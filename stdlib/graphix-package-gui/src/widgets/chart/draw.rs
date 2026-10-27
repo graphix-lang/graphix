@@ -236,14 +236,20 @@ fn label_areas<DB: DrawingBackend>(
     builder.y_label_area_size(size(mesh.and_then(|m| m.y_label_area_size), auto_y));
 }
 
+/// How a value axis over `range` with `labels` ticks (plotters' 10 when
+/// unset) writes them.
+fn tick_format(range: (f64, f64), labels: Option<i64>) -> TickFormat {
+    TickFormat::new(range, labels.map_or(10, |n| ticks(n, 1)))
+}
+
 /// How the y axis over `y` writes its ticks.
 fn y_ticks(y: (f64, f64), mesh: Option<&MeshStyleV>) -> TickFormat {
-    TickFormat::new(y, mesh.and_then(|m| m.y_labels).map_or(10, |n| ticks(n, 1)))
+    tick_format(y, mesh.and_then(|m| m.y_labels))
 }
 
 /// How a numeric x axis over `x` writes its ticks.
 fn x_ticks(x: (f64, f64), mesh: Option<&MeshStyleV>) -> TickFormat {
-    TickFormat::new(x, mesh.and_then(|m| m.x_labels).map_or(10, |n| ticks(n, 1)))
+    tick_format(x, mesh.and_then(|m| m.x_labels))
 }
 
 /// What draw records for update: the plot rectangle and its ranges.
@@ -1011,8 +1017,12 @@ fn draw_3d_chart<DB: DrawingBackend, X: GXExt>(
         }
         let (x_label, y_label) = axis_labels(w);
         let z_label = w.drawn.z_label.t.as_ref().and_then(|o| o.as_deref());
-        let (x_fn, y_fn, z_fn) =
-            (axis_format(x_label), axis_format(z_label), axis_format(y_label));
+        let labels = |f: fn(&MeshStyleV) -> Option<i64>| mesh_style.and_then(f);
+        let (x_fn, y_fn, z_fn) = (
+            axis_format(x_label, tick_format(x, labels(|m| m.x_labels))),
+            axis_format(z_label, tick_format((z_min, z_max), labels(|m| m.z_labels))),
+            axis_format(y_label, tick_format(y, labels(|m| m.y_labels))),
+        );
         axes.x_formatter(&x_fn);
         axes.y_formatter(&y_fn);
         axes.z_formatter(&z_fn);
@@ -1117,16 +1127,21 @@ fn draw_3d_chart<DB: DrawingBackend, X: GXExt>(
 }
 
 /// A 3D axis' tick text: the value, after the axis' label when it has one.
-// CR claude for claude: [bug/low] 3D ticks are written with one fixed decimal, so a
+// XCR claude for claude: [bug/low] 3D ticks are written with one fixed decimal, so a
 // surface whose z spans 0..0.01 labels every tick 0.0, and Unix-ms values print as
 // 13-digit integers. The 2D value axes moved to TickFormat for exactly this; the 3D
 // axes did not. Fix: in draw_3d_chart, build a TickFormat per axis from its range and
 // the mesh's label count, and have axis_format write `{l}: {fmt.format(*v)}`. Found by
 // reading; not run. (gui-chart-03)
-fn axis_format(label: Option<&str>) -> impl Fn(&f64) -> String + '_ {
+// 2026-10-26 claude: draw_3d_chart builds a TickFormat per axis (tick_format, shared
+// with x_ticks/y_ticks, plotters' 10 labels when the mesh sets none) from its range
+// and label count; axis_format writes fmt.format(v). Pin:
+// widgets::chart::draw::test::a_3d_axis_tells_its_ticks_apart (z over 0..0.01 labels
+// 0.000..0.010 apart, Unix-ms in scientific).
+fn axis_format(label: Option<&str>, fmt: TickFormat) -> impl Fn(&f64) -> String + '_ {
     move |v| match label {
-        Some(l) => format!("{l}: {v:.1}"),
-        None => format!("{v:.1}"),
+        Some(l) => format!("{l}: {}", fmt.format(*v)),
+        None => fmt.format(*v),
     }
 }
 
@@ -1150,4 +1165,21 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     };
     let m = l - c / 2.0;
     (((r1 + m) * 255.0) as u8, ((g1 + m) * 255.0) as u8, ((b1 + m) * 255.0) as u8)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn a_3d_axis_tells_its_ticks_apart() {
+        let z = axis_format(Some("z"), tick_format((0.0, 0.01), None));
+        let labels: Vec<String> = (0..=10).map(|k| z(&(k as f64 * 0.001))).collect();
+        let mut unique = labels.clone();
+        unique.dedup();
+        assert_eq!(unique, labels);
+        assert_eq!(z(&0.005), "z: 0.005");
+        let ms = axis_format(None, tick_format((1.7e12, 1.8e12), Some(4)));
+        assert!(ms(&1.75e12).len() <= 8, "{}", ms(&1.75e12));
+    }
 }

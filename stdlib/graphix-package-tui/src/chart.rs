@@ -1,7 +1,7 @@
 use super::tag_newtype;
 use super::{
     AlignmentV, BoundsV, LineV, MarkerV, PointV, StyleV, TuiW, TuiWidget,
-    into_borrowed_line, layout::ConstraintV, reconcile,
+    into_borrowed_line_within, layout::ConstraintV, reconcile,
 };
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -36,6 +36,7 @@ tag_newtype!(#[derive(Clone, Copy)] LegendPositionV(LegendPosition), "legend pos
 struct AxisV {
     axis: Axis<'static>,
     labels: Vec<LineV>,
+    title: Option<LineV>,
 }
 
 impl FromValue for AxisV {
@@ -57,24 +58,26 @@ impl FromValue for AxisV {
         if let Some(st) = style {
             axis = axis.style(st.0);
         }
-        if let Some(LineV(t)) = title {
-            axis = axis.title(t);
-        }
-        Ok(Self { axis, labels: labels.unwrap_or_default() })
+        Ok(Self { axis, labels: labels.unwrap_or_default(), title })
     }
 }
 
 impl AxisV {
-    fn build(&self, room: u16) -> Axis<'_> {
+    /// The axis with at most `room` of its labels, its text cut to `width`.
+    fn build(&self, room: u16, width: u16) -> Axis<'_> {
         let count = self.labels.len().min(room as usize);
         let labels = (0..count)
             .map(|i| {
                 let index =
                     if count < 2 { 0 } else { i * (self.labels.len() - 1) / (count - 1) };
-                into_borrowed_line(&self.labels[index].0)
+                into_borrowed_line_within(&self.labels[index].0, width)
             })
             .collect::<Vec<_>>();
-        self.axis.clone().labels(labels)
+        let axis = self.axis.clone().labels(labels);
+        match &self.title {
+            Some(LineV(t)) => axis.title(into_borrowed_line_within(t, width)),
+            None => axis,
+        }
     }
 }
 
@@ -98,20 +101,13 @@ struct DatasetW<X: GXExt> {
     p: DatasetProps<X>,
     data_ref: Ref<X>,
     data: Vec<(f64, f64)>,
-    /// Where a line breaks: each index starts a segment the point before
-    /// it cannot be joined to (their difference overflows).
-    breaks: Vec<usize>,
 }
 
 impl<X: GXExt> DatasetW<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
         let p = DatasetProps::compile(gx, &v).await.context("dataset")?;
-        let mut t = Self {
-            p,
-            data_ref: gx.compile_field(&v, "data").await?,
-            data: vec![],
-            breaks: vec![],
-        };
+        let mut t =
+            Self { p, data_ref: gx.compile_field(&v, "data").await?, data: vec![] };
         if let Some(v) = t.data_ref.last.take() {
             t.set_data(&v)?;
         }
@@ -120,12 +116,6 @@ impl<X: GXExt> DatasetW<X> {
 
     /// The finite points: ratatui paints a NaN at the canvas edge.
     fn set_data(&mut self, v: &Value) -> Result<()> {
-        // CR claude for claude: [risk/low] An early return below (array_elems failing
-        // or a pair that does not cast) leaves `data` empty or partial while `breaks`
-        // still indexes the old data. The display loop only logs an update error and
-        // keeps drawing, so DatasetW::build's `self.data[s..e]` then panics. Clear
-        // `breaks` together with `data` here, or build both into locals and assign them
-        // only on success. Found by reading; not run. (tui-widgets-07)
         self.data.clear();
         let points = rep::array_elems(v).ok_or_else(|| {
             anyhow!("invalid dataset {}", graphix_compiler::typ::Naked(v))
@@ -134,14 +124,6 @@ impl<X: GXExt> DatasetW<X> {
             let PointV(x, y) = p.clone().cast_to().context("invalid dataset pair")?;
             if x.is_finite() && y.is_finite() {
                 self.data.push((x, y));
-            }
-        }
-        self.breaks.clear();
-        for (i, pair) in self.data.windows(2).enumerate() {
-            if !(pair[1].0 - pair[0].0).is_finite()
-                || !(pair[1].1 - pair[0].1).is_finite()
-            {
-                self.breaks.push(i + 1);
             }
         }
         Ok(())
@@ -156,24 +138,38 @@ impl<X: GXExt> DatasetW<X> {
     }
 
     /// The datasets this series draws as: one, or for a line one per
-    /// segment between its breaks, the first carrying the name.
-    fn build(&self) -> impl Iterator<Item = Dataset<'_>> {
+    /// segment between its breaks, the first carrying the name. A line
+    /// breaks before each point it cannot be joined to from the one before
+    /// (their difference overflows). The name is cut to `width`.
+    fn build(&self, width: u16) -> impl Iterator<Item = Dataset<'_>> {
         let connected =
             matches!(self.p.graph_type.t.flatten(), Some(GraphTypeV(GraphType::Line)));
-        let breaks: &[usize] = if connected { &self.breaks } else { &[] };
-        let starts = std::iter::once(0).chain(breaks.iter().copied());
-        let ends = breaks.iter().copied().chain(std::iter::once(self.data.len()));
+        let joined: &[(f64, f64)] = if connected { &self.data } else { &[] };
+        let breaks = joined
+            .windows(2)
+            .enumerate()
+            .filter(|(_, p)| {
+                !(p[1].0 - p[0].0).is_finite() || !(p[1].1 - p[0].1).is_finite()
+            })
+            .map(|(i, _)| i + 1);
+        let starts = std::iter::once(0).chain(breaks.clone());
+        let ends = breaks.chain(std::iter::once(self.data.len()));
         starts
             .zip(ends)
             .enumerate()
-            .map(|(i, (s, e))| self.segment(&self.data[s..e], i == 0))
+            .map(move |(i, (s, e))| self.segment(&self.data[s..e], i == 0, width))
     }
 
-    fn segment<'a>(&'a self, data: &'a [(f64, f64)], named: bool) -> Dataset<'a> {
+    fn segment<'a>(
+        &'a self,
+        data: &'a [(f64, f64)],
+        named: bool,
+        width: u16,
+    ) -> Dataset<'a> {
         let p = &self.p;
         let mut ds = Dataset::default().data(data);
         if named && let Some(Some(LineV(l))) = &p.name.t {
-            ds = ds.name(into_borrowed_line(l));
+            ds = ds.name(into_borrowed_line_within(l, width));
         }
         if let Some(Some(m)) = p.marker.t {
             ds = ds.marker(m.0);
@@ -241,8 +237,11 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         let p = &self.p;
-        let mut chart =
-            Chart::new(self.datasets.iter().flat_map(|(_, d)| d.build()).collect());
+        // the legend adds its border to its widest name
+        let text_room = rect.width.saturating_sub(2);
+        let mut chart = Chart::new(
+            self.datasets.iter().flat_map(|(_, d)| d.build(text_room)).collect(),
+        );
         if let Some(Some(h)) = &p.hidden_legend_constraints.t {
             chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
         }
@@ -262,9 +261,9 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
             chart = chart.style(s.0);
         }
         if let Some(Some(a)) = &p.x_axis.t {
-            chart = chart.x_axis(a.build(rect.width));
+            chart = chart.x_axis(a.build(rect.width, text_room));
         }
-        // CR claude for claude: [bug/low] Label counts are bounded before ratatui sees
+        // XCR claude for claude: [bug/low] Label counts are bounded before ratatui sees
         // them, but text widths are not. ratatui adds widths in u16 (`w + 1` for an
         // axis title, `inner_width + 2` for the legend, `area.x + label_size + margin`
         // for a horizontal bar label in barchart.rs), so a 65535-wide y title, a
@@ -274,11 +273,19 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         // DatasetW::segment, BarProps::build), and add an UPSTREAM.md entry. probe:
         // design/review-2026-10-26/repro/tui-widgets-wide-text-overflow.sh
         // (tui-widgets-05)
+        // 2026-10-26 claude: into_borrowed_line_within (lib.rs, unicode-truncate,
+        // ratatui's own truncation crate) cuts axis titles and labels and dataset
+        // names to rect.width - 2 (the legend border) and bar labels to rect.width - 1
+        // (the bar margin); the horizontal value room reads the cut width. UPSTREAM.md
+        // entry added. Pin: test::panic_test::text_wider_than_u16_draws_cut (the
+        // repro's three programs, each drawn cut).
         if let Some(Some(a)) = &p.y_axis.t {
-            chart =
-                chart.y_axis(a.build((rect.height as u32).min(
+            chart = chart.y_axis(a.build(
+                (rect.height as u32).min(
                     u16::MAX as u32 / rect.height.saturating_sub(1).max(1) as u32 + 1,
-                ) as u16));
+                ) as u16,
+                text_room,
+            ));
         }
         frame.render_widget(chart, rect);
         Ok(())
@@ -295,12 +302,15 @@ mod tests {
         let mut labels = vec![LineV(Line::from("m")); 65_538];
         labels[0] = LineV(Line::from("f"));
         labels[65_537] = LineV(Line::from("z"));
-        let axis = AxisV { axis: Axis::default().bounds([0.0, 1.0]), labels };
+        let axis =
+            AxisV { axis: Axis::default().bounds([0.0, 1.0]), labels, title: None };
         let rect = Rect::new(0, 0, 80, 10);
         let mut buffer = Buffer::empty(rect);
-        Chart::default().x_axis(axis.build(rect.width)).render(rect, &mut buffer);
+        Chart::default()
+            .x_axis(axis.build(rect.width, rect.width))
+            .render(rect, &mut buffer);
         assert_eq!(buffer[(0, 9)].symbol(), "f");
-        Chart::default().x_axis(axis.build(2)).render(rect, &mut buffer);
+        Chart::default().x_axis(axis.build(2, rect.width)).render(rect, &mut buffer);
         assert_eq!(buffer[(79, 9)].symbol(), "z");
     }
 }

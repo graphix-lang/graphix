@@ -45,19 +45,10 @@ impl<X: GXExt> DatasetEntry<X> {
     /// The chart mode this dataset's data asks for; `None` while it has
     /// none.
     pub fn mode(&self) -> Option<ChartMode> {
-        fn xy(time: bool) -> ChartMode {
-            if time { ChartMode::TimeSeries } else { ChartMode::Numeric }
-        }
         match self {
-            Self::XY { data, .. } => {
-                data.t.as_ref().filter(|d| !d.pts.is_empty()).map(|d| xy(d.time))
-            }
-            Self::Candlestick { data, .. } => {
-                data.t.as_ref().filter(|d| !d.pts.is_empty()).map(|d| xy(d.time))
-            }
-            Self::ErrorBar { data, .. } => {
-                data.t.as_ref().filter(|d| !d.pts.is_empty()).map(|d| xy(d.time))
-            }
+            Self::XY { data, .. } => data.t.as_ref().and_then(Series::mode),
+            Self::Candlestick { data, .. } => data.t.as_ref().and_then(Series::mode),
+            Self::ErrorBar { data, .. } => data.t.as_ref().and_then(Series::mode),
             Self::Bar { data, .. } => {
                 data.t.as_ref().filter(|d| !d.0.is_empty()).map(|_| ChartMode::Bar)
             }

@@ -1598,6 +1598,30 @@ let result = data_table(
     Ok(())
 }
 
+/// An auto-fit asks `on_resize` of a column without a width ref, as a
+/// drag does, and the column takes the fit width itself.
+#[tokio::test(flavor = "current_thread")]
+async fn auto_fit_asks_on_resize_without_a_width_ref() -> Result<()> {
+    let code = r#"
+
+let log = 0.0;
+let long = "wider than MIN_COL_WIDTH default";
+let tbl = { rows: ["r0"], columns: [
+        text_column(#name: "c0", #source: &long, #on_resize: |w: f64| log <- w)
+    ] };
+let result = data_table(#table: &tbl)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::log").await?;
+    let _ = h.view();
+    h.dt_mut().handle_column_resize_start(literal!("c0"));
+    h.dt_mut().handle_column_resize_start(literal!("c0"));
+    let w = h.dt().dt_user_width("c0").expect("auto-fit writes user_widths");
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::log"), Some(&Value::F64(w as f64)));
+    Ok(())
+}
+
 /// Quick presses on two columns' handles, as after a scroll brings
 /// another column under the cursor, start a drag of the second.
 #[tokio::test(flavor = "current_thread")]

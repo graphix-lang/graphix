@@ -650,6 +650,57 @@ let result = chart(#x_axis: &axis({min: 0.0, max: 10.0}),
     Ok(())
 }
 
+/// Text as wide as ratatui's u16 coordinates draws cut to the screen: an
+/// axis title, a legend name and a horizontal bar label.
+#[tokio::test]
+async fn text_wider_than_u16_draws_cut() -> Result<()> {
+    let (t, n) = ("a".repeat(65535), "a".repeat(65534));
+    for (code, row) in [
+        (
+            format!(
+                r#"
+use tui::{{line, chart::{{axis, chart, dataset}}}};
+let result = chart(
+    #x_axis: &axis({{min: 0.0, max: 10.0}}),
+    #y_axis: &axis(#title: line("{t}"), {{min: 0.0, max: 10.0}}),
+    &[dataset(&[(1.0, 1.0)])]
+)
+"#
+            ),
+            0,
+        ),
+        (
+            format!(
+                r#"
+use tui::{{line, chart::{{axis, chart, dataset}}}};
+let result = chart(
+    #legend_position: &`TopRight,
+    #hidden_legend_constraints: &{{width: `Percentage(100), height: `Percentage(100)}},
+    #x_axis: &axis({{min: 0.0, max: 10.0}}),
+    #y_axis: &axis({{min: 0.0, max: 10.0}}),
+    &[dataset(#name: &line("{n}"), &[(1.0, 1.0)])]
+)
+"#
+            ),
+            1,
+        ),
+        (
+            format!(
+                r#"
+use tui::{{line, barchart::{{bar, bar_chart, bar_group}}}};
+let result = bar_chart(#direction: &`Horizontal, &[bar_group([bar(#label: &line("{t}"), &3)])])
+"#
+            ),
+            0,
+        ),
+    ] {
+        let mut h = TuiTestHarness::with_viewport(&code, 40, 10).await?;
+        let lines = h.render_lines()?;
+        assert!(lines[row].contains("aaaaaaaaaa"), "{lines:?}");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn chart_samples_labels_to_fit() -> Result<()> {
     for height in [50, 400] {

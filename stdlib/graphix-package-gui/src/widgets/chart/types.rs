@@ -1,3 +1,4 @@
+use super::dataset::ChartMode;
 use crate::types::{ColorV, TextSizeV};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
@@ -73,15 +74,7 @@ fn array(v: Value, what: &str) -> Result<netidx::protocol::valarray::ValArray> {
 }
 
 /// XY data; x is in ms since the epoch when `time`.
-// CR claude for claude: [structure/low] XYData has exactly the shape of Series<(f64,
-// f64)>, so DatasetEntry::mode repeats its non-empty-mode body once per point type.
-// Make it `pub type XYData = Series<(f64, f64)>` and give Series<P> a `mode()` that the
-// XY, Candlestick and ErrorBar arms call. BarData, XYZData and SurfaceData also match
-// Value::Array by hand where array() exists; use it. Found by reading. (gui-chart-06)
-pub struct XYData {
-    pub time: bool,
-    pub pts: LPooled<Vec<(f64, f64)>>,
-}
+pub type XYData = Series<(f64, f64)>;
 
 impl FromValue for XYData {
     fn from_value(v: Value) -> Result<Self> {
@@ -106,10 +99,7 @@ pub struct BarData(pub LPooled<Vec<(ArcStr, f64)>>);
 
 impl FromValue for BarData {
     fn from_value(v: Value) -> Result<Self> {
-        let a = match v {
-            Value::Array(a) => a,
-            _ => bail!("chart bar data: expected array"),
-        };
+        let a = array(v, "bar")?;
         Ok(Self(
             a.iter()
                 .map(|v| v.clone().cast_to::<Pair<ArcStr>>().map(|Pair(l, y)| (l, y)))
@@ -153,6 +143,17 @@ impl EBPoint {
 pub struct Series<P> {
     pub time: bool,
     pub pts: LPooled<Vec<P>>,
+}
+
+impl<P> Series<P> {
+    /// The chart mode these points ask for; `None` when there are none.
+    pub fn mode(&self) -> Option<ChartMode> {
+        match (self.pts.is_empty(), self.time) {
+            (true, _) => None,
+            (false, true) => Some(ChartMode::TimeSeries),
+            (false, false) => Some(ChartMode::Numeric),
+        }
+    }
 }
 
 pub type OHLCData = Series<OHLCPoint>;
@@ -222,10 +223,7 @@ pub struct XYZData(pub LPooled<Vec<(f64, f64, f64)>>);
 
 impl FromValue for XYZData {
     fn from_value(v: Value) -> Result<Self> {
-        let a = match v {
-            Value::Array(a) => a,
-            _ => bail!("chart xyz data: expected array"),
-        };
+        let a = array(v, "xyz")?;
         Ok(Self(
             a.iter()
                 .map(|v| v.clone().cast_to::<Triple>().map(|Triple(x, y, z)| (x, y, z)))
@@ -239,18 +237,11 @@ pub struct SurfaceData(pub LPooled<Vec<LPooled<Vec<(f64, f64, f64)>>>>);
 
 impl FromValue for SurfaceData {
     fn from_value(v: Value) -> Result<Self> {
-        let a = match v {
-            Value::Array(a) => a,
-            _ => bail!("chart surface data: expected array of arrays"),
-        };
+        let a = array(v, "surface")?;
         let mut rows: LPooled<Vec<LPooled<Vec<(f64, f64, f64)>>>> = LPooled::take();
         for row_v in a.iter() {
-            let row_a = match row_v {
-                Value::Array(a) => a,
-                _ => bail!("chart surface data: expected inner array"),
-            };
             rows.push(
-                row_a
+                array(row_v.clone(), "surface row")?
                     .iter()
                     .map(|v| {
                         v.clone().cast_to::<Triple>().map(|Triple(x, y, z)| (x, y, z))

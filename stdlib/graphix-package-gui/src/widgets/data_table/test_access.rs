@@ -8,7 +8,7 @@ use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::GXExt;
 use netidx::path::Path;
-use poolshark::local::LPooled;
+use poolshark::{global::GPooled, local::LPooled};
 use std::time::Instant;
 
 impl<X: GXExt> DataTableW<X> {
@@ -60,7 +60,7 @@ impl<X: GXExt> DataTableW<X> {
             panic!("unknown sparkline column {col}");
         };
         let mut inner = self.cells.inner.lock();
-        let history = inner.sparklines.entry(key).or_insert_with(LPooled::take);
+        let history = inner.sparklines.entry(key).or_insert_with(GPooled::take);
         push_sparkline_point(history, when, v, *history_seconds);
     }
 

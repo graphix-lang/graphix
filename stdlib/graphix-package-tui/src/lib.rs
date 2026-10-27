@@ -73,6 +73,7 @@ use tokio::{
     time::{Interval, MissedTickBehavior, interval},
 };
 use triomphe::Arc;
+use unicode_truncate::UnicodeTruncateStr;
 use validate::{Byte, Index, Offset};
 
 mod barchart;
@@ -400,6 +401,23 @@ fn into_borrowed_line<'a>(line: &'a Line<'static>) -> Line<'a> {
                 Cow::Borrowed(s) => Cow::Borrowed(*s),
             };
             Span { content, style: s.style }
+        })
+        .collect();
+    Line { alignment: line.alignment, style: line.style, spans }
+}
+
+/// `line` borrowed and cut to at most `width` columns: ratatui adds the
+/// widths of some text (an axis title, a legend entry, a bar label) to
+/// coordinates in u16, so text it measures that way is cut to its area.
+fn into_borrowed_line_within<'a>(line: &'a Line<'static>, width: u16) -> Line<'a> {
+    let mut room = usize::from(width);
+    let spans = line
+        .spans
+        .iter()
+        .map(|s| {
+            let (content, w) = s.content.unicode_truncate(room);
+            room -= w;
+            Span { content: Cow::Borrowed(content), style: s.style }
         })
         .collect();
     Line { alignment: line.alignment, style: line.style, spans }

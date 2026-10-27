@@ -88,13 +88,7 @@ pub(super) struct SharedCellsInner {
     pub(super) routing: IntMap<SubId, SubRoles>,
     /// Sparkline history per `(row_path, col_name)`; keyed by identity
     /// so it survives row reordering.
-    // CR claude for claude: [style/low] These histories are taken on tokio workers
-    // (deliver_to_grid in the dispatch task) and dropped on the GUI thread
-    // (update_subscriptions' retain): the asymmetric cross-thread case the pooling rule
-    // gives to GPooled. As LPooled, the workers always allocate and the GUI thread's
-    // pool fills with deques it never reuses. Use GPooled here. Found by reading; not
-    // run. (gui-datatable-07)
-    pub(super) sparklines: AHashMap<(Path, ArcStr), LPooled<VecDeque<(Instant, f64)>>>,
+    pub(super) sparklines: AHashMap<(Path, ArcStr), GPooled<VecDeque<(Instant, f64)>>>,
     /// Latest `on_update` callable id, read by the dispatch task at
     /// the start of each batch.
     pub(super) on_update: Option<CallableId>,
@@ -259,7 +253,7 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
 /// Primitive` does not hold (a map).
 fn deliver_to_grid<X: GXExt>(
     gx: &GXHandle<X>,
-    sparklines: &mut AHashMap<(Path, ArcStr), LPooled<VecDeque<(Instant, f64)>>>,
+    sparklines: &mut AHashMap<(Path, ArcStr), GPooled<VecDeque<(Instant, f64)>>>,
     on_update: Option<CallableId>,
     role: &SubRole,
     v: &Value,
@@ -273,7 +267,7 @@ fn deliver_to_grid<X: GXExt>(
     {
         let h = sparklines
             .entry((row_path.clone(), col_name.clone()))
-            .or_insert_with(LPooled::take);
+            .or_insert_with(GPooled::take);
         push_sparkline_point(h, now, f, *hs);
     }
     if let Some(cid) = on_update {
@@ -664,17 +658,11 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
-    /// Push each sparkline column's fallback into the history of every
-    /// cell that never subscribes: a virtual row's, or a stored source's. A
+    /// Push each sparkline column's fallback as a point into the history
+    /// of every cell that never subscribes (a virtual row's, or a stored
+    /// source's): every such cell of `fired`, the column whose source just
+    /// gave a value, and a first point to any other that has none yet. A
     /// subscribed cell's history holds only its own values.
-    /// Give the sparkline cells their defaults' points: every cell of
-    /// `fired`, the column whose source just gave a value, and a first
-    /// point to any other cell that has none yet.
-    // CR claude for claude: [readability/low] Two doc paragraphs are stacked above this
-    // function; the first is an older wording of the second. Merge them into one: cells
-    // that never subscribe get their fallback as a point, every such cell of `fired`,
-    // and a first point for any other cell with no history. Found by reading; not run.
-    // (gui-datatable-06)
     pub(super) fn push_defaults_to_sparklines(&self, fired: Option<&ArcStr>) {
         if self.mode != DisplayMode::Table {
             return;
@@ -698,7 +686,7 @@ impl<X: GXExt> DataTableW<X> {
                 if fired != Some(col_name) && inner.sparklines.contains_key(&key) {
                     continue;
                 }
-                let history = inner.sparklines.entry(key).or_insert_with(LPooled::take);
+                let history = inner.sparklines.entry(key).or_insert_with(GPooled::take);
                 push_sparkline_point(history, now, f, history_seconds);
             }
         }

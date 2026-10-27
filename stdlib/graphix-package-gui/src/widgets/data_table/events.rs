@@ -212,9 +212,7 @@ impl<X: GXExt> DataTableW<X> {
         true
     }
 
-    /// Follow the drag to `cursor_x`. A column with a width ref takes its
-    /// width from the program, so the drag only asks its `on_resize`;
-    /// any other column takes the drag's width itself.
+    /// Follow the drag to `cursor_x`, resizing its column (`user_resize`).
     pub(crate) fn handle_mouse_move_resize(
         &mut self,
         cursor_x: f32,
@@ -223,11 +221,21 @@ impl<X: GXExt> DataTableW<X> {
         let last = drag.last_x.replace(cursor_x)?;
         drag.current_width = (drag.current_width + cursor_x - last).max(MIN_COL_WIDTH);
         let (name, w) = (drag.col_name.clone(), drag.current_width);
+        self.user_resize(name, w)
+    }
+
+    /// The user sized column `name` to `w`, by a drag or an auto-fit. A
+    /// column with a width ref takes its width from the program, so only
+    /// its `on_resize` is asked; any other column takes `w` itself, and
+    /// its `on_resize` is asked too. Returns that call.
+    pub(super) fn user_resize(&self, name: ArcStr, w: f32) -> Option<(CallableId, f64)> {
         let col = self.columns.get(&name);
+        let on_resize =
+            col.and_then(|c| c.on_resize.as_ref()).map(|c| (c.id(), w as f64));
         if col.is_none_or(|c| c.ref_width.is_none()) {
             self.user_widths.lock().insert(name, w);
         }
-        col.and_then(|c| c.on_resize.as_ref()).map(|c| (c.id(), w as f64))
+        on_resize
     }
 
     pub(crate) fn handle_column_resize_end(&mut self) -> bool {

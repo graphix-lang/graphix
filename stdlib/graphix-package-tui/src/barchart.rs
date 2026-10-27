@@ -1,5 +1,6 @@
 use super::{
-    DirectionV, LineV, StyleV, TuiW, TuiWidget, into_borrowed_line, reconcile,
+    DirectionV, LineV, StyleV, TuiW, TuiWidget, into_borrowed_line,
+    into_borrowed_line_within, reconcile,
     validate::{Dim, Index},
 };
 use anyhow::{Context, Result};
@@ -27,12 +28,13 @@ graphix_rt::props! {
 }
 
 impl<X: GXExt> BarProps<X> {
-    /// The bar, its text value cut to `value_room` bytes: ratatui places
-    /// what does not fit inside the bar by byte length.
-    fn build(&self, value_room: u16) -> Bar<'_> {
+    /// The bar, its label cut to `label_room` columns and its text value
+    /// to `value_room` bytes: ratatui places what does not fit inside the
+    /// bar by byte length.
+    fn build(&self, label_room: u16, value_room: u16) -> Bar<'_> {
         let mut bar = Bar::default().value(self.value.t.map_or(0, |v| v.0 as u64));
         if let Some(Some(LineV(l))) = &self.label.t {
-            bar = bar.label(into_borrowed_line(l));
+            bar = bar.label(into_borrowed_line_within(l, label_room));
         }
         if let Some(Some(s)) = &self.style.t {
             bar = bar.style(s.0);
@@ -159,6 +161,8 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
             Direction::Vertical => rect.width,
             Direction::Horizontal => rect.height,
         } as u32;
+        // a horizontal chart puts its bars a margin past the widest label
+        let label_room = rect.width.saturating_sub(1);
         let value_room = match direction {
             Direction::Vertical => u16::MAX,
             Direction::Horizontal => {
@@ -167,7 +171,7 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
                         b.label.t.as_ref()?.as_ref().map(|l| l.0.width())
                     })
                     .max()
-                    .unwrap_or(0) as u16;
+                    .map_or(0, |w| w.min(label_room as usize) as u16);
                 rect.width.saturating_sub(label).saturating_sub((label != 0) as u16)
             }
         };
@@ -190,7 +194,7 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
                     break 'groups;
                 }
                 used += need;
-                bars.push(bar.build(value_room));
+                bars.push(bar.build(label_room, value_room));
             }
             chart = chart.data(Self::group(group, &bars));
         }

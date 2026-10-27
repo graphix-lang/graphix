@@ -175,3 +175,18 @@ the state of a fix, and Graphix's side.
   over its own rect and swaps the cells with the frame's
   (`stdlib/graphix-package-tui/src/calendar.rs`); nothing in Graphix
   calls `merge`. Not reported.
+
+## ratatui-widgets 0.3.2: Chart and BarChart add text widths in u16
+
+- **Bug.** `Chart::layout` tests a y axis title by `w + 1` and sizes the
+  legend by `inner_width + 2`, and `BarChart` places horizontal bars at
+  `area.x + label_size + margin`, all `u16` from `Line::width() as u16`.
+  A 65535-wide y title, a 65534-wide dataset name or a 65535-wide bar
+  label panics a debug build and wraps in release; a width past 65535
+  truncates and lays out wrong.
+- **Repro.** `design/review-2026-10-26/repro/tui-widgets-wide-text-overflow.sh`
+  against a Graphix that does not cut the text.
+- **Graphix's side.** Worked around (wide text crashed the display):
+  axis titles and labels, dataset names and bar labels are cut to their
+  rect before ratatui sees them (`into_borrowed_line_within`,
+  `stdlib/graphix-package-tui/src/lib.rs`). Not reported.
