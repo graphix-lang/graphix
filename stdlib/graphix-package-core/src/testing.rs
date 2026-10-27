@@ -180,14 +180,17 @@ impl Mode {
         }
     }
 
-    /// A fixture's pruning: every skip audited, unless `GRAPHIX_PRUNE`
-    /// says otherwise. A fixture that measures pruning sets
-    /// [`Mode::prune`] in its setup.
+    /// A fixture's pruning, unless `GRAPHIX_PRUNE` says otherwise: real
+    /// skips in `Jit` and `Par`, every skip audited in `Interp` and
+    /// `JitPar`, so each engine and each fork mode holds a predicate both
+    /// to pruned runs and to the walk of every boundary. A fixture that
+    /// measures pruning sets [`Mode::prune`] in its setup.
     pub fn fixture_prune(self) -> PruneMode {
         match self {
             Mode::Unpruned => PruneMode::Off,
             _ if std::env::var_os("GRAPHIX_PRUNE").is_some() => PruneMode::from_env(),
-            // CR claude for claude: [test-gap/medium] Every run! mode audits and none
+            Mode::Jit | Mode::Par => PruneMode::On,
+            // XCR claude for claude: [test-gap/medium] Every run! mode audits and none
             // prunes, so the gate never runs the production default (PruneMode::On)
             // beyond the few lang::prune pins. The audit walks each boundary it would
             // skip, so a fixture computes what Off computes, and a divergence that
@@ -197,7 +200,13 @@ impl Mode {
             // design/review-2026-10-26/repro/x-prune-catchup-since-last-walk.gx
             // (GRAPHIX_PRUNE=audit prints 0 1 0 like off; only on prints 0 1 0 101)
             // (x-prune-03)
-            // CR claude for claude: [test-gap/medium] [test-gap/medium] Every run!
+            // 2026-10-26 claude: Mode::fixture_prune prunes for real (PruneMode::On) in
+            // Jit and Par and audits in Interp and JitPar, so each engine and each fork
+            // mode runs every predicate both pruned and audited (a diagonal rather than
+            // Par+JitPar, so the serial JIT prunes too); GRAPHIX_PRUNE still overrides.
+            // The graphix-tests suite passes under it. Pin:
+            // testing::tests::fixtures_prune_for_real_and_audited_in_each_engine.
+            // XCR claude for claude: [test-gap/medium] [test-gap/medium] Every run!
             // fixture runs under Audit. Prune::audit walks each boundary it would skip
             // and checks only that cycle's production and publications, so the child's
             // state evolves as unpruned and no fixture ever takes the riding path. A
@@ -209,7 +218,10 @@ impl Mode {
             // pruned semantics. probe:
             // design/review-2026-10-26/repro/c-prune-wake-last-run-pruned.gx
             // (c-prune-wake-04)
-            _ => PruneMode::Audit,
+            // 2026-10-26 claude: Fixed with x-prune-03: Jit and Par fixtures prune for
+            // real, Interp and JitPar audit. Pin:
+            // testing::tests::fixtures_prune_for_real_and_audited_in_each_engine.
+            Mode::Interp | Mode::JitPar => PruneMode::Audit,
         }
     }
 
@@ -278,18 +290,25 @@ pub async fn check_fixture(ctx: &TestCtx) -> Result<()> {
     ctx.rt.check(program, None).await.map(|_| ())
 }
 
-/// The check refuses exactly when the build does.
-// CR claude for claude: [test-gap/low] Two refusals agree here whatever their messages,
+/// The check refuses exactly when the build does: the check's refusal
+/// when both refuse, which a fixture's predicate holds as it holds the
+/// build's.
+// XCR claude for claude: [test-gap/low] Two refusals agree here whatever their messages,
 // and run! applies its predicate only to the build's error. A check that refuses for a
 // different or wrong reason passes every refused(..) fixture, though --check and the
 // LSP show the check's message. Return the check's error when both refuse and have
 // run_mode assert pred on it too. Found by reading; not run. (core-aux-05)
+// 2026-10-26 claude: verdicts_agree answers the check's refusal when both refuse, and
+// run! holds the fixture's predicate to it before the build's, so a refused(..) fixture
+// fails when the check refuses for another reason; every graphix-tests fixture passes
+// under it. Pin: testing::tests::both_refusing_answers_the_checks_refusal.
 pub fn verdicts_agree(
     checked: Result<()>,
     built: Result<(), &anyhow::Error>,
-) -> Result<()> {
+) -> Result<Option<anyhow::Error>> {
     match (checked, built) {
-        (Ok(()), Ok(())) | (Err(_), Err(_)) => Ok(()),
+        (Ok(()), Ok(())) => Ok(None),
+        (Err(e), Err(_)) => Ok(Some(e)),
         (Ok(()), Err(e)) => bail!("the check accepts what the build refuses: {e:#}"),
         (Err(e), Ok(())) => bail!("the check refuses what the build accepts: {e:#}"),
     }
@@ -911,9 +930,12 @@ macro_rules! run {
                 // the stdlib root's own cycles fork too: count the fixture's
                 let forks_before = ctx.rt.control().forks();
                 let built = $crate::testing::compile_result(&ctx).await;
-                if let ::std::option::Option::Some(checked) = checked {
-                    $crate::testing::verdicts_agree(checked, built.as_ref().map(|_| ()))?;
-                }
+                let check_refusal = match checked {
+                    ::std::option::Option::Some(checked) => {
+                        $crate::testing::verdicts_agree(checked, built.as_ref().map(|_| ()))?
+                    }
+                    ::std::option::Option::None => ::std::option::Option::None,
+                };
                 let regions = match &built {
                     Ok(_) => ctx.fusion_stats().await.ok().map(|s| s.fused),
                     Err(_) => ::std::option::Option::None,
@@ -922,6 +944,9 @@ macro_rules! run {
                     Err(e) => {
                         if let ::std::result::Result::Err(dead) = ctx.rt.get_env().await {
                             ::anyhow::bail!("the runtime died compiling the fixture ({dead:#}): {e:#}")
+                        }
+                        if let ::std::option::Option::Some(c) = check_refusal {
+                            assert!(pred(dbg!(Err(c))), "the check's refusal")
                         }
                         assert!(pred(dbg!(Err(e))))
                     }
@@ -1166,4 +1191,37 @@ macro_rules! run_with_tempdir {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_refusing_answers_the_checks_refusal() {
+        let built = anyhow::anyhow!("the build's reason");
+        let checked =
+            verdicts_agree(Err(anyhow::anyhow!("the check's reason")), Err(&built));
+        let refusal = checked.unwrap().expect("both refuse");
+        assert!(refused("the check's reason")(Err(refusal)));
+        assert!(verdicts_agree(Ok(()), Ok(())).unwrap().is_none());
+    }
+
+    #[test]
+    fn fixtures_prune_for_real_and_audited_in_each_engine() {
+        if std::env::var_os("GRAPHIX_PRUNE").is_some() {
+            return;
+        }
+        for prune in [PruneMode::On, PruneMode::Audit] {
+            for node_walk in [true, false] {
+                assert!(
+                    Mode::ALL
+                        .iter()
+                        .any(|m| m.node_walk() == node_walk && m.fixture_prune() == prune),
+                    "no {} mode runs fixtures under {prune:?}",
+                    if node_walk { "node-walk" } else { "jit" }
+                )
+            }
+        }
+    }
 }

@@ -2,7 +2,8 @@
 
 Status: built.
 Pins: `stdlib/graphix-tests/src/lib_tests/core.rs` `queuefn_delta_per_cycle`, `queuefn_trigger_arg`,
-`queuefn_trigger_before_fn`, `queuefn_sleeping_site_keeps_its_calls`, `queuefn_birth_fire_is_no_credit`
+`queuefn_trigger_before_fn`, `queuefn_sleeping_site_keeps_its_calls`, `queuefn_birth_fire_is_no_credit`,
+`queuefn_wake_releases_one_call_a_cycle`, `queuefn_count_follows_a_moving_place`
 
 Lives in `graphix-package-core::queuefn`; the builtin is
 `core_queuefn`, bound in core's `mod.gx`.
@@ -69,9 +70,14 @@ design/review-2026-10-26/repro/x-async-io-queuefn-unbounded-credit.gx (x-async-i
   only fires after it exists release calls.
 - **A site's sleep** is a pause: its calls keep their place in the queue
   and no release takes one while it sleeps, since a sleeping site's
-  bindings would see only the last of several releases. At its wake it
-  releases its own calls, oldest first, while credit remains, and a call
-  it makes in that cycle queues behind them.
+  bindings would see only the last of several releases. At its wake the
+  credit pays its own calls, oldest first, while it remains; they are
+  released one a cycle, and a call it makes meanwhile queues behind them.
+- **One release a cycle per site**: writes to a site's argument bindings
+  made in one cycle land together, so two released calls would reach `f`
+  as one. A site's release is in flight until it lands; a call the
+  trigger or a credit pays meanwhile waits, paid, and the site releases
+  it when the one before lands.
 - **Depth change**: write the new depth through `#count` when non-null.
 - **`f` re-emits**: the queue and `pop_count` are NOT reset; later pops
   run queued args through the new `f`. A user who needs a fresh queue
@@ -126,13 +132,15 @@ user asked for.
   `genn::Callback::through` the `fid` binding: a call of `f` over one
   fresh binding per argument of the site. An invocation with credit
   delivers its fired arguments to those bindings this cycle
-  (`ExecCtx::deliver`), unless a release already delivered to them this
-  cycle: then it writes them with `set_var`, so the release runs first
-  and this call lands next cycle. A push writes `#count` directly (the
+  (`ExecCtx::deliver`), unless a release landed in them this cycle:
+  then it writes them with `set_var`, so the release runs first and this
+  call lands next cycle; with a release in flight it queues, paid. A push writes `#count` directly (the
   node's update is not re-entered by a push); a pop writes each recorded
   bind with `ctx.rt.set_var`, so the site's call fires next cycle.
 - `#count` is written through `ExecCtx::write_target`: a place patches
-  its root (`patch_level`), a binding is set (`set_level`).
+  its root (`patch_level`), a binding is set (`set_level`). The node
+  keeps the target the reference resolved to, and a target that arrives
+  or moves (a place's key) is told the depth.
 - Sleep: the node's `sleep` is a pause, keeping the queue and
   `pop_count`; its `reborn` (a seq step's next run) clears the queue,
   resets `pop_count` to 1 and writes `#count`. A wrapper site's `sleep`

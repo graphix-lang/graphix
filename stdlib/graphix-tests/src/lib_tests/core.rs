@@ -826,6 +826,39 @@ run!(queuefn_birth_fire_is_no_credit, r#"{
     select clk { 6 => got, _ => never() }
 }"#, prints("[i64:1, i64:2, i64:3]"); FuseExpect::Jit);
 
+// A site's wake releases the calls its banked credit pays one a cycle, so
+// each call's fired arguments reach f alone, and a call it makes in the
+// wake cycle lands after them (core-aux-01, x-async-io-03).
+run!(queuefn_wake_releases_one_call_a_cycle, r#"{
+    let c = 0;
+    c <- select c { n if n < 12 => n + 1, _ => never() };
+    let trig: Any = select c { 4 => null, 5 => null, 6 => null, _ => never() };
+    let a = 0;
+    a <- select c { 0 => 1, 1 => 2, _ => never() };
+    let b = 100;
+    b <- select c { 1 => 200, 6 => 300, _ => never() };
+    let mode = uniq(select c { n if n < 3 => `On, n if n < 7 => `Off, _ => `On });
+    let calls: Array<(i64, i64)> = [];
+    let q = queuefn(#trigger: trig, |x: i64, y: i64| -> (i64, i64) {
+        calls <- (x, y) ~ array::push(calls, (x, y));
+        (x, y)
+    });
+    let r = select mode { `On => q(a, b), `Off => never() };
+    select c { 12 => calls, _ => never() }
+}"#, prints("[[i64:0, i64:100], [i64:1, i64:100], [i64:2, i64:200], [i64:2, i64:300]]"); FuseExpect::Jit);
+
+// A #count place whose key moves is told the depth at the move.
+run!(queuefn_count_follows_a_moving_place, r#"{
+    let c = 0;
+    c <- select c { n if n < 6 => n + 1, _ => never() };
+    let arr = [-1, -1];
+    let i = 0;
+    i <- select c { 3 => 1, _ => never() };
+    let q = queuefn(#count: &mut arr[i], #trigger: never(), |x: i64| -> i64 x * 10);
+    let r = q(select c { 0 => 1, 1 => 2, 2 => 3, _ => never() });
+    select c { 6 => arr, _ => never() }
+}"#, prints("[i64:2, i64:2]"); FuseExpect::Jit);
+
 // The option HOFs answer every delivery of their input, as their select
 // spellings do, even when the callback ignores its argument: after a
 // null they take the new value.

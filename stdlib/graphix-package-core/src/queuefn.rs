@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, ExecCtx, InitFn, LambdaId,
-    Node, Refs, Rt, Scope, Tag, TagValue, TagView, UserEvent,
+    Node, Refs, Rt, Scope, Tag, TagValue, TagView, UserEvent, WriteTarget,
     effects::{LambdaFacts, RecursionKind},
     env::Env,
     expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
@@ -33,6 +33,9 @@ struct QueueEntry {
     /// cycle; on dispatch only these are written, so pred sees only the
     /// args that actually updated.
     updates: LPooled<Vec<(BindId, Value)>>,
+    /// A credit is spent on it: it waits only for its site's release in
+    /// flight to land.
+    paid: bool,
 }
 
 #[derive(Debug, Default)]
@@ -41,9 +44,14 @@ struct QueueState {
     /// The sites asleep: their calls keep their place and none is released
     /// until the site wakes.
     asleep: SmallVec<[SiteId; 2]>,
+    /// The sites whose last release has not landed yet. A site releases
+    /// one call a cycle, since writes to its argument bindings made in one
+    /// cycle land together and would merge two calls into one.
+    in_flight: SmallVec<[SiteId; 2]>,
     pop_count: i64,
-    /// BindId of the writable `#count` ref, or None if not provided.
-    count_ref: Option<BindId>,
+    /// The writable `#count` reference's cell and where a write through it
+    /// lands, or None if not provided.
+    count_ref: Option<(BindId, WriteTarget)>,
     /// Last value written through `count_ref` to avoid redundant writes.
     last_written_depth: i64,
 }
@@ -53,6 +61,7 @@ impl QueueState {
         Self {
             queue: VecDeque::new(),
             asleep: SmallVec::new(),
+            in_flight: SmallVec::new(),
             pop_count: 1,
             count_ref: None,
             last_written_depth: 0,
@@ -63,31 +72,68 @@ impl QueueState {
         self.queue.len() as i64
     }
 
-    /// The oldest call of a site awake.
-    fn pop_awake(&mut self) -> Option<QueueEntry> {
-        let i = self.queue.iter().position(|e| !self.asleep.contains(&e.site))?;
-        self.queue.remove(i)
-    }
-
-    /// The oldest call of `site`, when a credit releases it.
-    fn pop_own(&mut self, site: SiteId) -> Option<QueueEntry> {
-        if self.pop_count == 0 {
+    /// A trigger's fire: the oldest unpaid call of a site awake, released
+    /// now unless its site has a release in flight, when it is paid and
+    /// waits; with none, a banked credit.
+    fn trigger(&mut self) -> Option<QueueEntry> {
+        let asleep = &self.asleep;
+        let Some(i) =
+            self.queue.iter().position(|e| !e.paid && !asleep.contains(&e.site))
+        else {
+            self.pop_count += 1;
+            return None;
+        };
+        let site = self.queue[i].site;
+        if self.in_flight.contains(&site) {
+            self.queue[i].paid = true;
             return None;
         }
-        let i = self.queue.iter().position(|e| e.site == site)?;
-        self.pop_count -= 1;
+        self.in_flight.push(site);
         self.queue.remove(i)
     }
 
-    /// Forget `site`: its calls and its sleep.
+    /// `site` wakes: the credit banked pays its calls, oldest first, and
+    /// what it released before its sleep has landed. True if it slept.
+    fn wake(&mut self, site: SiteId) -> bool {
+        let Some(i) = self.asleep.iter().position(|s| *s == site) else {
+            return false;
+        };
+        self.asleep.swap_remove(i);
+        self.landed(site);
+        for e in self.queue.iter_mut().filter(|e| e.site == site && !e.paid) {
+            if self.pop_count == 0 {
+                break;
+            }
+            self.pop_count -= 1;
+            e.paid = true;
+        }
+        true
+    }
+
+    fn landed(&mut self, site: SiteId) {
+        self.in_flight.retain(|s| *s != site)
+    }
+
+    /// The oldest paid call of `site`, unless a release is in flight.
+    fn release(&mut self, site: SiteId) -> Option<QueueEntry> {
+        if self.in_flight.contains(&site) {
+            return None;
+        }
+        let i = self.queue.iter().position(|e| e.site == site && e.paid)?;
+        self.in_flight.push(site);
+        self.queue.remove(i)
+    }
+
+    /// Forget `site`: its calls, its sleep and its release in flight.
     fn drop_site(&mut self, site: SiteId) {
         self.queue.retain(|e| e.site != site);
         self.asleep.retain(|s| *s != site);
+        self.landed(site);
     }
 
     /// The `#count` write the depth needs, if it changed.
     fn count_write(&mut self) -> Option<(BindId, i64)> {
-        let bid = self.count_ref?;
+        let bid = self.count_ref.as_ref()?.0;
         let depth = self.depth();
         (depth != self.last_written_depth).then(|| {
             self.last_written_depth = depth;
@@ -103,10 +149,16 @@ fn write_count<R: Rt, E: UserEvent>(
     if let Some((r, depth)) = w {
         let v = Value::I64(depth);
         match ctx.write_target(r) {
-            graphix_compiler::WriteTarget::Place(root, path) => {
-                ctx.rt.patch_level(root, path, v)
-            }
-            graphix_compiler::WriteTarget::Bind(target) => ctx.rt.set_level(target, v),
+            WriteTarget::Place(root, path) => ctx.rt.patch_level(root, path, v),
+            WriteTarget::Bind(target) => ctx.rt.set_level(target, v),
+        }
+    }
+}
+
+fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, e: Option<QueueEntry>) {
+    if let Some(mut e) = e {
+        for (bid, v) in e.updates.drain(..) {
+            ctx.rt.set_var(bid, v);
         }
     }
 }
@@ -139,10 +191,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // a site waking releases its calls the credit banked while it slept;
-        // they land in turn from the next cycle, and so after them does a
-        // call it makes now
-        // CR claude for claude: [bug/medium] At a wake every paid entry is set_var'd in
+        // a site's paid calls are released one a cycle, each once the one
+        // before lands; at a wake the credit banked while it slept pays its
+        // calls, and a call it makes meanwhile queues behind them
+        // XCR claude for claude: [bug/medium] At a wake every paid entry is set_var'd in
         // this one cycle. Writes to different bindings land together, so two queued
         // calls whose fired arguments are disjoint reach f as one call, and with
         // overlapping deltas a later call's argument arrives early. A call made in this
@@ -152,39 +204,41 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         // site set_var a private tick binding it reads, popping one per update. probe:
         // design/review-2026-10-26/repro/core-aux-queuefn-wake-merges-calls.gx
         // (core-aux-01)
-        let mut woke: LPooled<Vec<QueueEntry>> = LPooled::take();
-        let count_write = {
+        // 2026-10-26 claude: WrapperApply releases one call a cycle per site:
+        // QueueState::in_flight holds a site whose release has not landed, a wake marks
+        // the calls its banked credit covers paid, the site releases the next paid one
+        // when the last lands, and a trigger or credit meeting a release in flight
+        // queues the call paid. Pin:
+        // lib_tests::core::queuefn_wake_releases_one_call_a_cycle (fails with the fix
+        // undone: the queued calls merge).
+        // XCR claude for claude: [bug/medium] The wake releases every queued
+        // call the credit covers in one cycle. Each entry writes only the
+        // arguments that fired for it, and the runtime queues writes per
+        // variable, so the first release lands with arguments of later
+        // ones. A call made in the wake cycle (the `woke_any` path) mixes
+        // the same way. With q(1, 100) and q(2, 200) queued across a sleep,
+        // the function sees (1, 200), which was never called, then (2,
+        // 200). Fix: at the wake, release one entry and release the next
+        // when its binds land, keeping later calls behind, so each delta
+        // lands alone. probe:
+        // design/review-2026-10-26/repro/x-async-io-queuefn-wake-mixes-calls.gx
+        // (x-async-io-03)
+        // 2026-10-26 claude: Fixed with core-aux-01: one release a cycle per
+        // site (QueueState::in_flight, paid entries); a call made in the wake
+        // cycle queues paid behind the released ones. Pin:
+        // lib_tests::core::queuefn_wake_releases_one_call_a_cycle; the repro
+        // prints (1, 100) then (2, 200).
+        let landed = self.call.args().iter().any(|b| ctx.event.variables.contains_key(b));
+        let (released, count_write) = {
             let mut s = self.state.lock();
-            match s.asleep.iter().position(|x| *x == self.site) {
-                None => None,
-                Some(i) => {
-                    s.asleep.swap_remove(i);
-                    // CR claude for claude: [bug/medium] The wake releases every queued
-                    // call the credit covers in one cycle. Each entry writes only the
-                    // arguments that fired for it, and the runtime queues writes per
-                    // variable, so the first release lands with arguments of later
-                    // ones. A call made in the wake cycle (the `woke_any` path) mixes
-                    // the same way. With q(1, 100) and q(2, 200) queued across a sleep,
-                    // the function sees (1, 200), which was never called, then (2,
-                    // 200). Fix: at the wake, release one entry and release the next
-                    // when its binds land, keeping later calls behind, so each delta
-                    // lands alone. probe:
-                    // design/review-2026-10-26/repro/x-async-io-queuefn-wake-mixes-calls.gx
-                    // (x-async-io-03)
-                    while let Some(e) = s.pop_own(self.site) {
-                        woke.push(e)
-                    }
-                    s.count_write()
-                }
+            if !s.wake(self.site) && landed {
+                s.landed(self.site)
             }
+            let e = s.release(self.site);
+            (e, s.count_write())
         };
         write_count(ctx, count_write);
-        let woke_any = !woke.is_empty();
-        for mut e in woke.drain(..) {
-            for (bid, v) in e.updates.drain(..) {
-                ctx.rt.set_var(bid, v);
-            }
-        }
+        release(ctx, released);
         let mut delta: LPooled<Vec<(BindId, Value)>> = LPooled::take();
         let mut tags: LPooled<Vec<Tag>> = LPooled::take();
         for (i, n) in from.iter_mut().enumerate() {
@@ -203,33 +257,30 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
             delta.clear();
         }
         if !delta.is_empty() {
-            let count_write = {
-                let mut s = self.state.lock();
-                if s.pop_count > 0 {
-                    s.pop_count -= 1;
-                    drop(s);
-                    // a release delivering to these binds this cycle goes first;
-                    // this call lands next cycle
-                    let released = woke_any
-                        || self
-                            .call
-                            .args()
-                            .iter()
-                            .any(|b| ctx.event.variables.contains_key(b));
-                    for (bid, v) in delta.drain(..) {
-                        if released {
-                            ctx.rt.set_var(bid, v);
-                        } else {
-                            ctx.deliver(bid, TagValue::fired(v));
-                        }
-                    }
-                    None
-                } else {
-                    s.queue.push_back(QueueEntry { site: self.site, updates: delta });
-                    s.count_write()
+            let mut s = self.state.lock();
+            let paid = s.pop_count > 0;
+            if paid {
+                s.pop_count -= 1;
+            }
+            if paid && !s.in_flight.contains(&self.site) {
+                // a release landing in these binds this cycle goes first, and
+                // this call lands next cycle
+                if landed {
+                    s.in_flight.push(self.site);
                 }
-            };
-            write_count(ctx, count_write);
+                drop(s);
+                for (bid, v) in delta.drain(..) {
+                    match landed {
+                        true => ctx.rt.set_var(bid, v),
+                        false => ctx.deliver(bid, TagValue::fired(v)),
+                    }
+                }
+            } else {
+                s.queue.push_back(QueueEntry { site: self.site, updates: delta, paid });
+                let w = s.count_write();
+                drop(s);
+                write_count(ctx, w);
+            }
         }
         match self.call.update(ctx).view() {
             TagView::Fired(v) => self.out.set(TagValue::fired(v.value_cloned())),
@@ -318,7 +369,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let pop_count = i64::decode(buf)?;
-        let count_ref = Pack::decode(buf)?;
+        let count_ref = Option::<BindId>::decode(buf)?.map(|c| (c, ctx.write_target(c)));
         let last_written_depth = i64::decode(buf)?;
         let fid = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
@@ -328,6 +379,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
         let state = Arc::new(Mutex::new(QueueState {
             queue: VecDeque::new(),
             asleep: SmallVec::new(),
+            in_flight: SmallVec::new(),
             pop_count,
             count_ref,
             last_written_depth,
@@ -458,7 +510,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         s.pop_count.encode(buf)?;
-        s.count_ref.encode(buf)?;
+        s.count_ref.as_ref().map(|(c, _)| *c).encode(buf)?;
         s.last_written_depth.encode(buf)?;
         self.fid.encode(buf)?;
         self.top_id.encode(buf)?;
@@ -475,9 +527,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // from[1] = #trigger
         // from[2] = f
         if let Some(v) = seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned()) {
-            let new_ref = graphix_compiler::reference::cell(&v);
+            let new_ref =
+                graphix_compiler::reference::cell(&v).map(|c| (c, ctx.write_target(c)));
             let mut s = self.state.lock();
-            // CR claude for claude: [bug/low] Only the cell is compared, and a moving
+            // XCR claude for claude: [bug/low] Only the cell is compared, and a moving
             // place (`&mut arr[i]`) keeps its cell and changes only its path. When i
             // moves, the new place is not told the depth until the depth next changes,
             // contradicting the comment below. Keep the resolved WriteTarget
@@ -485,6 +538,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             // it changes. probe:
             // design/review-2026-10-26/repro/core-aux-queuefn-count-move.gx
             // (core-aux-04)
+            // 2026-10-26 claude: QueueState::count_ref keeps the cell and its resolved
+            // WriteTarget; a target that changes (a moving place) resets
+            // last_written_depth so the new place is told the depth. Pin:
+            // lib_tests::core::queuefn_count_follows_a_moving_place (prints [2, -1]
+            // with the fix undone).
             if s.count_ref != new_ref {
                 // a reference that arrives or moves is told the depth
                 s.count_ref = new_ref;
@@ -521,21 +579,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // a fire born with the queuefn is no credit
         let trigger_fired = seam_tick(from[1].update(ctx)).is_some() && !ctx.event.born();
         if trigger_fired {
-            let popped = {
-                let mut s = self.state.lock();
-                match s.pop_awake() {
-                    Some(entry) => Some(entry),
-                    None => {
-                        s.pop_count += 1;
-                        None
-                    }
-                }
-            };
-            if let Some(mut entry) = popped {
-                for (bid, v) in entry.updates.drain(..) {
-                    ctx.rt.set_var(bid, v);
-                }
-            }
+            let popped = self.state.lock().trigger();
+            release(ctx, popped);
         }
         self.maybe_write_count(ctx);
         let res = if ctx.event.born() { self.lambda.clone() } else { new_lambda };
@@ -577,6 +622,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             let mut s = self.state.lock();
             s.queue.clear();
             s.asleep.clear();
+            s.in_flight.clear();
             s.pop_count = 1;
             s.count_write()
         };
