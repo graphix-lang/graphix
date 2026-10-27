@@ -3075,6 +3075,18 @@ run!(
     prints(r#"[i64:1, "s", i64:0]"#)
 );
 
+// A writable reference in a function body to a function its block holds
+// makes it a `<-` target as a write there does: one compile, nothing
+// generalized it.
+run!(
+    mut_ref_in_a_lambda_to_a_written_function,
+    prints("[i64:3, i64:1]"),
+    "/test.gx" => "let f = |x| x;
+let h = |t: i64| { let r = &mut f; *r <- t ~ |x| x; t };
+let result = (h(3), f(1))";
+    FuseExpect::None
+);
+
 /// A binding an earlier input generalized stays generic, its uses having
 /// relied on it: a later write is held to its every instance, and a later
 /// `&mut` of it is refused.

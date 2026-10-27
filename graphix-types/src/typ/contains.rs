@@ -952,8 +952,14 @@ fn same_name_apart(
 
 impl std::error::Error for TypeMismatch {}
 
-/// Both nodes wrap the same content allocation, so containment holds
-/// reflexively. `TVar`/`Ref` keep their full arms: cheap and delicate.
+impl Type {
+    /// Both nodes wrap the same content allocation, so containment holds
+    /// reflexively. `TVar`/`Ref` keep their full arms: cheap and delicate.
+    pub fn shares_content(&self, t: &Type) -> bool {
+        same_content(self, t)
+    }
+}
+
 fn same_content(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Set(x), Type::Set(y)) | (Type::Tuple(x), Type::Tuple(y)) => {

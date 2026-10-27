@@ -1394,7 +1394,7 @@ impl StructPatternNode {
     /// Each name this pattern binds with the union of its part of each
     /// member of `typ` that `shape`, the one view of them all it was
     /// compiled against, can match.
-    fn names_by_member(
+    pub(super) fn names_by_member(
         &self,
         env: &Env,
         typ: &Type,

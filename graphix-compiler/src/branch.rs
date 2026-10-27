@@ -10,7 +10,10 @@ use crate::{
     analysis::Sites,
     cost::{ForkSite, Meter, Plan, Siblings},
     expr::Expr,
-    node::{callsite::CallNode, place::Path},
+    node::{
+        callsite::CallNode,
+        place::{Path, RefPath},
+    },
     prune::{BoundaryRef, Reader},
     typ::tvar::TaskContext,
 };
@@ -81,7 +84,7 @@ pub struct ForkRt<R: Rt> {
     /// Under `GRAPHIX_PAR_AUDIT`, every variable this branch read.
     reads: Option<parking_lot::Mutex<IntSet<BindId>>>,
     store: IntMap<BindId, Option<(TagValue, u64)>>,
-    ref_paths: IntMap<BindId, Option<(BindId, Path)>>,
+    ref_paths: IntMap<BindId, Option<RefPath>>,
     /// The readers this branch registered, which the runtime learns only
     /// at the merge: a delivery this cycle marks them too.
     readers: IntMap<BindId, SmallVec<[Reader; 1]>>,
@@ -337,7 +340,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         self.store_remove(id)
     }
 
-    pub fn ref_path(&self, cell: &BindId) -> Option<&(BindId, Path)> {
+    pub fn ref_path(&self, cell: &BindId) -> Option<&RefPath> {
         if let RtView::Fork(f) = self {
             f.note_read(*cell)
         }
@@ -353,11 +356,11 @@ impl<'a, R: Rt> RtView<'a, R> {
         }
     }
 
-    pub fn set_ref_path(&mut self, cell: BindId, root: BindId, path: Path) {
+    pub fn set_ref_path(&mut self, cell: BindId, to: RefPath) {
         match self {
-            Self::Root(r) => r.set_ref_path(cell, root, path),
+            Self::Root(r) => r.set_ref_path(cell, to),
             Self::Fork(f) => {
-                f.ref_paths.insert(cell, Some((root, path)));
+                f.ref_paths.insert(cell, Some(to));
             }
         }
     }
@@ -394,7 +397,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                 for (cell, e) in ref_paths {
                     match e {
                         None => r.clear_ref_path(&cell),
-                        Some((root, path)) => r.set_ref_path(cell, root, path),
+                        Some(to) => r.set_ref_path(cell, to),
                     }
                 }
                 for op in log {

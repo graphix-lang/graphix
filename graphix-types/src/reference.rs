@@ -27,10 +27,37 @@ pub struct Lives(Mutex<LivesState>);
 struct LivesState {
     /// Per binding a reference names, how many keeps name it.
     pins: IntMap<BindId, u32>,
+    /// Per cell whose keep names a binding, that binding.
+    targets: IntMap<BindId, BindId>,
     /// Bindings deleted while pinned: their values go with the last pin.
     orphaned: IntSet<BindId>,
     /// Cells, and orphans unpinned, whose values may go.
     released: Vec<BindId>,
+}
+
+impl LivesState {
+    fn unpin(&mut self, t: BindId) {
+        if let Some(n) = self.pins.get_mut(&t) {
+            *n -= 1;
+            if *n == 0 {
+                self.pins.remove(&t);
+                if self.orphaned.remove(&t) {
+                    self.released.push(t);
+                }
+            }
+        }
+    }
+
+    /// The keep of `cell` names `target`, in place of what it named.
+    fn name(&mut self, cell: BindId, target: BindId) {
+        let old = self.targets.insert(cell, target);
+        if old != Some(target) {
+            *self.pins.entry(target).or_default() += 1;
+            if let Some(o) = old {
+                self.unpin(o)
+            }
+        }
+    }
 }
 
 impl Lives {
@@ -38,9 +65,9 @@ impl Lives {
     /// shares: the last one to drop releases them.
     pub fn keep(lives: &Arc<Self>, cell: BindId, target: Option<BindId>) -> Arc<Keep> {
         if let Some(t) = target {
-            *lives.0.lock().pins.entry(t).or_default() += 1;
+            lives.0.lock().name(cell, t);
         }
-        Arc::new(Keep { cell, target, lives: lives.clone() })
+        Arc::new(Keep { cell, lives: lives.clone() })
     }
 
     /// The binding `id` is deleted: true when a reference still names it,
@@ -82,16 +109,20 @@ impl Lives {
 /// Shared by every reference value of one cell.
 pub struct Keep {
     cell: BindId,
-    target: Option<BindId>,
     lives: Arc<Lives>,
+}
+
+impl Keep {
+    /// The cell names `target` now, a place whose root moved: the keep
+    /// pins it in place of the binding it named.
+    pub fn retarget(&self, target: BindId) {
+        self.lives.0.lock().name(self.cell, target)
+    }
 }
 
 impl fmt::Debug for Keep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Keep")
-            .field("cell", &self.cell)
-            .field("target", &self.target)
-            .finish()
+        f.debug_struct("Keep").field("cell", &self.cell).finish()
     }
 }
 
@@ -99,16 +130,8 @@ impl Drop for Keep {
     fn drop(&mut self) {
         let mut st = self.lives.0.lock();
         st.released.push(self.cell);
-        if let Some(t) = self.target
-            && let Some(n) = st.pins.get_mut(&t)
-        {
-            *n -= 1;
-            if *n == 0 {
-                st.pins.remove(&t);
-                if st.orphaned.remove(&t) {
-                    st.released.push(t);
-                }
-            }
+        if let Some(t) = st.targets.remove(&self.cell) {
+            st.unpin(t)
         }
     }
 }
@@ -224,6 +247,22 @@ mod test {
             Reference::decode(&mut &buf[..]),
             Err(PackError::InvalidFormat)
         ));
+    }
+
+    #[test]
+    fn a_retargeted_keep_pins_its_new_binding_alone() {
+        let lives = Arc::new(Lives::default());
+        let (cell, a, b) = (BindId::new(), BindId::new(), BindId::new());
+        let keep = Lives::keep(&lives, cell, Some(a));
+        keep.retarget(b);
+        let mut released = Vec::new();
+        assert!(!lives.orphan_if_pinned(a));
+        assert!(lives.orphan_if_pinned(b));
+        lives.released(|id| released.push(id));
+        assert!(released.is_empty());
+        drop(keep);
+        lives.released(|id| released.push(id));
+        assert_eq!(released, [cell, b]);
     }
 }
 

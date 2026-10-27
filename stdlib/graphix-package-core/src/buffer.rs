@@ -156,7 +156,7 @@ struct Decoder<'a> {
     buf: &'a Bytes,
     pos: usize,
     /// each write's reference, where it lands, and the value
-    written: poolshark::local::LPooled<Vec<(BindId, WriteTarget, Value)>>,
+    written: poolshark::local::LPooled<Vec<(BindId, Option<WriteTarget>, Value)>>,
 }
 
 fn decode_err(msg: impl std::fmt::Display) -> Value {
@@ -175,8 +175,10 @@ impl<'a> Decoder<'a> {
         ctx: &ExecCtx<'_, R, E>,
         r: &Value,
     ) -> Result<Option<usize>, Value> {
-        let target = ctx.write_target(reference(r)?);
-        let v = match self.written.iter().rev().find(|(_, t, _)| *t == target) {
+        let Some(target) = ctx.write_target(reference(r)?) else { return Ok(None) };
+        let written =
+            self.written.iter().rev().find(|(_, t, _)| t.as_ref() == Some(&target));
+        let v = match written {
             Some((_, _, v)) => Some(v.clone()),
             None => match &target {
                 WriteTarget::Bind(b) => ctx.rt.store_value(b),

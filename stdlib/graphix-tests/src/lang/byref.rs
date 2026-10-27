@@ -1067,3 +1067,81 @@ run!(
     prints("[true, false]");
     FuseExpect::Jit
 );
+
+// A write through a held place reference while its key is bottom does not
+// happen: the reference names nothing then, and its read is bottom.
+run!(
+    a_write_through_an_addressless_place_does_not_happen,
+    r#"{
+  let c = 0;
+  c <- select c { k if k < 6 => k + 1, _ => never() };
+  let a = [10, 20, 30];
+  let k = select c { 2 => never(), 3 => never(), _ => 0 };
+  let holder: [&mut i64, null] = null;
+  holder <- &mut a[k];
+  let w = holder$;
+  *w <- select c { 2 => c ~ 99, _ => never() };
+  let rd = *w;
+  let seen: Array<(i64, i64)> = [];
+  seen <- rd ~ array::push(seen, (c, rd));
+  let t = select c { 6 => null, _ => never() };
+  t ~ (seen, a)
+}"#,
+    prints("[[[i64:1, i64:10], [i64:4, i64:10], [i64:5, i64:10]], [i64:10, i64:20, i64:30]]");
+    FuseExpect::Jit
+);
+
+// A held place reference whose root moves to another binding reads the
+// new element in the cycle it moves, as a key's move does.
+run!(
+    a_held_place_reads_its_new_root_at_once,
+    r#"{
+  let c = 0;
+  c <- select c { k if k < 6 => k + 1, _ => never() };
+  let a = [10, 20];
+  let b = [30, 40];
+  let r = select c { 2 => &b, 3 => &b, _ => &a };
+  let p = &(*r)[0];
+  let holder: [&i64, null] = null;
+  holder <- p;
+  let w = holder$;
+  let rd = *w;
+  let rp = *p;
+  let seen: Array<(i64, i64, i64)> = [];
+  seen <- c ~ array::push(seen, (c, rd, rp));
+  let t = select c { 6 => null, _ => never() };
+  t ~ seen
+}"#,
+    prints(
+        "[[i64:1, i64:10, i64:10], [i64:2, i64:30, i64:30], [i64:3, i64:30, i64:30], \
+         [i64:4, i64:10, i64:10], [i64:5, i64:10, i64:10]]"
+    );
+    FuseExpect::Jit
+);
+
+// A place rooted at a dereference keeps alive the binding it names now: a
+// copy of it outlives the slot that held both roots, and writes through
+// it land on the root it moved to.
+run!(
+    a_kept_place_pins_the_root_it_moved_to,
+    r#"{
+  let c = 0;
+  c <- select c { k if k < 6 => k + 1, _ => never() };
+  let keep: [&mut i64, null] = null;
+  let rs = array::map(select c { k if k < 3 => [0], _ => [] }, |_| {
+    let y1: Array<i64> = [5, 6];
+    let y2: Array<i64> = [7, 8];
+    let r = select c { 0 => &mut y1, _ => &mut y2 };
+    keep <- &mut (*r)[1];
+    y2
+  });
+  let w = keep$;
+  *w <- c ~ c * 10;
+  let seen: Array<i64> = [];
+  seen <- c ~ array::push(seen, *w);
+  let t = select c { 6 => null, _ => never() };
+  t ~ (seen, array::len(rs))
+}"#,
+    prints("[[i64:8, i64:10, i64:20, i64:30, i64:40], i64:0]");
+    FuseExpect::Jit
+);

@@ -6,7 +6,7 @@ use enumflags2::BitFlags;
 use futures::{FutureExt, Stream, StreamExt, stream::SelectAll};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
-    View, diagnostic_site,
+    View, WriteTarget, diagnostic_site,
     expr::{
         self, Expr, ExprId, ExprKind, Load, ModPath, Origin, Probes, ResolverRef,
         Resolvers, RootFile, Sig, Source, join_in_order,
@@ -770,10 +770,12 @@ impl<X: GXExt> GX<X> {
     /// place patches its root, else the referent or the cell is set. A
     /// patch is checked by the root it would make now.
     fn set_deref(&mut self, cell: BindId, v: Value, sets: &mut Vec<EmbedderWrite>) {
-        let (id, path) = {
-            let ctx = self.ctx.view();
-            let (id, path) = ctx.ref_target(cell);
-            (id, (!path.is_empty()).then(|| place::Path::from(path)))
+        let (id, path) = match self.ctx.view().write_target(cell) {
+            None => return,
+            Some(WriteTarget::Bind(id)) => (id, None),
+            Some(WriteTarget::Place(id, path)) => {
+                (id, (!path.is_empty()).then_some(path))
+            }
         };
         match path {
             Some(path) => {

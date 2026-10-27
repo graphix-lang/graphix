@@ -929,8 +929,9 @@ pub(crate) fn write_through<R: Rt, E: UserEvent>(
     v: Value,
 ) {
     match ctx.write_target(r) {
-        WriteTarget::Place(root, path) => ctx.rt.patch_var(root, path, v, None),
-        WriteTarget::Bind(target) => ctx.rt.set_var(target, v),
+        Some(WriteTarget::Place(root, path)) => ctx.rt.patch_var(root, path, v, None),
+        Some(WriteTarget::Bind(target)) => ctx.rt.set_var(target, v),
+        None => (),
     }
 }
 

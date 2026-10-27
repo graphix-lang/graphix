@@ -500,6 +500,30 @@ run!(let_over_a_union_refuses_a_member_it_misses, r#"{
   f((1, "s"))
 }"#, refused("refutable patterns are not allowed in let: (i64, string) matches only part of"); FuseExpect::None);
 
+// A let's pattern over a value the compile has no type for yet (a
+// select's, a call's) fits it at the check: each member of the union it
+// turns out to be, and a whole capture is the union of the members.
+run!(
+    let_destructures_a_union_typed_by_the_check,
+    r#"{
+  let c = 1;
+  let t = select c { 0 => (1, "x"), _ => ("y", 2) };
+  let (a, b) = t;
+  let f = |x: i64| select x { 0 => {p: 1, q: "x"}, _ => {p: "y", q: 2} };
+  let {p, q} = f(0);
+  let w@ (m, n) = select c { 1 => (1, "x"), _ => ("y", 2) };
+  let u: [(i64, string), (string, i64)] = w;
+  (b, a, p, q, u, m)
+}"#,
+    prints(r#"[i64:2, "y", i64:1, "x", [i64:1, "x"], i64:1]"#)
+);
+
+run!(let_over_a_later_typed_union_refuses_a_member_it_misses, r#"{
+  let f = |x: i64| select x { 0 => (1, "x"), _ => ("y", 2) };
+  let (1, y) = f(0);
+  y
+}"#, refused("refutable patterns are not allowed in let: (i64, string) matches only part of"); FuseExpect::None);
+
 // A let of one name over a union keeps the value's type, so a writable
 // reference to it is no reference to a generalized binding; a
 // destructured union's binds are the same.

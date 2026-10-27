@@ -50,8 +50,8 @@ struct QueueState {
     in_flight: SmallVec<[SiteId; 2]>,
     pop_count: i64,
     /// The writable `#count` reference's cell and where a write through it
-    /// lands, or None if not provided.
-    count_ref: Option<(BindId, WriteTarget)>,
+    /// lands (None while its place has no address), or None if not provided.
+    count_ref: Option<(BindId, Option<WriteTarget>)>,
     /// Last value written through `count_ref` to avoid redundant writes.
     last_written_depth: i64,
 }
@@ -149,8 +149,9 @@ fn write_count<R: Rt, E: UserEvent>(
     if let Some((r, depth)) = w {
         let v = Value::I64(depth);
         match ctx.write_target(r) {
-            WriteTarget::Place(root, path) => ctx.rt.patch_level(root, path, v),
-            WriteTarget::Bind(target) => ctx.rt.set_level(target, v),
+            Some(WriteTarget::Place(root, path)) => ctx.rt.patch_level(root, path, v),
+            Some(WriteTarget::Bind(target)) => ctx.rt.set_level(target, v),
+            None => (),
         }
     }
 }

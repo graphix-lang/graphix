@@ -1160,8 +1160,8 @@ pub trait Rt: Debug + Any + Send + Sync {
     fn patch_level(&mut self, id: BindId, path: node::place::Path, value: Value);
     /// Register the place a reference cell stands for (`&root[i].f`), so
     /// `*r` reads through the root and `*r <- v` patches it.
-    fn set_ref_path(&mut self, cell: BindId, root: BindId, path: node::place::Path);
-    fn ref_path(&self, cell: &BindId) -> Option<&(BindId, node::place::Path)>;
+    fn set_ref_path(&mut self, cell: BindId, to: node::place::RefPath);
+    fn ref_path(&self, cell: &BindId) -> Option<&node::place::RefPath>;
     fn clear_ref_path(&mut self, cell: &BindId);
 
     /// The persistent store: the (production, cycle stamp) of a bound
@@ -2126,11 +2126,15 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     }
 
     /// Where a write through the reference cell `cell` lands: its
-    /// registered place, else what [`Self::ref_target`] names.
-    pub fn write_target(&self, cell: BindId) -> WriteTarget {
+    /// registered place, else what [`Self::ref_target`] names; nowhere
+    /// while it is a place whose address is bottom.
+    pub fn write_target(&self, cell: BindId) -> Option<WriteTarget> {
         match self.rt.ref_path(&cell) {
-            Some((root, path)) => WriteTarget::Place(*root, path.clone()),
-            None => WriteTarget::Bind(self.ref_target(cell).0),
+            Some(node::place::RefPath::At(root, path)) => {
+                Some(WriteTarget::Place(*root, path.clone()))
+            }
+            Some(node::place::RefPath::Nowhere) => None,
+            None => Some(WriteTarget::Bind(self.ref_target(cell).0)),
         }
     }
 

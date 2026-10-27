@@ -3,7 +3,7 @@
 //! accessors; a read applies the path to the root's value, a write
 //! rebuilds the root's value along it.
 
-use crate::{abstract_value, expr::Expr, rep};
+use crate::{BindId, abstract_value, expr::Expr, rep};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
@@ -21,6 +21,16 @@ pub enum Step {
     Index(i64),
     Field(ArcStr),
     Key(Value),
+}
+
+/// What a place reference's cell stands for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefPath {
+    /// The element at the path in the root binding's value.
+    At(BindId, Path),
+    /// Nothing, while the place's address is bottom: a write through the
+    /// reference does not happen, and a read finds the cell's bottom.
+    Nowhere,
 }
 
 /// A place's accessors, from its root binding's value.

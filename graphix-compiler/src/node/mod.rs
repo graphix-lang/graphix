@@ -2124,10 +2124,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             && let Some(cell) = self.cell
         {
             match ctx.write_target(cell) {
-                WriteTarget::Bind(id) => ctx.rt.set_var(id, v),
-                WriteTarget::Place(root, path) => {
+                Some(WriteTarget::Bind(id)) => ctx.rt.set_var(id, v),
+                Some(WriteTarget::Place(root, path)) => {
                     ctx.rt.patch_var(root, path, v, Some(self.spec.clone()))
                 }
+                None => (),
             }
             self.pending = false;
         }

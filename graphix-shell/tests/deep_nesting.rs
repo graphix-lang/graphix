@@ -595,7 +595,7 @@ fn flat_type_chain_checks_in_linear_time() {
 #[test]
 fn wrapped_let_chains_check_in_linear_time() {
     const LETS: usize = 20_000;
-    for wrap in ["{a: X}", "(X, 1)", "`A(X)", "[X, X]"] {
+    for wrap in ["{a: X}", "(X, 1)", "`A(X)", "[X, X]", "&X"] {
         let mut s = String::from("let x0 = 1;\n");
         for i in 1..=LETS {
             s.push_str(&format!(

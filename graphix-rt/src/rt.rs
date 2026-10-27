@@ -5,7 +5,7 @@ use futures::{FutureExt, channel::mpsc, stream::SelectAll};
 use graphix_compiler::{
     BindId, CustomBuiltinType, ExecState, Rt, TagValue,
     expr::{Expr, ExprId},
-    node::place::{Path, VarUpdate},
+    node::place::{Path, RefPath, VarUpdate},
     prune::Reader,
 };
 use netidx_value::Value;
@@ -283,7 +283,7 @@ pub struct GXRt<X: GXExt> {
     pub(super) by_ref: IntMap<BindId, Readers>,
     pub(super) var_updates: Waiting<VarUpdate>,
     /// The place each place-reference cell stands for (`Rt::set_ref_path`).
-    pub(super) ref_paths: IntMap<BindId, (BindId, Path)>,
+    pub(super) ref_paths: IntMap<BindId, RefPath>,
     pub(super) custom_updates: Waiting<Box<dyn CustomBuiltinType>>,
     pub(super) tasks: JoinSet<(BindId, Value)>,
     /// The timers not fired yet, so a released one can be stopped.
@@ -467,11 +467,11 @@ impl<X: GXExt> Rt for GXRt<X> {
         self.var_updates.push_level(id, update, same);
     }
 
-    fn set_ref_path(&mut self, cell: BindId, root: BindId, path: Path) {
-        self.ref_paths.insert(cell, (root, path));
+    fn set_ref_path(&mut self, cell: BindId, to: RefPath) {
+        self.ref_paths.insert(cell, to);
     }
 
-    fn ref_path(&self, cell: &BindId) -> Option<&(BindId, Path)> {
+    fn ref_path(&self, cell: &BindId) -> Option<&RefPath> {
         self.ref_paths.get(cell)
     }
 

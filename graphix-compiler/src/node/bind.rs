@@ -4,7 +4,7 @@ use super::{
     data::{struct_field_types, tuple_field_types},
     lambda::{DefBody, DefOrigin, LambdaDef},
     pattern::StructPatternNode,
-    place::{self, Path},
+    place::{self, Path, RefPath},
     read_var, standing_view,
 };
 use crate::{
@@ -42,6 +42,18 @@ use smallvec::SmallVec;
 use std::{any::Any, mem};
 use triomphe::Arc;
 
+/// A `let` pattern's fit to its value, which waits for the value's check.
+#[derive(Debug)]
+enum Deferred {
+    /// The predicate of a pattern that leaves struct fields out, completed
+    /// against the value as a select arm's against its scrutinee.
+    Partial(Type),
+    /// The predicate a pattern compiled against, over a value typed by an
+    /// open cell, each name a fresh cell: held to every member of the
+    /// value, each name typed by its part of each member.
+    Shape(Type),
+}
+
 #[derive(Debug)]
 pub struct Bind<R: Rt, E: UserEvent> {
     slept: WakeBit,
@@ -51,10 +63,9 @@ pub struct Bind<R: Rt, E: UserEvent> {
     pub(crate) spec: Arc<Expr>,
     pub(crate) typ: Type,
     pub(crate) pattern: StructPatternNode,
-    /// The predicate of a pattern that leaves struct fields out, over a
-    /// value whose type the compile did not know: completed against the
-    /// value at the check, as a select arm's against its scrutinee.
-    partial: Option<Type>,
+    /// The pattern's fit to a value whose type the compile did not know,
+    /// judged at the check.
+    deferred: Option<Deferred>,
     pub(crate) node: Node<R, E>,
     ever_published: bool,
     /// The ids a wake re-raised into this cycle's event, absent from it
@@ -104,7 +115,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
             typ,
             pattern,
             node,
-            partial: None,
+            deferred: None,
             ever_published: false,
             slept: WakeBit::default(),
             slept_at: 0,
@@ -202,7 +213,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             StructPatternNode::compile(ctx, typ, pat, scope, spec.pos, spec.ori.clone())
                 .at(&spec)
         };
-        let mut partial = None;
+        let mut deferred = None;
         let mut narrowed = None;
         let (node, pattern, typ) = if *rec {
             if pat.single_bind().is_none() {
@@ -256,41 +267,42 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     };
                     // a `_` matches what the value holds, deciding none of it
                     if !completed && pat.has_partial_struct() {
-                        partial = Some(ptyp);
-                    } else if pat.single_bind().is_none()
-                        && !fits_every_member(ctx, &ptyp, &typ, &mut narrowed, || {
-                            pat.infer_type_predicate(&ctx.env, &scope.lexical)
-                        })
+                        deferred = Some(Deferred::Partial(ptyp));
+                    } else if pat.single_bind().is_none() {
+                        if node.typ().with_deref(|t| t.is_none()) {
+                            let pred = pat
+                                .infer_type_predicate(&ctx.env, &scope.lexical)?
+                                .any_as_tvar();
+                            deferred = Some(Deferred::Shape(pred));
+                        } else if !fits_every_member(
+                            ctx,
+                            &ptyp,
+                            &typ,
+                            &mut narrowed,
+                            || pat.infer_type_predicate(&ctx.env, &scope.lexical),
+                        )
                         .at(&spec)?
-                    {
-                        let part = ptyp.could_match(&ctx.env, &typ)?;
-                        format_with_flags(PrintFlag::DerefTVars, || match part {
-                            true => bailat!(
-                                spec,
-                                "refutable patterns are not allowed in let: {ptyp} \
-                                 matches only part of {typ}"
-                            ),
-                            false => {
-                                bailat!(
-                                    spec,
-                                    "match error {typ} can't be matched by {ptyp}"
-                                )
-                            }
-                        })?
+                        {
+                            misfit(ctx, &spec, &ptyp, &typ)?
+                        }
                     }
                     typ
                 }
             };
-            let pattern = compile_pattern(
-                ctx,
-                partial.as_ref().or(narrowed.as_ref()).unwrap_or(&typ),
-            )?;
+            let shape = match &deferred {
+                Some(Deferred::Partial(t) | Deferred::Shape(t)) => Some(t),
+                None => narrowed.as_ref(),
+            };
+            let pattern = compile_pattern(ctx, shape.unwrap_or(&typ))?;
             if let Some(shape) = &narrowed {
                 pattern.retype_by_member(ctx, &typ, shape).at(&spec)?;
             }
+            if let Some(Deferred::Shape(_)) = &deferred {
+                pattern.ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
+            }
             (node, pattern, typ)
         };
-        if partial.is_none()
+        if deferred.is_none()
             && narrowed.is_none()
             && !pattern.covers(&ctx.env, &typ, false)
         {
@@ -344,7 +356,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             typ,
             pattern,
             node,
-            partial,
+            deferred,
             ever_published: false,
             slept: WakeBit::default(),
             slept_at: 0,
@@ -352,10 +364,43 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }))
     }
 
-    /// Complete a [`Self::partial`] pattern against the value's type,
-    /// which must be known by now.
-    fn complete_partial(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        let Some(ptyp) = self.partial.take() else { return Ok(()) };
+    /// Fit the pattern to the value's type, which must be known by now.
+    fn complete_deferred(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        match self.deferred.take() {
+            None => Ok(()),
+            Some(Deferred::Partial(ptyp)) => self.complete_partial(ctx, ptyp),
+            Some(Deferred::Shape(pred)) => self.complete_shape(ctx, pred),
+        }
+    }
+
+    /// Hold `pred`, the predicate the pattern compiled against, to every
+    /// member of the value's type, and type each name, a fresh cell, by
+    /// its part of each member.
+    fn complete_shape(&mut self, ctx: &mut CompileCtx<R, E>, pred: Type) -> Result<()> {
+        let spec = &self.spec;
+        let mut narrowed = None;
+        if !fits_every_member(ctx, &pred, &self.typ, &mut narrowed, || Ok(pred.clone()))
+            .at(spec)?
+        {
+            return misfit(ctx, spec, &pred, &self.typ);
+        }
+        if narrowed.is_none() {
+            self.pattern.realign(&ctx.env, &self.typ).at(spec)?;
+            if !self.pattern.covers(&ctx.env, &self.typ, false) {
+                bailat!(spec, "refutable patterns are not allowed in let");
+            }
+        }
+        for leaf in self.pattern.names_by_member(&ctx.env, &self.typ, &pred).at(spec)? {
+            if let Some(b) = ctx.env.by_id.get(&leaf.id) {
+                b.typ.clone().check_contains(&ctx.env, &leaf.typ).at(spec)?
+            }
+        }
+        Ok(())
+    }
+
+    /// Complete a pattern that leaves struct fields out against the
+    /// value's type.
+    fn complete_partial(&mut self, ctx: &mut CompileCtx<R, E>, ptyp: Type) -> Result<()> {
         let ExprKind::Bind(b) = &self.spec.kind else { return Ok(()) };
         let spec = &self.spec;
         let t = b.pattern.complete_type_predicate(&ctx.env, &ptyp, &self.typ).at(spec)?;
@@ -438,15 +483,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// The LambdaDef `Value` of the binding this one aliases (`let h =
     /// f`), when `f` resolves statically and no `<-` writes it.
     fn aliased_lambda(&self, ctx: &mut CompileCtx<R, E>) -> Option<Value> {
-        // CR claude for claude: [structure/low] This loop repeats `ungrouped`, which
-        // lambda_value and forwards already use. Match on `ungrouped(&self.node)`
-        // instead, so the three agree on what a parenthesized alias names. Found by
-        // reading; not run. (c-bind-07)
-        let mut view = self.node.view();
-        while let NodeView::ExplicitParens(p) = view {
-            view = p.n.view();
-        }
-        match view {
+        match ungrouped(&self.node) {
             NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => {
                 let fv = ctx.bind_to_lambda.get(&r.id).cloned();
                 if fv.is_some() {
@@ -479,7 +516,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             typ,
             pattern,
             node,
-            partial: None,
+            deferred: None,
             ever_published: false,
             slept: WakeBit::default(),
             slept_at: 0,
@@ -696,7 +733,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         }
         wrap!(self.node, self.node.typecheck0(ctx))?;
         self.check_value(ctx)?;
-        self.complete_partial(ctx)?;
+        self.complete_deferred(ctx)?;
         self.publish(ctx);
         Ok(())
     }
@@ -710,7 +747,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         if !types.settle(self.spec.id, &self.typ) {
             self.check_value(ctx)?;
         }
-        self.complete_partial(ctx)?;
+        self.complete_deferred(ctx)?;
         self.publish(ctx);
         Ok(())
     }
@@ -899,6 +936,24 @@ impl Ref {
     }
 }
 
+/// The refusal of a `let` whose pattern `ptyp` does not hold its value
+/// type `typ`.
+fn misfit<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    spec: &Expr,
+    ptyp: &Type,
+    typ: &Type,
+) -> Result<()> {
+    let part = ptyp.could_match(&ctx.env, typ)?;
+    format_with_flags(PrintFlag::DerefTVars, || match part {
+        true => bailat!(
+            spec,
+            "refutable patterns are not allowed in let: {ptyp} matches only part of {typ}"
+        ),
+        false => bailat!(spec, "match error {typ} can't be matched by {ptyp}"),
+    })
+}
+
 /// A let's pattern predicate `ptyp` holds every member of the value type
 /// `typ`, each on its own; over several members `narrowed` takes the
 /// predicate with each cell the union of its parts, as a select arm's is:
@@ -913,7 +968,7 @@ fn fits_every_member<R: Rt, E: UserEvent>(
 ) -> Result<bool> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     expr::union_members(&ctx.env, typ, &mut members)?;
-    // CR claude for claude: [bug/medium] At compile, a value whose type is still an
+    // XCR claude for claude: [bug/medium] At compile, a value whose type is still an
     // open cell (a select's, a call's result) is one 'member' here, and
     // `ptyp.contains(typ)` binds that cell to the pattern's shape before the value is
     // checked. So `let t = select c { 0 => (1, "x"), _ => ("y", 2) }; let (a, b) = t`
@@ -922,6 +977,13 @@ fn fits_every_member<R: Rt, E: UserEvent>(
     // Fix: when the value's type is an unbound cell, defer this check to typecheck0
     // after the value's check, as complete_partial is deferred. probe:
     // design/review-2026-10-26/repro/c-bind-let-shape-binds-value.gx (c-bind-05)
+    // 2026-10-26 claude: Bind::compile defers the fit of a destructuring pattern over
+    // a value typed by an open cell (Deferred::Shape): the pattern compiles against
+    // its own predicate with each name a fresh cell, and typecheck0 (complete_shape)
+    // holds the predicate to every member of the checked value and types each name by
+    // names_by_member. Pins:
+    // lang::tuples_structs::let_destructures_a_union_typed_by_the_check,
+    // let_over_a_later_typed_union_refuses_a_member_it_misses.
     if members.len() < 2 || matches!(ptyp, Type::TVar(_)) {
         return ptyp.any_as_tvar().contains(&ctx.env, typ);
     }
@@ -1465,7 +1527,8 @@ pub struct ByRef<R: Rt, E: UserEvent> {
     referent: Referent<R, E>,
     pub id: BindId,
     resident: TagValue,
-    registered: Option<(BindId, Path)>,
+    /// What the runtime holds the cell stands for, when it holds anything.
+    registered: Option<RefPath>,
     /// Shared by every reference value this site published: the last to
     /// drop releases the cell, its place and what it names.
     keep: Option<triomphe::Arc<crate::reference::Keep>>,
@@ -1553,7 +1616,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 Referent::Channel(c) => (&**c as &dyn Any).downcast_ref::<Ref>(),
             };
             if let Some(r) = named {
-                // CR claude for claude: [bug/medium] In a single script, `&mut f`
+                // XCR claude for claude: [bug/medium] In a single script, `&mut f`
                 // inside a function body is refused here as "made generic by an earlier
                 // compile" when f holds a function. generalized_earlier judges by the
                 // levels of the cells f's type reaches, and inside a body those read as
@@ -1565,6 +1628,18 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 // instead, and pin the lambda-body case. probe:
                 // design/review-2026-10-26/repro/c-node-mod-mut-ref-in-lambda.gx
                 // (c-node-mod-02)
+                // 2026-10-26 claude: The probe no longer reproduced at the tip, nor
+                // did the run-time bind case once with_runtime_settles entered
+                // Level::TOP (c-bind-01). ByRef::compile still judged a writable
+                // reference by the levels of the cells the binding's type reaches;
+                // it now refuses only a binding env.poly_binds still holds, the fact
+                // Connect::typecheck0_with asks (mark_connect_target keeps there
+                // only what an earlier compile generalized), so `&mut f` and `f <-`
+                // decide alike. Pins: lang::types::mut_ref_in_a_lambda_to_a_written_function
+                // (the probe's case), written_after_generalized_is_held_to_it (the
+                // REPL refusal); no pin at the tip fails with the old test. With it,
+                // c-bind-01's pin no longer fails with that fix's AtLevel removed:
+                // the refusal does not read levels at all.
                 // XCR claude for claude: [bug/high] `&mut y` over an inferred let is
                 // refused at every run-time bind. In a collection slot or a dynamic
                 // call, `{ let y = i + 1; let r = &mut y; .. }` fails with 'binding the
@@ -1588,7 +1663,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 // lang::byref::mut_reference_to_an_inferred_local_at_a_run_time_bind (a
                 // dynamic call and an array::map slot; fails with 'binding the callee
                 // failed: y was made generic' when the AtLevel is removed).
-                if ctx.generalized_earlier(r.id) {
+                if ctx.env.poly_binds.contains(&r.id) {
                     bailat!(
                         spec,
                         "{} was made generic by an earlier compile, and a writable \
@@ -1630,8 +1705,8 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         }
     }
 
-    /// Drop the place registration; was there one?
-    // CR claude for claude: [bug/medium] When a place's key goes bottom, unregister
+    /// Drop the place registration.
+    // XCR claude for claude: [bug/medium] When a place's key goes bottom, unregister
     // clears the cell's ref_path. ref_target then falls back to the cell itself. A copy
     // of the reference held elsewhere (`holder <- &mut a[k]`) then writes into the
     // mirror cell (`write_target` gives `WriteTarget::Bind(cell)`), and its Deref reads
@@ -1640,12 +1715,18 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     // an addressless entry for the cell, so write_target has no target and the deref
     // reads bottom. probe: design/review-2026-10-26/repro/c-bind-addressless-write.gx
     // (c-bind-02)
-    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> bool {
-        let was = self.registered.take().is_some();
-        if was {
+    // 2026-10-26 claude: The runtime's place registry holds a node::place::RefPath,
+    // At(root, path) or Nowhere: a place whose address is bottom (from birth or after
+    // its key went bottom) registers Nowhere, so ExecCtx::write_target is None and
+    // every writer (ConnectDeref, core write_through, queuefn, buffer decode, the
+    // embedder's set_deref) drops the write, and ref_target reads the cell's bottom; a
+    // delete or release clears the entry. ByRef::registered mirrors what the runtime
+    // holds. Pin: lang::byref::a_write_through_an_addressless_place_does_not_happen (a
+    // (3, 99) read appears with the old write target).
+    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        if self.registered.take().is_some() {
             ctx.rt.clear_ref_path(&self.id);
         }
-        was
     }
 
     /// The cell when the place has no element: bottom.
@@ -1667,7 +1748,8 @@ pub(crate) fn ref_target<'a, R: Rt, E: UserEvent>(
     cell: BindId,
 ) -> (BindId, &'a [place::Step]) {
     match ctx.rt.ref_path(&cell) {
-        Some((root, path)) => (*root, &path[..]),
+        Some(RefPath::At(root, path)) => (*root, &path[..]),
+        Some(RefPath::Nowhere) => (cell, &[][..]),
         None => (ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell), &[][..]),
     }
 }
@@ -1710,20 +1792,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             Referent::Place(place) => {
                 let Resolved { address, root, moved } = place.update(ctx);
                 let Some(Address { bind, path, steps }) = address else {
-                    let lost = self.unregister(ctx);
+                    let lost = matches!(self.registered, Some(RefPath::At(..)));
+                    if !matches!(self.registered, Some(RefPath::Nowhere)) {
+                        ctx.rt.set_ref_path(self.id, RefPath::Nowhere);
+                        self.registered = Some(RefPath::Nowhere);
+                    }
                     if lost {
                         self.bottom_mirror(ctx);
                     }
                     return self.resident.set_bottom(lost || ctx.event.born());
                 };
-                let same = self
-                    .registered
-                    .as_ref()
-                    .is_some_and(|(r, p)| *r == bind && p == path);
+                let same = matches!(&self.registered,
+                    Some(RefPath::At(r, p)) if *r == bind && p == path);
                 let moved = moved || !same;
                 if !same {
-                    ctx.rt.set_ref_path(self.id, bind, path.clone());
-                    self.registered = Some((bind, path.clone()));
+                    let to = RefPath::At(bind, path.clone());
+                    ctx.rt.set_ref_path(self.id, to.clone());
+                    self.registered = Some(to);
                 }
                 // the cell mirrors the element, read through the address;
                 // a bottom root sets it bottom
@@ -1750,7 +1835,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             }
         };
         if ctx.event.born() || retargeted {
-            // CR claude for claude: [bug/medium] The Keep's target is fixed at the
+            // XCR claude for claude: [bug/medium] The Keep's target is fixed at the
             // first publication. A place rooted at a dereference (`&mut *r`) that
             // retargets when r moves keeps pinning its first root, not the binding its
             // ref_path now names. After the site is deleted, a kept copy's binding can
@@ -1760,7 +1845,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             // old one dropping would release the cell. probe:
             // design/review-2026-10-26/repro/x-refs-catchup-moving-root-unpinned.gx
             // (x-refs-catchup-03)
-            // CR claude for claude: [bug/medium] The keep is made once and pins the
+            // 2026-10-26 claude: Lives keeps each cell's pinned binding
+            // (LivesState::targets) instead of the Keep holding it, and Keep::retarget
+            // moves the pin under the lock: ByRef::update retargets its keep whenever
+            // the place re-registers on another binding, unpinning the old one (an
+            // orphan whose last pin it was is released). Pins:
+            // lang::byref::a_kept_place_pins_the_root_it_moved_to (writes dropped at
+            // c=4.. without it),
+            // reference::test::a_retargeted_keep_pins_its_new_binding_alone; both
+            // repros give their expected output.
+            // XCR claude for claude: [bug/medium] The keep is made once and pins the
             // binding the place named at that moment. A place rooted at `*r` that later
             // retargets (r moves from &mut y1 to &mut y2) still pins y1. When the slot
             // holding y2 is deleted, y2's value is released, and every write through a
@@ -1768,11 +1862,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             // to the new target whenever the place re-registers on another binding (a
             // Lives method that swaps the Keep's target). probe:
             // design/review-2026-10-26/repro/c-bind-keep-retarget.gx (c-bind-03)
-            let keep = self.keep.get_or_insert_with(|| {
-                let target = ctx.env.byref_chain.get(&self.id).copied();
-                let target = target.or_else(|| self.registered.as_ref().map(|(r, _)| *r));
-                crate::reference::Lives::keep(ctx.control.lives(), self.id, target)
+            // 2026-10-26 claude: Lives keeps each cell's pinned binding
+            // (LivesState::targets) instead of the Keep holding it, and Keep::retarget
+            // moves the pin under the lock: ByRef::update retargets its keep whenever
+            // the place re-registers on another binding, unpinning the old one (an
+            // orphan whose last pin it was is released). Pins:
+            // lang::byref::a_kept_place_pins_the_root_it_moved_to (writes dropped at
+            // c=4.. without it),
+            // reference::test::a_retargeted_keep_pins_its_new_binding_alone; both
+            // repros give their expected output. (same fix as x-refs-catchup-03)
+            let target = ctx.env.byref_chain.get(&self.id).copied();
+            let target = target.or_else(|| match &self.registered {
+                Some(RefPath::At(r, _)) => Some(*r),
+                Some(RefPath::Nowhere) | None => None,
             });
+            let keep = match &self.keep {
+                Some(keep) => {
+                    if let Some(t) = target {
+                        keep.retarget(t)
+                    }
+                    keep
+                }
+                None => self.keep.insert(crate::reference::Lives::keep(
+                    ctx.control.lives(),
+                    self.id,
+                    target,
+                )),
+            };
             let r = crate::reference::reference(self.id, Some(keep.clone()));
             self.resident.set(TagValue::fired(r))
         } else {
@@ -1841,8 +1957,10 @@ enum Moved {
     No,
     /// Same binding, another path: a moving place reference's key moved.
     Path,
-    /// Another binding, or the first.
+    /// Another binding than the one it read.
     Target,
+    /// The first binding since it read none.
+    First,
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
@@ -1912,14 +2030,18 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
                 a.path = p;
                 Moved::Path
             }
-            (_, p) => {
+            (prev, p) => {
+                let moved = match prev {
+                    Some(_) => Moved::Target,
+                    None => Moved::First,
+                };
                 self.release(ctx);
                 ctx.ref_var(id, self.top_id);
                 if cell != id {
                     ctx.ref_var(cell, self.top_id);
                 }
                 self.addr = Some(Addr { cell, id, path: p.unwrap_or_default() });
-                Moved::Target
+                moved
             }
         };
         (id, moved)
@@ -2014,10 +2136,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         };
         match res {
             Some(mut tv) => {
-                // a move of the path is a new element, read fired
+                // a move to another element is read fired
                 let t = match moved {
                     // at a wake, catch-up decides through the reference's fire
-                    // CR claude for claude: [bug/medium] A key move is read fired here,
+                    // XCR claude for claude: [bug/medium] A key move is read fired here,
                     // but a move to another root binding (Moved::Target) is read quiet.
                     // Through a held copy of a place `&(*r)[0]` whose r moves from &a
                     // to &b, `*w` keeps the old element for a cycle (c=2: 10 while `*p`
@@ -2027,16 +2149,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                     // join(addr). probe:
                     // design/review-2026-10-26/repro/c-bind-target-move-quiet.gx
                     // (c-bind-04)
-                    Moved::Path if !ctx.event.wake() => tv.tag().join(addr).fresh(),
-                    Moved::Path | Moved::No | Moved::Target => tv.tag().join(addr),
+                    // 2026-10-26 claude: Deref::address tells a first binding
+                    // (Moved::First, read joined with the reference's tag) from a move
+                    // to another binding (Moved::Target), which is read fired outside a
+                    // wake as a key's move is, a bottom included. Pin:
+                    // lang::byref::a_held_place_reads_its_new_root_at_once (via the
+                    // holder reads 10 at c=2 and 30 at c=4 without it).
+                    Moved::Path | Moved::Target if !ctx.event.wake() => {
+                        tv.tag().join(addr).fresh()
+                    }
+                    Moved::Path | Moved::Target | Moved::No | Moved::First => {
+                        tv.tag().join(addr)
+                    }
                 };
                 tv.retag(t);
                 self.resident.set(tv)
             }
             // a moved address with nothing to read is bottom
             None if moved != Moved::No => {
-                let path = moved == Moved::Path && !ctx.event.wake();
-                self.resident.set_bottom(addr.triggers() || path)
+                let fresh =
+                    matches!(moved, Moved::Path | Moved::Target) && !ctx.event.wake();
+                self.resident.set_bottom(addr.triggers() || fresh)
             }
             None => self.resident.ride(),
         }
@@ -2117,8 +2250,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 wrap!(self, p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut))?
             }
         };
-        let t = Type::ByRef(*mutability, Arc::new(t));
-        // CR claude for claude: [perf/low] A let chain of references (`let x1 = &x0;
+        // XCR claude for claude: [perf/low] A let chain of references (`let x1 = &x0;
         // let x2 = &x1; ..`) still checks in quadratic time: 1.43 s at 5000 lets and
         // 5.79 s at 10000 (debug --check), almost all of it in Typecheck0. The [X], {a:
         // X}, (X, 1) and `A(X) chains are now linear. The x-stack-03 note says &X is
@@ -2129,6 +2261,20 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         // and add an &X case to deep_nesting::wrapped_let_chains_check_in_linear_time.
         // probe: design/review-2026-10-26/repro/x-rerun-1-ref-chain-quadratic.sh
         // (x-rerun-1-03)
+        // 2026-10-26 claude: The quadratic part was check_contains' closed() walk of
+        // the whole referent at the top of every committing call. ByRef's check now
+        // skips a referent whose type shares content with the one the reference was
+        // typed with at compile (Type::shares_content, contains' own reflexive test,
+        // now public), the case of every &x, and binds its own unshared cell with
+        // array::bind_element (a place); anything else checks as before. Debug --check
+        // of the chain: 1.16 / 1.33 / 1.8 s at 2500 / 5000 / 10000 (startup about 1 s)
+        // against 2.2 / 3.7 / 9.4 s. Pin:
+        // deep_nesting::wrapped_let_chains_check_in_linear_time's new &X case (past 15
+        // s without it).
+        if cell.shares_content(&t) || super::array::bind_element(cell, &t) {
+            return Ok(());
+        }
+        let t = Type::ByRef(*mutability, Arc::new(t));
         wrap!(self, self.typ.check_contains(&ctx.env, &t))
     }
 }
