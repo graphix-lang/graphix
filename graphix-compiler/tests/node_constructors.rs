@@ -26,3 +26,4 @@ constructor!(struct_with, "StructWith", "../src/node/data.rs");
 constructor!(struct_ref, "StructRef", "../src/node/data.rs");
 constructor!(tuple, "Tuple", "../src/node/data.rs");
 constructor!(variant, "Variant", "../src/node/data.rs");
+constructor!(construct, "Construct", "../src/node/data.rs");

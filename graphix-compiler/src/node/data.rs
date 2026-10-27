@@ -675,6 +675,27 @@ pub struct Construct<R: Rt> {
 }
 
 impl<R: Rt> Construct<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        id: AbstractId,
+        name: ArcStr,
+        rep: Type,
+        arg: Node<R>,
+    ) -> Node<R> {
+        Node::new(Self {
+            spec,
+            typ,
+            id,
+            name,
+            rep,
+            arg,
+            params: None,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -685,17 +706,7 @@ impl<R: Rt> Construct<R> {
         let name = ArcStr::decode(buf)?;
         let rep = Type::decode(buf)?;
         let arg = decode_node(ctx, buf)?;
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            id,
-            name,
-            rep,
-            arg,
-            params: None,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, typ, id, name, rep, arg))
     }
 
     pub(crate) fn compile(
@@ -726,17 +737,7 @@ impl<R: Rt> Construct<R> {
         };
         let (typ, rep) = r.instantiate(id);
         let name = r.name.clone();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            id,
-            name,
-            rep,
-            arg,
-            params: None,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, typ, id, name, rep, arg))
     }
 }
 
