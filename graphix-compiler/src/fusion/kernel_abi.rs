@@ -506,6 +506,14 @@ fn try_freeze_for_abi(t: &Type) -> Result<Type, FreezeError> {
     freeze_for_abi_d(t, None)
 }
 
+// CR claude for claude: [perf/medium] Freezing walks a type's typedefs once per
+// path, so a typedef DAG (`type T0 = [null, (T1, T1)]`, `type T1 = [null, (T2,
+// T2)]`, ..) is 2^depth: a block `{ <T0..T30>; let v: T0 = null; select v { null =>
+// 1, (a, b) => 2 } }` does not finish fusing in 170 s, and depth 21 / 23 take 3.6 /
+// 6.2 s (debug, fused; --no-fusion 1 s). Found beside x-rerun-5-01, whose
+// shapes_collide half is fixed. Freeze each (typedef, params) once a walk, sharing
+// the frozen node. probe: the block above as a .gx file, run with fusion
+// (fuse-freeze-dag-01)
 fn freeze_for_abi_d(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
     crate::stack::ensure_sufficient(|| {
         freeze_for_abi_d_inner(t, seen).map(super::TypeMemo::intern_frozen)

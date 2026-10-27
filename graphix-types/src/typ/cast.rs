@@ -42,7 +42,7 @@ pub enum IsAFlags {
 
 /// A failed cast. Formatting is deferred to the report: a union tries
 /// its members and discards every failure but the last.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CastFail {
     why: Cow<'static, str>,
     to: Type,
@@ -61,9 +61,8 @@ type Cast = std::result::Result<Option<Value>, CastFail>;
 /// The static source type of `v` at a cast position, with names, cells
 /// and applications looked through; `None` when unknown. Of a union,
 /// the member whose outer form `v` has, or the kind of collection all
-/// such members are (a list, an array, a tuple and a struct share
-/// `Value::Array`); `None` when they differ.
-// CR claude for claude: [perf/medium] Since kind markers, a list is told apart by its
+/// such members are; `None` when they differ.
+// XCR claude for claude: [perf/medium] Since kind markers, a list is told apart by its
 // marker (list::is_list), so the static source type decides nothing. Its only effect is
 // the 'not a list' refusal when the type says List and the value is not one, which a
 // marked list never triggers. Yet src_head clones and expands the type at every node of
@@ -72,17 +71,24 @@ type Cast = std::result::Result<Option<Value>, CastFail>;
 // refusals, and fold cast_from into cast_value (TypeCast::update and the lowering cast
 // pseudo-site both call it). probe:
 // design/review-2026-10-26/repro/t-cast-setops-src-head-cost.sh (t-cast-setops-07)
-fn src_head(src: Option<&Type>, env: &Env, v: &Value) -> Option<Type> {
+// 2026-10-26 claude: Not done as suggested: x-kind-markers-04 needs the source type (an
+// unmarked array whose source is an Array is no writer's data), so src stays. Done: the
+// two 'not a list' refusals are gone (dead with markers), and src_head expands a source
+// ref through CastCx::expand, the same per-cast memo the target side uses, so no node
+// re-instantiates a typedef. The probe (debug, loaded box): typed 57 -> 48 ms, Any
+// 34-38 -> 40 ms (the Set arm's src_head now runs only for an unmarked array). No pin
+// (perf). Review whether the remaining 1.2x is acceptable.
+fn src_head(cx: &mut CastCx, src: Option<&Type>, env: &Env, v: &Value) -> Option<Type> {
     let mut cur = src?.clone();
     loop {
         cur = match &cur {
             Type::TVar(_) => cur.deref_cloned()?,
             Type::App(c, a) => Type::app_filled(c, a)?,
-            Type::Ref(_) => cur.lookup_ref(env).ok()?,
+            Type::Ref(tr) => cx.expand(env, &cur, tr)?,
             Type::Set(ms) => {
                 let mut heads: SmallVec<[Type; 4]> = SmallVec::new();
                 for m in ms.iter() {
-                    let h = src_head(Some(m), env, v)?;
+                    let h = src_head(cx, Some(m), env, v)?;
                     if has_form(&h, v) {
                         heads.push(h)
                     }
@@ -131,6 +137,10 @@ fn cast_elts<T>(
 /// parameters it is applied to, so `Id<i64>` and `Id<&i64>` are two.
 type RefKey = (usize, Arc<[Type]>);
 
+/// How many values deep a cast reads: data nested deeper is refused, so
+/// foreign data bounds neither the walk's stack nor its memory.
+pub const MAX_DATA_DEPTH: usize = 1024;
+
 /// A cast in progress: the refs expanded on the way to each value.
 struct CastCx {
     hist: LPooled<AHashSet<(RefKey, usize)>>,
@@ -139,6 +149,25 @@ struct CastCx {
     /// Each reference's expansion, by definition and params allocation,
     /// with the params held so the allocation stays theirs.
     expanded: LPooled<AHashMap<(usize, usize), (Arc<[Type]>, Type)>>,
+    /// Each union's reading of a value inside another union's, by the
+    /// union's members, the value's address and `exact`, with the union
+    /// held so the members stay its: a union tries several members over
+    /// one value, so without it a failing read is exponential in the
+    /// data's depth.
+    read: LPooled<AHashMap<(usize, usize, bool), (Type, Cast)>>,
+    /// Whether the walk is inside a union's reading.
+    in_union: bool,
+    /// How many values on the path are built by the walk, not held by
+    /// the cast's value: their addresses are reused, so no reading of a
+    /// value under one is remembered.
+    built: usize,
+    /// How many times the walk refused a type that recursed without
+    /// consuming the value, which depends on the path: no reading that
+    /// met one is remembered.
+    cuts: usize,
+    /// The address of the value being cast and how many values deep it is.
+    at: usize,
+    depth: usize,
     /// Only a conversion that loses nothing counts: a union tries its
     /// members so first.
     exact: bool,
@@ -148,6 +177,42 @@ struct CastCx {
 }
 
 impl CastCx {
+    fn new(decimal_floats: bool) -> Self {
+        CastCx {
+            hist: LPooled::take(),
+            sizes: LPooled::take(),
+            expanded: LPooled::take(),
+            read: LPooled::take(),
+            in_union: false,
+            built: 0,
+            cuts: 0,
+            at: 0,
+            depth: 0,
+            exact: false,
+            decimal_floats,
+        }
+    }
+
+    /// The expansion of the reference `t`, made once a cast.
+    fn expand(&mut self, env: &Env, t: &Type, tr: &TypeRef) -> Option<Type> {
+        let Some(def) = tr.def_key() else { return t.lookup_ref(env).ok() };
+        let ek = (def, tr.params.as_ptr().addr());
+        if let Some((_, t)) = self.expanded.get(&ek) {
+            return Some(t.clone());
+        }
+        let x = t.lookup_ref(env).ok()?;
+        self.expanded.insert(ek, (tr.params.clone(), x.clone()));
+        Some(x)
+    }
+
+    /// `f` over a value the walk built.
+    fn over_built<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.built += 1;
+        let r = f(self);
+        self.built -= 1;
+        r
+    }
+
     /// `v` as the f64 a float position reads, when it is a decimal that
     /// stands for a float.
     fn float_of(&self, v: &Value) -> Option<Value> {
@@ -201,6 +266,9 @@ struct Verdicts<T> {
     /// application being decided, whose provisional verdicts a node's may
     /// rest on.
     walked: LPooled<AHashSet<usize>>,
+    /// The types the walk built outside any application being decided,
+    /// alive until it ends: a node `walked` holds keeps its address.
+    built: LPooled<Vec<Type>>,
 }
 
 impl<T> Verdicts<T> {
@@ -211,7 +279,17 @@ impl<T> Verdicts<T> {
             depth: 0,
             read: usize::MAX,
             walked: LPooled::take(),
+            built: LPooled::take(),
         }
+    }
+
+    /// `f` over `t`, a type built for this walk.
+    fn over_built<R>(&mut self, t: Type, f: impl FnOnce(&mut Self, &Type) -> R) -> R {
+        let r = f(self, &t);
+        if self.depth == 0 {
+            self.built.push(t)
+        }
+        r
     }
 
     /// Settle the provisional verdicts that read the application decided
@@ -380,14 +458,15 @@ impl Type {
     }
 
     /// Whether a value of this type can hold a reference, outside a
-    /// function or an abstract type, which a cast never takes apart. A
-    /// cast refuses such a source: a reference names a cell, it is no
-    /// data to read.
+    /// function or an abstract type with no `Cast` implementation, which
+    /// a cast never takes apart (one with an implementation may read its
+    /// payload at its parameters). A cast refuses such a source: a
+    /// reference names a cell, it is no data to read.
     #[doc(hidden)]
     pub fn holds_ref(&self, env: &Env) -> bool {
         self.holds(env, &mut Verdicts::new(), &|t| match t {
             Type::ByRef(..) => Some(true),
-            // CR claude for claude: [bug/medium] A cast does take a Graphix abstract
+            // XCR claude for claude: [bug/medium] A cast does take a Graphix abstract
             // apart when its Cast impl leaves from_value to the representation:
             // cast_inner's CastHook::Representation casts the payload at the target's
             // params. So with type Box<'a> = Abstract<'a> and impl<'a> Cast for Box<'a>
@@ -399,7 +478,14 @@ impl Type {
             // probe:
             // design/review-2026-10-26/repro/t-cast-setops-abstract-ref-escape.gx
             // (t-cast-setops-04)
-            Type::Fn(_) | Type::Abstract { .. } => Some(false),
+            // 2026-10-26 claude: holds_ref stops only at an abstract with no Cast
+            // implementation (!env.casts(id)), as holds_beyond_data does, and walks the
+            // params of one with an implementation, so cast<Box<Any>>(Box(&v)) is
+            // refused by the check ('can't cast a reference'); impl Cast's
+            // representation check (traits.rs) sees through such an abstract too. Pin:
+            // lang::cast_trait::cast_of_a_reference_in_a_parameter_refused.
+            Type::Fn(_) => Some(false),
+            Type::Abstract { id, .. } if !env.casts(*id) => Some(false),
             _ => None,
         })
     }
@@ -613,13 +699,13 @@ impl Type {
                 return v;
             }
             match self {
-                Type::TVar(_) => {
-                    self.deref_cloned().is_some_and(|t| t.holds(env, seen, leaf))
-                }
+                Type::TVar(_) => self.deref_cloned().is_some_and(|t| {
+                    seen.over_built(t, |seen, t| t.holds(env, seen, leaf))
+                }),
                 // an open constructor is unknown like an open cell: its
                 // argument decides
                 Type::App(c, a) => match Type::app_filled(c, a) {
-                    Some(f) => f.holds(env, seen, leaf),
+                    Some(f) => seen.over_built(f, |seen, f| f.holds(env, seen, leaf)),
                     None => a.holds(env, seen, leaf),
                 },
                 Type::Ref(tr) => {
@@ -627,14 +713,14 @@ impl Type {
                     let shape =
                         tr.params.iter().map(|p| p.holds(env, seen, leaf)).collect();
                     match tr.def_key() {
-                        None => t.holds(env, seen, leaf),
+                        None => seen.over_built(t, |seen, t| t.holds(env, seen, leaf)),
                         Some(k) => decide_once(seen, (k, shape), false, |seen| {
                             t.holds(env, seen, leaf)
                         }),
                     }
                 }
                 t => {
-                    // CR claude for claude: [bug/high] walked is keyed by node address,
+                    // XCR claude for claude: [bug/high] walked is keyed by node address,
                     // but at depth 0 this walk also visits temporaries: app_filled in
                     // the App arm, a TVar bound to a filled App (with_deref), and
                     // lookup_ref when def_key is None. Each is freed after its walk,
@@ -648,6 +734,13 @@ impl Type {
                     // ends, or bump depth while walking one, and add a pin. probe:
                     // design/review-2026-10-26/repro/t-cast-setops-walked-addr-reuse.gx
                     // (t-cast-setops-01)
+                    // 2026-10-26 claude: Type::holds keeps every type it builds outside
+                    // an application being decided (a filled application, a cell's
+                    // deref, a ref with no definition key) alive in Verdicts::built
+                    // until the walk ends (Verdicts::over_built), so no later temporary
+                    // takes an address walked holds. Pin:
+                    // lang::types::cast_of_a_reference_beside_a_filled_application (the
+                    // probe; fails in all four modes with the fix undone).
                     let node = super::node_addr(t).filter(|_| seen.depth == 0);
                     if node.is_some_and(|n| seen.walked.contains(&n)) {
                         return false;
@@ -670,7 +763,19 @@ impl Type {
         src: Option<&Type>,
         v: &Value,
     ) -> Cast {
-        ensure_sufficient(|| self.cast_inner(env, cx, src, v))
+        let at = (v as *const Value).addr();
+        if at == cx.at {
+            return ensure_sufficient(|| self.cast_inner(env, cx, src, v));
+        }
+        if cx.depth == MAX_DATA_DEPTH {
+            return Err(self.cast_fail("the data is nested too deep", v));
+        }
+        let outer = mem::replace(&mut cx.at, at);
+        cx.depth += 1;
+        let r = ensure_sufficient(|| self.cast_inner(env, cx, src, v));
+        cx.depth -= 1;
+        cx.at = outer;
+        r
     }
 
     fn cast_fail(&self, why: impl Into<Cow<'static, str>>, v: &Value) -> CastFail {
@@ -786,7 +891,7 @@ impl Type {
                 None => Ok(cx.float_of(v)),
             },
             Type::Error(e) => {
-                let src = src_head(src, env, v);
+                let src = src_head(cx, src, env, v);
                 let src = match &src {
                     Some(Type::Error(s)) => Some(&**s),
                     _ => None,
@@ -802,10 +907,7 @@ impl Type {
             // a list reads as the array of its elements, a map as the
             // array of its (key, value) pairs
             Type::Array(et) => {
-                let src = src_head(src, env, v);
-                if matches!(&src, Some(Type::List(_))) && !list::is_list(v) {
-                    return Err(self.cast_fail("not a list", v));
-                }
+                let src = src_head(cx, src, env, v);
                 let src = match &src {
                     Some(Type::Array(s) | Type::List(s)) => Some(&**s),
                     _ => None,
@@ -813,9 +915,9 @@ impl Type {
                 match v {
                     v if list::is_list(v) => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
-                        for el in list::Iter::new(v.clone()) {
-                            let c = et.cast_int(env, cx, src, &el)?;
-                            out.push(c.unwrap_or(el));
+                        for el in list::heads(v) {
+                            let c = et.cast_int(env, cx, src, el)?;
+                            out.push(c.unwrap_or_else(|| el.clone()));
                         }
                         Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
                     }
@@ -829,7 +931,8 @@ impl Type {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for (k, val) in m.into_iter() {
                             let pair = rep::tuple([k.clone(), val.clone()]);
-                            let c = et.cast_int(env, cx, None, &pair)?;
+                            let c =
+                                cx.over_built(|cx| et.cast_int(env, cx, None, &pair))?;
                             out.push(c.unwrap_or(pair));
                         }
                         Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
@@ -838,10 +941,7 @@ impl Type {
                 }
             }
             Type::List(et) => {
-                let src = src_head(src, env, v);
-                if matches!(&src, Some(Type::List(_))) && !list::is_list(v) {
-                    return Err(self.cast_fail("not a list", v));
-                }
+                let src = src_head(cx, src, env, v);
                 let src = match &src {
                     Some(Type::Array(s) | Type::List(s)) => Some(&**s),
                     _ => None,
@@ -850,13 +950,13 @@ impl Type {
                     v if list::is_list(v) => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         let mut changed = false;
-                        for el in list::Iter::new(v.clone()) {
-                            match et.cast_int(env, cx, src, &el)? {
+                        for el in list::heads(v) {
+                            match et.cast_int(env, cx, src, el)? {
                                 Some(c) => {
                                     changed = true;
                                     out.push(c)
                                 }
-                                None => out.push(el),
+                                None => out.push(el.clone()),
                             }
                         }
                         Ok(changed.then(|| list::from_iter(out.drain(..))))
@@ -873,7 +973,7 @@ impl Type {
                 }
             }
             Type::Map { key, value } => {
-                let src = src_head(src, env, v);
+                let src = src_head(cx, src, env, v);
                 let (ks, vs) = match &src {
                     Some(Type::Map { key, value }) => (Some(&**key), Some(&**value)),
                     _ => (None, None),
@@ -940,7 +1040,7 @@ impl Type {
                 }
             }
             Type::Tuple(ts) => {
-                let src = src_head(src, env, v);
+                let src = src_head(cx, src, env, v);
                 let ss = match &src {
                     Some(Type::Tuple(ss)) if ss.len() == ts.len() => Some(ss),
                     _ => None,
@@ -1013,7 +1113,7 @@ impl Type {
                 {
                     return Err(self.cast_fail("struct fields mismatch", v));
                 }
-                let src = src_head(src, env, v);
+                let src = src_head(cx, src, env, v);
                 let ss = match &src {
                     Some(Type::Struct(ss)) if ss.len() == ts.len() => Some(ss),
                     _ => None,
@@ -1046,7 +1146,7 @@ impl Type {
                 _ => Err(self.cast_fail("variant tag mismatch", v)),
             },
             Type::Variant(tag, ts, _) => {
-                let src = src_head(src, env, v);
+                let src = src_head(cx, src, env, v);
                 let ss = match &src {
                     Some(Type::Variant(stag, ss, _))
                         if stag == tag && ss.len() == ts.len() =>
@@ -1110,16 +1210,8 @@ impl Type {
                 else {
                     return Err(self.cast_fail("undefined type", v));
                 };
-                let ek = (key.0.0, tr.params.as_ptr().addr());
-                let t = match cx.expanded.get(&ek) {
-                    Some((_, t)) => t.clone(),
-                    None => match self.lookup_ref(env) {
-                        Ok(t) => {
-                            cx.expanded.insert(ek, (tr.params.clone(), t.clone()));
-                            t
-                        }
-                        Err(_) => return Err(self.cast_fail("undefined type", v)),
-                    },
+                let Some(t) = cx.expand(env, self, tr) else {
+                    return Err(self.cast_fail("undefined type", v));
                 };
                 // the same definition over the same value with larger params
                 // grows at every level, the value never consumed
@@ -1128,6 +1220,7 @@ impl Type {
                 let grows =
                     cx.sizes.get(&at).is_some_and(|ss| ss.iter().any(|s| *s < size));
                 if grows || !cx.hist.insert(key.clone()) {
+                    cx.cuts += 1;
                     return Err(
                         self.cast_fail("the type recurses without consuming it", v)
                     );
@@ -1150,7 +1243,7 @@ impl Type {
             // part of it (a fraction, a sub-second part, a rounding).
             Type::Set(ts) => {
                 let outer = cx.exact;
-                // CR claude for claude: [bug/high] A failing union read is exponential
+                // XCR claude for claude: [bug/high] A failing union read is exponential
                 // in the data's depth. This inexact round re-runs every nested union in
                 // both rounds. cast_member also tries a tuple or struct member in its
                 // rank pass and then again in its own-class pass, and nothing remembers
@@ -1162,27 +1255,55 @@ impl Type {
                 // probe:
                 // design/review-2026-10-26/repro/t-cast-setops-union-cast-exponential.gx
                 // (t-cast-setops-02)
+                // 2026-10-26 claude: CastCx::read remembers each union's reading
+                // (success or failure) of a value inside another union's reading, keyed
+                // by the union's members, the value's address and exact, the union held
+                // so its members keep their address; not under a value the walk built
+                // (the map-to-pairs arm's pair, CastCx::built), not when the reading met
+                // a 'recurses without consuming' cut (path-dependent, CastCx::cuts).
+                // List casts walk heads by reference (list::heads) so element addresses
+                // are the list's. cast_member skips in its own-class pass the members
+                // its rank pass tried. Pin:
+                // typ::cast::tests::failing_union_read_is_linear (J at depth 23:
+                // instant; with the memo undone it runs past 900 s).
+                let key = (cx.in_union && cx.built == 0)
+                    .then(|| (ts.as_ptr().addr(), (v as *const Value).addr(), outer));
+                if let Some(k) = &key
+                    && let Some((_, r)) = cx.read.get(k)
+                {
+                    return r.clone();
+                }
+                let (in_union, cuts) = (mem::replace(&mut cx.in_union, true), cx.cuts);
+                let array = rep::array_elems(v).is_some()
+                    && matches!(src_head(cx, src, env, v), Some(Type::Array(_)));
                 let rounds: &[bool] = if outer { &[true] } else { &[true, false] };
-                let mut failed = None;
+                let mut r = Err(None);
                 for exact in rounds {
                     cx.exact = *exact;
-                    let r = self.cast_member(env, cx, src, v, ts);
+                    r = self.cast_member(env, cx, src, v, ts, array).map_err(Some);
                     cx.exact = outer;
-                    match r {
-                        Ok(c) => return Ok(c),
-                        Err(e) => failed = Some(e),
+                    if r.is_ok() {
+                        break;
                     }
                 }
-                Err(failed.expect("a round was tried"))
+                cx.in_union = in_union;
+                let r = r.map_err(|e| e.expect("a round was tried"));
+                if let Some(k) = key
+                    && cx.cuts == cuts
+                {
+                    cx.read.insert(k, (self.clone(), r.clone()));
+                }
+                r
             }
         }
     }
 
-    /// The union `ts`'s reading of `v`, as `cast_int` takes one: a member
-    /// whose tag the value carries, else one the value inhabits, else, for
-    /// unmarked data, a tuple of its length and then a struct, else the
-    /// first member of its own runtime class it converts to, else the
-    /// first it converts to at all.
+    /// The union `ts`'s reading of `v`, as `cast_int` takes one: when `v`
+    /// is statically an array (`array`), an array member it inhabits; else
+    /// a member whose tag it carries, else, for unmarked data, a tuple of
+    /// its length and then a struct, else one the value inhabits, else the
+    /// first member of its own runtime class it converts to, else the first
+    /// it converts to at all.
     fn cast_member(
         &self,
         env: &Env,
@@ -1190,7 +1311,18 @@ impl Type {
         src: Option<&Type>,
         v: &Value,
         ts: &[Type],
+        array: bool,
     ) -> Cast {
+        if array {
+            let arrays = ts
+                .iter()
+                .filter(|t| matches!(rep_head(env, t).as_deref(), Some(Type::Array(_))));
+            for t in arrays {
+                if let Ok(None) = t.cast_int(env, cx, src, v) {
+                    return Ok(None);
+                }
+            }
+        }
         // a member whose tag the value carries is its reading, whatever a
         // tagless reading of an earlier member says
         // CR claude for eric: [bug/medium] The data a writer emits does not say which
@@ -1223,7 +1355,7 @@ impl Type {
             };
         }
         // a writer wrote the tuple or the struct the data reads back as
-        // CR claude for claude: [bug/medium] This rank, and the tagged pass above it,
+        // XCR claude for claude: [bug/medium] This rank, and the tagged pass above it,
         // run before the inhabits check even when the cast's source is statically an
         // Array. So cast<[(i64, i64), Array<i64>]>(a) with a: Array<i64> = [1, 2]
         // returns the tuple (1, 2), and an Array<string> ["B", "x"] cast to
@@ -1233,6 +1365,24 @@ impl Type {
         // keep them for a None/Any source. probe:
         // design/review-2026-10-26/repro/x-kind-markers-cast-array-becomes-tuple.gx
         // (x-kind-markers-04)
+        // 2026-10-26 claude: The Set arm decides from_data once: false when the value
+        // is an unmarked array whose source type (src_head) is an Array; cast_member
+        // then skips the tagged and the tuple/struct rank passes, so an array reads
+        // as the member it inhabits; a None/Any source keeps the data order. Both
+        // engines pass the source (TypeCast::update and lowering::cast_typed call
+        // cast_from). CLAUDE.md's cast rule and design/distinct_composite_forms.md
+        // say so. Pin: lang::types::cast_of_an_array_keeps_its_member (the probe's
+        // array, the [`B(string), Array<string>] case, and Any data still reading as
+        // the tuple).
+        // 2026-10-26 claude: Refined after the gate (lang::types::cast_reads_the_tag
+        // reads an Array<string> ["Zed", "5"] into [`Abc(string, i64), `Zed(i64)] by
+        // its tag): a statically-array value no longer skips the tagged and rank
+        // passes; cast_member first tries the union's array members and returns one
+        // the value inhabits (cast Ok(None)), then reads it in the data order. So
+        // Array<i64> [1, 2] stays the Array<i64> member, ["B", "x"] stays
+        // Array<string>, and a union with no array member it inhabits still reads it
+        // by tag or as a tuple. Pins: cast_of_an_array_keeps_its_member and
+        // cast_reads_the_tag.
         // CR claude for eric: [bug/medium] The rank pass takes the first same-length
         // tuple (then struct) that casts at all, including by printing a number into a
         // string, ahead of a member the data reads without leaving its class. With T =
@@ -1244,6 +1394,7 @@ impl Type {
         // with the comments updated to the order chosen? probe:
         // design/review-2026-10-26/repro/t-cast-setops-tuple-rank-cross-class.gx
         // (t-cast-setops-06)
+        let mut ranked: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
         if let Value::Array(a) = v
             && rep::kind(v).is_none()
         {
@@ -1253,9 +1404,10 @@ impl Type {
                 _ => None,
             };
             for r in 0..2 {
-                for t in ts.iter().filter(|t| rank(t) == Some(r)) {
-                    if let Ok(c) = t.cast_int(env, cx, src, v) {
-                        return Ok(c);
+                for (i, t) in ts.iter().enumerate().filter(|(_, t)| rank(t) == Some(r)) {
+                    match t.cast_int(env, cx, src, v) {
+                        Ok(c) => return Ok(c),
+                        Err(_) => ranked[i] = true,
                     }
                 }
             }
@@ -1264,7 +1416,8 @@ impl Type {
             ts.iter().map(|t| in_own_class(env, t, v)).collect();
         let mut converted = None;
         for pass in [true, false] {
-            for (t, _) in ts.iter().zip(own.iter()).filter(|(_, o)| **o == pass) {
+            let members = ts.iter().zip(own.iter()).zip(ranked.iter());
+            for ((t, _), _) in members.filter(|((_, o), r)| **o == pass && !**r) {
                 match t.cast_int(env, cx, src, v) {
                     Ok(None) => return Ok(None),
                     Ok(Some(c)) if converted.is_none() => converted = Some(c),
@@ -1279,8 +1432,9 @@ impl Type {
     }
 
     /// Cast `v` of unknown static type to this type; a failure is the
-    /// `InvalidCast` error value. An array and a list are told apart by
-    /// shape.
+    /// `InvalidCast` error value. An unmarked array reads as a writer's
+    /// data: a union reads it as a tagged variant, a tuple or a struct
+    /// before an array.
     pub fn cast_value(&self, env: &Env, v: Value) -> Value {
         self.cast_value_int(env, None, v, false).unwrap_or_else(|e| e)
     }
@@ -1292,7 +1446,8 @@ impl Type {
     }
 
     /// [`Self::cast_value`] of a `v` statically of type `src`, which
-    /// decides whether a value is an array or a list.
+    /// decides whether an unmarked array is an array or a writer's data:
+    /// a union reads an array as an array member it inhabits first.
     pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
         self.cast_value_int(env, Some(src), v, false).unwrap_or_else(|e| e)
     }
@@ -1305,7 +1460,7 @@ impl Type {
         self.cast_value_int(env, None, v, true).unwrap_or_else(|e| e)
     }
 
-    // CR claude for claude: [bug/medium] The cast recurses once per nesting level of
+    // XCR claude for claude: [bug/medium] The cast recurses once per nesting level of
     // foreign data, with no limit, and each level costs 10-20 KB of stacker stack in a
     // debug build. pack::read of 1.2 MB of crafted bytes into `type N = Array<N>` runs
     // past 6 GB in half a second. json and toml limit nesting while parsing, but pack,
@@ -1313,6 +1468,12 @@ impl Type {
     // Fix: count depth in CastCx and refuse past the json reader's MAX_DEPTH with an
     // InvalidCast. probe: design/review-2026-10-26/repro/x-security-pack-deep-cast.sh
     // (x-security-03)
+    // 2026-10-26 claude: cast_int counts value depth (CastCx::at/depth: a call over a
+    // value at another address is one level deeper) and refuses past MAX_DATA_DEPTH
+    // (1024, not json's 128, so in-language recursive data a program round-trips keeps
+    // working; ~20 MB of debug stack) with an InvalidCast 'the data is nested too
+    // deep'. CLAUDE.md's stack discipline names the limit. Pin:
+    // lang::types::cast_of_data_nested_too_deep (1024 levels read, 1025 refused).
     fn cast_value_int(
         &self,
         env: &Env,
@@ -1320,14 +1481,7 @@ impl Type {
         v: Value,
         decimal_floats: bool,
     ) -> Result<Value, Value> {
-        let mut cx = CastCx {
-            hist: LPooled::take(),
-            sizes: LPooled::take(),
-            expanded: LPooled::take(),
-            exact: false,
-            decimal_floats,
-        };
-        match self.cast_int(env, &mut cx, src, &v) {
+        match self.cast_int(env, &mut CastCx::new(decimal_floats), src, &v) {
             Ok(None) => Ok(v),
             Ok(Some(v)) => Ok(v),
             Err(e) => Err(errf!(CAST_ERR_TAG, "{e}")),
@@ -1539,18 +1693,15 @@ impl Type {
         let mut scrut: LPooled<Vec<Type>> = LPooled::take();
         let mut seen: LPooled<Vec<RefKey>> = LPooled::take();
         flatten_union_members(scrutinee, env, &mut scrut, &mut seen)?;
-        let below = |m: &Type| {
-            m.try_for_each_child(&mut |c| match shapes_collide(
-                c,
-                env,
-                &mut LPooled::take(),
-            ) {
+        let mut walked = ShapeSeen::default();
+        let mut below = |m: &Type| {
+            m.try_for_each_child(&mut |c| match shapes_collide(c, env, &mut walked) {
                 true => ControlFlow::Break(()),
                 false => ControlFlow::Continue(()),
             })
             .is_break()
         };
-        if scrut.iter().any(below) {
+        if scrut.iter().any(|m| below(m)) {
             return None;
         }
         let mut sfacts: LPooled<Vec<MemberFacts>> = LPooled::take();
@@ -1598,10 +1749,10 @@ impl Type {
 }
 
 /// Whether `t` or a part of it is a union two of whose members share a
-/// shape (`arr_overlap`). A typedef is expanded once, whatever its
-/// parameters: a non-regular one's grow at every level, and what they
-/// hold is walked at the first.
-// CR claude for claude: [perf/medium] `seen` is only the path, so a typedef that names
+/// shape (`arr_overlap`). An application is walked once a search, and a
+/// typedef once a path, whatever its parameters: a non-regular one's grow
+/// at every level, and what they hold is walked at the first.
+// XCR claude for claude: [perf/medium] `seen` is only the path, so a typedef that names
 // the next one twice (`type T0 = [null, (T1, T1)]`, ...) is walked once per path,
 // 2^depth. This runs at a select's first consult through shallow_discriminant, on the
 // runtime path with or without fusion: a select over T0 at depth 22 stalls its first
@@ -1609,17 +1760,33 @@ impl Type {
 // found collision-free (key plus params), as Type::holds now does, so a shared node is
 // walked once. probe: design/review-2026-10-26/repro/x-rerun-5-select-dag-shallow.gx
 // (x-rerun-5-01)
-fn shapes_collide(t: &Type, env: &Env, seen: &mut LPooled<Vec<usize>>) -> bool {
+// 2026-10-26 claude: shapes_collide keeps the path of typedefs (termination for
+// growing params) and a set of (definition, params) applications walked this search
+// (ShapeSeen), shared across all of shallow_discriminant's children: the answer is an
+// OR, so a revisited application adds nothing. Pin:
+// typ::cast::tests::shallow_discriminant_walks_a_typedef_dag_once (depth 26: instant;
+// 21 s with the set undone). The probe's select still takes 2^depth when it is FUSED
+// inside a block: fusion's freeze_for_abi_d expands the DAG as a tree; that is a new
+// CR (fuse-freeze-dag-01) in fusion/kernel_abi.rs.
+/// What a [`shapes_collide`] search has walked: the applications, and
+/// the typedefs on the path.
+#[derive(Default)]
+struct ShapeSeen {
+    walked: LPooled<AHashSet<RefKey>>,
+    path: SmallVec<[usize; 8]>,
+}
+
+fn shapes_collide(t: &Type, env: &Env, seen: &mut ShapeSeen) -> bool {
     ensure_sufficient(|| match t {
         Type::Ref(tr) => {
-            let Some(key) = tr.def_key() else { return false };
-            let Ok(x) = t.lookup_ref(env) else { return false };
-            if seen.contains(&key) {
+            let Some(key) = ref_key(tr) else { return false };
+            if seen.path.contains(&key.0) || !seen.walked.insert(key.clone()) {
                 return false;
             }
-            seen.push(key);
+            let Ok(x) = t.lookup_ref(env) else { return false };
+            seen.path.push(key.0);
             let r = shapes_collide(&x, env, seen);
-            seen.pop();
+            seen.path.pop();
             r
         }
         Type::TVar(tv) => tv.binding().is_some_and(|b| shapes_collide(&b, env, seen)),
@@ -1812,8 +1979,10 @@ fn rep_head<'a>(env: &Env, t: &'a Type) -> Option<Cow<'a, Type>> {
 /// The primitive tags a value of another type may share.
 const SHARED_PRIMS: BitFlags<Typ> = make_bitflags!(Typ::{Map | Error | Array});
 
-/// Whether a value of `t` may also be a value of a type `t` doesn't hold.
-// CR claude for claude: [bug/medium] Every abstract answers false here. A Rust-backed
+/// Whether a value of `t` may also be a value of a type `t` doesn't hold:
+/// a Rust-backed abstract's values carry only its id, so one with
+/// parameters shares its form with its other instantiations.
+// XCR claude for claude: [bug/medium] Every abstract answers false here. A Rust-backed
 // one with parameters carries only its id, though, so its other instantiations share
 // its form (rep_collision says so for a written pair). As a result `|x: ['a,
 // db::Tree<string, i64>]| select x { db::Tree<string, i64> as t => "i64 tree", v =>
@@ -1822,6 +1991,12 @@ const SHARED_PRIMS: BitFlags<Typ> = make_bitflags!(Typ::{Map | Error | Array});
 // abstract_reps entry, and pin it in a select and in a union dispatch. probe:
 // design/review-2026-10-26/repro/x-typecheck-patterns-rust-abstract-open-member.gx
 // (x-typecheck-patterns-04)
+// 2026-10-26 claude: shares_form answers true for a Rust-backed abstract with
+// parameters (no abstract_reps entry), so an open member beside one is refused
+// ('annotate it') in a select and in a union dispatch. Pins:
+// lang::select::open_member_beside_a_rust_abstract_refused,
+// open_member_beside_a_rust_abstract_in_a_dispatch_refused. Same change as
+// t-cast-setops-03 (L1-b04).
 fn shares_form(env: &Env, t: &Type) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
         // CR claude for claude: [bug/high] A Rust-backed abstract's values carry only
@@ -1835,7 +2010,15 @@ fn shares_form(env: &Env, t: &Type) -> bool {
         // entry in env.abstract_reps). probe:
         // design/review-2026-10-26/repro/t-cast-setops-open-vs-rust-abstract.gx
         // (t-cast-setops-03)
-        None | Some(Type::Bottom | Type::Abstract { .. }) => false,
+        // 2026-10-26 claude: Fixed by the x-typecheck-patterns-04 change: shares_form
+        // answers true for a parameterized Rust-backed abstract. Pins:
+        // lang::select::open_member_beside_a_rust_abstract_refused and
+        // open_member_beside_a_rust_abstract_in_a_dispatch_refused (db::Tree<string,
+        // i64> beside an open member).
+        Some(Type::Abstract { id, params }) => {
+            !params.is_empty() && !env.abstract_reps.contains_key(id)
+        }
+        None | Some(Type::Bottom) => false,
         Some(Type::Variant(_, ps, _)) if ps.is_empty() => false,
         Some(Type::Primitive(p)) => p.intersects(SHARED_PRIMS),
         Some(Type::Set(ts)) => ts.iter().any(|t| shares_form(env, t)),
@@ -2884,5 +3067,77 @@ impl Type {
         f: &mut dyn FnMut(&Value) -> Value,
     ) -> Value {
         map_refs(env, &mut HoldsRef::default(), self, v, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        env::Env,
+        expr::{ModPath, TypeDefBody, parser::parse_type},
+        typ::Type,
+    };
+    use netidx_value::Value;
+    use std::time::{Duration, Instant};
+    use triomphe::Arc;
+
+    /// An env holding the typedefs `defs` at the root, and `t` there.
+    fn typed(defs: &[(&str, &str)], t: &str) -> (Env, Type) {
+        let mut env = Env::default();
+        for (name, body) in defs {
+            env.deftype(
+                &ModPath::root(),
+                name,
+                Arc::from_iter([]),
+                &TypeDefBody::Alias(parse_type(body).unwrap()),
+                true,
+                None,
+                Default::default(),
+                Default::default(),
+                Arc::new(Default::default()),
+            )
+            .unwrap();
+        }
+        env.seed_typedef_refs();
+        let t = parse_type(t).unwrap().scope_refs(&ModPath::root());
+        t.seed_refs(&env);
+        (env, t)
+    }
+
+    // A select's shallow test over `type T0 = [null, (T1, T1)]`, .. walks
+    // each typedef once, not once per path.
+    #[test]
+    fn shallow_discriminant_walks_a_typedef_dag_once() {
+        let depth = 26;
+        let names: Vec<String> = (0..=depth).map(|i| format!("T{i}")).collect();
+        let bodies: Vec<String> = (0..=depth)
+            .map(|i| match i {
+                i if i == depth => "i64".into(),
+                i => format!("[null, (T{}, T{})]", i + 1, i + 1),
+            })
+            .collect();
+        let defs: Vec<(&str, &str)> =
+            names.iter().zip(bodies.iter()).map(|(n, b)| (&**n, &**b)).collect();
+        let (env, scrutinee) = typed(&defs, "T0");
+        let pred = parse_type("(T1, T1)").unwrap().scope_refs(&ModPath::root());
+        pred.seed_refs(&env);
+        let started = Instant::now();
+        pred.shallow_discriminant(&env, &scrutinee);
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    // A failing union read costs what the data's size does: each union
+    // reads each value once, however many members try it.
+    #[test]
+    fn failing_union_read_is_linear() {
+        let (env, j) = typed(&[("J", "[i64, (J, i64), Array<J>]")], "J");
+        let mut v = Value::Array([Value::from("x"), Value::I64(1)].into_iter().collect());
+        for _ in 0..22 {
+            v = Value::Array([v, Value::I64(1)].into_iter().collect());
+        }
+        let started = Instant::now();
+        let r = j.cast_value(&env, v);
+        assert!(format!("{r}").contains("no member admits it"), "{r}");
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
     }
 }

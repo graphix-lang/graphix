@@ -1116,6 +1116,60 @@ run!(cast_of_a_reference_in_an_instance, CAST_OF_A_REFERENCE_IN_AN_INSTANCE, |v:
     matches!(v, Ok(Value::Error(e)) if format!("{e}").contains("can't cast a reference"))
 }; FuseExpect::None);
 
+// Two applications of one constructor filled for one search are two
+// types: the first, holding no reference, vouches nothing for the second.
+const CAST_OF_A_REFERENCE_BESIDE_A_FILLED_APPLICATION: &str = r#"
+{
+  use Collection::*;
+  let f = |c: Collection, y| cast<(Array<i64>, Array<Any>)>((map(c, |x| 1), map(c, |x| y)));
+  let v = 5;
+  f([1, 2], &v)
+}
+"#;
+run!(cast_of_a_reference_beside_a_filled_application, CAST_OF_A_REFERENCE_BESIDE_A_FILLED_APPLICATION, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Error(e)) if format!("{e}").contains("can't cast a reference"))
+}; FuseExpect::Jit);
+
+// An array a union reads stays the array member it inhabits; only data
+// reads as a tuple of its length or a tagged variant.
+const CAST_OF_AN_ARRAY_KEEPS_ITS_MEMBER: &str = r#"
+{
+  type U = [(i64, i64), Array<i64>];
+  type V = [`B(string), Array<string>];
+  let a: Array<i64> = [1, 2];
+  let s: Array<string> = ["B", "x"];
+  let d: Any = [1, 2];
+  let show = |u: U| select u { (i64, i64) as t => "tuple", Array<i64> as x => "array" };
+  let showv = |v: V| select v { `B(_) => "variant", Array<string> as x => "array" };
+  "[show(cast<U>(a)$)] [showv(cast<V>(s)$)] [show(cast<U>(d)$)]"
+}
+"#;
+run!(
+    cast_of_an_array_keeps_its_member,
+    CAST_OF_AN_ARRAY_KEEPS_ITS_MEMBER,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::String(s)) if &**s == "array array tuple")
+    }
+);
+
+// A cast reads data at most `MAX_DATA_DEPTH` (1024) values deep.
+const CAST_OF_DATA_NESTED_TOO_DEEP: &str = r#"
+{
+  type N = Array<N>;
+  let rec mk = |n: i64| -> N select n { 0 => [], n => [mk(n - 1)] };
+  let read = |n: i64| {
+    let a: Any = mk(n);
+    select cast<N>(a) { error as e => "[e]", _ => "read" }
+  };
+  (read(1023), str::contains(#part: "nested too deep", read(1024)))
+}
+"#;
+run!(
+    cast_of_data_nested_too_deep,
+    CAST_OF_DATA_NESTED_TOO_DEEP,
+    prints(r#"["read", true]"#)
+);
+
 // An arithmetic operand that is a union with an open member narrows the
 // member to the bound, never binds it to the bound: the member stays one
 // type a later use picks, here ⊥ (only ⊥ was produced into `x`). A

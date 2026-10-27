@@ -30,6 +30,16 @@ pub fn split(v: &Value) -> Option<(&Value, &Value)> {
     }
 }
 
+/// The heads of the list `v`, borrowed from it.
+pub fn heads(v: &Value) -> impl Iterator<Item = &Value> {
+    let mut cur = v;
+    std::iter::from_fn(move || {
+        let (head, tail) = split(cur)?;
+        cur = tail;
+        Some(head)
+    })
+}
+
 pub fn is_nil(v: &Value) -> bool {
     rep::marked(v, Kind::List).is_some_and(|p| p.is_empty())
 }

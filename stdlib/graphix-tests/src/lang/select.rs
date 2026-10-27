@@ -3397,6 +3397,21 @@ run!(open_member_in_a_dispatch_refused, r#"{
   f(&s)
 }"#, refused("annotate it"); FuseExpect::None);
 
+// A Rust-backed abstract's values carry only its id: an open member may
+// be another instantiation of it.
+run!(open_member_beside_a_rust_abstract_refused, r#"{
+  let f = |x: ['a, db::Tree<string, i64>]| select x { db::Tree<string, i64> as t => "i64 tree", v => "other" };
+  f(1)
+}"#, refused("annotate it"); FuseExpect::None);
+
+run!(open_member_beside_a_rust_abstract_in_a_dispatch_refused, r#"{
+  trait Show { val show: fn(self) -> string };
+  impl Show for db::Tree<string, i64> { let show = |x| "i64 tree" };
+  impl Show for i64 { let show = |x| "int" };
+  let f = 'b: Show |x: [db::Tree<string, i64>, 'b]| Show::show(x);
+  f(1)
+}"#, refused("annotate it"); FuseExpect::None);
+
 run!(open_member_beside_an_error_refused, r#"{
   let f = |r: ['a, Error<`E>]| select r { error as e => 0, v => 1 };
   f(1)

@@ -419,7 +419,7 @@ integer first, that holds it). A cast leaves a value's runtime class
 only to parse a string into a scalar (never a collection), to print a number, bool, datetime or duration
 plainly (`"42"`), between a number and a datetime (Unix seconds) or a
 duration (seconds), from a bool to a number (1 or 0), or to read an array of numbers as bytes; a list reads as the array of its elements and a map as the array of its `(key, value)` pairs, and an array of pairs reads as a map; a union target tries the members of the value's own
-class first (`typ/cast.rs::convert`, `in_own_class`), unmarked array data a tuple of its length then a struct before an array, and every way a member that holds the value exactly before one that would drop part of it (`holds_exactly`: `cast<[i64, f64]>("3.5")` is 3.5). The JIT inlines
+class first (`typ/cast.rs::convert`, `in_own_class`), an array the source type says is one (`cast_from`) an array member it inhabits, then unmarked array data a tagged variant, a tuple of its length, then a struct before an array, and every way a member that holds the value exactly before one that would drop part of it (`holds_exactly`: `cast<[i64, f64]>("3.5")` is 3.5). The JIT inlines
 only the casts that always fit (`lowering::inline_cast`). A struct cast
 reads a field the data omits as null wherever the field's type
 admits null (`typ/cast.rs`), and a string parses as an RFC3339
@@ -1185,6 +1185,8 @@ Refusals set a thread-local (`note_refused`) because combine merges
 messages. Pins: `graphix-compiler/tests/deep_drop.rs`,
 `graphix-shell/tests/deep_nesting.rs` (add a case for a new recursive
 construct). netidx-value has the same treatment for bracket literals.
+A cast reads data at most `typ::cast::MAX_DATA_DEPTH` values deep and
+refuses deeper data with an `InvalidCast`.
 
 ## Debugging
 

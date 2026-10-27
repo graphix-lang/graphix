@@ -99,7 +99,9 @@ being `string` (`in_own_class`, `carries_tag` read strictly): data `"A"`
 cast to `` [string, `A] `` stays a string, to `` [`A, `B] `` becomes the
 variant. Unmarked array data reads as a tuple of its length, then a
 struct, before an array, so what a writer emits of a tuple or a struct
-reads back as it (`Type::cast_member`). Every way, a member that holds
+reads back as it (`Type::cast_member`). An array the source type says is
+one (`Type::cast_from`, which both engines' casts call) reads as an
+array member it inhabits before any of that. Every way, a member that holds
 the value exactly comes before one that would drop part of it (a
 fraction, a sub-second part, a rounding: `holds_exactly`).
 `cast<string>` of a bare variant is its tag; no other marked

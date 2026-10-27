@@ -117,6 +117,15 @@ run!(cast_impl_over_a_reference_refused, r#"{
     0
 }"#, refused("its representation holds a function or a reference, which no data carries"); FuseExpect::None);
 
+// A cast reads a representation at its parameters: a parameter that is
+// a reference is a reference cast.
+run!(cast_of_a_reference_in_a_parameter_refused, r#"{
+    type Box<'a> = Abstract<'a>;
+    impl<'a> Cast for Box<'a> {};
+    let v = 5;
+    cast<Box<Any>>(Box(&v))
+}"#, refused("can't cast a reference"); FuseExpect::None);
+
 // A `to_value` that writes its own type inside its result is refused,
 // not followed forever: inside a container the writer's depth bound
 // refuses it, and with none between, the bound on abstract values
