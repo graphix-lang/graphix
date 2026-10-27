@@ -21,21 +21,22 @@ let base = "/local/graphix/data_table_scrolling";
 // Drive every metric off one clock so all rows update in lockstep.
 let tick = time::timer(duration:2.s, true);
 
+// A progress column draws a fraction in [0, 1].
 let rand01 = || rand::rand(#start: 0., #end: 1., #clock: tick);
-let rand100 = || rand::rand(#start: 0., #end: 100., #clock: tick);
 let rand_mbps = || rand::rand(#start: 0., #end: 1000., #clock: tick);
+let rand_count = |n: i64| rand::rand(#start: 0, #end: n, #clock: tick);
 
 let publish_host = |name: string| {
-    net::publish("[base]/host-[name]/cpu_pct", rand100());
-    net::publish("[base]/host-[name]/mem_pct", rand100());
-    net::publish("[base]/host-[name]/disk_pct", rand100());
+    net::publish("[base]/host-[name]/cpu_pct", rand01());
+    net::publish("[base]/host-[name]/mem_pct", rand01());
+    net::publish("[base]/host-[name]/disk_pct", rand01());
     net::publish("[base]/host-[name]/net_in_mbps", rand_mbps());
     net::publish("[base]/host-[name]/net_out_mbps", rand_mbps());
     net::publish("[base]/host-[name]/load_1m", rand01());
     net::publish("[base]/host-[name]/load_5m", rand01());
     net::publish("[base]/host-[name]/load_15m", rand01());
-    net::publish("[base]/host-[name]/error_count", rand100());
-    net::publish("[base]/host-[name]/request_count", rand_mbps())
+    net::publish("[base]/host-[name]/error_count", rand_count(100));
+    net::publish("[base]/host-[name]/request_count", rand_count(1000))
 };
 
 array::map(host_ids, publish_host);

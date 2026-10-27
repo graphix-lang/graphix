@@ -10,15 +10,19 @@ use tui::{
 let ed = line_edit::state("");
 let saved = "";
 
-// Enter saves the text and clears the editor; every other key edits
-let handle = |e: Event| on_press(e, |k| select k.code {
-  kk@ `Enter => {
-    saved <- kk ~ ed.value;
-    ed <- kk ~ line_edit::state("");
-    `Stop
-  },
-  _ => line_edit::handle(&mut ed, e)
-});
+// Enter saves the text and clears the editor; a paste and every other
+// key edit it
+let handle = |e: Event| select e {
+  `Paste(_) => line_edit::handle(&mut ed, e),
+  _ => on_press(e, |k| select k.code {
+    kk@ `Enter => {
+      saved <- kk ~ ed.value;
+      ed <- kk ~ line_edit::state("");
+      `Stop
+    },
+    _ => line_edit::handle(&mut ed, e)
+  })
+};
 
 input_handler(
   #handle: &handle,

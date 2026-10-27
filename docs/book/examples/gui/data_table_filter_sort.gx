@@ -10,8 +10,8 @@ use gui::{
 use sys::net;
 mod icon;
 
-// Publish 6 sensors across three environments; the sidebar controls
-// let the user pick a row filter mode. Sorting is driven entirely
+// Publish 6 sensors across three environments; the controls row
+// lets the user pick a row filter mode. Sorting is driven entirely
 // from the table itself — click a header to cycle its sort order.
 net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
 net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");

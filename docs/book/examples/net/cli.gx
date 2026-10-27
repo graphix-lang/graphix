@@ -32,3 +32,4 @@ let cli: args::ParseResult = select args::parse(
 
 println("Command: [cli.command]");
 println("Values: [cli.values]");
+sys::exit(cli ~ 0)

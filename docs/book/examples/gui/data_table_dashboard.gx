@@ -20,14 +20,14 @@ mod icon;
 // * Progress column for uptime %
 // * Button column that fires an action callback
 // * Regex row filter wired to a text input
-// * Column sort driven by pick_list widgets in the sidebar
+// * Column sort driven by pick_list widgets in the controls row
 // * Selection echoed in the footer
 
 let t = cast<f64>(count(time::timer(duration:1.s, true)))$;
 
 type State = [`Healthy, `Degraded, `Down];
 
-// Publish a tiny fleet of services. state is writable (Combo).
+// Publish a fleet of 1024 services. state is writable (Combo).
 let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
     net::publish(
         #on_write: |v: State| state <- v,

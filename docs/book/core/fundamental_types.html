@@ -12,20 +12,21 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="../favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
-        <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-0392ca55.css">
-        <link rel="stylesheet" href="../css/chrome-fc474251.css">
-        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
-        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
-        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
@@ -35,24 +36,12 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f13f22e3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-fa28cf06.js"></script>
+        <script src="../toc.js"></script>
     </head>
     <body>
-    <div id="mdbook-help-container">
-        <div id="mdbook-help-popup">
-            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
-            <div>
-                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
-                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
-                <p>Press <kbd>?</kbd> to show this help</p>
-                <p>Press <kbd>Esc</kbd> to hide this help</p>
-            </div>
-        </div>
-    </div>
-    <div id="mdbook-body-container">
+    <div id="body-container">
         <!-- Work around some values being stored in localStorage wrapped in quotes -->
         <script>
             try {
@@ -81,59 +70,56 @@
             html.classList.add("js");
         </script>
 
-        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
 
         <!-- Hide / unhide sidebar before it is displayed -->
         <script>
             let sidebar = null;
-            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
             if (document.body.clientWidth >= 1080) {
                 try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
                 sidebar = sidebar || 'visible';
             } else {
                 sidebar = 'hidden';
-                sidebar_toggle.checked = false;
             }
-            if (sidebar === 'visible') {
-                sidebar_toggle.checked = true;
-            } else {
-                html.classList.remove('sidebar-visible');
-            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
         </script>
 
-        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
                 <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
-            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
             </div>
         </nav>
 
-        <div id="mdbook-page-wrapper" class="page-wrapper">
+        <div id="page-wrapper" class="page-wrapper">
 
             <div class="page">
-                <div id="mdbook-menu-bar-hover-placeholder"></div>
-                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
                     <div class="left-buttons">
-                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
-                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
                         </label>
-                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
-                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
                         </button>
-                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
-                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
                         </ul>
-                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
-                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
                         </button>
                     </div>
 
@@ -141,38 +127,33 @@
 
                     <div class="right-buttons">
                         <a href="../print.html" title="Print this book" aria-label="Print this book">
-                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                            <i id="print-button" class="fa fa-print"></i>
                         </a>
 
                     </div>
                 </div>
 
-                <div id="mdbook-search-wrapper" class="hidden">
-                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
-                        <div class="search-wrapper">
-                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
-                            <div class="spinner-wrapper">
-                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
-                            </div>
-                        </div>
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
                     </form>
-                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
-                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
-                        <ul id="mdbook-searchresults">
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
                         </ul>
                     </div>
                 </div>
 
                 <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
                 <script>
-                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
-                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
-                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
                         link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
                     });
                 </script>
 
-                <div id="mdbook-content" class="content">
+                <div id="content" class="content">
                     <main>
                         <h1 id="fundamental-types"><a class="header" href="#fundamental-types">Fundamental Types</a></h1>
 <p>Graphix has a few fundamental data types, the Graphix shell is a good way to
@@ -188,27 +169,22 @@ calculations without rounding or floating point approximation errors.</p>
 <p>The basic arithmetic operations are implemented on every number type. Both
 operands of an operation are one type: an <code>f64</code> and an <code>i64</code> do not mix
 without a cast.</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Operation</th><th>Unchecked</th><th>Checked</th></tr>
-</thead>
-<tbody>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Unchecked</th><th>Checked</th></tr></thead><tbody>
 <tr><td>Add</td><td>+</td><td>+?</td></tr>
 <tr><td>Subtract</td><td>-</td><td>-?</td></tr>
 <tr><td>Multiply</td><td>*</td><td>*?</td></tr>
 <tr><td>Divide</td><td>/</td><td>/?</td></tr>
 <tr><td>Mod</td><td>%</td><td>%?</td></tr>
-</tbody>
-</table>
+</tbody></table>
 </div>
 <p>Unchecked integer <code>+</code>, <code>-</code> and <code>*</code> wrap on overflow (`i64:9223372036854775807</p>
 <ul>
-<li>1<code>is the smallest</code>i64<code>). Unchecked </code>/<code>and</code>%<code>return bottom (no value) on a zero divisor (the interpreter also logs it; compiled code does not, so run with</code>–no-fusion<code>to see the log), and</code>/<code>also on the one quotient that overflows, the smallest signed value divided by</code>-1<code>; </code>x %
+<li>1<code>is the smallest</code>i64<code>). Unchecked </code>/<code>and</code>%<code>return bottom (no value) on a zero divisor (the interpreter also logs it; compiled code does not, so run with</code>--no-fusion<code>to see the log), and</code>/<code>also on the one quotient that overflows, the smallest signed value divided by</code>-1<code>; </code>x %
 -1<code>is</code>0`. A bottomed expression simply stops updating until its inputs
 change to values that produce a valid result.</li>
 </ul>
-<p>Checked operators return a union type <code>[T, Error&lt;</code>ArithError(string)&gt;]<code>, allowing you to handle arithmetic errors explicitly using </code>?<code>, </code>$<code>, or </code>select`.</p>
+<p>Checked operators return a union type <code>[T, Error&lt;</code>ArithError(string)&gt;]<code>, allowing you to handle arithmetic errors explicitly using </code>?<code>, </code>$<code>, or </code>select<code>. The error names its cause: an integer or decimal overflow, a zero divisor. Floats follow IEEE 754, so a checked float operator never fails: </code>1.0 /? 0.0<code>is infinity and</code>0.0 %? 0.0` is NaN. They stay legal on
+floats so that generic code can use them over any number.</p>
 <p>Mixing two numeric types is refused at compile time; cast one side:</p>
 <pre><code class="language-graphix">〉1. + 1
 error: in expr
@@ -220,7 +196,7 @@ Caused by:
 -: f64
 2
 </code></pre>
-<p>With unchecked operators, a division by zero returns bottom (logged by the interpreter only) – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
+<p>With unchecked operators, a division by zero returns bottom (logged by the interpreter only) -- the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
 <pre><code class="language-graphix">〉0 / 0
 -: i64
 </code></pre>
@@ -250,18 +226,12 @@ variable width encoding instead of normal encoding. The number of
 bytes used varies for 64 bit numbers to between 1 and 10. Small
 numbers (below 127) are encoded in 1 byte, larger number use more
 bytes. The type correspondence is,</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Compact</th><th>Normal</th></tr>
-</thead>
-<tbody>
+<div class="table-wrapper"><table><thead><tr><th>Compact</th><th>Normal</th></tr></thead><tbody>
 <tr><td>v32</td><td>u32</td></tr>
 <tr><td>z32</td><td>i32</td></tr>
 <tr><td>v64</td><td>u64</td></tr>
 <tr><td>z64</td><td>i64</td></tr>
-</tbody>
-</table>
+</tbody></table>
 </div>
 <h3 id="number-sets"><a class="header" href="#number-sets">Number Sets</a></h3>
 <p>There are a few sets of number types that classify numbers into various kinds.
@@ -294,6 +264,27 @@ Caused by:
     0: at: line: 1, column: 2, in: i64:1
     1: type mismatch bool does not contain i64
 </code></pre>
+<h2 id="operator-precedence"><a class="header" href="#operator-precedence">Operator Precedence</a></h2>
+<p>Binary operators bind in this order, tightest first; the operators on one
+row bind equally.</p>
+<div class="table-wrapper"><table><thead><tr><th>Binds</th><th>Operators</th></tr></thead><tbody>
+<tr><td>tightest</td><td><code>*</code> <code>/</code> <code>%</code> <code>*?</code> <code>/?</code> <code>%?</code></td></tr>
+<tr><td></td><td><code>+</code> <code>-</code> <code>+?</code> <code>-?</code></td></tr>
+<tr><td></td><td><code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></td></tr>
+<tr><td></td><td><code>==</code> <code>!=</code></td></tr>
+<tr><td></td><td><code>&amp;&amp;</code></td></tr>
+<tr><td></td><td><code>||</code></td></tr>
+<tr><td>loosest</td><td><code>~</code> <code>~!</code> (see <a href="connect.html">Connect</a>)</td></tr>
+</tbody></table>
+</div>
+<p>Every binary operator is left associative: <code>8 / 2 * 2</code> is <code>8</code> and
+<code>10 - 3 - 2</code> is <code>5</code>. The prefix operators <code>-</code> and <code>!</code>, and the postfix <code>?</code>, <code>$</code>,
+indexing and field access, bind tighter than any binary operator, so
+<code>!true || true</code> is <code>true</code>. Since <code>~</code> binds loosest, <code>x &lt;- t ~ x + 1</code> needs
+no parentheses: <code>&lt;-</code> is not an operator, and its right side is the whole
+<code>t ~ x + 1</code>. A lambda may be an operator's last operand, and its body
+takes the rest of the expression: <code>t ~ |x| x + 1</code> is the function
+<code>|x| x + 1</code> at each update of <code>t</code>.</p>
 <h2 id="duration"><a class="header" href="#duration">Duration</a></h2>
 <p>A time duration. The type name is <code>duration</code>, and the literals are written as,
 <code>duration:1.0s</code>, <code>duration:1.0ms</code>, <code>duration:1.0us</code>, <code>duration:1.0ns</code> (and
@@ -369,7 +360,7 @@ value = \[1 + 1]
 interpolation is bare and literal brackets are marked; in templates,
 brackets are bare and interpolation is marked.</strong></p>
 <p>One newline immediately after the opening <code>"""</code> is stripped, so the
-template’s first line does not have to share a line with the
+template's first line does not have to share a line with the
 delimiter. The content ends at the first unescaped <code>"""</code>; to include a
 literal <code>"""</code>, escape one of the quotes (<code>\"""</code>), and a <code>"</code> that would
 touch the closing delimiter must likewise be escaped (<code>"""ends in \""""</code>).
@@ -380,7 +371,7 @@ backslash-then-bracket is <code>\\[</code>.</p>
 <p>A raw string is written <code>r"…"</code>, or with hashes — <code>r#"…"#</code>,
 <code>r##"…"##</code>, and so on — exactly as in Rust. There are NO escapes and
 no interpolation: the content is verbatim, ending at the first <code>"</code>
-followed by the opener’s hash count. Any string at all can be written
+followed by the opener's hash count. Any string at all can be written
 by choosing enough hashes. This is the form for embedding scripts,
 regexes, or other bracket- and backslash-heavy text:</p>
 <pre><code class="language-graphix">let pat = r"[\[\]0-9]+";
@@ -393,14 +384,14 @@ between the delimiters.</p>
 <h2 id="any"><a class="header" href="#any">Any</a></h2>
 <p>The <code>Any</code> type is a type that unifies with any other type, it corresponds to the
 underlying variant type that represents all values in Graphix (and netidx). It
-is not used very often, as it provides very few guarantees, however it has it’s
-place. For example, <code>queue</code>’s <code>#clock</code> argument is <code>Any</code>: any value at all can
+is not used very often, as it provides very few guarantees, however it has it's
+place. For example, <code>queue</code>'s <code>#clock</code> argument is <code>Any</code>: any value at all can
 tick it. Usually the first thing you do with a value of type <code>Any</code> is call
 <code>cast</code> to turn it into the type you expect (or an error), or use a <code>select</code>
 expression to match its type (more on select later). A cast keeps a
-value’s kind: a number converts to another number (an integer type only
+value's kind: a number converts to another number (an integer type only
 when it holds the value exactly), and a union target takes a member of
-the value’s own kind first, so <code>cast&lt;[i8, Array&lt;f64&gt;]&gt;([1, 2])</code> is
+the value's own kind first, so <code>cast&lt;[i8, Array&lt;f64&gt;]&gt;([1, 2])</code> is
 <code>[1., 2.]</code>. Across kinds a cast only parses a string (<code>cast&lt;i64&gt;("42")</code>,
 <code>cast&lt;bool&gt;("true")</code>), prints a number, bool, datetime or duration
 plainly (<code>cast&lt;string&gt;(42)</code> is <code>"42"</code>), converts between a number and
@@ -415,7 +406,7 @@ and casts what arrives to it.</p>
 <h2 id="null"><a class="header" href="#null">Null</a></h2>
 <p>Null is nothing, just like in many other languages. Unlike most other languages
 <code>null</code> is a type not a catch all. If the type of a value does not include <code>null</code>
-then it can’t be null. The set <code>['a, null]</code> (alias <code>Option&lt;'a&gt;</code>) is commonly
+then it can't be null. The set <code>['a, null]</code> (alias <code>Option&lt;'a&gt;</code>) is commonly
 used to represent things that will sometimes return <code>null</code>.</p>
 <h2 id="array"><a class="header" href="#array">Array</a></h2>
 <p>Arrays are immutable, contiguous, and homogeneous. They are
@@ -445,7 +436,7 @@ exclusive bound. Literal numbers can always be replaced with a Graphix
 expression, e.g. <code>a[i..j]</code> is perfectly valid.</p>
 <h3 id="mutability-and-implementation"><a class="header" href="#mutability-and-implementation">Mutability and Implementation</a></h3>
 <p>Arrays are not mutable, like all other Graphix values. All operations that
-“change” an array, actually create a new array leaving the old one unchanged.
+"change" an array, actually create a new array leaving the old one unchanged.
 This is even true of the connect operator, which we will talk more about later.</p>
 <p>There are a couple of important notes to understand about the implementation of
 Arrays.</p>
@@ -533,29 +524,32 @@ module</p>
 <h3 id="map-literals"><a class="header" href="#map-literals">Map Literals</a></h3>
 <p>Maps can be constructed using the <code>{key =&gt; value}</code> syntax:</p>
 <pre><code class="language-graphix">〉{"a" =&gt; 1, "b" =&gt; 2, "c" =&gt; 3}
--: Map&lt;'_1893: string, '_1895: i64&gt;
+-: Map&lt;string, i64&gt;
 {"a" =&gt; 1, "b" =&gt; 2, "c" =&gt; 3}
 </code></pre>
-<p>Keys and values can be any Graphix type, for example here is a map where the key
-is a <code>Map&lt;string, i64&gt;</code>.</p>
+<p>Values can be any Graphix type. Keys are kept in order, so a key type must be
+<code>Ordered</code> (see <a href="../functions/polymorphism.html">Polymorphism</a>): no reference, no
+function and no type holding two numeric types, so <code>{&amp;x =&gt; 1}</code>, and <code>{k =&gt; "a"}</code>
+with <code>k: [i64, f64]</code>, are refused. Any other type will do, for example here is
+a map where the key is a <code>Map&lt;string, i64&gt;</code>.</p>
 <pre><code class="language-graphix ignore">{{"foo" =&gt; 42} =&gt; "foo", {"bar" =&gt; 42} =&gt; "bar"}
--: Map&lt;'_1919: Map&lt;'_1915: string, '_1917: i64&gt;, '_1921: string&gt;
+-: Map&lt;Map&lt;string, i64&gt;, string&gt;
 {{"bar" =&gt; 42} =&gt; "bar", {"foo" =&gt; 42} =&gt; "foo"}
 </code></pre>
 <h3 id="map-indexing"><a class="header" href="#map-indexing">Map Indexing</a></h3>
 <p>Maps can be indexed using the <code>map{key}</code> syntax to retrieve values:</p>
 <pre><code class="language-graphix">〉let m = {"a" =&gt; 1, "b" =&gt; 2, "c" =&gt; 3}
 〉m{"b"}
--: ['_1907: i64, Error&lt;`MapKeyError(string)&gt;]
+-: [i64, Error&lt;`MapKeyError(string)&gt;]
 2
 </code></pre>
 <p>If a key is not present in the map, indexing returns a <code>MapKeyError</code>:</p>
 <pre><code class="language-graphix">〉m{"missing"}
--: ['_1907: i64, Error&lt;`MapKeyError(string)&gt;]
+-: [i64, Error&lt;`MapKeyError(string)&gt;]
 error:`MapKeyError("map key \"missing\" not found")
 </code></pre>
 <h3 id="mutability-and-implementation-2"><a class="header" href="#mutability-and-implementation-2">Mutability and Implementation</a></h3>
-<p>Like all Graphix values, maps are immutable. All operations that “change” a map
+<p>Like all Graphix values, maps are immutable. All operations that "change" a map
 actually create a new map, leaving the original unchanged. Maps are memory
 pooled and very efficient - creating new maps typically reuses existing memory
 rather than allocating new memory.</p>
@@ -600,11 +594,11 @@ handling.</p>
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
                             <a rel="prev" href="../core/overview.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
-                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                                <i class="fa fa-angle-left"></i>
                             </a>
 
                             <a rel="next prefetch" href="../core/reading_types.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                                <i class="fa fa-angle-right"></i>
                             </a>
 
                         <div style="clear: both"></div>
@@ -614,21 +608,16 @@ handling.</p>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
                     <a rel="prev" href="../core/overview.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
-                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                        <i class="fa fa-angle-left"></i>
                     </a>
 
                     <a rel="next prefetch" href="../core/reading_types.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                        <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
 
         </div>
 
-        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
-        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
-        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
-        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
-        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
 
 
 
@@ -637,17 +626,16 @@ handling.</p>
         </script>
 
 
-        <script src="../elasticlunr-ef4e11c1.min.js"></script>
-        <script src="../mark-09e88c2c.min.js"></script>
-        <script src="../searcher-09f2665d.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="../clipboard-1626706a.min.js"></script>
-        <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-c22b7243.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../theme/graphix-highlight-24424521.js"></script>
-
+        <script src="../theme/graphix-highlight.js"></script>
 
 
     </div>
