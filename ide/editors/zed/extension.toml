@@ -14,7 +14,7 @@ repository = "https://github.com/graphix-lang/graphix"
 repository = "https://github.com/graphix-lang/graphix"
 # graphix-types' zed_grammar_rev_is_current fails when this rev's
 # parser.c or scanner.c differs from the checkout's.
-rev = "8934f159f612b8f5f318b2023b5366e2f2b5baa0"
+rev = "cc023bce5d3374d39c57e5d19e22b70308da03a1"
 path = "ide/tree-sitter-graphix"
 
 [language_servers.graphix-lsp]
