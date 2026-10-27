@@ -243,14 +243,9 @@ async fn live_timer_keeps_value(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// The reader sleeps from tick 1 (200 ms) to tick 2 (400 ms); 'second',
+// written at 300 ms, is held and delivered at the wake.
 #[cfg(unix)]
-// CR claude for claude: [test-gap/low] The arm sleeps from tick 1 to tick 2 (100-200
-// ms), but 'second' is written after `sleep 0.3`, after the wake. So this never checks
-// that a line written while the reader sleeps is held back and delivered at the wake.
-// No other pin covers that for the unbatched `Lines::lines`; process.rs pins only
-// lines_batched. Write 'second' inside the window (`sleep 0.15`) so a change that drops
-// a queued line at `IoLines::sleep` fails here. Found by reading; a probe with lines
-// written during a sleep shows the reader is correct today. (tests-lang-rest-a-06)
 async fn line_reader_rewake(mode: Mode) -> Result<()> {
     let code = r#"{
         use sys::io::Lines;
@@ -261,7 +256,7 @@ async fn line_reader_rewake(mode: Mode) -> Result<()> {
             "/bin/sh"
         ))?;
         let stream = opt::ok_or(child.stdout, `NoStdout)?;
-        let tick = count(sys::time::timer(child ~ duration:100.ms, 3)?);
+        let tick = count(sys::time::timer(child ~ duration:200.ms, 3)?);
         let active = true;
         active <- select tick { 1 => false, 2 => true, _ => never() };
         select active {

@@ -6,8 +6,8 @@ use anyhow::Result;
 use graphix_package_core::{
     PrintSink,
     testing::{
-        FuseExpect, Mode, TestState, as_i64s, compile_result, fixture_runtime,
-        result_source, updates_until_quiet,
+        FuseExpect, Mode, TestState, as_i64s, check_fixture, compile_result,
+        fixture_runtime, result_source, updates_until_quiet, verdicts_agree,
     },
 };
 use netidx::publisher::Value;
@@ -45,12 +45,6 @@ pub(super) async fn run_delta(code: &str, mode: Mode) -> Result<(Vec<Value>, Str
 
 /// [`run_delta`] with `setup` run over the state before the runtime
 /// starts, until the runtime settles or no event arrives for `quiet`.
-// CR claude for claude: [test-gap/low] This driver backs 128 modes! tests and never
-// runs the check alone. run! holds check_fixture to the build in interp mode
-// (verdicts_agree), and these do not, so a --check/LSP refusal of a seq, wake or
-// reference program that builds goes unnoticed. For Mode::Interp, call
-// testing::check_fixture before compile_result and testing::verdicts_agree after it.
-// Found by reading; not run. (tests-lang-rest-b-06)
 pub(super) async fn run_delta_with(
     code: &str,
     mode: Mode,
@@ -69,11 +63,19 @@ pub(super) async fn run_delta_with(
         },
     )
     .await?;
+    let checked = match mode {
+        Mode::Interp => Some(check_fixture(&ctx).await),
+        _ => None,
+    };
     let control = ctx.rt.control();
     control.reset_invocations();
     // the stdlib root's own cycles fork too: count the fixture's
     let (forks_before, build_forks_before) = (control.forks(), control.build_forks());
-    let res = compile_result(&ctx).await?;
+    let built = compile_result(&ctx).await;
+    if let Some(checked) = checked {
+        verdicts_agree(checked, built.as_ref().map(|_| ()))?;
+    }
+    let res = built?;
     let regions = ctx.fusion_stats().await.map(|s| s.fused).unwrap_or(0);
     let deadline = Instant::now() + Duration::from_secs(20);
     let values =

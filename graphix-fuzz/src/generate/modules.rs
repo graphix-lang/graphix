@@ -58,6 +58,26 @@ fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
     }
 }
 
+/// Bind a read of the imported `name` in the main scope: a call when it
+/// is a function, else its value.
+fn read_import(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    name: &str,
+    ty: &GenType,
+    stmts: &mut Vec<String>,
+) {
+    let (read, rty) = match ty {
+        GenType::Fn { labels, params, ret } => {
+            (format!("{name}({})", exprs::call_args(ctx, rng, labels, params, 1)), &**ret)
+        }
+        t => (name.to_string(), t),
+    };
+    let v = ctx.fresh();
+    stmts.push(format!("let {v} = {read}"));
+    ctx.push(v, rty.clone());
+}
+
 /// Emit one module. Public lambdas are registered in `ctx` under
 /// `m{idx}::name`; an abstract-type round-trip (when present) binds an
 /// i64 in the main scope via `stmts`.
@@ -97,15 +117,6 @@ pub(super) fn gen_module(
                     }
                 });
             }
-        }
-        stats.use_vocab = true;
-    } else if idx > 0 {
-        let list: Vec<String> = (0..idx).map(|j| format!("m{j}")).collect();
-        let header = format!("use super::{{{}}};\n", list.join(", "));
-        if has_gxi {
-            gxi.push_str(&header)
-        } else {
-            gx.push_str(&header)
         }
         stats.use_vocab = true;
     }
@@ -538,11 +549,6 @@ pub(super) fn gen_module(
         }
         stats.abstract_value = true;
     }
-    // textual, but exact: `m<j>::` for an earlier j can only appear
-    // through a vocabulary reference
-    if (0..idx).any(|j| gx.contains(&format!("m{j}::"))) {
-        stats.cross_module_call = true;
-    }
     // Register the public lambdas in main under their absolute paths,
     // road prefixes stripped.
     let plain = |fty: &GenType| {
@@ -567,6 +573,7 @@ pub(super) fn gen_module(
             0 if konst.is_some() => {
                 let (k, kty) = konst.clone().unwrap();
                 stmts.push(format!("use {mname}::{k}"));
+                read_import(ctx, rng, &k, &kty, &mut stmts);
                 ctx.push(k, kty);
             }
             1 if idx == 0 => {
@@ -577,11 +584,13 @@ pub(super) fn gen_module(
                 if let Some((k, kty)) = &konst {
                     ctx.push(k.clone(), kty.clone());
                 }
+                let (fname, fty) = &public[rng.below(public.len())];
+                read_import(ctx, rng, fname, &plain(fty), &mut stmts);
             }
             _ => {
                 let (fname, fty) = &public[rng.below(public.len())];
                 let alias = ctx.fresh();
-                // CR claude for claude: [test-gap/low] The imported name goes into the
+                // XCR claude for claude: [test-gap/low] The imported name goes into the
                 // vocabulary, but nothing makes a later slot read it. Measured over 100
                 // module programs: 50 of 63 item imports are never referenced and only
                 // draw an "unused import" warning, yet the feature report counts them
@@ -591,7 +600,17 @@ pub(super) fn gen_module(
                 // actually references. probe:
                 // design/review-2026-10-26/repro/fuzz-gen-b-unused-imports.sh
                 // (fuzz-gen-b-03)
+                // 2026-10-26 claude: Each main-scope import is now read at once by a
+                // let (read_import: a call over generated arguments for a function, the
+                // value for a constant; the glob arm reads one public), and road 0's
+                // use super header is written last and names only the earlier modules
+                // the module's gx (or its gxi, when written) reads. Over the first 100
+                // module programs of gen 2000 1234: 87 imports, 0 unused-import
+                // warnings, every program a trace. Pin: graphix-fuzz
+                // generate::modules::test::imports_are_read (fails on the unfixed
+                // generator, and on the header half alone).
                 stmts.push(format!("use {mname}::{fname} as {alias}"));
+                read_import(ctx, rng, &alias, &plain(fty), &mut stmts);
                 ctx.push(alias, plain(fty));
             }
         }
@@ -601,6 +620,28 @@ pub(super) fn gen_module(
         let t = types::scalar_type(rng);
         let e = exprs::gen_typed(&inner, rng, &t, 1);
         gx.push_str(&format!("{e}\n"));
+    }
+    // textual, but exact: `m<j>::` for an earlier j can only appear
+    // through a vocabulary reference
+    let reads = |text: &str, j: usize| text.contains(&format!("m{j}::"));
+    if (0..idx).any(|j| reads(&gx, j)) {
+        stats.cross_module_call = true;
+    }
+    // road 0's header names the earlier modules the module reads
+    let header: Vec<String> = match road {
+        0 => (0..idx)
+            .filter(|&j| reads(&gx, j) || (has_gxi && reads(&gxi, j)))
+            .map(|j| format!("m{j}"))
+            .collect(),
+        _ => Vec::new(),
+    };
+    if !header.is_empty() {
+        let header = format!("use super::{{{}}};\n", header.join(", "));
+        match has_gxi {
+            true => gxi.insert_str(0, &header),
+            false => gx.insert_str(0, &header),
+        }
+        stats.use_vocab = true;
     }
     let mut files = vec![(format!("{mname}.gx"), gx.trim_end().to_string())];
     if has_gxi {
@@ -685,4 +726,62 @@ pub(super) fn gen_dynamic_module(
     stmts.push(super::dynamic_module_use(&v, &status, &fallback, &call));
     ctx.push(v, (**ret).clone());
     stmts
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{files, generate::gen_program, mutate::Rng};
+
+    /// `name` as a whole name somewhere in `text`.
+    fn names(text: &str, name: &str) -> bool {
+        let part = |c: char| c.is_alphanumeric() || c == '_' || c == ':';
+        text.match_indices(name).any(|(i, _)| {
+            !text[..i].ends_with(part) && !text[i + name.len()..].starts_with(part)
+        })
+    }
+
+    /// Every main-scope item import is read after it, and a road-0
+    /// header names only the earlier modules its module reads.
+    #[test]
+    fn imports_are_read() {
+        let mut rng = Rng::new(1234);
+        let (mut imports, mut headers) = (0, 0);
+        for _ in 0..300 {
+            let prog = gen_program(&mut rng);
+            let (main, sections) = files::split(&prog).unwrap();
+            for (at, _) in main.match_indices("use m") {
+                let end = main[at..].find(';').map_or(main.len(), |e| at + e);
+                let stmt = &main[at..end];
+                let name = match stmt.split_once(" as ") {
+                    Some((_, alias)) => alias,
+                    None => stmt.rsplit("::").next().unwrap(),
+                };
+                if name != "*" {
+                    imports += 1;
+                    assert!(names(&main[end..], name), "`{stmt}` is never read: {prog}");
+                }
+            }
+            for (file, text) in &sections {
+                let Some((list, _)) =
+                    text.strip_prefix("use super::{").and_then(|t| t.split_once("};"))
+                else {
+                    continue;
+                };
+                let stem = file.split('.').next();
+                let module: String = sections
+                    .iter()
+                    .filter(|(f, _)| f.split('.').next() == stem)
+                    .map(|(_, t)| t.as_str())
+                    .collect();
+                for m in list.split(", ") {
+                    headers += 1;
+                    assert!(
+                        module.contains(&format!("{m}::")),
+                        "{file} imports {m} and never reads it: {prog}"
+                    );
+                }
+            }
+        }
+        assert!(imports >= 20 && headers >= 20, "{imports} imports, {headers} headers");
+    }
 }

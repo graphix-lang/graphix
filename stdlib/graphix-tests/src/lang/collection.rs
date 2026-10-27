@@ -84,8 +84,8 @@ run!(
             v => len(b) * 100 + v
         }
     "#;
-    // The default bodies fuse, `find` whole; `len` and the abstract
-    // payload paths node-walk.
+    // `find`'s default fuses whole (filter_map_keep_fuses pins the map
+    // and filter defaults).
     FuseExpect::Jit
 );
 
@@ -231,12 +231,6 @@ run!(
 // Cross-implementation agreement: the intrinsic, the trait default's
 // body shape, and a hand-written recursion agree on values.
 
-// CR claude for claude: [test-gap/low] `b = Collection::fold(src, ..)` dispatches to
-// the Array impl, which is the 'array_fold intrinsic, so `a == b` compares array::fold
-// with itself and cannot fail. The map and find siblings use shapes that are not the
-// trait defaults' either (no `Keep, no `Found). Use the defaults' real shapes over the
-// array, e.g. `array::filter_map(src, |x| `Keep(x * 3 + 1))`, and drop the
-// self-comparison. Found by reading; not run. (tests-lang-rest-b-07)
 run!(
     collection_bodies_fold_array,
     is(Value::Bool(true)),
@@ -248,9 +242,8 @@ run!(
                 false => acc
             };
         let a = array::fold(src, 7, |a, x| a + x);
-        let b = Collection::fold(src, 7, |a, x| a + x);
-        let c = fold_go(src, |a, x| a + x, 0, 7);
-        let result = (a == b) && (b == c)
+        let b = fold_go(src, |a, x| a + x, 0, 7);
+        let result = (a == b) && (a == 19907)
     "#
 );
 
@@ -265,7 +258,7 @@ run!(
                 false => out
             };
         let a = array::map(src, |x| x * 3 + 1);
-        let b = array::filter_map(src, |x| x * 3 + 1);
+        let b = array::filter_map(src, |x| `Keep(x * 3 + 1));
         let c = array::init(array::len(src), |i| src[i]$ * 3 + 1);
         let d = map_go(src, |x| x * 3 + 1, 0, []);
         let result = (a == b) && (b == c) && (c == d)
@@ -279,7 +272,7 @@ run!(
         let src = array::init(64, |i| i);
         let a = array::filter(src, |x| x % 2 == 0);
         let b = array::filter_map(src, |x| select x % 2 == 0 {
-            true => x,
+            true => `Keep(x),
             false => null
         });
         let result = a == b && array::len(a) == 32
@@ -292,18 +285,18 @@ run!(
     "/test.gx" => r#"
         let src = array::init(64, |i| i);
         let ffold = |a: Array<i64>, target: i64| -> [i64, null] {
-            let init: [i64, null] = null;
-            let (_, found) = array::fold(a, (false, init), |(done, acc), x| select done {
-                true => (done, acc),
-                false => select x == target { true => (true, x), false => (false, acc) }
+            let init: [`Found(i64), null] = null;
+            let found = array::fold(a, init, |acc, x| select acc {
+                null as _ => select x == target { true => `Found(x), false => null },
+                found => found
             });
-            found
+            select found { `Found(x) => x, null as _ => null }
         };
         let a1 = array::find(src, |x| x == 40);
         let b1 = ffold(src, 40);
         let a2 = array::find(src, |x| x == 999);
         let b2 = ffold(src, 999);
-        let result = (a1 == b1) && (a2 == b2)
+        let result = (a1 == b1) && (a2 == b2) && opt::contains(b1, 40) && opt::is_none(b2)
     "#
 );
 
@@ -348,19 +341,7 @@ run!(
 );
 
 // A total filter_map callback (no null in its return type) routes to
-// the map loop, so the trait map default's shape fuses.
-// CR claude for claude: [readability/low] The comment above says the trait map
-// default's shape fuses. The default is `filter_map(c, |x| `Keep(f(x)))`, and a
-// `Keep-returning callback node-walks: `#[native] map(Bag(..), f)` is refused at
-// `array::filter_map(b.0, f)`. This fixture shows a total callback fusing, a different
-// shape. The same claim ('The default bodies fuse') sits on
-// collection_newtype_defaults, where only find's default fuses. Reword both. probe:
-// design/review-2026-10-26/repro/tests-lang-rest-b-keep-default-nodewalks.gx
-// (tests-lang-rest-b-05)
-// 2026-10-26 claude: f-call-flow-01 made a `Keep callback fuse, so the trait map
-// default's shape (`|x| `Keep(f(x))`) now fuses; the comment's claim holds for it, but
-// this fixture still tests a total callback, not that shape.
-// lang::collection::filter_map_keep_fuses pins the default's shape under #[native].
+// the map loop and fuses.
 const FILTER_MAP_TOTAL_CALLBACK: &str = r#"
 {
   let a = array::init(10, |i| i);
