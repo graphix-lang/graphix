@@ -423,7 +423,7 @@ run!(net_write_survives_a_sleep_before_connect, r#"
 // re-fires without tearing down what it names: the subscription delivers
 // once, the standing value is written once, and the publication and the
 // rpc are published once.
-// CR claude for claude: [test-gap/medium] This fixture fails about once in 12 runs of
+// XCR claude for claude: [test-gap/medium] This fixture fails about once in 12 runs of
 // lib_tests::net on two CPUs (taskset -c 0,1), in a varying mode: the run ends at the
 // 30 s timeout with no value, so one of count(v), writes, count(p) or count(d) never
 // produced before ticks reached 10. It fails on the code before and after 08e9e666b
@@ -433,6 +433,13 @@ run!(net_write_survives_a_sleep_before_connect, r#"
 // (200 ms), and the tuple then never fires. Find which count is missing, then derive
 // the end from the deliveries rather than the timer (causal ordering). repro: loop
 // `taskset -c 0,1 <graphix_tests binary> lib_tests::net`. (flake-net-canon-01)
+// 2026-10-27 claude: Cause: a first delivery later than the tenth tick. The result arm
+// is `10 => ticks ~ counts`, and at the eleventh tick it sleeps, so a counts tuple that first exists after
+// tick 10 is banked into an arm that never answers. The ten-tick window now starts at
+// the tick the four counts first exist (start = once(counts ~ ticks); the arm is n ==
+// start + 10), so a slow subscribe only delays the end. Re-fires are still counted
+// over ten ticks. The new arithmetic fuses, so the fixture is FuseExpect::Jit. Clean
+// in 15 runs of lib_tests::net under taskset -c 0,1 (about 1 in 12 failed before).
 run!(net_noncanonical_path_refires, r#"
 {
   sys::net::publish("/local/pin/canon/s", 7);
@@ -449,12 +456,13 @@ run!(net_noncanonical_path_refires, r#"
     sys::net::subscribe("/local/pin/canon/r/doc");
   let counts = (count(v), writes, count(p), count(d));
   let ticks = count(t);
-  select ticks { 10 => ticks ~ counts, _ => never() }
+  let start = once(counts ~ ticks);
+  select ticks { n if n == start + 10 => ticks ~ counts, _ => never() }
 }
 "#, |v: Result<&Value>| {
     let one = [Value::I64(1), Value::I64(1), Value::I64(1), Value::I64(1)];
     matches!(v, Ok(Value::Array(a)) if a[..] == one)
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // A write in an arm that sleeps writes again after its wake, to the path
 // as it stands. Each x follows the write before it landing, or the sleep.
