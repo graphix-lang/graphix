@@ -14,18 +14,19 @@ use graphix_package_json::JsonView;
 use handlebars::{
     Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext,
     RenderErrorReason, Renderable,
-    template::{Template, TemplateElement},
+    template::{Parameter, Template, TemplateElement},
 };
 use netidx_value::Value;
 use std::{
     cell::{Cell, RefCell},
-    mem,
+    iter, mem, slice,
 };
 
 /// Register each entry of `partials`, a struct or a map of templates by
 /// name as its type `typ` says, or null.
 fn register_partials(
     registry: &mut Handlebars<'static>,
+    block: &TemplateElement,
     env: &Env,
     typ: Option<&Type>,
     partials: &Value,
@@ -39,9 +40,7 @@ fn register_partials(
                 let Value::String(tmpl) = tmpl else {
                     return Err(format!("partial values must be strings, got {tmpl}"));
                 };
-                registry
-                    .register_partial(name.as_str(), shallow(tmpl)?)
-                    .map_err(|e| format!("{e}"))?;
+                register(registry, block, name.as_str(), tmpl)?;
             }
             Ok(())
         }
@@ -62,9 +61,18 @@ thread_local! {
 /// and one would recurse until the stack overflows.
 const MAX_RENDER_DEPTH: usize = 128;
 
-/// How deep a template's or partial's text may nest its blocks: building
-/// and dropping a template recurses once per level.
+/// How deep a template's or partial's text may nest its blocks and
+/// subexpressions: rendering, cloning and dropping a template recurse once
+/// per level.
 const MAX_BLOCK_DEPTH: usize = 64;
+
+/// The stack a template's compile takes beyond what its nesting does.
+const STACK_BASE: usize = 256 * 1024;
+
+/// The stack a template's compile may take per bracket in its text, at
+/// most one per level it nests: twice what the deepest per-bracket shape,
+/// a run of subexpressions, measures.
+const STACK_PER_BRACKET: usize = 4 * 1024;
 
 /// The block helper every block and partial expansion is wrapped in: it
 /// counts the levels in progress and refuses one past
@@ -75,19 +83,23 @@ thread_local! {
     static RENDER_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
-/// `text`, refused when its blocks nest deeper than [`MAX_BLOCK_DEPTH`]
-/// as handlebars builds them: a block opens at `{{#..}}` and closes at
-/// `{{/..}}`, and each `{{else ..}}` or `{{^ ..}}` naming a helper (a chain
-/// link) nests one level more until its block closes. What the parser does
-/// not read as a tag (an escaped `{{`, a comment, a raw block's text, a
-/// string literal in a tag) opens and closes nothing.
-// CR claude for claude: [bug/medium] Only block tags are counted here, so
+/// `text` compiled as the template `name`, refused when its blocks and
+/// subexpressions nest deeper than [`MAX_BLOCK_DEPTH`]. Parsing, building
+/// and dropping a template recurse once per bracket a level opens, so all
+/// three run on a stack sized by the brackets in `text`.
+// XCR claude for claude: [bug/medium] Only block tags are counted here, so
 // subexpressions nested inside one tag (`{{lookup (lookup (lookup ... "x") "x") "x"}}`)
 // are unbounded. At about 1000 levels hbs::render overflows the worker's stack and
 // aborts the process instead of answering HbsErr. Count parenthesis depth within a tag
 // (outside string literals) against MAX_BLOCK_DEPTH as well. probe:
 // design/review-2026-10-26/repro/x-rerun-5-hbs-subexpr-overflow.gx (x-rerun-5-05)
-// CR claude for claude: [bug/high] shallow undercounts nesting wherever handlebars
+// 2026-10-26 claude: Fixed with small-pkgs-01: the depth is measured on the parsed
+// Template, where a subexpression (in a helper's name, params or hash) is a level as a
+// block is, against the same MAX_BLOCK_DEPTH. The repro now answers HbsErr('blocks and
+// subexpressions nest more than 64 deep'). Pin: graphix-tests
+// lib_tests::hbs::hbs_text_nesting_refused (sub(64) renders, sub(65) and sub(5000) are
+// refused).
+// XCR claude for claude: [bug/high] shallow undercounts nesting wherever handlebars
 // reads a `{{/..}}` as text. Case 1: `unescaped` skips one `{{` after a backslash, but
 // the grammar's escape takes `\{{{{` whole, so `{{#if a}}\{{{{/if}}` repeated nests.
 // Case 2: `tag_len` ends a tag at the first `}}`, but a path key `[..]` may hold `}}`,
@@ -98,94 +110,59 @@ thread_local! {
 // (dropping the refused template inside the grown stack), and register the parsed
 // templates. probe:
 // design/review-2026-10-26/repro/small-pkgs-hbs-escaped-closer-abort.sh (small-pkgs-01)
-fn shallow(text: &str) -> std::result::Result<&str, String> {
-    let refused = || Err(format!("blocks nest more than {MAX_BLOCK_DEPTH} deep"));
-    fn pad(s: &str) -> &str {
-        s.trim_start_matches(|c: char| c == '~' || c.is_whitespace())
-    }
-    let mut links = [0usize; MAX_BLOCK_DEPTH + 1];
-    let (mut blocks, mut depth) = (0usize, 0usize);
-    let mut rest = text;
-    while let Some(i) = unescaped(rest, "{{") {
-        let tag = &rest[i..];
-        rest = if let Some(raw) = tag.strip_prefix("{{{{") {
-            let text = after(raw, "}}}}");
-            after(&text[unescaped(text, "{{{{").unwrap_or(text.len())..], "}}}}")
-        } else if let Some(comment) = tag.strip_prefix("{{!--")
-            && comment.contains("--}}")
-        {
-            after(comment, "--}}")
-        } else if let Some(comment) = tag.strip_prefix("{{!") {
-            after(comment, "}}")
-        } else {
-            let body = pad(&tag[2..]);
-            let invert = body.strip_prefix('^').or_else(|| body.strip_prefix("else"));
-            match (body.as_bytes().first(), invert) {
-                (Some(b'#'), _) => {
-                    depth += 1;
-                    if depth > MAX_BLOCK_DEPTH {
-                        return refused();
-                    }
-                    links[blocks] = 0;
-                    blocks += 1;
-                }
-                (Some(b'/'), _) if blocks > 0 => {
-                    blocks -= 1;
-                    depth -= 1 + links[blocks];
-                }
-                (_, Some(invert)) if blocks > 0 && !pad(invert).starts_with("}}") => {
-                    depth += 1;
-                    if depth > MAX_BLOCK_DEPTH {
-                        return refused();
-                    }
-                    links[blocks - 1] += 1;
-                }
-                _ => (),
+// 2026-10-26 claude: shallow and its hand-mirrored scanner (unescaped, after, tag_len)
+// are gone. hbs::compile parses each template and partial with
+// Template::compile_with_name under stacker::maybe_grow, sized at 4 KiB per '{', '[' or
+// '(' in the text (every level of handlebars' recursion opens one; the deepest shape, a
+// run of subexpressions, measured about 2.2 KiB per bracket in dev and release),
+// measures the depth on the parsed Template (nests_within: each block template, inverse
+// and subexpression a level), drops a refused template on the grown stack, and
+// registers the parsed template directly (register). The message is now 'blocks and
+// subexpressions nest more than 64 deep'. A text of a million brackets reserves 4 GiB
+// of address space, which a host refusing the mapping answers with a stacker panic.
+// Pin: graphix-tests lib_tests::hbs::hbs_text_nesting_refused (escaped and keyed at 100
+// and 5000); with the old scan it aborts with a stack overflow, and without maybe_grow
+// too.
+fn compile(name: &str, text: &str) -> std::result::Result<Template, String> {
+    let brackets = text.bytes().filter(|b| matches!(b, b'{' | b'[' | b'(')).count();
+    let stack = STACK_BASE + brackets * STACK_PER_BRACKET;
+    stacker::maybe_grow(stack, stack, || {
+        let t = Template::compile_with_name(text, name.to_owned())
+            .map_err(|e| format!("{e}"))?;
+        match nests_within(&t.elements, MAX_BLOCK_DEPTH) {
+            true => Ok(t),
+            false => Err(format!(
+                "blocks and subexpressions nest more than {MAX_BLOCK_DEPTH} deep"
+            )),
+        }
+    })
+}
+
+/// Whether the blocks and subexpressions in `elements` nest at most
+/// `budget` deep: a block's template and inverse, and a subexpression,
+/// are each a level.
+fn nests_within(elements: &[TemplateElement], budget: usize) -> bool {
+    use TemplateElement::*;
+    let below =
+        |elements: &[TemplateElement]| budget > 0 && nests_within(elements, budget - 1);
+    elements.iter().all(|el| {
+        let (name, params, hash, templates) = match el {
+            Expression(h) | HtmlExpression(h) | HelperBlock(h) => {
+                (&h.name, &h.params, &h.hash, [h.template.as_ref(), h.inverse.as_ref()])
             }
-            &tag[tag_len(tag)..]
+            DecoratorExpression(d)
+            | DecoratorBlock(d)
+            | PartialExpression(d)
+            | PartialBlock(d) => {
+                (&d.name, &d.params, &d.hash, [d.template.as_ref(), None])
+            }
+            _ => return true,
         };
-    }
-    Ok(text)
-}
-
-/// Where in `s` the first `pat` that is not escaped (one backslash before
-/// it) starts.
-fn unescaped(s: &str, pat: &str) -> Option<usize> {
-    let mut from = 0;
-    while let Some(i) = s[from..].find(pat).map(|i| from + i) {
-        let before = &s[..i];
-        match before.ends_with('\\') && !before.ends_with("\\\\") {
-            true => from = i + pat.len(),
-            false => return Some(i),
-        }
-    }
-    None
-}
-
-/// `s` past the first `pat`, or empty when there is none.
-fn after<'a>(s: &'a str, pat: &str) -> &'a str {
-    s.find(pat).map_or("", |i| &s[i + pat.len()..])
-}
-
-/// The length of the tag `tag` starts with, through its closing `}}`, a
-/// string literal in it read whole.
-fn tag_len(tag: &str) -> usize {
-    let b = tag.as_bytes();
-    let mut i = 2;
-    while i < b.len() {
-        match b[i] {
-            b'}' if b.get(i + 1) == Some(&b'}') => return i + 2,
-            q @ (b'"' | b'\'') if !b[i - 1].is_ascii_alphanumeric() => {
-                i += 1;
-                while i < b.len() && b[i] != q {
-                    i += if b[i] == b'\\' { 2 } else { 1 };
-                }
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    b.len()
+        iter::once(name).chain(params).chain(hash.values()).all(|p| match p {
+            Parameter::Subexpression(s) => below(slice::from_ref(&*s.element)),
+            _ => true,
+        }) && templates.into_iter().flatten().all(|t| below(&t.elements))
+    })
 }
 
 struct RenderDepth;
@@ -248,6 +225,20 @@ fn bound_nesting(t: &mut Template, block: &TemplateElement) {
     }
 }
 
+/// Register `text` as the template `name`, compiled by [`compile`] with
+/// every block and partial expansion bounded by [`bound_nesting`].
+fn register(
+    registry: &mut Handlebars<'static>,
+    block: &TemplateElement,
+    name: &str,
+    text: &str,
+) -> std::result::Result<(), String> {
+    let mut t = compile(name, text)?;
+    bound_nesting(&mut t, block);
+    registry.register_template(name, t);
+    Ok(())
+}
+
 fn build_registry(
     strict: bool,
     env: &Env,
@@ -257,23 +248,15 @@ fn build_registry(
 ) -> Result<Handlebars<'static>> {
     let mut registry = Handlebars::new();
     registry.set_strict_mode(strict);
-    register_partials(&mut registry, env, ft.args.get(1).map(|a| &a.typ), partials)
-        .map_err(|e| anyhow!("{e}"))?;
-    registry
-        .register_template_string("main", shallow(template).map_err(|e| anyhow!("{e}"))?)
-        .map_err(|e| anyhow!("{e}"))?;
     let block =
         Template::compile(&format!("{{{{#{DEPTH_HELPER}}}}}{{{{/{DEPTH_HELPER}}}}}"))?
             .elements
             .pop()
             .ok_or_else(|| anyhow!("the partial depth helper did not compile"))?;
-    let names: Vec<String> = registry.get_templates().keys().cloned().collect();
-    for name in names {
-        if let Some(mut t) = registry.get_template(&name).cloned() {
-            bound_nesting(&mut t, &block);
-            registry.register_template(&name, t);
-        }
-    }
+    let partials_type = ft.args.get(1).map(|a| &a.typ);
+    register_partials(&mut registry, &block, env, partials_type, partials)
+        .and_then(|()| register(&mut registry, &block, "main", template))
+        .map_err(|e| anyhow!("{e}"))?;
     registry.register_helper(DEPTH_HELPER, Box::new(RenderDepth));
     Ok(registry)
 }

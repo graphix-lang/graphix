@@ -30,6 +30,7 @@ graphix-package-json = { version = "0.9.0", path = "../graphix-package-json" }
 graphix-rt = { version = "0.9.0", path = "../../graphix-rt" }
 serde_json = { workspace = true }
 handlebars = { workspace = true }
+stacker = { workspace = true }
 poolshark = { workspace = true }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }

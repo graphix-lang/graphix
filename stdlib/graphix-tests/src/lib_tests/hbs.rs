@@ -172,11 +172,37 @@ run!(hbs_block_nesting_refused, r#"{
     );
     "[mutual]|[deep]|[fine]|[chain]|[commented]|[quoted]|[short]"
 }"#, |v: Result<&Value>| {
-    let nests = |s: &str| s.contains("blocks nest more than 64 deep");
+    let nests = |s: &str| s.contains("blocks and subexpressions nest more than 64 deep");
     matches!(v, Ok(Value::String(s)) if matches!(s.split('|').collect::<Vec<_>>()[..],
         [mutual, deep, "x", chain, commented, quoted, "z"]
             if mutual.contains("templates nest more than 128 deep")
             && nests(deep) && nests(chain) && nests(commented) && nests(quoted)))
+}; FuseExpect::Jit);
+
+// The bound is measured on the template handlebars builds, so text it
+// reads as no tag (`\{{{{` escapes whole, a path key `[..]` may hold
+// `}}`) closes nothing, and subexpressions nested in one tag count as
+// blocks do. Compiling a deep text answers rather than overflowing the
+// stack (small-pkgs-01, x-rerun-5-05).
+run!(hbs_text_nesting_refused, r##"{
+    let repeat = |k: i64, s: string| str::join(#sep: "", array::init(k, |i| s));
+    let nest = |k: i64, open: string, inner: string, close: string|
+        str::concat(repeat(k, open), inner, repeat(k, close));
+    let escaped = |k: i64|
+        hbs::render(nest(k, r"{{#if a}}\{{{{/if}}", "x", "{{/if}}"), {a: true});
+    let keyed = |k: i64|
+        hbs::render(nest(k, r"{{#if a}}{{x [}}{{/if}}]}}", "x", "{{/if}}"), {a: true});
+    let sub = |k: i64| hbs::render(
+        str::concat("{{lookup ", nest(k, "(lookup ", "a", r#" "x")"#), r#" "x"}}"#),
+        {a: 1}
+    );
+    let fine = sub(64);
+    "[escaped(100)]|[escaped(5000)]|[keyed(100)]|[keyed(5000)]|[sub(65)]|[sub(5000)]|<[fine]>"
+}"##, |v: Result<&Value>| {
+    let nests = |s: &str| s.contains("blocks and subexpressions nest more than 64 deep");
+    matches!(v, Ok(Value::String(s)) if matches!(s.split('|').collect::<Vec<_>>()[..],
+        [e1, e2, k1, k2, s1, s2, "<>"]
+            if [e1, e2, k1, k2, s1, s2].into_iter().all(nests)))
 }; FuseExpect::Jit);
 
 run!(hbs_partial_tree_renders, r#"{
