@@ -214,7 +214,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
                 }
                 continue;
             }
-            // CR claude for claude: [bug/low] Only #[parallel] and #[serial] refuse
+            // XCR claude for claude: [bug/low] Only #[parallel] and #[serial] refuse
             // stray arguments (fork_kind). The definition assertions handled here, and
             // registry attributes such as #[native], never look at attr.args.
             // `#[pure(1, 2)]`, `#[sync(fast)]` and `#[native(1)]` are accepted and the
@@ -223,6 +223,19 @@ fn compile_inner<R: Rt, E: UserEvent>(
             // the message fork_kind uses. Variant of c-data-map-04. probe:
             // design/review-2026-10-26/repro/x-rerun-2-attr-args-ignored.gx
             // (x-rerun-2-05)
+            // 2026-10-26 claude: compile_inner refuses a non-empty argument list on
+            // every attribute but the fork controls (which fork_kind judges) and the
+            // seq lowering's run-event marker: '#[name] takes no arguments',
+            // definition assertions and registry attributes alike, so --check refuses
+            // it as the build does. The Attribute trait's doc now says arguments are
+            // refused; a registry attribute that wants arguments would need the
+            // registry to say so. Pins:
+            // lib_tests::native::def_assertion_arguments_refused and
+            // native_arguments_refused (run!, all modes, check parity; both fail with
+            // the fix undone).
+            if !attr.args.is_empty() {
+                bailat!(spec, "#[{}] takes no arguments", attr.name)
+            }
             match DefAssertionKind::from_name(&attr.name) {
                 Some(k) => def_asserts.push(k),
                 None => {
@@ -412,7 +425,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             let typ = Type::of_literal(v).at(spec)?;
             Ok(Constant::new(v.clone(), typ, spec.clone()))
         }
-        // CR claude for claude: [bug/medium] The SeqStep exemption reaches every block
+        // XCR claude for claude: [bug/medium] The SeqStep exemption reaches every block
         // nested in a step, not just the lowering's own: SeqStep is inherited by
         // everything compiled under a step's items. A user block ending in a let inside
         // a step, under a tuple say, passes the check and compiles as a plain Block
@@ -423,9 +436,14 @@ fn compile_kind<R: Rt, E: UserEvent>(
         // nested case. probe:
         // design/review-2026-10-26/repro/c-data-map-seq-trailing-let-block.gx
         // (c-data-map-01)
+        // 2026-10-26 claude: The SeqStep exemption is gone: no lowering builds a block
+        // ending in a let (the seq lowering's steps compile as block children and
+        // lower_block ends in its value), and every seq fixture passes without it, so
+        // any block ending in a let is refused, in a step as anywhere. Pin:
+        // lang::modules::block_ending_in_a_let_in_a_seq_step_refused (the probe's
+        // nested shape; fails with the fix undone).
         ExprKind::Block { exprs }
-            if !flags.contains(CFlag::SeqStep)
-                && exprs.last().is_some_and(|e| matches!(e.kind, ExprKind::Bind(_))) =>
+            if exprs.last().is_some_and(|e| matches!(e.kind, ExprKind::Bind(_))) =>
         {
             bailat!(
                 exprs[exprs.len() - 1],
@@ -717,7 +735,9 @@ pub(super) fn eta_dispatcher<R: Rt, E: UserEvent>(
     ft.collect_tvars(&mut tvs);
     let renamed: AHashMap<ArcStr, Type> = tvs
         .keys()
-        .map(|n| (n.clone(), Type::TVar(TVar::empty_generic(arcstr::format!("eta_{n}")))))
+        .map(|n| {
+            (n.clone(), Type::TVar(TVar::empty_generic(arcstr::format!("#eta_{n}"))))
+        })
         .collect();
     let constraints: SmallVec<[(TVar, Type); 2]> = ft
         .constraint_view()
@@ -734,15 +754,7 @@ pub(super) fn eta_dispatcher<R: Rt, E: UserEvent>(
     for (i, a) in ft.args.iter().enumerate() {
         let (kind, label, var) = match a.label() {
             Some(l) => (ArgKind::Labeled, Some(l.clone()), l.clone()),
-            // CR claude for claude: [bug/low] The eta-expansion names its positional
-            // parameters eta{i}, which a label can also spell. `fn(#eta1: i64, self)`
-            // makes two parameters named eta1, and `let g = Sh::sh` is refused with
-            // "arguments must have unique names", showing the lowering's text. A
-            // lowering's names start with `#` (is_lowered). Name these `#eta{i}`, and
-            // the renamed type variables likewise. probe:
-            // design/review-2026-10-26/repro/c-data-map-eta-label-collision.gx
-            // (c-data-map-03)
-            None => (ArgKind::Positional, None, arcstr::format!("eta{i}")),
+            None => (ArgKind::Positional, None, arcstr::format!("#eta{i}")),
         };
         args.push(Arg {
             kind,

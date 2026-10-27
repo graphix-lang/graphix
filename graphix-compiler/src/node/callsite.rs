@@ -3885,7 +3885,9 @@ impl Absent {
         let captured = &mut self.captured;
         let r = ctx.under(View::Wake, |ctx| {
             let caught_up = captured.deliver(ctx, 0);
+            let scope = captured.open(ctx, 0);
             let r = update(ctx);
+            captured.ran(ctx, 0, scope);
             TrackedFires::restore(ctx.event, caught_up);
             r
         });

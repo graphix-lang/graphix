@@ -140,8 +140,9 @@ impl CollectionIntrinsic {
         top_id: ExprId,
         typ: &Arc<FnType>,
         args: &[StructPatternNode],
+        prototype: ExprId,
     ) -> Result<Node<R, E>> {
-        by_collection!(self, new(self, ctx, spec, scope, top_id, typ, args))
+        by_collection!(self, new(self, ctx, spec, scope, top_id, typ, args, prototype))
     }
 
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
@@ -541,7 +542,7 @@ impl Callback {
         let (Self { scope, id, typ, top_id, share, arg: _ }, fty) =
             (self, Type::Fn(self.typ.clone()));
         let call = match kind {
-            // CR claude for claude: [risk/medium] The prototype call's synthetic spec
+            // XCR claude for claude: [risk/medium] The prototype call's synthetic spec
             // gets a fresh ExprId at every build, so its definition's DefTable has no
             // row for it. Every instance of a collection intrinsic therefore checks
             // this call in full (CallSite::typecheck0_instance's fallback) instead of
@@ -552,9 +553,24 @@ impl Callback {
             // row. probe:
             // design/review-2026-10-26/repro/c-lambda-collection-prototype-no-row.gx
             // (c-lambda-05)
-            CallKind::Prototype => {
+            // 2026-10-26 claude: Every compile of a collection intrinsic gives its
+            // prototype call one expression id, minted once in the definition's
+            // BodyShared (prototype, imaged with it; REGISTRATION_FORMAT 89) and
+            // passed through CollectionIntrinsic::build to genn::apply_prototype, so
+            // the check's table has the call's row and an instance substitutes.
+            // GRAPHIX_ELAB_AUDIT is silent on the probe cold and warm. Pin:
+            // graphix-shell/tests/elab_audit.rs collection_instances_substitute
+            // (fails with the fix undone: three fallback lines, map, fold, list map).
+            CallKind::Prototype(spec_id) => {
                 let function = genn::reference(ctx, *id, fty, *top_id);
-                genn::apply_prototype(function, scope.clone(), args, typ, *top_id)
+                genn::apply_prototype(
+                    function,
+                    scope.clone(),
+                    args,
+                    typ,
+                    *top_id,
+                    spec_id,
+                )
             }
             CallKind::Slot(Some(def)) => {
                 let spec = self.spec(ctx);
@@ -582,7 +598,8 @@ impl Callback {
 /// Which call of its callback a collection builds.
 #[derive(Clone)]
 enum CallKind {
-    Prototype,
+    /// The call the check types, by its expression id.
+    Prototype(ExprId),
     /// A slot; the definition value when the prototype call resolved
     /// statically, else it calls through the callback parameter.
     Slot(Option<Value>),
@@ -949,6 +966,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
         top_id: ExprId,
         typ: &Arc<FnType>,
         args: &[StructPatternNode],
+        prototype: ExprId,
     ) -> Result<Node<R, E>> {
         let CollectionIntrinsic::Map(op, flavor) = intrinsic else {
             bail!("{intrinsic:?} is not a map intrinsic")
@@ -959,7 +977,8 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
         let (source_id, callback) = Callback::of_args(scope, top_id, typ, args, 1)?;
         let element_type = C::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
-        let prototype = Slot::new(ctx, &callback, &element_type, CallKind::Prototype);
+        let prototype =
+            Slot::new(ctx, &callback, &element_type, CallKind::Prototype(prototype));
         let base = MapQBase {
             source,
             prototype: prototype.call,
@@ -1072,7 +1091,7 @@ fn woken_slots<R: Rt, E: UserEvent, T>(
     let Some(mut missed) = paused else {
         return update(ctx, SlotViews { old_len, standing: View::Cycle });
     };
-    // CR claude for claude: [bug/medium] The resume of paused slots delivers the
+    // XCR claude for claude: [bug/medium] The resume of paused slots delivers the
     // tracked bits but opens no node::wake::CatchUp scope. A callee a woken slot binds
     // fresh, because the function value changed while the source was bottom, is never
     // owed the fires its body's inputs had meanwhile. The slot's `a ~ x` stays silent,
@@ -1081,8 +1100,21 @@ fn woken_slots<R: Rt, E: UserEvent, T>(
     // with `captured`. probe:
     // design/review-2026-10-26/repro/x-refs-catchup-paused-body-no-catchup.gx
     // (x-refs-catchup-05)
+    // 2026-10-26 claude: woken_slots opens the paused slots' catch-up scope
+    // (TrackedFires::open under the wake view, closed by ran) around the update, and
+    // callsite::Absent::wake opens its captured tracker's scope the same way, so a
+    // callee bound fresh at the resume is owed its inputs' fires by write stamp. The
+    // probe and its Absent variant print (7, [1]) and (8, [1]) in both engines. Pins:
+    // lang::collection::bottom_source_fresh_callee_catches_up and
+    // lang::dense_deltas::callee_back_fresh_inner_callee (all four modes; both fail
+    // with the fix undone). The scope's since is the tracker's build cycle, the cycle
+    // the source went bottom, so a write stamped in that very cycle is still not owed
+    // to such a callee (the build-cycle question of tests-select-03).
     let caught_up = missed.deliver(ctx, 0);
+    // every slot runs under an init view: a standing one's wake, a fresh one's birth
+    let scope = ctx.under(View::Wake, |ctx| missed.open(ctx, 0));
     let r = update(ctx, SlotViews { old_len, standing: View::Wake });
+    missed.ran(ctx, 0, scope);
     TrackedFires::restore(ctx.event, caught_up);
     r
 }
@@ -1298,7 +1330,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 return self.resident.set(TagValue::tagged(v, tag));
             }
         }
-        // CR claude for claude: [risk/low] This is read before woken_slots runs the
+        // XCR claude for claude: [risk/low] This is read before woken_slots runs the
         // paused slots' catch-up. A callback that fired while the source was bottom
         // reaches the slots only through that missed.deliver, so they rebind to the new
         // callee with rebound false. site.redecide() is skipped, and SlotSite keeps,
@@ -1308,8 +1340,16 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         // the catch-up, for example have woken_slots report whether it re-raised
         // callback.id. Found by reading; a probe that rebinds the callback during a
         // pause under GRAPHIX_PAR=force showed no wrong value. (c-collection-03)
-        let rebound = ctx.event.variables.contains_key(&self.callback.id);
+        // 2026-10-26 claude: rebound is read inside woken_slots' update closure, after
+        // the paused slots' catch-up has delivered a callback that changed meanwhile,
+        // so update_slots runs the slots in order and redecides the site. No pin: as
+        // the CR says, a probe under GRAPHIX_PAR=force shows no wrong value, and
+        // nothing a program sees tells the verdict apart.
+        let callback = self.callback.id;
         let slots = woken_slots(ctx, old_len, paused, |ctx, views| {
+            // after the paused slots' catch-up, which delivers a callback
+            // that changed meanwhile
+            let rebound = ctx.event.variables.contains_key(&callback);
             update_slots(ctx, &mut self.slots, &mut self.fork, views, rebound)
         });
         match slots {
@@ -1537,6 +1577,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
         top_id: ExprId,
         typ: &Arc<FnType>,
         args: &[StructPatternNode],
+        prototype: ExprId,
     ) -> Result<Node<R, E>> {
         let CollectionIntrinsic::Fold(flavor) = intrinsic else {
             bail!("{intrinsic:?} is not a fold intrinsic")
@@ -1552,8 +1593,13 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
         let element_type = C::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
         let init = genn::reference(ctx, init_id, acc_type.clone(), top_id);
-        let prototype =
-            FoldSlot::new(ctx, &callback, &acc_type, &element_type, CallKind::Prototype);
+        let prototype = FoldSlot::new(
+            ctx,
+            &callback,
+            &acc_type,
+            &element_type,
+            CallKind::Prototype(prototype),
+        );
         let base = FoldQBase {
             source,
             init,
@@ -1652,7 +1698,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // whole-fold abort: a callback that never consumes the acc
         // recovers.
         let init = self.base.init.update(ctx).clone();
-        // CR claude for claude: [bug/medium] An init fire that lands while the source
+        // XCR claude for claude: [bug/medium] An init fire that lands while the source
         // is bottom is lost. This path returns without passing the init to slot 0's
         // acc, so the paused slots' TrackedFires never sees it. At the return, `anew`
         // re-passes the init stale, so `array::fold(xs, i, |acc, x| acc ~ (acc + x))`
@@ -1664,7 +1710,23 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // bottom_source_slots_wake_caught_up. probe:
         // design/review-2026-10-26/repro/c-collection-fold-init-paused.gx
         // (c-collection-02)
+        // 2026-10-26 claude: While the source is bottom and the slots paused, a
+        // triggering init is delivered to slot 0's acc and the paused tracker observes
+        // it, so at the return the acc's fire is caught up (the return's stale re-pass
+        // of the init is then injected fired). Both engines print 101 from n=4 on the
+        // probe (the fold node-walks in the JIT too: its callback samples). Pin:
+        // lang::collection::bottom_source_fold_init_caught_up (all four modes; fails
+        // with the fix undone, last value 1).
         if source.is_none() {
+            // slot 0 reads the init as its acc: a fire of it the paused
+            // slots miss is theirs to catch up
+            if let (SourceSeen::Paused(missed), Some(slot)) =
+                (&mut self.seen, self.slots.first())
+                && init.tag().triggers()
+            {
+                ctx.deliver(slot.acc_id, init);
+                missed.observe(ctx);
+            }
             return self.resident.set_bottom_as(tag);
         }
         // a quiet acc is news to no slot: it only stands, unless the

@@ -6,7 +6,7 @@
 
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval, refusal},
+    testing::{FuseExpect, eval, refusal, refused},
 };
 use netidx::subscriber::Value;
 
@@ -96,6 +96,13 @@ async fn unknown_attribute_is_error() {
     let e = refusal("#[bogus]\ni64:1", crate::TEST_REGISTER).await.unwrap();
     assert!(e.contains("unknown attribute #[bogus]"), "{e}");
 }
+
+// An attribute other than #[parallel(grain)] takes no arguments, the
+// definition assertions and the registry's included.
+run!(def_assertion_arguments_refused, "{ let f = #[pure(1, 2)] |a| a + 1; f(1) }",
+    refused("#[pure] takes no arguments"); FuseExpect::None);
+run!(native_arguments_refused, "{ let a = 1; #[native(1)] (a + 1, a + 2) }",
+    refused("#[native] takes no arguments"); FuseExpect::None);
 
 // `#[native]` inside a HOF callback body is checked: a wholly sync
 // `list::map` callback satisfies it.

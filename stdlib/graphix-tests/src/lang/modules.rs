@@ -96,6 +96,16 @@ run!(
     "#
 );
 
+// A seq step holds no exemption for a block nested in it.
+run!(
+    block_ending_in_a_let_in_a_seq_step_refused,
+    refused("a let has none"),
+    "/test.gx" => r#"
+        let t = 1;
+        let result = seq t { let a = (1, { let c = 2; let b = c + 1 }); a }
+    "#
+);
+
 const DYNAMIC_MODULE1: &str = r#"
 {
     let source = "

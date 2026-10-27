@@ -52,11 +52,11 @@ fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
     }
 }
 
-/// What a definition's compiles share: its lowerings (whose ids
-/// its check table has rows for), the check's specs and its lambda
-/// literals' shares.
+/// What a definition's compiles share: its lowerings and its
+/// prototype call's id (whose ids its check table has rows for), the
+/// check's specs and its lambda literals' shares.
 fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackError> {
-    let BodyShared { lowerings, specs, literals } = shared;
+    let BodyShared { lowerings, specs, literals, prototype } = shared;
     encode_varint(lowerings.len() as u64, buf);
     for (id, e) in lowerings.iter() {
         id.encode(buf)?;
@@ -72,7 +72,7 @@ fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackE
         id.encode(buf)?;
         crate::stack::ensure_sufficient(|| shared_encode(&share.lock(), buf))?;
     }
-    Ok(())
+    prototype.encode(buf)
 }
 
 // XCR claude for claude: [bug/medium] shared_decode, and shared_encode above it, recurse
@@ -104,6 +104,7 @@ fn shared_decode(buf: &mut impl Buf) -> Result<BodyShared, PackError> {
         let share = crate::stack::ensure_sufficient(|| shared_decode(buf))?;
         shared.literals.insert(id, BodyShare::new(Mutex::new(share)));
     }
+    shared.prototype = Pack::decode(buf)?;
     Ok(shared)
 }
 

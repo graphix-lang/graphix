@@ -571,11 +571,57 @@ async fn bottom_source_slots_wake_caught_up(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A callee a paused slot binds fresh at the source's return, its
+// function value having changed meanwhile, is owed the fires its body's
+// inputs had while the slot was paused, as in a woken select arm.
+async fn bottom_source_fresh_callee_catches_up(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let (values, _) = run_delta(
+        r#"{
+            let a = 0;
+            let which = 0;
+            let gd = select which { 0 => |x| x - 100, _ => |x| a ~ x };
+            let n = 0;
+            n <- select n { k if k < 8 => k + 1, _ => never() };
+            a <- select n { 4 => 7, _ => never() };
+            which <- select n { 4 => 1, _ => never() };
+            let src = select n { k if (k > 2) && (k < 7) => never(), _ => [1] };
+            array::map(src, |v| gd(v))
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(values.last(), Some(&Value::Array([Value::I64(1)].into())), "{values:?}");
+    Ok(())
+}
+
+// A fold's init that fires while its source is bottom is caught up at the
+// return, as a capture of the slots is.
+async fn bottom_source_fold_init_caught_up(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let (values, _) = run_delta(
+        r#"{
+            let n = 0;
+            n <- select n { k if k < 6 => k + 1, _ => never() };
+            let i = 0;
+            i <- select n { 2 => 100, _ => never() };
+            let xs = select n { 3 => never(), _ => [1] };
+            array::fold(xs, i, |acc, x| acc ~ (acc + x))
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(values.last(), Some(&Value::I64(101)), "{values:?}");
+    Ok(())
+}
+
 modes!(
     collection_fires_on_a_stale_resize,
     collection_refs_reach_its_slots,
     bottom_source_runs_no_slot,
-    bottom_source_slots_wake_caught_up
+    bottom_source_slots_wake_caught_up,
+    bottom_source_fresh_callee_catches_up,
+    bottom_source_fold_init_caught_up
 );
 
 // filter_map drops an element on null and keeps `Keep(v), null included,

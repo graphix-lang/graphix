@@ -79,7 +79,7 @@ pub fn apply<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
     let ftype = typ.instantiate(&nohash::IntSet::default());
-    apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id)
+    apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id, None)
 }
 
 /// A call of the function value `f` over `args`: bound at its first
@@ -107,14 +107,17 @@ pub(crate) fn apply_constant<R: Rt, E: UserEvent>(
     apply(fnode, scope, args, typ, top_id)
 }
 
+/// A call whose dispatch its typecheck resolves; `id` is its expression's,
+/// which every compile of the body it is in shares.
 pub(crate) fn apply_prototype<R: Rt, E: UserEvent>(
     fnode: Node<R, E>,
     scope: Scope,
     args: SmallVec<[Node<R, E>; 2]>,
     typ: &FnType,
     top_id: ExprId,
+    id: ExprId,
 ) -> Result<Node<R, E>> {
-    apply_inner(fnode, scope, args, typ, None, Type::empty_tvar(), top_id)
+    apply_inner(fnode, scope, args, typ, None, Type::empty_tvar(), top_id, Some(id))
 }
 
 fn check_arity(n: usize, typ: &FnType) -> Result<()> {
@@ -136,6 +139,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
     ftype: Option<FnType>,
     rtype: Type,
     top_id: ExprId,
+    id: Option<ExprId>,
 ) -> Result<Node<R, E>> {
     check_arity(args.len(), typ)?;
     let mut spec = ExprKind::Apply(ApplyExpr {
@@ -148,6 +152,9 @@ fn apply_inner<R: Rt, E: UserEvent>(
     })
     .to_expr(fnode.spec().pos);
     spec.ori = fnode.spec().ori.clone();
+    if let Some(id) = id {
+        spec.id = id;
+    }
     let args: ArgMap<R, E> = ArgKey::of_formals(&typ.args)
         .zip(args)
         .map(|(key, node)| {

@@ -995,7 +995,7 @@ pub(crate) struct DefAssertion {
     pub(crate) warned: bool,
 }
 
-/// Trait implemented by graphix attributes (`#[name]` / `#[name(args)]`).
+/// Trait implemented by graphix attributes (`#[name]`; arguments are refused).
 pub trait Attribute<R: Rt, E: UserEvent> {
     /// The bare attribute name (`native` for `#[native]`); a flat
     /// global namespace.

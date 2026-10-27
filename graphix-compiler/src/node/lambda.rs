@@ -520,6 +520,9 @@ pub struct BodyShared {
     /// every compile of the body makes a definition of it, and they share
     /// one.
     pub(crate) literals: AHashMap<ExprId, BodyShare>,
+    /// A collection intrinsic's prototype call, by the expression id
+    /// every compile of the intrinsic gives it.
+    pub(crate) prototype: Option<ExprId>,
 }
 
 /// The body compiling now: what it shares, and whether this compile is
@@ -1097,6 +1100,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         tid: ExprId,
         spec: Arc<Expr>,
         intrinsic: CollectionIntrinsic,
+        prototype: ExprId,
     ) -> Result<Self> {
         let origin = spec.ori.clone();
         Self::new_with_body(
@@ -1108,7 +1112,9 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             args,
             scope,
             origin,
-            |ctx, argpats| intrinsic.build(ctx, spec, scope, tid, &typ, argpats),
+            |ctx, argpats| {
+                intrinsic.build(ctx, spec, scope, tid, &typ, argpats, prototype)
+            },
         )
     }
 
@@ -1478,6 +1484,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                 instance
             }
             DefBody::Collection(intrinsic) => {
+                let prototype = *shared.lock().prototype.get_or_insert_with(ExprId::new);
                 instantiate(ctx, mode, &def_typ, &table, |ctx, typ, typing| {
                     GXLambda::new_collection(
                         ctx,
@@ -1490,6 +1497,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                         tid,
                         def_spec.clone(),
                         *intrinsic,
+                        prototype,
                     )
                 })
             }

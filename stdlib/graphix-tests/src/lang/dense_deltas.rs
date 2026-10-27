@@ -237,6 +237,30 @@ async fn callee_back_arg_still_bottom(mode: Mode) -> Result<()> {
 
 modes!(callee_back_arg_still_bottom);
 
+// A callee the returning function's instance binds fresh, its function
+// value having changed while the function was bottom, is owed the fires
+// its body's inputs had meanwhile.
+const CALLEE_BACK_FRESH_INNER_CALLEE: &str = r#"{
+  let a = 0;
+  let which = 0;
+  let gd = select which { 0 => |x| x - 100, _ => |x| a ~ x };
+  let n = 0;
+  n <- select n { k if k < 8 => k + 1, _ => never() };
+  a <- select n { 4 => 7, _ => never() };
+  which <- select n { 4 => 1, _ => never() };
+  let h = |x| gd(x);
+  let f = select n { k if (k > 2) && (k < 7) => never(), _ => h };
+  f(1)
+}"#;
+
+async fn callee_back_fresh_inner_callee(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(CALLEE_BACK_FRESH_INNER_CALLEE, mode).await?;
+    assert_eq!(values.last(), Some(&Value::I64(1)), "{values:?}");
+    Ok(())
+}
+
+modes!(callee_back_fresh_inner_callee);
+
 // A stateful callee whose function value is bottom for a while, or a
 // collection slot whose source is, pauses as the select-arm twin's body
 // does: its `<-` state survives, and the input that fired meanwhile is

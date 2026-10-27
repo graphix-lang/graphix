@@ -2134,6 +2134,19 @@ run!(
     FuseExpect::None
 );
 
+// An eta-expansion's own names are no source name: a label spelled like
+// one is the method's label.
+run!(
+    trait_method_value_label_named_like_its_parameters,
+    r#"{
+    trait Sh { val sh: fn(#eta1: i64, self) -> string };
+    impl Sh for string { let sh = |#eta1: i64, s| "[s][eta1]" };
+    let g = Sh::sh;
+    g(#eta1: 5, "x")
+}"#,
+    prints(r#""x5""#)
+);
+
 // A trait method named as a value is its eta-expansion: an ordinary
 // function, passed to a collection, forwarded through a parameter,
 // stored, and polymorphic.
