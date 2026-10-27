@@ -1,0 +1,13 @@
+// x-typecheck-generics-02c: a quantified function type written outside a formal (a
+// typedef's struct field) takes a function with a narrower bound; the check passes,
+// the build fails.
+// command: graphix --check x-typecheck-generics-02c-typedef-field.gx ; graphix --no-cache x-typecheck-generics-02c-typedef-field.gx
+// expected: --check refuses the program, at `{f: add}` (if S's field is rank-2) or at
+//   `s.f(1.5, 2.5)` (if the annotation's 'b absorbs add's Int).
+// observed (2026-10-27): --check exits 0; a run fails at s.f(1.5, 2.5): "binding the
+//   callee failed: a run-time bind at s.f(1.5, 2.5) did not type: an instance at
+//   fn(x: f64, y: f64) -> f64 of a definition typed fn<'a: Int + Singleton>(..)".
+type S = {f: fn<'b: Number>(x: 'b, y: 'b) -> 'b};
+let add = 'a: Int |x: 'a, y: 'a| -> 'a x + y;
+let s: S = {f: add};
+s.f(1.5, 2.5)

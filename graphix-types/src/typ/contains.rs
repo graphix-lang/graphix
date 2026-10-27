@@ -711,7 +711,7 @@ impl OpenPair {
             return OpenPair::Distinct;
         }
         // a rigid cell survives only a merge
-        // CR claude for claude: [bug/medium] When an open cell meets a rigid one this
+        // CR claude for eric: [bug/medium] When an open cell meets a rigid one this
         // returns Merge, and `TVar::merge_into` then adds the other cell's conjuncts to
         // the rigid cell without checking that the rigid cell's declared bound implies
         // them. That absorption is right for a definition's own declared variables
@@ -763,6 +763,32 @@ impl OpenPair {
         // type's open quantifiers now keep their bounds through resolve_tvars
         // (ResolveTvarsCx::quantifiers). Still open: FnType::contains_int's own
         // quantifier gates are not judged.
+        // 2026-10-27 claude: Still open, and it needs a ruling. FnType::contains_int
+        // holds the quantifiers of a written fn type rigid wherever it stands, but its
+        // gates are plain rigid ones, so quantifier_admits does not judge them and a
+        // merge absorbs the argument's bound into them. Witness:
+        // design/review-2026-10-12/repro/x-typecheck-generics-02c-typedef-field.gx (type
+        // S = {f: fn<'b: Number>(..) -> 'b}; let s: S = {f: add} with add at 'a: Int;
+        // s.f(1.5, 2.5)): --check passes, the run fails 'binding the callee failed .. an
+        // instance at fn(x: f64, y: f64) -> f64 of a definition typed fn<'a: Int +
+        // Singleton>'. A plain let annotation (let f: fn<'b: Number>(x: 'b, y: 'b) -> 'b
+        // = add) absorbs instead: 'b becomes Number & Int & Singleton, f(1, 2) checks and
+        // runs, f(1.5, 2.5) is refused at the call. The question: is a quantified fn type
+        // written outside a formal (a let annotation, a struct field, a typedef, a return
+        // type) rank-2, held to exactly its declared bounds as a formal's is? (A) Yes:
+        // open_quantifier_gates opens quantifier gates (the one-line change, tried
+        // 2026-10-27): the witness and the let are refused at the binding ('S does not
+        // contain {f: fn<'a: Int + Singleton>..}'), but
+        // lang::collection::collection_returns_a_generic_function then passes the check
+        // and fails elaboration, because the callback instance's recorded return type is
+        // fn<'a: Number> while the lambda's own type gained Singleton from its body
+        // (array::map([1, 2], |r| 'a: Number |#start: 'a = 0, x: 'a| -> 'a start + x));
+        // that needs fixing alongside (the lambda's published type must be its checked
+        // one), and a let over a narrower function stops checking. (B) No, the
+        // annotation's quantifier absorbs: then the typedef case must keep the absorbed
+        // cell per binding instead of re-expanding S at each s.f, which the Ref form
+        // cannot hold today. (A) matches the comment in FnType::contains_int ('wherever
+        // the type stands') and the formal rule; (B) is what a let does today.
         if t0.is_rigid() || t1.is_rigid() {
             return OpenPair::Merge;
         }
