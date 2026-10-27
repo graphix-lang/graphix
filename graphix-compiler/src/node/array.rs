@@ -139,6 +139,21 @@ impl<R: Rt> ArrayRef<R> {
         // LambdaInstance, Module, CachedArgsAsync, Filter/Queue/Hold/Throttle, the
         // net/time/watch/http builtins) still repeat their literal; each is its own
         // edit across many files, left for a batch of its own.
+        // 2026-10-27 codex: Eleven more kinds now have one with constructor shared by
+        // compile and image_decode, one commit per kind: MapRef; Struct, StructWith,
+        // StructRef, Tuple, Variant, Construct, TupleRef; Qop, SeqGuard, SeqAbort.
+        // Runtime defaults, Qop's raised type, and SeqGuard's handler poll registration
+        // are initialized there. The eleven node_constructors structural pins all
+        // failed on the original duplicated literals and all pass now. graphix-shell
+        // constructor_image::constructor_nodes_agree_cold_and_warm passes: the
+        // non-fused program exercises these shapes, a map lookup and sequence guards,
+        // writes a program image cold, loads it warm, and produces 19 in both runs. The
+        // full examples_compile example compilation test also passed on the refactored
+        // code. The behavioral image test is an equivalence check, not a claimed
+        // pre-fix behavioral failure. Encoded fields and byte order are unchanged, so
+        // no image format bump. Remaining: Catch and ErrorRelay, Bind, LambdaInstance,
+        // Module, CachedArgsAsync, Filter/Queue/Hold/Throttle, and net/time/watch/http
+        // builtins. The CR remains open for those kinds.
         Ok(Self::with(spec, typ, etyp, source, i))
     }
 

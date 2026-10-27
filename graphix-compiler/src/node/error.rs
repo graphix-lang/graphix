@@ -1302,6 +1302,10 @@ pub struct SeqAbort<R: Rt> {
 }
 
 impl<R: Rt> SeqAbort<R> {
+    fn with(spec: Arc<Expr>, n: Node<R>, machine: ErrorHandler) -> Node<R> {
+        Node::new(Self { spec, n, machine })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -1309,7 +1313,7 @@ impl<R: Rt> SeqAbort<R> {
         let spec = Arc::new(Expr::decode(buf)?);
         let n = decode_node(ctx, buf)?;
         let machine = image::handler_decode(buf)?;
-        Ok(Node::new(Self { spec, n, machine }))
+        Ok(Self::with(spec, n, machine))
     }
 
     pub(crate) fn compile(
@@ -1326,7 +1330,7 @@ impl<R: Rt> SeqAbort<R> {
             .and_then(|h| h.machine())
             .ok_or_else(|| anyhow!("BUG: seq machine"))?;
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
-        Ok(Node::new(Self { spec, n, machine }))
+        Ok(Self::with(spec, n, machine))
     }
 }
 
