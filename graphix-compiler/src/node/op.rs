@@ -16,7 +16,7 @@ use crate::{
     },
     node::error::{diagnostic_site, report_failure},
     stack::ensure_sufficient,
-    typ::{ContainsFlags, Type, tvar::require_bounds},
+    typ::{Bound, ContainsFlags, Type, tvar::require_bounds},
     wrap,
 };
 use anyhow::{Context, Result, bail};
@@ -314,8 +314,8 @@ macro_rules! compare_op {
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
                     Some(t) => {
                         let bound = match $ordered {
-                            true => Type::Ordered,
-                            false => Type::Discernible,
+                            true => Type::Bound(Bound::Ordered),
+                            false => Type::Bound(Bound::Discernible),
                         };
                         require_bounds(std::slice::from_ref(&bound), &t);
                         let judgment = crate::PendingSettle::Discernible {

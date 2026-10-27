@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     format_with_flags,
     typ::{
-        FnType, TVar, Type,
+        Bound, FnType, TVar, Type,
         contains::{ContainsHist, INFINITE_TYPE_MSG},
         tvar::{CellFact, Fresh, would_cycle_inner},
     },
@@ -153,11 +153,11 @@ impl TVar {
         if cell.binding.is_some() || super::tvar::earlier_task(&cell) {
             return Ok(());
         }
-        if cell.constraints.iter().any(|c| matches!(c, Type::Concrete)) {
+        if cell.constraints.iter().any(|c| matches!(c, Type::Bound(Bound::Concrete))) {
             drop(cell);
             return Err(self.not_concrete());
         }
-        if cell.constraints.iter().any(|c| matches!(c, Type::Function)) {
+        if cell.constraints.iter().any(|c| matches!(c, Type::Bound(Bound::Function))) {
             drop(cell);
             return Err(self.not_function());
         }

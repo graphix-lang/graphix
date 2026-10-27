@@ -2045,14 +2045,7 @@ impl<R: Rt> PatternNode<R> {
                 )
             }
             Type::App(..) | Type::Hole => bail!("can't match on a type constructor"),
-            Type::Concrete
-            | Type::Data
-            | Type::Function
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::NoError
-            | Type::Ordered
-            | Type::Discernible => {
+            Type::Bound(_) => {
                 bail!("can't match on a constraint")
             }
             Type::Bottom

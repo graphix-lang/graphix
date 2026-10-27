@@ -1,7 +1,7 @@
 use crate::{
     env::Env,
     stack::ensure_sufficient,
-    typ::{FnType, NodePairs, RefHist, RefPair, TVar, Type, TypeRef},
+    typ::{Bound, FnType, NodePairs, RefHist, RefPair, TVar, Type, TypeRef},
 };
 use ahash::AHashMap;
 use anyhow::Result;
@@ -147,14 +147,14 @@ impl Identity {
             (Type::Bottom, Type::Bottom)
             | (Type::Any, Type::Any)
             | (Type::Hole, Type::Hole)
-            | (Type::Concrete, Type::Concrete)
-            | (Type::Data, Type::Data)
-            | (Type::Function, Type::Function)
-            | (Type::OneNumber, Type::OneNumber)
-            | (Type::NoError, Type::NoError)
-            | (Type::Discernible, Type::Discernible)
-            | (Type::Ordered, Type::Ordered)
-            | (Type::Singleton, Type::Singleton) => true,
+            | (Type::Bound(Bound::Concrete), Type::Bound(Bound::Concrete))
+            | (Type::Bound(Bound::Data), Type::Bound(Bound::Data))
+            | (Type::Bound(Bound::Function), Type::Bound(Bound::Function))
+            | (Type::Bound(Bound::OneNumber), Type::Bound(Bound::OneNumber))
+            | (Type::Bound(Bound::NoError), Type::Bound(Bound::NoError))
+            | (Type::Bound(Bound::Discernible), Type::Bound(Bound::Discernible))
+            | (Type::Bound(Bound::Ordered), Type::Bound(Bound::Ordered))
+            | (Type::Bound(Bound::Singleton), Type::Bound(Bound::Singleton)) => true,
             (Type::App(c0, a0), Type::App(c1, a1)) => {
                 self.same(c0, c1) && self.same(a0, a1)
             }
@@ -339,22 +339,8 @@ impl Type {
             | (_, Type::App(..))
             | (Type::Hole, _)
             | (_, Type::Hole)
-            | (Type::Concrete, _)
-            | (Type::Data, _)
-            | (Type::Function, _)
-            | (Type::Singleton, _)
-            | (Type::OneNumber, _)
-            | (Type::NoError, _)
-            | (Type::Discernible, _)
-            | (Type::Ordered, _)
-            | (_, Type::Function)
-            | (_, Type::Singleton)
-            | (_, Type::OneNumber)
-            | (_, Type::NoError)
-            | (_, Type::Discernible)
-            | (_, Type::Ordered)
-            | (_, Type::Data)
-            | (_, Type::Concrete) => {
+            | (Type::Bound(_), _)
+            | (_, Type::Bound(_)) => {
                 if self == t {
                     Ok(self.clone())
                 } else {
@@ -581,22 +567,8 @@ impl Type {
             | (_, Type::App(..))
             | (Type::Hole, _)
             | (_, Type::Hole)
-            | (Type::Concrete, _)
-            | (Type::Data, _)
-            | (Type::Function, _)
-            | (Type::Singleton, _)
-            | (Type::OneNumber, _)
-            | (Type::NoError, _)
-            | (Type::Discernible, _)
-            | (Type::Ordered, _)
-            | (_, Type::Function)
-            | (_, Type::Singleton)
-            | (_, Type::OneNumber)
-            | (_, Type::NoError)
-            | (_, Type::Discernible)
-            | (_, Type::Ordered)
-            | (_, Type::Data)
-            | (_, Type::Concrete) => Ok(if self == t {
+            | (Type::Bound(_), _)
+            | (_, Type::Bound(_)) => Ok(if self == t {
                 Type::Primitive(BitFlags::empty())
             } else {
                 self.clone()

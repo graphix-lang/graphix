@@ -4,7 +4,7 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AndAc, FnType, NodePairs, RefHist, RefPair, Type,
+        AndAc, Bound, FnType, NodePairs, RefHist, RefPair, Type,
         contains::{ContainsHist, find_open_cell},
         setops::strictly_identical,
     },
@@ -270,22 +270,8 @@ impl Type {
             }
             (Type::Hole, _)
             | (_, Type::Hole)
-            | (Type::Concrete, _)
-            | (Type::Data, _)
-            | (Type::Function, _)
-            | (Type::Singleton, _)
-            | (Type::OneNumber, _)
-            | (Type::NoError, _)
-            | (Type::Discernible, _)
-            | (Type::Ordered, _)
-            | (_, Type::Function)
-            | (_, Type::Singleton)
-            | (_, Type::OneNumber)
-            | (_, Type::NoError)
-            | (_, Type::Discernible)
-            | (_, Type::Ordered)
-            | (_, Type::Data)
-            | (_, Type::Concrete) => Ok(self == t),
+            | (Type::Bound(_), _)
+            | (_, Type::Bound(_)) => Ok(self == t),
             (t0, Self::Primitive(s)) => {
                 for t1 in s.iter() {
                     let t1 = Type::Primitive(t1.into());
@@ -583,14 +569,14 @@ impl Type {
                 a0.sig_matches_int(env, a1, tvar_map, hist)
             }
             (Self::Hole, Self::Hole)
-            | (Self::Concrete, Self::Concrete)
-            | (Self::Data, Self::Data)
-            | (Self::Function, Self::Function)
-            | (Self::OneNumber, Self::OneNumber)
-            | (Self::NoError, Self::NoError)
-            | (Self::Discernible, Self::Discernible)
-            | (Self::Ordered, Self::Ordered)
-            | (Self::Singleton, Self::Singleton) => Ok(()),
+            | (Self::Bound(Bound::Concrete), Self::Bound(Bound::Concrete))
+            | (Self::Bound(Bound::Data), Self::Bound(Bound::Data))
+            | (Self::Bound(Bound::Function), Self::Bound(Bound::Function))
+            | (Self::Bound(Bound::OneNumber), Self::Bound(Bound::OneNumber))
+            | (Self::Bound(Bound::NoError), Self::Bound(Bound::NoError))
+            | (Self::Bound(Bound::Discernible), Self::Bound(Bound::Discernible))
+            | (Self::Bound(Bound::Ordered), Self::Bound(Bound::Ordered))
+            | (Self::Bound(Bound::Singleton), Self::Bound(Bound::Singleton)) => Ok(()),
             // A bound signature var is its binding.
             (Self::TVar(sig_tv), impl_type) if let Some(b) = sig_tv.binding() => {
                 b.sig_matches_int(env, impl_type, tvar_map, hist)

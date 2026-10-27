@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     expr::{ModPath, Name, TypeDefBody, TypeDefExpr, WrittenAt, WrittenPath, get_origin},
-    typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
+    typ::{Bound, FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use arcstr::{ArcStr, literal};
 use combine::{
@@ -82,14 +82,14 @@ where
     /// The predicates a bound may name, by keyword.
     fn predicate(word: &str) -> Option<Type> {
         Some(match word {
-            "Concrete" => Type::Concrete,
-            "Data" => Type::Data,
-            "Function" => Type::Function,
-            "Singleton" => Type::Singleton,
-            "OneNumber" => Type::OneNumber,
-            "NoError" => Type::NoError,
-            "Discernible" => Type::Discernible,
-            "Ordered" => Type::Ordered,
+            "Concrete" => Type::Bound(Bound::Concrete),
+            "Data" => Type::Bound(Bound::Data),
+            "Function" => Type::Bound(Bound::Function),
+            "Singleton" => Type::Bound(Bound::Singleton),
+            "OneNumber" => Type::Bound(Bound::OneNumber),
+            "NoError" => Type::Bound(Bound::NoError),
+            "Discernible" => Type::Bound(Bound::Discernible),
+            "Ordered" => Type::Bound(Bound::Ordered),
             _ => return None,
         })
     }

@@ -7,7 +7,7 @@ use crate::{
     },
     format_with_flags, image,
     typ::{
-        Mutability, TVar, Type,
+        Bound, Mutability, TVar, Type,
         contains::{ContainsFlags, ContainsHist},
         key_text,
         matches::{MatchHist, SigPairs},
@@ -1508,10 +1508,10 @@ impl FnType {
                     for impl_tc in tv.cell_constraints() {
                         if matches!(
                             impl_tc,
-                            Type::Discernible
-                                | Type::Ordered
-                                | Type::Concrete
-                                | Type::Data
+                            Type::Bound(Bound::Discernible)
+                                | Type::Bound(Bound::Ordered)
+                                | Type::Bound(Bound::Concrete)
+                                | Type::Bound(Bound::Data)
                         ) {
                             let mut occurrences = super::tvar::Occurrences::default();
                             sig_type.tvar_occurrences(&mut occurrences);

@@ -5,7 +5,7 @@ use crate::{
         print::{PrettyBuf, PrettyDisplay},
     },
     print_as_written,
-    typ::{Mutability, Type, TypeRef},
+    typ::{Bound, Mutability, Type, TypeRef},
 };
 use arcstr::ArcStr;
 use compact_str::format_compact;
@@ -201,14 +201,14 @@ impl Type {
                 None => write!(f, "{c}<{a}>"),
             },
             Self::Hole => write!(f, "'_"),
-            Self::Concrete => write!(f, "Concrete"),
-            Self::Data => write!(f, "Data"),
-            Self::Function => write!(f, "Function"),
-            Self::Singleton => write!(f, "Singleton"),
-            Self::OneNumber => write!(f, "OneNumber"),
-            Self::NoError => write!(f, "NoError"),
-            Self::Discernible => write!(f, "Discernible"),
-            Self::Ordered => write!(f, "Ordered"),
+            Self::Bound(Bound::Concrete) => write!(f, "Concrete"),
+            Self::Bound(Bound::Data) => write!(f, "Data"),
+            Self::Bound(Bound::Function) => write!(f, "Function"),
+            Self::Bound(Bound::Singleton) => write!(f, "Singleton"),
+            Self::Bound(Bound::OneNumber) => write!(f, "OneNumber"),
+            Self::Bound(Bound::NoError) => write!(f, "NoError"),
+            Self::Bound(Bound::Discernible) => write!(f, "Discernible"),
+            Self::Bound(Bound::Ordered) => write!(f, "Ordered"),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
             Self::Ref(tr) => {
@@ -288,14 +288,7 @@ fn opens_with_bracket(t: &Type) -> bool {
         | Type::Abstract { .. }
         | Type::App(..)
         | Type::Hole
-        | Type::Concrete
-        | Type::Data
-        | Type::Singleton
-        | Type::OneNumber
-        | Type::NoError
-        | Type::Discernible
-        | Type::Ordered
-        | Type::Function => false,
+        | Type::Bound(_) => false,
     }
 }
 
@@ -322,17 +315,7 @@ fn pretty_lone_arg(
 impl PrettyDisplay for Type {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         match self {
-            Self::Abstract { .. }
-            | Self::App(..)
-            | Self::Hole
-            | Self::Concrete
-            | Self::Data
-            | Self::Singleton
-            | Self::OneNumber
-            | Self::NoError
-            | Self::Discernible
-            | Self::Ordered
-            | Self::Function => {
+            Self::Abstract { .. } | Self::App(..) | Self::Hole | Self::Bound(_) => {
                 writeln!(buf, "{self}")
             }
             Self::Bottom => writeln!(buf, "_"),

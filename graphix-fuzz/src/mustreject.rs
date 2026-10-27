@@ -19,7 +19,7 @@ use graphix_compiler::{
         parser,
     },
     ide::ExprTypeSite,
-    typ::{FnArgType, FnType, Mutability, Type},
+    typ::{Bound, FnArgType, FnType, Mutability, Type},
 };
 use netidx_value::Typ;
 use triomphe::Arc;
@@ -1017,9 +1017,10 @@ fn function_bound(
     out: &mut Vec<RejectProbe>,
 ) {
     let bounded = |t: &Type| match t {
-        Type::TVar(tv) => {
-            tv.cell_constraints().iter().any(|c| matches!(c, Type::Function))
-        }
+        Type::TVar(tv) => tv
+            .cell_constraints()
+            .iter()
+            .any(|c| matches!(c, Type::Bound(Bound::Function))),
         _ => false,
     };
     let sizes = mutate::sizes(root);

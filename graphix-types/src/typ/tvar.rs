@@ -5,7 +5,7 @@ use crate::{
     expr::{ModPath, TypeDefBody},
     image,
     stack::ensure_sufficient,
-    typ::{PRINT_FLAGS, PrintFlag, Type, node_addr, setops::union_identical},
+    typ::{Bound, PRINT_FLAGS, PrintFlag, Type, node_addr, setops::union_identical},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -830,15 +830,15 @@ pub fn require_bounds(cons: &[Type], t: &Type) {
 pub(crate) fn handed_bounds(cons: &[Type], t: &Type, hand: &mut dyn FnMut(&TVar, Type)) {
     for c in cons {
         match c {
-            Type::Concrete | Type::Data => {
+            Type::Bound(Bound::Concrete) | Type::Bound(Bound::Data) => {
                 let skips = |t: &Type| matches!(t, Type::Fn(_));
                 t.require_everywhere(c, &skips, hand, &mut LPooled::take())
             }
-            Type::Singleton => t.require_singleton(hand),
-            Type::OneNumber => t.require_one_number(hand),
-            Type::NoError => t.require_no_error(hand),
+            Type::Bound(Bound::Singleton) => t.require_singleton(hand),
+            Type::Bound(Bound::OneNumber) => t.require_one_number(hand),
+            Type::Bound(Bound::NoError) => t.require_no_error(hand),
             // what a comparison of the type reaches
-            Type::Discernible | Type::Ordered => {
+            Type::Bound(Bound::Discernible) | Type::Bound(Bound::Ordered) => {
                 let skips = |t: &Type| matches!(t, Type::Fn(_) | Type::ByRef(..));
                 t.require_everywhere(c, &skips, hand, &mut LPooled::take())
             }
@@ -1262,17 +1262,29 @@ impl TVar {
     /// Whether the cell holds the `Concrete` conjunct.
     #[doc(hidden)]
     pub fn requires_concrete(&self) -> bool {
-        self.cell().read().constraints.iter().any(|c| matches!(c, Type::Concrete))
+        self.cell()
+            .read()
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Type::Bound(Bound::Concrete)))
     }
 
     /// Whether the cell holds the `Data` conjunct.
     pub(crate) fn requires_data(&self) -> bool {
-        self.cell().read().constraints.iter().any(|c| matches!(c, Type::Data))
+        self.cell()
+            .read()
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Type::Bound(Bound::Data)))
     }
 
     /// Whether the cell holds the `Function` conjunct.
     pub(crate) fn requires_function(&self) -> bool {
-        self.cell().read().constraints.iter().any(|c| matches!(c, Type::Function))
+        self.cell()
+            .read()
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Type::Bound(Bound::Function)))
     }
 
     /// Bind self to `binding` (other's, read by the caller), merging
@@ -1652,7 +1664,7 @@ impl Type {
         let mut parts = UnionParts::new(Measure::Members);
         if self.union_parts(None, &mut parts).is_ok() {
             for tv in parts.open.iter() {
-                hand(tv, Type::NoError)
+                hand(tv, Type::Bound(Bound::NoError))
             }
         }
     }
@@ -1707,7 +1719,7 @@ impl Type {
             return;
         }
         for tv in parts.open.iter() {
-            hand(tv, Type::OneNumber)
+            hand(tv, Type::Bound(Bound::OneNumber))
         }
     }
 
@@ -2914,7 +2926,7 @@ impl UnionParts {
     fn narrowing(&self) -> Option<Type> {
         match (&self.first, self.known) {
             (Some(k), 1) => Some(k.clone()),
-            (_, 0) => Some(Type::Singleton),
+            (_, 0) => Some(Type::Bound(Bound::Singleton)),
             _ => None,
         }
     }

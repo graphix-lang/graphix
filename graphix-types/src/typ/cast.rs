@@ -7,7 +7,7 @@ use crate::{
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, CoreTrait, TVar, Type, TypeRef, params_size,
+        AbstractId, Bound, CoreTrait, TVar, Type, TypeRef, params_size,
         setops::union_identical,
         tval::{NakedPrefix, has_form, member_of},
     },
@@ -716,14 +716,7 @@ impl Type {
                 None => Ok(None),
             },
             Type::Hole => Err(self.cast_fail("a type constructor", v)),
-            Type::Concrete
-            | Type::Data
-            | Type::Function
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::NoError
-            | Type::Ordered
-            | Type::Discernible => Err(self.cast_fail("a constraint", v)),
+            Type::Bound(_) => Err(self.cast_fail("a constraint", v)),
             Type::Bottom | Type::Any => Ok(cx.float_of(v)),
             Type::Fn(_) => match v {
                 Value::Abstract(a) if AbstractTypeRegistry::is_a(a, "lambda") => Ok(None),
@@ -1366,15 +1359,7 @@ impl Type {
                 Some(t) => t.is_a_int(env, hist, flags, v),
                 None => !flags.contains(IsAFlags::Strict),
             },
-            Type::Hole
-            | Type::Concrete
-            | Type::Data
-            | Type::Function
-            | Type::Singleton
-            | Type::Discernible
-            | Type::Ordered
-            | Type::OneNumber
-            | Type::NoError => false,
+            Type::Hole | Type::Bound(_) => false,
             // `hist` is the current path, not a visited set: a repeat
             // on the path is a name expanding without consuming value
             // structure; a repeat off the path is union backtracking.
@@ -1714,14 +1699,7 @@ fn member_facts(t: &Type) -> MemberFacts {
         | Type::TVar(_)
         | Type::App(..)
         | Type::Hole
-        | Type::Concrete
-        | Type::Data
-        | Type::Singleton
-        | Type::OneNumber
-        | Type::NoError
-        | Type::Discernible
-        | Type::Ordered
-        | Type::Function => MemberFacts::EXACT,
+        | Type::Bound(_) => MemberFacts::EXACT,
     }
 }
 
@@ -1802,16 +1780,7 @@ fn rep_head<'a>(env: &Env, t: &'a Type) -> Option<Cow<'a, Type>> {
         Type::TVar(_) => t.deref_cloned().and_then(owned),
         Type::App(c, a) => Type::app_filled(c, a).and_then(owned),
         Type::Ref(_) => t.lookup_ref(env).ok().and_then(owned),
-        Type::Any
-        | Type::Hole
-        | Type::Concrete
-        | Type::Data
-        | Type::Function
-        | Type::Singleton
-        | Type::Discernible
-        | Type::Ordered
-        | Type::OneNumber
-        | Type::NoError => None,
+        Type::Any | Type::Hole | Type::Bound(_) => None,
         t => Some(Cow::Borrowed(t)),
     })
 }
@@ -1865,7 +1834,9 @@ fn open_collision(
     let pair = || Some(Indiscernible::Pair(a.clone(), b.clone()));
     let mut beside = |cell: &super::TVar, t: &Type| {
         // a `NoError` cell is never an error, so it shares no error's form
-        if cell.cell_constraints().contains(&Type::NoError) && error_only(env, t) {
+        if cell.cell_constraints().contains(&Type::Bound(Bound::NoError))
+            && error_only(env, t)
+        {
             return None;
         }
         let typed = cell.typed_bounds(env);

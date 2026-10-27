@@ -87,14 +87,7 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::Abstract { .. }
         | Type::App(..)
         | Type::Hole
-        | Type::Concrete
-        | Type::Data
-        | Type::Function
-        | Type::Singleton
-        | Type::OneNumber
-        | Type::NoError
-        | Type::Discernible
-        | Type::Ordered
+        | Type::Bound(_)
         | Type::Ref(_)
         | Type::TVar(_)
         | Type::Variant(_, _, _) => None,
@@ -494,22 +487,8 @@ impl Type {
             | (_, Type::App(..))
             | (Type::Hole, _)
             | (_, Type::Hole)
-            | (Type::Concrete, _)
-            | (Type::Data, _)
-            | (Type::Function, _)
-            | (Type::Singleton, _)
-            | (Type::OneNumber, _)
-            | (Type::NoError, _)
-            | (Type::Discernible, _)
-            | (Type::Ordered, _)
-            | (_, Type::Function)
-            | (_, Type::Singleton)
-            | (_, Type::OneNumber)
-            | (_, Type::NoError)
-            | (_, Type::Discernible)
-            | (_, Type::Ordered)
-            | (_, Type::Data)
-            | (_, Type::Concrete) => {
+            | (Type::Bound(_), _)
+            | (_, Type::Bound(_)) => {
                 if union_identical(self, t) {
                     Some(self.clone())
                 } else {

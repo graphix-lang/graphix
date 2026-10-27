@@ -233,14 +233,7 @@ fn identity(t: &Type) -> Option<(Identity, Type)> {
         | Type::Primitive(_)
         | Type::Abstract { .. }
         | Type::Hole
-        | Type::Concrete
-        | Type::Data
-        | Type::Singleton
-        | Type::OneNumber
-        | Type::NoError
-        | Type::Discernible
-        | Type::Ordered
-        | Type::Function => return None,
+        | Type::Bound(_) => return None,
     };
     Some(((std::mem::discriminant(t), x, y), t.clone()))
 }

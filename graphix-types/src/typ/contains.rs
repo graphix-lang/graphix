@@ -6,9 +6,9 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, AndAc, Brief, CoreTrait, FnType, Indiscernible, Lazy, Mutability,
-        NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type, node_addr,
-        params_size, probe_key,
+        AbstractId, AndAc, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
+        Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
+        node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{CellFact, Fresh, RigidGate, would_cycle_inner},
     },
@@ -673,7 +673,10 @@ impl Type {
     // annotation, a struct field) rank-2?
     pub fn implies(&self, env: &Env, c: &Type) -> Result<bool> {
         if strictly_identical(self, c)
-            || matches!((self, c), (Type::Ordered, Type::Discernible))
+            || matches!(
+                (self, c),
+                (Type::Bound(Bound::Ordered), Type::Bound(Bound::Discernible))
+            )
         {
             return Ok(true);
         }
@@ -1235,7 +1238,9 @@ pub(super) fn find_open_cell(
 fn discernible_cell(t: &Type) -> Option<(TVar, Type)> {
     let bound = |tv: &TVar| {
         let cons = tv.cell_constraints();
-        [Type::Ordered, Type::Discernible].into_iter().find(|b| cons.contains(b))
+        [Type::Bound(Bound::Ordered), Type::Bound(Bound::Discernible)]
+            .into_iter()
+            .find(|b| cons.contains(b))
     };
     let tv = find_open_cell(t, false, &mut |tv| bound(tv).is_some())?;
     let b = bound(&tv)?;
@@ -1417,7 +1422,8 @@ impl Type {
     /// `Ordered` cell and `t` is not that.
     pub fn discernible_refusal(&self, env: &Env, t: &Self) -> Option<anyhow::Error> {
         let (tv, bound) = discernible_cell(self)?;
-        let why = t.indiscernible(env, Open::Benign, bound == Type::Ordered)?;
+        let why =
+            t.indiscernible(env, Open::Benign, bound == Type::Bound(Bound::Ordered))?;
         Some(t.not_discernible(&bound, &tv.name, &why))
     }
 
@@ -1539,24 +1545,26 @@ impl Type {
             return behind.contains_int(flags, env, hist, t);
         }
         match (self, t) {
-            (Self::Concrete, t) => Ok(t.concrete_holds(env)),
-            (_, Self::Concrete) => Ok(false),
-            (Self::Data, t) => Ok(t.data_holds(env)),
-            (_, Self::Data) => Ok(false),
-            (Self::Function, t) => t.function_holds(env, commit),
-            (_, Self::Function) => Ok(false),
-            (Self::Singleton, t) => t.singleton_holds(env, commit),
-            (_, Self::Singleton) => Ok(false),
-            (Self::OneNumber, t) => t.one_number_holds(env, commit),
-            (_, Self::OneNumber) => Ok(false),
-            (Self::NoError, t) => Ok(!t.may_be_error(env, commit)?),
-            (_, Self::NoError) => Ok(false),
-            (Self::Discernible, t) => {
+            (Self::Bound(Bound::Concrete), t) => Ok(t.concrete_holds(env)),
+            (_, Self::Bound(Bound::Concrete)) => Ok(false),
+            (Self::Bound(Bound::Data), t) => Ok(t.data_holds(env)),
+            (_, Self::Bound(Bound::Data)) => Ok(false),
+            (Self::Bound(Bound::Function), t) => t.function_holds(env, commit),
+            (_, Self::Bound(Bound::Function)) => Ok(false),
+            (Self::Bound(Bound::Singleton), t) => t.singleton_holds(env, commit),
+            (_, Self::Bound(Bound::Singleton)) => Ok(false),
+            (Self::Bound(Bound::OneNumber), t) => t.one_number_holds(env, commit),
+            (_, Self::Bound(Bound::OneNumber)) => Ok(false),
+            (Self::Bound(Bound::NoError), t) => Ok(!t.may_be_error(env, commit)?),
+            (_, Self::Bound(Bound::NoError)) => Ok(false),
+            (Self::Bound(Bound::Discernible), t) => {
                 Ok(t.indiscernible(env, Open::Benign, false).is_none())
             }
-            (_, Self::Discernible) => Ok(false),
-            (Self::Ordered, t) => Ok(t.indiscernible(env, Open::Benign, true).is_none()),
-            (_, Self::Ordered) => Ok(false),
+            (_, Self::Bound(Bound::Discernible)) => Ok(false),
+            (Self::Bound(Bound::Ordered), t) => {
+                Ok(t.indiscernible(env, Open::Benign, true).is_none())
+            }
+            (_, Self::Bound(Bound::Ordered)) => Ok(false),
             (Self::Hole, Self::Hole) => Ok(true),
             (Self::Hole, Self::TVar(tv)) => match tv.binding() {
                 Some(b) => Self::Hole.contains_int(flags, env, hist, &b),
@@ -1918,7 +1926,7 @@ impl Type {
                     // a `NoError` cell below a union holding errors takes
                     // the union without them: `Primitive ⊇ 'r` gives `'r`
                     // every primitive but `error`
-                    if t1.cell_constraints().contains(&Self::NoError)
+                    if t1.cell_constraints().contains(&Self::Bound(Bound::NoError))
                         && let Some(w) = t0.without_errors(env)?
                         && cell_constraints_ok(t1, flags, env, hist, &w)?
                     {

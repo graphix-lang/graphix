@@ -52,7 +52,7 @@ use crate::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{FnType, Indiscernible, Open, Type},
+    typ::{Bound, FnType, Indiscernible, Open, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -2553,11 +2553,11 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
         let Some(t) = tv.binding() else { continue };
         for c in tv.cell_constraints().iter() {
             match c {
-                Type::Discernible | Type::Ordered => {
+                Type::Bound(Bound::Discernible) | Type::Bound(Bound::Ordered) => {
                     discernible(env, &t, &Discerned::Bound(tv.clone(), c.clone()))?
                 }
-                Type::Concrete => discernible(env, &t, &Discerned::Keys)?,
-                Type::OneNumber => {
+                Type::Bound(Bound::Concrete) => discernible(env, &t, &Discerned::Keys)?,
+                Type::Bound(Bound::OneNumber) => {
                     if t.one_number_open() {
                         format_with_flags(PrintFlag::DerefTVars, || {
                             bail!(
@@ -2634,7 +2634,7 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
             typ.indiscernible(env, Open::Unknown, *ordered)
         }
         Discerned::Bound(_, bound) => {
-            typ.indiscernible(env, Open::Unknown, *bound == Type::Ordered)
+            typ.indiscernible(env, Open::Unknown, *bound == Type::Bound(Bound::Ordered))
         }
         Discerned::Keys => typ.map_key_failure(env, Open::Unknown),
     };

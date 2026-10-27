@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     expr::parser::parse_one,
     format_with_flags,
-    typ::{FnArgKind, FnArgType, FnType, Mutability, TVar, Type, TypeRef},
+    typ::{Bound, FnArgKind, FnArgType, FnType, Mutability, TVar, Type, TypeRef},
 };
 use bytes::Bytes;
 use chrono::prelude::*;
@@ -547,14 +547,14 @@ fn typ() -> impl Strategy<Value = Typ> {
 fn bound(inner: impl Strategy<Value = Type>) -> impl Strategy<Value = Type> {
     prop_oneof![
         6 => inner,
-        1 => Just(Type::Concrete),
-        1 => Just(Type::Data),
-        1 => Just(Type::Function),
-        1 => Just(Type::Singleton),
-        1 => Just(Type::OneNumber),
-        1 => Just(Type::NoError),
-        1 => Just(Type::Discernible),
-        1 => Just(Type::Ordered),
+        1 => Just(Type::Bound(Bound::Concrete)),
+        1 => Just(Type::Bound(Bound::Data)),
+        1 => Just(Type::Bound(Bound::Function)),
+        1 => Just(Type::Bound(Bound::Singleton)),
+        1 => Just(Type::Bound(Bound::OneNumber)),
+        1 => Just(Type::Bound(Bound::NoError)),
+        1 => Just(Type::Bound(Bound::Discernible)),
+        1 => Just(Type::Bound(Bound::Ordered)),
     ]
 }
 

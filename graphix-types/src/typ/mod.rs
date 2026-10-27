@@ -147,14 +147,7 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         Type::Map { .. }
         | Type::App(..)
         | Type::Hole
-        | Type::Concrete
-        | Type::Data
-        | Type::Function
-        | Type::Singleton
-        | Type::OneNumber
-        | Type::NoError
-        | Type::Discernible
-        | Type::Ordered
+        | Type::Bound(_)
         | Type::Primitive(_)
         | Type::Any
         | Type::Bottom
@@ -1063,6 +1056,42 @@ impl Ord for TypeRef {
     }
 }
 
+/// A bound a cell's constraints may hold beside its types: what a type
+/// binding the cell must be, judged as a whole rather than contained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Bound {
+    /// The conjunct `'a: Concrete`: whatever binds the cell is fully known,
+    /// with no open cell and no ⊥ in it, so a type-directed builtin can act
+    /// on it.
+    Concrete,
+    /// The conjunct `'a: Data`: whatever binds the cell is data a writer
+    /// can write: no reference, no function and no abstract type without
+    /// a `Cast` implementation; an open cell holds.
+    Data,
+    /// The conjunct `'a: Function`: whatever binds the cell is a function
+    /// type, so a builtin wrapping a function can read its signature.
+    Function,
+    /// The conjunct `'a: Singleton`: whatever binds the cell is one type,
+    /// not a union of several (arithmetic is `fn<'a: Number + Singleton>`).
+    Singleton,
+    /// The conjunct `'a: OneNumber`: whatever binds the cell holds at
+    /// most one numeric type (`[i64, null]`, not `[i64, f64, null]`).
+    OneNumber,
+    /// The conjunct `'a: NoError`: no value of whatever binds the cell is
+    /// an error (`Result`'s success type).
+    NoError,
+    /// The conjunct `'a: Discernible`: no union anywhere in whatever binds
+    /// the cell holds two members with one runtime form
+    /// ([`Type::rep_ambiguity`]), so its values compare and hash as their
+    /// types do.
+    Discernible,
+    /// The conjunct `'a: Ordered`: `Discernible`, and no reference where a
+    /// comparison looks ([`Type::ref_in`]): a reference's value is its
+    /// cell, which neither orders nor names what it points to, so values
+    /// of the type order, hash and compare by value alone.
+    Ordered,
+}
+
 /// Type depth is not bounded by source nesting (`let x1 = [x0]; let x2
 /// = [x1]; ..` builds a type as deep as the program is long), so every
 /// recursive walk, `Eq`, `Ord`, `Hash` and `Debug` included, runs under
@@ -1103,10 +1132,9 @@ pub enum Type {
     /// The hole in a type constructor, written `'_` (`impl Collection
     /// for Array<'_>`). Legal nowhere else.
     Hole,
-    /// The conjunct `'a: Concrete`: whatever binds the cell is fully known,
-    /// with no open cell and no ⊥ in it, so a type-directed builtin can act
-    /// on it. Legal only as a constraint.
-    // CR claude for claude: [structure/medium] Concrete, Function, Singleton, OneNumber,
+    /// A conjunct a cell's constraints may hold ([`Bound`]). Legal only as
+    /// a constraint.
+    // XCR claude for claude: [structure/medium] Concrete, Function, Singleton, OneNumber,
     // Discernible and Ordered are each a Type variant that is "legal only as a
     // constraint". Yet every type walk (print, matches, setops, normalize, cast, tval,
     // contains, fusion, pattern) lists all six, often in both pair orders, and they can
@@ -1127,38 +1155,14 @@ pub enum Type {
     // typexp.rs 8, expr/test.rs 8, tval 8, the rest 1-4). Type::Bound(BoundKind) also
     // moves Type's derived Ord and its image encoding (a format bump), so it wants a
     // batch of its own run while no other lane edits graphix-types/src/typ.
-    Concrete,
-    /// The conjunct `'a: Data`: whatever binds the cell is data a writer
-    /// can write: no reference, no function and no abstract type without
-    /// a `Cast` implementation; an open cell holds. Legal only as a
-    /// constraint.
-    Data,
-    /// The conjunct `'a: Function`: whatever binds the cell is a function
-    /// type, so a builtin wrapping a function can read its signature.
-    /// Legal only as a constraint.
-    Function,
-    /// The conjunct `'a: Singleton`: whatever binds the cell is one type,
-    /// not a union of several (arithmetic is `fn<'a: Number + Singleton>`).
-    /// Legal only as a constraint.
-    Singleton,
-    /// The conjunct `'a: OneNumber`: whatever binds the cell holds at
-    /// most one numeric type (`[i64, null]`, not `[i64, f64, null]`).
-    /// Legal only as a constraint.
-    OneNumber,
-    /// The conjunct `'a: NoError`: no value of whatever binds the cell is
-    /// an error (`Result`'s success type). Legal only as a constraint.
-    NoError,
-    /// The conjunct `'a: Discernible`: no union anywhere in whatever binds
-    /// the cell holds two members with one runtime form
-    /// ([`Type::rep_ambiguity`]), so its values compare and hash as their
-    /// types do. Legal only as a constraint.
-    Discernible,
-    /// The conjunct `'a: Ordered`: `Discernible`, and no reference where a
-    /// comparison looks ([`Type::ref_in`]): a reference's value is its
-    /// cell, which neither orders nor names what it points to, so values
-    /// of the type order, hash and compare by value alone. Legal only as
-    /// a constraint.
-    Ordered,
+    // 2026-10-27 claude: Type's eight bound variants are one, Type::Bound(Bound), with
+    // Bound { Concrete, Data, Function, Singleton, OneNumber, NoError, Discernible,
+    // Ordered }. The 29 or-pattern runs that listed all eight, each sharing one arm
+    // body, are now one Type::Bound(_) alternative (31 sites), so a ninth bound needs no
+    // edit there. The 152 references left name their bound (Debug, Eq/Ord/Hash, the
+    // image tags, contains, settle, tvar, print). Image bytes and Type's order are
+    // unchanged: each bound keeps its own tag, so no format bump. Whole gate green.
+    Bound(Bound),
 }
 
 impl Debug for Type {
@@ -1167,14 +1171,14 @@ impl Debug for Type {
             Self::Bottom => f.write_str("Bottom"),
             Self::Any => f.write_str("Any"),
             Self::Hole => f.write_str("Hole"),
-            Self::Concrete => f.write_str("Concrete"),
-            Self::Data => f.write_str("Data"),
-            Self::Function => f.write_str("Function"),
-            Self::Singleton => f.write_str("Singleton"),
-            Self::OneNumber => f.write_str("OneNumber"),
-            Self::NoError => f.write_str("NoError"),
-            Self::Discernible => f.write_str("Discernible"),
-            Self::Ordered => f.write_str("Ordered"),
+            Self::Bound(Bound::Concrete) => f.write_str("Concrete"),
+            Self::Bound(Bound::Data) => f.write_str("Data"),
+            Self::Bound(Bound::Function) => f.write_str("Function"),
+            Self::Bound(Bound::Singleton) => f.write_str("Singleton"),
+            Self::Bound(Bound::OneNumber) => f.write_str("OneNumber"),
+            Self::Bound(Bound::NoError) => f.write_str("NoError"),
+            Self::Bound(Bound::Discernible) => f.write_str("Discernible"),
+            Self::Bound(Bound::Ordered) => f.write_str("Ordered"),
             Self::Primitive(p) => f.debug_tuple("Primitive").field(p).finish(),
             Self::Ref(r) => f.debug_tuple("Ref").field(r).finish(),
             Self::Fn(t) => f.debug_tuple("Fn").field(t).finish(),
@@ -1311,14 +1315,14 @@ impl Type {
             Type::Bottom => out.put_u8(tag::BOTTOM),
             Type::Any => out.put_u8(tag::ANY),
             Type::Hole => out.put_u8(tag::HOLE),
-            Type::Concrete => out.put_u8(tag::CONCRETE),
-            Type::Data => out.put_u8(tag::DATA),
-            Type::Function => out.put_u8(tag::FUNCTION),
-            Type::Singleton => out.put_u8(tag::SINGLETON),
-            Type::OneNumber => out.put_u8(tag::ONE_NUMBER),
-            Type::NoError => out.put_u8(tag::NO_ERROR),
-            Type::Discernible => out.put_u8(tag::DISCERNIBLE),
-            Type::Ordered => out.put_u8(tag::ORDERED),
+            Type::Bound(Bound::Concrete) => out.put_u8(tag::CONCRETE),
+            Type::Bound(Bound::Data) => out.put_u8(tag::DATA),
+            Type::Bound(Bound::Function) => out.put_u8(tag::FUNCTION),
+            Type::Bound(Bound::Singleton) => out.put_u8(tag::SINGLETON),
+            Type::Bound(Bound::OneNumber) => out.put_u8(tag::ONE_NUMBER),
+            Type::Bound(Bound::NoError) => out.put_u8(tag::NO_ERROR),
+            Type::Bound(Bound::Discernible) => out.put_u8(tag::DISCERNIBLE),
+            Type::Bound(Bound::Ordered) => out.put_u8(tag::ORDERED),
             Type::Primitive(p) => {
                 out.put_u8(tag::PRIMITIVE);
                 out.put_u64_le(p.bits() as u64);
@@ -1406,17 +1410,7 @@ impl Type {
 
     fn shape_len_inner(&self) -> usize {
         1 + match self {
-            Type::Bottom
-            | Type::Any
-            | Type::Hole
-            | Type::Concrete
-            | Type::Data
-            | Type::Function
-            | Type::OneNumber
-            | Type::NoError
-            | Type::Discernible
-            | Type::Ordered
-            | Type::Singleton => 0,
+            Type::Bottom | Type::Any | Type::Hole | Type::Bound(_) => 0,
             Type::Primitive(p) => p.encoded_len(),
             Type::Ref(r) => r.encoded_len(),
             Type::Fn(f) => f.encoded_len(),
@@ -1442,14 +1436,14 @@ impl Type {
             Type::Bottom => Ok(buf.put_u8(tag::BOTTOM)),
             Type::Any => Ok(buf.put_u8(tag::ANY)),
             Type::Hole => Ok(buf.put_u8(tag::HOLE)),
-            Type::Concrete => Ok(buf.put_u8(tag::CONCRETE)),
-            Type::Data => Ok(buf.put_u8(tag::DATA)),
-            Type::Function => Ok(buf.put_u8(tag::FUNCTION)),
-            Type::Singleton => Ok(buf.put_u8(tag::SINGLETON)),
-            Type::OneNumber => Ok(buf.put_u8(tag::ONE_NUMBER)),
-            Type::NoError => Ok(buf.put_u8(tag::NO_ERROR)),
-            Type::Discernible => Ok(buf.put_u8(tag::DISCERNIBLE)),
-            Type::Ordered => Ok(buf.put_u8(tag::ORDERED)),
+            Type::Bound(Bound::Concrete) => Ok(buf.put_u8(tag::CONCRETE)),
+            Type::Bound(Bound::Data) => Ok(buf.put_u8(tag::DATA)),
+            Type::Bound(Bound::Function) => Ok(buf.put_u8(tag::FUNCTION)),
+            Type::Bound(Bound::Singleton) => Ok(buf.put_u8(tag::SINGLETON)),
+            Type::Bound(Bound::OneNumber) => Ok(buf.put_u8(tag::ONE_NUMBER)),
+            Type::Bound(Bound::NoError) => Ok(buf.put_u8(tag::NO_ERROR)),
+            Type::Bound(Bound::Discernible) => Ok(buf.put_u8(tag::DISCERNIBLE)),
+            Type::Bound(Bound::Ordered) => Ok(buf.put_u8(tag::ORDERED)),
             Type::Primitive(p) => {
                 buf.put_u8(tag::PRIMITIVE);
                 p.encode(buf)
@@ -1525,14 +1519,14 @@ impl Type {
             tag::BOTTOM => Type::Bottom,
             tag::ANY => Type::Any,
             tag::HOLE => Type::Hole,
-            tag::CONCRETE => Type::Concrete,
-            tag::DATA => Type::Data,
-            tag::FUNCTION => Type::Function,
-            tag::SINGLETON => Type::Singleton,
-            tag::ONE_NUMBER => Type::OneNumber,
-            tag::NO_ERROR => Type::NoError,
-            tag::DISCERNIBLE => Type::Discernible,
-            tag::ORDERED => Type::Ordered,
+            tag::CONCRETE => Type::Bound(Bound::Concrete),
+            tag::DATA => Type::Bound(Bound::Data),
+            tag::FUNCTION => Type::Bound(Bound::Function),
+            tag::SINGLETON => Type::Bound(Bound::Singleton),
+            tag::ONE_NUMBER => Type::Bound(Bound::OneNumber),
+            tag::NO_ERROR => Type::Bound(Bound::NoError),
+            tag::DISCERNIBLE => Type::Bound(Bound::Discernible),
+            tag::ORDERED => Type::Bound(Bound::Ordered),
             tag::PRIMITIVE => Type::Primitive(PackTrait::decode(buf)?),
             tag::REF => Type::Ref(PackTrait::decode(buf)?),
             tag::FN => Type::Fn(PackTrait::decode(buf)?),
@@ -1603,14 +1597,28 @@ impl PartialEq for Type {
             (Type::Bottom, _) => matches!(other, Type::Bottom),
             (Type::Any, _) => matches!(other, Type::Any),
             (Type::Hole, _) => matches!(other, Type::Hole),
-            (Type::Concrete, _) => matches!(other, Type::Concrete),
-            (Type::Data, _) => matches!(other, Type::Data),
-            (Type::Function, _) => matches!(other, Type::Function),
-            (Type::Singleton, _) => matches!(other, Type::Singleton),
-            (Type::OneNumber, _) => matches!(other, Type::OneNumber),
-            (Type::NoError, _) => matches!(other, Type::NoError),
-            (Type::Discernible, _) => matches!(other, Type::Discernible),
-            (Type::Ordered, _) => matches!(other, Type::Ordered),
+            (Type::Bound(Bound::Concrete), _) => {
+                matches!(other, Type::Bound(Bound::Concrete))
+            }
+            (Type::Bound(Bound::Data), _) => matches!(other, Type::Bound(Bound::Data)),
+            (Type::Bound(Bound::Function), _) => {
+                matches!(other, Type::Bound(Bound::Function))
+            }
+            (Type::Bound(Bound::Singleton), _) => {
+                matches!(other, Type::Bound(Bound::Singleton))
+            }
+            (Type::Bound(Bound::OneNumber), _) => {
+                matches!(other, Type::Bound(Bound::OneNumber))
+            }
+            (Type::Bound(Bound::NoError), _) => {
+                matches!(other, Type::Bound(Bound::NoError))
+            }
+            (Type::Bound(Bound::Discernible), _) => {
+                matches!(other, Type::Bound(Bound::Discernible))
+            }
+            (Type::Bound(Bound::Ordered), _) => {
+                matches!(other, Type::Bound(Bound::Ordered))
+            }
             (Type::Primitive(a), _) => matches!(other, Type::Primitive(b) if a == b),
             _ => ensure_sufficient(|| self.eq_composite(other)),
         }
@@ -1631,14 +1639,20 @@ impl Type {
             Type::Bottom => matches!(other, Type::Bottom),
             Type::Any => matches!(other, Type::Any),
             Type::Hole => matches!(other, Type::Hole),
-            Type::Concrete => matches!(other, Type::Concrete),
-            Type::Data => matches!(other, Type::Data),
-            Type::Function => matches!(other, Type::Function),
-            Type::Singleton => matches!(other, Type::Singleton),
-            Type::OneNumber => matches!(other, Type::OneNumber),
-            Type::NoError => matches!(other, Type::NoError),
-            Type::Discernible => matches!(other, Type::Discernible),
-            Type::Ordered => matches!(other, Type::Ordered),
+            Type::Bound(Bound::Concrete) => matches!(other, Type::Bound(Bound::Concrete)),
+            Type::Bound(Bound::Data) => matches!(other, Type::Bound(Bound::Data)),
+            Type::Bound(Bound::Function) => matches!(other, Type::Bound(Bound::Function)),
+            Type::Bound(Bound::Singleton) => {
+                matches!(other, Type::Bound(Bound::Singleton))
+            }
+            Type::Bound(Bound::OneNumber) => {
+                matches!(other, Type::Bound(Bound::OneNumber))
+            }
+            Type::Bound(Bound::NoError) => matches!(other, Type::Bound(Bound::NoError)),
+            Type::Bound(Bound::Discernible) => {
+                matches!(other, Type::Bound(Bound::Discernible))
+            }
+            Type::Bound(Bound::Ordered) => matches!(other, Type::Bound(Bound::Ordered)),
             Type::Primitive(a) => matches!(other, Type::Primitive(b) if a == b),
             Type::Ref(a) => matches!(other, Type::Ref(b) if a == b),
             Type::Fn(a) => {
@@ -1696,14 +1710,14 @@ impl Type {
             Type::Abstract { .. } => tag::ABSTRACT,
             Type::App(..) => tag::APP,
             Type::Hole => tag::HOLE,
-            Type::Concrete => tag::CONCRETE,
-            Type::Data => tag::DATA,
-            Type::Function => tag::FUNCTION,
-            Type::Singleton => tag::SINGLETON,
-            Type::OneNumber => tag::ONE_NUMBER,
-            Type::NoError => tag::NO_ERROR,
-            Type::Discernible => tag::DISCERNIBLE,
-            Type::Ordered => tag::ORDERED,
+            Type::Bound(Bound::Concrete) => tag::CONCRETE,
+            Type::Bound(Bound::Data) => tag::DATA,
+            Type::Bound(Bound::Function) => tag::FUNCTION,
+            Type::Bound(Bound::Singleton) => tag::SINGLETON,
+            Type::Bound(Bound::OneNumber) => tag::ONE_NUMBER,
+            Type::Bound(Bound::NoError) => tag::NO_ERROR,
+            Type::Bound(Bound::Discernible) => tag::DISCERNIBLE,
+            Type::Bound(Bound::Ordered) => tag::ORDERED,
         }
     }
 
@@ -1748,14 +1762,7 @@ impl Ord for Type {
             Type::Bottom
             | Type::Any
             | Type::Hole
-            | Type::Concrete
-            | Type::Data
-            | Type::Function
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::NoError
-            | Type::Discernible
-            | Type::Ordered
+            | Type::Bound(_)
             | Type::Primitive(_) => self.cmp_fields(other),
             _ => ensure_sufficient(|| self.cmp_fields(other)),
         })
@@ -1766,17 +1773,7 @@ impl Hash for Type {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.rank().hash(state);
         match self {
-            Type::Bottom
-            | Type::Any
-            | Type::Hole
-            | Type::Concrete
-            | Type::Data
-            | Type::Function
-            | Type::OneNumber
-            | Type::NoError
-            | Type::Discernible
-            | Type::Ordered
-            | Type::Singleton => (),
+            Type::Bottom | Type::Any | Type::Hole | Type::Bound(_) => (),
             Type::Primitive(p) => p.hash(state),
             t => ensure_sufficient(|| match t {
                 Type::Ref(r) => r.hash(state),
@@ -1807,14 +1804,7 @@ impl Hash for Type {
                 Type::Bottom
                 | Type::Any
                 | Type::Hole
-                | Type::Concrete
-                | Type::Data
-                | Type::Function
-                | Type::Singleton
-                | Type::OneNumber
-                | Type::NoError
-                | Type::Discernible
-                | Type::Ordered
+                | Type::Bound(_)
                 | Type::Primitive(_) => (),
             }),
         }
@@ -1863,14 +1853,7 @@ impl Drop for Type {
             Type::Bottom
             | Type::Any
             | Type::Hole
-            | Type::Concrete
-            | Type::Data
-            | Type::Function
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::NoError
-            | Type::Discernible
-            | Type::Ordered
+            | Type::Bound(_)
             | Type::Primitive(_)
             | Type::TVar(_) => false,
             Type::Ref(tr) => tr.is_unique() && tr.params.is_unique(),
@@ -1895,14 +1878,7 @@ impl Drop for Type {
                 Type::Bottom
                 | Type::Any
                 | Type::Hole
-                | Type::Concrete
-                | Type::Data
-                | Type::Function
-                | Type::Singleton
-                | Type::OneNumber
-                | Type::NoError
-                | Type::Discernible
-                | Type::Ordered
+                | Type::Bound(_)
                 | Type::Primitive(_) => (),
                 Type::Ref(r) => drop(ptr::read(r)),
                 Type::Fn(f) => drop(ptr::read(f)),
@@ -1995,14 +1971,7 @@ impl Type {
             | Type::Primitive(_)
             | Type::TVar(_)
             | Type::Hole
-            | Type::Concrete
-            | Type::Data
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::NoError
-            | Type::Discernible
-            | Type::Ordered
-            | Type::Function => ControlFlow::Continue(()),
+            | Type::Bound(_) => ControlFlow::Continue(()),
             Type::App(c, a) => {
                 f(c)?;
                 f(a)
@@ -2142,14 +2111,7 @@ impl Type {
             | Type::Primitive(_)
             | Type::TVar(_)
             | Type::Hole
-            | Type::Concrete
-            | Type::Data
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::NoError
-            | Type::Discernible
-            | Type::Ordered
-            | Type::Function => None,
+            | Type::Bound(_) => None,
             Type::App(c, a) => match (f(c), f(a)) {
                 (None, None) => None,
                 (c2, a2) => Some(Type::app(
@@ -2985,15 +2947,7 @@ impl Type {
                 Some(filled) => ensure_sufficient(|| filled.with_deref(f)),
                 None => f(Some(self)),
             },
-            Self::Hole
-            | Self::Concrete
-            | Self::Data
-            | Self::Function
-            | Self::Singleton
-            | Self::Discernible
-            | Self::Ordered
-            | Self::OneNumber
-            | Self::NoError => f(Some(self)),
+            Self::Hole | Self::Bound(_) => f(Some(self)),
             Self::Bottom
             | Self::Abstract { .. }
             | Self::Any
@@ -3020,14 +2974,7 @@ impl Type {
     /// a cell binds to. Exhaustive, so a new variant is decided here.
     pub fn is_predicate(&self) -> bool {
         match self {
-            Type::Concrete
-            | Type::Data
-            | Type::Function
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::NoError
-            | Type::Discernible
-            | Type::Ordered => true,
+            Type::Bound(_) => true,
             Type::Bottom
             | Type::Any
             | Type::Hole

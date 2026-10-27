@@ -279,14 +279,7 @@ impl<'a> TVal<'a> {
                 Type::Primitive(_)
                 | Type::Abstract { .. }
                 | Type::Hole
-                | Type::Concrete
-                | Type::Data
-                | Type::Function
-                | Type::Singleton
-                | Type::OneNumber
-                | Type::NoError
-                | Type::Discernible
-                | Type::Ordered
+                | Type::Bound(_)
                 | Type::Bottom
                 | Type::Any,
                 v,
