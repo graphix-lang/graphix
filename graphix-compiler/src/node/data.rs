@@ -503,6 +503,17 @@ pub struct Tuple<R: Rt> {
 }
 
 impl<R: Rt> Tuple<R> {
+    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R>]>, fork: ForkSite) -> Node<R> {
+        Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+            fork,
+        })
+    }
+
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
@@ -516,14 +527,7 @@ impl<R: Rt> Tuple<R> {
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
         let typ = Type::Tuple(Arc::from_iter(n.iter().map(|n| n.typ().clone())));
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            n,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-            fork: Default::default(),
-        }))
+        Ok(Self::with(spec, typ, n, Default::default()))
     }
 }
 
@@ -535,14 +539,7 @@ impl<R: Rt> Tuple<R> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            n,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-            fork: ForkSite::image_decode(buf)?,
-        }))
+        Ok(Self::with(spec, typ, n, ForkSite::image_decode(buf)?))
     }
 }
 
