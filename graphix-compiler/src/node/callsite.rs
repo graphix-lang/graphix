@@ -1088,6 +1088,10 @@ pub(crate) fn carried_out(
     })
 }
 
+/// The shared nodes a [`data_positions`] walk has walked, by identity and
+/// position kind, each held so an expansion's node keeps its address.
+type DataSeen = AHashMap<(usize, bool), Type>;
+
 /// Every type variable under `t` by name, with whether each occurrence
 /// is data: never under a function, a reference, a typedef application,
 /// a nominal type or a constructor application. Bindings are walked.
@@ -1096,20 +1100,22 @@ fn data_positions(
     t: &Type,
     data: bool,
     expanding: &mut SmallVec<[usize; 4]>,
-    seen: &mut AHashSet<(usize, bool)>,
+    seen: &mut DataSeen,
     out: &mut AHashMap<ArcStr, (TVar, bool)>,
 ) {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => {
             out.entry(tv.name.clone()).or_insert_with(|| (tv.clone(), true)).1 &= data;
-            if seen.insert((tv.cell_addr(), data))
+            if seen.insert((tv.cell_addr(), data), t.clone()).is_none()
                 && let Some(b) = tv.binding()
             {
                 data_positions(env, &b, data, expanding, seen, out)
             }
         }
         // a shared node is walked once in each kind of position
-        t if t.shared_identity().is_some_and(|n| !seen.insert((n, data))) => (),
+        t if t
+            .shared_identity()
+            .is_some_and(|n| seen.insert((n, data), t.clone()).is_some()) => {}
         Type::Ref(_) if let Some((key, whole)) = expansion(env, t, expanding) => {
             expanding.push(key);
             data_positions(env, &whole, data, expanding, seen, out);
@@ -1191,7 +1197,7 @@ fn holds_invariantly(env: &Env, t: &Type, expanding: &mut SmallVec<[usize; 4]>) 
 fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
-    let mut seen: LPooled<AHashSet<(usize, bool)>> = LPooled::take();
+    let mut seen: LPooled<DataSeen> = LPooled::take();
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
     let mut expanding = SmallVec::new();
     inst.for_each_type(&mut |t| {

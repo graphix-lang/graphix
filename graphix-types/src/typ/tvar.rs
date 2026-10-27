@@ -2096,13 +2096,15 @@ impl Type {
     }
 
     /// [`Self::collect_tvars`], each shared node (`seen`) walked once.
+    /// `seen` holds each node, so a normalized conjunct dropped mid-walk
+    /// cannot lend its address to a node never walked.
     pub(super) fn collect_tvars_seen(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
-        seen: &mut AHashSet<usize>,
+        seen: &mut AHashMap<usize, Type>,
     ) {
         if let Some(n) = node_addr(self)
-            && !seen.insert(n)
+            && seen.insert(n, self.clone()).is_some()
         {
             return;
         }

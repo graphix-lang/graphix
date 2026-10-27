@@ -1066,7 +1066,7 @@ impl FnType {
     pub(super) fn collect_tvars_seen(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
-        seen: &mut AHashSet<usize>,
+        seen: &mut AHashMap<usize, Type>,
     ) {
         self.for_each_part(&mut |t, constraint| {
             if constraint {

@@ -1012,7 +1012,9 @@ struct DataMeet<'a> {
     /// Each side's enclosing function types' own quantifiers: such a cell
     /// judges what its function is called with, never the function.
     own: [SmallVec<[ArcStr; 2]>; 2],
-    seen: LPooled<AHashSet<(usize, usize)>>,
+    /// The node pairs walked, each held so an expansion's node keeps its
+    /// address for the walk.
+    seen: LPooled<AHashMap<(usize, usize), (Type, Type)>>,
 }
 
 impl<'a> DataMeet<'a> {
@@ -1043,7 +1045,7 @@ impl<'a> DataMeet<'a> {
             };
         }
         if let (Some(a), Some(b)) = (node_addr(t[0]), node_addr(t[1]))
-            && !self.seen.insert((a, b))
+            && self.seen.insert((a, b), (t[0].clone(), t[1].clone())).is_some()
         {
             return None;
         }

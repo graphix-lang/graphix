@@ -387,19 +387,20 @@ impl Type {
     /// left a parameter undecided carries no cell a later check could
     /// still decide).
     pub fn frozen(&self, env: &Env) -> Type {
+        /// Each cell's fixed type, by address, with the cell held so a
+        /// witness's fresh cell keeps its address for the walk.
+        type Memo = AHashMap<usize, (TVar, Type)>;
         /// `None` where nothing beneath holds a cell.
-        fn go(t: &Type, env: &Env, memo: &mut AHashMap<usize, Type>) -> Option<Type> {
+        fn go(t: &Type, env: &Env, memo: &mut Memo) -> Option<Type> {
             crate::stack::ensure_sufficient(|| match t {
                 Type::TVar(tv) => {
                     let addr = tv.cell_addr();
-                    if let Some(t) = memo.get(&addr) {
+                    if let Some((_, t)) = memo.get(&addr) {
                         return Some(t.clone());
                     }
                     // a cell met again inside its own binding is ⊥ there
-                    memo.insert(addr, Type::Bottom);
-                    let fixed = |t: Type, memo: &mut AHashMap<usize, Type>| {
-                        go(&t, env, memo).unwrap_or(t)
-                    };
+                    memo.insert(addr, (tv.clone(), Type::Bottom));
+                    let fixed = |t: Type, memo: &mut Memo| go(&t, env, memo).unwrap_or(t);
                     let r = match tv.binding() {
                         Some(b) => fixed(b, memo),
                         None => match tv.witness(env) {
@@ -407,7 +408,7 @@ impl Type {
                             _ => Type::Bottom,
                         },
                     };
-                    memo.insert(addr, r.clone());
+                    memo.insert(addr, (tv.clone(), r.clone()));
                     Some(r)
                 }
                 t => t.cow_children(&mut |c| go(c, env, memo)),
