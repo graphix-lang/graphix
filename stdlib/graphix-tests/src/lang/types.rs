@@ -2720,7 +2720,7 @@ const OPEN_MEMBER_TAKES_THE_RESIDUE: &str = r#"
 
 run!(open_member_takes_the_residue, OPEN_MEMBER_TAKES_THE_RESIDUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(true)])
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 /// A union holding the very cell it is asked to contain binds nothing.
 const UNION_HOLDS_ITS_OWN_CELL: &str = r#"
@@ -3383,7 +3383,7 @@ const BARE_VARIANT_AFTER_ARRAY: &str = r#"
 
 run!(bare_variant_after_array, BARE_VARIANT_AFTER_ARRAY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(1), Value::I64(3)])
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 /// Two applications of a recursive definition do not merge: L<i64> and
 /// L<string> do not cover a mixed list.

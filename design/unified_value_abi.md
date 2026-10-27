@@ -26,11 +26,15 @@ encoding:
   - variant / nullable / bare-value shapes: the `Value` payload word.
     A bare value is anything without a register or composite form: a
     map, an error, an abstract, a list, a datetime/duration/bytes, a
-    varint (`v32`/`z32`/`v64`/`z64`), a decimal, and a union of several
+    varint (`v32`/`z32`/`v64`/`z64`), a decimal, a union of several
     primitives (`[i64, f64]`, `Number`), whose arms merge by the same
-    boxing a scalar gets at any value seam. A select over a primitive
-    union tests the value's tag against each primitive of an arm's
-    predicate. Arithmetic takes scalars only, so a varint or a union
+    boxing a scalar gets at any value seam, and any other union of
+    encoded members (`` [`A, `B, null] ``, `` [{x: i64}, `N] ``,
+    `[List<i64>, Array<i64>]`), which the members' tags and kind
+    markers tell apart. A select over a primitive union tests the
+    value's tag against each primitive of an arm's predicate; over
+    another union, a written type test is the value's own test
+    (`graphix_value_is_a`). Arithmetic takes scalars only, so a varint or a union
     operand keeps its operator in the node-walk.
 
 Every kernel returns two words. Because every seam

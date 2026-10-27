@@ -657,3 +657,60 @@ run!(select_nested_leaves_fuse, r#"
     )
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[[i64:11, i64:22, i64:31, i64:40], [i64:10, i64:9, i64:3], ["hello", "wo", "r"], ["1/10", "2.5/20"], [i64:4, i64:0, i64:7, i64:-1, i64:-1, i64:5], [i64:3, i64:4, i64:3, i64:8, i64:-2], [i64:1, i64:10, i64:0, i64:-9], ["zeroa0", "head1", "empty", "zerod1"], [i64:1, i64:0, i64:1, i64:0, i64:13, i64:2], [i64:3, i64:0, i64:0, i64:2, i64:3], [i64:1, i64:2, i64:5, "5"]]"#); FuseExpect::Jit);
+
+// A union of any encoded members rides a kernel as the value it is: an
+// optional enum, variants beside a struct or a tuple, a list beside an
+// array, a map beside bytes and null, each returned, passed, compared,
+// printed and tested by pattern or by written type.
+run!(unions_of_marked_kinds_fuse, r#"
+{
+    let a = |n: i64| -> [`A, `B, null] #[native] select n { 0 => `A, 1 => `B, _ => null };
+    let b = |n: i64| -> [`A, `B(i64), null] #[native] select n { 0 => `A, 1 => `B(n), _ => null };
+    let c = |n: i64| -> [{x: i64}, `N] #[native] select n { 0 => {x: n}, _ => `N };
+    let d = |n: i64| -> [List<i64>, Array<i64>] #[native] select n { 0 => [<n, 1>], _ => [n] };
+    let e = |v: [`A, `B(i64), null]| -> i64 #[native] select v { `A => 1, `B(k) => k, null => 0 };
+    let f = |q: [Array<string>, List<f64>]| -> i64 #[native] select q {
+        Array<string> as s => array::len(s),
+        List<f64> as l => 10 + list::len(l)
+    };
+    let g = |q: [(i64, i64), `A(i64), `B]| -> i64 #[native] select q {
+        (i64, i64) as (x, y) => x + y,
+        [`A(i64), `B] as w => select w { `A(k) => k * 100, `B => -1 }
+    };
+    let h = |q: [`A(i64), `B, string]| -> i64 #[native] select q {
+        [`A(i64), `B] as _ => 7,
+        string as s => str::len(s)
+    };
+    let m = |q: [Map<string, i64>, bytes, null]| -> i64 #[native] select q {
+        Map<string, i64> as m => map::len(m),
+        bytes as _ => -5,
+        null => 0
+    };
+    let s = |q: [{a: i64}, List<i64>]| -> i64 #[native] select q {
+        {a: i64} as r => r.a,
+        List<i64> as l => list::len(l)
+    };
+    let i = |q: [(i64, i64), `A(i64), `B, {a: i64}]| -> i64 #[native] select q {
+        (x, y) => x + y,
+        `A(k) => k * 100,
+        {a} => a,
+        `B => -1
+    };
+    let eq = |p: [`A, `B(i64), null], q: [`A, `B(i64), null]| -> bool #[native] p == q;
+    let show = |p| -> string #[native] "<[p]>";
+    let arr = |xs: Array<[`A, `B(i64), null]>| -> Array<i64> #[native] array::map(xs, |x| select x {
+        `A => 1,
+        `B(k) => k,
+        null => 0
+    });
+    (
+        (e(`A), e(b(1)), e(b(5)), e(null), e(`B(9)), e(select a(1) { `A => `A, _ => null })),
+        (f(["x", "y"]), f([<1.0, 2.0, 3.0>]), g((2, 3)), g(`A(4)), g(`B)),
+        (h(`A(1)), h(`B), h("abcd"), m({"a" => 1, "b" => 2}), m(bytes:AA==), m(null)),
+        (s({a: 6}), s([<1, 2>]), i((1, 2)), i(`A(3)), i(`B), i({a: 8})),
+        (eq(`A, `A), eq(`A, null), eq(`B(1), `B(1)), eq(`B(1), `B(2)), eq(null, b(2))),
+        (show(`B(2)), show(b(2)), show("s"), show(a(0)), show(c(0)), show(c(1)), show(d(0)), show(d(3))),
+        arr([`A, `B(5), null])
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[[i64:1, i64:1, i64:0, i64:0, i64:9, i64:0], [i64:2, i64:13, i64:5, i64:400, i64:-1], [i64:7, i64:7, i64:4, i64:2, i64:-5, i64:0], [i64:6, i64:2, i64:3, i64:300, i64:-1, i64:8], [true, false, true, false, true], ["<`B(2)>", "<null>", "<s>", "<`A>", "<{x: 0}>", "<`N>", "<[<0, 1>]>", "<[3]>"], [i64:1, i64:5, i64:0]]"#); FuseExpect::Jit);

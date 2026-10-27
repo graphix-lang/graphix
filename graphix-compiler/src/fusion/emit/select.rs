@@ -1452,6 +1452,18 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
             {
                 Some(emit_null_cond(cx, scrut, scrut_typ)?)
             }
+            // Over any other union, the value's own test against the
+            // predicate, as the node-walk tests a written one.
+            _ if matches!(scrut_typ, Type::Set(_))
+                && matches!(scrut, SelectScrut::Value { kind: ValueKind::Value, .. }) =>
+            {
+                let SelectScrut::Value { disc, payload, .. } = scrut else {
+                    unreachable!()
+                };
+                let typ = cx.interned_type(&pat.type_predicate.resolve_tvars())?;
+                let call = cx.call_helper("graphix_value_is_a", &[typ, disc, payload])?;
+                Some(cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0))
+            }
             Type::Primitive(p)
                 if !p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
             {

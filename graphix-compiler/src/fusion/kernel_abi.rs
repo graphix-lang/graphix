@@ -227,10 +227,11 @@ fn primitive_union(members: &[Type]) -> Option<Type> {
 /// The top-level [`AbiKind`] of a `Type`; nested elements are not
 /// checked (see [`freeze_for_abi`]). A `Set` is one of: a union that
 /// folds to one primitive set ([`primitive_union`]), an option or a
-/// result (`Nullable`), all variants (`Variant`), or all tuples, structs
-/// and arrays (`Value`). `None` for shapes with no kernel encoding: an
-/// unbound TVar, `Fn`, `Any`, `ByRef`, any other `Set`, a `Ref` with an
-/// empty resolution cell, or a recursive named type.
+/// result (`Nullable`), all variants (`Variant`), or any other union of
+/// encoded members (`Value`). `None` for shapes with no kernel encoding:
+/// an unbound TVar, `Fn`, `Any`, `ByRef`, a `Set` holding one of them or
+/// a `Set`, a `Ref` with an empty resolution cell, or a recursive named
+/// type.
 pub fn abi_kind(t: &Type) -> Option<AbiKind> {
     abi_kind_d(t, None)
 }
@@ -322,7 +323,7 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             if let Some(succ) = option_result_success(members) {
                 return abi_kind_d(succ, seen).map(|_| AbiKind::Nullable);
             }
-            // CR claude for claude: [perf/medium] A union not covered by these three
+            // XCR claude for claude: [perf/medium] A union not covered by these three
             // rules has no kernel encoding: [`A, `B, null] (an optional enum), [`A,
             // `B(i64), null], [{x: i64}, `N], [List<i64>, Array<i64>]. Every function
             // returning or taking one node-walks. With kind markers the value tells all
@@ -354,22 +355,33 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             // freeze, so its select de-fuses before any pattern is lowered. Of the
             // three changes this CR needs together, the select lowering's member tests
             // now exist for composites; the freeze step and the abi_kind rule remain.
+            // 2026-10-27 claude: abi_kind and the freeze now take any union of encoded
+            // members as a Value (abi_kind_d's Set rule: no member a Set, none without
+            // a kernel encoding; Freeze: a non-variant union must be canonical, and a
+            // member that freezes to a Set or bottom is NonCanonical), and the select
+            // lowering tests a written type over such a Value scrutinee with
+            // graphix_value_is_a, as the node-walk's is_a does (emit_arm_cond). The
+            // probe's three functions, and every x-kind-markers-06-union-formals probe,
+            // fuse under #[native] with the node-walk's answers. A list pattern over a
+            // union holding a list still de-fuses ('list pattern over non-list'). Pin:
+            // graphix-tests fusion_review::unions_of_marked_kinds_fuse (#[native] on
+            // returns, formals, variant/null/composite patterns, written type tests,
+            // ==, interpolation, array::map); its jit modes fail with either half
+            // undone.
             let all_variants = members
                 .iter()
                 .all(|m| m.with_deref(|r| matches!(r, Some(Type::Variant(_, _, _)))));
             if all_variants {
                 return Some(AbiKind::Variant);
             }
-            // a union of composites rides as the Value it is; a select
-            // tests a member's shape before reading it as that member
-            if members.iter().all(|m| {
-                m.with_deref(|r| {
-                    matches!(r, Some(Type::Tuple(_) | Type::Struct(_) | Type::Array(_)))
-                })
-            }) {
-                return Some(AbiKind::Value);
-            }
-            return None;
+            // any other union rides as the Value it is: its members' kind
+            // markers and value tags tell them apart, and a select tests a
+            // member before reading it as that member
+            let encoded = |m: &Type| {
+                !m.with_deref(|r| matches!(r, Some(Type::Set(_))))
+                    && abi_kind_d(m, seen).is_some_and(|k| k != AbiKind::Unit)
+            };
+            return members.iter().all(encoded).then_some(AbiKind::Value);
         }
         None
     }
@@ -702,15 +714,9 @@ impl Freeze {
                             if succ_idx == 1 { frozen_succ } else { members[1].clone() };
                         return Ok(Type::Set(Arc::from_iter([m0, m1])));
                     }
-                    let composite = |m: &Type| {
-                        m.with_deref(|r| {
-                            matches!(
-                                r,
-                                Some(Type::Tuple(_) | Type::Struct(_) | Type::Array(_))
-                            )
-                        })
-                    };
-                    if members.iter().all(composite) {
+                    let variant =
+                        |m: &Type| m.with_deref(|r| matches!(r, Some(Type::Variant(..))));
+                    if !members.iter().all(variant) {
                         // one the normalizer would collapse freezes as what it
                         // collapses to
                         // XCR claude for claude: [risk/low] [risk/low] This normalizes
@@ -737,31 +743,12 @@ impl Freeze {
                         if !canonical {
                             return Err(NonCanonical);
                         }
-                        let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                            members.iter().map(|m| self.freeze(m, seen)).collect();
-                        let mut frozen = frozen?;
-                        return Ok(Type::Set(Arc::from_iter(frozen.drain(..))));
                     }
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> = members
                         .iter()
-                        .map(|m| {
-                            let m = m.deref_cloned();
-                            match &m {
-                                Some(Type::Variant(tag, payloads, at)) => {
-                                    let fp: Result<LPooled<Vec<Type>>, FreezeError> =
-                                        payloads
-                                            .iter()
-                                            .map(|p| self.freeze(p, seen))
-                                            .collect();
-                                    let mut fp = fp?;
-                                    Ok(Type::Variant(
-                                        tag.clone(),
-                                        Arc::from_iter(fp.drain(..)),
-                                        *at,
-                                    ))
-                                }
-                                _ => Err(NonCanonical),
-                            }
+                        .map(|m| match self.freeze(m, seen)? {
+                            Type::Set(_) | Type::Bottom => Err(NonCanonical),
+                            m => Ok(m),
                         })
                         .collect();
                     let mut frozen = frozen?;

@@ -1959,7 +1959,7 @@ run!(
     select_abstract_predicate,
     SELECT_ABSTRACT_PREDICATE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) };
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A union-typed arm plus a never() arm returns the declared union.
@@ -1978,7 +1978,7 @@ run!(
     select_union_return_never_arm,
     SELECT_UNION_RETURN_NEVER_ARM,
     is(Value::I64(42));
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // The bare-cell face: the produced union carries the signature's own
@@ -3359,7 +3359,7 @@ const SAME_FORM_VARIANT_ARRAY: &str = r#"
 
 run!(variant_told_from_array, SAME_FORM_VARIANT_ARRAY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 const SAME_FORM_STRUCT_ARRAY: &str = r#"
 {
@@ -3401,7 +3401,7 @@ const SAME_FORM_TAG_STRING: &str = r#"
 
 run!(tag_told_from_string, SAME_FORM_TAG_STRING, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 const SAME_FORM_REFERENCES: &str = r#"
 {
@@ -3575,7 +3575,7 @@ const SAME_FORM_DISTINCT_PARTS: &str = r#"
 
 run!(same_form_distinct_parts, SAME_FORM_DISTINCT_PARTS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(4)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // An or-arm narrows what the later arms see, per alternative.
 const OR_ARM_NARROWS: &str = r#"
@@ -4136,7 +4136,7 @@ run!(
     "[f(`A(5))][f(`B)][f(`A(`B))]"
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "ibb");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // a rest shared by or-alternatives is typed from the scrutinee

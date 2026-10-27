@@ -752,7 +752,7 @@ run!(
             _ => false,
         }
     };
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // Two references to one variable, taken at two sites, are equal to all
