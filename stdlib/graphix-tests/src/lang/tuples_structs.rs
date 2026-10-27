@@ -538,3 +538,80 @@ run!(let_over_a_union_takes_a_writable_reference, r#"{
   set(&mut q);
   (q, x)
 }"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[["A", i64:1], i64:2]"#); FuseExpect::Jit);
+
+run!(
+    union_field_common_index,
+    r#"
+{
+let f = |s: [{a: i64, b: i64}, {a: i64, c: i64}]| s.a;
+[f({a: 1, b: 2}), f({a: 3, c: 4})]
+}
+"#,
+    prints("[i64:1, i64:3]"); FuseExpect::None
+);
+
+run!(
+    union_field_different_indices,
+    r#"
+{
+let f = |s: [{a: i64, z: i64}, {z: i64}]| s.z;
+[f({a: 1, z: 2}), f({z: 3})]
+}
+"#,
+    prints("[i64:2, i64:3]"); FuseExpect::None
+);
+
+run!(
+    union_field_different_types,
+    r#"
+{
+let f = |s: [{a: i64, z: i64}, {z: string}]| s.z;
+[f({a: 1, z: 2}), f({z: "three"})]
+}
+"#,
+    prints("[i64:2, \"three\"]"); FuseExpect::None
+);
+
+run!(
+    union_field_tuple_arities,
+    r#"
+{
+let f = |t: [(i64, i64), (i64, i64, i64)]| t.1;
+[f((1, 2)), f((3, 4, 5))]
+}
+"#,
+    prints("[i64:2, i64:4]"); FuseExpect::None
+);
+
+run!(
+    union_field_missing_struct,
+    r#"
+{
+let f = |s: [{a: i64}, {b: i64}]| s.a;
+f({a: 1})
+}
+"#,
+    refused("unknown field a")
+);
+
+run!(
+    union_field_missing_tuple,
+    r#"
+{
+let f = |t: [(i64, i64), (i64, i64, i64)]| t.2;
+f((1, 2))
+}
+"#,
+    refused("no such field 2")
+);
+
+run!(
+    union_field_replace_indices,
+    r#"
+{
+let f = |s: [{a: i64, z: i64}, {z: i64}]| {s with z: 10};
+[f({a: 1, z: 2}).z, f({z: 3}).z]
+}
+"#,
+    prints("[i64:10, i64:10]"); FuseExpect::None
+);

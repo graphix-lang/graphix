@@ -510,6 +510,13 @@ an event samples is sampled first and unwrapped after, `(k ~ sel)$`,
 which samples the null and drops it; a call takes that value, not the
 key and `sel$` apart.
 
+## Field access
+
+A union of structs allows `.field` when every member has that name, even at
+different sorted positions; a union of tuples allows `.N` when every member
+has that position, even at different arities. A read unions the member field
+types; a functional struct update must fit every member's field type.
+
 ## References and places
 
 Read-only reference arguments `&'a` infer the widest referent across arguments,

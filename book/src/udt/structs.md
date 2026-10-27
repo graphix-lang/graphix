@@ -73,6 +73,12 @@ takes `.field` the same way,
 "I am foo"
 ```
 
+A field can be read from a union of struct types when every member has that
+field. The result has the union of their field types. The other fields may
+differ, and the shared field need not have the same position in each struct.
+A functional update over such a union requires the replacement to fit that
+field in every member.
+
 ## Mutability and Functional Update
 
 Structs are not mutable, like everything else in Graphix. However There is a

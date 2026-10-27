@@ -314,9 +314,16 @@ impl<R: Rt> Update<R> for StructWith<R> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
-        let index: SmallVec<[Option<usize>; 8]> =
-            self.replace.iter().map(|r| r.index).collect();
         let src = self.source.update(ctx);
+        let index: SmallVec<[Option<usize>; 8]> = src.with_value(|v| {
+            let fields = rep::struct_fields(v);
+            self.replace
+                .iter()
+                .map(|r| {
+                    r.index.or_else(|| rep::field_named(fields?, &r.name).map(|(i, _)| i))
+                })
+                .collect()
+        });
         let vals: SmallVec<[&TagValue; 8]> =
             self.replace.iter_mut().map(|r| r.n.update(ctx)).collect();
         let tag = vals.iter().fold(src.tag(), |t, v| t.join(v.tag()));
@@ -420,10 +427,9 @@ impl<R: Rt> StructRef<R> {
         field_name: &ArcStr,
     ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
-        // what the source's type says now; the check decides the rest
         let (typ, sorted_field_idx) =
             match struct_field_type(ctx, source.typ(), field_name) {
-                Ok((i, t)) => (t, Some(i)),
+                Ok((i, t)) => (t, i),
                 Err(_) => (Type::empty_tvar(), None),
             };
         let field_name = field_name.clone();
@@ -457,7 +463,12 @@ impl<R: Rt> Update<R> for StructRef<R> {
         }
         let res = tv.with_value(|v| {
             let fields = rep::struct_fields(v)?;
-            rep::field_at(fields, self.sorted_field_idx?).map(|(_, v)| v.clone())
+            match self.sorted_field_idx {
+                Some(i) => rep::field_at(fields, i).map(|(_, v)| v.clone()),
+                None => {
+                    rep::field_named(fields, &self.field_name).map(|(_, v)| v.clone())
+                }
+            }
         });
         match res {
             Some(v) => self.resident.set(TagValue::tagged(v, tag)),
@@ -828,12 +839,10 @@ pub(crate) fn tuple_field_types<R: Rt>(
     source: &Type,
     field: usize,
 ) -> Result<LPooled<Vec<Type>>> {
-    // tuples of one arity: the field's type is each one's
     if let Some(members) = union_of(ctx, source, |t| match t {
         Type::Tuple(flds) => Some(flds.clone()),
         _ => None,
-    })? && members.windows(2).all(|w| w[0].len() == w[1].len())
-    {
+    })? {
         return members
             .iter()
             .map(|flds| flds.get(field).cloned())
@@ -877,13 +886,12 @@ pub(crate) fn tuple_field_types<R: Rt>(
     )
 }
 
-/// The sorted position and type of the field `name` over `source`, a
-/// struct.
+/// The field's common sorted position, when its members agree, and its type.
 pub(crate) fn struct_field_type<R: Rt>(
     ctx: &CompileCtx<R>,
     source: &Type,
     name: &ArcStr,
-) -> Result<(usize, Type)> {
+) -> Result<(Option<usize>, Type)> {
     let (i, ts) = struct_field_types(ctx, source, name)?;
     let ts: LPooled<Vec<&Type>> = ts.iter().collect();
     Ok((i, Type::union(&ctx.env, &ts)?))
@@ -895,7 +903,7 @@ pub(crate) fn struct_field_types<R: Rt>(
     ctx: &CompileCtx<R>,
     source: &Type,
     name: &ArcStr,
-) -> Result<(usize, LPooled<Vec<Type>>)> {
+) -> Result<(Option<usize>, LPooled<Vec<Type>>)> {
     let field = |flds: &[(ArcStr, Type, WrittenAt)]| match flds
         .iter()
         .enumerate()
@@ -904,22 +912,20 @@ pub(crate) fn struct_field_types<R: Rt>(
         Some((i, (_, t, _))) => Ok((i, t.clone())),
         None => bail!("in struct, unknown field {name}"),
     };
-    // structs of one shape: the field sits at one index in each
     if let Some(members) = union_of(ctx, source, |t| match t {
         Type::Struct(flds) => Some(flds.clone()),
         _ => None,
-    })? && members.windows(2).all(|w| same_names(&w[0], &w[1]))
-    {
-        let mut index = 0;
+    })? {
+        let mut index = None;
         let mut ts: LPooled<Vec<Type>> = LPooled::take();
         for flds in members.iter() {
             let (i, t) = field(flds)?;
-            index = i;
+            index = if ts.is_empty() { Some(i) } else { index.filter(|j| *j == i) };
             ts.push(t);
         }
         return Ok((index, ts));
     }
-    // CR claude for claude: [bug/low] A union of structs whose names differ lands here,
+    // XCR claude for claude: [bug/low] A union of structs whose names differ lands here,
     // and the read is refused with "expected struct not [..]" even when every member
     // has the field. In [{a: i64, b: i64}, {a: i64, c: i64}], `a` sits at the same
     // sorted index in both. tuple_field_types does the same for tuples of different
@@ -932,8 +938,14 @@ pub(crate) fn struct_field_types<R: Rt>(
     // fast struct reads depend on the type being sorted by key at compile time and
     // baking in the index at runtime. In [T0, T1] if T0 has a common field with T1 it
     // is not guaranteed that that field appears at the same index.
+    // 2026-10-27 codex: Implemented the ruling: a field present in every union member
+    // is readable; differing struct offsets resolve by name at runtime, while a common
+    // offset retains the indexed path. Tuple members may differ in arity. Replacement
+    // checks every member and uses the resident struct offset. Pins:
+    // lang::tuples_structs::union_field_{common_index,different_indices,different_types,tuple_arities,missing_struct,missing_tuple,replace_indices};
+    // all 28 failed before the fix. Book and language skill updated.
     deref_typ!("struct", ctx, source,
-        Some(Type::Struct(flds)) => field(flds).map(|(i, t)| (i, LPooled::from_iter([t])))
+        Some(Type::Struct(flds)) => field(flds).map(|(i, t)| (Some(i), LPooled::from_iter([t])))
     )
 }
 
@@ -961,10 +973,6 @@ fn union_of<R: Rt, T>(
         }
     }
     Ok(Some(out))
-}
-
-fn same_names(a: &[(ArcStr, Type, WrittenAt)], b: &[(ArcStr, Type, WrittenAt)]) -> bool {
-    a.len() == b.len() && a.iter().zip(b.iter()).all(|((n0, _, _), (n1, _, _))| n0 == n1)
 }
 
 #[derive(Debug)]
@@ -1011,7 +1019,6 @@ impl<R: Rt> TupleRef<R> {
     ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let field = *field;
-        // what the source's type says now; the check decides the rest
         let typ = tuple_field_type(ctx, &scope.lexical, source.typ(), field)
             .unwrap_or_else(|_| Type::empty_tvar());
         let scope = scope.lexical.clone();
@@ -1158,7 +1165,7 @@ impl<R: Rt> StructWith<R> {
                         )?;
                     }
                 }
-                rep.index = Some(i);
+                rep.index = i;
             }
             Ok(())
         };
@@ -1181,7 +1188,7 @@ impl<R: Rt> StructRef<R> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
         let (idx, typ) = wrap!(self, etyp)?;
-        self.sorted_field_idx = Some(idx);
+        self.sorted_field_idx = idx;
         if let ExprKind::StructRef { field, .. } = &self.spec.kind
             && ctx.env.ide.is_lsp()
         {
