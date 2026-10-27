@@ -128,8 +128,8 @@ impl Identity {
         let same = ensure_sufficient(|| self.same_inner(t0, t1));
         if let Some(pair) = pair.filter(|_| same) {
             match self.pairs {
-                None => self.found.insert(pair),
-                Some(_) => self.found_in_fn.insert(pair),
+                None => self.found.insert(pair, t0, t1),
+                Some(_) => self.found_in_fn.insert(pair, t0, t1),
             }
         }
         same

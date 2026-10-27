@@ -846,7 +846,7 @@ impl Link {
         }
         let equal = ensure_sufficient(|| self.equal_inner(t0, t1));
         if let Some(pair) = pair.filter(|_| equal) {
-            self.found.insert(pair)
+            self.found.insert(pair, t0, t1)
         }
         equal
     }

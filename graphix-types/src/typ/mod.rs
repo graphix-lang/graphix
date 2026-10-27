@@ -83,11 +83,12 @@ impl Type {
 /// found to agree, so a DAG is walked once per pair of nodes rather than
 /// once per path; a pair found once agrees for the rest of the walk.
 /// A walk remembers nothing for its first `NodePairs::EAGER` nodes,
-/// which is every walk of a small type.
+/// which is every walk of a small type. Each pair is held for the walk,
+/// so an address stays its node's.
 #[derive(Default)]
 pub(super) struct NodePairs {
     seen: u32,
-    found: Option<LPooled<AHashSet<(usize, usize)>>>,
+    found: Option<LPooled<AHashMap<(usize, usize), (Type, Type)>>>,
 }
 
 impl NodePairs {
@@ -107,11 +108,13 @@ impl NodePairs {
     }
 
     pub(super) fn contains(&self, key: (usize, usize)) -> bool {
-        self.found.as_ref().is_some_and(|f| f.contains(&key))
+        self.found.as_ref().is_some_and(|f| f.contains_key(&key))
     }
 
-    pub(super) fn insert(&mut self, key: (usize, usize)) {
-        self.found.get_or_insert_with(LPooled::take).insert(key);
+    pub(super) fn insert(&mut self, key: (usize, usize), t0: &Type, t1: &Type) {
+        self.found
+            .get_or_insert_with(LPooled::take)
+            .insert(key, (t0.clone(), t1.clone()));
     }
 
     pub(super) fn clear(&mut self) {
