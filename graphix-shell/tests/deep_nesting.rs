@@ -684,6 +684,31 @@ fn comparisons_over_a_shared_type_dag_check_in_linear_time() {
     }
 }
 
+/// The defaults a written type hides are judged in time linear in the
+/// types: a value typed by a recursive typedef holding no function with a
+/// default is not expanded, and a DAG of 4-tuples checked against a
+/// typedef built the same way is walked once per part.
+#[test]
+fn hidden_defaults_judge_in_linear_time() {
+    const DEPTH: usize = 60;
+    let tree = "type T = [`Leaf(fn(x: i64) -> i64), `Node(T, T, T, T, T, T, T, T)];\n\
+                let f = |t: T| { let u: T = t; u };\nf";
+    let mut typedef = String::from("let x0 = |#d = 1, x: i64| x + d;\n");
+    for i in 1..=DEPTH {
+        let x = format!("x{}", i - 1);
+        typedef.push_str(&format!("let x{i} = ({x}, {x}, {x}, {x});\n"));
+    }
+    typedef.push_str("type T0 = fn(x: i64) -> i64;\n");
+    for i in 1..=DEPTH {
+        let t = format!("T{}", i - 1);
+        typedef.push_str(&format!("type T{i} = ({t}, {t}, {t}, {t});\n"));
+    }
+    typedef.push_str(&format!("let y: T{DEPTH} = x{DEPTH};\ny"));
+    for program in [tree.to_string(), typedef] {
+        checks_within(&program, std::time::Duration::from_secs(15))
+    }
+}
+
 // An instance's types are its definition's, taken row by row: a shared
 // node is taken once, so a call of a definition building a DAG of pairs
 // elaborates in time linear in the DAG.

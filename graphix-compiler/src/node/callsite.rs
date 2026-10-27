@@ -213,11 +213,12 @@ impl ArgStage {
     }
 }
 
-/// A labeled default of `f` compiled and checked in `f`'s environment,
-/// where its names are, against the site's view of the label, which the
-/// default narrows and the instance runs with; where the site hides the
-/// label, against `f`'s own parameter, and then against the label of
-/// `value`, the function as the site holds it, which it narrows.
+/// A labeled default of `f` compiled in `f`'s environment, where its
+/// names are, and judged in the site's, where the site's types are:
+/// against the site's view of the label, which the default narrows and
+/// the instance runs with; where the site hides the label, against `f`'s
+/// own parameter, and then against the label of `value`, the function as
+/// the site holds it, which it narrows.
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
@@ -231,31 +232,29 @@ fn checked_default<R: Rt, E: UserEvent>(
     site: Option<&FnType>,
     value: Option<&FnType>,
 ) -> Result<Node<R, E>> {
-    let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
         let mut node = compile(ctx, flags, expr.clone(), &local_scope, top_id)?;
-
-        let res = node.typecheck0(ctx).and_then(|()| {
-            let label = |ft: &FnType| -> Option<Type> {
-                ft.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
-            };
-            match site.and_then(label) {
-                Some(t) => t.check_contains(&ctx.env, node.typ()),
-                None => {
-                    for t in callee_param(ctx, f, name, site, &mut gates)
-                        .into_iter()
-                        .chain(value.and_then(label))
-                    {
-                        t.check_contains(&ctx.env, node.typ())?
-                    }
-                    Ok(())
-                }
-            }
-        });
+        let res = node.typecheck0(ctx);
         Ok::<_, anyhow::Error>((node, res))
     })?;
+    let label = |ft: &FnType| -> Option<Type> {
+        ft.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
+    };
+    let res = res.and_then(|()| match site.and_then(label) {
+        Some(t) => t.check_contains(&ctx.env, node.typ()),
+        None => {
+            let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+            for t in callee_param(ctx, f, name, site, &mut gates)
+                .into_iter()
+                .chain(value.and_then(label))
+            {
+                t.check_contains(&ctx.env, node.typ())?
+            }
+            Ok(())
+        }
+    });
     node.refs(defaults);
     match wrap!(node, res) {
         Ok(()) => Ok(node),
@@ -334,16 +333,19 @@ pub(crate) fn check_hidden_defaults<R: Rt, E: UserEvent>(
     value: &Type,
     narrowing: Narrowing,
 ) -> Result<()> {
-    if !may_hold_fn(declared, &mut LPooled::take()) {
+    if !may_hold_fn(declared, &mut LPooled::take())
+        || !holds_defaulted(ctx, value, &mut LPooled::take())
+    {
         return Ok(());
     }
+    let visited = &mut LPooled::take();
     match narrowing {
         Narrowing::Site => {
-            hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0)
+            hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, visited)
         }
         Narrowing::Copy => {
             let declared = declared.reset_tvars();
-            hidden_defaults_at(ctx, flags, scope, top_id, &declared, value, 0)
+            hidden_defaults_at(ctx, flags, scope, top_id, &declared, value, 0, visited)
         }
     }
 }
@@ -363,6 +365,42 @@ fn may_hold_fn(t: &Type, seen: &mut AHashSet<usize>) -> bool {
     })
 }
 
+/// Whether a function whose definition has a labeled default stands in
+/// `t` outside any function type, through bindings: what
+/// [`hidden_defaults_at`] can judge. Each shared node is asked once
+/// (`seen`).
+fn holds_defaulted<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    t: &Type,
+    seen: &mut AHashSet<usize>,
+) -> bool {
+    ensure_sufficient(|| match t {
+        _ if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
+        Type::Fn(ft) => ft.lambda_ids.ids().iter().any(|id| {
+            ctx.lambda_defs
+                .get(id)
+                .and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+                .is_some_and(|f| f.argspec.iter().any(|a| a.kind.default().is_some()))
+        }),
+        Type::TVar(tv) => tv.binding().is_some_and(|b| holds_defaulted(ctx, &b, seen)),
+        // a typedef's body is a written type, whose functions were judged
+        // where they entered it: only its parameters hold the value's own
+        t => {
+            let mut any = false;
+            t.for_each_child(&mut |c| any = any || holds_defaulted(ctx, c, seen));
+            any
+        }
+    })
+}
+
+/// Typedefs expand this deep at most on one path of the walk, so a
+/// recursive one ends.
+const MAX_EXPANSIONS: u8 = 16;
+
+/// `expanded` counts the typedefs expanded on the way here; `visited`
+/// holds the pairs of shared nodes walked already, so a type that shares
+/// a part is walked once per part.
+#[allow(clippy::too_many_arguments)]
 fn hidden_defaults_at<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -371,16 +409,36 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
     declared: &Type,
     value: &Type,
     expanded: u8,
+    visited: &mut AHashSet<(usize, usize)>,
 ) -> Result<()> {
+    let Some(v) = value.deref_cloned() else { return Ok(()) };
+    if let Type::Ref(_) = &v {
+        if expanded >= MAX_EXPANSIONS || !holds_defaulted(ctx, &v, &mut LPooled::take()) {
+            return Ok(());
+        }
+        return match v.lookup_ref_probe(&ctx.env) {
+            Some((_, v)) => hidden_defaults_at(
+                ctx,
+                flags,
+                scope,
+                top_id,
+                declared,
+                &v,
+                expanded + 1,
+                visited,
+            ),
+            None => Ok(()),
+        };
+    }
     let mut expanded = expanded;
-    let (Some(d), Some(v)) = (
-        opened(&ctx.env, declared, &mut expanded),
-        opened(&ctx.env, value, &mut expanded),
-    ) else {
+    let Some(d) = opened(&ctx.env, declared, &mut expanded) else { return Ok(()) };
+    if let (Some(a), Some(b)) = (d.shared_identity(), v.shared_identity())
+        && !visited.insert((a, b))
+    {
         return Ok(());
-    };
-    let at = |ctx: &mut CompileCtx<R, E>, d: &Type, v: &Type| {
-        hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded)
+    }
+    let mut at = |ctx: &mut CompileCtx<R, E>, d: &Type, v: &Type| {
+        hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded, visited)
     };
     ensure_sufficient(|| match (&d, &v) {
         (Type::Fn(formal), Type::Fn(fv)) => {
@@ -408,18 +466,30 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
         // _under_a_tuple_member, _under_an_element_member, _under_a_variant_member (each
         // fails with the pairing restricted to fn members), and
         // default_fits_its_variant_member (only the matching member judges).
+        // 2026-10-27 claude: The walk reads typedefs with Type::lookup_ref_probe (fills
+        // no resolution cell: lookup_ref filled another module's typedef cells from the
+        // site's env during parallel module checks, so gui::data_table's ColumnSpec
+        // check failed about 1 in 2000 compiles), expands a value's typedef only where
+        // its parameters hold a function whose definition has a labeled default
+        // (holds_defaulted; a typedef body is written, judged where a function entered
+        // it), counts expansions per path (siblings no longer share one budget), and
+        // walks each pair of shared nodes once (visited). The gui registration had
+        // walked recursive widget typedefs to depth 16 at every site: 0.87 s per stdlib
+        // compile, now 0.13 s. Pin: graphix-shell
+        // deep_nesting::hidden_defaults_judge_in_linear_time (fails with either the gate
+        // or the memo removed); colspec stress 0 of 8000.
         (Type::Set(_), _) | (_, Type::Set(_)) => {
-            let mut expanded = expanded;
             let mut formals: LPooled<Vec<Type>> = LPooled::take();
-            union_members(&ctx.env, &d, &mut expanded, &mut formals);
+            union_members(&d, &mut formals, &mut |m| opened(&ctx.env, m, &mut 0));
             let mut values: LPooled<Vec<Type>> = LPooled::take();
-            union_members(&ctx.env, &v, &mut expanded, &mut values);
+            union_members(&v, &mut values, &mut |m| m.deref_cloned());
             values.iter().try_for_each(|v| {
+                if let Type::Ref(_) = v {
+                    return at(ctx, &d, v);
+                }
                 let mut holders = formals.iter().filter(|d| same_constructor(d, v));
                 match (holders.next(), holders.next()) {
-                    (Some(d), None) => {
-                        hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded)
-                    }
+                    (Some(d), None) => at(ctx, d, v),
                     _ => Ok(()),
                 }
             })
@@ -448,30 +518,33 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
     })
 }
 
-/// `t` through its cells and typedefs; `None` where a cell is open or
-/// the typedefs nest too deep (`expanded` counts the expansions, so a
-/// recursive one ends).
+/// `t` through its cells and typedefs, probed: a resolution cell another
+/// module's check may fill is left as it is. `None` where a cell is open,
+/// a typedef does not resolve or `expanded` reaches [`MAX_EXPANSIONS`].
 fn opened(env: &Env, t: &Type, expanded: &mut u8) -> Option<Type> {
-    const MAX_EXPANSIONS: u8 = 16;
     let mut t = t.deref_cloned()?;
     while let Type::Ref(_) = &t {
         if *expanded >= MAX_EXPANSIONS {
             return None;
         }
         *expanded += 1;
-        t = t.lookup_ref(env).ok()?.deref_cloned()?;
+        t = t.lookup_ref_probe(env)?.1.deref_cloned()?;
     }
     Some(t)
 }
 
-/// The members of the union `t`, nested unions flattened, each opened;
-/// an open member is left out.
-fn union_members(env: &Env, t: &Type, expanded: &mut u8, out: &mut LPooled<Vec<Type>>) {
+/// The members of the union `t`, nested unions flattened, each through
+/// `open`; a member `open` refuses is left out.
+fn union_members(
+    t: &Type,
+    out: &mut LPooled<Vec<Type>>,
+    open: &mut impl FnMut(&Type) -> Option<Type>,
+) {
     match t {
         Type::Set(ts) => {
             for m in ts.iter() {
-                if let Some(m) = opened(env, m, expanded) {
-                    union_members(env, &m, expanded, out)
+                if let Some(m) = open(m) {
+                    union_members(&m, out, open)
                 }
             }
         }
@@ -833,6 +906,12 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
 // Jit). Pins: lang::functions::default_hidden_by_a_result_element,
 // _by_a_generic_formal_result, _by_a_result_type, _by_a_throws, _by_a_callback_result,
 // _by_a_generic_result, default_fits_a_result_type; rank-2 shape probed (refused).
+// 2026-10-27 claude: checked_default now compiles and typechecks the default in f's env
+// but makes its containments (the site's label, callee_param, the value's label) in the
+// site's env, where the site's types were written: a site type's unresolved typedef is
+// no longer resolved in the callee's env. callee_param writes only fresh cells (the
+// instance and the site's copy); the value-label narrowing is a write by the site's
+// task like its other checks, refused as foreign by tvar::decided.
 fn callee_param<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     f: &LambdaDef<R, E>,
