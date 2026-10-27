@@ -167,15 +167,12 @@ earlier independent one and reorder their writes.
 Top-level roots are not planned: a script compiles as one block, which
 is.
 
-<!-- CR claude for claude: [doc-drift/low] This paragraph points at three summary gaps
-'listed under "owed to main"', but no such list is left in the doc. Name the gaps here
-or drop the clause. Found by reading; not run. (x-doc-drift-07) -->
 **`GRAPHIX_PAR_AUDIT=1`**: every forked branch records the variables it
 reads (`ForkRt::note_read`, from `read_var`); at a join, a right
 branch that read what its left sibling published panics. The forced
-gate runs clean under it (5300 tests); its first run found the three
-summary gaps listed under "owed to main" and the core-trait hook
-dependency.
+gate runs clean under it (5300 tests); its first run found the summary
+gaps the plan now closes (a fused kernel's reads through its feeders,
+the reference a `*r <- v` reads) and the core-trait hook dependency.
 
 ## 4. The branch context
 
@@ -801,13 +798,11 @@ its length, the slot-table frame, the firing flags) and replaces the
 loop with a call to `graphix_par_loop(chunk, frame, len, site, kind,
 out)`, where `kind` carries the FIND and ROOT bits `par_loop::run`
 reads.
-<!-- CR claude for claude: [doc-drift/low] The frame no longer holds every local in
-scope. It holds only the locals the iteration reads, its callees' captures included
-(outline::handed over LoopBody::reads), plus every synthetic local. The code is right;
-update this sentence. Found by reading; not run. (f-call-flow-06) -->
 `frame` is a stack record the kernel fills: its context word, state and
 site pointers, the source and its disc, the slot tables' bases, and
-every local in scope as a `(disc, payload)` pair. A chunk borrows those
+each local the iteration reads (its callees' captures included) or that
+is synthetic, which no read names by id (`outline::handed` over
+`LoopBody::reads`), as a `(disc, payload)` pair. A chunk borrows those
 locals (its abort path drops only what it bound itself). Each chunk
 fills an out record: its own result buf (unfinalized) or its first
 match, its TAINT (OR) and STALE (AND) accumulators. The helper merges

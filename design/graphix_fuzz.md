@@ -42,13 +42,6 @@ Subcommands: `check`/`run`/`minimize`/`typemorph <file>`; `generate
 `regress` alone, or re-recording its manifest). `check-one`/`minimize-one`/`selfcheck-one`/
 `typemorph-one` are the hidden child-process forms.
 
-<!-- CR claude for claude: [doc-drift/low] The reactive-generation part of this
-paragraph is stale. "usually with an `until` on the same clock holding the run open past
-it" no longer holds: a bare `until` reads the step's entry snapshot and never ends, so
-only `until live(..)` holds a run open. The code also keeps the burst-clock `until` in
-the tail set, which contradicts "a body with an `until` ... stays out". Rewrite both
-once the generator emits `live`. probe:
-design/review-2026-10-26/repro/fuzz-gen-b-until-stall.gx (fuzz-gen-b-04) -->
 Sources: **corpus mutation** (seeds = the hand seeds plus every `run!`
 fixture harvested at build time by `build.rs`; a type-blind
 subexpression replacement applied 1–5×, a donor subtree from any seed
@@ -66,15 +59,22 @@ injection, so a second trigger lands while a run is busy and `seq`
 drops it where `seqq` queues it; the body draws `let`, issued calls,
 connects, `{ .. }` blocks, `until`, `try … with`, an abort into a catch
 sink, `println` steps, a call to a callee that writes the accumulator
-then a read of it, and a read through a reference to the accumulator; the head draws `abort(..)` and, under `seqq`,
+then a read of it, and a read through a reference to the accumulator;
+step reads draw `live(..)` now and then, and an `until` is written
+`until live(..)` (a bare `until`, drawn rarely, reads the step's entry
+snapshot and may never end); the head draws `abort(..)` and, under `seqq`,
 `flush(..)`, whose event is a cycle of a clock the ceremony's input
-restarts (usually with an `until` on the same clock holding the run
-open past it, so the event lands inside the run) or a bare input;
+restarts (usually with an `until live(..)` on the same clock holding the
+run open past it, so the event lands inside the run) or a bare input;
 every completed run prints its value, and is also observable through an
 accumulator, a run counter and the last block value, all present from
-init; a body with an `until`, an abort or an `abort(..)` head stays out
-of the always-firing tail set, though a step that reads a binding of
-`take`, `skip`, `filter` or `once` can still stall one in it). Statement slots may embed a whole generated
+init; a body that can stall (a bare `until`, an `until` on a level
+nothing is sure to flip), abort (a raise, a `try` whose handler
+rethrows) or be aborted (an `abort(..)` or `flush(..)` head) stays out
+of the always-firing tail set, while an `until live(..)` on the burst
+counter stays in it, though a step that reads a binding of `take`,
+`skip`, `filter` or `once` can still stall one in it). Statement slots
+may embed a whole generated
 subprogram as a typed block (`subprogram_depth`, default 2; 50/50
 sharing the outer scope vs closed), and slot counts are a geometric
 draw so long dataflow chains appear organically — composition adds
@@ -190,8 +190,10 @@ forked comparison (`Pair::Par`) a `StackBudget` on either side beside a
 trace is CONTAINED too, since the stack budget charges by thread (the
 serial cycle's 2 MB worker pays a 32 MB segment early, a forked part's
 16 MB pool stack later). The activation budget counts what the program
-holds, so an `ActivationBudget` on the JIT side, or on either side of a
-forked comparison, stays a divergence.
+holds, so an `ActivationBudget` on the JIT side, or on either side of
+the forked node-walk's comparison (`Pair::Par(Mode::Par)`), stays a
+divergence; a serial node-walk's beside the forked JIT's trace is the
+engine containment above.
 The node-walk's frame per recursion level is kilobytes (`update_call`
 alone is 3.6KB under LTO) where a native kernel's is words, so a depth
 only the kernel reaches says nothing about either engine's answer. A
@@ -273,9 +275,9 @@ program compiled as one block still publishes them by name
 (`input_scope`), with a callable's driver declarations beside them and
 its handler resolved from the block the program compiled in
 (`program_scope`); a callable program runs the sessions on both routes,
-the dispatch route compared at final-values strength like its engine
-pair. `GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every
-Nth batched subject; the individual path always runs them.
+each compared at the program's tier like its engine pair.
+`GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every Nth
+batched subject; the individual path always runs them.
 
 **Forked runs** (`Pair::Par`): each engine runs again forked and is
 compared with the serial node-walk: the node-walk with every fork point
@@ -364,12 +366,6 @@ Three rules learned from a campaign that died of its own exhaust:
   is noise (an ENOSPC flood dedups nowhere, since the key varies with
   program text). Excluded-tier hangs do not count; finding-write
   failures are fatal too.
-<!-- CR claude for claude: [doc-drift/low] The fuzzer also reads
-GRAPHIX_FUZZ_TIMEOUT_SCALE (scales every deadline, set per host by fleet.sh),
-GRAPHIX_FUZZ_DUMP_REJECTS (gen-check writes its rejects to a dir), GRAPHIX_FUZZ_BATCH
-(pool batch size), and the parent-to-child GRAPHIX_FUZZ_SERIAL_RUNS,
-GRAPHIX_FUZZ_RUN_LOG and GRAPHIX_FUZZ_CHILD_ASAN_OPTIONS. None is documented here. List
-them. Found by reading; not run. (x-doc-drift-10) -->
 - **Campaign output lives OUTSIDE the repo** (`~/tmp/target/fuzz/`,
   `GRAPHIX_FUZZ_CORPUS` overrides); the repo's corpus dir syncs across
   machines. Children get `GRAPHIX_STACK_BUDGET` and an `RLIMIT_AS` of 8GB
@@ -380,6 +376,20 @@ them. Found by reading; not run. (x-doc-drift-10) -->
   child. macOS enforces no `RLIMIT_AS`, so a darwin child instead
   watches its own resident size (`task_info`, every 100ms) and aborts
   past the same cap.
+- **Other knobs.** `GRAPHIX_FUZZ_TIMEOUT_SCALE` multiplies every
+  deadline (an integer, 1 to 100; `fleet.sh` sets it per host);
+  `GRAPHIX_FUZZ_BATCH` is the pool's batch size (64; 1 disables
+  batching); `GRAPHIX_FUZZ_DUMP_REJECTS=<dir>` makes `gen-check` write
+  each rejected program with its error to `<dir>/reject_<i>.gx`;
+  `soak.sh` reads `GRAPHIX_FUZZ_TARGET` (the build root its `fuzz/`
+  output goes under, `~/tmp/target`) and `GRAPHIX_FUZZ_NICE` (19). The
+  parent sets three for its children: `GRAPHIX_FUZZ_RUN_LOG` (a check
+  child logs each run it starts on stderr, so the parent of one that
+  died knows which runs were in flight), `GRAPHIX_FUZZ_SERIAL_RUNS` (the
+  child makes its runs one at a time: the re-check of a child whose
+  concurrent runs died together at the address-space cap) and
+  `GRAPHIX_FUZZ_CHILD_ASAN_OPTIONS` (passed on as the child's
+  `ASAN_OPTIONS`; `soak.sh` sets an RSS limit under ASan).
 
 The fleet deploy is a script (`fleet.sh deploy`), every step of which
 verifies a fact (pgrep, content fingerprint, the campaign's own gate
@@ -439,18 +449,11 @@ text artifact on two routes: **in-language** (dispatch epochs as
 `set_many` injections) and **dispatch** (`compile_callable` + `call` per
 epoch, with gap compiles first — the embedder timeline has cycles
 between building a handler and the first event). `check` runs the 2×2
-<!-- CR claude for claude: [doc-drift/low] Strength::of holds EngineDispatch and the
-Dispatch-route Cold/Warm pairs at Exact; only Pair::Route compares at final strength.
-This line, and the sessions paragraph's "the dispatch route compared at final-values
-strength like its engine pair", describe the older rule. In §3, "an ActivationBudget ...
-on either side of a forked comparison stays a divergence" also needs narrowing to
-Pair::Par(Mode::Par): Oracle::settle drops a serial node-walk budget beside a
-Pair::Par(JitPar) trace as engine containment, which is right. The code is right; fix
-the doc. (fuzz-lib-a-07) -->
-matrix: engine pairs per route (the dispatch pair at finals strength),
-then the route pair. `Divergence` carries which pair (`Pair`: the
-comparisons `Engine`, `EngineDispatch`, `Route`, `Cold`, `Warm`, `Par`
-and `Prune`, and the findings `Twin`, `Check`, `Rejected` and
+matrix: engine pairs per route, each at the program's tier, then the
+route pair, the one comparison held to final values whatever the tier
+(the routes pace a program differently, `Strength::of`). `Divergence`
+carries which pair (`Pair`: the comparisons `Engine`, `EngineDispatch`,
+`Route`, `Cold`, `Warm`, `Par` and `Prune`, and the findings `Twin`, `Check`, `Rejected` and
 `Accepted`). Callable
 programs batch like any other and never enter the mutation ring.
 
@@ -540,33 +543,31 @@ lanes, and `abi_kind`/`freeze_for_abi` crash rather than shrug.
 **Metamorphic transforms** (`typemorph.rs`): take a program the checker
 accepts, apply an acceptance-preserving `Expr → Expr` transform, print
 it back, check again; accept→reject is a flip. Transforms are graded,
-and the grade is the triage default: parens-wrap is SOUND (a flip is a
-<!-- CR claude for claude: [doc-drift/low] This paragraph drifts from typemorph.rs. The
-transforms bind `tm__0` (not `__t`/`__c`). Only alias-swap's hoist is built (no
-reverse). stmt-permute permutes any statement kind outside its exclusion list, not only
-binds. label-permute (SOUND), default-materialize and default-elide (EXPECTED) are
-missing. Update the names and the catalog; keep "adjacent independent binds" as the rule
-once stmt-permute stops moving the block's last statement. Found by reading; not run.
-(fuzz-mutate-06) -->
-<!-- 2026-10-26 claude: stmt-permute no longer moves the block's last statement
-(fuzz-mutate-01). -->
-compiler bug); block-wrap (`e` → `{ let __t = e; __t }`, not on direct
-or parenthesized lambda literals (a `let rec` takes only a lambda) nor
-on `never()`: a `let` over ⊥ is an open
-cell its writers type, where the bare `never()` is ⊥), let-extract (`f(.., |x| body)` → `let __c =
-|x| body; f(.., __c)` — THE order probe: declared-param push vs
-body-first inference; not on a callback whose body selects over a
-value an unannotated parameter's type decides, or reads a field of or
-`with`-updates such a parameter, which by language rule only the call
-types), let-inline (the reverse: the value goes in parenthesized, never
-a `never()`, and never where a later binder at any depth rebinds the
-name or a name the value reads), stmt-permute (adjacent
-independent binds — tvar allocation order) and alias-swap (hoist an
-annotation's structural spelling into a typedef, and the reverse — the
-Ref-vs-expansion channels) are EXPECTED (a flip files for triage:
-compiler bug, transform-precondition bug, or a language rule that
-needed words — "a free union member stays free" is the kind of rule
-this lane forces into the open, witnesses attached). union-permute is
+and the grade is the triage default: parens-wrap and label-permute
+(rotate a call's labeled arguments, which bind by name) are SOUND (a
+flip is a compiler bug); block-wrap (`e` → `{ let tm__0 = e; tm__0 }`,
+not on lambda literals (let-extract's probe) or blocks, nor on
+`never()`: a `let` over ⊥ is an open cell its writers type, where the
+bare `never()` is ⊥, nor under `&`, where `e` may be a place's root),
+let-extract (`f(.., |x| body)` → `let tm__0 = |x| body; f(.., tm__0)` —
+THE order probe: declared-param push vs body-first inference; not on a
+callback whose body selects over a value an unannotated parameter's type
+decides, or reads a field of or `with`-updates such a parameter, which
+by language rule only the call types), let-inline (the reverse: the
+value goes in parenthesized, never a `never()`, and never where a later
+binder at any depth rebinds the name or a name the value reads),
+stmt-permute (adjacent independent statements of the top block, the
+block's value never moved; declarations, connects and catches stay put
+— tvar allocation order), default-materialize and default-elide (write
+an omitted default out at a call its lambda's binding reaches, or drop
+an explicit argument equal to the default; only a default that reads no
+name) and alias-swap (hoist a `let` annotation free of type variables
+into `type Tm__0 = T` — the Ref-vs-expansion channel; the reverse is
+not built) are EXPECTED (a flip files for triage: compiler bug,
+transform-precondition bug, or a language rule that needed words — "a
+free union member stays free" is the kind of rule this lane forces into
+the open, witnesses attached). A body that already holds a `tm__` or
+`Tm__` name, or an attribute, is not probed. union-permute is
 AST-invisible (the parser sorts unions) and eta-expand needs arity
 knowledge; both are deferred. A candidate the printer cannot round-trip
 (its text must reparse to the candidate itself, not merely parse)

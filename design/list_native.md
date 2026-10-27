@@ -115,15 +115,13 @@ through its cast. Only a session image carries the marked cells.
 - Tail loops carrying a List use the Value-pair rebind; the flatten
   boundary (`graphix_list_to_valarray`/`graphix_valarray_into_list`)
   and the ListMap/ListFold scaffolds carry no tag writes or tests.
-<!-- CR claude for claude: [doc-drift/low] A list pattern at a tuple, struct or array
-leaf fuses now: emit_composite_pattern_cond_inner sends it to emit_list_pattern_cond,
-and `#[native]` over `(0, [<h, t..>]) => h` builds. Drop that clause; the nested element
-pattern residue (`[<0, rest..>]`) is still real. probe: a #[native] tuple-with-list-leaf
-select fused under graphix-fuzz run. (f-select-05) -->
 - `@`-binds on list arms fuse (`emit_list_pattern_cond` binds `all` as
-  a Value clone). Nested element patterns (a literal or destructured
-  head, `[<0, rest..>]`) and a list pattern at a tuple, struct or array
-  leaf de-fuse (coverage residue).
+  a Value clone), and so does every head pattern (a literal, an
+  or-pattern, a variant, a tuple or struct, `[<0, rest..>]`: each head is
+  a leaf, `emit_leaf_cond` at `LeafAt::ListHead`) and a list pattern at a
+  tuple, struct, array or payload leaf (pins:
+  `fusion_review::select_nested_leaves_fuse`, the `#[native]` list arms
+  in `fusion_review`).
 
 ## Open
 
