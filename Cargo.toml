@@ -34,7 +34,7 @@ cargo_toml = "0.22.3"
 chrono = { version = "^0.4.24", features = ["serde"] }
 clap = { version = "4", features = ["derive", "string"] }
 cp_r = "0.5"
-combine = "4"
+combine = "4.6.9"
 compact_str = { version = "0.9", features = ["serde"] }
 crc32fast = "1.5.0"
 crossterm = { version = "0.29", features = ["event-stream"] }
