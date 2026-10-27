@@ -12,7 +12,7 @@ Within a `seq` you write statements the way you would in an ordinary
 language, and the compiler transforms them into that state machine for
 you.
 
-```graphix
+```graphix,fragment
 seq trigger {
     do_step_1(x);
     do_step_2(y);
@@ -36,7 +36,7 @@ and nothing outside the block sees the name. Like `seq name { ... }`
 over a variable, the name is the value the run started with, and the
 pattern may destructure (`seq let {x, y} = point { ... }`):
 
-```graphix
+```graphix,fragment
 seq let session = (*connected)$ {
     known <- upsert(known, session.domain, session.server, session.fingerprint);
     save <- session
@@ -47,7 +47,7 @@ A `seq` can also be a step of another `seq`. Written without a trigger
 it runs every time its statement is reached, and the enclosing step
 waits for that run to complete:
 
-```graphix
+```graphix,fragment
 seq request {
     let cfg = seq { let raw = read_config(request); parse(raw) };
     apply(cfg)
@@ -216,7 +216,7 @@ present, then samples them together with `~!` and issues once. This gives
 standing values a fresh call event, including values carried from an
 earlier step:
 
-```graphix
+```graphix,fragment
 seq request {
     let x = request;
     let f = |v| v ~ x;
@@ -312,7 +312,7 @@ or stall the run. (A lambda literal is its own scope and may contain
 one: inside a function you are back in ordinary Graphix.) Error
 handling inside a sequence is control flow:
 
-```graphix
+```graphix,fragment
 seq req {
   let code = try {
     let child = sys::process::spawn(options(req))?;
@@ -360,7 +360,7 @@ retracted.
 `abort(event)` in the head, separated from the trigger by `;`, ends the
 run in progress when `event` fires:
 
-```graphix
+```graphix,fragment
 seq go; abort(cancel) {
   let child = sys::process::spawn(options(cmd))?;
   let status = sys::process::wait(child.proc)?;

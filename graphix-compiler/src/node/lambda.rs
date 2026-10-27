@@ -1131,6 +1131,12 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     // async, since re-reaching it is a fresh birth anyway. That would change the rule
     // that instances are retained unconditionally. Decide whether the current cost is
     // acceptable or which lever to take. (x-fix-nodes-03)
+    // 2026-10-27 claude: graphix-shell/tests/recursion_memory.rs
+    // MAX_BYTES_PER_ACTIVATION (12 KB) sits 5% above today's dev-profile cost (11652 B
+    // below 5000 deep, 11625 B above, measured with
+    // design/review-2026-10-26/repro/tests-shell-compiler-activation-cost.py), so a few
+    // hundred more bytes per activation fail the plain gate. Choose that ceiling with
+    // this decision (tests-shell-compiler-04).
     fn new_with_body(
         ctx: &mut CompileCtx<R, E>,
         id: LambdaId,

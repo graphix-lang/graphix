@@ -26,7 +26,7 @@ it: if a module exports both a type `Color` and a value `Color`, one
 
 ## Forms
 
-```graphix
+```graphix,fragment
 // one name
 use tui::line;
 // group

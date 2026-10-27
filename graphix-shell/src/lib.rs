@@ -448,14 +448,22 @@ impl<X: GXExt> Shell<X> {
             Mode::Script(source) => Some(source.clone()),
             Mode::Check(_) | Mode::Repl => None,
         };
-        let cached_program = match &program {
+        let uncached = match &program {
+            Some(Load::Netidx(_)) => Some("nothing keys a netidx script's source"),
             Some(_) if !self.module_resolvers.is_empty() => {
-                log::info!(
-                    "no program entry: the cache cannot vouch for an embedder's resolvers"
-                );
+                Some("the cache cannot vouch for an embedder's resolvers")
+            }
+            Some(Load::File(_) | Load::Text(_)) | None => None,
+        };
+        let cached_program = match uncached {
+            Some(why) if self.cache == CacheMode::Warm => {
+                bail!("--warm: the program cannot be cached: {why}")
+            }
+            Some(why) => {
+                log::info!("no program entry: {why}");
                 None
             }
-            p => p.as_ref(),
+            None => program.as_ref(),
         };
         let mut flags: BitFlags<CFlag> = match self.mode {
             Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled.into(),
@@ -503,13 +511,19 @@ impl<X: GXExt> Shell<X> {
                 pending_registration = Some(rx);
                 image.save = Some(tx);
             }
-            // CR claude for claude: [bug/low] Under CacheMode::Warm a netidx: script
+            // XCR claude for claude: [bug/low] Under CacheMode::Warm a netidx: script
             // has no program key (RegistrationCache::new returns None for
             // Load::Netidx), so nothing is sent or stored, and `--warm netidx:/p.gx`
             // exits 0 with only the registration written. The first real run then
             // compiles the program cold. A file script that reads a netidx module fails
             // --warm instead. Warm should fail here too, saying a netidx script's
             // program cannot be cached. Found by reading; not run. (shell-04)
+            // 2026-10-27 claude: Shell::configure names why a script keeps no program
+            // entry (a netidx script, an embedder's resolvers) and under
+            // CacheMode::Warm fails with it before compiling or opening the cache; On
+            // logs it as before. Pin: graphix-shell lib
+            // test::warm_refuses_a_netidx_script (with the Warm arm undone the warm run
+            // compiles and fails on the missing netidx resolver instead).
             if c.has_program() {
                 let (tx, rx) = oneshot::channel();
                 program_image = Some(tx);
@@ -814,6 +828,23 @@ mod test {
         let net = Load::Netidx(netidx_core::path::Path::from("/apps/p.gx"));
         assert_eq!(argv0(&net).as_deref(), Some("netidx:/apps/p.gx"));
         assert_eq!(argv0(&Load::Text(arcstr::literal!("1"))), None);
+    }
+
+    /// `--warm` of a program the cache keeps no entry for fails, before
+    /// compiling anything.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn warm_refuses_a_netidx_script() {
+        let net = Load::Netidx(netidx_core::path::Path::from("/apps/p.gx"));
+        let mut shell = ShellBuilder::<graphix_rt::NoExt>::default()
+            .mode(Mode::Script(net))
+            .cache(CacheMode::Warm)
+            .build()
+            .unwrap();
+        let e = shell.warm().await.expect_err("warmed a netidx script");
+        assert!(
+            format!("{e:#}").contains("nothing keys a netidx script's source"),
+            "{e:#}"
+        );
     }
 
     /// The cache key and the program both name the file the program

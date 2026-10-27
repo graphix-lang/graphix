@@ -24,7 +24,7 @@ Controls spacing between a widget's border and its content:
 - `` `Axis({x, y}) `` -- separate horizontal (`x`) and vertical (`y`) padding.
 - `` `Each({top, right, bottom, left}) `` -- individual padding per side.
 
-```graphix
+```graphix,fragment
 container(
   #padding: &`All(20.0),
   &text(&"Padded content")
@@ -52,7 +52,7 @@ Horizontal and vertical alignment for positioning content within a container:
 {{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:align}}
 ```
 
-```graphix
+```graphix,fragment
 column(
   #halign: &`Center,
   #width: &`Fill,
@@ -74,7 +74,7 @@ container(
 
 RGBA color with floating-point components in the range 0.0 to 1.0. Color is an abstract type — use the `color` constructor to create values. Components default to 0.0 except alpha which defaults to 1.0. Out-of-range values return an `InvalidColor` error.
 
-```graphix
+```graphix,fragment
 // Solid red ($ swallows errors with a warning)
 let red = color(#r: 1.0)$;
 
@@ -96,7 +96,7 @@ Fonts are described by family, weight, and style:
 - `FontWeight` ranges from `` `Thin `` (lightest) to `` `Black `` (heaviest).
 - `FontStyle` controls italic/oblique rendering.
 
-```graphix
+```graphix,fragment
 text(
   #font: &{ family: `Monospace, weight: `Bold, style: `Normal },
   &"Monospace bold text"

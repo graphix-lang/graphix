@@ -89,7 +89,7 @@ The top-level module file is `src/graphix/mod.gx`. This is where you typically
 bind your builtins to Graphix names and re-export them. Builtin lambdas must
 have full type annotations on all arguments and the return type:
 
-```graphix
+```graphix,fragment
 let my_builtin = |arg: Any| -> bool 'mylib_my_builtin;
 let my_cached = |@args: bool| -> bool 'mylib_my_cached;
 ```
@@ -98,7 +98,7 @@ let my_cached = |@args: bool| -> bool 'mylib_my_cached;
 
 The interface file declares the public API of your package:
 
-```graphix
+```graphix,sig
 /// Check if a value is an error
 val my_builtin: fn(v: Any) -> bool;
 

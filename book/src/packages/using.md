@@ -11,13 +11,15 @@ functions under `sys::net`:
 
 ```graphix
 use sys::net;
-net::subscribe("/some/netidx/path")
+let v: f64 = net::subscribe("/some/netidx/path")$;
+v
 ```
 
 Or access it without `use`:
 
 ```graphix
-sys::net::subscribe("/some/netidx/path")
+let v: f64 = sys::net::subscribe("/some/netidx/path")$;
+v
 ```
 
 The standard library packages (`core`, `str`, `array`, `map`, `re`, `rand`,

@@ -22,7 +22,7 @@ The positional argument is a reference to an array of `CanvasShape` values. Shap
 
 A straight line between two points with a given color and stroke width.
 
-```graphix
+```graphix,fragment
 `Line({ from: {x: 0.0, y: 0.0}, to: {x: 100.0, y: 50.0},
         color: color(#r: 1.0)$, width: 2.0 })
 ```
@@ -31,7 +31,7 @@ A straight line between two points with a given color and stroke width.
 
 A circle defined by center and radius. Either or both of `fill` and `stroke` can be provided; set the other to null.
 
-```graphix
+```graphix,fragment
 `Circle({ center: {x: 100.0, y: 100.0}, radius: 40.0,
           fill: color(#r: 0.2, #g: 0.6, #b: 1.0)$, stroke: null })
 ```
@@ -40,7 +40,7 @@ A circle defined by center and radius. Either or both of `fill` and `stroke` can
 
 An axis-aligned rectangle defined by its top-left corner and size.
 
-```graphix
+```graphix,fragment
 `Rect({ top_left: {x: 10.0, y: 10.0}, size: {width: 80.0, height: 60.0},
         fill: color(#g: 0.8, #b: 0.4)$, stroke: null })
 ```
@@ -49,7 +49,7 @@ An axis-aligned rectangle defined by its top-left corner and size.
 
 Like `Rect` but with rounded corners. The `radius` field controls the corner rounding.
 
-```graphix
+```graphix,fragment
 `RoundedRect({ top_left: {x: 10.0, y: 10.0}, size: {width: 80.0, height: 60.0},
                radius: 8.0,
                fill: null, stroke: {color: color(#r: 1.0, #g: 1.0, #b: 1.0)$, width: 2.0} })
@@ -59,7 +59,7 @@ Like `Rect` but with rounded corners. The `radius` field controls the corner rou
 
 A circular arc defined by center, radius, and start/end angles in radians. Arcs only have a stroke (no fill).
 
-```graphix
+```graphix,fragment
 `Arc({ center: {x: 100.0, y: 100.0}, radius: 50.0,
        start_angle: 0.0, end_angle: 3.14159,
        stroke: {color: color(#r: 1.0, #g: 0.5)$, width: 2.0} })
@@ -69,7 +69,7 @@ A circular arc defined by center, radius, and start/end angles in radians. Arcs 
 
 An ellipse with independent x and y radii, a rotation angle, and start/end angles (all in radians). Supports both fill and stroke.
 
-```graphix
+```graphix,fragment
 `Ellipse({ center: {x: 150.0, y: 100.0}, radii: {x: 60.0, y: 30.0},
            rotation: 0.5, start_angle: 0.0, end_angle: 6.283,
            fill: color(#r: 0.8, #g: 0.2, #b: 0.8, #a: 0.5)$, stroke: null })
@@ -79,7 +79,7 @@ An ellipse with independent x and y radii, a rotation angle, and start/end angle
 
 A cubic Bezier curve defined by start, two control points, and end. Drawn as a stroked line.
 
-```graphix
+```graphix,fragment
 `BezierCurve({ from: {x: 0.0, y: 100.0},
                control_a: {x: 50.0, y: 0.0}, control_b: {x: 150.0, y: 200.0},
                to: {x: 200.0, y: 100.0},
@@ -90,7 +90,7 @@ A cubic Bezier curve defined by start, two control points, and end. Drawn as a s
 
 A quadratic Bezier curve with one control point. Drawn as a stroked line.
 
-```graphix
+```graphix,fragment
 `QuadraticCurve({ from: {x: 0.0, y: 100.0},
                   control: {x: 100.0, y: 0.0},
                   to: {x: 200.0, y: 100.0},
@@ -101,7 +101,7 @@ A quadratic Bezier curve with one control point. Drawn as a stroked line.
 
 A text label placed at a specific position on the canvas.
 
-```graphix
+```graphix,fragment
 `Text({ content: "Hello", position: {x: 50.0, y: 50.0},
         color: color(#r: 1.0, #g: 1.0, #b: 1.0)$, size: 16.0 })
 ```
@@ -117,7 +117,7 @@ An arbitrary path built from `PathSegment` values. Supports fill, stroke, or bot
 - `` `ArcTo({a, b, radius}) `` -- arc through two tangent points
 - `` `Close `` -- close the path back to its start
 
-```graphix
+```graphix,fragment
 `Path({
   segments: [
     `MoveTo({x: 0.0, y: 0.0}),

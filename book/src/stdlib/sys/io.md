@@ -52,7 +52,7 @@ either; `pack` reads and writes `bytes`; `xls` reads `bytes` and has no
 writer. Reading a document from a stream is therefore just
 reading the stream:
 
-```graphix
+```graphix,fragment
 use sys::io::{Read, Write};
 
 let f = sys::fs::open(`Read, path)?;

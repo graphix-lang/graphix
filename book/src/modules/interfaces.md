@@ -35,7 +35,7 @@ declarations need.
 
 Declare exported values and their types using `val`:
 
-```graphix
+```graphix,sig
 val add: fn(a: i64, b: i64) -> i64;
 val greeting: string;
 val config: Array<i64>;
@@ -63,7 +63,7 @@ Types can be polymorphic and recursive, just like in regular Graphix code.
 
 Declare sub-modules that the module exports:
 
-```graphix
+```graphix,fragment
 mod utils;
 mod parser;
 ```
@@ -75,7 +75,7 @@ Each declared sub-module should have its own implementation file (e.g.,
 
 Import names the interface's own declarations need:
 
-```graphix
+```graphix,fragment
 use super::{Client, Response};
 use sys::io::Read;
 ```
@@ -105,7 +105,7 @@ The implementation does not define it again.
 `impl Trait for Type;` declares that the implementation provides that trait
 implementation:
 
-```graphix
+```graphix,fragment
 impl Show for Point;
 impl<'a: Show> Show for Array<'a>;
 ```
@@ -119,7 +119,7 @@ Siblings](#impls-between-siblings)).
 Let's create a simple math utilities module with an interface.
 
 **math.gxi** (interface):
-```graphix
+```graphix,sig
 /// Add two numbers
 val add: fn(a: i64, b: i64) -> i64;
 
@@ -151,7 +151,7 @@ available in the implementation - defining it again there is an error. Also,
 the module.
 
 **main.gx** (usage):
-```graphix
+```graphix,fragment
 mod math;
 
 let result = math::add(1, 2);
@@ -184,7 +184,7 @@ Interface files support documentation comments using `///`. These comments
 document the exported items and are the primary place to document your module's
 public API:
 
-```graphix
+```graphix,sig
 /// Filter an array, keeping only elements where the predicate returns true.
 /// 
 /// The predicate function is called for each element. Elements for which
@@ -196,7 +196,7 @@ val filter: fn(a: Array<'a>, f: fn(x: 'a) -> bool throws 'e) -> Array<'a> throws
 
 Interface files fully support polymorphic type signatures:
 
-```graphix
+```graphix,sig
 /// Transform each element of an array using function f
 val map: fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e;
 
@@ -225,7 +225,7 @@ mylib/
 
 The root interface (`mod.gxi`) declares the sub-modules:
 
-```graphix
+```graphix,sig
 // mod.gxi
 type Config = { name: string, version: i64 };
 val config: Config;
@@ -257,7 +257,7 @@ in the `.gx` keeps it private to the parent's subtree.
 
 Example:
 
-```graphix
+```graphix,sig
 // parent.gxi
 val public_helper: fn(x: i64) -> i64;
 mod child;
@@ -271,7 +271,7 @@ let public_helper = |x| x + 1;
 mod child;
 ```
 
-```graphix
+```graphix,fragment
 // parent/child.gx
 // both visible here
 use super::{private_setup, public_helper};
@@ -285,14 +285,14 @@ adds in its body without declaring it in its `.gxi` is hidden while
 the module's siblings are checked; the code after the modules sees it.
 Declare it in the interface to make it visible to the siblings:
 
-```graphix
+```graphix,sig
 // a.gxi
 use super::Show;
 val x: i64;
 impl Show for i64;
 ```
 
-```graphix
+```graphix,fragment
 // a.gx
 use super::Show;
 impl Show for i64 { let show = |x| "int [x]" };
@@ -310,14 +310,14 @@ siblings, so its check may not decide a type the code around it left
 open. Here the parent leaves the type of `cell` open and the child,
 which has an interface, would decide it by writing to it:
 
-```graphix
+```graphix,fragment
 // p.gx
 let cell = never();
 let v = 1;
 mod c;
 ```
 
-```graphix
+```graphix,fragment
 // p/c.gx
 use super::cell;
 let w = 2;
@@ -421,7 +421,7 @@ select v {
 ### Example: Encapsulated Counter
 
 **counter.gxi**:
-```graphix
+```graphix,sig
 /// An opaque counter type
 type Counter;
 
@@ -449,7 +449,7 @@ let increment = |#trig: Any, c: &mut Counter| -> null {
 ```
 
 **main.gx**:
-```graphix
+```graphix,fragment
 mod counter;
 
 let c = counter::make(0);
@@ -464,7 +464,7 @@ Nominal and hidden are independent. Put the `Abstract<..>` body in the
 interface and the type is nominal but constructible by anyone — a
 newtype whose representation is public:
 
-```graphix
+```graphix,sig
 // interface
 type Meters = Abstract<f64>;
 val add: fn(a: Meters, b: Meters) -> Meters;
@@ -477,7 +477,7 @@ A module with no interface file exports its definitions too, so its
 
 Abstract types can have type parameters, allowing generic containers:
 
-```graphix
+```graphix,sig
 // interface
 type Box<'a>;
 val wrap: fn(x: 'a) -> Box<'a>;
@@ -499,7 +499,7 @@ bound its implementation needs. `double` adds a value to itself, and
 arithmetic takes operands of exactly one numeric type, so it needs
 `Singleton` as well as `Number`:
 
-```graphix
+```graphix,sig
 // interface - constraint required
 type NumericWrapper<'a: Number>;
 val wrap: fn(x: 'a) -> NumericWrapper<'a>;

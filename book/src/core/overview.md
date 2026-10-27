@@ -26,7 +26,7 @@ This is where Graphix becomes special. The `<-` operator (connect) is the only w
 
 **[Connect](./connect.md)** is the most important section in this chapter. When you write:
 
-```graphix
+```graphix,fragment
 let count = 0;
 count <- timer ~ (count + 1)
 ```

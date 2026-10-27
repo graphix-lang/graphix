@@ -11,7 +11,7 @@ inferred from the type annotation at the call site.
 Parsing takes `bytes` or a `string`, so parsing from a stream is
 reading the stream ([sys::io](sys/io.md)):
 
-```graphix
+```graphix,fragment
 use sys::io::{Read, Write};
 
 let f = sys::fs::open(`Read, path)?;
@@ -27,7 +27,7 @@ The return type of `json::read` is determined by the type annotation on
 the binding. The compiler resolves the concrete type at compile time and
 generates the appropriate deserialization code.
 
-```graphix
+```graphix,fragment
 
 let n: i64 = json::read("42")?;
 let s: string = json::read("\"hello\"")?;

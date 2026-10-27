@@ -221,7 +221,7 @@ which needs a head or tail (rest) pattern for the unbounded lengths,
 plus an exact-length arm for each length below the rest pattern's
 minimum. So this select is exhaustive with no wildcard arm:
 
-```graphix
+```graphix,fragment
 select a {
   [] => `Empty,
   [x, tl..] => `Cons(x, tl)
@@ -488,7 +488,7 @@ The type of a bare `never()` is bottom, which every type absorbs: a
 select whose other arms are all `string` is itself a `string`, however
 deeply the `never()` arms nest.
 
-```graphix
+```graphix,fragment
 let admins = select load {
   `Roster => list_admins(target),
   _ => never()
@@ -544,7 +544,7 @@ fires when the constant does, at the arm's first entry and never
 again, so the check warns of it; the same goes for a call with an
 effect whose arguments are all constants, and a `seq` with no trigger.
 
-```graphix
+```graphix,fragment
 select k.code {
   kk@ `Up => sel <- kk ~ (sel - 1),
   kk@ `Down => sel <- kk ~ (sel + 1),

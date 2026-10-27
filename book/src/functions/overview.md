@@ -32,7 +32,7 @@ let g = |(x, y): (f64, f64), z: f64| -> f64 x + y + z
 Functions are called with the following syntax.
 
 
-```graphix
+```graphix,fragment
 f(1, 1)
 ```
 

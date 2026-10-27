@@ -1,6 +1,6 @@
 //! Where an error arose and what it passed through on its way out.
 
-use crate::expr::{Expr, Origin, Source};
+use crate::expr::{Expr, Origin, Source, print::Bare};
 use combine::stream::position::SourcePosition;
 use poolshark::local::LPooled;
 use std::fmt::{self, Write};
@@ -35,13 +35,15 @@ impl std::error::Error for ErrorContext {}
 impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const MAX: usize = 38;
-        /// Keeps the first `MAX` bytes written and stops the write.
+        /// Keeps the first `MAX` bytes written, on one line (a newline
+        /// is one space), and stops the write.
         struct Head(LPooled<String>, bool);
-        impl Write for Head {
-            fn write_str(&mut self, s: &str) -> fmt::Result {
+        impl Head {
+            fn push(&mut self, s: &str) -> fmt::Result {
                 let room = MAX - self.0.len();
                 if s.len() <= room {
-                    return self.0.write_str(s);
+                    self.0.push_str(s);
+                    return Ok(());
                 }
                 let mut end = room;
                 while !s.is_char_boundary(end) {
@@ -52,8 +54,23 @@ impl fmt::Display for ErrorContext {
                 Err(fmt::Error)
             }
         }
+        impl Write for Head {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                let mut lines = s.split('\n');
+                if let Some(first) = lines.next() {
+                    self.push(first)?;
+                }
+                for line in lines {
+                    if !(self.0.is_empty() || self.0.ends_with(' ')) {
+                        self.push(" ")?;
+                    }
+                    self.push(line)?;
+                }
+                Ok(())
+            }
+        }
         let mut head = Head(LPooled::take(), false);
-        // CR claude for claude: [bug/low] The snippet is the Expr's flat Display. For a
+        // XCR claude for claude: [bug/low] The snippet is the Expr's flat Display. For a
         // decorated expression that Display starts with write_leading_flat's newline
         // and puts each attribute on its own line. So a frame reads `in: ` and then
         // `#[serial]` and `s + 1` on lines of their own, and the 38-byte head spends
@@ -62,7 +79,13 @@ impl fmt::Display for ErrorContext {
         // snippet stays on one line even with a decorated child. probe:
         // design/review-2026-10-26/repro/t-print-decorated-error-snippet.gx
         // (t-print-02)
-        let complete = self.0.mentions_lowered() || write!(head, "{}", self.0).is_ok();
+        // 2026-10-27 claude: ErrorContext writes print::Bare (no decorations of its
+        // own) and Head writes each newline as one space, so every frame is one line.
+        // Pin: graphix-types
+        // expr::context::test::a_frame_names_its_expression_on_one_line (fails with
+        // either half undone).
+        let complete =
+            self.0.mentions_lowered() || write!(head, "{}", Bare(&self.0)).is_ok();
         let Head(snippet, truncated) = head;
         if !complete && !truncated {
             return Err(fmt::Error);
@@ -203,3 +226,22 @@ impl fmt::Display for ParserContext {
 }
 
 impl std::error::Error for ParserContext {}
+
+#[cfg(test)]
+mod test {
+    use super::At;
+    use crate::expr::{Expr, ExprKind};
+
+    #[test]
+    fn a_frame_names_its_expression_on_one_line() {
+        let bind: Expr = "let x =\n    #[serial]\n    s + 1".parse().unwrap();
+        let ExprKind::Bind(b) = &bind.kind else { panic!("not a bind: {bind}") };
+        let e = anyhow::anyhow!("boom").at(&b.value).at(&bind);
+        let frames: Vec<String> = e.chain().map(|c| c.to_string()).collect();
+        let snippets: Vec<&str> = frames
+            .iter()
+            .filter_map(|f| f.split_once(", in: ").map(|(_, s)| s))
+            .collect();
+        assert_eq!(snippets, ["let x = #[serial] s + 1", "s + 1"], "{frames:?}");
+    }
+}

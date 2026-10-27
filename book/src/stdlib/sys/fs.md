@@ -11,7 +11,7 @@ The `sys::fs` module provides functions for reading, writing, and watching files
 An open `File` reads, writes and closes through the [sys::io](io.md)
 traits, and seeks through `Seek`:
 
-```graphix
+```graphix,fragment
 use sys::{fs::{Seek, open}, io::{Close, Read, Write}};
 
 let f = open(`Create, path)?;

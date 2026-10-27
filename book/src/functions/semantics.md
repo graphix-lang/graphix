@@ -64,7 +64,7 @@ semantics of connect when combined with functions, normally you'd use
 a sequential iterator like `array::fold` for a job like
 this. Nevertheless, lets carry on
 
-```graphix
+```graphix,fragment
 let a = [1, 2, 3, 4, 5];
 len(a)
 ```
@@ -78,7 +78,7 @@ $ graphix test.gx
 
 However if we do,
 
-```graphix
+```graphix,fragment
 let a = [1, 2, 3, 4, 5];
 a <- [1, 2, 3];
 a <- [1, 2];
@@ -144,7 +144,7 @@ semantics. For these cases there is the `queue` function (and
 friends), which allows you to control how updates to a variable are
 processed.
 
-```graphix
+```graphix,sig
 val queue: fn(#clock: Any, v: 'a) -> 'a
 ```
 

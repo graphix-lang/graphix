@@ -9,7 +9,7 @@ overwhelming example consider a classic, the cons list. Graphix ships this
 exact structure as the built-in [`List`](../core/fundamental_types.md#list)
 type — that name is reserved — so our hand-rolled twin is called `Lst`,
 
-```graphix
+```graphix,fragment
 type Lst<'a> = [
   `Cons('a, Lst<'a>),
   `Nil
@@ -63,7 +63,7 @@ let rec fold = |l: Lst<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b| -> 'b select 
 You can probably see where functional programming gets it's (partly deserved)
 reputation for being elegant and simple. Lets try them out,
 
-```graphix
+```graphix,fragment
 let l = cons(cons(cons(cons(`Nil, 1), 2), 3), 4);
 l
 ```
@@ -77,7 +77,7 @@ $ graphix test.gx
 
 Lets try something more complex,
 
-```graphix
+```graphix,fragment
 map(l, |x| x * x)
 ```
 
@@ -90,7 +90,7 @@ $ graphix test.gx
 
 as expected. Finally lets sum the list with fold,
 
-```graphix
+```graphix,fragment
 fold(l, 0, |acc, v| acc + v)
 ```
 

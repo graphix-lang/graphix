@@ -418,8 +418,11 @@ impl<X: GXExt> GX<X> {
 
     pub(super) async fn new(mut cfg: GXConfig<X>) -> Result<Self> {
         let st_new = Instant::now();
-        cfg.resolvers
-            .extend(crate::search_path(&cfg.resolver_factories, &mut cfg.ctx.libstate)?);
+        cfg.resolvers.extend(crate::search_path(
+            &cfg.resolver_factories,
+            &mut cfg.ctx.libstate,
+            None,
+        )?);
         let mut ctx = cfg.ctx;
         if cfg.lsp_mode {
             ctx.env.ide = IdeMode::Lsp(None);

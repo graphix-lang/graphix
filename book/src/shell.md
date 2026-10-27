@@ -209,7 +209,7 @@ For example, if you have:
 ```
 
 Then `main.gx` can use:
-```graphix
+```graphix,fragment
 mod utils;
 mod math;
 
@@ -352,7 +352,7 @@ In this structure:
 - `logic/handlers.gx` defines the `logic::handlers` module
 
 From `main.gx`:
-```graphix
+```graphix,fragment
 mod ui;
 mod logic;
 
@@ -379,7 +379,7 @@ Place shared modules in your platform's init directory (e.g., `~/.local/share/gr
 ```
 
 Any Graphix program can then use:
-```graphix
+```graphix,fragment
 mod common;
 mod mylib;
 ```
@@ -505,6 +505,10 @@ graphix --no-cache ./myprogram.gx
 # compile, write the cache and exit (prepare a deployment's first start)
 graphix --warm ./myprogram.gx
 ```
+
+A `netidx:` script keeps no program entry, since nothing tells the cache
+its source changed: the program compiles at every start, and `--warm`
+refuses it.
 
 A restored program compiles nothing, so warnings printed while
 compiling appear only on a cold start: pass `--no-cache` to see them.

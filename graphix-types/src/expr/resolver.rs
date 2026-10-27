@@ -246,11 +246,12 @@ pub fn split_escaped(
 
 /// Parse a GRAPHIX_MODPATH-style list (`scheme:payload,{...}`) into
 /// resolvers. `file:` is built in, other schemes look up `factories`,
-/// an entry with no registered scheme is a file path, and an empty
-/// entry (a trailing comma's) is nothing.
+/// an entry with no registered scheme is a file path, read through
+/// `overrides`, and an empty entry (a trailing comma's) is nothing.
 pub fn parse_modpath(
     factories: &AHashMap<ArcStr, ResolverFactory>,
     libstate: &mut crate::LibState,
+    overrides: Option<&BufferOverrides>,
     s: &str,
 ) -> Result<Vec<ResolverRef>> {
     let mut res: Vec<ResolverRef> = vec![];
@@ -270,7 +271,7 @@ pub fn parse_modpath(
             },
             None => {
                 let path = l.strip_prefix("file:").unwrap_or(&l);
-                res.push(FilesResolver::new(PathBuf::from_str(path)?, None))
+                res.push(FilesResolver::new(PathBuf::from_str(path)?, overrides.cloned()))
             }
         }
     }
@@ -1271,8 +1272,8 @@ mod test {
     fn modpath_skips_an_unread_scheme() {
         let factories = AHashMap::default();
         let mut libstate = crate::LibState::default();
-        let r =
-            parse_modpath(&factories, &mut libstate, r"netidx:/x,C:\gx,/lib").unwrap();
+        let r = parse_modpath(&factories, &mut libstate, None, r"netidx:/x,C:\gx,/lib")
+            .unwrap();
         assert_eq!(r.len(), 2, "{r:?}");
         assert!(format!("{:?}", r[0]).contains("gx"), "{:?}", r[0]);
     }
@@ -1282,8 +1283,9 @@ mod test {
     fn modpath_unescapes_the_separator() {
         let factories = AHashMap::default();
         let mut libstate = crate::LibState::default();
-        let r = parse_modpath(&factories, &mut libstate, r"file:/a\,b,file:C:\gx\lib")
-            .unwrap();
+        let r =
+            parse_modpath(&factories, &mut libstate, None, r"file:/a\,b,file:C:\gx\lib")
+                .unwrap();
         assert_eq!(r.len(), 2);
         assert!(format!("{:?}", r[0]).contains(r#""/a,b""#), "{:?}", r[0]);
         assert!(format!("{:?}", r[1]).contains(r#"C:\\gx\\lib"#), "{:?}", r[1]);

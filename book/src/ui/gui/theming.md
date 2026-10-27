@@ -12,13 +12,13 @@ The `Theme` type enumerates all available themes:
 
 Apply a theme by passing it to the `window` function:
 
-```graphix
+```graphix,fragment
 window(#theme: &`CatppuccinMocha, &content)
 ```
 
 Since `#theme` takes a `&Theme`, you can change the theme reactively:
 
-```graphix
+```graphix,fragment
 let dark = true;
 let theme = select dark {
   true => `Dark,

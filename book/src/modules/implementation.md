@@ -25,7 +25,7 @@ m.gx  test.gx
 `test.gx` is the program that we will run, `m.gx` is a module it will load.
 
 `test.gx`
-```graphix
+```graphix,fragment
 mod m;
 
 m::hello
@@ -127,14 +127,14 @@ $ find .
 ```
 
 `test.gx` is the root of the hierarchy
-```graphix
+```graphix,fragment
 mod m;
 
 m::n::hello
 ```
 
 `m/mod.gx` is the root of module `m`
-```graphix
+```graphix,fragment
 mod n
 ```
 

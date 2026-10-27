@@ -38,7 +38,7 @@ depended on it would have no way of knowing what changed, and thus would have to
 do whatever huge amount of work it is supposed to do all over again. Consider a
 constrained GUI type with just labels and boxes,
 
-```graphix
+```graphix,fragment
 type Gui = [
   `Label(string),
   `Box(Array<Gui>)
@@ -53,7 +53,7 @@ widgets we had created and rebuild the entire UI from scratch. We'd like to be
 able to just update the label text that changed, and we can, with a small change
 to the type.
 
-```graphix
+```graphix,fragment
 type Gui = [
   `Label(&string),
   `Box(Array<Gui>)
@@ -74,7 +74,7 @@ Suppose we want to write a function that can update the value a passed in
 reference refers to, instead of the reference itself (which we can also do). We
 can do that with,
 
-```graphix
+```graphix,fragment
 *r <- "new value"
 ```
 

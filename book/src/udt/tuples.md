@@ -3,7 +3,7 @@
 Tuples are like structs where the field names are numbers, or like Arrays where
 every element can be a different type and the length is known at compile time. For example,
 
-```graphix
+```graphix,fragment
 (string, i64, f64)
 ```
 

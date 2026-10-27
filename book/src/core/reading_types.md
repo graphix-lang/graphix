@@ -6,7 +6,7 @@ Throughout this book and in the standard library documentation, you'll encounter
 
 The simplest function signature looks like this:
 
-```graphix
+```graphix,sig
 val double: fn(x: i64) -> i64
 ```
 
@@ -19,7 +19,7 @@ Every positional parameter in a function type carries a name as well as a type. 
 
 Another example:
 
-```graphix
+```graphix,sig
 val concat: fn(a: string, b: string) -> string
 ```
 
@@ -31,13 +31,13 @@ Type parameters (like generics in other languages) are written with a single quo
 
 ### Simple Type Parameters
 
-```graphix
+```graphix,sig
 val identity: fn(x: 'a) -> 'a
 ```
 
 This means: "takes a value of any type `'a` and returns a value of the same type `'a`". The `identity` function could work with integers, strings, or any other type.
 
-```graphix
+```graphix,sig
 val first: fn(a: Array<'a>) -> 'a
 ```
 
@@ -45,7 +45,7 @@ This means: "takes an array of any type `'a` and returns a single element of typ
 
 ### Multiple Type Parameters
 
-```graphix
+```graphix,sig
 val map: fn(a: Array<'a>, f: fn(x: 'a) -> 'b) -> Array<'b>
 ```
 
@@ -60,13 +60,13 @@ The types `'a` and `'b` can be the same or different.
 
 Arguments prefixed with `?#` are optional and labeled:
 
-```graphix
+```graphix,sig
 val text: fn(?#style: Style, content: string) -> Widget
 ```
 
 This function can be called in two ways:
 
-```graphix
+```graphix,fragment
 // style uses default value
 text("Hello");
 // style is specified
@@ -91,7 +91,7 @@ widget(#height: 50, "text")
 
 Arguments with `#` but no `?` are required but labeled:
 
-```graphix
+```graphix,sig
 val input_handler: fn(
     ?#enabled: &[bool, null],
     #handle: &fn(e: Event) -> [`Stop, `Continue],
@@ -101,7 +101,7 @@ val input_handler: fn(
 
 You must provide `#handle`, but it doesn't have to be in the first position. However, it must come before the unlabeled `&Tui` argument:
 
-```graphix
+```graphix,fragment
 input_handler(#handle: &my_handler, &my_widget)
 ```
 
@@ -109,7 +109,7 @@ input_handler(#handle: &my_handler, &my_widget)
 
 The `@args` notation means a function accepts any number of arguments:
 
-```graphix
+```graphix,sig
 val sum: fn(@args: i64) -> i64
 ```
 
@@ -124,7 +124,7 @@ sum(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 
 Sometimes a function requires at least one argument:
 
-```graphix
+```graphix,sig
 val max: fn(first: 'a, @args: 'a) -> 'a
 ```
 
@@ -137,7 +137,7 @@ with an `@args` parameter is refused.
 
 An ampersand `&` before a type means "reference to" rather than the value itself:
 
-```graphix
+```graphix,sig
 val text: fn(content: &string) -> Widget
 ```
 
@@ -169,7 +169,7 @@ A `&T` parameter accepts a `&mut` too, and covers any narrower type: `&[i64, nul
 
 In function signatures, `&T` in a parameter position means the function expects a reference. In widget examples, you'll often see:
 
-```graphix
+```graphix,fragment
 block(#title: &line("My Title"), &my_widget)
 ```
 
@@ -181,7 +181,7 @@ For a deeper dive, see [References](../udt/references.md).
 
 When a function can throw errors, the signature includes `throws`:
 
-```graphix
+```graphix,sig
 val divide: fn(a: i64, b: i64) -> i64 throws `DivideByZero
 ```
 
@@ -191,7 +191,7 @@ This function returns `i64` if successful, but might throw a `DivideByZero` erro
 
 A function can throw multiple error types:
 
-```graphix
+```graphix,sig
 val parse_and_divide: fn(num: string, denom: string) -> i64 throws [`ParseError, `DivideByZero]
 ```
 
@@ -199,7 +199,7 @@ val parse_and_divide: fn(num: string, denom: string) -> i64 throws [`ParseError,
 
 Often error types are parameterized:
 
-```graphix
+```graphix,sig
 val filter: fn(v: 'a, f: fn(x: 'a) -> bool throws 'e) -> 'a throws 'e
 ```
 
@@ -213,13 +213,13 @@ A function type without `throws` throws nothing. A parameter written
 
 The `Result` type is a convenient way to represent success or error:
 
-```graphix
+```graphix,fragment
 type Result<'r: NoError, 'e> = ['r, Error<'e>]
 ```
 
 So a function signature like:
 
-```graphix
+```graphix,sig
 val parse: fn(s: string) -> Result<i64, `ParseError>
 ```
 
@@ -236,7 +236,7 @@ See [Error Handling](./error.md) for complete details on working with errors.
 
 Square brackets `[...]` denote a set type - the value can be any one of the types in the set:
 
-```graphix
+```graphix,sig
 val process: fn(x: [i64, string]) -> string
 ```
 
@@ -246,13 +246,13 @@ This function accepts either an `i64` or a `string`, and returns a `string`.
 
 The pattern `[T, null]` means "T or nothing":
 
-```graphix
+```graphix,sig
 val find: fn(haystack: Array<string>, needle: string) -> [string, null]
 ```
 
 Returns a string if found, `null` if not found. This is aliased as `Option<T>`:
 
-```graphix
+```graphix,sig
 type Option<'a> = ['a, null];
 val find: fn(haystack: Array<string>, needle: string) -> Option<string>
 ```
@@ -261,7 +261,7 @@ val find: fn(haystack: Array<string>, needle: string) -> Option<string>
 
 Types can nest arbitrarily:
 
-```graphix
+```graphix,sig
 val sum: fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number
 ```
 
@@ -277,7 +277,7 @@ sum(1, [2, 3], 4)
 
 Type variables in functions can have constraints:
 
-```graphix
+```graphix,sig
 val sum: fn<'a: Number>(@args: 'a) -> 'a
 ```
 
@@ -360,7 +360,7 @@ Let's decode some complex real-world signatures:
 
 ### Example 1: TUI Table Widget
 
-```graphix
+```graphix,sig
 val table: fn(
     ?#header: &[Row, null],
     ?#selected: &[i64, null],
@@ -384,7 +384,7 @@ All parameters are references because the table needs to react to changes withou
 
 ### Example 2: Filter Function
 
-```graphix
+```graphix,sig
 val filter: fn(v: 'a, pred: fn(x: 'a) -> bool throws 'e) -> 'a throws 'e
 ```
 
@@ -399,7 +399,7 @@ Breaking it down:
 
 ### Example 3: Queue Function
 
-```graphix
+```graphix,sig
 val queue: fn(#clock: Any, ?#flush: Any, ?#flush_before: [i64, null], v: 'a) -> 'a
 ```
 
@@ -415,7 +415,7 @@ Call it like: `queue(#clock: my_timer, my_value)`
 
 ### Example 4: Array Map
 
-```graphix
+```graphix,sig
 val map: fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e
 ```
 

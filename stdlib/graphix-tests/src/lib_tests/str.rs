@@ -566,6 +566,18 @@ run!(
     prints(r#"[true, true, true, true, "4.20", "007", true, "refused"]"#)
 );
 
+// A map literal's repeated key keeps its last binding, parsed as compiled
+// (t-expr-core-02).
+run!(
+    parse_map_repeated_key_keeps_the_last,
+    r##"{
+  let p: Result<Map<string, i64>, `ParseError(string)> = str::parse(r#"{"a" => 1, "a" => 2}"#);
+  let lit = {"a" => 1, "a" => 2};
+  (p$, p$ == lit)
+}"##,
+    prints(r#"[{"a" => i64:2}, true]"#)
+);
+
 // sprintf prints a composite as interpolation does, never its kind
 // marker, and refuses to pad past its cap rather than allocate without
 // bound (x-builtin-effects-01, collections-str-01, x-panics-05,

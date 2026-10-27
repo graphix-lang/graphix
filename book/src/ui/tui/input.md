@@ -50,7 +50,7 @@ runs twice. `on_press(e, f)` calls `f` with the `KeyEvent` when `e` is a
 press and continues on everything else. It returns what a handler
 returns, so it is usually the handler's whole body:
 
-```graphix
+```graphix,fragment
 let handle = |e: Event| on_press(e, |k| select k.code {
   `Up => { sel <- k ~ max(0, sel - 1); `Stop },
   `Down => { sel <- k ~ sel + 1; `Stop },
@@ -65,7 +65,7 @@ and answers every event, which means sampling the answer on the event
 (a bare `` `Stop `` is a constant: it answers the first event and no
 other):
 
-```graphix
+```graphix,fragment
 let modal = |e: Event| { on_press(e, keys); e ~ `Stop };
 ```
 
@@ -97,7 +97,7 @@ false the display takes it back with a full repaint. Its result is the
 display's actual state, so start the program on the release and clear
 the level with the program's exit:
 
-```graphix
+```graphix,fragment
 let suspended = false;
 {
   catch(e) { println("could not run: [e]"); suspended <- e ~ false };

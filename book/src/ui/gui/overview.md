@@ -46,7 +46,7 @@ A few things to notice:
 
 GUI widgets take `&` references so that updates propagate with fine granularity. When you write:
 
-```graphix
+```graphix,fragment
 let name = "world";
 text(&"Hello, [name]!")
 ```
@@ -55,7 +55,7 @@ The `text` widget holds a reference to the string expression `"Hello, [name]!"`.
 
 This is especially important for interactive widgets. A text input, for example, takes a `&string` for its current value and provides a callback to update it:
 
-```graphix
+```graphix,fragment
 let name = "";
 text_input(#on_input: |v| name <- v, #placeholder: &"Type here...", &name)
 ```

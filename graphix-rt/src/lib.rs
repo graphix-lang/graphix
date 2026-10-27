@@ -18,7 +18,7 @@ use graphix_compiler::{
     BindId, CFlag, Control, Event, ExecState, FusionStats, LambdaId, NoUserEvent,
     ParMode, Scope, UserEvent, cost,
     env::Env,
-    expr::{ExprId, Load, ModPath, Probe, ResolverFactory, ResolverRef},
+    expr::{BufferOverrides, ExprId, Load, ModPath, Probe, ResolverFactory, ResolverRef},
     ide::Ide,
     image::ProgramRoot,
     node::lambda::LambdaDef,
@@ -1048,18 +1048,22 @@ impl<X: GXExt> GXHandle<X> {
 }
 
 /// The module search after a program's own directory: the entries of
-/// `GRAPHIX_MODPATH`, then the user's data directory.
+/// `GRAPHIX_MODPATH`, then the user's data directory, every directory
+/// read through `overrides`.
 pub fn search_path(
     factories: &ahash::AHashMap<ArcStr, ResolverFactory>,
     libstate: &mut graphix_compiler::LibState,
+    overrides: Option<&BufferOverrides>,
 ) -> Result<Vec<ResolverRef>> {
     let mut res = match std::env::var("GRAPHIX_MODPATH") {
-        Ok(mp) => graphix_compiler::expr::parse_modpath(factories, libstate, &mp)
-            .map_err(|e| e.context("GRAPHIX_MODPATH"))?,
+        Ok(mp) => {
+            graphix_compiler::expr::parse_modpath(factories, libstate, overrides, &mp)
+                .map_err(|e| e.context("GRAPHIX_MODPATH"))?
+        }
         Err(_) => vec![],
     };
     if let Some(dd) = data_dir() {
-        res.push(graphix_compiler::expr::FilesResolver::new(dd, None));
+        res.push(graphix_compiler::expr::FilesResolver::new(dd, overrides.cloned()));
     }
     Ok(res)
 }

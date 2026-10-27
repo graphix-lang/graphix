@@ -918,7 +918,14 @@ impl ExprKind {
             Select(SelectExpr { arg, arms }) => {
                 f(arg);
                 for (p, e) in arms.iter() {
-                    p.guard.iter().for_each(|g| f(g));
+                    let Pattern {
+                        guard,
+                        type_predicate: _,
+                        structure_predicate: _,
+                        pos: _,
+                        end: _,
+                    } = p;
+                    guard.iter().for_each(|g| f(g));
                     f(e);
                 }
             }
@@ -940,7 +947,17 @@ impl ExprKind {
             }
             SeqMachine(m) => {
                 f(&m.pc);
-                m.steps.iter().for_each(|s| s.items.iter().for_each(|e| f(e)))
+                for s in m.steps.iter() {
+                    let SeqStep {
+                        items,
+                        label: _,
+                        scope: _,
+                        until: _,
+                        value: _,
+                        next: _,
+                    } = s;
+                    items.iter().for_each(|e| f(e))
+                }
             }
             SeqCapture(c) => {
                 f(&c.snapshot);
@@ -1413,18 +1430,11 @@ impl Expr {
                 Some(rep::structure(fields.drain(..)))
             }
             ExprKind::Map { args } => {
-                let mut pairs: LPooled<Vec<(Value, Value)>> = LPooled::take();
+                let mut map = netidx_value::Map::new();
                 for (k, v) in args.iter() {
-                    pairs.push((k.literal_value()?, v.literal_value()?))
+                    map.insert_cow(k.literal_value()?, v.literal_value()?);
                 }
-                // CR claude for claude: [bug/low] Map::from_iter keeps the first
-                // binding of a repeated key, but the map literal node and the JIT keep
-                // the last, so `str::parse(r#"{"a" => 1, "a" => 2}"#)` gives `{"a" =>
-                // 1}` where the same literal compiled gives `{"a" => 2}`. Insert the
-                // pairs in order with insert_cow, as node::map does. probe:
-                // design/review-2026-10-26/repro/t-expr-core-parse-dup-map-key.gx
-                // (t-expr-core-02)
-                Some(Value::Map(netidx_value::Map::from_iter(pairs.drain(..))))
+                Some(Value::Map(map))
             }
             _ => None,
         })
@@ -1601,14 +1611,6 @@ impl Expr {
     }
     /// This node rebuilt with each direct sub-expression replaced by
     /// `f(child)`, in `for_each_child`'s order, with a fresh id.
-    // CR claude for claude: [risk/low] Three spots copy an Expr-holding struct
-    // wholesale: the select arm's `p.clone()` with only `guard` replaced, `SeqStep {
-    // items, ..s.clone() }`, and `other => other.clone()` over ArgKind. for_each_child
-    // reads only guard/items/default(). A new Expr field in Pattern or SeqStep, or a
-    // new ArgKind variant holding one, would compile and be skipped by both walks
-    // alike, and children_agree cannot see it. Destructure Pattern, SeqStep and ArgKind
-    // exhaustively here (and in for_each_child) so the compiler forces each new field
-    // to be handled. Found by reading; not run. (t-expr-core-03)
     pub fn map_children(&self, f: &mut impl FnMut(&Expr) -> Expr) -> Expr {
         use ExprKind::*;
         let a = |f: &mut dyn FnMut(&Expr) -> Expr, x: &Arc<Expr>| Arc::new(f(x));
@@ -1704,7 +1706,8 @@ impl Expr {
                 args: Arc::from_iter(l.args.iter().map(|arg| Arg {
                     kind: match &arg.kind {
                         ArgKind::Defaulted(d) => ArgKind::Defaulted(f(d)),
-                        other => other.clone(),
+                        ArgKind::Positional => ArgKind::Positional,
+                        ArgKind::Labeled => ArgKind::Labeled,
                     },
                     pattern: arg.pattern.clone(),
                     constraint: arg.constraint.clone(),
@@ -1744,8 +1747,15 @@ impl Expr {
             Select(SelectExpr { arg, arms }) => Select(SelectExpr {
                 arg: a(f, arg),
                 arms: Arc::from_iter(arms.iter().map(|(p, e)| {
-                    let mut p = p.clone();
-                    p.guard = p.guard.as_ref().map(|g| f(g));
+                    let Pattern { type_predicate, structure_predicate, guard, pos, end } =
+                        p;
+                    let p = Pattern {
+                        type_predicate: type_predicate.clone(),
+                        structure_predicate: structure_predicate.clone(),
+                        guard: guard.as_ref().map(|g| f(g)),
+                        pos: *pos,
+                        end: *end,
+                    };
                     (p, f(e))
                 })),
             }),
@@ -1794,11 +1804,17 @@ impl Expr {
                 id: m.id,
                 pc: a(f, &m.pc),
                 scopes: m.scopes.clone(),
-                steps: Arc::from_iter(
-                    m.steps
-                        .iter()
-                        .map(|s| SeqStep { items: xs(f, &s.items), ..s.clone() }),
-                ),
+                steps: Arc::from_iter(m.steps.iter().map(|s| {
+                    let SeqStep { label, scope, until, value, items, next } = s;
+                    SeqStep {
+                        label: label.clone(),
+                        scope: *scope,
+                        until: *until,
+                        value: value.clone(),
+                        items: xs(f, items),
+                        next: *next,
+                    }
+                })),
             })),
             BinOp { op, lhs, rhs } => BinOp { op: *op, lhs: a(f, lhs), rhs: a(f, rhs) },
         };

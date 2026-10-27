@@ -38,7 +38,7 @@ The `canvas` widget provides a low-level drawing surface for custom graphics. Yo
 ```
 
 ### Label
-```graphix
+```graphix,fragment
 `Label({line: line("Hello"), x: 5.0, y: 0.5})
 ```
 

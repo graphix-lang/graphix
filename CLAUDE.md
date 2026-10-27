@@ -1256,9 +1256,11 @@ test is a result.
 - Examples in `book/src/examples/` are documentation and test corpus at
   once: each is included by a book page, and `graphix-shell/tests/
   examples_compile.rs` builds every one (check, elaboration, fusion, as
-  `graphix --expand` does) in the plain gate, and parses every inline
-  ```` ```graphix ```` fence (`,ignore` for a schematic fragment,
-  `,refused` for one the check must refuse); the tui package's
+  `graphix --expand` does) in the plain gate, and checks every inline
+  ```` ```graphix ```` fence as a script (a REPL transcript's inputs only
+  parse; `,fragment` parses a program written against names its page
+  assumes, `,sig` an interface, `,ignore` nothing; `,refused` must be
+  refused, by the message a transcript after it shows); the tui package's
   `examples_test` renders every TUI example and drives some with keys,
   and the GUI examples are run by hand
   (`cargo run --bin graphix -- examples/gui/<name>.gx`).

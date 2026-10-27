@@ -4,7 +4,7 @@ Structs allow you to define a type that groups any number of fields together as
 one data object. The fields are accessible by name anywhere in the program. For
 example,
 
-```graphix
+```graphix,fragment
 { foo: string, bar: i64 }
 ```
 
@@ -79,7 +79,7 @@ Structs are not mutable, like everything else in Graphix. However There is a
 quick way create a new struct from an existing struct with only some fields
 changed. This is called functional struct update syntax. For example,
 
-```graphix
+```graphix,fragment
 { s with bar: 21 }
 ```
 

@@ -30,7 +30,7 @@ Rather than constructing `Dataset` variants directly, use these convenience func
 
 ### `chart::line`
 
-```graphix
+```graphix,fragment
 chart::line(#label: "Price", #color: color(#r: 1.0)$, &data)
 ```
 
@@ -38,7 +38,7 @@ Points connected by straight line segments. Data is `&[Array<(f64, f64)>, Array<
 
 ### `chart::scatter`
 
-```graphix
+```graphix,fragment
 chart::scatter(#label: "Points", #point_size: 5.0, &data)
 ```
 
@@ -46,7 +46,7 @@ Individual points without connecting lines. Same data type as line.
 
 ### `chart::bar`
 
-```graphix
+```graphix,fragment
 chart::bar(#label: "Counts", &data)
 ```
 
@@ -54,7 +54,7 @@ Vertical bars from the x-axis. Data is `&Array<(string, f64)>` — category labe
 
 ### `chart::area`
 
-```graphix
+```graphix,fragment
 chart::area(#label: "Volume", &data)
 ```
 
@@ -62,7 +62,7 @@ Like line but with the region between the line and the x-axis filled with 30% op
 
 ### `chart::dashed_line`
 
-```graphix
+```graphix,fragment
 chart::dashed_line(#label: "Projection", #dash: 10.0, #gap: 5.0, &data)
 ```
 
@@ -70,7 +70,7 @@ A dashed line series. `dash` and `gap` control the dash and gap lengths in pixel
 
 ### `chart::candlestick`
 
-```graphix
+```graphix,fragment
 chart::candlestick(#label: "OHLC", &ohlc_data)
 ```
 
@@ -78,7 +78,7 @@ Financial candlestick chart. Data is `&[Array<OhlcPoint<f64>>, Array<OhlcPoint<d
 
 ### `chart::error_bar`
 
-```graphix
+```graphix,fragment
 chart::error_bar(#label: "Confidence", &error_data)
 ```
 
@@ -86,7 +86,7 @@ Vertical error bars. Data is `&[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<d
 
 ### `chart::pie`
 
-```graphix
+```graphix,fragment
 chart::pie(#show_percentages: true, #start_angle: -90.0, &data)
 ```
 
@@ -94,7 +94,7 @@ Pie chart. Data is `&Array<(string, f64)>` — category labels paired with value
 
 ### `chart::scatter3d`
 
-```graphix
+```graphix,fragment
 chart::scatter3d(#label: "3D Points", #point_size: 4.0, &data)
 ```
 
@@ -102,7 +102,7 @@ chart::scatter3d(#label: "3D Points", #point_size: 4.0, &data)
 
 ### `chart::line3d`
 
-```graphix
+```graphix,fragment
 chart::line3d(#label: "3D Line", &data)
 ```
 
@@ -110,7 +110,7 @@ chart::line3d(#label: "3D Line", &data)
 
 ### `chart::surface`
 
-```graphix
+```graphix,fragment
 chart::surface(#color_by_z: true, #label: "surface", &grid_data)
 ```
 
@@ -137,7 +137,7 @@ chart::chart(#title: &"Summary", #style: &headline, &[...])
 
 ### `chart::chart_style`
 
-```graphix
+```graphix,fragment
 chart::chart_style(#background: color(#r: 0.1, #g: 0.1, #b: 0.1)$, #margin: 20.0, #legend_position: `UpperRight)
 ```
 
@@ -145,7 +145,7 @@ Constructs a `ChartStyle` value for the chart's `#style` parameter. Every argume
 
 ### `chart::mesh_style`
 
-```graphix
+```graphix,fragment
 chart::mesh_style(#label_color: color(#r: 1.0, #g: 1.0, #b: 1.0)$, #x_labels: 5)
 ```
 
@@ -153,7 +153,7 @@ Constructs a `MeshStyle` value for `chart_style`'s `#mesh` parameter.
 
 ### `chart::legend_style`
 
-```graphix
+```graphix,fragment
 chart::legend_style(#background: color(#r: 0.1, #g: 0.1, #b: 0.1)$, #label_color: color(#r: 1.0, #g: 1.0, #b: 1.0)$)
 ```
 

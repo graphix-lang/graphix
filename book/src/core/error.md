@@ -37,7 +37,7 @@ does not stop the execution of any node. The handler is an ordinary reactive
 expression that runs when an error value arrives — the natural idiom is to
 connect it to state your program reads,
 
-```graphix
+```graphix,fragment
 let error_display: [null, string] = null;
 let x = {
     catch(e) error_display <- "[e]";
@@ -54,7 +54,7 @@ next one out). Every
 error raised with `?` is wrapped in an `ErrChain` struct, the full definition of
 which is,
 
-```graphix
+```graphix,fragment
 type Pos = {
     line: i32,
     column: i32
@@ -159,7 +159,7 @@ never". If the expression on it's left is a non error, then `$` doesn't do
 anything, otherwise it logs the error at the `warn!` log level and returns
 nothing. This is a concise way of writing,
 
-```graphix
+```graphix,fragment
 select might_fail(1, 2, 3) {
   error as _ => never(),
   v => v
@@ -168,7 +168,7 @@ select might_fail(1, 2, 3) {
 
 can instead be written as,
 
-```graphix
+```graphix,fragment
 might_fail(1, 2, 3)$
 ```
 
@@ -183,7 +183,7 @@ Both operators also work on an optional value, a `['a, null]`. `$` is still
 "or never": a null produces nothing, and because a null is not a failure
 nothing is logged. It is the way to say "wait until this is there",
 
-```graphix
+```graphix,fragment
 let session = (*connected)$
 ```
 
@@ -205,7 +205,7 @@ null is left in place. That is what you want from a function that returns
 `Result<null, 'e>`, its `?` must not raise on success, and it means each
 operator takes one layer, as in Rust. To take both, write both,
 
-```graphix
+```graphix,fragment
 db::txn::get(tree, key)?$
 ```
 

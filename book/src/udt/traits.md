@@ -60,7 +60,7 @@ automatically, like a `type`, and must not be repeated there.
 
 ## Implementing a Trait
 
-```graphix
+```graphix,fragment
 type Counter = Abstract<i64>;
 
 impl Show for Counter {
@@ -87,7 +87,7 @@ that the implementation provides the impl (see below).
 
 ### Parameterized targets
 
-```graphix
+```graphix,fragment
 impl<'a: Show> Show for Array<'a> {
     let show = |xs| "\[[str::join(#sep: ", ", array::map(xs, Show::show))]\]"
 }
@@ -146,7 +146,7 @@ is enforced.
 
 A trait's methods live under the trait's name, like a module's items:
 
-```graphix
+```graphix,fragment
 Show::show(Counter(42));
 
 // or `use Show::*`
@@ -166,7 +166,7 @@ call is a compile error: annotate the argument.
 When the self type is a union of implementors, the call becomes the
 `select` you would otherwise write, one arm per member:
 
-```graphix
+```graphix,fragment
 let v: [i64, Counter] = select flag { true => 1, false => Counter(2) };
 // ≡ select v { i64 as x => show(x), Counter as x => show(x) }
 show(v)
@@ -178,7 +178,7 @@ Every member needs an implementation.
 
 A trait names no value's type; it constrains a type variable:
 
-```graphix
+```graphix,fragment
 let describe = 'a: Show |x: 'a| "<[show(x)]>";
 describe(3);
 describe(Counter(4))
@@ -191,7 +191,7 @@ dispatches to `i64`'s `show` and `Counter(4)` to `Counter`'s.
 Writing the trait as a parameter's type is shorthand for a fresh
 bounded variable per parameter:
 
-```graphix
+```graphix,fragment
 // the same as 'a: Show, 'b: Show |a: 'a, b: 'b| ...
 let both = |a: Show, b: Show| "[show(a)] [show(b)]"
 ```
@@ -206,7 +206,7 @@ against the implementations known then.
 
 ## Traits in Interface Files
 
-```graphix
+```graphix,sig
 // m.gxi
 trait Show { val show: fn(self) -> string };
 type Counter;
@@ -214,7 +214,7 @@ impl Show for Counter;
 val make: fn(x: i64) -> Counter
 ```
 
-```graphix
+```graphix,fragment
 // m.gx
 type Counter = Abstract<i64>;
 impl Show for Counter { let show = |c| "Counter([c.0])" };
@@ -434,7 +434,7 @@ A parameter typed by a constructor trait is a constructor variable
 applied to a fresh element, and each call site resolves it for its
 own receiver:
 
-```graphix
+```graphix,fragment
 let total = |c: Collection| fold(c, 0, |a, x| a + x);
 // 10
 total([1, 2]) + total(list::from_array([3, 4]))
@@ -445,7 +445,7 @@ result is not the same shape (`total` returns a scalar). To *preserve*
 the container — return the same kind of collection with a new element
 — name the constructor and apply it:
 
-```graphix
+```graphix,fragment
 let sqr = 'c: Collection, 'a: Number |c: 'c<'a>| -> 'c<'a> map(c, |n| n * n);
 // Array<i64> [1, 4, 9]
 sqr([1, 2, 3]);
