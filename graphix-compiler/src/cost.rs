@@ -89,7 +89,7 @@ pub fn calibration() -> Option<&'static Calibration> {
 pub fn start_calibration() {
     static STARTED: AtomicBool = AtomicBool::new(false);
     static FIXED: LazyLock<Option<u64>> = LazyLock::new(|| {
-        std::env::var("GRAPHIX_PAR_T").ok().and_then(|t| t.parse().ok())
+        graphix_types::stack::env_count("GRAPHIX_PAR_T", 0, "measuring the threshold")
     });
     if let Some(t) = *FIXED {
         return fix_calibration(t);

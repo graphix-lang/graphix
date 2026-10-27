@@ -1,10 +1,13 @@
 use enumflags2::bitflags;
+use poolshark::local::LPooled;
 use std::{
     cell::Cell,
+    io,
     sync::{
         LazyLock, OnceLock,
         atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
+    thread::JoinHandle,
 };
 
 /// Stack headroom that must remain before [`ensure_sufficient`]
@@ -25,32 +28,61 @@ static DEFAULT_BUDGET: LazyLock<AtomicUsize> = LazyLock::new(|| {
     AtomicUsize::new(match std::env::var("GRAPHIX_STACK_BUDGET") {
         Err(_) => usize::MAX,
         Ok(s) => parse_budget(&s).unwrap_or_else(|| {
-            let msg = compact_str::format_compact!(
-                "GRAPHIX_STACK_BUDGET={s:?} is not a byte count (1073741824, \
-                 64M, 1G); running without a stack budget"
+            report_env(
+                "GRAPHIX_STACK_BUDGET",
+                &s,
+                "a byte count (1073741824, 64M, 1G)",
+                "running without a stack budget",
             );
-            log::error!("{msg}");
-            eprintln!("{msg}");
             usize::MAX
         }),
     })
 });
 
+/// Report that the variable `var` holds `value`, which is not `wanted`,
+/// so a mistyped knob does not run quietly as `fallback` says.
+fn report_env(var: &str, value: &str, wanted: &str, fallback: &str) {
+    let msg = compact_str::format_compact!("{var}={value:?} is not {wanted}; {fallback}");
+    log::error!("{msg}");
+    eprintln!("{msg}");
+}
+
 /// The mode the variable `var` names, any case, else `default`; a value
-/// that names none is reported, so a mistyped knob does not run quietly
-/// in the default mode.
+/// that names none is reported.
 fn env_mode<T: Copy>(var: &str, modes: &[(&str, T)], default: T) -> T {
     let Ok(s) = std::env::var(var) else { return default };
     match modes.iter().find(|(n, _)| n.eq_ignore_ascii_case(s.trim())) {
         Some((_, m)) => *m,
         None => {
             let names = modes.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ");
-            let msg = compact_str::format_compact!(
-                "{var}={s:?} is not one of {names}; using the default"
+            report_env(
+                var,
+                &s,
+                &compact_str::format_compact!("one of {names}"),
+                "using the default",
             );
-            log::error!("{msg}");
-            eprintln!("{msg}");
             default
+        }
+    }
+}
+
+/// The count of at least `least` the variable `var` holds, else `None`; a
+/// value that is not one is reported, `fallback` saying what runs instead.
+pub fn env_count<T>(var: &str, least: T, fallback: &str) -> Option<T>
+where
+    T: std::str::FromStr + PartialOrd + std::fmt::Display,
+{
+    let s = std::env::var(var).ok()?;
+    match s.trim().parse().ok().filter(|n| *n >= least) {
+        Some(n) => Some(n),
+        None => {
+            report_env(
+                var,
+                &s,
+                &compact_str::format_compact!("a count of at least {least}"),
+                fallback,
+            );
+            None
         }
     }
 }
@@ -92,18 +124,10 @@ pub fn set_stack_budget(bytes: usize) {
 /// unlimited, `GRAPHIX_ACTIVATION_BUDGET`, or the last
 /// [`set_activation_budget`].
 static DEFAULT_ACTIVATIONS: LazyLock<AtomicU64> = LazyLock::new(|| {
-    AtomicU64::new(match std::env::var("GRAPHIX_ACTIVATION_BUDGET") {
-        Err(_) => u64::MAX,
-        Ok(s) => s.trim().parse().unwrap_or_else(|_| {
-            let msg = compact_str::format_compact!(
-                "GRAPHIX_ACTIVATION_BUDGET={s:?} is not a count; running without an \
-                 activation budget"
-            );
-            log::error!("{msg}");
-            eprintln!("{msg}");
-            u64::MAX
-        }),
-    })
+    AtomicU64::new(
+        env_count("GRAPHIX_ACTIVATION_BUDGET", 0, "running without an activation budget")
+            .unwrap_or(u64::MAX),
+    )
 });
 
 /// Set the activation budget runtimes created from now on start with; a
@@ -221,23 +245,55 @@ pub fn record_self_blocks(n: i64) {
 /// `GRAPHIX_EVAL_THREADS`, else one worker a core: the workers an
 /// evaluation pool is built with.
 pub fn eval_threads() -> usize {
-    // CR claude for claude: [risk/low] A value this cannot use (`abc`, `0`, `-2`) falls
+    // XCR claude for claude: [risk/low] A value this cannot use (`abc`, `0`, `-2`) falls
     // back to one worker per core without a word, and cost.rs reads GRAPHIX_PAR_T the
     // same way. GRAPHIX_PAR and GRAPHIX_PRUNE report a bad value through env_mode, and
     // the stack and activation budgets report theirs, so a mistyped thread count or
     // threshold silently benchmarks the default. Read both through a reporting count
     // helper beside env_mode, which GRAPHIX_ACTIVATION_BUDGET can share. probe:
     // design/review-2026-10-26/repro/t-misc-eval-threads-typo.sh (t-misc-02)
+    // 2026-10-27 claude: GRAPHIX_EVAL_THREADS, GRAPHIX_PAR_T (cost::start_calibration)
+    // and GRAPHIX_ACTIVATION_BUDGET now read through stack::env_count, which reports a
+    // value that is no count of at least its least (1 for the threads, 0 for the
+    // others) and falls back as before; it, env_mode and GRAPHIX_STACK_BUDGET share
+    // stack::report_env for the message. The repro prints a line for abc, 0, -2 and
+    // lots. Pin: stack::test::a_bad_count_is_reported (children with
+    // GRAPHIX_EVAL_THREADS abc/0/-2 and GRAPHIX_ACTIVATION_BUDGET -1; fails with the
+    // silent parse restored).
     static THREADS: LazyLock<usize> = LazyLock::new(|| {
-        std::env::var("GRAPHIX_EVAL_THREADS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|n| *n > 0)
-            .unwrap_or_else(|| {
-                std::thread::available_parallelism().map_or(1, |n| n.get())
-            })
+        env_count("GRAPHIX_EVAL_THREADS", 1, "using one worker a core").unwrap_or_else(
+            || std::thread::available_parallelism().map_or(1, |n| n.get()),
+        )
     });
     *THREADS
+}
+
+/// A pool of `threads` workers, each started by `spawn`, else of as
+/// many as the last try started before one failed. A failed try's
+/// workers have exited before the next try starts its own.
+fn build_eval_pool(
+    mut threads: usize,
+    mut spawn: impl FnMut(rayon::ThreadBuilder) -> io::Result<JoinHandle<()>>,
+) -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
+    let mut started: LPooled<Vec<JoinHandle<()>>> = LPooled::take();
+    loop {
+        let built = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .spawn_handler(|t| Ok(started.push(spawn(t)?)))
+            .build();
+        match built {
+            Ok(pool) => break Ok(pool),
+            Err(e) if threads > 1 => {
+                log::warn!("the evaluation pool: {threads} workers: {e}");
+                let fit = started.len();
+                for worker in started.drain(..) {
+                    let _ = worker.join();
+                }
+                threads = fit.clamp(1, threads - 1)
+            }
+            Err(e) => break Err(e),
+        }
+    }
 }
 
 /// `f` of the [`Control`] of the cycle running on this thread, `None`
@@ -462,37 +518,49 @@ impl Control {
     /// This runtime's evaluation pool, built at the first call.
     pub fn eval_pool(&self) -> &rayon::ThreadPool {
         self.pool.get_or_init(|| {
-            let mut threads = eval_threads();
-            // a process short of address space or threads gets fewer workers
-            loop {
-                let built = rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
+            build_eval_pool(eval_threads(), |t| {
+                std::thread::Builder::new()
+                    .name(format!("graphix-eval-{}", t.index()))
                     .stack_size(16 << 20)
-                    .thread_name(|i| format!("graphix-eval-{i}"))
-                    .build();
-                match built {
-                    Ok(pool) => break pool,
-                    Err(e) if threads > 1 => {
-                        log::warn!("the evaluation pool: {threads} workers: {e}");
-                        threads /= 2
-                    }
-                    // CR claude for claude: [bug/medium] The halving above does not
-                    // degrade. A failed rayon build only signals its spawned threads to
-                    // terminate, and they still count when the next, smaller build is
-                    // tried at once. So under a thread limit every retry fails down to
-                    // one worker, this panic fires, and the program dies at startup
-                    // ('loading initial modules: channel closed'). cost::calibrate
-                    // makes it worse: it builds a second all-core pool at the same
-                    // moment and `.expect`s it, which panicked the calibration thread
-                    // in the same runs. Wait for the failed build's threads to exit, or
-                    // size the pool from the threads that can actually be spawned. Run
-                    // parts inline rather than panicking here. Calibrate on a few
-                    // workers and leave the calibration unset when that fails. probe:
-                    // design/review-2026-10-26/repro/x-perf-runtime-thread-limit.sh
-                    // (x-perf-runtime-04)
-                    Err(e) => panic!("the evaluation pool: {e}"),
-                }
-            }
+                    .spawn(|| t.run())
+            })
+            // CR claude for claude: [bug/medium] The halving above does not
+            // degrade. A failed rayon build only signals its spawned threads to
+            // terminate, and they still count when the next, smaller build is
+            // tried at once. So under a thread limit every retry fails down to
+            // one worker, this panic fires, and the program dies at startup
+            // ('loading initial modules: channel closed'). cost::calibrate
+            // makes it worse: it builds a second all-core pool at the same
+            // moment and `.expect`s it, which panicked the calibration thread
+            // in the same runs. Wait for the failed build's threads to exit, or
+            // size the pool from the threads that can actually be spawned. Run
+            // parts inline rather than panicking here. Calibrate on a few
+            // workers and leave the calibration unset when that fails. probe:
+            // design/review-2026-10-26/repro/x-perf-runtime-thread-limit.sh
+            // (x-perf-runtime-04)
+            // 2026-10-27 claude: Done: the pool is built by
+            // stack::build_eval_pool, whose spawn handler keeps each worker's
+            // JoinHandle; a failed try joins the workers it started (rayon's
+            // Terminator has signalled them) and the next try asks for as many
+            // as started, at most one fewer, so the pool is as large as the
+            // limit allows (the calibration part was done under
+            // x-perf-compile-06). Pin:
+            // stack::test::a_thread_limit_sizes_the_pool (a spawner that
+            // refuses past 3 live threads gets a 3-worker pool from a request
+            // for 8; with the halving and no join restored the build fails).
+            // Under the repro the log shows one '32 workers' warning and the
+            // program runs where at least one worker can start. Remains: when
+            // not one worker can start the build still panics here. Running
+            // parts inline needs Control::eval_pool to be fallible and a serial
+            // path at every pool user (branch::on_pool's four callers, which
+            // call rayon::join and par_iter inside it and would otherwise reach
+            // rayon's global pool, which cannot start either;
+            // node::check_in_tasks; fusion::fuse_each), and the fork plans to
+            // go Serial when there is no pool; not done in this batch. In this
+            // host's repro the zero-worker case is reached at margins up to
+            // about 70 threads, since the user's thread count moves by tens
+            // with the other lanes' builds.
+            .unwrap_or_else(|e| panic!("the evaluation pool: no worker starts: {e}"))
         })
     }
 
@@ -781,6 +849,59 @@ mod test {
             assert!(a.eval_pool().current_thread_index().is_some());
             assert!(b.eval_pool().current_thread_index().is_none());
         });
+    }
+
+    // a try that fails at a thread limit has its workers exit before
+    // the next, so the pool is as large as the limit lets it be
+    #[test]
+    fn a_thread_limit_sizes_the_pool() {
+        const LIMIT: usize = 3;
+        let live = triomphe::Arc::new(AtomicUsize::new(0));
+        let pool = build_eval_pool(8, |t| {
+            if live.fetch_add(1, Ordering::SeqCst) >= LIMIT {
+                live.fetch_sub(1, Ordering::SeqCst);
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            let live = live.clone();
+            std::thread::Builder::new().spawn(move || {
+                t.run();
+                live.fetch_sub(1, Ordering::SeqCst);
+            })
+        })
+        .expect("a pool of the workers the limit allows");
+        assert_eq!(pool.current_num_threads(), LIMIT);
+    }
+
+    // a count variable holding what no count of its least can be is
+    // reported, and the default stands
+    #[test]
+    fn a_bad_count_is_reported() {
+        const CHILD: &str = "GRAPHIX_STACK_BAD_COUNT_CHILD";
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(eval_threads(), cores);
+            assert_eq!(DEFAULT_ACTIVATIONS.load(Ordering::Relaxed), u64::MAX);
+            return;
+        }
+        for bad in ["abc", "0", "-2"] {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "stack::test::a_bad_count_is_reported", "--nocapture"])
+                .env(CHILD, "1")
+                .env("GRAPHIX_EVAL_THREADS", bad)
+                .env("GRAPHIX_ACTIVATION_BUDGET", "-1")
+                .output()
+                .unwrap();
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{bad}: {err}");
+            let threads = format!(
+                "GRAPHIX_EVAL_THREADS={bad:?} is not a count of at least 1; using one \
+                 worker a core"
+            );
+            assert!(err.contains(&threads), "{bad}: {err}");
+            let activations = "GRAPHIX_ACTIVATION_BUDGET=\"-1\" is not a count of at \
+                 least 0; running without an activation budget";
+            assert!(err.contains(activations), "{bad}: {err}");
+        }
     }
 
     #[test]
