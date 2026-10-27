@@ -7,7 +7,6 @@ use bytes::{Buf, BufMut};
 use graphix_types::stack::ParMode;
 use netidx_core::pack::{Pack, PackError};
 use parking_lot::Mutex;
-use smallvec::SmallVec;
 use std::{
     sync::{
         LazyLock, OnceLock,
@@ -71,9 +70,10 @@ const T_FLOOR: Duration = Duration::from_micros(1);
 
 static CALIBRATION: OnceLock<Calibration> = OnceLock::new();
 
-/// The calibration, or `None` while it is being measured: until then
-/// nothing forks under `Auto`, and nothing waits for it. The first call
-/// starts the measurement, unless [`start_calibration`] did.
+/// The calibration, or `None` while it is being measured or when it
+/// could not be (no thread to measure on): until then nothing forks
+/// under `Auto`, and nothing waits for it. The first call starts the
+/// measurement, unless [`start_calibration`] did.
 pub fn calibration() -> Option<&'static Calibration> {
     if let Some(c) = CALIBRATION.get() {
         return Some(c);
@@ -95,7 +95,7 @@ pub fn start_calibration() {
         return fix_calibration(t);
     }
     if !STARTED.load(Ordering::Relaxed) && !STARTED.swap(true, Ordering::Relaxed) {
-        // CR claude for claude: [bug/medium] [bug/medium] A spawn failure here or in
+        // XCR claude for claude: [bug/medium] [bug/medium] A spawn failure here or in
         // calibrate's pool panics, although the calibration only tunes a heuristic.
         // calibrate also builds a second pool of eval_threads() workers (32 here)
         // beside the tokio workers and the evaluation pool, at runtime construction,
@@ -107,12 +107,29 @@ pub fn start_calibration() {
         // skip calibration for a check-only run. probe:
         // design/review-2026-10-26/repro/x-perf-compile-thread-limit-panic.sh
         // (x-perf-compile-06)
-        std::thread::Builder::new()
+        // 2026-10-27 claude: A failed calibration thread spawn or pool build logs a
+        // warning and leaves the calibration unset (nothing forks under Auto), never
+        // panics; calibrate measures on a pool of CALIBRATION_WORKERS (2, at most
+        // eval_threads) instead of eval_threads() workers. The repro at TasksMax=70 is
+        // rc=0 with no panic; at TasksMax=40 the calibration no longer panics but the
+        // evaluation pool's halving still does (x-perf-runtime-04, its own CR). A
+        // check-only run still calibrates, on two threads for about 20 ms, which no
+        // longer seemed worth a config flag. Pin:
+        // cost::tests::no_thread_leaves_the_threshold_unmeasured (a child under
+        // RLIMIT_NPROC=0; panics 'spawn the calibration thread' with the expect
+        // restored). Also ForkSite::plan_with splits plan_auto (c-cost-misc-02).
+        let spawned = std::thread::Builder::new()
             .name("graphix-par-calibrate".into())
             .spawn(|| {
-                let _ = CALIBRATION.set(calibrate());
-            })
-            .expect("spawn the calibration thread");
+                if let Some(c) = calibrate() {
+                    let _ = CALIBRATION.set(c);
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!(
+                "the fork threshold is not measured, nothing forks under Auto: {e}"
+            )
+        }
     }
 }
 
@@ -125,17 +142,25 @@ pub fn fix_calibration(t: u64) {
     let _ = CALIBRATION.set(Calibration { t, shift });
 }
 
+/// The workers of the pool the calibration measures, at most.
+const CALIBRATION_WORKERS: usize = 2;
+
 /// The latency, in ticks, from handing an idle evaluation pool a job to
 /// the job starting: the cost a fork pays when its right side is
-/// stolen.
-fn calibrate() -> Calibration {
-    // a pool of its own, which nothing else forks onto, sized as a
-    // runtime's: how fast a worker wakes depends on how many sleep
+/// stolen. `None` when no pool to measure could be built.
+fn calibrate() -> Option<Calibration> {
+    // a pool of its own, which nothing else forks onto
+    let workers = CALIBRATION_WORKERS.min(graphix_types::stack::eval_threads());
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(graphix_types::stack::eval_threads())
+        .num_threads(workers)
         .thread_name(|_| "graphix-par-calibrate-worker".into())
         .build()
-        .expect("the calibration pool");
+        .inspect_err(|e| {
+            log::warn!(
+                "the fork threshold is not measured, nothing forks under Auto: {e}"
+            )
+        })
+        .ok()?;
     let (tick0, start) = (ticks(), Instant::now());
     let mut wakes = [0u64; 9];
     for w in wakes.iter_mut() {
@@ -151,7 +176,7 @@ fn calibrate() -> Calibration {
     if crate::dbgenv::graphix_dbg_par() {
         eprintln!("PAR calibrated: wakes {wakes:?} ticks, {per_ns:.3} ticks/ns, T = {t}");
     }
-    Calibration { t, shift: (63 - t.leading_zeros()).saturating_sub(T_BUCKET) }
+    Some(Calibration { t, shift: (63 - t.leading_zeros()).saturating_sub(T_BUCKET) })
 }
 
 /// The fork threshold for a pool that wakes in `wake` ticks, on a counter
@@ -406,17 +431,14 @@ impl ForkSite {
         }
     }
 
-    // CR claude for claude: [test-gap/low] No test covers ForkSite's state machine:
-    // Probe to Measured at 2T, Probe to Serial after PROBES, settling with an untimed
-    // child (h.n == 0), settled-and-not-paying to Serial, an n change resetting to
-    // Probe, re-probing after RECHECK. Because plan_auto reads the global
-    // calibration(), it cannot be driven with a test Calibration. A regression here
-    // would lose every node-walk fork under Auto while every gate stays green, and
-    // par_attrs.rs's comment says cost::tests pins these decisions. Split it into
-    // plan_with(cal, n), as SlotSite does, and test those transitions. Found by
-    // reading; not run. (c-cost-misc-02)
     fn plan_auto(&mut self, n: usize) -> Plan<'_> {
-        let Some(cal) = calibration() else { return Plan::Serial };
+        match calibration() {
+            None => Plan::Serial,
+            Some(cal) => self.plan_with(cal, n),
+        }
+    }
+
+    fn plan_with(&mut self, cal: &'static Calibration, n: usize) -> Plan<'_> {
         match &mut self.0 {
             Site::Probe { .. } => Plan::Measure(Meter::new(self, cal, n)),
             Site::Serial { countdown } => match countdown.checked_sub(1) {
@@ -467,12 +489,16 @@ impl<'a> Meter<'a> {
     pub fn time<T>(&mut self, i: usize, f: impl FnOnce() -> T) -> T {
         let t0 = ticks();
         let r = f();
-        let dt = ticks_since(t0);
+        self.timed(i, ticks_since(t0));
+        r
+    }
+
+    /// Child `i`'s update took `dt` ticks.
+    fn timed(&mut self, i: usize, dt: u64) {
         self.total += dt;
         if let Site::Measured(m) = &mut self.site.0 {
             m.hist[i].add(self.cal, dt);
         }
-        r
     }
 
     /// The update is over: revise the estimates and the schedule.
@@ -911,9 +937,6 @@ pub struct LoopSite {
     until: AtomicU64,
 }
 
-/// A loop's probes: a probed run's ticks per slot and its slots.
-pub(crate) type Probes = SmallVec<[(u64, u16); SETTLE as usize]>;
-
 /// The fewest slots a probe times as one run: a slot timed alone carries
 /// the run's fixed cost, which makes a cheap loop look worth a fork.
 pub(crate) const PROBE_BATCH: usize = 16;
@@ -944,31 +967,25 @@ impl LoopSite {
     }
 
     /// The range size for the `n` slots that `probes` left, or `None`
-    /// when they run in order. A settled estimate that no fork pays at
-    /// starts a stretch of untimed runs.
+    /// when they run in order; `probed` is the probe run's ticks per slot
+    /// and its slots, if it ran any. A settled estimate that no fork pays
+    /// at starts a stretch of untimed runs.
     pub(crate) fn grain(
         &self,
         cal: &Calibration,
-        probes: &Probes,
+        probed: Option<(u64, usize)>,
         n: usize,
     ) -> Option<usize> {
         let mut p = self.probe.lock();
-        for (t, k) in probes.iter() {
-            for _ in 0..*k {
-                p.probed(cal, *t);
+        if let Some((t, k)) = probed {
+            for _ in 0..k {
+                p.probed(cal, t);
             }
         }
         match p.grain(cal, n, CHUNKS_PER_WORKER) {
             None if p.hist.n >= SETTLE => {
-                let est = cal.floor(p.hist.p75()).max(1);
-                // CR claude for claude: [structure/low] This re-derives serial_below
-                // with floor division, so a loop of exactly floor(2T/est) slots cannot
-                // pay for a fork yet is probed (16 serial timed slots, two locks) every
-                // run instead of running untimed. Use serial_below(cal, est). Probes is
-                // also a SmallVec that par_loop::run fills with at most one (ticks per
-                // slot, slots) pair: take that pair (or an Option of it) and delete the
-                // type. Found by reading; not run. (c-cost-misc-04)
-                let below = ((2 * cal.t) / est).min(u32::MAX as u64) as u32;
+                let est = cal.floor(p.hist.p75());
+                let below = serial_below(cal, est).min(u32::MAX as usize) as u32;
                 self.below.store(below, Ordering::Relaxed);
                 let until = ticks().saturating_add(RECHECK as u64 * cal.t);
                 self.until.store(until, Ordering::Relaxed);
@@ -1044,8 +1061,7 @@ mod tests {
         assert!(!l.untimed(3), "a fresh site times its loops");
         assert_eq!(l.probes(&cal, 3), Some(3));
         // slots at T/64: loops under 128 slots cannot pay for a fork
-        let probes: Probes = [(1 << 4, 4)].into_iter().collect();
-        assert_eq!(l.grain(&cal, &probes, 0), None);
+        assert_eq!(l.grain(&cal, Some((1 << 4, 4)), 0), None);
         assert!(l.untimed(127));
         assert!(!l.untimed(128), "a long enough loop is timed");
         let guard = l.probe.lock();
@@ -1107,13 +1123,140 @@ mod tests {
         let heavy = LoopSite::default();
         assert_eq!(heavy.probes(&cal, 32), Some(PROBE_BATCH));
         assert_eq!(heavy.probes(&cal, 8), Some(8));
-        heavy.grain(&cal, &Probes::from_slice(&[(1 << 12, 4)]), 28);
+        heavy.grain(&cal, Some((1 << 12, 4)), 28);
         assert_eq!(heavy.probes(&cal, 32), Some(1));
         let cheap = LoopSite::default();
-        cheap.grain(&cal, &Probes::from_slice(&[(1 << 4, 4)]), 28);
+        cheap.grain(&cal, Some((1 << 4, 4)), 28);
         assert_eq!(cheap.probes(&cal, 32), Some(PROBE_BATCH));
         let unsettled = LoopSite::default();
-        unsettled.grain(&cal, &Probes::from_slice(&[(1 << 12, 1)]), 31);
+        unsettled.grain(&cal, Some((1 << 12, 1)), 31);
         assert_eq!(unsettled.probes(&cal, 32), Some(3));
+    }
+
+    /// A loop as long as its estimate's serial bound, `2T / est` rounded
+    /// down, cannot pay for a fork and runs untimed.
+    #[test]
+    fn loop_site_runs_the_longest_unpaying_loop_untimed() {
+        let cal = Calibration { t: 1000, shift: 0 };
+        let l = LoopSite::default();
+        // slots at 64 ticks: 31 of them are 1984 ticks, under 2T
+        assert_eq!(l.grain(&cal, Some((64, 4)), 0), None);
+        assert!(l.untimed(31));
+        assert!(!l.untimed(32), "32 slots reach 2T");
+    }
+
+    static CAL: Calibration = Calibration { t: 1 << 10, shift: 4 };
+
+    /// One measured update of `site`'s children at `each` ticks apiece.
+    fn measure(site: &mut ForkSite, each: &[u64]) {
+        let n = each.len();
+        let Plan::Measure(mut m) = site.plan_with(&CAL, n) else {
+            panic!("the site did not measure: {:?}", site.0)
+        };
+        for (i, dt) in each.iter().enumerate() {
+            m.timed(i, *dt);
+        }
+        m.done(n);
+    }
+
+    fn forks(site: &mut ForkSite, n: usize) -> bool {
+        matches!(site.plan_with(&CAL, n), Plan::Fork(_))
+    }
+
+    #[test]
+    fn fork_site_measures_what_reaches_2t_and_forks_what_pays() {
+        let mut site = ForkSite::default();
+        measure(&mut site, &[CAL.t, CAL.t]);
+        assert!(matches!(site.0, Site::Measured(_)), "2T total measures each child");
+        for _ in 0..SETTLE {
+            measure(&mut site, &[4 * CAL.t, 4 * CAL.t]);
+        }
+        assert!(forks(&mut site, 2), "two settled children at 4T fork");
+        assert!(
+            matches!(site.plan_with(&CAL, 3), Plan::Measure(_)),
+            "a change in the children's count probes again"
+        );
+        assert!(matches!(site.0, Site::Probe { left: PROBES }));
+    }
+
+    #[test]
+    fn fork_site_turns_serial_after_its_probes_and_reprobes() {
+        let mut site = ForkSite::default();
+        for _ in 0..PROBES {
+            measure(&mut site, &[CAL.t / 2, CAL.t]);
+        }
+        assert!(matches!(site.0, Site::Serial { countdown: RECHECK }));
+        for _ in 0..RECHECK {
+            assert!(matches!(site.plan_with(&CAL, 2), Plan::Serial));
+        }
+        assert!(
+            matches!(site.plan_with(&CAL, 2), Plan::Measure(_)),
+            "RECHECK updates on, the site probes again"
+        );
+        assert!(matches!(site.0, Site::Probe { left: PROBES }));
+    }
+
+    #[test]
+    fn fork_site_settles_over_a_child_never_timed() {
+        let mut site = ForkSite::default();
+        measure(&mut site, &[2 * CAL.t, 0, 0]);
+        for _ in 0..SETTLE {
+            let Plan::Measure(mut m) = site.plan_with(&CAL, 3) else { panic!() };
+            m.timed(0, 4 * CAL.t);
+            m.timed(2, 4 * CAL.t);
+            m.done(3);
+        }
+        let Site::Measured(m) = &site.0 else { panic!("{:?}", site.0) };
+        assert!(m.settled, "a child never timed does not hold the site unsettled");
+        assert_eq!(m.prefix[2], m.prefix[1], "and is estimated at nothing");
+        assert!(forks(&mut site, 3));
+    }
+
+    #[test]
+    fn fork_site_that_settles_unpaying_turns_serial() {
+        let mut site = ForkSite::default();
+        measure(&mut site, &[3 * CAL.t, CAL.t / 8]);
+        for _ in 0..SETTLE - 1 {
+            measure(&mut site, &[3 * CAL.t, CAL.t / 8]);
+            assert!(matches!(site.0, Site::Measured(_)), "unsettled, it keeps measuring");
+        }
+        measure(&mut site, &[3 * CAL.t, CAL.t / 8]);
+        assert!(
+            matches!(site.0, Site::Serial { countdown: RECHECK }),
+            "settled, a side under T pays for no fork: {:?}",
+            site.0
+        );
+    }
+
+    /// A process that may start no thread measures no threshold, and
+    /// neither starting the measurement nor asking for it panics.
+    #[cfg(unix)]
+    #[test]
+    fn no_thread_leaves_the_threshold_unmeasured() {
+        const CHILD: &str = "GRAPHIX_COST_NO_THREAD_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            // SAFETY: setrlimit reads the struct it is handed.
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NPROC, &none) }, 0);
+            if std::thread::Builder::new().spawn(|| ()).is_ok() {
+                // a privileged user is not held to the limit
+                return;
+            }
+            assert!(calibrate().is_none());
+            assert!(calibration().is_none());
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cost::tests::no_thread_leaves_the_threshold_unmeasured",
+                "--nocapture",
+                "--include-ignored",
+            ])
+            .env(CHILD, "1")
+            .env_remove("GRAPHIX_PAR_T")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     }
 }

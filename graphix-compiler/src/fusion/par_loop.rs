@@ -8,7 +8,7 @@ use super::emit_helpers::{
 };
 use crate::{
     branch::{self, Live},
-    cost::{self, LoopSite, ProbePlan, Probes},
+    cost::{self, LoopSite, ProbePlan},
     tval::TagValue,
 };
 use graphix_types::{
@@ -162,20 +162,20 @@ pub(crate) unsafe fn run(
             let Some(k) = site.probes(cal, len) else {
                 return unsafe { in_order(chunk, frame, len, find, out) };
             };
-            let mut probes = Probes::new();
+            let mut probed = None;
             if k > 0 {
                 let mut r = Run::new(0, k, find);
                 let t0 = cost::ticks();
                 unsafe { run_here(chunk, frame, &mut r) };
                 let each = cost::ticks_since(t0) / k as u64;
-                probes.push((each, k as u16));
+                probed = Some((each, k));
                 let aborted = r.aborted;
                 runs.push(r);
                 if aborted {
                     return unsafe { finish(&mut runs, find, out) };
                 }
             }
-            (k, site.grain(cal, &probes, len - k))
+            (k, site.grain(cal, probed, len - k))
         }
     };
     match grain {

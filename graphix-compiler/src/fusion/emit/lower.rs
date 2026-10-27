@@ -220,6 +220,7 @@ pub(super) fn compile_into_function<'a>(
     }
 
     b.seal_all_blocks();
+    check_frame(b.func, &kernel.fn_name)?;
     let LowerCtx { state, site, self_call_roots, .. } = lower;
     let words = site.next.get() as u32;
     // A self-call's child block has this body's layout, which is only
@@ -251,6 +252,21 @@ pub(super) fn compile_into_function<'a>(
             self_blocks: self_blocks.into(),
         },
     })
+}
+
+/// The most stack a function's explicit slots may take: a kernel runs
+/// with [`crate::stack::RED_ZONE`] free, which its spills and the
+/// helpers and callees it calls share.
+const MAX_FRAME: u64 = (crate::stack::RED_ZONE / 4) as u64;
+
+/// Refuse `func`, a function of `kernel`, when its explicit stack slots
+/// pass [`MAX_FRAME`].
+pub(super) fn check_frame(func: &Function, kernel: &str) -> Result<()> {
+    let bytes: u64 = func.sized_stack_slots.values().map(|s| s.size as u64).sum();
+    if bytes > MAX_FRAME {
+        bail!("kernel `{kernel}`: a frame of {bytes} bytes, past {MAX_FRAME} — de-fuse")
+    }
+    Ok(())
 }
 
 /// Record the body's site-block size on its kernel, where a self-call
@@ -729,6 +745,21 @@ mod tests {
             });
             assert!(result.is_err(), "accepted {count} argument words");
         }
+    }
+
+    #[test]
+    fn a_frame_past_the_bound_is_refused() {
+        let mut func = Function::new();
+        for size in [MAX_FRAME as u32 / 2, MAX_FRAME as u32 / 2, 8] {
+            assert!(check_frame(&func, "k").is_ok());
+            func.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                3,
+            ));
+        }
+        let e = check_frame(&func, "k").unwrap_err();
+        assert!(e.to_string().contains("de-fuse"), "{e}");
     }
 
     #[test]

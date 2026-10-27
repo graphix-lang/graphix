@@ -347,6 +347,7 @@ fn emit_chunk(
         b.ins().return_(&[]);
     }
     b.seal_all_blocks();
+    super::lower::check_frame(b.func, &p.kernel.fn_name)?;
     b.finalize(p.frontend);
     p.chunks.borrow_mut().push(ChunkFn { id, func, consts: consts.into_inner() });
     Ok((id, pending))

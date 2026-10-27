@@ -59,3 +59,6 @@ proptest = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }

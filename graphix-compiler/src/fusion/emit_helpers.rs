@@ -199,22 +199,14 @@ macro_rules! jit_helper_ret {
     };
 }
 
-/// One helper's `extern "C"` definition: each parameter crosses as its
-/// [`HelperArg::Wire`], and a pair return (`-> TagValue`, `-> ChildBlock`)
-/// through a trailing out-pointer.
-// CR claude for claude: [risk/low] A `safe fn` helper with a pair parameter or a pair
-// return becomes a safe extern "C" fn whose wire form is a raw pointer. The body
-// ptr::reads it (HelperArg::from_wire) or writes through `out`. So graphix_value_drop,
-// graphix_value_clone, graphix_map_ref and about 50 others can be called from safe Rust
-// with a null or dangling pointer, which is UB without an `unsafe` at the call. Only
-// JIT code calls them today, so this is latent. Fix: emit `unsafe extern "C"` for every
-// helper whose wire carries a pointer, or simply for every helper, and drop the
-// safe/unsafe distinction from the jit_helpers! grammar; JIT code calls them by
-// address, so nothing else changes. Found by reading; not run. (f-helpers-02)
+/// One helper's `unsafe extern "C"` definition: each parameter crosses
+/// as its [`HelperArg::Wire`], and a pair return (`-> TagValue`,
+/// `-> ChildBlock`) through a trailing out-pointer. Every helper is
+/// unsafe to call: the wire forms carry pointers its body reads.
 macro_rules! jit_helper_fn {
-    ([$($attr:meta)*] [$($unsafety:ident)?] $name:ident ($($p:ident: $t:ty),*) [pair $ret:ty] $body:block) => {
+    ([$($attr:meta)*] $name:ident ($($p:ident: $t:ty),*) [pair $ret:ty] $body:block) => {
         $(#[$attr])*
-        pub(crate) $($unsafety)? extern "C" fn $name($($p: <$t as HelperArg>::Wire,)* out: *mut $ret) {
+        pub(crate) unsafe extern "C" fn $name($($p: <$t as HelperArg>::Wire,)* out: *mut $ret) {
             // SAFETY: the call site passes each parameter's wire form
             $(let $p: $t = unsafe { <$t as HelperArg>::from_wire($p) };)*
             let r: $ret = (move || $body)();
@@ -222,9 +214,9 @@ macro_rules! jit_helper_fn {
             unsafe { out.write(r) }
         }
     };
-    ([$($attr:meta)*] [$($unsafety:ident)?] $name:ident ($($p:ident: $t:ty),*) [$($ret:ty)?] $body:block) => {
+    ([$($attr:meta)*] $name:ident ($($p:ident: $t:ty),*) [$($ret:ty)?] $body:block) => {
         $(#[$attr])*
-        pub(crate) $($unsafety)? extern "C" fn $name($($p: <$t as HelperArg>::Wire),*) $(-> $ret)? {
+        pub(crate) unsafe extern "C" fn $name($($p: <$t as HelperArg>::Wire),*) $(-> $ret)? {
             // a pair return is spelled `-> TagValue` or `-> ChildBlock`, the
             // out-pointer arm: by value, its words would never be written
             $(const {
@@ -240,9 +232,9 @@ macro_rules! jit_helper_fn {
     };
 }
 
-/// Declare JIT helpers: each entry is `safe`/`unsafe` followed by an
-/// ordinary `fn`. Emits the `pub [unsafe] extern "C"` definitions plus
-/// a `$registry()` function pushing one [`HelperSpec`] per helper.
+/// Declare JIT helpers: each entry is an ordinary `fn`. Emits the
+/// `pub unsafe extern "C"` definitions plus a `$registry()` function
+/// pushing one [`HelperSpec`] per helper.
 macro_rules! jit_helpers {
     (@parse [$registry:ident] [$({ $name:ident; ($($t:ty),*); ($($ret:ty)?) })*]) => {
         fn $registry(v: &mut Vec<HelperSpec>) {
@@ -256,55 +248,28 @@ macro_rules! jit_helpers {
     };
     (@parse [$registry:ident] [$($acc:tt)*]
         $(#[$attr:meta])*
-        unsafe fn $name:ident($($p:ident: $t:ty),* $(,)?) -> TagValue $body:block
+        fn $name:ident($($p:ident: $t:ty),* $(,)?) -> TagValue $body:block
         $($rest:tt)*
     ) => {
-        jit_helper_fn!([$($attr)*] [unsafe] $name ($($p: $t),*) [pair TagValue] $body);
+        jit_helper_fn!([$($attr)*] $name ($($p: $t),*) [pair TagValue] $body);
         jit_helpers!(@parse [$registry]
             [$($acc)* { $name; ($($t),*); (TagValue) }] $($rest)*);
     };
     (@parse [$registry:ident] [$($acc:tt)*]
         $(#[$attr:meta])*
-        safe fn $name:ident($($p:ident: $t:ty),* $(,)?) -> TagValue $body:block
+        fn $name:ident($($p:ident: $t:ty),* $(,)?) -> ChildBlock $body:block
         $($rest:tt)*
     ) => {
-        jit_helper_fn!([$($attr)*] [] $name ($($p: $t),*) [pair TagValue] $body);
-        jit_helpers!(@parse [$registry]
-            [$($acc)* { $name; ($($t),*); (TagValue) }] $($rest)*);
-    };
-    (@parse [$registry:ident] [$($acc:tt)*]
-        $(#[$attr:meta])*
-        unsafe fn $name:ident($($p:ident: $t:ty),* $(,)?) -> ChildBlock $body:block
-        $($rest:tt)*
-    ) => {
-        jit_helper_fn!([$($attr)*] [unsafe] $name ($($p: $t),*) [pair ChildBlock] $body);
+        jit_helper_fn!([$($attr)*] $name ($($p: $t),*) [pair ChildBlock] $body);
         jit_helpers!(@parse [$registry]
             [$($acc)* { $name; ($($t),*); (ChildBlock) }] $($rest)*);
     };
     (@parse [$registry:ident] [$($acc:tt)*]
         $(#[$attr:meta])*
-        safe fn $name:ident($($p:ident: $t:ty),* $(,)?) -> ChildBlock $body:block
+        fn $name:ident($($p:ident: $t:ty),* $(,)?) $(-> $ret:ty)? $body:block
         $($rest:tt)*
     ) => {
-        jit_helper_fn!([$($attr)*] [] $name ($($p: $t),*) [pair ChildBlock] $body);
-        jit_helpers!(@parse [$registry]
-            [$($acc)* { $name; ($($t),*); (ChildBlock) }] $($rest)*);
-    };
-    (@parse [$registry:ident] [$($acc:tt)*]
-        $(#[$attr:meta])*
-        unsafe fn $name:ident($($p:ident: $t:ty),* $(,)?) $(-> $ret:ty)? $body:block
-        $($rest:tt)*
-    ) => {
-        jit_helper_fn!([$($attr)*] [unsafe] $name ($($p: $t),*) [$($ret)?] $body);
-        jit_helpers!(@parse [$registry]
-            [$($acc)* { $name; ($($t),*); ($($ret)?) }] $($rest)*);
-    };
-    (@parse [$registry:ident] [$($acc:tt)*]
-        $(#[$attr:meta])*
-        safe fn $name:ident($($p:ident: $t:ty),* $(,)?) $(-> $ret:ty)? $body:block
-        $($rest:tt)*
-    ) => {
-        jit_helper_fn!([$($attr)*] [] $name ($($p: $t),*) [$($ret)?] $body);
+        jit_helper_fn!([$($attr)*] $name ($($p: $t),*) [$($ret)?] $body);
         jit_helpers!(@parse [$registry]
             [$($acc)* { $name; ($($t),*); ($($ret)?) }] $($rest)*);
     };
@@ -442,46 +407,46 @@ unsafe fn buf_give(buf: *mut ValueBuf) {
 
 jit_helpers! { registry = buf_helpers;
 
-unsafe fn graphix_value_buf_new(cap: usize) -> *mut LPooled<Vec<Value>> {
+fn graphix_value_buf_new(cap: usize) -> *mut LPooled<Vec<Value>> {
     buf_take(cap)
 }
 
 /// Push a `Value::Array` slot, taking ownership of `inner`.
-unsafe fn graphix_value_buf_push_array(buf: *mut LPooled<Vec<Value>>, inner: u64) {
+fn graphix_value_buf_push_array(buf: *mut LPooled<Vec<Value>>, inner: u64) {
     unsafe { (*buf).push(Value::Array(va_owned(inner))) }
 }
 
 /// Extend `buf` with the elements of an owned ValArray, then drop it.
-unsafe fn graphix_value_buf_extend_from_array(buf: *mut LPooled<Vec<Value>>, inner: u64) {
+fn graphix_value_buf_extend_from_array(buf: *mut LPooled<Vec<Value>>, inner: u64) {
     let v = Value::Array(unsafe { va_owned(inner) });
     Flavor::Array.extend(unsafe { &mut *buf }, &v)
 }
 
 /// Push a clone of borrowed ValArray bits; the caller keeps its ref.
-unsafe fn graphix_value_buf_push_array_borrowed(buf: *mut LPooled<Vec<Value>>, src: u64) {
+fn graphix_value_buf_push_array_borrowed(buf: *mut LPooled<Vec<Value>>, src: u64) {
     unsafe { (*buf).push(Value::Array(va_ref(&src).clone())) }
 }
 
 /// Push a clone of a borrowed Value; the caller keeps its ref.
-unsafe fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v: ManuallyDrop<TagValue>) {
+fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v: ManuallyDrop<TagValue>) {
     let dup = v.with_value(|v| v.clone());
     unsafe { (*buf).push(dup) }
 }
 
 /// Push an owned Value, consuming it. The buffer holds clean Values:
 /// the tag is stripped here.
-unsafe fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
+fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
     unsafe { (*buf).push(tv.value()) }
 }
 
 /// Push a clone of a borrowed filter_map result's kept element.
-unsafe fn graphix_value_buf_push_kept_borrowed(buf: *mut LPooled<Vec<Value>>, v: ManuallyDrop<TagValue>) {
+fn graphix_value_buf_push_kept_borrowed(buf: *mut LPooled<Vec<Value>>, v: ManuallyDrop<TagValue>) {
     let dup = v.with_value(|v| collection::kept(v).clone());
     unsafe { (*buf).push(dup) }
 }
 
 /// Push an owned filter_map result's kept element, consuming the result.
-unsafe fn graphix_value_buf_push_kept(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
+fn graphix_value_buf_push_kept(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
     let v = tv.value();
     let k = collection::kept(&v);
     let k = if std::ptr::eq(k, &v) { v } else { k.clone() };
@@ -489,20 +454,20 @@ unsafe fn graphix_value_buf_push_kept(buf: *mut LPooled<Vec<Value>>, tv: TagValu
 }
 
 /// Drop a buf that never reached `finalize`.
-unsafe fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
+fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
     assert!(!buf.is_null(), "graphix_value_buf_drop: null buf — JIT codegen bug");
     unsafe { buf_give(buf) }
 }
 
 /// Push the marker of the kind `kind` (a `rep::Kind`), which opens a
 /// tuple, struct or variant.
-unsafe fn graphix_value_buf_push_marker(buf: *mut LPooled<Vec<Value>>, kind: u64) {
+fn graphix_value_buf_push_marker(buf: *mut LPooled<Vec<Value>>, kind: u64) {
     let kind = rep::Kind::from_u8(kind as u8).expect("a kind marker");
     unsafe { (*buf).push(rep::marker(kind)) }
 }
 
 /// Push a `Value::String` cloned from a kernel strings-table slot.
-unsafe fn graphix_value_buf_push_arcstr(
+fn graphix_value_buf_push_arcstr(
     buf: *mut LPooled<Vec<Value>>,
     ptr: *const arcstr::ArcStr,
 ) {
@@ -510,13 +475,13 @@ unsafe fn graphix_value_buf_push_arcstr(
 }
 
 /// Push an owned `ArcStr` as `Value::String`, consuming it.
-unsafe fn graphix_value_buf_push_string(buf: *mut LPooled<Vec<Value>>, s: u64) {
+fn graphix_value_buf_push_string(buf: *mut LPooled<Vec<Value>>, s: u64) {
     let s = unsafe { arcstr_from_bits(s, "graphix_value_buf_push_string") };
     unsafe { (*buf).push(Value::String(s)) }
 }
 
 /// Finalize the buffer into owned `ValArray` bits, consuming the buf.
-unsafe fn graphix_valarray_finalize(buf: *mut LPooled<Vec<Value>>) -> u64 {
+fn graphix_valarray_finalize(buf: *mut LPooled<Vec<Value>>) -> u64 {
     unsafe {
         let bits = va_bits(ValArray::from_iter_exact((*buf).drain(..)));
         buf_give(buf);
@@ -525,18 +490,18 @@ unsafe fn graphix_valarray_finalize(buf: *mut LPooled<Vec<Value>>) -> u64 {
 }
 
 /// Borrowed ValArray bits → owned bits (refcount bump).
-unsafe fn graphix_valarray_clone(bits: u64) -> u64 {
+fn graphix_valarray_clone(bits: u64) -> u64 {
     va_bits(unsafe { va_ref(&bits) }.clone())
 }
 
 /// Drop owned ValArray bits.
-unsafe fn graphix_valarray_drop(bits: u64) {
+fn graphix_valarray_drop(bits: u64) {
     drop(unsafe { va_owned(bits) })
 }
 
 /// Extend `buf` with a list value's elements, consuming it, as the
 /// node-walk's `flat_map` does (`Flavor::extend`).
-unsafe fn graphix_value_buf_extend_from_list(
+fn graphix_value_buf_extend_from_list(
     buf: *mut LPooled<Vec<Value>>,
     tv: TagValue,
 ) {
@@ -551,7 +516,7 @@ jit_helpers! { registry = control_helpers;
 /// type: a builtin violating its signature, or a compiler bug. Either
 /// way an invariant is gone, and a panic here aborts (the helper ABI
 /// cannot unwind), which is what the fuzzer records as a crash.
-safe fn graphix_shape_mismatch(got_disc: u64) {
+fn graphix_shape_mismatch(got_disc: u64) {
     panic!(
         "fused call returned a Value whose shape (disc {got_disc:#x}) does not \
          match its declared return type"
@@ -559,28 +524,28 @@ safe fn graphix_shape_mismatch(got_disc: u64) {
 }
 
 /// Rust's float `%`, which cranelift has no instruction for.
-safe fn graphix_f64_rem(a: f64, b: f64) -> f64 {
+fn graphix_f64_rem(a: f64, b: f64) -> f64 {
     a % b
 }
 
 /// Rust's float `%`, which cranelift has no instruction for.
-safe fn graphix_f32_rem(a: f32, b: f32) -> f32 {
+fn graphix_f32_rem(a: f32, b: f32) -> f32 {
     a % b
 }
 
 /// A collection init count past the element limit, on the cycle it fired.
-safe fn graphix_init_oversize(n: i64) {
+fn graphix_init_oversize(n: i64) {
     crate::node::collection::log_init_oversize(n)
 }
 
 /// Set `KERNEL_ABORT`; emitted on every whole-kernel abort path.
-safe fn graphix_abort_set() {
+fn graphix_abort_set() {
     KERNEL_ABORT.with(|c| c.set(true))
 }
 
 /// A fused select matched no arm: a hole in the check's coverage, said
 /// once per site, as the node-walk says it once per select.
-unsafe fn graphix_select_no_match(site: *const super::emit::NoMatchSite) {
+fn graphix_select_no_match(site: *const super::emit::NoMatchSite) {
     let site = unsafe { &*site };
     if !site.said.swap(true, Relaxed) {
         crate::node::error::report_coverage_hole(&format_args!(
@@ -593,7 +558,7 @@ unsafe fn graphix_select_no_match(site: *const super::emit::NoMatchSite) {
 /// Run an outlined loop's `len` slots through its `chunk` over `frame`,
 /// in order or forked (`fusion::par_loop`), filling `out`; 1 when a
 /// chunk aborted the kernel.
-unsafe fn graphix_par_loop(
+fn graphix_par_loop(
     chunk: u64,
     frame: u64,
     len: u64,
@@ -607,7 +572,7 @@ unsafe fn graphix_par_loop(
 /// A `$` or handler-less `?` site swallowing a fresh error: the same
 /// diagnostic the node-walk emits. `site` is the interned "origin at
 /// position" string; `(disc, payload)` is the error Value, borrowed.
-unsafe fn graphix_swallowed_error(
+fn graphix_swallowed_error(
     site: *const arcstr::ArcStr,
     unhandled: u8,
     disc: u64,
@@ -633,7 +598,7 @@ unsafe fn graphix_swallowed_error(
 /// Raise a `?` site's error onto the invocation's delivery queue
 /// (`DEFERRED`). `(disc, payload)` is the error Value, borrowed: the
 /// queue takes a clone. `FusedKernel::update` drains the queue in order.
-unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
+fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     // SAFETY: the words are a valid clean `Value`; viewed, never owned.
     let tv = ManuallyDrop::new(unsafe { TagValue::from_raw(disc, payload) });
     let v = tv.value_cloned();
@@ -644,7 +609,7 @@ unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
 
 /// Raise a `?` site's `NullError` for a fresh null operand onto the
 /// invocation's delivery queue (`DEFERRED`).
-unsafe fn graphix_qop_raise_null(site: u64) {
+fn graphix_qop_raise_null(site: u64) {
     // SAFETY: the kernel's interned QopSite outlives this invocation.
     let site = unsafe { &*(site as *const QopSite) };
     let e = Value::Error(site.values.null_error(&site.spec).into());
@@ -653,22 +618,24 @@ unsafe fn graphix_qop_raise_null(site: u64) {
 
 /// A handler-less `?` site meeting a fresh null: the same diagnostic
 /// the node-walk emits, interned whole as `msg`.
-unsafe fn graphix_unhandled_null(msg: *const arcstr::ArcStr) {
+fn graphix_unhandled_null(msg: *const arcstr::ArcStr) {
     // SAFETY: the kernel's interned string outlives this invocation.
     report_failure!(unsafe { &*msg });
 }
 
-/// 1 if the active runtime has an `interrupt()`/`abort()` pending, else
-/// 0. Emitted at every JIT loop head.
-safe fn graphix_interrupted() -> i8 {
-    i8::from(crate::stack::interrupted())
+/// 1 if the active runtime has an `interrupt()`/`abort()` pending or
+/// the run recorded a panic ([`guard_panic`]), else 0. Emitted at every
+/// JIT loop head.
+fn graphix_interrupted() -> i8 {
+    i8::from(run_stops())
 }
 
 /// The kernel twin of `stack::ensure_sufficient`, asked at every native
-/// self-call: 0 = interrupted (skip the call), 1 = call directly, 2 =
-/// re-enter the callee on a fresh segment via [`graphix_grow_stack`].
-safe fn graphix_stack_check() -> i8 {
-    if crate::stack::interrupted() {
+/// self-call: 0 = interrupted or panicked (skip the call), 1 = call
+/// directly, 2 = re-enter the callee on a fresh segment via
+/// [`graphix_grow_stack`].
+fn graphix_stack_check() -> i8 {
+    if run_stops() {
         0
     } else if stacker::remaining_stack().unwrap_or(0) < crate::stack::RED_ZONE {
         if crate::stack::grow_exceeds_budget() {
@@ -685,7 +652,7 @@ safe fn graphix_stack_check() -> i8 {
 /// Run a kernel's `__spill` thunk on a fresh stack segment: `args` is
 /// the caller's spilled parameter words in signature order, `out` two
 /// words the thunk fills with the (disc, payload) result.
-unsafe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
+fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
     // SAFETY: `thunk` has the fixed spill signature this crate emits;
     // `args`/`out` are the calling kernel's stack slots, live for the call.
     let f: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(thunk as usize) };
@@ -695,7 +662,7 @@ unsafe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
 /// Call a builtin's registered `FastFn` directly. `args`/`n` is the
 /// call site's stack buffer of (disc, payload) pairs, borrowed. See
 /// [`fast_dispatch`] for the tag rules.
-unsafe fn graphix_fastcall(
+fn graphix_fastcall(
     fn_ptr: u64,
     args: u64,
     n: u64,
@@ -712,7 +679,7 @@ unsafe fn graphix_fastcall(
 /// buffer and tag rules, and when its trigger (`trigger`, a mask bit)
 /// fired with no argument tainted, queue the call (`DEFERRED`) for the
 /// wrapper to perform after the run.
-unsafe fn graphix_iocall(
+fn graphix_iocall(
     fn_ptr: u64,
     site: u64,
     args: u64,
@@ -725,7 +692,7 @@ unsafe fn graphix_iocall(
     let f: FastFn =
         unsafe { std::mem::transmute::<usize, FastFn>(fn_ptr as usize) };
     let tv = unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) };
-    if taint_mask == 0 && stale_mask & trigger == 0 && !kernel_panicked() {
+    if taint_mask == 0 && stale_mask & trigger == 0 {
         // SAFETY: the call site's buffer holds `n` clean Values for the call.
         let args = unsafe { std::slice::from_raw_parts(args as *const Value, n as usize) };
         let call = (site as *const crate::IoSite, args.iter().cloned().collect());
@@ -737,7 +704,7 @@ unsafe fn graphix_iocall(
 /// Call a `TypedFastFn` with the site's interned `Type` and the
 /// invoking kernel's env loan ([`with_kernel_env`]). Same buffer and
 /// tag rules as [`graphix_fastcall`].
-unsafe fn graphix_typedcall(
+fn graphix_typedcall(
     fn_ptr: u64,
     typ: u64,
     args: u64,
@@ -758,7 +725,7 @@ unsafe fn graphix_typedcall(
 
 /// A cast site's call: [`graphix_typedcall`] over its `(target, source)`
 /// pair.
-unsafe fn graphix_castcall(
+fn graphix_castcall(
     fn_ptr: u64,
     typ: u64,
     args: u64,
@@ -778,11 +745,11 @@ unsafe fn graphix_castcall(
 }
 
 /// Run `f`, which may run Graphix code (a fast fn, a value's `Eq`/`Ord`
-/// impl): a panic there is recorded, `placeholder` stands for the result
-/// and the run goes on, releasing what it owns as it would; the kernel
-/// then discards the run's result and what it deferred, and resumes the
-/// panic.
-// CR claude for claude: [risk/medium] A recorded panic does not stop the run. Nothing
+/// impl): a panic there is recorded and `placeholder` stands for the
+/// result. The run leaves by its abort path at its next poll (a loop
+/// head, a self-call), releasing what it owns as it would; the kernel
+/// then discards what it deferred and resumes the panic.
+// XCR claude for claude: [risk/medium] A recorded panic does not stop the run. Nothing
 // in the JIT code reads KERNEL_PANIC again: graphix_interrupted and graphix_stack_check
 // check only stack::interrupted(). The kernel goes on with the placeholder, and several
 // placeholders are untainted values it branches on (graphix_value_eq and
@@ -795,6 +762,14 @@ unsafe fn graphix_castcall(
 // check in graphix_iocall and make fast_dispatch's doc ("it aborts the kernel") true.
 // Found by reading; not run (only graphix-tests registers a panicking builtin).
 // (f-helpers-01)
+// 2026-10-27 claude: graphix_interrupted and graphix_stack_check now ask run_stops():
+// an interrupt or a panic the run recorded, so a kernel leaves by its abort path at its
+// next loop poll or self-call once a hook or fast fn panicked; graphix_iocall's own
+// panicked check is gone (a panicked run's Io is cleared anyway), and guard_panic's doc
+// says the run leaves. Pin: graphix-tests
+// lang::test_builtins::a_panic_stops_a_kernel_loop (a fused tail loop and a non-tail
+// self-call whose Eq hook panics at K(13); jit/jit_par count 990 panics with the fix
+// undone, under 100 with it, the loop polling every 64 iterations).
 fn guard_panic<T>(placeholder: T, f: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(r) => r,
@@ -883,7 +858,7 @@ jit_helpers! { registry = value_helpers;
 /// Unwrap an owned `Value::Array` into owned ValArray bits. Its caller
 /// sends a tainted operand elsewhere; the shape check only stops a
 /// codegen bug from reading another value's payload as array bits.
-safe fn graphix_value_into_array(v: TagValue) -> u64 {
+fn graphix_value_into_array(v: TagValue) -> u64 {
     match v.value() {
         Value::Array(a) => va_bits(a),
         v => panic!("graphix_value_into_array: expected Value::Array, got {v:?}"),
@@ -892,7 +867,7 @@ safe fn graphix_value_into_array(v: TagValue) -> u64 {
 
 /// Borrowed form of [`graphix_value_into_array`]: owned bits out, the
 /// caller keeps its Value.
-safe fn graphix_value_into_array_borrowed(v: ManuallyDrop<TagValue>) -> u64 {
+fn graphix_value_into_array_borrowed(v: ManuallyDrop<TagValue>) -> u64 {
     let bits = v.with_value(|v| match v {
         Value::Array(a) => va_bits(a.clone()),
         v => {
@@ -904,7 +879,7 @@ safe fn graphix_value_into_array_borrowed(v: ManuallyDrop<TagValue>) -> u64 {
 
 /// Drop an owned Value. Disc 0 is never a real Value, so the pending
 /// sentinel is rejected before an invalid `Value` materializes.
-safe fn graphix_value_drop(tv: TagValue) {
+fn graphix_value_drop(tv: TagValue) {
     // out of drop's reach while the assert may unwind: a sentinel is no Value
     let tv = ManuallyDrop::new(tv);
     assert!(
@@ -916,7 +891,7 @@ safe fn graphix_value_drop(tv: TagValue) {
 }
 
 /// Clone a borrowed Value (tag preserved); the caller keeps its ref.
-safe fn graphix_value_clone(tv: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_clone(tv: ManuallyDrop<TagValue>) -> TagValue {
     TagValue::clone(&tv)
 }
 
@@ -924,7 +899,7 @@ safe fn graphix_value_clone(tv: ManuallyDrop<TagValue>) -> TagValue {
 ///
 /// # Safety
 /// `ptr` must point to a live `Value` that outlives the JIT'd code.
-unsafe fn graphix_value_clone_from_static(ptr: *const Value) -> TagValue {
+fn graphix_value_clone_from_static(ptr: *const Value) -> TagValue {
     TagValue::fired(unsafe { (*ptr).clone() })
 }
 
@@ -933,7 +908,7 @@ unsafe fn graphix_value_clone_from_static(ptr: *const Value) -> TagValue {
 /// `tv`. A bottom `tv` stays the placeholder: a value of `T` built from
 /// one would reach `T`'s core-trait impls, which run only on values that
 /// exist.
-unsafe fn graphix_abstract_wrap(
+fn graphix_abstract_wrap(
     typ: *const Type,
     name: *const arcstr::ArcStr,
     tv: TagValue,
@@ -949,79 +924,79 @@ unsafe fn graphix_abstract_wrap(
     TagValue::fired(crate::abstract_value::wrap(id, name, params, tv.value()))
 }
 
-safe fn graphix_abstract_get_arcstr(tv: ManuallyDrop<TagValue>) -> u64 {
+fn graphix_abstract_get_arcstr(tv: ManuallyDrop<TagValue>) -> u64 {
     let r = tv.with_value(|v| slot_arcstr(payload_of(v)));
     arcstr_bits(r)
 }
 
-safe fn graphix_abstract_get_array(tv: ManuallyDrop<TagValue>) -> u64 {
+fn graphix_abstract_get_array(tv: ManuallyDrop<TagValue>) -> u64 {
     let r = tv.with_value(|v| va_bits(slot_array(payload_of(v)).clone()));
     r
 }
 
-safe fn graphix_abstract_get_value(tv: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_abstract_get_value(tv: ManuallyDrop<TagValue>) -> TagValue {
     let r = tv.with_value(|v| {
         TagValue::fired(payload_of(v).cloned().unwrap_or(Value::Null))
     });
     r
 }
 
-safe fn graphix_value_neg(v: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_neg(v: ManuallyDrop<TagValue>) -> TagValue {
     v.with_value(neg).map(TagValue::fired).unwrap_or_else(|| TagValue::bottom_null(true).clone())
 }
 
 /// # Safety
 /// `typ` must point to a type that outlives the kernel invocation.
-unsafe fn graphix_inferred_type_matches(v: ManuallyDrop<TagValue>, typ: *const Type) -> u8 {
+fn graphix_inferred_type_matches(v: ManuallyDrop<TagValue>, typ: *const Type) -> u8 {
     let typ = unsafe { &*typ };
     guard_panic(0, || v.with_value(|v| {
         typ.is_a_with(unsafe { kernel_env() }, IsAFlags::MatchAbstract.into(), v) as u8
     }))
 }
 
-safe fn graphix_value_add(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_add(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Add, false, &l, &r)
 }
 
-safe fn graphix_value_sub(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_sub(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Sub, false, &l, &r)
 }
 
-safe fn graphix_value_mul(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_mul(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Mul, false, &l, &r)
 }
 
-safe fn graphix_value_div(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_div(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Div, false, &l, &r)
 }
 
-safe fn graphix_value_rem(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_rem(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Mod, false, &l, &r)
 }
 
-safe fn graphix_value_checked_add(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_checked_add(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Add, true, &l, &r)
 }
 
-safe fn graphix_value_checked_sub(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_checked_sub(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Sub, true, &l, &r)
 }
 
-safe fn graphix_value_checked_mul(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_checked_mul(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Mul, true, &l, &r)
 }
 
-safe fn graphix_value_checked_div(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_checked_div(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Div, true, &l, &r)
 }
 
-safe fn graphix_value_checked_rem(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_value_checked_rem(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
     value_arith(ArithOp::Mod, true, &l, &r)
 }
 
 /// `l` against `r` in the total order of values: -1, 0 or 1. Borrows
 /// both operands.
-safe fn graphix_value_cmp(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> i8 {
+fn graphix_value_cmp(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> i8 {
     if l.is_bottom() || r.is_bottom() {
         return 0;
     }
@@ -1029,7 +1004,7 @@ safe fn graphix_value_cmp(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) 
 }
 
 /// Value equality; borrows both operands.
-safe fn graphix_value_eq(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> u8 {
+fn graphix_value_eq(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> u8 {
     if l.is_bottom() || r.is_bottom() {
         return 0;
     }
@@ -1038,13 +1013,13 @@ safe fn graphix_value_eq(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -
 
 /// `bytes[i]`: the `u8` or the index error, via the node-walk's own
 /// [`value_index`]. Borrows `v`.
-safe fn graphix_bytes_index(v: ManuallyDrop<TagValue>, i: i64) -> TagValue {
+fn graphix_bytes_index(v: ManuallyDrop<TagValue>, i: i64) -> TagValue {
     TagValue::fired(v.with_value(|v| value_index(v, i)))
 }
 
 /// `m{key}`: the value or the not-found error, via the shared
 /// [`map_get`]. Borrows both operands.
-safe fn graphix_map_ref(map: ManuallyDrop<TagValue>, key: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_map_ref(map: ManuallyDrop<TagValue>, key: ManuallyDrop<TagValue>) -> TagValue {
     guard_panic(TagValue::phantom(), || {
         TagValue::fired(map.with_value(|m| key.with_value(|k| map_get(m, k))))
     })
@@ -1052,14 +1027,14 @@ safe fn graphix_map_ref(map: ManuallyDrop<TagValue>, key: ManuallyDrop<TagValue>
 
 /// `a[i..j]` over an array or bytes: `flags` bit0 = `start` present,
 /// bit1 = `end` present. Borrows `src`.
-safe fn graphix_array_slice(src: ManuallyDrop<TagValue>, start: i64, end: i64, flags: i64) -> TagValue {
+fn graphix_array_slice(src: ManuallyDrop<TagValue>, start: i64, end: i64, flags: i64) -> TagValue {
     let s = if flags & 1 != 0 { Some(start) } else { None };
     let e = if flags & 2 != 0 { Some(end) } else { None };
     TagValue::fired(src.with_value(|v| array_slice(v, s, e)))
 }
 
 /// Whether `v` is the string `*lit`. Borrows `v`.
-unsafe fn graphix_value_is_str(v: ManuallyDrop<TagValue>, lit: *const arcstr::ArcStr) -> u8 {
+fn graphix_value_is_str(v: ManuallyDrop<TagValue>, lit: *const arcstr::ArcStr) -> u8 {
     let lit = unsafe { &*lit };
     v.with_value(|v| matches!(v, Value::String(s) if s == lit)) as u8
 }
@@ -1067,7 +1042,7 @@ unsafe fn graphix_value_is_str(v: ManuallyDrop<TagValue>, lit: *const arcstr::Ar
 /// Borrowed test of a variant's tag AND arity against `expected`
 /// (`rep::is_variant`): the tag alone does not discriminate
 /// `` [`A, `A(i64)] ``.
-unsafe fn graphix_variant_tag_eq(
+fn graphix_variant_tag_eq(
     v: ManuallyDrop<TagValue>,
     expected: *const arcstr::ArcStr,
     arity: usize,
@@ -1078,14 +1053,14 @@ unsafe fn graphix_variant_tag_eq(
 
 /// Owned clone of a variant payload slot as a Value; a shape mismatch
 /// yields the drop-safe `Value::Null`.
-safe fn graphix_variant_payload_value(v: ManuallyDrop<TagValue>, payload_idx: usize) -> TagValue {
+fn graphix_variant_payload_value(v: ManuallyDrop<TagValue>, payload_idx: usize) -> TagValue {
     let r = v.with_value(|v| rep::payload(v, payload_idx).cloned().unwrap_or(Value::Null));
     TagValue::fired(r)
 }
 
 /// Owned `ArcStr` clone of a string variant payload slot; mismatch
 /// yields the static empty string.
-safe fn graphix_variant_payload_string(v: ManuallyDrop<TagValue>, payload_idx: usize) -> u64 {
+fn graphix_variant_payload_string(v: ManuallyDrop<TagValue>, payload_idx: usize) -> u64 {
     let r = v.with_value(|v| match rep::payload(v, payload_idx) {
         Some(Value::String(s)) => s.clone(),
         _ => arcstr::ArcStr::new(),
@@ -1101,7 +1076,7 @@ safe fn graphix_variant_payload_string(v: ManuallyDrop<TagValue>, payload_idx: u
 /// The result aliases the parent's slot: it is valid while the parent
 /// variant is alive and is never dropped or passed to a consuming
 /// helper.
-unsafe fn graphix_variant_payload_borrowed(v: ManuallyDrop<TagValue>, payload_idx: usize) -> TagValue {
+fn graphix_variant_payload_borrowed(v: ManuallyDrop<TagValue>, payload_idx: usize) -> TagValue {
     let r = v.with_value(|v| match rep::payload(v, payload_idx) {
         // SAFETY: a bitwise alias of the slot; the kernel never drops
         // it, so the parent keeps the only ownership.
@@ -1113,7 +1088,7 @@ unsafe fn graphix_variant_payload_borrowed(v: ManuallyDrop<TagValue>, payload_id
 
 /// Owned `ArcStr` clone of a nullable's string payload; null yields the
 /// static empty string.
-safe fn graphix_nullable_string(v: ManuallyDrop<TagValue>) -> u64 {
+fn graphix_nullable_string(v: ManuallyDrop<TagValue>) -> u64 {
     let r = v.with_value(|v| match v {
         Value::String(s) => s.clone(),
         _ => arcstr::ArcStr::new(),
@@ -1123,7 +1098,7 @@ safe fn graphix_nullable_string(v: ManuallyDrop<TagValue>) -> u64 {
 
 /// Owned `ValArray` clone of a nullable's composite payload; null
 /// yields the empty array.
-safe fn graphix_nullable_array(v: ManuallyDrop<TagValue>) -> u64 {
+fn graphix_nullable_array(v: ManuallyDrop<TagValue>) -> u64 {
     let r = v.with_value(|v| match v {
         Value::Array(a) => a.clone(),
         _ => EMPTY_ARR.clone(),
@@ -1133,7 +1108,7 @@ safe fn graphix_nullable_array(v: ManuallyDrop<TagValue>) -> u64 {
 
 /// List-pattern structure test: `k` cells exist; `exact` also requires
 /// nil after them. A non-list fails the walk.
-safe fn graphix_list_match(v: ManuallyDrop<TagValue>, k: usize, exact: u8) -> u8 {
+fn graphix_list_match(v: ManuallyDrop<TagValue>, k: usize, exact: u8) -> u8 {
     let r = v.with_value(|v| match list_walk(v, k) {
         None => 0,
         Some(cur) => {
@@ -1148,7 +1123,7 @@ safe fn graphix_list_match(v: ManuallyDrop<TagValue>, k: usize, exact: u8) -> u8
 }
 
 /// Owned clone of the j-th head of a list as a Value; `Null` on a short chain.
-safe fn graphix_list_get_value(v: ManuallyDrop<TagValue>, j: usize) -> TagValue {
+fn graphix_list_get_value(v: ManuallyDrop<TagValue>, j: usize) -> TagValue {
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
         Some((h, _)) => h.clone(),
         None => Value::Null,
@@ -1163,7 +1138,7 @@ safe fn graphix_list_get_value(v: ManuallyDrop<TagValue>, j: usize) -> TagValue 
 ///
 /// The result aliases the list's cell: it is valid while the list is
 /// alive and is never dropped or passed to a consuming helper.
-unsafe fn graphix_list_head_borrowed(v: ManuallyDrop<TagValue>, j: usize) -> TagValue {
+fn graphix_list_head_borrowed(v: ManuallyDrop<TagValue>, j: usize) -> TagValue {
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
         // SAFETY: a bitwise alias of the cell's head; the kernel never
         // drops it, so the list keeps the only ownership.
@@ -1174,7 +1149,7 @@ unsafe fn graphix_list_head_borrowed(v: ManuallyDrop<TagValue>, j: usize) -> Tag
 }
 
 /// Owned `ValArray` bits of the j-th head; the empty array on mismatch.
-safe fn graphix_list_get_array(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
+fn graphix_list_get_array(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
         Some((Value::Array(a), _)) => a.clone(),
         _ => EMPTY_ARR.clone(),
@@ -1183,7 +1158,7 @@ safe fn graphix_list_get_array(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
 }
 
 /// Owned `ArcStr` of the j-th head; the empty string on mismatch.
-safe fn graphix_list_get_string(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
+fn graphix_list_get_string(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
     let r = v.with_value(|v| {
         match list_walk(v, j).and_then(|c| list::split(c)) {
             Some((Value::String(s), _)) => s.clone(),
@@ -1195,7 +1170,7 @@ safe fn graphix_list_get_string(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
 
 /// Owned clone of the k-th tail (the `[<h, rest..>]` rest bind), O(1)
 /// shared structure; `Null` on a short chain.
-safe fn graphix_list_tail(v: ManuallyDrop<TagValue>, k: usize) -> TagValue {
+fn graphix_list_tail(v: ManuallyDrop<TagValue>, k: usize) -> TagValue {
     let r = v.with_value(|v| match list_walk(v, k) {
         Some(cur) => cur.clone(),
         None => Value::Null,
@@ -1205,7 +1180,7 @@ safe fn graphix_list_tail(v: ManuallyDrop<TagValue>, k: usize) -> TagValue {
 
 /// Owned `ValArray` bits of a composite variant payload slot; the
 /// empty array on mismatch.
-safe fn graphix_variant_payload_array(v: ManuallyDrop<TagValue>, payload_idx: usize) -> u64 {
+fn graphix_variant_payload_array(v: ManuallyDrop<TagValue>, payload_idx: usize) -> u64 {
     let r = v.with_value(|v| match rep::payload(v, payload_idx) {
         Some(Value::Array(inner)) => inner.clone(),
         _ => EMPTY_ARR.clone(),
@@ -1227,36 +1202,36 @@ fn push_display<T: std::fmt::Display>(buf: *mut StringBuf, v: T) {
 jit_helpers! { registry = string_helpers;
 
 /// Owned clone of a kernel strings-table slot.
-unsafe fn graphix_arcstr_clone_from_static(p: *const arcstr::ArcStr) -> u64 {
+fn graphix_arcstr_clone_from_static(p: *const arcstr::ArcStr) -> u64 {
     arcstr_bits(unsafe { (*p).clone() })
 }
 
 /// Drop an owned ArcStr. Takes raw bits so the zero pending sentinel is
 /// rejected before an invalid `ArcStr` (NonNull) materializes.
-unsafe fn graphix_arcstr_drop(s: u64) {
+fn graphix_arcstr_drop(s: u64) {
     drop(unsafe { arcstr_from_bits(s, "graphix_arcstr_drop") })
 }
 
 /// Clone a borrowed ArcStr; the caller keeps its ref.
-unsafe fn graphix_arcstr_clone(s: u64) -> u64 {
+fn graphix_arcstr_clone(s: u64) -> u64 {
     let s = ManuallyDrop::new(unsafe { arcstr_from_bits(s, "graphix_arcstr_clone") });
     arcstr_bits((*s).clone())
 }
 
 /// The empty-`ArcStr` placeholder for a tainted String position, as bits.
-safe fn graphix_arcstr_empty() -> u64 {
+fn graphix_arcstr_empty() -> u64 {
     arcstr_bits(arcstr::ArcStr::new())
 }
 
 /// The empty-`ValArray` placeholder for a tainted composite position,
 /// as owned bits.
-safe fn graphix_valarray_empty() -> u64 {
+fn graphix_valarray_empty() -> u64 {
     va_bits(EMPTY_ARR.clone())
 }
 
 /// An empty `ValArray` to read borrowed, as bits: one reference held for
 /// the process, so a read that never drops it is sound.
-safe fn graphix_valarray_empty_borrowed() -> u64 {
+fn graphix_valarray_empty_borrowed() -> u64 {
     static HELD: std::sync::LazyLock<u64> =
         std::sync::LazyLock::new(|| va_bits(EMPTY_ARR.clone()));
     *HELD
@@ -1264,32 +1239,32 @@ safe fn graphix_valarray_empty_borrowed() -> u64 {
 
 /// Whether `v` is a `*typ`, as a select arm's written type test asks
 /// (`Type::is_a`), under the invoking kernel's env loan. Borrows `v`.
-unsafe fn graphix_value_is_a(typ: *const Type, v: ManuallyDrop<TagValue>) -> u8 {
+fn graphix_value_is_a(typ: *const Type, v: ManuallyDrop<TagValue>) -> u8 {
     let (typ, env) = unsafe { (&*typ, kernel_env()) };
     v.with_value(|v| typ.is_a(env, v)) as u8
 }
 
 /// Start an owned string buffer; pair with `graphix_string_buf_finalize`
 /// or `graphix_string_buf_drop`.
-unsafe fn graphix_string_buf_new() -> *mut StringBuf {
+fn graphix_string_buf_new() -> *mut StringBuf {
     STRING_SHELLS.with(|s| s.take(LPooled::take()))
 }
 
 /// Drop a string buf without finalizing.
-unsafe fn graphix_string_buf_drop(buf: *mut StringBuf) {
+fn graphix_string_buf_drop(buf: *mut StringBuf) {
     assert!(!buf.is_null(), "graphix_string_buf_drop: null buf — JIT codegen bug");
     STRING_SHELLS.with(|s| unsafe { s.give(buf) })
 }
 
 /// Finalize a string buf into an owned ArcStr, consuming the buf.
-unsafe fn graphix_string_buf_finalize(buf: *mut StringBuf) -> u64 {
+fn graphix_string_buf_finalize(buf: *mut StringBuf) -> u64 {
     let s = arcstr::ArcStr::from(unsafe { (*buf).as_str() });
     STRING_SHELLS.with(|st| unsafe { st.give(buf) });
     arcstr_bits(s)
 }
 
 /// Append an ArcStr's contents to the buf, consuming the ArcStr.
-unsafe fn graphix_string_buf_push_arcstr(buf: *mut StringBuf, s: u64) {
+fn graphix_string_buf_push_arcstr(buf: *mut StringBuf, s: u64) {
     let s = unsafe { arcstr_from_bits(s, "graphix_string_buf_push_arcstr") };
     unsafe { &mut *buf }.push_str(&s);
 }
@@ -1297,7 +1272,7 @@ unsafe fn graphix_string_buf_push_arcstr(buf: *mut StringBuf, s: u64) {
 /// Append `tv` as string interpolation renders a part of type `typ`
 /// (`StringInterpolate::update`), under the invoking kernel's env loan;
 /// a bottom part renders nothing, its taint the result's. Consumes `tv`.
-unsafe fn graphix_string_buf_push_value(buf: *mut StringBuf, typ: *const Type, tv: TagValue) {
+fn graphix_string_buf_push_value(buf: *mut StringBuf, typ: *const Type, tv: TagValue) {
     use std::fmt::Write;
     if tv.is_bottom() {
         return;
@@ -1322,14 +1297,14 @@ jit_helpers! { registry = collection_helpers;
 /// Flatten a List value into owned ValArray bits, consuming it. A
 /// non-list (the tainted placeholder) yields the empty array; the
 /// source disc's taint rides the loop's SlotFlags.
-safe fn graphix_list_to_valarray(tv: TagValue) -> u64 {
+fn graphix_list_to_valarray(tv: TagValue) -> u64 {
     let v = tv.value();
     let arr = list::to_array(&v).unwrap_or_else(|| EMPTY_ARR.clone());
     va_bits(arr)
 }
 
 /// Finalize a value buf into the List of its elements, consuming the buf.
-unsafe fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
+fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
     let list = list::from_iter(unsafe { (*buf).drain(..) });
     unsafe { buf_give(buf) };
     TagValue::fired(list)
@@ -1339,7 +1314,7 @@ unsafe fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
 /// its entries in written order, a later key replacing an earlier one as
 /// the node-walk's literal does; consumes the buf. Key order is a core
 /// trait's under the kernel's loaned hooks.
-unsafe fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
+fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
     let map = guard_panic(TagValue::phantom(), || {
         let mut m = netidx_value::Map::new();
         let mut entries = unsafe { (*buf).drain(..) };
@@ -1353,14 +1328,14 @@ unsafe fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
 }
 
 /// Consume finalized ValArray bits and build the List value.
-unsafe fn graphix_valarray_into_list(bits: u64) -> TagValue {
+fn graphix_valarray_into_list(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
     TagValue::fired(list::from_iter(arr.iter().cloned()))
 }
 
 /// Flatten a Map value into owned ValArray bits of `[k, v]` pairs in
 /// key order, consuming it; a non-map yields the empty array.
-safe fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
+fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
     let v = tv.value();
     let arr = match &v {
         Value::Map(m) => ValArray::from_iter(
@@ -1373,7 +1348,7 @@ safe fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
 
 /// Consume finalized ValArray bits of `[k, v]` pairs and build the
 /// `Value::Map` ([`crate::node::collection::pairs_to_map`]).
-unsafe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
+fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
     guard_panic(TagValue::phantom(), || {
         TagValue::fired(crate::node::collection::pairs_to_map(arr.iter()))
@@ -1653,14 +1628,14 @@ fn slot_arcstr(v: Option<&Value>) -> arcstr::ArcStr {
 macro_rules! prim_family {
     (valarray_get $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
         jit_helpers! { registry = $registry;
-            $(unsafe fn $name(bits: u64, idx: usize) -> $t {
+            $(fn $name(bits: u64, idx: usize) -> $t {
                 unsafe { va_ref(&bits) }.get(idx).map($read).unwrap_or_default()
             })*
         }
     };
     (struct_get $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
         jit_helpers! { registry = $registry;
-            $(unsafe fn $name(bits: u64, sorted_idx: usize) -> $t {
+            $(fn $name(bits: u64, sorted_idx: usize) -> $t {
                 struct_field(unsafe { va_ref(&bits) }, sorted_idx)
                     .map($read)
                     .unwrap_or_default()
@@ -1669,28 +1644,28 @@ macro_rules! prim_family {
     };
     (variant_payload $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
         jit_helpers! { registry = $registry;
-            $(safe fn $name(v: ManuallyDrop<TagValue>, payload_idx: usize) -> $t {
+            $(fn $name(v: ManuallyDrop<TagValue>, payload_idx: usize) -> $t {
                 variant_payload_read(&v, payload_idx, $read)
             })*
         }
     };
     (abstract_get $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
         jit_helpers! { registry = $registry;
-            $(safe fn $name(tv: ManuallyDrop<TagValue>) -> $t {
+            $(fn $name(tv: ManuallyDrop<TagValue>) -> $t {
                 abstract_payload_read(&tv, $read)
             })*
         }
     };
     (value_buf_push $registry:ident: $($name:ident, $t:ty, $ctor:expr;)*) => {
         jit_helpers! { registry = $registry;
-            $(unsafe fn $name(buf: *mut LPooled<Vec<Value>>, v: $t) {
+            $(fn $name(buf: *mut LPooled<Vec<Value>>, v: $t) {
                 unsafe { (*buf).push($ctor(v)) }
             })*
         }
     };
     (string_buf_push $registry:ident: $($name:ident, $t:ty;)*) => {
         jit_helpers! { registry = $registry;
-            $(unsafe fn $name(buf: *mut StringBuf, v: $t) {
+            $(fn $name(buf: *mut StringBuf, v: $t) {
                 push_display(buf, v)
             })*
         }
@@ -1782,7 +1757,7 @@ prim_family! { string_buf_push string_buf_push_helpers:
 
 jit_helpers! { registry = string_bool_helpers;
 
-unsafe fn graphix_string_buf_push_bool(buf: *mut StringBuf, v: u8) {
+fn graphix_string_buf_push_bool(buf: *mut StringBuf, v: u8) {
     push_display(buf, v != 0)
 }
 
@@ -1807,14 +1782,14 @@ unsafe fn sized_table(
 
 jit_helpers! { registry = elem_helpers;
 
-unsafe fn graphix_valarray_len(bits: u64) -> usize {
+fn graphix_valarray_len(bits: u64) -> usize {
     unsafe { va_ref(&bits) }.len()
 }
 
 /// Owned subslice `[start, len - back)` of borrowed ValArray bits; a
 /// range the array is too short for yields the empty array (a masked
 /// bind reads an array its pattern did not match).
-unsafe fn graphix_valarray_subslice(bits: u64, start: usize, back: usize) -> u64 {
+fn graphix_valarray_subslice(bits: u64, start: usize, back: usize) -> u64 {
     let a = unsafe { va_ref(&bits) };
     let r = match a.len().checked_sub(back) {
         Some(end) if end >= start => a.subslice(start..end).unwrap_or_else(|_| EMPTY_ARR.clone()),
@@ -1825,7 +1800,7 @@ unsafe fn graphix_valarray_subslice(bits: u64, start: usize, back: usize) -> u64
 
 /// Source-level `arr[idx]` via the shared [`array_index`]: the element
 /// or the index error; negative `idx` counts from the end.
-unsafe fn graphix_valarray_index(bits: u64, idx: i64) -> TagValue {
+fn graphix_valarray_index(bits: u64, idx: i64) -> TagValue {
     TagValue::fired(array_index(unsafe { va_ref(&bits) }, idx))
 }
 
@@ -1835,7 +1810,7 @@ unsafe fn graphix_valarray_index(bits: u64, idx: i64) -> TagValue {
 /// subtrees (`own_levels`, `leaf` as in [`free_slot_chain`]). With a
 /// tainted source (`source_present == 0`) the table only grows,
 /// zero-filled, so in-loop accesses up to `len` stay in bounds.
-unsafe fn graphix_slot_state_table(
+fn graphix_slot_state_table(
     word: *mut u64,
     len: u64,
     source_present: u64,
@@ -1867,7 +1842,7 @@ unsafe fn graphix_slot_state_table(
 
 /// [`graphix_slot_state_table`] for the level a forked chunk shares with
 /// the others: sized before the fork, so read-only here.
-unsafe fn graphix_slot_state_table_shared(
+fn graphix_slot_state_table_shared(
     word: *mut u64,
     len: u64,
     source_present: u64,
@@ -1883,7 +1858,7 @@ unsafe fn graphix_slot_state_table_shared(
 /// the caller's block; `desc` is the callee's
 /// `KernelSig::site_block_words`, read at run time because a self-call's
 /// block size is unknown while its body is still emitting.
-unsafe fn graphix_site_child_block(
+fn graphix_site_child_block(
     word: *mut u64,
     desc: *const AtomicU64,
 ) -> ChildBlock {
@@ -1908,7 +1883,7 @@ unsafe fn graphix_site_child_block(
 /// [`graphix_slot_state_table`] for a chain leaf of per-slot call-site
 /// blocks (`stride` words each); truncation frees the dropped blocks'
 /// anchor-owned chains.
-unsafe fn graphix_slot_state_blocks(
+fn graphix_slot_state_blocks(
     word: *mut u64,
     slots: u64,
     source_present: u64,
@@ -1934,52 +1909,52 @@ unsafe fn graphix_slot_state_blocks(
 }
 
 /// `arr[idx]` as owned ValArray bits.
-unsafe fn graphix_valarray_get_array(bits: u64, idx: usize) -> u64 {
+fn graphix_valarray_get_array(bits: u64, idx: usize) -> u64 {
     va_bits(slot_array(unsafe { va_ref(&bits) }.get(idx)).clone())
 }
 
 /// `arr[idx]` as borrowed ValArray bits: valid only while the parent
 /// array is alive, never passed to a consuming or dropping helper.
-unsafe fn graphix_valarray_get_array_borrowed(bits: u64, idx: usize) -> u64 {
+fn graphix_valarray_get_array_borrowed(bits: u64, idx: usize) -> u64 {
     va_borrowed_bits(slot_array(unsafe { va_ref(&bits) }.get(idx)))
 }
 
 /// A struct field as borrowed ValArray bits; same lifetime contract as
 /// [`graphix_valarray_get_array_borrowed`].
-unsafe fn graphix_struct_get_array_borrowed(bits: u64, sorted_idx: usize) -> u64 {
+fn graphix_struct_get_array_borrowed(bits: u64, sorted_idx: usize) -> u64 {
     va_borrowed_bits(slot_array(struct_field(unsafe { va_ref(&bits) }, sorted_idx)))
 }
 
 /// `arr[idx]` as an owned `ArcStr` (String elem).
-unsafe fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> u64 {
+fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> u64 {
     arcstr_bits(slot_arcstr(unsafe { va_ref(&bits) }.get(idx)))
 }
 
 /// The result borrows the array slot and must never be dropped.
-unsafe fn graphix_valarray_get_value_borrowed(bits: u64, idx: usize) -> TagValue {
+fn graphix_valarray_get_value_borrowed(bits: u64, idx: usize) -> TagValue {
     unsafe { slot_value_borrowed(va_ref(&bits).get(idx)) }
 }
 
 /// The result borrows the struct field and must never be dropped.
-unsafe fn graphix_struct_get_value_borrowed(bits: u64, idx: usize) -> TagValue {
+fn graphix_struct_get_value_borrowed(bits: u64, idx: usize) -> TagValue {
     unsafe { slot_value_borrowed(struct_field(va_ref(&bits), idx)) }
 }
 
 /// `arr[idx]` as an owned `Value`.
-unsafe fn graphix_valarray_get_value(bits: u64, idx: usize) -> TagValue {
+fn graphix_valarray_get_value(bits: u64, idx: usize) -> TagValue {
     TagValue::fired(unsafe { va_ref(&bits) }.get(idx).cloned().unwrap_or(Value::Null))
 }
 
 /// A struct field as owned ValArray bits.
-unsafe fn graphix_struct_get_array(bits: u64, sorted_idx: usize) -> u64 {
+fn graphix_struct_get_array(bits: u64, sorted_idx: usize) -> u64 {
     va_bits(slot_array(struct_field(unsafe { va_ref(&bits) }, sorted_idx)).clone())
 }
 
-unsafe fn graphix_struct_get_arcstr(bits: u64, sorted_idx: usize) -> u64 {
+fn graphix_struct_get_arcstr(bits: u64, sorted_idx: usize) -> u64 {
     arcstr_bits(slot_arcstr(struct_field(unsafe { va_ref(&bits) }, sorted_idx)))
 }
 
-unsafe fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
+fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
     TagValue::fired(
         struct_field(unsafe { va_ref(&bits) }, sorted_idx).cloned().unwrap_or(Value::Null),
     )
@@ -2020,13 +1995,13 @@ jit_helpers! { registry = debug_helpers;
 
 /// Print a disc word from inside JIT'd code (`GXDBG_CALLRET`); `tag`
 /// is a [`CallRetTag`].
-safe fn graphix_dbg_disc(tag: u64, disc: u64) {
+fn graphix_dbg_disc(tag: u64, disc: u64) {
     eprintln!("CLIF-DISC {} disc={disc:x}", CallRetTag::name(tag));
 }
 
 /// Count a JIT wrapper entry against the running runtime; emitted at the
 /// start of every wrapper.
-safe fn graphix_record_jit_invocation() {
+fn graphix_record_jit_invocation() {
     crate::stack::record_invocation(true)
 }
 
@@ -2135,9 +2110,10 @@ pub(crate) fn set_kernel_panic(p: Box<dyn Any + Send>) {
     })
 }
 
-/// Whether the running kernel recorded a panic.
-fn kernel_panicked() -> bool {
-    KERNEL_PANIC.with(|q| q.borrow().is_some())
+/// Whether the running kernel must leave at its next poll: the runtime
+/// asked it to, or it recorded a panic.
+fn run_stops() -> bool {
+    crate::stack::interrupted() || KERNEL_PANIC.with(|q| q.borrow().is_some())
 }
 
 /// Append what a chunk run deferred to this thread's queue.

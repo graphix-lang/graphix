@@ -11,7 +11,11 @@ use graphix_package_core::{
     testing::{Mode, TestState},
 };
 use netidx_value::Value;
-use std::time::Duration;
+use parking_lot::Mutex;
+use std::{
+    sync::atomic::{AtomicI64, Ordering},
+    time::Duration,
+};
 
 fn fc_panic_at_13(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -21,6 +25,27 @@ fn fc_panic_at_13(args: &[Value]) -> Option<Value> {
 }
 
 fast_builtin!(PanicAt13, PanicAt13Ev, "test_panic_at_13", fc_panic_at_13);
+
+/// The second argument of each `test_panic_at_13_keyed` call that
+/// panicked, so a fixture counts its own.
+static PANICKED: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+
+fn fc_panic_at_13_keyed(args: &[Value]) -> Option<Value> {
+    match (&args[0], &args[1]) {
+        (Value::I64(13), Value::I64(key)) => {
+            PANICKED.lock().push(*key);
+            panic!("thirteen")
+        }
+        (v, _) => Some(v.clone()),
+    }
+}
+
+fast_builtin!(
+    PanicAt13Keyed,
+    PanicAt13KeyedEv,
+    "test_panic_at_13_keyed",
+    fc_panic_at_13_keyed
+);
 
 /// The lines `test_note` took, shared with the test through the
 /// context's libstate.
@@ -75,6 +100,7 @@ fast_builtin!(Last, LastEv, "test_last", fc_last);
 async fn run(code: &str, mode: Mode) -> Result<Vec<Value>> {
     let setup = |ctx: &mut TestState| {
         ctx.register_builtin::<PanicAt13>().unwrap();
+        ctx.register_builtin::<PanicAt13Keyed>().unwrap();
         ctx.register_builtin::<Identity>().unwrap();
         ctx.register_builtin::<Last>().unwrap();
     };
@@ -105,6 +131,37 @@ async fn rust_panics_in_a_kernel(mode: Mode) -> Result<()> {
             Err(e) if e.to_string().contains("the runtime died") => (),
             r => panic!("{body}: {r:?}"),
         }
+    }
+    Ok(())
+}
+
+/// A kernel loop or self-call goes no further once a value hook it ran
+/// panicked: the hook's placeholder answer ("not equal") would loop on
+/// to the bound, and the run leaves at the next poll instead.
+async fn a_panic_stops_a_kernel_loop(mode: Mode) -> Result<()> {
+    static KEYS: AtomicI64 = AtomicI64::new(0);
+    for call in ["go(i + 1)", "go(i + 1) + 0"] {
+        let key = KEYS.fetch_add(1, Ordering::Relaxed);
+        let code = format!(
+            r#"{{
+                let boom = |x: i64, k: i64| -> i64 'test_panic_at_13_keyed;
+                type K = Abstract<i64>;
+                impl Eq for K {{ let eq = |a, b| boom(a.0, {key}) == boom(b.0, {key}) }};
+                let rec go = |i: i64| -> i64 select i >= 1000 {{
+                    true => i,
+                    false => select K(i) == K(13) {{ true => i, false => {call} }}
+                }};
+                let n = 10;
+                #[native] go(n)
+            }}"#
+        );
+        match run(&code, mode).await {
+            Err(e) if e.to_string().contains("the runtime died") => (),
+            r => panic!("{call}: {r:?}"),
+        }
+        // 990 at the bound; a loop polls every few dozen iterations
+        let panics = PANICKED.lock().iter().filter(|k| **k == key).count();
+        assert!((1..100).contains(&panics), "{call}: {panics} panics");
     }
     Ok(())
 }
@@ -162,6 +219,7 @@ async fn unread_quantifier_settles(mode: Mode) -> Result<()> {
 
 modes!(
     rust_panics_in_a_kernel,
+    a_panic_stops_a_kernel_loop,
     mistyped_function_value_is_refused,
     unread_quantifier_settles
 );
