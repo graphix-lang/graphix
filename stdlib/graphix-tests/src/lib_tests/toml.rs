@@ -198,3 +198,41 @@ run!(toml_variant_map_key_reads_back, r#"{
     let r: {m: Map<[`A, `B], i64>} = toml::read(s)?;
     (s, r.m == m)
 }"#, prints(r#"["[m]\nA = 1\nB = 2\n", true]"#); FuseExpect::Jit);
+
+// An offset date-time reads as its instant, the TOML 1.1 form without
+// seconds and a numeric offset included; a local date-time names no
+// instant and reads as its text.
+run!(
+    toml_offset_datetimes_read_as_instants,
+    r#"{
+    let r = |s: string| -> [datetime, string] {
+        let d: {t: [datetime, string]} = toml::read(s)$;
+        d.t
+    };
+    [
+        r("t = 1979-05-27T07:32Z"),
+        r("t = 1979-05-27T00:32-07:00"),
+        r("t = 1979-05-27 07:32:00.5Z"),
+        r("t = 1979-05-27T07:32:00")
+    ]
+}"#,
+    |v: Result<&Value>| {
+        use chrono::{TimeZone, Utc};
+        let at = Utc.with_ymd_and_hms(1979, 5, 27, 7, 32, 0).unwrap();
+        let half = at + chrono::Duration::milliseconds(500);
+        match v {
+            Ok(Value::Array(a)) => match &a[..] {
+                [
+                    Value::DateTime(a),
+                    Value::DateTime(b),
+                    Value::DateTime(c),
+                    Value::String(d),
+                ] => {
+                    **a == at && **b == at && **c == half && &**d == "1979-05-27T07:32:00"
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+);

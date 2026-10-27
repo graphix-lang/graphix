@@ -7,10 +7,13 @@ type Cursor<'k, 'v>;
 /// Arrays and lists match initial whole elements; maps match initial whole key/value pairs
 /// in key order. Other keys match exactly. Use cursor::range for compound ranges.
 /// A null prefix disables filtering, including when the key type contains null.
+/// A prefix that cannot be written as data (one holding a handle) makes
+/// every read a `DbErr`.
 val new: fn(?#prefix: ['k, null], t: Tree<'k, 'v>) -> Cursor<'k, 'v>;
 
 /// Create a cursor over a key range. Both bounds are optional (null = unbounded).
-/// Use `Included(key) or `Excluded(key) to specify each bound.
+/// Use `Included(key) or `Excluded(key) to specify each bound. A bound that
+/// cannot be written as data makes every read a `DbErr`.
 val range: fn(?#start: [`Included('k), `Excluded('k), null], ?#end: [`Included('k), `Excluded('k), null], t: Tree<'k, 'v>) -> Cursor<'k, 'v>;
 
 /// Read the next entry from the cursor. Advances on each trigger.

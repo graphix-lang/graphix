@@ -1,10 +1,16 @@
-use anyhow::Result;
+use crate::tree::Database;
 use futures::channel::mpsc;
 use parking_lot::{Mutex, RwLock};
 use poolshark::local::LPooled;
-use sled::IVec;
+use sled::{
+    IVec,
+    transaction::{
+        ConflictableTransactionResult, TransactionResult, Transactional,
+        TransactionalTree,
+    },
+};
 use smallvec::SmallVec;
-use std::{ptr, sync::Arc};
+use std::{cell::RefCell, ptr, sync::Arc};
 
 /// A change a write made to a tree: the key and the value it holds now,
 /// `None` once removed.
@@ -142,8 +148,8 @@ static LATE: Mutex<()> = Mutex::new(());
 /// key is the key's.
 pub(crate) fn write<T>(
     trees: &[(&Watches, &sled::Tree)],
-    write: impl FnOnce(&mut Changes) -> Result<T>,
-) -> Result<T> {
+    write: impl FnOnce(&mut Changes) -> T,
+) -> T {
     let mut order: SmallVec<[&Watches; 4]> = trees.iter().map(|(w, _)| *w).collect();
     order.sort_unstable_by_key(|w| *w as *const Watches);
     order.dedup_by(|a, b| ptr::eq(*a, *b));
@@ -162,6 +168,37 @@ pub(crate) fn write<T>(
     let res = write(&mut changes);
     send(trees, &mut changes, false);
     res
+}
+
+/// One sled transaction over `trees`, the first `watched` of them
+/// watched (tree `i` of the changes is `trees[i]`). Each attempt records
+/// what it changes; the watches receive exactly what the attempt that
+/// applied changed, and nothing when none did.
+pub(crate) fn transaction<T, E>(
+    db: &Database,
+    trees: &[sled::Tree],
+    watched: usize,
+    attempt: impl Fn(
+        &[TransactionalTree],
+        &mut Changes,
+    ) -> ConflictableTransactionResult<T, E>,
+) -> TransactionResult<T, E> {
+    let watches: LPooled<Vec<Arc<Watches>>> =
+        trees[..watched].iter().map(|t| db.watches(t)).collect();
+    let locked: SmallVec<[_; 4]> =
+        watches.iter().map(|w| &**w).zip(trees.iter()).collect();
+    write(&locked, |changes| {
+        let changes = RefCell::new(changes);
+        let res = trees.transaction(|tx| {
+            let mut changes = changes.borrow_mut();
+            changes.clear();
+            attempt(tx, &mut changes)
+        });
+        if res.is_err() {
+            changes.borrow_mut().clear();
+        }
+        res
+    })
 }
 
 /// Send each change to its tree's watches under its key's prefix, a

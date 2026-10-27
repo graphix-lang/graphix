@@ -10,6 +10,8 @@ type Subscription<'k, 'v>;
 /// Re-firing the same tree and prefix keeps the subscription. Changing either
 /// discards pending events and starts a new watch. Dropping the tree ends
 /// the subscription: each accessor yields one `DbErr`, and nothing after.
+/// A prefix that cannot be written as data (one holding a handle) is a
+/// subscription whose accessors yield one `DbErr`, and nothing after.
 val new: fn(?#prefix: ['k, null], t: Tree<'k, 'v>) -> Subscription<'k, 'v>;
 
 /// Fires with the changes each delivery carries, each key's in the order

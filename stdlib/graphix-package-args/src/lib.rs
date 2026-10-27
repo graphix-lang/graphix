@@ -9,7 +9,7 @@ use graphix_compiler::{
     Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, errf, expr::ExprId, image::ImageBuf, typ::FnType,
 };
-use graphix_package_core::{FireOnce, ProgramArgs};
+use graphix_package_core::ProgramArgs;
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 use netidx_core::pack::{Pack, PackError};
@@ -220,7 +220,6 @@ fn extract_matches(
 
 #[derive(Debug)]
 struct Parse {
-    once: FireOnce,
     out: TagValue,
 }
 
@@ -236,21 +235,21 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self { once: FireOnce::default(), out: TagValue::phantom() }))
+        Ok(Box::new(Self { out: TagValue::phantom() }))
     }
 
     fn image_decode(
         _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
-        buf: &mut &[u8],
+        _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        Ok(Box::new(Self { once: FireOnce::decode(buf)?, out: TagValue::phantom() }))
+        Ok(Box::new(Self { out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.once.encode(buf)
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        Ok(())
     }
 
     fn update(
@@ -262,16 +261,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
             return self.out.ride();
         };
         let spec = tv.value_cloned();
-        // CR claude for claude: [bug/low] Only the first spec a call site receives is
+        // XCR claude for claude: [bug/low] Only the first spec a call site receives is
         // ever parsed: a later fire of cmd rides the old answer, and neither
         // args/mod.gxi nor the book says so. The parse is a pure function of cmd and a
         // constant argv, so parse on every fire and drop the FireOnce state, or
         // document the once. probe:
         // design/review-2026-10-26/repro/gx-stdlib-args-parse-once.gx (gx-stdlib-06)
-        if !self.once.take() {
-            return self.out.ride();
-        }
-
+        // 2026-10-26 claude: Parse drops its FireOnce: every spec cmd delivers is
+        // parsed (no image state; EFFECT stays Async, unchanged); args/mod.gxi says
+        // so. Pin: graphix-tests lib_tests::args::parse_each_spec (a second spec,
+        // written after the first answered, names a flag only it has; times out with
+        // the once restored).
         let spec = match spec.cast_to::<Command>() {
             Ok(spec) => spec,
             Err(e) => {
@@ -315,10 +315,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
     fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-
-    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.once.reset();
-    }
 }
 
 graphix_derive::defpackage! {

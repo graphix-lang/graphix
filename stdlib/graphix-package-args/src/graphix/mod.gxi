@@ -39,7 +39,8 @@ val flag: fn(#name: string, ?#short: [string, null], ?#help: [string, null]) -> 
 /// create a command descriptor
 val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array<Command>, args: Array<Arg>) -> Command;
 
-/// parse the program's arguments (sys::args) against the spec. A
-/// flag's value is "true" or "false". --help and --version answer
-/// `ArgHelp with the text to print, a usage error `ArgError.
+/// parse the program's arguments (sys::args) against the spec, again
+/// at each spec cmd delivers. A flag's value is "true" or "false".
+/// --help and --version answer `ArgHelp with the text to print, a
+/// usage error `ArgError.
 val parse: fn(cmd: Command) -> [ParseResult, Error<[`ArgError(string), `ArgHelp(string)]>];

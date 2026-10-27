@@ -2,7 +2,7 @@ use crate::{
     encoding::{decode_key, decode_value, encode_key, encode_prefix},
     tree::{Reaped, Tree, blocking, get_tree_inner},
 };
-use anyhow::Result;
+use anyhow::{Result, bail};
 use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::Effect, rep};
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
@@ -15,15 +15,21 @@ use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{fmt, ops::Bound, sync::Arc};
 
-/// A cursor's iterator; `None` iterates nothing (a prefix no key can have).
+/// A cursor's iterator; `None` iterates nothing (a prefix no key can
+/// have), and an error, every read answers (a key that cannot be written
+/// as data).
 pub(crate) struct CursorInner {
-    iter: Mutex<Option<sled::Iter>>,
+    iter: Mutex<Result<Option<sled::Iter>>>,
     tree: Tree,
 }
 
 impl CursorInner {
     fn next(&self) -> Result<Option<Value>> {
-        match self.iter.lock().as_mut().and_then(|i| i.next()) {
+        let next = match &mut *self.iter.lock() {
+            Err(e) => bail!("{e:#}"),
+            Ok(iter) => iter.as_mut().and_then(|i| i.next()),
+        };
+        match next {
             None => Ok(None),
             Some(r) => {
                 let (k, v) = r?;
@@ -52,7 +58,7 @@ graphix_package_core::impl_abstract_arc!(
     static CURSOR_WRAPPER = "db::cursor::Cursor"
 );
 
-fn wrap_cursor(iter: Option<sled::Iter>, tree: Tree) -> Value {
+fn wrap_cursor(iter: Result<Option<sled::Iter>>, tree: Tree) -> Value {
     CURSOR_WRAPPER.wrap(CursorValue {
         inner: Arc::new(Reaped::new(CursorInner { iter: Mutex::new(iter), tree })),
     })
@@ -71,10 +77,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorNewEv {
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 1)?;
-        let iter = match write_marked_data(ctx, from.value(0)?).ok()? {
+        let iter = write_marked_data(ctx, from.value(0)?).map(|prefix| match prefix {
             Value::Null => Some(tree.tree.iter()),
             v => encode_prefix(tree.key_typ, &v).ok().map(|p| tree.tree.scan_prefix(&*p)),
-        };
+        });
         Some(wrap_cursor(iter, tree))
     }
 }
@@ -106,11 +112,16 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorRangeEv {
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 2)?;
-        let lo =
-            parse_bound(tree.key_typ, &write_marked_data(ctx, from.value(0)?).ok()?)?;
-        let hi =
-            parse_bound(tree.key_typ, &write_marked_data(ctx, from.value(1)?).ok()?)?;
-        let iter = lo.zip(hi).map(|r| tree.tree.range(r));
+        let lo = write_marked_data(ctx, from.value(0)?);
+        let hi = write_marked_data(ctx, from.value(1)?);
+        let iter = match (lo, hi) {
+            (Err(e), _) | (_, Err(e)) => Err(e),
+            (Ok(lo), Ok(hi)) => {
+                let lo = parse_bound(tree.key_typ, &lo)?;
+                let hi = parse_bound(tree.key_typ, &hi)?;
+                Ok(lo.zip(hi).map(|r| tree.tree.range(r)))
+            }
+        };
         Some(wrap_cursor(iter, tree))
     }
 }
@@ -191,7 +202,7 @@ mod test {
         let Value::Abstract(value) = value else { panic!("expected tree") };
         let tree = value.downcast_ref::<TreeValue>().unwrap().inner.clone();
         let tree_weak = Arc::downgrade(&tree);
-        let cursor = wrap_cursor(Some(tree.tree.iter()), tree);
+        let cursor = wrap_cursor(Ok(Some(tree.tree.iter())), tree);
         drop(value);
         assert!(tree_weak.upgrade().is_some(), "cursor must retain its tree");
         drop(db);

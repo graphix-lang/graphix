@@ -334,3 +334,26 @@ async fn spec_refusals() -> Result<()> {
     }
     Ok(())
 }
+
+/// Every spec a call site receives is parsed: here the second, written
+/// after the first answered, names a flag the first does not have.
+const PARSE_EACH_SPEC: &str = r#"
+{
+    let name = "a";
+    let r = args::parse(args::command(#name: "test", [args::flag(#name: name)]));
+    name <- uniq(r ~ "b");
+    select map::get((r$).values, "b") { null => never(), s => s }
+}
+"#;
+
+#[tokio::test(flavor = "current_thread")]
+async fn parse_each_spec() -> Result<()> {
+    let (v, ctx) =
+        testing::eval_with_setup(PARSE_EACH_SPEC, &crate::TEST_REGISTER, |ctx| {
+            ctx.libstate.set(ProgramArgs(vec![ArcStr::from("script.gx")]));
+        })
+        .await?;
+    ctx.shutdown().await;
+    assert_eq!(v, Value::String(ArcStr::from("false")));
+    Ok(())
+}

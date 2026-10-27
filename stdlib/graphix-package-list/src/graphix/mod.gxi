@@ -58,7 +58,9 @@ val map: fn(l: List<'a>, f: fn(x: 'a) -> 'b throws 'e) -> List<'b> throws 'e;
 /// Return a new list containing only elements where f returned true.
 val filter: fn(l: List<'a>, f: fn(x: 'a) -> bool throws 'e) -> List<'a> throws 'e;
 
-/// Return a new list containing the non-null outputs of f.
+/// Return a new list of the outputs of f, in order: a null output
+/// drops its element, `Keep(v) keeps v (null included), and any other
+/// output is kept.
 val filter_map: fn(l: List<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e) -> List<'b> throws 'e;
 
 /// Return the lists f returns for each element, concatenated in order.

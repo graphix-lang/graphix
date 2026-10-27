@@ -19,9 +19,7 @@ use netidx_derive::Pack;
 use netidx_value::{ValArray, Value};
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
-use smallvec::SmallVec;
 use std::{
-    cell::RefCell,
     fmt,
     marker::PhantomData,
     ops::Deref,
@@ -38,7 +36,7 @@ use crate::{
     watch::{self, Changes, Watches},
 };
 
-use sled::transaction::{ConflictableTransactionError, TransactionError, Transactional};
+use sled::transaction::{ConflictableTransactionError, TransactionError};
 use tokio::sync::Notify;
 
 pub(crate) use graphix_package_core::Reaped;
@@ -909,36 +907,25 @@ fn import_data(db: &Database, data: ExportData) -> Result<()> {
         .iter()
         .map(|tree| db.open_tree(&tree.name))
         .collect::<sled::Result<LPooled<Vec<_>>>>()?;
-    let watches: LPooled<Vec<Arc<Watches>>> =
-        trees.iter().map(|t| db.watches(t)).collect();
-    let locked: SmallVec<[_; 4]> =
-        watches.iter().map(|w| &**w).zip(trees.iter()).collect();
-    watch::write(&locked, |changes| {
-        let changes = RefCell::new(changes);
-        let res = trees.as_slice().transaction(|tx| {
-            changes.borrow_mut().clear();
-            for (i, (src, dest)) in data.iter().zip(tx).enumerate() {
-                for [key, value] in &*src.entries {
-                    if dest.get(key)?.is_some() {
-                        return Err(ConflictableTransactionError::Abort(anyhow!(
-                            "import would overwrite an existing key"
-                        )));
-                    }
-                    dest.insert(key.as_slice(), value.as_slice())?;
-                    changes.borrow_mut().record(i, key, None, Some(value));
+    let res = watch::transaction(db, &trees, trees.len(), |tx, changes| {
+        for (i, (src, dest)) in data.iter().zip(tx).enumerate() {
+            for [key, value] in &*src.entries {
+                if dest.get(key)?.is_some() {
+                    return Err(ConflictableTransactionError::Abort(anyhow!(
+                        "import would overwrite an existing key"
+                    )));
                 }
+                dest.insert(key.as_slice(), value.as_slice())?;
+                changes.record(i, key, None, Some(value));
             }
-            Ok(())
-        });
-        if res.is_err() {
-            changes.borrow_mut().clear();
         }
-        match res {
-            Ok(()) => Ok(()),
-            Err(TransactionError::Abort(e)) => Err(e),
-            Err(TransactionError::Storage(e)) => Err(e.into()),
-        }
-    })
+        Ok(())
+    });
+    match res {
+        Ok(()) => Ok(()),
+        Err(TransactionError::Abort(e)) => Err(e),
+        Err(TransactionError::Storage(e)) => Err(e.into()),
+    }
 }
 
 db_name_op!(DbImportEv, DbImport, "db_import", |db, path: ArcStr| {

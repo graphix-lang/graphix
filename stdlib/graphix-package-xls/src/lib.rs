@@ -5,6 +5,7 @@
 use arcstr::ArcStr;
 use bytes::Bytes;
 use calamine::{Data, Reader, Sheets, open_workbook_auto_from_rs};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{ValArray, Value};
@@ -29,20 +30,20 @@ fn data_to_value(cell: &Data) -> Value {
             Some(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
             None => Value::F64(edt.as_f64()),
         },
-        // CR claude for claude: [bug/medium] A date-only ISO cell (`2020-01-01`, the
+        // XCR claude for claude: [bug/medium] A date-only ISO cell (`2020-01-01`, the
         // common ods date cell) and one with fractional seconds
         // (`2020-01-01T10:00:00.5`) match neither parse and come back as strings, while
         // the same dates in xlsx/xls read as datetimes. Parse `%Y-%m-%dT%H:%M:%S%.f`,
         // then a bare `%Y-%m-%d` at midnight UTC, before falling back to a string, and
         // pin both forms. probe:
         // design/review-2026-10-26/repro/small-pkgs-ods-date-cells.sh (small-pkgs-05)
-        Data::DateTimeIso(s) => match chrono::DateTime::parse_from_rfc3339(s) {
-            Ok(dt) => Value::DateTime(TArc::new(dt.with_timezone(&chrono::Utc))),
-            Err(_) => match chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-            {
-                Ok(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
-                Err(_) => Value::String(ArcStr::from(s.as_str())),
-            },
+        // 2026-10-26 claude: Data::DateTimeIso goes through iso_datetime: RFC 3339,
+        // then a local date-time with optional fractional seconds read as UTC, then a
+        // bare date at midnight UTC, else the string. Pin: graphix-package-xls
+        // test::ods_date_cells_read_as_datetimes (the probe's three ods date cells).
+        Data::DateTimeIso(s) => match iso_datetime(s) {
+            Some(dt) => Value::DateTime(TArc::new(dt)),
+            None => Value::String(ArcStr::from(s.as_str())),
         },
         Data::DurationIso(s) => match iso_duration_secs(s) {
             Some(secs) => duration_value(secs),
@@ -51,6 +52,22 @@ fn data_to_value(cell: &Data) -> Value {
         Data::Empty => Value::Null,
         Data::Error(e) => Value::String(ArcStr::from(format!("{e:?}").as_str())),
     }
+}
+
+/// An ISO 8601 date-time cell as an instant: with an offset, else local
+/// time read as UTC (fractional seconds optional), else a date alone at
+/// midnight UTC.
+fn iso_datetime(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").map(|t| t.and_utc())
+        })
+        .or_else(|_| {
+            NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map(|d| d.and_time(NaiveTime::MIN).and_utc())
+        })
+        .ok()
 }
 
 /// `secs` seconds as a duration, or as an f64 where no duration holds
@@ -576,6 +593,32 @@ mod test {
                 r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>"#,
             ),
         ])
+    }
+
+    /// An ods date cell reads as a datetime whether it holds a date
+    /// alone, a date-time, or fractional seconds.
+    #[test]
+    fn ods_date_cells_read_as_datetimes() {
+        let cells: String = ["2020-01-01", "2020-01-01T10:00:00", "2020-01-01T10:00:00.5"]
+            .iter()
+            .map(|d| {
+                format!(
+                    r#"<table:table-cell office:value-type="date" office:date-value="{d}"><text:p>x</text:p></table:table-cell>"#
+                )
+            })
+            .collect();
+        let v = parse_sheet(
+            Cursor::new(ods(&format!("<table:table-row>{cells}</table:table-row>"))),
+            "S",
+        );
+        let at = |h, ms| {
+            let d = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+            Value::DateTime(TArc::new(
+                d.and_hms_milli_opt(h, 0, 0, ms).unwrap().and_utc(),
+            ))
+        };
+        let row = ValArray::from([at(0, 0), at(10, 0), at(10, 500)]);
+        assert_eq!(v, Value::Array(ValArray::from([Value::Array(row)])));
     }
 
     #[test]

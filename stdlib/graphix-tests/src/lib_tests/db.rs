@@ -929,6 +929,25 @@ run_with_tempdir!(
     }
 );
 
+// A prefix or bound that cannot be written as data is a DbErr where it is
+// read, as an unstorable key is: never a silent subscription or cursor.
+run_with_tempdir!(
+    name: db_unwritable_prefix_is_an_error,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let t: db::Tree<Array<Any>, i64> = db::tree(db, "t")$;
+        let ev = db::subscription::on_change(db::subscription::new(#prefix: [db], t));
+        let c = db::cursor::new(#prefix: [db], t);
+        let r = db::cursor::range(#start: `Included([db]), t);
+        (is_err(ev), is_err(db::cursor::read(c, c)), is_err(db::cursor::read(r, r)))
+    }}"#,
+    setup: |td| { td.path().join("unwritable_prefix.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), "[true, true, true]");
+        Ok(())
+    }
+);
+
 // A tree's types are stored with their typedefs expanded, so a program
 // whose typedef differs is refused; the stored text is the db format.
 run_with_tempdir!(

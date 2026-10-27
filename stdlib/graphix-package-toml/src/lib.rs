@@ -5,7 +5,7 @@
 use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 use graphix_compiler::{
     env::Env,
     errf,
@@ -25,7 +25,7 @@ fn toml_to_value(v: toml::Value) -> Value {
         toml::Value::Integer(i) => Value::I64(i),
         toml::Value::Float(f) => Value::F64(f),
         toml::Value::Boolean(b) => Value::Bool(b),
-        // CR claude for claude: [bug/medium] Converting through dt.to_string() and RFC
+        // XCR claude for claude: [bug/medium] Converting through dt.to_string() and RFC
         // 3339 loses a TOML 1.1 offset datetime without seconds: "t =
         // 1979-05-27T07:32Z" becomes the string "1979-05-27T07:32Z", and a datetime
         // target refuses it with InvalidCast. Build the chrono value from the
@@ -33,13 +33,16 @@ fn toml_to_value(v: toml::Value) -> Value {
         // string only for a value with no offset. probe:
         // design/review-2026-10-26/repro/small-pkgs-toml-datetime-no-seconds.gx
         // (small-pkgs-07)
-        toml::Value::Datetime(dt) => {
-            let s = dt.to_string();
-            match chrono::DateTime::parse_from_rfc3339(&s) {
-                Ok(parsed) => Value::DateTime(TArc::new(parsed.with_timezone(&Utc))),
-                Err(_) => Value::String(ArcStr::from(s.as_str())),
-            }
-        }
+        // 2026-10-26 claude: toml_to_value builds an offset date-time's instant from
+        // its date, time (seconds and nanoseconds defaulting to 0, a leap second 60 as
+        // chrono's) and offset fields (offset_datetime); a local date, time or
+        // date-time still reads as its text. Pin: graphix-tests
+        // lib_tests::toml::toml_offset_datetimes_read_as_instants (no seconds, a
+        // -07:00 offset, a space separator with a fraction, a local date-time).
+        toml::Value::Datetime(dt) => match offset_datetime(&dt) {
+            Some(dt) => Value::DateTime(TArc::new(dt)),
+            None => Value::String(ArcStr::from(dt.to_string().as_str())),
+        },
         toml::Value::Array(arr) => {
             let mut vals: LPooled<Vec<Value>> =
                 arr.into_iter().map(toml_to_value).collect();
@@ -61,6 +64,32 @@ fn toml_to_value(v: toml::Value) -> Value {
             Value::Array(ValArray::from_iter_exact(vals.drain(..)))
         }
     }
+}
+
+/// An offset date-time as a UTC instant; `None` for a local date,
+/// time or date-time, which names no instant.
+fn offset_datetime(dt: &toml::value::Datetime) -> Option<DateTime<Utc>> {
+    let (date, time, offset) = (dt.date?, dt.time?, dt.offset?);
+    let date =
+        NaiveDate::from_ymd_opt(date.year.into(), date.month.into(), date.day.into())?;
+    let (second, leap) = match time.second.unwrap_or(0) {
+        60 => (59, 1_000_000_000),
+        s => (s, 0),
+    };
+    let time = NaiveTime::from_hms_nano_opt(
+        time.hour.into(),
+        time.minute.into(),
+        second.into(),
+        time.nanosecond.unwrap_or(0) + leap,
+    )?;
+    let minutes = match offset {
+        toml::value::Offset::Z => 0,
+        toml::value::Offset::Custom { minutes } => i32::from(minutes),
+    };
+    let local = FixedOffset::east_opt(minutes * 60)?
+        .from_local_datetime(&date.and_time(time))
+        .single()?;
+    Some(local.with_timezone(&Utc))
 }
 
 /// The deepest nesting a value writes as TOML: as deep as toml::read

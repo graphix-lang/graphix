@@ -4,7 +4,7 @@ use crate::{
         blocking_op, get_db, insert_arg, key_arg, meta_key, raw_args, value_or_null,
         writes_arg,
     },
-    watch::{self, Changes, Watches},
+    watch::{self, Changes},
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
@@ -18,12 +18,9 @@ use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use sled::{
     IVec,
-    transaction::{
-        ConflictableTransactionError, TransactionError, Transactional, TransactionalTree,
-    },
+    transaction::{ConflictableTransactionError, TransactionError, TransactionalTree},
 };
-use smallvec::SmallVec;
-use std::{cell::RefCell, collections::hash_map::Entry, fmt, sync::Arc};
+use std::{collections::hash_map::Entry, fmt, sync::Arc};
 
 /// The tree a transaction's part is over: one that stood when it was
 /// opened, or a name the commit creates, empty until then.
@@ -133,9 +130,8 @@ impl TxnState {
     fn check_and_apply(
         &self,
         tx: &[TransactionalTree],
-        changes: &RefCell<&mut Changes>,
+        changes: &mut Changes,
     ) -> Result<(), ConflictableTransactionError<Refused>> {
-        changes.borrow_mut().clear();
         let abort = |r| Err(ConflictableTransactionError::Abort(r));
         for (t, tx) in self.trees.iter().zip(tx) {
             for (k, v) in &t.read {
@@ -157,23 +153,69 @@ impl TxnState {
                     Some(v) => tx.insert(k.clone(), v.clone())?,
                     None => tx.remove(k.clone())?,
                 };
-                changes.borrow_mut().record(i, k, old.as_deref(), v.as_deref());
+                changes.record(i, k, old.as_deref(), v.as_deref());
             }
         }
         Ok(())
     }
 
     /// Apply the transaction. A tree it opened that did not stand is
-    /// created here, and dropped again when the commit fails and nothing
-    /// claimed it meanwhile.
+    /// created here, and dropped again when the commit does not apply and
+    /// nothing claimed it meanwhile. An applied commit that wrote is made
+    /// durable once `creating` is released: applied and visible either
+    /// way, a failed flush is its own outcome, never a DbErr a retry would
+    /// apply again.
     fn commit(self) -> Result<Value> {
-        let _creating = self.db.creating.lock();
-        let mut created: LPooled<Vec<ArcStr>> = LPooled::take();
-        let res = self.apply(&mut created);
-        if !matches!(res, Ok(Value::Null)) {
-            self.drop_unclaimed(&created)?;
+        let outcome = {
+            let _creating = self.db.creating.lock();
+            let mut created: LPooled<Vec<ArcStr>> = LPooled::take();
+            let res = self.apply(&mut created);
+            if !matches!(res, Ok(Outcome::Applied)) {
+                if let Err(e) = self.drop_unclaimed(&created) {
+                    log::warn!("db: dropping the trees a failed commit created: {e:#}");
+                }
+            }
+            res?
+        };
+        match outcome {
+            Outcome::Conflict => {
+                Ok(Value::Error(rep::make_variant(literal!("Conflict"), []).into()))
+            }
+            Outcome::Applied if !self.writes() => Ok(Value::Null),
+            // XCR claude for claude: [perf/low] This fsync runs under `creating`,
+            // which TxnState::commit holds, so every commit, import, db::tree open
+            // and drop_tree waits on it. Concurrent commits fsync one after another
+            // instead of sharing one make_stable. A commit with no writes and no
+            // new meta flushes too. commit also runs drop_unclaimed after an
+            // applied NotDurable, and its `?` can turn a Conflict or NotDurable
+            // into a DbErr, which a program would retry. Fix: let apply report
+            // applied or not, call drop_unclaimed only when not applied (log its
+            // error), release `creating`, then flush only when something was
+            // written. Found by reading; not run. (db2-04)
+            // 2026-10-26 claude: apply returns Outcome::{Applied, Conflict}; commit
+            // drops unclaimed trees only when the commit did not apply and logs
+            // that drop's error instead of returning it, releases creating, then
+            // flushes only an applied commit that writes (TxnState::writes: pending
+            // meta or a tree write); NotDurable stays its own outcome. No new pin:
+            // the flush skip and the lock release are not observable from a test;
+            // failed_commit_drops_its_new_tree and commit_reaches_watches still
+            // hold the outcomes.
+            Outcome::Applied => match self.db.flush() {
+                Ok(_) => Ok(Value::Null),
+                Err(e) => Ok(Value::Error(
+                    rep::make_variant(
+                        literal!("NotDurable"),
+                        [Value::String(format_compact!("{e}").as_str().into())],
+                    )
+                    .into(),
+                )),
+            },
         }
-        res
+    }
+
+    /// Whether applying the transaction writes anything.
+    fn writes(&self) -> bool {
+        !self.pending_meta.is_empty() || self.trees.iter().any(|t| !t.write.is_empty())
     }
 
     /// Drop each of `created` that is still empty and has no types: a
@@ -190,7 +232,7 @@ impl TxnState {
         Ok(())
     }
 
-    fn apply(&self, created: &mut Vec<ArcStr>) -> Result<Value> {
+    fn apply(&self, created: &mut Vec<ArcStr>) -> Result<Outcome> {
         let mut trees: Vec<sled::Tree> = Vec::with_capacity(self.trees.len() + 1);
         for t in &self.trees {
             trees.push(match &t.target {
@@ -207,59 +249,25 @@ impl TxnState {
             trees.push(self.db.open_tree(META_TREE)?);
         }
         if trees.is_empty() {
-            return Ok(Value::Null);
+            return Ok(Outcome::Applied);
         }
-        let watches: LPooled<Vec<Arc<Watches>>> =
-            trees[..self.trees.len()].iter().map(|t| self.db.watches(t)).collect();
-        let locked: SmallVec<[_; 4]> =
-            watches.iter().map(|w| &**w).zip(trees.iter()).collect();
-        // CR claude for claude: [structure/low] This block repeats import_data's
-        // watched transaction: watches per tree, the zip into `locked`, the RefCell
-        // around `changes`, the clear on each sled attempt and the clear on failure.
-        // Both copies must stay in step for subscribers to get exactly the applied
-        // changes. Move it into one watch.rs function taking the trees, how many are
-        // watched and the per-attempt body, and call it from here and from import_data.
-        // Found by reading; not run. (db2-05)
-        let res = watch::write(&locked, |changes| {
-            let changes = RefCell::new(changes);
-            let res = (&trees[..]).transaction(|tx| self.check_and_apply(tx, &changes));
-            if res.is_err() {
-                changes.borrow_mut().clear();
-            }
-            Ok(res)
-        })?;
+        let res =
+            watch::transaction(&self.db, &trees, self.trees.len(), |tx, changes| {
+                self.check_and_apply(tx, changes)
+            });
         match res {
-            Ok(()) => {
-                // applied and visible either way: a failed flush is its own
-                // outcome, never a DbErr a retry would apply again
-                // CR claude for claude: [perf/low] This fsync runs under `creating`,
-                // which TxnState::commit holds, so every commit, import, db::tree open
-                // and drop_tree waits on it. Concurrent commits fsync one after another
-                // instead of sharing one make_stable. A commit with no writes and no
-                // new meta flushes too. commit also runs drop_unclaimed after an
-                // applied NotDurable, and its `?` can turn a Conflict or NotDurable
-                // into a DbErr, which a program would retry. Fix: let apply report
-                // applied or not, call drop_unclaimed only when not applied (log its
-                // error), release `creating`, then flush only when something was
-                // written. Found by reading; not run. (db2-04)
-                match self.db.flush() {
-                    Ok(_) => Ok(Value::Null),
-                    Err(e) => Ok(Value::Error(
-                        rep::make_variant(
-                            literal!("NotDurable"),
-                            [Value::String(format_compact!("{e}").as_str().into())],
-                        )
-                        .into(),
-                    )),
-                }
-            }
-            Err(TransactionError::Abort(Refused::Conflict)) => {
-                Ok(Value::Error(rep::make_variant(literal!("Conflict"), []).into()))
-            }
+            Ok(()) => Ok(Outcome::Applied),
+            Err(TransactionError::Abort(Refused::Conflict)) => Ok(Outcome::Conflict),
             Err(TransactionError::Abort(Refused::Meta(e))) => Err(e),
             Err(TransactionError::Storage(e)) => Err(e.into()),
         }
     }
+}
+
+/// Whether a commit applied: a conflict applies nothing.
+enum Outcome {
+    Applied,
+    Conflict,
 }
 
 pub(crate) struct TxnInner {

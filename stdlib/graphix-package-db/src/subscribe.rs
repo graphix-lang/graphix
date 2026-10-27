@@ -98,6 +98,16 @@ fn push_event(key_typ: Option<Typ>, change: Change, events: &mut Vec<Result<DbEv
     })());
 }
 
+/// `events` as one delivery under `bind_id`.
+fn delivery(
+    bind_id: BindId,
+    events: GPooled<Vec<Result<DbEvent>>>,
+) -> GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>> {
+    let mut batch = CBATCH_POOL.take();
+    batch.push((bind_id, Box::new(DbEvents(events)) as Box<dyn CustomBuiltinType>));
+    batch
+}
+
 /// Forward `changes` to the runtime, one batch per delivery the runtime
 /// has room for, until the task ends, which ends the watch. A channel the
 /// tree's drop closed ends it with an error.
@@ -127,12 +137,7 @@ async fn watch(
                 true
             }
         };
-        let mut batch = CBATCH_POOL.take();
-        batch.push((
-            bind_id,
-            Box::new(DbEvents(batch_events)) as Box<dyn CustomBuiltinType>,
-        ));
-        if tx.start_send(batch).is_err() || dropped {
+        if tx.start_send(delivery(bind_id, batch_events)).is_err() || dropped {
             break;
         }
     }
@@ -209,16 +214,18 @@ impl DbSubscribe {
     }
 
     /// Watch the cached tree under the cached prefix, reporting under the
-    /// current bind id; a prefix no key can have watches nothing.
-    fn watch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    /// current bind id; a prefix no key can have watches nothing, and one
+    /// that cannot be written as data is the error.
+    fn watch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Result<()> {
         self.stop();
-        let Some(tree) = get_tree_inner(&self.args, 1) else { return };
+        let Some(tree) = get_tree_inner(&self.args, 1) else { return Ok(()) };
         let prefix = match self.args.value(0).map(|v| write_marked_data(ctx, v)) {
-            None | Some(Err(_)) => return,
+            None => return Ok(()),
+            Some(Err(e)) => return Err(e),
             Some(Ok(Value::Null)) => Ok(GPooled::orphan(vec![])),
             Some(Ok(v)) => encode_prefix(tree.key_typ, &v),
         };
-        // CR claude for claude: [bug/low] A prefix that cannot be written as data (a
+        // XCR claude for claude: [bug/low] A prefix that cannot be written as data (a
         // Rust handle in an Array<Any> key) makes the subscription silent forever. In
         // DbCursorNewEv::eval the same failure (`.ok()?`) leaves cursor::new bottom, so
         // cursor::read never answers, while db::insert of that key is a DbErr
@@ -226,10 +233,29 @@ impl DbSubscribe {
         // one DbErr batch under bind_id here, and keep it in CursorInner for `next` to
         // return. probe:
         // design/review-2026-10-26/repro/db2-unencodable-prefix-silent.gx (db2-03)
-        let Ok(prefix) = prefix else { return };
+        // 2026-10-26 claude: DbSubscribe::watch returns a prefix's write error and a
+        // fired subscription reports it as its one DbErr event under its bind id
+        // (DbSubscribe::report; a wake does not report it again); the watch task and
+        // report build their delivery through one subscribe::delivery. A cursor's
+        // CursorInner holds Result<Option<sled::Iter>>: a prefix (cursor::new) or a
+        // bound (cursor::range, which had the same .ok()?) that cannot be written makes
+        // every read that DbErr. subscription.gxi and cursor.gxi say so. Pin:
+        // graphix-tests lib_tests::db::db_unwritable_prefix_is_an_error (fails with
+        // either half undone).
+        let Ok(prefix) = prefix else { return Ok(()) };
         let (tx, rx) = mpsc::channel(1);
         ctx.rt.watch(rx);
         self.abort = Some(spawn_watch(&tree, &prefix, self.bind_id, tx));
+        Ok(())
+    }
+
+    /// `e` as the subscription's one event.
+    fn report<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>, e: anyhow::Error) {
+        let (mut tx, rx) = mpsc::channel(1);
+        let mut events = EVENT_POOL.take();
+        events.push(Err(e));
+        tx.try_send(delivery(self.bind_id, events)).expect("a new channel has room");
+        ctx.rt.watch(rx);
     }
 }
 
@@ -261,13 +287,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                     return self.out.retag(Tag::FIRED);
                 }
                 self.bind_id = BindId::new();
-                self.watch(ctx);
+                if let Err(e) = self.watch(ctx) {
+                    self.report(ctx, e);
+                }
                 let sub = SubscriptionValue { bind_id: self.bind_id };
                 self.out.set(TagValue::fired(SUBSCRIPTION_WRAPPER.wrap(sub)))
             }
             Invocation::Quiet => {
+                // a prefix's error was reported when the subscription fired
                 if self.slept.take() {
-                    self.watch(ctx);
+                    let _ = self.watch(ctx);
                 }
                 self.out.ride()
             }
@@ -622,7 +651,7 @@ mod test {
                     changes.record(0, &key(0), old.as_deref(), Some(&v));
                     applied_tx.send(()).unwrap();
                     go.recv().unwrap();
-                    Ok(())
+                    anyhow::Ok(())
                 })
                 .unwrap()
             })
