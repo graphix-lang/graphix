@@ -1683,6 +1683,10 @@ impl Receipts {
 }
 
 impl ErrorRelay {
+    fn with(handler: ErrorHandler) -> Self {
+        Self { handler, receipts: Receipts::default() }
+    }
+
     /// The relay, and the scope the function it covers compiles under.
     pub fn new<R: Rt>(
         ctx: &mut CompileCtx<R>,
@@ -1708,7 +1712,7 @@ impl ErrorRelay {
         ctx.record_ref(bind_id, top_id);
         let covered = scope.with_catch((bind_id, top_id), HandlerKind::Catch);
         let handler = covered.dynamic.handler().unwrap();
-        (Self { handler, receipts: Receipts::default() }, covered)
+        (Self::with(handler), covered)
     }
 
     /// The error the function raised this cycle, which also goes on.
@@ -1752,6 +1756,6 @@ impl ErrorRelay {
         let handler = image::handler_decode(buf)?;
         let (bind_id, top_id) = handler.id();
         ctx.record_ref(bind_id, top_id);
-        Ok(Self { handler, receipts: Receipts::default() })
+        Ok(Self::with(handler))
     }
 }
