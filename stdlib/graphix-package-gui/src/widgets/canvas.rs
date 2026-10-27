@@ -123,6 +123,71 @@ pub(crate) enum PathSegment {
     Close,
 }
 
+const MAX_EXTENT: f64 = 1_000_000.0;
+
+fn extent_fits(points: &[PointV], margin: f64) -> bool {
+    points.iter().all(|p| {
+        (p.0.x as f64).abs() + margin <= MAX_EXTENT
+            && (p.0.y as f64).abs() + margin <= MAX_EXTENT
+    })
+}
+
+impl CanvasShape {
+    fn fits(&self) -> bool {
+        let stroke =
+            |s: &Option<StrokeV>| s.as_ref().map_or(0.0, |s| s.width.0.abs() as f64);
+        match self {
+            Self::Line { from, to, width, .. } => {
+                extent_fits(&[*from, *to], width.0.abs() as f64)
+            }
+            Self::Circle { center, radius, stroke: s, .. } => {
+                extent_fits(&[*center], radius.0.abs() as f64 + stroke(s))
+            }
+            Self::Arc { center, radius, stroke, .. } => extent_fits(
+                &[*center],
+                radius.0.abs() as f64 + stroke.width.0.abs() as f64,
+            ),
+            Self::Rect { top_left, size, stroke: s, .. }
+            | Self::RoundedRect { top_left, size, stroke: s, .. } => extent_fits(
+                &[*top_left],
+                size.0.width.abs().max(size.0.height.abs()) as f64 + stroke(s),
+            ),
+            Self::Ellipse { center, radii, stroke: s, .. } => extent_fits(
+                &[*center],
+                (radii.0.x as f64).hypot(radii.0.y as f64) + stroke(s),
+            ),
+            Self::BezierCurve { from, control_a, control_b, to, width, .. } => {
+                extent_fits(&[*from, *control_a, *control_b, *to], width.0.abs() as f64)
+            }
+            Self::QuadraticCurve { from, control, to, width, .. } => {
+                extent_fits(&[*from, *control, *to], width.0.abs() as f64)
+            }
+            Self::Text { position, size, content, .. } => extent_fits(
+                &[*position],
+                size.0.abs() as f64 * content.chars().count().max(1) as f64,
+            ),
+            Self::Path { segments, stroke: s, .. } => segments.iter().all(|s0| {
+                let margin = stroke(s);
+                match s0 {
+                    PathSegment::MoveTo(p) | PathSegment::LineTo(p) => {
+                        extent_fits(&[*p], margin)
+                    }
+                    PathSegment::BezierTo { control_a, control_b, to } => {
+                        extent_fits(&[*control_a, *control_b, *to], margin)
+                    }
+                    PathSegment::QuadraticTo { control, to } => {
+                        extent_fits(&[*control, *to], margin)
+                    }
+                    PathSegment::ArcTo { a, b, radius } => {
+                        extent_fits(&[*a, *b], margin + radius.0.abs() as f64)
+                    }
+                    PathSegment::Close => margin <= MAX_EXTENT,
+                }
+            }),
+        }
+    }
+}
+
 /// The shapes of a canvas update; one that does not read (a non-finite
 /// field) is left out, as a chart leaves out a non-finite point, and the
 /// rest draw.
@@ -256,7 +321,7 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
             if let Some(shapes) = self.p.shapes.t.as_ref() {
                 for shape in &shapes.0 {
                     if draw_shape(frame, shape).is_none() && !self.invalid_geometry.replace(true) {
-                        log::error!(target: graphix_compiler::FAILURE_TARGET, "canvas skipped non-finite geometry");
+                        log::error!(target: graphix_compiler::FAILURE_TARGET, "canvas skipped invalid geometry (extent limit: {MAX_EXTENT} logical pixels)");
                     }
                 }
             }
@@ -287,8 +352,11 @@ fn draw_shape(
     fn stroke(s: &StrokeV) -> Stroke<'static> {
         Stroke::default().with_color(s.color.0).with_width(s.width.0)
     }
+    if !shape.fits() {
+        return None;
+    }
     match shape {
-        // CR claude for claude: [bug/low] A finite line far past the canvas draws
+        // XCR claude for claude: [bug/low] A finite line far past the canvas draws
         // nothing. A `Line` from x=-1e30 to x=1e30 at y 10..20 leaves the test
         // harness's 200x200 frame black and is not flagged as invalid geometry, while
         // the same line at x=±1e12 draws across rows 14 and 15. Found by the pixel
@@ -297,6 +365,20 @@ fn draw_shape(
         // segments, in f64, to a box far past any canvas before tessellating
         // (CheckedPath), or flag such geometry as invalid; which, and for which shapes
         // (lines, or every path), is to decide. (canvas-huge-line-01)
+        // 2026-10-27 codex: Applied Eric's question-48 ruling: draw_shape refuses
+        // every shape outside a conservative extent of 1,000,000 logical pixels and
+        // logs through the existing invalid-geometry path. This is over 60 16K screen
+        // widths from the origin, far beyond a useful canvas drawing, while keeping
+        // curve tessellation far below the measured 1e12-radius allocation. Checks
+        // include stroke widths, curve controls, circle/ellipse radii, rectangle
+        // sizes, text position/size/content length and Path segments; CheckedPath also
+        // rejects derived points outside the bound. Pin
+        // widgets::canvas::path::tests::huge_finite_line_is_rejected reproduces the
+        // finite +/-1e30 line and failed before the fix, then passed.
+        // widgets::canvas::tests::every_shape_has_a_bounded_extent covers all shape
+        // kinds; four widgets::canvas unit tests pass. Updated
+        // canvas_huge_line_is_skipped for the new policy, but did not run GPU/runtime
+        // harness tests in the socket-restricted sandbox. No image encoding changed.
         CanvasShape::Line { from, to, color, width } => {
             let path = CheckedPath::build(|b| {
                 b.move_to(from.0);
@@ -426,4 +508,99 @@ fn draw_shape(
         }
     }
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced_core::{Color, Size};
+
+    #[test]
+    fn every_shape_has_a_bounded_extent() {
+        for (x, fits) in [(100.0, true), (1e30, false)] {
+            let p = PointV(Point::new(x, x));
+            let origin = PointV(Point::ORIGIN);
+            let color = ColorV(Color::WHITE);
+            let width = Finite(2.0);
+            let radius = Finite(x);
+            let stroke = StrokeV { color, width };
+            let size = SizeV(Size::new(x, x));
+            for shape in [
+                CanvasShape::Line { from: p, to: origin, color, width },
+                CanvasShape::Circle {
+                    center: origin,
+                    radius,
+                    fill: Some(color),
+                    stroke: None,
+                },
+                CanvasShape::Rect {
+                    top_left: origin,
+                    size,
+                    fill: Some(color),
+                    stroke: None,
+                },
+                CanvasShape::RoundedRect {
+                    top_left: origin,
+                    size,
+                    radius: Finite(10.0),
+                    fill: Some(color),
+                    stroke: None,
+                },
+                CanvasShape::Arc {
+                    center: origin,
+                    radius,
+                    start_angle: Finite(0.0),
+                    end_angle: Finite(1.0),
+                    stroke,
+                },
+                CanvasShape::Ellipse {
+                    center: origin,
+                    radii: p,
+                    rotation: Finite(1.0),
+                    start_angle: Finite(0.0),
+                    end_angle: Finite(1.0),
+                    fill: Some(color),
+                    stroke: None,
+                },
+                CanvasShape::BezierCurve {
+                    from: origin,
+                    control_a: p,
+                    control_b: origin,
+                    to: origin,
+                    color,
+                    width,
+                },
+                CanvasShape::QuadraticCurve {
+                    from: origin,
+                    control: p,
+                    to: origin,
+                    color,
+                    width,
+                },
+                CanvasShape::Text {
+                    content: "text".into(),
+                    position: p,
+                    color,
+                    size: TextSizeV(16.0),
+                },
+                CanvasShape::Path {
+                    segments: vec![
+                        PathSegment::MoveTo(origin),
+                        PathSegment::ArcTo { a: p, b: origin, radius },
+                    ],
+                    fill: Some(color),
+                    stroke: None,
+                },
+                CanvasShape::Line { from: origin, to: origin, color, width: radius },
+                CanvasShape::Text {
+                    content: "text".into(),
+                    position: origin,
+                    color,
+                    size: TextSizeV(x),
+                },
+            ] {
+                assert_eq!(shape.fits(), fits, "{shape:?}");
+            }
+        }
+    }
 }

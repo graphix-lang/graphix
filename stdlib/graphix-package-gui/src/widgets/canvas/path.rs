@@ -17,8 +17,8 @@ fn point(p: Point) -> geom::Point<f64> {
     geom::Point::new(p.x as f64, p.y as f64)
 }
 
-fn finite(p: geom::Point<f64>) -> bool {
-    (p.x as f32).is_finite() && (p.y as f32).is_finite()
+fn bounded(p: geom::Point<f64>) -> bool {
+    p.x.abs() <= super::MAX_EXTENT && p.y.abs() <= super::MAX_EXTENT
 }
 
 fn iced(p: geom::Point<f64>) -> Point {
@@ -35,7 +35,7 @@ impl CheckedPath {
         f(&mut b);
         let path = b.builder?.build();
         let valid = path.raw().iter().all(|event| {
-            let finite = |p: geom::Point<f32>| p.x.is_finite() && p.y.is_finite();
+            let finite = |p: geom::Point<f32>| bounded(p.cast());
             match event {
                 Event::Begin { at } => finite(at),
                 Event::Line { from, to } => finite(from) && finite(to),
@@ -52,7 +52,7 @@ impl CheckedPath {
     }
 
     fn checked(&mut self, points: &[geom::Point<f64>]) -> Option<&mut Builder> {
-        if !points.iter().copied().all(finite) {
+        if !points.iter().copied().all(bounded) {
             self.builder = None;
         }
         self.builder.as_mut()
@@ -140,7 +140,7 @@ impl CheckedPath {
     }
 
     pub(super) fn rectangle_fits(top_left: Point, size: Size) -> bool {
-        Self::rectangle_corners(top_left, size).into_iter().all(finite)
+        Self::rectangle_corners(top_left, size).into_iter().all(bounded)
     }
 
     pub(super) fn rectangle(&mut self, top_left: Point, size: Size) {
@@ -219,6 +219,17 @@ impl CheckedPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn huge_finite_line_is_rejected() {
+        assert!(
+            CheckedPath::build(|b| {
+                b.move_to(Point::new(-1e30, 10.0));
+                b.line_to(Point::new(1e30, 20.0));
+            })
+            .is_none()
+        );
+    }
 
     #[test]
     fn turns_curve_and_reversals_fall_back_to_a_line() {

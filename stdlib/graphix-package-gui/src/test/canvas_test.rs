@@ -303,7 +303,7 @@ async fn canvas_overflowing_circle_is_skipped() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn canvas_huge_line_keeps_finite_endpoints() -> Result<()> {
+async fn canvas_huge_line_is_skipped() -> Result<()> {
     let mut h = canvas_harness(
         1,
         "`Line({from: {x: -300000000000000000000000000000000000000.0, y: 10.0}, \
@@ -311,7 +311,8 @@ async fn canvas_huge_line_keeps_finite_endpoints() -> Result<()> {
          color: color(#b: 1.0)$, width: 2.0})",
     )
     .await?;
-    draws(&mut h, &[]);
+    h.render();
+    assert!(invalid_geometry(&h));
     Ok(())
 }
 
