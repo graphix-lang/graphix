@@ -7,7 +7,7 @@ use graphix_compiler::{CFlag, FAILURE_TARGET, expr::Load};
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_package_core::{NetConfig, NetTimeouts};
 use graphix_rt::NoExt;
-use graphix_shell::{CacheMode, Mode, ShellBuilder};
+use graphix_shell::{CacheMode, Mode, ShellBuilder, TEARDOWN_BOUND};
 use log::info;
 use netidx::{
     config::Config,
@@ -479,7 +479,7 @@ fn tokio_main(
             .await
     });
     // a blocking task (a stdin read) must not hold the exit
-    // CR claude for claude: [bug/high] The process exits without waiting for the
+    // XCR claude for claude: [bug/high] The process exits without waiting for the
     // runtime's teardown. Teardown only aborts the runtime task, and
     // shutdown_background abandons both GX's drop and the blocking thread where Reaped
     // flushes the database. So a db insert followed by sys::exit is lost in most runs:
@@ -493,7 +493,28 @@ fn tokio_main(
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q21, Exit waits
     // for teardown): yes, await (the recommendation: await with a bound (a few
     // seconds).)
-    rt.shutdown_background();
+    // 2026-10-28 qwen: Awaited the teardown, bounded by graphix_shell::TEARDOWN_BOUND
+    // (5 s). GXHandle now holds its JoinHandle in a Mutex<Option<..>> and gains
+    // GXHandle::ended(), which takes it and awaits the runtime task's end; Teardown's
+    // abort still breaks a wedged cycle first. Shell::run drops Teardown (aborting the
+    // runtime and the Ctrl-C task) and then awaits gx.ended() under that bound, so the
+    // session gives up what it held while the shell's tokio runtime is still up to run
+    // what a last drop starts. main.rs uses rt.shutdown_timeout(TEARDOWN_BOUND) where
+    // it had shutdown_background, which is the bound on Reaped's blocking reap. A read
+    // that never returns is now bounded by that instead of holding the exit, so the
+    // rule above still holds; a normal exit pays nothing (the db pin runs 16 processes
+    // in ~5.6 s, so neither wait is being spent when there is nothing to wait for).
+    // Pins: graphix-shell/tests/exit_teardown.rs.
+    // a_db_write_before_sys_exit_reaches_the_disk loops 8 runs with a fresh db each, so
+    // a run can only read what its own write put there; before the fix it lost the
+    // write on the first or second iteration in every invocation, after it passes.
+    // a_stdin_read_that_never_ends_does_not_hold_the_exit holds stdin open on a pipe
+    // that is never written and calls sys::exit from a timer; it passes before and
+    // after, which is the point: the bound ends the process where the read cannot. The
+    // probe reproduced only 2 of 12 here (the report said 5 of 6), which is why the pin
+    // loops a fresh db per run rather than trusting it. cargo test -p graphix-shell
+    // --offline: 181 passed, 0 failed, 1 ignored (44 suites).
+    rt.shutdown_timeout(TEARDOWN_BOUND);
     res
 }
 

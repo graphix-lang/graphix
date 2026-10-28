@@ -27,6 +27,7 @@ use log::error;
 use netidx_core::atomic_id;
 use netidx_value::FromValue;
 use netidx_value::{ValArray, Value};
+use parking_lot::Mutex;
 use poolshark::global::GPooled;
 use serde_derive::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
@@ -541,7 +542,10 @@ pub struct EnvStats {
 
 struct GXHandleInner<X: GXExt> {
     tx: tmpsc::UnboundedSender<ToGX<X>>,
-    task: JoinHandle<()>,
+    /// `None` once a waiter has taken it, which leaves the drop no
+    /// `JoinHandle` to abort with: the abort flag is all there is then.
+    /// See [`GXHandle::ended`].
+    task: Mutex<Option<JoinHandle<()>>>,
     /// Shared (cloned from `ctx.control`) interrupt/abort control. See
     /// [`GXHandle::interrupt`] / [`GXHandle::abort`].
     control: triomphe::Arc<Control>,
@@ -554,7 +558,9 @@ impl<X: GXExt> Drop for GXHandleInner<X> {
         // Signal abort first so a wedged `do_cycle` loop breaks;
         // `task.abort()` alone cannot interrupt a sync loop.
         self.control.abort();
-        self.task.abort()
+        if let Some(task) = self.task.lock().as_ref() {
+            task.abort()
+        }
     }
 }
 
@@ -644,6 +650,18 @@ impl<X: GXExt> GXHandle<X> {
     pub fn abort(&self) {
         self.0.control.abort();
         self.0.aborted.notify_one()
+    }
+
+    /// Wait for the runtime's task to end, which the caller must have asked
+    /// for with [`GXHandle::abort`] or by dropping the last handle. The
+    /// session gives up what it holds as that task ends, so work a last drop
+    /// starts belongs to the caller's runtime and it must still be up to run
+    /// it. The wait is unbounded: a runtime that cannot end holds it forever.
+    /// One waiter at a time; a call while another waits returns at once.
+    pub async fn ended(&self) {
+        if let Some(task) = self.0.task.lock().take() {
+            let _ = task.await;
+        }
     }
 
     async fn exec<R, F: FnOnce(oneshot::Sender<R>) -> ToGX<X>>(&self, f: F) -> Result<R> {
@@ -1140,6 +1158,11 @@ impl<X: GXExt> GXConfig<X> {
         let st = std::time::Instant::now();
         init_rx.await??;
         log::info!("runtime start wait: {:?}", st.elapsed());
-        Ok(GXHandle(Arc::new(GXHandleInner { tx, task, control, aborted })))
+        Ok(GXHandle(Arc::new(GXHandleInner {
+            tx,
+            task: Mutex::new(Some(task)),
+            control,
+            aborted,
+        })))
     }
 }

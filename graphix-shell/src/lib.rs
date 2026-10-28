@@ -31,6 +31,7 @@ use std::{
     io::{self, Write},
     marker::PhantomData,
     ops::ControlFlow,
+    time::Duration,
 };
 use tokio::{
     select,
@@ -195,6 +196,13 @@ impl<X: GXExt> Output<X> {
         ControlFlow::Continue(())
     }
 }
+
+/// How long the end of the process waits for a runtime that is stopping:
+/// for its task to end, and for the blocking work that ending starts (a
+/// value that finishes its work as it drops, like a database's flush). Past
+/// this the process ends regardless: a read that never returns must not
+/// hold the exit.
+pub const TEARDOWN_BOUND: Duration = Duration::from_secs(5);
 
 /// Stops the runtime and the Ctrl-C task when a run ends, whichever way:
 /// the Ctrl-C task holds a handle, so the runtime would outlive the run.
@@ -799,6 +807,11 @@ impl<X: GXExt> Shell<X> {
         // `output.clear()`.
         gx.interrupt();
         output.clear().await;
+        // The session gives up what it held as the runtime's task ends, and
+        // the work a last drop starts runs on this runtime, so it must stay
+        // up while that task is awaited.
+        drop(_teardown);
+        let _ = tokio::time::timeout(TEARDOWN_BOUND, gx.ended()).await;
         exit
     }
 }
