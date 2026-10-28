@@ -17,7 +17,7 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use smallvec::SmallVec;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 use triomphe::Arc;
 
 /// The origin of every synthetic binding: default positions mark the
@@ -78,8 +78,7 @@ pub fn apply<R: Rt>(
     typ: &FnType,
     top_id: ExprId,
 ) -> Result<Node<R>> {
-    let ftype = typ.instantiate(&nohash::IntSet::default());
-    apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id, None)
+    apply_slot(fnode, scope, args, typ, top_id, &OnceLock::new())
 }
 
 /// A call of the function value `f` over `args`: bound at its first
@@ -117,7 +116,7 @@ pub(crate) fn apply_prototype<R: Rt>(
     top_id: ExprId,
     id: ExprId,
 ) -> Result<Node<R>> {
-    apply_inner(fnode, scope, args, typ, None, Type::empty_tvar(), top_id, Some(id))
+    apply_inner(fnode, scope, args, typ, None, Type::empty_tvar(), top_id, Some(id), None)
 }
 
 fn check_arity(n: usize, typ: &FnType) -> Result<()> {
@@ -131,6 +130,65 @@ fn check_arity(n: usize, typ: &FnType) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
+pub(crate) struct CallSpec {
+    expr: Arc<Expr>,
+    pub(crate) args: SmallVec<[Arc<Expr>; 2]>,
+}
+
+impl CallSpec {
+    pub(crate) fn function(&self) -> &Arc<Expr> {
+        let ExprKind::Apply(apply) = &self.expr.kind else { unreachable!("call spec") };
+        &apply.function
+    }
+
+    fn new<R: Rt>(
+        fnode: &Node<R>,
+        args: &[Node<R>],
+        typ: &FnType,
+        id: Option<ExprId>,
+    ) -> Self {
+        let args: SmallVec<[Arc<Expr>; 2]> =
+            args.iter().map(|n| Arc::new(n.spec().clone())).collect();
+        let mut expr = ExprKind::Apply(ApplyExpr {
+            args: Arc::from_iter(
+                args.iter()
+                    .zip(typ.args.iter())
+                    .map(|(spec, farg)| (farg.label().cloned(), (**spec).clone())),
+            ),
+            function: Arc::new(fnode.spec().clone()),
+        })
+        .to_expr(fnode.spec().pos);
+        expr.ori = fnode.spec().ori.clone();
+        if let Some(id) = id {
+            expr.id = id;
+        }
+        Self { expr: Arc::new(expr), args }
+    }
+}
+
+pub(crate) fn apply_slot<R: Rt>(
+    fnode: Node<R>,
+    scope: Scope,
+    args: SmallVec<[Node<R>; 2]>,
+    typ: &FnType,
+    top_id: ExprId,
+    shared: &OnceLock<CallSpec>,
+) -> Result<Node<R>> {
+    let ftype = typ.instantiate(&nohash::IntSet::default());
+    apply_inner(
+        fnode,
+        scope,
+        args,
+        typ,
+        Some(ftype.clone()),
+        ftype.rtype,
+        top_id,
+        None,
+        Some(shared),
+    )
+}
+
 fn apply_inner<R: Rt>(
     fnode: Node<R>,
     scope: Scope,
@@ -140,30 +198,26 @@ fn apply_inner<R: Rt>(
     rtype: Type,
     top_id: ExprId,
     id: Option<ExprId>,
+    shared: Option<&OnceLock<CallSpec>>,
 ) -> Result<Node<R>> {
     check_arity(args.len(), typ)?;
-    let mut spec = ExprKind::Apply(ApplyExpr {
-        args: Arc::from_iter(
-            args.iter()
-                .zip(typ.args.iter())
-                .map(|(node, farg)| (farg.label().cloned(), node.spec().clone())),
-        ),
-        function: Arc::new(fnode.spec().clone()),
-    })
-    .to_expr(fnode.spec().pos);
-    spec.ori = fnode.spec().ori.clone();
-    if let Some(id) = id {
-        spec.id = id;
-    }
+    let owned;
+    let spec = match shared {
+        Some(shared) => shared.get_or_init(|| CallSpec::new(&fnode, &args, typ, id)),
+        None => {
+            owned = CallSpec::new(&fnode, &args, typ, id);
+            &owned
+        }
+    };
     let args: ArgMap<R> = ArgKey::of_formals(&typ.args)
         .zip(args)
-        .map(|(key, node)| {
-            let spec = Arc::new(node.spec().clone());
-            (key, Arg::new(BindId::new(), Some(node), ArgStage::Given, spec))
+        .zip(spec.args.iter())
+        .map(|((key, node), spec)| {
+            (key, Arg::new(BindId::new(), Some(node), ArgStage::Given, spec.clone()))
         })
         .collect();
     Ok(Node::new(CallNode::Call(CallSite::unbound(
-        Arc::new(spec),
+        spec.expr.clone(),
         ftype,
         rtype,
         fnode,

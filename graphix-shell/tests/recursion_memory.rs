@@ -60,3 +60,17 @@ fn deep_recursion_memory_is_linear() {
         )
     });
 }
+
+const MAX_BYTES_PER_SLOT: i64 = 3_584;
+
+#[test]
+fn collection_slot_memory_is_linear() {
+    assert_linear_cost("slot", MAX_BYTES_PER_SLOT, |n| {
+        let last = n - 1;
+        format_compact!(
+            "let values = array::init({n}, |i| i);\n\
+             sys::exit(select (array::len(values), values[0]$, values[-1]$) {{\n\
+             ({n}, 0, {last}) => 0, _ => 1\n}})\n"
+        )
+    });
+}

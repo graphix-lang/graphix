@@ -43,7 +43,7 @@ use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
-use std::{fmt::Debug, marker::PhantomData};
+use std::{fmt::Debug, marker::PhantomData, sync::OnceLock};
 use triomphe::Arc;
 
 /// A traversal that calls its callback once per element.
@@ -406,6 +406,7 @@ struct Callback {
     share: Option<SlotShare>,
     /// The argument the callback was at the call, once a check saw it.
     arg: Option<Arc<Expr>>,
+    slot_spec: OnceLock<genn::CallSpec>,
 }
 
 impl Callback {
@@ -439,7 +440,15 @@ impl Callback {
             )
         }
         let id = name(callback, "callback")?;
-        let cb = Self { scope: scope.clone(), id, typ, top_id, share: None, arg: None };
+        let cb = Self {
+            scope: scope.clone(),
+            id,
+            typ,
+            top_id,
+            share: None,
+            arg: None,
+            slot_spec: OnceLock::new(),
+        };
         Ok((name(source, "source")?, cb))
     }
 
@@ -471,7 +480,7 @@ impl Callback {
             _ => Some(SlotShare::image_decode(ctx, buf)?),
         };
         let arg = Option::<Expr>::decode(buf)?.map(Arc::new);
-        Ok(Self { scope, id, typ, top_id, share, arg })
+        Ok(Self { scope, id, typ, top_id, share, arg, slot_spec: OnceLock::new() })
     }
 
     fn see_arg<R: Rt>(&mut self, ctx: &CompileCtx<R>) {
@@ -485,14 +494,27 @@ impl Callback {
     fn slot_arg<R: Rt>(
         &self,
         ctx: &mut CompileCtx<R>,
-        name: &str,
+        index: usize,
         typ: &Type,
     ) -> (BindId, Node<R>) {
         let id = BindId::new();
-        let spec = match &self.arg {
-            Some(arg) => genn::name_spec(name, arg.pos, arg.ori.clone()),
+        let spec = match self.slot_spec.get() {
+            Some(spec) => spec.args[index].clone(),
             None => {
-                genn::name_spec(name, SourcePosition::default(), genn::SYNTHETIC.clone())
+                let name = if index == 0 && self.typ.args.len() == 2 {
+                    "collection_acc"
+                } else {
+                    "collection_element"
+                };
+                let expr = match &self.arg {
+                    Some(arg) => genn::name_spec(name, arg.pos, arg.ori.clone()),
+                    None => genn::name_spec(
+                        name,
+                        SourcePosition::default(),
+                        genn::SYNTHETIC.clone(),
+                    ),
+                };
+                Arc::new(expr)
             }
         };
         (id, Ref::new(ctx, id, typ.clone(), self.top_id, spec))
@@ -501,6 +523,9 @@ impl Callback {
     /// The callback parameter as written, the source a slot's call of a
     /// resolved definition reports.
     fn spec<R: Rt>(&self, ctx: &CompileCtx<R>) -> Arc<Expr> {
+        if let Some(spec) = self.slot_spec.get() {
+            return spec.function().clone();
+        }
         match ctx.env.by_id.get(&self.id) {
             Some(b) => Arc::new(genn::name_spec(&b.name, b.pos, b.ori.clone())),
             None => NOP.clone(),
@@ -541,7 +566,7 @@ impl Callback {
         args: SmallVec<[Node<R>; 2]>,
         kind: CallKind,
     ) -> Node<R> {
-        let (Self { scope, id, typ, top_id, share, arg: _ }, fty) =
+        let (Self { scope, id, typ, top_id, share, .. }, fty) =
             (self, Type::Fn(self.typ.clone()));
         let call = match kind {
             CallKind::Prototype(spec_id) => {
@@ -555,23 +580,30 @@ impl Callback {
                     spec_id,
                 )
             }
-            CallKind::Slot(Some(def)) => {
-                let spec = self.spec(ctx);
-                genn::apply_constant(def, spec, scope.clone(), args, typ, *top_id).map(
-                    |mut call| {
-                        if let Some(cs) = call
+            CallKind::Slot(def) => {
+                let resolved = def.is_some();
+                let function = match def {
+                    Some(def) => super::Constant::new(def, fty, self.spec(ctx)),
+                    None => genn::reference(ctx, *id, fty, *top_id),
+                };
+                genn::apply_slot(
+                    function,
+                    scope.clone(),
+                    args,
+                    typ,
+                    *top_id,
+                    &self.slot_spec,
+                )
+                .map(|mut call| {
+                    if resolved
+                        && let Some(cs) = call
                             .downcast_mut::<CallNode<R>>()
                             .and_then(CallNode::call_mut)
-                        {
-                            cs.share = share.clone();
-                        }
-                        call
-                    },
-                )
-            }
-            CallKind::Slot(None) => {
-                let function = genn::reference(ctx, *id, fty, *top_id);
-                genn::apply(function, scope.clone(), args, typ, *top_id)
+                    {
+                        cs.share = share.clone();
+                    }
+                    call
+                })
             }
         };
         call.expect("of_args held the callback to the intrinsic's arity")
@@ -750,7 +782,7 @@ struct Slot<R: Rt> {
 }
 
 impl<R: Rt> Slot<R> {
-    // CR claude for claude: [perf/medium] Every slot is a full run-time bind: an env
+    // XCR claude for claude: [perf/medium] Every slot is a full run-time bind: an env
     // binding for the synthetic `collection_element` argument, a fresh instantiate of
     // the callback type, and at first dispatch build_bound (compile, typecheck0/1,
     // analysis::analyze_bound_callee and share::fuse_slot). The analysis gives the same
@@ -784,13 +816,51 @@ impl<R: Rt> Slot<R> {
     // 2026-10-27 claude: Under the D1 ruling, slots and activations sharing their
     // prototype's graph (lever 2) is not taken now; lever 1 (smaller instances) applies
     // to slots as to activations and is next under x-fix-nodes-03.
+    // 2026-10-27 codex: Measured before changes with the same offline dev graphix and
+    // wait4 method as recursion_memory, --no-cache --no-fusion --no-netidx,
+    // array::len(array::init(n, |i| i)) checked before exit, n=1/5000/20000:
+    // 65540/90204/155948 KiB, slopes 5052/4488 B per slot. Throwaway activation_sizes
+    // test: CallSite 600, GXLambda 208, Ref 88, Constant 80, Type 40, FnType 168, TCell
+    // 128, TVarInner 48 bytes. Each identity slot has element, staged argument and
+    // callback formal ids (three runtime variable channels); the synthetic element
+    // spec, function spec, call spec and argument specs are rebuilt for every slot.
+    // genn::apply also instantiates the callback signature per slot, while the node
+    // graph and its state remain per slot. Largest safe slot-specific candidate after
+    // the common activation work: share immutable synthetic specs among sibling slots,
+    // with each slot retaining its own ids, signatures, nodes and runtime state. No
+    // prototype graph sharing.
+    // 2026-10-27 codex: Fixed under D1 lever 1: Callback lazily keeps one CallSpec
+    // (call/function/argument expressions), shared by sibling slots and their Ref nodes
+    // through genn::apply_slot. Every slot still owns its nodes, ids, signature
+    // instantiation, analysis and runtime state; no prototype graph sharing. The
+    // metadata cache is rebuilt after image restore, leaving the image encoding
+    // unchanged. Pin:
+    // graphix-shell/tests/recursion_memory.rs::collection_slot_memory_is_linear checks
+    // length and both endpoint values at 1/5000/20000 slots, with a 3584 B ceiling.
+    // Same wait4 child probe and --no-cache --no-fusion --no-netidx, GRAPHIX_PAR=off:
+    // baseline 74900/92912/152000 KiB (4033 B/slot over 5000..20000), fixed runs
+    // 3238..3392 B/slot (74368/89936/137368 KiB and 66952/80476/130164 KiB). The
+    // original length-only auto-mode probe measured 4488 before and 3558 after. Both
+    // memory pins failed on the saved baseline; disabling only CallSpec reuse with
+    // activation changes retained also failed the slot pin (3949 B versus its then-3600
+    // ceiling, subsequently tightened to 3584); restoring reuse passed. Initial 3750 B
+    // pin under auto scheduling failed at 4013 B; measured the exact stronger fixture
+    // and pinned serial execution to exclude parallel scheduling cost, which is covered
+    // separately by the four-mode semantic suites. Offline validation: graphix-tests
+    // lang:: 7393 passed, one timing test ignored, all 29 active image tests included;
+    // lib_tests:: 3112 passed; shell recursion_memory, no_subst, shared_bodies passed.
+    // Socket-dependent tests excluded and workspace gate left to coordinator. One
+    // delayed-error timer fixture failed once in the language run and passed in all
+    // four modes plus the whole selected suite on rerun, unchanged. Exact
+    // filters/results: /tmp/graphix-lang-rerun.log and
+    // /tmp/graphix-lib_tests-final.log.
     fn new(
         ctx: &mut CompileCtx<R>,
         callback: &Callback,
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let (id, element) = callback.slot_arg(ctx, "collection_element", element_type);
+        let (id, element) = callback.slot_arg(ctx, 0, element_type);
         let call = callback.call(ctx, smallvec![element], kind);
         Self { id, call, state: SlotState::Bottom }
     }
@@ -1406,9 +1476,8 @@ impl<R: Rt> FoldSlot<R> {
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let (acc_id, acc) = callback.slot_arg(ctx, "collection_acc", acc_type);
-        let (element_id, element) =
-            callback.slot_arg(ctx, "collection_element", element_type);
+        let (acc_id, acc) = callback.slot_arg(ctx, 0, acc_type);
+        let (element_id, element) = callback.slot_arg(ctx, 1, element_type);
         let call = callback.call(ctx, smallvec![acc, element], kind);
         Self { acc_id, element_id, call, state: SlotState::Bottom }
     }
