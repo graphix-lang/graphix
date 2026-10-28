@@ -689,7 +689,7 @@ seq let c = go; abort(sys::time::after_idle(duration:10.s, c)) { .. }
 seqq request; abort(skip); flush(cancel) { .. }
 ```
 
-**The event is an initial step.** The expression is asleep while the
+**The abort event is an initial step.** The expression is asleep while the
 machine is idle and is born again when a run starts, as a step is at
 each run's entry (its select carries `CFlag::RunEvent`, which the
 lowering asks for with an attribute no source can spell), so a timer
@@ -716,7 +716,13 @@ written to a variable outside.
 
 **`seqq`.** `abort` ends the current run and returns its credit, so the
 next queued request starts. `flush` is an abort that also empties the
-queue; a request arriving with or after the flush is kept. A flush
+queue; a request arriving with or after the flush is kept. The flush
+source is evaluated outside the run gate and remains active between
+runs, so the queue clears even during handoffs between short runs. A
+request already dispatched to the machine is no longer queued. Only
+the machine's abort reads the flush through the run gate. A timer in
+`flush` runs between requests instead of being reborn for each request.
+A flush
 that reads the run's request reaches the queue a cycle late through a
 variable, so it carries the number of requests that arrived before its
 cycle (`#flush_before`): the queue numbers its arrivals and drops only
@@ -751,8 +757,9 @@ try-body arm's nearest handler is its jump; `DynNode::machine` marks
 the machine's, found once at compile time), and fails on a change in
 either. A guard that activates in the abort cycle itself is born
 failed (`ErrorHandler::aborted_in`). For `flush` the event is also
-connected to the variable `core::queue` takes as `#flush`, so the queue
-empties in the cycle the credit returns; the queue clears before it
+read ungated by `core::queue` as `#flush`, or carried through
+`#flush_before` when it depends on the dequeued request. Clearing needs
+no running body and no returning credit; the queue clears before it
 pushes and before it releases.
 
 ## 10. Costs

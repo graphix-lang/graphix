@@ -416,7 +416,13 @@ seqq request; abort(skip); flush(cancel_all) { ... }
 ```
 
 `flush` follows `abort` when both are present, and only `seqq` accepts
-it. A request that arrives with the flush or after it is kept.
+it. The flush source stays active between runs, so it empties queued
+requests even during the handoff between short runs. A request already
+dispatched for the next run is no longer queued. A request that arrives
+with the flush or after it is kept. Only the abort of the running
+body is gated to fires after that run's entry. Unlike an `abort` source,
+a timer written in `flush` keeps running between requests; it is not a
+per-run timer.
 
 ## Sleeping
 

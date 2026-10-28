@@ -346,3 +346,21 @@ modes!(sleep_restarts);
 modes!(reference_inputs);
 modes!(unhandled_warnings);
 modes!(function_captures_stay_static);
+
+async fn flush_between_short_runs(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let k = 0;
+        k <- select k { s if s < 60 => s + 1, _ => never() };
+        let go = select k < 10 { true => k, false => never() };
+        let fl = filter(k, |x| (x > 12) && (x < 30));
+        seqq let c = go; flush(fl) {
+            let s = live(k);
+            c
+        }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [0, 1, 2, 3]);
+    Ok(())
+}
+
+modes!(flush_between_short_runs);

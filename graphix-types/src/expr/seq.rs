@@ -440,7 +440,7 @@ fn run_events(
     let flush_var = queue.as_ref().and_then(|q| q.flush);
     let push_flush = |out: &mut Vec<Expr>, events: &mut SmallVec<[Expr; 2]>| {
         if let Some(e) = flush {
-            // CR claude for claude: [bug/high] A seqq's flush reaches the queue only
+            // XCR claude for claude: [bug/high] A seqq's flush reaches the queue only
             // through run_event, which passes a fire only after the current run's entry
             // cycle. A run that completes in its entry cycle leaves no such cycle, and
             // neither do the handoff cycles between queued runs (a queued request takes
@@ -457,13 +457,24 @@ fn run_events(
             // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q10, `flush`
             // between short runs): yes, ungated (the recommendation: ungated for the
             // queue.)
-            let event = run_event(&rewrite(e, visible), &edge, &armed);
-            out.push(let_bind(e.pos, &flushed, None, event));
+            // 2026-10-27 codex: The flush source is evaluated once outside the run gate.
+            // The queue reads its ungated event (or the existing request-count marker when
+            // the flush reads the dequeued request); only aborting the current body uses
+            // the run gate. Pin lang::seqq::flush_between_short_runs expects requests 0
+            // through 3: request 3 was already dispatched at the flush, and queued requests
+            // 4 through 9 are discarded. It fails in all four modes before the fix and
+            // passes afterward. An initial expectation of only 0 through 2 was corrected
+            // after the full regression run exposed this handoff boundary; the corrected
+            // pin was retested against the old gating. Ran lang::seq, lang::select and
+            // lang::sample regression filters; no FuseExpect moved. Docs now distinguish
+            // per-run abort sources from continuously active flush sources. No
+            // socket/netidx-admin or full workspace gate here.
+            out.push(let_bind(e.pos, &flushed, None, rewrite(e, visible)));
             if let Some((v, count)) = flush_var {
                 let mark = sample(e.pos, r#ref(e.pos, &flushed), r#ref(e.pos, count));
                 out.push(connect(e.pos, v, mark));
             }
-            events.push(r#ref(e.pos, &flushed));
+            events.push(run_event(&r#ref(e.pos, &flushed), &edge, &armed));
         }
     };
     match queue {
@@ -496,7 +507,7 @@ fn run_events(
 /// ([`crate::CFlag::RunEvent`]); no source can spell it.
 pub const RUN_EVENT: ArcStr = literal!("seq-run");
 
-/// An `abort(..)` or `flush(..)` event: `e` is an initial step, born
+/// A run's abort event: `e` is an initial step, born
 /// when a run starts and asleep between runs, and only its fires after
 /// the entry cycle count. What stands at entry, and the fires it missed
 /// asleep, belong to no run.

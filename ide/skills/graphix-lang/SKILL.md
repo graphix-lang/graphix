@@ -401,7 +401,10 @@ Nothing is undone: clean up outside on the same event (`busy <- cancel ~
 false`), and write a child that must die with the run to an outer
 variable, not a `let`. Under `seqq`, `abort` starts the next queued
 request and `flush(e)` (after `abort`, `seqq` only) also empties the
-queue. A seq whose select arm sleeps mid-run is idle when it wakes.
+queue. Its source stays active between runs and clears the queue even
+between short runs; only its abort of a running body is run-gated. A timer
+in `flush` therefore keeps running between requests. A seq whose select
+arm sleeps mid-run is idle when it wakes.
 A sample inside a step clears its banked triggers when the step is born
 for a new run; a trigger from an aborted run cannot complete the next run.
 A select in that step also starts fresh entry history: its arms are born
