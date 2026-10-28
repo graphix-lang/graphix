@@ -3,7 +3,9 @@
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
 val read: fn<'b: Concrete>(input: [string, bytes]) -> Result<'b, [`TomlErr(string), `InvalidCast(string)]>;
 
-/// Serialize a value to a TOML string.
+/// Serialize a value to a TOML string. Maps with scalar keys are tables;
+/// other maps are arrays of key/value pairs and require a containing table.
+/// Null map keys cannot be represented.
 val write_str: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<string, `TomlErr(string)>;
 
 /// Serialize a value to TOML bytes.

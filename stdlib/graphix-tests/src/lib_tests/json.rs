@@ -311,10 +311,8 @@ run!(writers_refuse_functions, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == r#"error:`JsonErr("a function or a value of a type backed by Rust is not data")|error:`TomlErr("a function or a value of a type backed by Rust is not data")|error:`HbsErr("a function or a value of a type backed by Rust is not data")"#)
 }; FuseExpect::Jit);
 
-// A composite map key is written as println shows it, naked at every
-// depth.
-run!(json_composite_key_is_naked, r#"json::write_str({[1, 2] => 3})$"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == r#"{"[1, 2]":3}"#)
+run!(json_composite_key_uses_pairs, r#"json::write_str({[1, 2] => 3})$"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"[[[1,2],3]]"#)
 }; FuseExpect::Jit);
 
 // json and toml write a list as a flat array and read it back so: a list
@@ -451,3 +449,40 @@ run!(json_number_out_of_range, r#"{
 async fn written_bytes_count_as_a_container() -> Result<()> {
     deepest_written_reads_back("bytes", "bytes:AQID", 1).await
 }
+
+run!(
+    composite_map_keys_use_pairs,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let round_trip = 'k: Ordered + Concrete |m: Map<'k, i64>| {
+        let r: Result<Map<'k, i64>, E> = json::read(json::write_str(m)$);
+        select r { error as _ => false, v => v == m }
+    };
+    [round_trip({(1, 2) => 3}), round_trip({{a: 1} => 2}),
+     round_trip({[1, 2] => 3}), round_trip({list::from_array([1, 2]) => 3}),
+     round_trip({`A(1) => 2}), round_trip({null => 1}),
+     round_trip({buffer::from_string("hi") => 1})]
+}
+"#,
+    prints("[true, true, true, true, true, true, true]")
+);
+
+run!(colliding_pair_keys_are_refused, r#"{
+    let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
+    select json::write_str({keys: m}) {
+        error as e => "[e]",
+        _ => "written"
+    }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.contains("two keys"))
+}; FuseExpect::Jit);
+
+run!(colliding_bytes_and_array_keys_are_refused, r#"{
+    let m: Map<[bytes, Array<i64>], i64> = {bytes:AQI= => 1, [1, 2] => 2};
+    select json::write_str({keys: m}) {
+        error as e => "[e]",
+        _ => "written"
+    }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.contains("two keys"))
+}; FuseExpect::Jit);

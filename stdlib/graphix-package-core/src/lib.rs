@@ -441,9 +441,9 @@ pub use memo::FastMemo;
 /// A map key as a text format (JSON, TOML, a template's data) writes it,
 /// by its data (`abstract_value::to_data`): a string bare, a datetime in
 /// RFC3339, a duration in seconds, any other value in its naked form. A
-/// reader's cast reads back a key whose data is a string, a number, a
-/// bool, a datetime or a duration; the text of any other key's does not.
-// CR claude for claude: [bug/medium] The doc says a reader's cast reads this text back,
+/// reader's cast reads back these scalar object keys. [`shape`] writes
+/// a map holding any other key as an array of pairs.
+// XCR claude for claude: [bug/medium] The doc says a reader's cast reads this text back,
 // but it does not for a bare variant or a composite key. Map<`A, i64> writes
 // {"\"A\"":2} (the data string printed with its quotes) and Map<(i64, i64), i64> writes
 // {"[1, 2]":3`}; json::read into the same types gives InvalidCast for both, so the json
@@ -458,7 +458,15 @@ pub use memo::FastMemo;
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q41, Map keys that
 // are not strings or scalars, in json and toml): yes, the pairs array (the
 // recommendation: the pairs array.)
-// CR claude for claude: [bug/medium] The text this writes for a tuple, struct, variant or
+// 2026-10-27 codex: Implemented q41 with a shared pairs shape for composite, bytes and
+// null keys. JSON and TOML check the serialized key data for collisions before writing
+// each pair, including collisions between bytes and integer arrays. Pins
+// lib_tests::{json,toml}::{composite_map_keys_use_pairs,colliding_pair_keys_are_refused,colliding_bytes_and_array_keys_are_refused};
+// all 16 collision cases failed with the collision guards disabled and pass with them
+// restored in the focused cr_rework harness. The harness passed 44 tests. Full
+// library-suite results will be reported separately. Book, interfaces and language
+// skill describe the pairs representation and TOML restrictions.
+// XCR claude for claude: [bug/medium] The text this writes for a tuple, struct, variant or
 // list key, for a null key ("null") and for a bytes key (base64) does not read back.
 // The reader casts the object key string to the key type, and a cast parses a string
 // only into a scalar. So json/toml write {(1, 2) => "q"} as {"[1, 2]":"q"}, and reading
@@ -471,7 +479,15 @@ pub use memo::FastMemo;
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q41, Map keys that
 // are not strings or scalars, in json and toml): yes, the pairs array (the
 // recommendation: the pairs array.)
-// CR claude for claude: [bug/high] A bare-variant or composite map key is written as
+// 2026-10-27 codex: Implemented q41 with a shared pairs shape for composite, bytes and
+// null keys. JSON and TOML check the serialized key data for collisions before writing
+// each pair, including collisions between bytes and integer arrays. Pins
+// lib_tests::{json,toml}::{composite_map_keys_use_pairs,colliding_pair_keys_are_refused,colliding_bytes_and_array_keys_are_refused};
+// all 16 collision cases failed with the collision guards disabled and pass with them
+// restored in the focused cr_rework harness. The harness passed 44 tests. Full
+// library-suite results will be reported separately. Book, interfaces and language skill
+// describe the pairs representation and TOML restrictions.
+// XCR claude for claude: [bug/high] A bare-variant or composite map key is written as
 // the quoted Naked text of its data: `A becomes the JSON key "\"A\"" (TOML '"A"', hbs
 // &quot;A&quot;), and (1, "a") becomes "[1, \"a\"]". No reader casts those back, so
 // json::read/toml::read into the same Map type fail with InvalidCast, and an enum-keyed
@@ -494,6 +510,14 @@ pub use memo::FastMemo;
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q41, Map keys that
 // are not strings or scalars, in json and toml): yes, the pairs array (the
 // recommendation: the pairs array.)
+// 2026-10-27 codex: Implemented q41 with a shared pairs shape for composite, bytes and
+// null keys. JSON and TOML check the serialized key data for collisions before writing
+// each pair, including collisions between bytes and integer arrays. Pins
+// lib_tests::{json,toml}::{composite_map_keys_use_pairs,colliding_pair_keys_are_refused,colliding_bytes_and_array_keys_are_refused};
+// all 16 collision cases failed with the collision guards disabled and pass with them
+// restored in the focused cr_rework harness. The harness passed 44 tests. Full
+// library-suite results will be reported separately. Book, interfaces and language
+// skill describe the pairs representation and TOML restrictions.
 pub fn map_key(k: &Value) -> Result<ArcStr> {
     Ok(match graphix_compiler::abstract_value::to_data(k)? {
         Value::String(s) => s,
@@ -508,6 +532,7 @@ pub fn map_key(k: &Value) -> Result<ArcStr> {
 pub enum Shape {
     Object(LPooled<Vec<(ArcStr, Value, Option<Type>)>>, Keys),
     Seq(LPooled<Vec<(Value, Option<Type>)>>),
+    Pairs(LPooled<Vec<(Value, Option<Type>, Value, Option<Type>)>>),
     Leaf(Value),
 }
 
@@ -555,7 +580,8 @@ fn written<'a>(
 }
 
 /// `v`'s shape under `t`, the type its call site gave it: a struct or a
-/// map is an object; an array, a list, a tuple or a variant's tag and
+/// map with scalar keys is an object, another map an array of pairs;
+/// an array, a list, a tuple or a variant's tag and
 /// payload a sequence; a bare variant its tag; a union reads as the
 /// member `v` inhabits. `v` is the program's value: its kind markers
 /// decide members, lists and composites, and an abstract value in it is
@@ -580,14 +606,11 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Result<Shape> {
                 }
                 Ok(Shape::Object(entries, Keys::Fields))
             }
-            _ => untyped_shape(v),
+            _ => untyped_shape(env, v),
         },
-        (Some(Type::Map { value, .. }), Value::Map(m)) => Ok(Shape::Object(
-            m.into_iter()
-                .map(|(k, v)| Ok((map_key(k)?, v.clone(), Some(Type::clone(value)))))
-                .collect::<Result<_>>()?,
-            Keys::Data,
-        )),
+        (Some(Type::Map { key, value }), Value::Map(m)) => {
+            map_shape(env, Some(key), Some(value), m.into_iter())
+        }
         (Some(Type::Array(e)), v) if let Some(a) = rep::array_elems(v) => {
             Ok(Shape::Seq(a.iter().map(|x| (x.clone(), Some(Type::clone(e)))).collect()))
         }
@@ -603,7 +626,7 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Result<Shape> {
                     .map(|(x, t)| (x.clone(), Some(t.clone())))
                     .collect(),
             )),
-            _ => untyped_shape(v),
+            _ => untyped_shape(env, v),
         },
         (Some(Type::Variant(_, ps, _)), v) => match rep::read_variant(v) {
             Some((tag, p)) if !ps.is_empty() && p.elems().len() == ps.len() => {
@@ -615,9 +638,9 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Result<Shape> {
                 let tag = (Value::String(tag.clone()), None);
                 Ok(Shape::Seq(std::iter::once(tag).chain(payload).collect()))
             }
-            _ => untyped_shape(v),
+            _ => untyped_shape(env, v),
         },
-        (_, v) => untyped_shape(v),
+        (_, v) => untyped_shape(env, v),
     }
 }
 
@@ -648,8 +671,40 @@ fn constructor(env: &Env, t: &Type) -> Option<Type> {
     }
 }
 
+fn map_shape<'a>(
+    env: &Env,
+    key_type: Option<&Type>,
+    value_type: Option<&Type>,
+    entries: impl Iterator<Item = (&'a Value, &'a Value)>,
+) -> Result<Shape> {
+    let mut pairs: LPooled<Vec<_>> = entries
+        .map(|(k, v)| {
+            let (kt, k) = written(env, key_type.cloned(), k)?;
+            Ok((k.into_owned(), kt, v.clone(), value_type.cloned()))
+        })
+        .collect::<Result<_>>()?;
+    let scalar = |k: &Value| {
+        matches!(
+            k,
+            Value::String(_) | Value::Bool(_) | Value::DateTime(_) | Value::Duration(_)
+        ) || Typ::number().contains(Typ::get(k))
+            || rep::variant(k).is_some_and(|(_, payload)| payload.is_empty())
+    };
+    if pairs.iter().all(|(k, _, _, _)| scalar(k)) {
+        Ok(Shape::Object(
+            pairs
+                .drain(..)
+                .map(|(k, _, v, vt)| Ok((map_key(&k)?, v, vt)))
+                .collect::<Result<_>>()?,
+            Keys::Data,
+        ))
+    } else {
+        Ok(Shape::Pairs(pairs))
+    }
+}
+
 /// `v`'s shape by its kind marker, or as data where it has none.
-fn untyped_shape(v: &Value) -> Result<Shape> {
+fn untyped_shape(env: &Env, v: &Value) -> Result<Shape> {
     let seq = |vs: &[Value]| Shape::Seq(vs.iter().map(|x| (x.clone(), None)).collect());
     let object = |fs: &[Value]| {
         Shape::Object(
@@ -677,12 +732,7 @@ fn untyped_shape(v: &Value) -> Result<Shape> {
         None => match v {
             Value::Array(a) if rep::is_struct(a) => object(a),
             Value::Array(a) => seq(a),
-            Value::Map(m) => Shape::Object(
-                m.into_iter()
-                    .map(|(k, v)| Ok((map_key(k)?, v.clone(), None)))
-                    .collect::<Result<_>>()?,
-                Keys::Data,
-            ),
+            Value::Map(m) => map_shape(env, None, None, m.into_iter())?,
             v => Shape::Leaf(v.clone()),
         },
     })

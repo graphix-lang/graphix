@@ -2,6 +2,7 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+use ahash::AHashSet;
 use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
@@ -17,6 +18,7 @@ use graphix_package_core::{
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
+use serde::Serialize;
 use triomphe::Arc as TArc;
 
 fn toml_to_value(v: toml::Value) -> Value {
@@ -126,6 +128,29 @@ fn to_toml(
                 .collect::<Result<_, _>>()?;
             Ok(toml::Value::Array(vals.drain(..).collect()))
         }
+        Shape::Pairs(mut pairs) => {
+            let depth = deeper(deeper(depth)?)?;
+            let mut seen: LPooled<AHashSet<LPooled<String>>> = LPooled::take();
+            let mut vals: LPooled<Vec<toml::Value>> = LPooled::take();
+            for (k, kt, v, vt) in pairs.drain(..) {
+                let k = to_toml(env, kt.as_ref(), &k, depth)?;
+                let mut written: LPooled<String> = LPooled::take();
+                k.serialize(toml::ser::ValueSerializer::new(&mut *written))
+                    .map_err(|e| e.to_string())?;
+                if !seen.insert(written) {
+                    return Err("two keys write as the same TOML data".into());
+                }
+                vals.push(toml::Value::Array(vec![
+                    k,
+                    to_toml(env, vt.as_ref(), &v, depth)?,
+                ]));
+            }
+            Ok(toml::Value::Array(vals.drain(..).collect()))
+        }
+        Shape::Leaf(v @ Value::Bytes(_)) => {
+            deeper(depth)?;
+            leaf_to_toml(&v)
+        }
         Shape::Leaf(v) => leaf_to_toml(&v),
     }
 }
@@ -159,7 +184,9 @@ fn leaf_to_toml(value: &Value) -> Result<toml::Value, String> {
                 .map(toml::Value::Datetime)
                 .map_err(|e| format!("cannot convert datetime to TOML: {e}"))
         }
-        Value::Bytes(_) => Err("cannot represent bytes in TOML".into()),
+        Value::Bytes(b) => Ok(toml::Value::Array(
+            b.iter().map(|b| toml::Value::Integer(i64::from(*b))).collect(),
+        )),
         Value::Duration(_) => Err("cannot represent duration in TOML".into()),
         Value::Decimal(_) => Err("cannot represent decimal in TOML".into()),
         Value::Array(_) | Value::Map(_) => {

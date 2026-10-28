@@ -47,7 +47,7 @@ fn register_partials(
             }
             Ok(())
         }
-        Shape::Seq(_) | Shape::Leaf(_) => Err(format!(
+        Shape::Seq(_) | Shape::Pairs(_) | Shape::Leaf(_) => Err(format!(
             "partials must be a struct, map, or null, got {}",
             NakedPrefix(partials)
         )),

@@ -7,7 +7,8 @@
 val read: fn<'b: Concrete>(input: [string, bytes]) -> Result<'b, [`JsonErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a JSON string, as its type says: a struct or a
-/// map is an object, an array, tuple or list an array.
+/// map with scalar keys is an object; another map is an array of key/value
+/// pairs. An array, tuple or list is an array.
 val write_str: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<string, `JsonErr(string)>;
 
 /// Serialize a value to JSON bytes.

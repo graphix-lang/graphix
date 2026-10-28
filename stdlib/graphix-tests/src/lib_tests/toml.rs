@@ -236,3 +236,39 @@ run!(
         }
     }
 );
+
+run!(
+    composite_map_keys_use_pairs,
+    r#"{
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    let round_trip = 'k: Ordered + Concrete |m: Map<'k, i64>| {
+        let r: Result<{m: Map<'k, i64>}, E> = toml::read(toml::write_str({m})$);
+        select r { error as _ => false, v => v.m == m }
+    };
+    [round_trip({(1, 2) => 3}), round_trip({{a: 1} => 2}),
+     round_trip({[1, 2] => 3}), round_trip({list::from_array([1, 2]) => 3}),
+     round_trip({`A(1) => 2}), round_trip({buffer::from_string("hi") => 1})]
+}
+"#,
+    prints("[true, true, true, true, true, true]")
+);
+
+run!(colliding_pair_keys_are_refused, r#"{
+    let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
+    select toml::write_str({keys: m}) {
+        error as e => "[e]",
+        _ => "written"
+    }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.contains("two keys"))
+}; FuseExpect::Jit);
+
+run!(colliding_bytes_and_array_keys_are_refused, r#"{
+    let m: Map<[bytes, Array<i64>], i64> = {bytes:AQI= => 1, [1, 2] => 2};
+    select toml::write_str({keys: m}) {
+        error as e => "[e]",
+        _ => "written"
+    }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.contains("two keys"))
+}; FuseExpect::Jit);

@@ -209,22 +209,20 @@ impl<'a> JsonView<'a> {
         Self { env, typ, value, depth: 0 }
     }
 
-    fn under(&self, typ: Option<&'a Type>, value: &'a Value) -> Self {
-        Self { env: self.env, typ, value, depth: self.depth + 1 }
+    fn under(&self, typ: Option<&'a Type>, value: &'a Value, levels: usize) -> Self {
+        Self { env: self.env, typ, value, depth: self.depth + levels }
     }
 }
 
 impl Serialize for JsonView<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let shape = shape(self.env, self.typ, self.value).map_err(S::Error::custom)?;
-        // a container at depth n is the n + 1th: MAX_DEPTH of them is where
-        // json::read stops
-        if self.depth + 1 >= MAX_DEPTH
-            && matches!(
-                shape,
-                Shape::Object(..) | Shape::Seq(_) | Shape::Leaf(Value::Bytes(_))
-            )
-        {
+        let containers = match &shape {
+            Shape::Pairs(_) => 2,
+            Shape::Object(..) | Shape::Seq(_) | Shape::Leaf(Value::Bytes(_)) => 1,
+            Shape::Leaf(_) => 0,
+        };
+        if containers > 0 && self.depth + containers >= MAX_DEPTH {
             return Err(S::Error::custom(format_args!(
                 "the value nests {MAX_DEPTH} containers deep or more"
             )));
@@ -240,14 +238,30 @@ impl Serialize for JsonView<'_> {
                             "two keys write as the same JSON key {k}"
                         )));
                     }
-                    map.serialize_entry(k.as_str(), &self.under(t.as_ref(), v))?;
+                    map.serialize_entry(k.as_str(), &self.under(t.as_ref(), v, 1))?;
                 }
                 map.end()
             }
             Shape::Seq(elems) => {
                 let mut seq = s.serialize_seq(Some(elems.len()))?;
                 for (v, t) in elems.iter() {
-                    seq.serialize_element(&self.under(t.as_ref(), v))?;
+                    seq.serialize_element(&self.under(t.as_ref(), v, 1))?;
+                }
+                seq.end()
+            }
+            Shape::Pairs(pairs) => {
+                let mut seq = s.serialize_seq(Some(pairs.len()))?;
+                let mut seen: LPooled<AHashSet<serde_json::Value>> = LPooled::take();
+                for (k, kt, v, vt) in pairs.iter() {
+                    let k = serde_json::to_value(self.under(kt.as_ref(), k, 2))
+                        .map_err(S::Error::custom)?;
+                    if seen.contains(&k) {
+                        return Err(S::Error::custom(
+                            "two keys write as the same JSON data",
+                        ));
+                    }
+                    seq.serialize_element(&(&k, self.under(vt.as_ref(), v, 2)))?;
+                    seen.insert(k);
                 }
                 seq.end()
             }

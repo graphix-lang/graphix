@@ -54,7 +54,7 @@ reads as the number its value names.
 ## Type-directed serialization
 
 `json::write_str` and `json::write_bytes` write a value as its type at
-the call site says: a struct or a `Map` is an object; an array, a tuple
+the call site says: a struct is an object; an array, a tuple
 or a `List` is an array (a `List` flat); a variant with a payload is an
 array of its tag and payload. An `Array<(string, T)>` is an array of
 pairs whatever order its keys are in. Only a value whose type says
@@ -68,3 +68,13 @@ json::write_str(pairs)$;
 // {"a":1,"b":2}
 json::write_str({a: 1, b: 2})$
 ```
+
+A map whose keys all write as strings, numbers, booleans, datetimes, durations
+or bare variant tags is an object. If any key has another form, the whole map
+is an array of `[key, value]` pairs. The key keeps its data structure, so a typed
+read can reconstruct tuple, struct, array, list and payload-variant keys, as
+well as null and bytes keys. For example, `{(1, 2) => 3}` writes as
+`[[[1,2],3]]`.
+
+A writer refuses a map whose distinct keys serialize as the same data,
+including when the map uses the pairs representation.

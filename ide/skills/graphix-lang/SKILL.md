@@ -765,7 +765,9 @@ target reads the text as a Graphix literal (`(1, "a")`, `{x: 1}`,
 integer or `decimal` reads a number's text exactly (past `i64` is an
 `InvalidCast`); a read into neither, `Array<Any>`, gives `f64`. A struct
 target reads a field the data omits as null where the field's type
-admits null.
+admits null. JSON/TOML maps with scalar keys write as objects/tables; a
+map with a composite, bytes or null key writes as an array of `[key, value]`
+pairs. TOML still refuses null keys and requires a table at the document root.
 
 Derive, do not add a second writer. Two unordered writers to one
 variable race when one replaces it wholesale (a file load landing after
