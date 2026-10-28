@@ -747,7 +747,7 @@ pub struct ParamCalls {
 }
 
 impl<R: Rt> LambdaDef<R> {
-    fn captured_ids(&self, f: &mut impl FnMut(BindId)) {
+    pub(crate) fn captured_ids(&self, f: &mut impl FnMut(BindId)) {
         if let Some(tables) = self.table.get() {
             for capture in &tables.table.captures {
                 if let Some(id) = capture.id(&self.env, &self.scope.lexical) {
@@ -2134,6 +2134,7 @@ fn capture_names<R: Rt>(
     match node.view() {
         NodeView::Ref(r) => add(r.id),
         NodeView::Connect(c) => add(c.id),
+        NodeView::ConnectDeref(c) => add(c.src_id),
         NodeView::Lambda(l) => {
             if let Some(d) = l.def_value().downcast_ref::<LambdaDef<R>>() {
                 d.captured_ids(&mut add);

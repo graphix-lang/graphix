@@ -805,7 +805,7 @@ fn typecheck_arg<R: Rt>(
                 wrap!(n, added_bound(&ctx.env, name, q, declared))?;
             }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
-            // CR claude for claude: [bug/medium] A lambda argument that writes an outer
+            // XCR claude for claude: [bug/medium] A lambda argument that writes an outer
             // variable (`apply(|x| { r <- x; x })`, or `*p <- x`) carries the rank-2
             // quantifier out, and neither check here sees it. The quantifier's copy is
             // generic (FnType::generic_inner_quantifiers), and tvar::lower never lowers
@@ -831,6 +831,19 @@ fn typecheck_arg<R: Rt>(
             // WRITES (Connect targets included, nested literals' too), recorded by its
             // definition's check (DefTable, imaged) and walked by escapes_through, plus
             // t-tvar-01's shallower-level merge for the *p <- x form.
+            // 2026-10-28 claude: Fixed: the rank-2 argument check now also walks the
+            // bindings every lambda literal in the argument captures, its definition's
+            // DefTable::captures (reads and writes, nested literals' included;
+            // core-aux-02 recorded them), so a write to an outer variable carries the
+            // quantifier into a binding escapes_through sees. Writes through a
+            // reference (*p <- x) were not recorded as captures at all, which also left
+            // an escaped closure that writes through a captured reference without p
+            // after its slot went: capture_names now records ConnectDeref's reference
+            // binding. Pins: lang::types::unsound_acceptances_are_refused
+            // RANK2_ARG_WRITES_OUTER, _ARRAY, RANK2_ARG_WRITES_THROUGH_A_REFERENCE,
+            // RANK2_ARG_NESTED_LAMBDA_WRITES_OUTER, RANK2_FIELD_WRITES_OUTER;
+            // lang::orphans::a_saved_closure_writing_through_a_captured_reference_outlives_its_slot.
+            // All fail with the capture walk and the ConnectDeref capture removed.
             let quantified: SmallVec<[(ArcStr, usize); 2]> = quantified
                 .iter()
                 .map(|(name, tv)| (name.clone(), tv.cell_addr()))
@@ -842,6 +855,19 @@ fn typecheck_arg<R: Rt>(
             refs.with_external_refs(|id| {
                 if let Some(b) = ctx.env.by_id.get(&id) {
                     free.push(b.typ.clone())
+                }
+            });
+            // a lambda's body is no child of its node: the bindings it reads
+            // and writes are its definition's captures
+            fusion::for_each_node(n, &mut |c| {
+                if let NodeView::Lambda(l) = c.view()
+                    && let Some(d) = l.def_value().downcast_ref::<LambdaDef<R>>()
+                {
+                    d.captured_ids(&mut |id| {
+                        if let Some(b) = ctx.env.by_id.get(&id) {
+                            free.push(b.typ.clone())
+                        }
+                    })
                 }
             });
             for t in free.iter() {

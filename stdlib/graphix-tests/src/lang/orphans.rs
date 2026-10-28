@@ -133,3 +133,21 @@ run!(
     }"#,
     is(Value::I64(16))
 );
+
+run!(
+    a_saved_closure_writing_through_a_captured_reference_outlives_its_slot,
+    r#"{
+        let n = 0;
+        n <- select n { k if k < 8 => k + 1, _ => never() };
+        let src = select n { k if k < 2 => [10], _ => [] };
+        let gs = array::map(src, |k| {
+            let v = k;
+            let p = &mut v;
+            |x: i64| -> i64 { *p <- x; x + k }
+        });
+        let saved: fn(x: i64) -> i64 = never();
+        saved <- gs[0]$;
+        select n { k if k >= 4 => saved(k), _ => never() }
+    }"#,
+    is(Value::I64(14))
+);

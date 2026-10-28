@@ -1948,6 +1948,45 @@ const NESTED_QUANTIFIER_ENV_CELL_NESTED: &str = r#"{
     a * 2
 }"#;
 
+// A lambda literal argument whose body writes a variable outside it, directly,
+// into a container or through a reference, or from a lambda nested in it, carries
+// the quantifier out through what it writes.
+const RANK2_ARG_WRITES_OUTER: &str = r#"{
+    let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+    let r = never();
+    let t = apply(|x| { r <- x; x });
+    r + 1
+}"#;
+
+const RANK2_ARG_WRITES_OUTER_ARRAY: &str = r#"{
+    let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+    let r = never();
+    let t = apply(|x| { r <- [x]; x });
+    r
+}"#;
+
+const RANK2_ARG_WRITES_THROUGH_A_REFERENCE: &str = r#"{
+    let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+    let r = never();
+    let p = &mut r;
+    let t = apply(|x| { *p <- x; x });
+    r
+}"#;
+
+const RANK2_ARG_NESTED_LAMBDA_WRITES_OUTER: &str = r#"{
+    let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+    let r = never();
+    let t = apply(|x| { let g = |y| { r <- y; y }; g(x) });
+    r
+}"#;
+
+const RANK2_FIELD_WRITES_OUTER: &str = r#"{
+    let use_it = |s: {f: fn<'b: Any>(x: 'b) -> 'b}| (s.f(1), s.f("s"));
+    let r = never();
+    let t = use_it({f: |x| { r <- x; x }});
+    r
+}"#;
+
 // Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
@@ -2100,6 +2139,11 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_ENV_CELL, "not polymorphic"),
         (NESTED_QUANTIFIER_ENV_CELL_NESTED, "not polymorphic"),
+        (RANK2_ARG_WRITES_OUTER, "not polymorphic in 'b"),
+        (RANK2_ARG_WRITES_OUTER_ARRAY, "not polymorphic in 'b"),
+        (RANK2_ARG_WRITES_THROUGH_A_REFERENCE, "not polymorphic in 'b"),
+        (RANK2_ARG_NESTED_LAMBDA_WRITES_OUTER, "not polymorphic in 'b"),
+        (RANK2_FIELD_WRITES_OUTER, "not polymorphic in 'b"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
