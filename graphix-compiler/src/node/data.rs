@@ -205,6 +205,10 @@ pub struct Replace<R: Rt> {
 }
 
 impl<R: Rt> Replace<R> {
+    fn with(index: Option<usize>, name: ArcStr, n: Node<R>) -> Self {
+        Self { index, name, n }
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.index.encode(buf)?;
         self.name.encode(buf)?;
@@ -218,7 +222,7 @@ impl<R: Rt> Replace<R> {
         let index = Option::<usize>::decode(buf)?;
         let name = ArcStr::decode(buf)?;
         let n = decode_node(ctx, buf)?;
-        Ok(Replace { index, name, n })
+        Ok(Self::with(index, name, n))
     }
 }
 
@@ -278,11 +282,8 @@ impl<R: Rt> StructWith<R> {
         let replace = replace
             .iter()
             .map(|(name, e)| {
-                Ok(Replace {
-                    index: None,
-                    name: name.clone(),
-                    n: compile(ctx, flags, e.clone(), scope, top_id)?,
-                })
+                let n = compile(ctx, flags, e.clone(), scope, top_id)?;
+                Ok(Replace::with(None, name.clone(), n))
             })
             .collect::<Result<Box<[_]>>>()?;
         let typ = source.typ().clone();
