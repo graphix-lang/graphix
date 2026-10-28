@@ -252,11 +252,7 @@ impl ServerState {
     pub fn flush(&mut self) -> Diagnostics {
         let mut roots: Vec<PathBuf> = self.dirty.drain().collect();
         roots.sort();
-        let mut files = AHashSet::default();
-        for root in roots {
-            files.extend(self.check(&root));
-        }
-        self.publish_files(files)
+        self.check_roots(roots)
     }
 
     /// Check the dirty roots `uri`'s document is checked under, and only
@@ -269,11 +265,14 @@ impl ServerState {
         let stale: Vec<PathBuf> = self
             .roots_of(&path)
             .into_iter()
-            .filter(|root| self.dirty.contains(root))
+            .filter(|root| self.dirty.remove(root))
             .collect();
+        self.check_roots(stale)
+    }
+
+    fn check_roots(&mut self, roots: Vec<PathBuf>) -> Diagnostics {
         let mut files = AHashSet::default();
-        for root in stale {
-            self.dirty.remove(&root);
+        for root in roots {
             files.extend(self.check(&root));
         }
         self.publish_files(files)
