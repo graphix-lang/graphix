@@ -3963,6 +3963,16 @@ run!(
     }
 );
 
+// A slice over a union's array member binds its elements at that member's
+// element type, so a generic one is the definition's variable, not a cell
+// of its own the signature then settles to ⊥ (the kernel read it as bottom).
+run!(
+    slice_over_a_union_member_binds_its_element_type,
+    "{ let first = |rows: [null, Array<'a>]| select rows { null as _ => 0, [a, ..] => a, _ => 0 }; first([4, 2]) }",
+    is(Value::I64(4));
+    FuseExpect::Jit
+);
+
 run!(
     slice_elements_share_an_open_type,
     "{ let f = |a| select a { [x, y] => str::len(x) + y, _ => 0 }; f([\"abc\", 1]) }",
@@ -4673,7 +4683,7 @@ run!(generic_slice_arms_check, r#"{
   (is_empty([1, 2]), first([1, 2]), head([<1>]))
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[false, i64:1, i64:1]")
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // Under a written union a slice pattern narrows to the member it can
 // match, as a tuple or variant pattern does.

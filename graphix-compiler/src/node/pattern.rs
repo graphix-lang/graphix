@@ -711,7 +711,10 @@ impl StructPatternNode {
     /// stands over its own member, but the run-time test admits a value
     /// of any member at every position: every name an element binds holds
     /// the union of its part of each member the element's structure admits.
-    fn hold_slice_members(&self, env: &Env, typ: &Type) -> Result<()> {
+    /// `matched`, when not empty, is the scrutinee's members this slice can
+    /// match: an array or list member's elements are its own, not the
+    /// predicate's cells, which stand for any other member (`Any`).
+    fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
             if let Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
@@ -719,7 +722,16 @@ impl StructPatternNode {
             | Self::SliceSuffix { .. } = self
             {
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-                if let Some(Type::Array(et) | Type::List(et)) = &expand(env, typ) {
+                let mut own = matched.is_empty();
+                for m in matched {
+                    match &expand(env, m) {
+                        Some(Type::Array(et) | Type::List(et)) => {
+                            members_or_open(env, &et, &mut members)?
+                        }
+                        _ => own = true,
+                    }
+                }
+                if own && let Some(Type::Array(et) | Type::List(et)) = &expand(env, typ) {
                     members_or_open(env, &et, &mut members)?
                 }
                 let mut leaves: SmallVec<[Leaf; 4]> = SmallVec::new();
@@ -750,7 +762,7 @@ impl StructPatternNode {
             }
             for (c, t) in self.children().into_iter().zip(ts) {
                 if let Some((t, _)) = t {
-                    c.hold_slice_members(env, &t)?
+                    c.hold_slice_members(env, &t, &[])?
                 }
             }
             Ok(())
@@ -2001,7 +2013,7 @@ impl<R: Rt> PatternNode<R> {
                 }
             }
             self.structure_predicate.narrow_payloads(env, &matched)?;
-            self.structure_predicate.hold_slice_members(env, narrowed)?;
+            self.structure_predicate.hold_slice_members(env, narrowed, &matched)?;
         }
         let mut leaves = SmallVec::new();
         self.structure_predicate.leaves(
