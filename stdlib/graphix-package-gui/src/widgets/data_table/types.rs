@@ -543,7 +543,7 @@ pub(crate) fn decimate_sparkline(history: &mut VecDeque<(Instant, f64)>) {
 
 /// The oldest instant a history `history_seconds` long keeps at `now`;
 /// `None` when the window reaches past what `Instant` can say: keep all.
-fn sparkline_cutoff(now: Instant, history_seconds: f64) -> Option<Instant> {
+pub(super) fn sparkline_cutoff(now: Instant, history_seconds: f64) -> Option<Instant> {
     now.checked_sub(Duration::try_from_secs_f64(history_seconds).ok()?)
 }
 

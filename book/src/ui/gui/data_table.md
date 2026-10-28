@@ -123,8 +123,12 @@ escaping for a slash inside a name. Invalid names are ignored with a warning.
 - **`sparkline_column`** -- Rolling-line visualization accumulating
   published values over `history_seconds`. Every cell uses the same rolling time
   axis, from now minus `history_seconds` to now. The last value extends flat to
-  now; the value at the window start is retained even when updates stop. By default the y-axis is
-  shared across every cell in the column (auto-scaled to the union of
+  now; the value at the window start is retained even when updates stop. While
+  the newest sample is inside the window, idle frames advance at one horizontal
+  pixel per redraw, capped at 60 frames per second. Once that sample reaches the
+  window start, the flat line needs no further timed redraws. A new sample
+  resumes them. By default the y-axis is shared across every cell in the column
+  (auto-scaled to the union of
   all rows' values) so cells are visually comparable. Pass `#min` /
   `#max` to fix the axis instead.
 

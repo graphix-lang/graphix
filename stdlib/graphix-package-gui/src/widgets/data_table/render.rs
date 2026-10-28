@@ -7,7 +7,8 @@ use super::{
     Renderer, TableMsg, VALUE_COL_KEY, VALUE_HEADER_LABEL,
     types::{
         Choice, ColumnType, SortDirection, ViewportMetrics, age_sparkline, cell_path,
-        col_header_width, col_min_width, row_basename, truncate_to_width,
+        col_header_width, col_min_width, row_basename, sparkline_cutoff,
+        truncate_to_width,
     },
 };
 use crate::{
@@ -22,7 +23,10 @@ use iced_core::keyboard::{Key, key::Named};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 type Col<'a> = widget::Column<'a, Message, GraphixTheme, Renderer>;
 type Row<'a> = widget::Row<'a, Message, GraphixTheme, Renderer>;
@@ -52,6 +56,8 @@ pub(super) struct SparkBounds {
 
 /// Canvas program that draws a sparkline polyline.
 struct SparklineCanvas {
+    newest_sample: Option<Instant>,
+    history_seconds: f64,
     points: LPooled<Vec<(f64, f64)>>,
     bounds: SparkBounds,
 }
@@ -73,7 +79,12 @@ impl SparklineCanvas {
         if let Some(&(_, v)) = points.last() {
             points.push((1.0, v));
         }
-        Self { points, bounds }
+        Self {
+            points,
+            bounds,
+            history_seconds,
+            newest_sample: history.back().map(|&(time, _)| time),
+        }
     }
 
     fn path(&self, size: iced_core::Size) -> widget::canvas::Path {
@@ -114,6 +125,31 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer>
     for SparklineCanvas
 {
     type State = ();
+
+    fn update(
+        &self,
+        _state: &mut Self::State,
+        event: &iced_core::Event,
+        bounds: iced_core::Rectangle,
+        _cursor: iced_core::mouse::Cursor,
+    ) -> Option<widget::Action<Message>> {
+        let iced_core::Event::Window(iced_core::window::Event::RedrawRequested(now)) =
+            event
+        else {
+            return None;
+        };
+        let newest = self.newest_sample?;
+        if sparkline_cutoff(*now, self.history_seconds)
+            .is_some_and(|cutoff| newest <= cutoff)
+            || bounds.width <= 0.0
+            || !bounds.width.is_finite()
+        {
+            return None;
+        }
+        let seconds = (self.history_seconds / bounds.width as f64).max(1.0 / 60.0);
+        let period = Duration::try_from_secs_f64(seconds).ok()?;
+        Some(widget::Action::request_redraw_at(now.checked_add(period)?))
+    }
 
     fn draw(
         &self,
@@ -793,6 +829,53 @@ impl<X: GXExt> DataTableW<X> {
                 // existing integration expectation for retained history. Full GUI
                 // suite follows; GPU rendering and netidx-dependent table integration
                 // cannot run in this sandbox.
+                // 2026-10-28 codex: Nonempty visible SparklineCanvas programs now
+                // request iced RedrawRequest::At on each redraw, at history_seconds /
+                // pixel width (capped at 60 Hz). The existing window deadline wakes the
+                // normal frame path, which rebuilds and lays out the table with a fresh
+                // timestamp even without data events. Empty and zero-width canvases
+                // request no timer. quiet_sparklines_request_pixel_timed_redraws failed
+                // before the update method was added, then passed: repeated idle
+                // deadlines scale with both history duration and width, successive
+                // rebuilt samples move one pixel, and the held final value still
+                // extends to now. cargo test -p graphix-package-gui --offline --lib
+                // sparkline_tests -- --nocapture: 5 passed. Updated the book. CPU
+                // scheduling and geometry are verified; an actual window/GPU timer
+                // rendering remains for coordinator review. Full GUI lib gate follows
+                // after the test-strengthening work.
+                // 2026-10-28 codex: Second review: restored the unmerged f128727 redraw
+                // scheduler, then stopped it when the newest sample is at or before the
+                // current history cutoff. SparklineCanvas stores the newest sample's
+                // timestamp and uses the same sparkline_cutoff helper as history aging
+                // on every RedrawRequested event, so an existing canvas stops even
+                // without being rebuilt. Pins
+                // expired_sparklines_stop_requesting_redraws and
+                // sparkline_redraw_scheduling_cost both failed before this fix and pass
+                // afterward. They cover exact expiration, fractional-second/nanosecond
+                // rounding, later events on the same canvas, a retained flat line, and
+                // resumption after a new sample. CPU measurement in the dev profile,
+                // isolated after the full suites finished: 10,000 canvases, 100 updates
+                // each, 10-second history and 100-pixel width. At sample age 10s, one
+                // million update calls requested one million redraws before (8.412581
+                // ms) and zero after (8.755766 ms). At age 0s, both requested one
+                // million; before 8.141288 ms, after 11.022088 ms. These measure
+                // scheduling calls, not actual window/GPU redraw cost. cargo test -p
+                // graphix-package-gui --offline --lib sparkline_tests -- --nocapture:
+                // before 5 passed/2 failed, after 7 passed. The isolated
+                // sparkline_redraw_scheduling_cost filter failed before and passed
+                // after. Final cargo test -p graphix-package-gui --offline --lib: 92
+                // passed, 258 failed, 1 ignored; 78 failures under
+                // test::data_table_test:: are resolver/socket failures and 180 cannot
+                // initialize a GPU adapter. cargo test -p graphix-tests --offline
+                // --lib: 11015 passed, 447 failed, 3 ignored. Network-dependent failure
+                // prefixes: lang::async_restart::seq_network,
+                // lang::interfaces::abstract_type_dynamic_module, lang::modules::,
+                // lang::traits::, lib_tests::core::queue, lib_tests::http::,
+                // lib_tests::json::json_stream_, lib_tests::net::,
+                // lib_tests::pack::pack_stream_tcp, lib_tests::tcp::, lib_tests::tls::,
+                // lib_tests::toml::toml_stream_tcp and lib_tests::typecheck::. Book
+                // updated/rebuilt; cargo fmt --all completed. Actual window timers, GPU
+                // rendering and socket-dependent integration remain unverified here.
                 let bounds = spark_bounds.unwrap_or(SparkBounds { min: 0.0, max: 1.0 });
                 let sparkline = history
                     .filter(|h| !h.is_empty())
@@ -816,6 +899,136 @@ impl<X: GXExt> DataTableW<X> {
 mod sparkline_tests {
     use super::*;
     use widget::canvas::path::lyon_path::Event;
+
+    fn redraw_at(canvas: &SparklineCanvas, now: Instant) -> Option<widget::Action<()>> {
+        use iced_core::{Event, Rectangle, Size, mouse::Cursor, window};
+        use widget::canvas::Program;
+        <SparklineCanvas as Program<(), GraphixTheme, Renderer>>::update(
+            canvas,
+            &mut (),
+            &Event::Window(window::Event::RedrawRequested(now)),
+            Rectangle::with_size(Size::new(100.0, 20.0)),
+            Cursor::Unavailable,
+        )
+    }
+
+    #[test]
+    fn expired_sparklines_stop_requesting_redraws() {
+        let now = Instant::now();
+        let bounds = SparkBounds { min: 0.0, max: 1.0 };
+        let mut history = [(now - Duration::from_secs(2), 0.25), (now, 0.75)].into();
+        for seconds in [10.0, 0.1234567895, 1.4e-9] {
+            let canvas = SparklineCanvas::new(&history, now, seconds, bounds);
+            let cutoff = now + Duration::from_secs_f64(seconds);
+            assert!(redraw_at(&canvas, cutoff - Duration::from_nanos(1)).is_some());
+            assert!(redraw_at(&canvas, cutoff).is_none());
+            assert!(redraw_at(&canvas, cutoff + Duration::from_secs(1)).is_none());
+        }
+        let mut frame_time = now + Duration::from_secs(10);
+        for _ in 0..3 {
+            age_sparkline(&mut history, frame_time, 10.0);
+            let canvas = SparklineCanvas::new(&history, frame_time, 10.0, bounds);
+            assert_eq!(&*canvas.points, &[(0.0, 0.75), (1.0, 0.75)]);
+            assert!(redraw_at(&canvas, frame_time).is_none());
+            frame_time += Duration::from_secs(1);
+        }
+        history.push_back((frame_time, 0.5));
+        let canvas = SparklineCanvas::new(&history, frame_time, 10.0, bounds);
+        assert!(redraw_at(&canvas, frame_time).is_some());
+    }
+
+    #[test]
+    fn sparkline_redraw_scheduling_cost() {
+        use std::hint::black_box;
+        let now = Instant::now();
+        let bounds = SparkBounds { min: 0.0, max: 1.0 };
+        let history = [(now - Duration::from_secs(2), 0.25), (now, 0.75)].into();
+        let canvases: LPooled<Vec<_>> = (0..10_000)
+            .map(|_| SparklineCanvas::new(&history, now, 10.0, bounds))
+            .collect();
+        let mut counts = [0; 2];
+        for (count, age) in counts.iter_mut().zip([0, 10]) {
+            let time = now + Duration::from_secs(age);
+            let start = Instant::now();
+            for _ in 0..100 {
+                for canvas in canvases.iter() {
+                    *count += black_box(redraw_at(black_box(canvas), black_box(time)))
+                        .is_some() as usize;
+                }
+            }
+            eprintln!(
+                "10,000 sparklines, 100 updates each, sample age {age}s: {:?}, {count} redraw requests",
+                start.elapsed()
+            );
+        }
+        assert_eq!(counts, [1_000_000, 0]);
+    }
+
+    #[test]
+    fn quiet_sparklines_request_pixel_timed_redraws() {
+        use iced_core::{Event as IcedEvent, Rectangle, mouse::Cursor, window};
+        use std::time::Duration;
+        use widget::canvas::Program;
+
+        let now = Instant::now();
+        let history = [(now - Duration::from_secs(2), 0.25), (now, 0.75)].into();
+        let bounds = SparkBounds { min: 0.0, max: 1.0 };
+        let canvas = SparklineCanvas::new(&history, now, 10.0, bounds);
+        for (width, seconds, expected_ms) in
+            [(100.0, 10.0, 100), (200.0, 10.0, 50), (100.0, 20.0, 200)]
+        {
+            let mut frame_time = now;
+            for _ in 0..3 {
+                let canvas = SparklineCanvas::new(&history, frame_time, seconds, bounds);
+                let action =
+                    <SparklineCanvas as Program<(), GraphixTheme, Renderer>>::update(
+                        &canvas,
+                        &mut (),
+                        &IcedEvent::Window(window::Event::RedrawRequested(frame_time)),
+                        Rectangle::with_size(iced_core::Size::new(width, 20.0)),
+                        Cursor::Unavailable,
+                    )
+                    .expect(
+                        "nonempty history must keep requesting frames on an idle table",
+                    );
+                let (message, redraw, status) = action.into_inner();
+                assert!(message.is_none());
+                assert_eq!(status, iced_core::event::Status::Ignored);
+                let window::RedrawRequest::At(next) = redraw else {
+                    panic!("{redraw:?}")
+                };
+                assert_eq!(next - frame_time, Duration::from_millis(expected_ms));
+                let next_canvas = SparklineCanvas::new(&history, next, seconds, bounds);
+                let dx = (canvas.points[1].0 - next_canvas.points[1].0) * width as f64;
+                assert!((dx - 1.0).abs() < 1e-10);
+                assert_eq!(next_canvas.points.last(), Some(&(1.0, 0.75)));
+                frame_time = next;
+            }
+        }
+        for (history, width) in [(VecDeque::new(), 100.0), (history, 0.0)] {
+            let canvas = SparklineCanvas::new(&history, now, 10.0, bounds);
+            assert!(
+                <SparklineCanvas as Program<(), GraphixTheme, Renderer>>::update(
+                    &canvas,
+                    &mut (),
+                    &IcedEvent::Window(window::Event::RedrawRequested(now)),
+                    Rectangle::with_size(iced_core::Size::new(width, 20.0)),
+                    Cursor::Unavailable,
+                )
+                .is_none()
+            );
+        }
+        assert!(
+            <SparklineCanvas as Program<(), GraphixTheme, Renderer>>::update(
+                &canvas,
+                &mut (),
+                &IcedEvent::Mouse(iced_core::mouse::Event::CursorLeft),
+                Rectangle::with_size(iced_core::Size::new(100.0, 20.0)),
+                Cursor::Unavailable,
+            )
+            .is_none()
+        );
+    }
 
     #[test]
     fn sparkline_timestamps_share_a_window_and_extend_to_now() {
@@ -841,6 +1054,8 @@ mod sparkline_tests {
     #[test]
     fn sparkline_path_uses_the_rolling_window() {
         let canvas = SparklineCanvas {
+            newest_sample: None,
+            history_seconds: 10.0,
             points: [(0.2, 0.0), (0.4, 1.0), (1.0, 1.0)].into_iter().collect(),
             bounds: SparkBounds { min: 0.0, max: 1.0 },
         };
@@ -874,6 +1089,8 @@ mod sparkline_tests {
     #[test]
     fn sparkline_paths_skip_nonfinite_samples() {
         let canvas = SparklineCanvas {
+            newest_sample: None,
+            history_seconds: 10.0,
             points: vec![
                 (f64::NAN, 0.0),
                 (0.0, 0.0),
