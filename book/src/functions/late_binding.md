@@ -6,6 +6,11 @@ compiles. A call through a function value it cannot trace, one read out
 of a data structure for example, is late bound: the runtime figures out
 which function it calls, and at compile time only the function's type
 is known. Late binding is a powerful abstraction tool.
+
+Writing a function variable fires its call's current result even when
+the write gives it the same function. The call keeps its existing
+instance: its counters and local state are not reset.
+
 For example we can create two structs of type `T` that each contain a different
 implementation of `f`, and we can use them interchangibly with any function that
 accepts a `T`. In this simple example we create one implementation of `f` that

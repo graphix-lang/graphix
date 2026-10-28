@@ -77,6 +77,8 @@ what `organic_deltas.rs` cites.
    fired input (consistent with an op whose operand is a standing
    bottom).
 5. A recursive call whose arguments fire at their previous value fires.
+   A function-variable delivery also fires its call at the current result,
+   including a write of the same definition; the instance is retained.
 6. A tail re-dispatch with unchanged arguments fires at any iteration
    count, including zero.
 7. A constant-terminal recursion fires per delivery on both engines.

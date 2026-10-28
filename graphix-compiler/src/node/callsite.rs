@@ -2794,9 +2794,7 @@ impl<R: Rt> CallSite<R> {
             ctx.event.variables.remove(&id);
         }
         match res {
-            // a function back from bottom fires the call with its current
-            // value, as a scrutinee back from bottom fires its select
-            Some(tv) if returned => {
+            Some(tv) if returned || (!static_callee && fnode_tag.is_fired()) => {
                 let tag = tv.tag().fresh();
                 self.resident.set(tv);
                 self.resident.retag(tag)
@@ -2831,7 +2829,7 @@ impl<R: Rt> CallSite<R> {
             }
             _ => false,
         };
-        // CR claude for claude: [bug/low] When the function variable fires with the
+        // XCR claude for claude: [bug/low] When the function variable fires with the
         // definition already bound, the site keeps its instance and, with no argument
         // fired, rides: the call does not fire. A dereference whose reference variable
         // is rewritten with the same reference does fire. In the probe, `*r` fires at
@@ -2845,6 +2843,15 @@ impl<R: Rt> CallSite<R> {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q6, Writing
         // the same function to a function variable): yes, a write is a fire (the
         // recommendation: a write is a fire, as for every variable.)
+        // 2026-10-27 codex: A fired dynamic function input now retags the instance's
+        // current production fired, including a same-definition write; rebind still
+        // retains that instance. Documented the rule in CLAUDE.md, organic_firing, the
+        // late-binding chapter and graphix-lang. Pin
+        // lang::functions::same_function_write_fires_without_reset sees [1,2,2],
+        // proving both the extra fire and preserved count state; it failed in all four
+        // modes before the fix with [1,2]. The lang::functions, lib_tests::callable,
+        // lang::seq, lang::select and lang::sample filters pass after it. No FuseExpect
+        // moved. No netidx-admin socket tests or fuzzer soak were run.
         if same {
             return false;
         }

@@ -3246,6 +3246,20 @@ run!(rank2_quantifier_of_a_parameter_copied_at_each_call, r#"{
   (use_it(apply), nested(apply))
 }"#, prints(r#"[[i64:1, "s"], [i64:1, "s"]]"#); FuseExpect::Jit);
 
+run!(same_function_write_fires_without_reset, r#"{
+    let step = 0;
+    step <- select step { s if s < 7 => s + 1, _ => never() };
+    let f = |x: i64| count(x);
+    let function = f;
+    function <- select step { 3 => f, _ => never() };
+    let argument = 5;
+    argument <- select step { 1 => 6, _ => never() };
+    let result = function(argument);
+    let seen = [];
+    seen <- result ~ array::push(seen, result);
+    select step { 7 => seen, _ => never() }
+}"#, prints("[i64:1, i64:2, i64:2]"); FuseExpect::Jit);
+
 run!(readonly_reference_variable_widens, r#"{
     let r: &u64 = &u64:0;
     let n: &[u64, null] = &null;

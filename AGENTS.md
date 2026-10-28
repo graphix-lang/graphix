@@ -775,7 +775,9 @@ node graph IS the IR — there is no parallel typed IR
   decide a tag; `uniq`/`filter`/`~` are the cadence tools. A select emits
   per fired input — scrutinee delivery, a CONSULTED guard, or the taken
   arm's own production; same-arm re-matches emit the arm's current
-  value. A constant fires where it is born (`View::born`) and stands
+  value. A delivery to a function-valued callee fires its current result
+  even for the same definition, keeping that call's instance and state.
+  A constant fires where it is born (`View::born`) and stands
   stale everywhere else; every argument-less literal (`` `Tag ``, `[]`,
   `{}`) is a constant (`node::produce_constant`). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on

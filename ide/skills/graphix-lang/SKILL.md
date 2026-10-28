@@ -244,8 +244,10 @@ greet(#greeting: "hi", "world")   // labeled always by name, before positionals
 let f = |@args: i64| args         // variadic (builtins only)
 ```
 
-Calls dispatch statically. A HOF nested under its own callback is a
-fresh instance, not recursion.
+Calls resolve statically where the compiler can trace the function. A
+function-variable write fires its call's current result even when it
+writes the same function; the call keeps its instance and state. A HOF
+nested under its own callback is a fresh instance, not recursion.
 
 A labeled default returning an enclosing function's open type requires a
 closed defaulted parameter type. Annotate the factory's parameter
