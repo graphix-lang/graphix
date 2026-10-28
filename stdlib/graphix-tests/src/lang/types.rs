@@ -4543,3 +4543,24 @@ run!(
     prints(r#"["array", "list"]"#);
     FuseExpect::Jit
 );
+
+// A bound naming another quantifier ('d: [null, 'c]) puts what 'd takes
+// below 'c, so 'c bound later to a type without it is refused.
+run!(
+    quantifier_bound_holds_a_later_binding,
+    r#"{
+        let g = 'c: Any, 'd: [null, 'c] |y: 'd, x: 'c| -> [null, 'c] y;
+        let f = 'a: Any |x: 'a| -> [null, 'a] g(5, x);
+        f("s")
+    }"#,
+    refused("above i64 does not contain 'a")
+);
+
+run!(
+    quantifier_bound_admits_a_binding_it_holds,
+    r#"{
+        let g = 'c: Any, 'd: [null, 'c] |y: 'd, x: 'c| -> [null, 'c] y;
+        g(5, 7)
+    }"#,
+    is(Value::I64(5))
+);

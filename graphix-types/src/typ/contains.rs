@@ -454,6 +454,15 @@ fn commit_cell_constraints(
         if !held {
             return Ok(false);
         }
+        // the conjunct's own open cells must hold what the cell takes:
+        // `'d: [null, 'c]` bound to i64 puts i64 below 'c, so 'c bound
+        // later to a type without it is refused
+        if !exact(c)
+            && c.has_unbound()
+            && !c.contains_int(flags | ContainsFlags::Lower, env, hist, t)?
+        {
+            return Ok(false);
+        }
     }
     Ok(true)
 }
