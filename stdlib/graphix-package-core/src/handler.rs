@@ -147,7 +147,11 @@ impl<R: Rt> Request<R> {
             Err(f) => genn::Callback::of_value(ctx, &scope, ftyp, &["x"], f, top_id),
         }
         .expect("Handler::new held the function to one argument");
-        Self { call, relay }
+        Request::with(call, relay)
+    }
+
+    fn with(call: genn::Callback<R>, relay: ErrorRelay) -> Self {
+        Request { call, relay }
     }
 
     /// The request's binding.
@@ -323,6 +327,6 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
         let ftyp = Arc::new(FnType::decode(buf)?);
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        Ok(Self::with(Request { call, relay }, pid, ftyp, scope, top_id))
+        Ok(Self::with(Request::with(call, relay), pid, ftyp, scope, top_id))
     }
 }
