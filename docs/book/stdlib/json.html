@@ -165,7 +165,11 @@ inferred from the type annotation at the call site.</p>
 /// Numbers are read exactly, so an object whose only key is
 /// `$serde_json::private::Number` reads as the number its value spells
 /// (`{"$serde_json::private::Number": "42"}` is 42), not as an object.
-val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`JsonErr(string), `InvalidCast(string)]&gt;;
+/// The target holds no union two members of which one JSON value could
+/// be written by (`JsonData`): `[u8, i64]`, `[string, datetime]` and
+/// `[Array&lt;string&gt;, Array&lt;i64&gt;]` are refused, since what was written as
+/// one could read back as the other.
+val read: fn&lt;'b: Concrete + JsonData&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`JsonErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a JSON string, as its type says: a struct or a
 /// map with scalar keys is an object; another map is an array of key/value
@@ -198,6 +202,18 @@ let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 
 let items: Array&lt;{id: i64, label: string}&gt; = json::read(data)?;
 let maybe: [string, null] = json::read(data)?;
 </code></pre>
+<h3 id="unions-in-the-target"><a class="header" href="#unions-in-the-target">Unions in the target</a></h3>
+<p>JSON keeps no record of which member of a union a value was written as,
+so a target holds no union two of whose members one JSON value could be
+written by: the read could hand back the other one. <code>[u8, i64]</code> (two
+integers), <code>[string, datetime]</code> (a datetime is written as a string),
+<code>[string, `A]</code> (a variant with no payload is written as its tag),
+<code>[decimal, f64]</code>, <code>[Array&lt;string&gt;, Array&lt;i64&gt;]</code> (both write <code>[]</code>) and a
+struct beside a map of strings (an object reads as both) are refused.
+Members JSON writes apart are fine: <code>[i64, f64]</code> (an integer and a number
+with a fraction), <code>[`A(i64), `B(string)]</code>, <code>[{a: i64}, {b: i64}]</code>,
+<code>[T, null]</code>. Pack and db keep the member, so their reads take these
+unions.</p>
 <h3 id="numbers"><a class="header" href="#numbers">Numbers</a></h3>
 <p>A number reads exactly where its position in the target holds an
 integer or a <code>decimal</code>: <code>-9223372036854775809</code> read as an <code>i64</code> is an
@@ -207,7 +223,8 @@ float nearest the text, and a position that holds neither, an <code>Any</code> o
 <code>string</code> say, reads every number that is not an integer as that <code>f64</code>,
 whatever the rest of the target holds. Excess decimal fractional precision
 rounds to the nearest representable decimal without passing through <code>f64</code>.
-The same rounding applies to <code>cast&lt;decimal&gt;</code> and <code>str::parse</code>.</p>
+The same rounding applies to <code>cast&lt;decimal&gt;</code> and <code>str::parse</code>. A
+<code>decimal</code> is written as an exact number (<code>1.10</code>), never a string.</p>
 <p>The reader keeps a number's text by way of serde_json's
 <code>arbitrary_precision</code>, which passes a number as an object of one key,
 <code>$serde_json::private::Number</code>. An object whose first key is that one

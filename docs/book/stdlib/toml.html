@@ -164,6 +164,10 @@ is refused as a document.
 As with json, only a value whose type says nothing (<code>Any</code>) is written by
 its contents, where an array of <code>(string, _)</code> pairs in key order is a
 table.</p>
+<p>A <code>toml::read</code> target holds no union two of whose members one TOML value
+could be written by, as with <a href="json.html#unions-in-the-target">json</a>:
+<code>[u8, i64]</code> and <code>[Array&lt;string&gt;, Array&lt;i64&gt;]</code> are refused. TOML has a
+datetime of its own, so <code>[string, datetime]</code> reads apart here.</p>
 <p>Maps follow JSON's key rule: scalar keys form a table, while a map holding
 a composite or bytes key is an array of <code>[key, value]</code> pairs. Such a map must
 be inside a document field because TOML requires a table at the root. TOML
@@ -171,7 +175,9 @@ cannot represent a null key. Bytes write as an array of byte integers.</p>
 <pre><code class="language-graphix">/// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
-val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`TomlErr(string), `InvalidCast(string)]&gt;;
+/// The target holds no union two members of which one TOML value could
+/// be written by (`TomlData`), as `json::read`'s.
+val read: fn&lt;'b: Concrete + TomlData&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`TomlErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a TOML string. Maps with scalar keys are tables;
 /// other maps are arrays of key/value pairs and require a containing table.
