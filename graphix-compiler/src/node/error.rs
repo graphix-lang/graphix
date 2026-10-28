@@ -905,6 +905,14 @@ pub(crate) enum QopMode {
 }
 
 impl QopMode {
+    fn raise(
+        handler: Option<ErrorHandler>,
+        top_id: ExprId,
+        flags: BitFlags<CFlag>,
+    ) -> Self {
+        Self::Raise { handler, top_id, flags, values: SiteValues::default() }
+    }
+
     fn decode(buf: &mut &[u8]) -> Result<Self, PackError> {
         if !bool::decode(buf)? {
             return Ok(Self::Ignore);
@@ -915,7 +923,7 @@ impl QopMode {
         };
         let top_id = ExprId::decode(buf)?;
         let flags = image::flags_decode(buf)?;
-        Ok(Self::Raise { handler, top_id, flags, values: SiteValues::default() })
+        Ok(Self::raise(handler, top_id, flags))
     }
 
     fn encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -989,12 +997,7 @@ impl<R: Rt> Qop<R> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let mode = match spec.kind {
             ExprKind::OrNever(_) => QopMode::Ignore,
-            _ => QopMode::Raise {
-                handler: scope.dynamic.handler(),
-                top_id,
-                flags,
-                values: SiteValues::default(),
-            },
+            _ => QopMode::raise(scope.dynamic.handler(), top_id, flags),
         };
         let typ = Type::empty_tvar();
         let strip = Strip::Error;
