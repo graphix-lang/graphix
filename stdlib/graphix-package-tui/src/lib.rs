@@ -813,10 +813,9 @@ impl ImageState for SuspendEv {
         ctx: &mut ExecCtx<'_, R>,
         _buf: &mut &[u8],
     ) -> Result<Self, PackError> {
-        Ok(Self {
-            control: Some(ctx.libstate.get_or_default::<TuiControl>().clone()),
-            held: Arc::new(Mutex::new(None)),
-        })
+        let mut this = Self::default();
+        this.attach(ctx);
+        Ok(this)
     }
 }
 
