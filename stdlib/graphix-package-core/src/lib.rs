@@ -36,9 +36,10 @@ use std::{
     collections::VecDeque,
     fmt::{Debug, Write},
     marker::PhantomData,
+    sync::atomic::{AtomicUsize, Ordering as SyncOrdering},
     time::Duration,
 };
-use tokio::time::Instant;
+use tokio::{sync::Notify, time::Instant};
 
 pub(crate) mod buffer;
 pub(crate) mod math;
@@ -4145,6 +4146,9 @@ pub struct NetTimeouts {
 /// A value whose drop runs on a blocking thread, when there is a runtime:
 /// dropping the last handle to a database flushes and syncs (sled's log,
 /// a WAL checkpoint), which must never stall a cycle.
+///
+/// The exit waits for the reaps still in flight ([`await_reaps`]) so that
+/// what a value does as it dies is done before the process is gone.
 pub struct Reaped<T: Send + 'static>(std::mem::ManuallyDrop<T>);
 
 impl<T: Send + 'static> Reaped<T> {
@@ -4182,10 +4186,67 @@ impl<T: Send + 'static> Drop for Reaped<T> {
         let t = unsafe { std::mem::ManuallyDrop::take(&mut self.0) };
         match tokio::runtime::Handle::try_current() {
             Ok(rt) if !REAPING.get() => {
-                reaping(|| drop(rt.spawn_blocking(move || reaping(|| drop(t)))))
+                let reap = REAPS.count(t);
+                reaping(|| drop(rt.spawn_blocking(move || reaping(|| drop(reap)))))
             }
             _ => drop(t),
         }
+    }
+}
+
+/// The reaps this process has spawned that have not finished, and the wake
+/// for the count reaching zero. Process-wide on purpose: the process is what
+/// is exiting, and what a value does as it dies belongs to that exit.
+struct Reaps {
+    outstanding: AtomicUsize,
+    drained: Notify,
+}
+
+static REAPS: Reaps =
+    Reaps { outstanding: AtomicUsize::new(0), drained: Notify::const_new() };
+
+impl Reaps {
+    /// Count `t` as a reap that has been spawned but has not finished.
+    fn count<T>(&'static self, t: T) -> Reap<T> {
+        self.outstanding.fetch_add(1, SyncOrdering::AcqRel);
+        (t, Outstanding(self))
+    }
+}
+
+/// One reap counted as outstanding until it drops.
+struct Outstanding(&'static Reaps);
+
+impl Drop for Outstanding {
+    fn drop(&mut self) {
+        if self.0.outstanding.fetch_sub(1, SyncOrdering::AcqRel) == 1 {
+            self.0.drained.notify_waiters();
+        }
+    }
+}
+
+/// A spawned reap: its value and its count of itself. The value drops first
+/// and the count after, whether the pool ran the spawn or cancelled it with
+/// the pool — a cancelled spawn drops its value all the same, and a reap that
+/// never answered would otherwise hold the exit to its bound.
+type Reap<T> = (T, Outstanding);
+
+/// Wait for every reap this process has spawned to finish. What a blocking
+/// thread is otherwise stuck in — a read that never returns — is not part of
+/// this and the exit does not wait for it.
+pub async fn await_reaps() {
+    loop {
+        if REAPS.outstanding.load(SyncOrdering::Acquire) == 0 {
+            return;
+        }
+        let drained = REAPS.drained.notified();
+        tokio::pin!(drained);
+        // the waiter is registered before the count is read again, so a reap
+        // answering between the two cannot pass without waking us
+        drained.as_mut().enable();
+        if REAPS.outstanding.load(SyncOrdering::Acquire) == 0 {
+            return;
+        }
+        drained.await;
     }
 }
 
@@ -4197,7 +4258,7 @@ impl<T: Send + 'static> Debug for Reaped<T> {
 
 #[cfg(test)]
 mod reaped_test {
-    use super::Reaped;
+    use super::{Reaped, await_reaps};
     use std::{sync::mpsc, thread, time::Duration};
 
     /// A shut-down runtime cancels a blocking spawn inline, under its pool's
@@ -4214,6 +4275,43 @@ mod reaped_test {
             tx.send(()).unwrap();
         });
         rx.recv_timeout(Duration::from_secs(5)).expect("a nested reap deadlocked");
+    }
+
+    /// A drop that takes time: the reap is outstanding until it has run.
+    struct Slow(mpsc::Sender<()>);
+
+    const SLOW: Duration = Duration::from_millis(200);
+
+    impl Drop for Slow {
+        fn drop(&mut self) {
+            thread::sleep(SLOW);
+            let _ = self.0.send(());
+        }
+    }
+
+    /// `await_reaps` returns only once the reap has dropped its value, and
+    /// at once when no reap is in flight.
+    #[test]
+    fn await_reaps_waits_for_the_reap_in_flight() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            await_reaps().await;
+            let (tx, rx) = mpsc::channel();
+            drop(Reaped::new(Slow(tx)));
+            let start = std::time::Instant::now();
+            tokio::time::timeout(Duration::from_secs(5), await_reaps())
+                .await
+                .expect("await_reaps never returned");
+            let waited = start.elapsed();
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("await_reaps returned before the value had dropped");
+            assert!(
+                waited >= SLOW / 2,
+                "await_reaps returned in {waited:?}, before the reap had dropped \
+                 the {SLOW:?} its value takes"
+            );
+            await_reaps().await;
+        });
     }
 }
 

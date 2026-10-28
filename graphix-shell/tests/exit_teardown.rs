@@ -1,6 +1,6 @@
 //! The end of the process waits for the runtime's teardown, bounded: what
 //! the runtime drops as it stops reaches the disk, and a stdin read that
-//! never ends does not hold the exit past its bound.
+//! never ends is not part of that teardown and does not hold the exit.
 
 mod common;
 use common::graphix;
@@ -9,6 +9,7 @@ use std::{
     fs,
     io::Read,
     process::{Command, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -50,24 +51,24 @@ fn a_db_write_before_sys_exit_reaches_the_disk() {
     }
 }
 
-/// A stdin read the program never finishes must not hold the exit: the
-/// bound ends the process, not the read. The child's stdin is a pipe that
-/// stays open and is never written to, so its read never answers.
+/// A stdin read the program never finishes must not hold the exit. The exit
+/// waits for the runtime's task and for the reaps that ending it started; a
+/// blocking read that never answers is neither. The child's stdin is a pipe
+/// that stays open and is never written to, so its read never answers, and
+/// the program prints its first value at its first cycle, where its exit
+/// timer starts: the time from that print to the end of the process is the
+/// teardown, and it must not be the bound.
 #[test]
 fn a_stdin_read_that_never_ends_does_not_hold_the_exit() {
-    fn drain<R: Read + Send + 'static>(r: Option<R>) -> thread::JoinHandle<Vec<u8>> {
-        thread::spawn(move || {
-            let mut buf = vec![];
-            if let Some(mut r) = r {
-                let _ = r.read_to_end(&mut buf);
-            }
-            buf
-        })
-    }
+    /// the program's own exit timer
+    const TIMER: Duration = Duration::from_millis(500);
+    /// what the exit may take once the program has asked to exit. Nothing
+    /// here is owed the bound: paying it means the wait is back on the read.
+    const ALLOWANCE: Duration = Duration::from_secs(2);
     let program = "use sys::io::Lines;\n\
                    let l = Lines::lines(sys::io::stdin(null));\n\
                    sys::exit(sys::time::timer(duration:500.ms, false) ~ 0);\n\
-                   l\n";
+                   \"started\"\n";
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("main.gx");
     fs::write(&path, program).expect("write the program");
@@ -82,16 +83,34 @@ fn a_stdin_read_that_never_ends_does_not_hold_the_exit() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn graphix");
-    // read on while it runs: a full pipe would look like a held exit
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
-    let start = Instant::now();
-    // a run, its bound, and the time a cold compile takes on a busy machine
-    let deadline = start + TEARDOWN_BOUND + Duration::from_secs(30);
+    // read on while it runs: a full pipe would look like a held exit. Its
+    // first value is the instant it asked to exit, so time that.
+    let (asked, heard) = mpsc::channel();
+    let mut stdout = child.stdout.take().expect("the child's stdout");
+    let out = thread::spawn(move || {
+        let mut buf = vec![];
+        let mut byte = [0u8; 1];
+        while stdout.read(&mut byte).unwrap_or(0) == 1 {
+            if buf.is_empty() {
+                let _ = asked.send(Instant::now());
+            }
+            buf.push(byte[0]);
+        }
+        buf
+    });
+    let mut stderr = child.stderr.take().expect("the child's stderr");
+    let err = thread::spawn(move || {
+        let mut buf = vec![];
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+    let asked = heard
+        .recv_timeout(Duration::from_secs(120))
+        .expect("the program never printed, so it never had a first cycle");
     let status = loop {
         match child.try_wait().expect("wait for graphix") {
             Some(status) => break status,
-            None if Instant::now() > deadline => {
+            None if asked.elapsed() > TEARDOWN_BOUND + Duration::from_secs(30) => {
                 let pid = child.id();
                 let _ = child.kill();
                 let _ = child.wait();
@@ -100,17 +119,20 @@ fn a_stdin_read_that_never_ends_does_not_hold_the_exit() {
             None => thread::sleep(Duration::from_millis(20)),
         }
     };
-    let err = String::from_utf8_lossy(&stderr.join().expect("drain stderr")).into_owned();
-    let bytes = stdout.join().expect("drain stdout");
+    let teardown = asked.elapsed();
+    let bytes = out.join().expect("drain stdout");
     let out = String::from_utf8_lossy(&bytes);
     let out = out.trim();
-    let elapsed = start.elapsed();
+    let err = String::from_utf8_lossy(&err.join().expect("drain stderr")).into_owned();
     assert!(
         status.success(),
         "the program did not exit as asked: {status:?}\nstdout: {out}\nstderr: {err}"
     );
+    assert!(out.contains("started"), "the program printed [{out}], not its value");
     assert!(
-        elapsed <= TEARDOWN_BOUND + Duration::from_secs(20),
-        "the exit took {elapsed:?}, past the {TEARDOWN_BOUND:?} it is bounded by"
+        teardown < TIMER + ALLOWANCE,
+        "the exit waited {teardown:?} after the program asked to exit: the \
+         {TEARDOWN_BOUND:?} bound is being spent on the stdin read, which is \
+         no part of the teardown\nstderr: {err}"
     );
 }

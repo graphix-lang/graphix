@@ -7,7 +7,7 @@ use graphix_compiler::{CFlag, FAILURE_TARGET, expr::Load};
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_package_core::{NetConfig, NetTimeouts};
 use graphix_rt::NoExt;
-use graphix_shell::{CacheMode, Mode, ShellBuilder, TEARDOWN_BOUND};
+use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use log::info;
 use netidx::{
     config::Config,
@@ -493,28 +493,34 @@ fn tokio_main(
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q21, Exit waits
     // for teardown): yes, await (the recommendation: await with a bound (a few
     // seconds).)
-    // 2026-10-28 qwen: Awaited the teardown, bounded by graphix_shell::TEARDOWN_BOUND
-    // (5 s). GXHandle now holds its JoinHandle in a Mutex<Option<..>> and gains
-    // GXHandle::ended(), which takes it and awaits the runtime task's end; Teardown's
-    // abort still breaks a wedged cycle first. Shell::run drops Teardown (aborting the
-    // runtime and the Ctrl-C task) and then awaits gx.ended() under that bound, so the
-    // session gives up what it held while the shell's tokio runtime is still up to run
-    // what a last drop starts. main.rs uses rt.shutdown_timeout(TEARDOWN_BOUND) where
-    // it had shutdown_background, which is the bound on Reaped's blocking reap. A read
-    // that never returns is now bounded by that instead of holding the exit, so the
-    // rule above still holds; a normal exit pays nothing (the db pin runs 16 processes
-    // in ~5.6 s, so neither wait is being spent when there is nothing to wait for).
-    // Pins: graphix-shell/tests/exit_teardown.rs.
+    // 2026-10-28 qwen: Awaited, bounded, by graphix_shell::TEARDOWN_BOUND (5 s).
+    // GXHandle holds its JoinHandle in a Mutex<Option<..>> and has GXHandle::ended(),
+    // which takes it and awaits the runtime task's end; Teardown's abort still breaks
+    // a wedged cycle first. Shell::run drops Teardown (aborting the runtime and the
+    // Ctrl-C task), awaits gx.ended() and then Reaped's outstanding reaps, both within
+    // that one bound, so the session gives up what it held while this runtime is still
+    // up to run what a last drop started. shutdown_background is right again: the exit
+    // waits for the teardown's own work and abandons whatever else a blocking thread is
+    // stuck in (a stdin read) at once. Pins: graphix-shell/tests/exit_teardown.rs.
     // a_db_write_before_sys_exit_reaches_the_disk loops 8 runs with a fresh db each, so
-    // a run can only read what its own write put there; before the fix it lost the
-    // write on the first or second iteration in every invocation, after it passes.
-    // a_stdin_read_that_never_ends_does_not_hold_the_exit holds stdin open on a pipe
-    // that is never written and calls sys::exit from a timer; it passes before and
-    // after, which is the point: the bound ends the process where the read cannot. The
-    // probe reproduced only 2 of 12 here (the report said 5 of 6), which is why the pin
-    // loops a fresh db per run rather than trusting it. cargo test -p graphix-shell
-    // --offline: 181 passed, 0 failed, 1 ignored (44 suites).
-    rt.shutdown_timeout(TEARDOWN_BOUND);
+    // a run can only read what its own write put there.
+    // 2026-10-28 qwen: Awaited the teardown's own work and nothing else. Reaped counts
+    // the reaps it has spawned that have not finished (an AtomicUsize and a Notify in
+    // one static, process-wide: the process is what is exiting; the count drops once
+    // the blocking thread has dropped the value, and a spawn cancelled with the pool
+    // drops its value all the same) and graphix_package_core::await_reaps() waits for
+    // zero. Shell::run drops Teardown, awaits GXHandle::ended() then await_reaps(),
+    // both within one TEARDOWN_BOUND deadline, so a stdin read that never answers is
+    // abandoned at once; main.rs is back to shutdown_background. Pin
+    // exit_teardown::a_stdin_read_that_never_ends_does_not_hold_the_exit now times the
+    // exit from the program's first value and refuses 2.5 s: 5.53 s (the whole bound,
+    // spent waiting on the read) before this, 0.51 s after — its own 500 ms exit timer,
+    // the wait costing ~10 ms. The db pin is unchanged and still passes. cargo test -p
+    // graphix-shell --offline: 181 passed, 0 failed, 1 ignored. Left alone: a signal
+    // that arrives during the initial env load returns from Shell::run before the wait
+    // (graphix-shell/src/lib.rs:705), a narrow window that still races its reaps; a
+    // signal during a run does wait.
+    rt.shutdown_background();
     res
 }
 
