@@ -493,17 +493,6 @@ fn tokio_main(
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q21, Exit waits
     // for teardown): yes, await (the recommendation: await with a bound (a few
     // seconds).)
-    // 2026-10-28 qwen: Awaited, bounded, by graphix_shell::TEARDOWN_BOUND (5 s).
-    // GXHandle holds its JoinHandle in a Mutex<Option<..>> and has GXHandle::ended(),
-    // which takes it and awaits the runtime task's end; Teardown's abort still breaks
-    // a wedged cycle first. Shell::run drops Teardown (aborting the runtime and the
-    // Ctrl-C task), awaits gx.ended() and then Reaped's outstanding reaps, both within
-    // that one bound, so the session gives up what it held while this runtime is still
-    // up to run what a last drop started. shutdown_background is right again: the exit
-    // waits for the teardown's own work and abandons whatever else a blocking thread is
-    // stuck in (a stdin read) at once. Pins: graphix-shell/tests/exit_teardown.rs.
-    // a_db_write_before_sys_exit_reaches_the_disk loops 8 runs with a fresh db each, so
-    // a run can only read what its own write put there.
     // 2026-10-28 qwen: Awaited the teardown's own work and nothing else. Reaped counts
     // the reaps it has spawned that have not finished (an AtomicUsize and a Notify in
     // one static, process-wide: the process is what is exiting; the count drops once
