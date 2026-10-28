@@ -79,6 +79,12 @@ struct Rand {
     out: TagValue,
 }
 
+impl Rand {
+    fn with(args: CachedVals) -> Self {
+        Self { args, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Rand {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "rand";
@@ -91,7 +97,7 @@ impl<R: Rt> BuiltIn<R> for Rand {
         from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Rand { args: CachedVals::new(from), out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(CachedVals::new(from))))
     }
 
     fn image_decode(
@@ -100,7 +106,7 @@ impl<R: Rt> BuiltIn<R> for Rand {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let args = CachedVals::image_decode(buf)?;
-        Ok(Box::new(Rand { args, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(args)))
     }
 }
 
@@ -156,6 +162,12 @@ struct Pick {
     out: TagValue,
 }
 
+impl Pick {
+    fn new() -> Self {
+        Self { out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Pick {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "rand_pick";
@@ -168,7 +180,7 @@ impl<R: Rt> BuiltIn<R> for Pick {
         _from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Pick { out: TagValue::phantom() }))
+        Ok(Box::new(Self::new()))
     }
 
     fn image_decode(
@@ -176,7 +188,7 @@ impl<R: Rt> BuiltIn<R> for Pick {
         _from: &[Node<R>],
         _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
-        Ok(Box::new(Pick { out: TagValue::phantom() }))
+        Ok(Box::new(Self::new()))
     }
 }
 
@@ -211,6 +223,12 @@ struct Shuffle {
     out: TagValue,
 }
 
+impl Shuffle {
+    fn new() -> Self {
+        Self { out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Shuffle {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "rand_shuffle";
@@ -223,7 +241,7 @@ impl<R: Rt> BuiltIn<R> for Shuffle {
         _from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Shuffle { out: TagValue::phantom() }))
+        Ok(Box::new(Self::new()))
     }
 
     fn image_decode(
@@ -231,7 +249,7 @@ impl<R: Rt> BuiltIn<R> for Shuffle {
         _from: &[Node<R>],
         _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
-        Ok(Box::new(Shuffle { out: TagValue::phantom() }))
+        Ok(Box::new(Self::new()))
     }
 }
 
