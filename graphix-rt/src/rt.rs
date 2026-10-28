@@ -309,11 +309,15 @@ impl<X: GXExt> GXRt<X> {
     /// or custom task, an armed timer, or a watch besides the two the
     /// runtime holds open.
     pub(super) fn outstanding(&self) -> bool {
-        !self.tasks.is_empty()
-            || !self.custom_tasks.is_empty()
+        self.replies_pending()
             || !self.timers.is_empty()
             || self.watches.len() > 1
             || self.var_watches.len() > 1
+    }
+
+    /// Whether a spawned or custom task may still reply.
+    pub(super) fn replies_pending(&self) -> bool {
+        !self.tasks.is_empty() || !self.custom_tasks.is_empty()
     }
 
     /// An execution state over a new runtime.

@@ -363,6 +363,15 @@ impl<X: GXExt> Callable<X> {
     }
 }
 
+/// What a settle waiter waits out besides new input.
+#[derive(Debug, Clone, Copy)]
+enum Settle {
+    /// Every reply: no spawned or custom task in flight.
+    Replies,
+    /// Everything outstanding: replies, armed timers and live watches.
+    Sources,
+}
+
 enum ToGX<X: GXExt> {
     GetEnv {
         res: oneshot::Sender<Env>,
@@ -462,9 +471,10 @@ enum ToGX<X: GXExt> {
     /// Send [`GXEvent::Idle`] when the runtime next goes idle. See
     /// [`GXHandle::notify_idle`].
     NotifyIdle,
-    /// Answer when the runtime is idle with nothing outstanding. See
-    /// [`GXHandle::wait_settled`].
+    /// Answer when the runtime is idle with nothing `until` names
+    /// outstanding. See [`GXHandle::wait_settled`].
     WaitSettled {
+        until: Settle,
         res: oneshot::Sender<()>,
     },
     /// Start (or restart) runtime-side tracing. See
@@ -861,7 +871,14 @@ impl<X: GXExt> GXHandle<X> {
     /// standing source (a subscription, a server) never settles; an
     /// extension's own sources (`GXExt::update_sources`) are not seen.
     pub async fn wait_settled(&self) -> Result<()> {
-        self.exec(|res| ToGX::WaitSettled { res }).await
+        self.exec(|res| ToGX::WaitSettled { until: Settle::Sources, res }).await
+    }
+
+    /// Wait until the runtime is idle, as [`Self::wait_idle`], with no
+    /// spawned or custom task in flight: every async call made so far
+    /// has replied. Timers and watches may still start cycles.
+    pub async fn wait_replies(&self) -> Result<()> {
+        self.exec(|res| ToGX::WaitSettled { until: Settle::Replies, res }).await
     }
 
     /// Start (or restart) runtime-side tracing: every value a registered

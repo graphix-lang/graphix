@@ -692,6 +692,9 @@ async fn drive(
     outcome
 }
 
+/// The longest a settle round waits for the replies in flight.
+const REPLY_WAIT: Duration = Duration::from_secs(10);
+
 async fn drive_inner(
     ctx: &TestCtx,
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
@@ -733,9 +736,11 @@ async fn drive_inner(
         }};
     }
     // One epoch's segment, settled. `trace_wait_idle` sees an in-flight
-    // async IO task as idle, so the FinalValues tier re-waits after a
-    // grace sleep until a round is quiet; Exact-tier programs have no
-    // in-flight IO and skip the settle.
+    // async IO task as idle, so the FinalValues tier waits out the replies
+    // in flight (up to REPLY_WAIT: a program may keep one in flight for
+    // ever) and re-waits after a grace sleep, for what timers and watches
+    // start, until a round is quiet; Exact-tier programs have no in-flight
+    // IO and skip the settle.
     macro_rules! wait_settled {
         () => {{
             let mut seg = step_or_timeout!(
@@ -745,6 +750,11 @@ async fn drive_inner(
             );
             if tier == OracleTier::FinalValues {
                 for _ in 0..8 {
+                    step_or_timeout!(
+                        tokio::time::timeout(REPLY_WAIT, ctx.rt.wait_replies()),
+                        Ok(Err(e)) => return Outcome::RuntimeErr(format!("wait_replies: {e}")),
+                        _ => ()
+                    );
                     tokio::time::sleep(Duration::from_millis(150)).await;
                     let more = step_or_timeout!(
                         ctx.rt.trace_wait_idle(),

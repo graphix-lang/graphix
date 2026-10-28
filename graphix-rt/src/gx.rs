@@ -51,7 +51,7 @@ use triomphe::Arc;
 
 use crate::{
     Callable, CallableId, CompExp, CompRes, GXConfig, GXEvent, GXExt, GXHandle, GXRt,
-    Ref, ToGX, TraceEvent, TraceSegment, rt::Via,
+    Ref, Settle, ToGX, TraceEvent, TraceSegment, rt::Via,
 };
 
 static TRACE_EVENTS: std::sync::LazyLock<Pool<Vec<TraceEvent>>> =
@@ -367,9 +367,9 @@ pub(super) struct GX<X: GXExt> {
     /// A `NotifyIdle` is pending: the next idle verdict sends
     /// [`GXEvent::Idle`].
     notify_idle: bool,
-    /// Pending `WaitSettled` requests, answered at the first idle verdict
-    /// with nothing outstanding (`GXRt::outstanding`).
-    settle_waiters: Vec<oneshot::Sender<()>>,
+    /// Pending `WaitSettled` requests, each answered at the first idle
+    /// verdict with nothing its [`Settle`] names outstanding.
+    settle_waiters: Vec<(Settle, oneshot::Sender<()>)>,
     /// The program compiled or restored at construction; a compile
     /// failure is kept for the embedder to report, the runtime starts.
     program: Option<Result<ProgramRoot, String>>,
@@ -1049,7 +1049,9 @@ impl<X: GXExt> GX<X> {
                 }
                 ToGX::WaitIdle { res } => self.idle_waiters.push(res),
                 ToGX::NotifyIdle => self.notify_idle = true,
-                ToGX::WaitSettled { res } => self.settle_waiters.push(res),
+                ToGX::WaitSettled { until, res } => {
+                    self.settle_waiters.push((until, res))
+                }
                 ToGX::TraceStart { max_events, max_cycles } => {
                     // Replacing an active trace drops its pending waiter and events.
                     self.trace = Some(TraceState::new(max_events, max_cycles));
@@ -1595,8 +1597,13 @@ impl<X: GXExt> GX<X> {
             if !ready {
                 // a settle waiter waits out what is outstanding without
                 // the grace loop: a finished task or a fire wakes it
-                let settled =
-                    !self.settle_waiters.is_empty() && !self.ctx.rt.outstanding();
+                let replies = self.ctx.rt.replies_pending();
+                let sources = self.ctx.rt.outstanding();
+                let quiet = |until: &Settle| match until {
+                    Settle::Replies => !replies,
+                    Settle::Sources => !sources,
+                };
+                let settled = self.settle_waiters.iter().any(|(until, _)| quiet(until));
                 let waiter = self.trace.is_some()
                     || !self.idle_waiters.is_empty()
                     || self.notify_idle
@@ -1626,7 +1633,8 @@ impl<X: GXExt> GX<X> {
                         }
                     }
                     if settled {
-                        for tx in self.settle_waiters.drain(..) {
+                        let waiters = &mut self.settle_waiters;
+                        for (_, tx) in waiters.extract_if(.., |(until, _)| quiet(until)) {
                             let _ = tx.send(());
                         }
                     }

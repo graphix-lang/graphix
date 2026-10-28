@@ -58,6 +58,34 @@ async fn settles_when_a_watch_ends() -> Result<()> {
     Ok(())
 }
 
+/// A reply in flight holds `wait_replies` and a live watch does not; the
+/// watch still holds `wait_settled`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replies_settle_beside_a_live_watch() -> Result<()> {
+    let (gx, _wtx) = watched().await?;
+    let (gate, opened) = tokio::sync::oneshot::channel::<()>();
+    gx.with_ctx(move |ctx| {
+        ctx.rt.spawn_var(async move {
+            let _ = opened.await;
+            (BindId::new(), Value::Null)
+        })
+    })
+    .await?;
+    let replies = gx.wait_replies();
+    tokio::pin!(replies);
+    if timeout(Duration::from_millis(300), &mut replies).await.is_ok() {
+        bail!("replies settled with a call in flight")
+    }
+    let _ = gate.send(());
+    timeout(Duration::from_secs(3), &mut replies)
+        .await
+        .context("wait_replies did not answer after the call replied")??;
+    if timeout(Duration::from_millis(300), gx.wait_settled()).await.is_ok() {
+        bail!("settled with a live watch")
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn abort_answers_a_pending_settle() -> Result<()> {
     let (gx, _wtx) = watched().await?;
