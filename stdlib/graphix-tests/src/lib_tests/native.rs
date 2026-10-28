@@ -207,3 +207,38 @@ async fn native_blocker_list_is_filtered() {
         "structural `let` noise (whose values fused) must be filtered out, got: {err}"
     );
 }
+
+// A builtin whose cost scales with its data has no fast-call entry: a fused
+// call would rerun it whenever any input of its kernel fired, so it stays
+// behind its argument cache and `#[native]` over it is refused.
+#[tokio::test]
+async fn native_over_cached_builtins_is_error() {
+    for (name, code) in [
+        (
+            "array::sort",
+            "{ let f = |a: Array<i64>| { let r = #[native] array::sort(a); r }; f([3, 1, 2]) }",
+        ),
+        (
+            "str::parse",
+            "{ let p = |s: string| -> i64 { let r = #[native] str::parse(s)$; r }; p(\"1\") }",
+        ),
+        (
+            "hbs::render",
+            "{ let r = |t: string| { let s = #[native] hbs::render(t, {name: \"x\"})$; s }; r(\"a\") }",
+        ),
+        (
+            "re::find",
+            "{ let m = |p: string| { let r = #[native] re::find(#pat: p, \"aabbcc\")$; r }; m(\"b+\") }",
+        ),
+        (
+            "re::is_match",
+            "{ let m = |p: string| { let r = #[native] re::is_match(#pat: p, \"x\"); r }; m(\"x\") }",
+        ),
+    ] {
+        let e = refusal(code, crate::TEST_REGISTER).await.unwrap();
+        assert!(
+            e.contains(&format!("builtin `{name}` has no fast-call entry")),
+            "{name}: {e}"
+        );
+    }
+}
