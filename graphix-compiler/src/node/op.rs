@@ -88,7 +88,8 @@ macro_rules! binary_node {
             ) -> Result<Node<R>> {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
-                Ok(Self::node(spec, $typ, lhs, rhs, Default::default()))
+                let typ = ctx.instance_node_type(spec.id).unwrap_or_else(|| $typ);
+                Ok(Self::node(spec, typ, lhs, rhs, Default::default()))
             }
 
             pub(crate) fn image_decode(

@@ -1598,16 +1598,9 @@ impl<R: Rt> CallSite<R> {
             _ => compile(ctx, flags, (**f).clone(), scope, top_id)?,
         };
         let args = compile_apply_args(ctx, flags, scope, top_id, &spec, args)?;
-        let site = Self::unbound(
-            spec,
-            None,
-            Type::empty_tvar(),
-            fnode,
-            args,
-            scope.clone(),
-            flags,
-            top_id,
-        );
+        let rtype = ctx.instance_node_type(spec.id).unwrap_or_else(Type::empty_tvar);
+        let site =
+            Self::unbound(spec, None, rtype, fnode, args, scope.clone(), flags, top_id);
         Ok(Node::new(CallNode::Call(site)))
     }
 

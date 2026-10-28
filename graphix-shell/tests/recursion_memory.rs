@@ -1,69 +1,62 @@
-//! A recursion's dynamic scope must not grow with its depth: a deep
-//! interpreted recursion under `--no-fusion` runs in a child process,
-//! and its peak RSS grows linearly with the depth, at a bounded cost per
-//! activation.
-
 #![cfg(target_os = "linux")]
 
+use compact_str::{CompactString, format_compact};
 use std::{
-    env, fs,
+    fs,
     process::{Command, Stdio},
 };
 
-/// The depths measured: a baseline, and two that a linear cost puts 15k
-/// activations apart.
-const DEPTHS: [i64; 3] = [1, 5_000, 20_000];
-/// What an interpreted activation of a three-arm function may cost: about
-/// 11.6KB measured in the dev profile, 5% under this ceiling.
-const MAX_BYTES_PER_ACTIVATION: i64 = 12 * 1024;
+const SIZES: [i64; 3] = [1, 5_000, 20_000];
+const MAX_BYTES_PER_ACTIVATION: i64 = 10 * 1024;
 
-/// The peak RSS in KB of `f(depth)`, which must compute its sum.
-fn peak_rss_kb(depth: i64) -> i64 {
-    let expected = depth * (depth + 1) / 2;
-    let program = format!(
-        "let rec f = |n: i64| -> i64 select n {{\n  0 => 0,\n  _ => n + f(n - 1)\n}};\n\
-         sys::exit(select f({depth}) {{ {expected} => 0, _ => 1 }})\n"
-    );
-    let path = env::temp_dir()
-        .join(format!("recursion_memory_{}_{depth}.gx", std::process::id()));
-    fs::write(&path, program).unwrap();
+fn peak_rss_kb(program: &str) -> i64 {
+    let file = tempfile::Builder::new().suffix(".gx").tempfile().unwrap();
+    fs::write(file.path(), program).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_graphix"))
         .arg("--no-cache")
         .arg("--no-fusion")
-        .arg(&path)
+        .arg("--no-netidx")
+        .env("GRAPHIX_PAR", "off")
+        .arg(file.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
     let pid = child.id() as libc::pid_t;
     let mut status = 0;
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     let reaped = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
-    let _ = fs::remove_file(&path);
     assert_eq!(reaped, pid, "wait4 failed");
     assert!(
         libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-        "the recursion did not compute f({depth}) = {expected} (status {status:#x})"
+        "the program did not compute the expected result (status {status:#x}): {program}"
     );
     usage.ru_maxrss
 }
 
-#[test]
-fn deep_recursion_memory_is_linear() {
-    let [base, mid, deep] = DEPTHS.map(peak_rss_kb);
-    eprintln!("peak RSS by depth {DEPTHS:?}: {base}KB {mid}KB {deep}KB");
-    // the cost of an activation, below the midpoint and above it
-    let low = (mid - base) * 1024 / (DEPTHS[1] - DEPTHS[0]);
-    let high = (deep - mid) * 1024 / (DEPTHS[2] - DEPTHS[1]);
-    assert!(
-        high <= MAX_BYTES_PER_ACTIVATION,
-        "an activation costs {high} bytes, over {MAX_BYTES_PER_ACTIVATION}"
+fn assert_linear_cost(what: &str, ceiling: i64, program: impl Fn(i64) -> CompactString) {
+    let [base, mid, deep] = SIZES.map(|n| peak_rss_kb(&program(n)));
+    let low = (mid - base) * 1024 / (SIZES[1] - SIZES[0]);
+    let high = (deep - mid) * 1024 / (SIZES[2] - SIZES[1]);
+    eprintln!(
+        "{what}: peak RSS at {SIZES:?}: {base}KB {mid}KB {deep}KB; {low}/{high} bytes per {what}"
     );
-    // linear: a deeper activation costs what a shallow one does
+    assert!(high <= ceiling, "a {what} costs {high} bytes, over {ceiling}");
     assert!(
         high <= 2 * low.max(1024) && low <= 2 * high.max(1024),
-        "activation cost {low} bytes below {} deep, {high} bytes above",
-        DEPTHS[1]
+        "{what} cost {low} bytes below {} deep, {high} bytes above",
+        SIZES[1]
     );
+}
+
+#[test]
+fn deep_recursion_memory_is_linear() {
+    assert_linear_cost("activation", MAX_BYTES_PER_ACTIVATION, |depth| {
+        let expected = depth * (depth + 1) / 2;
+        format_compact!(
+            "let rec f = |n: i64| -> i64 select n {{\n  0 => 0,\n  _ => n + f(n - 1)\n}};\n\
+             sys::exit(select f({depth}) {{ {expected} => 0, _ => 1 }})\n"
+        )
+    });
 }

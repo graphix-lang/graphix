@@ -1278,6 +1278,10 @@ impl Resolving {
 }
 
 impl<R: Rt> CompileCtx<R> {
+    pub(crate) fn instance_node_type(&mut self, id: ExprId) -> Option<Type> {
+        self.body.as_mut()?.types.as_mut()?.typ(id)
+    }
+
     /// The active instantiation of `def` with exactly this identity.
     pub(crate) fn resolving(
         &self,

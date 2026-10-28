@@ -891,7 +891,10 @@ impl Ref {
                 }
                 let bind_id = bind.id;
                 let (typ, signature) = match ctx.env.poly_binds.contains(&bind_id) {
-                    true => (Type::empty_tvar(), Signature::Pending),
+                    true => match ctx.instance_node_type(spec.id) {
+                        Some(typ) => (typ, Signature::Decided),
+                        None => (Type::empty_tvar(), Signature::Pending),
+                    },
                     false => (bind.typ.clone(), Signature::Binding),
                 };
                 if ctx.env.ide.is_lsp() {

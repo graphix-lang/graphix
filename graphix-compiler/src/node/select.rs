@@ -415,7 +415,8 @@ impl<R: Rt> Select<R> {
             })
             .collect::<Result<Vec<_>>>()
             .at(&spec)?;
-        Ok(Self::new(arg, arms, Type::empty_tvar(), spec, flags | own))
+        let typ = ctx.instance_node_type(spec.id).unwrap_or_else(Type::empty_tvar);
+        Ok(Self::new(arg, arms, typ, spec, flags | own))
     }
 }
 

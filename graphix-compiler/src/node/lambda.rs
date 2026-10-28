@@ -427,6 +427,7 @@ impl DefTables {
 /// An instance's view of its definition's [`DefTable`]: each row
 /// instantiated through one cell map, which starts from the definition's
 /// signature unified with the instance's.
+#[derive(Debug, Clone)]
 pub struct InstanceTypes {
     tables: Tables,
     known: Known,
@@ -584,6 +585,7 @@ fn enclosing_tvars<R: Rt>(ctx: &CompileCtx<R>, known: &mut AHashMap<ArcStr, TVar
 pub(crate) struct BodyCompile {
     pub(crate) share: BodyShare,
     pub(crate) checking: bool,
+    pub(crate) types: Option<InstanceTypes>,
     /// The signatures of the definitions around the body, innermost last.
     pub(crate) declared: Arc<[Arc<FnType>]>,
 }
@@ -791,6 +793,7 @@ pub struct GXLambda<R: Rt> {
     /// checks, may lack the defining module's private typedefs.
     env: Lexical,
     typing: Typing,
+    construction_types: Option<Box<InstanceTypes>>,
     /// The runtime this activation counts against, when a cycle bound it
     /// (`stack::activation_born`).
     charged: Option<usize>,
@@ -883,11 +886,25 @@ impl<R: Rt> GXLambda<R> {
     /// The types an instance takes from its definition's check; `None`
     /// for the definition's own check, which checks the body. An
     /// instance its definition's check cannot type is a compiler bug.
-    fn instance_types(&self, ctx: &CompileCtx<R>) -> Result<Option<InstanceTypes>> {
-        let (table, def) = match &self.typing {
+    fn instance_types(&mut self, ctx: &CompileCtx<R>) -> Result<Option<InstanceTypes>> {
+        if let Some(types) = self.construction_types.take() {
+            return Ok(Some(*types));
+        }
+        self.typing.instance_types(ctx, self.id, &self.typ)
+    }
+}
+
+impl Typing {
+    fn instance_types<R: Rt>(
+        &self,
+        ctx: &CompileCtx<R>,
+        id: LambdaId,
+        typ: &FnType,
+    ) -> Result<Option<InstanceTypes>> {
+        let (table, def) = match self {
             Typing::Definition => return Ok(None),
             Typing::Restored => {
-                bail!("a restored instance of {:?} is checked again", self.id)
+                bail!("a restored instance of {:?} is checked again", id)
             }
             Typing::Substituted(table, def) => (table, def),
         };
@@ -895,15 +912,12 @@ impl<R: Rt> GXLambda<R> {
             return Ok(None);
         }
         let Some(tables) = table.get() else {
-            bail!(
-                "an instance of {:?}, whose definition's check recorded no types",
-                self.id
-            )
+            bail!("an instance of {:?}, whose definition's check recorded no types", id)
         };
-        match InstanceTypes::new(ctx, tables.clone(), def, &self.typ) {
+        match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-                bail!("an instance at {} of a definition typed {def}", self.typ)
+                bail!("an instance at {} of a definition typed {def}", typ)
             }),
         }
     }
@@ -1119,6 +1133,7 @@ impl<R: Rt> GXLambda<R> {
             first_dispatch: true,
             env,
             typing,
+            construction_types: None,
             charged,
         }
     }
@@ -1136,10 +1151,21 @@ impl<R: Rt> GXLambda<R> {
         body: Expr,
     ) -> Result<Self> {
         let origin = body.ori.clone();
+        let types = typing.instance_types(ctx, id, &typ)?;
         let build = |ctx: &mut CompileCtx<R>, _: &[StructPatternNode]| {
-            compile(ctx, flags, body, scope, tid)
+            let outer =
+                ctx.body.as_mut().map(|b| mem::replace(&mut b.types, types.clone()));
+            let body = compile(ctx, flags, body, scope, tid);
+            if let Some(outer) = outer {
+                ctx.body.as_mut().expect("compiling body").types = outer;
+            }
+            body
         };
-        Self::new_with_body(ctx, id, typ, typing, argspec, args, scope, origin, build)
+        let mut instance = Self::new_with_body(
+            ctx, id, typ, typing, argspec, args, scope, origin, build,
+        )?;
+        instance.construction_types = types.map(Box::new);
+        Ok(instance)
     }
 
     pub(super) fn new_collection(
@@ -1171,7 +1197,7 @@ impl<R: Rt> GXLambda<R> {
         )
     }
 
-    // CR claude for claude: [perf/medium] Every node-walked call is a retained activation
+    // XCR claude for claude: [perf/medium] Every node-walked call is a retained activation
     // built here, and each one still holds about 10-12 KB after runtime-heap-01. A
     // node-walked binary recursion therefore grows by GBs at modest depth. fib(20)
     // under --no-fusion peaks at 273 MB against 58 MB fused. fib(25), about 243k calls,
@@ -1196,6 +1222,45 @@ impl<R: Rt> GXLambda<R> {
     // (smaller activations: an instance's nodes built from its definition's types with no
     // placeholder cells, shared Ref and call-site structures) is next; the per-activation
     // cost and MAX_BYTES_PER_ACTIVATION are unchanged so far.
+    // 2026-10-27 codex: Measured before changes in this worktree, offline dev graphix,
+    // --no-cache --no-fusion --no-netidx, wait4 peak RSS at depths 1/5000/20000:
+    // 65088/116448/275264 KiB, slopes 10520/10841 B per activation. The committed
+    // recursion probe actually has two select arms. Throwaway shell activation_sizes
+    // test: CallSite 600, GXLambda 208, Select 504, Ref 88, Add/Sub 144 each, Constant
+    // 80, Bind 224, Block 120, Type 40, FnType 168, TCell 128, TVarInner 48 bytes
+    // (payload, excluding allocator/Arc overhead). Construction allocates fresh
+    // placeholder cells for arithmetic/select/call returns, then typecheck0_instance
+    // binds them to table rows, retaining both TVar allocations. A generalized Ref also
+    // builds a placeholder and a fresh scheme; call signatures and ArgMap storage are per
+    // site. The measured recursion has one fresh formal n and one staged recursive
+    // argument per activation, three reads of n, one of the function binding and one
+    // staged argument ref; runtime reader/store maps add to the node payload. Plan: seed
+    // safe placeholder types from definition rows during construction, preserve
+    // per-instance open-cell identity, then measure retained savings. No graph sharing or
+    // lifecycle change.
+    // 2026-10-27 codex: Fixed under D1 lever 1. GXLambda prepares InstanceTypes before
+    // compiling its body; construction and typecheck0_instance use the same substitution
+    // map, released after the check unless a nested definition owns it. Arithmetic,
+    // select and call-result nodes and generalized Ref nodes take their table rows at
+    // construction; missing rows and GRAPHIX_NO_SUBST retain the check path. No
+    // graph/lifecycle sharing or public signature changes. Correction to the measurement
+    // note: Select already replaced its result placeholder after checking; its
+    // construction saving is transient, while arithmetic/call-return placeholders and Ref
+    // scheme copies were retained. Pin:
+    // graphix-shell/tests/recursion_memory.rs::deep_recursion_memory_is_linear, ceiling
+    // lowered from 12288 to 10240 B. Same wait4 child probe at 1/5000/20000, --no-cache
+    // --no-fusion --no-netidx and GRAPHIX_PAR=off: baseline 76540/126888/285496 KiB
+    // (10827 B/activation over 5000..20000), fixed 72708/118576/261000 KiB (9722 B; other
+    // fixed runs 9701/9704). Saw the tightened pin fail on the saved baseline executable
+    // (10827 > 10240), then pass. Initial default-auto probe was 10841 before, 9686
+    // after. Verified offline: shell recursion_memory, no_subst and shared_bodies;
+    // graphix-tests lang:: (7393 passed, 1 timing test ignored, network cases excluded)
+    // and lib_tests:: (3112 passed, network cases excluded); lang includes all 29 active
+    // image tests. One lang run had continuations::jit observe an early (0,0) before
+    // (0,1) in the delayed-error timer fixture; all four continuations modes and the
+    // entire selected lang suite passed on rerun, with no test change. Socket-dependent
+    // tests and the whole-workspace gate were not run. Exact filtered cargo commands and
+    // outputs are in /tmp/graphix-lang-rerun.log and /tmp/graphix-lib_tests-final.log.
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
@@ -1484,6 +1549,7 @@ pub(crate) fn make_init<R: Rt>(
                 let compiling = BodyCompile {
                     share: shared.clone(),
                     checking: matches!(mode, BindMode::Definition),
+                    types: None,
                     declared: enclosing.clone(),
                 };
                 let outer = ctx.body.replace(compiling);
