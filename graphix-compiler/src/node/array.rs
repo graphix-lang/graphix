@@ -370,6 +370,10 @@ impl<R: Rt> ArrayRef<R> {
         // fusion/emit/lower.rs SiteLayout and CtxWord, fusion/emit/record.rs
         // RecordReloc and the RecordKind variants, and fusion/share.rs RegionPrint (the
         // walk builds an empty one and fills it). x-dup-03 stays open for those.
+        // 2026-10-28 qwen: graphix-shell --test constructor_image
+        // (constructor_nodes_agree_cold_and_warm) passes at this tip: the program that
+        // exercises these shapes runs to the same production cold and from a restored
+        // image.
         Ok(Self::with(spec, typ, etyp, source, i))
     }
 
