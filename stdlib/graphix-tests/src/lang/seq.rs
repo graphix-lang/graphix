@@ -921,3 +921,17 @@ run!(trigger_read_by_another_spelling_is_snapshotted,
         let t = 0;
         t <- select t { k if k < 4 => (k ~ t) + 1, _ => never() }
     "#; FuseExpect::Jit);
+
+run!(sample_bank_cleared_at_seq_rebirth, r#"{
+    let step = 0;
+    step <- select step { s if s < 16 => s + 1, _ => never() };
+    let go = select step { 1 | 8 => step, _ => never() };
+    let ev = select step { 3 => step, _ => never() };
+    let cancel = select step { 5 => null, _ => never() };
+    let v = never();
+    v <- select step { 10 => 100, _ => never() };
+    let result = seq go; abort(cancel) { let r = live(ev ~ v); r };
+    let completed = 0;
+    completed <- result ~ completed + 1;
+    select step { 16 => completed, _ => never() }
+}"#, is(Value::I64(0)); FuseExpect::Jit);

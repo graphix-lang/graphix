@@ -425,6 +425,11 @@ trigger it on the event that selects the arm. A `seq` nested in a step
 of an outer run that was aborted is idle too; a triggerless one starts
 again when a later run enters its step.
 
+A sample (`~`) inside a step starts each run with no banked trigger. An
+unpaid trigger from an aborted run cannot complete a later run when the
+sampled value arrives. An ordinary arm's sleep and wake preserves its bank;
+entering a step for a new run is a birth.
+
 The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
 Sleeping the enclosing expression keeps the queued requests, as `queue`

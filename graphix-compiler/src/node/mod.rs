@@ -2544,6 +2544,7 @@ pub struct Sample<R: Rt> {
     pub trigger: Node<R>,
     pub arg: Held<R>,
     resident: TagValue,
+    slept: WakeBit,
 }
 
 impl<R: Rt> Sample<R> {
@@ -2572,6 +2573,7 @@ impl<R: Rt> Sample<R> {
             trigger,
             arg,
             resident: TagValue::phantom(),
+            slept: WakeBit::default(),
         }))
     }
 
@@ -2605,6 +2607,7 @@ impl<R: Rt> Sample<R> {
             trigger,
             arg,
             resident: TagValue::phantom(),
+            slept: WakeBit::default(),
         }))
     }
 
@@ -2647,6 +2650,13 @@ impl<R: Rt> Update<R> for Sample<R> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
+        if self.slept.take() && ctx.event.born() {
+            match &mut self.banking {
+                Banking::Strict => (),
+                Banking::One { owed } => *owed = false,
+                Banking::Each { owed, .. } => *owed = 0,
+            }
+        }
         // XCR claude for claude: [bug/low] A bottom trigger is not `is_fired`, so both `~`
         // and `~!` ride their resident while the trigger is bottom. The sample keeps
         // showing its last value: in the probe (7, 2) fires while `a / z` is bottom.
@@ -2805,7 +2815,7 @@ impl<R: Rt> Update<R> for Sample<R> {
         self.trigger.delete(ctx);
     }
 
-    // CR claude for claude: [bug/medium] A `~`'s debt survives its step's sleep and the
+    // XCR claude for claude: [bug/medium] A `~`'s debt survives its step's sleep and the
     // step's next entry, which is a birth for the run (View::Step). A trigger banked in
     // an aborted seq run is paid in the next run when the argument arrives, completing
     // that run's step on an event of the dead run ("result 100 at 12" with no ev in run
@@ -2818,7 +2828,16 @@ impl<R: Rt> Update<R> for Sample<R> {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q3, A banked
     // trigger across a seq run): yes, clear it (the recommendation: clear it, which
     // follows "entering a step is its birth".)
+    // 2026-10-27 codex: Sample now records sleep and clears owed triggers when its next
+    // update is born (including a new seq run); a normal wake retains the bank. Updated
+    // the seq chapter, CLAUDE.md and graphix-lang. New pin
+    // lang::seq::sample_bank_cleared_at_seq_rebirth failed in all four modes before the
+    // fix, completing the second run on the aborted run's trigger. It passes after the
+    // fix, together with the lang::seq, lang::select, lang::sample and
+    // lib_tests::bottom regression filters. No FuseExpect moved. The netidx-admin
+    // socket tests and a fuzzer soak were not run here.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.slept.set();
         // what was paid and not yet received is owed again under a fresh
         // id, so a payment landing while asleep is not lost
         if let Banking::Each { owed, pay } = &mut self.banking

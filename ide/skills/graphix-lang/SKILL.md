@@ -396,6 +396,8 @@ false`), and write a child that must die with the run to an outer
 variable, not a `let`. Under `seqq`, `abort` starts the next queued
 request and `flush(e)` (after `abort`, `seqq` only) also empties the
 queue. A seq whose select arm sleeps mid-run is idle when it wakes.
+A sample inside a step clears its banked triggers when the step is born
+for a new run; a trigger from an aborted run cannot complete the next run.
 
 A busy flag set on a trigger, a call sampled on that trigger, and the
 flag cleared on the result is a seq written by hand, three statements
