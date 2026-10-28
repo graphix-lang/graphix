@@ -1242,6 +1242,10 @@ fn root_place<R: Rt>(root: &Node<R>) -> Option<(BindId, &Path)> {
 }
 
 impl<R: Rt> Place<R> {
+    fn with(root: Node<R>, steps: Vec<PlaceStep<R>>, scope: ModPath) -> Self {
+        Place { root, steps, scope, path: Path::new() }
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.root.image_encode(buf)?;
         encode_varint(self.steps.len() as u64, buf);
@@ -1262,7 +1266,7 @@ impl<R: Rt> Place<R> {
             steps.push(PlaceStep::image_decode(ctx, buf)?);
         }
         let scope = ModPath::decode(buf)?;
-        Ok(Place { root, steps, scope, path: Path::new() })
+        Ok(Self::with(root, steps, scope))
     }
 
     /// The accessor chain of `expr` down to a variable or a
@@ -1309,7 +1313,7 @@ impl<R: Rt> Place<R> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(Place { root, steps, scope: scope.lexical.clone(), path: Path::new() })
+        Ok(Self::with(root, steps, scope.lexical.clone()))
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> Resolved<'_> {
@@ -1501,6 +1505,18 @@ pub struct ByRef<R: Rt> {
 }
 
 impl<R: Rt> ByRef<R> {
+    fn with(spec: Arc<Expr>, typ: Type, referent: Referent<R>, id: BindId) -> Node<R> {
+        Node::new(Self {
+            spec,
+            typ,
+            referent,
+            id,
+            resident: TagValue::phantom(),
+            registered: None,
+            keep: None,
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -1512,15 +1528,7 @@ impl<R: Rt> ByRef<R> {
             false => Referent::Channel(decode_node(ctx, buf)?),
             true => Referent::Place(Place::image_decode(ctx, buf)?),
         };
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            referent,
-            id,
-            resident: TagValue::phantom(),
-            registered: None,
-            keep: None,
-        }))
+        Ok(Self::with(spec, typ, referent, id))
     }
 
     pub(crate) fn compile(
@@ -1593,15 +1601,7 @@ impl<R: Rt> ByRef<R> {
                 ctx.mark_connect_target(r.id).map_err(|e| e.at(&spec))?;
             }
         }
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            referent,
-            id,
-            resident: TagValue::phantom(),
-            registered: None,
-            keep: None,
-        }))
+        Ok(Self::with(spec, typ, referent, id))
     }
 
     /// Write the cell, which `Deref` reads for a chainless reference and
@@ -1855,6 +1855,16 @@ enum Moved {
 }
 
 impl<R: Rt> Deref<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        child: Node<R>,
+        top_id: ExprId,
+        addr: Option<Addr>,
+    ) -> Node<R> {
+        Node::new(Self { spec, typ, child, top_id, resident: TagValue::phantom(), addr })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -1870,14 +1880,7 @@ impl<R: Rt> Deref<R> {
                 ctx.record_ref(a.cell, top_id);
             }
         }
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            child,
-            top_id,
-            resident: TagValue::phantom(),
-            addr,
-        }))
+        Ok(Self::with(spec, typ, child, top_id, addr))
     }
 
     pub(crate) fn compile(
@@ -1890,14 +1893,7 @@ impl<R: Rt> Deref<R> {
     ) -> Result<Node<R>> {
         let child = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let typ = Type::empty_tvar();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            child,
-            top_id,
-            resident: TagValue::phantom(),
-            addr: None,
-        }))
+        Ok(Self::with(spec, typ, child, top_id, None))
     }
 
     /// Address `cell`'s referent: the place it stands for, else the
