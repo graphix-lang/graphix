@@ -144,6 +144,12 @@ impl Lives {
     // cycles so the self-write lands, and counts live reference cells (Lives::cells)
     // beside bindings; self_referencing_values_in_deleted_slots_are_collected fails in all
     // four modes without the cell release.
+    // 2026-10-28 claude: Maps are collected through too: immutable-chunkmap 2.1.5's
+    // NodeRef::strong_count gives every map node an owner count (netidx-value trace
+    // reports it; graphix requires 2.1.5), so the collector no longer reads a map's inner
+    // nodes as held from outside. Pin:
+    // lang::orphans::self_referencing_maps_in_deleted_slots_are_collected (fails in all
+    // four modes with map nodes uncounted).
     pub fn orphan_if_pinned(&self, id: BindId) -> bool {
         let mut st = self.0.lock();
         let pinned = st.pins.contains_key(&id);
@@ -251,8 +257,7 @@ struct Graph {
 
 #[derive(Default)]
 struct Alloc {
-    /// None where the owners cannot be counted.
-    strong: Option<usize>,
+    strong: usize,
     /// Edges to it from what this walk reached.
     internal: usize,
     children: SmallVec<[usize; 2]>,
@@ -332,8 +337,7 @@ impl Graph {
             n.internal += 1;
             return;
         }
-        let mut n =
-            Alloc { strong: Some(Arc::count(k)), internal: 1, ..Alloc::default() };
+        let mut n = Alloc { strong: Arc::count(k), internal: 1, ..Alloc::default() };
         n.owns.push(k.cell);
         self.cells.insert(k.cell);
         cells.push(k.cell);
@@ -355,7 +359,7 @@ impl Graph {
         let mut live = Live::default();
         let mut work: LPooled<Vec<Item>> = LPooled::take();
         for (a, n) in self.allocs.iter() {
-            if n.strong.is_none_or(|s| s > n.internal) {
+            if n.strong > n.internal {
                 work.push(Item::Alloc(*a))
             }
         }

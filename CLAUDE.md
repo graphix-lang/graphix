@@ -741,8 +741,7 @@ node graph IS the IR — there is no parallel typed IR
   and stored values until the last owner drops. The initializer does not survive.
   An orphan that only orphans' values keep (a self-reference, a `let rec`
   closure) is collected (`reference::Lives::collect`, over netidx-value's
-  `Value::edges`; a cycle through a map's inner nodes is not;
-  design/place_references.md). Pins:
+  `Value::edges`; design/place_references.md). Pins:
   `lang::functions::closure_outlives_collection_slot*`, `lang::orphans`.
 - **`let rec` is monomorphic-recursive**, and a binding something writes
   (a `<-` target, a `&mut`'s referent; a writer anywhere in its block,

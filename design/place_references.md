@@ -50,15 +50,14 @@ drops by itself, so the orphans are collected (`Lives::collect`, called by
 `release_references` before the releases). The collection walks every
 orphan's stored value, and the cells its references own, through the
 shared allocations netidx-value reports (`Value::edges`,
-`trace::Edge::children`: an array's inner arc and base, an error's arc, a
-map's nodes, an abstract), reading a reference's keep, a nominal abstract's
+`trace::Edge::children`: an array's inner arc and base, an error's arc,
+each of a map's nodes, an abstract), reading a reference's keep, a nominal abstract's
 payload and a function value's captures itself. An allocation whose owners
 the walk did not all find (its strong count exceeds the edges to it) is
 held from outside, and so is an orphan with a pin the walk did not find;
 everything such a holder reaches lives, and the other orphans are
 released, with the cells of the references collected: a cell mirrors its
-place, so its value holds the reference too. A map's inner nodes report no count, so what a map holds below
-its root always lives: a cycle through one is not collected. What the walk
+place, so its value holds the reference too. What the walk
 cannot read keeps what it holds, so a collection only ever releases too
 little. It runs when an orphan was made or lost a pin since the last one;
 one that kept an orphan with nothing changed waits 1, 2, 4.. up to 1024

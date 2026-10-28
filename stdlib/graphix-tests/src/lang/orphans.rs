@@ -151,3 +151,16 @@ run!(
     }"#,
     is(Value::I64(14))
 );
+
+async fn self_referencing_maps_in_deleted_slots_are_collected(mode: Mode) -> Result<()> {
+    slot_bindings_settle(
+        mode,
+        "type Node = {me: Map<string, &Node>, data: Array<i64>};",
+        "let x: Node = {me: {}, data: []};
+         x <- {me: {\"self\" => &x}, data: [k, k]};
+         k",
+    )
+    .await
+}
+
+modes!(self_referencing_maps_in_deleted_slots_are_collected);
