@@ -180,6 +180,44 @@ impl<R: Rt> ArrayRef<R> {
         // and cargo test -p graphix-shell --offline --test constructor_image
         // (constructor_nodes_agree_cold_and_warm) passes. Remaining: the
         // net/time/watch/http builtins, which this batch was told to leave.
+        // 2026-10-28 qwen: 2026-10-28 qwen: The net, time, watch and http builtins now
+        // build through one constructor each, called by init and image_decode; one
+        // commit per file. time.rs: AfterIdle::with(timeout_v, last_v, eid),
+        // Now::new(); Timer already had Timer::new(eid) used by both paths, so nothing
+        // to change. watch.rs: CreateWatcher::with(poll_interval, batch_size),
+        // WatchApply::with(interest, path), WatchStream::with(var, cached). net.rs:
+        // Write::new() (it encodes nothing), Subscribe::with(var, target),
+        // RpcCall::with(var, target), the list! macro's own with(var) — which covers
+        // List and ListTable —, Publish::with(top_id, wid, on_write, write_typ) (each
+        // path keeps its own ctx.record_ref(wid, top_id)), PublishRpc::with(var,
+        // handler, cast_typ). http/lib.rs: HttpServe::with(var, handler), and
+        // HttpRequestEv's ImageState::image_decode returns Self::default() — the shape
+        // sys/tls.rs's started_image_state! already uses — so its literal is written
+        // once, in Default. Every runtime default (WakeBit::default, out: phantom,
+        // inbox, current, defaults, max_inflight, handler: false, listening/abort) now
+        // lives in one place per kind; image_encode writes the same fields in the same
+        // order, so no image format bump. Tests (sandbox refuses sockets, so the
+        // net/http fixtures fail there; lists compared): cargo test -p
+        // graphix-package-sys --offline --lib is 31 passed, 1 failed before and after,
+        // the same test both times (loader::test::a_miss_records_its_probe, "resolver
+        // server shutdown"). cargo test -p graphix-package-http --offline --lib has no
+        // unit tests: 0 passed before and after. cargo test -p graphix-tests --offline
+        // --lib lang::image is 32 passed, 1 ignored before and after. Since the http
+        // package has no tests of its own, the http fixtures were compared too: cargo
+        // test -p graphix-tests --offline --lib lib_tests::http is 8 passed, 90 failed
+        // before and after with an identical 90-name failure list. No test changed. A
+        // scan of every image_decode body in the tree for a struct literal finds none
+        // left in these four files. Still repeating elsewhere under this CR (found by
+        // the same scan, not touched here): graphix_package_core::Handler repeats its
+        // literal in new (stdlib/graphix-package-core/src/handler.rs:193) and
+        // image_decode (:316); graphix_compiler::node::genn::Callback repeats it in
+        // through_binding (graphix-compiler/src/node/genn.rs:376) and image_decode
+        // (:479); tui's SuspendEv rebuilds in ImageState::image_decode what Default
+        // plus attach produce (stdlib/graphix-package-tui/src/lib.rs:810); CachedVals
+        // and a few core wrappers rebuild a decode-time literal.
+        // node::pattern::PatternNode and node::lambda::BuiltInLambda have a literal
+        // only in their decode, so there is nothing to share there. x-dup-03 stays open
+        // for the remaining kinds.
         Ok(Self::with(spec, typ, etyp, source, i))
     }
 
