@@ -1397,6 +1397,10 @@ pub(crate) struct StaticCallTarget {
 }
 
 impl<R: Rt> Callee<R> {
+    fn to_static(apply: Box<dyn Apply<R>>, first_update: bool) -> Self {
+        Callee::Static { apply, first_update }
+    }
+
     fn apply(&self) -> Option<&dyn Apply<R>> {
         match self {
             Callee::DynamicUnbound | Callee::Failed { .. } | Callee::Imaged { .. } => {
@@ -2414,7 +2418,7 @@ impl<R: Rt> CallSite<R> {
                 ftype: TArc::new(instance_ftype.clone()),
             });
         }
-        self.callee = Callee::Static { apply, first_update: true };
+        self.callee = Callee::to_static(apply, true);
         // a static bind's defaults run from its first update
         for arg in self.args.values_mut() {
             if arg.stage == ArgStage::Compiled {
@@ -2973,7 +2977,7 @@ impl<R: Rt> Arg<R> {
             Some(n) => TArc::new(n.spec().clone()),
             None => NOP.clone(),
         };
-        Ok((key, Arg { id, node, stage, spec }))
+        Ok((key, Arg::new(id, node, stage, spec)))
     }
 }
 
@@ -3118,7 +3122,7 @@ impl<R: Rt> CallSite<R> {
         else {
             unreachable!()
         };
-        self.callee = Callee::Static { apply, first_update };
+        self.callee = Callee::to_static(apply, first_update);
         Ok(())
     }
 
@@ -3148,7 +3152,7 @@ impl<R: Rt> CallSite<R> {
                     false => {
                         let apply: Box<dyn Apply<R>> =
                             Box::new(GXLambda::image_decode(ctx, buf)?);
-                        Callee::Static { apply, first_update: bool::decode(buf)? }
+                        Callee::to_static(apply, bool::decode(buf)?)
                     }
                     true => {
                         let instance = LambdaInstanceId::decode(buf)?;
@@ -3168,7 +3172,7 @@ impl<R: Rt> CallSite<R> {
                 let arg_refs = decode_nodes(ctx, buf)?;
                 let apply: Box<dyn Apply<R>> =
                     Box::new(BuiltInLambda::image_decode(ctx, &arg_refs, buf)?);
-                (arg_refs, Callee::Static { apply, first_update: bool::decode(buf)? })
+                (arg_refs, Callee::to_static(apply, bool::decode(buf)?))
             }
             _ => return Err(PackError::UnknownTag),
         };
