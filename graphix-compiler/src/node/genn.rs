@@ -314,6 +314,10 @@ enum Function {
 }
 
 impl<R: Rt> Callback<R> {
+    fn with(call: Node<R>, function: Function, args: SmallVec<[BindId; 2]>) -> Self {
+        Self { call, function, args }
+    }
+
     /// A call of a function of type `typ`, its arguments named `names`,
     /// through a binding of its own.
     pub fn new(
@@ -358,7 +362,7 @@ impl<R: Rt> Callback<R> {
     ) -> Result<Self> {
         let (args, nodes) = Self::bind_args(ctx, scope, typ, names, top_id)?;
         let call = apply_value(f, scope.clone(), nodes, typ, top_id)?;
-        Ok(Self { call, function: Function::Value, args })
+        Ok(Self::with(call, Function::Value, args))
     }
 
     fn through_binding(
@@ -373,7 +377,7 @@ impl<R: Rt> Callback<R> {
         let (args, nodes) = Self::bind_args(ctx, scope, typ, names, top_id)?;
         let fnode = reference(ctx, fid, Type::Fn(typ.clone()), top_id);
         let call = apply(fnode, scope.clone(), nodes, typ, top_id)?;
-        Ok(Self { call, function: holding(fid), args })
+        Ok(Self::with(call, holding(fid), args))
     }
 
     fn bind_args(
@@ -476,6 +480,6 @@ impl<R: Rt> Callback<R> {
         };
         let n = decode_varint(buf)? as usize;
         let args = (0..n).map(|_| BindId::decode(buf)).collect::<Result<_, _>>()?;
-        Ok(Self { call, function, args })
+        Ok(Self::with(call, function, args))
     }
 }
