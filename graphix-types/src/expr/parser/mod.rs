@@ -283,14 +283,7 @@ where
                 }
                 Some(_) if docs => unexpected_any("doc comment").left(),
                 Some(_) => {
-                    grow::note_reason(
-                        pos,
-                        None,
-                        CompactString::const_new(
-                            "`///` is a doc comment, legal only in a .gxi interface \
-                             file; a .gx file comments with `//`",
-                        ),
-                    );
+                    note_doc_in_gx(pos);
                     unexpected_any("doc comment").left()
                 }
                 None => value(()).right(),
@@ -713,6 +706,18 @@ where
     separator_tok(sep, why).with(eol_comment()).skip(spaces())
 }
 
+/// Note why a `///` is refused where no doc can stand.
+fn note_doc_in_gx(pos: SourcePosition) {
+    grow::note_reason(
+        pos,
+        None,
+        CompactString::const_new(
+            "`///` is a doc comment, legal only in a .gxi interface file; a .gx file \
+             comments with `//`",
+        ),
+    );
+}
+
 const COMMA_WHY: &str = "a `,` separates this item from the one before";
 const SEMI_WHY: &str = "a `;` separates this statement from the one before";
 
@@ -734,14 +739,7 @@ where
             ))
             .then(|(pos, _, doc)| match doc {
                 Some(_) => {
-                    grow::note_reason(
-                        pos,
-                        None,
-                        CompactString::const_new(
-                            "`///` is a doc comment, legal only in a .gxi interface \
-                             file; a .gx file comments with `//`",
-                        ),
-                    );
+                    note_doc_in_gx(pos);
                     unexpected_any("doc comment").right()
                 }
                 None if grow::starts_line(pos) => unexpected_any("comment").right(),
