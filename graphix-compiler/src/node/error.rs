@@ -144,6 +144,10 @@ enum AbortRole<R: Rt> {
 }
 
 impl<R: Rt> CatchAction<R> {
+    fn with(node: Node<R>, role: AbortRole<R>) -> Self {
+        Self { node, role, pending: None }
+    }
+
     pub(crate) fn manual(&self) -> Option<&Node<R>> {
         match &self.role {
             AbortRole::Machine { manual, .. } => manual.as_ref(),
@@ -163,6 +167,12 @@ impl<R: Rt> CatchAction<R> {
             AbortRole::Try { capture } => Some(capture),
             AbortRole::Machine { .. } => None,
         }
+    }
+}
+
+impl<R: Rt> AbortRole<R> {
+    fn machine(manual: Option<Node<R>>, pc: BindId, clock: Option<BindId>) -> Self {
+        AbortRole::Machine { manual, pc, clock: clock.map(|c| (c, false)) }
     }
 }
 
@@ -310,15 +320,15 @@ impl<R: Rt> Catch<R> {
             None => None,
             Some(node) => {
                 let role = if bool::decode(buf)? {
-                    AbortRole::Machine {
-                        manual: opt_node_decode(ctx, buf)?,
-                        pc: BindId::decode(buf)?,
-                        clock: Option::<BindId>::decode(buf)?.map(|c| (c, false)),
-                    }
+                    AbortRole::machine(
+                        opt_node_decode(ctx, buf)?,
+                        BindId::decode(buf)?,
+                        Option::<BindId>::decode(buf)?,
+                    )
                 } else {
                     AbortRole::Try { capture: BindId::decode(buf)? }
                 };
-                Some(CatchAction { node, role, pending: None })
+                Some(CatchAction::with(node, role))
             }
         };
         let own_handler = image::handler_decode(buf)?;
@@ -379,27 +389,21 @@ impl<R: Rt> Catch<R> {
         };
         let action = match &c.role {
             CatchRole::User => None,
-            CatchRole::Machine { action, manual, pc, clock } => Some(CatchAction {
-                node: compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?,
-                role: AbortRole::Machine {
-                    manual: manual
-                        .as_ref()
-                        .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id))
-                        .transpose()?,
-                    pc: lookup(ctx, pc)?,
-                    clock: clock
-                        .as_ref()
-                        .map(|c| lookup(ctx, c))
-                        .transpose()?
-                        .map(|c| (c, false)),
-                },
-                pending: None,
-            }),
-            CatchRole::Try { action, capture } => Some(CatchAction {
-                node: compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?,
-                role: AbortRole::Try { capture: lookup(ctx, capture)? },
-                pending: None,
-            }),
+            CatchRole::Machine { action, manual, pc, clock } => {
+                let node = compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?;
+                let manual = manual
+                    .as_ref()
+                    .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id))
+                    .transpose()?;
+                let pc = lookup(ctx, pc)?;
+                let clock = clock.as_ref().map(|c| lookup(ctx, c)).transpose()?;
+                Some(CatchAction::with(node, AbortRole::machine(manual, pc, clock)))
+            }
+            CatchRole::Try { action, capture } => {
+                let node = compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?;
+                let role = AbortRole::Try { capture: lookup(ctx, capture)? };
+                Some(CatchAction::with(node, role))
+            }
         };
         ctx.record_ref(bind_id, top_id);
         let own_handler = covered.dynamic.handler().unwrap();
