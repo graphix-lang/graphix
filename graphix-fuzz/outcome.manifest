@@ -59,7 +59,7 @@ trace	cast-wire-jul2026/00_let_bound_cast.gx
 trace	cast-wire-jul2026/01_narrow_cast_qop.gx
 trace	cast-wire-jul2026/02_narrow_cast_saturation.gx
 trace	catch-callsite-coverage-aug2026/00_shared_kernel_ignores_coverage.gx
-reject	N: this error reaches a catch whose handler was checked to take Error<ErrChain<`ArithError(string)>>: Error<ErrChain<`ArithError(string)>> does not contain Error<ErrChain<`ArrayIndexError(string)>>	catch-stmt-aug2026/00_constraint_too_narrow.gx
+reject	N: this error reaches a catch whose handler was checked to take Error<ErrChain<`ArithError(string)>>: type mismatch Error<ErrChain<`ArithError(string)>> does not contain Error<ErrChain<`ArrayIndexError(string)>>	catch-stmt-aug2026/00_constraint_too_narrow.gx
 trace	catch-stmt-aug2026/01_shadowing_rethrow.gx
 trace	catch-stmt-aug2026/02_toplevel_file_catch.gx
 trace	clone-scope-resolution-jul2026/01_nested_callback_filter_wrong_module.gx
