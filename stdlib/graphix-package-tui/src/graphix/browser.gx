@@ -70,8 +70,41 @@ let browser = |
     // only after the width fold over first_col.., so a full-window column clamp needs a
     // second (reverse) fold over the widths, and its content widths are indexed by
     // visible slot, not column.
+    // 2026-10-28 qwen: Column start now clamps to a full window. browser.gx folds the
+    // width twice: window(first) is the fold over columns[first ..] as it was,
+    // scrolled_col is the clamped viewport.x, and when window(scrolled_col) ends with
+    // room left over — every column from the stale offset already fits — a reverse fold
+    // walks the columns before it and takes them in while the room lasts, each charged
+    // at its name and the width of the leftmost visible slot, which is the only cost a
+    // column that has never been drawn can have. first_col is that start, and the
+    // window that is drawn (visible_columns, widths) is folded from it. A start with no
+    // room left over is unchanged, so a full 8-column window still starts at 5. Not
+    // observable in this sandbox: every browser fixture feeds its listing through
+    // sys::net::publish and netidx cannot start here (subscribe answers
+    // SubscribeError("loading the netidx config: Operation not permitted"), the
+    // resolver server logs Operation not permitted), so all of them time out on a blank
+    // render. cargo test -p graphix-package-tui --offline was 144 passed, 8 failed
+    // before any change here — every_example_renders and seven browser fixtures, among
+    // them a_browser_window_fills_from_a_shrunk_listing, the pin the note above names.
+    // It is 144 passed, 9 failed after: the new fixture fails the same blank-render
+    // way, and no other test moved. What was checked without a fixture. graphix --check
+    // on a program that calls browser compiles this module — proved by planting a type
+    // error in the width fold, which --check reported in module tui/browser — so the
+    // new code type-checks, and the same check passes on the fixture's own program. The
+    // arithmetic ran outside the browser over a fake listing (no netidx): a 24-wide
+    // window with 4-wide columns over a listing shrunk to 3 columns and scrolled to its
+    // last starts at 0 and shows col0..col2 where the old rule started at 2 and showed
+    // col2 alone; 8 columns scrolled to 5 start at 5, unscrolled start at 0, wide
+    // columns (nothing fits) keep their start, one column is unchanged. Pin:
+    // input_test::a_browser_window_fills_from_shrunk_columns — 8 columns in a 24-wide
+    // window, scrolled right, then shrunk to 3: the header's widths plus the selected
+    // path must read "3 /local/refill_cols/row0/col2". The old rule reads "1
+    // /local/refill_cols/row0/col1". Its expected value is derived from the fold above
+    // and was never observed: run it once where netidx works. The neighbouring
+    // a_browser_selection_survives_shrunk_columns should be unaffected — its selection
+    // lands on the last column under either rule — but it is unrun here too.
     let first_row = max(0, min(array::len(structure.rows) - row_slots, viewport.y));
-    let first_col = max(0, min(array::len(structure.columns) - 1, viewport.x));
+    let scrolled_col = max(0, min(array::len(structure.columns) - 1, viewport.x));
     let visible_rows = {
         let end = min(array::len(structure.rows), first_row + row_slots);
         (structure.rows)[first_row .. end]$
@@ -86,16 +119,15 @@ let browser = |
         error as _ => 0,
         w => w
     };
-    let { total: _, cols: visible_columns, widths }:
-        { total: i64, cols: Array<string>, widths: Array<Constraint> } = {
-        let name_width = max(4, get_width(0));
-        let max_width = size.width / 2;
-        let init = {
+    let name_width = max(4, get_width(0));
+    let max_width = size.width / 2;
+    let window = |first| {
+        let init: { total: i64, cols: Array<string>, widths: Array<Constraint> } = {
             total: size.width - name_width,
             cols: [],
             widths: [`Min(name_width)]
         };
-        let candidates = array::enumerate((structure.columns)[first_col ..]$);
+        let candidates = array::enumerate((structure.columns)[first ..]$);
         array::fold(candidates, init, |{total, cols, widths}, (i, col)| {
             let len = min(max_width, max(str::char_len(col), get_width(i + 1)));
             select total {
@@ -108,6 +140,31 @@ let browser = |
             }
         })
     };
+    // What a column costs is only known once it is drawn, so how wide a window
+    // is follows from where it starts: a start with room left over takes in the
+    // columns before it, at the cost of the slot one of them would land in,
+    // until the room is spent.
+    let scrolled = window(scrolled_col);
+    let first_col = select scrolled.total {
+        x if x <= 0 => scrolled_col,
+        x => {
+            let cost = |c| {
+                let col = (structure.columns)[c]$;
+                min(max_width, max(str::char_len(col), get_width(1))) + 4
+            };
+            let back = array::init(scrolled_col, |k| scrolled_col - 1 - k);
+            let start = array::fold(
+                back,
+                { left: x, first: scrolled_col },
+                |{left, first}, c| select left {
+                    y if y > 0 => { left: y - cost(c), first: c },
+                    y => { left: y, first }
+                }
+            );
+            start.first
+        }
+    };
+    let { total: _, cols: visible_columns, widths } = window(first_col);
     let visible_columns: Array<string> = uniq(visible_columns);
     let sel = {
         x: max(1, min(array::len(visible_columns), selected.x)),

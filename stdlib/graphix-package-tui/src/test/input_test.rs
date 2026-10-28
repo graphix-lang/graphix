@@ -604,6 +604,47 @@ let result = b
     Ok(())
 }
 
+/// A listing whose columns shrink under a window scrolled past them shows
+/// every column that fits, not only the one the stale offset names.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_window_fills_from_shrunk_columns() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r##"
+use tui::{Tui, browser::{MoveCursor, browser}};
+let n = 8;
+let pubs = array::init(n, |k| [
+  sys::net::publish("/local/refill_cols/row0/col[k]", k),
+  sys::net::publish("/local/refill_cols/row1/col[k]", k)
+]);
+let path = sys::time::after_idle(duration:200.ms, "/local/refill_cols");
+let cur: MoveCursor = never();
+let sel: [string, null] = never();
+let b: Tui = browser(#size: {width: 24, height: 6}, #cursor: cur, #selected_path: &mut sel, path);
+let shown = select b {
+  `Table(t) => array::len((*t.widths)$) - 1,
+  _ => never()
+};
+let loaded = false;
+loaded <- select (loaded, sel) {
+  (false, "/local/refill_cols/row0/col0") => true,
+  _ => never()
+};
+let i = 0;
+let tick = select loaded { true => sys::time::timer(duration:300.ms, 14), false => never() };
+i <- tick ~ i + 1;
+cur <- select i { x if x >= 1 && x < 8 => i ~ `Right(1), _ => never() };
+n <- select i { 8 => i ~ 3, _ => never() };
+let done = select i { 14 => i ~ "[shown] [sel]", _ => never() };
+let result = b
+"##,
+        24,
+        6,
+    )
+    .await?;
+    assert_eq!(done_string(&mut h).await?, Value::from("3 /local/refill_cols/row0/col2"));
+    Ok(())
+}
+
 /// A listing whose columns shrink under a window scrolled past them keeps
 /// drawing and selects a column it still has.
 #[tokio::test(flavor = "multi_thread")]
