@@ -877,6 +877,10 @@ pub struct CachedVals {
 }
 
 impl CachedVals {
+    fn with(slots: Box<[(Option<Value>, Tag)]>) -> Self {
+        CachedVals { slots, evaluated: Evaluated(false) }
+    }
+
     /// The slots with those at `idx` as data leaving the program, their
     /// forms kept ([`write_marked_data`]).
     fn as_data<R: Rt>(
@@ -890,7 +894,9 @@ impl CachedVals {
                 *v = write_marked_data(ctx, v)?;
             }
         }
-        Ok(CachedVals { slots, evaluated: self.evaluated })
+        let mut out = Self::with(slots);
+        out.evaluated = self.evaluated;
+        Ok(out)
     }
 }
 
@@ -1233,6 +1239,12 @@ pub struct OrderChecked<T, const START: usize, const END: usize> {
     check: bool,
 }
 
+impl<T, const START: usize, const END: usize> OrderChecked<T, START, END> {
+    fn with(inner: T, check: bool) -> Self {
+        OrderChecked { inner, check }
+    }
+}
+
 impl<T: ImageState, const START: usize, const END: usize> ImageState
     for OrderChecked<T, START, END>
 {
@@ -1245,7 +1257,8 @@ impl<T: ImageState, const START: usize, const END: usize> ImageState
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
-        Ok(Self { check: bool::decode(buf)?, inner: T::image_decode(ctx, buf)? })
+        let check = bool::decode(buf)?;
+        Ok(Self::with(T::image_decode(ctx, buf)?, check))
     }
 }
 
@@ -1265,10 +1278,10 @@ impl<R: Rt, T: EvalCached<R>, const START: usize, const END: usize> EvalCached<R
         from: &[Node<R>],
         top_id: ExprId,
     ) -> Self {
-        Self {
-            inner: T::init(ctx, typ, resolved, scope, from, top_id),
-            check: resolved.is_none_or(|t| t.args[START].typ.orders_refs(&ctx.env)),
-        }
+        Self::with(
+            T::init(ctx, typ, resolved, scope, from, top_id),
+            resolved.is_none_or(|t| t.args[START].typ.orders_refs(&ctx.env)),
+        )
     }
 
     fn typecheck0(
@@ -1449,7 +1462,7 @@ impl CachedVals {
         for v in vals.drain(..) {
             slots.push((v, Tag::from_raw(u8::decode(buf)?)));
         }
-        Ok(CachedVals { slots: slots.into(), evaluated: Evaluated(false) })
+        Ok(CachedVals::with(slots.into()))
     }
 
     pub fn new<R: Rt>(from: &[Node<R>]) -> CachedVals {
@@ -1458,10 +1471,7 @@ impl CachedVals {
 
     /// Slots holding `values`, each as if it just fired.
     pub fn from_values(values: impl IntoIterator<Item = Option<Value>>) -> CachedVals {
-        CachedVals {
-            slots: values.into_iter().map(|v| (v, Tag::FIRED)).collect(),
-            evaluated: Evaluated(false),
-        }
+        CachedVals::with(values.into_iter().map(|v| (v, Tag::FIRED)).collect())
     }
 
     pub fn len(&self) -> usize {
@@ -1917,6 +1927,12 @@ pub struct CachedArgs<T> {
     t: T,
 }
 
+impl<T> CachedArgs<T> {
+    fn with(woke_pending: bool, cached: CachedVals, t: T) -> Self {
+        CachedArgs { woke_pending, cached, last_result: TagValue::phantom(), t }
+    }
+}
+
 impl<R: Rt, T: EvalCached<R>> BuiltIn<R> for CachedArgs<T> {
     const EFFECT: Effect = T::EFFECT;
     const NAME: &str = T::NAME;
@@ -1931,12 +1947,11 @@ impl<R: Rt, T: EvalCached<R>> BuiltIn<R> for CachedArgs<T> {
         from: &'c [Node<R>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        let t = CachedArgs::<T> {
-            woke_pending: false,
-            cached: CachedVals::new(from),
-            last_result: TagValue::phantom(),
-            t: T::init(ctx, typ, resolved, scope, from, top_id),
-        };
+        let t = CachedArgs::<T>::with(
+            false,
+            CachedVals::new(from),
+            T::init(ctx, typ, resolved, scope, from, top_id),
+        );
         Ok(Box::new(t))
     }
 
@@ -1948,7 +1963,7 @@ impl<R: Rt, T: EvalCached<R>> BuiltIn<R> for CachedArgs<T> {
         let woke_pending = bool::decode(buf)?;
         let cached = CachedVals::image_decode(buf)?;
         let t = T::image_decode(ctx, buf)?;
-        Ok(Box::new(Self { woke_pending, cached, last_result: TagValue::phantom(), t }))
+        Ok(Box::new(Self::with(woke_pending, cached, t)))
     }
 }
 
@@ -2695,6 +2710,12 @@ struct Once {
     out: TagValue,
 }
 
+impl Once {
+    fn with(val: bool) -> Self {
+        Once { val, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Once {
     fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
@@ -2702,7 +2723,7 @@ impl<R: Rt> BuiltIn<R> for Once {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let _ = ctx;
-        Ok(Box::new(Once { val: bool::decode(buf)?, out: TagValue::phantom() }))
+        Ok(Box::new(Once::with(bool::decode(buf)?)))
     }
 
     const EFFECT: Effect = Effect::Sync;
@@ -2716,7 +2737,7 @@ impl<R: Rt> BuiltIn<R> for Once {
         _from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Once { val: false, out: TagValue::phantom() }))
+        Ok(Box::new(Once::with(false)))
     }
 }
 
@@ -2778,6 +2799,12 @@ struct Counted<const TAKE: bool> {
     out: TagValue,
 }
 
+impl<const TAKE: bool> Counted<TAKE> {
+    fn with(n: Option<usize>) -> Self {
+        Counted { n, out: TagValue::phantom() }
+    }
+}
+
 type Take = Counted<true>;
 type Skip = Counted<false>;
 
@@ -2788,7 +2815,7 @@ impl<R: Rt, const TAKE: bool> BuiltIn<R> for Counted<TAKE> {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let n = Option::<u64>::decode(buf)?.map(|n| n as usize);
-        Ok(Box::new(Self { n, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(n)))
     }
 
     const EFFECT: Effect = Effect::Sync;
@@ -2802,7 +2829,7 @@ impl<R: Rt, const TAKE: bool> BuiltIn<R> for Counted<TAKE> {
         _from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Self { n: None, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(None)))
     }
 }
 
@@ -3395,6 +3422,12 @@ struct Range {
     out: TagValue,
 }
 
+impl Range {
+    fn with(var: RtVar, args: CachedVals) -> Self {
+        Range { var, args, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Range {
     fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
@@ -3403,7 +3436,7 @@ impl<R: Rt> BuiltIn<R> for Range {
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let args = CachedVals::image_decode(buf)?;
-        Ok(Box::new(Self { var, args, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(var, args)))
     }
 
     const NAME: &str = "core_range";
@@ -3418,7 +3451,7 @@ impl<R: Rt> BuiltIn<R> for Range {
     ) -> Result<Box<dyn Apply<R>>> {
         let var = RtVar::new(ctx, top_id);
         let args = CachedVals::new(from);
-        Ok(Box::new(Self { var, args, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(var, args)))
     }
 }
 
@@ -3668,6 +3701,12 @@ struct Count {
     out: TagValue,
 }
 
+impl Count {
+    fn with(count: i64) -> Self {
+        Count { count, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Count {
     fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
@@ -3675,7 +3714,7 @@ impl<R: Rt> BuiltIn<R> for Count {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let _ = ctx;
-        Ok(Box::new(Count { count: i64::decode(buf)?, out: TagValue::phantom() }))
+        Ok(Box::new(Count::with(i64::decode(buf)?)))
     }
 
     const EFFECT: Effect = Effect::Sync;
@@ -3689,7 +3728,7 @@ impl<R: Rt> BuiltIn<R> for Count {
         _from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Count { count: 0, out: TagValue::phantom() }))
+        Ok(Box::new(Count::with(0)))
     }
 }
 
@@ -3996,6 +4035,12 @@ struct PrintCall {
     out: TagValue,
 }
 
+impl PrintCall {
+    fn with(printer: Printer, dest: LogDest) -> Self {
+        PrintCall { printer, dest, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> Apply<R> for PrintCall {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.dest.encode(buf)
@@ -4075,7 +4120,7 @@ macro_rules! printer {
             ) -> Result<Box<dyn Apply<R>>> {
                 let printer = $printer;
                 let dest = printer.default_dest();
-                Ok(Box::new(PrintCall { printer, dest, out: TagValue::phantom() }))
+                Ok(Box::new(PrintCall::with(printer, dest)))
             }
 
             fn image_decode(
@@ -4084,11 +4129,7 @@ macro_rules! printer {
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R>>, PackError> {
                 let dest = LogDest::decode(buf)?;
-                Ok(Box::new(PrintCall {
-                    printer: $printer,
-                    dest,
-                    out: TagValue::phantom(),
-                }))
+                Ok(Box::new(PrintCall::with($printer, dest)))
             }
 
             fn perform(ctx: &mut ExecCtx<'_, R>, site: &IoSite, args: &[Value]) {
