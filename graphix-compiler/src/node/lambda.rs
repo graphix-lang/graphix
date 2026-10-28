@@ -134,6 +134,31 @@ pub struct Tables {
 }
 
 impl DefTable {
+    fn with(
+        types: AHashMap<ExprId, Type>,
+        ftypes: AHashMap<ExprId, FnType>,
+        aux: AHashMap<ExprId, Box<[Type]>>,
+        lambdas: AHashMap<ExprId, SArc<DefTable>>,
+        typedefs: Vec<SArc<ResolvedRef>>,
+        facts: LambdaFacts,
+        calls_own: bool,
+        calls_captured: Box<[(LambdaId, u32)]>,
+        captures: Box<[Captured]>,
+    ) -> Self {
+        Self {
+            discriminants: Mutex::default(),
+            types,
+            ftypes,
+            aux,
+            lambdas,
+            typedefs,
+            facts,
+            calls_own,
+            calls_captured,
+            captures,
+        }
+    }
+
     /// Every type the table's rows hold but the signatures'.
     fn rows(&self) -> impl Iterator<Item = &Type> {
         self.types.values().chain(self.aux.values().flat_map(|ts| ts.iter()))
@@ -260,36 +285,25 @@ impl DefTable {
     /// `known`, its lambdas' tables included, which name them too.
     fn renamed(&self, known: &AHashMap<usize, TVar>) -> DefTable {
         ensure_sufficient(|| {
-            let mut table = DefTable {
-                discriminants: Mutex::default(),
-                types: self
-                    .types
-                    .iter()
-                    .map(|(id, t)| (*id, t.rename_with(known)))
-                    .collect(),
-                ftypes: self
-                    .ftypes
-                    .iter()
-                    .map(|(id, ft)| (*id, ft.rename_with(known)))
-                    .collect(),
-                aux: self
-                    .aux
+            let mut table = DefTable::with(
+                self.types.iter().map(|(id, t)| (*id, t.rename_with(known))).collect(),
+                self.ftypes.iter().map(|(id, ft)| (*id, ft.rename_with(known))).collect(),
+                self.aux
                     .iter()
                     .map(|(id, ts)| {
                         (*id, ts.iter().map(|t| t.rename_with(known)).collect())
                     })
                     .collect(),
-                lambdas: self
-                    .lambdas
+                self.lambdas
                     .iter()
                     .map(|(id, t)| (*id, SArc::new(t.renamed(known))))
                     .collect(),
-                typedefs: vec![],
-                facts: self.facts,
-                calls_own: self.calls_own,
-                calls_captured: self.calls_captured.clone(),
-                captures: self.captures.clone(),
-            };
+                vec![],
+                self.facts,
+                self.calls_own,
+                self.calls_captured.clone(),
+                self.captures.clone(),
+            );
             table.own_typedefs();
             table
         })
@@ -390,8 +404,7 @@ impl DefTable {
                 let calls_captured = (0..n)
                     .map(|_| Ok((LambdaId::decode(sub)?, u32::decode(sub)?)))
                     .collect::<Result<_, _>>()?;
-                Ok(SArc::new(DefTable {
-                    discriminants: Mutex::default(),
+                Ok(SArc::new(DefTable::with(
                     types,
                     ftypes,
                     aux,
@@ -401,7 +414,7 @@ impl DefTable {
                     calls_own,
                     calls_captured,
                     captures,
-                }))
+                )))
             },
             |b| Self::image_decode(b),
         )
@@ -1421,6 +1434,14 @@ pub(crate) struct BuiltInLambda<R: Rt> {
 }
 
 impl<R: Rt> BuiltInLambda<R> {
+    fn with(
+        typ: Arc<FnType>,
+        name: ArcStr,
+        apply: Box<dyn Apply<R> + Send + Sync + 'static>,
+    ) -> Self {
+        Self { typ, name, apply }
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         from: &[Node<R>],
@@ -1433,7 +1454,7 @@ impl<R: Rt> BuiltInLambda<R> {
             PackError::InvalidFormat
         })?;
         let apply = decode(ctx, from, buf)?;
-        Ok(Self { typ, name, apply })
+        Ok(Self::with(typ, name, apply))
     }
 }
 
@@ -1564,6 +1585,7 @@ pub struct Lambda {
     spec: Arc<Expr>,
     def: Value,
     typ: Type,
+    /// A lambda literal is a constant: present from birth (see Constant).
     resident: TagValue,
 }
 
@@ -1671,7 +1693,8 @@ pub(crate) fn make_init<R: Rt>(
                     BindMode::Static { .. } | BindMode::Dynamic(_) => Some(&*typ),
                 };
                 let apply = init(ctx, &def_typ, resolved, &scope, args, tid)?;
-                Ok(Box::new(BuiltInLambda { typ, name: name.clone(), apply }) as Box<_>)
+                let builtin = BuiltInLambda::with(typ, name.clone(), apply);
+                Ok(Box::new(builtin) as Box<_>)
             }
         })
     })
@@ -1972,13 +1995,7 @@ impl Lambda {
             captures: OnceLock::new(),
         });
         ctx.lambda_defs.insert(id, def.clone());
-        Ok(Node::new(Self {
-            spec,
-            def: def.clone(),
-            typ: Type::Fn(typ),
-            // a lambda literal is a constant: present from birth (see Constant)
-            resident: TagValue::stale(def),
-        }))
+        Ok(Self::with(spec, def, Type::Fn(typ)))
     }
 }
 
@@ -1991,7 +2008,11 @@ impl Lambda {
         let id = LambdaId::decode(buf)?;
         let typ = Type::decode(buf)?;
         let def = ctx.lambda_defs.get(&id).ok_or(PackError::InvalidFormat)?.clone();
-        Ok(Node::new(Self { spec, typ, resident: TagValue::stale(def.clone()), def }))
+        Ok(Self::with(spec, def, typ))
+    }
+
+    fn with<R: Rt>(spec: Arc<Expr>, def: Value, typ: Type) -> Node<R> {
+        Node::new(Self { spec, def: def.clone(), typ, resident: TagValue::stale(def) })
     }
 }
 
