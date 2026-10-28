@@ -136,6 +136,14 @@ impl Lives {
     // modes with collect disabled),
     // a_saved_reference_into_a_self_referencing_value_outlives_its_slot; netidx-value
     // trace::test::edges_count_every_owner. design/place_references.md.
+    // 2026-10-28 claude: The cells of the collected references are released too: a
+    // reference's cell mirrors its place's value, so the cell's own copy held the
+    // reference and kept the cycle alive after the orphan went (the review's probe still
+    // grew 800 MB per 100 cycles). The probe now stays at 312 MB over 600 cycles (281 MB
+    // with me: null; 4.2 GB before). The lang::orphans harness now keeps slots alive three
+    // cycles so the self-write lands, and counts live reference cells (Lives::cells)
+    // beside bindings; self_referencing_values_in_deleted_slots_are_collected fails in all
+    // four modes without the cell release.
     pub fn orphan_if_pinned(&self, id: BindId) -> bool {
         let mut st = self.0.lock();
         let pinned = st.pins.contains_key(&id);
@@ -189,6 +197,13 @@ impl Lives {
                 st.released.push(*id);
             }
         }
+        // the cells of the references collected: their values may hold the
+        // references themselves, and go before the keeps do
+        for id in g.cells.iter() {
+            if !live.binds.contains(id) {
+                st.released.push(*id);
+            }
+        }
         st.wait = if !kept {
             0
         } else if st.dirty {
@@ -198,6 +213,12 @@ impl Lives {
         };
         st.countdown = st.wait;
         st.dirty = false;
+    }
+
+    /// How many reference cells are alive: what a leak of them shows.
+    #[doc(hidden)]
+    pub fn cells(&self) -> usize {
+        self.0.lock().targets.len()
     }
 
     /// The cells and orphaned bindings released since the last call, whose
@@ -224,6 +245,8 @@ struct Graph {
     binds: IntMap<BindId, SmallVec<[usize; 2]>>,
     /// Per binding, how many distinct allocations found pin it.
     found: IntMap<BindId, u32>,
+    /// The cells of the keeps walked.
+    cells: IntSet<BindId>,
 }
 
 #[derive(Default)]
@@ -312,6 +335,7 @@ impl Graph {
         let mut n =
             Alloc { strong: Some(Arc::count(k)), internal: 1, ..Alloc::default() };
         n.owns.push(k.cell);
+        self.cells.insert(k.cell);
         cells.push(k.cell);
         if let Some(t) = lives.0.lock().targets.get(&k.cell).copied() {
             n.pins.push(t);

@@ -56,7 +56,8 @@ payload and a function value's captures itself. An allocation whose owners
 the walk did not all find (its strong count exceeds the edges to it) is
 held from outside, and so is an orphan with a pin the walk did not find;
 everything such a holder reaches lives, and the other orphans are
-released. A map's inner nodes report no count, so what a map holds below
+released, with the cells of the references collected: a cell mirrors its
+place, so its value holds the reference too. A map's inner nodes report no count, so what a map holds below
 its root always lives: a cycle through one is not collected. What the walk
 cannot read keeps what it holds, so a collection only ever releases too
 little. It runs when an orphan was made or lost a pin since the last one;

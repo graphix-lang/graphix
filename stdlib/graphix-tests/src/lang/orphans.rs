@@ -22,23 +22,23 @@ impl<R: Rt> EvalCached<R> for LiveBindings {
     const EFFECT: Effect = Effect::Sync;
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, _: &CachedVals) -> Option<Value> {
-        Some(Value::I64(ctx.env.by_id.len() as i64))
+        Some(Value::I64((ctx.env.by_id.len() + ctx.control.lives().cells()) as i64))
     }
 }
 
-/// Eight collection slots running `body` (over the slot's `k`) are built
-/// and deleted 200 times; the bindings alive after each deletion must not
-/// grow.
+/// Eight collection slots running `body` (over the slot's `k`) live three
+/// cycles, so what they write lands, and are deleted, 200 times; the
+/// bindings and reference cells alive after each deletion must not grow.
 async fn slot_bindings_settle(mode: Mode, decls: &str, body: &str) -> Result<()> {
     let code = format_compact!(
         "{{
             {decls}
             let live_bindings = |n: i64| -> i64 'test_live_bindings;
             let n = 0;
-            n <- select n {{ k if k < 401 => k + 1, _ => never() }};
-            let src = select n % 2 {{ 0 => [1, 2, 3, 4, 5, 6, 7, 8], _ => [] }};
+            n <- select n {{ k if k < 1200 => k + 1, _ => never() }};
+            let src = select (n / 3) % 2 {{ 0 => [1, 2, 3, 4, 5, 6, 7, 8], _ => [] }};
             let out = array::map(src, |k| {{ {body} }});
-            select n % 2 {{ 1 => live_bindings(array::len(out)), _ => never() }}
+            select n % 6 {{ 4 => live_bindings(n ~ array::len(out)), _ => never() }}
         }}"
     );
     let delta = run_delta_with(
@@ -51,7 +51,7 @@ async fn slot_bindings_settle(mode: Mode, decls: &str, body: &str) -> Result<()>
     )
     .await?;
     let counts = as_i64s(&delta.values);
-    assert_eq!(counts.len(), 201);
+    assert_eq!(counts.len(), 200);
     let early = counts[20];
     assert!(counts[20..].iter().all(|n| *n == early), "{counts:?}");
     Ok(())
