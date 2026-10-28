@@ -793,7 +793,6 @@ pub struct GXLambda<R: Rt> {
     /// checks, may lack the defining module's private typedefs.
     env: Lexical,
     typing: Typing,
-    construction_types: Option<Box<InstanceTypes>>,
     /// The runtime this activation counts against, when a cycle bound it
     /// (`stack::activation_born`).
     charged: Option<usize>,
@@ -807,6 +806,8 @@ pub(crate) enum Typing {
     /// From the definition's check, substituted by the instance's
     /// signature: the definition's tables and signature.
     Substituted(SArc<DefTables>, Arc<FnType>),
+    /// The construction's substitution map, consumed by the first check.
+    Prepared(Box<(Typing, InstanceTypes)>),
     /// Restored from an image, written after its check.
     Restored,
 }
@@ -887,8 +888,15 @@ impl<R: Rt> GXLambda<R> {
     /// for the definition's own check, which checks the body. An
     /// instance its definition's check cannot type is a compiler bug.
     fn instance_types(&mut self, ctx: &CompileCtx<R>) -> Result<Option<InstanceTypes>> {
-        if let Some(types) = self.construction_types.take() {
-            return Ok(Some(*types));
+        if matches!(self.typing, Typing::Prepared(_)) {
+            let Typing::Prepared(prepared) =
+                mem::replace(&mut self.typing, Typing::Restored)
+            else {
+                unreachable!()
+            };
+            let (typing, types) = *prepared;
+            self.typing = typing;
+            return Ok(Some(types));
         }
         self.typing.instance_types(ctx, self.id, &self.typ)
     }
@@ -907,6 +915,7 @@ impl Typing {
                 bail!("a restored instance of {:?} is checked again", id)
             }
             Typing::Substituted(table, def) => (table, def),
+            Typing::Prepared(prepared) => return Ok(Some(prepared.1.clone())),
         };
         if dbgenv::graphix_no_subst() {
             return Ok(None);
@@ -1133,7 +1142,6 @@ impl<R: Rt> GXLambda<R> {
             first_dispatch: true,
             env,
             typing,
-            construction_types: None,
             charged,
         }
     }
@@ -1151,7 +1159,15 @@ impl<R: Rt> GXLambda<R> {
         body: Expr,
     ) -> Result<Self> {
         let origin = body.ori.clone();
-        let types = typing.instance_types(ctx, id, &typ)?;
+        let instance_id = LambdaInstanceId::new();
+        let types = {
+            let mut p = profile::phase(Phase::InstanceCheck);
+            profile::instance(&mut p, instance_id, id, &body);
+            elab_audit::enter();
+            let res = typing.instance_types(ctx, id, &typ);
+            elab_audit::leave(ctx.def_gate_depth, "instance-signature", &body, &res);
+            res?
+        };
         let build = |ctx: &mut CompileCtx<R>, _: &[StructPatternNode]| {
             let outer =
                 ctx.body.as_mut().map(|b| mem::replace(&mut b.types, types.clone()));
@@ -1161,11 +1177,25 @@ impl<R: Rt> GXLambda<R> {
             }
             body
         };
-        let mut instance = Self::new_with_body(
-            ctx, id, typ, typing, argspec, args, scope, origin, build,
+        let instance = Self::new_with_body(
+            ctx,
+            id,
+            instance_id,
+            typ,
+            typing,
+            argspec,
+            args,
+            scope,
+            origin,
+            build,
         )?;
-        instance.construction_types = types.map(Box::new);
-        Ok(instance)
+        Ok(match types {
+            Some(types) => Self {
+                typing: Typing::Prepared(Box::new((instance.typing, types))),
+                ..instance
+            },
+            None => instance,
+        })
     }
 
     pub(super) fn new_collection(
@@ -1185,6 +1215,7 @@ impl<R: Rt> GXLambda<R> {
         Self::new_with_body(
             ctx,
             id,
+            LambdaInstanceId::new(),
             typ.clone(),
             typing,
             argspec,
@@ -1197,7 +1228,7 @@ impl<R: Rt> GXLambda<R> {
         )
     }
 
-    // XCR claude for claude: [perf/medium] Every node-walked call is a retained activation
+    // CR claude for claude: [perf/medium] Every node-walked call is a retained activation
     // built here, and each one still holds about 10-12 KB after runtime-heap-01. A
     // node-walked binary recursion therefore grows by GBs at modest depth. fib(20)
     // under --no-fusion peaks at 273 MB against 58 MB fused. fib(25), about 243k calls,
@@ -1222,48 +1253,17 @@ impl<R: Rt> GXLambda<R> {
     // (smaller activations: an instance's nodes built from its definition's types with no
     // placeholder cells, shared Ref and call-site structures) is next; the per-activation
     // cost and MAX_BYTES_PER_ACTIVATION are unchanged so far.
-    // 2026-10-27 codex: Measured before changes in this worktree, offline dev graphix,
-    // --no-cache --no-fusion --no-netidx, wait4 peak RSS at depths 1/5000/20000:
-    // 65088/116448/275264 KiB, slopes 10520/10841 B per activation. The committed
-    // recursion probe actually has two select arms. Throwaway shell activation_sizes
-    // test: CallSite 600, GXLambda 208, Select 504, Ref 88, Add/Sub 144 each, Constant
-    // 80, Bind 224, Block 120, Type 40, FnType 168, TCell 128, TVarInner 48 bytes
-    // (payload, excluding allocator/Arc overhead). Construction allocates fresh
-    // placeholder cells for arithmetic/select/call returns, then typecheck0_instance
-    // binds them to table rows, retaining both TVar allocations. A generalized Ref also
-    // builds a placeholder and a fresh scheme; call signatures and ArgMap storage are per
-    // site. The measured recursion has one fresh formal n and one staged recursive
-    // argument per activation, three reads of n, one of the function binding and one
-    // staged argument ref; runtime reader/store maps add to the node payload. Plan: seed
-    // safe placeholder types from definition rows during construction, preserve
-    // per-instance open-cell identity, then measure retained savings. No graph sharing or
-    // lifecycle change.
-    // 2026-10-27 codex: Fixed under D1 lever 1. GXLambda prepares InstanceTypes before
-    // compiling its body; construction and typecheck0_instance use the same substitution
-    // map, released after the check unless a nested definition owns it. Arithmetic,
-    // select and call-result nodes and generalized Ref nodes take their table rows at
-    // construction; missing rows and GRAPHIX_NO_SUBST retain the check path. No
-    // graph/lifecycle sharing or public signature changes. Correction to the measurement
-    // note: Select already replaced its result placeholder after checking; its
-    // construction saving is transient, while arithmetic/call-return placeholders and Ref
-    // scheme copies were retained. Pin:
-    // graphix-shell/tests/recursion_memory.rs::deep_recursion_memory_is_linear, ceiling
-    // lowered from 12288 to 10240 B. Same wait4 child probe at 1/5000/20000, --no-cache
-    // --no-fusion --no-netidx and GRAPHIX_PAR=off: baseline 76540/126888/285496 KiB
-    // (10827 B/activation over 5000..20000), fixed 72708/118576/261000 KiB (9722 B; other
-    // fixed runs 9701/9704). Saw the tightened pin fail on the saved baseline executable
-    // (10827 > 10240), then pass. Initial default-auto probe was 10841 before, 9686
-    // after. Verified offline: shell recursion_memory, no_subst and shared_bodies;
-    // graphix-tests lang:: (7393 passed, 1 timing test ignored, network cases excluded)
-    // and lib_tests:: (3112 passed, network cases excluded); lang includes all 29 active
-    // image tests. One lang run had continuations::jit observe an early (0,0) before
-    // (0,1) in the delayed-error timer fixture; all four continuations modes and the
-    // entire selected lang suite passed on rerun, with no test change. Socket-dependent
-    // tests and the whole-workspace gate were not run. Exact filtered cargo commands and
-    // outputs are in /tmp/graphix-lang-rerun.log and /tmp/graphix-lib_tests-final.log.
+    // 2026-10-28 codex: Lever 1 builds nodes from substituted definition types: 10603
+    // B/activation before, 9617-9815 after in the serial no-fusion recursion_memory probe
+    // (about 10%); retained binary recursion still grows to GBs, so this remains open.
+    // Signature construction is audited/profiled with bind context, its temporary map is
+    // consumed from Typing, and Select avoids the unused row lookup. Pins:
+    // deep_recursion_memory_is_linear (10240 B ceiling) and
+    // mistyped_function_value_reports_bind_context (four modes).
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
+        instance_id: LambdaInstanceId,
         typ: Arc<FnType>,
         typing: Typing,
         argspec: Arc<[Arg]>,
@@ -1307,7 +1307,6 @@ impl<R: Rt> GXLambda<R> {
         }
         let mut p = profile::phase(Phase::InstanceGraph);
         let body = super::prune::Prune::compile(ctx, |ctx| build_body(ctx, &argpats))?;
-        let instance_id = LambdaInstanceId::new();
         profile::instance(&mut p, instance_id, id, body.spec());
         drop(p);
         Ok(Self::with(

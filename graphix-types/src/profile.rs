@@ -393,7 +393,6 @@ pub fn instance(
             row.label = format_compact!("{:?}:{}", body.ori.source, body.pos);
             row.parent = parent;
         }
-        // the id exists only once the graph is built, so nothing opens under it
         let cost = match span.phase {
             Phase::InstanceCheck => InstanceCost::Check { outermost: c.open(id) },
             _ => InstanceCost::Graph,

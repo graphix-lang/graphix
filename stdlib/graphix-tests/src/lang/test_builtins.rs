@@ -17,6 +17,7 @@ use netidx_core::pack::PackError;
 use netidx_value::Value;
 use parking_lot::Mutex;
 use std::{
+    process::Command,
     sync::atomic::{AtomicI64, Ordering},
     time::Duration,
 };
@@ -240,6 +241,26 @@ async fn mistyped_function_value_is_refused(mode: Mode) -> Result<()> {
     let bad = run(&code("|x: i64| x + 1"), mode).await?;
     assert_eq!(bad, []);
     Ok(())
+}
+
+#[test]
+fn mistyped_function_value_reports_bind_context() {
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["mistyped_function_value_is_refused::", "--nocapture"])
+        .env("RUST_LOG", "warn")
+        .env("GRAPHIX_ELAB_AUDIT", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let context = "a run-time bind at g(1.5) did not type";
+    assert_eq!(stderr.matches(context).count(), 4, "{stderr}");
+    let refusals = stderr.lines().filter(|line| {
+        line.starts_with("ELAB-AUDIT ")
+            && line.contains("an instance at fn(x: f64) -> f64")
+            && line.contains("of a definition typed fn(x: i64) -> i64")
+    });
+    assert_eq!(refusals.count(), 4, "{stderr}");
 }
 
 /// A builtin's `'a: Concrete` that only a handler the call does not pass

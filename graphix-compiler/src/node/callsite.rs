@@ -1901,15 +1901,16 @@ impl<R: Rt> CallSite<R> {
             Some(ft) => ft.resolve_tvars(),
             None => f.typ.instantiate(&ctx.rec_defs),
         };
-        let mut apply =
-            self.init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))?;
+        let context =
+            |spec: &Expr| format_compact!("a run-time bind at {spec} did not type");
+        let mut apply = self
+            .init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))
+            .with_context(|| context(&self.spec))?;
         let params = self.register_fn_params(ctx, &*apply, &apply.typ(), f.id);
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
             Self::unregister_fn_params(ctx, params);
             ctx.discard_apply(apply);
-            return Err(
-                e.context(format!("a run-time bind at {} did not type", self.spec))
-            );
+            return Err(e.context(context(&self.spec)));
         }
         Ok((apply, defaults, params))
     }
@@ -2340,8 +2341,11 @@ impl<R: Rt> CallSite<R> {
         identity: FnArgIdentity,
     ) -> Result<()> {
         let scope = self.scope.clone();
-        let (apply, instance_ftype) =
-            self.setup_static_bind(ctx, &scope, self.flags, def)?;
+        let context =
+            |spec: &Expr| format_compact!("in the instance of {spec} at this call site");
+        let (apply, instance_ftype) = self
+            .setup_static_bind(ctx, &scope, self.flags, def)
+            .with_context(|| context(&self.spec))?;
         let instance = match apply.view() {
             ApplyView::Lambda(g) => Some(g.instance_id()),
             ApplyView::BuiltIn(_) | ApplyView::Opaque => None,
@@ -2383,7 +2387,7 @@ impl<R: Rt> CallSite<R> {
                 .expect("static callee must have an apply")
                 .typecheck0(ctx, arg_refs)
         }
-        .with_context(|| format!("in the instance of {} at this call site", self.spec));
+        .with_context(|| context(&self.spec));
         let resolved_ftype =
             self.refresh_static_ftype().expect("static callee must have an apply");
         let res = typecheck0
