@@ -417,6 +417,13 @@ impl Equality {
     // graphix-package-core unit suites pass (336, 54 and 6 tests), and all 48
     // lang::byref::any_ integration tests pass. No socket tests are involved in these
     // focused runs.
+    // 2026-10-28 codex: Follow-up validation found an abstract target can hide a map
+    // representation behind a custom Ord. The outer type's comparison walk is not its
+    // cast's representation walk. Pretyped casts now keep the key guard for any abstract
+    // target (and Any); each actual map still checks only keys whose static type can
+    // conceal references. The new any_reference_cast_abstract_map_is_refused pin failed
+    // in all four modes with the earlier target gate. This does not change the unchecked
+    // path for concrete structural targets such as Map<string, i64>.
     fn of(env: &Env, lhs: &Type, rhs: &Type, ordered: bool) -> Self {
         let refs = if ordered {
             [lhs, rhs].into_iter().find(|t| t.orders_refs(env))

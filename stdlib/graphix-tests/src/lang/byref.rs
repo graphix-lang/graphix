@@ -1354,3 +1354,14 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Error(e))
     if e.to_string().contains("references have no order")); FuseExpect::None
 );
+
+run!(any_reference_cast_abstract_map_is_refused, r#"{
+    type B = Abstract<Map<Any, i64>>;
+    impl Cast for B {};
+    impl Eq for B { let eq = |a, b| true };
+    impl Ord for B { let cmp = |a, b| `Equal };
+    let x = 1;
+    let a: Any = &x;
+    cast<B>([(a, 1)])
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Error(e))
+    if e.to_string().contains("references have no order")); FuseExpect::None);

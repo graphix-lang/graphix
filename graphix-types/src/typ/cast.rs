@@ -1456,8 +1456,8 @@ impl Type {
     }
 
     /// A cast with its input format and static map-key check decision.
-    /// `check_keys` may be false only when the target cannot hold references
-    /// under Any.
+    /// `check_keys` may be false only when the target contains neither Any
+    /// nor an abstract type whose representation a cast can enter.
     pub fn cast_with(
         &self,
         env: &Env,

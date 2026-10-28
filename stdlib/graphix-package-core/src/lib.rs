@@ -124,8 +124,7 @@ impl CastTarget {
 
     pub fn of(env: &Env, resolved: Option<&FnType>) -> Self {
         let typ = extract_cast_type(env, resolved);
-        let check_keys =
-            typ.as_ref().is_some_and(|t| t.holds_unknown(env) || t.orders_refs(env));
+        let check_keys = typ.as_ref().is_some_and(|t| t.holds_abstract(env));
         Self { typ, check_keys }
     }
 

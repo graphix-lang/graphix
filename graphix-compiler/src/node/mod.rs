@@ -2133,7 +2133,7 @@ impl<R: Rt> TypeCast<R> {
         let target = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
         let src_ref = n.typ().holds_ref(&ctx.env);
-        let check_keys = target.holds_unknown(&ctx.env) || target.orders_refs(&ctx.env);
+        let check_keys = target.holds_abstract(&ctx.env);
         Ok(Node::new(Self {
             slept: WakeBit::default(),
             spec,
@@ -2251,8 +2251,7 @@ impl<R: Rt> Update<R> for TypeCast<R> {
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         self.src_ref = self.n.typ().holds_ref(&ctx.env);
-        self.check_keys =
-            self.target.holds_unknown(&ctx.env) || self.target.orders_refs(&ctx.env);
+        self.check_keys = self.target.holds_abstract(&ctx.env);
         Ok(())
     }
 
