@@ -2,7 +2,7 @@ use crate::{
     BindId, CFlag,
     expr::{At, Expr, ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
-        FieldRefSite, Ide, IdeMode, ModuleRefSite, ReferenceSite, ScopeMapEntry,
+        FieldRefSite, Ide, IdeMode, Lowered, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite, Warning, WarningRecord,
     },
     is_lowered, mod_root,
@@ -651,8 +651,30 @@ impl Env {
         }
     }
 
-    pub fn push_reference(&self, site: ReferenceSite) {
-        self.with_ide(|ide| ide.references.push(site))
+    /// A reference written in the source. One a lowering redirected to a
+    /// cell of its own is told under the name written there: the binding
+    /// that name resolves to, or the cell, when the seq declared the name.
+    pub fn push_reference(&self, mut site: ReferenceSite) {
+        let Some(sink) = self.ide.sink() else { return };
+        if let Some(base) = Path::basename(&site.name.0).filter(|n| is_lowered(n)) {
+            let Some(l) = sink.lock().lowered.get(base).cloned() else { return };
+            if !l.sites.contains(&site.pos) {
+                return;
+            }
+            site.name = ModPath::from([l.written.as_str()]);
+            if l.decl.is_none() {
+                match self.lookup_bind(&site.scope, &site.name) {
+                    Ok(Some((_, b))) => site.bind_id = b.id,
+                    _ => return,
+                }
+            }
+        }
+        sink.lock().references.push(site)
+    }
+
+    /// The cell `cell` a seq's lowering made stands for `lowered`.
+    pub fn note_lowered(&self, cell: ArcStr, lowered: Lowered) {
+        self.with_ide(|ide| crate::ide::merge_lowered(&mut ide.lowered, cell, lowered))
     }
 
     pub fn push_module_reference(&self, site: ModuleRefSite) {
@@ -2236,12 +2258,24 @@ impl Env {
         }
     }
 
-    /// Give the IDE the binding as it stands, unless a lowering named it:
-    /// no source wrote it, so no query or completion may answer it.
+    /// Give the IDE the binding as it stands. One a lowering named is
+    /// given only as the name the seq declared it by, where it did: no
+    /// source wrote any other, so no query or completion may answer it.
     fn mirror_bind(&self, b: &Bind) {
-        if !is_lowered(&b.name) {
-            self.with_ide(|ide| ide.binds.push(b.clone()));
-        }
+        self.with_ide(|ide| {
+            if !is_lowered(&b.name) {
+                return ide.binds.push(b.clone());
+            }
+            if let Some(Lowered { written, decl: Some((pos, ori)), .. }) =
+                ide.lowered.get(b.name.as_str())
+            {
+                let mut b = b.clone();
+                b.name = written.as_str().into();
+                b.pos = *pos;
+                b.ori = ori.clone();
+                ide.binds.push(b)
+            }
+        })
     }
 
     /// Record that `id` is bound by a select arm's pattern, over a

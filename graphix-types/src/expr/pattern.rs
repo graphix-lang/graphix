@@ -112,6 +112,11 @@ impl StructurePattern {
     }
 
     pub fn with_names<'a>(&'a self, f: &mut impl FnMut(&'a ArcStr)) {
+        self.with_bound_names(&mut |n| f(&n.name))
+    }
+
+    /// Each name the pattern binds, with where it was written.
+    pub fn with_bound_names<'a>(&'a self, f: &mut impl FnMut(&'a Name)) {
         crate::stack::ensure_sufficient(|| self.with_names_inner(f))
     }
 
@@ -129,17 +134,17 @@ impl StructurePattern {
         }
     }
 
-    fn with_names_inner<'a>(&'a self, f: &mut impl FnMut(&'a ArcStr)) {
+    fn with_names_inner<'a>(&'a self, f: &mut impl FnMut(&'a Name)) {
         if let Some(n) = self.all() {
             f(n)
         }
         let (rest, subs): (Option<&Name>, &[Self]) = match self {
             Self::Bind(n) => return f(n),
             Self::Ignore | Self::Literal(..) => return,
-            Self::Abstract { bind, .. } => return bind.with_names(f),
-            Self::Or(alts) => return alts[0].with_names(f),
+            Self::Abstract { bind, .. } => return bind.with_bound_names(f),
+            Self::Or(alts) => return alts[0].with_bound_names(f),
             Self::Struct { binds, .. } => {
-                return binds.iter().for_each(|(_, t, _)| t.with_names(f));
+                return binds.iter().for_each(|(_, t, _)| t.with_bound_names(f));
             }
             Self::Slice { binds, .. }
             | Self::Tuple { binds, .. }
@@ -150,7 +155,7 @@ impl StructurePattern {
         if let Some(n) = rest {
             f(n)
         }
-        subs.iter().for_each(|t| t.with_names(f))
+        subs.iter().for_each(|t| t.with_bound_names(f))
     }
 
     pub fn binds_uniq(&self) -> bool {

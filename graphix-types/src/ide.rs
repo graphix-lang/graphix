@@ -10,11 +10,13 @@ use crate::{
     expr::{ModPath, Origin, WrittenPath},
     typ::Type,
 };
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use parking_lot::Mutex;
 use poolshark::global::{GPooled, Pool};
+use smallvec::SmallVec;
+use std::collections::hash_map::Entry;
 use std::sync::LazyLock;
 use triomphe::Arc;
 
@@ -27,6 +29,39 @@ pub struct ReferenceSite {
     pub scope: ModPath,
     pub name: ModPath,
     pub bind_id: BindId,
+}
+
+/// What a cell a seq's lowering made stands for in the source: the name
+/// written there, and, for a name the seq itself declares (`seq let t`,
+/// `with(err)`), where it was declared. A cell with no declaration
+/// stands for the binding its written name resolves to.
+#[derive(Debug, Clone)]
+pub struct Lowered {
+    pub written: ArcStr,
+    pub decl: Option<(SourcePosition, Arc<Origin>)>,
+    /// Where the source reads or writes it; the lowering's own uses of
+    /// the cell stand anywhere else and are no sites.
+    pub sites: SmallVec<[SourcePosition; 2]>,
+}
+
+/// Fold `l` into what `lowered` knows of `cell`.
+pub(crate) fn merge_lowered(
+    lowered: &mut AHashMap<ArcStr, Lowered>,
+    cell: ArcStr,
+    l: Lowered,
+) {
+    match lowered.entry(cell) {
+        Entry::Vacant(e) => {
+            e.insert(l);
+        }
+        Entry::Occupied(mut e) => {
+            let e = e.get_mut();
+            if l.decl.is_some() {
+                e.decl = l.decl
+            }
+            e.sites.extend(l.sites)
+        }
+    }
 }
 
 /// A `mod foo;` declaration, at the name, or one item of a `use`, at
@@ -219,6 +254,8 @@ pub struct Ide {
     /// Every checked node's type outside lambda bodies, when the check
     /// asked for them (`record_expr_types`).
     pub expr_types: GPooled<Vec<ExprTypeSite>>,
+    /// Per cell a seq's lowering made, what it stands for.
+    pub lowered: AHashMap<ArcStr, Lowered>,
 }
 
 impl Ide {
@@ -255,6 +292,7 @@ impl Ide {
             warnings: WARNING_POOL.take(),
             sig_links: SIG_LINK_POOL.take(),
             expr_types: EXPR_TYPE_SITE_POOL.take(),
+            lowered: AHashMap::default(),
         }
     }
 
@@ -271,6 +309,7 @@ impl Ide {
             warnings,
             sig_links,
             expr_types,
+            lowered,
         } = other;
         self.binds.append(binds);
         self.references.append(references);
@@ -283,6 +322,9 @@ impl Ide {
         self.warnings.append(warnings);
         self.sig_links.append(sig_links);
         self.expr_types.append(expr_types);
+        for (cell, l) in lowered.drain() {
+            merge_lowered(&mut self.lowered, cell, l)
+        }
     }
 
     pub(crate) fn push_type_ref(&mut self, site: TypeRefSite) {

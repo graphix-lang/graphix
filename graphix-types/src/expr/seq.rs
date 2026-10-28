@@ -17,7 +17,8 @@ use super::{
 use crate::{
     BindId,
     env::Env,
-    expr::{At, Name, OriginScope},
+    expr::{At, Name, Origin, OriginScope},
+    ide::Lowered,
     stack::ensure_sufficient,
     typ::{TVar, Type},
 };
@@ -31,6 +32,7 @@ use netidx_core::path::Path;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
+use std::cell::RefCell;
 use triomphe::Arc;
 
 /// The label of a machine with no run in progress.
@@ -109,9 +111,52 @@ struct Parts<'a> {
     body: &'a Arc<[Expr]>,
 }
 
+thread_local! {
+    /// Under a language server's check, what each cell the lowering in
+    /// progress sends a written name to stands for.
+    static LOWERED: RefCell<Option<LPooled<Vec<(ArcStr, Lowered)>>>> =
+        const { RefCell::new(None) };
+}
+
+/// The cell `cell` stands for `written`: read or written by the source at
+/// `site`, or declared at `decl` when the seq declares the name.
+fn note_lowered(
+    cell: &str,
+    written: &str,
+    site: Option<SourcePosition>,
+    decl: Option<(SourcePosition, &Arc<Origin>)>,
+) {
+    if cell != written {
+        LOWERED.with_borrow_mut(|l| {
+            if let Some(l) = l {
+                let lowered = Lowered {
+                    written: ArcStr::from(written),
+                    decl: decl.map(|(pos, ori)| (pos, ori.clone())),
+                    sites: site.into_iter().collect(),
+                };
+                l.push((ArcStr::from(cell), lowered))
+            }
+        })
+    }
+}
+
 /// The seq `spec` lowered to its machine, every expression of which
-/// comes from `spec`'s source.
+/// comes from `spec`'s source. Under a language server, the cells it
+/// sends written names to are told to the IDE ([`Env::note_lowered`]).
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
+    if !env.ide.is_lsp() {
+        return lower(spec, env, scope);
+    }
+    let outer = LOWERED.replace(Some(LPooled::take()));
+    let lowered = lower(spec, env, scope);
+    let mut noted = LOWERED.replace(outer).unwrap_or_default();
+    for (cell, l) in noted.drain(..) {
+        env.note_lowered(cell, l)
+    }
+    lowered
+}
+
+fn lower(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
     let ExprKind::Seq(s) = &spec.kind else { bail!("BUG: seq lowering of a non-seq") };
     let SeqExpr { kind, trigger, abort, body } = &**s;
@@ -251,12 +296,13 @@ fn trigger_snapshot(
             if !single {
                 body.push(let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, go)));
             }
-            b.pattern.with_names(&mut |n| {
+            b.pattern.with_bound_names(&mut |n| {
                 let c = cell(n.as_str());
-                decls.push(let_bind(vpos, &c, None, never(vpos)));
+                note_lowered(&c, n, None, Some((n.pos_or(pos), &spec.ori)));
+                decls.push(let_bind(n.pos_or(vpos), &c, None, never(vpos)));
                 let v = if single { r#ref(pos, go) } else { r#ref(pos, n) };
                 body.push(connect(pos, &c, v));
-                visible.insert(n.clone(), Redirect::Cell(c));
+                visible.insert(n.name.clone(), Redirect::Cell(c));
             });
             writes.push(block(pos, body.drain(..)));
             Ok(match &b.typ {
@@ -1156,7 +1202,7 @@ impl Machine<'_> {
                 let value = decorated(value, &stmt.dec);
                 let snap = self.snapshot(stmt, sink, visible);
                 let value = self.stmt_value(&value, &snap.map)?;
-                let target = rewrite_target(name, *deref, &snap.map);
+                let target = rewrite_target(name, pos, *deref, &snap.map);
                 let result = self.result;
                 let k = self.step(false, value, |v| {
                     let mut out = writes(sink, result, pos, v, &snap.map);
@@ -1202,7 +1248,7 @@ impl Machine<'_> {
             );
         }
         let e_cell = ArcStr::from(format_compact!("#seqe{}", spec.id.inner()).as_str());
-        self.decls.push(let_bind(pos, &e_cell, None, never(pos)));
+        self.decls.push(let_bind(t.bind.pos_or(pos), &e_cell, None, never(pos)));
         // a try whose value only writes variables has each body write them,
         // typed as they are
         let direct = !sink.is_empty()
@@ -1253,6 +1299,7 @@ impl Machine<'_> {
             step.items.insert(0, jump);
         }
         let mut wvis = scope(visible);
+        note_lowered(&e_cell, &t.bind, None, Some((t.bind.pos_or(spec.pos), &spec.ori)));
         wvis.insert(t.bind.name.clone(), Redirect::Cell(e_cell));
         tails.extend(self.lower_scoped(&handler, &branch, &wvis)?);
         match join {
@@ -1371,7 +1418,7 @@ impl Machine<'_> {
                     body.push(let_bind(s.pos, &v, None, value));
                     body.push(connect_path(
                         s.pos,
-                        rewrite_target(name, *deref, &vis),
+                        rewrite_target(name, s.pos, *deref, &vis),
                         *deref,
                         // the value's first fire after entry: an answer, or the
                         // level as it stands at entry
@@ -1444,7 +1491,7 @@ fn writes(
             }
             Write::Connect { name, deref } => connect_path(
                 pos,
-                rewrite_target(name, *deref, visible),
+                rewrite_target(name, pos, *deref, visible),
                 *deref,
                 r#ref(pos, v),
             ),
@@ -1856,7 +1903,7 @@ fn redirect<'a>(p: &ModPath, map: &'a Names) -> Option<&'a Redirect> {
 }
 
 /// A read of `p`.
-// CR claude for claude: [bug/medium] A redirected read becomes a read of its `#seq..`
+// XCR claude for claude: [bug/medium] A redirected read becomes a read of its `#seq..`
 // cell, and the language server only ever sees that cell, so a name the seq redirects
 // loses its IDE sites. Affected: every read after the first of an entry-snapshotted
 // variable in a step; the trigger variable read in the body; `seq let t = ..` names (a
@@ -1873,19 +1920,41 @@ fn redirect<'a>(p: &ModPath, map: &'a Names) -> Option<&'a Redirect> {
 // side reading it, and an e2e case in graphix-shell/tests/lsp. The batch's other seq
 // changes keep positions on every redirected read (rewrite keeps e.pos), and Redirect
 // gained a Function variant that maps a name to itself, so it adds no lost sites.
-fn rewrite_path(p: &ModPath, map: &Names) -> ModPath {
+// 2026-10-28 claude: Fixed: under a language server's check the seq lowering notes,
+// for each cell it sends a written name to, the name written there, the positions
+// where the source reads or writes it, and, for a name the seq declares (seq let,
+// with(err)), where it is declared (ide::Lowered, Env::note_lowered).
+// Env::push_reference tells a site of a lowered name only at a noted position, under
+// the written name: the binding that name resolves to, or the cell for a name the seq
+// declares; Env::mirror_bind gives the IDE a declared cell under its written name at
+// its declaration, and a declared cell's let is placed there. The lowering's own uses
+// of its cells are no sites, so the stray references at the seq and try keywords are
+// gone and completion offers err, not the #seq cells. Pin: graphix-shell/tests/lsp
+// seq_names_are_sites (entry snapshots, the trigger read in the body, seq let, a
+// destructuring seq let, try with(err), completion), which fails with the notes
+// disabled.
+fn rewrite_path(p: &ModPath, at: SourcePosition, map: &Names) -> ModPath {
     match redirect(p, map) {
-        Some(r) => ModPath::from([r.name().as_str()]),
+        Some(r) => {
+            note_lowered(r.name(), ref_key(p), Some(at), None);
+            ModPath::from([r.name().as_str()])
+        }
         None => p.clone(),
     }
 }
 
 /// A connect's target `p`: a write, or with `deref` a read of the
 /// reference written through.
-fn rewrite_target(p: &ModPath, deref: bool, map: &Names) -> ModPath {
+fn rewrite_target(p: &ModPath, at: SourcePosition, deref: bool, map: &Names) -> ModPath {
     match redirect(p, map) {
-        Some(r) if deref => ModPath::from([r.name().as_str()]),
-        Some(Redirect::Cell(c)) => ModPath::from([c.as_str()]),
+        Some(r) if deref => {
+            note_lowered(r.name(), ref_key(p), Some(at), None);
+            ModPath::from([r.name().as_str()])
+        }
+        Some(Redirect::Cell(c)) => {
+            note_lowered(c, ref_key(p), Some(at), None);
+            ModPath::from([c.as_str()])
+        }
         _ => p.clone(),
     }
 }
@@ -2305,7 +2374,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             let live = live.as_deref().unwrap_or(map);
             ExprKind::Live(Arc::new(rewrite_with(x, live, mode.deferred())))
         }
-        ExprKind::Ref { name } => ExprKind::Ref { name: rewrite_path(name, map) },
+        ExprKind::Ref { name } => ExprKind::Ref { name: rewrite_path(name, e.pos, map) },
         // a module's body names nothing of the seq's: it is a scope of its own,
         // but a dynamic module's source is an expression here
         ExprKind::Module { name, value } => match &**value {
@@ -2320,7 +2389,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             _ => return e.clone(),
         },
         ExprKind::Connect { name, at, value, deref } => ExprKind::Connect {
-            name: rewrite_target(name, *deref, map),
+            name: rewrite_target(name, e.pos, *deref, map),
             at: *at,
             value: Arc::new(rewrite(value, map)),
             deref: *deref,

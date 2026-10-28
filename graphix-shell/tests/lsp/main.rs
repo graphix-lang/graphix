@@ -641,6 +641,62 @@ fn a_malformed_request_is_refused_and_the_server_lives() {
     hover_is(&mut c, "|f(x)", "f: fn(x: i64) -> i64");
 }
 
+/// A seq rewrites what its body reads to cells of its own: each name is
+/// still a site of what it was written as, and a name the seq declares
+/// (`seq let`, `with(err)`) is declared where it is written.
+#[test]
+fn seq_names_are_sites() {
+    let src = "\
+let clk = sys::time::timer(duration:10.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let f = |x: i64| -> Result<i64, `E> select x { 0 => error(`E), x => x };
+let a = seq clk {
+    let p = n * n;
+    let k = clk;
+    try { let c = f(p)?; c } with(err) { let m = \"[err]\"; 0 }
+};
+let b = seq let t = clk { let w = t; w };
+let d = seq let (u, v) = (clk ~ n, clk ~ 2) { let s = u + v; s };
+(a, b, d)
+";
+    let mut c = Client::start(&[("a.gx", src)]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    // an outer binding: its uses in the seq are among its references
+    let mut outer = |decl: &str, uses: &[&str]| {
+        let refs = c.references("a.gx", decl);
+        for u in uses {
+            assert!(refs.contains(&c.site("a.gx", u)), "{u}: {refs:?}");
+            assert_eq!(c.definition("a.gx", u), Some(c.site("a.gx", decl)), "{u}");
+        }
+    };
+    outer("let |n = 0", &["let p = |n * n", "let p = n * |n"]);
+    outer("let |clk =", &["let k = |clk"]);
+    // a name the seq declares: its declaration and its uses, nothing else
+    let mut declared = |decl: &str, sig: &str, uses: &[&str]| {
+        let h = c.hover("a.gx", decl);
+        assert_eq!(h.as_deref().and_then(|h| h.lines().nth(1)), Some(sig), "{decl}");
+        let mut sites = vec![c.site("a.gx", decl)];
+        sites.extend(uses.iter().map(|u| c.site("a.gx", u)));
+        sites.sort();
+        assert_eq!(c.references("a.gx", decl), sites, "{decl}");
+        for u in uses {
+            assert_eq!(c.definition("a.gx", u), Some(c.site("a.gx", decl)), "{u}");
+        }
+    };
+    declared("with(|err)", "err: Error<ErrChain<`E>>", &["\"[|err]"]);
+    declared(
+        "seq let |t =",
+        "t: [datetime, Error<`TimerError(string)>]",
+        &["let w = |t"],
+    );
+    declared("seq let (|u,", "u: i64", &["let s = |u + v"]);
+    let offered = c.completions("a.gx", "let m = \"[e|rr]");
+    assert!(offered.iter().all(|n| !n.starts_with('#')), "{offered:?}");
+    assert!(offered.iter().any(|n| n == "err"), "{offered:?}");
+}
+
 #[test]
 fn every_declared_name_is_a_site() {
     let src = "\
