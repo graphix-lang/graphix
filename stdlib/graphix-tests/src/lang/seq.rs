@@ -683,6 +683,14 @@ async fn reentry_fired_only(mode: Mode) -> Result<()> {
         let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), expected, "{name}\n{out}");
     }
+    // The level of `absent_level` bound outside the body instead: born
+    // once, before the first entry, it stands as it is for every run.
+    let outside = format!(
+        "{{ {CLOCK} {BAD} let lvl = sys::time::timer(duration:20.ms, false) ~ 42; \
+         seqq request {{ let q = request; let y = lvl; q * 100 + y }} }}"
+    );
+    let (values, out) = run_delta(&outside, mode).await?;
+    assert_eq!(as_i64s(&values), [142, 242, 342], "absent_level_outside\n{out}");
     // A lambda whose result is a standing level not derived from its
     // argument produces no fire when re-called: the run never completes.
     let stalls =
