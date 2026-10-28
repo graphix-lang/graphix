@@ -262,6 +262,10 @@ pub struct Trait<R: Rt> {
 }
 
 impl<R: Rt> Trait<R> {
+    fn with(spec: Arc<Expr>, def: Arc<TraitDef>, defaults: Node<R>) -> Node<R> {
+        Node::new(Self { spec, def, defaults })
+    }
+
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
@@ -339,7 +343,7 @@ impl<R: Rt> Trait<R> {
         // the node keeps its own declaration: deleting it removes the
         // dispatchers it minted, and the record only when it is the record
         ctx.env.set_trait_defaults(def.id, defaults_by_name.drain(..));
-        Ok(Node::new(Self { spec, def, defaults }))
+        Ok(Self::with(spec, def, defaults))
     }
 }
 
@@ -351,7 +355,7 @@ impl<R: Rt> Trait<R> {
         let spec = Arc::new(Expr::decode(buf)?);
         let def = Arc::<TraitDef>::decode(buf)?;
         let defaults = decode_node(ctx, buf)?;
-        Ok(Node::new(Self { spec, def, defaults }))
+        Ok(Self::with(spec, def, defaults))
     }
 }
 
@@ -651,6 +655,17 @@ pub(crate) fn impl_head(
 }
 
 impl<R: Rt> Impl<R> {
+    fn with(
+        spec: Arc<Expr>,
+        def: Arc<ImplDef>,
+        fulfils: Option<Fulfils>,
+        trait_def: Arc<TraitDef>,
+        body: Node<R>,
+        prototypes: Vec<SynthCall<R>>,
+    ) -> Node<R> {
+        Node::new(Self { spec, def, fulfils, trait_def, body, prototypes })
+    }
+
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
@@ -774,14 +789,7 @@ impl<R: Rt> Impl<R> {
             .register_impl(def.clone())
             .at(&spec)?
             .map(|declared| narrow_to_implementation(ctx, declared, &def));
-        Ok(Node::new(Self {
-            spec,
-            def,
-            fulfils,
-            trait_def,
-            body,
-            prototypes: Vec::new(),
-        }))
+        Ok(Self::with(spec, def, fulfils, trait_def, body, Vec::new()))
     }
 
     /// The core-trait prototypes: a call site per method over
@@ -900,7 +908,7 @@ impl<R: Rt> Impl<R> {
             let args = SmallVec::<[BindId; 2]>::decode(buf)?;
             prototypes.push(SynthCall { site, args });
         }
-        Ok(Node::new(Self { spec, def, fulfils, trait_def, body, prototypes }))
+        Ok(Self::with(spec, def, fulfils, trait_def, body, prototypes))
     }
 }
 
