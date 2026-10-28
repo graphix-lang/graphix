@@ -2755,3 +2755,17 @@ fn printed_scalars_stay_in_data_reader() {
     assert!(parse_literal_value("[NaN,").is_none());
     assert_eq!(parse_one("inf").unwrap(), refx("inf"));
 }
+
+#[test]
+fn source_error_does_not_expect_printed_data() {
+    let message = parse_program("let x = ;");
+    assert_eq!(
+        message,
+        r####"at line: 1, column: 9 in module /test: Parse error at line: 1, column: 9
+Unexpected `;`
+Expected mod, pub, use, catch, try, until, type, trait, impl, let, whitespaces, `&`, mut, `|`, `'`, `*`, `r`, [<, select, seqq, seq, cast, never, live, any, """, `"`, `{`, `-`, u8, u16, u32, i8, i16, i32, v32, z32, f32, f64, `0`, true, false, null, decimal, datetime, `:`, duration:, self, `!`, `[`, ```, `(` or #[
+
+    let x = ;
+            ^"####
+    );
+}

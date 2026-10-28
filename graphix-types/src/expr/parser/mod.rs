@@ -13,11 +13,12 @@ use arcstr::{ArcStr, literal};
 use combine::{
     EasyParser, ParseError, Parser, RangeStream, StreamOnce, attempt, between, choice,
     count_min_max, easy, eof,
-    error::StreamError,
+    error::{Commit, StreamError},
     look_ahead, many, many1, none_of, not_followed_by, optional,
     parser::{
         char::{space, string},
         combinator::recognize,
+        function::parser,
         range::{take_while, take_while1},
         token::produce,
     },
@@ -1245,21 +1246,15 @@ where
         (Err(_), Ok(n)) if n.is_finite() => Ok(Value::F64(n)),
         _ => Err(StreamErrorFor::<I>::message_static_message("a large printed float")),
     });
-    value(())
-        .and_then(|_| {
-            if PRINTED_DATA.get() {
-                Ok(())
-            } else {
-                Err(StreamErrorFor::<I>::message_static_message("printed data"))
-            }
-        })
-        .with(choice((
-            attempt(datetime),
-            attempt(duration),
-            attempt(nonfinite),
-            large_integer,
-        )))
-        .skip(not_prefix())
+    let mut printed =
+        choice((attempt(datetime), attempt(duration), attempt(nonfinite), large_integer))
+            .skip(not_prefix());
+    parser(move |input: &mut I| {
+        if !PRINTED_DATA.get() {
+            return Err(Commit::Peek(I::Error::empty(input.position()).into()));
+        }
+        printed.parse_stream(input).into_result()
+    })
 }
 
 fn literal<I>() -> impl Parser<I, Output = Expr>
