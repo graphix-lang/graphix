@@ -500,6 +500,7 @@ mod test {
                 eq: |_, a, b| Some(a.payload == b.payload),
                 eq_applies: |_, _| true,
                 hash,
+                cmp_applies: |_, _| false,
                 cmp: |_, _, _| None,
                 fmt: |_, _| None,
                 to_value: |_, _| None,
