@@ -572,3 +572,9 @@ with no bank when `v` is bottom. `~` still banks: the fires that find
 `v` absent are paid once when `v` arrives, however many there were.
 This also applies after `v` has produced a value and then gone bottom: the
 next value pays the banked trigger; the old value does not pay it.
+
+Both samples retain their last output while `e` is bottom: bottom is not a
+trigger fire. This lets an event written as `select .. { .., _ => never() }`
+leave its last sample available between events. A banked `~` can still pay
+when its argument arrives. A select over that event instead goes bottom
+between events.

@@ -2647,7 +2647,7 @@ impl<R: Rt> Update<R> for Sample<R> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
-        // CR claude for claude: [bug/low] A bottom trigger is not `is_fired`, so both `~`
+        // XCR claude for claude: [bug/low] A bottom trigger is not `is_fired`, so both `~`
         // and `~!` ride their resident while the trigger is bottom. The sample keeps
         // showing its last value: in the probe (7, 2) fires while `a / z` is bottom.
         // design/dense_delivery.md R3 has a consumed bottom bottom the production. Its
@@ -2674,6 +2674,15 @@ impl<R: Rt> Update<R> for Sample<R> {
         // eric.
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q2, `~` with a
         // bottom trigger (round-1 q2, follow-up)): yes, a (the recommendation: (a).)
+        // 2026-10-27 codex: Kept the ruled output ride: both samples retain their last
+        // output when the trigger is bottom, without another fire. Documented the fourth
+        // designated ride in dense_delivery, CLAUDE.md, the select chapter and
+        // graphix-lang; corrected organic_firing's claim that select is an equivalent
+        // sampler. Pins lang::select::sample_bottom_trigger_retains_value and
+        // lib_tests::bottom::strict_sample pass in all four modes. Temporarily bottoming
+        // the output with its trigger makes both pins fail in all four modes; restored
+        // the implementation. The supplied shell probe still prints (0,5), then (1,5).
+        // Book build passes; no FuseExpect moved.
         let fired = self.trigger.update(ctx).tag().is_fired();
         self.arg.update(ctx);
         let (mut owed, pay_id) = match &mut self.banking {

@@ -82,5 +82,6 @@ what `organic_deltas.rs` cites.
 7. A constant-terminal recursion fires per delivery on both engines.
 8. The downstream cadence of `count`/`once`/effects over selects rises
    correspondingly — they observe honest deliveries.
-9. `~` remains the sampling construct; `select t { _ => v }` is also a
-   sampler, redundant rather than wrong.
+9. `~` samples at its trigger's fires and retains its output while the
+   trigger is bottom. `select t { _ => v }` instead goes bottom with `t`
+   and also emits when `v` fires; the two have different cadences.

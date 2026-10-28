@@ -5052,3 +5052,17 @@ run!(
 }"#,
     prints("[[i64:2, i64:3], [i64:0]]")
 );
+
+run!(sample_bottom_trigger_retains_value, r#"{
+    let step = 0;
+    step <- select step { s if s < 3 => s + 1, _ => never() };
+    let trigger = select step { 0 => 7, _ => never() };
+    let banked = trigger ~ 5;
+    let strict = trigger ~! 6;
+    let banked_fires = count(banked);
+    let strict_fires = count(strict);
+    select step {
+        3 => (banked, strict, banked_fires, strict_fires),
+        _ => never()
+    }
+}"#, prints("[i64:5, i64:6, i64:1, i64:1]"); FuseExpect::Jit);

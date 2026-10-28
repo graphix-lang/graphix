@@ -115,6 +115,9 @@ activation_state.md`), a pattern guard's truth (`is_match` takes
 (sample its current value: a trigger that finds the RHS bottom banks
 one payment, even after an earlier value, and pays when the RHS returns;
 `~!` produces bottom instead and banks nothing).
+The fourth designated ride is the sample's output while its trigger
+does not fire, including a bottom trigger: both `~` and `~!` retain the
+last output. A banked payment may still fire when the argument arrives.
 In dataflow terms these are the language's `pre`/`fby`, not ambient
 cache behaviour.
 

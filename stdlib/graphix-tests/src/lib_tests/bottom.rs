@@ -184,7 +184,7 @@ async fn strict_sample(mode: Mode) -> Result<()> {
                 (Tag::STALE, Tag::FIRED, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::STALE, Tag::STALE, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::FIRED, Tag::STALE, 11, Tag::FIRED, 11),
-                // CR claude for claude: [bug/medium] This row pins `~` (and `~!`) keeping
+                // XCR claude for claude: [bug/medium] This row pins `~` (and `~!`) keeping
                 // its last value when its trigger goes bottom: Sample::update rides on
                 // a trigger that is not fired, and a bottom trigger counts as not
                 // fired. Everywhere else bottom in is bottom out (dense_delivery.md
@@ -208,6 +208,16 @@ async fn strict_sample(mode: Mode) -> Result<()> {
                 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q2, `~`
                 // with a bottom trigger (round-1 q2, follow-up)): yes, a (the
                 // recommendation: (a).)
+                // 2026-10-27 codex: Kept the ruled output ride: both samples retain their
+                // last output when the trigger is bottom, without another fire. Documented
+                // the fourth designated ride in dense_delivery, CLAUDE.md, the select
+                // chapter and graphix-lang; corrected organic_firing's claim that select is
+                // an equivalent sampler. Pins
+                // lang::select::sample_bottom_trigger_retains_value and
+                // lib_tests::bottom::strict_sample pass in all four modes. Temporarily
+                // bottoming the output with its trigger makes both pins fail in all four
+                // modes; restored the implementation. The supplied shell probe still prints
+                // (0,5), then (1,5). Book build passes; no FuseExpect moved.
                 (Tag::FRESH_BOTTOM, Tag::FIRED, 13, Tag::STALE, 11),
                 (Tag::FIRED, Tag::STALE, 13, Tag::FIRED, 13),
             ]
