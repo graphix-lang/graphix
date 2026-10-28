@@ -489,6 +489,30 @@ async fn collection_fires_on_a_stale_resize(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A slot's arguments read in the boundary its call stands in, so a slot
+// that calls through a callback never produced is deleted where its reads
+// were registered when the source shrinks.
+async fn shrinking_slots_over_an_absent_callback(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    use graphix_package_core::testing::as_i64s;
+    let (values, _) = run_delta(
+        r#"{
+            let n = 0;
+            n <- select n { 4 => never(), v => v + 1 };
+            let xs = uniq(select n { 0 => [1, 2, 3], 1 => [1, 2, 3], _ => [1] });
+            let f: fn(x: i64) -> [i64, null] = never();
+            let g: fn(acc: i64, x: i64) -> i64 = never();
+            let r = array::filter_map(xs, f);
+            let t = array::fold(xs, 0, g);
+            array::len(xs)
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(as_i64s(&values), vec![3, 1]);
+    Ok(())
+}
+
 // What a slot's run-time callback reads is the collection's: a fire it
 // missed while its arm slept is raised at the wake, and `a`'s birth, which
 // no reader saw, at the arm's first entry, as through a static callee.
@@ -618,6 +642,7 @@ async fn bottom_source_fold_init_caught_up(mode: Mode) -> Result<()> {
 }
 
 modes!(
+    shrinking_slots_over_an_absent_callback,
     collection_fires_on_a_stale_resize,
     collection_refs_reach_its_slots,
     bottom_source_runs_no_slot,

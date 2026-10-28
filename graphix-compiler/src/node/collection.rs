@@ -545,25 +545,32 @@ impl Callback {
     /// a lambda's instance body does: an interrupt stops the slot loop
     /// between slots, and a reply to a slot it kept the walk from is
     /// delivered again.
-    fn call<R: Rt>(
+    /// `args` builds the call's arguments, with what the slot keeps of
+    /// them, inside the boundary the call stands in.
+    fn call<R: Rt, T>(
         &self,
         ctx: &mut CompileCtx<R>,
-        args: SmallVec<[Node<R>; 2]>,
         kind: CallKind,
-    ) -> Node<R> {
-        match kind {
-            CallKind::Prototype(id) => {
-                self.build_call(ctx, args, CallKind::Prototype(id))
+        args: impl FnOnce(&mut CompileCtx<R>) -> (T, SmallVec<[Node<R>; 2]>),
+    ) -> (T, Node<R>) {
+        let fenced = match &kind {
+            CallKind::Prototype(_) => false,
+            CallKind::Slot(Some(def)) => {
+                !def.downcast_ref::<LambdaDef<R>>().is_some_and(|d| !d.is_builtin())
             }
-            CallKind::Slot(Some(def))
-                if def
-                    .downcast_ref::<LambdaDef<R>>()
-                    .is_some_and(|d| !d.is_builtin()) =>
-            {
-                self.build_call(ctx, args, CallKind::Slot(Some(def)))
-            }
-            slot => Prune::fence(ctx, |ctx| self.build_call(ctx, args, slot)),
-        }
+            CallKind::Slot(None) => true,
+        };
+        let mut kept = None;
+        let build = |ctx: &mut CompileCtx<R>| {
+            let (k, args) = args(ctx);
+            kept = Some(k);
+            self.build_call(ctx, args, kind)
+        };
+        let call = match fenced {
+            true => Prune::fence(ctx, build),
+            false => build(ctx),
+        };
+        (kept.expect("the call built its arguments"), call)
     }
 
     fn build_call<R: Rt>(
@@ -833,8 +840,11 @@ impl<R: Rt> Slot<R> {
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let (id, element) = callback.slot_arg(ctx, 0, "collection_element", element_type);
-        let call = callback.call(ctx, smallvec![element], kind);
+        let (id, call) = callback.call(ctx, kind, |ctx| {
+            let (id, element) =
+                callback.slot_arg(ctx, 0, "collection_element", element_type);
+            (id, smallvec![element])
+        });
         Self { id, call, state: SlotState::Bottom }
     }
 
@@ -1542,10 +1552,12 @@ impl<R: Rt> FoldSlot<R> {
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let (acc_id, acc) = callback.slot_arg(ctx, 0, "collection_acc", acc_type);
-        let (element_id, element) =
-            callback.slot_arg(ctx, 1, "collection_element", element_type);
-        let call = callback.call(ctx, smallvec![acc, element], kind);
+        let ((acc_id, element_id), call) = callback.call(ctx, kind, |ctx| {
+            let (acc_id, acc) = callback.slot_arg(ctx, 0, "collection_acc", acc_type);
+            let (element_id, element) =
+                callback.slot_arg(ctx, 1, "collection_element", element_type);
+            ((acc_id, element_id), smallvec![acc, element])
+        });
         Self { acc_id, element_id, call, state: SlotState::Bottom }
     }
 
