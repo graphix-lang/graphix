@@ -417,9 +417,45 @@ pub struct FusionCtx {
     /// Definitions deleted since the last link, whose kernels it forgets.
     dead: Vec<LambdaId>,
     instances: Arc<parking_lot::Mutex<BTreeMap<KernelCacheKey, share::SlotShare>>>,
+    /// Each instance's body fingerprint, as a walk now would find it: a
+    /// kernel spliced anywhere may change one, so any splice forgets them
+    /// all ([`kernel_node`]). Shared with the context's compile tasks.
+    fingerprints: Arc<parking_lot::Mutex<Fingerprints>>,
+}
+
+#[derive(Default)]
+struct Fingerprints {
+    /// Bumped at every splice: a walk begun before one is not kept.
+    generation: u64,
+    by_instance: ahash::AHashMap<
+        crate::LambdaInstanceId,
+        (lowering::QopCoverage, lowering::FnResolutions),
+    >,
 }
 
 impl FusionCtx {
+    /// The fingerprint of the instance `g`'s body ([`lowering::body_fingerprint`]),
+    /// walked once until a kernel is spliced.
+    pub(crate) fn fingerprint<R: Rt>(
+        &self,
+        g: &crate::node::lambda::GXLambda<R>,
+        ec: &CompileCtx<R>,
+    ) -> (lowering::QopCoverage, lowering::FnResolutions) {
+        let generation = {
+            let f = self.fingerprints.lock();
+            if let Some(known) = f.by_instance.get(&g.instance_id()) {
+                return known.clone();
+            }
+            f.generation
+        };
+        let print = lowering::body_fingerprint(g.body(), ec);
+        let mut f = self.fingerprints.lock();
+        if f.generation == generation {
+            f.by_instance.insert(g.instance_id(), print.clone());
+        }
+        print
+    }
+
     /// A compile task's fusion state: the module shared, its own outcome
     /// counters, which [`Self::join`] adds back. A fusion task gets an
     /// emission of its own ([`fuse_each`]); any other emits nothing.
@@ -432,6 +468,7 @@ impl FusionCtx {
             share: None,
             dead: Vec::new(),
             instances: self.instances.clone(),
+            fingerprints: self.fingerprints.clone(),
         }
     }
 
@@ -639,6 +676,7 @@ impl FusionCtx {
             share: None,
             dead: Vec::new(),
             instances: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
+            fingerprints: Arc::new(parking_lot::Mutex::new(Fingerprints::default())),
         }
     }
 }
@@ -944,6 +982,17 @@ pub(crate) struct Discovery<'n, R: Rt> {
 // not a safe shortcut: inference joins facts from different instances into the
 // definition, so a stateful specialization must not de-fuse another. No new pin or
 // fix-specific test; leaving open.
+// 2026-10-28 claude: Partly fixed: the cubic term was build_lambda_kernel's
+// body_fingerprint, recomputed per callee per region (40401 walks of the callee
+// closure at n=200). FusionCtx::fingerprint now memoizes each instance's fingerprint,
+// shared with compile tasks and forgotten at every splice (kernel_node bumps a
+// generation), so it returns exactly what a walk would. Quick build, the probe: n=500
+// 7.8 -> 2.2 s, 1000 60 -> 9.4 s, 2000 >170 -> 45 s; fusion manifest unchanged. What
+// stands is quadratic: a region that fails forgets the kernel signatures it built, so
+// each region rebuilds its callee chain before f0's refusal (profile now flat:
+// compile_region, kernel-cache lookups, build_lambda_kernel). A transitive refusal
+// memo would remove it but changes which call site a #[native] refusal names; left
+// open.
 pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     root: &'n Node<R>,
     ctx: &CompileCtx<R>,
@@ -1393,7 +1442,7 @@ pub(crate) fn fuse_instance<R: Rt>(
 ) -> anyhow::Result<()> {
     let key = match apply.view() {
         ApplyView::Lambda(g) => {
-            let (coverage, resolutions) = lowering::body_fingerprint(g.body(), ctx);
+            let (coverage, resolutions) = ctx.fusion.fingerprint(g, ctx);
             Some((g.id(), Arc::new(apply.typ().resolve_tvars()), coverage, resolutions))
         }
         _ => None,
@@ -1531,6 +1580,11 @@ pub(crate) fn kernel_node<R: Rt>(
     kernel: Arc<KernelSig>,
     jit: emit::WrappedKernel,
 ) -> Node<R> {
+    {
+        let mut f = ctx.fusion.fingerprints.lock();
+        f.generation += 1;
+        f.by_instance.clear();
+    }
     let top = ctx.fusion.top_id.unwrap_or(node.spec().id);
     let feeders: Box<[Node<R>]> = inputs
         .iter()

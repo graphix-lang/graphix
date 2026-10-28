@@ -1350,7 +1350,7 @@ pub(crate) fn build_lambda_kernel<R: Rt>(
     // tvar cells with the def, so `g.typ()` reports whichever
     // monomorphization unified first.
     let resolved_typ = triomphe::Arc::new(site_ftype.resolve_tvars());
-    let (coverage, fn_resolutions) = body_fingerprint(g.body(), ec);
+    let (coverage, fn_resolutions) = ec.fusion.fingerprint(g, ec);
     let key = (g.id(), resolved_typ, coverage, fn_resolutions);
     if let Some(cached) = ec.fusion.kernel(&key) {
         return Ok(cached);
