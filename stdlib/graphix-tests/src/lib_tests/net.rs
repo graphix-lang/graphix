@@ -159,7 +159,7 @@ run!(net_list_table, NET_LIST_TABLE, |v: Result<&Value>| {
         Ok(Value::Bool(true)) => true,
         _ => false,
     }
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const NET_RPC0: &str = r#"
 {
