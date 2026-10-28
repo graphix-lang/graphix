@@ -1242,8 +1242,10 @@ cycle, across workers; the compiler never pins threads.
 - **Traits v1** (`design/traits.md`): static dispatch on the self
   argument's type; a union self lowers to a select; impls are global
   facts; core `Eq`/`Ord`/`Display` ride the value (map keys, sort,
-  operators, printers, both engines), and core `Cast` the casts and
-  writers (no structural default, never called by a program); a method
+  operators, printers, both engines), `Eq`'s optional `hash` the part
+  `array::dedup` hashes (left out, a value hashes by its type alone), and
+  core `Cast` the casts and writers (no structural default; these
+  methods are never called by a program); a method
   may take `self` only in its result, and no call dispatches it. A
   method's `#[pure]`/`#[sync]` (above its `val`) is asserted of every
   body, each impl's and the default (`traits::method_decl`); core's

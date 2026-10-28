@@ -40,6 +40,10 @@ pub struct ValueHookDispatch {
     /// equality; when not, equality is the payload's.
     #[doc(hidden)]
     pub eq_applies: fn(*mut u8, &GxAbstract) -> bool,
+    /// The part of the value its `Eq` implementation reads, which a hash
+    /// takes; `None` when the implementation leaves `hash` out.
+    #[doc(hidden)]
+    pub hash: fn(*mut u8, &GxAbstract) -> Option<Value>,
     #[doc(hidden)]
     pub cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
     #[doc(hidden)]
@@ -390,15 +394,17 @@ impl Ord for GxAbstract {
     }
 }
 
-/// Where an `Eq` implementation may decide equality only the id and the
-/// parameters are hashed, since no hash of the payload can agree with
-/// it; elsewhere equality is the payload's, and so is the hash.
+/// Where an `Eq` implementation may decide equality the id, the
+/// parameters and what its `hash` returns are hashed, since no hash of
+/// the payload can agree with it; elsewhere equality is the payload's,
+/// and so is the hash.
 impl Hash for GxAbstract {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
         self.params_key().hash(state);
-        if hooked(|h| (h.eq_applies)(h.state, self).then_some(())).is_none() {
-            crate::stack::ensure_sufficient(|| self.payload.hash(state))
+        match hooked(|h| (h.eq_applies)(h.state, self).then(|| (h.hash)(h.state, self))) {
+            None => crate::stack::ensure_sufficient(|| self.payload.hash(state)),
+            Some(part) => crate::stack::ensure_sufficient(|| part.hash(state)),
         }
     }
 }
@@ -459,5 +465,48 @@ mod test {
             GxAbstract::decode(&mut &buf[..]),
             Err(PackError::InvalidFormat)
         ));
+    }
+
+    fn boxed(payload: i64) -> GxAbstract {
+        GxAbstract {
+            id: AbstractId::of(&crate::expr::ModPath::from(["m"]), "T"),
+            name: arcstr::literal!("T"),
+            params: Arc::from_iter([]),
+            payload: Value::I64(payload),
+            params_key: OnceLock::new(),
+        }
+    }
+
+    fn hash_of(g: &GxAbstract) -> u64 {
+        use std::hash::BuildHasher;
+        ahash::RandomState::with_seeds(1, 2, 3, 4).hash_one(g)
+    }
+
+    /// Where an `Eq` implementation decides equality, a value hashes by the
+    /// part its `hash` returns, so values of one type spread over buckets
+    /// (a dedup of them stays linear), and by its type alone without one.
+    #[test]
+    fn eq_hashes_by_its_part() {
+        fn dispatch(
+            hash: fn(*mut u8, &GxAbstract) -> Option<Value>,
+        ) -> ValueHookDispatch {
+            ValueHookDispatch {
+                state: ptr::null_mut(),
+                eq: |_, a, b| Some(a.payload == b.payload),
+                eq_applies: |_, _| true,
+                hash,
+                cmp: |_, _, _| None,
+                fmt: |_, _| None,
+                to_value: |_, _| None,
+                from_value: |_, _, _| None,
+            }
+        }
+        let part = dispatch(|_, a| Some(a.payload.clone()));
+        with_value_hooks(&part, || {
+            assert_ne!(hash_of(&boxed(1)), hash_of(&boxed(2)));
+            assert_eq!(hash_of(&boxed(1)), hash_of(&boxed(1)));
+        });
+        let none = dispatch(|_, _| None);
+        with_value_hooks(&none, || assert_eq!(hash_of(&boxed(1)), hash_of(&boxed(2))));
     }
 }

@@ -222,7 +222,12 @@ Unlike the three below it has no structural default for every type,
 no operator dispatches it, and a program never calls its methods.
 
 Declared in core's interface (`graphix-package-core/src/graphix/
-mod.gxi`): `trait Eq { val eq: fn(self, other: self) -> bool }`,
+mod.gxi`): `trait Eq { val eq: fn(self, other: self) -> bool; val
+hash: fn(self) -> Any }`, where `hash` is optional and, like `Cast`'s
+methods, called only by the runtime: it is the part of the value `eq`
+reads, which `GxAbstract`'s `Hash` takes (with the id and the
+parameters) where an `Eq` implementation decides equality; left out,
+the value hashes by its type alone (`CoreTrait::runtime_method`),
 `trait Ord { val cmp: fn(self, other: self) -> Ordering }` with
 `type Ordering = [`Less, `Equal, `Greater]`, `trait Display { val fmt:
 fn(self) -> string }`. Their ids are path-derived like every trait's,

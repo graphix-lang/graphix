@@ -737,7 +737,7 @@ impl<R: Rt> Impl<R> {
         for d in trait_def.methods.iter() {
             if !provided.contains(&d.name)
                 && d.default.is_none()
-                && !CoreTrait::representation_default(trait_id)
+                && !CoreTrait::runtime_method(trait_id, &d.name)
             {
                 bailat!(
                     spec,
@@ -767,13 +767,11 @@ impl<R: Rt> Impl<R> {
             pos: spec.pos,
             ori: spec.ori.clone(),
         });
-        let fulfils = ctx.env.register_impl(def.clone()).at(&spec)?.map(|declared| {
-            if CoreTrait::representation_default(trait_id) {
-                narrow_to_representation(ctx, declared, &def)
-            } else {
-                Fulfils { entry: declared, narrowed: None }
-            }
-        });
+        let fulfils = ctx
+            .env
+            .register_impl(def.clone())
+            .at(&spec)?
+            .map(|declared| narrow_to_implementation(ctx, declared, &def));
         Ok(Node::new(Self {
             spec,
             def,
@@ -822,20 +820,21 @@ impl<R: Rt> Impl<R> {
     }
 }
 
-/// A declared impl of a trait whose methods default to the
-/// representation (`Cast`) keeps only the methods its implementation
-/// writes: one it leaves out is the representation. Registered here,
-/// where the implementation registers, never in a module's check, which
-/// runs beside its siblings'.
-
-fn narrow_to_representation<R: Rt>(
+/// A declared impl keeps only the runtime methods
+/// (`CoreTrait::runtime_method`) its implementation writes: a `Cast`
+/// method it leaves out is the representation, an `Eq::hash` the type
+/// alone. Registered here, where the implementation registers, never in
+/// a module's check, which runs beside its siblings'.
+fn narrow_to_implementation<R: Rt>(
     ctx: &mut CompileCtx<R>,
     declared: Arc<ImplDef>,
     implementation: &ImplDef,
 ) -> Fulfils {
     let mut methods = declared.methods.clone();
     for (name, _) in declared.methods.into_iter() {
-        if !implementation.methods.contains_key(name) {
+        if CoreTrait::runtime_method(declared.trait_id, name)
+            && !implementation.methods.contains_key(name)
+        {
             methods.remove_cow(name);
         }
     }

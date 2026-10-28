@@ -30,6 +30,7 @@ use triomphe::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Method {
     Eq,
+    Hash,
     Cmp,
     Fmt,
     ToValue,
@@ -39,7 +40,7 @@ enum Method {
 impl Method {
     fn of(self) -> CoreTrait {
         match self {
-            Self::Eq => CoreTrait::Eq,
+            Self::Eq | Self::Hash => CoreTrait::Eq,
             Self::Cmp => CoreTrait::Ord,
             Self::Fmt => CoreTrait::Display,
             Self::ToValue | Self::FromValue => CoreTrait::Cast,
@@ -49,6 +50,7 @@ impl Method {
     fn name(self) -> &'static str {
         match self {
             Self::Eq => "eq",
+            Self::Hash => "hash",
             Self::Cmp => "cmp",
             Self::Fmt => "fmt",
             Self::ToValue => "to_value",
@@ -60,7 +62,7 @@ impl Method {
     fn arg_types(self, typ: &Type) -> SmallVec<[Type; 2]> {
         match self {
             Self::Eq | Self::Cmp => SmallVec::from_iter([typ.clone(), typ.clone()]),
-            Self::Fmt | Self::ToValue => SmallVec::from_iter([typ.clone()]),
+            Self::Hash | Self::Fmt | Self::ToValue => SmallVec::from_iter([typ.clone()]),
             Self::FromValue => SmallVec::from_iter([Type::Any]),
         }
     }
@@ -99,7 +101,7 @@ fn hook_of(
         .ok_or_else(|| anyhow!("core trait {} lacks {}", def.name, m.name()))?;
     let bind = match im.methods.get(m.name()).copied().or(decl.default) {
         Some(bind) => bind,
-        None if CoreTrait::representation_default(t.id()) => return Ok(None),
+        None if CoreTrait::runtime_method(t.id(), m.name()) => return Ok(None),
         None => {
             return Err(anyhow!(
                 "impl {} for {} has no {}",
@@ -638,6 +640,12 @@ fn dispatch_cmp<R: Rt>(
     }
 }
 
+fn dispatch_hash<R: Rt>(state: *mut u8, a: &GxAbstract) -> Option<Value> {
+    // SAFETY: with_hooks lent its context for this dispatch.
+    let ctx = unsafe { lent::<R>(state) };
+    call_hook(ctx, Method::Hash, &a.typ(), &[as_value(a)]).ran()?
+}
+
 fn dispatch_fmt<R: Rt>(state: *mut u8, a: &GxAbstract) -> Option<ArcStr> {
     // SAFETY: with_hooks lent its context for this dispatch.
     let ctx = unsafe { lent::<R>(state) };
@@ -693,6 +701,7 @@ pub fn with_hooks<R: Rt, T>(ctx: &mut ExecCtx<'_, R>, f: impl FnOnce() -> T) -> 
         state: ctx as *mut ExecCtx<'_, R> as *mut u8,
         eq: dispatch_eq::<R>,
         eq_applies: dispatch_eq_applies::<R>,
+        hash: dispatch_hash::<R>,
         cmp: dispatch_cmp::<R>,
         fmt: dispatch_fmt::<R>,
         to_value: dispatch_to_value::<R>,

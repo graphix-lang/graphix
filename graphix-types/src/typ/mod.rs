@@ -575,6 +575,17 @@ impl CoreTrait {
     pub fn representation_default(id: TraitId) -> bool {
         Self::of_id(id) == Some(Self::Cast)
     }
+
+    /// Whether the runtime calls the method `name` and a program never
+    /// does: every `Cast` method, and `Eq`'s `hash`. An implementation
+    /// may leave one out.
+    pub fn runtime_method(id: TraitId, name: &str) -> bool {
+        match Self::of_id(id) {
+            Some(Self::Cast) => true,
+            Some(Self::Eq) => name == "hash",
+            _ => false,
+        }
+    }
 }
 
 /// What a `TypeRef`'s name means: the definition [`Type::lookup_ref`]

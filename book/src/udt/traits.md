@@ -253,6 +253,19 @@ Key("Foo") == Key("FOO");
 (Key("x"), 1) == (Key("X"), 2)
 ```
 
+`array::dedup` hashes the values it keeps. An `Eq` implementation can
+add `hash`, the part of the value its `eq` reads, which is what gets
+hashed; two values `eq` calls equal must give equal parts. Without
+`hash`, every value of the type hashes alike: the result is the same,
+but a dedup of many distinct values compares each with every other.
+
+```graphix,fragment
+impl Eq for Key {
+    let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0);
+    let hash = |k| str::to_lower(k.0)
+};
+```
+
 A color that prints as its hex triplet, wherever it appears:
 
 ```graphix

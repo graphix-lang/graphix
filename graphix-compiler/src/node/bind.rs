@@ -871,16 +871,16 @@ impl Ref {
         match resolved {
             None => bailat!(spec, "{name} not defined"),
             Some((_, bind)) => {
-                if ctx
-                    .env
-                    .trait_methods
-                    .get(&bind.id)
-                    .is_some_and(|tm| tm.trait_id == CoreTrait::Cast.id())
+                if let Some(tm) = ctx.env.trait_methods.get(&bind.id)
+                    && let Some(def) = ctx.env.trait_def(tm.trait_id)
+                    && let Some(m) = def.methods.get(tm.index)
+                    && CoreTrait::runtime_method(tm.trait_id, &m.name)
                 {
-                    bailat!(
-                        spec,
-                        "{name} is called by casts and writers, never by a program"
-                    )
+                    let by = match CoreTrait::of_id(tm.trait_id) {
+                        Some(CoreTrait::Cast) => "casts and writers",
+                        _ => "hashing",
+                    };
+                    bailat!(spec, "{name} is called by {by}, never by a program")
                 }
                 if let Some(flags) = value
                     && let Some(eta) = super::compiler::lowering(ctx, &spec, |ctx| {

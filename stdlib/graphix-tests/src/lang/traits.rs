@@ -2752,3 +2752,51 @@ run!(
 }"#,
     prints("[true, true, true, i64:1]")
 );
+
+// `Eq::hash` is the part of a value `eq` reads: the runtime hashes it, so
+// a dedup merges what `eq` calls equal, keeping the first.
+run!(
+    eq_hash_merges_what_eq_calls_equal,
+    r#"{
+    type Name = Abstract<{n: string, id: i64}>;
+    impl Eq for Name { let eq = |a, b| a.0.n == b.0.n; let hash = |a| a.0.n };
+    let a = Name({n: "a", id: 1});
+    let b = Name({n: "a", id: 2});
+    let c = Name({n: "c", id: 3});
+    array::map(array::dedup([a, b, c, b]), |x| x.0.id)
+}"#,
+    prints("[i64:1, i64:3]")
+);
+
+run!(
+    eq_hash_is_not_called_by_a_program,
+    r#"{
+    type Mod = Abstract<i64>;
+    impl Eq for Mod { let eq = |a, b| a.0 == b.0; let hash = |a| a.0 };
+    Eq::hash(Mod(1))
+}"#,
+    refused("Eq::hash is called by hashing, never by a program")
+);
+
+// An interface's `impl Eq for T;` is fulfilled by an implementation that
+// leaves `hash` out, as one that writes it.
+run!(
+    eq_hash_left_out_fulfils_a_declared_impl,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r#"
+mod m;
+let result = m::same(m::mk(1), m::mk(3))
+"#,
+    "/test/m.gxi" => r#"
+type T;
+impl Eq for T;
+val mk: fn(x: i64) -> T;
+val same: fn(a: T, b: T) -> bool
+"#,
+    "/test/m.gx" => r#"
+type T = Abstract<i64>;
+impl Eq for T { let eq = |a, b| a.0 % 2 == b.0 % 2 };
+let mk = |x: i64| T(x);
+let same = |a: T, b: T| a == b
+"#
+);
