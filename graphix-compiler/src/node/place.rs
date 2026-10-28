@@ -16,11 +16,23 @@ use triomphe::Arc;
 /// One accessor of a path: an array or tuple index (negative from the
 /// end, as `a[-1]` reads; `0` is also an error's or an abstract
 /// value's payload), a struct field, or a map key.
-#[derive(Debug, Clone, PartialEq, netidx_derive::Pack)]
+#[derive(Debug, Clone, netidx_derive::Pack)]
 pub enum Step {
     Index(i64),
     Field(ArcStr),
-    Key(Value),
+    /// The key and whether its static type can hold a reference.
+    Key(Value, bool),
+}
+
+impl PartialEq for Step {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Index(a), Self::Index(b)) => a == b,
+            (Self::Field(a), Self::Field(b)) => a == b,
+            (Self::Key(a, _), Self::Key(b, _)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// What a place reference's cell stands for.
@@ -238,9 +250,9 @@ pub fn read_path<'a>(
                 &abstract_value::get(v).unwrap().payload
             }
             (Step::Field(name), v) => field_of(v, name)?.1,
-            (Step::Key(k), Value::Map(m)) => {
+            (Step::Key(k, check), Value::Map(m)) => {
                 anyhow::ensure!(
-                    crate::reference::orderable(k),
+                    !check || crate::reference::orderable(k),
                     "references have no order, including under Any"
                 );
                 m.get(k).ok_or_else(|| anyhow!("no key {k}"))?
@@ -325,9 +337,9 @@ pub fn write_path<'a>(
                 spine.push(Hole::Field(c, j));
                 f
             }
-            (Step::Key(k), Value::Map(m)) => {
+            (Step::Key(k, check), Value::Map(m)) => {
                 anyhow::ensure!(
-                    crate::reference::orderable(k),
+                    !check || crate::reference::orderable(k),
                     "references have no order, including under Any"
                 );
                 spine.push(Hole::Key(m, k));
@@ -379,10 +391,15 @@ mod tests {
     use netidx_value::ValArray;
 
     #[test]
+    fn key_type_check_does_not_change_place_identity() {
+        assert_eq!(Step::Key(Value::I64(1), false), Step::Key(Value::I64(1), true));
+    }
+
+    #[test]
     fn map_paths_refuse_reference_keys() {
         let key = crate::reference::reference(BindId::new(), None);
         let root = Value::Map(netidx_value::Map::new());
-        let path = [Step::Key(key)];
+        let path = [Step::Key(key, true)];
         assert!(
             read_path(&root, &path)
                 .unwrap_err()

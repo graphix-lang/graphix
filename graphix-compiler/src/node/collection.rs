@@ -166,7 +166,7 @@ trait MapCollection: Debug + Clone + Default + Send + Sync + 'static {
     /// The elements `keep` keeps, as this collection is under `flavor`.
     fn kept(&self, flavor: Flavor, keep: impl Iterator<Item = bool>) -> Option<Value> {
         let kept = self.values().zip(keep).filter_map(|(v, k)| k.then_some(v));
-        flavor.build(&mut kept.collect())
+        flavor.build(&mut kept.collect(), false)
     }
 }
 
@@ -231,6 +231,7 @@ pub(crate) fn split_pair(value: &Value) -> Option<(Value, Value)> {
 /// caller runs this under them.
 pub(crate) fn pairs_to_map<'a>(
     pairs: impl IntoIterator<Item = &'a Value>,
+    check_keys: bool,
 ) -> Option<Value> {
     let mut kv: LPooled<Vec<(Value, Value)>> = LPooled::take();
     kv.extend(pairs.into_iter().filter_map(|v| {
@@ -240,7 +241,7 @@ pub(crate) fn pairs_to_map<'a>(
         }
         pair
     }));
-    if !kv.iter().all(|(k, _)| super::coretraits::ordered(k)) {
+    if check_keys && !kv.iter().all(|(k, _)| super::coretraits::ordered(k)) {
         return None;
     }
     // insert_many keeps the first of equal keys, so it sees them last
@@ -855,6 +856,7 @@ pub struct MapQBase<R: Rt> {
     prototype_id: BindId,
     spec: Arc<Expr>,
     typ: Type,
+    check_keys: bool,
 }
 
 impl<R: Rt> MapQBase<R> {
@@ -954,7 +956,7 @@ impl<R: Rt> MapQBase<R> {
                 return Some(found.cloned().unwrap_or(Value::Null));
             }
         };
-        self.flavor.build(&mut elems)
+        self.flavor.build(&mut elems, self.check_keys)
     }
 }
 
@@ -1014,6 +1016,7 @@ impl<R: Rt, C: MapCollection> MapQ<R, C> {
             prototype_id: prototype.id,
             spec,
             typ: typ.rtype.clone(),
+            check_keys: true,
         };
         Ok(Self::with(base, callback))
     }
@@ -1035,6 +1038,7 @@ impl<R: Rt, C: MapCollection> MapQ<R, C> {
             prototype_id: BindId::decode(buf)?,
             spec: Arc::new(Expr::decode(buf)?),
             typ: Type::decode(buf)?,
+            check_keys: bool::decode(buf)?,
         };
         Ok(Self::with(base, Callback::image_decode(ctx, buf)?))
     }
@@ -1294,6 +1298,7 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
         self.base.prototype_id.encode(buf)?;
         self.base.spec.encode(buf)?;
         self.base.typ.encode(buf)?;
+        self.base.check_keys.encode(buf)?;
         self.callback.image_encode(buf)
     }
 
@@ -1391,7 +1396,12 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.callback.see_arg(ctx);
-        each(self.base.nodes_mut(), |n| n.typecheck1(ctx))
+        each(self.base.nodes_mut(), |n| n.typecheck1(ctx))?;
+        self.base.check_keys = self.base.typ.with_deref(|t| match t {
+            Some(Type::Map { key, .. }) => key.orders_refs(&ctx.env),
+            _ => false,
+        });
+        Ok(())
     }
 
     fn typ(&self) -> &Type {
@@ -1877,11 +1887,11 @@ fn fuse_callback<R: Rt>(
 
 impl Flavor {
     /// This flavor's collection over `elems`, which it drains.
-    fn build(self, elems: &mut LPooled<Vec<Value>>) -> Option<Value> {
+    fn build(self, elems: &mut LPooled<Vec<Value>>, check_keys: bool) -> Option<Value> {
         match self {
             Self::Array => Some(Value::Array(ValArray::from_iter_exact(elems.drain(..)))),
             Self::List => Some(list::from_iter(elems.drain(..))),
-            Self::CMap => pairs_to_map(elems.iter()),
+            Self::CMap => pairs_to_map(elems.iter(), check_keys),
         }
     }
 

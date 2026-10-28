@@ -190,6 +190,20 @@ impl PartialOrd for Reference {
 // instantiated-impl equality and ordering probes failed eight cases before the exact
 // lookup correction and passed afterward. Rules, book, design and language skill
 // updated. Full-suite and fuzzer results are recorded in the completion report.
+// 2026-10-28 codex: Gate reference-order walks on resolved argument/key types. Map nodes,
+// collection builders, by-reference map paths and ordered builtins retain the decision
+// from typecheck1 (and image it); native helpers receive constant gates. The fast builtin
+// path is used only when its argument type cannot conceal references. Cast nodes and
+// reader targets retain a conservative target-level gate; the generic Type cast API also
+// checks the static map-key type once before iterating entries, so an unrelated Any in a
+// map value never causes a key walk. Existing netidx-facing signatures are unchanged.
+// Pins: ordered_builtin_checks_only_unknown_types and typed_map_cast_skips_reference_walk
+// both failed with their guards removed, then passed restored. Extended
+// map_helpers_refuse_reference_keys covers both native gate values;
+// key_type_check_does_not_change_place_identity pins that gate metadata is not reference
+// identity. The complete graphix-types, graphix-compiler and graphix-package-core unit
+// suites pass (336, 54 and 6 tests), and all 48 lang::byref::any_ integration tests pass.
+// No socket tests are involved in these focused runs.
 impl Ord for Reference {
     fn cmp(&self, other: &Self) -> Ordering {
         self.cell.cmp(&other.cell)
@@ -294,9 +308,16 @@ impl FromValue for BindId {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ORDER_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Whether ordering this value can reach a reference outside an `Ord` implementation.
 /// The caller lends its core-trait hooks.
 pub fn orderable(v: &Value) -> bool {
+    #[cfg(test)]
+    ORDER_CHECKS.set(ORDER_CHECKS.get() + 1);
     ensure_sufficient(|| {
         if cell(v).is_some() {
             return false;
@@ -314,4 +335,24 @@ pub fn orderable(v: &Value) -> bool {
             _ => true,
         }
     })
+}
+
+#[cfg(test)]
+mod order_check_test {
+    use super::*;
+    use crate::{env::Env, typ::Type};
+    use triomphe::Arc as TArc;
+
+    #[test]
+    fn typed_map_cast_skips_reference_walk() {
+        let env = Env::default();
+        let target = Type::Map {
+            key: TArc::new(Type::Primitive(netidx_value::Typ::I64.into())),
+            value: TArc::new(Type::Primitive(netidx_value::Typ::I64.into())),
+        };
+        let value = Value::Map([(Value::I64(1), Value::I64(2))].into_iter().collect());
+        ORDER_CHECKS.set(0);
+        assert_eq!(target.cast_value(&env, value.clone()), value);
+        assert_eq!(ORDER_CHECKS.get(), 0);
+    }
 }

@@ -42,11 +42,18 @@ pub struct Map<R: Rt> {
     /// they update in.
     pub n: Box<[Node<R>]>,
     resident: TagValue,
+    check_keys: bool,
     pub(crate) fork: ForkSite,
 }
 
 impl<R: Rt> Map<R> {
-    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R>]>, fork: ForkSite) -> Node<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        n: Box<[Node<R>]>,
+        fork: ForkSite,
+        check_keys: bool,
+    ) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
             spec,
@@ -54,6 +61,7 @@ impl<R: Rt> Map<R> {
             n,
             resident: TagValue::phantom(),
             fork,
+            check_keys,
         })
     }
 
@@ -72,7 +80,13 @@ impl<R: Rt> Map<R> {
         let entries = (0..2 * n)
             .map(|_| decode_node(ctx, buf))
             .collect::<Result<Box<[_]>, PackError>>()?;
-        Ok(Self::with(spec, typ, entries, ForkSite::image_decode(buf)?))
+        Ok(Self::with(
+            spec,
+            typ,
+            entries,
+            ForkSite::image_decode(buf)?,
+            bool::decode(buf)?,
+        ))
     }
 
     pub(crate) fn compile(
@@ -92,7 +106,7 @@ impl<R: Rt> Map<R> {
             key: Arc::new(Type::empty_tvar()),
             value: Arc::new(Type::empty_tvar()),
         };
-        Ok(Self::with(spec, typ, n, ForkSite::default()))
+        Ok(Self::with(spec, typ, n, ForkSite::default(), true))
     }
 }
 
@@ -106,7 +120,8 @@ impl<R: Rt> Update<R> for Map<R> {
             k.image_encode(buf)?;
             v.image_encode(buf)?;
         }
-        self.fork.image_encode(buf)
+        self.fork.image_encode(buf)?;
+        self.check_keys.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -114,7 +129,7 @@ impl<R: Rt> Update<R> for Map<R> {
         let m = with_hooks(ctx, || {
             let mut m = CMap::new();
             while let (Some(k), Some(v)) = (vals.next(), vals.next()) {
-                if !super::coretraits::ordered(&k) {
+                if self.check_keys && !super::coretraits::ordered(&k) {
                     return None;
                 }
                 m.insert_cow(k, v);
@@ -125,6 +140,15 @@ impl<R: Rt> Update<R> for Map<R> {
             Some(m) => self.resident.set(TagValue::tagged(m, tag)),
             None => self.resident.set_bottom_as(tag),
         }
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        for n in &mut self.n {
+            wrap!(n, n.typecheck1(ctx))?;
+        }
+        let check_keys = self.entries().any(|(k, _)| k.typ().orders_refs(&ctx.env));
+        self.check_keys = check_keys;
+        Ok(())
     }
 
     composite_plumbing!(Map);
@@ -250,13 +274,14 @@ pub struct MapRef<R: Rt> {
     pub typ: Type,
     pub vtyp: Type,
     resident: TagValue,
+    check_key: bool,
 }
 
 /// Look up `key` in a `Value::Map`, returning the value or the
 /// `map key not found` error. Shared by the node-walk and the JIT so
 /// both agree bit-for-bit. `src` must be a `Value::Map`.
-pub(crate) fn map_get(src: &Value, key: &Value) -> Option<Value> {
-    if !super::coretraits::ordered(key) {
+pub(crate) fn map_get(src: &Value, key: &Value, check_key: bool) -> Option<Value> {
+    if check_key && !super::coretraits::ordered(key) {
         return None;
     }
     Some(match src {
@@ -276,6 +301,7 @@ impl<R: Rt> MapRef<R> {
         vtyp: Type,
         source: Node<R>,
         key: Node<R>,
+        check_key: bool,
     ) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
@@ -285,6 +311,7 @@ impl<R: Rt> MapRef<R> {
             typ,
             vtyp,
             resident: TagValue::phantom(),
+            check_key,
         })
     }
 
@@ -316,7 +343,7 @@ impl<R: Rt> MapRef<R> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let vtyp = Type::decode(buf)?;
-        Ok(Self::with(spec, typ, vtyp, source, key))
+        Ok(Self::with(spec, typ, vtyp, source, key, bool::decode(buf)?))
     }
 
     pub(crate) fn compile(
@@ -335,7 +362,7 @@ impl<R: Rt> MapRef<R> {
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([vtyp.clone(), ERR.clone()]));
-        Ok(Self::with(spec, typ, vtyp, source, key))
+        Ok(Self::with(spec, typ, vtyp, source, key, true))
     }
 }
 
@@ -356,7 +383,8 @@ impl<R: Rt> Update<R> for MapRef<R> {
         self.key.image_encode(buf)?;
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        self.vtyp.encode(buf)
+        self.vtyp.encode(buf)?;
+        self.check_key.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -364,7 +392,9 @@ impl<R: Rt> Update<R> for MapRef<R> {
         let k = self.key.update(ctx);
         let tag = s.tag().join(k.tag());
         dense_gate!(self, tag, tag.is_bottom());
-        let v = with_hooks(ctx, || s.with_value(|s| k.with_value(|k| map_get(s, k))));
+        let v = with_hooks(ctx, || {
+            s.with_value(|s| k.with_value(|k| map_get(s, k, self.check_key)))
+        });
         match v {
             Some(v) => self.resident.set(TagValue::tagged(v, tag)),
             None => self.resident.set_bottom_as(tag),
@@ -374,6 +404,13 @@ impl<R: Rt> Update<R> for MapRef<R> {
     // The element cell binds from the source as in the check; the
     // index needs no judging.
     super::typed_by_row!(source);
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        wrap!(self.key, self.key.typecheck1(ctx))?;
+        self.check_key = self.key.typ().orders_refs(&ctx.env);
+        Ok(())
+    }
 
     fn typ(&self) -> &Type {
         &self.typ

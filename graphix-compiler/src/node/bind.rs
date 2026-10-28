@@ -1127,7 +1127,7 @@ enum PlaceStep<R: Rt> {
     Index(Node<R>),
     Tuple(usize),
     Field(expr::Name),
-    Key(Node<R>),
+    Key(Node<R>, bool),
 }
 
 /// The place a `&root[i].f` reference stands for: the root node (a
@@ -1157,9 +1157,10 @@ impl<R: Rt> PlaceStep<R> {
                 buf.put_u8(2);
                 f.encode(buf)
             }
-            PlaceStep::Key(n) => {
+            PlaceStep::Key(n, check) => {
                 buf.put_u8(3);
-                n.image_encode(buf)
+                n.image_encode(buf)?;
+                check.encode(buf)
             }
         }
     }
@@ -1175,7 +1176,7 @@ impl<R: Rt> PlaceStep<R> {
             0 => Ok(PlaceStep::Index(decode_node(ctx, buf)?)),
             1 => Ok(PlaceStep::Tuple(usize::decode(buf)?)),
             2 => Ok(PlaceStep::Field(expr::Name::decode(buf)?)),
-            3 => Ok(PlaceStep::Key(decode_node(ctx, buf)?)),
+            3 => Ok(PlaceStep::Key(decode_node(ctx, buf)?, bool::decode(buf)?)),
             _ => Err(PackError::UnknownTag),
         }
     }
@@ -1303,7 +1304,7 @@ impl<R: Rt> Place<R> {
                     PlaceSpec::Tuple(i) => PlaceStep::Tuple(i),
                     PlaceSpec::Field(f) => PlaceStep::Field(f),
                     PlaceSpec::Key(e) => {
-                        PlaceStep::Key(compile(ctx, flags, e, scope, top_id)?)
+                        PlaceStep::Key(compile(ctx, flags, e, scope, top_id)?, true)
                     }
                 })
             })
@@ -1335,13 +1336,13 @@ impl<R: Rt> Place<R> {
                 PlaceStep::Field(name) => {
                     suffix.push(place::Step::Field(name.name.clone()))
                 }
-                PlaceStep::Key(n) => {
+                PlaceStep::Key(n, check) => {
                     let tv = n.update(ctx);
                     moved |= tv.tag().triggers();
                     if tv.tag().is_bottom() {
                         complete = false
                     } else {
-                        suffix.push(place::Step::Key(tv.value_cloned()))
+                        suffix.push(place::Step::Key(tv.value_cloned(), *check))
                     }
                 }
             }
@@ -1366,7 +1367,7 @@ impl<R: Rt> Place<R> {
         f(&mut self.root);
         for step in &mut self.steps {
             match step {
-                PlaceStep::Index(n) | PlaceStep::Key(n) => f(n),
+                PlaceStep::Index(n) | PlaceStep::Key(n, _) => f(n),
                 PlaceStep::Tuple(_) | PlaceStep::Field(_) => (),
             }
         }
@@ -1376,7 +1377,7 @@ impl<R: Rt> Place<R> {
         f(&self.root);
         for step in &self.steps {
             match step {
-                PlaceStep::Index(n) | PlaceStep::Key(n) => f(n),
+                PlaceStep::Index(n) | PlaceStep::Key(n, _) => f(n),
                 PlaceStep::Tuple(_) | PlaceStep::Field(_) => (),
             }
         }
@@ -1387,7 +1388,7 @@ impl<R: Rt> Place<R> {
     fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         descend(&mut self.root, ctx)?;
         let keys = self.steps.iter_mut().filter_map(|s| match s {
-            PlaceStep::Index(n) | PlaceStep::Key(n) => Some(n),
+            PlaceStep::Index(n) | PlaceStep::Key(n, _) => Some(n),
             PlaceStep::Tuple(_) | PlaceStep::Field(_) => None,
         });
         fuse_parts(keys, ctx).map(|_| ())
@@ -1429,7 +1430,7 @@ impl<R: Rt> Place<R> {
                     Type::Array(Arc::new(et.clone())).check_contains(&ctx.env, &cur)?;
                     et
                 }
-                PlaceStep::Key(k) => {
+                PlaceStep::Key(k, _) => {
                     let (kt, vt) = (Type::empty_tvar(), Type::empty_tvar());
                     let mt = Type::Map {
                         key: Arc::new(kt.clone()),
@@ -1792,6 +1793,24 @@ impl<R: Rt> Update<R> for ByRef<R> {
             Referent::Channel(n) => fuse_parts([n], ctx),
             Referent::Place(p) => p.fuse(ctx).map(|()| None),
         }
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        let mut result = Ok(());
+        self.referent.each(&mut |n| {
+            if result.is_ok() {
+                result = wrap!(n, n.typecheck1(ctx));
+            }
+        });
+        result?;
+        if let Referent::Place(place) = &mut self.referent {
+            for step in &mut place.steps {
+                if let PlaceStep::Key(n, check) = step {
+                    *check = n.typ().orders_refs(&ctx.env);
+                }
+            }
+        }
+        Ok(())
     }
 
     super::typed_by_row!();

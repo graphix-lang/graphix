@@ -126,7 +126,7 @@ type RefKey = (usize, Arc<[Type]>);
 pub const MAX_DATA_DEPTH: usize = 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CastInput {
+pub enum CastInput {
     Data,
     ExactFloats,
     Marked,
@@ -163,10 +163,11 @@ struct CastCx {
     /// members so first.
     exact: bool,
     input: CastInput,
+    check_keys: bool,
 }
 
 impl CastCx {
-    fn new(input: CastInput) -> Self {
+    fn new(input: CastInput, check_keys: bool) -> Self {
         CastCx {
             hist: LPooled::take(),
             sizes: LPooled::take(),
@@ -179,6 +180,7 @@ impl CastCx {
             depth: 0,
             exact: false,
             input,
+            check_keys,
         }
     }
 
@@ -901,11 +903,14 @@ impl Type {
                     Some(Type::Map { key, value }) => (Some(&**key), Some(&**value)),
                     _ => (None, None),
                 };
+                let check_keys = cx.check_keys && key.orders_refs(env);
                 let mut entry = |k: &Value,
                                  v: &Value|
                  -> std::result::Result<_, CastFail> {
                     let ck = key.cast_int(env, cx, ks, k)?;
-                    if !crate::reference::orderable(ck.as_ref().unwrap_or(k)) {
+                    if check_keys
+                        && !crate::reference::orderable(ck.as_ref().unwrap_or(k))
+                    {
                         return Err(self.cast_fail(
                             "references have no order, including under Any",
                             k,
@@ -1420,26 +1425,26 @@ impl Type {
     /// data: a union reads it as a tagged variant, a tuple or a struct
     /// before an array.
     pub fn cast_value(&self, env: &Env, v: Value) -> Value {
-        self.cast_value_int(env, None, v, CastInput::Data).unwrap_or_else(|e| e)
+        self.cast_with(env, None, v, CastInput::Data, true).unwrap_or_else(|e| e)
     }
 
     /// Read binary data whose composite kinds are preserved: an unmarked
     /// array is an array, including at nested union positions.
     pub fn cast_marked_value(&self, env: &Env, v: Value) -> Value {
-        self.cast_value_int(env, None, v, CastInput::Marked).unwrap_or_else(|e| e)
+        self.cast_with(env, None, v, CastInput::Marked, true).unwrap_or_else(|e| e)
     }
 
     /// [`Self::cast_value`] with its refusal apart from a cast value that
     /// is an error: `Err` is the `InvalidCast` error value.
     pub fn try_cast_value(&self, env: &Env, v: Value) -> Result<Value, Value> {
-        self.cast_value_int(env, None, v, CastInput::Data)
+        self.cast_with(env, None, v, CastInput::Data, true)
     }
 
     /// [`Self::cast_value`] of a `v` statically of type `src`, which
     /// decides whether an unmarked array is an array or a writer's data:
     /// a union reads an array as an array member it inhabits first.
     pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
-        self.cast_value_int(env, Some(src), v, CastInput::Data).unwrap_or_else(|e| e)
+        self.cast_with(env, Some(src), v, CastInput::Data, true).unwrap_or_else(|e| e)
     }
 
     /// [`Self::cast_value`] of data whose decimals stand for floats read
@@ -1447,17 +1452,21 @@ impl Type {
     /// one only where its position holds an integer or a decimal, and is
     /// elsewhere the f64 its text reads as.
     pub fn cast_exact_floats(&self, env: &Env, v: Value) -> Value {
-        self.cast_value_int(env, None, v, CastInput::ExactFloats).unwrap_or_else(|e| e)
+        self.cast_with(env, None, v, CastInput::ExactFloats, true).unwrap_or_else(|e| e)
     }
 
-    fn cast_value_int(
+    /// A cast with its input format and static map-key check decision.
+    /// `check_keys` may be false only when the target cannot hold references
+    /// under Any.
+    pub fn cast_with(
         &self,
         env: &Env,
         src: Option<&Type>,
         v: Value,
         input: CastInput,
+        check_keys: bool,
     ) -> Result<Value, Value> {
-        match self.cast_int(env, &mut CastCx::new(input), src, &v) {
+        match self.cast_int(env, &mut CastCx::new(input, check_keys), src, &v) {
             Ok(None) => Ok(v),
             Ok(Some(v)) => Ok(v),
             Err(e) => Err(errf!(CAST_ERR_TAG, "{e}")),

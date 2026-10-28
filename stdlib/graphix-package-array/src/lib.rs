@@ -116,7 +116,7 @@ fn fc_sort(args: &[Value]) -> Option<Value> {
     }
 }
 
-graphix_package_core::fast_builtin!(Sort, SortEv, "array_sort", fc_sort);
+graphix_package_core::fast_builtin!(Sort, SortEv, "array_sort", fc_sort; ordered(2..3));
 
 fn fc_dedup(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -149,9 +149,6 @@ fn fc_dedup(args: &[Value]) -> Option<Value> {
             let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
             let mut kept: LPooled<Vec<Value>> = LPooled::take();
             for v in a.iter() {
-                if !graphix_compiler::node::coretraits::ordered(v) {
-                    return None;
-                }
                 if seen.insert(v.clone()) {
                     kept.push(v.clone());
                 }
@@ -162,7 +159,7 @@ fn fc_dedup(args: &[Value]) -> Option<Value> {
     }
 }
 
-graphix_package_core::fast_builtin!(Dedup, DedupEv, "array_dedup", fc_dedup);
+graphix_package_core::fast_builtin!(Dedup, DedupEv, "array_dedup", fc_dedup; ordered(0..1));
 
 fn fc_enumerate(args: &[Value]) -> Option<Value> {
     match &args[0] {

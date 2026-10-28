@@ -22,7 +22,7 @@ use crate::{
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
     typ::{
-        Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
+        CastInput, Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
         tvar::{AtLevel, InTask, Level, TaskContext, TaskId, current_task, new_task},
     },
 };
@@ -2119,6 +2119,7 @@ pub struct TypeCast<R: Rt> {
     /// error. Known only once the source's type is, so the check refuses
     /// what it can see and an instance of a generic body fails here.
     src_ref: bool,
+    pub(crate) check_keys: bool,
     resident: TagValue,
 }
 
@@ -2132,6 +2133,7 @@ impl<R: Rt> TypeCast<R> {
         let target = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
         let src_ref = n.typ().holds_ref(&ctx.env);
+        let check_keys = target.holds_unknown(&ctx.env) || target.orders_refs(&ctx.env);
         Ok(Node::new(Self {
             slept: WakeBit::default(),
             spec,
@@ -2139,6 +2141,7 @@ impl<R: Rt> TypeCast<R> {
             target,
             n,
             src_ref,
+            check_keys,
             resident: TagValue::phantom(),
         }))
     }
@@ -2163,6 +2166,7 @@ impl<R: Rt> TypeCast<R> {
             target,
             n,
             src_ref: false,
+            check_keys: true,
             resident: TagValue::phantom(),
         }))
     }
@@ -2194,7 +2198,11 @@ impl<R: Rt> Update<R> for TypeCast<R> {
             errf!(CAST_ERR_TAG, "can't cast a reference")
         } else {
             let (target, src) = (&self.target, self.n.typ());
-            coretraits::with_display_hooks(ctx, |env| target.cast_from(env, src, v))
+            coretraits::with_display_hooks(ctx, |env| {
+                target
+                    .cast_with(env, Some(src), v, CastInput::Data, self.check_keys)
+                    .unwrap_or_else(|e| e)
+            })
         };
         self.resident.set(TagValue::tagged(v, tag))
     }
@@ -2243,6 +2251,8 @@ impl<R: Rt> Update<R> for TypeCast<R> {
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         self.src_ref = self.n.typ().holds_ref(&ctx.env);
+        self.check_keys =
+            self.target.holds_unknown(&ctx.env) || self.target.orders_refs(&ctx.env);
         Ok(())
     }
 

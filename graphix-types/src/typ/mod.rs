@@ -35,7 +35,7 @@ use std::{
 use triomphe::Arc;
 
 mod cast;
-pub use cast::{Indiscernible, IsAFlags, Open, ShallowScrutinee};
+pub use cast::{CastInput, Indiscernible, IsAFlags, Open, ShallowScrutinee};
 mod contains;
 pub use contains::ContainsFlags;
 pub use contains::TypeMismatch;

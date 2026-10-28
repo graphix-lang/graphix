@@ -20,7 +20,7 @@ use graphix_compiler::{
     image::{self, ImageBuf},
     node::{coretraits, genn},
     rep,
-    typ::{FnType, TVal, Type},
+    typ::{CastInput, FnType, TVal, Type},
 };
 use graphix_rt::GXRt;
 use netidx::{path::Path, publisher::Typ, subscriber::Value};
@@ -112,27 +112,37 @@ pub fn castable(env: &Env, t: &Type) -> bool {
 /// A type-directed builtin's target: the success type of its resolved
 /// return type, set at init and again at `typecheck1`, imaged with it.
 #[derive(Debug, Default, Clone, netidx_derive::Pack)]
-pub struct CastTarget(Option<Type>);
+pub struct CastTarget {
+    typ: Option<Type>,
+    check_keys: bool,
+}
 
 impl CastTarget {
+    fn convert(&self, t: &Type, env: &Env, v: Value, input: CastInput) -> Value {
+        t.cast_with(env, None, v, input, self.check_keys).unwrap_or_else(|e| e)
+    }
+
     pub fn of(env: &Env, resolved: Option<&FnType>) -> Self {
-        Self(extract_cast_type(env, resolved))
+        let typ = extract_cast_type(env, resolved);
+        let check_keys =
+            typ.as_ref().is_some_and(|t| t.holds_unknown(env) || t.orders_refs(env));
+        Self { typ, check_keys }
     }
 
     pub fn refresh(&mut self, env: &Env, resolved: &FnType) {
-        self.0 = extract_cast_type(env, Some(resolved))
+        *self = Self::of(env, Some(resolved))
     }
 
     /// Whether a part of the target reads a number exactly
     /// (`Type::holds_exact_number`).
     pub fn holds_exact_number(&self, env: &Env) -> bool {
-        self.0.as_ref().is_some_and(|t| t.holds_exact_number(env))
+        self.typ.as_ref().is_some_and(|t| t.holds_exact_number(env))
     }
 
     /// `v` cast to the target, or as it is when there is none.
     pub fn cast(&self, env: &Env, v: Value) -> Value {
-        match &self.0 {
-            Some(t) => t.cast_value(env, v),
+        match &self.typ {
+            Some(t) => self.convert(t, env, v, CastInput::Data),
             None => v,
         }
     }
@@ -149,16 +159,18 @@ impl CastTarget {
     /// [`Self::read`] of data whose decimals stand for floats read exactly
     /// ([`Type::cast_exact_floats`]).
     pub fn read_exact_floats(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
-        match (&self.0, v) {
-            (Some(t), v) if !matches!(v, Value::Error(_)) => t.cast_exact_floats(env, v),
+        match (&self.typ, v) {
+            (Some(t), v) if !matches!(v, Value::Error(_)) => {
+                self.convert(t, env, v, CastInput::ExactFloats)
+            }
             (_, v) => self.read(env, tag, v),
         }
     }
 
     /// Binary data with preserved composite kinds, read into the target.
     pub fn read_marked_data(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
-        match &self.0 {
-            Some(t) => t.cast_marked_value(env, v),
+        match &self.typ {
+            Some(t) => self.convert(t, env, v, CastInput::Marked),
             None => errf!(tag, "no concrete return type found"),
         }
     }
@@ -166,8 +178,8 @@ impl CastTarget {
     /// Data cast to the target (an error in it refused like any value the
     /// target does not admit), or with no target an error saying so.
     pub fn read_data(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
-        match &self.0 {
-            Some(t) => t.cast_value(env, v),
+        match &self.typ {
+            Some(t) => self.convert(t, env, v, CastInput::Data),
             None => errf!(tag, "no concrete return type found"),
         }
     }
@@ -1171,7 +1183,15 @@ impl<R: Rt, C: Elements> Apply<R> for IterQ<C> {
 /// its `CachedArgs` alias `$alias`, its name and its fast fn.
 #[macro_export]
 macro_rules! fast_builtin {
+    ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path; ordered($start:literal..$end:expr)) => {
+        $crate::fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc,
+            $crate::CachedArgs<$crate::OrderChecked<$ev, $start, { $end }>>);
+    };
     ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path) => {
+        $crate::fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc,
+            $crate::CachedArgs<$ev>);
+    };
+    (@impl $(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path, $wrapped:ty) => {
         $(#[$meta])*
         #[derive(Debug, Default)]
         $vis struct $ev;
@@ -1195,8 +1215,87 @@ macro_rules! fast_builtin {
             }
         }
 
-        $vis type $alias = $crate::CachedArgs<$ev>;
+        $vis type $alias = $wrapped;
     };
+}
+
+/// An ordered fast builtin's node-walk guard, decided by its argument type.
+#[derive(Debug, Default)]
+pub struct OrderChecked<T, const START: usize, const END: usize> {
+    inner: T,
+    check: bool,
+}
+
+impl<T: ImageState, const START: usize, const END: usize> ImageState
+    for OrderChecked<T, START, END>
+{
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.check.encode(buf)?;
+        self.inner.image_encode(buf)
+    }
+
+    fn image_decode<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        Ok(Self { check: bool::decode(buf)?, inner: T::image_decode(ctx, buf)? })
+    }
+}
+
+impl<R: Rt, T: EvalCached<R>, const START: usize, const END: usize> EvalCached<R>
+    for OrderChecked<T, START, END>
+{
+    const NAME: &str = T::NAME;
+    const EFFECT: Effect = T::EFFECT;
+    const ORDER_ARG: Option<usize> = Some(START);
+    const ORDERED: bool = T::ORDERED;
+
+    fn init(
+        ctx: &mut CompileCtx<R>,
+        typ: &FnType,
+        resolved: Option<&FnType>,
+        scope: &Scope,
+        from: &[Node<R>],
+        top_id: ExprId,
+    ) -> Self {
+        Self {
+            inner: T::init(ctx, typ, resolved, scope, from, top_id),
+            check: resolved.is_none_or(|t| t.args[START].typ.orders_refs(&ctx.env)),
+        }
+    }
+
+    fn typecheck0(
+        &mut self,
+        ctx: &mut CompileCtx<R>,
+        from: &mut [Node<R>],
+    ) -> Result<()> {
+        self.inner.typecheck0(ctx, from)
+    }
+
+    fn typecheck1(
+        &mut self,
+        ctx: &mut CompileCtx<R>,
+        from: &mut [Node<R>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.inner.typecheck1(ctx, from, resolved)?;
+        self.check = resolved.args[START].typ.orders_refs(&ctx.env);
+        Ok(())
+    }
+
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
+        if self.check
+            && !coretraits::with_hooks(ctx, || {
+                from.values()
+                    .skip(START)
+                    .take(END - START)
+                    .all(|v| v.is_some_and(coretraits::ordered))
+            })
+        {
+            return None;
+        }
+        self.inner.eval(ctx, from)
+    }
 }
 
 /// [`fast_builtin`] for a `FastCall::Typed` fn, directed by the call
@@ -1718,9 +1817,6 @@ pub fn sort_values(
         _ => return None,
     };
     let mut buf: LPooled<Vec<Value>> = vals.collect();
-    if !buf.iter().all(coretraits::ordered) {
-        return None;
-    }
     // an Ord that is no total order (a user impl) may panic the sort,
     // which leaves every element in the buffer: its order is wrong, and
     // the runtime goes on
@@ -1759,6 +1855,7 @@ pub trait EvalCached<R: Rt>:
     const EFFECT: Effect;
     /// See `graphix_compiler::BuiltIn::ORDERED`.
     const ORDERED: bool = false;
+    const ORDER_ARG: Option<usize> = None;
 
     fn init(
         _ctx: &mut CompileCtx<R>,
@@ -1812,6 +1909,7 @@ impl<R: Rt, T: EvalCached<R>> BuiltIn<R> for CachedArgs<T> {
     const EFFECT: Effect = T::EFFECT;
     const NAME: &str = T::NAME;
     const ORDERED: bool = T::ORDERED;
+    const ORDER_ARG: Option<usize> = T::ORDER_ARG;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R>,
@@ -2846,9 +2944,6 @@ fn fc_divide(args: &[Value]) -> Option<Value> {
 /// whole value, as `fn(a: 'a, @args: 'a) -> 'a` promises.
 fn extremum(args: &[Value], keep: std::cmp::Ordering) -> Option<Value> {
     let mut res = args.first()?;
-    if !args.iter().all(coretraits::ordered) {
-        return None;
-    }
     for v in &args[1..] {
         if v.partial_cmp(res) == Some(keep) {
             res = v
@@ -2876,8 +2971,8 @@ fn fc_or(args: &[Value]) -> Option<Value> {
 crate::fast_builtin!(Sum, SumEv, "core_sum", fc_sum);
 crate::fast_builtin!(Product, ProductEv, "core_product", fc_product);
 crate::fast_builtin!(Divide, DivideEv, "core_divide", fc_divide);
-crate::fast_builtin!(Min, MinEv, "core_min", fc_min);
-crate::fast_builtin!(Max, MaxEv, "core_max", fc_max);
+crate::fast_builtin!(Min, MinEv, "core_min", fc_min; ordered(0..usize::MAX));
+crate::fast_builtin!(Max, MaxEv, "core_max", fc_max; ordered(0..usize::MAX));
 crate::fast_builtin!(And, AndEv, "core_and", fc_and);
 crate::fast_builtin!(Or, OrEv, "core_or", fc_or);
 
@@ -4466,5 +4561,30 @@ mod structural_eq_test {
                 assert_eq!(structural_eq(a, b), a == b, "{a} against {b}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod order_check_test {
+    use super::*;
+    use graphix_compiler::{BindId, expr::parser::parse_fn_type, reference};
+    use graphix_rt::{GXRt, NoExt};
+
+    #[tokio::test]
+    async fn ordered_builtin_checks_only_unknown_types() -> Result<()> {
+        let mut state = GXRt::<NoExt>::new_state()?;
+        let sentinel = reference::reference(BindId::new(), None);
+        let from = CachedVals::from_values([Some(sentinel.clone())]);
+        let mut eval = OrderChecked::<MinEv, 0, { usize::MAX }>::default();
+        for (signature, check) in
+            [("fn(a: i64) -> i64", false), ("fn(a: Any) -> Any", true)]
+        {
+            let typ = parse_fn_type(signature)?;
+            eval.typecheck1(&mut state, &mut [], &typ)?;
+            assert_eq!(eval.check, check);
+            let result = eval.eval(&mut state.view(), &from);
+            assert_eq!(result, (!check).then(|| sentinel.clone()));
+        }
+        Ok(())
     }
 }

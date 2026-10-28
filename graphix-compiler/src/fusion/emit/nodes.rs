@@ -117,7 +117,10 @@ pub(crate) fn emit_map_new_node<R: Rt>(
         discs.push(emit_push_field_node(cx, buf, e)?);
     }
     close_buf(cx);
-    let call = cx.call_helper("graphix_map_finalize", &[buf])?;
+    let check =
+        entries.chunks_exact(2).any(|kv| kv[0].typ().orders_refs(cx.ctx.type_env));
+    let check = cx.b.ins().iconst(types::I64, check as i64);
+    let call = cx.call_helper("graphix_map_finalize", &[buf, check])?;
     let (base, payload) = (call[0], call[1]);
     let disc = producer_disc(cx, base, &discs);
     Ok(CompiledExpr::new(disc, payload))
@@ -1392,9 +1395,11 @@ pub(crate) fn emit_map_ref_node<R: Rt>(
     }
     let (m, k) = emit_value_pair(cx, source, key)?;
     let (mcv, kcv) = (m.cv, k.cv);
+    let check = key.typ().orders_refs(cx.ctx.type_env);
+    let check = cx.b.ins().iconst(types::I64, check as i64);
     let call = cx.call_helper(
         "graphix_map_ref",
-        &[mcv.disc, mcv.payload, kcv.disc, kcv.payload],
+        &[mcv.disc, mcv.payload, kcv.disc, kcv.payload, check],
     )?;
     let (rdisc, rpay) = (call[0], call[1]);
     drop_operands(cx, &[m, k])?;

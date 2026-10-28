@@ -197,14 +197,15 @@ pub(crate) fn emit_builtin_call_node<R: Rt>(
                 &[fp, tp, base, n, taint_mask, stale_mask],
             )?
         }
-        SiteDispatch::Cast { target, source } => {
+        SiteDispatch::Cast { target, source, check_keys } => {
             let fp = cx.const_ptr(KernelConst::Cast)?;
             let pair =
                 Type::Tuple(triomphe::Arc::from_iter([target.clone(), source.clone()]));
             let tp = cx.interned_type(&pair)?;
+            let check_keys = cx.b.ins().iconst(types::I64, *check_keys as i64);
             cx.call_helper(
                 "graphix_castcall",
-                &[fp, tp, base, n, taint_mask, stale_mask],
+                &[fp, tp, base, n, taint_mask, stale_mask, check_keys],
             )?
         }
     };

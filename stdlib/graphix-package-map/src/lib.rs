@@ -2,52 +2,50 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use graphix_compiler::{node::coretraits::ordered, rep};
+use graphix_compiler::rep;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use std::fmt::Debug;
 
 fn fc_get(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
-        (Value::Map(m), key) if ordered(key) => {
-            Some(m.get(key).cloned().unwrap_or(Value::Null))
-        }
+        (Value::Map(m), key) => Some(m.get(key).cloned().unwrap_or(Value::Null)),
         _ => None,
     }
 }
 
-graphix_package_core::fast_builtin!(Get, GetEv, "map_get", fc_get);
+graphix_package_core::fast_builtin!(Get, GetEv, "map_get", fc_get; ordered(1..2));
 
 fn fc_get_or(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1], &args[2]) {
-        (Value::Map(m), key, default) if ordered(key) => {
+        (Value::Map(m), key, default) => {
             Some(m.get(key).cloned().unwrap_or_else(|| default.clone()))
         }
         _ => None,
     }
 }
 
-graphix_package_core::fast_builtin!(GetOr, GetOrEv, "map_get_or", fc_get_or);
+graphix_package_core::fast_builtin!(GetOr, GetOrEv, "map_get_or", fc_get_or; ordered(1..2));
 
 fn fc_insert(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1], &args[2]) {
-        (Value::Map(m), key, value) if ordered(key) => {
+        (Value::Map(m), key, value) => {
             Some(Value::Map(m.insert(key.clone(), value.clone()).0))
         }
         _ => None,
     }
 }
 
-graphix_package_core::fast_builtin!(Insert, InsertEv, "map_insert", fc_insert);
+graphix_package_core::fast_builtin!(Insert, InsertEv, "map_insert", fc_insert; ordered(1..2));
 
 fn fc_remove(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
-        (Value::Map(m), key) if ordered(key) => Some(Value::Map(m.remove(key).0)),
+        (Value::Map(m), key) => Some(Value::Map(m.remove(key).0)),
         _ => None,
     }
 }
 
-graphix_package_core::fast_builtin!(Remove, RemoveEv, "map_remove", fc_remove);
+graphix_package_core::fast_builtin!(Remove, RemoveEv, "map_remove", fc_remove; ordered(1..2));
 
 /// A map's `(key, value)` pairs in key order. The cursor copies the pairs
 /// when the map arrives and walks them by position: finding the next key

@@ -80,19 +80,34 @@ pub enum SiteDispatch {
     /// A builtin's typed fast fn, directed by the site's resolved type.
     Typed { name: ArcStr, f: crate::TypedFastFn, typ: Arc<FnType> },
     /// A cast from `source` to `target`, through [`cast_typed`].
-    Cast { target: Type, source: Type },
+    Cast { target: Type, source: Type, check_keys: bool },
     /// An `Effect::Io` builtin: `f` is its result, and each fire of
     /// argument `trigger` (`arg`, typed `typ`) queues it to perform.
     Io { name: ArcStr, f: crate::FastFn, trigger: usize, arg: Expr, typ: Type },
 }
 
-/// The cast pseudo-site's fn: the same `cast_from` call `TypeCast::update`
+/// The cast pseudo-site's fn: the same `cast_with` call `TypeCast::update`
 /// makes on the node-walk. `typ` is the site's `(target, source)` pair.
-pub(crate) type CastFn = fn(&Env, &Type, &[Value]) -> Option<Value>;
+pub(crate) type CastFn = fn(&Env, &Type, &[Value], bool) -> Option<Value>;
 
-pub(crate) fn cast_typed(env: &Env, typ: &Type, args: &[Value]) -> Option<Value> {
+pub(crate) fn cast_typed(
+    env: &Env,
+    typ: &Type,
+    args: &[Value],
+    check_keys: bool,
+) -> Option<Value> {
     let Type::Tuple(ts) = typ else { return None };
-    Some(ts[0].cast_from(env, &ts[1], args[0].clone()))
+    Some(
+        ts[0]
+            .cast_with(
+                env,
+                Some(&ts[1]),
+                args[0].clone(),
+                crate::typ::CastInput::Data,
+                check_keys,
+            )
+            .unwrap_or_else(|e| e),
+    )
 }
 
 /// Where one buffer slot of a fastcall site comes from: an arg the call
@@ -508,6 +523,7 @@ fn try_register_cast<R: Rt>(
             dispatch: SiteDispatch::Cast {
                 target: tc.target.clone(),
                 source: source.clone(),
+                check_keys: tc.check_keys,
             },
         },
     )
@@ -554,6 +570,14 @@ fn try_register_builtin_call_from_callsite<R: Rt>(
         Some(ft) => ft.resolve_tvars(),
         None => (*info.typ).clone(),
     };
+    if let Some(arg) = ctx.builtin_order_arg(info.name.as_str())
+        && fn_type.args[arg].typ.orders_refs(&ctx.env)
+    {
+        return Some(FusionBlocker {
+            spec: apply_expr.clone(),
+            reason: format_compact!("`{path}` orders values holding Any"),
+        });
+    }
     let mut call_positional: SmallVec<[usize; 8]> = SmallVec::new();
     let mut call_labeled: LPooled<ahash::AHashMap<&str, usize>> = LPooled::take();
     for (call_idx, (label, _)) in a.args.iter().enumerate() {

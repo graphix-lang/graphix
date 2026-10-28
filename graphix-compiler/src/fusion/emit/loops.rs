@@ -18,7 +18,7 @@ use crate::{
 use anyhow::Result;
 use arcstr::ArcStr;
 use compact_str::format_compact;
-use cranelift_codegen::ir::Value as ClifValue;
+use cranelift_codegen::ir::{InstBuilder, Value as ClifValue, types};
 use netidx_value::Typ;
 use smallvec::SmallVec;
 
@@ -200,14 +200,27 @@ impl Flavor {
 
     /// The exit boundary for collection-returning loops: the loop's
     /// finalized ValArray as this flavor's collection Value.
-    fn emit_result(self, cx: &mut BodyCx, ptr: ClifValue) -> Result<CompiledExpr> {
+    fn emit_result(
+        self,
+        cx: &mut BodyCx,
+        ptr: ClifValue,
+        elem: &Type,
+    ) -> Result<CompiledExpr> {
         match self {
             Self::Array => Ok(emit::array_result(cx, ptr)),
             Self::List => {
                 convert_collection_result(cx, ptr, "graphix_valarray_into_list")
             }
             Self::CMap => {
-                convert_collection_result(cx, ptr, "graphix_valarray_into_cmap")
+                let check = elem.with_deref(|t| match t {
+                    Some(Type::Tuple(ts)) if ts.len() == 2 => {
+                        ts[0].orders_refs(cx.ctx.type_env)
+                    }
+                    _ => true,
+                });
+                let check = cx.b.ins().iconst(types::I64, check as i64);
+                let rs = cx.call_helper("graphix_valarray_into_cmap", &[ptr, check])?;
+                Ok(CompiledExpr::new(rs[0], rs[1]))
             }
         }
     }
@@ -276,7 +289,7 @@ pub(crate) fn emit_init_kind<R: Rt>(
         &sites,
         |cx| body.emit_clif(cx),
     )?;
-    let result = flavor.emit_result(cx, ptr)?;
+    let result = flavor.emit_result(cx, ptr, &output_type)?;
     // The firing wrap must see an over-limit count as a tainted source.
     Ok(Some(flags.apply(cx, result, count_disc)))
 }
@@ -311,7 +324,7 @@ pub(crate) fn emit_map_kind<R: Rt>(
             &sites,
             |cx| body.emit_clif(cx),
         )?;
-        Ok((flavor.emit_result(cx, ptr)?, flags))
+        Ok((flavor.emit_result(cx, ptr, &output_type)?, flags))
     })
 }
 
@@ -339,7 +352,7 @@ pub(crate) fn emit_filter_kind<R: Rt>(
             &sites,
             |cx| body.emit_clif(cx),
         )?;
-        Ok((flavor.emit_result(cx, ptr)?, flags))
+        Ok((flavor.emit_result(cx, ptr, &element_type)?, flags))
     })
 }
 
@@ -382,7 +395,7 @@ pub(crate) fn emit_filter_map_kind<R: Rt>(
             &sites,
             |cx| body.emit_clif(cx),
         )?;
-        Ok((flavor.emit_result(cx, ptr)?, flags))
+        Ok((flavor.emit_result(cx, ptr, &output_element)?, flags))
     })
 }
 
@@ -440,7 +453,7 @@ pub(crate) fn emit_flat_map_kind<R: Rt>(
                 }
             },
         )?;
-        Ok((flavor.emit_result(cx, ptr)?, flags))
+        Ok((flavor.emit_result(cx, ptr, &Type::Bottom)?, flags))
     })
 }
 

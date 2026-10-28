@@ -224,7 +224,7 @@ fn fc_sort(args: &[Value]) -> Option<Value> {
     }
 }
 
-graphix_package_core::fast_builtin!(Sort, SortEv, "list_sort", fc_sort);
+graphix_package_core::fast_builtin!(Sort, SortEv, "list_sort", fc_sort; ordered(2..3));
 
 fn fc_enumerate(args: &[Value]) -> Option<Value> {
     let list = &args[0];

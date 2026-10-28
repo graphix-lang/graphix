@@ -892,6 +892,8 @@ pub trait BuiltIn<R: Rt> {
     /// call an ordered builtin never run beside each other
     /// (`design/parallel_eval.md` §6). External effects are not ordered.
     const ORDERED: bool = false;
+    /// Argument whose ordering needs a value walk when its type can hold references.
+    const ORDER_ARG: Option<usize> = None;
     /// An event source whose standing interest re-attaches or resumes
     /// at its arm's wake (a subscription, a timer, a watch, a server):
     /// over constant arguments it still acts at every entry.
@@ -1345,6 +1347,7 @@ struct BuiltinEntry<R: Rt> {
     perform: BuiltInPerformFn<R>,
     effect: Effect,
     ordered: bool,
+    order_arg: Option<usize>,
     resumes: bool,
 }
 
@@ -1912,6 +1915,7 @@ impl<R: Rt> CompileCtx<R> {
                     perform: T::perform,
                     effect: T::EFFECT,
                     ordered: T::ORDERED,
+                    order_arg: T::ORDER_ARG,
                     resumes: T::RESUMES,
                 });
             }
@@ -1971,6 +1975,10 @@ impl<R: Rt> CompileCtx<R> {
     /// Whether a registered builtin is [`BuiltIn::ORDERED`].
     pub fn builtin_ordered(&self, name: &str) -> bool {
         self.registry.builtins.get(name).is_some_and(|b| b.ordered)
+    }
+
+    pub(crate) fn builtin_order_arg(&self, name: &str) -> Option<usize> {
+        self.registry.builtins.get(name).and_then(|b| b.order_arg)
     }
 
     /// Wrap a `LambdaDef` into a first-class function `Value` and
@@ -2118,7 +2126,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
                 let steps = path.iter().map(|s| match s {
                     Step::Index(i) => Value::I64(*i),
                     Step::Field(f) => Value::String(f.clone()),
-                    Step::Key(k) => k.clone(),
+                    Step::Key(k, _) => k.clone(),
                 });
                 // the root as a reference, which no data carries: the form
                 // equals no array of numbers

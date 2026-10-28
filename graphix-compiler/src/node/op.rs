@@ -401,6 +401,22 @@ impl Equality {
     // failed eight cases before the exact lookup correction and passed afterward.
     // Rules, book, design and language skill updated. Full-suite and fuzzer results are
     // recorded in the completion report.
+    // 2026-10-28 codex: Gate reference-order walks on resolved argument/key types. Map
+    // nodes, collection builders, by-reference map paths and ordered builtins retain the
+    // decision from typecheck1 (and image it); native helpers receive constant gates.
+    // The fast builtin path is used only when its argument type cannot conceal
+    // references. Cast nodes and reader targets retain a conservative target-level gate;
+    // the generic Type cast API also checks the static map-key type once before
+    // iterating entries, so an unrelated Any in a map value never causes a key walk.
+    // Existing netidx-facing signatures are unchanged. Pins:
+    // ordered_builtin_checks_only_unknown_types and typed_map_cast_skips_reference_walk
+    // both failed with their guards removed, then passed restored. Extended
+    // map_helpers_refuse_reference_keys covers both native gate values;
+    // key_type_check_does_not_change_place_identity pins that gate metadata is not
+    // reference identity. The complete graphix-types, graphix-compiler and
+    // graphix-package-core unit suites pass (336, 54 and 6 tests), and all 48
+    // lang::byref::any_ integration tests pass. No socket tests are involved in these
+    // focused runs.
     fn of(env: &Env, lhs: &Type, rhs: &Type, ordered: bool) -> Self {
         let refs = if ordered {
             [lhs, rhs].into_iter().find(|t| t.orders_refs(env))

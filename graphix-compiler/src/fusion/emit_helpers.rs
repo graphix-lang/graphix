@@ -732,6 +732,7 @@ fn graphix_castcall(
     n: u64,
     taint_mask: u64,
     stale_mask: u64,
+    check_keys: u64,
 ) -> TagValue {
     // SAFETY: as graphix_typedcall's
     let f: crate::fusion::lowering::CastFn = unsafe {
@@ -739,7 +740,7 @@ fn graphix_castcall(
     };
     let typ = unsafe { &*(typ as *const Type) };
     let env = unsafe { kernel_env() };
-    unsafe { fast_dispatch(|args| f(env, typ, args), args, n, taint_mask, stale_mask) }
+    unsafe { fast_dispatch(|args| f(env, typ, args, check_keys != 0), args, n, taint_mask, stale_mask) }
 }
 
 }
@@ -998,9 +999,9 @@ fn graphix_bytes_index(v: ManuallyDrop<TagValue>, i: i64) -> TagValue {
 
 /// `m{key}`: the value or the not-found error, via the shared
 /// [`map_get`]. Borrows both operands.
-fn graphix_map_ref(map: ManuallyDrop<TagValue>, key: ManuallyDrop<TagValue>) -> TagValue {
+fn graphix_map_ref(map: ManuallyDrop<TagValue>, key: ManuallyDrop<TagValue>, check_key: u64) -> TagValue {
     guard_panic(TagValue::phantom(), || {
-        map.with_value(|m| key.with_value(|k| map_get(m, k)))
+        map.with_value(|m| key.with_value(|k| map_get(m, k, check_key != 0)))
             .map(TagValue::fired).unwrap_or_else(TagValue::phantom)
     })
 }
@@ -1294,12 +1295,12 @@ fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
 /// its entries in written order, a later key replacing an earlier one as
 /// the node-walk's literal does; consumes the buf. Key order is a core
 /// trait's under the kernel's loaned hooks.
-fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
+fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>, check_keys: u64) -> TagValue {
     let map = guard_panic(TagValue::phantom(), || {
         let mut m = netidx_value::Map::new();
         let mut entries = unsafe { (*buf).drain(..) };
         while let (Some(k), Some(v)) = (entries.next(), entries.next()) {
-            if !crate::node::coretraits::ordered(&k) {
+            if check_keys != 0 && !crate::node::coretraits::ordered(&k) {
                 return TagValue::phantom();
             }
             m.insert_cow(k, v);
@@ -1331,10 +1332,10 @@ fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
 
 /// Consume finalized ValArray bits of `[k, v]` pairs and build the
 /// `Value::Map` ([`crate::node::collection::pairs_to_map`]).
-fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
+fn graphix_valarray_into_cmap(bits: u64, check_keys: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
     guard_panic(TagValue::phantom(), || {
-        crate::node::collection::pairs_to_map(arr.iter())
+        crate::node::collection::pairs_to_map(arr.iter(), check_keys != 0)
             .map(TagValue::fired).unwrap_or_else(TagValue::phantom)
     })
 }
@@ -2153,30 +2154,34 @@ mod tests {
     #[test]
     fn map_helpers_refuse_reference_keys() {
         let reference = crate::reference::reference(crate::BindId::new(), None);
-        for key in [reference.clone(), rep::tuple([Value::I64(1), reference])] {
-            unsafe {
-                let mut out = MaybeUninit::<TagValue>::uninit();
-                let buf = graphix_value_buf_new(2);
-                (*buf).extend([key.clone(), Value::I64(2)]);
-                graphix_map_finalize(buf, out.as_mut_ptr());
-                assert!(out.assume_init().is_bottom());
+        for check in [0, 1] {
+            for key in [reference.clone(), rep::tuple([Value::I64(1), reference.clone()])]
+            {
+                unsafe {
+                    let mut out = MaybeUninit::<TagValue>::uninit();
+                    let buf = graphix_value_buf_new(2);
+                    (*buf).extend([key.clone(), Value::I64(2)]);
+                    graphix_map_finalize(buf, check, out.as_mut_ptr());
+                    assert_eq!(out.assume_init().is_bottom(), check != 0);
 
-                let pairs = ValArray::from_iter_exact(
-                    [rep::tuple([key.clone(), Value::I64(2)])].into_iter(),
-                );
-                let mut out = MaybeUninit::<TagValue>::uninit();
-                graphix_valarray_into_cmap(va_bits(pairs), out.as_mut_ptr());
-                assert!(out.assume_init().is_bottom());
+                    let pairs = ValArray::from_iter_exact(
+                        [rep::tuple([key.clone(), Value::I64(2)])].into_iter(),
+                    );
+                    let mut out = MaybeUninit::<TagValue>::uninit();
+                    graphix_valarray_into_cmap(va_bits(pairs), check, out.as_mut_ptr());
+                    assert_eq!(out.assume_init().is_bottom(), check != 0);
 
-                let map = TagValue::fired(Value::Map(netidx_value::Map::new()));
-                let key = TagValue::fired(key);
-                let mut out = MaybeUninit::<TagValue>::uninit();
-                graphix_map_ref(
-                    from_ref(&map).cast(),
-                    from_ref(&key).cast(),
-                    out.as_mut_ptr(),
-                );
-                assert!(out.assume_init().is_bottom());
+                    let map = TagValue::fired(Value::Map(netidx_value::Map::new()));
+                    let key = TagValue::fired(key);
+                    let mut out = MaybeUninit::<TagValue>::uninit();
+                    graphix_map_ref(
+                        from_ref(&map).cast(),
+                        from_ref(&key).cast(),
+                        check,
+                        out.as_mut_ptr(),
+                    );
+                    assert_eq!(out.assume_init().is_bottom(), check != 0);
+                }
             }
         }
     }
