@@ -47,6 +47,7 @@ tokio = { workspace = true }
 triomphe = { workspace = true }
 
 [dev-dependencies]
+compact_str = { workspace = true }
 log = { workspace = true }
 dirs = { workspace = true }
 proptest = { workspace = true }

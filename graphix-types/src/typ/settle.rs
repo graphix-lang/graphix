@@ -19,7 +19,36 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::fmt::Write;
+use std::{
+    error::Error,
+    fmt::{self, Write},
+};
+
+#[derive(Debug)]
+pub struct ConcreteRequired(pub TVar);
+
+impl fmt::Display for ConcreteRequired {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the type '{} must be fully known here, a type-directed operation reads it: \
+             annotate it",
+            super::tvar::ShortName(&self.0.name)
+        )
+    }
+}
+
+impl Error for ConcreteRequired {}
+
+impl ConcreteRequired {
+    pub fn unread_callback(&self) -> anyhow::Error {
+        anyhow::anyhow!(
+            "the quantifier '{} must be fully known but is unread through an optional \
+             callback at this call: pass a typed handler or a typed null",
+            super::tvar::ShortName(&self.0.name)
+        )
+    }
+}
 
 impl TVar {
     /// The union of the cell's lower bounds, else the narrowest conjunct
@@ -138,11 +167,7 @@ impl TVar {
     }
 
     fn not_concrete(&self) -> anyhow::Error {
-        anyhow::anyhow!(
-            "the type '{} must be fully known here, a type-directed operation reads it: \
-             annotate it",
-            super::tvar::ShortName(&self.name)
-        )
+        ConcreteRequired(self.clone()).into()
     }
 
     fn not_function(&self) -> anyhow::Error {

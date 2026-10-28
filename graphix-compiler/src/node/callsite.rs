@@ -1841,11 +1841,15 @@ impl<R: Rt> CallSite<R> {
         Ok(known)
     }
 
-    /// A builtin reads a quantifier of its signature only through the
-    /// values of the arguments that hold it. One the result and throws do
-    /// not hold, and no argument this call passes or omits can carry a
-    /// value of, is never read here: it settles to ⊥ whatever its bounds.
-    fn settle_unread(&self, env: &Env, ftype: &FnType, carriers: &[ArcStr]) {
+    /// Cells the result and throws do not hold, and no argument this
+    /// call passes or omits can carry a value of.
+    fn for_each_unread(
+        &self,
+        env: &Env,
+        ftype: &FnType,
+        carriers: &[ArcStr],
+        mut f: impl FnMut(&ArcStr, &TVar),
+    ) {
         let mut read: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         ftype.rtype.reached_cells(&mut read);
         ftype.throws.reached_cells(&mut read);
@@ -1867,8 +1871,8 @@ impl<R: Rt> CallSite<R> {
         let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         ftype.collect_tvars(&mut tvs);
         for (name, tv) in tvs.iter() {
-            if ftype.quantifiers.contains(name) && !read.contains_key(&tv.cell_addr()) {
-                tv.settle_unread()
+            if !read.contains_key(&tv.cell_addr()) {
+                f(name, tv)
             }
         }
     }
@@ -1946,7 +1950,11 @@ impl<R: Rt> CallSite<R> {
     /// deferred to the statement boundary. Cells reachable from an
     /// omitted default the check did not see are exempt: the default
     /// binds them at the bind.
-    fn pending_settle(&self, ftype: &FnType) -> crate::PendingSettle {
+    fn pending_settle(
+        &self,
+        ftype: &FnType,
+        unread_callbacks: SmallVec<[TVar; 1]>,
+    ) -> crate::PendingSettle {
         let mut dtv: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         for farg in ftype.args.iter().filter(|_| self.defaults_open) {
             if let FnArgKind::Labeled { name, .. } = &farg.kind
@@ -1965,6 +1973,7 @@ impl<R: Rt> CallSite<R> {
         };
         crate::PendingSettle::Site {
             sigs: smallvec::SmallVec::new(),
+            unread_callbacks,
             ftype: ftype.clone(),
             rtype,
             exempt,
@@ -3540,11 +3549,12 @@ impl<R: Rt> CallSite<R> {
             }
         }
         self.check_value_defaults(ctx, ftype)?;
+        let mut unread_callbacks = SmallVec::new();
         if fresh {
             let mut carriers = SmallVec::new();
             self.defaults_open =
                 !self.check_omitted_defaults(ctx, ftype, &mut carriers)?;
-            // CR claude for claude: [bug/low] Only a builtin's unread Concrete quantifier
+            // XCR claude for claude: [bug/low] Only a builtin's unread Concrete quantifier
             // settles. So a lambda that forwards publish's optional handler,
             // `|#on_write: [fn(v: 'a) -> _, null] = null, p: string|
             // sys::net::publish(#on_write: on_write, p, 1)`, refuses `w("/a")`, though
@@ -3561,8 +3571,36 @@ impl<R: Rt> CallSite<R> {
             // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q29, A quantifier
             // used only through a forwarded function): yes, the message (the recommendation: the
             // message.)
-            if !self.defaults_open && static_builtin(ctx, self).is_some() {
-                self.settle_unread(&ctx.env, ftype, &carriers);
+            // 2026-10-28 codex: Implemented q29 at the call's deferred settle. ConcreteRequired
+            // retains the refused cell while preserving the original Display text. The call records
+            // unread callback cells, including inferred quantifiers, and specializes only a refusal
+            // of one of those cells. Builtin settling and inference are unchanged. Pins:
+            // lang::test_builtins::unread_forwarded_quantifier_message (4 modes failed before, now
+            // pass with both typed remedies) and read_quantifier_keeps_type_directed_message (real
+            // result reads and supplied open callbacks retain the original message). cargo test -p
+            // graphix-tests --offline --test cr_rework quantifier: 12 passed. cargo run -p
+            // graphix-fuzz --offline -- regress --bless: 552 programs, zero regressions; the
+            // manifest is unchanged, including the three Concrete rows identified by review. cargo
+            // fmt --all attempted, blocked by read-only sibling tvar.rs; touched packages formatted
+            // successfully. Full lib gate follows at session end.
+            if !self.defaults_open {
+                if static_builtin(ctx, self).is_some() {
+                    self.for_each_unread(&ctx.env, ftype, &carriers, |name, tv| {
+                        if ftype.quantifiers.contains(name) {
+                            tv.settle_unread();
+                        }
+                    });
+                } else {
+                    let mut callbacks: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                    for arg in ftype.args.iter().filter(|a| a.typ.holds_fn(&ctx.env)) {
+                        arg.typ.reached_cells(&mut callbacks);
+                    }
+                    self.for_each_unread(&ctx.env, ftype, &carriers, |_, tv| {
+                        if callbacks.contains_key(&tv.cell_addr()) {
+                            unread_callbacks.push(tv.clone());
+                        }
+                    });
+                }
             }
         }
         // A constrained cell reachable from the rtype/throws but no arg is
@@ -3603,7 +3641,7 @@ impl<R: Rt> CallSite<R> {
         // the check settles before elaboration (typecheck1) runs; a
         // definition's check runs no typecheck1, its gate's frame hands the
         // settle to the enclosing statement
-        let settle = self.pending_settle(ftype);
+        let settle = self.pending_settle(ftype, unread_callbacks);
         ctx.pending_settles.last_mut().expect("settle frame").push(settle);
         Ok(())
     }
@@ -3682,7 +3720,7 @@ impl<R: Rt> CallSite<R> {
         if let Some(lowered) = res? {
             return Ok(Some(lowered));
         }
-        let settle = self.pending_settle(&ftype);
+        let settle = self.pending_settle(&ftype, SmallVec::new());
         ctx.pending_settles.last_mut().expect("root settle frame").push(settle);
         Ok(None)
     }

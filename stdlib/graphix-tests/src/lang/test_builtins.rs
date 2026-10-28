@@ -5,6 +5,7 @@
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
+use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, Effect, ExecCtx, Node, PruneMode, Rt, Scope,
     TagValue, expr::ExprId, image::ImageBuf, typ::FnType,
@@ -269,7 +270,7 @@ fn mistyped_function_value_reports_bind_context() {
 /// it (a handler whose argument is left open) or the result holds it.
 async fn unread_quantifier_settles(mode: Mode) -> Result<()> {
     let code = |ret: &str, call: &str| {
-        format!(
+        format_compact!(
             r#"{{
                 let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64|
                     -> {ret} 'test_last;
@@ -288,9 +289,55 @@ async fn unread_quantifier_settles(mode: Mode) -> Result<()> {
         ),
     ] {
         match run(&code(ret, call), mode).await {
-            Err(e) if format!("{e:#}").contains("must be fully known") => (),
+            Err(e) if format_compact!("{e:#}").contains("must be fully known") => (),
             r => panic!("{ret} {call}: {r:?}"),
         }
+    }
+    Ok(())
+}
+
+async fn unread_forwarded_quantifier_message(mode: Mode) -> Result<()> {
+    let code = |call: &str| {
+        format_compact!(
+            r#"{{
+        let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64|
+            -> i64 'test_last;
+        let g = |#h: [fn(v: 'b) -> i64, null] = null, x: i64| f(#h: h, x);
+        {call}
+    }}"#
+        )
+    };
+    for call in ["g(3)", "g(#h: null, 3)"] {
+        let e = run(&code(call), mode).await.unwrap_err();
+        let message = format_compact!("{e:#}");
+        assert!(message.contains("typed handler or a typed null"), "{message}");
+        assert!(!message.contains("operation reads it"), "{message}");
+    }
+    for call in [
+        "g(#h: |v: i64| v, 3)",
+        "{ let h: [fn(v: i64) -> i64, null] = null; g(#h: h, 3) }",
+    ] {
+        assert_eq!(run(&code(call), mode).await?, [Value::I64(3)]);
+    }
+    Ok(())
+}
+
+async fn read_quantifier_keeps_type_directed_message(mode: Mode) -> Result<()> {
+    for (ret, call) in [("'a", "f(3)"), ("i64", "f(#h: |v| 3, 3)")] {
+        let code = format_compact!(
+            r#"{{
+            let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64|
+                -> {ret} 'test_last;
+            {call}
+        }}"#
+        );
+        let e = run(&code, mode).await.unwrap_err();
+        let message = format_compact!("{e:#}");
+        assert!(
+            message.contains("a type-directed operation reads it: annotate it"),
+            "{message}"
+        );
+        assert!(!message.contains("typed handler"), "{message}");
     }
     Ok(())
 }
@@ -326,5 +373,7 @@ modes!(
     rust_panics_in_a_kernel,
     a_panic_stops_a_kernel_loop,
     mistyped_function_value_is_refused,
-    unread_quantifier_settles
+    unread_quantifier_settles,
+    unread_forwarded_quantifier_message,
+    read_quantifier_keeps_type_directed_message
 );

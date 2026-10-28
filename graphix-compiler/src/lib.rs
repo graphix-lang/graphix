@@ -2411,6 +2411,7 @@ pub(crate) enum PendingSettle {
         ftype: FnType,
         /// The site's return-type cell.
         rtype: Option<typ::TVar>,
+        unread_callbacks: SmallVec<[typ::TVar; 1]>,
         /// Cells (by address) exempt from settling: an omitted defaulted
         /// argument's.
         exempt: AHashSet<usize>,
@@ -2505,7 +2506,15 @@ impl PendingSettle {
     ) -> Result<()> {
         let mut reached: LPooled<AHashMap<usize, AHashSet<usize>>> = LPooled::take();
         for s in frame.iter() {
-            if let PendingSettle::Site { ftype, rtype, exempt, sigs, spec } = s {
+            if let PendingSettle::Site {
+                ftype,
+                rtype,
+                exempt,
+                sigs,
+                spec,
+                unread_callbacks,
+            } = s
+            {
                 let mut kept: SmallVec<[&AHashSet<usize>; 2]> = SmallVec::new();
                 for sig in sigs.iter() {
                     reached.entry(triomphe::Arc::as_ptr(sig).addr()).or_insert_with(
@@ -2522,6 +2531,16 @@ impl PendingSettle {
                 }
                 if let Err(e) = ftype.settle_terminal(env, rtype.as_ref(), exempt, &kept)
                 {
+                    let e = match e.downcast_ref::<typ::settle::ConcreteRequired>() {
+                        Some(concrete)
+                            if unread_callbacks
+                                .iter()
+                                .any(|tv| tv.cell_addr() == concrete.0.cell_addr()) =>
+                        {
+                            concrete.unread_callback()
+                        }
+                        _ => e,
+                    };
                     on_err(spec, e)?
                 }
             }
