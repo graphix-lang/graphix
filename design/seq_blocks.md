@@ -164,6 +164,12 @@ once per reaching. A passed step is asleep and nothing in it
 re-fires. This is `f(trigger ~ x)` applied mechanically, the rule the
 hand-written ceremonies get wrong.
 
+Every later step samples its reads of completed seq-local lets at its
+own entry, just as it samples external variables. The planner's decision
+to put steps in one cycle or successive cycles does not consume a local
+let's fire for later steps. `Redirect::Local` records those bindings for
+the entry snapshot; lambda literals retain function redirects.
+
 **A step sees the world as it stood at its entry.** Every variable the
 seq's own text reads, a lambda written in the seq and an untaken select
 arm included, is sampled together: at the step's entry under `seq`,

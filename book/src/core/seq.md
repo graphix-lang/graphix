@@ -254,6 +254,11 @@ returns 5. It does not retain the 1 that was present at entry. Initialize
 all named inputs before triggering the sequence when their entry-time
 values must be retained.
 
+A `let` defined by an earlier step keeps its completed value. Each later
+step that reads it takes a new entry snapshot, so sampling on that value
+can fire in each later step. This does not depend on which steps the
+compiler can run in the same cycle.
+
 A step completes when it produces a new value after its entry, never on a
 value left standing from an earlier run. A call's answer is what the call
 produces after it is issued; a step that reads a level (`let y = x`)

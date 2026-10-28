@@ -1,6 +1,6 @@
 //! Where an error arose and what it passed through on its way out.
 
-use crate::expr::{Expr, Origin, Source, print::Bare};
+use crate::expr::{Expr, Origin, Source, parser, print::Bare};
 use combine::stream::position::SourcePosition;
 use poolshark::local::LPooled;
 use std::fmt::{self, Write};
@@ -13,6 +13,20 @@ pub struct ErrorContext(Expr, usize);
 impl ErrorContext {
     pub fn expr(&self) -> &Expr {
         &self.0
+    }
+
+    fn source_text(&self) -> Option<&str> {
+        let text = self.0.ori.text.strip_prefix('\u{feff}').unwrap_or(&self.0.ori.text);
+        let offset = |pos: SourcePosition| {
+            let line = parser::lines(text).nth(usize::try_from(pos.line - 1).ok()?)?;
+            let column = usize::try_from(pos.column - 1).ok()?;
+            let byte =
+                line.char_indices().map(|(i, _)| i).chain([line.len()]).nth(column)?;
+            Some(line.as_ptr() as usize - text.as_ptr() as usize + byte)
+        };
+        let start = offset(self.0.pos)?;
+        let end = offset(self.0.end.get()?)?;
+        (start < end).then(|| text.get(start..end)).flatten()
     }
 }
 
@@ -30,8 +44,8 @@ impl fmt::Debug for ErrorContext {
 impl std::error::Error for ErrorContext {}
 
 /// `at: <pos>[ in <source>], in: <the start of the expression>..`, the
-/// start left out of an expression that names what a lowering bound,
-/// which is no text the program wrote.
+/// original expression recovered when a lowering rewrote its names and
+/// the source span is available.
 impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const MAX: usize = 38;
@@ -56,7 +70,7 @@ impl fmt::Display for ErrorContext {
         }
         impl Write for Head {
             fn write_str(&mut self, s: &str) -> fmt::Result {
-                let mut lines = s.split('\n');
+                let mut lines = parser::lines(s);
                 if let Some(first) = lines.next() {
                     self.push(first)?;
                 }
@@ -70,8 +84,13 @@ impl fmt::Display for ErrorContext {
             }
         }
         let mut head = Head(LPooled::take(), false);
-        let complete =
-            self.0.mentions_lowered() || write!(head, "{}", Bare(&self.0)).is_ok();
+        let complete = if self.0.mentions_lowered() {
+            self.source_text()
+                .and_then(|source| parser::parse_one(source).ok())
+                .is_none_or(|written| write!(head, "{}", Bare(&written)).is_ok())
+        } else {
+            write!(head, "{}", Bare(&self.0)).is_ok()
+        };
         let Head(snippet, truncated) = head;
         if !complete && !truncated {
             return Err(fmt::Error);
@@ -215,8 +234,37 @@ impl std::error::Error for ParserContext {}
 
 #[cfg(test)]
 mod test {
-    use super::At;
+    use super::{At, Origin, parser};
     use crate::expr::{Expr, ExprKind};
+
+    #[test]
+    fn a_rewritten_frame_keeps_its_source_text() {
+        fn lower(expr: &Expr) -> Expr {
+            let mut expr = expr.map_children(&mut lower);
+            if matches!(expr.kind, ExprKind::Ref { .. }) {
+                expr.kind = ExprKind::Ref { name: ["#seq_snapshot"].into() };
+            }
+            expr
+        }
+        for source in [
+            "\u{feff}let a = 1; a + \"s\"",
+            "let a = 1; a + \"s\"",
+            "let a = \"é\";\r\na +\r\n\"s\"",
+            "let a = \"é\";\r\n{\r\n0;\r\n// comment\r\na + \"s\"\r\n}",
+        ] {
+            let parsed =
+                parser::parse(Origin { text: source.into(), ..Origin::default() })
+                    .unwrap();
+            let e = anyhow::anyhow!("boom").at(&lower(parsed.last().unwrap()));
+            let message = compact_str::format_compact!("{e}");
+            assert!(message.contains("in:"), "{message}");
+            assert!(message.contains("a + \"s\""), "{message}");
+            assert!(
+                !message.contains("#seq") && !message.contains("comment"),
+                "{message}"
+            );
+        }
+    }
 
     #[test]
     fn a_frame_names_its_expression_on_one_line() {

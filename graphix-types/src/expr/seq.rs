@@ -37,11 +37,12 @@ use triomphe::Arc;
 pub const IDLE: i64 = -1;
 
 /// Where the rewrite sends a name. A cell (a `seq let` trigger's name, a
-/// try's `e`) takes every use; a snapshot (a trigger's value), a capture (a `seqq`
-/// request's external values) and an entry (a step's entry snapshot) take only the reads, so
-/// a write, a `&` or a call's function reaches the variable itself. A nested seq takes its own
-/// entries, and a `live` neither. A local is a name a statement of the seq
-/// binds: it stays itself, and no outer variable of its name is captured.
+/// try's `e`) takes every use. A snapshot (a trigger's value), a capture
+/// (a `seqq` request's external values) and an entry (a step's snapshot)
+/// take only reads: a write, a `&` or a call's function reaches the
+/// variable itself. A nested seq takes its own entries, and a `live`
+/// neither. A local identifies a completed let for later steps' snapshots
+/// and hides outer bindings of the same name.
 /// A function is a local or outer name bound to a function: it stays
 /// itself, and an issued call takes it at the call site, where the call
 /// resolves it.
@@ -781,9 +782,9 @@ fn label(k: usize) -> ArcStr {
 }
 
 impl Machine<'_> {
-    /// The step's entry snapshot of the variables `e` reads from outside
-    /// the seq, `live` aside (`design/seq_blocks.md` §5): `visible` with
-    /// each sent to a cell, and the lets that fill the cells, at the
+    /// The step's entry snapshot of `e`'s external variables and completed
+    /// local lets, `live` aside (`design/seq_blocks.md` §5). Each read goes
+    /// to a cell filled at the
     /// step's entry, or when all named inputs are present, as an issued
     /// call takes its argument tuple. The references the
     /// step's `sink` writes through are read at its entry too, and so are a
@@ -793,12 +794,18 @@ impl Machine<'_> {
         let (env, scope_path, captures) = (self.env, self.scope_path, self.captures);
         let mut read = |name: &ModPath, at: &Expr| {
             let key = ref_key(name);
-            if redirect(name, visible).is_some() || vars.contains_key(key) {
+            if vars.contains_key(key) {
                 return;
             }
-            let outer = captures.contains(key)
-                || matches!(env.lookup_bind(scope_path, name),
-                    Ok(Some((_, bind))) if !is_function(env, bind));
+            let outer = match redirect(name, visible) {
+                Some(Redirect::Local(_)) => true,
+                Some(_) => false,
+                None => {
+                    captures.contains(key)
+                        || matches!(env.lookup_bind(scope_path, name),
+                        Ok(Some((_, bind))) if !is_function(env, bind))
+                }
+            };
             if outer {
                 let mut read = at.clone();
                 read.kind = ExprKind::Ref { name: name.clone() };
@@ -837,7 +844,7 @@ impl Machine<'_> {
             else {
                 return;
             };
-            // CR claude for claude: [risk/medium] A seq-local let is left out of the
+            // XCR claude for claude: [risk/medium] A seq-local let is left out of the
             // entry snapshot. A later step gets the let's fire only through the one
             // catch-up bit, which the first later-cycle reader consumes. So `seq go {
             // let v = go + 1; a <- v ~ 5; b <- v ~ 6; v ~ 9 }` yields 9, but the same
@@ -854,6 +861,19 @@ impl Machine<'_> {
             // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q12, A
             // step-local let read by a later step): yes, snapshot (the recommendation:
             // snapshot them, as outer variables are.)
+            // 2026-10-27 codex: Every local let is recorded in the lowering's
+            // visible-name map (lambda literals retain function redirects). Later steps
+            // include those local reads in their entry snapshots, so one step cannot
+            // consume the only fire available to another. Pin
+            // lang::seq_steps::local_let_is_sampled_at_each_later_step fails in all
+            // four modes without the fix and passes with it. The first regression run
+            // found missing original expression text in errors after local references
+            // were lowered. ErrorContext now uses the preserved source span for
+            // rewritten expressions; the existing a_step_error_names_nothing_lowered
+            // pin and a source-text unit pin cover it. Ran seq/select/sample
+            // regressions and graphix-types expr::seq::test. Updated rules, book,
+            // design and language skill. No FuseExpect moved. Full workspace and
+            // socket/netidx-admin tests remain for coordinator review.
             read(name, r)
         });
         for w in sink {
@@ -1043,21 +1063,9 @@ impl Machine<'_> {
             self.patch(&tails, first);
             tails = next;
             shadow_step(stmt, &mut vis);
-            // a local hides only what the seq could otherwise read by its name
             if let ExprKind::Bind(b) = &stmt.kind {
                 b.pattern.with_names(&mut |n| {
-                    let outer = || {
-                        matches!(
-                            self.env.lookup_bind(
-                                self.scope_path,
-                                &ModPath::from([n.as_str()])
-                            ),
-                            Ok(Some(_))
-                        )
-                    };
-                    if !vis.contains_key(n) && outer() {
-                        vis.insert(n.clone(), Redirect::Local(n.clone()));
-                    }
+                    vis.entry(n.clone()).or_insert_with(|| Redirect::Local(n.clone()));
                 });
             }
         }
@@ -2759,6 +2767,7 @@ mod test {
             assert_eq!(got.to_string(), want.to_string(), "{src}");
         }
     }
+
     #[test]
     fn nested_seq_keeps_request_and_takes_own_entries() {
         let map = names(&[

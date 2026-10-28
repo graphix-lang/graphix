@@ -255,3 +255,24 @@ async fn arm_born_at_each_run(mode: Mode) -> Result<()> {
 }
 
 modes!(arm_born_at_each_run);
+
+async fn local_let_is_sampled_at_each_later_step(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let note = 0;
+        let r = &mut note;
+        let a = 0;
+        let b = 0;
+        let go = 1;
+        seq go {
+            let v = go + 1;
+            a <- v ~ 5;
+            *r <- 7;
+            b <- v ~ 6;
+            v ~ 9
+        }
+    }"#;
+    assert_eq!(run(code, mode).await?, [9]);
+    Ok(())
+}
+
+modes!(local_let_is_sampled_at_each_later_step);

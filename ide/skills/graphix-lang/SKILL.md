@@ -466,9 +466,9 @@ A passed step is asleep: a `let` keeps the value its step produced. A
 step completes when it produces a NEW value after its entry, never on a
 value standing from an earlier run; a step that reads a level takes it
 as it stands at entry (under `seq`; `seqq` captured it with the
-request) and waits for it if absent. A `let`'s fire reaches the first
-later step that reads it, not the ones after (a second `t ~ x` on it
-does not write). A run whose last write targets its own trigger ends
+request) and waits for it if absent. Each later step snapshots the
+seq-local `let` values it reads, so `v ~ x` can fire at each step's
+entry regardless of whether the planner placed it in a later cycle. A run whose last write targets its own trigger ends
 before the write lands, so the write starts the next run.
 A step whose value never fires stalls the run: `never()`, a select
 whose arms are connects (`select err { `Admin(m) => note <- m }`), a

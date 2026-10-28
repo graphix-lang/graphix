@@ -1303,6 +1303,7 @@ cycle, across workers; the compiler never pins threads.
   desugars to a machine node (`node/seq_machine.rs`: busy-drop, calls
   issued once per entry over an argument snapshot); every statement is
   a step and a passed step sleeps, so a `let` keeps its step's value;
+  each later step snapshots the local lets it reads at its own entry;
   a `let` of one name to a lambda literal binds the lambda itself, so
   calls through it resolve statically (its assertions are the build's).
   A statement starts in the first cycle its predecessor's effect can
