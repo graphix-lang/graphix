@@ -156,6 +156,7 @@ fn fmt_naked_capped(
                 {
                     write!(f, "{}", Literal(v))?;
                 }
+                Value::Decimal(d) => write!(f, "{d}")?,
                 v => write!(f, "{}", NakedValue(v))?,
             }
             continue;

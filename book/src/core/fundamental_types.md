@@ -562,3 +562,7 @@ using `e.0` e.g.,
 
 More information about dealing with errors is available in the section on error
 handling.
+
+A decimal's plain display, including scalar interpolation and `cast<string>`,
+has no trailing decimal point when its scale is zero. Inside a composite it
+prints as a typed decimal literal so `str::parse` retains its type and value.

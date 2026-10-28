@@ -4145,7 +4145,7 @@ run!(ref_test_over_any_in_a_second_pair, r#"{
 // A string casts to a decimal or a float exactly: digits past f64 stay,
 // a float reads anything Rust's float parse reads, and a pre-epoch
 // datetime truncates toward zero as a float does.
-// CR claude for claude: [bug/low] This pins "12345678901234567890." as the plain print of
+// XCR claude for claude: [bug/low] This pins "12345678901234567890." as the plain print of
 // a scale-0 decimal. A float prints plainly with no trailing dot (f64 5.0 -> "5"), but
 // Value::fmt_naked routes a decimal through DecimalFmt (netidx-value print.rs), which
 // appends the literal syntax's '.'. That holds for cast<string> and interpolation
@@ -4155,6 +4155,14 @@ run!(ref_test_over_any_in_a_second_pair, r#"{
 // design/review-2026-10-26/repro/tests-types-decimal-plain-print.gx (tests-types-06)
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q46, A decimal's
 // plain print): yes, unadorned (the recommendation: unadorned.)
+// 2026-10-27 codex: Reapplied q46 in Graphix's printer: scalar decimals use plain decimal
+// Display, while composite decimal leaves retain literal syntax. No upstream change. Pin
+// lang::types::decimal_plain_print_is_unadorned failed all four modes without the change
+// and passes in all four afterward; updated string_casts_to_decimal_and_float_exactly,
+// the book and language skill. Both decimal pins pass together (8 tests). cargo fmt --all
+// was attempted but cannot write a file in the read-only sibling Graphix checkout;
+// formatting the touched workspace packages succeeds. Full-library results are reported
+// separately.
 run!(string_casts_to_decimal_and_float_exactly, r#"{
   let d1 = cast<decimal>("1.23456789012345678901234567")$;
   let d2 = cast<decimal>("12345678901234567890")$;
@@ -4166,7 +4174,7 @@ run!(string_casts_to_decimal_and_float_exactly, r#"{
   let w = json::write_str(d1)$;
   let r: decimal = json::read(w)$;
   "[d1] [d2] [f1] [f2] [f3] [f4] [t1] [r]"
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.23456789012345678901234567 12345678901234567890. 9223372036854776000 inf 3 -0 0 1.23456789012345678901234567"); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.23456789012345678901234567 12345678901234567890 9223372036854776000 inf 3 -0 0 1.23456789012345678901234567"); FuseExpect::Jit);
 
 // A string holding a typed literal reads into a float as into an
 // integer: what Rust's parse refuses is read as a value, then converted.
@@ -4407,3 +4415,12 @@ run!(written_parameter_outside_its_bound_refused, r#"{
     let bad: [B<string>, null] = null;
     bad
 }"#, refused("type mismatch Number does not contain string"); FuseExpect::None);
+
+run!(
+    decimal_plain_print_is_unadorned,
+    r#"{
+    let d = decimal:12345678901234567890.;
+    ["[d]" == "12345678901234567890", cast<string>(d)$ == "12345678901234567890"]
+}"#,
+    prints("[true, true]")
+);
