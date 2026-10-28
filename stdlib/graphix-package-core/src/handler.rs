@@ -176,6 +176,25 @@ fn call_of<R: Rt, Q>(running: &mut (Request<R>, Q)) -> &mut Node<R> {
 }
 
 impl<R: Rt, Q: Reply> Handler<R, Q> {
+    fn with(
+        proto: Request<R>,
+        pid: BindId,
+        ftyp: Arc<FnType>,
+        scope: Scope,
+        top_id: ExprId,
+    ) -> Self {
+        Self {
+            proto,
+            pid,
+            ftyp,
+            scope,
+            top_id,
+            pending: Vec::new(),
+            running: Vec::new(),
+            siblings: Siblings::default(),
+        }
+    }
+
     /// A handler of type `ftyp` (a one-argument function type).
     pub fn new(
         ctx: &mut CompileCtx<R>,
@@ -190,16 +209,7 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
         let scope = scope.append_block("fn", LambdaId::new().inner());
         let pid = BindId::new();
         let proto = Request::new(ctx, Ok(pid), &ftyp, &scope, top_id);
-        Ok(Self {
-            proto,
-            pid,
-            ftyp,
-            scope,
-            top_id,
-            pending: Vec::new(),
-            running: Vec::new(),
-            siblings: Siblings::default(),
-        })
+        Ok(Self::with(proto, pid, ftyp, scope, top_id))
     }
 
     /// Take the function's value when its argument fires.
@@ -313,15 +323,6 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
         let ftyp = Arc::new(FnType::decode(buf)?);
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        Ok(Self {
-            proto: Request { call, relay },
-            pid,
-            ftyp,
-            scope,
-            top_id,
-            pending: Vec::new(),
-            running: Vec::new(),
-            siblings: Siblings::default(),
-        })
+        Ok(Self::with(Request { call, relay }, pid, ftyp, scope, top_id))
     }
 }
