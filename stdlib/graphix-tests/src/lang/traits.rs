@@ -2800,3 +2800,64 @@ let mk = |x: i64| T(x);
 let same = |a: T, b: T| a == b
 "#
 );
+
+run!(
+    required_trait_callback_effects_stay_parametric,
+    r#"{
+    trait Apply {
+        #[sync] val apply: fn(self, f: fn(x: i64) -> i64) -> i64;
+        #[pure] val pure_apply: fn(self, f: fn(x: i64) -> i64) -> i64
+    };
+    impl Apply for i64 {
+        let apply = |s, f| f(s);
+        let pure_apply = |s, f| f(s)
+    };
+    (Apply::apply(1, |x| x + 1), Apply::pure_apply(2, |x| x + 1))
+}"#,
+    prints("[i64:2, i64:3]")
+);
+
+run!(
+    uncalled_trait_impl_must_be_pure,
+    r#"{
+    trait Score { #[pure] val score: fn(self) -> i64 };
+    impl Score for i64 { let score = |x| count(x) + x };
+    0
+}"#,
+    refused("#[pure]: this function is not a pure function"); FuseExpect::None; build_only
+);
+
+run!(
+    uncalled_trait_impl_must_be_sync,
+    r#"{
+    trait Score { #[sync] val score: fn(self) -> i64 };
+    impl Score for i64 {
+        let score = |x| sys::time::after_idle(duration:1.ms, x)
+    };
+    0
+}"#,
+    refused("#[sync]: this function is async"); FuseExpect::None; build_only
+);
+
+run!(
+    uncalled_dynamic_trait_impl_must_be_pure,
+    r#"{
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            trait Score { #[pure] val score: fn(self) -> i64 };
+            impl Score for i64
+        };
+        source "impl Score for i64 { let score = |x| count(x) + x }"
+    };
+    status
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(e))
+    if e.to_string().contains("#[pure]: this function is not a pure function")); FuseExpect::None
+);
+
+run!(required_trait_checks_actual_callback_effects, r#"{
+    trait Apply { #[sync] val apply: fn(self, f: fn(x: i64) -> i64) -> i64 };
+    impl Apply for i64 { let apply = |s, f| f(s) };
+    Apply::apply(1, |x| sys::time::after_idle(duration:1.ms, x))
+}"#, refused("#[sync]: this function is async"); FuseExpect::None; build_only);

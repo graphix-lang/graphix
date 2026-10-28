@@ -35,7 +35,9 @@ module.
 A trait can require something of every body of a method by writing
 `#[pure]` or `#[sync]` above its `val`. Each implementation's body, and
 the default, then carries that assertion, and a body that breaks it
-fails the compile:
+fails the build even when no call reaches the method. A dynamic module with
+an invalid implementation fails to load. A function parameter's effects remain
+the caller's to supply, as for an assertion on an ordinary function definition:
 
 ```graphix
 trait Score {

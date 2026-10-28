@@ -630,6 +630,11 @@ printing); only abstract types may implement them outside core. The io
 traits `Read`/`Lines`/`Write`/`Close`/`Seek`/`Socket` describe streams
 whose TYPE is their kind (`sys::fs::File`, `sys::tcp::TcpStream`, …).
 
+A trait method's `#[pure]` or `#[sync]` holds for every implementation, even
+an uncalled one. Builds reject violating bodies; dynamic modules fail to load.
+Callback parameters retain caller-dependent effects, as in ordinary definitions.
+`--check` does not elaborate these body assertions.
+
 ## Standard library, briefly
 
 Core (always in scope): `print println dbg log cast<T>(x) error is_err

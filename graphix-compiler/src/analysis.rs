@@ -430,7 +430,7 @@ pub fn build_only_refusal(msg: &str) -> bool {
     BUILD_ONLY_REFUSALS.iter().any(|h| msg.contains(h))
 }
 
-fn assertion_failure<R: Rt>(
+pub(crate) fn assertion_failure<R: Rt>(
     kind: DefAssertionKind,
     d: &LambdaDef<R>,
 ) -> Option<CompactString> {

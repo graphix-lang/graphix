@@ -785,7 +785,7 @@ impl<R: Rt> Impl<R> {
     /// The core-trait prototypes: a call site per method over
     /// synthesized argument bindings of the target type, typechecked
     /// and statically resolved like any call, never updated.
-    // CR claude for claude: [bug/medium] Only core traits get prototype call sites, so a
+    // XCR claude for claude: [bug/medium] Only core traits get prototype call sites, so a
     // user trait's declared #[pure]/#[sync] is checked of an impl only when some
     // build-time call reaches it. An uncalled violating impl compiles. A dynamic
     // module's impure impl of a sig-declared `#[pure]` method loads with status null:
@@ -800,6 +800,18 @@ impl<R: Rt> Impl<R> {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q36, A trait
     // method's `#[pure]` is a contract on every impl): yes, every impl (the
     // recommendation: every impl, as CLAUDE.md says.)
+    // 2026-10-28 codex: Reworked q36 by checking each required method's checked
+    // definition facts with the ordinary assertion checker at implementation
+    // elaboration. Core prototypes remain; user methods do not need artificial argument
+    // bindings, so callback effects remain parametric until a real call. The three
+    // uncalled invalid-implementation pins failed in all 12 modes before the fix; the
+    // valid callback pin failed all four modes with the earlier prototype patch. All 16
+    // cases now pass, and the actual async-callback refusal plus valid callback control
+    // pass all eight modes. Pins: uncalled_trait_impl_must_be_pure,
+    // uncalled_trait_impl_must_be_sync, uncalled_dynamic_trait_impl_must_be_pure,
+    // required_trait_callback_effects_stay_parametric,
+    // required_trait_checks_actual_callback_effects. Book and skill updated.
+    // Full-library results are reported separately.
     fn build_prototypes(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());
@@ -968,6 +980,22 @@ impl<R: Rt> Update<R> for Impl<R> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.body, self.body.typecheck1(ctx))?;
+        for method in self.trait_def.methods.iter().filter(|m| !m.requires.is_empty()) {
+            let Some(bind) = self.def.methods.get(method.name.as_str()) else { continue };
+            let def = ctx
+                .bind_to_lambda
+                .get(bind)
+                .and_then(|v| v.downcast_ref::<LambdaDef<R>>())
+                .ok_or_else(|| {
+                    anyhow!("impl method {} has no checked definition", method.name)
+                })?;
+            for name in method.requires.iter() {
+                let kind = DefAssertionKind::from_name(name).expect("method requirement");
+                if let Some(message) = crate::analysis::assertion_failure(kind, def) {
+                    return Err(anyhow!("{message}").at(&self.spec));
+                }
+            }
+        }
         if self.prototypes.is_empty() {
             wrap!(self.body, self.build_prototypes(ctx))?;
         }
