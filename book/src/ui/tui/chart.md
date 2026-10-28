@@ -65,6 +65,10 @@ A marker decides how many points one terminal cell can plot (columns by rows):
 
 Braille needs a font with the Unicode Braille Patterns; Sextant and Octant need the Symbols for Legacy Computing block, which fewer terminals support. A terminal without the glyphs shows replacement characters (`�`).
 
+Each line series draws as one polyline, including when it leaves and re-enters
+the visible area. Finite segments crossing the axis bounds remain visible even
+when their endpoints are very large.
+
 ## See Also
 
 - [barchart](barchart.md) - For categorical data visualization

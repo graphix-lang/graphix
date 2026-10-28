@@ -207,3 +207,26 @@ the state of a fix, and Graphix's side.
   axis titles and labels, dataset names and bar labels are cut to their
   rect before ratatui sees them (`into_borrowed_line_within`,
   `stdlib/graphix-package-tui/src/lib.rs`). Not reported.
+
+## line-clipping 0.3.7 / ratatui-widgets 0.3.2: finite line clipping overflows
+
+- **Effect.** The Cohen–Sutherland clipper multiplies coordinate differences
+  before dividing. Finite endpoints can produce infinity or NaN, drawing the
+  wrong cells. Rejecting overflowing differences also drops crossing segments.
+- **Repro.** `design/review-2026-10-26/repro/tui-widgets-canvas-line-clip.sh`;
+  `canvas::tests::enormous_canvas_lines_match_their_visible_segments` pins the
+  rendered result without a terminal or sockets.
+- **Graphix workaround.** Clip from the original endpoints with power-of-two
+  scaling and a compensated determinant. Canvas lines clip to the window. Chart
+  lines clip to a box padded by one axis span on each side and join disconnected
+  pieces along its perimeter, outside the visible window. One dataset per series
+  keeps all its Braille dots in one canvas layer. Separate layers cost a full-area
+  allocation and traversal and replace earlier cells instead of merging dots.
+  Enormous chart axes and all their series scale down by powers of two before
+  clipping, keeping ratatui's remaining products finite.
+- **Pins.** `clip::tests::asymmetric_segments_keep_their_slope`,
+  `chart::tests::reentering_line_preserves_braille_dots`,
+  `chart::tests::perimeter_joins_never_enter_the_window`,
+  `test::panic_test::enormous_chart_axes_preserve_each_graph_type`, and
+  `chart::tests::reentering_line_uses_one_layer` (also prints render timings).
+- **Status.** Not reported upstream.

@@ -1,7 +1,7 @@
-use super::tag_newtype;
 use super::{
     AlignmentV, BoundsV, LineV, MarkerV, PointV, StyleV, TuiW, TuiWidget,
-    into_borrowed_line_within, layout::ConstraintV, reconcile,
+    clip::clip_line, into_borrowed_line_within, layout::ConstraintV, reconcile,
+    tag_newtype,
 };
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -9,6 +9,7 @@ use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
+use poolshark::local::LPooled;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -35,6 +36,7 @@ tag_newtype!(#[derive(Clone, Copy)] LegendPositionV(LegendPosition), "legend pos
 #[derive(Clone)]
 struct AxisV {
     axis: Axis<'static>,
+    bounds: [f64; 2],
     labels: Vec<LineV>,
     title: Option<LineV>,
 }
@@ -51,14 +53,19 @@ impl FromValue for AxisV {
             title: Option<LineV>,
         }
         let Fields { bounds, labels, labels_alignment, style, title } = v.cast_to()?;
-        let mut axis = Axis::default().bounds([bounds.min, bounds.max]);
+        let mut axis = Axis::default();
         if let Some(al) = labels_alignment {
             axis = axis.labels_alignment(al.0);
         }
         if let Some(st) = style {
             axis = axis.style(st.0);
         }
-        Ok(Self { axis, labels: labels.unwrap_or_default(), title })
+        Ok(Self {
+            axis,
+            bounds: [bounds.min, bounds.max],
+            labels: labels.unwrap_or_default(),
+            title,
+        })
     }
 }
 
@@ -73,7 +80,7 @@ impl AxisV {
                 into_borrowed_line_within(&self.labels[index].0, width)
             })
             .collect::<Vec<_>>();
-        let axis = self.axis.clone().labels(labels);
+        let axis = self.axis.clone().bounds(self.bounds).labels(labels);
         match &self.title {
             Some(LineV(t)) => axis.title(into_borrowed_line_within(t, width)),
             None => axis,
@@ -97,17 +104,107 @@ graphix_rt::props! {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PlotBounds {
+    x: [f64; 2],
+    y: [f64; 2],
+    scale: (f64, f64),
+}
+
+impl PlotBounds {
+    fn new(x: [f64; 2], y: [f64; 2]) -> Self {
+        let scale = |bounds: [f64; 2]| {
+            let max = bounds[0].abs().max(bounds[1].abs());
+            if max > 1e100 { f64::from_bits(max.to_bits() & (0x7ff << 52)) } else { 1.0 }
+        };
+        let scale = (scale(x), scale(y));
+        Self { x: x.map(|v| v / scale.0), y: y.map(|v| v / scale.1), scale }
+    }
+
+    fn point(&self, p: (f64, f64)) -> (f64, f64) {
+        (p.0 / self.scale.0, p.1 / self.scale.1)
+    }
+}
+
+#[derive(Default)]
+struct LineData {
+    points: LPooled<Vec<(f64, f64)>>,
+}
+
+impl LineData {
+    fn clip(&mut self, data: &[(f64, f64)], bounds: PlotBounds) {
+        self.points.clear();
+        let pad = |[min, max]: [f64; 2]| [min - (max - min), max + (max - min)];
+        let (x, y) = (pad(bounds.x), pad(bounds.y));
+        for pair in data.windows(2) {
+            let Some([a, b]) =
+                clip_line(bounds.point(pair[0]), bounds.point(pair[1]), x, y)
+            else {
+                continue;
+            };
+            if let Some(&last) = self.points.last() {
+                if last != a {
+                    self.join(last, a, x, y);
+                    self.points.push(a);
+                }
+            } else {
+                self.points.push(a);
+            }
+            self.points.push(b);
+        }
+        if let [p] = data {
+            let p = bounds.point(*p);
+            if p.0 >= bounds.x[0]
+                && p.0 <= bounds.x[1]
+                && p.1 >= bounds.y[0]
+                && p.1 <= bounds.y[1]
+            {
+                self.points.push(p);
+            }
+        }
+    }
+
+    // Disconnected endpoints lie on this box; each join stays on its perimeter,
+    // strictly outside the axis bounds, so ratatui discards every join segment.
+    fn join(&mut self, from: (f64, f64), to: (f64, f64), x: [f64; 2], y: [f64; 2]) {
+        let edge = |p: (f64, f64)| {
+            if p.1 == y[0] {
+                0
+            } else if p.0 == x[1] {
+                1
+            } else if p.1 == y[1] {
+                2
+            } else {
+                debug_assert_eq!(p.0, x[0]);
+                3
+            }
+        };
+        let corners = [(x[1], y[0]), (x[1], y[1]), (x[0], y[1]), (x[0], y[0])];
+        let mut side = edge(from);
+        let end = edge(to);
+        while side != end {
+            self.points.push(corners[side]);
+            side = (side + 1) % 4;
+        }
+    }
+}
+
 struct DatasetW<X: GXExt> {
     p: DatasetProps<X>,
     data_ref: Ref<X>,
     data: Vec<(f64, f64)>,
+    line: LineData,
 }
 
 impl<X: GXExt> DatasetW<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
         let p = DatasetProps::compile(gx, &v).await.context("dataset")?;
-        let mut t =
-            Self { p, data_ref: gx.compile_field(&v, "data").await?, data: vec![] };
+        let mut t = Self {
+            p,
+            data_ref: gx.compile_field(&v, "data").await?,
+            data: vec![],
+            line: LineData::default(),
+        };
         if let Some(v) = t.data_ref.last.take() {
             t.set_data(&v)?;
         }
@@ -137,38 +234,20 @@ impl<X: GXExt> DatasetW<X> {
         Ok(())
     }
 
-    /// The datasets this series draws as: one, or for a line one per
-    /// segment between its breaks, the first carrying the name. A line
-    /// breaks before each point it cannot be joined to from the one before
-    /// (their difference overflows). The name is cut to `width`.
-    fn build(&self, width: u16) -> impl Iterator<Item = Dataset<'_>> {
-        let connected =
-            matches!(self.p.graph_type.t.flatten(), Some(GraphTypeV(GraphType::Line)));
-        let joined: &[(f64, f64)] = if connected { &self.data } else { &[] };
-        let breaks = joined
-            .windows(2)
-            .enumerate()
-            .filter(|(_, p)| {
-                !(p[1].0 - p[0].0).is_finite() || !(p[1].1 - p[0].1).is_finite()
-            })
-            .map(|(i, _)| i + 1);
-        let starts = std::iter::once(0).chain(breaks.clone());
-        let ends = breaks.chain(std::iter::once(self.data.len()));
-        starts
-            .zip(ends)
-            .enumerate()
-            .map(move |(i, (s, e))| self.segment(&self.data[s..e], i == 0, width))
+    fn is_line(&self) -> bool {
+        matches!(self.p.graph_type.t.flatten(), Some(GraphTypeV(GraphType::Line)))
     }
 
-    fn segment<'a>(
-        &'a self,
-        data: &'a [(f64, f64)],
-        named: bool,
-        width: u16,
-    ) -> Dataset<'a> {
+    /// One dataset per series; its name is cut to `width`.
+    fn build(&self, width: u16, bounds: PlotBounds) -> Dataset<'_> {
+        let data = if self.is_line() || bounds.scale != (1.0, 1.0) {
+            self.line.points.as_slice()
+        } else {
+            self.data.as_slice()
+        };
         let p = &self.p;
         let mut ds = Dataset::default().data(data);
-        if named && let Some(Some(LineV(l))) = &p.name.t {
+        if let Some(Some(LineV(l))) = &p.name.t {
             ds = ds.name(into_borrowed_line_within(l, width));
         }
         if let Some(Some(m)) = p.marker.t {
@@ -237,10 +316,22 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         let p = &self.p;
+        let bounds = |axis: &Option<Option<AxisV>>| {
+            axis.as_ref().and_then(|a| a.as_ref()).map_or([0.0, 0.0], |a| a.bounds)
+        };
+        let bounds = PlotBounds::new(bounds(&p.x_axis.t), bounds(&p.y_axis.t));
+        for (_, d) in &mut self.datasets {
+            if d.is_line() {
+                d.line.clip(&d.data, bounds);
+            } else if bounds.scale != (1.0, 1.0) {
+                d.line.points.clear();
+                d.line.points.extend(d.data.iter().map(|&p| bounds.point(p)));
+            }
+        }
         // the legend adds its border to its widest name
         let text_room = rect.width.saturating_sub(2);
         let mut chart = Chart::new(
-            self.datasets.iter().flat_map(|(_, d)| d.build(text_room)).collect(),
+            self.datasets.iter().map(|(_, d)| d.build(text_room, bounds)).collect(),
         );
         if let Some(Some(h)) = &p.hidden_legend_constraints.t {
             chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
@@ -283,15 +374,18 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
             chart = chart.style(s.0);
         }
         if let Some(Some(a)) = &p.x_axis.t {
-            chart = chart.x_axis(a.build(rect.width, text_room));
+            chart = chart.x_axis(a.build(rect.width, text_room).bounds(bounds.x));
         }
         if let Some(Some(a)) = &p.y_axis.t {
-            chart = chart.y_axis(a.build(
-                (rect.height as u32).min(
-                    u16::MAX as u32 / rect.height.saturating_sub(1).max(1) as u32 + 1,
-                ) as u16,
-                text_room,
-            ));
+            chart = chart.y_axis(
+                a.build(
+                    (rect.height as u32).min(
+                        u16::MAX as u32 / rect.height.saturating_sub(1).max(1) as u32 + 1,
+                    ) as u16,
+                    text_room,
+                )
+                .bounds(bounds.y),
+            );
         }
         frame.render_widget(chart, rect);
         Ok(())
@@ -303,13 +397,194 @@ mod tests {
     use super::*;
     use ratatui::{buffer::Buffer, text::Line, widgets::Widget};
 
+    fn render_lines<'a>(
+        runs: impl Iterator<Item = &'a [(f64, f64)]>,
+        rect: Rect,
+    ) -> Buffer {
+        use ratatui::symbols::Marker;
+        let datasets = runs
+            .map(|data| {
+                Dataset::default()
+                    .data(data)
+                    .graph_type(GraphType::Line)
+                    .marker(Marker::Braille)
+            })
+            .collect();
+        let mut buffer = Buffer::empty(rect);
+        Chart::new(datasets)
+            .x_axis(Axis::default().bounds([0.0, 10.0]))
+            .y_axis(Axis::default().bounds([0.0, 10.0]))
+            .render(rect, &mut buffer);
+        buffer
+    }
+
+    #[test]
+    fn connected_braille_segments_share_a_layer() {
+        let data = [(2.0, 1.0), (2.3, 9.0), (2.6, 1.0), (8.0, 5.0), (2.0, 5.2)];
+        let mut clipped = LineData::default();
+        clipped.clip(&data, PlotBounds::new([0.0, 10.0], [0.0, 10.0]));
+        let rect = Rect::new(0, 0, 11, 11);
+        let expected = render_lines(std::iter::once(data.as_slice()), rect);
+        assert_eq!(
+            render_lines(std::iter::once(clipped.points.as_slice()), rect),
+            expected
+        );
+    }
+
+    #[test]
+    fn disconnected_runs_join_outside_the_window() {
+        let data = [(-1e308, 5.0), (5.0, 5.0), (30.0, 5.0), (30.0, 8.0), (5.0, 8.0)];
+        let mut clipped = LineData::default();
+        clipped.clip(&data, PlotBounds::new([0.0, 10.0], [0.0, 10.0]));
+        let expected = [(-10.0, 5.0), (5.0, 5.0), (20.0, 5.0), (20.0, 8.0), (5.0, 8.0)];
+        assert_eq!(&*clipped.points, &expected);
+        let rect = Rect::new(0, 0, 11, 11);
+        assert_eq!(
+            render_lines(std::iter::once(clipped.points.as_slice()), rect),
+            render_lines(std::iter::once(expected.as_slice()), rect)
+        );
+    }
+
+    #[test]
+    fn large_line_uses_one_layer() {
+        use std::{hint::black_box, time::Instant};
+        let points: LPooled<Vec<_>> = (0..2000)
+            .map(|i| {
+                let x = i as f64 / 200.0;
+                (x, 5.0 + x.sin() * 4.0)
+            })
+            .collect();
+        let mut clipped = LineData::default();
+        clipped.clip(&points, PlotBounds::new([0.0, 10.0], [0.0, 10.0]));
+        assert_eq!(clipped.points.len(), points.len());
+        let rect = Rect::new(0, 0, 200, 50);
+        let start = Instant::now();
+        for _ in 0..100 {
+            black_box(render_lines(std::iter::once(points.as_slice()), rect));
+        }
+        let baseline = start.elapsed() / 100;
+        let start = Instant::now();
+        for _ in 0..100 {
+            clipped.clip(&points, PlotBounds::new([0.0, 10.0], [0.0, 10.0]));
+            black_box(render_lines(std::iter::once(clipped.points.as_slice()), rect));
+        }
+        eprintln!(
+            "2000 points, 200x50: raw {baseline:?}, clipped {:?}",
+            start.elapsed() / 100
+        );
+    }
+
+    async fn line_series()
+    -> Result<(graphix_package_core::testing::Fixture, DatasetW<graphix_rt::NoExt>)> {
+        use graphix_package_core::testing::Fixture;
+        let (f, value) = Fixture::new(
+            "use tui::chart::dataset; let result = dataset(#graph_type: &`Line, #marker: &`Braille, &[(0.75, 9.6), (1.05, 30.0), (1.35, 9.6)])",
+            &[&graphix_package_core::P, &graphix_package_array::P, &graphix_package_str::P, &graphix_package_sys::P, &crate::P],
+            |_| {},
+        ).await?;
+        let series = DatasetW::compile(&f.gx, value).await?;
+        Ok((f, series))
+    }
+
+    #[tokio::test]
+    async fn reentering_line_preserves_braille_dots() -> Result<()> {
+        let (_f, mut series) = line_series().await?;
+        let bounds = PlotBounds::new([0.0, 10.0], [0.0, 10.0]);
+        series.line.clip(&series.data, bounds);
+        let rect = Rect::new(0, 0, 11, 11);
+        let expected = render_lines(std::iter::once(series.data.as_slice()), rect);
+        let mut actual = Buffer::empty(rect);
+        let dataset: Dataset<'_> = series.build(rect.width, bounds);
+        Chart::new(vec![dataset])
+            .x_axis(Axis::default().bounds(bounds.x))
+            .y_axis(Axis::default().bounds(bounds.y))
+            .render(rect, &mut actual);
+        assert_eq!(actual[(1, 0)], expected[(1, 0)]);
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reentering_line_uses_one_layer() -> Result<()> {
+        use std::{hint::black_box, time::Instant};
+        let (_f, mut series) = line_series().await?;
+        series.data = (0..2000)
+            .map(|i| {
+                let x = i as f64 / 200.0;
+                (x, 5.0 + (150.0 * x).sin() * 8.0)
+            })
+            .collect();
+        let bounds = PlotBounds::new([0.0, 10.0], [0.0, 10.0]);
+        let rect = Rect::new(0, 0, 200, 50);
+        let start = Instant::now();
+        for _ in 0..100 {
+            black_box(render_lines(std::iter::once(series.data.as_slice()), rect));
+        }
+        let raw = start.elapsed() / 100;
+        let start = Instant::now();
+        for _ in 0..100 {
+            series.line.clip(&series.data, bounds);
+            let dataset: Dataset<'_> = series.build(rect.width, bounds);
+            let mut buffer = Buffer::empty(rect);
+            Chart::new(vec![dataset])
+                .x_axis(Axis::default().bounds(bounds.x))
+                .y_axis(Axis::default().bounds(bounds.y))
+                .render(rect, &mut buffer);
+            black_box(buffer);
+        }
+        eprintln!(
+            "k=150, 2000 points, 200x50 Braille, 100 renders: raw {raw:?}, clipped {:?}",
+            start.elapsed() / 100
+        );
+        assert!(series.line.points.iter().all(|&(x, y)|
+            (-10.0..=20.0).contains(&x) && (-10.0..=20.0).contains(&y)));
+        Ok(())
+    }
+
+    #[test]
+    fn perimeter_joins_never_enter_the_window() {
+        let outside = [(5.0, -40.0), (40.0, 5.0), (5.0, 40.0), (-40.0, 5.0)];
+        let rect = Rect::new(0, 0, 11, 11);
+        for a in outside {
+            for b in outside {
+                let data = [(5.0, 5.0), a, b, (5.0, 5.0)];
+                let mut clipped = LineData::default();
+                clipped.clip(&data, PlotBounds::new([0.0, 10.0], [0.0, 10.0]));
+                assert_eq!(
+                    render_lines(std::iter::once(clipped.points.as_slice()), rect),
+                    render_lines(std::iter::once(data.as_slice()), rect),
+                    "{a:?} -> {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn enormous_axes_keep_clipper_products_finite() {
+        let bounds = PlotBounds::new([0.0, 1e300], [0.0, 1e300]);
+        let data = [(1e299, 1e299), (2e299, 1e308), (1e308, 1e308), (9e299, 9e299)];
+        let mut clipped = LineData::default();
+        clipped.clip(&data, bounds);
+        assert!(!clipped.points.is_empty());
+        for p in clipped.points.windows(2) {
+            let dx = p[1].0 - p[0].0;
+            let dy = p[1].1 - p[0].1;
+            for x in bounds.x {
+                assert!(((x - p[0].0) * dy).is_finite());
+            }
+            for y in bounds.y {
+                assert!(((y - p[0].1) * dx).is_finite());
+            }
+        }
+    }
+
     #[test]
     fn x_labels_do_not_truncate_their_count() {
         let mut labels = vec![LineV(Line::from("m")); 65_538];
         labels[0] = LineV(Line::from("f"));
         labels[65_537] = LineV(Line::from("z"));
         let axis =
-            AxisV { axis: Axis::default().bounds([0.0, 1.0]), labels, title: None };
+            AxisV { axis: Axis::default(), bounds: [0.0, 1.0], labels, title: None };
         let rect = Rect::new(0, 0, 80, 10);
         let mut buffer = Buffer::empty(rect);
         Chart::default()

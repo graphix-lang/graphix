@@ -1,4 +1,6 @@
-use super::{BoundsV, ColorV, LineV, MarkerV, PointV, TuiW, TuiWidget, reconcile};
+use super::{
+    BoundsV, ColorV, LineV, MarkerV, PointV, TuiW, TuiWidget, clip::clip_line, reconcile,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::{BindId, expr::ExprId};
@@ -114,7 +116,7 @@ enum ShapeV {
 
 impl ShapeV {
     /// Whether the shape's coordinates are numbers ratatui can place.
-    // CR claude for claude: [bug/medium] This check, and DatasetW's breaks in chart.rs,
+    // XCR claude for claude: [bug/medium] This check, and DatasetW's breaks in chart.rs,
     // guards only x2 - x1 and y2 - y1. ratatui's clipper (line-clipping
     // cohen_sutherland) still computes (x_min - x1) * dy / dx, which overflows. Its
     // inf/inf NaN counts as inside and lands at column 0, so `Line{x1: -1e300, y1:
@@ -138,12 +140,53 @@ impl ShapeV {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q53, TUI lines
     // that overflow the clipper): yes, clip and add upstream entry (the recommendation:
     // clip in Graphix; add an UPSTREAM.md entry.)
+    // 2026-10-28 codex: Reworked clipping: original-endpoint edge intersections use
+    // power-of-two scaling and a compensated determinant. Canvas lines and chart lines
+    // draw their visible portions; connected chart pieces share one polyline/dataset,
+    // with breaks only at disconnected visible runs. Pins:
+    // clip::tests::asymmetric_segments_keep_their_slope failed on the supplied old
+    // clipper (0.634413...,0);
+    // canvas::tests::enormous_canvas_lines_match_their_visible_segments failed with the
+    // original canvas path; connected_braille_segments_share_a_layer,
+    // clipped_lines_break_only_at_disconnected_runs and large_line_uses_one_layer all
+    // failed when forced back to one dataset per segment. They pass after fixing. The
+    // 2000-point 200x50 Braille CPU render measured 235 us raw versus 268 us including
+    // clipping (100 renders, dev profile; no allocation measurement). cargo test -p
+    // graphix-package-tui --offline --lib: 151 passed, 8 failed, all in
+    // test::input_test::a_browser_* and test::examples_test::every_example_renders,
+    // with sandbox resolver/socket failures. Both updated overflow integration pins
+    // passed. Book rebuilt and UPSTREAM entry added. GPU/socket-capable review remains
+    // external.
+    // 2026-10-28 codex: Second review: restored the unmerged rework from bbd7afa,
+    // retaining clip.rs unchanged. DatasetW::build now returns one Dataset, for every
+    // series. LineData clips to a finite box padded by one axis span and connects
+    // disconnected pieces along its perimeter, outside the window; enormous axes and all
+    // series scale down by powers of two to bound ratatui's products. Restored the true
+    // build/name-width and text_room comments. Reproduced both new pins against the
+    // rejected runs implementation: reentering_line_preserves_braille_dots lost cell
+    // (1,0); reentering_line_uses_one_layer found 478 layers. Both pass now, and the
+    // final pins exercise DatasetW::build directly (its single-Dataset return type
+    // enforces the layer count). Added perimeter_joins_never_enter_the_window,
+    // enormous_axes_keep_clipper_products_finite and
+    // enormous_chart_axes_preserve_each_graph_type. The canvas enormous-line pin also
+    // failed with the original draw/finite code restored and passed with clipping. Dev
+    // CPU timings, 100 renders at 200x50 Braille: 2000 points (i/200,
+    // 5+8*sin(150*i/200)), rejected runs 25.279512 ms, raw 419.261 us; fixed including
+    // clip/build 447.882 us, raw 419.347 us. Canvas, 1999 segments from the same points:
+    // original 375.678 us, fixed 416.312 us. cargo test -p graphix-package-tui --offline
+    // --lib chart::tests -- --nocapture: 8 passed; canvas::tests: 3 passed;
+    // enormous_chart_axes: 1 passed. Final cargo test -p graphix-package-tui --offline
+    // --lib: 157 passed, 8 socket-dependent failures: test::input_test::a_browser_* and
+    // test::examples_test::every_example_renders (browser_basic, browser_commands,
+    // browser_navigation, paragraph_log_viewer, sparkline_rolling), with resolver
+    // Operation not permitted errors. UPSTREAM.md and book updated; mdbook build and
+    // cargo fmt --all completed. No terminal/socket-capable run or allocation
+    // measurements; the requested graphix-tests lib gate is running and its results will
+    // be in the final report.
     fn finite(&self) -> bool {
         let all = |cs: &[f64]| cs.iter().all(|c| c.is_finite());
         match self {
-            ShapeV::Line(CanvasLineV(l)) => {
-                all(&[l.x1, l.y1, l.x2, l.y2, l.x2 - l.x1, l.y2 - l.y1])
-            }
+            ShapeV::Line(CanvasLineV(l)) => all(&[l.x1, l.y1, l.x2, l.y2]),
             ShapeV::Circle(CanvasCircleV(c)) => all(&[
                 c.x,
                 c.y,
@@ -162,10 +205,16 @@ impl ShapeV {
         }
     }
 
-    fn draw(&self, ctx: &mut CanvasContext) {
+    fn draw(&self, ctx: &mut CanvasContext, x: [f64; 2], y: [f64; 2]) {
         match self {
             _ if !self.finite() => {}
-            ShapeV::Line(s) => ctx.draw(&s.0),
+            ShapeV::Line(CanvasLineV(l)) => {
+                if let Some([(x1, y1), (x2, y2)]) =
+                    clip_line((l.x1, l.y1), (l.x2, l.y2), x, y)
+                {
+                    ctx.draw(&Line { x1, y1, x2, y2, color: l.color });
+                }
+            }
             ShapeV::Circle(s) => ctx.draw(&s.0),
             ShapeV::Rectangle(s) => ctx.draw(&s.0),
             ShapeV::Points(s) => {
@@ -246,7 +295,7 @@ impl<X: GXExt> TuiWidget for CanvasW<X> {
         let shapes = &self.shapes;
         canvas = canvas.paint(|ctx| {
             for shape in shapes.iter().filter_map(|(_, s)| s.t.as_ref()) {
-                shape.draw(ctx);
+                shape.draw(ctx, bounds(p.x_bounds.t), bounds(p.y_bounds.t));
             }
         });
         frame.render_widget(canvas, rect);
@@ -258,6 +307,74 @@ impl<X: GXExt> TuiWidget for CanvasW<X> {
 mod tests {
     use super::*;
     use ratatui::style::Color;
+
+    #[test]
+    fn enormous_canvas_lines_match_their_visible_segments() {
+        use ratatui::{buffer::Buffer, symbols::Marker, widgets::Widget};
+        let render = |a: (f64, f64), b: (f64, f64)| {
+            let shape = ShapeV::Line(CanvasLineV(Line {
+                x1: a.0,
+                y1: a.1,
+                x2: b.0,
+                y2: b.1,
+                color: Color::Red,
+            }));
+            let rect = Rect::new(0, 0, 11, 11);
+            let mut buffer = Buffer::empty(rect);
+            Canvas::default()
+                .marker(Marker::Braille)
+                .x_bounds([0.0, 10.0])
+                .y_bounds([0.0, 10.0])
+                .paint(|ctx| shape.draw(ctx, [0.0, 10.0], [0.0, 10.0]))
+                .render(rect, &mut buffer);
+            buffer
+        };
+        for (a, b, c, d) in [
+            ((-1e300, 1e300), (5.0, 5.0), (0.0, 10.0), (5.0, 5.0)),
+            ((-1e308, 5.0), (1e308, 5.0), (0.0, 5.0), (10.0, 5.0)),
+            ((-1e300, -0.7e300), (3e300, 2.1e300), (0.0, 0.0), (10.0, 7.0)),
+        ] {
+            assert_eq!(render(a, b), render(c, d), "{a:?} -> {b:?}");
+        }
+    }
+
+    #[test]
+    fn canvas_line_render_cost() {
+        use poolshark::local::LPooled;
+        use ratatui::{buffer::Buffer, symbols::Marker, widgets::Widget};
+        use std::{hint::black_box, time::Instant};
+        let point = |i| {
+            let x = i as f64 / 200.0;
+            (x, 5.0 + 8.0 * (150.0 * x).sin())
+        };
+        let shapes: LPooled<Vec<_>> = (0..1999)
+            .map(|i| {
+                let (x1, y1) = point(i);
+                let (x2, y2) = point(i + 1);
+                ShapeV::Line(CanvasLineV(Line { x1, y1, x2, y2, color: Color::Red }))
+            })
+            .collect();
+        let rect = Rect::new(0, 0, 200, 50);
+        let start = Instant::now();
+        for _ in 0..100 {
+            let mut buffer = Buffer::empty(rect);
+            Canvas::default()
+                .marker(Marker::Braille)
+                .x_bounds([0.0, 10.0])
+                .y_bounds([0.0, 10.0])
+                .paint(|ctx| {
+                    for shape in shapes.iter() {
+                        shape.draw(ctx, [0.0, 10.0], [0.0, 10.0]);
+                    }
+                })
+                .render(rect, &mut buffer);
+            black_box(buffer);
+        }
+        eprintln!(
+            "canvas k=150, 1999 segments, 200x50 Braille, 100 renders: {:?}",
+            start.elapsed() / 100
+        );
+    }
 
     #[test]
     fn finite_shapes_require_finite_extents() {

@@ -89,6 +89,10 @@ The `canvas` widget provides a low-level drawing surface for custom graphics. Yo
 - Y increases upward
 - Shapes outside bounds are clipped
 
+Finite line segments are clipped to the axis bounds before rendering. A segment
+that crosses the visible area stays visible even when its endpoints are very
+large.
+
 ## See Also
 
 - [chart](chart.md) - For pre-built line charts
