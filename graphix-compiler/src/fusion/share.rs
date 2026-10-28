@@ -106,6 +106,10 @@ impl SharedAttempt {
     fn fused(&self) -> bool {
         matches!(self, Self::Fused(_))
     }
+
+    fn refused(root: ExprId, blocker: Option<ExprId>) -> Self {
+        SharedAttempt::Refused { root, blocker }
+    }
 }
 
 type Table = Arc<Vec<SharedAttempt>>;
@@ -156,7 +160,7 @@ pub(crate) fn record<R: Rt>(
             ))
         }
         FusionAttempt::Refused(blocker) => {
-            SharedAttempt::Refused { root: node.spec().id, blocker: *blocker }
+            SharedAttempt::refused(node.spec().id, *blocker)
         }
     };
     attempts.push(entry)
@@ -330,10 +334,10 @@ impl SlotShare {
         for _ in 0..n {
             match u8::decode(buf)? {
                 0 => {
-                    table.push(SharedAttempt::Refused {
-                        root: ExprId::decode(buf)?,
-                        blocker: Option::<ExprId>::decode(buf)?,
-                    });
+                    table.push(SharedAttempt::refused(
+                        ExprId::decode(buf)?,
+                        Option::<ExprId>::decode(buf)?,
+                    ));
                     continue;
                 }
                 1 => (),
