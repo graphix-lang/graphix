@@ -671,7 +671,10 @@ unselected arm tears a subscription or publication down and drops an rpc
 call in flight. `sys::fs`, `sys::tcp`, `sys::tls`, `sys::process`
 (`spawn`, `options`, `Proc`, `wait`), `http`. `json` and `toml`:
 `read(string | bytes)` (async), `write_str` and `write_bytes` (pure);
-`pack`: `read(bytes)` (async) and `write_bytes`.
+`pack`: `read(bytes)` (async) and `write_bytes`. Pack and db values preserve
+composite kinds (tuple, struct, variant, list, array and map), including
+union members; abstract values still cross through `Cast`. Older unmarked
+data remains readable but cannot recover a kind that was erased.
 
 A sync variadic builtin called with no positional argument is a compile
 error (`str::concat()`); it could never fire.

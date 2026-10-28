@@ -198,3 +198,30 @@ async fn pack_abstract_read_checks_the_payload() -> Result<()> {
     );
     Ok(())
 }
+
+run!(pack_preserves_union_member_kinds, r#"{
+    type E = [`PackErr(string), `InvalidCast(string)];
+    let round = 'a: Data + Concrete + Discernible |v: 'a| {
+        let r: Result<'a, E> = pack::read(pack::write_bytes(v)$);
+        select r { error as _ => false, got => got == v }
+    };
+    let tuple: [(string, i64), `B(i64)] = ("B", 7);
+    let list: [List<i64>, (i64, i64), Array<i64>] = [<1, 2>];
+    let array: [Array<i64>, (i64, i64)] = [1, 2];
+    let raw: [array, (i64, i64)] = [1, 2];
+    let tag: [string, `A] = `A;
+    let map: [Map<string, i64>, Array<(string, i64)>] = {"a" => 1};
+    let nested: {value: [Array<i64>, (i64, i64)]} = {value: [1, 2]};
+    type B = Abstract<i64>;
+    impl Cast for B {};
+    let boxes: [Array<B>, (B, B)] = [B(1), B(2)];
+    [round(tuple), round(list), round(array), round(tag), round(map),
+     round(nested), round(boxes), round(raw)]
+}"#, prints("[true, true, true, true, true, true, true, true]"); FuseExpect::Jit);
+
+run!(pack_array_union_prefers_unchanged_elements, r#"{
+    type V = [Array<string>, Array<i64>];
+    let v: V = ["1", "2"];
+    let r: V = pack::read(pack::write_bytes(v)$)$;
+    r == v
+}"#, prints("true"); FuseExpect::Jit);

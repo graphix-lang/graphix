@@ -1595,3 +1595,39 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+run_with_tempdir!(
+    name: db_preserves_union_member_kind,
+    code: r#"{{
+        type U = [(string, i64), `B(i64)];
+        let db = db::open("{}")$;
+        let tree: db::Tree<string, U> = db::tree(db, null)?;
+        let v: U = ("B", 7);
+        let old = db::insert(tree, "value", v)$;
+        let got = db::get(tree, old ~ "value")?;
+        select got {{ null => false, got => got == v }}
+    }}"#,
+    setup: |td| { td.path().join("union_kinds.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::Bool(true));
+        Ok(())
+    }
+);
+
+run_with_tempdir!(
+    name: db_array_union_prefers_unchanged_elements,
+    code: r#"{{
+        type U = [Array<string>, Array<i64>];
+        let db = db::open("{}")$;
+        let tree: db::Tree<string, U> = db::tree(db, null)?;
+        let v: U = ["1", "2"];
+        let old = db::insert(tree, "value", v)$;
+        let got = db::get(tree, old ~ "value")?;
+        select got {{ null => false, got => got == v }}
+    }}"#,
+    setup: |td| { td.path().join("union_kinds.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::Bool(true));
+        Ok(())
+    }
+);

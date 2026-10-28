@@ -1167,12 +1167,15 @@ cycle, across workers; the compiler never pins threads.
 - **Composite forms** (`graphix-types/src/rep.rs`,
   `design/distinct_composite_forms.md`): a tuple, struct, variant (bare
   included) and list cell is an array whose element 0 is its kind's
-  marker, a Rust-registered abstract that no data carries and only an
-  image decodes; an array is unmarked. Only `rep.rs` and `list.rs` know
-  the layout. Data carries no markers: a writer writes through
-  `abstract_value::to_data` (`rep::strip`: a list as a flat array, a
-  bare variant as its tag), and a reader's cast rebuilds the forms from
-  data (`rep::read_*` report `Parts::Data`). A primitive `array` holds
+  marker, a Rust-registered abstract; an array is unmarked. Only `rep.rs`
+  and `list.rs` know the layout. Text and netidx writers strip markers
+  through `abstract_value::to_data` (`rep::strip`: a list as a flat array,
+  a bare variant as its tag), and the reader's cast rebuilds the forms
+  (`rep::read_*` report `Parts::Data`). Pack and db values keep composite
+  kinds through `to_marked_data`; their reader, `rep::decode_marked_data`,
+  admits markers only in well-formed composites, with no other abstract
+  value admitted. Image reads admit markers within the image session.
+  A primitive `array` holds
   arrays only; `cast<string>` of a bare variant is its tag.
 - **One runtime form** (`Type::rep_collision`): no select arm, and so no
   union trait dispatch, may tell apart two types that share a runtime

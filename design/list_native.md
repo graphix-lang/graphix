@@ -101,10 +101,10 @@ select l {
 ## Printing and the wire
 
 `TVal` and the naked printer render the literal form (`[<1, 2>]`).
-Data carries no markers: a writer (json, toml, pack, netidx) strips a
-list to a flat array (`rep::strip` under `abstract_value::to_data`), so
-`json::write_str([<1, 2>])` is `"[1,2]"`, and a read rebuilds the cells
-through its cast. Only a session image carries the marked cells.
+JSON, TOML and netidx strip a list to a flat array (`rep::strip` under
+`abstract_value::to_data`), so `json::write_str([<1, 2>])` is `"[1,2]"`,
+and a read rebuilds cells through its cast. Pack, db values and session
+images preserve marked cells. Binary data validation walks these cells iteratively.
 
 ## Fusion
 

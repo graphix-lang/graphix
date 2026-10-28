@@ -685,6 +685,22 @@ run!(
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union members
 // that share a data form): yes a for json/toml, b for pack and db (the recommendation:
 // (a) for json/toml targets; (b) for pack and db.)
+// 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and validate
+// composite kind markers; their casts defer a converting array member until every array
+// member has had a chance to hold the value unchanged. Reused Restore for the decoder's
+// scoped marker permission. Pins pack_preserves_union_member_kinds failed all four modes
+// on current main; pack_array_union_prefers_unchanged_elements and
+// db_array_union_prefers_unchanged_elements failed all eight modes with the old patch,
+// then passed with the revised member selection. The temporary cr_rework harness (exact
+// retained fixtures) passes 20 tests, including db_preserves_union_member_kind and the
+// recursive abstract-alias guard. Binary rule, book, interface and skill docs updated.
+// The JSON/TOML target restriction remains unimplemented: putting a format-specific
+// bound on json::read would change a public signature used by
+// ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx, contrary to this
+// brief's explicit restriction. Applying it to Concrete generally would incorrectly
+// reject the pack/db targets this ruling requires. No such signature change was made.
+// This CR stays open; the text-data constraint needs coordination or an approved checker
+// design preserving that API.
 const DATA_READS_BACK_AS_WRITTEN: &str = r#"
 {
   type U = [(i64, i64), Array<f64>];
@@ -4200,12 +4216,9 @@ run!(
     "#
 );
 
-// Keys that differ as values but write as the same data ("A" and `A to
-// pack, [1, 2] and (1, 2) to json) are refused by a writer, which would
-// otherwise keep one of them.
 run!(
-    colliding_data_keys_refused_by_a_writer,
-    prints(r#"["refused", "refused"]"#),
+    binary_keys_keep_kinds_text_keys_refuse_collisions,
+    prints(r#"["written", "refused"]"#),
     "/test.gx" => r#"
         let m: Map<[string, `A], i64> = {"A" => 1, `A => 2};
         let m2: Map<[Array<i64>, (i64, i64)], i64> = {[1, 2] => 1, (1, 2) => 2};

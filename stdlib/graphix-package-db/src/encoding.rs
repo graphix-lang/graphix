@@ -24,11 +24,8 @@ pub(crate) static ENCODE_MANY_POOL: LazyLock<Pool<Vec<GPooled<Vec<u8>>>>> =
 /// A key nests at most this deep.
 const MAX_DEPTH: usize = 64;
 
-/// `v` stored as data: its tuples, structs, variants and lists in their
-/// data forms ([`rep::strip`]).
+/// `v` stored with its tuple, struct, variant and list kinds preserved.
 pub(crate) fn encode_value(v: &Value) -> Result<GPooled<Vec<u8>>> {
-    let stripped = rep::strip(v);
-    let v = stripped.as_ref().unwrap_or(v);
     let mut buf = ENCODE_POOL.take();
     buf.reserve(v.encoded_len());
     v.encode(&mut *buf).map_err(|e| anyhow!("the value cannot be stored: {e}"))?;
@@ -37,7 +34,7 @@ pub(crate) fn encode_value(v: &Value) -> Result<GPooled<Vec<u8>>> {
 
 /// A stored value; an error is undecodable, since data never holds one.
 pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
-    match Value::decode(&mut &*data) {
+    match rep::decode_marked_data(&mut &*data) {
         Ok(Value::Error(_)) => bail!("undecodable value: data holds no error"),
         Ok(v) => Ok(v),
         Err(e) => bail!("undecodable value: {e}"),
@@ -576,11 +573,9 @@ mod test {
     }
 
     #[test]
-    fn stored_values_carry_no_markers() {
+    fn stored_values_preserve_kinds() {
         let v = rep::tuple([variant("A", []), list::from_iter([Value::I64(1)])]);
-        let data =
-            Value::Array([Value::from("A"), Value::Array([Value::I64(1)].into())].into());
-        assert_eq!(decode_value(&encode_value(&v).unwrap()).unwrap(), data);
+        assert_eq!(decode_value(&encode_value(&v).unwrap()).unwrap(), v);
     }
 
     #[test]

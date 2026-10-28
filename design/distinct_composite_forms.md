@@ -44,9 +44,14 @@ no array's element 0 is ever a marker, and arrays need no tag.
 
 **What every boundary does.**
 
-- Writers strip the markers (the `to_data` walk, for every composite).
-- Reads add them through their cast, so a cast to a struct always
-  rebuilds.
+- Text and netidx writers strip markers through `to_data`; their reads
+  reconstruct composites through the target's cast.
+- Pack and db values preserve composite kinds through `to_marked_data`.
+  `rep::decode_marked_data` enables marker decoding for that read and
+  validates the whole value iteratively: markers occur only in composite
+  headers, struct fields are sorted, variants have a tag and list tails
+  are lists. Other abstract values remain forbidden. Abstract values still
+  cross through `Cast`; their nominal identity is not written.
 - Rust readers (the derives, and the gui/tui hand impls that read a
   bare variant as a string) either see stripped values or learn the
   marker.
@@ -73,8 +78,8 @@ definition, as `==` refuses it today.
 `Marker(Kind)`, `Kind` one of `Tuple`, `Struct`, `Variant`, `List`; a
 `Value` per kind per thread (`rep::marker`), so pushing one is a refcount
 bump no other thread contends. A
-marker packs as its kind byte and decodes only under an image session
-(`ids::in_session`). `rep::kind` reads a value's marker; `TUPLE_BASE` and
+marker packs as its kind byte and decodes under an image session
+(`ids::in_session`) or a scoped, validated binary data read. `rep::kind` reads a value's marker; `TUPLE_BASE` and
 `STRUCT_BASE` are 1. A list cell is `[LMARK, h, t]` and
 nil is `[LMARK]`, one value per thread, so `[]` and `[<>]` differ. The strict
 readers (`tuple_elems`, `struct_fields`, `variant`, `array_elems`) see only

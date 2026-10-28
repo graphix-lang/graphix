@@ -125,6 +125,13 @@ type RefKey = (usize, Arc<[Type]>);
 /// foreign data bounds neither the walk's stack nor its memory.
 pub const MAX_DATA_DEPTH: usize = 1024;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CastInput {
+    Data,
+    ExactFloats,
+    Marked,
+}
+
 /// A cast in progress: the refs expanded on the way to each value.
 struct CastCx {
     hist: LPooled<AHashSet<(RefKey, usize)>>,
@@ -155,13 +162,11 @@ struct CastCx {
     /// Only a conversion that loses nothing counts: a union tries its
     /// members so first.
     exact: bool,
-    /// The data's decimals stand for floats read exactly
-    /// ([`Type::cast_exact_floats`]).
-    decimal_floats: bool,
+    input: CastInput,
 }
 
 impl CastCx {
-    fn new(decimal_floats: bool) -> Self {
+    fn new(input: CastInput) -> Self {
         CastCx {
             hist: LPooled::take(),
             sizes: LPooled::take(),
@@ -173,7 +178,7 @@ impl CastCx {
             at: 0,
             depth: 0,
             exact: false,
-            decimal_floats,
+            input,
         }
     }
 
@@ -201,7 +206,9 @@ impl CastCx {
     /// stands for a float.
     fn float_of(&self, v: &Value) -> Option<Value> {
         match v {
-            Value::Decimal(_) if self.decimal_floats => convert(v.clone(), Typ::F64),
+            Value::Decimal(_) if self.input == CastInput::ExactFloats => {
+                convert(v.clone(), Typ::F64)
+            }
             _ => None,
         }
     }
@@ -1111,6 +1118,26 @@ impl Type {
                     // Union members that share a data form): yes a for json/toml, b for
                     // pack and db (the recommendation: (a) for json/toml targets; (b) for
                     // pack and db.)
+                    // 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and
+                    // validate composite kind markers; their casts defer a converting array
+                    // member until every array member has had a chance to hold the value
+                    // unchanged. Reused Restore for the decoder's scoped marker permission.
+                    // Pins pack_preserves_union_member_kinds failed all four modes on
+                    // current main; pack_array_union_prefers_unchanged_elements and
+                    // db_array_union_prefers_unchanged_elements failed all eight modes with
+                    // the old patch, then passed with the revised member selection. The
+                    // temporary cr_rework harness (exact retained fixtures) passes 20
+                    // tests, including db_preserves_union_member_kind and the recursive
+                    // abstract-alias guard. Binary rule, book, interface and skill docs
+                    // updated. The JSON/TOML target restriction remains unimplemented:
+                    // putting a format-specific bound on json::read would change a public
+                    // signature used by
+                    // ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx,
+                    // contrary to this brief's explicit restriction. Applying it to
+                    // Concrete generally would incorrectly reject the pack/db targets this
+                    // ruling requires. No such signature change was made. This CR stays
+                    // open; the text-data constraint needs coordination or an approved
+                    // checker design preserving that API.
                     (_, Some(elts)) if elts.len() == ts.len() => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for (i, el) in elts.iter().enumerate() {
@@ -1172,7 +1199,8 @@ impl Type {
                 }
                 let (in_union, cuts) = (mem::replace(&mut cx.in_union, true), cx.cuts);
                 let array = rep::array_elems(v).is_some()
-                    && matches!(src_head(cx, src, env, v), Some(Type::Array(_)));
+                    && (cx.input == CastInput::Marked
+                        || matches!(src_head(cx, src, env, v), Some(Type::Array(_))));
                 let rounds: &[bool] = if outer { &[true] } else { &[true, false] };
                 let mut r = Err(None);
                 for exact in rounds {
@@ -1211,13 +1239,25 @@ impl Type {
         array: bool,
     ) -> Cast {
         if array {
-            let arrays = ts
-                .iter()
-                .filter(|t| matches!(rep_head(env, t).as_deref(), Some(Type::Array(_))));
+            let arrays = ts.iter().filter(|t| match rep_head(env, t).as_deref() {
+                Some(Type::Array(_)) => true,
+                Some(Type::Primitive(p)) => p.contains(Typ::Array),
+                _ => false,
+            });
+            let mut converted = None;
             for t in arrays {
-                if let Ok(None) = t.cast_int(env, cx, src, v) {
-                    return Ok(None);
+                match t.cast_int(env, cx, src, v) {
+                    Ok(None) => return Ok(None),
+                    Ok(Some(v))
+                        if cx.input == CastInput::Marked && converted.is_none() =>
+                    {
+                        converted = Some(v)
+                    }
+                    _ => (),
                 }
+            }
+            if converted.is_some() {
+                return Ok(converted);
             }
         }
         // a member whose tag the value carries is its reading, whatever a
@@ -1237,6 +1277,24 @@ impl Type {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union
         // members that share a data form): yes a for json/toml, b for pack and db (the
         // recommendation: (a) for json/toml targets; (b) for pack and db.)
+        // 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and
+        // validate composite kind markers; their casts defer a converting array member
+        // until every array member has had a chance to hold the value unchanged. Reused
+        // Restore for the decoder's scoped marker permission. Pins
+        // pack_preserves_union_member_kinds failed all four modes on current main;
+        // pack_array_union_prefers_unchanged_elements and
+        // db_array_union_prefers_unchanged_elements failed all eight modes with the old
+        // patch, then passed with the revised member selection. The temporary cr_rework
+        // harness (exact retained fixtures) passes 20 tests, including
+        // db_preserves_union_member_kind and the recursive abstract-alias guard. Binary
+        // rule, book, interface and skill docs updated. The JSON/TOML target
+        // restriction remains unimplemented: putting a format-specific bound on
+        // json::read would change a public signature used by
+        // ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx, contrary
+        // to this brief's explicit restriction. Applying it to Concrete generally would
+        // incorrectly reject the pack/db targets this ruling requires. No such
+        // signature change was made. This CR stays open; the text-data constraint needs
+        // coordination or an approved checker design preserving that API.
         let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
         if tagged.peek().is_some() {
             let mut read = Err(None);
@@ -1269,6 +1327,24 @@ impl Type {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union
         // members that share a data form): yes a for json/toml, b for pack and db (the
         // recommendation: (a) for json/toml targets; (b) for pack and db.)
+        // 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and
+        // validate composite kind markers; their casts defer a converting array member
+        // until every array member has had a chance to hold the value unchanged.
+        // Reused Restore for the decoder's scoped marker permission. Pins
+        // pack_preserves_union_member_kinds failed all four modes on current main;
+        // pack_array_union_prefers_unchanged_elements and
+        // db_array_union_prefers_unchanged_elements failed all eight modes with the
+        // old patch, then passed with the revised member selection. The temporary
+        // cr_rework harness (exact retained fixtures) passes 20 tests, including
+        // db_preserves_union_member_kind and the recursive abstract-alias guard.
+        // Binary rule, book, interface and skill docs updated. The JSON/TOML target
+        // restriction remains unimplemented: putting a format-specific bound on
+        // json::read would change a public signature used by
+        // ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx, contrary
+        // to this brief's explicit restriction. Applying it to Concrete generally
+        // would incorrectly reject the pack/db targets this ruling requires. No such
+        // signature change was made. This CR stays open; the text-data constraint
+        // needs coordination or an approved checker design preserving that API.
         let mut ranked: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
         if let Value::Array(a) = v
             && rep::kind(v).is_none()
@@ -1311,20 +1387,26 @@ impl Type {
     /// data: a union reads it as a tagged variant, a tuple or a struct
     /// before an array.
     pub fn cast_value(&self, env: &Env, v: Value) -> Value {
-        self.cast_value_int(env, None, v, false).unwrap_or_else(|e| e)
+        self.cast_value_int(env, None, v, CastInput::Data).unwrap_or_else(|e| e)
+    }
+
+    /// Read binary data whose composite kinds are preserved: an unmarked
+    /// array is an array, including at nested union positions.
+    pub fn cast_marked_value(&self, env: &Env, v: Value) -> Value {
+        self.cast_value_int(env, None, v, CastInput::Marked).unwrap_or_else(|e| e)
     }
 
     /// [`Self::cast_value`] with its refusal apart from a cast value that
     /// is an error: `Err` is the `InvalidCast` error value.
     pub fn try_cast_value(&self, env: &Env, v: Value) -> Result<Value, Value> {
-        self.cast_value_int(env, None, v, false)
+        self.cast_value_int(env, None, v, CastInput::Data)
     }
 
     /// [`Self::cast_value`] of a `v` statically of type `src`, which
     /// decides whether an unmarked array is an array or a writer's data:
     /// a union reads an array as an array member it inhabits first.
     pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
-        self.cast_value_int(env, Some(src), v, false).unwrap_or_else(|e| e)
+        self.cast_value_int(env, Some(src), v, CastInput::Data).unwrap_or_else(|e| e)
     }
 
     /// [`Self::cast_value`] of data whose decimals stand for floats read
@@ -1332,7 +1414,7 @@ impl Type {
     /// one only where its position holds an integer or a decimal, and is
     /// elsewhere the f64 its text reads as.
     pub fn cast_exact_floats(&self, env: &Env, v: Value) -> Value {
-        self.cast_value_int(env, None, v, true).unwrap_or_else(|e| e)
+        self.cast_value_int(env, None, v, CastInput::ExactFloats).unwrap_or_else(|e| e)
     }
 
     fn cast_value_int(
@@ -1340,9 +1422,9 @@ impl Type {
         env: &Env,
         src: Option<&Type>,
         v: Value,
-        decimal_floats: bool,
+        input: CastInput,
     ) -> Result<Value, Value> {
-        match self.cast_int(env, &mut CastCx::new(decimal_floats), src, &v) {
+        match self.cast_int(env, &mut CastCx::new(input), src, &v) {
             Ok(None) => Ok(v),
             Ok(Some(v)) => Ok(v),
             Err(e) => Err(errf!(CAST_ERR_TAG, "{e}")),
@@ -2691,6 +2773,24 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union
         // members that share a data form): yes a for json/toml, b for pack and db (the
         // recommendation: (a) for json/toml targets; (b) for pack and db.)
+        // 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and
+        // validate composite kind markers; their casts defer a converting array member
+        // until every array member has had a chance to hold the value unchanged. Reused
+        // Restore for the decoder's scoped marker permission. Pins
+        // pack_preserves_union_member_kinds failed all four modes on current main;
+        // pack_array_union_prefers_unchanged_elements and
+        // db_array_union_prefers_unchanged_elements failed all eight modes with the old
+        // patch, then passed with the revised member selection. The temporary cr_rework
+        // harness (exact retained fixtures) passes 20 tests, including
+        // db_preserves_union_member_kind and the recursive abstract-alias guard. Binary
+        // rule, book, interface and skill docs updated. The JSON/TOML target
+        // restriction remains unimplemented: putting a format-specific bound on
+        // json::read would change a public signature used by
+        // ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx, contrary
+        // to this brief's explicit restriction. Applying it to Concrete generally would
+        // incorrectly reject the pack/db targets this ruling requires. No such
+        // signature change was made. This CR stays open; the text-data constraint needs
+        // coordination or an approved checker design preserving that API.
         Some(Type::List(_)) => list::is_list(v),
         Some(Type::Tuple(_)) => rep::tuple_elems(v).is_some(),
         Some(Type::Struct(_)) => rep::struct_fields(v).is_some(),

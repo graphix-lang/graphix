@@ -4,7 +4,7 @@
 )]
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
-use graphix_compiler::{abstract_value::to_data, env::Env, errf};
+use graphix_compiler::{abstract_value::to_marked_data, env::Env, errf, rep};
 use graphix_package_core::{
     CachedArgsAsync, CachedVals, CastTarget, ReadFormat, TypedRead,
 };
@@ -28,7 +28,7 @@ impl ReadFormat for Packed {
     fn parse(b: Bytes) -> impl Future<Output = Value> + Send {
         async move {
             let mut rest = b.as_ref();
-            match Value::decode(&mut rest) {
+            match rep::decode_marked_data(&mut rest) {
                 Ok(_) if !rest.is_empty() => {
                     errf!(Self::TAG, "{} bytes follow the value", rest.len())
                 }
@@ -41,7 +41,7 @@ impl ReadFormat for Packed {
     fn read(target: &CastTarget, env: &Env, v: Value) -> Value {
         match v {
             Value::Array(a) if a.len() == 1 => {
-                target.read_data(env, &Self::TAG, a[0].clone())
+                target.read_marked_data(env, &Self::TAG, a[0].clone())
             }
             v => target.read(env, &Self::TAG, v),
         }
@@ -51,7 +51,7 @@ impl ReadFormat for Packed {
 type PackRead = CachedArgsAsync<TypedRead<Packed>>;
 
 fn fc_write_bytes(args: &[Value]) -> Option<Value> {
-    let v = match to_data(args.first()?) {
+    let v = match to_marked_data(args.first()?) {
         Ok(v) => v,
         Err(e) => return Some(errf!("PackErr", "{e}")),
     };

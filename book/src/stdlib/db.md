@@ -14,6 +14,11 @@ reach the tree, and its `to_value` decides the stored order.
 
 ## Interface
 
+Stored values preserve tuple, struct, variant and list kinds, including in
+unions. Abstract values cross through their `Cast` implementation. Older
+unmarked records remain readable, but an erased kind cannot be recovered
+when the target union admits multiple interpretations.
+
 ```graphix
 {{#include ../../../stdlib/graphix-package-db/src/graphix/mod.gxi}}
 ```

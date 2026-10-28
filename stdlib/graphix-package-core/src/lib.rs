@@ -155,6 +155,14 @@ impl CastTarget {
         }
     }
 
+    /// Binary data with preserved composite kinds, read into the target.
+    pub fn read_marked_data(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
+        match &self.0 {
+            Some(t) => t.cast_marked_value(env, v),
+            None => errf!(tag, "no concrete return type found"),
+        }
+    }
+
     /// Data cast to the target (an error in it refused like any value the
     /// target does not admit), or with no target an error saying so.
     pub fn read_data(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
@@ -2080,9 +2088,8 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
 }
 
 /// The type a builtin answering with stored data reads it back as: its
-/// success type. Stored data carries no markers and no abstract value,
-/// so the read makes its tuples, structs, variants and lists and casts
-/// its abstract types.
+/// success type. Stored data preserves composite kinds and reads
+/// abstract types through their Cast implementation.
 pub fn data_target(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
     extract_cast_type(env, resolved)
 }
@@ -2095,7 +2102,7 @@ pub fn read_back<R: Rt>(
     tag: &ArcStr,
     v: Value,
 ) -> Value {
-    match coretraits::with_display_hooks(ctx, |env| t.cast_value(env, v)) {
+    match coretraits::with_display_hooks(ctx, |env| t.cast_marked_value(env, v)) {
         Value::Error(e) => errf!(tag.clone(), "{}", ErrorText(&e)),
         v => v,
     }

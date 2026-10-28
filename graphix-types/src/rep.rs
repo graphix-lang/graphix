@@ -1,12 +1,12 @@
 //! The runtime forms of a tuple, a struct, a variant and a list cell;
 //! only this module and `list.rs` know them. Each is an array whose
 //! element 0 is its kind's marker, a Rust-registered abstract no Graphix
-//! type names and no data carries, so no array, string or other kind can
+//! type names, so no array, string or other kind can
 //! pass for one. A tuple holds its elements after the marker, a struct
 //! its `[name, value]` fields sorted by name, a variant its tag (a
 //! string) and then its payload, a list cell its head and tail (`list.rs`).
 //!
-//! Data (what a reader decodes, what a writer writes) carries no markers:
+//! Text data carries no markers; pack and db preserve them:
 //! a tuple is an array, a struct an array of pairs, a variant its tag or
 //! an array of its tag and payload, a list a flat array. The `read_*`
 //! readers take data as well as values, telling a cast which one it got
@@ -18,7 +18,7 @@ use immutable_chunkmap::map::Map;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
 use poolshark::local::LPooled;
-use std::{convert::Infallible, fmt, sync::LazyLock};
+use std::{cell::Cell, convert::Infallible, fmt, sync::LazyLock};
 
 /// What a marker says a composite is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -56,8 +56,7 @@ impl fmt::Debug for Marker {
     }
 }
 
-/// Only an image restores a marker: data never carries one, so bytes
-/// holding one are forged or stale.
+/// Markers decode only inside an image or a validated binary data read.
 impl Pack for Marker {
     fn encoded_len(&self) -> usize {
         1
@@ -68,11 +67,62 @@ impl Pack for Marker {
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        if !crate::ids::in_session() || !buf.has_remaining() {
+        if (!crate::ids::in_session() && !READING_DATA.get()) || !buf.has_remaining() {
             return Err(PackError::InvalidFormat);
         }
         Kind::from_u8(buf.get_u8()).map(Marker).ok_or(PackError::InvalidFormat)
     }
+}
+
+thread_local! {
+    static READING_DATA: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Decode data whose composite kinds are preserved, rejecting markers outside
+/// a well-formed composite and abstract values that data cannot carry.
+pub fn decode_marked_data(buf: &mut impl Buf) -> Result<Value, PackError> {
+    register();
+    let _reading = crate::Restore::replace(&READING_DATA, true);
+    let value = Value::decode(buf)?;
+    let mut pending: LPooled<Vec<&Value>> = LPooled::from_iter([&value]);
+    while let Some(v) = pending.pop() {
+        match v {
+            Value::Array(a) => match kind(v) {
+                None => pending.extend(a.iter()),
+                Some(Kind::Tuple) => pending.extend(a[1..].iter()),
+                Some(Kind::Struct) => {
+                    let fields = &a[1..];
+                    if !fields.is_empty() && !is_struct(fields) {
+                        return Err(PackError::InvalidFormat);
+                    }
+                    for f in fields {
+                        pending.push(field(f).ok_or(PackError::InvalidFormat)?.1);
+                    }
+                }
+                Some(Kind::Variant) => {
+                    let (_, payload) = variant(v).ok_or(PackError::InvalidFormat)?;
+                    pending.extend(payload.iter());
+                }
+                Some(Kind::List) => match &a[1..] {
+                    [] => (),
+                    [head, tail] if crate::list::is_list(tail) => {
+                        pending.extend([head, tail]);
+                    }
+                    _ => return Err(PackError::InvalidFormat),
+                },
+            },
+            Value::Map(m) => {
+                for (k, v) in m {
+                    pending.extend([k, v]);
+                }
+            }
+            Value::Error(e) => pending.push(e),
+            Value::Abstract(_) => return Err(PackError::InvalidFormat),
+            _ => (),
+        }
+    }
+    drop(pending);
+    Ok(value)
 }
 
 static WRAPPER: LazyLock<AbstractWrapper<Marker>> = LazyLock::new(|| {
@@ -537,7 +587,7 @@ impl netidx_value::Shape for GraphixShape {
 
 #[cfg(test)]
 mod tests {
-    use super::map_parts;
+    use super::*;
     use crate::list;
     use netidx_value::Value;
     use std::convert::Infallible;
@@ -579,5 +629,54 @@ mod tests {
         let mapped = map_parts(&l, &mut times10(&[999_999])).unwrap().unwrap();
         assert_eq!(list::heads(&mapped).last(), Some(&Value::I64(9_999_990)));
         assert_eq!(list::len(&mapped), Some(n as usize));
+    }
+    #[test]
+    fn binary_data_preserves_composite_kinds() {
+        let value = tuple([
+            make_variant(arcstr::literal!("A"), []),
+            crate::list::from_iter((0..10_000).map(Value::I64)),
+            structure_of_fields([make_field(arcstr::literal!("x"), Value::I64(1))]),
+        ]);
+        let mut bytes: LPooled<Vec<u8>> = LPooled::take();
+        value.encode(&mut *bytes).unwrap();
+        let read = decode_marked_data(&mut bytes.as_slice()).unwrap();
+        let parts = tuple_elems(&read).unwrap();
+        assert!(is_variant(&parts[0], "A", 0));
+        assert_eq!(crate::list::len(&parts[1]), Some(10_000));
+        assert_eq!(
+            field_at(struct_fields(&parts[2]).unwrap(), 0).unwrap().1,
+            &Value::I64(1)
+        );
+    }
+
+    #[test]
+    fn binary_data_rejects_malformed_markers() {
+        let malformed = [
+            marker(Kind::Tuple),
+            Value::Array([Value::Null, marker(Kind::Tuple)].into()),
+            build(Kind::Variant, [Value::I64(1)]),
+            build(Kind::List, [Value::I64(1), Value::Null]),
+            build(
+                Kind::Struct,
+                [
+                    make_field(arcstr::literal!("z"), Value::Null),
+                    make_field(arcstr::literal!("a"), Value::Null),
+                ],
+            ),
+        ];
+        for value in malformed {
+            let mut bytes: LPooled<Vec<u8>> = LPooled::take();
+            value.encode(&mut *bytes).unwrap();
+            assert!(decode_marked_data(&mut bytes.as_slice()).is_err());
+        }
+    }
+
+    #[test]
+    fn binary_data_decode_does_not_enable_other_readers() {
+        let value = tuple([Value::I64(1), Value::I64(2)]);
+        let mut bytes: LPooled<Vec<u8>> = LPooled::take();
+        value.encode(&mut *bytes).unwrap();
+        assert_eq!(decode_marked_data(&mut bytes.as_slice()).unwrap(), value);
+        assert!(Value::decode(&mut bytes.as_slice()).is_err());
     }
 }
