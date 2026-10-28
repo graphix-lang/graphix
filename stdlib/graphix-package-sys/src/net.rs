@@ -102,11 +102,7 @@ impl<R: Rt> BuiltIn<R> for Write {
         _from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Write {
-            dv: Either::Right(VecDeque::new()),
-            slept: WakeBit::default(),
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::new()))
     }
 
     fn image_decode(
@@ -115,15 +111,19 @@ impl<R: Rt> BuiltIn<R> for Write {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let _ = buf;
-        Ok(Box::new(Write {
-            dv: Either::Right(VecDeque::new()),
-            slept: WakeBit::default(),
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::new()))
     }
 }
 
 impl Write {
+    fn new() -> Self {
+        Self {
+            dv: Either::Right(VecDeque::new()),
+            slept: WakeBit::default(),
+            out: TagValue::phantom(),
+        }
+    }
+
     fn same_path(&self, new_path: Option<&Path>) -> bool {
         match (new_path, &self.dv) {
             (Some(p0), Either::Left((p1, _))) => p0 == p1,
@@ -228,6 +228,18 @@ pub(crate) struct Subscribe {
     out: TagValue,
 }
 
+impl Subscribe {
+    fn with(var: RtVar, target: CastTarget) -> Self {
+        Self {
+            slept: WakeBit::default(),
+            cur: None,
+            var,
+            target,
+            out: TagValue::phantom(),
+        }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Subscribe {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_subscribe";
@@ -243,13 +255,7 @@ impl<R: Rt> BuiltIn<R> for Subscribe {
     ) -> Result<Box<dyn Apply<R>>> {
         let _ = from;
         let var = RtVar::new(ctx, top_id);
-        Ok(Box::new(Subscribe {
-            slept: WakeBit::default(),
-            cur: None,
-            var,
-            target: CastTarget::of(&ctx.env, resolved),
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(var, CastTarget::of(&ctx.env, resolved))))
     }
 
     fn image_decode(
@@ -259,13 +265,7 @@ impl<R: Rt> BuiltIn<R> for Subscribe {
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let target = CastTarget::decode(buf)?;
-        Ok(Box::new(Subscribe {
-            slept: WakeBit::default(),
-            cur: None,
-            var,
-            target,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(var, target)))
     }
 }
 
@@ -388,11 +388,7 @@ impl<R: Rt> BuiltIn<R> for RpcCall {
     ) -> Result<Box<dyn Apply<R>>> {
         let var = RtVar::new(ctx, top_id);
         let _ = from;
-        Ok(Box::new(RpcCall {
-            var,
-            target: CastTarget::of(&ctx.env, resolved),
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(var, CastTarget::of(&ctx.env, resolved))))
     }
 
     fn image_decode(
@@ -402,7 +398,7 @@ impl<R: Rt> BuiltIn<R> for RpcCall {
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let target = CastTarget::decode(buf)?;
-        Ok(Box::new(RpcCall { var, target, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(var, target)))
     }
 }
 
@@ -532,6 +528,10 @@ impl<R: Rt> Apply<R> for RpcCall {
 }
 
 impl RpcCall {
+    fn with(var: RtVar, target: CastTarget) -> Self {
+        Self { var, target, out: TagValue::phantom() }
+    }
+
     fn release<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(net) = ctx.libstate.get::<NetState>() {
             net.stop_request(self.var.id);
@@ -569,6 +569,15 @@ macro_rules! list {
         }
 
         impl $name {
+            fn with(var: RtVar) -> Self {
+                Self {
+                    slept: WakeBit::default(),
+                    current: None,
+                    var,
+                    out: TagValue::phantom(),
+                }
+            }
+
             fn remint<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
                 self.stop(ctx);
                 self.var.remint(ctx);
@@ -602,12 +611,7 @@ macro_rules! list {
             ) -> Result<Box<dyn Apply<R>>> {
                 let _ = from;
                 let var = RtVar::new(ctx, top_id);
-                Ok(Box::new($name {
-                    slept: WakeBit::default(),
-                    current: None,
-                    var,
-                    out: TagValue::phantom(),
-                }))
+                Ok(Box::new(Self::with(var)))
             }
 
             fn image_decode(
@@ -616,12 +620,7 @@ macro_rules! list {
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R>>, PackError> {
                 let var = RtVar::image_decode(ctx, buf)?;
-                Ok(Box::new($name {
-                    slept: WakeBit::default(),
-                    current: None,
-                    var,
-                    out: TagValue::phantom(),
-                }))
+                Ok(Box::new(Self::with(var)))
             }
         }
 
@@ -746,6 +745,26 @@ pub(crate) struct Publish<R: Rt> {
     out: TagValue,
 }
 
+impl<R: Rt> Publish<R> {
+    fn with(
+        top_id: ExprId,
+        wid: BindId,
+        on_write: genn::Callback<R>,
+        write_typ: Option<Type>,
+    ) -> Self {
+        Self {
+            slept: WakeBit::default(),
+            current: None,
+            top_id,
+            wid,
+            on_write,
+            write_typ,
+            handler: false,
+            out: TagValue::phantom(),
+        }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Publish<R> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_publish";
@@ -769,16 +788,8 @@ impl<R: Rt> BuiltIn<R> for Publish<R> {
                 let on_write = genn::Callback::new(ctx, &scope, &mftyp, &["x"], top_id)?;
                 let wid = BindId::new();
                 ctx.record_ref(wid, top_id);
-                Ok(Box::new(Publish {
-                    slept: WakeBit::default(),
-                    current: None,
-                    top_id,
-                    wid,
-                    on_write,
-                    write_typ: write_type(&ctx.env, resolved),
-                    handler: false,
-                    out: TagValue::phantom(),
-                }))
+                let write_typ = write_type(&ctx.env, resolved);
+                Ok(Box::new(Self::with(top_id, wid, on_write, write_typ)))
             }
             _ => bail!("expected three arguments"),
         }
@@ -794,16 +805,7 @@ impl<R: Rt> BuiltIn<R> for Publish<R> {
         let on_write = genn::Callback::image_decode(ctx, buf)?;
         let write_typ = Pack::decode(buf)?;
         ctx.record_ref(wid, top_id);
-        Ok(Box::new(Publish {
-            slept: WakeBit::default(),
-            current: None,
-            top_id,
-            wid,
-            on_write,
-            write_typ,
-            handler: false,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(top_id, wid, on_write, write_typ)))
     }
 }
 
@@ -1051,6 +1053,20 @@ pub(crate) struct PublishRpc<R: Rt> {
 }
 
 impl<R: Rt> PublishRpc<R> {
+    fn with(var: RtVar, handler: Handler<R, RpcReply>, cast_typ: Option<Type>) -> Self {
+        Self {
+            slept: WakeBit::default(),
+            var,
+            handler,
+            inbox: Default::default(),
+            current: None,
+            cast_typ,
+            defaults: Vec::new(),
+            max_inflight: usize::MAX,
+            out: TagValue::phantom(),
+        }
+    }
+
     fn handler_arg(resolved: &FnType) -> Option<Type> {
         match &resolved.args.get(4)?.typ {
             Type::Fn(ft) => Some(ft.args.first()?.typ.clone()),
@@ -1134,17 +1150,8 @@ impl<R: Rt> BuiltIn<R> for PublishRpc<R> {
         let typ = resolved.unwrap_or(typ);
         let handler = Handler::new(ctx, &typ.args[4].typ, scope, top_id)?;
         let var = RtVar::new(ctx, top_id);
-        Ok(Box::new(PublishRpc {
-            slept: WakeBit::default(),
-            var,
-            handler,
-            inbox: Default::default(),
-            current: None,
-            cast_typ: resolved.and_then(Self::handler_arg),
-            defaults: Vec::new(),
-            max_inflight: usize::MAX,
-            out: TagValue::phantom(),
-        }))
+        let cast_typ = resolved.and_then(Self::handler_arg);
+        Ok(Box::new(Self::with(var, handler, cast_typ)))
     }
 
     fn image_decode(
@@ -1155,17 +1162,7 @@ impl<R: Rt> BuiltIn<R> for PublishRpc<R> {
         let var = RtVar::image_decode(ctx, buf)?;
         let handler = Handler::image_decode(ctx, buf)?;
         let cast_typ = Pack::decode(buf)?;
-        Ok(Box::new(PublishRpc {
-            slept: WakeBit::default(),
-            var,
-            handler,
-            inbox: Default::default(),
-            current: None,
-            cast_typ,
-            defaults: Vec::new(),
-            max_inflight: usize::MAX,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(var, handler, cast_typ)))
     }
 }
 
