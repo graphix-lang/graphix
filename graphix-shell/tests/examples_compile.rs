@@ -113,6 +113,47 @@ fn shown_error(transcript: &str) -> Option<String> {
     Some(msg.map_or(last, |(_, m)| m).to_string())
 }
 
+/// The ```graphix fences a page holds, in order, each with the error
+/// transcript written after it, if any.
+fn page_fences(page: &Path, text: &str, fences: &mut Vec<Fence>) {
+    let mut open: Option<Open> = None;
+    let mut refused: Option<usize> = None;
+    for (n, line) in text.lines().enumerate() {
+        match (&mut open, line.starts_with("```")) {
+            (None, false) => (),
+            (None, true) => {
+                open = Some(match line.strip_prefix("```graphix") {
+                    Some(tag) => Open::Graphix(Fence {
+                        page: page.to_path_buf(),
+                        at: format!("{}:{}", page.display(), n + 1),
+                        tag: tag.trim().to_string(),
+                        body: String::new(),
+                        shown: None,
+                    }),
+                    None => Open::Other(String::new()),
+                })
+            }
+            (Some(_), true) => match open.take() {
+                Some(Open::Graphix(f)) => {
+                    refused = matches!(Claim::of(&f.tag), Claim::Refused)
+                        .then_some(fences.len());
+                    fences.push(f)
+                }
+                Some(Open::Other(body)) => {
+                    if let Some(i) = refused.take() {
+                        fences[i].shown = shown_error(&body)
+                    }
+                }
+                None => (),
+            },
+            (Some(Open::Graphix(Fence { body, .. }) | Open::Other(body)), false) => {
+                body.push_str(line);
+                body.push('\n')
+            }
+        }
+    }
+}
+
 fn book_fences(dir: &Path, fences: &mut Vec<Fence>) -> Result<()> {
     for e in fs::read_dir(dir).with_context(|| dir.display().to_string())? {
         let p = e?.path();
@@ -120,45 +161,7 @@ fn book_fences(dir: &Path, fences: &mut Vec<Fence>) -> Result<()> {
             book_fences(&p, fences)?;
         } else if p.extension().is_some_and(|x| x == "md") {
             let text = fs::read_to_string(&p)?;
-            let mut open: Option<Open> = None;
-            let mut refused: Option<usize> = None;
-            for (n, line) in text.lines().enumerate() {
-                match (&mut open, line.starts_with("```")) {
-                    (None, false) => (),
-                    (None, true) => {
-                        open = Some(match line.strip_prefix("```graphix") {
-                            Some(tag) => Open::Graphix(Fence {
-                                page: p.clone(),
-                                at: format!("{}:{}", p.display(), n + 1),
-                                tag: tag.trim().to_string(),
-                                body: String::new(),
-                                shown: None,
-                            }),
-                            None => Open::Other(String::new()),
-                        })
-                    }
-                    (Some(_), true) => match open.take() {
-                        Some(Open::Graphix(f)) => {
-                            refused = matches!(Claim::of(&f.tag), Claim::Refused)
-                                .then_some(fences.len());
-                            fences.push(f)
-                        }
-                        Some(Open::Other(body)) => {
-                            if let Some(i) = refused.take() {
-                                fences[i].shown = shown_error(&body)
-                            }
-                        }
-                        None => (),
-                    },
-                    (
-                        Some(Open::Graphix(Fence { body, .. }) | Open::Other(body)),
-                        false,
-                    ) => {
-                        body.push_str(line);
-                        body.push('\n')
-                    }
-                }
-            }
+            page_fences(&p, &text, fences);
         }
     }
     Ok(())
@@ -341,6 +344,39 @@ async fn transcript_type_readouts_are_checked() -> Result<()> {
     Ok(())
 }
 
+/// A `refused` fence says nothing the gate can check unless the page
+/// shows the refusal it means, so one with no error transcript is a
+/// failure and one with a transcript must refuse with that message.
+#[tokio::test(flavor = "multi_thread")]
+async fn refused_fences_need_a_transcript() -> Result<()> {
+    let body = "let x: i64 = \"a\";\nx\n";
+    let fence = "```graphix,refused\nlet x: i64 = \"a\";\nx\n```\n";
+    let mut fences = vec![];
+    page_fences(Path::new("page.md"), fence, &mut fences);
+    assert_eq!(fences.len(), 1);
+    let missing = fence_failure(&fences[0])
+        .await
+        .expect("a refused fence with no error transcript is reported");
+    assert!(missing.contains("no error transcript"), "{missing}");
+
+    let msg = check(body).await?.unwrap_err().root_cause().to_string();
+    let page = format!(
+        "{fence}\n```\n$ graphix test.gx\nError: in file test.gx\n\nCaused by:\n    0: {msg}\n```\n"
+    );
+    let mut fences = vec![];
+    page_fences(Path::new("page.md"), &page, &mut fences);
+    assert_eq!(fences.len(), 1);
+    assert_eq!(fences[0].shown.as_deref(), Some(msg.as_str()));
+    assert_eq!(fence_failure(&fences[0]).await, None);
+
+    let page = page.replace(msg.as_str(), "string does not contain i64");
+    let mut fences = vec![];
+    page_fences(Path::new("page.md"), &page, &mut fences);
+    let stale = fence_failure(&fences[0]).await.expect("a stale transcript is reported");
+    assert!(stale.contains("the page shows"), "{stale}");
+    Ok(())
+}
+
 /// Every ```graphix fence in the book holds what its tag claims
 /// ([`Claim`]); an `{{#include}}` is checked where the file lives.
 // CR claude for claude: [test-gap/low] This gate only parses untagged fences and REPL
@@ -382,6 +418,39 @@ async fn transcript_type_readouts_are_checked() -> Result<()> {
 // edit. The older CR's separate issue remains: a ,refused fence without an error
 // transcript still accepts any refusal. Leaving the CR open for that remaining policy;
 // no image bytes changed.
+/// Why the page's claim about `f` is false, if it is false: the fence
+/// must hold what its tag says, and a `refused` fence must show which
+/// refusal.
+async fn fence_failure(f: &Fence) -> Option<String> {
+    let failed = match Claim::of(&f.tag) {
+        Claim::Nothing => return None,
+        Claim::Sig => parser::parse_sig(Origin::unspecified(&f.body)).err(),
+        Claim::Fragment => parser::parse(Origin::unspecified(&f.body)).err(),
+        Claim::ReplSetup => return None,
+        Claim::Accepted if f.body.contains('〉') => return None,
+        Claim::Accepted => match check(&f.body).await {
+            Ok(r) => r.err(),
+            Err(e) => Some(e),
+        },
+        Claim::Refused => match check(&f.body).await {
+            Ok(Ok(())) => Some(anyhow!("tagged refused, but the check accepts it")),
+            Ok(Err(e)) => match f.shown.as_ref() {
+                None => Some(anyhow!(
+                    "tagged refused with no error transcript: the check refuses it as {e:#}"
+                )),
+                Some(shown) if !format!("{e:#}").contains(shown.as_str()) => {
+                    Some(anyhow!("the page shows `{shown}`, the check says {e:#}"))
+                }
+                Some(_) => None,
+            },
+            Err(e) => Some(e),
+        },
+    };
+    failed.map(|e| format!("{}: {e:#}", f.at))
+}
+
+/// Every ```graphix fence in the book holds what its tag claims
+/// ([`Claim`]); an `{{#include}}` is checked where the file lives.
 #[tokio::test(flavor = "multi_thread")]
 async fn book_fences_check() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../book/src");
@@ -390,33 +459,7 @@ async fn book_fences_check() -> Result<()> {
     assert!(fences.len() >= 400, "book looks wrong: only {} fences", fences.len());
     let mut failures: Vec<String> = stream::iter(fences.iter())
         .filter(|f| std::future::ready(!f.body.contains("{{#include")))
-        .map(|f| async move {
-            let failed = match Claim::of(&f.tag) {
-                Claim::Nothing => return None,
-                Claim::Sig => parser::parse_sig(Origin::unspecified(&f.body)).err(),
-                Claim::Fragment => parser::parse(Origin::unspecified(&f.body)).err(),
-                Claim::ReplSetup => return None,
-                Claim::Accepted if f.body.contains('〉') => return None,
-                Claim::Accepted => match check(&f.body).await {
-                    Ok(r) => r.err(),
-                    Err(e) => Some(e),
-                },
-                Claim::Refused => match check(&f.body).await {
-                    Ok(Ok(())) => {
-                        Some(anyhow!("tagged refused, but the check accepts it"))
-                    }
-                    Ok(Err(e)) => f
-                        .shown
-                        .as_ref()
-                        .filter(|shown| !format!("{e:#}").contains(shown.as_str()))
-                        .map(|shown| {
-                            anyhow!("the page shows `{shown}`, the check says {e:#}")
-                        }),
-                    Err(e) => Some(e),
-                },
-            };
-            failed.map(|e| format!("{}: {e:#}", f.at))
-        })
+        .map(|f| fence_failure(f))
         .buffer_unordered(8)
         .filter_map(|r| async move { r })
         .collect()

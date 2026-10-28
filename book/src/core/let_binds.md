@@ -10,6 +10,15 @@ let x = 2 + 2 + x;
 let y = x + 1
 ```
 
+```
+$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 2, column: 17 in file test.gx, in: x
+    1: x not defined
+```
+
 The same name can be used again in the same scope, it will shadow the previous
 value.
 
@@ -29,6 +38,16 @@ time. Sometimes this is necessary in order to help type inference.
 let x: [i64, null] = 1;
 // compile time type error: string does not contain [i64, null]
 let y: string = x;
+```
+
+```
+$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 4, column: 1 in file test.gx, in: let y: string = x
+    1: at: line: 4, column: 17 in file test.gx, in: x
+    2: type mismatch string does not contain [i64, null]
 ```
 
 You can use patterns in let binds as long as they will always match.
