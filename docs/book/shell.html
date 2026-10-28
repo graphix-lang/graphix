@@ -176,6 +176,10 @@
 </li>
 <li><code>Ctrl+C</code> cancels the currently running expression/tui</li>
 <li><code>Ctrl+D</code> exits the shell</li>
+<li>with input piped in (<code>graphix &lt; lines.gx</code>), the end of the input ends
+the shell once what its lines started has run (at most five seconds for
+a program that never goes idle), with the status a <code>sys::exit</code> among
+them asked for</li>
 </ul>
 <p>REPL mode is designed for interactive exploration. It doesn't enable warnings by default to keep the experience lightweight.</p>
 <h3 id="script-mode"><a class="header" href="#script-mode">Script Mode</a></h3>
