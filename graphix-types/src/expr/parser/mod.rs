@@ -2248,13 +2248,7 @@ pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
 /// Read printed data through the expression grammar, without evaluating names
 /// or applications. Nonfinite float names are data only within this read.
 pub fn parse_literal_value(s: &str) -> Option<Value> {
-    struct Reading(bool);
-    impl Drop for Reading {
-        fn drop(&mut self) {
-            PRINTED_DATA.set(self.0);
-        }
-    }
-    let _reading = Reading(PRINTED_DATA.replace(true));
+    let _reading = crate::Restore::replace(&PRINTED_DATA, true);
     parse_one(s).ok().and_then(|e| e.literal_value())
 }
 

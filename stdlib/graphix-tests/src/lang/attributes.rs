@@ -449,8 +449,37 @@ async fn check_dynamic_native(case: bool) -> Result<()> {
     use graphix_package_core::testing::{
         Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
     };
-    use std::time::Duration;
+    use std::{process::Command, time::Duration};
     use tokio::time::Instant;
+
+    const CHILD: &str = "GRAPHIX_TEST_NATIVE_REFUSAL_CHILD";
+    if !case && std::env::var_os(CHILD).is_none() {
+        let output = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "lang::attributes::native_body_attribute_dynamic_rejects_stateful",
+                "--nocapture",
+                "--include-ignored",
+            ])
+            .env(CHILD, "1")
+            .env("RUST_LOG", "graphix::failure=error")
+            .output()?;
+        let stderr = std::str::from_utf8(&output.stderr)?;
+        assert!(output.status.success(), "native refusal child failed: {stderr}");
+        assert_eq!(
+            stderr
+                .matches("#[native] expression did not fully fuse to native code")
+                .count(),
+            2,
+            "missing native refusal in Jit or JitPar: {stderr}"
+        );
+        assert_eq!(
+            stderr.matches("builtin `count` has no fast-call entry").count(),
+            2,
+            "{stderr}"
+        );
+        return Ok(());
+    }
 
     for mode in [Mode::Jit, Mode::JitPar] {
         for (code, valid) in [
