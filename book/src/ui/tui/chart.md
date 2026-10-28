@@ -2,10 +2,6 @@
 
 The `chart` widget renders line charts with multiple datasets, custom axes, labels, and styling. It's ideal for visualizing time series data, trends, sensor readings, and any numeric data relationships.
 
-Finite line segments are clipped to the axis bounds before rendering, including
-segments with extremely large endpoints. A segment crossing the viewport remains
-visible even when subtracting its endpoints would overflow.
-
 ## Interface
 
 ```graphix

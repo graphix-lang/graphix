@@ -204,26 +204,3 @@ the state of a fix, and Graphix's side.
   axis titles and labels, dataset names and bar labels are cut to their
   rect before ratatui sees them (`into_borrowed_line_within`,
   `stdlib/graphix-package-tui/src/lib.rs`). Not reported.
-
-## ratatui 0.30.2 / line-clipping 0.3.7: finite line coordinates overflow clipping
-
-- **Bug.** The canvas line clipper multiplies coordinate differences before
-  dividing. A finite segment can produce infinity and then NaN; NaN passes
-  its region tests and is drawn at the wrong corner. Endpoint subtraction
-  can overflow too. Chart line datasets use the same canvas path.
-- **Repro.** Over `[0, 10]` on both axes, the segment `(-1e300, 1e300)` to
-  `(5, 5)` is drawn from the bottom-left instead of the top-left. The line
-  `(-1e308, 5)` to `(1e308, 5)` crosses the entire viewport despite its
-  overflowing x difference. The original probe is
-  `design/review-2026-10-26/repro/tui-widgets-canvas-line-clip.sh`;
-  `test::panic_test::overflowing_canvas_lines_are_clipped` and
-  `overflowing_chart_lines_are_clipped` compare their renders with the
-  explicit visible segments.
-- **Upstream fix.** Use clipping arithmetic that stays finite for finite
-  endpoints and preserves near-endpoint intersections. Not reported.
-- **Graphix's side.** Worked around because lines were drawn incorrectly or
-  disappeared: `graphix-package-tui/src/clip.rs` clips in data coordinates
-  before handing each visible segment to ratatui. Each boundary intersection
-  works on the half-segment containing it and interpolates from the nearer
-  endpoint; chart segments remain separate so clipping never connects
-  disjoint visible pieces. Scratch geometry is pooled.

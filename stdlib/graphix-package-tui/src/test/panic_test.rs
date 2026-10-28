@@ -596,52 +596,33 @@ async fn calendar_negative_year_does_not_panic() -> Result<()> {
     Ok(())
 }
 
-async fn canvas_line_lines(coords: &str) -> Result<Vec<String>> {
-    let code = format_compact!(
+#[tokio::test]
+async fn overflowing_canvas_geometry_is_empty() -> Result<()> {
+    let mut h = TuiTestHarness::new(
         r#"
 use tui::canvas::canvas;
-let shape = `Line({{color: `Red, {coords}}});
-let result = canvas(#marker: &`Block, #x_bounds: &{{min: 0.0, max: 10.0}},
-    #y_bounds: &{{min: 0.0, max: 10.0}}, &[&shape])
-"#
-    );
-    TuiTestHarness::new(&code).await?.render_lines()
-}
-
-#[tokio::test]
-async fn overflowing_canvas_lines_are_clipped() -> Result<()> {
-    for (huge, clipped) in [
-        (
-            "x1: -1e308, y1: -1e308, x2: 1e308, y2: 1e308",
-            "x1: 0.0, y1: 0.0, x2: 10.0, y2: 10.0",
-        ),
-        (
-            "x1: -1e300, y1: 1e300, x2: 5.0, y2: 5.0",
-            "x1: 0.0, y1: 10.0, x2: 5.0, y2: 5.0",
-        ),
-        (
-            "x1: -1e308, y1: 5.0, x2: 1e308, y2: 5.0",
-            "x1: 0.0, y1: 5.0, x2: 10.0, y2: 5.0",
-        ),
-    ] {
-        let expected = canvas_line_lines(clipped).await?;
-        assert!(expected.iter().any(|l| !l.trim().is_empty()));
-        assert_eq!(canvas_line_lines(huge).await?, expected, "{huge}");
-    }
+let shape = `Line({color: `Red, x1: -1e308, y1: -1e308, x2: 1e308, y2: 1e308});
+let result = canvas(#x_bounds: &{min: 0.0, max: 10.0},
+    #y_bounds: &{min: 0.0, max: 10.0}, &[&shape])
+"#,
+    )
+    .await?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
 #[tokio::test]
-async fn overflowing_chart_lines_are_clipped() -> Result<()> {
-    for (huge, clipped) in [
-        ("(-1e308, -1e308), (1e308, 1e308)", "(0.0, 0.0), (10.0, 10.0)"),
-        ("(-1e300, 1e300), (5.0, 5.0)", "(0.0, 10.0), (5.0, 5.0)"),
-        ("(-1e308, 5.0), (1e308, 5.0)", "(0.0, 5.0), (10.0, 5.0)"),
-    ] {
-        let expected = line_chart_lines(clipped).await?;
-        assert!(expected.iter().any(|l| !l.trim().is_empty()));
-        assert_eq!(line_chart_lines(huge).await?, expected, "{huge}");
-    }
+async fn overflowing_chart_line_is_empty() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::chart::{axis, chart, dataset};
+let result = chart(#x_axis: &axis({min: 0.0, max: 10.0}),
+    #y_axis: &axis({min: 0.0, max: 10.0}),
+    &[dataset(#graph_type: &`Line, &[(-1e308, -1e308), (1e308, 1e308)])])
+"#,
+    )
+    .await?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
@@ -658,8 +639,10 @@ let result = chart(#x_axis: &axis({{min: 0.0, max: 10.0}}),
     TuiTestHarness::new(&code).await?.render_lines()
 }
 
+/// A line breaks at a pair whose difference overflows; the finite
+/// segments on either side still draw.
 #[tokio::test]
-async fn an_overflowing_pair_keeps_the_finite_segments() -> Result<()> {
+async fn an_overflowing_pair_breaks_the_line() -> Result<()> {
     let drawn = line_chart_lines(
         "(1.0, 1.0), (4.0, 4.0), (-1e308, -1e308), (1e308, 1e308), (6.0, 6.0), (9.0, 9.0)",
     )

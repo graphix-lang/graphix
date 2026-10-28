@@ -2,10 +2,6 @@
 
 The `canvas` widget provides a low-level drawing surface for custom graphics. You can draw lines, circles, rectangles, points, and text labels at specific coordinates, making it perfect for diagrams, plots, and custom visualizations.
 
-Finite line segments are clipped to the axis bounds before rendering, including
-segments with extremely large endpoints. A segment crossing the viewport remains
-visible even when subtracting its endpoints would overflow.
-
 ## Interface
 
 ```graphix
