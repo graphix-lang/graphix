@@ -438,7 +438,7 @@ impl<R: Rt> Apply<R> for RpcCall {
         if (path_fired || args_fired)
             && let (Some(path), Some(args)) = (&path, &args)
         {
-            // CR claude for claude: [bug/medium] This remint, and the one in
+            // XCR claude for claude: [bug/medium] This remint, and the one in
             // RpcCall::sleep, abort a call in flight that the server has already run: a
             // new call drops the previous reply (latest-wins), and a sleep drops the
             // reply for good. By EvalCachedAsync::CANCEL_SAFE's own definition an rpc
@@ -458,6 +458,21 @@ impl<R: Rt> Apply<R> for RpcCall {
             // returns its bytes to the stream's buffer, so no data is lost. This
             // replaces the CANCEL_SAFE split (a call not cancel-safe finishing and
             // answering at the wake).
+            // 2026-10-28 codex: Eric's ruling is already implemented by RpcCall::sleep
+            // and the shared remint used for a replacement call. Documented the
+            // distinction between cancelling the local wait and undoing remote work:
+            // the server may complete an effect after the caller abandons its reply.
+            // Completed results survive sleep; wake alone sends no request. Updated
+            // net.gxi, the book, async sleep design record, language skill and project
+            // rules. Added net::test::rpc_abandons_old_reply_slots, using a runtime
+            // with no NetState and no sockets. It checks queued and later old replies
+            // are ignored after sleep or direct replacement-slot remint, the previous
+            // completed result remains quiet, and the new slot accepts a reply. The pin
+            // passed on the existing implementation, failed when reply-ID reminting was
+            // removed (an old reply fired), and passed after restoration. This does not
+            // exercise a live RPC transport or prove remote cancellation; the named
+            // server probes and existing latest-call integration test require sockets,
+            // which the sandbox forbids. No production behavior changed.
             self.remint(ctx);
             let args = match write_data(ctx, args) {
                 Ok(args) => args,
@@ -1272,6 +1287,47 @@ impl<R: Rt> Apply<R> for PublishRpc<R> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[tokio::test]
+    async fn rpc_abandons_old_reply_slots() -> Result<()> {
+        use graphix_compiler::{node::Nop, typ::Type};
+        use graphix_rt::{GXRt, NoExt};
+
+        for sleep in [true, false] {
+            let mut state = GXRt::<NoExt>::new_state()?;
+            let var = RtVar::new(&mut state, ExprId::new());
+            let mut call = RpcCall {
+                var,
+                target: CastTarget::default(),
+                out: TagValue::fired(Value::I64(7)),
+            };
+            let mut ctx = state.view();
+            ctx.apply_deferred();
+            let old = call.var.id;
+            ctx.publish(old, TagValue::fired(Value::I64(9)));
+            if sleep {
+                call.sleep(&mut ctx);
+            } else {
+                call.remint(&mut ctx);
+            }
+            let mut from =
+                std::array::from_fn::<_, 2, _>(|_| Node::new(Nop { typ: Type::Any }));
+            let out = call.update(&mut ctx, &mut from);
+            assert!(!out.is_fired());
+            assert_eq!(out.value_cloned(), Value::I64(7));
+            ctx.publish(old, TagValue::fired(Value::I64(10)));
+            let out = call.update(&mut ctx, &mut from);
+            assert!(!out.is_fired());
+            assert_eq!(out.value_cloned(), Value::I64(7));
+            ctx.publish(call.var.id, TagValue::fired(Value::I64(11)));
+            let out = call.update(&mut ctx, &mut from);
+            assert!(out.is_fired());
+            assert_eq!(out.value_cloned(), Value::I64(11));
+            assert!(ctx.libstate.get::<NetState>().is_none());
+            call.delete(&mut ctx);
+        }
+        Ok(())
+    }
 
     #[test]
     fn list_error_preserves_remote_message() {

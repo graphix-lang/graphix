@@ -10,7 +10,12 @@ val write: fn<'a: Data>(path: string, value: 'a) -> Result<_, `WriteError(string
 /// subscribe to the specified path
 val subscribe: fn<'a: Concrete>(path: string) -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]>;
 
-/// call the specified rpc. args must be a struct or null.
+/// Call the specified RPC. args must be a struct or null. A new call or
+/// a sleep discards any pending reply. This does not undo work already
+/// started on the server: its handler can finish, but its reply is ignored.
+/// The last completed result survives sleep; waking starts no call unless
+/// an argument fires. Keep the call outside a sleeping arm, or in a seq
+/// step that waits for its result, when that result must be observed.
 val call: fn<'a: Data, 'b: Concrete>(path: string, args: 'a) -> Result<'b, [`RpcError(string), `InvalidCast(string)]>;
 
 /// Publish an rpc,

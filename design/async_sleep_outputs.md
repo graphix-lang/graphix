@@ -8,7 +8,7 @@ partial rebirth"). What a builtin does across a sleep follows from what
 its output is.
 
 - **A call** (`CachedArgsAsync`: file, stream, process, http, db, sqlite
-  operations; rpc `call`): sleep aborts the call in flight (it cannot be
+  operations): sleep aborts the call in flight (it cannot be
   paused) and the wake restarts nothing, since a restart would perform
   an action no trigger asked for; only an argument's fire, a caught-up
   one included, starts a call. The result is a level and survives the
@@ -25,6 +25,13 @@ its output is.
   earlier read to settle, `ReadTicket`) or dropped. A program that needs
   the outcome calls outside the arm, or in a seq step. Calls not yet
   started are dropped either way.
+- **An RPC call** (`RpcCall`) cancels its local wait and remints its
+  reply ID at sleep or when a new call starts. A reply queued under the
+  old ID, or arriving later, cannot answer the site. This does not undo
+  the remote handler's effects: a handler already running on the server
+  can finish even though its caller stopped waiting. The last completed
+  result survives sleep, and wake alone starts no call. Pin:
+  `net::test::rpc_abandons_old_reply_slots` in `graphix-package-sys`.
 - **An event source** (timers, `after_idle`, `throttle`'s pending
   emission, line readers, net and db subscriptions, watches, servers,
   `iter`/`range` deliveries): it pauses. A timer's run and a pending
@@ -57,7 +64,7 @@ born view, a seq step entered for its next run.
 | Family | Sleep | Wake |
 | --- | --- | --- |
 | `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, db, sqlite, other packages on the wrapper) | aborts the call in flight, remints the reply ID; keeps args and result; an eval not cancel-safe (stream reads and writes, cursor reads, tls handshakes, file open/seek/fstat/truncate, db and sqlite ops, process spawn, tcp connect/listen) finishes instead, unanswered; a read's bytes return to the stream | starts a call only on an argument fire |
-| rpc `call` | remints the reply ID; keeps the result | as above |
+| rpc `call` | cancels the local wait and remints the reply ID; keeps the result; remote work may finish unanswered | starts a call only on an argument fire |
 | `timer` | cancels the armed fire; keeps the run; clears its output | re-arms the run if fires remain |
 | `after_idle` | cancels a pending wait; clears its output | resumes a pending wait |
 | `throttle` | pauses the pending emission (its timer starts again at the next update); keeps the held value and the window the last emission opened; clears the output | — |

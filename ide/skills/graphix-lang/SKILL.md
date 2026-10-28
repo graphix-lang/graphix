@@ -851,3 +851,11 @@ Re-delivering the same handle afterward, or after a seek/TLS upgrade,
 starts reading at its current position. Seek explicitly before rereading
 a file from the beginning; re-delivery does not rewind. A delivery while
 the same reader is active leaves it running.
+
+## RPC reply lifetime
+
+`sys::net::call` abandons a pending reply when a new call starts or its
+site sleeps. This does not undo work already started on the server. Its
+last completed result survives sleep, and waking alone sends no request.
+To observe a result, keep the call outside a sleeping arm or in a seq
+step that waits for it.
