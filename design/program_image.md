@@ -80,8 +80,12 @@ directories refuse symlinks, including during collection. Entries are regular
 files owned by the effective user without group/other write permission. The reader opens without following
 symlinks and checks the opened file's metadata before mapping it; it also
 opens nonblocking so a non-file entry cannot wait for a writer. New
-directories use 0700 and files 0600. Collection traverses only trusted
-directories and regular entries. The checksum detects corruption; it does
+directories use 0700 and files 0600. A write renames over whatever stands
+at its entry's name, and collection removes an entry in a trusted directory
+that is not a trusted file, so a bad entry costs one miss. Collection
+traverses only trusted directories. The checks go by path: someone who can
+write to an ancestor of the cache base can swap the tree between a check
+and the open or rename that follows it. The checksum detects corruption; it does
 not authenticate bytes supplied through an untrusted cache. Pins:
 `cache::tests::privacy` in the shell.
 

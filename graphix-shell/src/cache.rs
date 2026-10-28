@@ -65,7 +65,10 @@ fn cache_directory(path: &FsPath, create: bool, links_left: u8) -> Result<()> {
             builder.create(path)?;
             fs::symlink_metadata(path)?
         }
-        Err(e) => return Err(e.into()),
+        Err(e) => {
+            return Err(anyhow::Error::from(e))
+                .with_context(|| format_compact!("cache directory {}", path.display()));
+        }
     };
     if metadata.is_symlink() && links_left > 0 {
         check_owner(&metadata)
@@ -423,7 +426,7 @@ impl RegistrationCache {
                 return None;
             }
             Err(e) => {
-                warn!("opening the {entry:?} image {}: {e}", path.display());
+                warn!("opening the {entry:?} image {}: {e:#}", path.display());
                 return None;
             }
         };
@@ -489,11 +492,6 @@ impl RegistrationCache {
         let path = self.path(entry).ok_or_else(|| anyhow!("no {entry:?} entry"))?;
         let dir = self.dir();
         self.directories(true)?;
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) => cache_file(&metadata)?,
-            Err(e) if e.kind() == ErrorKind::NotFound => (),
-            Err(e) => return Err(e.into()),
-        }
         let tmp = dir.join(
             format_compact!(
                 "{}.img.{}.{}",
@@ -542,6 +540,7 @@ impl RegistrationCache {
             for f in fs::read_dir(&build).into_iter().flatten().flatten() {
                 let Ok(m) = fs::symlink_metadata(f.path()) else { continue };
                 if cache_file(&m).is_err() {
+                    let _ = fs::remove_file(f.path());
                     continue;
                 }
                 if f.path().extension().is_some_and(|e| e == "img") {
@@ -695,8 +694,8 @@ mod tests {
             for bits in [0o660, 0o602, 0o666] {
                 mode(&path, bits);
                 assert!(cache.load(Entry::Registration).is_none(), "mode {bits:o}");
-                assert!(cache.store_registration(b"replacement").is_err());
-                mode(&path, 0o600);
+                cache.store_registration(b"replacement").unwrap();
+                assert!(cache.load(Entry::Registration).is_some(), "mode {bits:o}");
             }
         }
 
@@ -731,7 +730,9 @@ mod tests {
             fs::rename(&entry, &real).unwrap();
             symlink(&real, &entry).unwrap();
             assert!(cache.load(Entry::Registration).is_none());
-            assert!(cache.store_registration(b"replacement").is_err());
+            cache.store_registration(b"replacement").unwrap();
+            assert!(!fs::symlink_metadata(&entry).unwrap().is_symlink());
+            assert_eq!(fs::read(&real).unwrap(), b"entry");
             fs::remove_file(&entry).unwrap();
             fs::rename(real, &entry).unwrap();
             let dir = cache.dir();
