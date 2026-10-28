@@ -630,8 +630,8 @@ node graph IS the IR — there is no parallel typed IR
   back). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
   recomputes from the world as it stands, reading standing values STALE;
   the only events it re-raises are the fires no selected reader saw,
-  once, at their current value (one fire bit per arm-body input per
-  select, consumed by whichever arm reads it; a destructuring let's
+  once, at their current value (one fire bit per input per select, shared
+  by consulted guards and arm bodies and consumed by whichever reads it; a destructuring let's
   siblings are inputs of their own; a pattern bind, of this select or
   an enclosing one, is a facet of its scrutinee's delivery: reading it
   consumes that input's bit, and it is never delivered; an arm a guard's

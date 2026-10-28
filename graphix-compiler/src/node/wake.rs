@@ -104,8 +104,9 @@ pub(crate) fn inject<R: Rt>(
 /// per arm-body input, set when the input fires and consumed by the
 /// arm evaluation that reads it, so a woken arm receives exactly the
 /// fires no selected reader saw, once, at the current standing value.
-/// Guards, the scrutinee and pattern binds (of any enclosing select)
-/// are not tracked. Survives sleep.
+/// A select gives each guard a consumer slot in the same tracker. The
+/// scrutinee and pattern binds (of any enclosing select) are not delivered
+/// by it. Survives sleep.
 #[derive(Debug, Default)]
 pub(crate) struct TrackedFires {
     /// Per arm: the body's free refs. Refreshed at each deselect, when

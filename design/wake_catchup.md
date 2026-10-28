@@ -24,14 +24,14 @@ separates the two channels.
 
 ## The rule (Eric, 2026-09-01)
 
-1. **Every select tracks one fire bit per arm input** — the union of
-   its arm bodies' free refs (binds defined outside the arm). Bits are
+1. **Every select tracks one fire bit per input** — the union of
+   its arm bodies' and guards' free refs (binds defined outside them). Bits are
    set when a tracked input fires soundly, whatever the selection
    state, including no-arm windows (bottom scrutinee, undecidable
    guards). Bits OR-accumulate: N fires during a sleep conflate to ONE
    catch-up at the latest standing value (`queue` is the lossless
    tool).
-2. **Fire state is consumed by evaluation.** Whichever arm evaluation
+2. **Fire state is consumed by evaluation.** Whichever guard or arm evaluation
    reads an input clears its bit — the live selected arm same-cycle as
    the degenerate case, a woken arm at catch-up. Delivery is
    consumption whether or not the arm's interior does anything with it.
@@ -63,9 +63,11 @@ returns, runs it under the wake view with those fires caught up.
 
 A guard the chain does not reach sleeps as an unselected arm does and,
 when the chain next reaches it, catches up the fires its inputs had
-while it slept, through a tracker of its own (`select.rs::GuardSleep`;
-pins `lang::select::guard_below_the_claim_sleeps`,
-`guard_catches_up_a_direct_input`).
+while it slept, through a consumer slot in the select's one tracker. A
+guard spends the same fire bit an arm body would; neither catches up a
+fire the other already consumed. Pins:
+`lang::select::{guard_below_the_claim_sleeps, guard_catches_up_a_direct_input,
+guard_and_arm_share_missed_fire}`.
 
 Outside the mechanism: the scrutinee (its own consult machinery);
 pattern binds of THIS select and of every enclosing select — a pattern
@@ -198,8 +200,10 @@ is insufficient; the forced recompute republishes `p2` at the present
 
 Select and the seq machine share it.
 
-- `per_arm`: each arm body's free refs (`Refs` referenced minus bound
-  within the arm, minus pattern binds).
+- `per_arm`: each consumer's free refs (`Refs` referenced minus bound
+  within it, minus pattern binds). A select assigns bodies the first N
+  slots and guards the next N slots; a guard's slot is empty where the
+  arm has no guard. A select without guards allocates only the body slots.
 - `consumes`: per arm, the inputs the pattern binds its body reads are
   facets of (`Env::pattern_inputs`, marked at `Select::compile` for
   each arm's structure-predicate ids: the inputs that reach the

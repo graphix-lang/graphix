@@ -84,7 +84,7 @@ struct LazyArmFacts {
     /// is given the value fired when the chain next reaches it.
     missed: Vec<bool>,
     /// A select with guards: the ones the chain does not reach sleep.
-    guards: Option<Box<GuardSleep>>,
+    guards: Option<Vec<GuardRun>>,
 }
 
 #[derive(Debug)]
@@ -100,16 +100,6 @@ impl ArmDiscriminants {
             scrutinee: ShallowScrutinee::new(scrutinee),
         }
     }
-}
-
-/// A guard the chain does not reach sleeps, and wakes caught up when it
-/// next does.
-#[derive(Debug)]
-struct GuardSleep {
-    /// The guards' inputs' fires, one slot per arm.
-    fires: TrackedFires,
-    /// Per arm: its guard's run so far.
-    runs: Vec<GuardRun>,
 }
 
 /// A guard's run so far, as the chain reached it.
@@ -159,9 +149,14 @@ impl LazyArmFacts {
         arms: &[(PatternNode<R>, Node<R>)],
         discriminants: Arc<ArmDiscriminants>,
     ) -> Self {
+        let has_guards = arms.iter().any(|(pat, _)| pat.guard.is_some());
+        let consumers = arms.len() * (1 + usize::from(has_guards));
         LazyArmFacts {
-            tracked: TrackedFires::new(&ctx.env, ctx.rt.cycle(), arms.len(), |i, r| {
-                arm_refs(&arms[i], r)
+            tracked: TrackedFires::new(&ctx.env, ctx.rt.cycle(), consumers, |i, r| {
+                match arms.get(i) {
+                    Some(arm) => arm_refs(arm, r),
+                    None => guard_refs(&arms[i - arms.len()].0, r),
+                }
             }),
             sleep_on_deselect: arms
                 .iter()
@@ -215,7 +210,7 @@ impl LazyArmFacts {
                 .map(|(i, _)| i)
                 .collect(),
             missed: vec![false; arms.len()],
-            // CR claude for claude: [bug/medium] The guards get a catch-up tracker of
+            // XCR claude for claude: [bug/medium] The guards get a catch-up tracker of
             // their own, separate from the arms', so neither side consumes the other's
             // bits. A fire a selected arm body read is caught up again by a woken guard
             // (`n if count(b) > 1` gives "guard 2" where the body twin `n => count(b)`
@@ -228,13 +223,15 @@ impl LazyArmFacts {
             // (tests-select-04)
             // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q5, Do a guard and
             // an arm spend one fire?): yes, one tracker (the recommendation: one tracker.)
-            guards: arms.iter().any(|(pat, _)| pat.guard.is_some()).then(|| {
-                let fires =
-                    TrackedFires::new(&ctx.env, ctx.rt.cycle(), arms.len(), |i, r| {
-                        guard_refs(&arms[i].0, r)
-                    });
-                Box::new(GuardSleep { fires, runs: vec![GuardRun::Unborn; arms.len()] })
-            }),
+            // 2026-10-27 codex: Guards now occupy consumer slots in the select's single
+            // TrackedFires, sharing pending fires with arm bodies while keeping independent guard
+            // sleep state. Removed the separate GuardSleep tracker and updated CLAUDE.md,
+            // wake_catchup, the select chapter and graphix-lang. New pin
+            // lang::select::guard_and_arm_share_missed_fire failed in all four modes before the
+            // change (one 2 / guard 2), and passes after it (one 1 / other). The lang::seq,
+            // lang::select and lang::sample filters pass; no FuseExpect moved. The netidx-admin
+            // socket tests and a fuzzer soak were not run here.
+            guards: has_guards.then(|| vec![GuardRun::Unborn; arms.len()]),
         }
     }
 }
@@ -1611,9 +1608,6 @@ impl<R: Rt> Update<R> for Select<R> {
         let mut guard_tags: SmallVec<[(usize, Tag); 4]> = SmallVec::new();
         let arg_prod = arg.update(ctx);
         tracked.observe(ctx);
-        if let Some(g) = guards {
-            g.fires.observe(ctx);
-        }
         // A guard runs where the chain reaches it, an arm whose shape
         // admits the value with no earlier arm claiming it (`open` is the
         // chain still running at arm `i`): the checker narrowed the binds
@@ -1625,6 +1619,7 @@ impl<R: Rt> Update<R> for Select<R> {
         let live = arg.value.as_ref().filter(|_| !arg.tag.is_bottom());
         let mut open = live.is_some();
         for i in 0..guards_end {
+            let consumer = arms.len() + i;
             let pat = &mut arms[i].0;
             let reach = live.filter(|_| open).filter(|v| {
                 let shallow = shallow[i]
@@ -1642,27 +1637,26 @@ impl<R: Rt> Update<R> for Select<R> {
                 Some(_) => missed[i] = false,
                 None => missed[i] |= arg_prod.triggers(),
             }
-            let GuardSleep { fires, runs } =
-                &mut **guards.as_mut().expect("a guarded arm builds the guard sleep");
+            let runs = guards.as_mut().expect("a guarded arm builds the guard sleep");
             let Some(v) = reach else {
                 if runs[i].unreached() {
                     pat.sleep_guard(ctx);
-                    fires.fell_asleep(i, ctx.rt.cycle());
-                    fires.refresh(&ctx.env, i, |r| guard_refs(pat, r));
+                    tracked.fell_asleep(consumer, ctx.rt.cycle());
+                    tracked.refresh(&ctx.env, consumer, |r| guard_refs(pat, r));
                 }
                 continue;
             };
             let saved = pat.bind_tentative(ctx, v, tag);
             let view = runs[i].reached();
-            let caught_up = fires.deliver(ctx, i);
+            let caught_up = tracked.deliver(ctx, consumer);
             let t = ctx.under(view, |ctx| {
-                let scope = fires.open(ctx, i);
+                let scope = tracked.open(ctx, consumer);
                 let t = pat.update(ctx);
-                fires.ran(ctx, i, scope);
+                tracked.ran(ctx, consumer, scope);
                 t
             });
             TrackedFires::restore(ctx.event, caught_up);
-            fires.evaluated(&ctx.env, i, |r| guard_refs(pat, r));
+            tracked.evaluated(&ctx.env, consumer, |r| guard_refs(pat, r));
             if let Some(t) = t {
                 guard_tags.push((i, t));
             }
@@ -1891,9 +1885,6 @@ impl<R: Rt> Update<R> for Select<R> {
         if let Some(facts) = arm_facts {
             let cycle = ctx.rt.cycle();
             facts.tracked.all_fell_asleep(cycle);
-            if let Some(g) = &mut facts.guards {
-                g.fires.all_fell_asleep(cycle);
-            }
         }
         arg.sleep(ctx);
         for (pat, body) in arms {

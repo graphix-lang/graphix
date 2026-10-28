@@ -5066,3 +5066,26 @@ run!(sample_bottom_trigger_retains_value, r#"{
         _ => never()
     }
 }"#, prints("[i64:5, i64:6, i64:1, i64:1]"); FuseExpect::Jit);
+
+run!(guard_and_arm_share_missed_fire, r#"{
+    let input = 0;
+    let step = 0;
+    step <- select step { s if s < 7 => s + 1, _ => never() };
+    input <- select step { 2 => 7, _ => never() };
+    let chosen = select step { 0 | 5 => 2, _ => 1 };
+    let guarded = select chosen {
+        1 => "one [count(input)]",
+        n if count(input) > 1 => "guard 2",
+        _ => "other"
+    };
+    let bodies = select chosen {
+        1 => "one [count(input)]",
+        n => "arm [count(input)]"
+    };
+    let seen = [];
+    seen <- select step {
+        3 | 5 => array::push(seen, (guarded, bodies)),
+        _ => never()
+    };
+    select step { 7 => seen, _ => never() }
+}"#, prints(r#"[["one 1", "one 1"], ["other", "arm 1"]]"#); FuseExpect::Jit);

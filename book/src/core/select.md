@@ -37,7 +37,10 @@ they will be unsubscribed and unpublished until it is selected again).
 Sleep is a pause: when the arm is selected again it resumes where it
 stood. Its counters, `once`s and queues keep their state, a call it made
 is not made again, and the only events it sees are the ones that fired
-while it slept, each once, at its current value. The first time an arm
+while it slept and no consulted guard or selected arm already read, each
+once, at its current value. Guards and arm bodies share this catch-up:
+whichever reads a missed fire first spends it for the whole select.
+The first time an arm
 is selected is its birth: its constants fire then, and only then.
 
 A call still running when its arm falls asleep is never answered. It is
