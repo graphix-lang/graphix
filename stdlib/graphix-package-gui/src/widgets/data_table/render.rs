@@ -56,7 +56,8 @@ pub(super) struct SparkBounds {
 
 /// Canvas program that draws a sparkline polyline.
 struct SparklineCanvas {
-    newest_sample: Option<Instant>,
+    /// Every sample had aged out when it was built: its picture is final.
+    still: bool,
     history_seconds: f64,
     points: LPooled<Vec<(f64, f64)>>,
     bounds: SparkBounds,
@@ -83,7 +84,9 @@ impl SparklineCanvas {
             points,
             bounds,
             history_seconds,
-            newest_sample: history.back().map(|&(time, _)| time),
+            still: history.back().is_none_or(|&(t, _)| {
+                sparkline_cutoff(now, history_seconds).is_some_and(|cutoff| t <= cutoff)
+            }),
         }
     }
 
@@ -138,12 +141,7 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer>
         else {
             return None;
         };
-        let newest = self.newest_sample?;
-        if sparkline_cutoff(*now, self.history_seconds)
-            .is_some_and(|cutoff| newest <= cutoff)
-            || bounds.width <= 0.0
-            || !bounds.width.is_finite()
-        {
+        if self.still || bounds.width <= 0.0 || !bounds.width.is_finite() {
             return None;
         }
         let seconds = (self.history_seconds / bounds.width as f64).max(1.0 / 60.0);
@@ -918,11 +916,15 @@ mod sparkline_tests {
         let bounds = SparkBounds { min: 0.0, max: 1.0 };
         let mut history = [(now - Duration::from_secs(2), 0.25), (now, 0.75)].into();
         for seconds in [10.0, 0.1234567895, 1.4e-9] {
-            let canvas = SparklineCanvas::new(&history, now, seconds, bounds);
             let cutoff = now + Duration::from_secs_f64(seconds);
-            assert!(redraw_at(&canvas, cutoff - Duration::from_nanos(1)).is_some());
-            assert!(redraw_at(&canvas, cutoff).is_none());
-            assert!(redraw_at(&canvas, cutoff + Duration::from_secs(1)).is_none());
+            let built = |at| SparklineCanvas::new(&history, at, seconds, bounds);
+            let before = built(cutoff - Duration::from_nanos(1));
+            assert!(redraw_at(&before, cutoff - Duration::from_nanos(1)).is_some());
+            // a picture drawn before the expiry is redrawn once more, after it
+            assert!(redraw_at(&before, cutoff + Duration::from_millis(1)).is_some());
+            assert!(redraw_at(&built(cutoff), cutoff).is_none());
+            let late = cutoff + Duration::from_secs(1);
+            assert!(redraw_at(&built(late), late).is_none());
         }
         let mut frame_time = now + Duration::from_secs(10);
         for _ in 0..3 {
@@ -943,12 +945,12 @@ mod sparkline_tests {
         let now = Instant::now();
         let bounds = SparkBounds { min: 0.0, max: 1.0 };
         let history = [(now - Duration::from_secs(2), 0.25), (now, 0.75)].into();
-        let canvases: LPooled<Vec<_>> = (0..10_000)
-            .map(|_| SparklineCanvas::new(&history, now, 10.0, bounds))
-            .collect();
         let mut counts = [0; 2];
         for (count, age) in counts.iter_mut().zip([0, 10]) {
             let time = now + Duration::from_secs(age);
+            let canvases: LPooled<Vec<_>> = (0..10_000)
+                .map(|_| SparklineCanvas::new(&history, time, 10.0, bounds))
+                .collect();
             let start = Instant::now();
             for _ in 0..100 {
                 for canvas in canvases.iter() {
@@ -1054,7 +1056,7 @@ mod sparkline_tests {
     #[test]
     fn sparkline_path_uses_the_rolling_window() {
         let canvas = SparklineCanvas {
-            newest_sample: None,
+            still: true,
             history_seconds: 10.0,
             points: [(0.2, 0.0), (0.4, 1.0), (1.0, 1.0)].into_iter().collect(),
             bounds: SparkBounds { min: 0.0, max: 1.0 },
@@ -1089,7 +1091,7 @@ mod sparkline_tests {
     #[test]
     fn sparkline_paths_skip_nonfinite_samples() {
         let canvas = SparklineCanvas {
-            newest_sample: None,
+            still: true,
             history_seconds: 10.0,
             points: vec![
                 (f64::NAN, 0.0),
