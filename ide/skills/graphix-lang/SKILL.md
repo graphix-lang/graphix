@@ -556,6 +556,11 @@ an event samples is sampled first and unwrapped after, `(k ~ sel)$`,
 which samples the null and drops it; a call takes that value, not the
 key and `sel$` apart.
 
+An annotated `catch(e: T)` checks each raised type against `T` where it
+joins the catch, including callback throws. A declared error parameter stays
+rigid: a function taking `Result<i64, 'e>` and catching only
+``Error<ErrChain<`A>>`` must declare ``'e: `A``.
+
 ## Abstract comparisons
 
 An abstract's `Eq` implementation bypasses representation checks for equality

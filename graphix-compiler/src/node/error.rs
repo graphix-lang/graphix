@@ -108,10 +108,6 @@ pub struct Catch<R: Rt> {
     own_handler: ErrorHandler,
     receipts: Receipts,
     unused_warning: Option<BitFlags<CFlag>>,
-    constraint: Option<Type>,
-    /// Throws unioned into the bind before `catch(e: T)` ascribes `T`
-    /// onto it. Coverage is this snapshot, not the bind after ascription.
-    thrown: Option<Type>,
     bind_id: BindId,
     top_id: ExprId,
     /// The boundary this catch polls its handler from.
@@ -172,6 +168,35 @@ impl<R: Rt> CatchAction<R> {
 
 /// Join `etyp`, an error type raised to `handler`'s catch, into the type
 /// its bind infers. A sealed catch takes only what its bind holds.
+// XCR claude for claude: [bug/medium] An open raise (r? over Result<i64, 'e>, or a
+// callback's throws 'e) into an ascribed catch is judged only by the Contains
+// pushed below. That push ignores def_gate_depth, unlike defer_settle, so it
+// drains at the statement's typecheck1 and narrows the definition's 'e only
+// after a later statement's call has been checked. `let run = |r: Result<i64,
+// 'e>| { catch(e: Error<ErrChain<`A>>) ..; r? + 1 }; run(error(`B))` passes
+// --check, and elaboration refuses the instance (GRAPHIX_ELAB_AUDIT reports
+// it). Judge open raises into a sealed catch where they join (T.check_contains
+// in join_raised, which also lets `thrown` and this Contains go), or inside the
+// definition's own settle ahead of PendingSettle::Body. Whether a rigid
+// declared 'e is then refused ("declare the bound") or narrowed is your call.
+// The `thrown` doc is stale either way: Catch::compile binds T, so the snapshot
+// is T plus open raises. probe:
+// design/review-2026-10-26/repro/c-error-op-ascribed-catch-open-throws.gx
+// (c-error-op-01)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q28, An open
+// raise into an ascribed catch): yes, judge at join (the recommendation: judge
+// at the join; refuse a rigid `'e`.)
+// 2026-10-28 codex: Sealed catches check every raised type at join_raised, while
+// declared error variables are rigid. Removed Catch's delayed Contains and
+// redundant constraint/thrown fields and advanced the image format. Pins
+// lang::errors::catch_ascription_refuses_open_raise and
+// catch_ascription_refuses_open_callback failed in all four modes without the fix
+// (8 failures); catch_ascription_accepts_bounded_raise passed before and after.
+// cargo test -p graphix-tests --offline --lib lang::errors:: passes all 255
+// tests. Updated the book, design/catch.md, language skill and rules; regenerated
+// AGENTS.md; mdbook build passed. Broader checks will be reported to the
+// coordinator. The other block sharing this id remains open with a note
+// explaining its unrelated ruling.
 pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Result<()> {
     let (catch, _) = handler.id();
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
@@ -197,10 +222,13 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
                 )
             })?
         }
-        Some(t) if handler.sealed() && !etyp.has_unbound() => bail!(
-            "this error reaches a catch whose handler was checked to take {t}: \
-             {t} does not contain {etyp}"
-        ),
+        Some(t) if handler.sealed() => {
+            return t.check_contains(env, etyp).map_err(|e| {
+                anyhow!(
+                    "this error reaches a catch whose handler was checked to take {t}: {e}"
+                )
+            });
+        }
         Some(t) => Type::union(env, &[&t, etyp])?,
     };
     tv.bind(joined);
@@ -236,8 +264,6 @@ impl<R: Rt> Catch<R> {
         action: Option<CatchAction<R>>,
         own_handler: ErrorHandler,
         unused_warning: Option<BitFlags<CFlag>>,
-        constraint: Option<Type>,
-        thrown: Option<Type>,
         bind_id: BindId,
         top_id: ExprId,
         polled: Option<BoundaryRef>,
@@ -249,8 +275,6 @@ impl<R: Rt> Catch<R> {
             own_handler,
             receipts: Receipts::default(),
             unused_warning,
-            constraint,
-            thrown,
             bind_id,
             top_id,
             polled,
@@ -284,25 +308,12 @@ impl<R: Rt> Catch<R> {
             }
         };
         let own_handler = image::handler_decode(buf)?;
-        let constraint = Option::<Type>::decode(buf)?;
-        let thrown = Option::<Type>::decode(buf)?;
         let bind_id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         ctx.record_ref(bind_id, top_id);
         let polled = ctx.boundary.clone();
         own_handler.polled_by(&polled);
-        Ok(Self::with(
-            spec,
-            handler,
-            action,
-            own_handler,
-            None,
-            constraint,
-            thrown,
-            bind_id,
-            top_id,
-            polled,
-        ))
+        Ok(Self::with(spec, handler, action, own_handler, None, bind_id, top_id, polled))
     }
 
     pub(crate) fn compile(
@@ -389,8 +400,6 @@ impl<R: Rt> Catch<R> {
             action,
             own_handler,
             matches!(c.role, CatchRole::User).then_some(flags),
-            c.constraint.clone(),
-            None,
             bind_id,
             top_id,
             polled,
@@ -439,8 +448,6 @@ impl<R: Rt> Update<R> for Catch<R> {
             }
         }
         image::handler_encode(&self.own_handler, buf)?;
-        self.constraint.encode(buf)?;
-        self.thrown.encode(buf)?;
         self.bind_id.encode(buf)?;
         self.top_id.encode(buf)
     }
@@ -1427,54 +1434,6 @@ impl<R: Rt> Catch<R> {
         child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
-        // siblings typecheck first, so the region's throws are already
-        // unioned into the bind: snapshot them, then ascribe `T`
-        // CR claude for claude: [bug/medium] An open raise (r? over Result<i64, 'e>, or a
-        // callback's throws 'e) into an ascribed catch is judged only by the Contains
-        // pushed below. That push ignores def_gate_depth, unlike defer_settle, so it
-        // drains at the statement's typecheck1 and narrows the definition's 'e only
-        // after a later statement's call has been checked. `let run = |r: Result<i64,
-        // 'e>| { catch(e: Error<ErrChain<`A>>) ..; r? + 1 }; run(error(`B))` passes
-        // --check, and elaboration refuses the instance (GRAPHIX_ELAB_AUDIT reports
-        // it). Judge open raises into a sealed catch where they join (T.check_contains
-        // in join_raised, which also lets `thrown` and this Contains go), or inside the
-        // definition's own settle ahead of PendingSettle::Body. Whether a rigid
-        // declared 'e is then refused ("declare the bound") or narrowed is your call.
-        // The `thrown` doc is stale either way: Catch::compile binds T, so the snapshot
-        // is T plus open raises. probe:
-        // design/review-2026-10-26/repro/c-error-op-ascribed-catch-open-throws.gx
-        // (c-error-op-01)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q28, An open
-        // raise into an ascribed catch): yes, judge at join (the recommendation: judge
-        // at the join; refuse a rigid `'e`.)
-        if let Some(t) = self.constraint.clone() {
-            let tv = {
-                let bind = ctx
-                    .env
-                    .by_id
-                    .get(&self.bind_id)
-                    .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
-                match &bind.typ {
-                    Type::TVar(tv) => tv.clone(),
-                    _ => unreachable!(),
-                }
-            };
-            if self.thrown.is_none() {
-                let contents = tv.binding().unwrap_or(Type::Bottom);
-                self.thrown = Some(contents);
-            }
-            tv.bind(t.clone());
-            // `T` must cover every error the region throws, judged with
-            // the check's settle
-            if check {
-                let inner = self.thrown.clone().unwrap_or(Type::Bottom);
-                let spec = self.spec.clone();
-                ctx.pending_settles
-                    .last_mut()
-                    .expect("settle frame")
-                    .push(crate::PendingSettle::Contains { outer: t, inner, spec });
-            }
-        }
         wrap!(self.handler, child(&mut self.handler, ctx))?;
         // a handler that reads the error was checked at the bind's type; a
         // handler that ignores it (the REPL's tail catch) takes any raise
@@ -1701,6 +1660,14 @@ impl Receipts {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q28, An open
     // raise into an ascribed catch): yes, judge at join (the recommendation: judge at
     // the join; refuse a rigid `'e`.)
+    // 2026-10-28 codex: The 2026-10-27 ruling attached here addresses the other
+    // c-error-op-01 block (ascribed-catch type checking), not receipt accounting or the
+    // sleep-policy choice recorded on 2026-10-25. It cannot be implemented for this
+    // block as worded. Left Receipts unchanged and this block open: Eric still needs to
+    // choose whether sleeping catches retain outstanding raises or give them up and
+    // suppress their wake deliveries. The separate type-checking block is being
+    // addressed in this worktree. The receipt probe was read but not run or pinned in
+    // this change.
     fn give_up(&mut self, handler: &ErrorHandler, cycle: u64) {
         while self.acked < handler.raised() {
             self.acked += 1;

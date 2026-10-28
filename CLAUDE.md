@@ -1154,6 +1154,9 @@ cycle, across workers; the compiler never pins threads.
 - **`catch`** (`design/catch.md`) installs a handler for the rest of its
   block; it is not control flow. A user handler that never reads its
   binder warns: its expression can act at birth before an error arrives.
+  An ascribed catch checks each raised type at its join, while the enclosing
+  definition's declared variables are rigid; the annotation must contain
+  each variable's declared bound (`node::error::join_raised`).
   `?` wraps its error in an `ErrChain`
   once, extending a chain rather than nesting it, and the types agree:
   `ErrChain<ErrChain<X>>` is `ErrChain<X>`, so a generic `Result<T, 'e>`

@@ -91,10 +91,13 @@ flow — `design/seq_blocks.md` §7).
   cycle the error was raised. Cross-top deliveries (a REPL catch in an
   earlier input) take the `set_var` next-cycle path; the shell threads
   a session scope so a toplevel catch covers later inputs.
-- `catch(e: T)` ascribes `T` to `e` in the handler. Coverage is
-  unchanged: `T` must contain the accumulated throw union, snapshotted
-  before ascription and checked with the check's settle (a
-  `PendingSettle::Contains`), never by elaboration; an unannotated `catch(e)`
-  infers `e` from that union.
+- `catch(e: T)` ascribes `T` to `e` before checking the covered region.
+  Each raised type is checked against `T` at its join, while a definition's
+  declared variables are rigid. A declared error variable must carry a bound
+  that fits `T`; the catch cannot narrow it after the definition's check.
+  An unannotated `catch(e)` infers `e` from the union of raised types.
+  Pins: `catch_ascription_refuses_open_raise`,
+  `catch_ascription_refuses_open_callback`,
+  `catch_ascription_accepts_bounded_raise`.
 - A handler in a callee stays in the callee; a handler's `?` rethrows
   to the previous install or the next one out.

@@ -1085,3 +1085,39 @@ async fn catch_without_binder_warns(mode: Mode) -> Result<()> {
 }
 
 modes!(catch_without_binder_warns);
+
+run!(
+    catch_ascription_refuses_open_raise,
+    r#"{
+        let run = |r: Result<i64, 'e>| {
+            catch(e: Error<ErrChain<`A>>) never(e);
+            r? + 1
+        };
+        run(error(`B))
+    }"#,
+    refused("does not contain")
+);
+
+run!(
+    catch_ascription_refuses_open_callback,
+    r#"{
+        let run = |g: fn() -> i64 throws 'e| {
+            catch(e: Error<ErrChain<`A>>) never(e);
+            g() + 1
+        };
+        run(|| error(`B)?)
+    }"#,
+    refused("does not contain")
+);
+
+run!(
+    catch_ascription_accepts_bounded_raise,
+    r#"{
+        let run = 'e: `A |r: Result<i64, 'e>| {
+            catch(e: Error<ErrChain<`A>>) never(e);
+            r? + 1
+        };
+        run(2)
+    }"#,
+    is(Value::I64(3))
+);

@@ -111,7 +111,11 @@ division by zero rather than throwing.
 
 The binder may carry a type annotation, `catch(e: T) expr`. That is a
 type ascription: `e` has type `T` in the handler. The compiler still
-checks that `T` contains every error the covered region can throw.
+checks that `T` contains every error the covered region can throw, including
+errors from callbacks. In a generic function, declare a bound on an error
+parameter that reaches an annotated catch: for example, a function taking
+`Result<i64, 'e>` and catching only ``Error<ErrChain<`A>>`` declares
+``'e: `A``. The catch does not narrow an unconstrained declared parameter.
 
 ## Checked Errors
 
