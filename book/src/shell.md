@@ -244,7 +244,7 @@ This is useful for organizing projects where you want both a runnable program (`
 
 ### Running from Netidx
 
-<!-- CR claude for claude: [doc-drift/low] This section and the GRAPHIX_MODPATH section
+<!-- XCR claude for claude: [doc-drift/low] This section and the GRAPHIX_MODPATH section
 never say what loading modules from netidx trusts. NetidxResolver compiles whatever is
 published at the path, so under anonymous auth any host can supply code, and a netidx
 entry listed before file entries shadows the user's own modules. Add a note: netidx
@@ -255,6 +255,11 @@ Found by reading; not run. (x-security-08) -->
 modules from netidx trusts): yes. Add to the book: netidx modules are code from whoever
 may publish at the path; use authenticated netidx, and list file entries first when
 local modules must win. -->
+<!-- 2026-10-28 qwen: book/src/shell.md, Running from Netidx: a paragraph now says what
+loading modules from netidx trusts: a netidx module is code from whoever may publish at
+that path; use authenticated netidx with publish permissions restricted to those who
+should supply the code, and list file entries before netidx entries when local modules
+must win. Docs prose, no test; docs/ is build output and was not rebuilt. -->
 A program run from netidx finds its modules beside it, as a file's do
 on disk: the directory of its netidx path is the module search path.
 
@@ -268,6 +273,13 @@ executes it, and resolves its modules under `/my/graphix/modules`. So
 if `myprogram` contains `mod utils`, the shell looks for
 `/my/graphix/modules/utils.gx`, then `/my/graphix/modules/utils/mod.gx`,
 each with its interface beside it (`utils.gxi`, `utils/mod.gxi`).
+
+A netidx module is code from whoever may publish at that path. Anyone
+with publish permission there supplies the code your program runs. Use
+authenticated netidx, and restrict publish permissions to the hosts and
+users who should supply this code. If your local modules must win over
+published ones, list the file entries before the netidx entries in the
+module path.
 
 ### Module Search Path Priority
 
