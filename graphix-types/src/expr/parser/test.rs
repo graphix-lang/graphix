@@ -2574,6 +2574,23 @@ fn no_comment_stands_inside_a_splice_or_an_attribute() {
     }
 }
 
+// an attribute has no single-line form either, so none stands in a
+// splice, whatever it decorates; a splice without one parses
+#[test]
+fn no_attribute_stands_inside_a_splice() {
+    let attr = "an attribute cannot stand inside a string's splice";
+    for src in [
+        "let s = \"a [{ #[pure] let y = 1; y }] b\";\ns",
+        "let s = \"\"\"a \\[#[pure] 1] b\"\"\";\ns",
+        "let s = \"[{ trait T { #[pure] val f: fn(self) -> i64 }; 1 }]\";\ns",
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(attr), "{src}: {msg}");
+    }
+    parse_one("\"a [{ let y = 1; y }] b\"").unwrap();
+    parse_one("\"\"\"a \\[1 + 1] b\"\"\"").unwrap();
+}
+
 // a `//` that starts its line is never the comment ending the line above,
 // whatever the item before it consumed
 #[test]

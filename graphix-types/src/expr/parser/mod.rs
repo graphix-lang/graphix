@@ -334,6 +334,18 @@ pub(super) fn holds_comment(e: &Expr) -> bool {
     })
 }
 
+/// Whether a `#[..]` attribute stands anywhere in `e`, a trait method's
+/// included: none can in what prints on one line.
+pub(super) fn holds_attr(e: &Expr) -> bool {
+    e.fold(false, &mut |c, e| {
+        c || e.dec.as_ref().is_some_and(|d| !d.attrs.is_empty())
+            || match &e.kind {
+                ExprKind::Trait(t) => t.methods.iter().any(|m| !m.attrs.is_empty()),
+                _ => false,
+            }
+    })
+}
+
 // `#[name]` or `#[name(arg, ...)]`; the args are full expressions, which
 // print on the attribute's line. The `attempt` on `#[` keeps a labeled
 // call arg `#name` from colliding.

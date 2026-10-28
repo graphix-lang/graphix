@@ -1,7 +1,7 @@
 use super::{
     GRAPHIX_ESC, GRAPHIX_MUST_ESC, expr,
     grow::{grow, note_reason, refuse},
-    holds_comment, sptoken,
+    holds_attr, holds_comment, sptoken,
 };
 use crate::expr::{Expr, ExprKind, StrForm};
 use arcstr::ArcStr;
@@ -69,7 +69,7 @@ parser! {
         }
         // a splice prints on its string's line, where no comment can stand
         let spliced = |(e, end): (Expr, SourcePosition)| {
-            // CR claude for claude: [bug/medium] This checks only `dec.comments`, so a
+            // XCR claude for claude: [bug/medium] This checks only `dec.comments`, so a
             // comment ending a line inside a splice (`"[{ let x = 1; // hi\n x }]"`) or
             // standing below a list in one parses. The formatter then refuses the file
             // as its own bug. An attribute in a splice also gets through, and the
@@ -91,10 +91,23 @@ parser! {
             // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q75,
             // Attributes inside a string splice): yes, refuse (the recommendation:
             // refuse.)
-            match holds_comment(&e) {
-                true => refuse(end, "a comment cannot stand inside a string's splice")
+            // 2026-10-28 qwen: Refused an attribute anywhere inside a string's splice:
+            // parser holds_attr (parser/mod.rs) folds dec.attrs and trait method attrs,
+            // interpolateexp's spliced refuses with \"an attribute cannot stand inside
+            // a string's splice\". Pins: parser/test.rs
+            // no_attribute_stands_inside_a_splice (refused in [{..}], in a template
+            // \\[..] and on a trait method; a plain splice still parses); the expr
+            // round-trip generator now strips attributes as well as comments from
+            // splice expressions (expr/test.rs uncommented).
+            match (holds_comment(&e), holds_attr(&e)) {
+                (true, _) => refuse(end, "a comment cannot stand inside a string's splice")
                     .right(),
-                false => value(Intp::Expr(e)).left(),
+                (_, true) => refuse(
+                    end,
+                    "an attribute cannot stand inside a string's splice",
+                )
+                .right(),
+                (false, false) => value(Intp::Expr(e)).left(),
             }
         };
         let interp_part = || attempt(

@@ -41,7 +41,8 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
     .prop_map(ArcStr::from)
 }
 
-/// `e` with no comment anywhere, as a string's splice holds it.
+/// `e` with no comment or attribute anywhere, as a string's splice holds
+/// neither.
 fn uncommented(e: &Expr) -> Expr {
     stripped(e, true)
 }
@@ -52,14 +53,16 @@ fn untrailed(e: &Expr) -> Expr {
     stripped(e, false)
 }
 
-/// `e` with no comment after a list item, nor, when `above`, above one.
+/// `e` with no comment after a list item, nor, when `above`, above one;
+/// `above` drops attributes too, which stand nowhere a splice's
+/// expression prints.
 fn stripped(e: &Expr, above: bool) -> Expr {
     let lines = |c: &Comments| if above { Comments::default() } else { c.clone() };
     let mut e = e.map_children(&mut |c| stripped(c, above));
     if let Some(d) = e.dec.clone() {
         let d = Decorations {
             comments: if above { Arc::from_iter([]) } else { d.comments.clone() },
-            attrs: d.attrs.clone(),
+            attrs: if above { Arc::from_iter([]) } else { d.attrs.clone() },
             eol: None,
             below: Arc::from_iter([]),
         };
@@ -70,6 +73,7 @@ fn stripped(e: &Expr, above: bool) -> Expr {
             methods: Arc::from_iter(t.methods.iter().map(|m| TraitMethod {
                 comments: lines(&m.comments),
                 eol: Eol::default(),
+                attrs: if above { Arc::from_iter([]) } else { m.attrs.clone() },
                 ..m.clone()
             })),
             below: Comments::default(),
