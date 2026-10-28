@@ -1273,10 +1273,88 @@ impl<R: Rt> Construct<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.arg, child(&mut self.arg, ctx))?;
-        match check {
-            true => wrap!(self.arg, self.rep.check_contains(&ctx.env, &self.arg.typ())),
-            false => Ok(()),
+        if !check {
+            return Ok(());
         }
+        // XCR claude for claude: [bug/medium] With invariant abstract parameters,
+        // `Box(1)` is typed `Box<i64>` eagerly. A wider annotation can only decide
+        // the parameter here (a let whose initializer is itself the construction)
+        // and at call arguments (`pre_unify_arg`, which does not look inside an
+        // array argument). The following are all refused with "Box<[i64, string]>
+        // does not contain Box<i64>": a lambda return `-> Box<[i64, string]>
+        // Box(1)`, `let b: (Box<[i64, string]>, i64) = (Box(1), 2)`, the same in a
+        // struct or array literal, select arms building `Box(1)` and `Box("s")`,
+        // and `b <- Box(1)` into a `Box<[i64, string]>` variable. For the `<-` case
+        // write_mismatch also advises declaring the union `[Box<[i64, string]>,
+        // Box<i64>]`. That contradicts design/nominal_abstract_types.md rule 4 ("a
+        // let annotation decides ... as a formal decides an argument's"), and every
+        // case passes once it goes through a `let r: Box<[i64, string]> = Box(1)`
+        // first. The fix is a typing-rule choice. One option: give `T(v)` a fresh
+        // parameter cell that the payload only bounds from below, so context
+        // decides it wherever the value flows. The other: apply the pre-unify to
+        // every annotated position (returns, nested literals, select arms,
+        // connects). Either way, write_mismatch should not suggest a union of two
+        // instantiations of one abstract. probe:
+        // design/review-2026-10-12/repro/x-fix-types-07.sh (x-fix-types-07)
+        // 2026-10-24 claude: Eric ruled (2026-10-24): fresh cell: T(v) gets a fresh
+        // parameter cell the payload bounds from below, so the context decides it.
+        // 2026-10-25 claude: Tried the ruling as a deferred judgment: T(v) left its
+        // parameter cells open and a PendingSettle::LowerBound, judged after the
+        // frame's sites and before its cells settle (and at a definition gate's
+        // close, before the signature generalizes), bound what nothing decided to
+        // the payload's type and checked the rest held it. All nine repro cases
+        // then checked, a misfit was still refused, and |x| Box(x) stayed generic.
+        // But an annotation that is a union of two instantiations broke: `let x:
+        // [Box<i64>, Box<string>] = Box("hi")` checks the union against Box<'a>
+        // while 'a is open, takes the first member (Box<i64>), and the payload then
+        // fails (lang::traits::abstract_test_matches_parameters and four other
+        // trait and select fixtures). A deferred check cannot steer that choice.
+        // What the ruling needs is a lower bound on the cell itself: a TCell field
+        // beside its constraints that every bind checks (the binding must contain
+        // the payload), so the union check skips Box<i64>; the settle binds a cell
+        // still open to it. That is a change to the cell core (copies, merges,
+        // aliases and images carry it), so it is reverted and back to eric to
+        // confirm before building it.
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, D3,
+        // discussed): option A. Add a lower-bound field to the type cell (every
+        // bind must contain it; the settle binds a still-open cell to it), carried
+        // by copies, merges, aliases and images, so T(v) leaves its parameters open
+        // with the payload's type as their lower bound.
+        // 2026-10-28 claude: Ruling A built: TCell::lower, a list of lower bounds
+        // every binding must contain (cell_constraints_ok), joined by a merge once
+        // each side's conjuncts admit the other's (a rigid cell admits none but
+        // itself), carried by freshen copies, images (REGISTRATION_FORMAT 97) and
+        // level claims; the witness of a cell with lower bounds is their union.
+        // Construct checks its payload with ContainsFlags::Lower (outside function
+        // arguments a parameter cell takes the payload's part as a lower bound, an
+        // open payload cell taking the parameter's conjuncts, a declared one
+        // merged) and defers each parameter cell to its statement's settle; a
+        // definition keeps the bound in its signature, so each call decides its
+        // own. A trait bound settles a lower-bounded cell under a commit and a
+        // probe reads it as its witness (find_impl_with); Type::holds reads an open
+        // cell's lower bounds. The bind.rs pre-unify for abstract lets is deleted
+        // (this CR moved here with it). All nine probe cases check; a union of two
+        // instantiations takes the one the payload fits. Pins:
+        // lang::types::{context_decides_constructed_parameters,
+        // constructed_into_a_union_of_instantiations,
+        // constructed_parameter_below_a_narrower_type_refused,
+        // constructed_parameter_below_a_declared_variable_refused,
+        // constructing_definition_decided_per_call},
+        // lang::image::a_restored_constructor_keeps_its_lower_bound. Must-reject
+        // family 11 is now abstract-param (mutation m::B<string>: a wider
+        // annotation is legal now). Gate green, regress 0/0/0, GUI suite A/B equal.
+        wrap!(self.arg, self.rep.check_contains_lower(&ctx.env, &self.arg.typ()))?;
+        if let Type::Abstract { params, .. } = &self.typ {
+            for p in params.iter() {
+                if let Type::TVar(tv) = p {
+                    super::defer_settle(ctx, || crate::PendingSettle::Operand {
+                        tv: tv.clone(),
+                        spec: self.spec.clone(),
+                    })
+                }
+            }
+        }
+        Ok(())
     }
 }
 

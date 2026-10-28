@@ -1464,11 +1464,12 @@ fn cell_encode(
         |e| &mut e.cells,
         buf,
         |buf| {
-            let (typ, constraints, facts, level) = {
+            let (typ, constraints, below, facts, level) = {
                 let c = cell.read();
                 let TCell {
                     binding,
                     constraints,
+                    lower,
                     facts,
                     rigid_gates,
                     quantifier_gates: _,
@@ -1484,10 +1485,11 @@ fn cell_encode(
                     );
                     return Err(PackError::InvalidFormat);
                 }
-                (binding.clone(), constraints.to_vec(), *facts, *level)
+                (binding.clone(), constraints.to_vec(), lower.to_vec(), *facts, *level)
             };
             typ.encode(buf)?;
             slice_encode(&constraints, buf)?;
+            slice_encode(&below, buf)?;
             facts.bits().encode(buf)?;
             level.encode(buf)
         },
@@ -1527,6 +1529,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
             enter(Obj::Cell(cell.clone()))?;
             let typ = Pack::decode(sub)?;
             let constraints: Vec<_> = Pack::decode(sub)?;
+            let below: Vec<_> = Pack::decode(sub)?;
             let facts = BitFlags::from_bits(u8::decode(sub)?)
                 .map_err(|_| PackError::InvalidFormat)?;
             let level = Pack::decode(sub)?;
@@ -1534,6 +1537,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
             c.level = level;
             c.binding = typ;
             c.constraints = constraints.into_iter().collect();
+            c.lower = below.into_iter().collect();
             c.facts = facts;
             drop(c);
             Ok(cell)

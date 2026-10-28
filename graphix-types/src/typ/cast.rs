@@ -641,9 +641,11 @@ impl Type {
                 return v;
             }
             match self {
-                Type::TVar(_) => self.deref_cloned().is_some_and(|t| {
-                    seen.over_built(t, |seen, t| t.holds(env, seen, leaf))
-                }),
+                // an open cell will hold what bounds it from below
+                Type::TVar(_) => match self.deref_cloned() {
+                    Some(t) => seen.over_built(t, |seen, t| t.holds(env, seen, leaf)),
+                    None => self.open_lower().iter().any(|l| l.holds(env, seen, leaf)),
+                },
                 // an open constructor is unknown like an open cell: its
                 // argument decides
                 Type::App(c, a) => match Type::app_filled(c, a) {

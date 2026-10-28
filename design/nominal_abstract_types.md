@@ -76,8 +76,16 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    Parameters are invariant: the representation is hidden, so nothing
    outside it can say a `Sink<i64>` is a `Sink<[i64, string]>`, and a
    Rust-backed handle (`db::Tree<K, V>`) may store what it is given.
-   A `let` annotation decides a constructed value's parameters (`let b:
-   Box<[i64, string]> = Box(1)`), as a formal decides an argument's. An
+   A constructed value's payload bounds its parameters from below
+   (`TCell::lower`, `ContainsFlags::Lower`): `Box(1)` is `Box<'p>` with
+   `'p` at least `i64`, so the type the value flows into decides `'p`
+   (`let b: Box<[i64, string]> = Box(1)`, a return, an element, a
+   field, select arms, a connect, a union of instantiations, which
+   takes the member the payload fits), and the statement's settle binds
+   one nothing decided to the payload's type. A definition that
+   constructs (`|x| Box(x)`) keeps the bound in its signature, so each
+   call's context decides its own. A trait bound or a dispatch on the
+   value reads its parameters and so settles them. An
    unknown constructor's argument (`'c<a>`) is invariant too. Declared
    variance is the extension if a covariant abstract container is ever
    needed.

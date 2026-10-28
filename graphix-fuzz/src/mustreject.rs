@@ -41,7 +41,7 @@ pub enum Family {
     RefWrite,
     RefWiden,
     SameForm,
-    AbstractWiden,
+    AbstractParam,
 }
 
 impl Family {
@@ -60,7 +60,7 @@ impl Family {
         Family::RefWrite,
         Family::RefWiden,
         Family::SameForm,
-        Family::AbstractWiden,
+        Family::AbstractParam,
     ];
 }
 
@@ -72,7 +72,7 @@ impl Family {
         let says: &[&str] = match self {
             Family::MonoReuse => &["does not contain fn("],
             Family::RigidVar => &["unbound"],
-            Family::SharedVar | Family::AbstractWiden => &["does not contain"],
+            Family::SharedVar | Family::AbstractParam => &["does not contain"],
             Family::LabelUnknown => &["unknown labeled argument"],
             Family::LabelMissing => &["missing required argument"],
             Family::LabelDefault => {
@@ -119,7 +119,7 @@ impl std::fmt::Display for Family {
             Family::RefWrite => "ref-write",
             Family::RefWiden => "ref-widen",
             Family::SameForm => "same-form",
-            Family::AbstractWiden => "abstract-widen",
+            Family::AbstractParam => "abstract-param",
         })
     }
 }
@@ -298,7 +298,7 @@ pub fn probes(
     function_bound(&root, &pre, types, cap, &mut out);
     references(&root, types, cap, &mut out);
     same_form(&root, &pre, types, cap, &mut out);
-    abstract_widen(&root, &pre, types, cap, &mut out);
+    abstract_param(&root, &pre, types, cap, &mut out);
     // at most `cap` of each family's, each id its own
     let mut kept: Vec<RejectProbe> = Vec::with_capacity(out.len());
     for mut p in out {
@@ -442,12 +442,13 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
 
 /// Family 11. A statement `let v = e` the map types `B<i64>`, a
 /// generated module's parameterized abstract type: the let is annotated
-/// `m::B<[i64, string]>`. An abstract type's parameters are invariant,
-/// whatever its rep does with them. The map does not name the module:
+/// `m::B<string>`. A constructed value's parameter holds its payload's
+/// type, and an abstract type's parameters are invariant, whatever its
+/// rep does with them. The map does not name the module:
 /// it is the one whose `mkb`/`unb` the body reaches, or with several,
 /// the one whose `mkb` the let calls. A value with a leaf its uses typed
 /// is skipped: the annotation would decide it. Right site: the let.
-fn abstract_widen(
+fn abstract_param(
     root: &Expr,
     pre: &[Expr],
     types: &TypeMap,
@@ -489,8 +490,7 @@ fn abstract_widen(
                 _ => continue,
             },
         };
-        let Ok(widened) = parser::parse_type(&format!("{module}::B<[i64, string]>"))
-        else {
+        let Ok(widened) = parser::parse_type(&format!("{module}::B<string>")) else {
             continue;
         };
         let mut stmts = stmts.to_vec();
@@ -498,7 +498,7 @@ fn abstract_widen(
             ExprKind::Bind(Arc::new(BindExpr { typ: Some(widened), ..(**b).clone() }))
                 .to_expr(stmt.pos);
         let cand = ExprKind::Block { exprs: Arc::from_iter(stmts) }.to_expr_nopos();
-        out.extend(finish(Family::AbstractWiden, si, &cand, |back, _| {
+        out.extend(finish(Family::AbstractParam, si, &cand, |back, _| {
             vec![nth_stmt(back, si).and_then(span)]
         }));
         n += 1;
@@ -684,6 +684,10 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         // must_reject_families_are_refused_where_their_rules_say's new case, B<i64>
         // over m0::mkb(x + i64:1) gets an abstract-widen site (the old per-node test
         // skipped it).
+        // 2026-10-28 claude: Family 11 is now abstract-param (abstract_param): under D3
+        // a constructed value's parameter is bounded below by its payload, so a wider
+        // annotation decides it and is no mutant; the mutation is now the disjoint
+        // m::B<string>. The open_init skip is unchanged.
         _ => types.cell(value),
     }
 }

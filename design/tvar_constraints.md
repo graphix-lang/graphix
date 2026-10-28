@@ -46,6 +46,17 @@ rule — `TVar::settle` binds an unbound constrained cell to the
 narrowest conjunct every other conjunct contains, and "no witness" is
 the "unsatisfiable constraints on 'a: i64 & string" error.
 
+A cell may also be bounded from below: `TCell::lower`, a list every
+binding must contain (`cell_constraints_ok` checks it beside the
+conjuncts). Only a constructed abstract value's parameters get one
+(`ContainsFlags::Lower`, outside function arguments: the payload's part
+becomes the bound instead of the binding). Each conjunct must contain a
+lower bound when it is added; a merge joins both cells' lists after
+each side's conjuncts admit the other's (a rigid cell admits none but
+itself); a copy, an image and a level claim carry the list. The witness
+of a cell with lower bounds is their union, so every settle binds it
+there; a probe of a trait bound reads it so, and a commit settles it.
+
 A conjunct is an upper bound, so a type wider than the cell's witness
 holds the cell without the cell becoming it: `t ⊇ 'a` that the
 conjuncts refuse as a binding (`'a := t`) settles `'a` to its witness

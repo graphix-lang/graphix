@@ -22,23 +22,40 @@ use smallvec::SmallVec;
 use std::fmt::Write;
 
 impl TVar {
-    /// The narrowest conjunct every other conjunct contains, its generic
-    /// cells copied (a stored scheme's cells must not join live inference)
-    /// and its live cells shared, so it keeps its relations. `Err(true)`
-    /// when there is none, `Err(false)` when no conjunct could be one (all
-    /// traits or self-referential). Bound and unconstrained cells have none.
+    /// The union of the cell's lower bounds, else the narrowest conjunct
+    /// every other conjunct contains, its generic cells copied (a stored
+    /// scheme's cells must not join live inference) and its live cells
+    /// shared, so it keeps its relations. `Err(true)` when there is none,
+    /// `Err(false)` when no conjunct could be one (all traits or
+    /// self-referential). Bound and unbounded cells have none.
     pub(crate) fn witness(&self, env: &Env) -> Result<std::result::Result<Type, bool>> {
-        let cons = {
+        let (cons, below) = {
             let cell = self.cell();
             let cell = cell.read();
-            if cell.binding.is_some() || cell.constraints.is_empty() {
+            if cell.binding.is_some()
+                || (cell.constraints.is_empty() && cell.lower.is_empty())
+            {
                 return Ok(Err(false));
             }
-            cell.constraints.clone()
+            (cell.constraints.clone(), cell.lower.clone())
         };
+        let addr = self.cell_addr();
+        if !below.is_empty() {
+            if below.iter().any(|l| would_cycle_inner(addr, l)) {
+                return Ok(Err(false));
+            }
+            let below: LPooled<Vec<&Type>> = below.iter().collect();
+            let w = Type::union(env, &below)?;
+            let mut hist = ContainsHist::new();
+            for c in cons.iter() {
+                if !c.contains_int(BitFlags::empty(), env, &mut hist, &w)? {
+                    return Ok(Err(true));
+                }
+            }
+            return Ok(Ok(w));
+        }
         let mut hist = ContainsHist::new();
         let mut candidates = false;
-        let addr = self.cell_addr();
         'cand: for c in cons.iter() {
             // A trait conjunct is a predicate, not a binding, and a
             // conjunct reaching this cell has no finite witness.
@@ -114,7 +131,7 @@ impl TVar {
     /// refused instead. Only the terminal walk uses this (an earlier call
     /// would foreclose writers not yet typechecked).
     pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
-        if !self.cell_constraints().is_empty() {
+        if !self.cell_constraints().is_empty() || !self.cell_lower().is_empty() {
             self.settle(env)?;
         }
         self.settle_bottom()
@@ -179,6 +196,25 @@ impl TVar {
     }
 }
 
+impl Type {
+    /// The open cells `self` holds as positions, when each has a lower
+    /// bound: a reading of the type ([`Self::frozen`] reads them as their
+    /// bounds) that an operation reading it decides by settling them.
+    /// `None` when there is none or one has no lower bound.
+    pub(crate) fn lowered_cells(&self) -> Option<LPooled<Vec<TVar>>> {
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        position_cells(self, &mut cells);
+        let mut open: LPooled<Vec<TVar>> = LPooled::take();
+        for tv in cells.values().filter(|tv| !tv.is_bound() && !tv.is_rigid()) {
+            if tv.cell_lower().is_empty() {
+                return None;
+            }
+            open.push(tv.clone());
+        }
+        (!open.is_empty()).then_some(open)
+    }
+}
+
 /// Record which settle-set members `t` references, descending through
 /// non-member cells' bindings and constraints but stopping at members
 /// (their reach is their own edge list).
@@ -194,12 +230,12 @@ fn settle_refs(
             if let Some(&i) = index.get(&addr) {
                 out.push(i);
             } else if visited.insert(addr) {
-                let (bound, cons) = {
+                let (bound, cons, below) = {
                     let cell = tv.cell();
                     let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone())
+                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
                 };
-                for t in bound.iter().chain(cons.iter()) {
+                for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
                     settle_refs(t, index, visited, out);
                 }
             }
@@ -249,12 +285,12 @@ impl FnType {
         for (_, tv) in nodes.iter() {
             let mut out: SmallVec<[usize; 4]> = SmallVec::new();
             let mut visited: LPooled<AHashSet<usize>> = LPooled::take();
-            let (bound, cons) = {
+            let (bound, cons, below) = {
                 let cell = tv.cell();
                 let cell = cell.read();
-                (cell.binding.clone(), cell.constraints.clone())
+                (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
             };
-            for t in bound.iter().chain(cons.iter()) {
+            for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
                 settle_refs(t, &index, &mut visited, &mut out);
             }
             out.sort_unstable();
@@ -340,12 +376,12 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AddrSet) {
     crate::stack::ensure_sufficient(|| match t {
         Type::TVar(tv) => {
             if out.insert(tv.cell_addr(), tv.clone()).is_none() {
-                let (bound, cons) = {
+                let (bound, cons, below) = {
                     let cell = tv.cell();
                     let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone())
+                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
                 };
-                for t in bound.iter().chain(cons.iter()) {
+                for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
                     reached(t, out, nodes)
                 }
             }

@@ -536,6 +536,19 @@ async fn a_restored_function_prints_its_source() -> Result<()> {
     Ok(())
 }
 
+/// A definition that constructs carries its parameter's lower bound in
+/// its signature: restored, each call's context still decides it.
+#[tokio::test]
+async fn a_restored_constructor_keeps_its_lower_bound() -> Result<()> {
+    let program = "type Box<'a> = Abstract<'a>;\nlet mk = |x| Box(x);\n\
+                   let w: Box<[i64, string]> = mk(1);\nlet i = mk(2);\n\
+                   \"[select w.0 { i64 as n => n, string as _ => 0 }] [i.0 + 1]\"";
+    let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
+    assert_eq!(cold, [Value::from("1 3")]);
+    assert_eq!(cold, warm);
+    Ok(())
+}
+
 /// A dynamic module's interface keeps its items' positions in an image:
 /// a refusal a restored module's body meets points where a cold one's
 /// does.

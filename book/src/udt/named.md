@@ -57,4 +57,22 @@ that defines the type can construct or read it: see
 costs one allocation, so nominal types suit handles and newtypes better than
 hot data.
 
+A nominal type may take parameters, and they are invariant: the
+representation is hidden, so nothing outside it can say a `Box<i64>` is a
+`Box<[i64, string]>`. A constructed value's parameters are decided by where
+it goes, with its payload's type as the least they can be:
+
+```graphix
+type Box<'a> = Abstract<'a>;
+let mk = |x| Box(x);
+let wide: Box<[i64, string]> = mk(1);
+let either: [Box<i64>, Box<string>] = Box("hi");
+let narrow = Box(2);
+narrow.0 + 1
+```
+
+`wide` is a `Box<[i64, string]>` and `either` a `Box<string>`. `narrow`
+goes nowhere wider, so it is a `Box<i64>`. `let b: Box<string> = Box(1)` is
+refused: `Box<string> does not contain Box<i64>`.
+
 In the next section you'll see that we can do a lot more with them.

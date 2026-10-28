@@ -60,12 +60,15 @@ fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut AddrSet) -> bool {
                 if !seen.insert(cell_addr) {
                     return false;
                 }
-                let (binding, cons) = {
+                let (binding, cons, below) = {
                     let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone())
+                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
                 };
                 binding.is_some_and(|b| would_cycle_seen(addr, &b, seen))
-                    || cons.iter().any(|c| would_cycle_seen(addr, c, seen))
+                    || cons
+                        .iter()
+                        .chain(below.iter())
+                        .any(|c| would_cycle_seen(addr, c, seen))
             }
         }
         t => t
@@ -508,6 +511,10 @@ pub(crate) enum Fresh<'a> {
 pub struct TCell {
     pub(crate) binding: Option<Type>,
     pub(crate) constraints: SmallVec<[Type; 1]>,
+    /// What the cell is bounded by from below: everything it is ever
+    /// bound to must contain every member, and a cell still open when it
+    /// settles binds to their union ([`TVar::add_lower`]).
+    pub(crate) lower: SmallVec<[Type; 1]>,
     /// What the checks learned of the cell ([`CellFact`]): every copy, merge
     /// and image carries the whole set.
     pub(crate) facts: BitFlags<CellFact>,
@@ -579,6 +586,7 @@ impl Default for TCell {
         TCell {
             binding: None,
             constraints: SmallVec::new(),
+            lower: SmallVec::new(),
             facts: BitFlags::empty(),
             rigid_gates: 0,
             quantifier_gates: 0,
@@ -736,30 +744,36 @@ impl fmt::Display for TVar {
                 return write!(f, "'{}: …", ShortName(&self.name));
             }
             let r = (|| {
-                let (typ, cons) = {
+                let (typ, cons, below) = {
                     let cell = self.cell();
                     let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone())
+                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
                 };
-                // a generated cell's binding is all a reader needs of it
-                match (&typ, self.generated()) {
-                    (Some(t), true) => return write!(f, "{t}"),
+                // a generated cell's binding, or else what it settles to,
+                // is all a reader needs of it
+                match (&typ, self.generated(), &below[..]) {
+                    (Some(t), true, _) => return write!(f, "{t}"),
+                    (None, true, [l]) => return write!(f, "{l}"),
+                    (None, true, [l, ls @ ..]) => {
+                        write!(f, "[{l}")?;
+                        for l in ls {
+                            write!(f, ", {l}")?
+                        }
+                        return write!(f, "]");
+                    }
                     _ => write!(f, "'{}: ", ShortName(&self.name))?,
                 }
-                match typ {
-                    Some(t) => write!(f, "{t}"),
-                    None if cons.is_empty() => write!(f, "unbound"),
-                    None => {
-                        write!(f, "unbound within ")?;
-                        for (i, c) in cons.iter().enumerate() {
-                            if i > 0 {
-                                write!(f, " & ")?
-                            }
-                            write!(f, "{c}")?
-                        }
-                        Ok(())
+                let Some(t) = typ else {
+                    write!(f, "unbound")?;
+                    for (i, c) in cons.iter().enumerate() {
+                        write!(f, "{}{c}", if i == 0 { " within " } else { " & " })?
                     }
-                }
+                    for (i, t) in below.iter().enumerate() {
+                        write!(f, "{}{t}", if i == 0 { " above " } else { " | " })?
+                    }
+                    return Ok(());
+                };
+                write!(f, "{t}")
             })();
             PRINTING.with_borrow_mut(|s| s.remove(&addr));
             r
@@ -918,11 +932,11 @@ impl TVar {
             (c.level.depth() > level.depth()).then(|| {
                 written(&c);
                 c.level = level;
-                (c.binding.clone(), c.constraints.clone())
+                (c.binding.clone(), c.constraints.clone(), c.lower.clone())
             })
         };
-        if let Some((binding, cons)) = lowered {
-            for t in binding.iter().chain(cons.iter()) {
+        if let Some((binding, cons, below)) = lowered {
+            for t in binding.iter().chain(cons.iter()).chain(below.iter()) {
                 lower(t, level)
             }
         }
@@ -1000,7 +1014,7 @@ impl TVar {
         }
     }
 
-    /// Bind an open, flexible, unconstrained cell to `t`, which is not a
+    /// Bind an open, flexible, unbounded cell to `t`, which is not a
     /// var and does not hold this one, when nothing but this var holds
     /// the cell: every way a type reaches a cell is a clone of a var
     /// sharing it, so `t` cannot reach it and the occurs check would find
@@ -1012,6 +1026,7 @@ impl TVar {
             || self.is_bound()
             || self.is_rigid()
             || !self.cell_constraints().is_empty()
+            || !self.cell_lower().is_empty()
         {
             return false;
         }
@@ -1064,6 +1079,27 @@ impl TVar {
     /// The cell's constraint conjunction (cloned out).
     pub fn cell_constraints(&self) -> SmallVec<[Type; 1]> {
         self.read().cell.read().constraints.clone()
+    }
+
+    /// The cell's lower bounds (cloned out).
+    pub fn cell_lower(&self) -> SmallVec<[Type; 1]> {
+        self.read().cell.read().lower.clone()
+    }
+
+    /// Bound the open cell from below by `t` (deduped): whatever it binds
+    /// to must contain `t`. The caller has checked the cell's conjuncts
+    /// admit `t`; they are handed to `t`'s open cells as a binding's are.
+    pub(crate) fn add_lower(&self, t: Type) {
+        let cell = self.cell();
+        if cell.read().lower.iter().any(|e| union_identical(e, &t)) {
+            return;
+        }
+        require_bounds(&self.cell_constraints(), &t);
+        lower(&t, cell.read().level);
+        let mut c = cell.write();
+        if decided(&c) {
+            c.lower.push(t)
+        }
     }
 
     pub fn read<'a>(&'a self) -> RwLockReadGuard<'a, TVarLink> {
@@ -1165,6 +1201,10 @@ impl TVar {
             let s = s_cell.read();
             (conjuncts, s.facts)
         };
+        let mut below = match same {
+            true => LPooled::take(),
+            false => new_conjuncts(&o_cell.read().lower, s_cell.read().lower.clone()),
+        };
         let oid = other.read().id;
         if !same {
             let s_task = s_cell.read().task;
@@ -1202,6 +1242,7 @@ impl TVar {
         {
             let mut oc = o_cell.write();
             oc.constraints.extend(to_add.drain(..));
+            oc.lower.extend(below.drain(..));
             if !earlier_task(&oc) {
                 oc.facts |= facts;
             } else if !oc.facts.contains(facts) {
@@ -1523,6 +1564,9 @@ impl TVar {
         for c in self.cell_constraints() {
             let c = walk(&c, fresh, memo).unwrap_or(c);
             f.add_cell_constraint(c);
+        }
+        for t in self.cell_lower() {
+            f.add_lower(walk(&t, fresh, memo).unwrap_or(t));
         }
         // what the source's checks learned holds of every copy
         let facts = self.cell().read().facts;
@@ -2143,6 +2187,14 @@ impl Type {
 
     /// [`Self::has_unbound`] less the rigid cells: a declared variable in
     /// its own body never binds, so it stands as a constant.
+    /// The lower bounds of the open cell `self` ends in, if it is one.
+    pub(crate) fn open_lower(&self) -> SmallVec<[Type; 1]> {
+        match self {
+            Type::TVar(tv) => tv.open_cell().map(|c| c.cell_lower()).unwrap_or_default(),
+            _ => SmallVec::new(),
+        }
+    }
+
     pub fn has_free(&self) -> bool {
         self.open_beneath(false)
     }

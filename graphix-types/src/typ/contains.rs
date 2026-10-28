@@ -47,6 +47,10 @@ pub enum ContainsFlags {
     /// adopts `t`'s quantifier bounds: its quantifiers absorb them rather
     /// than hold `t` to their declared bounds.
     Adopt,
+    /// An open cell `self` reaches outside a function's arguments takes
+    /// `t`'s part as a lower bound instead of binding to it: a constructed
+    /// value's payload bounds its parameters, the context decides them.
+    Lower,
 }
 
 /// The infinite-type rejection wording, shared by
@@ -352,9 +356,10 @@ fn nesting(t: &Type) -> usize {
 /// a rigid cell rigid wherever the decision will, so a member it admits
 /// does not fail on that cell.
 fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
+    let lower = flags & ContainsFlags::Lower;
     match flags.intersects(ContainsFlags::Commit | ContainsFlags::RigidCheck) {
-        true => BitFlags::from(ContainsFlags::RigidCheck),
-        false => BitFlags::empty(),
+        true => lower | ContainsFlags::RigidCheck,
+        false => lower,
     }
 }
 
@@ -594,7 +599,8 @@ fn same_head(c: &Type, t: &Type) -> bool {
 }
 
 /// True iff binding `t` into the cell would satisfy every conjunct of
-/// the cell's constraints. A pure probe.
+/// the cell's constraints and contain each of its lower bounds. A pure
+/// probe.
 fn cell_constraints_ok(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
@@ -602,9 +608,53 @@ fn cell_constraints_ok(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    let probe = guide(flags);
+    if !conjuncts_admit(tv, flags, env, hist, t)? {
+        return Ok(false);
+    }
+    let probe = guide(flags) & !ContainsFlags::Lower;
+    for l in tv.cell_lower().iter() {
+        if !t.contains_int(probe, env, hist, l)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// True iff every conjunct of the cell's constraints contains `t`. A
+/// pure probe.
+fn conjuncts_admit(
+    tv: &TVar,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<bool> {
+    let probe = guide(flags) & !ContainsFlags::Lower;
     for c in tv.cell_constraints().iter() {
         if !c.contains_int(probe, env, hist, t)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether the open cell `to` (as `tt`) admits the lower bounds of the
+/// open cell `from` its unification would merge in: its conjuncts
+/// contain each, and a rigid cell, which holds only itself, holds each.
+fn admits_lower(
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    (tt, to): (&Type, &TVar),
+    from: &TVar,
+) -> Result<bool> {
+    let probe = (guide(flags) & !ContainsFlags::Lower) | ContainsFlags::RigidCheck;
+    for l in from.cell_lower().iter() {
+        let held = match to.is_rigid() {
+            true => tt.contains_int(probe, env, hist, l)?,
+            false => conjuncts_admit(to, flags, env, hist, l)?,
+        };
+        if !held {
             return Ok(false);
         }
     }
@@ -1296,6 +1346,17 @@ impl Type {
         }
     }
 
+    /// [`Self::check_contains`] where the open cells `self` reaches take
+    /// `t`'s parts as lower bounds ([`ContainsFlags::Lower`]).
+    pub fn check_contains_lower(&self, env: &Env, t: &Self) -> Result<()> {
+        let mut hist = ContainsHist::new();
+        let flags = ContainsFlags::Commit | ContainsFlags::Lower;
+        match self.contains_int(flags, env, &mut hist, t)? {
+            true => Ok(()),
+            false => Err(self.contains_mismatch(env, t)),
+        }
+    }
+
     fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
         // A refused open cell on either side is the infinite type,
         // surfacing at a consumer; report it as the settle path does.
@@ -1906,6 +1967,25 @@ impl Type {
                 if (rigid || commit) && t0.is_rigid() {
                     return Ok(false);
                 }
+                if flags.contains(ContainsFlags::Lower)
+                    && !flags.contains(ContainsFlags::Contra)
+                    && !t0.is_rigid()
+                {
+                    if !conjuncts_admit(t0, flags, env, hist, t1)? {
+                        return Ok(false);
+                    }
+                    if commit {
+                        if graphix_dbg_bind() {
+                            eprintln!(
+                                "LOWER '{}({:x}) above {t1:?}",
+                                t0.name,
+                                t0.cell_addr()
+                            );
+                        }
+                        t0.add_lower(t1.clone());
+                    }
+                    return Ok(true);
+                }
                 // A constraint violation fails here, at the site that
                 // tried it.
                 if !cell_constraints_ok(t0, flags, env, hist, t1)? {
@@ -2287,6 +2367,18 @@ impl Type {
                 if (rigid || commit) && t0.is_rigid() {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
+                if flags.contains(ContainsFlags::Lower)
+                    && !flags.contains(ContainsFlags::Contra)
+                    && !t0.is_rigid()
+                {
+                    if !conjuncts_admit(t0, flags, env, hist, &b1)? {
+                        return Ok(false);
+                    }
+                    if commit {
+                        t0.add_lower(b1);
+                    }
+                    return Ok(true);
+                }
                 // a probe answers as the commit would: the cell's own
                 // conjuncts must admit the binding
                 if !cell_constraints_ok(t0, flags, env, hist, &b1)? {
@@ -2353,6 +2445,26 @@ impl Type {
                     return refuse();
                 }
                 if !quantifier_admits(env, t0, t1) || !quantifier_admits(env, t1, t0) {
+                    return Ok(false);
+                }
+                // an open cell below is bounded by what bounds `t0`, as a
+                // merge would have it; a declared one is merged
+                if flags.contains(ContainsFlags::Lower)
+                    && !flags.contains(ContainsFlags::Contra)
+                    && !t0.is_rigid()
+                    && !t1.is_rigid()
+                {
+                    if commit {
+                        for c in t0.cell_constraints() {
+                            t1.add_cell_constraint(c)
+                        }
+                        t0.add_lower(tt1.clone());
+                    }
+                    return Ok(true);
+                }
+                if !admits_lower(flags, env, hist, (tt0, t0), t1)?
+                    || !admits_lower(flags, env, hist, (tt1, t1), t0)?
+                {
                     return Ok(false);
                 }
                 match OpenPair::of(t0, t1) {
@@ -2923,6 +3035,13 @@ impl Type {
             // An impl's bound can ask the question again of the expanded
             // type: met again, it holds if the rest does.
             t => {
+                if flags.contains(ContainsFlags::Commit)
+                    && let Some(cells) = t.lowered_cells()
+                {
+                    for tv in cells.iter() {
+                        tv.settle_witness(env)?
+                    }
+                }
                 let id = hist.ref_id(t, env).unwrap_or(usize::MAX);
                 hist.question(Question::Implements(id, tid), true, |hist| {
                     Ok(find_impl_with(env, tid, t, hist)?.is_some())
@@ -3097,7 +3216,10 @@ pub(super) fn find_impl_with(
     // constant, which takes the impl's bounds as a body's call hands a
     // declared variable a bound it needs, so each call checks them.
     if t.has_free() {
-        return Ok(None);
+        return match t.lowered_cells() {
+            Some(_) => find_impl_with(env, trait_id, &t.frozen(env), hist),
+            None => Ok(None),
+        };
     }
     let wanted = t.with_deref(|t| t.and_then(Type::resolved_abstract));
     for im in list.iter().filter(|im| !env.impl_hidden(im)) {

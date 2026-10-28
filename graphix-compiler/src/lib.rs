@@ -2415,7 +2415,9 @@ pub(crate) enum PendingSettle {
         sigs: SmallVec<[triomphe::Arc<FnType>; 1]>,
         spec: Arc<Expr>,
     },
-    /// An operator's operand cell, settled once the frame's sites have.
+    /// A cell an operation leaves for its context to decide (an
+    /// operator's operand, a constructed value's parameter), settled once
+    /// the frame's sites have.
     Operand { tv: typ::TVar, spec: Arc<Expr> },
     /// A `let`'s cell over the initializer type `init`: ⊥ when `init` is
     /// ⊥ and no writer or reader decided the cell.

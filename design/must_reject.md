@@ -238,13 +238,16 @@ never share a form.
 `B<i64>`, a generated module's parameterized abstract type (the
 generator's `type B<'a> = Abstract<'a>`, entering the vocabulary at
 `B<i64>` through `mkb`/`unb`). Mutation: the let annotated
-`m::B<[i64, string]>`. Rule: an abstract type's parameters are
+`m::B<string>`. Rule: a constructed value's parameter holds its
+payload's type (`TCell::lower`), and an abstract type's parameters are
 invariant, whatever its rep does with them (`contains.rs`, `equal_int`
-over the parameters). The map holds the type by id, so the module is
+over the parameters). A wider annotation (`m::B<[i64, string]>`) is no
+mutant: the payload bounds the parameter from below, so the annotation
+decides it. The map holds the type by id, so the module is
 the one whose `mkb`/`unb` the body reaches, or with several the one
 whose `mkb` the let calls; a value with a leaf its uses typed is
 skipped, since a let annotation decides a parameter left open. Right
-site: the let. Built (`abstract-widen`).
+site: the let. Built (`abstract-param`).
 
 ## Labeled and optional arguments across the fuzzer
 

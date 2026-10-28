@@ -3043,6 +3043,93 @@ run!(
     FuseExpect::Jit
 );
 
+/// A constructed value's payload bounds its parameters from below, so a
+/// wider type wherever the value flows decides them: a return, an
+/// element, a field, a select's arms and a connect.
+const CONTEXT_DECIDES_CONSTRUCTED_PARAMETERS: &str = r#"
+{
+    type Box<'a> = Abstract<'a>;
+    let n = |b: Box<[i64, string]>| select b.0 { i64 as n => n, string as _ => 100 };
+    let ret = || -> Box<[i64, string]> Box(1);
+    let t: (Box<[i64, string]>, i64) = (Box(2), 0);
+    let s: {a: Box<[i64, string]>} = {a: Box(3)};
+    let a: Array<Box<[i64, string]>> = [Box(4)];
+    let sel: Box<[i64, string]> = select t.1 { 0 => Box(5), _ => Box("s") };
+    let c: Box<[i64, string]> = never();
+    c <- Box(6);
+    n(ret()) + n(t.0) + n(s.a) + n(a[0]$) + n(sel) + n(c)
+}
+"#;
+
+run!(
+    context_decides_constructed_parameters,
+    CONTEXT_DECIDES_CONSTRUCTED_PARAMETERS,
+    is(Value::I64(21));
+    FuseExpect::Jit
+);
+
+/// A union of two instantiations takes the one the payload fits.
+const CONSTRUCTED_INTO_A_UNION_OF_INSTANTIATIONS: &str = r#"
+{
+    type Box<'a> = Abstract<'a>;
+    let x: [Box<i64>, Box<string>] = Box("hi");
+    select x { Box<i64> as _ => 1, Box<string> as _ => 2 }
+}
+"#;
+
+run!(
+    constructed_into_a_union_of_instantiations,
+    CONSTRUCTED_INTO_A_UNION_OF_INSTANTIATIONS,
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+
+run!(
+    constructed_parameter_below_a_narrower_type_refused,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let b: Box<string> = Box(1);
+    0
+}"#,
+    refused("Box<string> does not contain Box<i64>");
+    FuseExpect::None
+);
+
+/// A declared variable is a constant in its body: a payload of another
+/// type is no value of it.
+run!(
+    constructed_parameter_below_a_declared_variable_refused,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let f = 'a: Any |x: 'a| -> Box<'a> Box(1);
+    f(2)
+}"#,
+    refused("Box<'a: unbound within Any> does not contain Box<i64>");
+    FuseExpect::None
+);
+
+/// A definition that constructs keeps the bound in its signature: each
+/// call's context decides its own instance, and one nothing widens is
+/// the payload's type.
+const CONSTRUCTING_DEFINITION_DECIDED_PER_CALL: &str = r#"
+{
+    type Box<'a> = Abstract<'a>;
+    let mk = |x| Box(x);
+    let w: Box<[i64, string]> = mk(1);
+    let i = mk(2);
+    let s = mk("s");
+    let n = select w.0 { i64 as n => n, string as _ => 0 };
+    "[n] [i.0 + 1] [s.0]"
+}
+"#;
+
+run!(
+    constructing_definition_decided_per_call,
+    CONSTRUCTING_DEFINITION_DECIDED_PER_CALL,
+    is(Value::String("1 3 s".into()));
+    FuseExpect::Jit
+);
+
 /// A union of a bare variable and a constructor of it places every
 /// member: when the constructor's first fit would strand one, the
 /// deepest member fit decides the variable.
