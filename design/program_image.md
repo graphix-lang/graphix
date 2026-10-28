@@ -70,6 +70,21 @@ and renamed into place, so concurrent first runs are safe. A load
 touches its entry; a write collects, across build ids, the entries
 unused for 30 days and the least recently used past 512 MiB.
 
+**Trust.** On Unix, loading and writing check the cache base and each
+managed directory, refusing foreign ownership and group/other write
+permissions. The cache base may follow up to 40 symlinks: every link
+must belong to the effective user, and the final target must be a
+trusted directory. Relative targets resolve against their link's parent.
+Trust is checked before creating managed subdirectories. Managed
+directories refuse symlinks, including during collection. Entries are regular
+files owned by the effective user without group/other write permission. The reader opens without following
+symlinks and checks the opened file's metadata before mapping it; it also
+opens nonblocking so a non-file entry cannot wait for a writer. New
+directories use 0700 and files 0600. Collection traverses only trusted
+directories and regular entries. The checksum detects corruption; it does
+not authenticate bytes supplied through an untrusted cache. Pins:
+`cache::tests::privacy` in the shell.
+
 **Correctness.** An entry is written only after the work it caches
 succeeded, and before any cycle runs, so a cache never masks a
 compile error and never captures live state. A program whose flags ask

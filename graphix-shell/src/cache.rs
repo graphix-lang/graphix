@@ -14,6 +14,7 @@ use ahash::AHashSet;
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
+use compact_str::format_compact;
 use graphix_compiler::{
     expr::{Load, Probe, names_nothing},
     image,
@@ -30,6 +31,65 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime},
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+
+fn check_owner(metadata: &fs::Metadata) -> Result<()> {
+    #[cfg(unix)]
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        bail!("cache path must be owned by the current user");
+    }
+    #[cfg(not(unix))]
+    let _ = metadata;
+    Ok(())
+}
+
+fn check_private(metadata: &fs::Metadata) -> Result<()> {
+    check_owner(metadata)?;
+    #[cfg(unix)]
+    if metadata.mode() & 0o022 != 0 {
+        bail!("cache path must not be writable by group or others");
+    }
+    Ok(())
+}
+
+fn cache_directory(path: &FsPath, create: bool, links_left: u8) -> Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if create && e.kind() == ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            builder.mode(0o700);
+            builder.create(path)?;
+            fs::symlink_metadata(path)?
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if metadata.is_symlink() && links_left > 0 {
+        check_owner(&metadata)
+            .with_context(|| format_compact!("cache link {}", path.display()))?;
+        let target = fs::read_link(path)?;
+        let target = match target.is_absolute() {
+            true => target,
+            false => path.parent().unwrap_or(FsPath::new(".")).join(target),
+        };
+        return cache_directory(&target, false, links_left - 1);
+    }
+    if !metadata.is_dir() {
+        bail!("cache path is not a directory: {}", path.display());
+    }
+    check_private(&metadata)
+        .with_context(|| format_compact!("cache directory {}", path.display()))
+}
+
+fn cache_file(metadata: &fs::Metadata) -> Result<()> {
+    if !metadata.is_file() {
+        bail!("cache entry is not a regular file");
+    }
+    check_private(metadata)
+}
 
 /// The bytes the entries of every build id may hold together.
 const KEEP_BYTES: u64 = 512 << 20;
@@ -279,6 +339,16 @@ impl RegistrationCache {
         self.root.join(&self.build)
     }
 
+    fn directories(&self, create: bool) -> Result<()> {
+        let graphix = self.root.parent().ok_or_else(|| anyhow!("cache has no parent"))?;
+        let base = graphix.parent().ok_or_else(|| anyhow!("cache has no base"))?;
+        cache_directory(base, create, 40)?;
+        for dir in [graphix, &self.root, &self.dir()] {
+            cache_directory(dir, create, 0)?;
+        }
+        Ok(())
+    }
+
     fn key(&self, entry: Entry) -> Option<&str> {
         match entry {
             Entry::Registration => Some(&self.registration),
@@ -295,7 +365,7 @@ impl RegistrationCache {
     /// never rewritten in place (written to a temporary file and renamed),
     /// so the mapping stays valid. A program entry whose sources changed
     /// is a miss.
-    // CR claude for claude: [risk/medium] An entry's integrity rests on the cache
+    // XCR claude for claude: [risk/medium] An entry's integrity rests on the cache
     // directory's permissions alone, and nothing checks them. load restores any entry
     // at the keyed path whatever its owner or mode, store applies 0700 only to
     // directories it creates itself, and the crc32 seal can be recomputed by anyone.
@@ -308,11 +378,50 @@ impl RegistrationCache {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q70, Trusting
     // the image cache directory): yes, and set the permissions correctly when
     // creating it (the recommendation: refuse.)
+    // 2026-10-28 codex: Reworked the unmerged cache trust checks. The cache base
+    // follows up to 40 symlinks, checking each link's effective-user ownership and
+    // the final directory's ownership and permissions before creating managed
+    // subdirectories. Relative targets work. Managed directories and entry files
+    // still refuse symlinks; files open O_NOFOLLOW/O_NONBLOCK and are checked before
+    // mapping; collection skips untrusted paths. Created directories/files use
+    // 0700/0600. owned_cache_base_links_are_trusted failed against the earlier
+    // no-symlink implementation and passes now. Restoring main's unchecked
+    // load/store/collect bodies made five refusal pins fail (shared entries, shared
+    // directories, entry/build links, collector links, unsafe symlink targets).
+    // Removing only the link-owner check failed
+    // foreign_cache_base_link_is_refused_even_with_a_private_target, using
+    // /proc/self's foreign-owned link and current-user-owned target; it also covers a
+    // link chain. Invalid/dangling/cyclic links are refused. cargo test -p
+    // graphix-shell --offline --lib passes all 19 tests after restoring the fix;
+    // focused mutation runs used --lib cache::tests::privacy and --lib
+    // foreign_cache_base_link. The named poisoning probe printed
+    // PWNED-by-a-cache-file on main and hello-from-the-author with this fix.
+    // /tmp/x-security-05-symlink-cli.py verified --warm and a warm run through an
+    // owned relative cache-base symlink, then --warm refusal after making its target
+    // 0777. cargo build -p graphix-shell --offline, cargo fmt --all and mdbook build
+    // -d /tmp/graphix-cr-rework-book passed. Rules, book and design updated;
+    // AGENTS.md regenerated. Tested on Linux; other platforms were not exercised. No
+    // render/update/dispatch/fork path changed.
     pub(crate) fn load(&self, entry: Entry) -> Option<(ArcStr, Bytes)> {
         let path = self.path(entry)?;
-        let file = match fs::File::open(&path) {
+        let file = (|| -> Result<fs::File> {
+            self.directories(false)?;
+            let mut open = fs::OpenOptions::new();
+            open.read(true);
+            #[cfg(unix)]
+            open.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+            let file = open.open(&path)?;
+            cache_file(&file.metadata()?)?;
+            Ok(file)
+        })();
+        let file = match file {
             Ok(f) => f,
-            Err(e) if e.kind() == ErrorKind::NotFound => return None,
+            Err(e)
+                if e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == ErrorKind::NotFound) =>
+            {
+                return None;
+            }
             Err(e) => {
                 warn!("opening the {entry:?} image {}: {e}", path.display());
                 return None;
@@ -351,7 +460,7 @@ impl RegistrationCache {
         };
         let _ = file.set_modified(SystemTime::now());
         info!("{entry:?} image {}", path.display());
-        Some((ArcStr::from(path.display().to_string()), image))
+        Some((format_compact!("{}", path.display()).as_str().into(), image))
     }
 
     pub(crate) fn store_registration(&self, image: &[u8]) -> Result<()> {
@@ -379,24 +488,27 @@ impl RegistrationCache {
     fn store(&self, entry: Entry, parts: &[&[u8]]) -> Result<()> {
         let path = self.path(entry).ok_or_else(|| anyhow!("no {entry:?} entry"))?;
         let dir = self.dir();
-        // an entry holds the program, its literals included: the user's alone
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        let tmp = dir.join(format!(
-            "{}.img.{}.{}",
-            self.key(entry).unwrap_or_default(),
-            std::process::id(),
-            TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
+        self.directories(true)?;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => cache_file(&metadata)?,
+            Err(e) if e.kind() == ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+        }
+        let tmp = dir.join(
+            format_compact!(
+                "{}.img.{}.{}",
+                self.key(entry).unwrap_or_default(),
+                std::process::id(),
+                TEMP.fetch_add(1, Ordering::Relaxed)
+            )
+            .as_str(),
+        );
         let written = (|| {
             use std::io::Write;
             let mut open = fs::OpenOptions::new();
             open.write(true).create_new(true);
             #[cfg(unix)]
-            std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+            open.mode(0o600);
             let mut f = open.open(&tmp)?;
             for part in parts {
                 f.write_all(part)?;
@@ -421,10 +533,17 @@ impl RegistrationCache {
         let age = |m: &fs::Metadata| {
             m.modified().ok().and_then(|t| now.duration_since(t).ok()).unwrap_or_default()
         };
-        let mut entries = vec![];
+        let mut entries: LPooled<Vec<(Duration, u64, PathBuf)>> = LPooled::take();
         for build in fs::read_dir(&self.root).into_iter().flatten().flatten() {
-            for f in fs::read_dir(build.path()).into_iter().flatten().flatten() {
-                let Ok(m) = f.metadata() else { continue };
+            let build = build.path();
+            if cache_directory(&build, false, 0).is_err() {
+                continue;
+            }
+            for f in fs::read_dir(&build).into_iter().flatten().flatten() {
+                let Ok(m) = fs::symlink_metadata(f.path()) else { continue };
+                if cache_file(&m).is_err() {
+                    continue;
+                }
                 if f.path().extension().is_some_and(|e| e == "img") {
                     entries.push((age(&m), m.len(), f.path()));
                 } else if age(&m) > ABANDONED {
@@ -434,7 +553,7 @@ impl RegistrationCache {
         }
         entries.sort_unstable_by_key(|(age, ..)| *age);
         let mut kept = 0;
-        for (age, len, path) in entries {
+        for (age, len, path) in entries.drain(..) {
             kept += len;
             if age > KEEP_UNUSED || kept > KEEP_BYTES {
                 let _ = fs::remove_file(path);
@@ -444,8 +563,9 @@ impl RegistrationCache {
         // process may be about to write its entry there
         let own = self.dir();
         for build in fs::read_dir(&self.root).into_iter().flatten().flatten() {
-            if build.path() != own {
-                let _ = fs::remove_dir(build.path());
+            let path = build.path();
+            if path != own && cache_directory(&path, false, 0).is_ok() {
+                let _ = fs::remove_dir(path);
             }
         }
     }
@@ -454,6 +574,213 @@ impl RegistrationCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    mod privacy {
+        use super::*;
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        fn cache(base: &FsPath) -> RegistrationCache {
+            RegistrationCache {
+                root: base.join("graphix/registration"),
+                build: "build".into(),
+                registration: "registration".into(),
+                program: None,
+            }
+        }
+
+        fn mode(path: &FsPath, mode: u32) {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+
+        #[test]
+        fn owned_cache_base_links_are_trusted() {
+            for relative in [false, true] {
+                let tmp = tempfile::tempdir().unwrap();
+                let base = tmp.path().join("cache");
+                let target = tmp.path().join("real-cache");
+                fs::create_dir(&target).unwrap();
+                mode(&target, 0o700);
+                symlink(
+                    if relative { FsPath::new("real-cache") } else { &target },
+                    &base,
+                )
+                .unwrap();
+                let cache = cache(&base);
+                cache.store_registration(b"entry").unwrap();
+                let (_, bytes) = cache.load(Entry::Registration).unwrap();
+                assert_eq!(bytes.as_ref(), b"entry");
+                assert!(
+                    target.join("graphix/registration/build/registration.img").is_file()
+                );
+                assert!(fs::symlink_metadata(base).unwrap().is_symlink());
+            }
+        }
+
+        #[test]
+        fn unsafe_cache_base_link_targets_are_refused_before_creation() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().join("cache");
+            let target = tmp.path().join("real-cache");
+            fs::create_dir(&target).unwrap();
+            symlink(&target, &base).unwrap();
+            let cache = cache(&base);
+            for bits in [0o720, 0o702, 0o777] {
+                mode(&target, bits);
+                assert!(cache.load(Entry::Registration).is_none());
+                assert!(cache.store_registration(b"entry").is_err());
+                assert!(!target.join("graphix").exists());
+            }
+            mode(&target, 0o700);
+            cache.store_registration(b"entry").unwrap();
+            for bits in [0o720, 0o702, 0o777] {
+                mode(&target, bits);
+                assert!(cache.load(Entry::Registration).is_none());
+                assert!(cache.store_registration(b"replacement").is_err());
+            }
+            fs::remove_file(&base).unwrap();
+            symlink("/", &base).unwrap();
+            if fs::metadata("/").unwrap().uid() != unsafe { libc::geteuid() } {
+                assert!(cache.load(Entry::Registration).is_none());
+                assert!(cache.store_registration(b"entry").is_err());
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn foreign_cache_base_link_is_refused_even_with_a_private_target() {
+            let link = FsPath::new("/proc/self");
+            let metadata = fs::symlink_metadata(link).unwrap();
+            assert!(metadata.is_symlink());
+            check_private(&fs::metadata(link).unwrap()).unwrap();
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                let tmp = tempfile::tempdir().unwrap();
+                let chain = tmp.path().join("cache");
+                symlink(link, &chain).unwrap();
+                for base in [link, &chain] {
+                    let error = cache(base).directories(false).unwrap_err();
+                    assert!(
+                        format_compact!("{error:#}")
+                            .contains("owned by the current user"),
+                        "{error:#}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn invalid_cache_base_links_are_refused() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().join("cache");
+            let target = tmp.path().join("target");
+            let cache = cache(&base);
+            symlink(&target, &base).unwrap();
+            assert!(cache.store_registration(b"entry").is_err());
+            assert!(!target.exists());
+            fs::write(&target, b"file").unwrap();
+            assert!(cache.store_registration(b"entry").is_err());
+            fs::remove_file(&target).unwrap();
+            symlink(&base, &target).unwrap();
+            assert!(cache.store_registration(b"entry").is_err());
+            assert!(cache.load(Entry::Registration).is_none());
+        }
+
+        #[test]
+        fn shared_entries_are_never_loaded() {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = cache(tmp.path());
+            cache.store_registration(b"entry").unwrap();
+            assert!(cache.load(Entry::Registration).is_some());
+            let path = cache.path(Entry::Registration).unwrap();
+            for bits in [0o660, 0o602, 0o666] {
+                mode(&path, bits);
+                assert!(cache.load(Entry::Registration).is_none(), "mode {bits:o}");
+                assert!(cache.store_registration(b"replacement").is_err());
+                mode(&path, 0o600);
+            }
+        }
+
+        #[test]
+        fn shared_directories_are_never_used() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().join("cache");
+            let cache = cache(&base);
+            cache.store_registration(b"entry").unwrap();
+            for dir in [&base, &base.join("graphix"), &cache.root, &cache.dir()] {
+                for bits in [0o720, 0o702, 0o777] {
+                    mode(dir, bits);
+                    assert!(
+                        cache.load(Entry::Registration).is_none(),
+                        "{} mode {bits:o}",
+                        dir.display()
+                    );
+                    assert!(cache.store_registration(b"replacement").is_err());
+                    mode(dir, 0o700);
+                }
+            }
+            assert!(cache.load(Entry::Registration).is_some());
+        }
+
+        #[test]
+        fn cache_links_are_not_followed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = cache(&tmp.path().join("cache"));
+            cache.store_registration(b"entry").unwrap();
+            let entry = cache.path(Entry::Registration).unwrap();
+            let real = tmp.path().join("real-entry");
+            fs::rename(&entry, &real).unwrap();
+            symlink(&real, &entry).unwrap();
+            assert!(cache.load(Entry::Registration).is_none());
+            assert!(cache.store_registration(b"replacement").is_err());
+            fs::remove_file(&entry).unwrap();
+            fs::rename(real, &entry).unwrap();
+            let dir = cache.dir();
+            let real = tmp.path().join("real-build");
+            fs::rename(&dir, &real).unwrap();
+            symlink(&real, &dir).unwrap();
+            assert!(cache.load(Entry::Registration).is_none());
+            assert!(cache.store_registration(b"replacement").is_err());
+        }
+
+        #[test]
+        fn foreign_ownership_is_refused() {
+            let metadata = fs::metadata("/").unwrap();
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                assert!(check_private(&metadata).is_err());
+            }
+        }
+
+        #[test]
+        fn collection_does_not_follow_a_build_link() {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = cache(&tmp.path().join("cache"));
+            cache.store_registration(b"entry").unwrap();
+            let outside = tmp.path().join("outside");
+            fs::create_dir(&outside).unwrap();
+            let file = outside.join("keep.img");
+            fs::write(&file, b"keep").unwrap();
+            fs::File::open(&file).unwrap().set_modified(SystemTime::UNIX_EPOCH).unwrap();
+            symlink(&outside, cache.root.join("another-build")).unwrap();
+            cache.collect();
+            assert_eq!(fs::read(file).unwrap(), b"keep");
+        }
+
+        #[test]
+        fn newly_created_cache_is_private() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().join("cache");
+            let cache = cache(&base);
+            cache.store_registration(b"entry").unwrap();
+            for dir in [&base, &base.join("graphix"), &cache.root, &cache.dir()] {
+                assert_eq!(
+                    fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+            }
+            let entry = cache.path(Entry::Registration).unwrap();
+            assert_eq!(fs::metadata(entry).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
 
     /// The test binary is linked with a build id on Linux; the walker
     /// finds it and it is stable across calls.

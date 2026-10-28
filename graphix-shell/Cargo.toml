@@ -67,6 +67,8 @@ krb5_iov = [
 slow-tests = []
 
 [dependencies]
+compact_str = { workspace = true }
+libc = { workspace = true }
 tempfile = { workspace = true }
 bytes = { workspace = true }
 dirs = { workspace = true }
@@ -114,8 +116,6 @@ tokio = { workspace = true }
 triomphe = { workspace = true }
 
 [dev-dependencies]
-compact_str = { workspace = true }
-libc = { workspace = true }
 lsp-server = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }

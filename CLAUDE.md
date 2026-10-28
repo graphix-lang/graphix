@@ -235,6 +235,12 @@ entry that reads, else compiles; an entry that fails to read leaves the
 session untouched, and whatever was compiled is written, except a
 program that asked for fusion where the JIT does not build. `--no-cache`
 disables the cache, `--warm` writes and exits (failing when it cannot);
+on Unix the cache base, graphix/registration directories, build directory
+and entry must belong to the effective user and forbid group/other
+writes. The cache base may be a symlink chain owned by that user to a
+trusted directory; it is checked before creating anything beneath it.
+Managed directories and entries refuse symlinks; new directories and
+files use 0700 and 0600. The collector skips untrusted paths;
 the header carries the ISA, the build's fingerprint (its helpers,
 libcalls and version, `build_fingerprint`), refused on a mismatch as the
 ISA is, and a checksum of everything after it
