@@ -478,7 +478,6 @@ mod test {
     }
 
     fn hash_of(g: &GxAbstract) -> u64 {
-        use std::hash::BuildHasher;
         ahash::RandomState::with_seeds(1, 2, 3, 4).hash_one(g)
     }
 
