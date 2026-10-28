@@ -1531,6 +1531,11 @@ test is a result.
 
 ## Stdlib notes
 
+- `xls`: calamine opens every BIFF xls sheet densely, including for
+  `sheets`; `MAX_CELLS` is a post-open limit for xls, not an opening
+  memory bound. The ods preflight does not cover xls. This accepted
+  limitation is documented in `book/src/stdlib/xls.md` and `UPSTREAM.md`.
+
 - `sys::process`: a child lives in a task of its own (`own_child`),
   which selects on its exit against kill requests over `ctl` and reaps
   it; dropping the last `Proc` closes `ctl`, which kills a

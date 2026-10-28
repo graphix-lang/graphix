@@ -1,5 +1,10 @@
 /// List sheet names in a workbook.
 ///
+/// Both sheets and read open every BIFF xls sheet densely over its used
+/// cells. The cell limit is checked afterward: a small sparse xls file
+/// can exhaust memory and terminate the process instead of returning XlsErr.
+/// Use trusted xls files or an external process memory limit.
+///
 /// To read a workbook from a stream, read it first —
 /// `xls::sheets(Read::read_all(f)?)`.
 val sheets: fn(input: bytes) -> Result<Array<string>, `XlsErr(string)>;
@@ -10,4 +15,5 @@ type Cell = [i64, f64, string, bool, datetime, duration, null];
 
 /// Read a sheet by name as a 2D array of rows from A1: rows[0][0] is A1,
 /// every row as wide as the last used column, an empty cell null.
+/// The xls opening-memory limitation described on sheets applies here too.
 val read: fn(input: bytes, sheet: string) -> Result<Array<Array<Cell>>, `XlsErr(string)>;

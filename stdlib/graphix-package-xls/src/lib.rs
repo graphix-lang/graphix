@@ -321,7 +321,7 @@ fn check_shared_strings<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(),
 }
 
 fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
-    // CR claude for claude: [bug/high] Only ods is guarded against calamine's dense open.
+    // XCR claude for claude: [bug/high] Only ods is guarded against calamine's dense open.
     // The BIFF .xls reader also builds every sheet over its cells' bounding box when
     // the workbook opens, so a 5.6 KB .xls with cells at A1 and at (65535, 65535)
     // OOM-kills the runtime through xls::sheets alone. MAX_CELLS is checked only after
@@ -332,6 +332,19 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     // (small-pkgs-03)
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q56, A dense
     // .xls): document and add an UPSTREAM bug
+    // 2026-10-28 codex: Implemented Eric's document-only ruling: book/API and CLAUDE.md
+    // state that sheets and read eagerly open every BIFF xls sheet densely, and MAX_CELLS
+    // does not bound opening memory; regenerated AGENTS.md. Expanded the calamine
+    // UPSTREAM.md entry to cover xls and its lack of a preflight guard. Reproduced the
+    // probe with its generated 5.6 KB input through target/debug/graphix --no-cache
+    // --no-fusion under an 8 GiB address-space limit (TOKIO_WORKER_THREADS=2,
+    // GRAPHIX_EVAL_THREADS=2): abort requesting 137438953472 bytes. An initial 1 GiB
+    // limit aborted during startup and was not counted as reproduction. Bounded pin
+    // test::xls_sparse_cells_open_as_a_dense_range uses the same layout with A1 and
+    // (255,255): two cells open as 65536 cells. This pins unchanged behavior; no
+    // red-before-fix claim. cargo test -p graphix-package-xls --offline --lib: 12 passed.
+    // mdbook build -d ../docs/book: passed. The xls allocation risk remains intentionally
+    // unfixed under the ruling.
     if let Ok(mut zip) = ZipArchive::new(rs.clone())
         && let Err(e) = check_ods(&mut zip).and_then(|()| check_shared_strings(&mut zip))
     {
@@ -521,6 +534,20 @@ mod test {
     use super::*;
     use std::io::Write;
     use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+
+    #[test]
+    fn xls_sparse_cells_open_as_a_dense_range() {
+        let bytes = Bytes::from_static(include_bytes!("../tests/data/sparse.xls"));
+        assert_eq!(bytes.len(), 5632);
+        let mut workbook = open(Cursor::new(bytes)).unwrap();
+        assert_eq!(workbook.sheet_names(), &["S0"]);
+        let range = workbook.worksheet_range("S0").unwrap();
+        assert_eq!(range.get_size(), (256, 256));
+        assert_eq!(range.cells().count(), 65536);
+        assert_eq!(range.used_cells().count(), 2);
+        assert_eq!(range.get_value((0, 0)), Some(&Data::Float(1.0)));
+        assert_eq!(range.get_value((255, 255)), Some(&Data::Float(2.0)));
+    }
 
     /// A zip of `files`, each a name and its contents, stored.
     fn zip_of(files: &[(&str, &str)]) -> Bytes {
