@@ -1112,8 +1112,11 @@ impl Type {
                             }
                         })
                     }
-                    // a payload written without its tag, as json may carry it
-                    // CR claude for claude: [bug/medium] This tagless read takes any
+                    (Some((t, _)), _) if t != tag => {
+                        Err(self.cast_fail("variant tag mismatch", v))
+                    }
+                    (Some(_), _) => Err(self.cast_fail("variant length mismatch", v)),
+                    // XCR claude for claude: [bug/medium] This tagless read takes any
                     // array of the payload's length, including another variant's
                     // written form. json::write_str(`B(2)) is ["B",2], and reading it
                     // into `A(string, i64) gives `A("B", 2) instead of InvalidCast. An
@@ -1162,15 +1165,12 @@ impl Type {
                     // target here is one variant, not a union, and reading ["B", 2] into
                     // `A(string, i64) still gives `A("B", 2) (probe run 2026-10-28). The
                     // tagless arm is still to delete or narrow as the CR proposes.
-                    (_, Some(elts)) if elts.len() == ts.len() => {
-                        let mut out: LPooled<Vec<Value>> = LPooled::take();
-                        for (i, el) in elts.iter().enumerate() {
-                            let c = ts[i].cast_int(env, cx, payload(i), el)?;
-                            out.push(c.unwrap_or_else(|| el.clone()));
-                        }
-                        Ok(Some(rep::make_variant(tag.clone(), out.drain(..))))
-                    }
-                    (_, Some(_)) => Err(self.cast_fail("variant length mismatch", v)),
+                    // 2026-10-28 claude: Fixed as the CR proposed: the tagless read is
+                    // deleted, since no writer emits a payload without its tag and the arm
+                    // only turned a mismatch into a wrong value. A variant reads only data
+                    // that names its tag; another variant's written form is a tag mismatch
+                    // (now named so), an untagged array not a variant. Pin:
+                    // lang::types::a_variant_reads_only_its_own_tag.
                     _ => Err(self.cast_fail("not a variant", v)),
                 }
             }

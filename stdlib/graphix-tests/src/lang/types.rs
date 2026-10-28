@@ -4464,3 +4464,23 @@ run!(
 }"#,
     prints("[true, true]")
 );
+
+// A variant reads only from data that names its tag: another variant's
+// written form, or an untagged array of the payload's length, is no value
+// of it (x-kind-markers-03).
+run!(
+    a_variant_reads_only_its_own_tag,
+    r#"{
+  let other: Result<`A(string, i64), [`InvalidCast(string), `JsonErr(string)]> =
+    json::read(json::write_str(`B(2))$);
+  let bare: Result<[`A(i64, i64), `B(i64, i64)], [`InvalidCast(string), `JsonErr(string)]> =
+    json::read(r"[1, 2]");
+  let own: Result<`A(string, i64), [`InvalidCast(string), `JsonErr(string)]> =
+    json::read(json::write_str(`A("x", 2))$);
+  (select other { error as _ => "refused", _ => "read" },
+   select bare { error as _ => "refused", _ => "read" },
+   own$)
+}"#,
+    prints(r#"["refused", "refused", ["A", "x", i64:2]]"#);
+    FuseExpect::Jit
+);
