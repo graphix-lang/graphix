@@ -311,6 +311,65 @@ impl<R: Rt> ArrayRef<R> {
         // node/callsite.rs the Arg literal in image_decode at 2976 where Arg::new
         // exists, and Callee::Static; fusion/share.rs SharedRegion and SlotShare in the
         // share-table decode. x-dup-03 stays open for those.
+        // 2026-10-28 qwen: The twenty-one kinds this batch named now build through one
+        // constructor shared by their compile/init path and image_decode, plus four
+        // more of the same class that this batch's scan found; fourteen commits, one
+        // per file (error.rs and share.rs carry two). bind.rs: Place::with(root, steps,
+        // scope), ByRef::with(spec, typ, referent, id) (resident phantom,
+        // registered/keep None), Deref::with(spec, typ, child, top_id, addr) (resident
+        // phantom; each path keeps its own record_ref of the address it read).
+        // collection.rs: Callback::with(scope, id, typ, top_id, share, arg) (slot_spec
+        // default), MapQBase::with nine parts, FoldQBase::with eight. data.rs:
+        // Replace::with(index, name, n). error.rs: CatchAction::with(node, role)
+        // (pending None), AbortRole::machine(manual, pc, clock) — the clock's owed flag
+        // starts false there — and QopMode::raise(handler, top_id, flags), which this
+        // batch's scan found holding values: SiteValues::default() in both decode and
+        // compile. lambda.rs: BuiltInLambda::with(typ, name, apply) (make_init and
+        // image_decode), Lambda::with(spec, def, typ) (resident stale(def)),
+        // DefTable::with nine parts for renamed and image_decode. pattern.rs:
+        // PatternNode::with(explicit_type_predicate, type_predicate,
+        // structure_predicate, guard) — the compile path does hold a second literal,
+        // correcting the earlier note. seq_machine.rs: SeqMachine::with(spec, id, pc,
+        // pc_id, steps, expand) (current/tracked None), SeqCapture::with(spec, machine,
+        // snapshot, live, live_id, is_live) (the AtomicBool lives there). traits.rs:
+        // Trait::with(spec, def, defaults), Impl::with(spec, def, fulfils, trait_def,
+        // body, prototypes). module.rs: Body::dynamic(source, sig_env) (Module::with
+        // already covered the node). callsite.rs: Arg::image_decode now calls the
+        // existing Arg::new, and Callee::to_static(apply, first_update) is the only
+        // Callee::Static literal (bind_instance, the imaged body's first dispatch, and
+        // both image_decode arms). fusion/share.rs: SharedRegion::with(root, kernel,
+        // jit, facts, print), SlotShare::with(table, base) (all three sites),
+        // SharedAttempt::refused(root, blocker) and args Parse::new(). Left alone with
+        // a reason: AbortRole::Try and Body::Dynamic name only the parts each path
+        // supplies, nothing defaulted; DefTable::record and the check's fallback write
+        // ..Default::default() and then fill the maps, so they have no second literal
+        // of their shape; Callee::Imaged and ImagedRefs are built only in their decode.
+        // Encoded fields and byte order are unchanged, and every constructor takes its
+        // arguments in the order the literal listed its fields, so decode order is
+        // unchanged: no image format bump. Tests (sandbox refuses sockets;
+        // RUSTC_WRAPPER=""; lists compared at this tip and with these twelve files
+        // reverted to the batch's base): graphix-compiler --lib 54 passed, 0 failed in
+        // both; graphix-package-args --lib has no unit tests, 0 in both; graphix-tests
+        // --lib lang::image 32 passed, 1 ignored, 0 failed in both; graphix-tests --lib
+        // lang::errors 259 passed, 0 failed at the tip; and graphix- tests --lib lang::
+        // — 7819 passed, 96 failed, 1 ignored in both, with an identical failure-name
+        // list (the dynamic-module, net, http, tcp and tls fixtures that need a socket
+        // or the module resolver server). No test changed. Still repeating for the next
+        // batch, from the same scan. Same class, worth fixing: node/lambda.rs's
+        // LambdaDef literal (compile) and image/defs.rs's (def_decode) are one struct
+        // built in two files with runtime defaults in both (no_loop, captures;
+        // recursion and param_calls start empty on one path and carry decoded values on
+        // the other, so a constructor needs one argument for each); node/mod.rs Sample
+        // builds Banking::One { owed: false } and Banking::Each(Payments::new(id)) in
+        // both image_decode and compile; graphix-types abstract_value.rs builds
+        // GxAbstract with params_key: OnceLock::new() in both Pack::decode and wrap,
+        // and reference.rs builds Reference with _keep: None in decode and _keep: keep
+        // in wrap; graphix-package-core RtVar remains as agreed (its two paths hold
+        // CompileCtx and ExecCtx, so one constructor needs a context change first).
+        // Lower risk — every field is supplied by both paths, so nothing can diverge:
+        // fusion/emit/lower.rs SiteLayout and CtxWord, fusion/emit/record.rs
+        // RecordReloc and the RecordKind variants, and fusion/share.rs RegionPrint (the
+        // walk builds an empty one and fills it). x-dup-03 stays open for those.
         Ok(Self::with(spec, typ, etyp, source, i))
     }
 
