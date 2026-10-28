@@ -10,6 +10,12 @@ macro_rules! born_builtin {
             out: ::graphix_compiler::TagValue,
         }
 
+        impl $name {
+            fn with(once: ::graphix_package_core::FireOnce) -> Self {
+                Self { once, out: ::graphix_compiler::TagValue::phantom() }
+            }
+        }
+
         impl<R: ::graphix_compiler::Rt> ::graphix_compiler::BuiltIn<R> for $name {
             const EFFECT: ::graphix_compiler::effects::Effect =
                 ::graphix_compiler::effects::Effect::Sync;
@@ -23,7 +29,8 @@ macro_rules! born_builtin {
                 _from: &'c [::graphix_compiler::Node<R>],
                 _top_id: ::graphix_compiler::expr::ExprId,
             ) -> anyhow::Result<Box<dyn ::graphix_compiler::Apply<R>>> {
-                Ok(Box::new(Self { once: ::graphix_package_core::FireOnce::default(), out: ::graphix_compiler::TagValue::phantom() }))
+                let once = ::graphix_package_core::FireOnce::default();
+                Ok(Box::new(Self::with(once)))
             }
 
             fn image_decode(
@@ -32,7 +39,7 @@ macro_rules! born_builtin {
                 buf: &mut &[u8],
             ) -> Result<Box<dyn ::graphix_compiler::Apply<R>>, ::netidx_core::pack::PackError> {
                 let once = <::graphix_package_core::FireOnce as ::netidx_core::pack::Pack>::decode(buf)?;
-                Ok(Box::new(Self { once, out: ::graphix_compiler::TagValue::phantom() }))
+                Ok(Box::new(Self::with(once)))
             }
         }
 
