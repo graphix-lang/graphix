@@ -1845,6 +1845,15 @@ pub struct PatternNode<R: Rt> {
 }
 
 impl<R: Rt> PatternNode<R> {
+    fn with(
+        explicit_type_predicate: bool,
+        type_predicate: Type,
+        structure_predicate: StructPatternNode,
+        guard: Option<Held<R>>,
+    ) -> Self {
+        Self { explicit_type_predicate, type_predicate, structure_predicate, guard }
+    }
+
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.explicit_type_predicate.encode(buf)?;
         self.type_predicate.encode(buf)?;
@@ -1867,12 +1876,12 @@ impl<R: Rt> PatternNode<R> {
             true => Some(Held::image_decode(ctx, buf)?),
             false => None,
         };
-        Ok(PatternNode {
+        Ok(Self::with(
             explicit_type_predicate,
             type_predicate,
             structure_predicate,
             guard,
-        })
+        ))
     }
 
     /// The arm's coverage atoms: each or-alternative paired with its
@@ -2119,12 +2128,7 @@ impl<R: Rt> PatternNode<R> {
             .map(|g| compiler::compile(ctx, flags, g.clone(), &scope, top_id))
             .transpose()?
             .map(Held::new);
-        Ok(PatternNode {
-            explicit_type_predicate: explicit,
-            type_predicate,
-            structure_predicate,
-            guard,
-        })
+        Ok(Self::with(explicit, type_predicate, structure_predicate, guard))
     }
 
     /// Deliver the scrutinee's destructured leaves to this arm's binds,
