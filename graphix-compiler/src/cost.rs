@@ -523,6 +523,22 @@ impl<'a> Meter<'a> {
                 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q67,
                 // Auto forks that cost more than they save): yes, all three (the
                 // recommendation: all three.)
+                // 2026-10-28 claude: Not fixed. A rework covering this CR with
+                // c-cost-misc-01, x-perf-runtime-02 and x-parallel-01 (handler instances
+                // planned as a SlotSite, a fork's threshold raised by a decayed setup
+                // overhead, four strict losses before a site goes serial, hysteresis on
+                // the sampling schedule) was built and measured, and dropped: pinned to
+                // cores 0-11, --no-fusion, mixed.gx (a recursion whose depth alternates
+                // 0 and 9 per cycle) took 1.53 s with the rework's first two rounds and
+                // 1.42 s with all three, against 1.03 s on main; fade.gx gained
+                // 0.02-0.04 s. The cause is the cost model, not the loss rule (which
+                // fired at most 40 times a run): a sample taken while a child forked
+                // counts only as a lower bound, which inflates a recursion's upper
+                // levels, so they fork about twice as often and the level below them
+                // almost never. A next attempt should keep main's nested samples or
+                // measure against them on mixed.gx. The patches and the benchmark
+                // scripts: ~/tmp/grok-forkcost/ and ~/tmp/grok-forkcost/bench/
+                // (run1.sh, batch.sh, p/mixed.gx, p/fade.gx).
                 m.sampler.sampled(m.settled, changed);
                 let pays = Splits::Weighted { prefix: &m.prefix, t: cal.t }
                     .split(0, n)
@@ -746,6 +762,23 @@ impl SlotSite {
                     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2,
                     // q67, Auto forks that cost more than they save): yes, all three
                     // (the recommendation: all three.)
+                    // 2026-10-28 claude: Not fixed. A rework covering this CR with
+                    // c-cost-misc-01, x-perf-runtime-02 and x-parallel-01 (handler
+                    // instances planned as a SlotSite, a fork's threshold raised by a
+                    // decayed setup overhead, four strict losses before a site goes
+                    // serial, hysteresis on the sampling schedule) was built and
+                    // measured, and dropped: pinned to cores 0-11, --no-fusion, mixed.gx
+                    // (a recursion whose depth alternates 0 and 9 per cycle) took 1.53 s
+                    // with the rework's first two rounds and 1.42 s with all three,
+                    // against 1.03 s on main; fade.gx gained 0.02-0.04 s. The cause is
+                    // the cost model, not the loss rule (which fired at most 40 times a
+                    // run): a sample taken while a child forked counts only as a lower
+                    // bound, which inflates a recursion's upper levels, so they fork
+                    // about twice as often and the level below them almost never. A next
+                    // attempt should keep main's nested samples or measure against them
+                    // on mixed.gx. The patches and the benchmark scripts:
+                    // ~/tmp/grok-forkcost/ and ~/tmp/grok-forkcost/bench/ (run1.sh,
+                    // batch.sh, p/mixed.gx, p/fade.gx).
                     SlotPlan::Fork { grain: grain(cal, *est, n, RANGES_PER_WORKER) }
                 }
             }
