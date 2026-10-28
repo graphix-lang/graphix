@@ -2591,6 +2591,17 @@ fn no_attribute_stands_inside_a_splice() {
     parse_one("\"\"\"a \\[1 + 1] b\"\"\"").unwrap();
 }
 
+// a `///` ending a line is refused as the doc comment it is, wherever a
+// `//` may end one
+#[test]
+fn a_doc_comment_never_ends_a_line() {
+    let msg = parse_program("let a = [1, /// first\n 2];\na");
+    assert!(
+        msg.contains("`///` is a doc comment, legal only in a .gxi interface file"),
+        "{msg}"
+    );
+}
+
 // a `//` that starts its line is never the comment ending the line above,
 // whatever the item before it consumed
 #[test]

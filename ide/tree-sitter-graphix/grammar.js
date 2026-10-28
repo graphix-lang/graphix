@@ -148,12 +148,12 @@ module.exports = grammar({
     //   1. a bare `//` (empty comment terminating at EOL)
     //   2. `//` followed by a non-slash, non-newline char and any rest
     //
-    // The non-slash third character keeps line_comment off `///foo`:
-    // the external doc_comment takes it where a doc is legal (before an
-    // interface item or a trait method, on a line of its own), and
-    // anywhere else it is `//` and then an error, as the graphix parser
-    // refuses it.
-    // CR claude for claude: [bug/low] graphix takes `///` ending a list item's line (`1,
+    // The non-slash third character keeps line_comment off `///foo`: the
+    // external doc_comment takes it where a doc is legal (before an
+    // interface item or a trait method, on a line of its own). Anywhere
+    // else a `///` is an ERROR here and the graphix parser refuses it
+    // too, ending a line after code included.
+    // XCR claude for claude: [bug/low] graphix takes `///` ending a list item's line (`1,
     // /// first`) as a plain end-of-line comment: eol_comment takes `//` and any text.
     // It refuses the same `///` on a line of its own in a .gx (comment_line notes it is
     // a doc comment). This token refuses a third `/`, and the doc_comment scanner
@@ -165,6 +165,14 @@ module.exports = grammar({
     // (ide-tooling-05)
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q76, `///` at
     // the end of a line): yes, refuse (the recommendation: refuse it.)
+    // 2026-10-28 qwen: eol_comment now refuses a `///` ending a line itself, in
+    // comment_line's own words (note_reason "`///` is a doc comment, legal only in a
+    // .gxi interface file; a .gx file comments with //`, unexpected doc comment); until
+    // now it only declined one and the refusal surfaced incidentally from a later
+    // backtracked comment_line attempt. tree-sitter needs no grammar change: its
+    // line_comment already refuses a third `/`, so `1, /// first` is an ERROR there and
+    // in graphix alike; the stale comment above the token now says so. Pin:
+    // parser/test.rs a_doc_comment_never_ends_a_line.
     line_comment: $ => token(choice(
       '//',
       seq('//', /[^\/\n]/, optional(/[^\n]*/)),

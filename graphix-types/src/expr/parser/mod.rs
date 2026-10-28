@@ -717,7 +717,8 @@ const COMMA_WHY: &str = "a `,` separates this item from the one before";
 const SEMI_WHY: &str = "a `;` separates this statement from the one before";
 
 /// A `//` comment ending a line after code, its text kept verbatim. One
-/// that starts its line stands below, and a `///` is a doc.
+/// that starts its line stands below, and a `///` is a doc and ends no
+/// line.
 fn eol_comment<I>() -> impl Parser<I, Output = Option<ArcStr>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -731,9 +732,20 @@ where
                 string("//"),
                 optional(attempt(token('/').skip(not_followed_by(token('/'))))),
             ))
-            .then(|(pos, _, doc)| match doc.is_none() && !grow::starts_line(pos) {
-                true => line_text().left(),
-                false => unexpected_any("comment").right(),
+            .then(|(pos, _, doc)| match doc {
+                Some(_) => {
+                    grow::note_reason(
+                        pos,
+                        None,
+                        CompactString::const_new(
+                            "`///` is a doc comment, legal only in a .gxi interface \
+                             file; a .gx file comments with `//`",
+                        ),
+                    );
+                    unexpected_any("doc comment").right()
+                }
+                None if grow::starts_line(pos) => unexpected_any("comment").right(),
+                None => line_text().left(),
             }),
     ))
     .map(|t: Option<CompactString>| t.map(|t| ArcStr::from(t.as_str())))
