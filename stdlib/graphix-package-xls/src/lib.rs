@@ -345,6 +345,15 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     // red-before-fix claim. cargo test -p graphix-package-xls --offline --lib: 12 passed.
     // mdbook build -d ../docs/book: passed. The xls allocation risk remains intentionally
     // unfixed under the ruling.
+    // 2026-10-28 codex: Renamed the bounded pin to
+    // xls_sparse_cells_span_the_full_bounding_box. It verifies the 256x256 range
+    // dimensions, two populated cells and their values; it does not observe backing
+    // allocation or when it happens. UPSTREAM.md now states that limit explicitly and
+    // attributes the eager-allocation claim to the reader implementation and the
+    // previously recorded memory-limited probe. No allocation regression is claimed for
+    // this pin, and no failing-before production-fix claim applies to this clarification.
+    // cargo test -p graphix-package-xls --offline --lib: all 12 passed. The accepted xls
+    // opening-memory limitation remains unchanged.
     if let Ok(mut zip) = ZipArchive::new(rs.clone())
         && let Err(e) = check_ods(&mut zip).and_then(|()| check_shared_strings(&mut zip))
     {
@@ -536,7 +545,7 @@ mod test {
     use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
     #[test]
-    fn xls_sparse_cells_open_as_a_dense_range() {
+    fn xls_sparse_cells_span_the_full_bounding_box() {
         let bytes = Bytes::from_static(include_bytes!("../tests/data/sparse.xls"));
         assert_eq!(bytes.len(), 5632);
         let mut workbook = open(Cursor::new(bytes)).unwrap();
