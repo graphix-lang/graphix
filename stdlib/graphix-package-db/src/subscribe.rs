@@ -170,6 +170,18 @@ pub(crate) struct DbSubscribe {
     out: TagValue,
 }
 
+impl DbSubscribe {
+    fn with(args: CachedVals) -> Self {
+        Self {
+            args,
+            bind_id: BindId::new(),
+            abort: None,
+            slept: WakeBit::default(),
+            out: TagValue::phantom(),
+        }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for DbSubscribe {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "db_subscription_new";
@@ -182,13 +194,7 @@ impl<R: Rt> BuiltIn<R> for DbSubscribe {
         from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(DbSubscribe {
-            args: CachedVals::new(from),
-            bind_id: BindId::new(),
-            abort: None,
-            slept: WakeBit::default(),
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(CachedVals::new(from))))
     }
 
     fn image_decode(
@@ -196,13 +202,8 @@ impl<R: Rt> BuiltIn<R> for DbSubscribe {
         _from: &[Node<R>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
-        Ok(Box::new(DbSubscribe {
-            args: CachedVals::image_decode(buf)?,
-            bind_id: BindId::new(),
-            abort: None,
-            slept: WakeBit::default(),
-            out: TagValue::phantom(),
-        }))
+        let args = CachedVals::image_decode(buf)?;
+        Ok(Box::new(Self::with(args)))
     }
 }
 
@@ -333,6 +334,12 @@ macro_rules! db_event_accessor {
             out: TagValue,
         }
 
+        impl $name {
+            fn with(top_id: ExprId, cached: CachedVals, data: Option<Type>) -> Self {
+                Self { top_id, cached, bind_id: None, data, out: TagValue::phantom() }
+            }
+        }
+
         impl<R: Rt> BuiltIn<R> for $name {
             const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin_name;
@@ -345,13 +352,9 @@ macro_rules! db_event_accessor {
                 from: &'c [Node<R>],
                 top_id: ExprId,
             ) -> Result<Box<dyn Apply<R>>> {
-                Ok(Box::new($name {
-                    top_id,
-                    cached: CachedVals::new(from),
-                    bind_id: None,
-                    data: data_target(&ctx.env, resolved),
-                    out: TagValue::phantom(),
-                }))
+                let cached = CachedVals::new(from);
+                let data = data_target(&ctx.env, resolved);
+                Ok(Box::new($name::with(top_id, cached, data)))
             }
 
             fn image_decode(
@@ -362,13 +365,7 @@ macro_rules! db_event_accessor {
                 let top_id = ExprId::decode(buf)?;
                 let cached = CachedVals::image_decode(buf)?;
                 let data = <Option<Type>>::decode(buf)?;
-                Ok(Box::new($name {
-                    top_id,
-                    cached,
-                    bind_id: None,
-                    data,
-                    out: TagValue::phantom(),
-                }))
+                Ok(Box::new($name::with(top_id, cached, data)))
             }
         }
 
