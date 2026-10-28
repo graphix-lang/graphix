@@ -1563,6 +1563,11 @@ impl<R: Rt> Qop<R> {
                 Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
                 Strip::Null => NULL_ERR.clone(),
             };
+            // an instance's operand may be narrower than its definition's
+            // (a callback's formal at a slot's element type): it raises nothing
+            if etyp.is_uninhabited() {
+                return Ok(());
+            }
             let etyp =
                 if rethrow { etyp } else { wrap!(self, fix_echain_typ(ctx, &etyp))? };
             join_raised(&ctx.env, handler, &etyp)?;

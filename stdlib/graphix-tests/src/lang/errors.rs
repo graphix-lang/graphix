@@ -1135,3 +1135,15 @@ run!(
     }"#,
     is(Value::I64(3))
 );
+
+// A function handed to a collection runs at the slot's element type, which
+// holds no error: its `?` raises nothing there.
+run!(
+    callback_narrower_than_its_raise,
+    r#"{
+        let h = |x: [i64, Error<`E>]| -> i64 x?;
+        catch(e) never(e);
+        array::fold(array::map([1, 2], h), 0, |acc, v| acc + v)
+    }"#,
+    is(Value::I64(3))
+);
