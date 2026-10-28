@@ -1111,6 +1111,20 @@ run!(
 );
 
 run!(
+    catch_ascription_refuses_rigid_union_raise,
+    r#"{
+        let run = 'e: [`A, `B] |r: Result<i64, 'e>| {
+            catch(e: Error<ErrChain<`A>>) never(e);
+            r? + 1
+        };
+        run(error(`A))
+    }"#,
+    refused(
+        "this error reaches a catch whose handler was checked to take Error<ErrChain<`A>>"
+    )
+);
+
+run!(
     catch_ascription_accepts_bounded_raise,
     r#"{
         let run = 'e: `A |r: Result<i64, 'e>| {

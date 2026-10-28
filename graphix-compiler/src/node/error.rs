@@ -197,6 +197,20 @@ impl<R: Rt> CatchAction<R> {
 // AGENTS.md; mdbook build passed. Broader checks will be reported to the
 // coordinator. The other block sharing this id remains open with a note
 // explaining its unrelated ruling.
+// 2026-10-28 codex: Follow-up pin
+// lang::errors::catch_ascription_refuses_rigid_union_raise covers the review's
+// c13.gx: a declared rigid 'e bounded by [`A, `B] raises into catch(e:
+// Error<ErrChain<`A>>), even though its only call supplies error(`A). It requires
+// the join_raised diagnostic, and the interp fixture checks both check-only and
+// build verdicts. Temporarily restoring the old guard that skips open types at a
+// sealed catch made all four modes fail (the program was accepted and timed out);
+// restoring the join check passes the pin. Commands: cargo test -p graphix-tests
+// --offline --lib catch_ascription_refuses_rigid_union_raise (0 passed, 4 failed
+// with the guard disabled); cargo test -p graphix-tests --offline --lib
+// lang::errors:: (259 passed after restoration). The supplied c13.gx also refuses
+// under --no-cache --check at r?'s join. Only the regression fixture changes; no
+// runtime or type-checking implementation change, and no semantics/documentation
+// change. The unrelated receipt-accounting CR sharing this id remains untouched.
 pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Result<()> {
     let (catch, _) = handler.id();
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
