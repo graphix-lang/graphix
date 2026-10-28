@@ -161,8 +161,8 @@ flags you can change the compilers behavior in this respect.
 
 The `$` operator goes in the same position as `?`, and is best described as "or
 never". If the expression on it's left is a non error, then `$` doesn't do
-anything, otherwise it logs the error at the `warn!` log level and returns
-nothing. This is a concise way of writing,
+anything, otherwise it returns nothing. It also produces warning diagnostics
+as described below. This is a concise way of writing,
 
 ```graphix,fragment
 select might_fail(1, 2, 3) {
@@ -177,10 +177,14 @@ can instead be written as,
 might_fail(1, 2, 3)$
 ```
 
-The `$` operator logs errors rather than silently discarding them, making it
-easier to debug issues while still allowing execution to continue. The log
-line names the site and the error, and is the same whether the expression
-runs in the interpreter or in a JIT-compiled kernel.
+A warning from `$` names the site and the error. In fused code, `$` and a
+`?` without a covering catch report when their error operand fires. These
+diagnostic messages can repeat or be absent: a guard can report even when
+an earlier arm selects the result, a constant error in an arm entered later
+can go unreported, and several depths of a native tail loop can share one
+report. Run with `--no-fusion` to inspect the interpreter's diagnostics.
+The error still produces no value, and a `?` covered by a catch follows the
+normal error propagation rules.
 
 ## ? and $ on Nullable Values
 

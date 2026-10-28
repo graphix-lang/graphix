@@ -207,7 +207,11 @@ datetime:"2020-01-01T00:00:00Z"  duration:1.0s  duration:500.ms   // units: ns u
 Unchecked `+ - *` wrap; integer `/` by zero and `MIN / -1` bottom, and
 `x % -1` is 0 (only the node-walk logs those diagnostics); checked
 (`+?` …) returns `[T, Error<`ArithError(string)>]`. `$` and a
-handler-less `?` log the error they swallow from both engines. `&&`/`||` are strict
+handler-less `?` report fired error operands. Inside fused code the reports
+can repeat or be absent: an unreached guard may report, a constant error in
+an arm first entered later may never report, and native tail depths may share
+one report. Use `--no-fusion` to inspect the node-walk's diagnostics.
+`&&`/`||` are strict
 (`false && ⊥ = ⊥`). Both operands of an operator are ONE type (cast one
 side). Comparison is exact: `x == 3` over `x: [i64, null]` and `` v ==
 `Red `` over `` [`Green, `Red] `` are refused — `opt::is_some`,
@@ -527,8 +531,8 @@ Inside `seq`, use `try … with`.
 `x$` is "or never": the success value, or bottom on an error. It is the
 one-token spelling of `select x { error as _ => never(), v => v }` and
 of `{ catch(e) never(); x? }` — never write either of those. A dropped
-error is logged at warn with its site, in both engines (`RUST_LOG=warn`
-and `--log-dir` in the shell). Use `$` when the failure is an expected
+error can be logged at warn with its site (`RUST_LOG=warn` and
+`--log-dir` in the shell); the fusion limits in Operators above apply. Use `$` when the failure is an expected
 non-event (a missing optional file); use `catch` when something must
 be told.
 

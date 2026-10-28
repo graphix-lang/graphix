@@ -747,9 +747,9 @@ node graph IS the IR — there is no parallel typed IR
   missed asleep or to a constant at its first entry, and a kernel remembers
   neither, so it node-walks (`lowering::arm_raise_blocker`), as does a
   guard whose handler-ful raise or performing call does not fire with
-  its arm's binds (`lowering::unfollowed_guard`): a kernel runs every
-  guard, those binds bottom where unreached, and the node-walk only
-  those the chain reaches; only a
+  its arm's binds (`lowering::unfollowed_guard`): a kernel runs its
+  prologue guards even where unreached, with those binds bottom; the
+  node-walk runs only guards the chain reaches; only a
   `never(..)` arm is a
   standing bottom (its args are still emitted and consumed), any other
   bottom-typed arm body runs; everything else — stateful/effectful builtins, `connect`,
@@ -951,8 +951,12 @@ node graph IS the IR — there is no parallel typed IR
   (`+?` …) yields a catchable `ArithError` naming its cause, except
   over floats, which follow IEEE and never fail (inf, NaN), unchecked
   `+ - *` wrap, integer div0 and `MIN / -1` bottom, `x % -1` is 0; indexing is bounds-checked through shared helpers on
-  both backends; `$` and handler-less `?` log a swallowed error from
-  both backends; unchecked-arith diagnostics, `sum`/`product`/`divide`'s
+  both backends; `$` and handler-less `?` report a fired error operand,
+  with no report-count or at-least-once guarantee inside a fused region:
+  an unreached prologue guard may report, a constant in a late arm may
+  never report, and native tail depths may share one report
+  (`design/strict_fusion.md`; `tests/fusion_diagnostics.rs`).
+  Unchecked-arith diagnostics, `sum`/`product`/`divide`'s
   included, are node-walk-only (debug with `--no-fusion`).
 - **Emit contracts** (`design/distributed_jit.md`): effects de-fuse,
   never silently skip; owned select-arm binds drop at every arm exit

@@ -38,6 +38,24 @@ arm missed asleep, which the node-walk re-delivers at entry, or a
 constant, which fires at the arm's first entry only, would print on one
 engine only. A tail recursion that prints by its formals is one native loop.
 
+Swallowed-failure diagnostics (`$` and `?` without a covering handler)
+follow a fired error operand inside a kernel. They carry neither a
+report-count nor an at-least-once guarantee across the two engines, and
+remain eligible for fusion. Prologue guards dominate the selection chain
+and may report even when an earlier arm claims the value; their bind masks
+still prevent unreached binds from becoming values. A constant error in
+an arm first entered after the kernel's birth may never fire there and
+never report. Native tail depths may share one report.
+
+`stdlib/graphix-tests/tests/fusion_diagnostics.rs` checks values, report
+counts, and retained native calls in all four modes:
+
+| Swallowed failure | Node-walk reports | Fused reports |
+| --- | ---: | ---: |
+| Unreached guard over four firing inputs | 0 | 4 |
+| Constant error in a late arm | 1 | 0 |
+| Constant error over six tail depths | 6 | 1 |
+
 Eric's ruling: "Complexity needs to pay rent, and this whack of
 complexity can't afford to live in our compiler." The machinery that
 went was deleted outright rather than kept behind a hatch — it is all
