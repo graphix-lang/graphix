@@ -1011,6 +1011,16 @@ impl FnType {
     // ids added under one copy would reach the other. The fact the fix caches must cover
     // the lambda ids too: share only a nested fn type whose LambdaIds set is closed. Or
     // the copy must instantiate the set and nothing else.
+    // 2026-10-28 claude: Profiled (perf, quick build, 2000 lets, 8.4 s, all of it
+    // Typecheck0): the time is spread over several whole-type walks per definition,
+    // cell_constraints 10%, settle::reached 8%, collect_position_tvars 8%,
+    // would_cycle_seen_inner (occurs check) 6%, TVar::binding 6%, reset_memo/freshen 5%,
+    // position_cells 3%, seed_refs_seen 3%, named_defs 3%. The nested fn types are not
+    // TVar-free: each closure's result is a bound cell, so the 'holds no TVar' fact
+    // proposed above never applies. A fix needs a checked signature's resolved, closed
+    // form (bound cells replaced by their bindings once its definition's check ends)
+    // that every one of these walks can stop at, plus the lambda_ids question above.
+    // Left open: only programs that nest a thousand closures reach it.
     pub fn generalize(&self, depth: u32) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
