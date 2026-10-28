@@ -48,8 +48,8 @@ pub use graphix_package_core::testing::Mode;
 
 /// The fork mode the fuzzer runs `mode` in: the node-walk's parallel runs
 /// fork every fork point; the JIT's run the default mode over a tiny
-/// fixed threshold ([`AUTO_T`]), so every site probes and then forks
-/// along `Auto`'s own shapes; the serial modes fork nothing, whatever
+/// base wake threshold ([`AUTO_T`]), exercising `Auto`'s probes, shapes
+/// and feedback; the serial modes fork nothing, whatever
 /// `GRAPHIX_PAR` says.
 pub fn fuzz_par(mode: Mode) -> ParMode {
     match mode {
@@ -59,8 +59,8 @@ pub fn fuzz_par(mode: Mode) -> ParMode {
     }
 }
 
-/// The fork threshold, in ticks, the fuzzer fixes for its `Auto` runs:
-/// small enough that every fork point pays.
+/// The base wake threshold, in ticks, fixed for the fuzzer's `Auto` runs.
+/// Sites still account for observed overhead and unprofitable forks.
 pub const AUTO_T: u64 = 4;
 
 /// `GRAPHIX_FUZZ_FORK=0` disables the forced-fork runs (default on).
@@ -177,17 +177,24 @@ impl fmt::Display for Rendered<'_> {
     }
 }
 
-/// What stopped a contained run. They agree with each other: which fires
-/// first is a race between the engines' descent speeds.
+/// What stopped a run. Runtime limits agree with one another because
+/// the first one reached depends on descent speed; construction agrees
+/// only with construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Containment {
     Deadline,
     StackBudget,
     ActivationBudget,
-    /// The runtime's construction, where the program compiles and is
-    /// checked, outlived the deadline: the same checker in every run, so
-    /// it is a finding of its own once confirmed (`Pair::Construction`).
+    /// Runtime construction (compilation, linking or image restore)
+    /// outlived the deadline. A confirmed node-walk construction timeout
+    /// is a finding of its own (`Pair::Construction`).
     Compile,
+}
+
+impl Containment {
+    fn agrees_with(self, other: Self) -> bool {
+        matches!(self, Self::Compile) == matches!(other, Self::Compile)
+    }
 }
 
 /// Strip the counters fresh names carry, so drift between two independent
@@ -251,7 +258,7 @@ impl Outcome {
             (RuntimeErr(_), RuntimeErr(_)) => true,
             // a node-walk budget beside a JIT deadline is settled by
             // `Oracle::settle`, which knows the engines
-            // CR claude for claude: [risk/medium] Two timeouts agree here whatever
+            // XCR claude for claude: [risk/medium] Two timeouts agree here whatever
             // stopped each side, a Containment::Compile included. A construction
             // timeout is no race between descents: on the JIT side it is fusion or the
             // link hanging or going superlinear, on a warm run a restore that never
@@ -265,7 +272,46 @@ impl Outcome {
             // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q72, A
             // construction timeout in the fuzzer): yes, compile only with compile (the
             // recommendation: Compile only with Compile.)
-            (Timeout(_), Timeout(_)) => true,
+            // 2026-10-28 codex: Compile containment now agrees only with Compile, at
+            // every comparison strength; mixed construction/runtime timeouts are Unsure
+            // rather than a trusted Contained verdict and retry the construction side
+            // at the slow budget. A successful retry is checked again against the
+            // normal runtime-budget containment rules. Updated the fuzzer record and
+            // rules, regenerated AGENTS, and corrected the Auto-threshold description
+            // to include the preceding cost-feedback change. Pins:
+            // tests::construction_timeouts_only_agree_with_construction covers all
+            // timeout pairs at all strengths and their verdicts;
+            // tests::mixed_construction_timeouts_retry_the_construction_side seeds
+            // mixed outcomes in both directions, proves the construction run is
+            // actually remade, and preserves containment when a recovered JIT outruns
+            // the node-walk budget. Both pins failed before the fix, then passed (cargo
+            // test -p graphix-fuzz --offline --lib construction_timeouts). Full cargo
+            // test -p graphix-fuzz --offline --lib: 127 passed after the related
+            // x-builtin-effects-02 string-return fixture correction. Final
+            // whole-session verification: cargo test -p graphix-tests --offline --lib:
+            // 10971 passed, 447 socket-dependent failures, 3 ignored; no new failures
+            // beyond the prior socket failures. Integration targets
+            // fusion_review/fusion_diagnostics/runtime_cost/handler_cost/queue_credits:
+            // 126 passed. All other touched crate lib targets passed except
+            // graphix-package-sys::loader::test::a_miss_records_its_probe (resolver
+            // server shutdown under the socket restriction): compiler 60, core 7, re
+            // 28, sys 28 passed; array/str/map/list/json/toml/hbs/pack have no lib
+            // tests. Final cargo run -p graphix-fuzz --offline -- regress: regression
+            // corpus 552 programs, 0 regressions; outcome manifest 552 programs, 0
+            // mismatches; fusion manifest 552 programs, 0 mismatches. cargo fmt --all
+            // and git diff --check passed. No actual hanging compiler was induced: the
+            // retry pin supplies the timed-out outcomes and runs the real retry path.
+            (Timeout(a), Timeout(b)) => a.agrees_with(*b),
+            _ => false,
+        }
+    }
+
+    fn needs_slow_retry(&self, other: &Self) -> bool {
+        use Outcome::Timeout;
+        match (self, other) {
+            (Timeout(Containment::Compile), Timeout(c)) => *c != Containment::Compile,
+            (Timeout(_), Timeout(_)) => false,
+            (Timeout(_), _) => true,
             _ => false,
         }
     }
@@ -937,8 +983,8 @@ pub enum Strength {
     Exact,
     /// Each epoch's settled value.
     Final,
-    /// Only what does not depend on values: both ran (a trace or a
-    /// timeout), or both refused alike.
+    /// Only what does not depend on values: two traces, compatible
+    /// containments, or matching rejections.
     Kind,
 }
 
@@ -1547,8 +1593,8 @@ pub enum Pair {
     Check,
     /// Serial node-walk (`reference`) vs a forked run (`tested`): the
     /// node-walk with every fork forced (`Mode::Par`), or the fused JIT,
-    /// kernel loops included, at `Auto` over [`AUTO_T`], so every site
-    /// probes and forks (`Mode::JitPar`).
+    /// kernel loops included, at `Auto` over [`AUTO_T`], exercising its
+    /// probes and fork feedback (`Mode::JitPar`).
     Par(Mode),
     /// The node-walk walking every boundary (`reference`) vs the pruned
     /// node-walk (`tested`): skipping a boundary changed the program
@@ -1708,7 +1754,7 @@ impl Verdict {
         use Outcome::*;
         match (a, b) {
             (Trace(_), Trace(_)) => Verdict::Ran,
-            (Timeout(_), Timeout(_)) => Verdict::Contained,
+            (Timeout(a), Timeout(b)) if a.agrees_with(*b) => Verdict::Contained,
             (CompileErr(_) | RuntimeErr(_), CompileErr(_) | RuntimeErr(_)) => {
                 Verdict::Rejected
             }
@@ -2285,6 +2331,35 @@ impl<'a> Oracle<'a> {
         None
     }
 
+    fn runtime_contained(&self, pair: Pair, a: &Outcome, b: &Outcome) -> bool {
+        let (ra, rb) = pair.runs().expect("a comparison");
+        let reason = if ra.mode.node_walk()
+            && !rb.mode.node_walk()
+            && matches!(
+                a,
+                Outcome::Timeout(
+                    Containment::StackBudget | Containment::ActivationBudget
+                )
+            )
+            && matches!(b, Outcome::Trace(_))
+        {
+            "the node-walk exceeded its stack or activation budget; the kernel's value stands unrefuted"
+        } else if matches!(pair, Pair::Par(_))
+            && matches!(
+                (a, b),
+                (Outcome::Timeout(Containment::StackBudget), Outcome::Trace(_))
+                    | (Outcome::Trace(_), Outcome::Timeout(Containment::StackBudget))
+            )
+        {
+            "the stack budget stopped one schedule and not the other"
+        } else {
+            return false;
+        };
+        eprintln!("CONTAINED — {reason}; not recorded");
+        eprintln!("    program: {}", self.code.replace('\n', "\\n"));
+        true
+    }
+
     /// One comparison through the confirm ladder.
     async fn settle(&mut self, pair: Pair) -> Settled {
         let (ra, rb) = pair.runs().expect("a comparison");
@@ -2336,24 +2411,7 @@ impl<'a> Oracle<'a> {
             return Settled::Agree;
         }
         self.confirmed = true;
-        // The node-walk's frame per recursion level is kilobytes where a
-        // kernel's is words, so a depth only the kernel reaches is
-        // containment: the kernel's value stands unrefuted.
-        if ra.mode.node_walk()
-            && !rb.mode.node_walk()
-            && matches!(
-                a,
-                Outcome::Timeout(
-                    Containment::StackBudget | Containment::ActivationBudget
-                )
-            )
-            && matches!(b, Outcome::Trace(_))
-        {
-            eprintln!(
-                "CONTAINED — the node-walk exceeded its stack or activation budget; the \
-                 kernel's value stands unrefuted, not recorded"
-            );
-            eprintln!("    program: {}", self.code.replace('\n', "\\n"));
+        if self.runtime_contained(pair, &a, &b) {
             return Settled::Drop;
         }
         // `#[tail_recursive]`'s loop is the JIT's assertion: the node-walk
@@ -2369,36 +2427,25 @@ impl<'a> Oracle<'a> {
             eprintln!("    program: {}", self.code.replace('\n', "\\n"));
             return Settled::Drop;
         }
-        // The stack budget charges by thread (a forked part runs on a larger
-        // stack than the serial cycle), so whether it stops a deep native
-        // recursion depends on the fork schedule: containment either way.
-        if matches!(pair, Pair::Par(_))
-            && matches!(
-                (&a, &b),
-                (Outcome::Timeout(Containment::StackBudget), Outcome::Trace(_))
-                    | (Outcome::Trace(_), Outcome::Timeout(Containment::StackBudget))
-            )
-        {
-            eprintln!(
-                "CONTAINED — the stack budget stopped one schedule and not the other; \
-                 not recorded"
-            );
-            eprintln!("    program: {}", self.code.replace('\n', "\\n"));
-            return Settled::Drop;
-        }
-        // A Timeout beside anything else measures the budget under load:
-        // that side again at the slow budget.
-        let one_sided =
-            matches!(a, Outcome::Timeout(_)) != matches!(b, Outcome::Timeout(_));
-        let budget = if one_sided { slow_budget(self.timeout) } else { self.timeout };
-        if one_sided {
-            let run = if matches!(a, Outcome::Timeout(_)) { ra } else { rb };
+        let retry = if a.needs_slow_retry(&b) {
+            Some(ra)
+        } else if b.needs_slow_retry(&a) {
+            Some(rb)
+        } else {
+            None
+        };
+        let budget =
+            if retry.is_some() { slow_budget(self.timeout) } else { self.timeout };
+        if let Some(run) = retry {
             let cpu = self_cpu();
             self.remake(run, budget).await;
             let burned = self_cpu().saturating_sub(cpu);
             (a, b) = (self.get(ra).clone(), self.get(rb).clone());
             if a.agrees_at(&b, s) {
                 return Settled::Agree;
+            }
+            if self.runtime_contained(pair, &a, &b) {
+                return Settled::Drop;
             }
             // A wedge sits at ~0% CPU; seconds of burn are an honestly slow
             // reference, which refutes nothing, unless it burns them inside
@@ -5799,6 +5846,72 @@ fn confirmed_flips(fresh: Vec<Flip>, batch: &[String]) -> (Vec<Flip>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn construction_timeouts_only_agree_with_construction() {
+        use Containment::{ActivationBudget, Compile, Deadline, StackBudget};
+        let kinds = [Compile, Deadline, StackBudget, ActivationBudget];
+        let agrees = [
+            [true, false, false, false],
+            [false, true, true, true],
+            [false, true, true, true],
+            [false, true, true, true],
+        ];
+        for (i, a) in kinds.iter().copied().enumerate() {
+            for (j, b) in kinds.iter().copied().enumerate() {
+                let (left, right) = (Outcome::Timeout(a), Outcome::Timeout(b));
+                for strength in [Strength::Exact, Strength::Final, Strength::Kind] {
+                    assert_eq!(
+                        left.agrees_at(&right, strength),
+                        agrees[i][j],
+                        "{a:?} beside {b:?} at {strength:?}"
+                    );
+                }
+                assert_eq!(
+                    Verdict::of(&left, &right),
+                    if agrees[i][j] { Verdict::Contained } else { Verdict::Unsure }
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_construction_timeouts_retry_the_construction_side() {
+        for runtime in [
+            Containment::Deadline,
+            Containment::StackBudget,
+            Containment::ActivationBudget,
+        ] {
+            for compile_left in [false, true] {
+                let pair = Pair::Engine;
+                let (ra, rb) = pair.runs().unwrap();
+                let mut oracle =
+                    Oracle::new("1", OracleTier::Exact, Duration::from_secs(2), None);
+                let (compile, running) =
+                    (Outcome::Timeout(Containment::Compile), Outcome::Timeout(runtime));
+                let (a, b) =
+                    if compile_left { (compile, running) } else { (running, compile) };
+                oracle.runs.extend([(ra, a), (rb, b)]);
+                let settled = oracle.settle(pair).await;
+                assert!(!matches!(settled, Settled::Agree));
+                if !compile_left && runtime != Containment::Deadline {
+                    assert!(
+                        matches!(settled, Settled::Drop),
+                        "a recovered JIT beside a node-walk budget is still containment"
+                    );
+                }
+                assert!(oracle.confirmed);
+                assert!(
+                    matches!(
+                        oracle.get(if compile_left { ra } else { rb }),
+                        Outcome::Trace(_)
+                    ),
+                    "the construction side must be remade"
+                );
+                assert_eq!(oracle.verdict(), Verdict::Unsure);
+            }
+        }
+    }
 
     #[test]
     fn render_prints_composites_in_graphix_syntax() {

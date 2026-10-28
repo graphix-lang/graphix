@@ -166,7 +166,7 @@ flake.
 
 **`Timeout` narrowly means a wedged evaluator** — or a construction
 that outlived the deadline (`Timeout(Compile)`: the program's compile
-and check, which every run shares, so the node-walk's, confirmed at the
+and check, linking or restore; the node-walk's, confirmed at the
 slow budget, is a finding of its own, `Pair::Construction`), or a
 runaway the stack or activation budget aborted: any failed request to a runtime
 whose `Control` reports `budget_aborted()` is `Timeout(ActivationBudget)`
@@ -174,8 +174,13 @@ or `Timeout(StackBudget)` by the budget the abort recorded
 (`Control::aborted_by`; the driver maps it, in one place), because the deadline and the budget are the same
 containment and which one stops an unbounded descent first is a race
 between the engines' descent speeds, not a property of the program.
-Timeout==Timeout is AGREE whatever stopped each side, but for a
-node-walk budget beside a JIT `Deadline`: the JIT's native loop counts
+Runtime timeouts agree with other runtime timeouts. `Compile` agrees only
+with `Compile`; beside a runtime timeout it retries the construction side
+at the slow budget, and a successful retry goes through the ordinary
+containment rules. Such a mixed pair is never a trusted `contained`
+verdict. Pins: `tests::construction_timeouts_only_agree_with_construction`
+and `tests::mixed_construction_timeouts_retry_the_construction_side`.
+There is also a special case for a node-walk budget beside a JIT `Deadline`: the JIT's native loop counts
 no activations, so the node-walk aborts any recursion deeper than its
 budget whether or not it ends; the node-walk runs again at the slow
 budget with four times the activations, a trace there is a divergence
@@ -283,7 +288,7 @@ batched subject; the individual path always runs them.
 compared with the serial node-walk: the node-walk with every fork point
 forked (`ParMode::Force`), the JIT in the default mode (`ParMode::Auto`)
 over a threshold the fuzzer fixes tiny (`cost::fix_calibration`,
-`AUTO_T`), so every site probes and then forks along `Auto`'s own shapes
+`AUTO_T`), exercising `Auto`'s probes, fork shapes and feedback
 (a probe's first items in the parent, weighted ranges, a loop's chunks).
 `GRAPHIX_FUZZ_FORK=0` disables them. `GRAPHIX_FUZZ_PAR` is a different
 knob, the number of checks in flight (default 8 per core; `soak.sh` sets

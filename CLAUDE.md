@@ -951,7 +951,10 @@ cycle, across workers; the compiler never pins threads.
   `Excluded` markers (`oracle_tier`) never record a divergence.
   Soaks run under `nice -n 19` from a campaign-private copy of the
   binary with output outside the repo; `graphix-fuzz/fleet.sh` deploys.
-  A stack-budget abort is a `Timeout` outcome (containment).
+  A stack-budget abort is a `Timeout` outcome (containment). Construction
+  timeouts agree only with construction timeouts; beside a runtime timeout
+  the construction side is retried at the slow budget and the pair cannot
+  be recorded as a trusted containment (`design/graphix_fuzz.md`).
 - A semantics change is not landed until it has soaked; gates are not
   the fuzzer.
 
@@ -1297,7 +1300,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_ABORT_ON_NO_MATCH=1` | an abort at a select no arm matched, a coverage hole (both engines report it once; the fuzzer's children set it, so a hole is a crash finding) |
 | `GRAPHIX_PAR_AUDIT=1` | a panic at a join whose right branch read what its left sibling published |
 | `GRAPHIX_PRUNE=audit` | walk pruning walks every boundary and panics where a skip would have changed a production or published (`off` walks everything) |
-| `GRAPHIX_PAR_T=<ticks>` | the fork threshold fixed in place of the calibration (a tiny one makes every `Auto` site probe and fork) |
+| `GRAPHIX_PAR_T=<ticks>` | the base wake threshold fixed in place of calibration; `Auto` still accounts for measured branch overhead and unprofitable forks |
 | `GRAPHIX_DBG_PAR=1` | the fork threshold's calibration and each kernel loop forked |
 | `GRAPHIX_NO_OUTLINE=1` | kernel loops emitted inline, never as chunks (A/B for the outlining) |
 | `GRAPHIX_TASK_AUDIT=1` | a backtrace at every write by a compile task to a cell or var an earlier task created (statement elaboration must write none) |
