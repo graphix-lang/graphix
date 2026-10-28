@@ -302,6 +302,17 @@ fn serialize_leaf<S: Serializer>(value: &Value, s: S) -> Result<S::Ok, S::Error>
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q45, How
         // json writes a decimal): yes, exact number (the recommendation: exact
         // number.)
+        // 2026-10-27 codex: Finding 7 reproduced with the earlier exact-number writer:
+        // decimal:1.10 in [decimal, f64] writes 1.10 and reads as f64, failing the
+        // temporary decimal_union_round_trip_probe in all four modes. Reverted the
+        // candidate writer. Exact JSON numbers erase decimal versus float identity;
+        // choosing decimal first would instead change original f64 members. The q42(a)
+        // format-specific target restriction is needed before this can satisfy the
+        // required round-trip rule. That restriction is blocked by the brief's ban on
+        // changing the json::read signature used in ../netidx; a blanket Concrete
+        // restriction would also break pack/db. No production change for this CR; it
+        // remains open pending coordination of q42(a). Probe and results:
+        // /tmp/decimal-union-probe.rs and /tmp/cr-decimal-union.log.
         Value::Decimal(d) => s.collect_str(d),
         Value::String(st) => s.serialize_str(st),
         Value::Bytes(b) => s.collect_seq(b.iter()),
