@@ -264,6 +264,53 @@ impl<R: Rt> ArrayRef<R> {
         // subscribe.rs DbSubscribe and tree.rs TreeTypes/Database. ImagedRefs in
         // callsite.rs has a literal only in its decode, so nothing to share there.
         // x-dup-03 stays open for those.
+        // 2026-10-28 qwen: Ten node kinds in graphix-compiler/src/node/mod.rs and
+        // twelve builtin kinds in stdlib now build through one constructor shared by
+        // their compile/init path and image_decode, one commit per file. mod.rs:
+        // ExplicitParens::with, TypeDef::with, Block::with (new and compile both call
+        // it, so lets_of is computed once), StringInterpolate::with (fork still decoded
+        // last), Connect::with, ConnectDeref::with (each path keeps its own
+        // ctx.record_ref), TypeCast::with (compile keeps src_ref false and check_keys
+        // true, decode computes both), Never::with, Any::with, Sample::with. stdlib:
+        // rand Rand::with(args), Pick::new and Shuffle::new (neither encodes anything);
+        // sys io.rs IoLines::with(var); core queuefn.rs QueueState::with(pop_count,
+        // count_ref, last_written_depth) with new() delegating to it, and
+        // QueueFn::with(state, fid, ftyp, top_id, scope); array Group::with(pred); db
+        // subscribe.rs DbSubscribe::with(args) plus the db_event_accessor wrapper's
+        // with(top_id, cached, data), which covers DbOnChange, DbOnInsert and
+        // DbOnRemove; db tree.rs TreeTypes::with(key, key_str, val_str) and
+        // OpenTreeEv::with(types), used by Default, init and image_decode. This batch's
+        // scan found one more of the same class and fixed it: sys dirs_mod.rs
+        // born_builtin! builds its wrapper through with(once), covering the 19 dirs
+        // builtins and sys_args. The db package's tests ran once with both db files
+        // changed. Skipped, as agreed: core lib.rs RtVar. Its two literals hold no
+        // defaulted runtime field, and one constructor would have to serve both
+        // contexts -- new takes &mut CompileCtx and defers the registration through
+        // record_ref, image_decode takes &mut ExecCtx and registers it with the runtime
+        // -- so it needs a context change first, not just a shared literal. Needed
+        // nothing: db tree.rs Database is built once, in try_open_db; queuefn.rs
+        // WrapperApply is built once, in build_wrapper_apply, and its image_encode
+        // refuses with NOT_QUIESCENT. Encoded fields and byte order are unchanged
+        // everywhere, so no image format bump. Tests (sandbox refuses sockets; lists
+        // compared before and after, RUSTC_WRAPPER=""): graphix-compiler --lib 54
+        // passed both runs; graphix-package-core 7; graphix-package-rand 28;
+        // graphix-package-array 0 (no unit tests); graphix-package-db 28;
+        // graphix-package-sys 31 passed 1 failed both runs, the same test each time
+        // (loader::test::a_miss_records_its_probe, "resolver server shutdown");
+        // graphix-tests --lib lang::image 32 passed, 1 ignored both runs. The whole
+        // graphix-tests --lib suite too, at this tip and at the batch's base: 11065
+        // passed, 447 failed, 3 ignored in both, with an identical failure-name list --
+        // every one a net, http, tcp, tls, json/toml/pack stream, modules, traits or
+        // typecheck fixture that needs a socket or the module resolver server. No test
+        // changed. Still repeating, for the next batch: node/bind.rs Place, ByRef,
+        // Deref; node/collection.rs MapQBase, FoldQBase and Callback; node/data.rs
+        // Replace; node/error.rs CatchAction; node/lambda.rs BuiltInLambda (make_init
+        // versus image_decode), Lambda and DefTable; node/pattern.rs PatternNode;
+        // node/seq_machine.rs SeqMachine and SeqCapture; node/traits.rs Trait and Impl;
+        // node/module.rs the Body::Dynamic literal (decode at 1014, compile at 1088);
+        // node/callsite.rs the Arg literal in image_decode at 2976 where Arg::new
+        // exists, and Callee::Static; fusion/share.rs SharedRegion and SlotShare in the
+        // share-table decode. x-dup-03 stays open for those.
         Ok(Self::with(spec, typ, etyp, source, i))
     }
 
