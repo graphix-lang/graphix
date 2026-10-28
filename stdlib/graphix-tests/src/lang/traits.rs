@@ -2652,6 +2652,38 @@ run!(
     prints("[false, true, true]")
 );
 
+run!(
+    sibling_block_cannot_see_abstract_representation,
+    r#"{
+    let v = { type T = Abstract<i64>; T(5) };
+    { let k = 1; v.0 + k }
+}"#,
+    refused("the definition of this abstract type is not visible here")
+);
+
+run!(
+    sibling_lambda_cannot_see_abstract_representation,
+    r#"{
+    let v = { type T = Abstract<i64>; T(5) };
+    let f = |k: i64| v.0 + k;
+    f(1)
+}"#,
+    refused("the definition of this abstract type is not visible here")
+);
+
+run!(
+    abstract_representation_visible_in_each_instance,
+    r#"{
+    let f = |x: i64| {
+        type T = Abstract<i64>;
+        let t = T(x);
+        (t.0, { let y = 1; t.0 + y })
+    };
+    [f(1), f(2)]
+}"#,
+    prints("[[i64:1, i64:2], [i64:2, i64:3]]")
+);
+
 #[test]
 fn inconsistent_eq_warning_matches_answer() -> Result<()> {
     let output = std::process::Command::new(std::env::current_exe()?)

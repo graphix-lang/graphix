@@ -431,23 +431,6 @@ pub(crate) fn scope_is_under(s: &str, prefix: &str) -> bool {
     s.as_bytes().get(prefix.len()).copied() == Some(b'/')
 }
 
-/// [`scope_is_under`] where a component a body or block mints (`#fn..`,
-/// `#do..`) stands for every instance of it: an abstract type a body
-/// declares is one type in every instance ([`AbstractId::declared`]),
-/// and each instance's body sees its definition.
-fn under_some_instance(s: &str, prefix: &str) -> bool {
-    let (mut s, mut prefix) = (Path::parts(s), Path::parts(prefix));
-    loop {
-        match (prefix.next(), s.next()) {
-            (None, _) => return true,
-            (Some(_), None) => return false,
-            (Some(p), Some(c))
-                if p == c || (p.starts_with('#') && c.starts_with('#')) => {}
-            (Some(_), Some(_)) => return false,
-        }
-    }
-}
-
 /// Iterate the lexical levels of `from` from innermost to the
 /// enclosing module root, inclusive.
 #[doc(hidden)]
@@ -2024,7 +2007,7 @@ impl Env {
     /// its subtree).
     pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
         let r = self.abstract_reps.get(&id)?;
-        // CR claude for claude: [bug/medium] under_some_instance matches any `#`
+        // XCR claude for claude: [bug/medium] under_some_instance matches any `#`
         // component against any other, so a sibling block or a lambda body in the same
         // module counts as an instance of the block that declared the abstract type.
         // `let v = { type T = Abstract<i64>; let x = T(5); x }; let w = { let k = 1;
@@ -2037,7 +2020,23 @@ impl Env {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q37, Which
         // bodies see an abstract's representation): yes, record (the recommendation:
         // record the place.)
-        (r.public || under_some_instance(from, &r.scope)).then_some(&**r)
+        // 2026-10-27 codex: Implemented declaration-specific visibility by reusing the
+        // recorded declaration place already encoded in AbstractId::declared: a private
+        // representation is visible only through an actual lexical typedef with that id
+        // and a representation. This replaces the wildcard matching of anonymous scope
+        // components; no duplicate place metadata or image field is needed. Pins
+        // lang::traits::sibling_{block,lambda}_cannot_see_abstract_representation
+        // failed in all eight modes before the fix and pass now;
+        // abstract_representation_visible_in_each_instance verifies defining-body
+        // instances and nested scopes retain access. The selected trait suite passes
+        // 579 tests, excluding nine socket-backed fixtures. Book and language skill
+        // updated.
+        let visible = r.public || chain_levels(from).any(|scope| {
+            self.lexical.typedefs.get(scope).and_then(|defs| defs.get(r.name.as_str())).is_some_and(|def| {
+                def.rep.is_some() && matches!(def.typ(), Type::Abstract { id: declared, .. } if *declared == id)
+            })
+        });
+        visible.then_some(&**r)
     }
 
     /// Fill the resolution cell of every `Type::Ref` reachable from a

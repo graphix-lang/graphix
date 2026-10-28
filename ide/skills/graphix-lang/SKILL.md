@@ -167,7 +167,9 @@ type List2<'a> = [`Cons('a, List2<'a>), `Nil]   // recursive
 Abstract (nominal) types: `type Counter = Abstract<i64>` as a whole
 typedef body; `Counter(x)` constructs, `c.0` reads the payload, pattern
 `Counter(p)` destructures — only where the definition is visible (the
-defining module, or a public `Abstract<..>` in the gxi). `T as t` is a
+defining module, or a public `Abstract<..>` in the gxi). A local definition
+is visible in every instance of its defining body and nested scopes, but
+not in a sibling block or sibling lambda. `T as t` is a
 nominal tag test anywhere, including over a union of abstracts. One
 allocation per construction: handles and newtypes, not hot data. It
 crosses data (json/toml/pack reads and writers, casts, `sys::net`) only

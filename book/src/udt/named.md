@@ -29,7 +29,11 @@ A type whose whole definition is `Abstract<..>` around a representation is
 nominal: it is a new type, different from its representation and from any
 other type with the same representation. Where its definition is visible, its
 name is its constructor, `.0` reads the representation back, and the
-constructor is also a pattern:
+constructor is also a pattern. A local definition is visible inside its
+defining body, including each call of that body and its nested scopes; a
+sibling block or sibling function does not gain access to the representation.
+
+For example:
 
 ```graphix
 type Meters = Abstract<f64>;
