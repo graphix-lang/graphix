@@ -701,6 +701,14 @@ run!(
 // reject the pack/db targets this ruling requires. No such signature change was made.
 // This CR stays open; the text-data constraint needs coordination or an approved checker
 // design preserving that API.
+// 2026-10-27 codex: Rechecked finding 10 in this continuation. The q42(a) target
+// restriction is still blocked by the brief's ban on changing public signatures used by
+// ../netidx: json::read is used in
+// graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is shared with
+// pack/db, which must accept these unions. A format-specific builtin refusal in
+// typecheck1 would make build reject what check accepts, contrary to the project rule.
+// No such workaround or signature change was made; q42 remains partial and needs
+// coordinator authorization for a format-specific target bound.
 const DATA_READS_BACK_AS_WRITTEN: &str = r#"
 {
   type U = [(i64, i64), Array<f64>];

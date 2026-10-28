@@ -1138,6 +1138,15 @@ impl Type {
                     // ruling requires. No such signature change was made. This CR stays
                     // open; the text-data constraint needs coordination or an approved
                     // checker design preserving that API.
+                    // 2026-10-27 codex: Rechecked finding 10 in this continuation. The
+                    // q42(a) target restriction is still blocked by the brief's ban on
+                    // changing public signatures used by ../netidx: json::read is used in
+                    // graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is
+                    // shared with pack/db, which must accept these unions. A
+                    // format-specific builtin refusal in typecheck1 would make build reject
+                    // what check accepts, contrary to the project rule. No such workaround
+                    // or signature change was made; q42 remains partial and needs
+                    // coordinator authorization for a format-specific target bound.
                     (_, Some(elts)) if elts.len() == ts.len() => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for (i, el) in elts.iter().enumerate() {
@@ -1295,6 +1304,15 @@ impl Type {
         // incorrectly reject the pack/db targets this ruling requires. No such
         // signature change was made. This CR stays open; the text-data constraint needs
         // coordination or an approved checker design preserving that API.
+        // 2026-10-27 codex: Rechecked finding 10 in this continuation. The q42(a)
+        // target restriction is still blocked by the brief's ban on changing public
+        // signatures used by ../netidx: json::read is used in
+        // graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is shared
+        // with pack/db, which must accept these unions. A format-specific builtin
+        // refusal in typecheck1 would make build reject what check accepts, contrary to
+        // the project rule. No such workaround or signature change was made; q42
+        // remains partial and needs coordinator authorization for a format-specific
+        // target bound.
         let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
         if tagged.peek().is_some() {
             let mut read = Err(None);
@@ -1345,6 +1363,15 @@ impl Type {
         // would incorrectly reject the pack/db targets this ruling requires. No such
         // signature change was made. This CR stays open; the text-data constraint
         // needs coordination or an approved checker design preserving that API.
+        // 2026-10-27 codex: Rechecked finding 10 in this continuation. The q42(a)
+        // target restriction is still blocked by the brief's ban on changing public
+        // signatures used by ../netidx: json::read is used in
+        // graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is shared
+        // with pack/db, which must accept these unions. A format-specific builtin
+        // refusal in typecheck1 would make build reject what check accepts, contrary
+        // to the project rule. No such workaround or signature change was made; q42
+        // remains partial and needs coordinator authorization for a format-specific
+        // target bound.
         let mut ranked: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
         if let Value::Array(a) = v
             && rep::kind(v).is_none()
@@ -2791,6 +2818,15 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         // incorrectly reject the pack/db targets this ruling requires. No such
         // signature change was made. This CR stays open; the text-data constraint needs
         // coordination or an approved checker design preserving that API.
+        // 2026-10-27 codex: Rechecked finding 10 in this continuation. The q42(a)
+        // target restriction is still blocked by the brief's ban on changing public
+        // signatures used by ../netidx: json::read is used in
+        // graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is shared
+        // with pack/db, which must accept these unions. A format-specific builtin
+        // refusal in typecheck1 would make build reject what check accepts, contrary to
+        // the project rule. No such workaround or signature change was made; q42
+        // remains partial and needs coordinator authorization for a format-specific
+        // target bound.
         Some(Type::List(_)) => list::is_list(v),
         Some(Type::Tuple(_)) => rep::tuple_elems(v).is_some(),
         Some(Type::Struct(_)) => rep::struct_fields(v).is_some(),
