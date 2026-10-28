@@ -85,6 +85,18 @@ pub(crate) struct SharedRegion {
     print: RegionPrint,
 }
 
+impl SharedRegion {
+    fn with(
+        root: ExprId,
+        kernel: Arc<KernelSig>,
+        jit: WrappedKernel,
+        facts: RegionFacts,
+        print: RegionPrint,
+    ) -> Self {
+        SharedRegion { root, kernel, jit, facts, print }
+    }
+}
+
 pub(crate) enum SharedAttempt {
     Fused(SharedRegion),
     Refused { root: ExprId, blocker: Option<ExprId> },
@@ -135,13 +147,13 @@ pub(crate) fn record<R: Rt>(
             let k = n
                 .downcast_mut::<FusedKernel<R>>()
                 .expect("a fused attempt builds a kernel");
-            SharedAttempt::Fused(SharedRegion {
-                root: node.spec().id,
-                kernel: k.kernel().clone(),
-                jit: k.jit().clone(),
-                facts: k.facts(),
-                print: RegionPrint::of(node),
-            })
+            SharedAttempt::Fused(SharedRegion::with(
+                node.spec().id,
+                k.kernel().clone(),
+                k.jit().clone(),
+                k.facts(),
+                RegionPrint::of(node),
+            ))
         }
         FusionAttempt::Refused(blocker) => {
             SharedAttempt::Refused { root: node.spec().id, blocker: *blocker }
@@ -237,7 +249,7 @@ pub(crate) fn fuse_prototype<R: Rt>(
             };
             r?;
             let any = attempts.iter().any(SharedAttempt::fused);
-            Ok(any.then(|| SlotShare { table: Arc::new(attempts), base: 0 }))
+            Ok(any.then(|| SlotShare::with(Arc::new(attempts), 0)))
         }
         Some(Share::Collect(attempts)) => {
             ctx.fusion.share = Some(Share::Collect(attempts));
@@ -252,7 +264,7 @@ pub(crate) fn fuse_prototype<R: Rt>(
                 _ => base,
             };
             let any = table[base.min(end)..end].iter().any(SharedAttempt::fused);
-            Ok(any.then(|| SlotShare { table, base }))
+            Ok(any.then(|| SlotShare::with(table, base)))
         }
     }
 }
@@ -275,6 +287,10 @@ pub(crate) fn fuse_slot<R: Rt>(
 }
 
 impl SlotShare {
+    fn with(table: Table, base: usize) -> Self {
+        SlotShare { table, base }
+    }
+
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         encode_varint(self.base as u64, buf);
         encode_varint(self.table.len() as u64, buf);
@@ -334,14 +350,10 @@ impl SlotShare {
                 raises.push((h, ExprId::decode(buf)?, ExprId::decode(buf)?));
             }
             let print = RegionPrint { callees, raises };
-            table.push(SharedAttempt::Fused(SharedRegion {
-                root,
-                kernel,
-                jit,
-                facts,
-                print,
-            }));
+            table.push(SharedAttempt::Fused(SharedRegion::with(
+                root, kernel, jit, facts, print,
+            )));
         }
-        Ok(Self { table: Arc::new(table), base })
+        Ok(Self::with(Arc::new(table), base))
     }
 }
