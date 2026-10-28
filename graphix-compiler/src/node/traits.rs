@@ -414,6 +414,17 @@ impl<R: Rt> Update<R> for Trait<R> {
         ctx.env.undeftrait(&self.def);
     }
 
+    /// A trait's identity is its scope and name: a reload's source cannot
+    /// declare it again until this declaration gives the definition of
+    /// record back, or the new body dispatches through this one's
+    /// methods. The record is global, not lexical, and the delete that
+    /// follows finds the replacement's record by its dispatchers and
+    /// leaves it.
+    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.defaults.unregister(ctx);
+        ctx.env.undeftrait(&self.def);
+    }
+
     fn typ(&self) -> &Type {
         Type::BOTTOM
     }
@@ -831,12 +842,35 @@ fn narrow_to_representation<R: Rt>(
     if methods.len() == declared.methods.len() {
         return Fulfils { entry: declared, narrowed: None };
     }
-    let entry = Arc::new(ImplDef { methods, ..(*declared).clone() });
+    // The narrowed entry is the implementation's own: it is identified
+    // by the implementation that narrowed the declaration, so each load
+    // gives back what it took and no other load's entry.
+    let entry = Arc::new(ImplDef {
+        methods,
+        scope: implementation.scope.clone(),
+        pos: implementation.pos,
+        ..(*declared).clone()
+    });
     ctx.env.replace_impl(&declared, entry.clone());
     Fulfils { entry, narrowed: Some(declared) }
 }
 
 impl<R: Rt> Impl<R> {
+    /// Give back to the registry what this implementation registered:
+    /// its own entry, or the declaration it narrowed. Another
+    /// implementation's entry is not identified with this one, so a
+    /// reload that unregistered this body and registered a new one
+    /// finds nothing to give back.
+    fn give_back(&self, ctx: &mut ExecCtx<'_, R>) {
+        match &self.fulfils {
+            None => ctx.env.unregister_impl(&self.def),
+            Some(Fulfils { entry, narrowed: Some(declared) }) => {
+                ctx.env.replace_impl(entry, declared.clone())
+            }
+            Some(Fulfils { narrowed: None, .. }) => (),
+        }
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -950,13 +984,12 @@ impl<R: Rt> Update<R> for Impl<R> {
         for p in self.prototypes.iter_mut() {
             p.delete(ctx)
         }
-        match &self.fulfils {
-            None => ctx.env.unregister_impl(&self.def),
-            Some(Fulfils { entry, narrowed: Some(declared) }) => {
-                ctx.env.replace_impl(entry, declared.clone())
-            }
-            Some(Fulfils { narrowed: None, .. }) => (),
-        }
+        self.give_back(ctx);
+    }
+
+    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.for_each_child_mut(&mut |c| c.unregister(ctx));
+        self.give_back(ctx);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {

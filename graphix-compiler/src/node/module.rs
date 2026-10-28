@@ -923,6 +923,10 @@ pub struct Module<R: Rt> {
     flags: BitFlags<CFlag>,
     body: Body<R>,
     env: Lexical,
+    /// What `env` was before any body compiled: the names the module
+    /// statement made. A load compiles into a copy of it, so the body it
+    /// replaces keeps the names it declared until it is gone.
+    base: Lexical,
     /// The signature's bindings at the module's scope, which the check
     /// pairs with the body's: the env a statement checks under may not
     /// hold them (a lambda instance's holds only the binds from before
@@ -941,6 +945,16 @@ pub struct Module<R: Rt> {
     /// it creates are its own, and its check writes no others.
     task: TaskId,
     resident: TagValue,
+}
+
+/// A module's compiled body, set aside while its replacement compiles:
+/// put back if the new source does not check, retired when it does.
+struct SetAside<R: Rt> {
+    env: Lexical,
+    nodes: Box<[Node<R>]>,
+    catches: Box<[usize]>,
+    proxy: Vec<Proxy>,
+    runs: Runs,
 }
 
 /// Store a production for `id` as the binding that made it does, a
@@ -969,11 +983,13 @@ impl<R: Rt> Module<R> {
         top_id: ExprId,
         task: TaskId,
     ) -> Self {
+        let base = env.clone();
         Self {
             spec,
             flags,
             body,
             env,
+            base,
             sig_binds,
             sig,
             scope,
@@ -1130,14 +1146,28 @@ impl<R: Rt> Module<R> {
     /// something, and analysis checks the definition assertions it
     /// reaches. A loaded body is never fused, so no fusion pass
     /// reconciles its registry attributes. A failure leaves nothing it
-    /// registered.
-    fn compile_source(&mut self, ctx: &mut ExecCtx<'_, R>, text: ArcStr) -> Result<()> {
+    /// registered. `replaced` is the body this load takes the name of:
+    /// it gives back what it registered in the global registries first,
+    /// so the new source registers as the first load did, and `saved`
+    /// puts those registrations back when the new source does not check.
+    fn compile_source(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R>,
+        text: ArcStr,
+        replaced: &mut SetAside<R>,
+    ) -> Result<()> {
         let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
         let exprs = add_interface_modules(parser::parse((*ori).clone())?, &self.sig);
+        // saved before the scrub, so a failure puts back the imports the
+        // body that keeps running registered
+        let saved = Saved::take(ctx);
+        let SetAside { env, nodes, .. } = replaced;
+        ctx.with_restored_mut(env, |ctx| {
+            nodes.iter_mut().for_each(|n| n.unregister(ctx))
+        });
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical);
-        let saved = Saved::take(ctx);
         let env = self.env.clone();
         let sig_env = match &self.body {
             Body::Static => None,
@@ -1296,15 +1326,49 @@ impl<R: Rt> Module<R> {
     }
 
     fn clear_compiled(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        for Proxy { inner, outer, .. } in self.proxy.drain(..) {
+        let set_aside = self.set_aside();
+        self.retire(ctx, set_aside)
+    }
+
+    /// Take the compiled body out of the module and start its env again
+    /// from the module statement's own: a replacement compiles into
+    /// fresh names, as the first load did, while the body it replaces
+    /// keeps the env it declared its names in.
+    fn set_aside(&mut self) -> SetAside<R> {
+        let env = mem::replace(&mut self.env, self.base.clone());
+        SetAside {
+            env,
+            nodes: mem::take(&mut self.nodes),
+            catches: mem::take(&mut self.catches),
+            proxy: mem::take(&mut self.proxy),
+            runs: mem::take(&mut self.runs),
+        }
+    }
+
+    /// Put a set-aside body back where it was: the load that would
+    /// replace it failed, so it runs on.
+    fn put_back(&mut self, body: SetAside<R>) {
+        let SetAside { env, nodes, catches, proxy, runs } = body;
+        self.env = env;
+        self.nodes = nodes;
+        self.catches = catches;
+        self.proxy = proxy;
+        self.runs = runs;
+    }
+
+    /// Release a set-aside body. Its references go to the runtime, so
+    /// what still holds one keeps it.
+    fn retire(&self, ctx: &mut ExecCtx<'_, R>, body: SetAside<R>) {
+        let SetAside { mut env, nodes, proxy, .. } = body;
+        for Proxy { inner, outer, .. } in proxy {
             ctx.unref_var(inner, self.top_id);
             ctx.unref_var(outer, self.top_id);
         }
-        ctx.with_restored_mut(&mut self.env, |ctx| {
-            for mut n in mem::take(&mut self.nodes) {
+        ctx.with_restored_mut(&mut env, |ctx| {
+            for mut n in nodes {
                 n.delete(ctx)
             }
-        })
+        });
     }
 
     fn sleep_nodes(&mut self, ctx: &mut ExecCtx<'_, R>) {
@@ -1355,6 +1419,14 @@ impl<R: Rt> Update<R> for Module<R> {
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        // A load declares its names in `env`, which `base` no longer
+        // says: an image is written before any cycle, so no body has
+        // loaded and the two are one.
+        if let Body::Dynamic { .. } = &self.body
+            && !self.nodes.is_empty()
+        {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
         put_tag(NodeTag::Module, buf);
         self.spec.encode(buf)?;
         image::flags_encode(self.flags, buf)?;
@@ -1420,12 +1492,24 @@ impl<R: Rt> Update<R> for Module<R> {
                     // q59, A dynamic module whose new source does not compile): yes,
                     // compile first (the recommendation: compile first (the comment
                     // already promises it).)
-                    self.clear_compiled(ctx);
-                    let res = self.compile_source(ctx, s);
+                    // the running body is set aside, not torn down: it goes
+                    // back if the new source does not check
+                    let mut set_aside = self.set_aside();
+                    let res = self.compile_source(ctx, s, &mut set_aside);
+                    // the new body's references reach the runtime first: an
+                    // unref cancels a reference still pending for the same
+                    // (variable, reader), so retiring the old body first would
+                    // cancel the new one's
                     ctx.apply_deferred();
                     match res {
-                        Err(e) => failed = Some(errf!(ERR_TAG, "compile error {e:?}")),
-                        Ok(()) => compiled = true,
+                        Err(e) => {
+                            self.put_back(set_aside);
+                            failed = Some(errf!(ERR_TAG, "compile error {e:?}"))
+                        }
+                        Ok(()) => {
+                            self.retire(ctx, set_aside);
+                            compiled = true
+                        }
                     }
                 }
                 v => {

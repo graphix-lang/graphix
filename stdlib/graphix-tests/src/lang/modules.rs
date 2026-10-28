@@ -52,6 +52,112 @@ const DYNAMIC_MODULE_SOURCE_ERROR: &str = r#"
 
 run!(dynamic_module_source_error_keeps_the_load, DYNAMIC_MODULE_SOURCE_ERROR, is(Value::String("kept".into())); FuseExpect::Jit);
 
+// A source string that is no program is the same case: the new source is
+// compiled before the running body is torn down, so a typo reports through
+// the status and the last good load still computes.
+const DYNAMIC_MODULE_BAD_SOURCE_KEEPS_THE_LOAD: &str = r#"
+{
+    let src: [string, Error<`E>] = "let x = 0; let y = x * 10";
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val x: i64; val y: i64 };
+        source src
+    };
+    src <- once(status) ~ "let x = ;";
+    foo::x <- select status { error as _ => 5, _ => never() };
+    select foo::y { 50 => "kept", _ => never() }
+}
+"#;
+
+run!(dynamic_module_bad_source_keeps_the_load, DYNAMIC_MODULE_BAD_SOURCE_KEEPS_THE_LOAD, is(Value::String("kept".into())); FuseExpect::Jit);
+
+// A refused reload is not the end of the module: the good source that
+// follows it loads and runs.
+const DYNAMIC_MODULE_GOOD_SOURCE_AFTER_A_BAD_ONE: &str = r#"
+{
+    let step = 0;
+    step <- select step { k if k < 6 => (k ~ step) + 1, _ => never() };
+    let src: [string, Error<`E>] = "let x = 0; let y = x * 10";
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val x: i64; val y: i64 };
+        source src
+    };
+    src <- select step {
+        1 => step ~ "let x = ;",
+        3 => step ~ "let x = 0; let y = x * 100",
+        _ => never()
+    };
+    foo::x <- select step { 5 => step ~ 5, _ => never() };
+    select step { 6 => foo::y, _ => never() }
+}
+"#;
+
+run!(dynamic_module_good_source_after_a_bad_one, DYNAMIC_MODULE_GOOD_SOURCE_AFTER_A_BAD_ONE, is(Value::I64(500)); FuseExpect::Jit);
+
+// A reload refused for a typo leaves what the running body registered in
+// the interface's place: the good source that follows narrows the
+// declared Cast with its own method, as a reload with no typo does.
+run!(
+    dynamic_module_bad_source_then_a_cast_reload_narrows,
+    r#"{
+    let step = 0;
+    step <- select step { k if k < 7 => (k ~ step) + 1, _ => never() };
+    let first = "type C = Abstract<i64>; impl Cast for C {}; let make = |x: i64| C(x)";
+    let typo = "type C = Abstract<i64>; impl Cast for C { let to_value = |c: C| ; }; let make = |x: i64| C(x)";
+    let good = "type C = Abstract<i64>; impl Cast for C { let to_value = |c: C| c.0 * 10 }; let make = |x: i64| C(x)";
+    let source: [string, Error<`E>] = first;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { type C; impl Cast for C; val make: fn(x: i64) -> C };
+        source source
+    };
+    source <- select step {
+        1 => step ~ typo,
+        3 => step ~ good,
+        _ => never()
+    };
+    let w = select step { 5 => json::write_str(foo::make(3))$, _ => never() };
+    select w { "30" => "reloaded", _ => never() }
+}"#,
+    is(Value::String("reloaded".into()));
+    FuseExpect::Jit
+);
+
+// A body that declares a trait is the same case twice over: the refused
+// load leaves the running one dispatching through it, and the load that
+// follows declares the trait -- whose identity is its scope and name --
+// again over the body it replaces.
+run!(
+    dynamic_module_a_trait_reloads_with_the_source,
+    r#"{
+    let step = 0;
+    step <- select step { k if k < 7 => (k ~ step) + 1, _ => never() };
+    let first = "trait T { val d: fn(self) -> i64 }; type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + 1 }; let make = |x: i64| T::d(C(x))";
+    let good = "trait T { val d: fn(self) -> i64 }; type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + 2 }; let make = |x: i64| T::d(C(x))";
+    let source: [string, Error<`E>] = first;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val make: fn(x: i64) -> i64 };
+        source source
+    };
+    source <- select step {
+        1 => step ~ "let make = ;",
+        3 => step ~ good,
+        _ => never()
+    };
+    let seen: Array<i64> = [];
+    seen <- select step {
+        2 => step ~ array::push(seen, foo::make(5)),
+        5 => step ~ array::push(seen, foo::make(5)),
+        _ => never()
+    };
+    select step { 6 => seen, _ => never() }
+}"#,
+    prints("[i64:6, i64:7]");
+    FuseExpect::Jit
+);
+
 // A reload whose Cast impl writes a method the first load left to the
 // representation writes through it: the interface's declaration is
 // narrowed afresh at each load.

@@ -397,6 +397,11 @@ impl<R: Rt> Node<R> {
         stack::ensure_sufficient(|| self.0.delete(ctx))
     }
 
+    #[inline]
+    pub fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        stack::ensure_sufficient(|| self.0.unregister(ctx))
+    }
+
     pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         stack::ensure_sufficient(|| self.0.typecheck0(ctx))
     }
@@ -694,6 +699,15 @@ pub trait Update<R: Rt>: Debug + Send + Sync + Any + 'static {
     /// Delete the node and its children from the context.
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.for_each_child_mut(&mut |c| c.delete(ctx))
+    }
+
+    /// Undo what this node registered in the global registries, leaving
+    /// the runtime as it is. A module's reload unregisters the body it
+    /// replaces so the new source registers afresh; what a node
+    /// registered is its own to give back, so its later `delete` finds
+    /// nothing of its own left and leaves the replacement alone.
+    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.for_each_child_mut(&mut |c| c.unregister(ctx))
     }
 
     /// First typecheck pass: structural checking. Each node checks

@@ -194,6 +194,10 @@ impl<R: Rt> Update<R> for Prune<R> {
         ctx.in_boundary(Some(&self.boundary), |ctx| self.child.delete(ctx))
     }
 
+    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        ctx.in_boundary(Some(&self.boundary), |ctx| self.child.unregister(ctx))
+    }
+
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(ride) = &mut self.ride {
             ride.walked = false;
