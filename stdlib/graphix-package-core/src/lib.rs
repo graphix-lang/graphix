@@ -3139,6 +3139,12 @@ struct Hold {
     out: TagValue,
 }
 
+impl Hold {
+    fn with(triggered: usize, current: Option<Value>) -> Self {
+        Self { triggered, current, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Hold {
     fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
@@ -3148,7 +3154,7 @@ impl<R: Rt> BuiltIn<R> for Hold {
         let _ = ctx;
         let triggered = decode_varint(buf)? as usize;
         let current = Pack::decode(buf)?;
-        Ok(Box::new(Self { triggered, current, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(triggered, current)))
     }
 
     const EFFECT: Effect = Effect::Sync;
@@ -3163,11 +3169,7 @@ impl<R: Rt> BuiltIn<R> for Hold {
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
         match from {
-            [_, _] => Ok(Box::new(Self {
-                triggered: 0,
-                current: None,
-                out: TagValue::phantom(),
-            })),
+            [_, _] => Ok(Box::new(Self::with(0, None))),
             _ => bail!("expected two arguments"),
         }
     }
