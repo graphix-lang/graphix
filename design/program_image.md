@@ -83,7 +83,9 @@ opens nonblocking so a non-file entry cannot wait for a writer. New
 directories use 0700 and files 0600. A write renames over whatever stands
 at its entry's name, and collection removes an entry in a trusted directory
 that is not a trusted file, so a bad entry costs one miss. Collection
-traverses only trusted directories. The checks go by path: someone who can
+traverses only trusted directories. A refusal (`cache::Untrusted`) is a miss,
+logged, and the first in a process prints one stderr line, since without a
+log nothing else says why every start is cold. The checks go by path: someone who can
 write to an ancestor of the cache base can swap the tree between a check
 and the open or rename that follows it. The checksum detects corruption; it does
 not authenticate bytes supplied through an untrusted cache. Pins:

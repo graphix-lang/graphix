@@ -28,17 +28,42 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Path as FsPath, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{Duration, SystemTime},
 };
 
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 
+/// A cache path the current user cannot trust: the cache is not used.
+#[derive(Debug)]
+struct Untrusted(&'static str);
+
+impl std::fmt::Display for Untrusted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Untrusted {}
+
+static UNTRUSTED_REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Log `e`, and when it is a trust refusal also say so on stderr, once a
+/// process: without a log nothing else tells why every start is cold.
+pub(crate) fn report(e: &anyhow::Error) {
+    warn!("{e:#}");
+    if e.chain().any(|c| c.is::<Untrusted>())
+        && !UNTRUSTED_REPORTED.swap(true, Ordering::Relaxed)
+    {
+        eprintln!("graphix: not using the image cache: {e:#}");
+    }
+}
+
 fn check_owner(metadata: &fs::Metadata) -> Result<()> {
     #[cfg(unix)]
     if metadata.uid() != unsafe { libc::geteuid() } {
-        bail!("cache path must be owned by the current user");
+        return Err(Untrusted("cache path must be owned by the current user").into());
     }
     #[cfg(not(unix))]
     let _ = metadata;
@@ -49,7 +74,9 @@ fn check_private(metadata: &fs::Metadata) -> Result<()> {
     check_owner(metadata)?;
     #[cfg(unix)]
     if metadata.mode() & 0o022 != 0 {
-        bail!("cache path must not be writable by group or others");
+        return Err(
+            Untrusted("cache path must not be writable by group or others").into()
+        );
     }
     Ok(())
 }
@@ -81,7 +108,8 @@ fn cache_directory(path: &FsPath, create: bool, links_left: u8) -> Result<()> {
         return cache_directory(&target, false, links_left - 1);
     }
     if !metadata.is_dir() {
-        bail!("cache path is not a directory: {}", path.display());
+        return Err(anyhow::Error::from(Untrusted("cache path is not a directory")))
+            .with_context(|| format_compact!("{}", path.display()));
     }
     check_private(&metadata)
         .with_context(|| format_compact!("cache directory {}", path.display()))
@@ -89,7 +117,7 @@ fn cache_directory(path: &FsPath, create: bool, links_left: u8) -> Result<()> {
 
 fn cache_file(metadata: &fs::Metadata) -> Result<()> {
     if !metadata.is_file() {
-        bail!("cache entry is not a regular file");
+        return Err(Untrusted("cache entry is not a regular file").into());
     }
     check_private(metadata)
 }
@@ -412,6 +440,16 @@ impl RegistrationCache {
     // design/program_image.md states the path-based check's limit (an ancestor writer
     // can swap the tree between check and use). Open for Eric: a trust refusal is
     // silent without --log-dir; should it print one stderr line?
+    // 2026-10-28 claude: Eric ruled (2026-10-28): yes, a trust refusal prints one
+    // stderr line. Built: the trust checks raise cache::Untrusted (foreign owner,
+    // group/other writable, not a directory or regular file, a symlinked entry via
+    // O_NOFOLLOW's ELOOP), and cache::report logs every cache failure and prints
+    // 'graphix: not using the image cache: <reason>' for the first refusal in a
+    // process; a store's failure goes through it too. Pins:
+    // graphix-shell/tests/cache_trust_report.rs (an_untrusted_cache_is_reported_once,
+    // a_trusted_cache_is_quiet); without the stderr line the first fails with 0
+    // lines, without the once guard with 4. Book (shell.md), CLAUDE.md and
+    // design/program_image.md say so.
     pub(crate) fn load(&self, entry: Entry) -> Option<(ArcStr, Bytes)> {
         let path = self.path(entry)?;
         let file = (|| -> Result<fs::File> {
@@ -420,7 +458,13 @@ impl RegistrationCache {
             open.read(true);
             #[cfg(unix)]
             open.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-            let file = open.open(&path)?;
+            let file = match open.open(&path) {
+                #[cfg(unix)]
+                Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                    return Err(Untrusted("cache entry is a symbolic link").into());
+                }
+                r => r?,
+            };
             cache_file(&file.metadata()?)?;
             Ok(file)
         })();
@@ -433,7 +477,10 @@ impl RegistrationCache {
                 return None;
             }
             Err(e) => {
-                warn!("opening the {entry:?} image {}: {e:#}", path.display());
+                report(&e.context(format_compact!(
+                    "opening the {entry:?} image {}",
+                    path.display()
+                )));
                 return None;
             }
         };

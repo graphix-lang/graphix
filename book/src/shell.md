@@ -536,8 +536,8 @@ link and its target directory meets those ownership and permission
 requirements. The shell refuses symlinks for its managed subdirectories
 and image files. It creates new directories with mode 0700 and entries
 with mode 0600. An untrusted cache is a miss and the program compiles
-normally; `--warm` fails if it cannot write a trusted
-entry.
+normally; the first refusal prints one line on stderr saying why, and
+`--warm` fails if it cannot write a trusted entry.
 
 A `netidx:` script keeps no program entry, since nothing tells the cache
 its source changed: the program compiles at every start, and `--warm`

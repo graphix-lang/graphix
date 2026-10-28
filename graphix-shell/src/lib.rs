@@ -593,7 +593,7 @@ impl<X: GXExt> Shell<X> {
             Ok(()) => Ok(()),
             Err(e) if self.cache == CacheMode::Warm => Err(e),
             Err(e) => {
-                log::warn!("{e:#}");
+                cache::report(&e);
                 Ok(())
             }
         }

@@ -240,7 +240,8 @@ and entry must belong to the effective user and forbid group/other
 writes. The cache base may be a symlink chain owned by that user to a
 trusted directory; it is checked before creating anything beneath it.
 Managed directories and entries refuse symlinks; new directories and
-files use 0700 and 0600. The collector skips untrusted paths;
+files use 0700 and 0600. A run's first refusal prints one stderr line
+(`cache::report`). The collector skips untrusted paths;
 the header carries the ISA, the build's fingerprint (its helpers,
 libcalls and version, `build_fingerprint`), refused on a mismatch as the
 ISA is, and a checksum of everything after it
