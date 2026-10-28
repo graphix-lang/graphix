@@ -158,6 +158,13 @@
                         <h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
 <p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
 <a href="https://netidx.github.io/netidx-book">netidx</a>.</p>
+<p><code>sys::net::call</code> waits only for the latest call's reply. Starting another
+call, or leaving the select arm containing the call, abandons the pending
+reply. The server may already be running the request: abandoning its
+reply does not cancel or undo the server's effects. The last completed
+result survives a sleep, and waking alone does not send another request.
+When the result must be observed, keep the call outside the sleeping arm
+or in a seq step that waits for it.</p>
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
@@ -170,7 +177,12 @@ val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `Write
 /// subscribe to the specified path
 val subscribe: fn&lt;'a: Concrete&gt;(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
-/// call the specified rpc. args must be a struct or null.
+/// Call the specified RPC. args must be a struct or null. A new call or
+/// a sleep discards any pending reply. This does not undo work already
+/// started on the server: its handler can finish, but its reply is ignored.
+/// The last completed result survives sleep; waking starts no call unless
+/// an argument fires. Keep the call outside a sleeping arm, or in a seq
+/// step that waits for its result, when that result must be observed.
 val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
 
 /// Publish an rpc,

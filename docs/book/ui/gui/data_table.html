@@ -430,8 +430,9 @@ column's header label. Receives the column name.</p>
 </li>
 <li>
 <p><strong><code>#on_update</code></strong> -- Fired for each update of a cell the table
-subscribes, which is the rows within 50 of the visible window; a
-row scrolling back in re-delivers its current value. Useful to
+subscribes: rows within 50 and columns within two of the visible window,
+plus sort columns across every row. A cell scrolling back in re-delivers
+its current value. Useful to
 mirror live values into graphix state without subscribing
 separately, but an aggregate over every row
 (<code>data_table_calculated.gx</code>'s sum) is complete only while the whole
@@ -479,7 +480,9 @@ current value.</p>
 </li>
 <li>
 <p><strong><code>sparkline_column</code></strong> -- Rolling-line visualization accumulating
-published values over <code>history_seconds</code>. By default the y-axis is
+published values over <code>history_seconds</code>. Every cell uses the same rolling time
+axis, from now minus <code>history_seconds</code> to now. The last value extends flat to
+now; the value at the window start is retained even when updates stop. By default the y-axis is
 shared across every cell in the column (auto-scaled to the union of
 all rows' values) so cells are visually comparable. Pass <code>#min</code> /
 <code>#max</code> to fix the axis instead.</p>
@@ -504,7 +507,8 @@ swapped, nulled, or initialized reactively.</p>
 </ul>
 <p>Double-clicking any column's resize handle auto-fits <em>every</em> column
 to its widest cell among the subscribed rows (those within 50 of the
-visible window); other rows count only their fallback.</p>
+visible window) and subscribed columns (within two of the visible columns);
+other cells count only their fallback.</p>
 <h2 id="source-where-cell-values-come-from"><a class="header" href="#source-where-cell-values-come-from">Source: Where Cell Values Come From</a></h2>
 <p>Each <code>ColumnSpec.source</code> is a <code>&amp;Source</code> ref that decides where the
 column's per-cell values originate:</p>
@@ -1231,8 +1235,9 @@ let layout = column(
 <h3 id="scrolling"><a class="header" href="#scrolling">Scrolling</a></h3>
 <p>Enough rows and columns that both scrollbars appear in the example's
 900x400 window. The rows are real netidx paths, and the table subscribes
-only the displayed rows plus 50 on each side, so scrolling subscribes
-the rows that enter that window and drops the ones that leave it.</p>
+only the displayed rows plus 50 on each side and columns plus two on each
+side (sort columns excepted). Scrolling subscribes cells entering that
+window and drops those leaving it.</p>
 <pre><code class="language-graphix">use gui::{
   window,
   column::column,
@@ -1321,6 +1326,14 @@ widgets, no netidx subscriptions.</li>
 <li><a href="../../stdlib/sys/net.html"><code>sys::net</code></a> -- the <code>Table</code> record and
 <code>list_table</code> helper consumed by <code>#table</code>.</li>
 </ul>
+<h2 id="subscription-window"><a class="header" href="#subscription-window">Subscription Window</a></h2>
+<p>Netidx cells are subscribed within the visible rows plus 50 rows on either
+side, and the visible columns plus two columns on either side. Horizontal
+scrolling, keyboard navigation, column widths and viewport resizing move
+this window. A column used for sorting remains subscribed over every row,
+even outside the visible columns. <code>on_update</code> receives updates from these
+subscriptions; it does not provide a complete stream for every table cell.
+Sparkline history records only updates received while subscribed.</p>
 
                     </main>
 

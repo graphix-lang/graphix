@@ -432,6 +432,10 @@ the same files. A <code>graphixfmt.json</code> that does not parse, or that name
 setting the formatter does not have, is an error rather than a silent
 fallback.</p>
 <h3 id="what-it-changes"><a class="header" href="#what-it-changes">What it changes</a></h3>
+<p>A single bracketed argument keeps its opening and closing brackets beside
+its parent's when the opening fits, in expressions, types and patterns.
+For example, a long <code>`Tag({ first, second })</code> pattern opens with
+<code>`Tag({</code> and closes with <code>})</code>, with the fields between them.</p>
 <p>The formatter keeps what you chose where the choice is yours: the order
 of struct fields and of the variants in a union, the delimiters of a
 string (<code>"…"</code>, <code>r"…"</code>, <code>"""…"""</code>), your comments and attributes. It
@@ -1506,7 +1510,8 @@ shell during tab completion and made available by the LSP server.</p>
 <h2 id="comments"><a class="header" href="#comments">Comments</a></h2>
 <p>A <code>//</code> comment runs to the end of its line and belongs to whatever comes
 next: write it on its own line directly above an expression, a <code>select</code>
-arm, a method inside an <code>impl</code> block, or a field of a struct literal.</p>
+arm, a method inside an <code>impl</code> block, a field of a struct literal, a
+lambda parameter, or an item inside a <code>use</code> tree.</p>
 <pre><code class="language-graphix">// a counter, one step per cycle
 let n = 0;
 n &lt;- n + 1;
@@ -1519,7 +1524,8 @@ select n {
 </code></pre>
 <p>A comment may also end the line of an item in a list, after the item's
 <code>;</code> or <code>,</code>: a statement, a <code>select</code> arm, a struct field, an array or tuple
-element, a call's argument, a trait or impl method, or an interface item.
+element, a call's argument (labeled arguments included), a lambda
+parameter, a use-tree item, a trait or impl method, or an interface item.
 And comments may stand below the last item, above the bracket that closes
 the list, or at the end of a file, a file of nothing but comments
 included.</p>
@@ -1834,6 +1840,13 @@ inside a seq step starts a new entry history at each run, so its arms
 can be born again in the new run, including after an asynchronous wait.
 An arm first entered with a new function instance or collection slot reads
 standing values as fired, just like the rest of that new instance or slot.</p>
+<p>An event source in the arm (a timer, a subscription, a line reader) keeps
+its place across the sleep, but not its last event: a re-entered arm
+would show it again as if it were new. So what the arm builds on the
+event shows nothing at the wake until the event fires again:
+<code>count(sys::time::timer(duration:1.s, true))</code> blanks for up to a second
+at each re-entry, then shows its kept count plus one. To keep showing
+the last value through a re-entry, hold it outside the arm.</p>
 <p>A call still running when its arm falls asleep is never answered. It is
 cancelled where it can be; one that cannot be stopped part way (a
 database operation, a file open, a process spawn, a connect) still
@@ -2730,7 +2743,11 @@ division by zero rather than throwing.</p>
 <h3 id="constraining-the-error-type"><a class="header" href="#constraining-the-error-type">Constraining the error type</a></h3>
 <p>The binder may carry a type annotation, <code>catch(e: T) expr</code>. That is a
 type ascription: <code>e</code> has type <code>T</code> in the handler. The compiler still
-checks that <code>T</code> contains every error the covered region can throw.</p>
+checks that <code>T</code> contains every error the covered region can throw, including
+errors from callbacks. In a generic function, declare a bound on an error
+parameter that reaches an annotated catch: for example, a function taking
+<code>Result&lt;i64, 'e&gt;</code> and catching only <code>Error&lt;ErrChain&lt;`A&gt;&gt;</code> declares
+<code>'e: `A</code>. The catch does not narrow an unconstrained declared parameter.</p>
 <h2 id="checked-errors"><a class="header" href="#checked-errors">Checked Errors</a></h2>
 <p>Graphix function types are annotated by the type of error they might raise. In
 most cases this is automatic, but for some higher order functions it may be
@@ -2768,8 +2785,8 @@ flags you can change the compilers behavior in this respect.</p>
 <h2 id="the--operator-aka-or-never"><a class="header" href="#the--operator-aka-or-never">The $ Operator, aka Or Never</a></h2>
 <p>The <code>$</code> operator goes in the same position as <code>?</code>, and is best described as "or
 never". If the expression on it's left is a non error, then <code>$</code> doesn't do
-anything, otherwise it logs the error at the <code>warn!</code> log level and returns
-nothing. This is a concise way of writing,</p>
+anything, otherwise it returns nothing. It also produces warning diagnostics
+as described below. This is a concise way of writing,</p>
 <pre><code class="language-graphix fragment">select might_fail(1, 2, 3) {
   error as _ =&gt; never(),
   v =&gt; v
@@ -2778,10 +2795,14 @@ nothing. This is a concise way of writing,</p>
 <p>can instead be written as,</p>
 <pre><code class="language-graphix fragment">might_fail(1, 2, 3)$
 </code></pre>
-<p>The <code>$</code> operator logs errors rather than silently discarding them, making it
-easier to debug issues while still allowing execution to continue. The log
-line names the site and the error, and is the same whether the expression
-runs in the interpreter or in a JIT-compiled kernel.</p>
+<p>A warning from <code>$</code> names the site and the error. In fused code, <code>$</code> and a
+<code>?</code> without a covering catch report when their error operand fires. These
+diagnostic messages can repeat or be absent: a guard can report even when
+an earlier arm selects the result, a constant error in an arm entered later
+can go unreported, and several depths of a native tail loop can share one
+report. Run with <code>--no-fusion</code> to inspect the interpreter's diagnostics.
+The error still produces no value, and a <code>?</code> covered by a catch follows the
+normal error propagation rules.</p>
 <h2 id="-and--on-nullable-values"><a class="header" href="#-and--on-nullable-values">? and $ on Nullable Values</a></h2>
 <p>Both operators also work on an optional value, a <code>['a, null]</code>. <code>$</code> is still
 "or never": a null produces nothing, and because a null is not a failure
@@ -3275,6 +3296,14 @@ processed.</p>
 <p>Every time clock updates queue allows a 'a through. If no 'a is
 queued, it still remembers to allow that many through when they
 arrive.</p>
+<p><code>queuefn(#trigger, f)</code> applies this idea to function invocations, preserving
+which arguments fired together. It returns a wrapper with the same
+signature as <code>f</code> and one initial permit. Each later trigger fire releases
+one waiting invocation or saves a permit. Saved permits accumulate like a
+counting semaphore: several later calls can run between trigger ticks.
+A wrapper call site releases at most one invocation per runtime cycle,
+so each invocation keeps its own arguments. The optional <code>#count: &amp;mut depth</code>
+reports the number of queued invocations.</p>
 <p>Lets use it to write two different subscription functions with
 different but equally valid and useful semantics.</p>
 <pre><code class="language-graphix">let f = |path| -&gt; string sys::net::subscribe(path)$;
@@ -5306,7 +5335,7 @@ utils::helper()
 <p>This executes <code>main.gx</code> and adds <code>/home/user/myproject/src</code> to the module search path, so <code>main.gx</code> can load <code>utils</code> and <code>math</code> modules.</p>
 <p>This is useful for organizing projects where you want both a runnable program (<code>main.gx</code>) and a library interface (<code>mod.gx</code>) for the same set of modules.</p>
 <h3 id="running-from-netidx"><a class="header" href="#running-from-netidx">Running from Netidx</a></h3>
-<!-- CR claude for claude: [doc-drift/low] This section and the GRAPHIX_MODPATH section
+<!-- XCR claude for claude: [doc-drift/low] This section and the GRAPHIX_MODPATH section
 never say what loading modules from netidx trusts. NetidxResolver compiles whatever is
 published at the path, so under anonymous auth any host can supply code, and a netidx
 entry listed before file entries shadows the user's own modules. Add a note: netidx
@@ -5317,6 +5346,11 @@ Found by reading; not run. (x-security-08) -->
 modules from netidx trusts): yes. Add to the book: netidx modules are code from whoever
 may publish at the path; use authenticated netidx, and list file entries first when
 local modules must win. -->
+<!-- 2026-10-28 qwen: book/src/shell.md, Running from Netidx: a paragraph now says what
+loading modules from netidx trusts: a netidx module is code from whoever may publish at
+that path; use authenticated netidx with publish permissions restricted to those who
+should supply the code, and list file entries before netidx entries when local modules
+must win. Docs prose, no test; docs/ is build output and was not rebuilt. -->
 <p>A program run from netidx finds its modules beside it, as a file's do
 on disk: the directory of its netidx path is the module search path.</p>
 <p>If you run:</p>
@@ -5327,6 +5361,12 @@ executes it, and resolves its modules under <code>/my/graphix/modules</code>. So
 if <code>myprogram</code> contains <code>mod utils</code>, the shell looks for
 <code>/my/graphix/modules/utils.gx</code>, then <code>/my/graphix/modules/utils/mod.gx</code>,
 each with its interface beside it (<code>utils.gxi</code>, <code>utils/mod.gxi</code>).</p>
+<p>A netidx module is code from whoever may publish at that path. Anyone
+with publish permission there supplies the code your program runs. Use
+authenticated netidx, and restrict publish permissions to the hosts and
+users who should supply this code. If your local modules must win over
+published ones, list the file entries before the netidx entries in the
+module path.</p>
 <h3 id="module-search-path-priority"><a class="header" href="#module-search-path-priority">Module Search Path Priority</a></h3>
 <p>The complete module search path, in order of priority:</p>
 <ol>
@@ -5818,10 +5858,13 @@ val queue: fn(#clock:Any, ?#flush:Any, ?#flush_before: [i64, null], v: 'a) -&gt;
 /// whose invocations are queued and released by an external trigger.
 ///
 /// Each call site of queuefn creates a fresh queue. The wrapper has an
-/// internal pop_count initialized to 1, so the first invocation runs
-/// immediately. Subsequent invocations push their args onto the queue and
-/// emit nothing until #trigger fires; each #trigger update releases one
-/// queued invocation, or banks a pop slot if the queue is empty. A fire
+/// counting semaphore initialized with one permit. An invocation spends
+/// a permit and runs immediately, or queues its arguments and emits nothing.
+/// Each #trigger update releases one queued invocation, or banks a permit
+/// when no awake invocation is waiting. Unused permits accumulate: later
+/// calls can consume them between trigger updates, so this is not a rate
+/// limit. One call site still releases at most one invocation per runtime
+/// cycle to keep argument deliveries separate. A fire
 /// of #trigger in the cycle the queuefn is born releases nothing. A call
 /// site that sleeps keeps its queued calls: no release takes one while it
 /// sleeps, and at its wake the slots banked meanwhile release them.
@@ -6620,6 +6663,14 @@ Close::close(text ~ f)?
 written in terms of it, so they come for free. The system streams
 override <code>read_exact</code> with a single call into the operating system,
 which reads under one lock instead of looping.</p>
+<p><code>Lines::lines</code> and <code>Lines::lines_batched</code> read until EOF or a read error.
+After they stop, delivering the same handle again starts a reader from
+its current position. To read a file again from the beginning, first
+call <code>sys::fs::Seek::seek</code> with <code>`Start(u64:0)</code>, then deliver the
+handle when the seek answers. Re-delivery never rewinds automatically;
+it can also read bytes appended after EOF or retry after an error.
+A handle delivered while its reader is still active leaves that reader
+running.</p>
 <pre><code class="language-graphix">/// The process's standard input, from [stdin]: it reads.
 type Stdin;
 
@@ -6714,12 +6765,13 @@ trait Read {
 /// is still a line. A line longer than 16 MiB is an error.
 ///
 /// Reads re-arm themselves, so either method is the whole "follow a
-/// stream" idiom in one call. Both stop at the end of the stream. A
-/// read error is returned, which also stops it — a stream that has
-/// failed once will not recover, and re-arming into the same error
-/// would spin. The error is a VALUE, like every other operation in
-/// this module: the caller decides whether to propagate it with `?`,
-/// log and drop it with `$`, or match on it.
+/// stream" idiom in one call. Both stop at EOF or a read error. A
+/// re-delivered handle restarts a finished reader, or one stopped by a
+/// seek or TLS upgrade, from the current stream position. It does not
+/// rewind: seek explicitly to read a file again. Re-delivery while the
+/// same reader is active leaves it reading. A read error is a value:
+/// propagate it with `?`, log and drop it with `$`, or match on it;
+/// re-deliver the handle to retry after addressing the error.
 trait Lines {
     /// One event per complete line, with the newline stripped. A chunk
     /// carrying several lines produces several events, and a chunk
@@ -7321,6 +7373,13 @@ val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsSt
 <div style="break-before: page; page-break-before: always;"></div><h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
 <p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
 <a href="https://netidx.github.io/netidx-book">netidx</a>.</p>
+<p><code>sys::net::call</code> waits only for the latest call's reply. Starting another
+call, or leaving the select arm containing the call, abandons the pending
+reply. The server may already be running the request: abandoning its
+reply does not cancel or undo the server's effects. The last completed
+result survives a sleep, and waking alone does not send another request.
+When the result must be observed, keep the call outside the sleeping arm
+or in a seq step that waits for it.</p>
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
@@ -7333,7 +7392,12 @@ val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `Write
 /// subscribe to the specified path
 val subscribe: fn&lt;'a: Concrete&gt;(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
-/// call the specified rpc. args must be a struct or null.
+/// Call the specified RPC. args must be a struct or null. A new call or
+/// a sleep discards any pending reply. This does not undo work already
+/// started on the server: its handler can finish, but its reply is ignored.
+/// The last completed result survives sleep; waking starts no call unless
+/// an argument fires. Keep the call outside a sleeping arm, or in a seq
+/// step that waits for its result, when that result must be observed.
 val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
 
 /// Publish an rpc,
@@ -7812,6 +7876,11 @@ formats (via calamine). A sheet is returned as a 2D array of <code>Cell</code>s,
 a select over a cell needs an arm for each of its seven kinds and no more.</p>
 <pre><code class="language-graphix">/// List sheet names in a workbook.
 ///
+/// Both sheets and read open every BIFF xls sheet densely over its used
+/// cells. The cell limit is checked afterward: a small sparse xls file
+/// can exhaust memory and terminate the process instead of returning XlsErr.
+/// Use trusted xls files or an external process memory limit.
+///
 /// To read a workbook from a stream, read it first —
 /// `xls::sheets(Read::read_all(f)?)`.
 val sheets: fn(input: bytes) -&gt; Result&lt;Array&lt;string&gt;, `XlsErr(string)&gt;;
@@ -7822,8 +7891,19 @@ type Cell = [i64, f64, string, bool, datetime, duration, null];
 
 /// Read a sheet by name as a 2D array of rows from A1: rows[0][0] is A1,
 /// every row as wide as the last used column, an empty cell null.
+/// The xls opening-memory limitation described on sheets applies here too.
 val read: fn(input: bytes, sheet: string) -&gt; Result&lt;Array&lt;Array&lt;Cell&gt;&gt;, `XlsErr(string)&gt;;
 </code></pre>
+<h2 id="memory-when-opening-xls-files"><a class="header" href="#memory-when-opening-xls-files">Memory when opening xls files</a></h2>
+<p>Both <code>xls::sheets</code> and <code>xls::read</code> open every sheet of a BIFF <code>.xls</code>
+workbook as a dense rectangle over its used cells. A small sparse file can
+therefore require much more memory than its file size. Graphix's cell limit
+is checked after this allocation and does not bound the cost of opening
+<code>.xls</code>. An allocation failure can terminate the process instead of returning
+<code>XlsErr</code>.</p>
+<p>Read only trusted <code>.xls</code> files in the Graphix process, or use a separate
+process with an enforced memory limit for untrusted files. Graphix has a
+preflight size check for <code>.ods</code>; that check does not cover <code>.xls</code>.</p>
 <h2 id="example-1"><a class="header" href="#example-1">Example</a></h2>
 <pre><code class="language-graphix">
 let data = sys::fs::read_all_bin("report.xlsx")?;
@@ -14412,7 +14492,7 @@ val chart_style: fn(
 <h3 id="chartbar"><a class="header" href="#chartbar"><code>chart::bar</code></a></h3>
 <pre><code class="language-graphix fragment">chart::bar(#label: "Counts", &amp;data)
 </code></pre>
-<p>Vertical bars from the x-axis. Data is <code>&amp;Array&lt;(string, f64)&gt;</code> — category labels paired with values. Uses <code>BarStyle</code> (which has <code>margin</code> instead of <code>stroke_width</code>/<code>point_size</code>).</p>
+<p>Vertical bars from the x-axis. Multiple bar series are grouped side by side in dataset order within each category. A missing value leaves its sub-slot empty; hovering a sub-slot identifies that series. Data is <code>&amp;Array&lt;(string, f64)&gt;</code> — category labels paired with values. Uses <code>BarStyle</code> (which has <code>margin</code> instead of <code>stroke_width</code>/<code>point_size</code>).</p>
 <h3 id="chartarea"><a class="header" href="#chartarea"><code>chart::area</code></a></h3>
 <pre><code class="language-graphix fragment">chart::area(#label: "Volume", &amp;data)
 </code></pre>
@@ -15963,8 +16043,9 @@ column's header label. Receives the column name.</p>
 </li>
 <li>
 <p><strong><code>#on_update</code></strong> -- Fired for each update of a cell the table
-subscribes, which is the rows within 50 of the visible window; a
-row scrolling back in re-delivers its current value. Useful to
+subscribes: rows within 50 and columns within two of the visible window,
+plus sort columns across every row. A cell scrolling back in re-delivers
+its current value. Useful to
 mirror live values into graphix state without subscribing
 separately, but an aggregate over every row
 (<code>data_table_calculated.gx</code>'s sum) is complete only while the whole
@@ -16012,7 +16093,9 @@ current value.</p>
 </li>
 <li>
 <p><strong><code>sparkline_column</code></strong> -- Rolling-line visualization accumulating
-published values over <code>history_seconds</code>. By default the y-axis is
+published values over <code>history_seconds</code>. Every cell uses the same rolling time
+axis, from now minus <code>history_seconds</code> to now. The last value extends flat to
+now; the value at the window start is retained even when updates stop. By default the y-axis is
 shared across every cell in the column (auto-scaled to the union of
 all rows' values) so cells are visually comparable. Pass <code>#min</code> /
 <code>#max</code> to fix the axis instead.</p>
@@ -16037,7 +16120,8 @@ swapped, nulled, or initialized reactively.</p>
 </ul>
 <p>Double-clicking any column's resize handle auto-fits <em>every</em> column
 to its widest cell among the subscribed rows (those within 50 of the
-visible window); other rows count only their fallback.</p>
+visible window) and subscribed columns (within two of the visible columns);
+other cells count only their fallback.</p>
 <h2 id="source-where-cell-values-come-from"><a class="header" href="#source-where-cell-values-come-from">Source: Where Cell Values Come From</a></h2>
 <p>Each <code>ColumnSpec.source</code> is a <code>&amp;Source</code> ref that decides where the
 column's per-cell values originate:</p>
@@ -16764,8 +16848,9 @@ let layout = column(
 <h3 id="scrolling"><a class="header" href="#scrolling">Scrolling</a></h3>
 <p>Enough rows and columns that both scrollbars appear in the example's
 900x400 window. The rows are real netidx paths, and the table subscribes
-only the displayed rows plus 50 on each side, so scrolling subscribes
-the rows that enter that window and drops the ones that leave it.</p>
+only the displayed rows plus 50 on each side and columns plus two on each
+side (sort columns excepted). Scrolling subscribes cells entering that
+window and drops those leaving it.</p>
 <pre><code class="language-graphix">use gui::{
   window,
   column::column,
@@ -16854,6 +16939,14 @@ widgets, no netidx subscriptions.</li>
 <li><a href="ui/gui/../../stdlib/sys/net.html"><code>sys::net</code></a> -- the <code>Table</code> record and
 <code>list_table</code> helper consumed by <code>#table</code>.</li>
 </ul>
+<h2 id="subscription-window"><a class="header" href="#subscription-window">Subscription Window</a></h2>
+<p>Netidx cells are subscribed within the visible rows plus 50 rows on either
+side, and the visible columns plus two columns on either side. Horizontal
+scrolling, keyboard navigation, column widths and viewport resizing move
+this window. A column used for sorting remains subscribed over every row,
+even outside the visible columns. <code>on_update</code> receives updates from these
+subscriptions; it does not provide a complete stream for every table cell.
+Sparkline history records only updates received while subscribed.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="menus"><a class="header" href="#menus">Menus</a></h1>
 <p>The <code>menu</code> module provides menu bars and context menus. Both are built from the same <code>MenuItem</code> building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.</p>
 <h2 id="interface-52"><a class="header" href="#interface-52">Interface</a></h2>
@@ -17156,6 +17249,10 @@ third-party packages with their versions or paths.</p>
 <p>If you manually edit the packages file, you can trigger a rebuild:</p>
 <pre><code>graphix package rebuild
 </code></pre>
+<p>A rebuild replaces the executable you are running. Cargo build outputs
+cannot be replaced: this includes debug, release, custom profiles and
+custom target directories. Copy the binary to your chosen installation
+directory first; it need not be under <code>$CARGO_HOME/bin</code>.</p>
 <p>A rebuild also picks up minor and patch version updates of third-party
 packages automatically. The shell source's <code>Cargo.lock</code> keeps the shell's own
 dependencies locked, but it does not name your packages, so Cargo resolves

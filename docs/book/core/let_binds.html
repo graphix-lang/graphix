@@ -195,7 +195,8 @@ shell during tab completion and made available by the LSP server.</p>
 <h2 id="comments"><a class="header" href="#comments">Comments</a></h2>
 <p>A <code>//</code> comment runs to the end of its line and belongs to whatever comes
 next: write it on its own line directly above an expression, a <code>select</code>
-arm, a method inside an <code>impl</code> block, or a field of a struct literal.</p>
+arm, a method inside an <code>impl</code> block, a field of a struct literal, a
+lambda parameter, or an item inside a <code>use</code> tree.</p>
 <pre><code class="language-graphix">// a counter, one step per cycle
 let n = 0;
 n &lt;- n + 1;
@@ -208,7 +209,8 @@ select n {
 </code></pre>
 <p>A comment may also end the line of an item in a list, after the item's
 <code>;</code> or <code>,</code>: a statement, a <code>select</code> arm, a struct field, an array or tuple
-element, a call's argument, a trait or impl method, or an interface item.
+element, a call's argument (labeled arguments included), a lambda
+parameter, a use-tree item, a trait or impl method, or an interface item.
 And comments may stand below the last item, above the bracket that closes
 the list, or at the end of a file, a file of nothing but comments
 included.</p>

@@ -246,7 +246,11 @@ division by zero rather than throwing.</p>
 <h3 id="constraining-the-error-type"><a class="header" href="#constraining-the-error-type">Constraining the error type</a></h3>
 <p>The binder may carry a type annotation, <code>catch(e: T) expr</code>. That is a
 type ascription: <code>e</code> has type <code>T</code> in the handler. The compiler still
-checks that <code>T</code> contains every error the covered region can throw.</p>
+checks that <code>T</code> contains every error the covered region can throw, including
+errors from callbacks. In a generic function, declare a bound on an error
+parameter that reaches an annotated catch: for example, a function taking
+<code>Result&lt;i64, 'e&gt;</code> and catching only <code>Error&lt;ErrChain&lt;`A&gt;&gt;</code> declares
+<code>'e: `A</code>. The catch does not narrow an unconstrained declared parameter.</p>
 <h2 id="checked-errors"><a class="header" href="#checked-errors">Checked Errors</a></h2>
 <p>Graphix function types are annotated by the type of error they might raise. In
 most cases this is automatic, but for some higher order functions it may be
@@ -284,8 +288,8 @@ flags you can change the compilers behavior in this respect.</p>
 <h2 id="the--operator-aka-or-never"><a class="header" href="#the--operator-aka-or-never">The $ Operator, aka Or Never</a></h2>
 <p>The <code>$</code> operator goes in the same position as <code>?</code>, and is best described as "or
 never". If the expression on it's left is a non error, then <code>$</code> doesn't do
-anything, otherwise it logs the error at the <code>warn!</code> log level and returns
-nothing. This is a concise way of writing,</p>
+anything, otherwise it returns nothing. It also produces warning diagnostics
+as described below. This is a concise way of writing,</p>
 <pre><code class="language-graphix fragment">select might_fail(1, 2, 3) {
   error as _ =&gt; never(),
   v =&gt; v
@@ -294,10 +298,14 @@ nothing. This is a concise way of writing,</p>
 <p>can instead be written as,</p>
 <pre><code class="language-graphix fragment">might_fail(1, 2, 3)$
 </code></pre>
-<p>The <code>$</code> operator logs errors rather than silently discarding them, making it
-easier to debug issues while still allowing execution to continue. The log
-line names the site and the error, and is the same whether the expression
-runs in the interpreter or in a JIT-compiled kernel.</p>
+<p>A warning from <code>$</code> names the site and the error. In fused code, <code>$</code> and a
+<code>?</code> without a covering catch report when their error operand fires. These
+diagnostic messages can repeat or be absent: a guard can report even when
+an earlier arm selects the result, a constant error in an arm entered later
+can go unreported, and several depths of a native tail loop can share one
+report. Run with <code>--no-fusion</code> to inspect the interpreter's diagnostics.
+The error still produces no value, and a <code>?</code> covered by a catch follows the
+normal error propagation rules.</p>
 <h2 id="-and--on-nullable-values"><a class="header" href="#-and--on-nullable-values">? and $ on Nullable Values</a></h2>
 <p>Both operators also work on an optional value, a <code>['a, null]</code>. <code>$</code> is still
 "or never": a null produces nothing, and because a null is not a failure

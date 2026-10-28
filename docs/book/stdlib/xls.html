@@ -161,6 +161,11 @@ formats (via calamine). A sheet is returned as a 2D array of <code>Cell</code>s,
 a select over a cell needs an arm for each of its seven kinds and no more.</p>
 <pre><code class="language-graphix">/// List sheet names in a workbook.
 ///
+/// Both sheets and read open every BIFF xls sheet densely over its used
+/// cells. The cell limit is checked afterward: a small sparse xls file
+/// can exhaust memory and terminate the process instead of returning XlsErr.
+/// Use trusted xls files or an external process memory limit.
+///
 /// To read a workbook from a stream, read it first —
 /// `xls::sheets(Read::read_all(f)?)`.
 val sheets: fn(input: bytes) -&gt; Result&lt;Array&lt;string&gt;, `XlsErr(string)&gt;;
@@ -171,8 +176,19 @@ type Cell = [i64, f64, string, bool, datetime, duration, null];
 
 /// Read a sheet by name as a 2D array of rows from A1: rows[0][0] is A1,
 /// every row as wide as the last used column, an empty cell null.
+/// The xls opening-memory limitation described on sheets applies here too.
 val read: fn(input: bytes, sheet: string) -&gt; Result&lt;Array&lt;Array&lt;Cell&gt;&gt;, `XlsErr(string)&gt;;
 </code></pre>
+<h2 id="memory-when-opening-xls-files"><a class="header" href="#memory-when-opening-xls-files">Memory when opening xls files</a></h2>
+<p>Both <code>xls::sheets</code> and <code>xls::read</code> open every sheet of a BIFF <code>.xls</code>
+workbook as a dense rectangle over its used cells. A small sparse file can
+therefore require much more memory than its file size. Graphix's cell limit
+is checked after this allocation and does not bound the cost of opening
+<code>.xls</code>. An allocation failure can terminate the process instead of returning
+<code>XlsErr</code>.</p>
+<p>Read only trusted <code>.xls</code> files in the Graphix process, or use a separate
+process with an enforced memory limit for untrusted files. Graphix has a
+preflight size check for <code>.ods</code>; that check does not cover <code>.xls</code>.</p>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">
 let data = sys::fs::read_all_bin("report.xlsx")?;

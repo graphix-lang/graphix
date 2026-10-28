@@ -443,7 +443,7 @@ val chart_style: fn(
 <h3 id="chartbar"><a class="header" href="#chartbar"><code>chart::bar</code></a></h3>
 <pre><code class="language-graphix fragment">chart::bar(#label: "Counts", &amp;data)
 </code></pre>
-<p>Vertical bars from the x-axis. Data is <code>&amp;Array&lt;(string, f64)&gt;</code> — category labels paired with values. Uses <code>BarStyle</code> (which has <code>margin</code> instead of <code>stroke_width</code>/<code>point_size</code>).</p>
+<p>Vertical bars from the x-axis. Multiple bar series are grouped side by side in dataset order within each category. A missing value leaves its sub-slot empty; hovering a sub-slot identifies that series. Data is <code>&amp;Array&lt;(string, f64)&gt;</code> — category labels paired with values. Uses <code>BarStyle</code> (which has <code>margin</code> instead of <code>stroke_width</code>/<code>point_size</code>).</p>
 <h3 id="chartarea"><a class="header" href="#chartarea"><code>chart::area</code></a></h3>
 <pre><code class="language-graphix fragment">chart::area(#label: "Volume", &amp;data)
 </code></pre>

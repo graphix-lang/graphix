@@ -341,6 +341,10 @@ the same files. A <code>graphixfmt.json</code> that does not parse, or that name
 setting the formatter does not have, is an error rather than a silent
 fallback.</p>
 <h3 id="what-it-changes"><a class="header" href="#what-it-changes">What it changes</a></h3>
+<p>A single bracketed argument keeps its opening and closing brackets beside
+its parent's when the opening fits, in expressions, types and patterns.
+For example, a long <code>`Tag({ first, second })</code> pattern opens with
+<code>`Tag({</code> and closes with <code>})</code>, with the fields between them.</p>
 <p>The formatter keeps what you chose where the choice is yours: the order
 of struct fields and of the variants in a union, the delimiters of a
 string (<code>"…"</code>, <code>r"…"</code>, <code>"""…"""</code>), your comments and attributes. It

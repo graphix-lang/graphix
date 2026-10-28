@@ -218,6 +218,10 @@ third-party packages with their versions or paths.</p>
 <p>If you manually edit the packages file, you can trigger a rebuild:</p>
 <pre><code>graphix package rebuild
 </code></pre>
+<p>A rebuild replaces the executable you are running. Cargo build outputs
+cannot be replaced: this includes debug, release, custom profiles and
+custom target directories. Copy the binary to your chosen installation
+directory first; it need not be under <code>$CARGO_HOME/bin</code>.</p>
 <p>A rebuild also picks up minor and patch version updates of third-party
 packages automatically. The shell source's <code>Cargo.lock</code> keeps the shell's own
 dependencies locked, but it does not name your packages, so Cargo resolves
