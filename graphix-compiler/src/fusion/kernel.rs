@@ -301,6 +301,11 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
+        // born again (a seq step's next run): its interior memory starts
+        // afresh, as a call site's builtins are reborn
+        if woke && ctx.event.born() {
+            self.state.fill(0)
+        }
         // the feeders are a fork point, as a call's arguments are
         let (_, mut polled) = crate::node::gather(ctx, &mut self.feeders, &mut self.fork);
         let any_updated = polled.iter().any(|tv| tv.tag().triggers());

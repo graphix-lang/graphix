@@ -207,6 +207,30 @@ async fn own_trigger_write_starts_the_next_run(mode: Mode) -> Result<()> {
 // reborn columns this CR lists that are unreachable from a seq step (skip, take, filter
 // see one value per argument per run and iter/range reset only out, which their sleep
 // already did); that part is unchanged by this commit. Commit f4cf3c3.
+// A fused region in a step starts afresh at each run, as the node-walk's
+// builtins are reborn: the fold's slot runs its callback again although
+// the only input it reads, the trigger's alias, fired at the step's entry
+// only in the first run.
+async fn kernels_are_reborn_at_each_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 30 => n + 1, _ => never() };
+        let x = select step { 1 | 10 | 20 => step, _ => never() };
+        let acc = 0;
+        let runs = 0;
+        seq x {
+            acc <- acc + x;
+            acc + array::fold([1], 42, |v0, kv| x);
+            runs <- runs + 1;
+            runs
+        }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    let printed: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(printed, ["i64:1", "i64:2", "i64:3"]);
+    Ok(())
+}
+
 async fn restart_builtins_are_reborn_at_each_run(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
@@ -238,6 +262,7 @@ async fn restart_builtins_are_reborn_at_each_run(mode: Mode) -> Result<()> {
 }
 
 modes!(
+    kernels_are_reborn_at_each_run,
     closure_write_is_seen,
     ref_write_through_a_variable_is_seen,
     seqq_callee_write_is_live,
