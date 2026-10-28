@@ -1292,7 +1292,9 @@ cycle, across workers; the compiler never pins threads.
   order over `Any`-typed functions is nondeterministic, and the fuzzer
   excludes a program that may make one (`oracle_tier`).
 - **`catch`** (`design/catch.md`) installs a handler for the rest of its
-  block; it is not control flow. `?` wraps its error in an `ErrChain`
+  block; it is not control flow. A user handler that never reads its
+  binder warns: its expression can act at birth before an error arrives.
+  `?` wraps its error in an `ErrChain`
   once, extending a chain rather than nesting it, and the types agree:
   `ErrChain<ErrChain<X>>` is `ErrChain<X>`, so a generic `Result<T, 'e>`
   raises `ErrChain<'e>`. Chain-ness is the type's (`Type::

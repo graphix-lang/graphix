@@ -273,7 +273,7 @@ async fn unhandled_warnings(mode: Mode) -> Result<()> {
         "seqq { 42 }",
         "{ let f = || seqq { 42 }; f() }",
         "seqq { sys::time::after_idle(duration:1.ms, 42) }",
-        "{ catch(e) null; let v: [i64, Error<`Expected>] = 42; seqq { v? } }",
+        "{ catch(e) e ~ null; let v: [i64, Error<`Expected>] = 42; seqq { v? } }",
     ] {
         ctx.rt.compile(ArcStr::from(code)).await?;
     }

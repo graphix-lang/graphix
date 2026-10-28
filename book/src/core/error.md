@@ -34,8 +34,8 @@ as here. In a file the catch's type is inferred from what it covers.
 Catching errors is NOT control flow: the catch statement is an installation,
 its type is bottom (it never produces a value), and an error being raised
 does not stop the execution of any node. The handler is an ordinary reactive
-expression that runs when an error value arrives — the natural idiom is to
-connect it to state your program reads,
+expression. Read its binder to react to arriving errors, and connect
+the result to state your program reads:
 
 ```graphix,fragment
 let error_display: [null, string] = null;
@@ -45,6 +45,11 @@ let x = {
 };
 widget([x, text(error_display)])
 ```
+
+A catch handler is a reactive expression, so it must read its error binder
+to wait for errors. Write `catch(e) failed <- e ~ true`, rather than
+`catch(e) failed <- true`, which writes at birth even when no error has
+arrived. The checker warns when a handler never reads its binder.
 
 The catch here covers `calc(in0)` — and only that block: a catch installed
 inside a block covers the rest of THAT block, nothing outside it. A second

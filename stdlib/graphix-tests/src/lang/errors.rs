@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, is, prints, refused},
+    testing::{FuseExpect, Mode, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -1036,3 +1036,52 @@ run!(
         let result = { catch(e) println("[e]"); x? }
     "#
 );
+
+async fn catch_without_binder_warns(mode: Mode) -> Result<()> {
+    use arcstr::literal;
+    use graphix_compiler::{CFlag, expr::Load};
+    use graphix_package_core::testing::{TestCtx, config};
+    use poolshark::local::LPooled;
+    use std::fmt::Write;
+    let (tx, _rx) = tokio::sync::mpsc::channel(100);
+    let ctx = TestCtx::start(
+        config(tx, &crate::TEST_REGISTER, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(mode.flags() | CFlag::WarningsAreErrors),
+    )
+    .await?;
+    let mut message: LPooled<String> = LPooled::take();
+    for source in [
+        literal!("{ let failed = false; catch(e) failed <- true; 1 }"),
+        literal!(
+            "{ let failed = false; catch(e) { let f = |e| e; failed <- f(true) }; 1 }"
+        ),
+    ] {
+        for result in [
+            ctx.rt.check(Load::Text(source.clone()), None).await.map(|_| ()),
+            ctx.rt.compile(source.clone()).await.map(|_| ()),
+        ] {
+            let error = match result {
+                Ok(()) => anyhow::bail!("a handler ignoring its binder must warn"),
+                Err(error) => error,
+            };
+            message.clear();
+            write!(message, "{error:#}")?;
+            assert!(message.contains("catch handler never reads its error"), "{message}");
+        }
+    }
+    for source in [
+        literal!("{ let failed = false; catch(e) failed <- e ~ true; 1 }"),
+        literal!(
+            "{ let failed = false; catch(e) { let f = |v| e ~ v; failed <- f(true) }; 1 }"
+        ),
+    ] {
+        ctx.rt.check(Load::Text(source.clone()), None).await?;
+        ctx.rt.compile(source).await?;
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
+modes!(catch_without_binder_warns);

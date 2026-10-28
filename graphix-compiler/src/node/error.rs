@@ -107,6 +107,7 @@ pub struct Catch<R: Rt> {
     pub(crate) action: Option<CatchAction<R>>,
     own_handler: ErrorHandler,
     receipts: Receipts,
+    unused_warning: Option<BitFlags<CFlag>>,
     constraint: Option<Type>,
     /// Throws unioned into the bind before `catch(e: T)` ascribes `T`
     /// onto it. Coverage is this snapshot, not the bind after ascription.
@@ -234,6 +235,7 @@ impl<R: Rt> Catch<R> {
         handler: Node<R>,
         action: Option<CatchAction<R>>,
         own_handler: ErrorHandler,
+        unused_warning: Option<BitFlags<CFlag>>,
         constraint: Option<Type>,
         thrown: Option<Type>,
         bind_id: BindId,
@@ -246,6 +248,7 @@ impl<R: Rt> Catch<R> {
             action,
             own_handler,
             receipts: Receipts::default(),
+            unused_warning,
             constraint,
             thrown,
             bind_id,
@@ -293,6 +296,7 @@ impl<R: Rt> Catch<R> {
             handler,
             action,
             own_handler,
+            None,
             constraint,
             thrown,
             bind_id,
@@ -384,6 +388,7 @@ impl<R: Rt> Catch<R> {
             handler,
             action,
             own_handler,
+            matches!(c.role, CatchRole::User).then_some(flags),
             c.constraint.clone(),
             None,
             bind_id,
@@ -533,6 +538,7 @@ impl<R: Rt> Update<R> for Catch<R> {
         ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
+        self.unused_warning = None;
         match types.aux(self.spec.id) {
             None => self.typecheck0_with(
                 ctx,
@@ -1476,6 +1482,32 @@ impl<R: Rt> Catch<R> {
         self.handler.refs(&mut refs);
         if refs.is_refed(self.bind_id) {
             self.own_handler.seal();
+        }
+        if check
+            && let Some(flags) = self.unused_warning.take()
+            && !refs.is_refed(self.bind_id)
+        {
+            // One registration is the catch's delivery slot. Further registrations
+            // read its binder, including those in checked definition bodies.
+            let mut registrations = 0;
+            let reads = ctx.pending_refs.iter().any(|((id, _), count)| {
+                if *id == self.bind_id {
+                    registrations += count;
+                }
+                registrations > 1
+            });
+            if !reads {
+                let ExprKind::Catch(c) = &self.spec.kind else { unreachable!() };
+                ctx.env.warn(
+                    flags,
+                    &self.spec,
+                    c.bind.pos_or(self.spec.pos),
+                    self.spec.end.0,
+                    format_args!(
+                        "catch handler never reads its error; sample the error binder (`e ~ value`)"
+                    ),
+                )?;
+            }
         }
         let Some(abort) = &mut self.action else { return Ok(()) };
         wrap!(abort.node, child(&mut abort.node, ctx))?;
