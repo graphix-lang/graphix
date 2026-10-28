@@ -280,6 +280,7 @@ async fn unread_quantifier_settles(mode: Mode) -> Result<()> {
     };
     assert_eq!(run(&code("i64", "f(3)"), mode).await?, [Value::I64(3)]);
     assert_eq!(run(&code("i64", "f(#h: null, 3)"), mode).await?, [Value::I64(3)]);
+    assert_eq!(run(&code("i64", "((f))(3)"), mode).await?, [Value::I64(3)]);
     for (ret, call) in [
         ("i64", "f(#h: |v| 0, 3)"),
         ("['a, i64]", "f(3)"),

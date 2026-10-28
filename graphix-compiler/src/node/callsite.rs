@@ -1634,6 +1634,10 @@ impl<R: Rt> CallSite<R> {
         args: &TArc<[(Option<ArcStr>, Expr)]>,
         f: &TArc<Expr>,
     ) -> Result<Node<R>> {
+        let mut f = f;
+        while let ExprKind::ExplicitParens(inner) = &f.kind {
+            f = inner;
+        }
         reject_dead_variadic_call(ctx, scope, f, args).at(&spec)?;
         // a call's function is compiled as written: a trait method named
         // here is the dispatcher itself, never its eta-expansion

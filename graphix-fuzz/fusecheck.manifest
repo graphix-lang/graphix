@@ -273,8 +273,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	operand-bound-member-oct2026/00_extracted_callback.gx
 1	organic-firing-aug2026/00_const_terminal.gx
 1	organic-firing-aug2026/01_multilevel_face.gx
-0	param-call-expr-sep2026/00_param_called_through_parens.gx
-0	param-call-expr-sep2026/01_rank2_param_called_through_parens.gx
+1	param-call-expr-sep2026/00_param_called_through_parens.gx
+1	param-call-expr-sep2026/01_rank2_param_called_through_parens.gx
 0	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
 0	parse-bottom-member-jul2026/01_nested_bottom_member.gx
 2	prevlen-word-jul2026/00_callee_loop_source_refresh.gx
