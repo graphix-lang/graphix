@@ -260,7 +260,11 @@ a `with` body's steps are steps like any other.
 `seqq` captures the external values read by its body. At each trigger it
 samples them together into one tuple and queues that tuple. Later changes
 to those inputs do not change a queued request or reissue a waiting step.
-Bindings declared inside the block retain their ordinary scope.
+Bindings declared inside the block retain their ordinary scope. A nested
+`seq` takes its own step snapshots when it enters, so it sees external
+variables as they stand then, rather than the enclosing `seqq`'s queued
+copies. The enclosing request's trigger value and local bindings still
+belong to that request.
 
 A capture uses its last produced value; it need not produce on the same
 cycle as the request. If its source becomes bottom, its previous value is

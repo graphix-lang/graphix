@@ -675,6 +675,12 @@ old value. A taken `with` branch is not an abort: the run continues
 and returns its credit at completion; an abort from the with body is
 the machine's abort.
 
+A nested `seq` inside `seqq` drops queued external-value redirects when
+its body is rewritten, so its steps snapshot external variables at their
+own entry. Trigger-value redirects and local cells stay tied to the
+enclosing request. `Redirect::Capture` distinguishes queued external
+values from `Redirect::Snapshot`, which preserves the request trigger.
+
 ## 9. `abort` and `flush`
 
 ```graphix

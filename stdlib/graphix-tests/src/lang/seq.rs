@@ -935,3 +935,19 @@ run!(sample_bank_cleared_at_seq_rebirth, r#"{
     completed <- result ~ completed + 1;
     select step { 16 => completed, _ => never() }
 }"#, is(Value::I64(0)); FuseExpect::Jit);
+
+run!(nested_seq_in_seqq_takes_own_entry, r#"{
+    let step = 0;
+    step <- select step { n if n < 12 => n + 1, _ => never() };
+    let x = 1;
+    let ready = false;
+    x <- select step { 4 => 2, _ => never() };
+    ready <- select step { 5 => true, _ => never() };
+    let go = 0;
+    seqq go {
+        until live(ready);
+        let a = x;
+        let b = seq { x };
+        (a, b)
+    }
+}"#, prints("[i64:1, i64:2]"); FuseExpect::Jit);

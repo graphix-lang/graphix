@@ -407,6 +407,9 @@ for a new run; a trigger from an aborted run cannot complete the next run.
 A select in that step also starts fresh entry history: its arms are born
 on their first selection in each run, even after an asynchronous wait.
 
+A nested `seq` inside `seqq` takes its own entry snapshots of external
+variables. It retains the enclosing request's trigger and local bindings.
+
 A busy flag set on a trigger, a call sampled on that trigger, and the
 flag cleared on the result is a seq written by hand, three statements
 apart:

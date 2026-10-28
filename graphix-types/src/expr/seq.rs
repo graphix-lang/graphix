@@ -37,8 +37,8 @@ use triomphe::Arc;
 pub const IDLE: i64 = -1;
 
 /// Where the rewrite sends a name. A cell (a `seq let` trigger's name, a
-/// try's `e`) takes every use; a snapshot (a trigger's value, a `seqq`
-/// capture) and an entry (a step's entry snapshot) take only the reads, so
+/// try's `e`) takes every use; a snapshot (a trigger's value), a capture (a `seqq`
+/// request's external values) and an entry (a step's entry snapshot) take only the reads, so
 /// a write, a `&` or a call's function reaches the variable itself. A nested seq takes its own
 /// entries, and a `live` neither. A local is a name a statement of the seq
 /// binds: it stays itself, and no outer variable of its name is captured.
@@ -49,6 +49,7 @@ pub const IDLE: i64 = -1;
 enum Redirect {
     Cell(ArcStr),
     Snapshot(ArcStr),
+    Capture(ArcStr),
     Entry(ArcStr),
     Local(ArcStr),
     Function(ArcStr),
@@ -61,6 +62,7 @@ impl Redirect {
         match self {
             Self::Cell(n)
             | Self::Snapshot(n)
+            | Self::Capture(n)
             | Self::Entry(n)
             | Self::Local(n)
             | Self::Function(n)
@@ -69,7 +71,7 @@ impl Redirect {
     }
 
     fn snapshot(&self) -> bool {
-        matches!(self, Self::Snapshot(_) | Self::Entry(_))
+        matches!(self, Self::Snapshot(_) | Self::Capture(_) | Self::Entry(_))
     }
 }
 
@@ -1495,7 +1497,13 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     let snapshots: LPooled<Names> = captures
         .iter()
         .filter(|(_, (_, _, id))| !live_ids.contains(id))
-        .map(|(n, (_, c, _))| (n.clone(), Redirect::Snapshot(c.clone())))
+        .map(|(n, (_, c, _))| {
+            let redirect = match is_trigger(n) {
+                true => Redirect::Snapshot(c.clone()),
+                false => Redirect::Capture(c.clone()),
+            };
+            (n.clone(), redirect)
+        })
         .collect();
     let body = rewrite_stmts(body, &snapshots, Rewrite::Bindings);
     let used = body.iter().fold(LPooled::<AHashSet<ArcStr>>::take(), |u, stmt| {
@@ -2270,7 +2278,8 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         // and the body belong to the inner machine's own runs
         ExprKind::Seq(s) => {
             let SeqExpr { kind, trigger, abort, body } = &**s;
-            let outer = only(map, |r| !matches!(r, Redirect::Entry(_)));
+            let outer =
+                only(map, |r| !matches!(r, Redirect::Entry(_) | Redirect::Capture(_)));
             let outer = outer.as_deref().unwrap_or(map);
             let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, outer)));
             let inner = match &trigger {
@@ -2716,5 +2725,18 @@ mod test {
             let want = parse_one(expected).expect("parses");
             assert_eq!(got.to_string(), want.to_string(), "{src}");
         }
+    }
+    #[test]
+    fn nested_seq_keeps_request_and_takes_own_entries() {
+        let map = names(&[
+            ("request", snapshot("request_snapshot")),
+            ("bound", cell("bound_cell")),
+            ("captured", Redirect::Capture(literal!("captured_snapshot"))),
+            ("entry", Redirect::Entry(literal!("entry_snapshot"))),
+        ]);
+        let source = parse_one("seq request { (bound, captured, entry) }").unwrap();
+        let expected =
+            parse_one("seq request_snapshot { (bound_cell, captured, entry) }").unwrap();
+        assert_eq!(rewrite(&source, &map).to_string(), expected.to_string());
     }
 }

@@ -1554,7 +1554,7 @@ fn own_access<R: Rt>(
                 }
                 Some(ApplyView::BuiltIn(name)) if current || cs.bound_statically() => {
                     s.ordered |= ctx.builtin_ordered(name);
-                    // CR claude for claude: [bug/medium] A builtin handed any function
+                    // XCR claude for claude: [bug/medium] A builtin handed any function
                     // makes the step opaque, and an opaque step marks every seqq
                     // capture live. So `let a = x; let c = filter(3, |v| v > 0)` in a
                     // seqq body reads x live, not as it stood at enqueue: the probe
@@ -1585,6 +1585,18 @@ fn own_access<R: Rt>(
                     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2,
                     // q9, A nested seq inside a seqq): yes, own entry (the
                     // recommendation: own entry, as CLAUDE.md says.)
+                    // 2026-10-27 codex: Separated seqq external captures from
+                    // trigger-value redirects. A nested seq drops the queued external
+                    // captures and takes its own entry snapshot, while retaining the
+                    // enclosing trigger and local cells. Pin
+                    // lang::seq::nested_seq_in_seqq_takes_own_entry failed in all four
+                    // modes without the fix (1,1) and passed with it (1,2); rewrite pin
+                    // expr::seq::test::nested_seq_keeps_request_and_takes_own_entries
+                    // covers the retained trigger/local redirects. Ran
+                    // seq/select/sample regression filters and the targeted
+                    // graphix-types test. Updated book, design and language skill. No
+                    // FuseExpect moved; socket/netidx-admin and full workspace tests
+                    // remain for coordinator review.
                     let reach = builtin_reach(cs, ctx);
                     if reach != Reach::Nothing && gxdbg_seqplan() {
                         let what = match reach {
