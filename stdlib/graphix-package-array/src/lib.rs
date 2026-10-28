@@ -224,6 +224,18 @@ struct Group<R: Rt> {
     out: TagValue,
 }
 
+impl<R: Rt> Group<R> {
+    fn with(pred: genn::Callback<R>) -> Self {
+        Self {
+            queue: VecDeque::new(),
+            buf: smallvec![],
+            pred,
+            ready: true,
+            out: TagValue::phantom(),
+        }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Group<R> {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "array_group";
@@ -244,13 +256,7 @@ impl<R: Rt> BuiltIn<R> for Group<R> {
                     t => bail!("expected function not {t}"),
                 };
                 let pred = genn::Callback::new(ctx, &scope, &mftyp, &["n", "x"], top_id)?;
-                Ok(Box::new(Self {
-                    queue: VecDeque::new(),
-                    buf: smallvec![],
-                    pred,
-                    ready: true,
-                    out: TagValue::phantom(),
-                }))
+                Ok(Box::new(Self::with(pred)))
             }
             _ => bail!("expected two arguments"),
         }
@@ -262,13 +268,7 @@ impl<R: Rt> BuiltIn<R> for Group<R> {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let pred = genn::Callback::image_decode(ctx, buf)?;
-        Ok(Box::new(Self {
-            queue: VecDeque::new(),
-            buf: smallvec![],
-            pred,
-            ready: true,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(pred)))
     }
 }
 
