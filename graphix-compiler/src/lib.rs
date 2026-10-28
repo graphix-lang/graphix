@@ -150,8 +150,8 @@ pub enum View {
     /// the fires the arm missed are delivered.
     Wake,
     /// Nodes born into a world that stands: constants fire, standing
-    /// values read stale. An arm's first entry, a seq step entered for a
-    /// run, a birth inside a resume.
+    /// values read stale. An arm's first entry into an existing world,
+    /// a seq step entered for a run, a birth inside a resume.
     Step,
 }
 

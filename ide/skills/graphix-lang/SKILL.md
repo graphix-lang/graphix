@@ -315,6 +315,8 @@ first, guard second; must be exhaustive with no dead arms; a bottom
 scrutinee yields a bottom select (put `hold` on the scrutinee to persist
 across a bottom cycle).
 
+- An arm first entered with a new function instance or collection slot
+  reads standing values as fired, like the rest of that born subtree.
 - An unselected arm with state, an effect or a raise sleeps. Sleep is a
   pause and a wake a resume: `count`, `once`, `take`, `skip`, `uniq`,
   `hold` and queues keep their state; an async call in flight is

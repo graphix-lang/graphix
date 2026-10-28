@@ -1823,7 +1823,7 @@ impl<R: Rt> Update<R> for Select<R> {
                             false => View::Wake,
                         }
                     }
-                    // CR claude for claude: [bug/medium] An arm's first entry under a
+                    // XCR claude for claude: [bug/medium] An arm's first entry under a
                     // Birth (a fresh collection slot, a callee instance bound at run
                     // time, a REPL input) runs as Birth join Step = Step, so it reads
                     // standing values stale while the rest of the same born subtree
@@ -1839,6 +1839,16 @@ impl<R: Rt> Update<R> for Select<R> {
                     // arm first entered inside a born subtree): yes, arm takes birth from
                     // enclosing view (the recommendation: the arm takes Birth (local, no
                     // change to join).)
+                    // 2026-10-27 codex: A select arm's first entry takes Birth when its
+                    // enclosing view is Birth; it otherwise takes Step. View::join is
+                    // unchanged. Pins
+                    // lang::select::arm_in_born_instance_reads_standing_values and
+                    // arm_in_born_slot_reads_standing_values failed in all four modes before
+                    // the fix and passed afterward. Ran lang::seq, lang::select and
+                    // lang::sample regression filters; no FuseExpect moved. Updated rules,
+                    // book, language skill and wake design. No socket/netidx-admin tests or
+                    // full workspace gate here.
+                    false if ctx.event.view == View::Birth => View::Birth,
                     false => View::Step,
                 };
                 let (t, v) =

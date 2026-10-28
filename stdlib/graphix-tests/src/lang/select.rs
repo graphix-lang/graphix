@@ -5089,3 +5089,37 @@ run!(guard_and_arm_share_missed_fire, r#"{
     };
     select step { 7 => seen, _ => never() }
 }"#, prints(r#"[["one 1", "one 1"], ["other", "arm 1"]]"#); FuseExpect::Jit);
+
+run!(arm_in_born_instance_reads_standing_values, r#"{
+    let step = 0;
+    step <- select step { s if s < 6 => s + 1, _ => never() };
+    let input = 5;
+    let outside = 0;
+    let inside = 0;
+    let f = |t| {
+        outside <- input;
+        select t { _ => { inside <- input; t } }
+    };
+    let function = never();
+    function <- select step { 2 => f, _ => never() };
+    let result = function(1);
+    select step { 6 => (outside, inside), _ => never() }
+}"#, prints("[i64:5, i64:5]"); FuseExpect::Jit);
+
+run!(arm_in_born_slot_reads_standing_values, r#"{
+    let step = 0;
+    step <- select step { s if s < 6 => s + 1, _ => never() };
+    let input = 7;
+    let outside = 0;
+    let inside = 0;
+    let values = select step {
+        s if s < 2 => [1],
+        s if s < 4 => [1, 2],
+        _ => [1, 2, 3]
+    };
+    let mapped = array::map(values, |v| {
+        outside <- input ~ outside + 1;
+        select v { _ => { inside <- input ~ inside + 1; v } }
+    });
+    select step { 6 => (outside, inside), _ => never() }
+}"#, prints("[i64:3, i64:3]"); FuseExpect::Jit);

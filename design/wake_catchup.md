@@ -332,7 +332,8 @@ As built:
   read as delivered, constants fire), `Wake` (a resume: standing values
   read stale, constants stand, `<-` targets keep their values), `Step`
   (born into a world that stands: constants fire, standing values read
-  stale). A select arm's first entry is a `Step`, every later one a
+  stale). A select arm's first entry inherits `Birth` when the enclosing
+  view is `Birth` and is otherwise a `Step`; every later entry is a
   `Wake` (`LazyArmFacts::entered`); a pure arm resumes as the others do, slept at its re-entry (it is not slept when
   deselected, since nothing in it runs) so its nodes recompute from what
   stands, as a kernel's do; a seq step entered for a run is a `Step`; a
