@@ -725,7 +725,7 @@ async fn the_bar_tooltip_reads_its_slot() -> Result<()> {
     let size = Size::new(400.0, 300.0);
     let mut state = ChartState::default();
     let info = draw_in(&h, &state, size).await.expect("drawn");
-    let x = info.rect.x + info.rect.width * 0.75;
+    let x = info.rect.x + info.rect.width * 0.875;
     let p = Point::new(x, info.rect.y + info.rect.height / 2.0);
     let moved = Event::Mouse(ME::CursorMoved { position: p });
     let bounds = Rectangle::new(Point::ORIGIN, size);
@@ -1280,5 +1280,33 @@ async fn chart_text_sizes_are_validated_before_drawing() -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn grouped_bars_remain_visible_and_hover_their_subslot() -> Result<()> {
+    let args = r#"#width: &`Fill, #height: &`Fixed(200.0),
+        &[bar(#label: "A", #color: color(#r: 1.0, #g: 0.0, #b: 1.0)$,
+              &[("a", 2.0), ("b", -2.0)]),
+          bar(#label: "B", #color: color(#r: 0.0, #g: 1.0, #b: 1.0)$,
+              &[("a", 4.0), ("b", -4.0)])]"#;
+    let mut h = chart_harness(args).await?;
+    let rgba = h.screenshot(400, 200);
+    assert!(color_pixels(&rgba, [255, 0, 255]) > 500, "first series hidden");
+    assert!(color_pixels(&rgba, [0, 255, 255]) > 500);
+    for (x, label, value) in [
+        (0.125, "A", "a: 2.00"),
+        (0.375, "B", "a: 4.00"),
+        (0.625, "A", "b: -2.00"),
+        (0.875, "B", "b: -4.00"),
+    ] {
+        let (_, snap) = hover_at_fraction(args, x, 0.5).await?;
+        let snap = snap.expect("a bar in this sub-slot");
+        assert_eq!((snap.label.as_str(), snap.value.as_str()), (label, value));
+    }
+    let (_, snap) =
+        hover_at_fraction(r#"&[bar(&[("a", 1.0)]), bar(&[("b", 2.0)])]"#, 0.375, 0.5)
+            .await?;
+    assert!(snap.is_none(), "missing values keep their empty sub-slot");
     Ok(())
 }

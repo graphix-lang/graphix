@@ -50,7 +50,7 @@ Individual points without connecting lines. Same data type as line.
 chart::bar(#label: "Counts", &data)
 ```
 
-Vertical bars from the x-axis. Data is `&Array<(string, f64)>` — category labels paired with values. Uses `BarStyle` (which has `margin` instead of `stroke_width`/`point_size`).
+Vertical bars from the x-axis. Multiple bar series are grouped side by side in dataset order within each category. A missing value leaves its sub-slot empty; hovering a sub-slot identifies that series. Data is `&Array<(string, f64)>` — category labels paired with values. Uses `BarStyle` (which has `margin` instead of `stroke_width`/`point_size`).
 
 ### `chart::area`
 

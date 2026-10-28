@@ -1,7 +1,9 @@
 use super::{
     ChartW,
     clip::View,
-    dataset::{ChartMode, DatasetEntry, first_pie, pie_slices, pie_start_angle},
+    dataset::{
+        ChartMode, DatasetEntry, bar_series, first_pie, pie_slices, pie_start_angle,
+    },
     ranges::{checked_range, drawable_x},
     types::*,
 };
@@ -402,9 +404,16 @@ fn nearest<X: GXExt>(chart: &ChartW<X>, cursor: Point) -> Option<Hit> {
         }
     };
     let slot = match mode {
-        ChartMode::Bar => pixel_to_data(cursor, info)
-            .filter(|(x, _)| *x >= 0.0)
-            .map(|(x, _)| x.floor() as usize),
+        ChartMode::Bar => pixel_to_data(cursor, info).and_then(|(x, _)| {
+            if x < 0.0 || x >= chart.bar_categories().len() as f64 {
+                return None;
+            }
+            let mut series = bar_series(&chart.datasets);
+            let count = series.clone().count();
+            let group = (x.fract() * count as f64).floor() as usize;
+            let (ds, _) = series.nth(group)?;
+            Some((ds, x.floor() as usize, (group as f64 + 0.5) / count as f64))
+        }),
         _ => None,
     };
     let mut bar: Option<Hit> = None;
@@ -435,13 +444,14 @@ fn nearest<X: GXExt>(chart: &ChartW<X>, cursor: Point) -> Option<Hit> {
                 }
             }
             DatasetEntry::Bar { .. } => {
-                // The whole vertical strip of a slot is a hit; the anchor is
-                // the top-center of this series' bar there.
-                let Some(at) = slot else { continue };
+                let Some((ds, at, center)) = slot else { continue };
+                if ds != i {
+                    continue;
+                }
                 let Some(v) = chart.bars.value(i, at).filter(|v| v.is_finite()) else {
                     continue;
                 };
-                let pixel = data_to_pixel(at as f64 + 0.5, view.clamp_y(v), info);
+                let pixel = data_to_pixel(at as f64 + center, view.clamp_y(v), info);
                 let dist = (cursor.x - pixel.x).abs();
                 if bar.is_none_or(|b| dist < b.dist) {
                     bar = Some(Hit { dist, pixel, ds: i, at })

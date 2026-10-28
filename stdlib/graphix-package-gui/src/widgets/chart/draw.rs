@@ -1,7 +1,10 @@
 use super::{
     ChartW,
     clip::{View, clip_area, clip_polyline},
-    dataset::{ChartMode, DatasetEntry, XYKind, first_pie, pie_slices, pie_start_angle},
+    dataset::{
+        ChartMode, DatasetEntry, XYKind, bar_series, first_pie, pie_slices,
+        pie_start_angle,
+    },
     interact::{ChartState, PlotInfo, ViewState, draw_tooltip},
     plotters_backend::{IcedBackend, estimate_text},
     ranges::*,
@@ -31,7 +34,7 @@ use plotters::{
         Polygon, Rectangle,
     },
     prelude::{
-        AreaSeries, DashedLineSeries, DrawingBackend, Histogram, IntoDrawingArea,
+        AreaSeries, DashedLineSeries, DrawingBackend, IntoDrawingArea,
         IntoSegmentedCoord, LineSeries, SeriesLabelPosition,
     },
     style::{
@@ -853,10 +856,12 @@ fn draw_bar_chart<DB: DrawingBackend, X: GXExt>(
         return false;
     }
     let view = View { x: (0.0, categories.len() as f64), y };
-    for (i, ds) in w.datasets.iter().enumerate() {
+    let series = bar_series(&w.datasets);
+    let count = series.clone().count();
+    for (group, (i, ds)) in series.enumerate() {
         let DatasetEntry::Bar { style, .. } = ds else { continue };
         let fill = ShapeStyle::from(series_color(cs, style.color, i)).filled();
-        // CR claude for claude: [bug/low] Each bar series is a separate Histogram over
+        // XCR claude for claude: [bug/low] Each bar series is a separate Histogram over
         // the same category segments, so series overlap full-width at a shared
         // category, and a later series hides every earlier one it is at least as tall
         // as. nearest gives every series at a slot the same distance and keeps the
@@ -866,16 +871,39 @@ fn draw_bar_chart<DB: DrawingBackend, X: GXExt>(
         // (gui-chart-05)
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q49, Bar
         // charts with several series): yes, grouped (the recommendation: grouped.)
-        let hist = Histogram::vertical(&chart)
-            .style(fill)
-            .margin(pixels(style.margin.unwrap_or(5.0)))
-            .baseline(view.clamp_y(0.0))
-            .data((0..categories.len()).filter_map(|slot| {
-                let v = w.bars.value(i, slot).filter(|v| v.is_finite())?;
-                Some((slot, view.clamp_y(v)))
-            }));
+        // 2026-10-28 codex: Grouped bar series in dataset order with a stable sub-slot
+        // per series and hover selection by that sub-slot (missing values leave a
+        // gap). CPU pin
+        // widgets::chart::draw::grouped_tests::grouped_bar_geometry_and_hover
+        // reproduced overlapping rectangles before the fix and passes after it; it
+        // covers positive/negative values, per-series hover and a missing value. Added
+        // GuiTestHarness pin grouped_bars_remain_visible_and_hover_their_subslot, but
+        // it cannot render in this sandbox: no GPU adapter, including software
+        // fallback. Updated the bar-chart book page. Ran cargo test -p
+        // graphix-package-gui --offline grouped_bar_geometry_and_hover (1 passed);
+        // full GUI suite follows with the batch.
+        let coord = chart.as_coord_spec().clone();
+        let bars = (0..categories.len()).filter_map(|slot| {
+            let v = w.bars.value(i, slot).filter(|v| v.is_finite())?;
+            let left = SegmentValue::Exact(slot);
+            let right = if slot + 1 == categories.len() {
+                SegmentValue::Last
+            } else {
+                SegmentValue::Exact(slot + 1)
+            };
+            let points = [(left, view.clamp_y(v)), (right, view.clamp_y(0.0))];
+            let width = (coord.translate(&points[1]).0 - coord.translate(&points[0]).0)
+                .max(0) as u32;
+            let start = (width as u64 * group as u64 / count as u64) as u32;
+            let end = (width as u64 * (group + 1) as u64 / count as u64) as u32;
+            let margin =
+                pixels(style.margin.unwrap_or(5.0)).min(end.saturating_sub(start) / 2);
+            let mut bar = Rectangle::new(points, fill);
+            bar.set_margin(0, 0, start + margin, width - end + margin);
+            Some(bar)
+        });
         annotate(
-            chart.draw_series(hist),
+            chart.draw_series(bars),
             style.label.as_deref(),
             block_mark(fill),
             "bar",
@@ -1172,5 +1200,117 @@ mod test {
         assert_eq!(z(&0.005), "z: 0.005");
         let ms = axis_format(None, tick_format((1.7e12, 1.8e12), Some(4)));
         assert!(ms(&1.75e12).len() <= 8, "{}", ms(&1.75e12));
+    }
+}
+
+#[cfg(test)]
+mod grouped_tests {
+    use super::*;
+    use graphix_package_core::testing::{Fixture, find_bind_id};
+    use graphix_rt::NoExt;
+    use plotters_backend::{BackendColor, BackendStyle, BackendTextStyle};
+    use poolshark::local::LPooled;
+    use std::{cell::RefCell, convert::Infallible};
+
+    type Bar = (BackendCoord, BackendCoord, (u8, u8, u8));
+    struct Recording<'a>(&'a RefCell<LPooled<Vec<Bar>>>);
+
+    impl DrawingBackend for Recording<'_> {
+        type ErrorType = Infallible;
+        fn get_size(&self) -> (u32, u32) {
+            (400, 300)
+        }
+        fn ensure_prepared(&mut self) -> Result<(), DrawingErrorKind<Infallible>> {
+            Ok(())
+        }
+        fn present(&mut self) -> Result<(), DrawingErrorKind<Infallible>> {
+            Ok(())
+        }
+        fn draw_pixel(
+            &mut self,
+            _: BackendCoord,
+            _: BackendColor,
+        ) -> Result<(), DrawingErrorKind<Infallible>> {
+            Ok(())
+        }
+        fn draw_rect<S: BackendStyle>(
+            &mut self,
+            a: BackendCoord,
+            b: BackendCoord,
+            style: &S,
+            fill: bool,
+        ) -> Result<(), DrawingErrorKind<Infallible>> {
+            if fill {
+                self.0.borrow_mut().push((a, b, style.color().rgb));
+            }
+            Ok(())
+        }
+        fn draw_text<T: BackendTextStyle>(
+            &mut self,
+            _: &str,
+            _: &T,
+            _: BackendCoord,
+        ) -> Result<(), DrawingErrorKind<Infallible>> {
+            Ok(())
+        }
+        fn estimate_text_size<T: BackendTextStyle>(
+            &self,
+            text: &str,
+            _: &T,
+        ) -> Result<(u32, u32), DrawingErrorKind<Infallible>> {
+            Ok((text.len() as u32 * 7, 12))
+        }
+    }
+
+    #[tokio::test]
+    async fn grouped_bar_geometry_and_hover() -> anyhow::Result<()> {
+        let (f, _) = Fixture::new(
+            r#"
+            use gui::chart::{chart, bar};
+            let result = chart(&[bar(&[("a", 2.0), ("b", -2.0)]),
+                                 bar(&[("a", 4.0)])])
+        "#,
+            &[&graphix_package_core::P, &graphix_package_str::P, &crate::P],
+            |_| (),
+        )
+        .await?;
+        let r = f.gx.compile_ref(find_bind_id(&f.compiled.env, "test::result")?).await?;
+        let w = crate::widgets::compile(f.gx.clone(), r.last.clone().unwrap()).await?;
+        let w = w.as_any().downcast_ref::<ChartW<NoExt>>().unwrap();
+        let rects = RefCell::new(LPooled::take());
+        let area = Recording(&rects).into_drawing_area();
+        assert!(draw_bar_chart(
+            &mut ChartBuilder::on(&area),
+            w,
+            None,
+            &ChartState::default().view_for(w)
+        ));
+        let rects = rects.borrow();
+        let first = rects.iter().find(|r| r.2 == (31, 119, 180)).unwrap();
+        let second = rects.iter().find(|r| r.2 == (255, 127, 14)).unwrap();
+        assert!(first.1.0 < second.0.0, "overlapping bars: {first:?}, {second:?}");
+        let info = w.plot_info.get().unwrap();
+        let bounds = iced_core::Rectangle::with_size(iced_core::Size::new(400.0, 300.0));
+        for (x, value) in [
+            (0.125, Some("a: 2.00")),
+            (0.375, Some("a: 4.00")),
+            (0.625, Some("b: -2.00")),
+            (0.875, None),
+        ] {
+            let p = iced_core::Point::new(
+                info.rect.x + info.rect.width * x,
+                info.rect.center_y(),
+            );
+            let mut state = ChartState::default();
+            state.handle_event(
+                w,
+                &iced_core::Event::Mouse(mouse::Event::CursorMoved { position: p }),
+                bounds,
+                mouse::Cursor::Available(p),
+            );
+            let snap = state.tooltip(w, bounds, mouse::Cursor::Available(p));
+            assert_eq!(snap.as_ref().map(|s| s.value.as_str()), value);
+        }
+        Ok(())
     }
 }

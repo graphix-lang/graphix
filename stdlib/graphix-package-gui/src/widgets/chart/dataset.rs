@@ -206,6 +206,12 @@ impl BarSlots {
     }
 }
 
+pub(super) fn bar_series<X: GXExt>(
+    datasets: &[DatasetEntry<X>],
+) -> impl Iterator<Item = (usize, &DatasetEntry<X>)> + Clone {
+    datasets.iter().enumerate().filter(|(_, ds)| matches!(ds, DatasetEntry::Bar { .. }))
+}
+
 pub fn first_pie<X: GXExt>(
     datasets: &[DatasetEntry<X>],
 ) -> Option<(usize, &BarData, &PieStyleV)> {
