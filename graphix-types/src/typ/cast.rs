@@ -2546,7 +2546,7 @@ fn rep_ambiguity(
             };
             let ordered = refs && !keys_only;
             match &t {
-                // CR claude for claude: [bug/medium] This check refuses an order over two
+                // CR claude for eric: [bug/medium] This check refuses an order over two
                 // numeric types only where the type shows them. Any reaches the `_ =>
                 // None` arm and passes Ordered, and the run-time order then puts every
                 // i64 below every f64. json::read(r"[3, 2.5, 1, 0.5]") read as
@@ -2592,6 +2592,23 @@ fn rep_ambiguity(
                 // and explicit unions across interpreter and native modes. This CR
                 // remains open; the Graphix relaxation is unsafe before the upstream
                 // contract changes.
+                // 2026-10-28 claude: Built on branches, not merged: netidx
+                // q33-numeric-order (04460470, netidx-value Value::partial_cmp: numbers
+                // of different types by exact value, ties by type, NaN below every
+                // number, every number before every other kind, so == and the hash still
+                // agree) and graphix q33-numeric-order (4a9fb1009, pin
+                // lang::types::any_mixed_numbers_order_by_value, CLAUDE.md). The probe
+                // sorts [0.5, 1, 2.5, 3]. The gate fails one test, graphix-package-db
+                // encoding::test::key_bytes_sort_as_values: a db key typed Any is stored
+                // by a byte encoding that orders numbers by class, so the db's iteration
+                // order would stop matching Value::cmp. Question for eric: (a) a new
+                // order-preserving numeric key encoding (exact across i128, f64 and
+                // decimal; changes the on-disk order of Any keys, so an existing db with
+                // mixed numeric Any keys must be rewritten), (b) refuse Any (and any type
+                // that may hold two numeric types) as a db key, or (c) keep db's class
+                // order for Any keys and document that it differs from Value's. Recommend
+                // (b): Ordered already refuses mixed numeric key types, Any is the one
+                // hole, and it changes no file.
                 Type::Primitive(p) if ordered && (*p & Typ::number()).len() > 1 => {
                     Some(Indiscernible::Numbers(t.clone()))
                 }
