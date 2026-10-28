@@ -58,13 +58,21 @@ struct QueueState {
 
 impl QueueState {
     fn new() -> Self {
+        Self::with(1, None, 0)
+    }
+
+    fn with(
+        pop_count: i64,
+        count_ref: Option<(BindId, Option<WriteTarget>)>,
+        last_written_depth: i64,
+    ) -> Self {
         Self {
             queue: VecDeque::new(),
             asleep: SmallVec::new(),
             in_flight: SmallVec::new(),
-            pop_count: 1,
-            count_ref: None,
-            last_written_depth: 0,
+            pop_count,
+            count_ref,
+            last_written_depth,
         }
     }
 
@@ -336,24 +344,12 @@ impl<R: Rt> BuiltIn<R> for QueueFn<R> {
         let ftyp = Option::<FnType>::decode(buf)?.map(Arc::new);
         let scope = image::scope_decode(buf)?;
         ctx.record_ref(fid, top_id);
-        let state = Arc::new(Mutex::new(QueueState {
-            queue: VecDeque::new(),
-            asleep: SmallVec::new(),
-            in_flight: SmallVec::new(),
+        let state = Arc::new(Mutex::new(QueueState::with(
             pop_count,
             count_ref,
             last_written_depth,
-        }));
-        Ok(Box::new(Self {
-            state,
-            fid,
-            ftyp,
-            lambda: None,
-            top_id,
-            scope,
-            out: TagValue::phantom(),
-            _phantom: PhantomData,
-        }))
+        )));
+        Ok(Box::new(Self::with(state, fid, ftyp, top_id, scope)))
     }
 
     const EFFECT: Effect = Effect::Async;
@@ -374,20 +370,31 @@ impl<R: Rt> BuiltIn<R> for QueueFn<R> {
         let fid = BindId::new();
         ctx.record_ref(fid, top_id);
         let ftyp = resolved.and_then(|r| extract_fn_arg_type(&ctx.env, r, 2));
-        Ok(Box::new(Self {
-            state: Arc::new(Mutex::new(QueueState::new())),
-            fid,
-            ftyp,
-            lambda: None,
-            top_id,
-            scope: scope.clone(),
-            out: TagValue::phantom(),
-            _phantom: PhantomData,
-        }))
+        let state = Arc::new(Mutex::new(QueueState::new()));
+        Ok(Box::new(Self::with(state, fid, ftyp, top_id, scope.clone())))
     }
 }
 
 impl<R: Rt> QueueFn<R> {
+    fn with(
+        state: StateRef,
+        fid: BindId,
+        ftyp: Option<Arc<FnType>>,
+        top_id: ExprId,
+        scope: Scope,
+    ) -> Self {
+        Self {
+            state,
+            fid,
+            ftyp,
+            lambda: None,
+            top_id,
+            scope,
+            out: TagValue::phantom(),
+            _phantom: PhantomData,
+        }
+    }
+
     fn build_lambda(&mut self, ctx: &mut ExecCtx<'_, R>) -> Result<Value> {
         let ftyp = self
             .ftyp
