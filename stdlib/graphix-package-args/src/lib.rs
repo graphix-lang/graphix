@@ -223,6 +223,12 @@ struct Parse {
     out: TagValue,
 }
 
+impl Parse {
+    fn new() -> Self {
+        Parse { out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Parse {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "args_parse";
@@ -235,7 +241,7 @@ impl<R: Rt> BuiltIn<R> for Parse {
         _from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> anyhow::Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Self { out: TagValue::phantom() }))
+        Ok(Box::new(Self::new()))
     }
 
     fn image_decode(
@@ -243,7 +249,7 @@ impl<R: Rt> BuiltIn<R> for Parse {
         _from: &[Node<R>],
         _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
-        Ok(Box::new(Self { out: TagValue::phantom() }))
+        Ok(Box::new(Self::new()))
     }
 }
 
