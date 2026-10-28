@@ -77,8 +77,9 @@ in one synthesized column. Its “value” header does not invoke `on_header_cli
   column's header label. Receives the column name.
 
 - **`#on_update`** -- Fired for each update of a cell the table
-  subscribes, which is the rows within 50 of the visible window; a
-  row scrolling back in re-delivers its current value. Useful to
+  subscribes: rows within 50 and columns within two of the visible window,
+  plus sort columns across every row. A cell scrolling back in re-delivers
+  its current value. Useful to
   mirror live values into graphix state without subscribing
   separately, but an aggregate over every row
   (`data_table_calculated.gx`'s sum) is complete only while the whole
@@ -144,7 +145,8 @@ Widths are controlled by two refs per column:
 
 Double-clicking any column's resize handle auto-fits *every* column
 to its widest cell among the subscribed rows (those within 50 of the
-visible window); other rows count only their fallback.
+visible window) and subscribed columns (within two of the visible columns);
+other cells count only their fallback.
 
 ## Source: Where Cell Values Come From
 
@@ -287,8 +289,9 @@ selection echoed in the footer.
 
 Enough rows and columns that both scrollbars appear in the example's
 900x400 window. The rows are real netidx paths, and the table subscribes
-only the displayed rows plus 50 on each side, so scrolling subscribes
-the rows that enter that window and drops the ones that leave it.
+only the displayed rows plus 50 on each side and columns plus two on each
+side (sort columns excepted). Scrolling subscribes cells entering that
+window and drops those leaving it.
 
 ```graphix
 {{#include ../../examples/gui/data_table_scrolling.gx}}
@@ -301,3 +304,13 @@ the rows that enter that window and drops the ones that leave it.
 - [Chart](chart.md) -- larger-scale line / area / scatter plots.
 - [`sys::net`](../../stdlib/sys/net.md) -- the `Table` record and
   `list_table` helper consumed by `#table`.
+
+## Subscription Window
+
+Netidx cells are subscribed within the visible rows plus 50 rows on either
+side, and the visible columns plus two columns on either side. Horizontal
+scrolling, keyboard navigation, column widths and viewport resizing move
+this window. A column used for sorting remains subscribed over every row,
+even outside the visible columns. `on_update` receives updates from these
+subscriptions; it does not provide a complete stream for every table cell.
+Sparkline history records only updates received while subscribed.

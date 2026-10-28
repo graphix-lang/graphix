@@ -7,7 +7,7 @@
 //! what is drawn.
 
 use super::{
-    DataTableW, DisplayMode, ROW_NAME_KEY, VALUE_COL_KEY,
+    AIndexMap, DataTableW, DisplayMode, ROW_NAME_KEY, VALUE_COL_KEY,
     types::{
         ColumnState, ColumnType, SortDirection, SourceEntry, cell_path, format_value,
         numeric_key, parse_selection, parse_table_columns, push_sparkline_point,
@@ -42,6 +42,20 @@ use std::{
     },
     time::Instant,
 };
+
+fn grid_columns<X: GXExt>(
+    columns: &AIndexMap<ArcStr, ColumnState<X>>,
+    visible: (usize, usize),
+) -> impl Iterator<Item = (&ArcStr, &ColumnState<X>)> {
+    const BUFFER: usize = 2;
+    let start = visible.0.saturating_sub(BUFFER);
+    let end = visible.1.saturating_add(BUFFER).min(columns.len());
+    columns
+        .get_range(start..end)
+        .into_iter()
+        .flat_map(|slice| slice.iter())
+        .filter(|(_, c)| c.is_subscribed())
+}
 
 /// One role a subscription plays. netidx dedupes subscriptions by
 /// path, so one `SubId` plays several roles when a cell is both
@@ -507,7 +521,10 @@ impl<X: GXExt> DataTableW<X> {
         let (s, e) = self.subscription_row_range();
         let mut window: LPooled<AHashSet<Path>> = LPooled::take();
         window.extend(self.row_paths[s.min(e)..e].iter().cloned());
-        let full = std::mem::take(&mut self.subscriptions_changed);
+        let columns = self.display_col_range();
+        let old_columns = std::mem::replace(&mut self.subscription_columns, columns);
+        let full =
+            std::mem::take(&mut self.subscriptions_changed) || columns != old_columns;
         let mut sort_cols: LPooled<AHashSet<ArcStr>> = LPooled::take();
         if full {
             sort_cols.extend(
@@ -520,7 +537,7 @@ impl<X: GXExt> DataTableW<X> {
         let mut shown: LPooled<AHashMap<ArcStr, Option<f64>>> = LPooled::take();
         match self.mode {
             DisplayMode::Table => {
-                // CR claude for claude: [perf/medium] Every netidx column of every row in
+                // XCR claude for claude: [perf/medium] Every netidx column of every row in
                 // the window is subscribed: `shown` holds all columns, and
                 // handle_scroll reconciles only when the row window moves. Only rows
                 // are virtualized for subscriptions. A 500-column table in a 40-row
@@ -533,7 +550,22 @@ impl<X: GXExt> DataTableW<X> {
                 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q51,
                 // Data-table column subscriptions): yes, window the columns (the
                 // recommendation: window the columns.)
-                for (name, c) in self.columns.iter().filter(|(_, c)| c.is_subscribed()) {
+                // 2026-10-28 codex: Grid subscriptions now follow the visible column
+                // range plus two columns per side. A changed column window forces full
+                // role reconciliation; horizontal scroll, keyboard navigation and layout
+                // changes schedule it. Sort roles remain subscribed across all rows. The
+                // production grid-column selection was extracted unchanged before
+                // testing: grid_columns_follow_the_horizontal_window reproduced all 500
+                // columns selected for a 3-column viewport, then passed with the fix
+                // (start, middle and end windows). cargo test -p graphix-package-gui
+                // --offline horizontal_: CPU pin passed; two unrelated integration tests
+                // failed on missing resolver/GPU. Added
+                // horizontal_subscription_window_follows_scroll_and_resize; after
+                // correcting its constructor arguments it compiles but cannot run:
+                // resolver server shutdown (sandbox sockets). Live drop/re-subscribe and
+                // sort-role integration remain for coordinator review. Book documents
+                // both axes and on_update scope.
+                for (name, c) in grid_columns(&self.columns, columns) {
                     let hs = match &c.spec.typ {
                         ColumnType::Sparkline { history_seconds, .. } => {
                             Some(*history_seconds)
@@ -915,5 +947,41 @@ mod window_tests {
         assert!(!inner.formatted.contains_key(&id));
         assert!(!inner.routing.contains_key(&id));
         assert_eq!(inner.live_value(&row, &other), Some(&Value::I64(42)));
+    }
+}
+
+#[cfg(test)]
+mod column_window_tests {
+    use super::super::types::ColumnSpec;
+    use super::*;
+    use compact_str::format_compact;
+    use graphix_rt::NoExt;
+
+    #[test]
+    fn grid_columns_follow_the_horizontal_window() {
+        let columns: AIndexMap<_, ColumnState<NoExt>> = (0..500)
+            .map(|i| {
+                let name: ArcStr = format_compact!("c{i}").as_str().into();
+                let spec = ColumnSpec {
+                    name: name.clone(),
+                    typ: ColumnType::Text,
+                    display_name: None,
+                    source_bid: None,
+                    width_bid: None,
+                    on_resize_bid: None,
+                    callback_value: None,
+                };
+                (name, ColumnState::new(spec))
+            })
+            .collect();
+        for (visible, expected) in
+            [((0, 3), 0..5), ((250, 253), 248..255), ((499, 500), 497..500)]
+        {
+            let names: LPooled<Vec<_>> =
+                grid_columns(&columns, visible).map(|(name, _)| name.clone()).collect();
+            let wanted: LPooled<Vec<ArcStr>> =
+                expected.map(|i| format_compact!("c{i}").as_str().into()).collect();
+            assert_eq!(names, wanted);
+        }
     }
 }

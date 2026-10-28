@@ -218,6 +218,9 @@ impl<X: GXExt> DataTableW<X> {
         };
         let (vis_row_start, vis_row_end) = self.display_row_range();
         let (vis_col_start, vis_col_end) = self.display_col_range();
+        if (vis_col_start, vis_col_end) != self.subscription_columns {
+            self.viewport_metrics.lock().needs_subscription_reconcile = true;
+        }
         let grid_snapshot = self.visible_grid();
         let name_col_offset = if show_row_name { 1 } else { 0 };
         let sort_indicators: LPooled<AHashMap<ArcStr, CompactString>> =

@@ -117,6 +117,7 @@ pub(crate) struct DataTableW<X: GXExt> {
     /// The rows in display order: `table_rows` sorted by `sort_by`.
     row_paths: Vec<Path>,
     row_indices: AHashMap<Path, usize>,
+    subscription_columns: (usize, usize),
     subscription_window: LPooled<AHashSet<Path>>,
     subscriptions_changed: bool,
     cells: Arc<SharedCells<X>>,
@@ -240,6 +241,7 @@ impl<X: GXExt> DataTableW<X> {
             table_rows: vec![],
             row_paths: vec![],
             row_indices: AHashMap::default(),
+            subscription_columns: (0, 0),
             subscription_window: LPooled::take(),
             subscriptions_changed: true,
             cells,

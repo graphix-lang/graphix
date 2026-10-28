@@ -188,7 +188,7 @@ impl<X: GXExt> DataTableW<X> {
         let pos_changed = row_changed || self.first_col != new_first_col;
         self.first_row = new_first_row;
         self.first_col = new_first_col;
-        if row_changed {
+        if pos_changed || metrics_changed {
             self.update_subscriptions();
         }
         metrics_changed || pos_changed

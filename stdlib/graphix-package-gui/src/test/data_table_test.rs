@@ -2659,3 +2659,28 @@ async fn visible_grid_contains_only_drawn_columns() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn horizontal_subscription_window_follows_scroll_and_resize() -> Result<()> {
+    let mut code: LPooled<String> = LPooled::take();
+    code.push_str("let tbl = { rows: [\"/local/window/r\"], columns: [");
+    for i in 0..500 {
+        if i > 0 {
+            code.push(',');
+        }
+        write!(code, "text_column(#width: &100.0, #name: \"c{i}\")")?;
+    }
+    code.push_str("] }; let result = data_table(#show_row_name: &false, #table: &tbl)");
+    let mut h = GuiTestHarness::new(&table_code(&code)).await?;
+    h.dt_mut().handle_scroll(0.0, 0.0, 300.0, 200.0);
+    assert_eq!(h.dt().dt_subscription_count(), 5);
+    assert_eq!(h.dt().dt_subscribed_rows("c0"), [Some(0)]);
+    assert!(h.dt().dt_subscribed_rows("c250").is_empty());
+    h.dt_mut().handle_scroll(25000.0, 0.0, 300.0, 200.0);
+    assert_eq!(h.dt().dt_subscription_count(), 7);
+    assert!(h.dt().dt_subscribed_rows("c0").is_empty());
+    assert_eq!(h.dt().dt_subscribed_rows("c250"), [Some(0)]);
+    h.dt_mut().handle_scroll(25000.0, 0.0, 500.0, 200.0);
+    assert_eq!(h.dt().dt_subscription_count(), 9);
+    Ok(())
+}
