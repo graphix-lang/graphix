@@ -225,3 +225,14 @@ run!(pack_array_union_prefers_unchanged_elements, r#"{
     let r: V = pack::read(pack::write_bytes(v)$)$;
     r == v
 }"#, prints("true"); FuseExpect::Jit);
+
+run!(pack_abstract_union_reads_representation, r#"{
+    type B = Abstract<i64>;
+    impl Cast for B {};
+    let scalar: [B, i64] = B(1);
+    let array: [Array<B>, Array<i64>] = [B(1), B(2)];
+    let s: [B, i64] = pack::read(pack::write_bytes(scalar)$)$;
+    let a: [Array<B>, Array<i64>] = pack::read(pack::write_bytes(array)$)$;
+    [select s { i64 as n => n == 1, _ => false },
+     select a { Array<i64> as ns => ns == [1, 2], _ => false }]
+}"#, prints("[true, true]"); FuseExpect::Jit);

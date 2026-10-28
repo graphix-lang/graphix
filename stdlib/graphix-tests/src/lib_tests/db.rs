@@ -1631,3 +1631,50 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+run_with_tempdir!(
+    name: db_abstract_union_reads_representation,
+    code: r#"{{
+        type B = Abstract<i64>;
+        impl Cast for B {{}};
+        type U = ([B, i64], [Array<B>, Array<i64>]);
+        let db = db::open("{}")$;
+        let tree: db::Tree<string, U> = db::tree(db, null)?;
+        let v: U = (B(1), [B(1), B(2)]);
+        let old = db::insert(tree, "value", v)$;
+        let got = db::get(tree, old ~ "value")?$;
+        [select got.0 {{ i64 as n => n == 1, _ => false }},
+         select got.1 {{ Array<i64> as ns => ns == [1, 2], _ => false }}]
+    }}"#,
+    setup: |td| { td.path().join("abstract_union.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), "[true, true]");
+        Ok(())
+    }
+);
+
+run_with_tempdir!(
+    name: db_unmarked_tuple_union_reads_as_array,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let tree: db::Tree<string, [(i64, i64), Array<i64>]> = db::tree(db, "legacy")?;
+        let got = db::get(tree, "value")?$;
+        select got {{ Array<i64> as a => a == [1, 2], _ => false }}
+    }}"#,
+    setup: |td| {
+        use netidx_core::pack::Pack;
+        use poolshark::local::LPooled;
+        let path = td.path().join("unmarked_tuple.db");
+        let db = sled::open(&path).unwrap();
+        let tree = db.open_tree("legacy").unwrap();
+        let mut bytes: LPooled<Vec<u8>> = LPooled::take();
+        Value::from([Value::I64(1), Value::I64(2)]).encode(&mut *bytes).unwrap();
+        tree.insert(b"value", bytes.as_slice()).unwrap();
+        db.flush().unwrap();
+        path
+    },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::Bool(true));
+        Ok(())
+    }
+);

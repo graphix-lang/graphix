@@ -2,7 +2,9 @@
 
 The `db` module provides an embedded key-value database (backed by sled)
 with ACID transactions, typed trees, cursors, and reactive subscriptions.
-A transaction's commit is on disk when it answers.
+A transaction's commit is on disk when it answers. Database files persist
+across program runs and Graphix builds; upgrading the executable does not
+rewrite stored records.
 
 Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, `db::tree` returns a `DbErr`.
@@ -15,9 +17,20 @@ reach the tree, and its `to_value` decides the stored order.
 ## Interface
 
 Stored values preserve tuple, struct, variant and list kinds, including in
-unions. Abstract values cross through their `Cast` implementation. Older
-unmarked records remain readable, but an erased kind cannot be recovered
-when the target union admits multiple interpretations.
+unions. This preserves structural kinds, not abstract identity: abstract
+values are stored as their `Cast` data. With `type B = Abstract<i64>` and
+the default `Cast` implementation, a `[B, i64]` holding `B(1)` reads back
+as `i64`, and an `[Array<B>, Array<i64>]` holding `[B(1), B(2)]` reads
+back as `Array<i64>`. Use distinct variant tags if those union members
+must remain distinguishable after a read.
+
+Older unmarked records remain readable when their tree metadata is
+compatible, but an erased kind cannot be recovered at an ambiguous union.
+In particular, a tuple written by a build that erased composite kinds
+into a `[(i64, i64), Array<i64>]` value reads back as the array member.
+Reopening the database with the same declared types does not detect this
+change of member. Rewrite such records from a source that still knows
+their original kind; upgrading Graphix alone cannot recover it.
 
 ```graphix
 {{#include ../../../stdlib/graphix-package-db/src/graphix/mod.gxi}}
