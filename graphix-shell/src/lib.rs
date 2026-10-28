@@ -28,7 +28,7 @@ use netidx::publisher::Value;
 use poolshark::{global::GPooled, local::LPooled};
 use reedline::Signal;
 use std::{
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     marker::PhantomData,
     ops::ControlFlow,
     time::Duration,
@@ -161,6 +161,22 @@ impl<X: GXExt> Output<X> {
         if let Self::Custom(cdc) = self {
             cdc.custom.batch_done().await
         }
+    }
+
+    /// Show every batch the runtime has sent, once `gx` has answered a
+    /// request: every batch of the cycles before it is in the stream.
+    async fn process_sent(
+        &mut self,
+        gx: &GXHandle<X>,
+        from_gx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+        env: &mut Env,
+        newenv: &mut Option<Env>,
+    ) -> ControlFlow<Result<Option<i32>>> {
+        let _ = gx.get_env().await;
+        while let Ok(mut batch) = from_gx.try_recv() {
+            self.process_batch(env, newenv, &mut batch).await?;
+        }
+        ControlFlow::Continue(())
     }
 
     /// Show a batch of the runtime's events, following its env: `Break`
@@ -716,19 +732,15 @@ impl<X: GXExt> Shell<X> {
         let exit = 'repl: loop {
             select! {
                 code = &mut exit_rx, if exit_open => match code {
-                    Ok(code) => {
-                        // the runtime answers once the cycle that asked has
-                        // sent its batch: show it, and every batch before it
-                        let _ = gx.get_env().await;
-                        while let Ok(mut batch) = from_gx.try_recv() {
-                            let shown =
-                                output.process_batch(&mut env, &mut newenv, &mut batch).await;
-                            if let ControlFlow::Break(r) = shown {
-                                break 'repl r
-                            }
-                        }
-                        break 'repl Ok(Some(code))
-                    }
+                    // the runtime answers once the cycle that asked has sent
+                    // its batch: show it, and every batch before it
+                    Ok(code) => match output
+                        .process_sent(&gx, &mut from_gx, &mut env, &mut newenv)
+                        .await
+                    {
+                        ControlFlow::Break(r) => break 'repl r,
+                        ControlFlow::Continue(()) => break 'repl Ok(Some(code)),
+                    },
                     // the runtime stopped: from_gx's end says why
                     Err(_) => exit_open = false,
                 },
@@ -762,6 +774,23 @@ impl<X: GXExt> Shell<X> {
                             // Interrupt first: a wedged runtime cannot serve `output.clear()`.
                             gx.interrupt();
                             output.clear().await;
+                        }
+                        // piped input ended: what its lines started runs
+                        // first, a program that never idles for at most the
+                        // teardown's bound, and may end the shell with its
+                        // own status
+                        Ok(Read::Signal(Signal::CtrlD)) if !io::stdin().is_terminal() => {
+                            let _ = tokio::time::timeout(TEARDOWN_BOUND, gx.wait_idle()).await;
+                            let shown = output
+                                .process_sent(&gx, &mut from_gx, &mut env, &mut newenv)
+                                .await;
+                            match (shown, exit_rx.try_recv()) {
+                                (ControlFlow::Break(r), _) => break 'repl r,
+                                (ControlFlow::Continue(()), Ok(code)) => {
+                                    break 'repl Ok(Some(code))
+                                }
+                                (ControlFlow::Continue(()), Err(_)) => break 'repl Ok(None),
+                            }
                         }
                         Ok(Read::Signal(Signal::CtrlD | Signal::ExternalBreak(_))) => {
                             break Ok(None)
