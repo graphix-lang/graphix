@@ -316,6 +316,17 @@ pub(super) fn holds_comment(e: &Expr) -> bool {
             ExprKind::Trait(t) => {
                 t.methods.iter().any(|m| !m.comments.lines().is_empty())
             }
+            ExprKind::Use { names, .. } => {
+                names.iter().any(|n| !n.comments.lines().is_empty())
+            }
+            ExprKind::Lambda(l) => {
+                l.args.iter().any(|a| {
+                    !a.comments.above.lines().is_empty()
+                        || a.comments.eol.text().is_some()
+                }) || !l.vargs_comments.above.lines().is_empty()
+                    || l.vargs_comments.eol.text().is_some()
+                    || !l.below.lines().is_empty()
+            }
             ExprKind::Module { value, .. } => match &**value {
                 ModuleKind::Dynamic { sig, .. } => {
                     sig.items.iter().any(|si| !si.comments.lines().is_empty())
@@ -2211,7 +2222,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 }
 
 /// Parse the items of an interface file, which may have none.
-// CR claude for claude: [bug/low] An interface takes no comment at the end of an item's
+// XCR claude for claude: [bug/low] An interface takes no comment at the end of an item's
 // line and none below its last item. A comment-only file does not parse at all: a .gxi
 // holding only a license header is "Unexpected end of input", and a .gx stub holding
 // only comments fails `commented` with "a comment here has no item to describe",
@@ -2230,7 +2241,21 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 // now a_comment_below_the_last_impl_method_rides_it.
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
 // every list (built)): yes, keep and extend (the recommendation: keep and extend.)
-// CR claude for claude: [bug/medium] Interface items are parsed with `sep_by_tok`, not
+// 2026-10-28 codex: Kept the already-built interface, trait/impl, map, never/any and
+// comment-only-file behavior. Extended labeled call arguments, lambda formals
+// (including variadic and empty lists), and use trees through the shared commented-list
+// parser. Formal comments live in ItemComments/LambdaExpr; use comments retain their
+// prefix depth alongside canonical import paths, with comment-aware grouping in program
+// and interface printers. The formatter verifies these ornaments on reparse and does
+// not merge decorated use statements. Pins comments_on_labeled_arguments_and_formals
+// and comments_in_use_trees both failed on the old parsers and now pass, with
+// comment-count preservation and idempotence at widths 30/90 for programs and
+// interfaces. Existing comments_after_list_items_stay and
+// a_comment_below_the_last_impl_method_rides_it retain the earlier fixes; their named
+// probes already passed before this change. Full graphix-types lib: 343 passed. Book,
+// language skill, CLAUDE/AGENTS and module-system design updated; session format
+// bumped.
+// XCR claude for claude: [bug/medium] Interface items are parsed with `sep_by_tok`, not
 // `commented`, so an interface file ending in a comment, or a `val` followed by an
 // end-of-line comment, is a parse error: the module's interface fails to load.
 // CLAUDE.md allows a comment below a file's last item and after a list item's
@@ -2249,6 +2274,20 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 // a_comment_below_the_last_impl_method_rides_it.
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
 // every list (built)): yes, keep and extend (the recommendation: keep and extend.)
+// 2026-10-28 codex: Kept the already-built interface, trait/impl, map, never/any and
+// comment-only-file behavior. Extended labeled call arguments, lambda formals
+// (including variadic and empty lists), and use trees through the shared commented-list
+// parser. Formal comments live in ItemComments/LambdaExpr; use comments retain their
+// prefix depth alongside canonical import paths, with comment-aware grouping in program
+// and interface printers. The formatter verifies these ornaments on reparse and does
+// not merge decorated use statements. Pins comments_on_labeled_arguments_and_formals
+// and comments_in_use_trees both failed on the old parsers and now pass, with
+// comment-count preservation and idempotence at widths 30/90 for programs and
+// interfaces. Existing comments_after_list_items_stay and
+// a_comment_below_the_last_impl_method_rides_it retain the earlier fixes; their named
+// probes already passed before this change. Full graphix-types lib: 343 passed. Book,
+// language skill, CLAUDE/AGENTS and module-system design updated; session format
+// bumped.
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let ori = Arc::new(ori);
     let _scope = OriginScope::enter(ori.clone());

@@ -1,14 +1,16 @@
 use super::{
+    COMMA_WHY, Commentable,
     arithexp::mutability,
-    comma_items, csep, expr, fname,
+    comma_items, commented, csep, decorate, expr, fname,
     grow::refusal,
-    name, sep_by_tok, spaces, spaces1, sptoken, structure_pattern,
+    leading_comments, leading_decorations, name, sep_by_tok, spaces, spaces1, sptoken,
+    structure_pattern,
     typexp::{flatten_bounds, tvar_bound, typ},
 };
 use crate::{
     expr::{
-        Arg, ArgKind, Expr, ExprKind, LambdaBody, LambdaExpr, Name, StructurePattern,
-        WrittenAt,
+        Arg, ArgKind, Comments, Eol, Expr, ExprKind, ItemComments, LambdaBody,
+        LambdaExpr, Name, StructurePattern, WrittenAt,
     },
     typ::{TVar, Type},
 };
@@ -37,7 +39,7 @@ pub(super) fn labeled_first(labeled: impl IntoIterator<Item = bool>) -> bool {
 
 pub(super) const LABELED_FIRST: &str = "labeled arguments come before positional ones";
 
-// CR claude for claude: [bug/low] Several lists that the formatter lays out one item per
+// XCR claude for claude: [bug/low] Several lists that the formatter lays out one item per
 // line refuse comments, although CLAUDE.md allows them on any list item. Refused: a
 // comment above a labeled argument (`#width:` takes no `leading_decorations` here), an
 // above or end-of-line comment on a lambda formal, an end-of-line or below comment on a
@@ -49,29 +51,46 @@ pub(super) const LABELED_FIRST: &str = "labeled arguments come before positional
 // (t-format-resolver-02)
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
 // every list (built)): yes, keep and extend (the recommendation: keep and extend.)
+// 2026-10-28 codex: Kept the already-built interface, trait/impl, map, never/any and
+// comment-only-file behavior. Extended labeled call arguments, lambda formals (including
+// variadic and empty lists), and use trees through the shared commented-list parser.
+// Formal comments live in ItemComments/LambdaExpr; use comments retain their prefix
+// depth alongside canonical import paths, with comment-aware grouping in program and
+// interface printers. The formatter verifies these ornaments on reparse and does not
+// merge decorated use statements. Pins comments_on_labeled_arguments_and_formals and
+// comments_in_use_trees both failed on the old parsers and now pass, with comment-count
+// preservation and idempotence at widths 30/90 for programs and interfaces. Existing
+// comments_after_list_items_stay and a_comment_below_the_last_impl_method_rides_it
+// retain the earlier fixes; their named probes already passed before this change. Full
+// graphix-types lib: 343 passed. Book, language skill, CLAUDE/AGENTS and module-system
+// design updated; session format bumped.
 fn applyarg<I>() -> impl Parser<I, Output = (Option<ArcStr>, Expr)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    spaces().with(choice((
-        // `#name` alone passes the variable of that name
-        // `#[` is an attribute on a positional argument
-        attempt(token('#').skip(not_followed_by(token('['))))
-            .with((position(), fname(), position()))
-            .skip(spaces())
-            .then(|(pos, name, end)| {
-                optional(token(':').with(expr())).map(move |e| match e {
-                    Some(e) => (Some(name.clone()), e),
-                    None => {
-                        let e = ExprKind::Ref { name: [name.clone()].into() };
-                        (Some(name.clone()), e.to_expr(pos).ending(end))
-                    }
-                })
-            }),
-        expr().map(|e| (None, e)),
-    )))
+    (
+        leading_decorations(),
+        choice((
+            // `#name` alone passes the variable of that name
+            // `#[` is an attribute on a positional argument
+            attempt(token('#').skip(not_followed_by(token('['))))
+                .with((position(), fname(), position()))
+                .skip(spaces())
+                .then(|(pos, name, end)| {
+                    optional(token(':').with(expr())).map(move |e| match e {
+                        Some(e) => (Some(name.clone()), e),
+                        None => {
+                            let e = ExprKind::Ref { name: [name.clone()].into() };
+                            (Some(name.clone()), e.to_expr(pos).ending(end))
+                        }
+                    })
+                }),
+            expr().map(|e| (None, e)),
+        )),
+    )
+        .map(|(leading, (label, e))| (label, decorate(e, leading)))
 }
 
 /// The `( args )` of a call: labeled `#name: e` args before anonymous ones,
@@ -100,18 +119,20 @@ where
         })
 }
 
-/// One argument between a lambda's bars: whether it is labeled, its
-/// pattern, and its annotation and default.
-type LambdaArg = ((SourcePosition, (bool, StructurePattern)), Option<Type>, Option<Expr>);
+impl Commentable for Arg {
+    fn take_eol(&mut self, eol: ArcStr) {
+        self.comments.eol = Eol::new(Some(eol));
+    }
+}
 
-pub(super) fn lambda_args<I>()
--> impl Parser<I, Output = (LPooled<Vec<Arg>>, Option<Option<Type>>)>
+fn lambda_arg<I>() -> impl Parser<I, Output = Arg>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    let arg = (
+    (
+        leading_comments(false),
         spaces().with(position()).and(choice((
             (position(), string("@args")).map(|(pos, s)| {
                 (false, StructurePattern::Bind(Name::written(ArcStr::from(s), pos)))
@@ -124,45 +145,64 @@ where
         ))),
         spaces().with(optional(token(':').with(typ()))),
         spaces().with(optional(token('=').with(expr()))),
-    );
-    (sep_by_tok(arg, csep(), attempt(sptoken('|'))), position()).and_then(
-        |(mut v, end): (LPooled<Vec<LambdaArg>>, _)| {
-            let n = v.len();
-            let mut args: LPooled<Vec<Arg>> = LPooled::take();
-            let mut vargs = None;
-            for (i, ((pos, (labeled, pattern)), constraint, default)) in
-                v.drain(..).enumerate()
-            {
+    )
+        .and_then(
+            |(mut comments, (pos, (labeled, pattern)), constraint, default)| {
                 if !labeled && default.is_some() {
                     return Err(refusal::<I>(
-                        end,
+                        pos,
                         "only labeled arguments may have a default value",
                     ));
                 }
-                match &pattern {
-                    StructurePattern::Bind(b) if b == "@args" => {
-                        if i + 1 < n {
-                            return Err(refusal::<I>(
-                                end,
-                                "@args must be the last argument",
-                            ));
-                        }
-                        vargs = Some(constraint)
-                    }
-                    _ => args.push(Arg {
-                        kind: match (labeled, default) {
-                            (false, _) => ArgKind::Positional,
-                            (true, None) => ArgKind::Labeled,
-                            (true, Some(e)) => ArgKind::Defaulted(e),
-                        },
-                        pattern,
-                        constraint,
-                        pos: WrittenAt(pos),
-                    }),
+                Ok(Arg {
+                    comments: ItemComments {
+                        above: Comments::of(comments.drain(..)),
+                        eol: Eol::default(),
+                    },
+                    kind: match (labeled, default) {
+                        (false, _) => ArgKind::Positional,
+                        (true, None) => ArgKind::Labeled,
+                        (true, Some(e)) => ArgKind::Defaulted(e),
+                    },
+                    pattern,
+                    constraint,
+                    pos: WrittenAt(pos),
+                })
+            },
+        )
+}
+
+type LambdaArgs = (LPooled<Vec<Arg>>, Option<Option<Type>>, ItemComments, Comments);
+
+fn lambda_args<I>() -> impl Parser<I, Output = LambdaArgs>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (commented(lambda_arg, ',', COMMA_WHY, || sptoken('|'), false), position()).and_then(
+        |(mut listed, end)| {
+            let mut args: LPooled<Vec<Arg>> = LPooled::take();
+            args.extend(listed.slots.drain(..).filter_map(|(_, a)| a));
+            let mut vargs = None;
+            let mut vargs_comments = ItemComments::default();
+            if let Some(i) = args.iter().position(
+                |a| matches!(&a.pattern, StructurePattern::Bind(b) if b == "@args"),
+            ) {
+                if i + 1 != args.len() {
+                    return Err(refusal::<I>(end, "@args must be the last argument"));
                 }
+                let arg = args.pop().unwrap();
+                vargs = Some(arg.constraint);
+                vargs_comments = arg.comments;
             }
             match labeled_first(args.iter().map(|a| a.kind.is_labeled())) {
-                true => Ok((args, vargs)),
+                true => Ok((
+                    args,
+                    vargs,
+                    vargs_comments,
+                    Comments::of(listed.below.drain(..)),
+                )),
                 false => Err(refusal::<I>(end, LABELED_FIRST)),
             }
         },
@@ -193,19 +233,31 @@ where
         ))),
         position(),
     )
-        .map(|(pos, constraints, (mut args, vargs), rtype, throws, body, end)| {
-            let args = Arc::from_iter(args.drain(..));
-            ExprKind::Lambda(Arc::new(LambdaExpr {
-                args,
-                vargs,
+        .map(
+            |(
+                pos,
+                constraints,
+                (mut args, vargs, vargs_comments, below),
                 rtype,
                 throws,
-                constraints,
                 body,
-            }))
-            .to_expr(pos)
-            .ending(end)
-        })
+                end,
+            )| {
+                let args = Arc::from_iter(args.drain(..));
+                ExprKind::Lambda(Arc::new(LambdaExpr {
+                    vargs_comments,
+                    below,
+                    args,
+                    vargs,
+                    rtype,
+                    throws,
+                    constraints,
+                    body,
+                }))
+                .to_expr(pos)
+                .ending(end)
+            },
+        )
 }
 
 /// `&|x| ..` or `&mut |x| ..`: a reference to a lambda.

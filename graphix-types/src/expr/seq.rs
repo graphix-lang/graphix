@@ -1812,7 +1812,10 @@ fn idle_of(pos: SourcePosition, pc: &str) -> Expr {
 fn lambda_sampling(pos: SourcePosition, level: &str) -> Expr {
     let x = literal!("x");
     ExprKind::Lambda(Arc::new(LambdaExpr {
+        vargs_comments: Default::default(),
+        below: Default::default(),
         args: Arc::from_iter([Arg {
+            comments: Default::default(),
             kind: ArgKind::Positional,
             pattern: StructurePattern::Bind(x.clone().into()),
             constraint: None,
@@ -2455,6 +2458,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             });
             let inner = inner.as_deref().unwrap_or(map);
             let args = Arc::from_iter(l.args.iter().map(|a| Arg {
+                comments: a.comments.clone(),
                 kind: match &a.kind {
                     ArgKind::Defaulted(d) => {
                         ArgKind::Defaulted(rewrite_with(d, map, mode.deferred()))
@@ -2472,6 +2476,8 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 LambdaBody::Builtin(s) => LambdaBody::Builtin(s.clone()),
             };
             ExprKind::Lambda(Arc::new(LambdaExpr {
+                vargs_comments: l.vargs_comments.clone(),
+                below: l.below.clone(),
                 args,
                 vargs: l.vargs.clone(),
                 rtype: l.rtype.clone(),

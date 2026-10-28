@@ -135,6 +135,7 @@ impl ArgKind {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Arg {
+    pub comments: ItemComments,
     pub kind: ArgKind,
     pub pattern: StructurePattern,
     pub constraint: Option<Type>,
@@ -163,6 +164,12 @@ impl<T> PartialEq for Aside<T> {
     fn eq(&self, _: &Self) -> bool {
         true
     }
+}
+
+impl<T> Eq for Aside<T> {}
+
+impl<T> std::hash::Hash for Aside<T> {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
 }
 
 impl<T> PartialOrd for Aside<T> {
@@ -211,6 +218,13 @@ impl Eol {
     pub fn text(&self) -> Option<&ArcStr> {
         self.0.as_ref()
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct ItemComments {
+    pub above: Comments,
+    pub eol: Eol,
 }
 
 /// The `//` comments and `#[..]` attributes an `Expr` carries: the lines
@@ -330,6 +344,34 @@ pub struct BindSig {
     pub typ: Type,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Pack)]
+#[pack(unwrapped)]
+pub enum UseCommentKind {
+    Above,
+    Eol,
+    Below,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct UseComment {
+    pub depth: u32,
+    pub kind: UseCommentKind,
+    pub text: ArcStr,
+}
+
+pub type UseComments = Aside<Option<Arc<[UseComment]>>>;
+
+impl UseComments {
+    pub fn of(lines: impl ExactSizeIterator<Item = UseComment>) -> Self {
+        Self((lines.len() > 0).then(|| Arc::from_iter(lines)))
+    }
+
+    pub fn lines(&self) -> &[UseComment] {
+        self.0.as_deref().unwrap_or(&[])
+    }
+}
+
 /// One imported name in a `use` declaration: the path as written —
 /// leading `self`/`super`/`package` keywords and a final `*` glob are
 /// encoded as literal path segments (all four are reserved words, so
@@ -337,6 +379,7 @@ pub struct BindSig {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash, Pack)]
 #[pack(unwrapped)]
 pub struct UseItem {
+    pub comments: UseComments,
     pub path: ModPath,
     pub rename: Option<Name>,
     /// Where each segment of `path` stands in the use tree.
@@ -349,12 +392,56 @@ impl UseItem {
     pub fn sorted(names: impl IntoIterator<Item = UseItem>) -> Arc<[UseItem]> {
         let mut names: LPooled<Vec<UseItem>> = names.into_iter().collect();
         names.sort_by(print::cmp_use_items);
+        if names.iter().any(|n| !n.comments.lines().is_empty()) {
+            let mut comments: LPooled<Vec<LPooled<Vec<UseComment>>>> = LPooled::take();
+            comments.extend(names.iter().map(|_| LPooled::take()));
+            for name in names.iter() {
+                for comment in name.comments.lines() {
+                    let depth = comment.depth as usize
+                        + (comment.kind != UseCommentKind::Below) as usize;
+                    let at = names
+                        .iter()
+                        .position(|n| {
+                            Path::parts(&n.path.0)
+                                .take(depth)
+                                .eq(Path::parts(&name.path.0).take(depth))
+                        })
+                        .unwrap();
+                    comments[at].push(comment.clone());
+                }
+            }
+            for (name, mut comments) in names.iter_mut().zip(comments.drain(..)) {
+                for i in 0..comments.len() {
+                    let depth = comments[i].depth;
+                    if comments
+                        .iter()
+                        .filter(|c| c.depth == depth && c.kind == UseCommentKind::Eol)
+                        .count()
+                        > 1
+                    {
+                        for c in comments
+                            .iter_mut()
+                            .filter(|c| c.depth == depth && c.kind == UseCommentKind::Eol)
+                        {
+                            c.kind = UseCommentKind::Above;
+                        }
+                    }
+                }
+                comments.sort_by_key(|c| (c.depth, c.kind));
+                name.comments = UseComments::of(comments.drain(..));
+            }
+        }
         Arc::from_iter(names.drain(..))
     }
 
     #[cfg(test)]
     pub fn plain(path: ModPath) -> Self {
-        Self { path, rename: None, at: WrittenPath::default() }
+        Self {
+            path,
+            rename: None,
+            at: WrittenPath::default(),
+            comments: UseComments::default(),
+        }
     }
 
     /// The final segment is the glob marker.
@@ -551,6 +638,8 @@ impl SeqKind {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct LambdaExpr {
+    pub vargs_comments: ItemComments,
+    pub below: Comments,
     pub args: Arc<[Arg]>,
     pub vargs: Option<Option<Type>>,
     pub rtype: Option<Type>,
@@ -1725,7 +1814,10 @@ impl Expr {
                 args: Arc::from_iter(args.iter().map(|(n, e)| (n.clone(), f(e)))),
             }),
             Lambda(l) => Lambda(Arc::new(LambdaExpr {
+                vargs_comments: l.vargs_comments.clone(),
+                below: l.below.clone(),
                 args: Arc::from_iter(l.args.iter().map(|arg| Arg {
+                    comments: arg.comments.clone(),
                     kind: match &arg.kind {
                         ArgKind::Defaulted(d) => ArgKind::Defaulted(f(d)),
                         ArgKind::Positional => ArgKind::Positional,

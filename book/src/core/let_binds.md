@@ -56,7 +56,8 @@ shell during tab completion and made available by the LSP server.
 
 A `//` comment runs to the end of its line and belongs to whatever comes
 next: write it on its own line directly above an expression, a `select`
-arm, a method inside an `impl` block, or a field of a struct literal.
+arm, a method inside an `impl` block, a field of a struct literal, a
+lambda parameter, or an item inside a `use` tree.
 
 ```graphix
 // a counter, one step per cycle
@@ -72,7 +73,8 @@ select n {
 
 A comment may also end the line of an item in a list, after the item's
 `;` or `,`: a statement, a `select` arm, a struct field, an array or tuple
-element, a call's argument, a trait or impl method, or an interface item.
+element, a call's argument (labeled arguments included), a lambda
+parameter, a use-tree item, a trait or impl method, or an interface item.
 And comments may stand below the last item, above the bracket that closes
 the list, or at the end of a file, a file of nothing but comments
 included.

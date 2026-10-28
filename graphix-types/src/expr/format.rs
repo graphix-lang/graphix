@@ -220,7 +220,8 @@ fn merge_sig_uses(sig: &Sig) -> Sig {
             SigKind::Use { reexport, names }
                 if si.doc.0.is_none()
                     && si.comments.lines().is_empty()
-                    && si.eol.text().is_none() =>
+                    && si.eol.text().is_none()
+                    && names.iter().all(|n| n.comments.lines().is_empty()) =>
             {
                 Some((*reexport, names))
             }
@@ -258,7 +259,9 @@ fn merge_expr_uses(exprs: &[Expr], value: Option<&Expr>) -> Arc<[Expr]> {
         exprs,
         |e| match &e.kind {
             ExprKind::Use { reexport, names }
-                if e.dec.is_none() && !value.is_some_and(|v| std::ptr::eq(v, e)) =>
+                if e.dec.is_none()
+                    && names.iter().all(|n| n.comments.lines().is_empty())
+                    && !value.is_some_and(|v| std::ptr::eq(v, e)) =>
             {
                 Some((*reexport, names))
             }
@@ -394,6 +397,7 @@ impl Parsed {
 /// back.
 #[derive(Debug, PartialEq)]
 enum Ornament<'a> {
+    UseComments(&'a [super::UseComment]),
     Decorations(&'a Decorations),
     Comments(&'a [ArcStr]),
     Eol(Option<&'a ArcStr>),
@@ -452,13 +456,21 @@ impl<'a> Ornaments<'a> {
                 }
                 ExprKind::Bind(b) => self.pattern(&b.pattern),
                 ExprKind::Lambda(l) => {
-                    l.args.iter().for_each(|a| self.pattern(&a.pattern))
+                    for a in l.args.iter() {
+                        self.pattern(&a.pattern);
+                        self.push(Ornament::Comments(a.comments.above.lines()));
+                        self.push(Ornament::Eol(a.comments.eol.text()));
+                    }
+                    self.push(Ornament::Comments(l.vargs_comments.above.lines()));
+                    self.push(Ornament::Eol(l.vargs_comments.eol.text()));
+                    self.push(Ornament::Comments(l.below.lines()));
                 }
                 ExprKind::Select(sel) => sel
                     .arms
                     .iter()
                     .for_each(|(p, _)| self.pattern(&p.structure_predicate)),
                 ExprKind::Trait(t) => self.methods(t, |_, _| ()),
+                ExprKind::Use { names, .. } => self.uses(names),
                 ExprKind::Module { value, .. }
                     if let ModuleKind::Dynamic { sig, .. } = &**value =>
                 {
@@ -490,13 +502,21 @@ impl<'a> Ornaments<'a> {
         self.push(Ornament::Comments(t.below.lines()))
     }
 
+    fn uses(&mut self, names: &'a [UseItem]) {
+        for n in names {
+            self.push(Ornament::UseComments(n.comments.lines()));
+        }
+    }
+
     fn sig(&mut self, sig: &'a Sig) {
         for si in sig.items.iter() {
             self.node += 1;
             self.push(Ornament::Comments(si.comments.lines()));
             self.push(Ornament::Eol(si.eol.text()));
-            if let SigKind::Trait(t) = &si.kind {
-                self.methods(t, |w, d| w.expr(d))
+            match &si.kind {
+                SigKind::Trait(t) => self.methods(t, |w, d| w.expr(d)),
+                SigKind::Use { names, .. } => self.uses(names),
+                _ => (),
             }
         }
         self.push(Ornament::Comments(sig.below.lines()))
@@ -1307,6 +1327,71 @@ mod tests {
     // the comment ending an item's line, after its separator, and those
     // below a list's last item stay, in every list, with and without a
     // trailing separator
+    #[test]
+    fn comments_in_use_trees() {
+        for src in [
+            "use array::{\n// length\nlen, // ends\nmap\n// below\n}",
+            "use {\n// first\na::b, // b\n// second\na::c // c\n}",
+            "use {a::{b, c}, // first group\na::{d, e} // second group\n}",
+            "use a::{\n// itself\nself, // a\n// renamed\nb as c, // b\n* // glob\n}",
+            "use {\n// arrays\narray::{\n// map\nmap,\n// length\nlen // len ends\n// array below\n}, // group ends\n// strings\nstr::len as length\n// all below\n}",
+            "use array::{\n// sole\nlen // ends\n// below\n}",
+            "use {\n// root\narray::len\n// below\n}",
+            "use array::{\n// group\n{len, map} // ends\n// below\n}",
+        ] {
+            for kind in [SourceKind::Program, SourceKind::Interface] {
+                for width in [30, 90] {
+                    let cfg = FormatConfig { width, ..FormatConfig::default() };
+                    let formatted = format_source(kind, src, &cfg).unwrap_or_else(|e| {
+                        let out = format_source_unchecked(kind, src, &cfg).unwrap();
+                        panic!(
+                            "{src}: {e:#}\n{out}\nwas: {:?}\nnow: {:?}",
+                            Parsed::new(kind, src).unwrap().ornaments(),
+                            Parsed::new(kind, &out)
+                                .map(|p| format_compact!("{:?}", p.ornaments()))
+                        );
+                    });
+                    assert_eq!(
+                        formatted.matches("//").count(),
+                        src.matches("//").count(),
+                        "{formatted}"
+                    );
+                    assert_eq!(
+                        format_source(kind, &formatted, &cfg).unwrap().as_str(),
+                        formatted.as_str()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn comments_on_labeled_arguments_and_formals() {
+        for src in [
+            "f(\n// width\n#width: 4, // eol\n// height\n#height\n// below\n)",
+            "|\n// x\nx: i64, // eol\n// y\ny: i64\n// below\n| x + y",
+            "|\n// count\n#count: i64 = 3, // default\n// rest\n@args: i64 // variadic\n// below\n| count",
+            "|\n// no arguments\n| 1",
+        ] {
+            for width in [30, 90] {
+                let cfg = FormatConfig { width, ..FormatConfig::default() };
+                let formatted = format_source(SourceKind::Program, src, &cfg)
+                    .unwrap_or_else(|e| panic!("{src}: {e:#}"));
+                assert_eq!(
+                    formatted.matches("//").count(),
+                    src.matches("//").count(),
+                    "{formatted}"
+                );
+                assert_eq!(
+                    format_source(SourceKind::Program, &formatted, &cfg)
+                        .unwrap()
+                        .as_str(),
+                    formatted.as_str()
+                );
+            }
+        }
+    }
+
     #[test]
     fn comments_after_list_items_stay() {
         use SourceKind::*;

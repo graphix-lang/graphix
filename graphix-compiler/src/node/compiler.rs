@@ -721,6 +721,7 @@ pub(super) fn eta_dispatcher<R: Rt>(
             None => (ArgKind::Positional, None, arcstr::format!("#eta{i}")),
         };
         args.push(Arg {
+            comments: Default::default(),
             kind,
             pattern: StructurePattern::Bind(Name::from(var.clone())),
             constraint: Some(a.typ.clone()),
@@ -733,6 +734,8 @@ pub(super) fn eta_dispatcher<R: Rt>(
         function: Arc::new(at(ExprKind::Ref { name: name.clone() })),
     }));
     Ok(Some(at(ExprKind::Lambda(Arc::new(LambdaExpr {
+        vargs_comments: Default::default(),
+        below: Default::default(),
         args: Arc::from_iter(args),
         vargs: None,
         rtype: Some(ft.rtype.clone()),

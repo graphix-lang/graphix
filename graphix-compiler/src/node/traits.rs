@@ -227,6 +227,8 @@ fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
         l.throws.clone().or_else(|| sig.explicit_throws.then(|| sig.throws.clone()));
     let mut e = value.clone();
     e.kind = ExprKind::Lambda(Arc::new(LambdaExpr {
+        vargs_comments: l.vargs_comments.clone(),
+        below: l.below.clone(),
         args,
         vargs: l.vargs.clone(),
         rtype,

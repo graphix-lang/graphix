@@ -91,6 +91,17 @@ with the impl, not a re-export. `pub use` parses and refuses
 ("re-exports (`pub use`) are not yet supported") so the grammar does
 not move twice when re-exports arrive.
 
+The parser retains comments on use-tree entries in `UseComments`, outside
+syntax equality and hashing. Each comment records its prefix depth and
+whether it stands above an entry, ends its line, or sits below a group.
+A comment on a single path follows its imported name; a group comment
+follows its prefix. `UseItem::sorted` moves this metadata to the first
+canonical leaf of that prefix. If grouping joins several ending comments
+at one prefix, they become leading lines there. The formatter retains
+braces around a commented group even when it contains only one name, and
+its ornament check verifies the normalized comment records on reparse.
+Pins: `comments_in_use_trees` in `expr/format.rs`.
+
 ### `mod`
 
 `mod foo;` declares the submodule and introduces the name `foo` — a

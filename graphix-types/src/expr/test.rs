@@ -847,6 +847,7 @@ fn use_item() -> impl Strategy<Value = UseItem> {
                 parts.push(ArcStr::from("*"));
             }
             UseItem {
+                comments: Default::default(),
                 path: ModPath::from_iter(parts),
                 rename: if glob { None } else { rename.map(Name::from) },
                 at: Default::default(),
@@ -1240,6 +1241,7 @@ macro_rules! lambda {
                                 pattern
                             };
                             Arg {
+                                comments: Default::default(),
                                 kind: match (labeled, default) {
                                     (false, _) => ArgKind::Positional,
                                     (true, None) => ArgKind::Labeled,
@@ -1255,6 +1257,8 @@ macro_rules! lambda {
                         constraints.into_iter().map(|(a, t)| (TVar::empty_named(a), t)),
                     );
                     ExprKind::Lambda(Arc::new(LambdaExpr {
+                        vargs_comments: Default::default(),
+                        below: Default::default(),
                         args: Arc::from_iter(args),
                         vargs,
                         rtype,
@@ -2344,6 +2348,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (ExprKind::Ref { name: name0 }, ExprKind::Ref { name: name1 }) => name0 == name1,
         (ExprKind::Lambda(l0), ExprKind::Lambda(l1)) => {
             let LambdaExpr {
+                vargs_comments: _,
+                below: _,
                 args: args0,
                 vargs: vargs0,
                 rtype: rtype0,
@@ -2352,6 +2358,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 body: body0,
             } = &**l0;
             let LambdaExpr {
+                vargs_comments: _,
+                below: _,
                 args: args1,
                 vargs: vargs1,
                 rtype: rtype1,

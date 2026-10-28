@@ -120,8 +120,8 @@ constant argument to `exit` runs at init — always gate it).
   order whenever anything inside `loc` or `rem` changes. Store a tag
   (`let front: [`Local, `Remote] = `Local`) and select the struct by it.
 - **Comments** stand on their own line above an expression, a select
-  arm, an impl or trait method, a struct-literal field or an interface
-  item; end a list item's line after its `;` or `,` (a statement, an arm,
+  arm, an impl or trait method, a struct-literal field, a lambda formal,
+  a use-tree item or an interface item; end a list item's line after its `;` or `,` (a statement, an arm,
   a field, an element, an argument: `x: 1, // across`); or stand below a
   list's last item or at the end of a file. One between an operator and
   its operand, or after an opening bracket on its line, is a parse

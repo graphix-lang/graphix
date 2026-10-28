@@ -1,5 +1,5 @@
 use super::{
-    csep, decl_items, doc_comment, expr, fname,
+    COMMA_WHY, Commentable, commented, csep, decl_items, doc_comment, expr, fname,
     grow::{grow, refusal},
     leading_comments, modpath, sep_by1_tok, spaces, spname, spstring, sptoken,
     traitexp::{impl_sig, trait_decl},
@@ -7,10 +7,14 @@ use super::{
 };
 use crate::expr::{
     BindSig, Comments, Eol, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox, Sig,
-    SigItem, SigKind, UseItem, WrittenPath, get_origin, parser::spaces1,
+    SigItem, SigKind, UseComment, UseCommentKind, UseComments, UseItem, WrittenPath,
+    get_origin, parser::spaces1,
 };
+use arcstr::ArcStr;
 use combine::{
-    ParseError, Parser, RangeStream, attempt, between, choice, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice,
+    error::StreamError,
+    optional,
     parser::char::{space, string},
     position,
     stream::{Range, position::SourcePosition},
@@ -200,35 +204,63 @@ fn capitalized(n: &Name) -> bool {
     n.as_str().starts_with(char::is_uppercase)
 }
 
-/// The paths of a use tree, each its segments, LAST FIRST, and rename.
-type UsePaths = LPooled<Vec<(LPooled<Vec<Name>>, Option<Name>)>>;
+struct UsePath {
+    segments: LPooled<Vec<Name>>,
+    rename: Option<Name>,
+    comments: LPooled<Vec<UseComment>>,
+}
+
+struct UsePaths(LPooled<Vec<UsePath>>);
+
+impl UsePaths {
+    fn comment(&mut self, kind: UseCommentKind, text: ArcStr) {
+        let single = self.0.len() == 1;
+        if let Some(first) = self.0.first_mut() {
+            let depth = if single && kind != UseCommentKind::Below {
+                first.segments.len().saturating_sub(1) as u32
+            } else {
+                0
+            };
+            first.comments.push(UseComment { depth, kind, text });
+        }
+    }
+}
+
+impl Commentable for UsePaths {
+    fn take_eol(&mut self, eol: ArcStr) {
+        self.comment(UseCommentKind::Eol, eol);
+    }
+}
 
 parser! {
-    /// One element of a use tree, yielding the path suffixes it denotes:
-    /// a path, a path ending in a group, a bare group, a glob leaf, a
-    /// renamed leaf, or `self` (an empty suffix).
     fn use_tree[I]()(I) -> UsePaths
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         let one = |seg: Option<Name>, rename: Option<Name>| {
-            let mut paths: UsePaths = LPooled::take();
-            let mut path: LPooled<Vec<Name>> = LPooled::take();
-            path.extend(seg);
-            paths.push((path, rename));
+            let mut paths = UsePaths(LPooled::take());
+            let mut segments: LPooled<Vec<Name>> = LPooled::take();
+            segments.extend(seg);
+            paths.0.push(UsePath { segments, rename, comments: LPooled::take() });
             paths
         };
-        grow(spaces().with(choice((
+        grow((leading_comments(false), choice((
             between(
                 token('{'),
                 sptoken('}'),
-                spaces().with(sep_by1_tok(use_tree(), csep(), token('}'))),
+                commented(use_tree, ',', COMMA_WHY, || token('}'), false),
             )
-            .map(|mut groups: LPooled<Vec<UsePaths>>| {
-                let mut paths: UsePaths = LPooled::take();
-                for mut g in groups.drain(..) {
-                    paths.extend(g.drain(..));
+            .and_then(|mut groups| {
+                let mut paths = UsePaths(LPooled::take());
+                for (_, group) in groups.slots.drain(..) {
+                    if let Some(mut group) = group {
+                        paths.0.extend(group.0.drain(..));
+                    }
                 }
-                paths
+                if paths.0.is_empty() {
+                    return Err(combine::stream::StreamErrorFor::<I>::message_static_message("expected a use item"));
+                }
+                for c in groups.below.drain(..) { paths.comment(UseCommentKind::Below, c); }
+                Ok(paths)
             }),
             (position(), token('*'))
                 .map(move |(pos, _)| one(Some(Name::written(arcstr::literal!("*"), pos)), None)),
@@ -236,31 +268,29 @@ parser! {
                 use_segment(),
                 optional(attempt(spstring("::").with(use_tree()))),
                 optional(attempt(
-                    spaces1()
-                        .with(string("as"))
-                        .with(spaces1())
+                    spaces1().with(string("as")).with(spaces1())
                         .with((position(), choice((fname(), typname())))),
                 )),
                 position(),
-            )
-                .and_then(move |(seg, tail, rename, end): (Name, Option<UsePaths>, _, _)| {
-                    let rename = rename.map(|(pos, n)| Name::written(n, pos));
-                    match (tail, rename) {
-                        (Some(_), Some(_)) => Err(refusal::<I>(
-                            end,
-                            "`as` renames a single imported name, not a group",
-                        )),
-                        (None, rename) if seg.as_str() == "self" => Ok(one(None, rename)),
-                        (None, rename) => Ok(one(Some(seg), rename)),
-                        (Some(mut paths), None) => {
-                            for (path, _) in paths.iter_mut() {
-                                path.push(seg.clone());
-                            }
-                            Ok(paths)
+            ).and_then(move |(seg, tail, rename, end): (Name, Option<UsePaths>, _, _)| {
+                let rename = rename.map(|(pos, n)| Name::written(n, pos));
+                match (tail, rename) {
+                    (Some(_), Some(_)) => Err(refusal::<I>(end, "`as` renames a single imported name, not a group")),
+                    (None, rename) if seg.as_str() == "self" => Ok(one(None, rename)),
+                    (None, rename) => Ok(one(Some(seg), rename)),
+                    (Some(mut paths), None) => {
+                        for path in paths.0.iter_mut() {
+                            path.segments.push(seg.clone());
+                            for c in path.comments.iter_mut() { c.depth += 1; }
                         }
+                        Ok(paths)
                     }
-                }),
-        ))))
+                }
+            }),
+        ))).map(|(mut comments, mut paths)| {
+            for c in comments.drain(..) { paths.comment(UseCommentKind::Above, c); }
+            paths
+        }))
     }
 }
 
@@ -273,7 +303,7 @@ where
     I::Range: Range,
 {
     (use_tree(), position()).and_then(|(mut paths, end): (UsePaths, _)| {
-        for (segs, rename) in paths.iter_mut() {
+        for UsePath { segments: segs, rename, .. } in paths.0.iter_mut() {
             segs.reverse();
             if let Some(msg) = check_use_item(segs) {
                 return Err(refusal::<I>(end, msg));
@@ -287,7 +317,8 @@ where
                 ));
             }
         }
-        Ok(UseItem::sorted(paths.drain(..).map(|(segs, rename)| UseItem {
+        Ok(UseItem::sorted(paths.0.drain(..).map(|UsePath { segments: segs, rename, mut comments }| UseItem {
+            comments: UseComments::of(comments.drain(..)),
             at: WrittenPath(segs.iter().map(|s| s.at.0).collect()),
             path: ModPath(Path::from_iter(segs.iter().map(|s| s.as_str()))),
             rename,

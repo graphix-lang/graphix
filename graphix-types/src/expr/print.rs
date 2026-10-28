@@ -2,10 +2,10 @@ use crate::{
     Restore,
     expr::{
         ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, CatchRole, Comments, Decorations,
-        Doc, Expr, ExprKind, ImplExpr, ImplHead, LambdaBody, LambdaExpr, ModuleKind,
-        Sandbox, SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem, SigKind, StrForm,
-        StructExpr, StructWithExpr, StructurePattern, TraitExpr, TraitMethod,
-        TypeDefBody, TypeDefExpr, UseItem, format::FormatConfig, parser,
+        Doc, Expr, ExprKind, ImplExpr, ImplHead, ItemComments, LambdaBody, LambdaExpr,
+        ModuleKind, Sandbox, SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem, SigKind,
+        StrForm, StructExpr, StructWithExpr, StructurePattern, TraitExpr, TraitMethod,
+        TypeDefBody, TypeDefExpr, UseCommentKind, UseItem, format::FormatConfig, parser,
         pattern::printed_fields,
     },
     print_as_written,
@@ -669,6 +669,12 @@ fn kind_decorated(k: &ExprKind) -> bool {
     ensure_sufficient(|| {
         let mut any = match k {
             ExprKind::Trait(t) => t.decorated(),
+            ExprKind::Use { names, .. } => use_decorated(names),
+            ExprKind::Lambda(l) => {
+                l.args.iter().any(|a| a.comments.decorated())
+                    || l.vargs_comments.decorated()
+                    || shows_comments(l.below.lines())
+            }
             ExprKind::Module { value, .. }
                 if let ModuleKind::Dynamic { sig, .. } = &**value =>
             {
@@ -686,6 +692,7 @@ fn sig_item_decorated(si: &SigItem) -> bool {
         || shows_comments(si.comments.lines())
         || shows_trailing(si.eol.text(), &[])
         || matches!(&si.kind, SigKind::Trait(t) if t.decorated())
+        || matches!(&si.kind, SigKind::Use { names, .. } if use_decorated(names))
 }
 
 /// A literal as source text: `i64` and `f64`, the types an unprefixed
@@ -1641,12 +1648,15 @@ impl PrettyDisplay for ApplyExpr {
                 if i > 0 {
                     item_sep(buf, ",", eol_of(&args[i - 1].1))?
                 }
+                if name.is_some() {
+                    write_leading(buf, &e.dec)?;
+                }
                 match name {
                     None => e.fmt_pretty(buf)?,
                     Some(name) if puns(name, e) => writeln!(buf, "#{name}")?,
                     Some(name) => {
                         write!(buf, "#{name}:")?;
-                        pretty_tail(buf, e)?
+                        pretty_tail_bare(buf, e)?
                     }
                 }
             }
@@ -1656,6 +1666,12 @@ impl PrettyDisplay for ApplyExpr {
             }
         })?;
         writeln!(buf, ")")
+    }
+}
+
+impl ItemComments {
+    fn decorated(&self) -> bool {
+        shows_comments(self.above.lines()) || shows_trailing(self.eol.text(), &[])
     }
 }
 
@@ -1727,26 +1743,24 @@ impl LambdaExpr {
     fn pretty_args(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let n = self.args.len() + self.vargs.is_some() as usize;
         for (i, a) in self.args.iter().enumerate() {
+            write_comments(buf, a.comments.above.lines())?;
             a.pretty_head(buf)?;
             if let Some(def) = a.kind.default() {
                 write!(buf, " =")?;
                 pretty_tail(buf, def)?;
-                buf.kill_newline();
             }
-            match i + 1 < n {
-                true => writeln!(buf, ",")?,
-                false => writeln!(buf)?,
-            }
+            item_sep(buf, if i + 1 < n { "," } else { "" }, a.comments.eol.text())?;
         }
-        match &self.vargs {
-            None => Ok(()),
-            Some(None) => writeln!(buf, "@args"),
-            Some(Some(typ)) => {
-                write!(buf, "@args: ")?;
+        if let Some(typ) = &self.vargs {
+            write_comments(buf, self.vargs_comments.above.lines())?;
+            write!(buf, "@args")?;
+            if let Some(typ) = typ {
+                write!(buf, ": ")?;
                 pretty_type(buf, typ)?;
-                writeln!(buf)
             }
+            item_sep(buf, "", self.vargs_comments.eol.text())?;
         }
+        write_comments(buf, self.below.lines())
     }
 
     /// What follows the closing bar, up to the body.
@@ -1814,10 +1828,15 @@ impl PrettyDisplay for LambdaExpr {
             LambdaBody::Builtin(builtin) => builtin.chars().count() + 3,
             LambdaBody::Expr(_) => 2,
         };
-        let has_args = !self.args.is_empty() || self.vargs.is_some();
+        let has_args = !self.args.is_empty()
+            || self.vargs.is_some()
+            || shows_comments(self.below.lines());
         let has_returns = self.rtype.is_some() || self.throws.is_some();
         let decorated_default =
-            self.args.iter().any(|a| a.kind.default().is_some_and(decorated));
+            self.args.iter().any(|a| {
+                a.comments.decorated() || a.kind.default().is_some_and(decorated)
+            }) || self.vargs_comments.decorated()
+                || shows_comments(self.below.lines());
         let overflows = buf.col() + opener > buf.limit;
         let mut laid_out = false;
         if overflows && has_returns && !decorated_default {
@@ -2305,6 +2324,10 @@ pub(crate) fn use_seg(item: &UseItem, depth: usize) -> Option<&str> {
     Path::parts(&item.path.0).nth(depth)
 }
 
+fn use_decorated(names: &[UseItem]) -> bool {
+    print_as_written() && names.iter().any(|n| !n.comments.lines().is_empty())
+}
+
 /// The names of a use statement as a tree of path segments: `items` is
 /// sorted (`UseItem::sorted`) and shares its first `depth` segments.
 #[derive(Clone, Copy)]
@@ -2314,6 +2337,20 @@ struct UseNames<'a> {
 }
 
 impl<'a> UseNames<'a> {
+    fn comments(&self, kind: UseCommentKind) -> impl Iterator<Item = &'a ArcStr> {
+        let depth = self.depth as u32;
+        self.items.iter().flat_map(|i| i.comments.lines()).filter_map(move |c| {
+            (print_as_written() && c.depth == depth && c.kind == kind).then_some(&c.text)
+        })
+    }
+
+    fn comments_at_depth(&self) -> bool {
+        print_as_written()
+            && self.items.iter().any(|i| {
+                i.comments.lines().iter().any(|c| c.depth as usize == self.depth)
+            })
+    }
+
     /// The entries at this level: a name that ends here, or every name
     /// continuing through one segment.
     fn entries(self) -> impl Iterator<Item = UseNames<'a>> {
@@ -2354,12 +2391,13 @@ impl<'a> UseNames<'a> {
                     let under = this.under();
                     let ends = under.items.len() == 1
                         && use_seg(&under.items[0], under.depth).is_none();
-                    if !ends {
+                    if !ends || under.comments_at_depth() {
                         write!(f, "::")?;
                         let mut entries = under.entries();
                         match (entries.next(), entries.next()) {
                             (Some(only), None)
-                                if use_seg(&only.items[0], only.depth).is_some() =>
+                                if use_seg(&only.items[0], only.depth).is_some()
+                                    && !under.comments_at_depth() =>
                             {
                                 this = only;
                                 continue;
@@ -2399,16 +2437,25 @@ impl<'a> UseNames<'a> {
         buf.nested::<fmt::Result, _>(|buf| {
             let n = self.entries().count();
             for (i, e) in self.entries().enumerate() {
+                for c in e.comments(UseCommentKind::Above) {
+                    writeln!(buf, "//{c}")?;
+                }
                 let start = buf.mark();
                 e.write_entry(buf)?;
-                if buf.width_since(start) >= buf.limit {
+                if buf.width_since(start) >= buf.limit || use_decorated(e.items) {
                     buf.rollback(start);
                     if let Some(group) = e.write_path(buf)? {
                         group.pretty_group(buf)?;
-                        buf.kill_newline();
                     }
                 }
-                writeln!(buf, "{}", if i + 1 < n { "," } else { "" })?;
+                item_sep(
+                    buf,
+                    if i + 1 < n { "," } else { "" },
+                    e.comments(UseCommentKind::Eol).next(),
+                )?;
+            }
+            for c in self.comments(UseCommentKind::Below) {
+                writeln!(buf, "//{c}")?;
             }
             Ok(())
         })?;
@@ -2426,6 +2473,10 @@ impl fmt::Display for UseStmt<'_> {
 }
 
 impl PrettyDisplay for UseStmt<'_> {
+    fn decorated(&self) -> bool {
+        use_decorated(self.1)
+    }
+
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         pretty_use_names(buf, self.0, self.1)
     }
@@ -2456,6 +2507,9 @@ fn pretty_use_names(
 ) -> fmt::Result {
     let names = UseNames { items: names, depth: 0 };
     write_use_head(buf, reexport)?;
+    if names.comments_at_depth() {
+        return names.pretty_group(buf);
+    }
     let mut entries = names.entries();
     match (entries.next(), entries.next()) {
         (Some(only), None) => match only.write_path(buf)? {

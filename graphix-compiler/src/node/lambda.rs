@@ -1749,6 +1749,7 @@ impl Lambda {
                 }
             };
             argspec.push(Arg {
+                comments: a.comments.clone(),
                 kind: a.kind.clone(),
                 pattern: a.pattern.clone(),
                 constraint,

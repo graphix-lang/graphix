@@ -317,7 +317,7 @@ fn comment_above_impl_method() {
 }
 
 #[test]
-// CR claude for claude: [bug/medium] [bug/medium] This pins a refusal that the documented
+// XCR claude for claude: [bug/medium] [bug/medium] This pins a refusal that the documented
 // comment rule does not make. A comment at the end of a list item's line, or below a
 // list's last item or a file's, is legal everywhere `commented` parses. `impl_decl`,
 // `trait_decl` and interface items use `sep_by_tok` instead, so impl and trait method
@@ -336,6 +336,19 @@ fn comment_above_impl_method() {
 // a_comment_below_the_last_impl_method_rides_it.
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
 // every list (built)): yes, keep and extend (the recommendation: keep and extend.)
+// 2026-10-28 codex: Kept the already-built interface, trait/impl, map, never/any and
+// comment-only-file behavior. Extended labeled call arguments, lambda formals (including
+// variadic and empty lists), and use trees through the shared commented-list parser.
+// Formal comments live in ItemComments/LambdaExpr; use comments retain their prefix depth
+// alongside canonical import paths, with comment-aware grouping in program and interface
+// printers. The formatter verifies these ornaments on reparse and does not merge
+// decorated use statements. Pins comments_on_labeled_arguments_and_formals and
+// comments_in_use_trees both failed on the old parsers and now pass, with comment-count
+// preservation and idempotence at widths 30/90 for programs and interfaces. Existing
+// comments_after_list_items_stay and a_comment_below_the_last_impl_method_rides_it retain
+// the earlier fixes; their named probes already passed before this change. Full
+// graphix-types lib: 343 passed. Book, language skill, CLAUDE/AGENTS and module-system
+// design updated; session format bumped.
 fn a_comment_below_the_last_impl_method_rides_it() {
     for src in [
         "impl Show for Counter { let show = |c| \"c\"\n// below\n}",
@@ -1070,14 +1083,18 @@ fn doexpr() {
 #[test]
 fn lambda() {
     let exp = ExprKind::Lambda(Arc::new(LambdaExpr {
+        vargs_comments: Default::default(),
+        below: Default::default(),
         args: Arc::from_iter([
             Arg {
+                comments: Default::default(),
                 kind: ArgKind::Positional,
                 pattern: StructurePattern::Bind("foo".into()),
                 constraint: None,
                 pos: Default::default(),
             },
             Arg {
+                comments: Default::default(),
                 kind: ArgKind::Positional,
                 pattern: StructurePattern::Bind("bar".into()),
                 constraint: None,
@@ -1125,6 +1142,8 @@ fn nested_lambda() {
     }
     .to_expr_nopos();
     let exp = ExprKind::Lambda(Arc::new(LambdaExpr {
+        vargs_comments: Default::default(),
+        below: Default::default(),
         args: Arc::from_iter([]),
         rtype: None,
         vargs: None,
@@ -1132,6 +1151,8 @@ fn nested_lambda() {
         throws: None,
         body: LambdaBody::Expr(
             ExprKind::Lambda(Arc::new(LambdaExpr {
+                vargs_comments: Default::default(),
+                below: Default::default(),
                 args: Arc::from_iter([]),
                 rtype: None,
                 vargs: None,
@@ -1152,7 +1173,10 @@ fn apply_lambda() {
     let e = call(
         refx("a"),
         [ExprKind::Lambda(Arc::new(LambdaExpr {
+            vargs_comments: Default::default(),
+            below: Default::default(),
             args: Arc::from_iter([Arg {
+                comments: Default::default(),
                 kind: ArgKind::Positional,
                 pattern: StructurePattern::Bind("a".into()),
                 constraint: None,
@@ -1176,14 +1200,18 @@ fn apply_typed_lambda() {
     let e = call(
         refx("a"),
         [ExprKind::Lambda(Arc::new(LambdaExpr {
+            vargs_comments: Default::default(),
+            below: Default::default(),
             args: Arc::from_iter([
                 Arg {
+                    comments: Default::default(),
                     kind: ArgKind::Positional,
                     pattern: StructurePattern::Bind("a".into()),
                     constraint: None,
                     pos: Default::default(),
                 },
                 Arg {
+                    comments: Default::default(),
                     kind: ArgKind::Positional,
                     pattern: StructurePattern::Bind("b".into()),
                     constraint: Some(Type::Set(Arc::from_iter([
@@ -1213,7 +1241,10 @@ fn typed_array() {
         pattern: StructurePattern::Bind(literal!("f").into()),
         typ: None,
         value: ExprKind::Lambda(Arc::new(LambdaExpr {
+            vargs_comments: Default::default(),
+            below: Default::default(),
             args: Arc::from_iter([Arg {
+                comments: Default::default(),
                 kind: ArgKind::Positional,
                 pattern: StructurePattern::Bind("a".into()),
                 constraint: Some(Type::Array(Arc::new(Type::TVar(TVar::empty_named(
@@ -1266,14 +1297,18 @@ fn labeled_argument_lambda() {
             ..Default::default()
         }))),
         value: ExprKind::Lambda(Arc::new(LambdaExpr {
+            vargs_comments: Default::default(),
+            below: Default::default(),
             args: Arc::from_iter([
                 Arg {
+                    comments: Default::default(),
                     pattern: StructurePattern::Bind("foo".into()),
                     kind: ArgKind::Defaulted(int(3)),
                     constraint: Some(tref("Number")),
                     pos: Default::default(),
                 },
                 Arg {
+                    comments: Default::default(),
                     pattern: StructurePattern::Bind("bar".into()),
                     kind: ArgKind::Defaulted(
                         ExprKind::Constant("hello".into()).to_expr_nopos(),
@@ -1282,12 +1317,14 @@ fn labeled_argument_lambda() {
                     pos: Default::default(),
                 },
                 Arg {
+                    comments: Default::default(),
                     pattern: StructurePattern::Bind("a".into()),
                     kind: ArgKind::Labeled,
                     constraint: None,
                     pos: Default::default(),
                 },
                 Arg {
+                    comments: Default::default(),
                     pattern: StructurePattern::Bind("baz".into()),
                     kind: ArgKind::Positional,
                     constraint: None,

@@ -298,7 +298,12 @@ struct pattern binds, struct type fields, variant types, every declared
 name (`Name`) and every expression's end, `Expr::pos`
 for struct literal fields, `Expr::str_form` for a string's delimiters,
 `Comments` and `Eol` (`Aside`: always equal) for the `//` lines above,
-after and below an interface item or a trait method.
+after and below an interface item or a trait method. Lambda formals carry
+`ItemComments`, with the variadic formal and empty-list comments on
+`LambdaExpr`. Use-tree comments carry their prefix depth (`UseComment`)
+beside the sorted imports; a single path's comments follow its imported
+name and a group's follow its prefix. Ending comments merged at one
+prefix become leading lines (`design/module_system.md`).
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
 program-visible values (a cast error, a null error), so comments print
@@ -1220,12 +1225,14 @@ cycle, across workers; the compiler never pins threads.
   write a lowering built gets no declaration hint. `range(i, j)` is
   the integer builtin (`` `RangeError ``).
 - **Comments** are legal above an expression, a select arm, an impl or
-  trait method, a struct-literal field or an interface item, at the end
+  trait method, a struct-literal field, a lambda formal, a use-tree item
+  or an interface item, at the end
   of a list item's line after its separator (a statement, an arm, a
   field, an element, an argument: `Decorations::eol`; an interface item
-  or a trait method: `Eol`) and below a list's last item or a file's
+  or a trait method: `Eol`; a formal: `ItemComments`; an import:
+  `UseComment`) and below a list's last item or a file's
   (`Decorations::below`, on a trailing `;`'s empty statement when there
-  is one; `Sig::below`, `TraitExpr::below`); none inside a string's
+  is one; `Sig::below`, `TraitExpr::below`, `LambdaExpr::below`); none inside a string's
   splice or an attribute's arguments, which print on one line; `///`
   docs only in an interface. Parse errors report the furthest point
   reached with the source line and a caret, and a refusal its reason.

@@ -404,6 +404,7 @@ impl<R: Rt> QueueFn<R> {
                     None => format_compact!("a{i}").as_str().into(),
                 };
                 Arg {
+                    comments: Default::default(),
                     kind: match a.is_labeled() {
                         true => ArgKind::Labeled,
                         false => ArgKind::Positional,
