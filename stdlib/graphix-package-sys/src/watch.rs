@@ -230,6 +230,12 @@ pub(crate) struct CreateWatcher {
     out: TagValue,
 }
 
+impl CreateWatcher {
+    fn with(poll_interval: Option<Duration>, batch_size: Option<i64>) -> Self {
+        Self { poll_interval, batch_size, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for CreateWatcher {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_watch_create";
@@ -242,11 +248,7 @@ impl<R: Rt> BuiltIn<R> for CreateWatcher {
         _args: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(CreateWatcher {
-            poll_interval: None,
-            batch_size: None,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(None, None)))
     }
 
     fn image_decode(
@@ -256,11 +258,7 @@ impl<R: Rt> BuiltIn<R> for CreateWatcher {
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let poll_interval = Pack::decode(buf)?;
         let batch_size = Pack::decode(buf)?;
-        Ok(Box::new(CreateWatcher {
-            poll_interval,
-            batch_size,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(poll_interval, batch_size)))
     }
 }
 
@@ -340,6 +338,18 @@ pub(crate) struct WatchApply {
     out: TagValue,
 }
 
+impl WatchApply {
+    fn with(interest: Option<BitFlags<Interest>>, path: Option<ArcStr>) -> Self {
+        Self {
+            slept: WakeBit::default(),
+            interest,
+            path,
+            watcher_val: None,
+            out: TagValue::phantom(),
+        }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for WatchApply {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_watch_watch";
@@ -353,13 +363,7 @@ impl<R: Rt> BuiltIn<R> for WatchApply {
         _from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(WatchApply {
-            slept: WakeBit::default(),
-            interest: None,
-            path: None,
-            watcher_val: None,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(None, None)))
     }
 
     fn image_decode(
@@ -369,13 +373,7 @@ impl<R: Rt> BuiltIn<R> for WatchApply {
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let interest = Pack::decode(buf)?;
         let path = Pack::decode(buf)?;
-        Ok(Box::new(WatchApply {
-            slept: WakeBit::default(),
-            interest,
-            path,
-            watcher_val: None,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(interest, path)))
     }
 }
 
@@ -536,14 +534,7 @@ impl<R: Rt, K: WatchKind> BuiltIn<R> for WatchStream<K> {
         from: &'c [Node<R>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Self {
-            var: RtVar::new(ctx, top_id),
-            cached: CachedVals::new(from),
-            bind_ids: Vec::new(),
-            out: TagValue::phantom(),
-            slept: WakeBit::default(),
-            kind: PhantomData,
-        }))
+        Ok(Box::new(Self::with(RtVar::new(ctx, top_id), CachedVals::new(from))))
     }
 
     fn image_decode(
@@ -553,18 +544,22 @@ impl<R: Rt, K: WatchKind> BuiltIn<R> for WatchStream<K> {
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let cached = CachedVals::image_decode(buf)?;
-        Ok(Box::new(Self {
+        Ok(Box::new(Self::with(var, cached)))
+    }
+}
+
+impl<K: WatchKind> WatchStream<K> {
+    fn with(var: RtVar, cached: CachedVals) -> Self {
+        Self {
             var,
             cached,
             bind_ids: Vec::new(),
             out: TagValue::phantom(),
             slept: WakeBit::default(),
             kind: PhantomData,
-        }))
+        }
     }
-}
 
-impl<K: WatchKind> WatchStream<K> {
     fn unwatch<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
         for bid in self.bind_ids.drain(..) {
             ctx.unref_var(bid, self.var.top_id());
