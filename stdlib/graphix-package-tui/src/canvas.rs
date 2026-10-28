@@ -1,3 +1,4 @@
+use super::clip::clip_line;
 use super::{BoundsV, ColorV, LineV, MarkerV, PointV, TuiW, TuiWidget, reconcile};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -114,7 +115,7 @@ enum ShapeV {
 
 impl ShapeV {
     /// Whether the shape's coordinates are numbers ratatui can place.
-    // CR claude for claude: [bug/medium] This check, and DatasetW's breaks in chart.rs,
+    // XCR claude for claude: [bug/medium] This check, and DatasetW's breaks in chart.rs,
     // guards only x2 - x1 and y2 - y1. ratatui's clipper (line-clipping
     // cohen_sutherland) still computes (x_min - x1) * dy / dx, which overflows. Its
     // inf/inf NaN counts as inside and lands at column 0, so `Line{x1: -1e300, y1:
@@ -138,12 +139,22 @@ impl ShapeV {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q53, TUI lines
     // that overflow the clipper): yes, clip and add upstream entry (the recommendation:
     // clip in Graphix; add an UPSTREAM.md entry.)
+    // 2026-10-28 codex: Canvas lines and chart line segments are now clipped in Graphix
+    // before ratatui sees them. The shared clipper uses a midpoint half-segment and the
+    // nearer endpoint for bounded interpolation; chart segments use pooled storage and
+    // stay separate. Updated both former empty-screen pins:
+    // overflowing_canvas_lines_are_clipped and overflowing_chart_lines_are_clipped both
+    // failed before this fix, and now match explicit visible segments for the
+    // overflowing diagonal, wrong-corner diagonal and full-width horizontal line. cargo
+    // test -p graphix-package-tui --offline overflowing_: 3 passed; cargo test -p
+    // graphix-package-tui --offline clip::tests: 2 passed (reversed endpoints,
+    // horizontal/vertical/sloped segments, outside/nonfinite cases). Added the
+    // ratatui/line-clipping UPSTREAM.md entry and book text. Full TUI suite is running;
+    // socket-dependent browser/examples remain subject to the sandbox restriction.
     fn finite(&self) -> bool {
         let all = |cs: &[f64]| cs.iter().all(|c| c.is_finite());
         match self {
-            ShapeV::Line(CanvasLineV(l)) => {
-                all(&[l.x1, l.y1, l.x2, l.y2, l.x2 - l.x1, l.y2 - l.y1])
-            }
+            ShapeV::Line(CanvasLineV(l)) => all(&[l.x1, l.y1, l.x2, l.y2]),
             ShapeV::Circle(CanvasCircleV(c)) => all(&[
                 c.x,
                 c.y,
@@ -162,10 +173,17 @@ impl ShapeV {
         }
     }
 
-    fn draw(&self, ctx: &mut CanvasContext) {
+    fn draw(&self, ctx: &mut CanvasContext, x: [f64; 2], y: [f64; 2]) {
         match self {
             _ if !self.finite() => {}
-            ShapeV::Line(s) => ctx.draw(&s.0),
+            ShapeV::Line(s) => {
+                let l = &s.0;
+                if let Some([(x1, y1), (x2, y2)]) =
+                    clip_line((l.x1, l.y1), (l.x2, l.y2), x, y)
+                {
+                    ctx.draw(&Line { x1, y1, x2, y2, color: l.color });
+                }
+            }
             ShapeV::Circle(s) => ctx.draw(&s.0),
             ShapeV::Rectangle(s) => ctx.draw(&s.0),
             ShapeV::Points(s) => {
@@ -246,7 +264,7 @@ impl<X: GXExt> TuiWidget for CanvasW<X> {
         let shapes = &self.shapes;
         canvas = canvas.paint(|ctx| {
             for shape in shapes.iter().filter_map(|(_, s)| s.t.as_ref()) {
-                shape.draw(ctx);
+                shape.draw(ctx, bounds(p.x_bounds.t), bounds(p.y_bounds.t));
             }
         });
         frame.render_widget(canvas, rect);

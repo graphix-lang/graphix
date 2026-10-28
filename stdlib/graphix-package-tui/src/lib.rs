@@ -81,6 +81,7 @@ mod block;
 mod calendar;
 mod canvas;
 mod chart;
+mod clip;
 mod gauge;
 mod input_handler;
 mod layout;

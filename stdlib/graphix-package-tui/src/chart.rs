@@ -1,14 +1,15 @@
-use super::tag_newtype;
 use super::{
     AlignmentV, BoundsV, LineV, MarkerV, PointV, StyleV, TuiW, TuiWidget,
     into_borrowed_line_within, layout::ConstraintV, reconcile,
 };
+use super::{clip::clip_line, tag_newtype};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
+use poolshark::local::LPooled;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -35,6 +36,7 @@ tag_newtype!(#[derive(Clone, Copy)] LegendPositionV(LegendPosition), "legend pos
 #[derive(Clone)]
 struct AxisV {
     axis: Axis<'static>,
+    bounds: [f64; 2],
     labels: Vec<LineV>,
     title: Option<LineV>,
 }
@@ -51,14 +53,15 @@ impl FromValue for AxisV {
             title: Option<LineV>,
         }
         let Fields { bounds, labels, labels_alignment, style, title } = v.cast_to()?;
-        let mut axis = Axis::default().bounds([bounds.min, bounds.max]);
+        let bounds = [bounds.min, bounds.max];
+        let mut axis = Axis::default();
         if let Some(al) = labels_alignment {
             axis = axis.labels_alignment(al.0);
         }
         if let Some(st) = style {
             axis = axis.style(st.0);
         }
-        Ok(Self { axis, labels: labels.unwrap_or_default(), title })
+        Ok(Self { axis, bounds, labels: labels.unwrap_or_default(), title })
     }
 }
 
@@ -73,7 +76,7 @@ impl AxisV {
                 into_borrowed_line_within(&self.labels[index].0, width)
             })
             .collect::<Vec<_>>();
-        let axis = self.axis.clone().labels(labels);
+        let axis = self.axis.clone().bounds(self.bounds).labels(labels);
         match &self.title {
             Some(LineV(t)) => axis.title(into_borrowed_line_within(t, width)),
             None => axis,
@@ -137,27 +140,24 @@ impl<X: GXExt> DatasetW<X> {
         Ok(())
     }
 
-    /// The datasets this series draws as: one, or for a line one per
-    /// segment between its breaks, the first carrying the name. A line
-    /// breaks before each point it cannot be joined to from the one before
-    /// (their difference overflows). The name is cut to `width`.
-    fn build(&self, width: u16) -> impl Iterator<Item = Dataset<'_>> {
-        let connected =
-            matches!(self.p.graph_type.t.flatten(), Some(GraphTypeV(GraphType::Line)));
-        let joined: &[(f64, f64)] = if connected { &self.data } else { &[] };
-        let breaks = joined
-            .windows(2)
-            .enumerate()
-            .filter(|(_, p)| {
-                !(p[1].0 - p[0].0).is_finite() || !(p[1].1 - p[0].1).is_finite()
-            })
-            .map(|(i, _)| i + 1);
-        let starts = std::iter::once(0).chain(breaks.clone());
-        let ends = breaks.chain(std::iter::once(self.data.len()));
-        starts
-            .zip(ends)
-            .enumerate()
-            .map(move |(i, (s, e))| self.segment(&self.data[s..e], i == 0, width))
+    fn clipped(&self, x: [f64; 2], y: [f64; 2]) -> LPooled<Vec<[(f64, f64); 2]>> {
+        if !matches!(self.p.graph_type.t.flatten(), Some(GraphTypeV(GraphType::Line))) {
+            return LPooled::take();
+        }
+        self.data.windows(2).filter_map(|p| clip_line(p[0], p[1], x, y)).collect()
+    }
+
+    fn build<'a>(
+        &'a self,
+        width: u16,
+        clipped: &'a [[(f64, f64); 2]],
+    ) -> impl Iterator<Item = Dataset<'a>> {
+        let mut points = self.segment(&self.data, true, width);
+        if matches!(self.p.graph_type.t.flatten(), Some(GraphTypeV(GraphType::Line))) {
+            points = points.graph_type(GraphType::Scatter);
+        }
+        std::iter::once(points)
+            .chain(clipped.iter().map(move |pair| self.segment(pair, false, width)))
     }
 
     fn segment<'a>(
@@ -239,8 +239,20 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         let p = &self.p;
         // the legend adds its border to its widest name
         let text_room = rect.width.saturating_sub(2);
+        let bounds = |axis: &Option<Option<AxisV>>| {
+            axis.as_ref().and_then(|a| a.as_ref()).map_or([0.0, 0.0], |a| a.bounds)
+        };
+        let clipped: LPooled<Vec<_>> = self
+            .datasets
+            .iter()
+            .map(|(_, d)| d.clipped(bounds(&p.x_axis.t), bounds(&p.y_axis.t)))
+            .collect();
         let mut chart = Chart::new(
-            self.datasets.iter().flat_map(|(_, d)| d.build(text_room)).collect(),
+            self.datasets
+                .iter()
+                .zip(clipped.iter())
+                .flat_map(|((_, d), points)| d.build(text_room, points))
+                .collect(),
         );
         if let Some(Some(h)) = &p.hidden_legend_constraints.t {
             chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
@@ -309,7 +321,7 @@ mod tests {
         labels[0] = LineV(Line::from("f"));
         labels[65_537] = LineV(Line::from("z"));
         let axis =
-            AxisV { axis: Axis::default().bounds([0.0, 1.0]), labels, title: None };
+            AxisV { axis: Axis::default(), bounds: [0.0, 1.0], labels, title: None };
         let rect = Rect::new(0, 0, 80, 10);
         let mut buffer = Buffer::empty(rect);
         Chart::default()
