@@ -377,9 +377,40 @@ async fn refused_fences_need_a_transcript() -> Result<()> {
     Ok(())
 }
 
+/// Why the page's claim about `f` is false, if it is false: the fence
+/// must hold what its tag says, and a `refused` fence must show which
+/// refusal.
+async fn fence_failure(f: &Fence) -> Option<String> {
+    let failed = match Claim::of(&f.tag) {
+        Claim::Nothing => return None,
+        Claim::Sig => parser::parse_sig(Origin::unspecified(&f.body)).err(),
+        Claim::Fragment => parser::parse(Origin::unspecified(&f.body)).err(),
+        Claim::ReplSetup => return None,
+        Claim::Accepted if f.body.contains('〉') => return None,
+        Claim::Accepted => match check(&f.body).await {
+            Ok(r) => r.err(),
+            Err(e) => Some(e),
+        },
+        Claim::Refused => match check(&f.body).await {
+            Ok(Ok(())) => Some(anyhow!("tagged refused, but the check accepts it")),
+            Ok(Err(e)) => match f.shown.as_ref() {
+                None => Some(anyhow!(
+                    "tagged refused with no error transcript: the check refuses it as {e:#}"
+                )),
+                Some(shown) if !format!("{e:#}").contains(shown.as_str()) => {
+                    Some(anyhow!("the page shows `{shown}`, the check says {e:#}"))
+                }
+                Some(_) => None,
+            },
+            Err(e) => Some(e),
+        },
+    };
+    failed.map(|e| format!("{}: {e:#}", f.at))
+}
+
 /// Every ```graphix fence in the book holds what its tag claims
 /// ([`Claim`]); an `{{#include}}` is checked where the file lives.
-// CR claude for claude: [test-gap/low] This gate only parses untagged fences and REPL
+// XCR claude for claude: [test-gap/low] This gate only parses untagged fences and REPL
 // inputs. A `refused` fence passes on any refusal, and transcript output is never
 // compared, so stale type readouts and stale coverage rules in the book pass it. 45 of
 // the 114 untagged fences in core/, functions/ and the top-level pages fail --check
@@ -418,39 +449,28 @@ async fn refused_fences_need_a_transcript() -> Result<()> {
 // edit. The older CR's separate issue remains: a ,refused fence without an error
 // transcript still accepts any refusal. Leaving the CR open for that remaining policy;
 // no image bytes changed.
-/// Why the page's claim about `f` is false, if it is false: the fence
-/// must hold what its tag says, and a `refused` fence must show which
-/// refusal.
-async fn fence_failure(f: &Fence) -> Option<String> {
-    let failed = match Claim::of(&f.tag) {
-        Claim::Nothing => return None,
-        Claim::Sig => parser::parse_sig(Origin::unspecified(&f.body)).err(),
-        Claim::Fragment => parser::parse(Origin::unspecified(&f.body)).err(),
-        Claim::ReplSetup => return None,
-        Claim::Accepted if f.body.contains('〉') => return None,
-        Claim::Accepted => match check(&f.body).await {
-            Ok(r) => r.err(),
-            Err(e) => Some(e),
-        },
-        Claim::Refused => match check(&f.body).await {
-            Ok(Ok(())) => Some(anyhow!("tagged refused, but the check accepts it")),
-            Ok(Err(e)) => match f.shown.as_ref() {
-                None => Some(anyhow!(
-                    "tagged refused with no error transcript: the check refuses it as {e:#}"
-                )),
-                Some(shown) if !format!("{e:#}").contains(shown.as_str()) => {
-                    Some(anyhow!("the page shows `{shown}`, the check says {e:#}"))
-                }
-                Some(_) => None,
-            },
-            Err(e) => Some(e),
-        },
-    };
-    failed.map(|e| format!("{}: {e:#}", f.at))
-}
-
-/// Every ```graphix fence in the book holds what its tag claims
-/// ([`Claim`]); an `{{#include}}` is checked where the file lives.
+// 2026-10-28 qwen: The remaining policy is now enforced: a graphix,refused fence with
+// no error transcript after it fails the book gate. fence_failure (extracted from
+// book_fences_check, which now maps fences through it) reports "tagged refused with no
+// error transcript: the check refuses it as .." when a refused fence's shown is None,
+// so a fence can no longer pass on any refusal at all; the transcript's message is
+// still compared with shown_error as before. The scan is likewise extracted as
+// page_fences so a page's text can be checked without the whole book. New pin
+// graphix-shell/tests/examples_compile::refused_fences_need_a_transcript, next to
+// transcript_type_readouts_are_checked: a refused fence with no transcript is
+// reported, the same page with the check's own message as the transcript's last line
+// passes, and a transcript naming a different message is still reported as stale.
+// Observed before the enforcement: the pin failed at examples_compile.rs:359 ("a
+// refused fence with no error transcript is reported") because fence_failure returned
+// None for that fence. book_fences_check then reported exactly three fences that had
+// no transcript — core/block.md:11, core/let_binds.md:6 and core/let_binds.md:27 — and
+// each now shows its refusal, taken from graphix --check of the fence's program (x not
+// defined at block.md line 8 and let_binds line 2, and type mismatch string does not
+// contain [i64, null] at let_binds line 4). Nothing under docs/ was touched. cargo
+// test -p graphix-shell --offline --test examples_compile is 4 passed, 0 failed. With
+// the transcript rule in place nothing this CR describes remains: untagged fences are
+// checked as scripts, ,fragment and ,sig cover what cannot be, REPL -: readouts are
+// compared, and a refused fence must show which refusal. Commit 82b08b4.
 #[tokio::test(flavor = "multi_thread")]
 async fn book_fences_check() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../book/src");
