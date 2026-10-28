@@ -406,7 +406,8 @@ struct Callback {
     share: Option<SlotShare>,
     /// The argument the callback was at the call, once a check saw it.
     arg: Option<Arc<Expr>>,
-    slot_spec: OnceLock<genn::CallSpec>,
+    /// Synthetic slot call expressions, indexed by whether the callee is resolved.
+    slot_spec: [OnceLock<genn::CallSpec>; 2],
 }
 
 impl Callback {
@@ -447,7 +448,7 @@ impl Callback {
             top_id,
             share: None,
             arg: None,
-            slot_spec: OnceLock::new(),
+            slot_spec: Default::default(),
         };
         Ok((name(source, "source")?, cb))
     }
@@ -480,7 +481,7 @@ impl Callback {
             _ => Some(SlotShare::image_decode(ctx, buf)?),
         };
         let arg = Option::<Expr>::decode(buf)?.map(Arc::new);
-        Ok(Self { scope, id, typ, top_id, share, arg, slot_spec: OnceLock::new() })
+        Ok(Self { scope, id, typ, top_id, share, arg, slot_spec: Default::default() })
     }
 
     fn see_arg<R: Rt>(&mut self, ctx: &CompileCtx<R>) {
@@ -495,17 +496,13 @@ impl Callback {
         &self,
         ctx: &mut CompileCtx<R>,
         index: usize,
+        name: &str,
         typ: &Type,
     ) -> (BindId, Node<R>) {
         let id = BindId::new();
-        let spec = match self.slot_spec.get() {
+        let spec = match self.slot_spec.iter().find_map(OnceLock::get) {
             Some(spec) => spec.args[index].clone(),
             None => {
-                let name = if index == 0 && self.typ.args.len() == 2 {
-                    "collection_acc"
-                } else {
-                    "collection_element"
-                };
                 let expr = match &self.arg {
                     Some(arg) => genn::name_spec(name, arg.pos, arg.ori.clone()),
                     None => genn::name_spec(
@@ -523,7 +520,7 @@ impl Callback {
     /// The callback parameter as written, the source a slot's call of a
     /// resolved definition reports.
     fn spec<R: Rt>(&self, ctx: &CompileCtx<R>) -> Arc<Expr> {
-        if let Some(spec) = self.slot_spec.get() {
+        if let Some(spec) = self.slot_spec[1].get() {
             return spec.function().clone();
         }
         match ctx.env.by_id.get(&self.id) {
@@ -592,7 +589,7 @@ impl Callback {
                     args,
                     typ,
                     *top_id,
-                    &self.slot_spec,
+                    &self.slot_spec[usize::from(resolved)],
                 )
                 .map(|mut call| {
                     if resolved
@@ -816,51 +813,18 @@ impl<R: Rt> Slot<R> {
     // 2026-10-27 claude: Under the D1 ruling, slots and activations sharing their
     // prototype's graph (lever 2) is not taken now; lever 1 (smaller instances) applies
     // to slots as to activations and is next under x-fix-nodes-03.
-    // 2026-10-27 codex: Measured before changes with the same offline dev graphix and
-    // wait4 method as recursion_memory, --no-cache --no-fusion --no-netidx,
-    // array::len(array::init(n, |i| i)) checked before exit, n=1/5000/20000:
-    // 65540/90204/155948 KiB, slopes 5052/4488 B per slot. Throwaway activation_sizes
-    // test: CallSite 600, GXLambda 208, Ref 88, Constant 80, Type 40, FnType 168, TCell
-    // 128, TVarInner 48 bytes. Each identity slot has element, staged argument and
-    // callback formal ids (three runtime variable channels); the synthetic element
-    // spec, function spec, call spec and argument specs are rebuilt for every slot.
-    // genn::apply also instantiates the callback signature per slot, while the node
-    // graph and its state remain per slot. Largest safe slot-specific candidate after
-    // the common activation work: share immutable synthetic specs among sibling slots,
-    // with each slot retaining its own ids, signatures, nodes and runtime state. No
-    // prototype graph sharing.
-    // 2026-10-27 codex: Fixed under D1 lever 1: Callback lazily keeps one CallSpec
-    // (call/function/argument expressions), shared by sibling slots and their Ref nodes
-    // through genn::apply_slot. Every slot still owns its nodes, ids, signature
-    // instantiation, analysis and runtime state; no prototype graph sharing. The
-    // metadata cache is rebuilt after image restore, leaving the image encoding
-    // unchanged. Pin:
-    // graphix-shell/tests/recursion_memory.rs::collection_slot_memory_is_linear checks
-    // length and both endpoint values at 1/5000/20000 slots, with a 3584 B ceiling.
-    // Same wait4 child probe and --no-cache --no-fusion --no-netidx, GRAPHIX_PAR=off:
-    // baseline 74900/92912/152000 KiB (4033 B/slot over 5000..20000), fixed runs
-    // 3238..3392 B/slot (74368/89936/137368 KiB and 66952/80476/130164 KiB). The
-    // original length-only auto-mode probe measured 4488 before and 3558 after. Both
-    // memory pins failed on the saved baseline; disabling only CallSpec reuse with
-    // activation changes retained also failed the slot pin (3949 B versus its then-3600
-    // ceiling, subsequently tightened to 3584); restoring reuse passed. Initial 3750 B
-    // pin under auto scheduling failed at 4013 B; measured the exact stronger fixture
-    // and pinned serial execution to exclude parallel scheduling cost, which is covered
-    // separately by the four-mode semantic suites. Offline validation: graphix-tests
-    // lang:: 7393 passed, one timing test ignored, all 29 active image tests included;
-    // lib_tests:: 3112 passed; shell recursion_memory, no_subst, shared_bodies passed.
-    // Socket-dependent tests excluded and workspace gate left to coordinator. One
-    // delayed-error timer fixture failed once in the language run and passed in all
-    // four modes plus the whole selected suite on rerun, unchanged. Exact
-    // filters/results: /tmp/graphix-lang-rerun.log and
-    // /tmp/graphix-lib_tests-final.log.
+    // 2026-10-28 codex: Slots share call metadata by resolved/dynamic kind, and callers
+    // name their slot arguments. Serial no-fusion recursion_memory measured 3890 B/slot
+    // before and 3319-3392 after; collection_slot_memory_is_linear checks
+    // length/endpoints with a 3700 B ceiling. Per-slot graphs and state remain
+    // independent.
     fn new(
         ctx: &mut CompileCtx<R>,
         callback: &Callback,
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let (id, element) = callback.slot_arg(ctx, 0, element_type);
+        let (id, element) = callback.slot_arg(ctx, 0, "collection_element", element_type);
         let call = callback.call(ctx, smallvec![element], kind);
         Self { id, call, state: SlotState::Bottom }
     }
@@ -1476,8 +1440,9 @@ impl<R: Rt> FoldSlot<R> {
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let (acc_id, acc) = callback.slot_arg(ctx, 0, acc_type);
-        let (element_id, element) = callback.slot_arg(ctx, 1, element_type);
+        let (acc_id, acc) = callback.slot_arg(ctx, 0, "collection_acc", acc_type);
+        let (element_id, element) =
+            callback.slot_arg(ctx, 1, "collection_element", element_type);
         let call = callback.call(ctx, smallvec![acc, element], kind);
         Self { acc_id, element_id, call, state: SlotState::Bottom }
     }

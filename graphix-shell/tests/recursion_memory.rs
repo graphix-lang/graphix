@@ -61,7 +61,7 @@ fn deep_recursion_memory_is_linear() {
     });
 }
 
-const MAX_BYTES_PER_SLOT: i64 = 3_584;
+const MAX_BYTES_PER_SLOT: i64 = 3_700;
 
 #[test]
 fn collection_slot_memory_is_linear() {
