@@ -218,6 +218,52 @@ impl<R: Rt> ArrayRef<R> {
         // node::pattern::PatternNode and node::lambda::BuiltInLambda have a literal
         // only in their decode, so there is nothing to share there. x-dup-03 stays open
         // for the remaining kinds.
+        // 2026-10-28 qwen: The four kinds this batch named now share one constructor
+        // between creation and image_decode; one commit per file (five commits).
+        // genn::Callback::with(call, function, args) is now the only literal, used by
+        // of_value, through_binding and image_decode. Handler::with(proto, pid, ftyp,
+        // scope, top_id) holds the single literal (pending/running/siblings default
+        // there), called by new and image_decode; its Request sub-struct likewise got
+        // Request::with(call, relay). tui's SuspendEv image_decode now builds through
+        // Default plus attach (the code that produces the cold shape), so the decode
+        // literal is gone and no field list repeats. In core lib.rs:
+        // CachedVals::with(slots) (used by new/from_values/image_decode; as_data keeps
+        // its evaluated through it), CachedArgs::with(woke_pending, cached, t)
+        // (last_result: phantom lives there), OrderChecked::with(inner, check) (decode
+        // order preserved: check still decodes first), Once::with(val),
+        // Counted::with(n), Count::with(count), Range::with(var, args),
+        // PrintCall::with(printer, dest) (both printer! macro paths). Iter, IterQ,
+        // TypedRead, CachedArgsAsync, Filter/Hold/Throttle/Queue already had one
+        // constructor at this base; nothing to change there. Encoded fields and byte
+        // order are unchanged everywhere, so no image format bump. Tests (sandbox
+        // refuses sockets; lists compared before and after): graphix-package-core --lib
+        // 7 passed, 0 failed both runs; graphix-compiler --lib 54 passed, 0 failed both
+        // runs; graphix-package-tui --lib 158 passed, 9 failed both runs with an
+        // identical name list (the pty/browser input_test fixtures and
+        // every_example_renders); graphix-tests --lib lang::image 32 passed, 1 ignored
+        // both runs. No test changed. Final scan of every image_decode body in the tree
+        // (string- and comment-aware, Self resolved to its impl target) finds repeated
+        // literals left only outside this batch's kinds: graphix-compiler node/bind.rs
+        // Place, ByRef, Deref; node/collection.rs Callback, MapQBase, FoldQBase;
+        // node/data.rs Replace; node/error.rs CatchAction; node/lambda.rs
+        // BuiltInLambda, Lambda and DefTable (three literals share discriminants:
+        // Mutex::default(); an earlier note called BuiltInLambda decode-only, but init
+        // builds its literal too); node/pattern.rs PatternNode (the compile path holds
+        // a second literal, correcting an earlier note); node/seq_machine.rs
+        // SeqMachine, SeqCapture; node/traits.rs Trait, Impl; node/mod.rs
+        // ExplicitParens, TypeDef, Block, StringInterpolate, Connect, ConnectDeref,
+        // TypeCast, Never, Any, Sample; node/module.rs the Body::Dynamic variant
+        // literal (decode versus compile); node/callsite.rs the Arg literal in decode
+        // where Arg::new exists, and Callee::Static; fusion/share.rs SharedRegion and
+        // SlotShare in the share-table decode. stdlib: graphix-package-array's
+        // function-builtin wrapper (queue/buf/pred), graphix-package-rand Rand, Pick,
+        // Shuffle, graphix-package-sys io.rs's read wrapper (var/reading/out), core
+        // queuefn.rs QueueState and its wrapper literal, core lib.rs RtVar (new versus
+        // decode; no defaulted runtime field, and the two paths hold CompileCtx and
+        // ExecCtx, so one constructor needs a context change first), graphix-package-db
+        // subscribe.rs DbSubscribe and tree.rs TreeTypes/Database. ImagedRefs in
+        // callsite.rs has a literal only in its decode, so nothing to share there.
+        // x-dup-03 stays open for those.
         Ok(Self::with(spec, typ, etyp, source, i))
     }
 
