@@ -1096,6 +1096,33 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
 }
 
 impl<R: Rt> GXLambda<R> {
+    fn with(
+        id: LambdaId,
+        instance_id: LambdaInstanceId,
+        args: Box<[StructPatternNode]>,
+        body: Node<R>,
+        typ: Arc<FnType>,
+        self_call: Option<SelfCall>,
+        env: Lexical,
+        typing: Typing,
+        charged: Option<usize>,
+    ) -> Self {
+        Self {
+            slept: WakeBit::default(),
+            id,
+            instance_id,
+            args,
+            body,
+            typ,
+            self_call: Mutex::new(self_call),
+            resident: TagValue::phantom(),
+            first_dispatch: true,
+            env,
+            typing,
+            charged,
+        }
+    }
+
     pub(super) fn new(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
@@ -1218,20 +1245,17 @@ impl<R: Rt> GXLambda<R> {
         let instance_id = LambdaInstanceId::new();
         profile::instance(&mut p, instance_id, id, body.spec());
         drop(p);
-        Ok(Self {
-            slept: WakeBit::default(),
+        Ok(Self::with(
             id,
             instance_id,
-            args: Box::from_iter(argpats.drain(..)),
-            typ,
+            Box::from_iter(argpats.drain(..)),
             body,
-            self_call: Mutex::new(None),
-            resident: TagValue::phantom(),
-            first_dispatch: true,
-            env: Lexical { binds, ..ctx.env.lexical() },
+            typ,
+            None,
+            Lexical { binds, ..ctx.env.lexical() },
             typing,
-            charged: crate::stack::activation_born(),
-        })
+            crate::stack::activation_born(),
+        ))
     }
 
     pub(crate) fn image_decode(
@@ -1245,21 +1269,18 @@ impl<R: Rt> GXLambda<R> {
         let body = decode_node(ctx, buf)?;
         let self_call = Option::<SelfCall>::decode(buf)?;
         let env = lexical_decode(buf)?;
-        Ok(Self {
-            slept: WakeBit::default(),
+        // an image holds compile-time instances, which no cycle charged
+        Ok(Self::with(
             id,
             instance_id,
             args,
             body,
             typ,
-            self_call: Mutex::new(self_call),
-            resident: TagValue::phantom(),
-            first_dispatch: true,
+            self_call,
             env,
-            typing: Typing::Restored,
-            // an image holds compile-time instances, which no cycle charged
-            charged: None,
-        })
+            Typing::Restored,
+            None,
+        ))
     }
 }
 
