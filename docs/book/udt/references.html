@@ -259,9 +259,17 @@ let r = &amp;x;
 </code></pre>
 <p>is <code>[true, true, false]</code>. A reference made from a value rather than a
 binding, <code>&amp;mut 0</code>, is its own place, equal only to itself.</p>
+<p>Equality still follows the target when a reference is held under <code>Any</code>,
+including references inside collections and abstract values without an
+<code>Eq</code> implementation. An abstract value's own <code>Eq</code> controls its equality.</p>
 <p>References have no order, so <code>&lt;</code> and the other orderings refuse them,
 and so does anything that orders or hashes values: map keys, <code>min</code>,
-<code>max</code>, the sorts and <code>array::dedup</code>. <code>uniq</code> compares them as <code>==</code> does.</p>
+<code>max</code>, the sorts and <code>array::dedup</code>. This also applies to references hidden
+under <code>Any</code>: the operation logs a failure and produces no value, even for
+a singleton collection. A cast that would create a map with such a key
+returns an error. Other values under <code>Any</code> remain orderable, and an
+abstract value's own <code>Ord</code> controls its ordering.
+<code>uniq</code> compares references as <code>==</code> does.</p>
 <h2 id="referencing-a-name-a-place-or-an-expression"><a class="header" href="#referencing-a-name-a-place-or-an-expression">Referencing a Name, a Place or an Expression</a></h2>
 <p><code>&amp;</code> does different things depending on what follows it.</p>
 <p><code>&amp;v</code>, where <code>v</code> is a binding, is a reference to that binding. Dereferencing it

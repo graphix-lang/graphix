@@ -185,7 +185,9 @@ module.</p>
 <p>A trait can require something of every body of a method by writing
 <code>#[pure]</code> or <code>#[sync]</code> above its <code>val</code>. Each implementation's body, and
 the default, then carries that assertion, and a body that breaks it
-fails the compile:</p>
+fails the build even when no call reaches the method. A dynamic module with
+an invalid implementation fails to load. A function parameter's effects remain
+the caller's to supply, as for an assertion on an ordinary function definition:</p>
 <pre><code class="language-graphix">trait Score {
     #[pure]
     val score: fn(self) -&gt; i64
@@ -351,6 +353,16 @@ Key("Foo") == Key("FOO");
 [Key("a")] == [Key("A")];
 // false: the i64s differ
 (Key("x"), 1) == (Key("X"), 2)
+</code></pre>
+<p><code>array::dedup</code> hashes the values it keeps. An <code>Eq</code> implementation can
+add <code>hash</code>, the part of the value its <code>eq</code> reads, which is what gets
+hashed; two values <code>eq</code> calls equal must give equal parts. Without
+<code>hash</code>, every value of the type hashes alike: the result is the same,
+but a dedup of many distinct values compares each with every other.</p>
+<pre><code class="language-graphix fragment">impl Eq for Key {
+    let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0);
+    let hash = |k| str::to_lower(k.0)
+};
 </code></pre>
 <p>A color that prints as its hex triplet, wherever it appears:</p>
 <pre><code class="language-graphix">type Color = Abstract&lt;{r: i64, g: i64, b: i64}&gt;;

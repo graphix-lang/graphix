@@ -156,6 +156,13 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="str"><a class="header" href="#str">Str</a></h1>
+<p><code>str::parse</code> reads printed values into its annotated type. Inside composites,
+strings escape interpolation brackets and numeric kinds other than <code>i64</code> and
+<code>f64</code> retain their type prefix. Bytes print as <code>bytes:</code> literals.</p>
+<p>The data reader accepts printed UTC datetimes, durations in every printed unit
+(<code>ns</code>, <code>µs</code>, <code>ms</code>, <code>s</code>, <code>m</code>, <code>h</code>, <code>d</code>), large finite floats printed as integers,
+and <code>NaN</code>, <code>inf</code>, and <code>-inf</code>. These printed forms do not extend program syntax.
+Diagnostic strings inside errors retain their readable, unescaped brackets.</p>
 <pre><code class="language-graphix">type Escape = {
     escape: string,
     escape_char: string,
@@ -273,7 +280,9 @@ val sub: fn(#start:i64, #len:i64, s: string) -&gt; Result&lt;string, `SubError(s
 /// text as a literal (a number, string, bool, null, datetime, duration or
 /// bytes, or an array, list, map, tuple, struct or variant of literals)
 /// cast to the type, or, where the text is no literal, the text cast to
-/// the type, so a number or an RFC3339 datetime reads bare.
+/// the type, so a number or an RFC3339 datetime reads bare. Printed UTC
+/// datetimes, durations in every printed unit and NaN/inf/-inf also read
+/// here, including inside composites. These forms do not extend source syntax.
 val parse: fn&lt;'b: Concrete&gt;(s: string) -&gt; Result&lt;'b, `ParseError(string)&gt;;
 </code></pre>
 

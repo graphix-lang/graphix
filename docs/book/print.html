@@ -1137,6 +1137,9 @@ using <code>e.0</code> e.g.,</p>
 </code></pre>
 <p>More information about dealing with errors is available in the section on error
 handling.</p>
+<p>A decimal's plain display, including scalar interpolation and <code>cast&lt;string&gt;</code>,
+has no trailing decimal point when its scale is zero. Inside a composite it
+prints as a typed decimal literal so <code>str::parse</code> retains its type and value.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="reading-type-signatures"><a class="header" href="#reading-type-signatures">Reading Type Signatures</a></h1>
 <p>Throughout this book and in the standard library documentation, you'll encounter function type signatures. This guide will help you understand what they mean. Don't try to memorize everything here - just use this as a reference when you encounter unfamiliar notation.</p>
 <h2 id="basic-function-signatures"><a class="header" href="#basic-function-signatures">Basic Function Signatures</a></h2>
@@ -3871,9 +3874,17 @@ let r = &amp;x;
 </code></pre>
 <p>is <code>[true, true, false]</code>. A reference made from a value rather than a
 binding, <code>&amp;mut 0</code>, is its own place, equal only to itself.</p>
+<p>Equality still follows the target when a reference is held under <code>Any</code>,
+including references inside collections and abstract values without an
+<code>Eq</code> implementation. An abstract value's own <code>Eq</code> controls its equality.</p>
 <p>References have no order, so <code>&lt;</code> and the other orderings refuse them,
 and so does anything that orders or hashes values: map keys, <code>min</code>,
-<code>max</code>, the sorts and <code>array::dedup</code>. <code>uniq</code> compares them as <code>==</code> does.</p>
+<code>max</code>, the sorts and <code>array::dedup</code>. This also applies to references hidden
+under <code>Any</code>: the operation logs a failure and produces no value, even for
+a singleton collection. A cast that would create a map with such a key
+returns an error. Other values under <code>Any</code> remain orderable, and an
+abstract value's own <code>Ord</code> controls its ordering.
+<code>uniq</code> compares references as <code>==</code> does.</p>
 <h2 id="referencing-a-name-a-place-or-an-expression"><a class="header" href="#referencing-a-name-a-place-or-an-expression">Referencing a Name, a Place or an Expression</a></h2>
 <p><code>&amp;</code> does different things depending on what follows it.</p>
 <p><code>&amp;v</code>, where <code>v</code> is a binding, is a reference to that binding. Dereferencing it
@@ -3966,7 +3977,9 @@ module.</p>
 <p>A trait can require something of every body of a method by writing
 <code>#[pure]</code> or <code>#[sync]</code> above its <code>val</code>. Each implementation's body, and
 the default, then carries that assertion, and a body that breaks it
-fails the compile:</p>
+fails the build even when no call reaches the method. A dynamic module with
+an invalid implementation fails to load. A function parameter's effects remain
+the caller's to supply, as for an assertion on an ordinary function definition:</p>
 <pre><code class="language-graphix">trait Score {
     #[pure]
     val score: fn(self) -&gt; i64
@@ -4132,6 +4145,16 @@ Key("Foo") == Key("FOO");
 [Key("a")] == [Key("A")];
 // false: the i64s differ
 (Key("x"), 1) == (Key("X"), 2)
+</code></pre>
+<p><code>array::dedup</code> hashes the values it keeps. An <code>Eq</code> implementation can
+add <code>hash</code>, the part of the value its <code>eq</code> reads, which is what gets
+hashed; two values <code>eq</code> calls equal must give equal parts. Without
+<code>hash</code>, every value of the type hashes alike: the result is the same,
+but a dedup of many distinct values compares each with every other.</p>
+<pre><code class="language-graphix fragment">impl Eq for Key {
+    let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0);
+    let hash = |k| str::to_lower(k.0)
+};
 </code></pre>
 <p>A color that prints as its hex triplet, wherever it appears:</p>
 <pre><code class="language-graphix">type Color = Abstract&lt;{r: i64, g: i64, b: i64}&gt;;
@@ -5164,6 +5187,9 @@ compiles no native code and analyzes no instance, so <code>#[native]</code>,
 verified by a run
 (<code>--expand</code> builds, to show each instance's steps). Files parse in
 parallel, so a large module split into several files checks faster.</p>
+<p>An expression attribute such as <code>#[native]</code> inside a function body is checked
+when a call builds that body. Defining an uncalled function is valid, including
+in the REPL; a later or dynamic call checks the attribute for its instance.</p>
 <h2 id="package-management"><a class="header" href="#package-management">Package Management</a></h2>
 <p>The shell includes a built-in package manager for extending Graphix with
 additional functionality. Use <code>graphix package</code> to search for, install, and
@@ -5565,12 +5591,20 @@ type Ordering = [`Less, `Equal, `Greater];
 /// Equality. `==` and `!=` consult the implementation of the operand
 /// type — and of every type nested inside it — falling back to the
 /// structural comparison of values where there is none. Outside core
-/// only an abstract type may implement it. The method runs inside the
-/// comparison, as often as the comparison needs it, so it is `#[pure]`.
+/// only an abstract type may implement it. The methods run inside the
+/// comparison, as often as the comparison needs them, so they are
+/// `#[pure]`.
 trait Eq {
     /// true if the two values are equal
     #[pure]
-    val eq: fn(self, other: self) -&gt; bool
+    val eq: fn(self, other: self) -&gt; bool;
+    /// the part of `self` that `eq` reads, which the runtime hashes
+    /// (`array::dedup`): two values `eq` calls equal must give equal
+    /// parts. An implementation that leaves it out hashes by its
+    /// type alone, which is correct but makes `dedup` compare each value
+    /// with every other. The runtime calls it, a program never does.
+    #[pure]
+    val hash: fn(self) -&gt; Any
 };
 
 /// Ordering. `&lt;`, `&gt;`, `&lt;=` and `&gt;=` consult the implementation the
@@ -6351,6 +6385,13 @@ val iter: fn(m: Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 val iterq: fn(#clock: Any, m: Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="str"><a class="header" href="#str">Str</a></h1>
+<p><code>str::parse</code> reads printed values into its annotated type. Inside composites,
+strings escape interpolation brackets and numeric kinds other than <code>i64</code> and
+<code>f64</code> retain their type prefix. Bytes print as <code>bytes:</code> literals.</p>
+<p>The data reader accepts printed UTC datetimes, durations in every printed unit
+(<code>ns</code>, <code>µs</code>, <code>ms</code>, <code>s</code>, <code>m</code>, <code>h</code>, <code>d</code>), large finite floats printed as integers,
+and <code>NaN</code>, <code>inf</code>, and <code>-inf</code>. These printed forms do not extend program syntax.
+Diagnostic strings inside errors retain their readable, unescaped brackets.</p>
 <pre><code class="language-graphix">type Escape = {
     escape: string,
     escape_char: string,
@@ -6468,7 +6509,9 @@ val sub: fn(#start:i64, #len:i64, s: string) -&gt; Result&lt;string, `SubError(s
 /// text as a literal (a number, string, bool, null, datetime, duration or
 /// bytes, or an array, list, map, tuple, struct or variant of literals)
 /// cast to the type, or, where the text is no literal, the text cast to
-/// the type, so a number or an RFC3339 datetime reads bare.
+/// the type, so a number or an RFC3339 datetime reads bare. Printed UTC
+/// datetimes, durations in every printed unit and NaN/inf/-inf also read
+/// here, including inside composites. These forms do not extend source syntax.
 val parse: fn&lt;'b: Concrete&gt;(s: string) -&gt; Result&lt;'b, `ParseError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="re"><a class="header" href="#re">Re</a></h1>
@@ -7604,7 +7647,8 @@ inferred from the type annotation at the call site.</p>
 val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`JsonErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a JSON string, as its type says: a struct or a
-/// map is an object, an array, tuple or list an array.
+/// map with scalar keys is an object; another map is an array of key/value
+/// pairs. An array, tuple or list is an array.
 val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
 /// Serialize a value to JSON bytes.
@@ -7640,14 +7684,16 @@ integer or a <code>decimal</code>: <code>-9223372036854775809</code> read as an 
 9007199254740993, not the float nearest it. A float position reads the
 float nearest the text, and a position that holds neither, an <code>Any</code> or a
 <code>string</code> say, reads every number that is not an integer as that <code>f64</code>,
-whatever the rest of the target holds.</p>
+whatever the rest of the target holds. Excess decimal fractional precision
+rounds to the nearest representable decimal without passing through <code>f64</code>.
+The same rounding applies to <code>cast&lt;decimal&gt;</code> and <code>str::parse</code>.</p>
 <p>The reader keeps a number's text by way of serde_json's
 <code>arbitrary_precision</code>, which passes a number as an object of one key,
 <code>$serde_json::private::Number</code>. An object whose first key is that one
 reads as the number its value names.</p>
 <h2 id="type-directed-serialization"><a class="header" href="#type-directed-serialization">Type-directed serialization</a></h2>
 <p><code>json::write_str</code> and <code>json::write_bytes</code> write a value as its type at
-the call site says: a struct or a <code>Map</code> is an object; an array, a tuple
+the call site says: a struct is an object; an array, a tuple
 or a <code>List</code> is an array (a <code>List</code> flat); a variant with a payload is an
 array of its tag and payload. An <code>Array&lt;(string, T)&gt;</code> is an array of
 pairs whatever order its keys are in. Only a value whose type says
@@ -7659,20 +7705,35 @@ json::write_str(pairs)$;
 // {"a":1,"b":2}
 json::write_str({a: 1, b: 2})$
 </code></pre>
+<p>A map whose keys all write as strings, numbers, booleans, datetimes, durations
+or bare variant tags is an object. If any key has another form, the whole map
+is an array of <code>[key, value]</code> pairs. The key keeps its data structure, so a typed
+read can reconstruct tuple, struct, array, list and payload-variant keys, as
+well as null and bytes keys. For example, <code>{(1, 2) =&gt; 3}</code> writes as
+<code>[[[1,2],3]]</code>.</p>
+<p>A writer refuses a map whose distinct keys serialize as the same data,
+including when the map uses the pairs representation.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="toml"><a class="header" href="#toml">toml</a></h1>
 <p>The <code>toml</code> module provides TOML serialization and deserialization.
 Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization, and
 the writers write a value as its type says, as <code>json::write_str</code> does: a
-document is a struct or a <code>Map</code>, and an <code>Array&lt;(string, T)&gt;</code> is refused.
+document is a struct or a map with scalar keys; an <code>Array&lt;(string, T)&gt;</code>
+is refused as a document.
 As with json, only a value whose type says nothing (<code>Any</code>) is written by
 its contents, where an array of <code>(string, _)</code> pairs in key order is a
 table.</p>
+<p>Maps follow JSON's key rule: scalar keys form a table, while a map holding
+a composite or bytes key is an array of <code>[key, value]</code> pairs. Such a map must
+be inside a document field because TOML requires a table at the root. TOML
+cannot represent a null key. Bytes write as an array of byte integers.</p>
 <pre><code class="language-graphix">/// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
 val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`TomlErr(string), `InvalidCast(string)]&gt;;
 
-/// Serialize a value to a TOML string.
+/// Serialize a value to a TOML string. Maps with scalar keys are tables;
+/// other maps are arrays of key/value pairs and require a containing table.
+/// Null map keys cannot be represented.
 val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `TomlErr(string)&gt;;
 
 /// Serialize a value to TOML bytes.
@@ -7691,6 +7752,8 @@ type Config = {
 let cfg: Config = toml::read(sys::fs::read_all("config.toml")?)?;
 let out = toml::write_str(#pretty: true, cfg)?;
 </code></pre>
+<p>A writer refuses a map whose distinct keys serialize as the same data,
+including when the map uses the pairs representation.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="pack"><a class="header" href="#pack">pack</a></h1>
 <p>The <code>pack</code> module provides native binary serialization using the netidx
 Pack format. Like <code>json::read</code>, <code>pack::read</code> uses type-directed
@@ -7700,14 +7763,26 @@ deserialization.</p>
 /// To decode from a stream, read it first — `pack::read(Read::read_all(f)?)`.
 val read: fn&lt;'b: Concrete&gt;(input: bytes) -&gt; Result&lt;'b, [`PackErr(string), `InvalidCast(string)]&gt;;
 
-/// Encode a value to packed binary bytes.
+/// Encode a value to packed binary bytes, preserving tuple, struct,
+/// variant and list kinds. Abstract values write through their Cast impl.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, pack::write_bytes(v)?)`.
 val write_bytes: fn&lt;'a: Data&gt;(value: 'a) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
 </code></pre>
 <p>The Pack format is a compact binary encoding native to netidx. It is
 more space-efficient than JSON or TOML and supports the full range of
-Graphix types including bytes, datetime, and duration.</p>
+data types including bytes, datetime, and duration. Tuple, struct, variant
+and list kinds are preserved, so a value in a union reads back as the same
+composite kind. This preserves structural kinds, not abstract identity:
+abstract values are written as their <code>Cast</code> data. For example, with
+<code>type B = Abstract&lt;i64&gt;</code> and the default <code>Cast</code> implementation, a
+<code>[B, i64]</code> holding <code>B(1)</code> reads back as <code>i64</code>, and an
+<code>[Array&lt;B&gt;, Array&lt;i64&gt;]</code> holding <code>[B(1), B(2)]</code> reads back as
+<code>Array&lt;i64&gt;</code>. The array kind survives; the abstract element type does
+not. Use distinct variant tags when a union must retain that distinction.</p>
+<p>The reader also accepts older unmarked data. A kind erased by an older
+writer cannot be recovered from an ambiguous union target; rewrite such
+values from a source that still knows their original kind.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="xls"><a class="header" href="#xls">xls</a></h1>
 <p>The <code>xls</code> module reads spreadsheet files in xlsx, xls, ods, and xlsb
 formats (via calamine). A sheet is returned as a 2D array of <code>Cell</code>s, so
@@ -7804,7 +7879,9 @@ println("[users] [raw]")
 <div style="break-before: page; page-break-before: always;"></div><h1 id="db"><a class="header" href="#db">db</a></h1>
 <p>The <code>db</code> module provides an embedded key-value database (backed by sled)
 with ACID transactions, typed trees, cursors, and reactive subscriptions.
-A transaction's commit is on disk when it answers.</p>
+A transaction's commit is on disk when it answers. Database files persist
+across program runs and Graphix builds; upgrading the executable does not
+rewrite stored records.</p>
 <p>Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, <code>db::tree</code> returns a <code>DbErr</code>.</p>
 <p>A tree orders and matches its keys by their data. For the primitive and
@@ -7812,6 +7889,20 @@ structural types that is the language's own order; a key of an abstract
 type is stored as its <code>Cast</code> data, so a custom <code>Eq</code> or <code>Ord</code> on it does not
 reach the tree, and its <code>to_value</code> decides the stored order.</p>
 <h2 id="interface-2"><a class="header" href="#interface-2">Interface</a></h2>
+<p>Stored values preserve tuple, struct, variant and list kinds, including in
+unions. This preserves structural kinds, not abstract identity: abstract
+values are stored as their <code>Cast</code> data. With <code>type B = Abstract&lt;i64&gt;</code> and
+the default <code>Cast</code> implementation, a <code>[B, i64]</code> holding <code>B(1)</code> reads back
+as <code>i64</code>, and an <code>[Array&lt;B&gt;, Array&lt;i64&gt;]</code> holding <code>[B(1), B(2)]</code> reads
+back as <code>Array&lt;i64&gt;</code>. Use distinct variant tags if those union members
+must remain distinguishable after a read.</p>
+<p>Older unmarked records remain readable when their tree metadata is
+compatible, but an erased kind cannot be recovered at an ambiguous union.
+In particular, a tuple written by a build that erased composite kinds
+into a <code>[(i64, i64), Array&lt;i64&gt;]</code> value reads back as the array member.
+Reopening the database with the same declared types does not detect this
+change of member. Rewrite such records from a source that still knows
+their original kind; upgrading Graphix alone cannot recover it.</p>
 <pre><code class="language-graphix">/// An opaque handle to an embedded database.
 type Db;
 

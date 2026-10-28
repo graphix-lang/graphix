@@ -159,16 +159,23 @@
 <p>The <code>toml</code> module provides TOML serialization and deserialization.
 Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization, and
 the writers write a value as its type says, as <code>json::write_str</code> does: a
-document is a struct or a <code>Map</code>, and an <code>Array&lt;(string, T)&gt;</code> is refused.
+document is a struct or a map with scalar keys; an <code>Array&lt;(string, T)&gt;</code>
+is refused as a document.
 As with json, only a value whose type says nothing (<code>Any</code>) is written by
 its contents, where an array of <code>(string, _)</code> pairs in key order is a
 table.</p>
+<p>Maps follow JSON's key rule: scalar keys form a table, while a map holding
+a composite or bytes key is an array of <code>[key, value]</code> pairs. Such a map must
+be inside a document field because TOML requires a table at the root. TOML
+cannot represent a null key. Bytes write as an array of byte integers.</p>
 <pre><code class="language-graphix">/// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
 val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`TomlErr(string), `InvalidCast(string)]&gt;;
 
-/// Serialize a value to a TOML string.
+/// Serialize a value to a TOML string. Maps with scalar keys are tables;
+/// other maps are arrays of key/value pairs and require a containing table.
+/// Null map keys cannot be represented.
 val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `TomlErr(string)&gt;;
 
 /// Serialize a value to TOML bytes.
@@ -187,6 +194,8 @@ type Config = {
 let cfg: Config = toml::read(sys::fs::read_all("config.toml")?)?;
 let out = toml::write_str(#pretty: true, cfg)?;
 </code></pre>
+<p>A writer refuses a map whose distinct keys serialize as the same data,
+including when the map uses the pairs representation.</p>
 
                     </main>
 

@@ -168,7 +168,8 @@ inferred from the type annotation at the call site.</p>
 val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`JsonErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a JSON string, as its type says: a struct or a
-/// map is an object, an array, tuple or list an array.
+/// map with scalar keys is an object; another map is an array of key/value
+/// pairs. An array, tuple or list is an array.
 val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
 /// Serialize a value to JSON bytes.
@@ -204,14 +205,16 @@ integer or a <code>decimal</code>: <code>-9223372036854775809</code> read as an 
 9007199254740993, not the float nearest it. A float position reads the
 float nearest the text, and a position that holds neither, an <code>Any</code> or a
 <code>string</code> say, reads every number that is not an integer as that <code>f64</code>,
-whatever the rest of the target holds.</p>
+whatever the rest of the target holds. Excess decimal fractional precision
+rounds to the nearest representable decimal without passing through <code>f64</code>.
+The same rounding applies to <code>cast&lt;decimal&gt;</code> and <code>str::parse</code>.</p>
 <p>The reader keeps a number's text by way of serde_json's
 <code>arbitrary_precision</code>, which passes a number as an object of one key,
 <code>$serde_json::private::Number</code>. An object whose first key is that one
 reads as the number its value names.</p>
 <h2 id="type-directed-serialization"><a class="header" href="#type-directed-serialization">Type-directed serialization</a></h2>
 <p><code>json::write_str</code> and <code>json::write_bytes</code> write a value as its type at
-the call site says: a struct or a <code>Map</code> is an object; an array, a tuple
+the call site says: a struct is an object; an array, a tuple
 or a <code>List</code> is an array (a <code>List</code> flat); a variant with a payload is an
 array of its tag and payload. An <code>Array&lt;(string, T)&gt;</code> is an array of
 pairs whatever order its keys are in. Only a value whose type says
@@ -223,6 +226,14 @@ json::write_str(pairs)$;
 // {"a":1,"b":2}
 json::write_str({a: 1, b: 2})$
 </code></pre>
+<p>A map whose keys all write as strings, numbers, booleans, datetimes, durations
+or bare variant tags is an object. If any key has another form, the whole map
+is an array of <code>[key, value]</code> pairs. The key keeps its data structure, so a typed
+read can reconstruct tuple, struct, array, list and payload-variant keys, as
+well as null and bytes keys. For example, <code>{(1, 2) =&gt; 3}</code> writes as
+<code>[[[1,2],3]]</code>.</p>
+<p>A writer refuses a map whose distinct keys serialize as the same data,
+including when the map uses the pairs representation.</p>
 
                     </main>
 

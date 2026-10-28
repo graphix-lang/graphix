@@ -180,12 +180,20 @@ type Ordering = [`Less, `Equal, `Greater];
 /// Equality. `==` and `!=` consult the implementation of the operand
 /// type — and of every type nested inside it — falling back to the
 /// structural comparison of values where there is none. Outside core
-/// only an abstract type may implement it. The method runs inside the
-/// comparison, as often as the comparison needs it, so it is `#[pure]`.
+/// only an abstract type may implement it. The methods run inside the
+/// comparison, as often as the comparison needs them, so they are
+/// `#[pure]`.
 trait Eq {
     /// true if the two values are equal
     #[pure]
-    val eq: fn(self, other: self) -&gt; bool
+    val eq: fn(self, other: self) -&gt; bool;
+    /// the part of `self` that `eq` reads, which the runtime hashes
+    /// (`array::dedup`): two values `eq` calls equal must give equal
+    /// parts. An implementation that leaves it out hashes by its
+    /// type alone, which is correct but makes `dedup` compare each value
+    /// with every other. The runtime calls it, a program never does.
+    #[pure]
+    val hash: fn(self) -&gt; Any
 };
 
 /// Ordering. `&lt;`, `&gt;`, `&lt;=` and `&gt;=` consult the implementation the

@@ -588,6 +588,9 @@ using <code>e.0</code> e.g.,</p>
 </code></pre>
 <p>More information about dealing with errors is available in the section on error
 handling.</p>
+<p>A decimal's plain display, including scalar interpolation and <code>cast&lt;string&gt;</code>,
+has no trailing decimal point when its scale is zero. Inside a composite it
+prints as a typed decimal literal so <code>str::parse</code> retains its type and value.</p>
 
                     </main>
 

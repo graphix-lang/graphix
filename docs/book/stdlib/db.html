@@ -158,7 +158,9 @@
                         <h1 id="db"><a class="header" href="#db">db</a></h1>
 <p>The <code>db</code> module provides an embedded key-value database (backed by sled)
 with ACID transactions, typed trees, cursors, and reactive subscriptions.
-A transaction's commit is on disk when it answers.</p>
+A transaction's commit is on disk when it answers. Database files persist
+across program runs and Graphix builds; upgrading the executable does not
+rewrite stored records.</p>
 <p>Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, <code>db::tree</code> returns a <code>DbErr</code>.</p>
 <p>A tree orders and matches its keys by their data. For the primitive and
@@ -166,6 +168,20 @@ structural types that is the language's own order; a key of an abstract
 type is stored as its <code>Cast</code> data, so a custom <code>Eq</code> or <code>Ord</code> on it does not
 reach the tree, and its <code>to_value</code> decides the stored order.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<p>Stored values preserve tuple, struct, variant and list kinds, including in
+unions. This preserves structural kinds, not abstract identity: abstract
+values are stored as their <code>Cast</code> data. With <code>type B = Abstract&lt;i64&gt;</code> and
+the default <code>Cast</code> implementation, a <code>[B, i64]</code> holding <code>B(1)</code> reads back
+as <code>i64</code>, and an <code>[Array&lt;B&gt;, Array&lt;i64&gt;]</code> holding <code>[B(1), B(2)]</code> reads
+back as <code>Array&lt;i64&gt;</code>. Use distinct variant tags if those union members
+must remain distinguishable after a read.</p>
+<p>Older unmarked records remain readable when their tree metadata is
+compatible, but an erased kind cannot be recovered at an ambiguous union.
+In particular, a tuple written by a build that erased composite kinds
+into a <code>[(i64, i64), Array&lt;i64&gt;]</code> value reads back as the array member.
+Reopening the database with the same declared types does not detect this
+change of member. Rewrite such records from a source that still knows
+their original kind; upgrading Graphix alone cannot recover it.</p>
 <pre><code class="language-graphix">/// An opaque handle to an embedded database.
 type Db;
 
