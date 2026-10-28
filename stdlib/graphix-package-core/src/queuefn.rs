@@ -445,6 +445,7 @@ impl<R: Rt> QueueFn<R> {
             init,
             table: Default::default(),
             shared: Default::default(),
+            captures: Default::default(),
             param_calls: Default::default(),
             facts: Mutex::new(LambdaFacts::ASYNC),
             recursion: Mutex::new(RecursionKind::NotRecursive),

@@ -6,9 +6,13 @@ use crate::{BindId, abstract_value, list, stack::ensure_sufficient};
 use anyhow::anyhow;
 use bytes::{Buf, BufMut};
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::{Abstract, FromValue, Value, abstract_type::AbstractWrapper};
+use netidx_value::{
+    Abstract, FromValue, Value, abstract_type::AbstractWrapper, trace::Edge,
+};
 use nohash::{IntMap, IntSet};
 use parking_lot::Mutex;
+use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
     cmp::Ordering,
     fmt,
@@ -33,6 +37,13 @@ struct LivesState {
     orphaned: IntSet<BindId>,
     /// Cells, and orphans unpinned, whose values may go.
     released: Vec<BindId>,
+    /// An orphan was made or lost a pin since the last collection.
+    dirty: bool,
+    /// Cycles until an orphan a collection kept is looked at again, and
+    /// the wait after that one, doubled at each collection that keeps
+    /// one with nothing changed.
+    countdown: u32,
+    wait: u32,
 }
 
 impl LivesState {
@@ -44,6 +55,8 @@ impl LivesState {
                 if self.orphaned.remove(&t) {
                     self.released.push(t);
                 }
+            } else if self.orphaned.contains(&t) {
+                self.dirty = true;
             }
         }
     }
@@ -70,9 +83,18 @@ impl Lives {
         Arc::new(Keep { cell, lives: lives.clone() })
     }
 
+    pub fn capture(lives: &Arc<Self>, ids: impl Iterator<Item = BindId>) -> Captures {
+        let ids: Box<[BindId]> = ids.collect();
+        let mut st = lives.0.lock();
+        for id in &ids {
+            *st.pins.entry(*id).or_default() += 1;
+        }
+        Captures { ids, lives: lives.clone() }
+    }
+
     /// The binding `id` is deleted: true when a reference still names it,
     /// whose value then goes with the last such reference.
-    // CR claude for claude: [bug/medium] An orphan whose own stored value holds a copy of
+    // XCR claude for claude: [bug/medium] An orphan whose own stored value holds a copy of
     // the reference that pins it is never released. Its value keeps the Keep alive, and
     // the Keep keeps the value. A slot doing `x <- {me: &x, data: ..}` leaks x's value
     // and the cell's entries each time it is deleted (about 800 MB per 100 cycles in
@@ -99,13 +121,83 @@ impl Lives {
     // netidx ownership/tracing API (and work in the read-only sibling), or an
     // embedder-root protocol; no unsafe layout access or premature release was added.
     // Closure capture pins share this cycle-collection limitation. The CR remains open.
+    // 2026-10-28 claude: Collected as ruled (q61), branch orphan-gc:
+    // reference::Lives::collect, run by ExecCtx::release_references, walks every orphan's
+    // stored value and the cells its references own through netidx-value's new
+    // Value::edges / trace::Edge (each shared allocation's address and strong count: an
+    // array's inner arc and base, an error's arc, a map's nodes, an abstract), reading a
+    // reference's keep, a nominal abstract's payload and a function value's captures. An
+    // allocation with an owner the walk did not find, or an orphan with an unfound pin,
+    // is held from outside, and all it reaches lives; the other orphans are released. A
+    // map's inner nodes report no count, so a cycle through a map is not collected (needs
+    // NodeRef::strong_count in immutable-chunkmap). Runs when an orphan was made or lost
+    // a pin, else backs off 1..1024 cycles. Pins:
+    // lang::orphans::self_referencing_values_in_deleted_slots_are_collected (fails in all
+    // modes with collect disabled),
+    // a_saved_reference_into_a_self_referencing_value_outlives_its_slot; netidx-value
+    // trace::test::edges_count_every_owner. design/place_references.md.
     pub fn orphan_if_pinned(&self, id: BindId) -> bool {
         let mut st = self.0.lock();
         let pinned = st.pins.contains_key(&id);
         if pinned {
             st.orphaned.insert(id);
+            st.dirty = true;
         }
         pinned
+    }
+
+    /// Release the orphans nothing outside the orphans keeps: every pin
+    /// of each is held by a reference or a function value that only
+    /// orphans' values, and the cells such references own, hold. Run at a
+    /// cycle's start, before [`Lives::released`]. `stored` hands its
+    /// callback a binding's stored value, and `captures` the captures of a
+    /// function value. An allocation whose owners are not all counted, a
+    /// pin not found and anything an abstract this walk cannot read holds
+    /// keep what they reach, so a collection only ever releases too little.
+    pub fn collect(
+        &self,
+        mut stored: impl FnMut(BindId, &mut dyn FnMut(&Value)),
+        captures: impl Fn(&Abstract) -> Option<&Captures>,
+    ) {
+        let orphans: LPooled<Vec<(BindId, u32)>> = {
+            let mut st = self.0.lock();
+            if st.orphaned.is_empty() {
+                return;
+            }
+            if !st.dirty && st.countdown > 0 {
+                st.countdown -= 1;
+                return;
+            }
+            st.orphaned
+                .iter()
+                .map(|id| (*id, st.pins.get(id).copied().unwrap_or(0)))
+                .collect()
+        };
+        let mut g = Graph::default();
+        let mut pending: LPooled<Vec<BindId>> =
+            orphans.iter().map(|(id, _)| *id).collect();
+        while let Some(id) = pending.pop() {
+            g.walk_bind(id, &mut stored, &captures, self, &mut pending);
+        }
+        let live = g.live(&orphans);
+        let mut st = self.0.lock();
+        let mut kept = false;
+        for (id, _) in orphans.iter() {
+            if live.binds.contains(id) {
+                kept = true;
+            } else if st.orphaned.remove(id) {
+                st.released.push(*id);
+            }
+        }
+        st.wait = if !kept {
+            0
+        } else if st.dirty {
+            1
+        } else {
+            (st.wait * 2).clamp(1, 1024)
+        };
+        st.countdown = st.wait;
+        st.dirty = false;
     }
 
     /// The cells and orphaned bindings released since the last call, whose
@@ -119,6 +211,169 @@ impl Lives {
             for id in released {
                 f(id)
             }
+        }
+    }
+}
+
+/// The allocations under the orphans' values, for [`Lives::collect`].
+#[derive(Default)]
+struct Graph {
+    allocs: IntMap<usize, Alloc>,
+    /// Per binding walked (an orphan, or a cell a reference owns), the
+    /// allocations its value holds.
+    binds: IntMap<BindId, SmallVec<[usize; 2]>>,
+    /// Per binding, how many distinct allocations found pin it.
+    found: IntMap<BindId, u32>,
+}
+
+#[derive(Default)]
+struct Alloc {
+    /// None where the owners cannot be counted.
+    strong: Option<usize>,
+    /// Edges to it from what this walk reached.
+    internal: usize,
+    children: SmallVec<[usize; 2]>,
+    /// The cells it owns (a keep's).
+    owns: SmallVec<[BindId; 1]>,
+    pins: SmallVec<[BindId; 1]>,
+}
+
+#[derive(Default)]
+struct Live {
+    allocs: IntSet<usize>,
+    binds: IntSet<BindId>,
+}
+
+impl Graph {
+    fn walk_bind(
+        &mut self,
+        id: BindId,
+        stored: &mut impl FnMut(BindId, &mut dyn FnMut(&Value)),
+        captures: &impl Fn(&Abstract) -> Option<&Captures>,
+        lives: &Lives,
+        cells: &mut Vec<BindId>,
+    ) {
+        if self.binds.contains_key(&id) {
+            return;
+        }
+        self.binds.insert(id, SmallVec::new());
+        stored(id, &mut |v| {
+            let mut stack: LPooled<Vec<(Option<usize>, Edge<'_>)>> = LPooled::take();
+            v.edges(|e| stack.push((None, e)));
+            while let Some((parent, e)) = stack.pop() {
+                let a = e.id();
+                match parent {
+                    None => self.binds.get_mut(&id).unwrap().push(a),
+                    Some(p) => self.allocs.get_mut(&p).unwrap().children.push(a),
+                }
+                if let Some(n) = self.allocs.get_mut(&a) {
+                    n.internal += 1;
+                    continue;
+                }
+                let mut n = Alloc { strong: e.strong(), internal: 1, ..Alloc::default() };
+                match e.as_abstract() {
+                    None => e.children(|c| stack.push((Some(a), c))),
+                    Some(abs) => {
+                        if let Some(r) = abs.downcast_ref::<Reference>() {
+                            if let Some(k) = &r._keep {
+                                let kid = Arc::as_ptr(k) as usize;
+                                n.children.push(kid);
+                                self.keep(kid, k, lives, cells);
+                            }
+                        } else if let Some(x) =
+                            abs.downcast_ref::<abstract_value::GxAbstract>()
+                        {
+                            x.payload.edges(|c| stack.push((Some(a), c)));
+                        } else if let Some(c) = captures(abs) {
+                            n.pins.extend(c.ids.iter().copied());
+                            for t in c.ids.iter() {
+                                *self.found.entry(*t).or_default() += 1;
+                            }
+                        }
+                    }
+                }
+                self.allocs.insert(a, n);
+            }
+        });
+    }
+
+    /// The keep `k` at address `kid`, reached once more.
+    fn keep(
+        &mut self,
+        kid: usize,
+        k: &Arc<Keep>,
+        lives: &Lives,
+        cells: &mut Vec<BindId>,
+    ) {
+        if let Some(n) = self.allocs.get_mut(&kid) {
+            n.internal += 1;
+            return;
+        }
+        let mut n =
+            Alloc { strong: Some(Arc::count(k)), internal: 1, ..Alloc::default() };
+        n.owns.push(k.cell);
+        cells.push(k.cell);
+        if let Some(t) = lives.0.lock().targets.get(&k.cell).copied() {
+            n.pins.push(t);
+            *self.found.entry(t).or_default() += 1;
+        }
+        self.allocs.insert(kid, n);
+    }
+
+    /// What something outside the walk keeps: an allocation with an
+    /// uncounted owner, an orphan with an uncounted pin, and all they
+    /// reach.
+    fn live(&self, orphans: &[(BindId, u32)]) -> Live {
+        enum Item {
+            Alloc(usize),
+            Bind(BindId),
+        }
+        let mut live = Live::default();
+        let mut work: LPooled<Vec<Item>> = LPooled::take();
+        for (a, n) in self.allocs.iter() {
+            if n.strong.is_none_or(|s| s > n.internal) {
+                work.push(Item::Alloc(*a))
+            }
+        }
+        for (id, pins) in orphans {
+            if *pins > self.found.get(id).copied().unwrap_or(0) {
+                work.push(Item::Bind(*id))
+            }
+        }
+        while let Some(i) = work.pop() {
+            match i {
+                Item::Alloc(a) => {
+                    if live.allocs.insert(a)
+                        && let Some(n) = self.allocs.get(&a)
+                    {
+                        work.extend(n.children.iter().map(|c| Item::Alloc(*c)));
+                        work.extend(n.owns.iter().chain(&n.pins).map(|b| Item::Bind(*b)));
+                    }
+                }
+                Item::Bind(b) => {
+                    if live.binds.insert(b)
+                        && let Some(cs) = self.binds.get(&b)
+                    {
+                        work.extend(cs.iter().map(|c| Item::Alloc(*c)));
+                    }
+                }
+            }
+        }
+        live
+    }
+}
+
+#[derive(Debug)]
+pub struct Captures {
+    ids: Box<[BindId]>,
+    lives: Arc<Lives>,
+}
+
+impl Drop for Captures {
+    fn drop(&mut self) {
+        let mut st = self.lives.0.lock();
+        for id in &self.ids {
+            st.unpin(*id);
         }
     }
 }
@@ -293,6 +548,24 @@ pub fn cell(v: &Value) -> Option<BindId> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn captures_release_orphans_after_the_last_owner() {
+        let lives = Arc::new(Lives::default());
+        let id = BindId::new();
+        let first = Lives::capture(&lives, [id].into_iter());
+        let last = Lives::capture(&lives, [id].into_iter());
+        assert!(lives.orphan_if_pinned(id));
+        drop(first);
+        lives.released(|_| panic!("a capture still owns the binding"));
+        drop(last);
+        let mut released = 0;
+        lives.released(|got| {
+            assert_eq!(got, id);
+            released += 1;
+        });
+        assert_eq!(released, 1);
+    }
 
     #[test]
     fn reference_decodes_only_under_an_image() {

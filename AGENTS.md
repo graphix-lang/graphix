@@ -917,6 +917,17 @@ node graph IS the IR — there is no parallel typed IR
   body the interp's per-slot/per-activation multiplicity for exactly the
   state that decides firing; only a site's first-ever dispatch, and a
   loop slot's first iteration, is an init view.
+- **Closure lifetimes**: a function value keeps the bindings it captures alive
+  after their owning slot or activation is deleted, including captures used by
+  nested literals and labeled defaults. `DefTable::captures` records names;
+  the emitted `LambdaDef` pins their instance ids through `reference::Captures`.
+  Deletion removes the names from the current scope but retains the type records
+  and stored values until the last owner drops. The initializer does not survive.
+  An orphan that only orphans' values keep (a self-reference, a `let rec`
+  closure) is collected (`reference::Lives::collect`, over netidx-value's
+  `Value::edges`; a cycle through a map's inner nodes is not;
+  design/place_references.md). Pins:
+  `lang::functions::closure_outlives_collection_slot*`, `lang::orphans`.
 - **`let rec` is monomorphic-recursive**, and a binding something writes
   (a `<-` target, a `&mut`'s referent; a writer anywhere in its block,
   a lambda body's included, `node::written_lets`) is not generalized:

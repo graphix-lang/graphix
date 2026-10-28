@@ -14,7 +14,7 @@ use crate::{
     Update, dbgenv,
     effects::{LambdaFacts, NoLoop, RecursionKind},
     env::{Bind, Env, Lexical},
-    expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
+    expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, ModPath, Origin},
     fusion::{
         self,
         emit::{
@@ -26,6 +26,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     profile::{self, Phase},
+    reference::{Captures, Lives},
     stack::ensure_sufficient,
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type,
@@ -37,9 +38,12 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, encode_varint};
+use netidx_core::{
+    pack::{Pack, PackError, encode_varint},
+    path::Path,
+};
 use netidx_value::Value;
 use nohash::IntSet;
 use parking_lot::Mutex;
@@ -79,6 +83,41 @@ pub struct DefTable {
     /// an instance resolves to its own formals (`ParamCalls`).
     calls_own: bool,
     calls_captured: Box<[(LambdaId, u32)]>,
+    captures: Box<[Captured]>,
+}
+
+#[derive(Debug, Clone, netidx_derive::Pack)]
+struct Captured {
+    up: u32,
+    path: ModPath,
+    name: CompactString,
+}
+
+impl Captured {
+    fn new(scope: &ModPath, binding: ModPath, name: CompactString) -> Self {
+        let common = Path::parts(&scope.0)
+            .zip(Path::parts(&binding.0))
+            .take_while(|(a, b)| a == b)
+            .count();
+        Self {
+            up: (Path::levels(&scope.0) - common) as u32,
+            path: ModPath::from_iter(Path::parts(&binding.0).skip(common)),
+            name,
+        }
+    }
+
+    fn id(&self, env: &Lexical, scope: &ModPath) -> Option<BindId> {
+        let base = Path::dirnames(&scope.0).rev().nth(self.up as usize)?;
+        let mut path: LPooled<String> = LPooled::take();
+        let scope = if &*self.path.0 == "/" {
+            base
+        } else {
+            path.push_str(base.trim_end_matches('/'));
+            path.push_str(&self.path.0);
+            path.as_str()
+        };
+        env.binds.get(scope).and_then(|bs| bs.get(&self.name)).copied()
+    }
 }
 
 /// One instance's cell map, shared with the lambdas its body defines:
@@ -150,10 +189,12 @@ impl DefTable {
         facts: LambdaFacts,
         calls_own: bool,
         calls_captured: Box<[(LambdaId, u32)]>,
+        captures: &mut AHashSet<(ModPath, CompactString)>,
     ) -> Self {
         let mut table = Self { facts, calls_own, calls_captured, ..Self::default() };
         let mut shared: LPooled<AHashSet<ExprId>> = LPooled::take();
         fusion::for_each_node(body, &mut |n| {
+            capture_names(n, def_env, checked, captures);
             let id = n.spec().id;
             if table.types.insert(id, n.typ().clone()).is_some() {
                 shared.insert(id);
@@ -247,6 +288,7 @@ impl DefTable {
                 facts: self.facts,
                 calls_own: self.calls_own,
                 calls_captured: self.calls_captured.clone(),
+                captures: self.captures.clone(),
             };
             table.own_typedefs();
             table
@@ -290,6 +332,10 @@ impl DefTable {
                 encode_varint(table.typedefs.len() as u64, buf);
                 for r in table.typedefs.iter() {
                     image::resolved_encode(r, buf)?;
+                }
+                encode_varint(table.captures.len() as u64, buf);
+                for capture in &table.captures {
+                    capture.encode(buf)?;
                 }
                 table.facts.encode(buf)?;
                 table.calls_own.encode(buf)?;
@@ -335,6 +381,9 @@ impl DefTable {
                 let typedefs = (0..n)
                     .map(|_| image::resolved_decode(sub))
                     .collect::<Result<Vec<_>, _>>()?;
+                let n = image::count_decode(sub)?;
+                let captures =
+                    (0..n).map(|_| Pack::decode(sub)).collect::<Result<_, _>>()?;
                 let facts = LambdaFacts::decode(sub)?;
                 let calls_own = bool::decode(sub)?;
                 let n = image::count_decode(sub)?;
@@ -351,6 +400,7 @@ impl DefTable {
                     facts,
                     calls_own,
                     calls_captured,
+                    captures,
                 }))
             },
             |b| Self::image_decode(b),
@@ -644,6 +694,7 @@ pub struct LambdaDef<R: Rt> {
     /// The definition's level: the cells it owns are its signature's
     /// and its body's.
     pub level: Level,
+    pub captures: OnceLock<Captures>,
 }
 
 /// Where a definition came from: a lambda expression, whose `init` is
@@ -696,6 +747,16 @@ pub struct ParamCalls {
 }
 
 impl<R: Rt> LambdaDef<R> {
+    fn captured_ids(&self, f: &mut impl FnMut(BindId)) {
+        if let Some(tables) = self.table.get() {
+            for capture in &tables.table.captures {
+                if let Some(id) = capture.id(&self.env, &self.scope.lexical) {
+                    f(id);
+                }
+            }
+        }
+    }
+
     /// Degrade the facts by `facts`; they never improve.
     pub(crate) fn join_facts(&self, facts: LambdaFacts) {
         let mut f = self.facts.lock();
@@ -1904,6 +1965,7 @@ impl Lambda {
             source: spec.id,
             origin: DefOrigin::Source { body, flags, spec: (*spec).clone(), enclosing },
             level,
+            captures: OnceLock::new(),
         });
         ctx.lambda_defs.insert(id, def.clone());
         Ok(Node::new(Self {
@@ -2056,6 +2118,31 @@ fn holds_enclosing_cell(t: &Type, depth: u32) -> bool {
     go(t, depth, &mut LPooled::take())
 }
 
+fn capture_names<R: Rt>(
+    node: &Node<R>,
+    outer: &Lexical,
+    checked: &Env,
+    captures: &mut AHashSet<(ModPath, CompactString)>,
+) {
+    let mut add = |id| {
+        if let Some(b) = checked.by_id.get(&id)
+            && outer.binds.get(&b.scope).and_then(|bs| bs.get(&b.name)) == Some(&id)
+        {
+            captures.insert((b.scope.clone(), b.name.clone()));
+        }
+    };
+    match node.view() {
+        NodeView::Ref(r) => add(r.id),
+        NodeView::Connect(c) => add(c.id),
+        NodeView::Lambda(l) => {
+            if let Some(d) = l.def_value().downcast_ref::<LambdaDef<R>>() {
+                d.captured_ids(&mut add);
+            }
+        }
+        _ => (),
+    }
+}
+
 /// The definition's check of its labeled defaults, under the gate:
 /// each default compiles in the def's scope and must fit its parameter.
 /// Against a declared tvar it must fit the tvar's constraints, not the
@@ -2065,6 +2152,7 @@ fn check_defaults<R: Rt>(
     ctx: &mut CompileCtx<R>,
     def: &LambdaDef<R>,
     scope: &Scope,
+    captures: &mut AHashSet<(ModPath, CompactString)>,
 ) -> Result<()> {
     let flags = match &def.origin {
         DefOrigin::Source { flags, .. } => {
@@ -2150,6 +2238,11 @@ fn check_defaults<R: Rt>(
             }
         });
         let res = res.at(&node.spec());
+        if res.is_ok() {
+            fusion::for_each_node(&node, &mut |n| {
+                capture_names(n, &def.env, &ctx.env, captures);
+            });
+        }
         ctx.discard(node);
         res?;
     }
@@ -2174,6 +2267,13 @@ impl<R: Rt> Update<R> for Lambda {
 
     /// A lambda literal is a constant.
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
+        if let Some(def) = self.def.downcast_ref::<LambdaDef<R>>() {
+            def.captures.get_or_init(|| {
+                let mut ids: LPooled<Vec<BindId>> = LPooled::take();
+                def.captured_ids(&mut |id| ids.push(id));
+                Lives::capture(ctx.control.lives(), ids.drain(..))
+            });
+        }
         produce_constant(ctx.event, &mut self.resident, || self.def.clone())
     }
 
@@ -2182,8 +2282,6 @@ impl<R: Rt> Update<R> for Lambda {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        // a retained def keeps its `LambdaIds` link-graph nodes alive, and
-        // `typecheck1`'s `ids()` walks grow with them
         if let Some(def) = self.def.downcast_ref::<LambdaDef<R>>() {
             ctx.lambda_defs.remove(&def.id);
             ctx.def_assertions.lock().retain(|a| a.id != def.id);
@@ -2208,6 +2306,8 @@ impl<R: Rt> Update<R> for Lambda {
         // (`CallSite::check_omitted_defaults`), where one may narrow that
         // site's cells.
         let mut gate = DefGate::open(ctx, def);
+        let mut table = None;
+        let mut captures: LPooled<AHashSet<(ModPath, CompactString)>> = LPooled::take();
         let res = (def.init)(
             &gate.scope,
             ctx,
@@ -2245,11 +2345,16 @@ impl<R: Rt> Update<R> for Lambda {
                     .iter()
                     .filter_map(|id| ctx.def_gate_params.get(id).copied())
                     .collect();
-                let table = SArc::new(DefTable::record(
-                    &g.body, &g.env, &ctx.env, facts, calls.own, captured,
+                table = Some(DefTable::record(
+                    &g.body,
+                    &g.env,
+                    &ctx.env,
+                    facts,
+                    calls.own,
+                    captured,
+                    &mut captures,
                 ));
                 *def.param_calls.lock() = calls;
-                def.table.set(Tables { table, outer: None });
             }
             ctx.discard_apply(f);
             res?;
@@ -2257,7 +2362,18 @@ impl<R: Rt> Update<R> for Lambda {
             ftyp.throws.check_contains(&ctx.env, &inferred_throws).at(spec)?;
             Ok(())
         });
-        let res = res.and_then(|()| check_defaults(ctx, def, &gate.scope));
+        let res = res.and_then(|()| check_defaults(ctx, def, &gate.scope, &mut captures));
+        if res.is_ok() && (table.is_some() || !captures.is_empty()) {
+            let mut table = table.unwrap_or_else(|| DefTable {
+                facts: *def.facts.lock(),
+                ..DefTable::default()
+            });
+            table.captures = captures
+                .drain()
+                .map(|(scope, name)| Captured::new(&def.scope.lexical, scope, name))
+                .collect();
+            def.table.set(Tables { table: SArc::new(table), outer: None });
+        }
         gate.close(ctx, def.table.get().map(|t| (t.table.clone(), spec)));
         // what the body bound is the signature: a call's types follow from
         // it without elaborating the body

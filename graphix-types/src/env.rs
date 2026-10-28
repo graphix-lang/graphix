@@ -2270,8 +2270,13 @@ impl Env {
     }
 
     pub fn unbind_variable(&mut self, id: BindId) {
+        self.unbind_name(id);
         self.poly_binds.remove(&id);
-        if let Some(b) = self.by_id.remove(&id) {
+        self.by_id.remove(&id);
+    }
+
+    pub fn unbind_name(&mut self, id: BindId) {
+        if let Some(b) = self.by_id.get(&id) {
             if let Some(binds) = self.lexical.binds.get_mut_cow(&b.scope) {
                 if binds.get(&b.name) == Some(&id) {
                     binds.remove_cow(&b.name);

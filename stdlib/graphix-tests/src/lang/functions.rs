@@ -3280,3 +3280,43 @@ run!(writable_reference_variable_does_not_widen_reversed, r#"{
     let f = |x: &mut 'a, y: &mut 'a| -> &mut 'a y;
     f(n, r)
 }"#, refused("does not contain"); FuseExpect::None);
+
+pub(super) const CLOSURE_OUTLIVES_SLOT: &str = r#"{
+        let n = 0;
+        n <- select n { k if k < 8 => k + 1, _ => never() };
+        let src = select n { k if k < 2 => [10], _ => [] };
+        let gs = array::map(src, |k| |x: i64| -> i64 x * k);
+        let saved: fn(x: i64) -> i64 = never();
+        saved <- gs[0]$;
+        select n { k if k >= 4 => saved(k), _ => never() }
+    }"#;
+
+run!(closure_outlives_collection_slot, CLOSURE_OUTLIVES_SLOT, is(Value::I64(40)));
+
+run!(
+    closure_outlives_collection_slot_transitively,
+    r#"{
+        let n = 0;
+        n <- select n { k if k < 8 => k + 1, _ => never() };
+        let src = select n { k if k < 2 => [10], _ => [] };
+        let gs = array::map(src, |k| |x: i64| |y: i64| -> i64 k * x + y);
+        let saved: fn(x: i64) -> fn(y: i64) -> i64 = never();
+        saved <- gs[0]$;
+        select n { k if k >= 4 => saved(k)(1), _ => never() }
+    }"#,
+    is(Value::I64(41))
+);
+
+run!(
+    closure_outlives_collection_slot_default,
+    r#"{
+        let n = 0;
+        n <- select n { k if k < 8 => k + 1, _ => never() };
+        let src = select n { k if k < 2 => [10], _ => [] };
+        let gs = array::map(src, |k: i64| |#factor: i64 = k, x: i64| -> i64 x * factor);
+        let saved: fn(x: i64) -> i64 = never();
+        saved <- gs[0]$;
+        select n { k if k >= 4 => saved(k), _ => never() }
+    }"#,
+    is(Value::I64(40))
+);

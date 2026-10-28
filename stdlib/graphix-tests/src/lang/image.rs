@@ -1224,3 +1224,12 @@ async fn banked_request_values_restore() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_restored_closure_outlives_its_slot() -> Result<()> {
+    let ((_, cold), (_, warm)) =
+        cold_and_warm(super::functions::CLOSURE_OUTLIVES_SLOT).await?;
+    assert_eq!(cold.last(), Some(&Value::I64(80)));
+    assert_eq!(warm, cold);
+    Ok(())
+}

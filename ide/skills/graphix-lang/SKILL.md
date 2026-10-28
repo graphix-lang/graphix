@@ -268,6 +268,11 @@ function-variable write fires its call's current result even when it
 writes the same function; the call keeps its instance and state. A HOF
 nested under its own callback is a fresh instance, not recursion.
 
+A closure keeps its captured bindings alive after their collection slot or
+activation is deleted, including captures used by nested closures and labeled
+defaults. The retained values remain readable and writable; the deleted
+initializer does not keep running.
+
 A labeled default returning an enclosing function's open type requires a
 closed defaulted parameter type. Annotate the factory's parameter
 (`|z: i64|`) or the defaulted one (`|#d: i64 = z, x|`); `|z| { let g =

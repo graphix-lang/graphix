@@ -114,6 +114,7 @@ pub(crate) fn def_encode<R: Rt>(
         source,
         origin,
         level,
+        captures: _,
     } = def;
     // a runtime-built definition exists only once a cycle ran
     let DefOrigin::Source { body, flags, spec, enclosing } = origin else {
@@ -187,6 +188,7 @@ pub(crate) fn def_decode<R: Rt>(
         source,
         origin: DefOrigin::Source { body, flags, spec, enclosing },
         level,
+        captures: Default::default(),
     });
     Ok(id)
 }

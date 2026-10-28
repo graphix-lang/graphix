@@ -2202,9 +2202,21 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// reference named it.
     pub fn release_references(&mut self) {
         let lives = self.control.lives().clone();
+        let rt = &self.rt;
+        lives.collect(
+            |id, f| {
+                if let Some((tv, _)) = rt.store_get(&id)
+                    && !tv.tag().is_bottom()
+                {
+                    tv.with_value(|v| f(v))
+                }
+            },
+            |a| a.downcast_ref::<LambdaDef<R>>().and_then(|d| d.captures.get()),
+        );
         lives.released(|id| {
             self.cx.env.byref_chain.remove(&id);
             self.cx.env.by_id.remove(&id);
+            self.cx.env.poly_binds.remove(&id);
             self.rt.clear_ref_path(&id);
             self.rt.store_release(&id);
         });

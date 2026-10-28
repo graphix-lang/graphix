@@ -1772,7 +1772,7 @@ impl StructPatternNode {
         }
     }
 
-    // CR claude for claude: [bug/high] Deleting a collection slot unbinds its parameters
+    // XCR claude for claude: [bug/high] Deleting a collection slot unbinds its parameters
     // here even when a closure the slot made escaped and still captures them. A call
     // site that binds that closure after the deletion fails with 'binding the callee
     // failed: k not defined', and no value is produced; a site bound earlier keeps
@@ -1784,13 +1784,42 @@ impl StructPatternNode {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q60, A closure
     // that outlives its collection slot): yes, keep them alive (the recommendation:
     // keep them alive.)
+    // 2026-10-28 codex: Function values now retain their free binding types and stored
+    // values using Lives capture pins, including transitive nested closures and
+    // omitted-argument defaults. The definition check records capture paths relative to
+    // the definition scope, so cloned instances and restored images resolve their own
+    // captures. Slot deletion removes the lexical name but retains by-id metadata until
+    // the last capture/reference releases it. Pins: closure_outlives_collection_slot,
+    // closure_outlives_collection_slot_transitively,
+    // closure_outlives_collection_slot_default, a_restored_closure_outlives_its_slot,
+    // captures_release_orphans_after_the_last_owner. All 13 runtime/image cases pass;
+    // restoring the old slot deletion makes all 13 fail with missing k. Full functions:
+    // 986 passed; images: 32 passed, one slow test ignored;
+    // graphix-types/compiler/package-core lib suites: 341/54/7 passed. Docs and image
+    // format updated. Cyclic closure/reference ownership still needs the collector
+    // tracked by x-refs-catchup-02; this change does not collect cycles. cargo fmt --all
+    // is blocked by read-only sibling netidx-value/src/op.rs; affected crates formatted
+    // separately.
+    // 2026-10-28 claude: Collected (orphan-gc): a let rec closure captures its own
+    // binding, so its Captures pin and the binding's stored closure kept each other
+    // alive. reference::Lives::collect now releases orphans that only orphans' values
+    // (and the cells their references own) keep, walking stored values through
+    // netidx-value's Value::edges with owner counts; anything held from outside, or that
+    // the walk cannot count, keeps what it reaches. A saved recursive closure still works
+    // after its slot is deleted. Pins:
+    // lang::orphans::recursive_closures_in_deleted_slots_are_collected,
+    // mutually_reaching_closures_in_deleted_slots_are_collected (fail in interp/par with
+    // collect disabled; under jit the slots fuse and bind nothing),
+    // a_saved_recursive_closure_outlives_its_slot, plus
+    // lang::functions::closure_outlives_collection_slot*.
     pub fn delete<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
         self.ids(&mut |id| {
-            // a reference that names it keeps its value
-            if !ctx.control.lives().orphan_if_pinned(id) {
+            if ctx.control.lives().orphan_if_pinned(id) {
+                ctx.env.unbind_name(id);
+            } else {
                 ctx.rt.store_release(&id);
+                ctx.env.unbind_variable(id);
             }
-            ctx.env.unbind_variable(id);
         })
     }
 }
