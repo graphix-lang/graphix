@@ -62,6 +62,10 @@ type Chart = {
   y_axis: &[Axis, null]
 };
 
+/// A chart of `datasets` over `#x_axis` and `#y_axis`. `#legend_position` is
+/// where the legend — one entry per named dataset — is drawn and defaults to
+/// `TopRight`; null hides the legend. `#hidden_legend_constraints` hides it as
+/// well once it would cover more of the chart than they allow.
 val chart: fn(
   ?#hidden_legend_constraints: &[LegendConstraints, null],
   ?#legend_position: &[LegendPosition, null],

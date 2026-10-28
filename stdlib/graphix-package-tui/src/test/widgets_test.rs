@@ -7,6 +7,7 @@
 use super::ch;
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
+use compact_str::format_compact;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use netidx::publisher::Value;
 use ratatui::{
@@ -171,6 +172,46 @@ let result = chart(
         "      ••••••••••",
         "••••••",
     ])?;
+    Ok(())
+}
+
+/// The rows a chart with one dataset named `cpu` draws over a 40x10
+/// viewport, with `legend` as its leading labelled arguments.
+async fn legend_chart(legend: &str) -> Result<Vec<String>> {
+    let code = format_compact!(
+        r#"
+use tui::{{line, chart::{{axis, chart, dataset}}}};
+let result = chart({legend}
+    #x_axis: &axis({{min: 0.0, max: 10.0}}),
+    #y_axis: &axis({{min: 0.0, max: 10.0}}),
+    &[dataset(#name: &line("cpu"), &[(1.0, 1.0)])])
+"#
+    );
+    TuiTestHarness::with_viewport(&code, 40, 10).await?.render_lines()
+}
+
+/// Null hides the legend: no dataset name is drawn.
+#[tokio::test]
+async fn a_null_legend_position_hides_the_legend() -> Result<()> {
+    let lines = legend_chart("#legend_position: &null,").await?;
+    assert!(!lines.iter().any(|l| l.contains("cpu")), "{lines:?}");
+    Ok(())
+}
+
+/// A position shows the legend, so the dataset name is drawn.
+#[tokio::test]
+async fn a_legend_position_shows_the_legend() -> Result<()> {
+    let lines = legend_chart("#legend_position: &`TopRight,").await?;
+    assert!(lines.iter().any(|l| l.contains("cpu")), "{lines:?}");
+    Ok(())
+}
+
+/// A chart that says nothing about the legend shows it at the default
+/// position.
+#[tokio::test]
+async fn a_chart_that_omits_the_legend_position_shows_the_legend() -> Result<()> {
+    let lines = legend_chart("").await?;
+    assert!(lines.iter().any(|l| l.contains("cpu")), "{lines:?}");
     Ok(())
 }
 

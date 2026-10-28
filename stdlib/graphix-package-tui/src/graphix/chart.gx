@@ -16,7 +16,7 @@ let dataset = |
 
 let chart = |
   #hidden_legend_constraints: &[LegendConstraints, null] = &null,
-  #legend_position: &[LegendPosition, null] = &null,
+  #legend_position: &[LegendPosition, null] = &`TopRight,
   #style: &[Style, null] = &null,
   #x_axis: &[Axis, null] = &null,
   #y_axis: &[Axis, null] = &null,
