@@ -951,3 +951,27 @@ run!(nested_seq_in_seqq_takes_own_entry, r#"{
         (a, b)
     }
 }"#, prints("[i64:1, i64:2]"); FuseExpect::Jit);
+
+run!(step_waits_for_untaken_arm, r#"{
+    let step = 0;
+    step <- select step { n if n < 8 => n + 1, _ => never() };
+    let mode: [`A, `B] = `A;
+    let present = 1;
+    let absent = never<i64>();
+    let completed = 0;
+    let go = 0;
+    let result = seq go { select mode { `A => present, `B => absent } };
+    completed <- result ~ completed + 1;
+    select step { 8 => completed, _ => never() }
+}"#, is(Value::I64(0)); FuseExpect::Jit);
+
+run!(step_reads_present_values_when_untaken_arm_arrives, r#"{
+    let step = 0;
+    step <- select step { n if n < 8 => n + 1, _ => never() };
+    let mode: [`A, `B] = `A;
+    let present = step;
+    let absent = never<i64>();
+    absent <- select step { 4 => 100, _ => never() };
+    let go = 0;
+    seq go { select mode { `A => present, `B => absent } }
+}"#, is(Value::I64(5)); FuseExpect::Jit);

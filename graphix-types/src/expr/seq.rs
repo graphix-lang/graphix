@@ -784,8 +784,8 @@ impl Machine<'_> {
     /// The step's entry snapshot of the variables `e` reads from outside
     /// the seq, `live` aside (`design/seq_blocks.md` §5): `visible` with
     /// each sent to a cell, and the lets that fill the cells, at the
-    /// step's entry, or at a variable's first arrival if it was absent
-    /// then, as an issued call takes its arguments. The references the
+    /// step's entry, or when all named inputs are present, as an issued
+    /// call takes its argument tuple. The references the
     /// step's `sink` writes through are read at its entry too, and so are a
     /// `seqq`'s capture cells, whose variables a callee's write makes live.
     fn snapshot(&mut self, e: &Expr, sink: &[Write], visible: &Names) -> Snapshot {
@@ -805,7 +805,7 @@ impl Machine<'_> {
                 vars.insert(ArcStr::from(key), read);
             }
         };
-        // CR claude for claude: [bug/medium] [bug/medium] The entry snapshot takes every
+        // XCR claude for claude: [bug/medium] [bug/medium] The entry snapshot takes every
         // free variable of the step's text, arm bodies and callbacks included, into one
         // strict tuple. A variable that only an untaken arm or an uncalled lambda reads
         // therefore holds the whole step. `seq t { select mode { `A => a_val, `B =>
@@ -820,6 +820,17 @@ impl Machine<'_> {
         // step snapshot is one strict tuple): yes, document (the recommendation:
         // document; it is the "snapshot everything" rule you ruled, stated honestly.
         // See D4 if you want to talk about it.)
+        // 2026-10-27 codex: Kept the whole-step snapshot as ruled. The seq chapter now
+        // includes an untaken-arm select example and states both consequences: every
+        // textually named variable must be present, and a missing input delays reading
+        // the present ones until the whole tuple is ready. Corrected the rules, language
+        // skill, design and helper documentation. Pins
+        // lang::seq::step_waits_for_untaken_arm and
+        // step_reads_present_values_when_untaken_arm_arrives pass in all four modes
+        // against the unchanged implementation. This is documentation of existing
+        // behavior, so there is no implementation fix to remove for a negative run. No
+        // FuseExpect moved. Full workspace and socket tests remain for coordinator
+        // review.
         captured(e, false, &mut |r| {
             let (ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. }) =
                 &r.kind
@@ -887,7 +898,7 @@ impl Machine<'_> {
         let (pc, id) = (self.issue.pc, self.id);
         let input = format_compact!("#seqsin{id}_{n}");
         let snap = format_compact!("#seqs{id}_{n}");
-        // CR claude for claude: [doc-drift/low] The snapshot is one strict tuple of every
+        // XCR claude for claude: [doc-drift/low] The snapshot is one strict tuple of every
         // variable the step reads, so when one is absent at entry, the ones present
         // then are read in the cycle the last arrives, not at entry: x = 0 at entry and
         // y arriving when x is 5 gives 5100, where CLAUDE.md and seq_blocks.md §5
@@ -901,6 +912,17 @@ impl Machine<'_> {
         // step snapshot is one strict tuple): yes, document (the recommendation:
         // document; it is the "snapshot everything" rule you ruled, stated honestly.
         // See D4 if you want to talk about it.)
+        // 2026-10-27 codex: Kept the whole-step snapshot as ruled. The seq chapter now
+        // includes an untaken-arm select example and states both consequences: every
+        // textually named variable must be present, and a missing input delays reading
+        // the present ones until the whole tuple is ready. Corrected the rules, language
+        // skill, design and helper documentation. Pins
+        // lang::seq::step_waits_for_untaken_arm and
+        // step_reads_present_values_when_untaken_arm_arrives pass in all four modes
+        // against the unchanged implementation. This is documentation of existing
+        // behavior, so there is no implementation fix to remove for a negative run. No
+        // FuseExpect moved. Full workspace and socket tests remain for coordinator
+        // review.
         let tuple = ExprKind::Tuple {
             args: Arc::from_iter(
                 std::iter::once(r#ref(pos, pc))

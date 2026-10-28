@@ -74,8 +74,10 @@ constant argument to `exit` runs at init — always gate it).
   array::zip(snap, states)` (a passed step sleeps, so its `let` keeps its
   value; a `let` outside the seq tracks).
 - **A step sees the world as it stood at its entry**: every outer variable
-  the seq's own text reads is read once when the step starts (or when it
-  first has a value), and does not change while the step runs. `select x
+  the seq's own text reads is sampled together when the step starts, or
+  when all named inputs are present. Untaken arms count too, and an
+  absent input delays reading the present ones. The snapshot does not
+  change while the step runs. `select x
   > 2 { true => x, false => never() }` in a step stalls if `x` was 2 at
   entry. A step waits for a change only through `live(e)`: `until
   live(ready)`, `select live(x) > 2 { .. }`; a bare `until ready` warns.
@@ -383,6 +385,10 @@ let r = seqq request {             // seqq queues triggers; seq drops while busy
   write(v)                          // the block's value; each output releases the next queued request
 }
 ```
+
+A step snapshots all variables its text names together, including untaken
+select arms and uncalled lambdas. If any is absent, the whole step waits:
+present variables are read only when the last absent input arrives.
 
 The trigger is any expression. `seqq sys::time::after_idle(duration:250.ms,
 key) { .. }` runs once per burst of presses, not once per press.

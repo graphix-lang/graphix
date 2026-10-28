@@ -1321,9 +1321,11 @@ cycle, across workers; the compiler never pins threads.
   production after its entry, never on a standing value. A step sees the
   world as it stood at its entry: every variable the seq's own text
   reads (lambdas written in it included, a nested seq excepted, which
-  takes its own) is read once, at the step's entry (`seq`) or at enqueue
-  (`seqq`), or at its first arrival if absent, as an issued call's
-  arguments are; a callee's state and captures stay live (the rule is
+  takes its own) is sampled together, at the step's entry (`seq`) or at
+  enqueue (`seqq`). The whole snapshot waits for every named variable,
+  including untaken arms and uncalled lambdas: an absent variable delays
+  reading the present ones until it arrives, as an issued call's
+  arguments do; a callee's state and captures stay live (the rule is
   lexical), a read through a reference (`*r`) reads its target live,
   and `live(e)` reads `e`'s variables live (a call whose argument reads
   live, a pattern bind of a live scrutinee included, is issued again at

@@ -165,10 +165,11 @@ re-fires. This is `f(trigger ~ x)` applied mechanically, the rule the
 hand-written ceremonies get wrong.
 
 **A step sees the world as it stood at its entry.** Every variable the
-seq's own text reads, a lambda written in the seq included, is read once:
-at the step's entry under `seq`, when the request is queued under
-`seqq` (§8), and a variable absent then is read at its first arrival,
-as a call's missing argument is waited for (§6.3). It does not change
+seq's own text reads, a lambda written in the seq and an untaken select
+arm included, is sampled together: at the step's entry under `seq`,
+when the request is queued under `seqq` (§8), or once all named inputs
+are present. An absent input delays reading the present ones too, as a
+call waits for its whole argument tuple (§6.3). It does not change
 while the step runs: `select x > 2 { true => x, false => never() }`
 stalls when `x` was 2 at entry, and so does `select big(x) { .. }`,
 which is handed the same `x`. The rule is lexical: a function the step
@@ -400,9 +401,10 @@ blocks lower the same way; lambda bodies and defaults, `until`
 conditions and reference contents keep their own reactive clocks.
 
 A call-free step and an `until` condition read their variables through
-the step's snapshot: each is sampled by the entry clock, a strict
-sample held until the next entry, and one absent then is taken at its
-first arrival, as the issue atom waits for a missing argument. So the
+the step's snapshot: the entry clock samples their whole strict tuple,
+held until the next entry. If one input is absent, the tuple waits and
+reads every input when the last arrives, as the issue atom waits for
+its arguments. So the
 step fires at entry with the standing value and is not followed after;
 the variables under a `live(e)` are read directly, which keeps
 `any(pc ~! e, e)`'s tracking for them alone. A reference a step writes

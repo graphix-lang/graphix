@@ -236,10 +236,29 @@ do not change the snapshot or interrupt the pending result. Nested calls
 get their own snapshots. A call without arguments is read at entry like a
 level.
 
+A step snapshots every variable its text names together, including variables
+read only by an untaken select arm or an uncalled lambda. It waits until
+all of them are present before taking that whole snapshot:
+
+```graphix
+let mode: [`A, `B] = `A;
+let a_val = 1;
+let b_val = never<i64>();
+let go = 0;
+seq go { select mode { `A => a_val, `B => b_val } }
+```
+
+This step waits for `b_val` even though it selects arm `A`. It also delays
+reading `a_val`: if `a_val` becomes 5 before `b_val` arrives, the step
+returns 5. It does not retain the 1 that was present at entry. Initialize
+all named inputs before triggering the sequence when their entry-time
+values must be retained.
+
 A step completes when it produces a new value after its entry, never on a
 value left standing from an earlier run. A call's answer is what the call
 produces after it is issued; a step that reads a level (`let y = x`)
-takes the level as it stands at entry, and waits for it if it is absent.
+takes the level as it stands at entry, or when the whole step snapshot
+is ready if any named input is absent.
 One consequence: a function that returns a level it does not derive from
 its argument (`|v| k`) produces nothing new when called again, so a step
 calling it never completes after the first run. Sample the level on the
