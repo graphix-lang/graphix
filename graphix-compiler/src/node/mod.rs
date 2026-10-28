@@ -285,13 +285,17 @@ pub struct ExplicitParens<R: Rt> {
 }
 
 impl<R: Rt> ExplicitParens<R> {
+    fn with(spec: Arc<Expr>, n: Node<R>) -> Node<R> {
+        Node::new(Self { spec, n })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let n = decode_node(ctx, buf)?;
-        Ok(Node::new(Self { spec, n }))
+        Ok(Self::with(spec, n))
     }
 
     pub(crate) fn compile(
@@ -305,7 +309,7 @@ impl<R: Rt> ExplicitParens<R> {
         // `spec` is the outer parens expression: it carries the position
         // and any `#[..]` decorations, so the node must own it
         let n = compile(ctx, flags, inner, scope, top_id)?;
-        Ok(Node::new(ExplicitParens { spec, n }))
+        Ok(Self::with(spec, n))
     }
 }
 
@@ -533,6 +537,10 @@ pub struct TypeDef {
 }
 
 impl TypeDef {
+    fn with<R: Rt>(spec: Arc<Expr>, scope: ModPath, name: ArcStr) -> Node<R> {
+        Node::new(Self { spec, scope, name })
+    }
+
     pub(crate) fn compile<R: Rt>(
         ctx: &mut CompileCtx<R>,
         spec: Arc<Expr>,
@@ -571,7 +579,7 @@ impl TypeDef {
                 (*spec).clone(),
             ));
         }
-        Ok(Node::new(Self { spec, scope: scope.lexical.clone(), name }))
+        Ok(Self::with(spec, scope.lexical.clone(), name))
     }
 }
 
@@ -583,7 +591,7 @@ impl TypeDef {
         let spec = Arc::new(Expr::decode(buf)?);
         let scope = ModPath::decode(buf)?;
         let name = ArcStr::decode(buf)?;
-        Ok(Node::new(Self { spec, scope, name }))
+        Ok(Self::with(spec, scope, name))
     }
 }
 
@@ -812,14 +820,24 @@ impl<R: Rt> Block<R> {
     /// Build a `Block` from compiled children. A module produces no
     /// value; a non-module block's value is its last child's.
     pub fn new(module: bool, children: Box<[Node<R>]>, spec: Arc<Expr>) -> Node<R> {
+        Self::with(module, spec, children, Box::default(), Runs::default())
+    }
+
+    fn with(
+        module: bool,
+        spec: Arc<Expr>,
+        children: Box<[Node<R>]>,
+        catches: Box<[usize]>,
+        runs: Runs,
+    ) -> Node<R> {
         Node::new(Self {
             module,
             spec,
             lets: lets_of(&children),
             children,
-            catches: Box::default(),
+            catches,
             resident: TagValue::phantom(),
-            runs: Runs::default(),
+            runs,
         })
     }
 
@@ -834,15 +852,7 @@ impl<R: Rt> Block<R> {
     ) -> Result<Node<R>> {
         let (children, catches) =
             compile_block_children(ctx, flags, scope, top_id, module, exprs.iter())?;
-        Ok(Node::new(Self {
-            module,
-            spec,
-            lets: lets_of(&children),
-            children,
-            catches,
-            resident: TagValue::phantom(),
-            runs: Runs::default(),
-        }))
+        Ok(Self::with(module, spec, children, catches, Runs::default()))
     }
 }
 
@@ -1517,15 +1527,7 @@ impl<R: Rt> Block<R> {
         let children = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
         let runs = Runs::image_decode(buf)?;
-        Ok(Node::new(Self {
-            module,
-            spec,
-            lets: lets_of(&children),
-            children,
-            catches,
-            resident: TagValue::phantom(),
-            runs,
-        }))
+        Ok(Self::with(module, spec, children, catches, runs))
     }
 }
 
@@ -1628,6 +1630,24 @@ pub struct StringInterpolate<R: Rt> {
 }
 
 impl<R: Rt> StringInterpolate<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        typs: Box<[Type]>,
+        args: Box<[Node<R>]>,
+        fork: ForkSite,
+    ) -> Node<R> {
+        Node::new(Self {
+            spec,
+            typ,
+            typs,
+            args,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+            fork,
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -1636,15 +1656,8 @@ impl<R: Rt> StringInterpolate<R> {
         let typ = Type::decode(buf)?;
         let typs = Vec::<Type>::decode(buf)?.into_boxed_slice();
         let args = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            typs,
-            args,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-            fork: ForkSite::image_decode(buf)?,
-        }))
+        let fork = ForkSite::image_decode(buf)?;
+        Ok(Self::with(spec, typ, typs, args, fork))
     }
 
     pub(crate) fn compile(
@@ -1661,15 +1674,7 @@ impl<R: Rt> StringInterpolate<R> {
             .collect::<Result<_>>()?;
         let typs = args.iter().map(|n| n.typ().clone()).collect();
         let typ = Type::Primitive(Typ::String.into());
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            typs,
-            args,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-            fork: Default::default(),
-        }))
+        Ok(Self::with(spec, typ, typs, args, Default::default()))
     }
 }
 
@@ -1774,6 +1779,10 @@ fn target_pos(spec: &Expr) -> crate::SourcePosition {
 }
 
 impl<R: Rt> Connect<R> {
+    fn with(spec: Arc<Expr>, node: Node<R>, id: BindId) -> Node<R> {
+        Node::new(Self { spec, node, id })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -1781,7 +1790,7 @@ impl<R: Rt> Connect<R> {
         let spec = Arc::new(Expr::decode(buf)?);
         let node = decode_node(ctx, buf)?;
         let id = BindId::decode(buf)?;
-        Ok(Node::new(Self { spec, node, id }))
+        Ok(Self::with(spec, node, id))
     }
 
     pub(crate) fn compile(
@@ -1810,7 +1819,7 @@ impl<R: Rt> Connect<R> {
             });
         }
         let node = compile(ctx, flags, value.clone(), scope, top_id)?;
-        Ok(Node::new(Self { spec, node, id }))
+        Ok(Self::with(spec, node, id))
     }
 }
 
@@ -1940,6 +1949,18 @@ pub struct ConnectDeref<R: Rt> {
 }
 
 impl<R: Rt> ConnectDeref<R> {
+    fn with(spec: Arc<Expr>, rhs: Node<R>, src_id: BindId, top_id: ExprId) -> Node<R> {
+        Node::new(Self {
+            spec,
+            rhs,
+            src_id,
+            cell: None,
+            top_id,
+            pending: None,
+            slept: WakeBit::default(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -1949,15 +1970,7 @@ impl<R: Rt> ConnectDeref<R> {
         let src_id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         ctx.record_ref(src_id, top_id);
-        Ok(Node::new(Self {
-            spec,
-            rhs,
-            src_id,
-            cell: None,
-            top_id,
-            pending: None,
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, rhs, src_id, top_id))
     }
 
     pub(crate) fn compile(
@@ -1985,15 +1998,7 @@ impl<R: Rt> ConnectDeref<R> {
         }
         ctx.record_ref(src_id, top_id);
         let rhs = compile(ctx, flags, value.clone(), scope, top_id)?;
-        Ok(Node::new(Self {
-            spec,
-            rhs,
-            src_id,
-            cell: None,
-            top_id,
-            pending: None,
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, rhs, src_id, top_id))
     }
 
     /// The cell a delivered reference value names; where a write lands
@@ -2124,6 +2129,26 @@ pub struct TypeCast<R: Rt> {
 }
 
 impl<R: Rt> TypeCast<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        target: Type,
+        n: Node<R>,
+        src_ref: bool,
+        check_keys: bool,
+    ) -> Node<R> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            spec,
+            typ,
+            target,
+            n,
+            src_ref,
+            check_keys,
+            resident: TagValue::phantom(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -2134,16 +2159,7 @@ impl<R: Rt> TypeCast<R> {
         let n = decode_node(ctx, buf)?;
         let src_ref = n.typ().holds_ref(&ctx.env);
         let check_keys = target.holds_abstract(&ctx.env);
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            spec,
-            typ,
-            target,
-            n,
-            src_ref,
-            check_keys,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, target, n, src_ref, check_keys))
     }
 
     pub(crate) fn compile(
@@ -2159,16 +2175,7 @@ impl<R: Rt> TypeCast<R> {
         let target = typ.scope_refs(&scope.lexical);
         target.check_cast(&ctx.env).at(&spec)?;
         let typ = Type::union(&ctx.env, &[&target, &CAST_ERR])?;
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            spec,
-            typ,
-            target,
-            n,
-            src_ref: false,
-            check_keys: true,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, target, n, false, true))
     }
 }
 
@@ -2279,6 +2286,10 @@ pub struct Never<R: Rt> {
 }
 
 impl<R: Rt> Never<R> {
+    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R>]>) -> Node<R> {
+        Node::new(Self { spec, typ, n })
+    }
+
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
@@ -2300,7 +2311,7 @@ impl<R: Rt> Never<R> {
             }
             None => Type::Bottom,
         };
-        Ok(Node::new(Self { spec, typ, n }))
+        Ok(Self::with(spec, typ, n))
     }
 }
 
@@ -2312,7 +2323,7 @@ impl<R: Rt> Never<R> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self { spec, typ, n }))
+        Ok(Self::with(spec, typ, n))
     }
 }
 
@@ -2399,6 +2410,17 @@ pub struct Any<R: Rt> {
 }
 
 impl<R: Rt> Any<R> {
+    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R>]>) -> Node<R> {
+        Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            from: None,
+            slept: WakeBit::default(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -2406,14 +2428,7 @@ impl<R: Rt> Any<R> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            n,
-            resident: TagValue::phantom(),
-            from: None,
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, typ, n))
     }
 
     pub(crate) fn compile(
@@ -2428,14 +2443,7 @@ impl<R: Rt> Any<R> {
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
-        Ok(Node::new(Self {
-            spec,
-            typ: Type::empty_tvar(),
-            n,
-            resident: TagValue::phantom(),
-            from: None,
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, Type::empty_tvar(), n))
     }
 }
 
@@ -2615,6 +2623,26 @@ pub struct Sample<R: Rt> {
 }
 
 impl<R: Rt> Sample<R> {
+    fn with(
+        spec: Arc<Expr>,
+        banking: Banking,
+        typ: Type,
+        top_id: ExprId,
+        trigger: Node<R>,
+        arg: Held<R>,
+    ) -> Node<R> {
+        Node::new(Self {
+            spec,
+            banking,
+            typ,
+            top_id,
+            trigger,
+            arg,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -2632,16 +2660,7 @@ impl<R: Rt> Sample<R> {
         };
         let trigger = decode_node(ctx, buf)?;
         let arg = Held::image_decode(ctx, buf)?;
-        Ok(Node::new(Self {
-            spec,
-            banking,
-            typ,
-            top_id,
-            trigger,
-            arg,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, banking, typ, top_id, trigger, arg))
     }
 
     pub(crate) fn compile(
@@ -2666,16 +2685,7 @@ impl<R: Rt> Sample<R> {
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
         let arg = Held::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
         let typ = banking.result_type(trigger.typ(), arg.node.typ());
-        Ok(Node::new(Self {
-            banking,
-            top_id,
-            spec,
-            typ,
-            trigger,
-            arg,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, banking, typ, top_id, trigger, arg))
     }
 
     /// The payment variable of a [`Banking::Each`] sample.
