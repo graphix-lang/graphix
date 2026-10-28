@@ -1478,7 +1478,7 @@ impl<R: Rt> Update<R> for Module<R> {
             // runs on
             match v {
                 Value::String(s) => {
-                    // CR claude for claude: [bug/low] The body is cleared before the new
+                    // XCR claude for claude: [bug/low] The body is cleared before the new
                     // source compiles, so a source string that fails to parse or check
                     // unloads the working module. After `source` becomes "let x = ;", a
                     // write to foo::x prints "5 0", not "5 50". That contradicts the
@@ -1492,8 +1492,36 @@ impl<R: Rt> Update<R> for Module<R> {
                     // q59, A dynamic module whose new source does not compile): yes,
                     // compile first (the recommendation: compile first (the comment
                     // already promises it).)
-                    // the running body is set aside, not torn down: it goes
-                    // back if the new source does not check
+                    // 2026-10-27 qwen: done: compile first, tear down only on success.
+                    // Module::update sets the running body aside (set_aside: its nodes,
+                    // proxies, catches, runs and the env it declared its names in, which
+                    // starts again from the module statement's own — the new base field)
+                    // and compiles the new source into that. A source that does not
+                    // check puts the body back and reports through the status as an
+                    // error value always did; a source that does is retired — proxies
+                    // unref'd, nodes deleted under the env that made them — after
+                    // apply_deferred, so an unref cannot cancel a reference the new body
+                    // just took for the same (variable, reader). Saved is taken before
+                    // the import scrub, so a refused reload restores the registries the
+                    // running body registered, and the partial new body is discarded as
+                    // a failed compile always discarded one. A load gives back what the
+                    // body it replaces registered globally, or the new source declares
+                    // its names over it: new Update::unregister (recurse; Prune crosses
+                    // its boundary like it does for delete), Impl::give_back (its entry,
+                    // or the declaration it narrowed) and Trait::unregister (the
+                    // definition of record, whose identity is scope and name, so a
+                    // re-declaration would otherwise leave the new body dispatching
+                    // through the old load's methods). The narrowed ImplDef now carries
+                    // the implementation's own scope and position, so it is identified
+                    // with the load that narrowed it: retiring load 1 after load 2
+                    // registered leaves load 2's entries alone. A dynamic body that has
+                    // loaded refuses the image write (NOT_QUIESCENT): a load declares
+                    // names in env that base no longer says, and an image is written
+                    // before any cycle. Tests (lang/modules): a bad source keeps the
+                    // load (fails before this change), a good source after a bad one, a
+                    // refused reload then a good reload that narrows the interface's
+                    // Cast, and a body declaring a trait that survives a refused reload
+                    // and reloads. The CR's probe prints "5 50".
                     let mut set_aside = self.set_aside();
                     let res = self.compile_source(ctx, s, &mut set_aside);
                     // the new body's references reach the runtime first: an
