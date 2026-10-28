@@ -328,25 +328,25 @@ pub(crate) struct TreeTypes {
 }
 
 impl TreeTypes {
+    fn with(key: Option<Typ>, key_str: ArcStr, val_str: ArcStr) -> Self {
+        Self { key, key_str, val_str }
+    }
+
     fn of(resolved: Option<&FnType>, env: &Env) -> Self {
         let Some(params) = resolved.and_then(|ft| tree_params_of_result_type(&ft.rtype))
         else {
             return Self::default();
         };
-        Self {
-            key: prim_typ(&params[0]),
-            key_str: stored_type(&params[0], env),
-            val_str: stored_type(&params[1], env),
-        }
+        Self::with(
+            prim_typ(&params[0]),
+            stored_type(&params[0], env),
+            stored_type(&params[1], env),
+        )
     }
 
     #[cfg(test)]
     pub(crate) fn string_to_string() -> Self {
-        Self {
-            key: Some(Typ::String),
-            key_str: "string".into(),
-            val_str: "string".into(),
-        }
+        Self::with(Some(Typ::String), "string".into(), "string".into())
     }
 
     pub(crate) fn concrete(&self) -> Result<()> {
@@ -394,7 +394,9 @@ impl ImageState for TreeTypes {
                     .ok_or(PackError::UnknownTag)
             })
             .transpose()?;
-        Ok(Self { key, key_str: ArcStr::decode(buf)?, val_str: ArcStr::decode(buf)? })
+        let key_str = ArcStr::decode(buf)?;
+        let val_str = ArcStr::decode(buf)?;
+        Ok(Self::with(key, key_str, val_str))
     }
 }
 
@@ -946,9 +948,15 @@ pub(crate) struct OpenTreeEv<O> {
     opener: PhantomData<O>,
 }
 
+impl<O> OpenTreeEv<O> {
+    fn with(types: TreeTypes) -> Self {
+        Self { types, opener: PhantomData }
+    }
+}
+
 impl<O> Default for OpenTreeEv<O> {
     fn default() -> Self {
-        Self { types: TreeTypes::default(), opener: PhantomData }
+        Self::with(TreeTypes::default())
     }
 }
 
@@ -961,7 +969,7 @@ impl<O: TreeOpener> ImageState for OpenTreeEv<O> {
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
-        Ok(Self { types: TreeTypes::image_decode(ctx, buf)?, opener: PhantomData })
+        Ok(Self::with(TreeTypes::image_decode(ctx, buf)?))
     }
 }
 
@@ -979,7 +987,7 @@ impl<O: TreeOpener> EvalCachedAsync for OpenTreeEv<O> {
         _from: &[Node<R>],
         _top_id: ExprId,
     ) -> Self {
-        Self { types: TreeTypes::of(resolved, &ctx.env), opener: PhantomData }
+        Self::with(TreeTypes::of(resolved, &ctx.env))
     }
 
     fn typecheck1<R: Rt>(
