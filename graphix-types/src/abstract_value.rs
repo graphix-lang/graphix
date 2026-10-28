@@ -14,7 +14,7 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     ptr,
-    sync::LazyLock,
+    sync::{LazyLock, OnceLock},
 };
 use triomphe::Arc;
 
@@ -109,12 +109,20 @@ pub struct GxAbstract {
     pub params: Arc<[Type]>,
     #[doc(hidden)]
     pub payload: Value,
+    /// `params` read as regular trees ([`crate::typ::regular`]), made at
+    /// the first comparison: two instantiations are two values, whatever
+    /// form each wrote its parameters in.
+    params_key: OnceLock<Arc<[u8]>>,
 }
 
 impl GxAbstract {
     /// The value's type.
     pub fn typ(&self) -> Type {
         Type::Abstract { id: self.id, params: self.params.clone() }
+    }
+
+    fn params_key(&self) -> &[u8] {
+        self.params_key.get_or_init(|| crate::typ::regular::key(&self.params))
     }
 }
 
@@ -310,6 +318,7 @@ impl Pack for GxAbstract {
                 name: Pack::decode(buf)?,
                 params: Pack::decode(buf)?,
                 payload: Pack::decode(buf)?,
+                params_key: OnceLock::new(),
             })
         })
     }
@@ -325,13 +334,13 @@ impl Drop for GxAbstract {
 
 impl PartialEq for GxAbstract {
     fn eq(&self, other: &Self) -> bool {
-        if self.id != other.id {
+        if self.id != other.id || self.params_key() != other.params_key() {
             return false;
         }
         if let Some(b) = hooked(|h| (h.eq)(h.state, self, other)) {
             return b;
         }
-        // CR claude for claude: [bug/medium] The structural case ignores params, but a
+        // XCR claude for claude: [bug/medium] The structural case ignores params, but a
         // type test does not. Box<i64>(1) and Box<[i64, null]>(1) are told apart by a
         // select, yet compare == and merge into one map key (coretraits::pair also
         // sends two instantiations here). Either compare params after the id in eq, cmp
@@ -342,6 +351,16 @@ impl PartialEq for GxAbstract {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q31, Two
         // instantiations of one abstract compare equal): yes, compare params (the
         // recommendation: compare params.)
+        // 2026-10-28 claude: Ruling built: GxAbstract's eq, cmp and hash compare a key of
+        // the params after the id (typ::regular::key, made lazily at the first
+        // comparison): the params read as regular trees, every resolved reference
+        // expanded with recursion closed by a memo, unions flattened and their primitives
+        // merged, then refined to ranks by sorted signatures and written in canonical DFS
+        // order, so an alias, a cast's target as written and a construction's frozen type
+        // give one key and a recursive alias equals a one-step unfolding of it (lane C's
+        // blocker). Pins: lang::traits::{abstract_instantiations_are_distinct,
+        // abstract_parameter_aliases_compare_equally,
+        // abstract_recursive_parameter_aliases_compare_equally}.
         crate::stack::ensure_sufficient(|| self.payload == other.payload)
     }
 }
@@ -360,6 +379,10 @@ impl Ord for GxAbstract {
             Ordering::Equal => {}
             o => return o,
         }
+        match self.params_key().cmp(other.params_key()) {
+            Ordering::Equal => {}
+            o => return o,
+        }
         if let Some(o) = hooked(|h| (h.cmp)(h.state, self, other)) {
             return o;
         }
@@ -367,12 +390,13 @@ impl Ord for GxAbstract {
     }
 }
 
-/// Where an `Eq` implementation may decide equality only the id is
-/// hashed, since no hash of the payload can agree with it; elsewhere
-/// equality is the payload's, and so is the hash.
+/// Where an `Eq` implementation may decide equality only the id and the
+/// parameters are hashed, since no hash of the payload can agree with
+/// it; elsewhere equality is the payload's, and so is the hash.
 impl Hash for GxAbstract {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+        self.params_key().hash(state);
         if hooked(|h| (h.eq_applies)(h.state, self).then_some(())).is_none() {
             crate::stack::ensure_sufficient(|| self.payload.hash(state))
         }
@@ -397,7 +421,7 @@ pub fn register() {
 /// Mint a value of the abstract type `id<params>` around `payload`.
 #[doc(hidden)]
 pub fn wrap(id: AbstractId, name: ArcStr, params: Arc<[Type]>, payload: Value) -> Value {
-    WRAPPER.wrap(GxAbstract { id, name, params, payload })
+    WRAPPER.wrap(GxAbstract { id, name, params, payload, params_key: OnceLock::new() })
 }
 
 /// The box inside `v`, if `v` is a Graphix-minted abstract value.
@@ -427,6 +451,7 @@ mod test {
             name: arcstr::literal!("T"),
             params: Arc::from_iter([]),
             payload: Value::I64(1),
+            params_key: OnceLock::new(),
         };
         let mut buf = Vec::new();
         v.encode(&mut buf).unwrap();

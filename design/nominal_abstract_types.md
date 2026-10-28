@@ -95,8 +95,13 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    constructor when no VALUE `Counter` is in scope; a declaration
    shadows, as everywhere.
 
-Equality is same tag + equal payloads (overridable through the core
-traits, `traits.md`); a value prints as `Counter(5)`.
+Equality is same tag, same parameters, then equal payloads (the payload
+part overridable through the core traits, `traits.md`); a value prints as
+`Counter(5)`. The parameters compare as regular trees
+(`typ::regular::key`: every resolved reference expanded, recursion
+included, unions flattened, then refined to canonical ranks), so an alias,
+a cast's target as written and a construction's frozen type name one
+parameter, and the orderings and hashes agree with equality.
 
 ## Why: one view instead of two
 

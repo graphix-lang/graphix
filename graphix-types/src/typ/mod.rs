@@ -46,6 +46,7 @@ mod normalize;
 pub use normalize::{NormKey, norm_key};
 mod print;
 pub use print::Brief;
+pub(crate) mod regular;
 mod setops;
 #[doc(hidden)]
 pub mod settle;

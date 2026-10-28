@@ -1051,7 +1051,8 @@ cycle, across workers; the compiler never pins threads.
   lower`), so the type it flows into decides them (a return, an element,
   a union of instantiations, a call through a definition that constructs)
   and one nothing decides settles to the payload's type; a trait bound or
-  dispatch reads it, so decides it there. A pattern `T(p)` with no
+  dispatch reads it, so decides it there. Two values compare their
+  parameters, as regular trees (`typ::regular`), before their payloads. A pattern `T(p)` with no
   type test tests the tag and takes its parameters from the scrutinee,
   never from `p` (`StructPatternNode::narrow_payloads`).
 - **Traits v1** (`design/traits.md`): static dispatch on the self

@@ -2701,3 +2701,54 @@ fn inconsistent_eq_warning_matches_answer() -> Result<()> {
     assert!(!stderr.contains("answering Equal"), "{stderr}");
     Ok(())
 }
+
+// Two instantiations of one abstract are two values: a select tells
+// them apart, and so do ==, the orderings and map keys.
+run!(
+    abstract_instantiations_are_distinct,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let p: Box<[i64, null]> = Box(1);
+    let q: Box<i64> = Box(1);
+    let xs: Array<[Box<i64>, Box<[i64, null]>]> = [p, q];
+    let m = {p => "p", q => "q"};
+    (xs[0]$ == xs[1]$, map::len(m), m{p}$, m{q}$)
+}"#,
+    prints("[false, i64:2, \"p\", \"q\"]")
+);
+
+// Parameters compare as types, not as written: an alias, a cast's
+// target as written and a read's are the parameter they name.
+run!(
+    abstract_parameter_aliases_compare_equally,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    impl<'a> Cast for Box<'a> {};
+    type I = i64;
+    type N = [I, null];
+    let s: Box<I> = cast<Box<I>>(1)$;
+    let t: Box<i64> = Box(1);
+    let u: Box<N> = json::read("1")$;
+    let v: Box<[i64, null]> = Box(1);
+    let m = {u => "read", v => "constructed"};
+    (s == t, s <= t, s >= t, u == v, map::len(m), m{u}$)
+}"#,
+    prints("[true, true, true, true, i64:1, \"constructed\"]")
+);
+
+// A recursive alias compares as the regular tree it names, however many
+// times a form unfolds it.
+run!(
+    abstract_recursive_parameter_aliases_compare_equally,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    impl<'a> Cast for Box<'a> {};
+    type R = [i64, Array<R>];
+    type S = [i64, Array<R>];
+    let a: Box<R> = cast<Box<R>>(1)$;
+    let b: Box<S> = Box(1);
+    let m = {a => "a", b => "b"};
+    (a == b, a <= b, a >= b, map::len(m))
+}"#,
+    prints("[true, true, true, i64:1]")
+);
