@@ -1724,6 +1724,36 @@ mod tests {
     }
 
     #[test]
+    fn a_lone_bracketed_pattern_hugs() {
+        let cfg = FormatConfig { width: 30, ..FormatConfig::default() };
+        for (src, opening, closing) in [
+            (
+                "select v { `Beta({ first, second: sssssssssss }) => 2, _ => 3 }",
+                "`Beta({\n",
+                "}) => 2",
+            ),
+            (
+                "select v { `Beta(`Gamma({ first, second: sssssssssss })) => 2, _ => 3 }",
+                "`Beta(`Gamma({\n",
+                "})) => 2",
+            ),
+            (
+                "select v { [[{ first, second: sssssssssss }]] => 2, _ => 3 }",
+                "[[{\n",
+                "}]] => 2",
+            ),
+        ] {
+            let out = format_source(SourceKind::Program, src, &cfg).unwrap();
+            assert!(out.contains(opening), "{out}");
+            assert!(out.contains(closing), "{out}");
+            assert_eq!(
+                format_source(SourceKind::Program, &out, &cfg).unwrap().as_str(),
+                out.as_str()
+            );
+        }
+    }
+
+    #[test]
     fn a_long_pattern_breaks_like_its_literal() {
         let cfg = FormatConfig { width: 30, ..FormatConfig::default() };
         let src = "let (alpha, `Beta(b, c), {gamma, ..}) = v; \

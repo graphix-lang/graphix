@@ -490,9 +490,19 @@ fn hug_parens(
     if !hugs_parens(e) {
         return Ok(false);
     }
+    hug_bracketed(buf, open, e, close, |col, limit| head_fits(col, limit, &e.kind))
+}
+
+fn hug_bracketed(
+    buf: &mut PrettyBuf,
+    open: &str,
+    e: &impl PrettyDisplay,
+    close: &str,
+    head_fits: impl FnOnce(usize, usize) -> bool,
+) -> Result<bool, fmt::Error> {
     let start = buf.mark();
     write!(buf, "{open}")?;
-    if !head_fits(buf.col(), buf.limit, &e.kind) {
+    if !head_fits(buf.col(), buf.limit) {
         buf.rollback(start);
         return Ok(false);
     }
@@ -1347,7 +1357,7 @@ enum PatElt<'a> {
 }
 
 /// A bracketed pattern, one element to a line.
-// CR claude for claude: [readability/low] A pattern's lone bracketed element never hugs.
+// XCR claude for claude: [readability/low] A pattern's lone bracketed element never hugs.
 // `` `Beta({ first, second: s }) `` prints as `` `Beta( ``, `{`, the fields, `}`, `)`,
 // while the same shape as a type or a value hugs (`` `Beta({ ``), per the Formatter
 // rule for expressions and types. Decide whether patterns follow the hug rule. If they
@@ -1356,12 +1366,36 @@ enum PatElt<'a> {
 // design/review-2026-10-26/repro/t-print-pattern-no-hug.gx (t-print-03)
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q77, Do patterns
 // hug?): yes, follow it (the recommendation: follow it.)
+// 2026-10-28 codex: Patterns now share the expression printer's bracket-layout helper. A
+// single bracketed child hugs when its opening fits, including nested variants, arrays
+// and structs; multi-element patterns keep their list layout. Pin
+// a_lone_bracketed_pattern_hugs failed before the change and passes afterward. Full
+// graphix-types lib: 344 passed. CLAUDE/AGENTS, the book formatter page and language
+// skill now include patterns in the rule.
 fn pretty_pattern_elts(
     buf: &mut PrettyBuf,
     open: &str,
     elts: &[PatElt<'_>],
     close: &str,
 ) -> fmt::Result {
+    if let [PatElt::Pat(p)] = elts {
+        use StructurePattern::*;
+        let head = match p {
+            Slice { list, .. } | SlicePrefix { list, .. } => Some(1 + *list as usize),
+            SliceSuffix { .. } | Tuple { .. } | Struct { .. } => Some(1),
+            Variant { tag, binds, .. } if !binds.is_empty() => {
+                Some(tag.chars().count() + 2)
+            }
+            Abstract { name, .. } => Some(flat_width(name) + 1),
+            _ => None,
+        };
+        if let Some(head) = head {
+            let head = head + p.all().map_or(0, |n| flat_width(n) + 2);
+            if hug_bracketed(buf, open, *p, close, |col, limit| col + head <= limit)? {
+                return Ok(());
+            }
+        }
+    }
     writeln!(buf, "{open}")?;
     buf.nested(|buf| {
         for (i, elt) in elts.iter().enumerate() {

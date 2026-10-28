@@ -127,6 +127,10 @@ constant argument to `exit` runs at init — always gate it).
   its operand, or after an opening bracket on its line, is a parse
   error. `///` doc comments only in `.gxi`.
 
+- **Formatting:** a lone bracketed argument hugs its parent's brackets
+  when its opening fits, in patterns as in expressions and types:
+  `` `Tag({ `` through `})`.
+
 ## Basics
 
 Expression-oriented; the last expression of a file or block is its value;

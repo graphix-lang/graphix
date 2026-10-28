@@ -259,6 +259,11 @@ fallback.
 
 ### What it changes
 
+A single bracketed argument keeps its opening and closing brackets beside
+its parent's when the opening fits, in expressions, types and patterns.
+For example, a long `` `Tag({ first, second }) `` pattern opens with
+`` `Tag({ `` and closes with `})`, with the fields between them.
+
 The formatter keeps what you chose where the choice is yours: the order
 of struct fields and of the variants in a union, the delimiters of a
 string (`"…"`, `r"…"`, `"""…"""`), your comments and attributes. It
