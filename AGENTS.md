@@ -690,7 +690,11 @@ thread-local `FastMemo`, never in state. A type-directed builtin
 (`str::parse`, the reads) declares its target `'b: Concrete`; the checker
 refuses the target where it settles open or holds a reference (data
 can't be one; the run-time cast refuses one too) or an abstract type
-with no `Cast` impl, a writer declares its value `'a: Data` (no
+with no `Cast` impl, `json::read`'s and `toml::read`'s target is also
+`'b: JsonData`/`TomlData` (`typ::textdata`: no union in it holds two
+members one value of the format could be written by), judged of the
+call's settled binding (`site_bounds`; refused at the bind, a union
+target would narrow to one member), a writer declares its value `'a: Data` (no
 reference, function or such abstract type; open is fine), an async
 builtin's `DATA_ARGS`/`DATA_RESULT` convert a store's keys and values
 both ways (the arguments keep their kind markers, so keys differ and

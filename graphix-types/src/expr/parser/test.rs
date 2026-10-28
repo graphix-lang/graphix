@@ -1895,6 +1895,8 @@ fn list_is_a_reserved_type_name() {
         "NoError",
         "Discernible",
         "Ordered",
+        "JsonData",
+        "TomlData",
     ] {
         assert!(parse_one(&format!("type {name} = i64")).is_err(), "{name}");
     }

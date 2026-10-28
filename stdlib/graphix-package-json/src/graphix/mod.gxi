@@ -4,7 +4,11 @@
 /// Numbers are read exactly, so an object whose only key is
 /// `$serde_json::private::Number` reads as the number its value spells
 /// (`{"$serde_json::private::Number": "42"}` is 42), not as an object.
-val read: fn<'b: Concrete>(input: [string, bytes]) -> Result<'b, [`JsonErr(string), `InvalidCast(string)]>;
+/// The target holds no union two members of which one JSON value could
+/// be written by (`JsonData`): `[u8, i64]`, `[string, datetime]` and
+/// `[Array<string>, Array<i64>]` are refused, since what was written as
+/// one could read back as the other.
+val read: fn<'b: Concrete + JsonData>(input: [string, bytes]) -> Result<'b, [`JsonErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a JSON string, as its type says: a struct or a
 /// map with scalar keys is an object; another map is an array of key/value

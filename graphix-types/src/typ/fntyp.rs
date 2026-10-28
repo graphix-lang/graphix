@@ -1519,6 +1519,8 @@ impl FnType {
                             impl_tc,
                             Type::Bound(Bound::Discernible)
                                 | Type::Bound(Bound::Ordered)
+                                | Type::Bound(Bound::JsonData)
+                                | Type::Bound(Bound::TomlData)
                                 | Type::Bound(Bound::Concrete)
                                 | Type::Bound(Bound::Data)
                         ) {

@@ -495,3 +495,14 @@ run!(decimal_excess_precision_rounds, r#"{
     let c = cast<decimal>(text);
     [a$ == expected, b$ == expected, c$ == expected]
 }"#, prints("[true, true, true]"); FuseExpect::Jit);
+
+// A decimal is written as an exact JSON number, so beside a string it
+// reads back as itself (small-pkgs-08).
+run!(json_decimal_written_as_an_exact_number, r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let d = decimal:12345678901234567890.123456789;
+    let u: [decimal, string] = decimal:1.10;
+    let back: Result<[decimal, string], E> = json::read(json::write_str(u)$);
+    let exact: Result<decimal, E> = json::read(json::write_str(d)$);
+    (json::write_str(d)$, json::write_str(u)$, back$ == u, exact$ == d)
+}"#, prints(r#"["12345678901234567890.123456789", "1.10", true, true]"#); FuseExpect::Jit);

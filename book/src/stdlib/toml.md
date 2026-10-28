@@ -9,6 +9,11 @@ As with json, only a value whose type says nothing (`Any`) is written by
 its contents, where an array of `(string, _)` pairs in key order is a
 table.
 
+A `toml::read` target holds no union two of whose members one TOML value
+could be written by, as with [json](json.md#unions-in-the-target):
+`[u8, i64]` and `[Array<string>, Array<i64>]` are refused. TOML has a
+datetime of its own, so `[string, datetime]` reads apart here.
+
 Maps follow JSON's key rule: scalar keys form a table, while a map holding
 a composite or bytes key is an array of `[key, value]` pairs. Such a map must
 be inside a document field because TOML requires a table at the root. TOML

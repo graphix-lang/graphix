@@ -545,17 +545,19 @@ fn typ() -> impl Strategy<Value = Typ> {
 
 /// A type variable's bound: a type, or one of the bound names.
 fn bound(inner: impl Strategy<Value = Type>) -> impl Strategy<Value = Type> {
-    prop_oneof![
-        6 => inner,
-        1 => Just(Type::Bound(Bound::Concrete)),
-        1 => Just(Type::Bound(Bound::Data)),
-        1 => Just(Type::Bound(Bound::Function)),
-        1 => Just(Type::Bound(Bound::Singleton)),
-        1 => Just(Type::Bound(Bound::OneNumber)),
-        1 => Just(Type::Bound(Bound::NoError)),
-        1 => Just(Type::Bound(Bound::Discernible)),
-        1 => Just(Type::Bound(Bound::Ordered)),
-    ]
+    let bounds = prop::sample::select(vec![
+        Bound::Concrete,
+        Bound::Data,
+        Bound::Function,
+        Bound::Singleton,
+        Bound::OneNumber,
+        Bound::NoError,
+        Bound::Discernible,
+        Bound::Ordered,
+        Bound::JsonData,
+        Bound::TomlData,
+    ]);
+    prop_oneof![6 => inner, 10 => bounds.prop_map(Type::Bound)]
 }
 
 fn typexp() -> impl Strategy<Value = Type> {

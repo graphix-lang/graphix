@@ -90,6 +90,8 @@ where
             "NoError" => Type::Bound(Bound::NoError),
             "Discernible" => Type::Bound(Bound::Discernible),
             "Ordered" => Type::Bound(Bound::Ordered),
+            "JsonData" => Type::Bound(Bound::JsonData),
+            "TomlData" => Type::Bound(Bound::TomlData),
             _ => return None,
         })
     }

@@ -140,6 +140,8 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
         "NoError",
         "Discernible",
         "Ordered",
+        "JsonData",
+        "TomlData",
     ];
     let typ = [
         "i8", "u8", "i16", "u16", "i32", "u32", "v32", "z32", "i64", "u64", "v64", "z64",

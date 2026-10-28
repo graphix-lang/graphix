@@ -22,7 +22,7 @@
       "i8 u8 i16 u16 i32 u32 v32 z32 i64 u64 v64 z64 f32 f64 " +
       "decimal datetime duration bool string bytes " +
       "Result Option Number Int Sint Uint Float Real Primitive Ordering " +
-      "Concrete Data Function Singleton OneNumber NoError Discernible Ordered";
+      "Concrete Data Function Singleton OneNumber NoError Discernible Ordered JsonData TomlData";
 
     // Type parameter pattern: 'a, 'b, 'r, 'e, etc.
     const TYPE_PARAM = {

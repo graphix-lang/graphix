@@ -1657,6 +1657,10 @@ impl Type {
                 Ok(t.indiscernible(env, Open::Benign, true).is_none())
             }
             (_, Self::Bound(Bound::Ordered)) => Ok(false),
+            // judged of the call's settled binding (`site_bounds`): refused
+            // here, a union target would narrow to one member instead
+            (Self::Bound(Bound::JsonData | Bound::TomlData), _) => Ok(true),
+            (_, Self::Bound(Bound::JsonData | Bound::TomlData)) => Ok(false),
             (Self::Hole, Self::Hole) => Ok(true),
             (Self::Hole, Self::TVar(tv)) => match tv.binding() {
                 Some(b) => Self::Hole.contains_int(flags, env, hist, &b),

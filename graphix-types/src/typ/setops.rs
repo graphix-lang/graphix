@@ -159,6 +159,8 @@ impl Identity {
             | (Type::Bound(Bound::NoError), Type::Bound(Bound::NoError))
             | (Type::Bound(Bound::Discernible), Type::Bound(Bound::Discernible))
             | (Type::Bound(Bound::Ordered), Type::Bound(Bound::Ordered))
+            | (Type::Bound(Bound::JsonData), Type::Bound(Bound::JsonData))
+            | (Type::Bound(Bound::TomlData), Type::Bound(Bound::TomlData))
             | (Type::Bound(Bound::Singleton), Type::Bound(Bound::Singleton)) => true,
             (Type::App(c0, a0), Type::App(c1, a1)) => {
                 self.same(c0, c1) && self.same(a0, a1)

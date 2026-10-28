@@ -294,7 +294,7 @@ fn serialize_leaf<S: Serializer>(value: &Value, s: S) -> Result<S::Ok, S::Error>
         Value::F64(n) => {
             Err(S::Error::custom(format_args!("cannot represent {n} as JSON")))
         }
-        // CR claude for claude: [bug/low] A decimal is written as a JSON string. Other
+        // XCR claude for claude: [bug/low] A decimal is written as a JSON string. Other
         // consumers get "1.5" where a number belongs, and a [decimal, string] value
         // reads back as the string member, so the round trip changes the value.
         // arbitrary_precision is already on, so a decimal can be written as an exact
@@ -317,7 +317,18 @@ fn serialize_leaf<S: Serializer>(value: &Value, s: S) -> Result<S::Ok, S::Error>
         // restriction would also break pack/db. No production change for this CR; it
         // remains open pending coordination of q42(a). Probe and results:
         // /tmp/decimal-union-probe.rs and /tmp/cr-decimal-union.log.
-        Value::Decimal(d) => s.collect_str(d),
+        // 2026-10-28 claude: Ruling built with q42(a), which unblocked it: a decimal
+        // writes as an exact JSON number (serde_json::Number over its text,
+        // arbitrary_precision), and json::read's target carries JsonData, which
+        // refuses a union a decimal shares a form with ([decimal, f64], [decimal,
+        // i64]); [decimal, string] reads back as written. Pin:
+        // lib_tests::json::json_decimal_written_as_an_exact_number.
+        Value::Decimal(d) => match d.to_string().parse::<serde_json::Number>() {
+            Ok(n) => n.serialize(s),
+            Err(e) => {
+                Err(S::Error::custom(format_args!("cannot write {d} as JSON: {e}")))
+            }
+        },
         Value::String(st) => s.serialize_str(st),
         Value::Bytes(b) => s.collect_seq(b.iter()),
         Value::DateTime(dt) => s.serialize_str(&dt.to_rfc3339()),

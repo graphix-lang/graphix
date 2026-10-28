@@ -478,6 +478,25 @@ and `array::dedup` require it; `==`, `!=` and `uniq` require only
 (`design/place_references.md`). It travels, judges and settles as
 `Discernible` does.
 
+### `JsonData`, `TomlData`: what a text reader can tell apart
+
+`'b: JsonData` (`json::read`'s target) and `'b: TomlData` (`toml::read`'s)
+hold of a type with no union anywhere in it whose two members one value
+of the format could be written by (`Type::text_ambiguity`,
+`typ/textdata.rs`): the reader picks one member per value, so a value
+written as one could read back as the other. Each member is read as the
+data it writes (ints and floats apart; JSON writes a datetime and a
+variant's tag as strings, a duration as a float and a decimal as an exact
+number; TOML has no null and a native datetime), composites as arrays (an
+object reads as its sorted key/value pairs, a struct takes exactly its
+fields less the nullable ones, any-length arrays share the empty array),
+and two members overlap where some finite value is written by one and
+read by the other. Unlike the other predicates it is judged only of the
+call's settled binding (`site_bounds`): a refusal at the bind would make
+a union target narrow to the one member that passes. It is handed to an
+open cell of its binding as `Concrete` is, so a generic reader's callers
+are judged at their sites.
+
 An interface must declare what its implementation requires: every
 conjunct of an implementation variable the signature leaves generic
 must follow from the signature variable's conjuncts, or from the bound

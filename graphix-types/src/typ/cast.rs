@@ -1158,6 +1158,10 @@ impl Type {
                     // what check accepts, contrary to the project rule. No such workaround
                     // or signature change was made; q42 remains partial and needs
                     // coordinator authorization for a format-specific target bound.
+                    // 2026-10-28 claude: q42(a) built, but it does not cover this: the
+                    // target here is one variant, not a union, and reading ["B", 2] into
+                    // `A(string, i64) still gives `A("B", 2) (probe run 2026-10-28). The
+                    // tagless arm is still to delete or narrow as the CR proposes.
                     (_, Some(elts)) if elts.len() == ts.len() => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for (i, el) in elts.iter().enumerate() {
@@ -1282,7 +1286,7 @@ impl Type {
         }
         // a member whose tag the value carries is its reading, whatever a
         // tagless reading of an earlier member says
-        // CR claude for claude: [bug/medium] The data a writer emits does not say which
+        // XCR claude for claude: [bug/medium] The data a writer emits does not say which
         // union member it came from, and this order reads it back as the wrong one. A
         // tuple ("B", 7) of [(string, i64), `B(i64)] comes back from pack, json and db
         // as `B(7), against the stated rule that unmarked data reads as a tuple of its
@@ -1324,6 +1328,20 @@ impl Type {
         // the project rule. No such workaround or signature change was made; q42
         // remains partial and needs coordinator authorization for a format-specific
         // target bound.
+        // 2026-10-28 claude: q42(a) built for json/toml: json::read's target is 'b:
+        // Concrete + JsonData and toml::read's 'b: Concrete + TomlData (new bounds,
+        // typ::textdata): no union anywhere in the target holds two members one value
+        // of the format could be written by (any-length arrays share the empty array,
+        // an object reads as its sorted key/value pairs, a struct takes only its fields
+        // and leaves out only nullable ones, ints and floats write apart, JSON writes a
+        // datetime and a tag as strings and a duration as a float, TOML has no null and
+        // a native datetime). Judged of the call's settled binding in site_bounds,
+        // never at the bind, where a refusal would narrow a union target to one member.
+        // Pins: lang::types::{json_target_union_its_data_cannot_tell_apart_refused,
+        // toml_target_union_its_data_cannot_tell_apart_refused,
+        // json_target_members_written_apart_read_back},
+        // typ::textdata::test::unions_whose_members_write_alike;
+        // data_reads_back_as_written keeps the pack half.
         let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
         if tagged.peek().is_some() {
             let mut read = Err(None);
@@ -1383,6 +1401,11 @@ impl Type {
         // to the project rule. No such workaround or signature change was made; q42
         // remains partial and needs coordinator authorization for a format-specific
         // target bound.
+        // 2026-10-28 claude: q42(a) built (JsonData/TomlData): the probe's json read
+        // into Array<[List<i64>, (i64, string), Array<[i64, f64]>]> is now refused
+        // (List<i64> and Array<[i64, f64]> write alike). Left: an Array<i64> value
+        // cast to [Array<i64>, (i64, i64)] becoming the tuple, an in-program cast the
+        // reader bounds do not decide.
         let mut ranked: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
         if let Value::Array(a) = v
             && rep::kind(v).is_none()
@@ -2859,6 +2882,12 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         // the project rule. No such workaround or signature change was made; q42
         // remains partial and needs coordinator authorization for a format-specific
         // target bound.
+        // 2026-10-28 claude: q42(a) built (JsonData/TomlData): the probe's json read of
+        // a Map member beside an array of pairs is now refused at the read. Left: the
+        // probe's in-program cast<[List<i64>, Array<string>]>([1, 2]), which still
+        // gives ["1", "2"]; a reader bound does not decide a cast of a program value,
+        // so whether a List member counts unmarked array data as its own class is still
+        // this CR's question.
         Some(Type::List(_)) => list::is_list(v),
         Some(Type::Tuple(_)) => rep::tuple_elems(v).is_some(),
         Some(Type::Struct(_)) => rep::struct_fields(v).is_some(),

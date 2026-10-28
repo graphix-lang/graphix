@@ -1,7 +1,9 @@
 /// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
-val read: fn<'b: Concrete>(input: [string, bytes]) -> Result<'b, [`TomlErr(string), `InvalidCast(string)]>;
+/// The target holds no union two members of which one TOML value could
+/// be written by (`TomlData`), as `json::read`'s.
+val read: fn<'b: Concrete + TomlData>(input: [string, bytes]) -> Result<'b, [`TomlErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a TOML string. Maps with scalar keys are tables;
 /// other maps are arrays of key/value pairs and require a containing table.

@@ -2605,6 +2605,22 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                     discernible(env, &t, &Discerned::Bound(tv.clone(), c.clone()))?
                 }
                 Type::Bound(Bound::Concrete) => discernible(env, &t, &Discerned::Keys)?,
+                Type::Bound(b @ (Bound::JsonData | Bound::TomlData)) => {
+                    let (format, name) = match b {
+                        Bound::JsonData => (typ::Format::Json, "JSON"),
+                        _ => (typ::Format::Toml, "TOML"),
+                    };
+                    if let Some((a, b)) = t.text_ambiguity(env, format) {
+                        format_with_flags(PrintFlag::DerefTVars, || {
+                            bail!(
+                                "'{}: {c} refuses {t}: its members {a} and {b} can be \
+                                 written as the same {name} data, so a read cannot tell \
+                                 which was written",
+                                tv.name
+                            )
+                        })?
+                    }
+                }
                 Type::Bound(Bound::OneNumber) => {
                     if t.one_number_open() {
                         format_with_flags(PrintFlag::DerefTVars, || {

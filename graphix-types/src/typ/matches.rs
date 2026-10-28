@@ -576,6 +576,8 @@ impl Type {
             | (Self::Bound(Bound::NoError), Self::Bound(Bound::NoError))
             | (Self::Bound(Bound::Discernible), Self::Bound(Bound::Discernible))
             | (Self::Bound(Bound::Ordered), Self::Bound(Bound::Ordered))
+            | (Self::Bound(Bound::JsonData), Self::Bound(Bound::JsonData))
+            | (Self::Bound(Bound::TomlData), Self::Bound(Bound::TomlData))
             | (Self::Bound(Bound::Singleton), Self::Bound(Bound::Singleton)) => Ok(()),
             // A bound signature var is its binding.
             (Self::TVar(sig_tv), impl_type) if let Some(b) = sig_tv.binding() => {

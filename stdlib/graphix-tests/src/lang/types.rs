@@ -672,7 +672,7 @@ run!(
 // Unmarked data reads back as the member that reads it exactly: a tuple of
 // its length, then a struct, before an array, so what pack and json write
 // of a tuple or a struct reads back as it.
-// CR claude for claude: [bug/medium] Only the members that win the tie-break round-trip.
+// XCR claude for claude: [bug/medium] Only the members that win the tie-break round-trip.
 // An Array<i64> of length 2 in [(i64, i64), Array<i64>] reads back from json or pack as
 // the tuple (1, 2). A bare `A in [string, `A] reads back as the string "A". Both are
 // silent member changes after a save and reload. The writer refuses keys that collide
@@ -709,27 +709,67 @@ run!(
 // typecheck1 would make build reject what check accepts, contrary to the project rule.
 // No such workaround or signature change was made; q42 remains partial and needs
 // coordinator authorization for a format-specific target bound.
+// 2026-10-28 claude: q42 complete: pack and db keep kinds (lane C), and json/toml
+// targets carry JsonData/TomlData, which refuse [(i64, i64), Array<i64>] and [string,
+// `A]. Pins: lang::types::{json_target_union_its_data_cannot_tell_apart_refused,
+// json_target_members_written_apart_read_back, data_reads_back_as_written}.
 const DATA_READS_BACK_AS_WRITTEN: &str = r#"
 {
   type U = [(i64, i64), Array<f64>];
   let v: U = (1, 2);
   let p: Result<U, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(v)$);
-  type S = [{a: i64}, Array<(string, i64)>];
-  let s: S = {a: 1};
-  let js: Result<S, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(s)$);
-  type T = [(string, i64), Array<string>];
-  let t: T = ("k", 1);
-  let jt: Result<T, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(t)$);
   let a: U = [f64:1.5];
   let pa: Result<U, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(a)$);
-  (p$ == v, js$ == s, jt$ == t, pa$ == a)
+  (p$ == v, pa$ == a)
+}
+"#;
+
+run!(data_reads_back_as_written, DATA_READS_BACK_AS_WRITTEN, prints("[true, true]"));
+
+// JSON keeps no kind: a target union two members of which one JSON value
+// could be written by is refused (`JsonData`), since what was written as
+// one could read back as the other. An object reads as its key/value
+// pairs, and a tuple and an array are both arrays.
+run!(
+    json_target_union_its_data_cannot_tell_apart_refused,
+    r#"{
+  type S = [{a: i64}, Array<(string, i64)>];
+  let r: Result<S, [`InvalidCast(string), `JsonErr(string)]> = json::read("{}");
+  r
+}"#,
+    refused("'b: JsonData refuses [Array<(string, i64)>, { a: i64 }]")
+);
+
+run!(
+    toml_target_union_its_data_cannot_tell_apart_refused,
+    r#"{
+  let r: Result<[u8, i64], [`InvalidCast(string), `TomlErr(string)]> = toml::read("1");
+  r
+}"#,
+    refused("'b: TomlData refuses [u8, i64]")
+);
+
+// Members JSON writes apart read back as written: a number written as an
+// integer and one written with a fraction, a variant's tag, a struct's
+// fields, null, and a tuple no array of its other member's elements is.
+const JSON_TARGET_MEMBERS_WRITTEN_APART: &str = r#"
+{
+  type V = [i64, f64, `A, `B(string), {n: string}, null];
+  let vs: Array<V> = [1, f64:1.0, `A, `B("x"), {n: "y"}, null];
+  let back: Result<Array<V>, [`InvalidCast(string), `JsonErr(string)]> =
+    json::read(json::write_str(vs)$);
+  type T = [(string, i64), Array<string>];
+  let t: T = ("k", 1);
+  let tb: Result<T, [`InvalidCast(string), `JsonErr(string)]> =
+    json::read(json::write_str(t)$);
+  (back$ == vs, tb$ == t)
 }
 "#;
 
 run!(
-    data_reads_back_as_written,
-    DATA_READS_BACK_AS_WRITTEN,
-    prints("[true, true, true, true]")
+    json_target_members_written_apart_read_back,
+    JSON_TARGET_MEMBERS_WRITTEN_APART,
+    prints("[true, true]")
 );
 
 // A cast leaves a value's runtime class only by parsing a string into a

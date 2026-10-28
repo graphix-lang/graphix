@@ -844,7 +844,10 @@ pub fn require_bounds(cons: &[Type], t: &Type) {
 pub(crate) fn handed_bounds(cons: &[Type], t: &Type, hand: &mut dyn FnMut(&TVar, Type)) {
     for c in cons {
         match c {
-            Type::Bound(Bound::Concrete) | Type::Bound(Bound::Data) => {
+            Type::Bound(Bound::Concrete)
+            | Type::Bound(Bound::Data)
+            | Type::Bound(Bound::JsonData)
+            | Type::Bound(Bound::TomlData) => {
                 let skips = |t: &Type| matches!(t, Type::Fn(_));
                 t.require_everywhere(c, &skips, hand, &mut LPooled::take())
             }

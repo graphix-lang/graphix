@@ -209,6 +209,8 @@ impl Type {
             Self::Bound(Bound::NoError) => write!(f, "NoError"),
             Self::Bound(Bound::Discernible) => write!(f, "Discernible"),
             Self::Bound(Bound::Ordered) => write!(f, "Ordered"),
+            Self::Bound(Bound::JsonData) => write!(f, "JsonData"),
+            Self::Bound(Bound::TomlData) => write!(f, "TomlData"),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
             Self::Ref(tr) => {

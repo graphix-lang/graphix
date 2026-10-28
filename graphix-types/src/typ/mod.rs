@@ -47,6 +47,8 @@ pub use normalize::{NormKey, norm_key};
 mod print;
 pub use print::Brief;
 pub(crate) mod regular;
+mod textdata;
+pub use textdata::Format;
 mod setops;
 #[doc(hidden)]
 pub mod settle;
@@ -1102,6 +1104,13 @@ pub enum Bound {
     /// cell, which neither orders nor names what it points to, so values
     /// of the type order, hash and compare by value alone.
     Ordered,
+    /// The conjunct `'a: JsonData`: no union anywhere in whatever binds
+    /// the cell holds two members one JSON value could be written by
+    /// ([`Type::text_ambiguity`]), so what `json::read` reads is what was
+    /// written; an open cell holds.
+    JsonData,
+    /// `JsonData` for TOML.
+    TomlData,
 }
 
 /// Type depth is not bounded by source nesting (`let x1 = [x0]; let x2
@@ -1191,6 +1200,8 @@ impl Debug for Type {
             Self::Bound(Bound::NoError) => f.write_str("NoError"),
             Self::Bound(Bound::Discernible) => f.write_str("Discernible"),
             Self::Bound(Bound::Ordered) => f.write_str("Ordered"),
+            Self::Bound(Bound::JsonData) => f.write_str("JsonData"),
+            Self::Bound(Bound::TomlData) => f.write_str("TomlData"),
             Self::Primitive(p) => f.debug_tuple("Primitive").field(p).finish(),
             Self::Ref(r) => f.debug_tuple("Ref").field(r).finish(),
             Self::Fn(t) => f.debug_tuple("Fn").field(t).finish(),
@@ -1273,6 +1284,8 @@ mod tag {
     pub const ORDERED: u8 = 24;
     pub const DATA: u8 = 25;
     pub const NO_ERROR: u8 = 26;
+    pub const JSON_DATA: u8 = 27;
+    pub const TOML_DATA: u8 = 28;
 }
 
 pub(super) fn key_text(s: &str, out: &mut Vec<u8>) {
@@ -1335,6 +1348,8 @@ impl Type {
             Type::Bound(Bound::NoError) => out.put_u8(tag::NO_ERROR),
             Type::Bound(Bound::Discernible) => out.put_u8(tag::DISCERNIBLE),
             Type::Bound(Bound::Ordered) => out.put_u8(tag::ORDERED),
+            Type::Bound(Bound::JsonData) => out.put_u8(tag::JSON_DATA),
+            Type::Bound(Bound::TomlData) => out.put_u8(tag::TOML_DATA),
             Type::Primitive(p) => {
                 out.put_u8(tag::PRIMITIVE);
                 out.put_u64_le(p.bits() as u64);
@@ -1456,6 +1471,8 @@ impl Type {
             Type::Bound(Bound::NoError) => Ok(buf.put_u8(tag::NO_ERROR)),
             Type::Bound(Bound::Discernible) => Ok(buf.put_u8(tag::DISCERNIBLE)),
             Type::Bound(Bound::Ordered) => Ok(buf.put_u8(tag::ORDERED)),
+            Type::Bound(Bound::JsonData) => Ok(buf.put_u8(tag::JSON_DATA)),
+            Type::Bound(Bound::TomlData) => Ok(buf.put_u8(tag::TOML_DATA)),
             Type::Primitive(p) => {
                 buf.put_u8(tag::PRIMITIVE);
                 p.encode(buf)
@@ -1539,6 +1556,8 @@ impl Type {
             tag::NO_ERROR => Type::Bound(Bound::NoError),
             tag::DISCERNIBLE => Type::Bound(Bound::Discernible),
             tag::ORDERED => Type::Bound(Bound::Ordered),
+            tag::JSON_DATA => Type::Bound(Bound::JsonData),
+            tag::TOML_DATA => Type::Bound(Bound::TomlData),
             tag::PRIMITIVE => Type::Primitive(PackTrait::decode(buf)?),
             tag::REF => Type::Ref(PackTrait::decode(buf)?),
             tag::FN => Type::Fn(PackTrait::decode(buf)?),
@@ -1631,6 +1650,12 @@ impl PartialEq for Type {
             (Type::Bound(Bound::Ordered), _) => {
                 matches!(other, Type::Bound(Bound::Ordered))
             }
+            (Type::Bound(Bound::JsonData), _) => {
+                matches!(other, Type::Bound(Bound::JsonData))
+            }
+            (Type::Bound(Bound::TomlData), _) => {
+                matches!(other, Type::Bound(Bound::TomlData))
+            }
             (Type::Primitive(a), _) => matches!(other, Type::Primitive(b) if a == b),
             _ => ensure_sufficient(|| self.eq_composite(other)),
         }
@@ -1665,6 +1690,8 @@ impl Type {
                 matches!(other, Type::Bound(Bound::Discernible))
             }
             Type::Bound(Bound::Ordered) => matches!(other, Type::Bound(Bound::Ordered)),
+            Type::Bound(Bound::JsonData) => matches!(other, Type::Bound(Bound::JsonData)),
+            Type::Bound(Bound::TomlData) => matches!(other, Type::Bound(Bound::TomlData)),
             Type::Primitive(a) => matches!(other, Type::Primitive(b) if a == b),
             Type::Ref(a) => matches!(other, Type::Ref(b) if a == b),
             Type::Fn(a) => {
@@ -1730,6 +1757,8 @@ impl Type {
             Type::Bound(Bound::NoError) => tag::NO_ERROR,
             Type::Bound(Bound::Discernible) => tag::DISCERNIBLE,
             Type::Bound(Bound::Ordered) => tag::ORDERED,
+            Type::Bound(Bound::JsonData) => tag::JSON_DATA,
+            Type::Bound(Bound::TomlData) => tag::TOML_DATA,
         }
     }
 
