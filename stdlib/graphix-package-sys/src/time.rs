@@ -32,6 +32,19 @@ pub(crate) struct AfterIdle {
     out: TagValue,
 }
 
+impl AfterIdle {
+    fn with(timeout_v: Option<Value>, last_v: Option<Value>, eid: ExprId) -> Self {
+        Self {
+            timeout_v,
+            last_v,
+            id: None,
+            slept: WakeBit::default(),
+            eid,
+            out: TagValue::phantom(),
+        }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for AfterIdle {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_time_after_idle";
@@ -44,14 +57,7 @@ impl<R: Rt> BuiltIn<R> for AfterIdle {
         _from: &'c [Node<R>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(AfterIdle {
-            timeout_v: None,
-            last_v: None,
-            id: None,
-            slept: WakeBit::default(),
-            eid: top_id,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(None, None, top_id)))
     }
 
     fn image_decode(
@@ -62,14 +68,7 @@ impl<R: Rt> BuiltIn<R> for AfterIdle {
         let timeout_v = Pack::decode(buf)?;
         let last_v = Pack::decode(buf)?;
         let eid = ExprId::decode(buf)?;
-        Ok(Box::new(AfterIdle {
-            timeout_v,
-            last_v,
-            id: None,
-            slept: WakeBit::default(),
-            eid,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(timeout_v, last_v, eid)))
     }
 }
 
@@ -352,6 +351,12 @@ pub(crate) struct Now {
     out: TagValue,
 }
 
+impl Now {
+    fn new() -> Self {
+        Self { out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Now {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "sys_time_now";
@@ -364,7 +369,7 @@ impl<R: Rt> BuiltIn<R> for Now {
         _from: &'c [Node<R>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Self { out: TagValue::phantom() }))
+        Ok(Box::new(Self::new()))
     }
 
     fn image_decode(
@@ -372,7 +377,7 @@ impl<R: Rt> BuiltIn<R> for Now {
         _from: &[Node<R>],
         _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
-        Ok(Box::new(Self { out: TagValue::phantom() }))
+        Ok(Box::new(Self::new()))
     }
 }
 
