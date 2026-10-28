@@ -44,7 +44,9 @@ integer or a `decimal`: `-9223372036854775809` read as an `i64` is an
 9007199254740993, not the float nearest it. A float position reads the
 float nearest the text, and a position that holds neither, an `Any` or a
 `string` say, reads every number that is not an integer as that `f64`,
-whatever the rest of the target holds.
+whatever the rest of the target holds. Excess decimal fractional precision
+rounds to the nearest representable decimal without passing through `f64`.
+The same rounding applies to `cast<decimal>` and `str::parse`.
 
 The reader keeps a number's text by way of serde_json's
 `arbitrary_precision`, which passes a number as an object of one key,

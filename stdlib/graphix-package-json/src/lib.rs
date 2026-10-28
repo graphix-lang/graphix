@@ -83,7 +83,7 @@ const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 /// the f64 does not read back as the text and a decimal holds it, so an
 /// integer target refuses what does not fit and a decimal target reads it
 /// whole. `None` past f64's range.
-// CR claude for claude: [bug/medium] Text with more digits than a decimal holds fails
+// XCR claude for claude: [bug/medium] Text with more digits than a decimal holds fails
 // from_str_exact and from_scientific and goes through the f64, so a decimal target
 // keeps about 16 digits where 28 fit: "12345678901234567890.123456789123" reads as
 // 12345678901234567168. cast.rs `parse` (Typ::Decimal) does the same for cast<decimal>
@@ -94,14 +94,18 @@ const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q44, A decimal with
 // more digits than it holds): yes, round (the recommendation: round, as float parsing
 // rounds.)
+// 2026-10-27 codex: Reapplied q44: string-to-decimal casts and JSON's exact numeric
+// reader use Decimal's rounding parser, retaining decimal precision instead of falling
+// through f64. Pin lib_tests::json::decimal_excess_precision_rounds failed all four
+// modes before the fix and passes in all four afterward, covering json::read,
+// str::parse and cast<decimal>. Updated the JSON book and language skill. Full-library
+// results are reported separately.
 fn number(n: &serde_json::Number, exact: bool) -> Option<Value> {
     let f = n.as_f64()?;
     let text = n.as_str();
     let d = match exact {
         false => None,
-        true => {
-            Decimal::from_str_exact(text).or_else(|_| Decimal::from_scientific(text)).ok()
-        }
+        true => text.parse::<Decimal>().ok(),
     };
     Some(match d {
         Some(d) if !reads_back(f, &d) => Value::Decimal(d.into()),

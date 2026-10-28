@@ -2890,10 +2890,7 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     let plain = match t {
         Typ::Decimal => {
             let s = s.trim();
-            rust_decimal::Decimal::from_str_exact(s)
-                .or_else(|_| rust_decimal::Decimal::from_scientific(s))
-                .ok()
-                .map(|d| Value::Decimal(d.into()))
+            s.parse::<rust_decimal::Decimal>().ok().map(|d| Value::Decimal(d.into()))
         }
         Typ::F64 => s.trim().parse::<f64>().ok().map(Value::F64),
         Typ::F32 => s.trim().parse::<f32>().ok().map(Value::F32),

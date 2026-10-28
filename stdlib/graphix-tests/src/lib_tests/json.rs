@@ -486,3 +486,12 @@ run!(colliding_bytes_and_array_keys_are_refused, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.contains("two keys"))
 }; FuseExpect::Jit);
+
+run!(decimal_excess_precision_rounds, r#"{
+    let text = "12345678901234567890.123456789123";
+    let expected = decimal:12345678901234567890.123456789;
+    let a: Result<decimal, [`JsonErr(string), `InvalidCast(string)]> = json::read(text);
+    let b: Result<decimal, `ParseError(string)> = str::parse(text);
+    let c = cast<decimal>(text);
+    [a$ == expected, b$ == expected, c$ == expected]
+}"#, prints("[true, true, true]"); FuseExpect::Jit);
