@@ -569,5 +569,6 @@ select k.code {
 
 `e ~! v` is the strict sample: `v` at each fire of `e`, and bottom
 with no bank when `v` is bottom. `~` still banks: the fires that find
-`v` absent are paid once, with `v`'s first value, however many there
-were.
+`v` absent are paid once when `v` arrives, however many there were.
+This also applies after `v` has produced a value and then gone bottom: the
+next value pays the banked trigger; the old value does not pay it.

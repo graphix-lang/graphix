@@ -112,8 +112,9 @@ three sites: the select scrutinee (binds and re-matches read the held
 value; a bottom scrutinee still bottoms the select — `design/
 activation_state.md`), a pattern guard's truth (`is_match` takes
 `&self` and cannot consume the guard's production), and `~`'s argument
-("sample the latest" is the contract; `~!` is the strict form — a
-trigger that finds the RHS bottom produces bottom and banks nothing).
+(sample its current value: a trigger that finds the RHS bottom banks
+one payment, even after an earlier value, and pays when the RHS returns;
+`~!` produces bottom instead and banks nothing).
 In dataflow terms these are the language's `pre`/`fby`, not ambient
 cache behaviour.
 

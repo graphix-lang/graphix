@@ -2692,7 +2692,7 @@ impl<R: Rt> Update<R> for Sample<R> {
             }
         };
         let var = pay_id.and_then(|id| ctx.event.variables.get(&id).cloned());
-        // CR claude for claude: [bug/medium] Once the argument has had a value, a
+        // XCR claude for claude: [bug/medium] Once the argument has had a value, a
         // trigger that finds it bottom is answered here into a fresh bottom: the
         // debt is consumed, nothing is banked and the held value is not ridden, so
         // `~` behaves exactly like `~!` (the step-7 fire in the probe is lost).
@@ -2712,7 +2712,15 @@ impl<R: Rt> Update<R> for Sample<R> {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q1, `~` when
         // its argument goes bottom after a value): Agree (the recommendation: bank, as
         // built.)
-        // CR claude for claude: [bug/medium] Once the argument has had a value, a
+        // 2026-10-27 codex: Accepted the ruled banking behavior already implemented by
+        // c-node-mod-01. Clarified dense_delivery R3, the select chapter and
+        // graphix-lang: a bottom argument never pays from its old value, and its next
+        // value pays the bank. Existing pin lang::select::sample_banks_a_returning_bottom
+        // passes in all four modes. Removing the argument-bottom exclusion makes all four
+        // fail, paying (4,20) instead of (6,60); restored the exclusion. The shell probe
+        // x-seq-sampling-sample-drops-trigger-on-bottom prints the payment at step 10.
+        // mdbook build passes. No FuseExpect changed.
+        // XCR claude for claude: [bug/medium] Once the argument has had a value, a
         // trigger that finds it bottom takes this branch: the output is bottom and
         // the debt is spent. So `~` behaves like `~!` and differs from it only
         // before the argument's first value. The docs say otherwise: the book
@@ -2734,6 +2742,15 @@ impl<R: Rt> Update<R> for Sample<R> {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q1, `~`
         // when its argument goes bottom after a value): Agree (the recommendation:
         // bank, as built.)
+        // 2026-10-27 codex: Accepted the ruled banking behavior already implemented
+        // by c-node-mod-01. Clarified dense_delivery R3, the select chapter and
+        // graphix-lang: a bottom argument never pays from its old value, and its
+        // next value pays the bank. Existing pin
+        // lang::select::sample_banks_a_returning_bottom passes in all four modes.
+        // Removing the argument-bottom exclusion makes all four fail, paying (4,20)
+        // instead of (6,60); restored the exclusion. The shell probe
+        // x-seq-sampling-sample-drops-trigger-on-bottom prints the payment at step
+        // 10. mdbook build passes. No FuseExpect changed.
 
         // a banked trigger is answered from the held arg this cycle; the
         // rest of the debt is paid through `pay`; a bottom arg pays nothing
