@@ -73,6 +73,14 @@ asan_host() {
     [[ -n ${FLEET_ASAN:-} && ",${FLEET_ASAN}," == *",$1,"* ]]
 }
 
+# FLEET_RELOCATE=<name>[,<name>...] runs those hosts' campaigns with
+# GRAPHIX_JIT_RELOCATE=every: every cycle's start moves every live kernel
+# into a fresh JIT generation (design/jit_memory.md), so the soak drives
+# relocation as hard as it can. The seed math is unchanged.
+relocate_host() {
+    [[ -n ${FLEET_RELOCATE:-} && ",${FLEET_RELOCATE}," == *",$1,"* ]]
+}
+
 skip_host() {
     [[ -n ${FLEET_ONLY:-} && $FLEET_ONLY != "$1" ]] && return 0
     [[ -n ${FLEET_EXCLUDE:-} && ",${FLEET_EXCLUDE}," == *",$1,"* ]] && return 0
@@ -247,7 +255,7 @@ sync_tree() {
 # itself prints lane lines, not a marker (a verifier keyed on a marker
 # the launch never emits false-negatives a healthy box).
 launch() {
-    local camp=$1 base=$2 h name os workers scale seed i=0 asan rc=0
+    local camp=$1 base=$2 h name os workers scale seed i=0 asan relocate rc=0
     [[ -n $camp && -n $base ]] || usage
     [[ $base =~ ^[0-9]+$ ]] || die "base-seed must be an unsigned integer"
     for h in "${HOSTS[@]}"; do
@@ -263,12 +271,17 @@ launch() {
             workers=$((workers / 4)); ((workers >= 8)) || workers=8
             scale=$((scale * 2))
         fi
-        say "$(printf '%-8s launching %s seed=%s workers=%s scale=%s%s' \
+        relocate=0
+        relocate_host "$name" && relocate=1
+        say "$(printf '%-8s launching %s seed=%s workers=%s scale=%s%s%s' \
              "$name" "$camp" "$seed" "$workers" "$scale" \
-             "$([[ $asan == 1 ]] && echo ' ASAN' || true)")"
-        timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$asan" $MIX <<'EOF' \
+             "$([[ $asan == 1 ]] && echo ' ASAN' || true)" \
+             "$([[ $relocate == 1 ]] && echo ' RELOCATE' || true)")"
+        timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$asan" "$relocate" $MIX <<'EOF' \
             || { warn "$(printf '%-8s LAUNCH FAILED' "$name")"; rc=1; }
-camp=$1; seed=$2; workers=$3; scale=$4; asan=$5; mix=${6:-}
+camp=$1; seed=$2; workers=$3; scale=$4; asan=$5; relocate=$6; mix=${7:-}
+relocate_env=
+[[ $relocate == 1 ]] && relocate_env='export GRAPHIX_JIT_RELOCATE=every'
 log=~/tmp/fleet-$camp-launch.log
 perl -MPOSIX -e 'exit 0 if fork; POSIX::setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!"' \
     bash -lc "
@@ -277,6 +290,7 @@ perl -MPOSIX -e 'exit 0 if fork; POSIX::setsid() or die "setsid: $!"; exec @ARGV
     export PATH=\$HOME/.cargo/bin:\$PATH
     export GRAPHIX_FUZZ_TIMEOUT_SCALE=$scale
     export SOAK_ASAN=$asan
+    $relocate_env
     cd ~/proj/graphix
     ./graphix-fuzz/soak.sh start $camp $workers $seed $mix
     echo FLEET_LAUNCH_OK
