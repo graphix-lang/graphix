@@ -85,6 +85,20 @@ impl Lives {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q61, A reference
     // cycle through an orphan's own value): yes, collect them (the recommendation:
     // collect them (orphans pinned only from orphaned values).)
+    // 2026-10-28 codex: Reproduced the retention with the named probe reduced to 10 slots
+    // and stopped at 200 cycles: RSS rose from 73400 to 144764 kB versus 71956 to 101464
+    // kB with me: null. No collector implemented. Safe orphan-only collection must
+    // distinguish a reference reachable only from orphan values from the same Value
+    // retained by an embedder. Value::Abstract clones its private
+    // std::sync::Arc<AbstractInner>; that does not clone Reference::_keep, so Keep's
+    // strong count cannot make the distinction. ValArray also hides ownership of its
+    // shared bases/slices, so counting the references found by walking orphan values is
+    // unsound when a containing value has an external alias. netidx-value exposes neither
+    // these ownership counts nor a trace/root API. Changing the reference to use a
+    // different inner Arc does not fix the outer Value sharing. This needs an agreed
+    // netidx ownership/tracing API (and work in the read-only sibling), or an
+    // embedder-root protocol; no unsafe layout access or premature release was added.
+    // Closure capture pins share this cycle-collection limitation. The CR remains open.
     pub fn orphan_if_pinned(&self, id: BindId) -> bool {
         let mut st = self.0.lock();
         let pinned = st.pins.contains_key(&id);
