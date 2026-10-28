@@ -603,6 +603,20 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 // quick-profile timing). This documents unchanged behavior, so there is
                 // no failing-before fix claim. Existing reconciliation pins cover
                 // replacement and failed-recompile recovery; full GUI suite follows.
+                // 2026-10-28 codex: Strengthened
+                // a_thousand_widgets_receive_their_updates: every widget receives a
+                // distinct batch-and-index string in each of ten direct-update batches,
+                // and its own interpolated value on the subsequent runtime write. The
+                // correct test passed (dev median 12.01 ms per 1000-update batch);
+                // deliberately rotating deliveries by one widget failed with one-1 versus
+                // one-0, then the mutation was removed. This is a test-strengthening
+                // change, not a production routing fix. Updated design/gui_updates.md.
+                // cargo test -p graphix-package-gui --offline --lib: 90 passed, 258
+                // failed, 1 ignored; all failure messages are environmental: 78
+                // test::data_table_test failures report resolver shutdown, and 180 tests
+                // under canvas_test/chart_test/frame_test/interaction_test/widgets_test
+                // report no GPU adapter. The distinct-delivery pin and all new CPU
+                // subscription/sparkline pins pass in that full run.
                 for tw in self.windows.values_mut() {
                     if let Err(e) = tw.handle_update(&self.rt, id, &v) {
                         error!(target: FAILURE_TARGET, "handle_update: {e:?}");

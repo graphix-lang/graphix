@@ -133,8 +133,9 @@ async fn a_changed_cell_keeps_its_row_siblings() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn a_thousand_widgets_receive_their_updates() -> Result<()> {
     use crate::widgets::text::TextW;
+    use compact_str::format_compact;
     use poolshark::local::LPooled;
-    use std::time::Instant;
+    use std::{fmt::Write, time::Instant};
 
     let mut code: LPooled<String> = LPooled::take();
     code.push_str("use gui::{text::text, column::column}; let value = \"before\"; let result = column(&[");
@@ -142,7 +143,7 @@ async fn a_thousand_widgets_receive_their_updates() -> Result<()> {
         if i > 0 {
             code.push(',');
         }
-        code.push_str("text(&value)");
+        write!(code, "text(&\"[value]-{i}\")")?;
     }
     code.push_str("])");
     let mut h = GuiTestHarness::new(&code).await?;
@@ -156,16 +157,19 @@ async fn a_thousand_widgets_receive_their_updates() -> Result<()> {
     for value in
         ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
     {
-        let value = Value::String(value.into());
+        let values: LPooled<Vec<_>> = (0..ids.len())
+            .map(|i| Value::String(format_compact!("{value}-{i}").as_str().into()))
+            .collect();
         let start = Instant::now();
-        for id in &*ids {
-            assert!(super::update_widget(&mut h.root, &h.f.gx, &rt, *id, &value)?);
+        for (id, value) in ids.iter().zip(values.iter()) {
+            assert!(super::update_widget(&mut h.root, &h.f.gx, &rt, *id, value)?);
         }
         times.push(start.elapsed());
+        let mut expected = values.iter();
         h.root.w.for_each_child_mut(&mut |w| {
             assert_eq!(
                 w.as_any().downcast_ref::<TextW<NoExt>>().unwrap().content(),
-                match &value {
+                match expected.next().unwrap() {
                     Value::String(s) => Some(s.as_str()),
                     _ => unreachable!(),
                 }
@@ -176,11 +180,13 @@ async fn a_thousand_widgets_receive_their_updates() -> Result<()> {
     eprintln!("1000 updates through 1000 widgets: median {:?}", times[5]);
     h.set_var("test::value", Value::String(arcstr::literal!("runtime")))?;
     h.drain().await?;
+    let mut index = 0;
     h.root.w.for_each_child_mut(&mut |w| {
         assert_eq!(
             w.as_any().downcast_ref::<TextW<NoExt>>().unwrap().content(),
-            Some("runtime")
+            Some(format_compact!("runtime-{index}").as_str())
         );
+        index += 1;
     });
     Ok(())
 }

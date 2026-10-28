@@ -23,7 +23,8 @@ An owner index would need to track every widget's references through
 subtree replacement; an omitted reference would silently stop updating.
 The measured cost is accepted in exchange for the simpler delivery rule.
 The pin sends ten batches through 1,000 text widgets, checks every widget's
-value after each batch, and checks a subsequent runtime write. It prints
+distinct value after each batch, and checks distinct values from a subsequent
+runtime write. Rotating the delivered values by one widget fails the pin. It prints
 walk timing without a timing assertion: scheduling and build profile must
 not decide whether delivery is correct. A dev-profile run measured
 12.36 ms per batch; that is not a replacement for the quick-profile result.
