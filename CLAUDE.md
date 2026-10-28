@@ -722,12 +722,15 @@ node graph IS the IR — there is no parallel typed IR
   type, a type application or a reference holds is fixed there, those
   arguments checked first whatever the order the call writes (a
   transparent typedef is its expansion)
-  (`callsite.rs::Widening`, `holds_invariantly`); a formal with its own quantifiers (`f: fn<'b: C>(..)`),
-  or holding one at a data position (a field, an element, a member,
-  through typedefs), is
-  rank-2: its argument is checked with `'b` rigid and held to exactly
-  its declared bounds, predicates included (`fn<'b: Number>` takes no
-  `|x| x * x`: declare `Number + Singleton`), a call copies `'b`
+  (`callsite.rs::Widening`, `holds_invariantly`); a written function type with its own quantifiers
+  (`fn<'b: C>(..)`) is rank-2 wherever it stands (a formal, a field, an
+  element, a member, a `let` annotation, a typedef, a return type): what
+  it holds is checked with `'b` rigid and held to exactly its declared
+  bounds, predicates included (`fn<'b: Number>` takes no `|x| x * x`:
+  declare `Number + Singleton`; `FnType::contains_int`, judged
+  coinductively where bounds name each other), except a lambda's written
+  type over its own checked one, which adopts its bounds
+  (`ContainsFlags::Adopt`); a call copies `'b`
   generic, the formal passed on is any instance of itself in an
   instance's elaboration as in the definition's check
   (`CellFact::FormalQuantifier`), and an open quantifier never binds to its bound, no site's

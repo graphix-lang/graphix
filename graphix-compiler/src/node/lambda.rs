@@ -2200,7 +2200,7 @@ impl<R: Rt> Update<R> for Lambda {
         };
         {
             let _at = AtLevel::enter(level);
-            self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
+            self.typ.check_adopts(&ctx.env, &row).at(&self.spec)?;
         }
         def.typ.generalize(def.level.depth());
         let mut own = tables.table.calls_own;

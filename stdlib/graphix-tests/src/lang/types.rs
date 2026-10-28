@@ -3625,6 +3625,31 @@ run!(rank2_refuses_narrower_bound, r#"{
     app(add)
 }"#, refused("does not contain fn<'a: Int + Singleton>"); FuseExpect::None);
 
+// A written fn<'b: C> means the same wherever it stands: a struct field
+// and a let annotation hold a value to every 'b the bound admits, as a
+// formal does, so a function that needs 'a: Int is refused at the binding.
+run!(rank2_struct_field_refuses_narrower_bound, r#"{
+    type S = {f: fn<'b: Number>(x: 'b, y: 'b) -> 'b};
+    let add = 'a: Int |x: 'a, y: 'a| -> 'a x + y;
+    let s: S = {f: add};
+    s.f(1.5, 2.5)
+}"#, refused("S does not contain { f: fn<'a: Int + Singleton>"); FuseExpect::None);
+
+run!(rank2_let_annotation_refuses_narrower_bound, r#"{
+    let add = 'a: Int |x: 'a, y: 'a| -> 'a x + y;
+    let f: fn<'b: Number>(x: 'b, y: 'b) -> 'b = add;
+    f(1, 2)
+}"#, refused("does not contain fn<'a: Int + Singleton>"); FuseExpect::None);
+
+run!(
+    rank2_let_annotation_holds_each_instantiation,
+    r#"{
+    let f: fn<'b: Number + Singleton>(x: 'b, y: 'b) -> 'b = |x, y| x + y;
+    (f(1, 2), f(1.5, 2.5))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(3), Value::F64(4.0)])
+);
+
 run!(
     rank2_accepts_implied_bounds,
     r#"{

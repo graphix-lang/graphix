@@ -96,6 +96,30 @@ cells. Bound cells stay bound: a def-time unification is a settled
 fact, and erasing it made the static type lie about the runtime value
 (the JIT marshal-panic class).
 
+### Quantified function types written elsewhere
+
+A written `fn<'b: C>(..)` means the same wherever it stands: a `let`
+annotation, a struct field, a typedef or a return type holds what it is
+given to every `'b` the bound admits, as a formal does.
+`FnType::contains_int` opens quantifier gates (`open_quantifier_rigid`)
+on the containing side's open quantifiers, so a merge into one is judged
+by `quantifier_admits`: `let f: fn<'b: Number>(..) = add` over `add` at
+`'a: Int` is refused at the binding, and so is `{f: add}` under a field
+of that type. Bounds that name each other (`'a: [i64, ('a, 'b)]`) reach
+the judgment of a pair again inside it; a thread-local set of the pairs
+in progress (`Judging`) answers such a re-entry that it holds, the
+coinductive reading, which stops the recursion. One check adopts rather
+than judges: an instance rebuilds a lambda from its written type and
+checks it over the type its definition's check recorded, which may hold
+a bound the body added (`'a: Number` with `+` gains `Singleton`); that
+check passes `ContainsFlags::Adopt`, whose plain rigid gates absorb the
+recorded bounds. Pins: `lang::types::rank2_struct_field_refuses_narrower_bound`,
+`rank2_let_annotation_refuses_narrower_bound`,
+`rank2_let_annotation_holds_each_instantiation`,
+`lang::image::a_definition_entered_three_times_restores` (the mutual
+bounds), `lang::collection::collection_returns_a_generic_function` (the
+adopting check).
+
 ### Generalization
 
 Every cell has a level (`tvar::Level`): the depth of the definition

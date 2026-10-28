@@ -1131,7 +1131,7 @@ impl FnType {
         // A quantifier self has not picked stands for every type its bound
         // admits, since each call through the value picks it anew: t must
         // fit it held rigid, wherever the type stands.
-        let gates = self.open_quantifier_gates();
+        let gates = self.open_quantifier_gates(flags.contains(ContainsFlags::Adopt));
         let gated = u32::from(!gates.is_empty());
         hist.gated += gated;
         let r = self.contains_gated(flags, env, hist, t);
@@ -1178,10 +1178,19 @@ impl FnType {
             && self.throws.contains_int(flags, env, hist, &t.throws)?)
     }
 
-    /// Rigid gates on the quantifiers no call has picked.
-    fn open_quantifier_gates(&self) -> LPooled<Vec<super::tvar::RigidGate>> {
+    /// Rigid gates on the quantifiers no call has picked: each holds what
+    /// it meets to its declared bounds, unless it `adopts` them.
+    fn open_quantifier_gates(
+        &self,
+        adopts: bool,
+    ) -> LPooled<Vec<super::tvar::RigidGate>> {
         let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
-        self.open_quantifiers(|tv, _| gates.push(tv.open_rigid()));
+        self.open_quantifiers(|tv, _| {
+            gates.push(match adopts {
+                true => tv.open_rigid(),
+                false => tv.open_quantifier_rigid(),
+            })
+        });
         gates
     }
 

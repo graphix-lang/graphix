@@ -23,6 +23,7 @@ use nohash::IntMap;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
+    cell::RefCell,
     mem,
     ops::{ControlFlow, Deref, DerefMut},
 };
@@ -42,6 +43,10 @@ pub enum ContainsFlags {
     /// The walk is under an odd number of function arguments, where the
     /// sides of the judgment have swapped.
     Contra,
+    /// `self` is the written form of the very function `t` types, which
+    /// adopts `t`'s quantifier bounds: its quantifiers absorb them rather
+    /// than hold `t` to their declared bounds.
+    Adopt,
 }
 
 /// The infinite-type rejection wording, shared by
@@ -618,6 +623,10 @@ fn quantifier_admits(env: &Env, q: &TVar, o: &TVar) -> bool {
     if own.is_empty() {
         return true;
     }
+    // bounds that name each other (`'a: [i64, ('a, 'b)]`) reach this pair
+    // again while judging it: coinductively, it holds there
+    let pair = (Arc::as_ptr(&q.cell()) as usize, Arc::as_ptr(&o.cell()) as usize);
+    let Some(_judging) = Judging::enter(pair) else { return true };
     let trait_of = |t: &Type| match t {
         Type::Ref(tr) => env.trait_of_ref(tr),
         _ => None,
@@ -629,6 +638,35 @@ fn quantifier_admits(env: &Env, q: &TVar, o: &TVar) -> bool {
             _ => false,
         })
     })
+}
+
+thread_local! {
+    static JUDGING: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A quantifier/cell pair [`quantifier_admits`] is judging on this thread.
+struct Judging((usize, usize));
+
+impl Judging {
+    /// `None` when the pair is already being judged.
+    fn enter(pair: (usize, usize)) -> Option<Self> {
+        JUDGING.with_borrow_mut(|j| {
+            (!j.contains(&pair)).then(|| {
+                j.push(pair);
+                Self(pair)
+            })
+        })
+    }
+}
+
+impl Drop for Judging {
+    fn drop(&mut self) {
+        JUDGING.with_borrow_mut(|j| {
+            if let Some(i) = j.iter().rposition(|p| *p == self.0) {
+                j.remove(i);
+            }
+        })
+    }
 }
 
 impl Type {
@@ -683,7 +721,7 @@ impl OpenPair {
             return OpenPair::Distinct;
         }
         // a rigid cell survives only a merge
-        // CR claude for claude: [bug/medium] When an open cell meets a rigid one this
+        // XCR claude for claude: [bug/medium] When an open cell meets a rigid one this
         // returns Merge, and `TVar::merge_into` then adds the other cell's conjuncts to
         // the rigid cell without checking that the rigid cell's declared bound implies
         // them. That absorption is right for a definition's own declared variables
@@ -765,6 +803,22 @@ impl OpenPair {
         // discussed): (A). A written fn<'b: C>(..) means the same wherever it is written:
         // a let annotation, a struct field, a typedef and a return type hold a value to
         // every 'b the bound admits, as a formal does.
+        // 2026-10-27 claude: Ruling (A) built: FnType::contains_int opens quantifier
+        // gates (open_quantifier_rigid) on the containing side's open quantifiers, so a
+        // written fn<'b: C> holds what it is given to exactly its declared bounds
+        // wherever it stands. The witness and the let are refused at the binding ('S does
+        // not contain { f: fn<'a: Int + Singleton>..'). Two follow-ons: quantifier_admits
+        // judges a pair coinductively (thread-local Judging set), since bounds that name
+        // each other re-entered it without end and exhausted memory
+        // (lang::image::a_definition_entered_three_times_restores); an instance's lambda
+        // checks its written type over its definition's recorded one with
+        // ContainsFlags::Adopt (Type::check_adopts), adopting a bound the body added
+        // (lang::collection::collection_returns_a_generic_function).
+        // trait_any_bound_does_not_imply_ordered is now refused by the impl's annotation,
+        // message updated. Pins: lang::types::{rank2_struct_field_refuses_narrower_bound,
+        // rank2_let_annotation_refuses_narrower_bound,
+        // rank2_let_annotation_holds_each_instantiation}. Docs: CLAUDE.md,
+        // design/tvar_constraints.md. GUI suite 3.30 s for 338 tests at load 41.
         if t0.is_rigid() || t1.is_rigid() {
             return OpenPair::Merge;
         }
@@ -1397,6 +1451,15 @@ impl Type {
 
     /// [`Self::check_contains`] with rigid enforcement; the def gate's
     /// acceptance checks only.
+    /// [`Self::check_contains`] of a function's written type over its
+    /// checked type `t`, adopting `t`'s quantifier bounds
+    /// ([`ContainsFlags::Adopt`]).
+    pub fn check_adopts(&self, env: &Env, t: &Self) -> Result<()> {
+        let flags = ContainsFlags::Commit | ContainsFlags::Adopt;
+        let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
+        if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
+    }
+
     pub fn check_contains_rigid(&self, env: &Env, t: &Self) -> Result<()> {
         let flags = ContainsFlags::Commit | ContainsFlags::RigidCheck;
         let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
