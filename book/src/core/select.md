@@ -48,6 +48,14 @@ can be born again in the new run, including after an asynchronous wait.
 An arm first entered with a new function instance or collection slot reads
 standing values as fired, just like the rest of that new instance or slot.
 
+An event source in the arm (a timer, a subscription, a line reader) keeps
+its place across the sleep, but not its last event: a re-entered arm
+would show it again as if it were new. So what the arm builds on the
+event shows nothing at the wake until the event fires again:
+`count(sys::time::timer(duration:1.s, true))` blanks for up to a second
+at each re-entry, then shows its kept count plus one. To keep showing
+the last value through a re-entry, hold it outside the arm.
+
 A call still running when its arm falls asleep is never answered. It is
 cancelled where it can be; one that cannot be stopped part way (a
 database operation, a file open, a process spawn, a connect) still

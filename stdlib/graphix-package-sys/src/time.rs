@@ -290,7 +290,7 @@ impl<R: Rt> Apply<R> for Timer {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        // CR claude for claude: [bug/medium] Clearing the output here, as every event
+        // XCR claude for claude: [bug/medium] Clearing the output here, as every event
         // source's sleep does, makes the source bottom at the wake. A bottomed argument
         // bottoms its consumer, so state built on the event is hidden until the next
         // event. In the probe, count(timer) in a woken arm shows nothing for three
@@ -329,6 +329,12 @@ impl<R: Rt> Apply<R> for Timer {
         // its next event) and document in design/async_sleep_outputs.md and the book
         // that state built on an event blanks until the event fires again (hold(..)
         // keeps it).
+        // 2026-10-28 claude: Ruled B built as documentation: a woken event source's
+        // cleared output is bottom until its next event, so state built on it blanks
+        // through the wake (design/async_sleep_outputs.md's event-source paragraph, book
+        // core/select.md: hold it outside the arm to keep showing it). Pin:
+        // lang::async_restart::woken_event_state_blanks_until_the_next_event, [1, 2, 3,
+        // 4] with no re-emitted 2 at the wake.
         self.out = TagValue::phantom();
         self.slept.set();
         self.stop(ctx)

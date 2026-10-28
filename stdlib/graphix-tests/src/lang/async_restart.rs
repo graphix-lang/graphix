@@ -345,6 +345,29 @@ async fn wake_resumes_a_count(mode: Mode) -> Result<()> {
 // A sleep pauses a timer's run and the wake resumes it: a one-shot or an
 // idle wait that already fired stays done, and a run of three fires its
 // last two after the wake.
+// An event source's last event does not survive its arm's sleep: what the
+// arm builds on it reads bottom at the wake, so count(timer) shows nothing
+// then, never its kept 2 again, and its next fire shows 3 (D2,
+// x-engine-firing-03).
+async fn woken_event_state_blanks_until_the_next_event(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let interval = duration:10.ms;
+        let on = true;
+        let c = select on { true => count(sys::time::timer(interval, 4)?), false => never() };
+        on <- select c { 2 => false, _ => never() };
+        let t = 0;
+        t <- select on {
+            false => select t { x if x < 3 => x + 1, _ => never() },
+            true => never()
+        };
+        on <- select t { 3 => true, _ => never() };
+        c
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), &[1, 2, 3, 4]);
+    Ok(())
+}
+
 async fn wake_resumes_standing_timers(mode: Mode) -> Result<()> {
     for (expr, expect) in [
         ("count(sys::time::timer(interval, once)?)", &[0, 1][..]),
@@ -499,6 +522,7 @@ modes!(
     wake_resumes_a_count,
     wake_resumes_quietly,
     wake_resumes_standing_timers,
+    woken_event_state_blanks_until_the_next_event,
     reentry_raises_once,
     reentry_through_a_callee_once,
     range_over_a_late_bound

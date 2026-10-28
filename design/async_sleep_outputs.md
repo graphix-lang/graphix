@@ -34,7 +34,15 @@ its output is.
   `net::write` re-attaches to its path but writes only on a value fire;
   a delivery stream in flight is aborted. Its output is the last event,
   which does not survive the sleep: a select emits its arm's value at a
-  re-entry, so a kept event would be re-raised as if it were new.
+  re-entry, so a kept event would be re-raised as if it were new. The
+  cleared output is bottom at the wake, so state built on the event reads
+  bottom until the event fires again, though it kept its value:
+  `count(timer)` in a woken arm shows nothing until the timer's next fire,
+  then its kept count plus one. `hold` over the event, outside the arm,
+  keeps showing the last one (pin `async_restart::woken_event_state_blanks_until_the_next_event`).
+  A third state, absent without bottom, would show the state through the
+  wake; it would be a new tag in the bottom algebra and the JIT's discs,
+  which nothing has needed.
 - **State** (the restart builtins, `queue`, `iterq`, `queuefn`,
   `filter`, `hold`):
   kept. A queue takes back what it sent through its reply variable and
