@@ -2913,6 +2913,12 @@ struct Filter<R: Rt> {
     out: TagValue,
 }
 
+impl<R: Rt> Filter<R> {
+    fn with(pred: genn::Callback<R>) -> Self {
+        Self { pred, pending: None, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Filter<R> {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_filter";
@@ -2932,7 +2938,7 @@ impl<R: Rt> BuiltIn<R> for Filter<R> {
                     t => bail!("expected a function not {t}"),
                 };
                 let pred = genn::Callback::new(ctx, scope, &ptyp, &["x"], top_id)?;
-                Ok(Box::new(Self { pred, pending: None, out: TagValue::phantom() }))
+                Ok(Box::new(Self::with(pred)))
             }
             _ => bail!("expected two arguments"),
         }
@@ -2944,7 +2950,7 @@ impl<R: Rt> BuiltIn<R> for Filter<R> {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let pred = genn::Callback::image_decode(ctx, buf)?;
-        Ok(Box::new(Self { pred, pending: None, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(pred)))
     }
 }
 
