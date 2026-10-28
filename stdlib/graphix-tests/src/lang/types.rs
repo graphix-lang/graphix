@@ -4505,3 +4505,19 @@ run!(
     }"#,
     is(Value::I64(5))
 );
+
+// Under Any, numbers of different types order by value (ties by type, so
+// one value of two types is never Equal and the order agrees with ==):
+// a sort of mixed numbers read from JSON is by value, and so is `<`.
+run!(
+    any_mixed_numbers_order_by_value,
+    r#"{
+  let xs: Result<Array<Any>, [`JsonErr(string), `InvalidCast(string)]> =
+    json::read(r"[3, 2.5, 1, 0.5]");
+  let a: Any = i64:3;
+  let b: Any = f64:2.5;
+  (array::sort(xs$), a < b, a > b)
+}"#,
+    prints("[[f64:0.5, i64:1, f64:2.5, i64:3], false, true]");
+    FuseExpect::None
+);

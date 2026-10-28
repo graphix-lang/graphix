@@ -984,7 +984,9 @@ node graph IS the IR — there is no parallel typed IR
   (`[&i64, Error<E>] ⊇ ['b, Error<E>]` gives 'b `&i64`, never `Error<E>`,
   all of them when none are left or what is left refuses it); a free union member stays free (a type test over an
   untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
-  NaN`, below every number) so `Value` is map-key-able; checked arith
+  NaN`, below every number) so `Value` is map-key-able, and numbers of
+  different types (under `Any`) order by value, exactly, ties by type,
+  every number before every other kind (netidx-value's `Value::cmp`); checked arith
   (`+?` …) yields a catchable `ArithError` naming its cause, except
   over floats, which follow IEEE and never fail (inf, NaN), unchecked
   `+ - *` wrap, integer div0 and `MIN / -1` bottom, `x % -1` is 0; indexing is bounds-checked through shared helpers on
