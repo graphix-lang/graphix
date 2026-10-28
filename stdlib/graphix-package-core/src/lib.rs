@@ -3333,6 +3333,12 @@ struct Throttle {
     out: TagValue,
 }
 
+impl Throttle {
+    fn with(wait: Duration, top_id: ExprId, last_v: Option<Value>) -> Self {
+        Self { wait, run: Run::Idle, top_id, last_v, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt> BuiltIn<R> for Throttle {
     fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
@@ -3343,13 +3349,7 @@ impl<R: Rt> BuiltIn<R> for Throttle {
         let wait = Duration::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         let last_v = Pack::decode(buf)?;
-        Ok(Box::new(Self {
-            wait,
-            run: Run::Idle,
-            top_id,
-            last_v,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(wait, top_id, last_v)))
     }
 
     const NAME: &str = "core_throttle";
@@ -3362,13 +3362,7 @@ impl<R: Rt> BuiltIn<R> for Throttle {
         _from: &'c [Node<R>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
-        Ok(Box::new(Self {
-            wait: Duration::ZERO,
-            run: Run::Idle,
-            top_id,
-            last_v: None,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(Duration::ZERO, top_id, None)))
     }
 }
 
