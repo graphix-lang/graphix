@@ -2411,6 +2411,34 @@ fn rep_ambiguity(
                 // Mixed numerics under Any order by class): yes, by value. implement in
                 // netidx-value? (the recommendation: by value; it closes every route at
                 // once.)
+                // 2026-10-27 codex: Reproduced q33 with
+                // design/review-2026-10-26/repro/x-rerun-6-any-mixed-numeric-order.gx:
+                // the result is [1, 3, 0.5, 2.5]. The common comparison is
+                // netidx-value/src/op.rs, Value::partial_cmp, which compares Typ first at
+                // each pair in its iterative walk; Value::Ord delegates to it. Array
+                // sorting, map ordering, nested values and Graphix operators all reach
+                // that contract. Fixing only a Graphix operator would leave these routes
+                // inconsistent. No upstream file was changed because ../netidx is
+                // read-only. Proposed upstream change: before the Typ comparison,
+                // recognize a pair of numeric values and compare mathematical values
+                // exactly, then break equal-value ties by Typ so cmp == Equal remains
+                // consistent with the existing class-sensitive Eq/Hash.
+                // Integer/float/decimal comparison must not cast both sides to f64 (that
+                // loses large integers and decimal distinctions); compare sign, magnitude
+                // and exact mantissa/exponent, using bounded integer arithmetic for the
+                // numeric domain. Preserve the existing same-type NaN and signed-zero
+                // rules, define a total cross-type NaN/infinity placement, and keep the
+                // numeric family in one interval relative to nonnumeric kinds so
+                // transitivity holds. Keep this in the iterative pair walk so composite
+                // comparison uses it too. Upstream pins should cover 2^53 +/- 1, i64/u64
+                // limits, negative fractions, decimal versus binary floats, infinities,
+                // NaNs, signed zero, class ties, and transitivity/antisymmetry over all
+                // numeric kinds; also ordered-map lookup and nested arrays. Once that is
+                // available, Graphix should remove the mixed-numeric Ordered refusals in
+                // Type::rep_collision and pin sorting/comparison/map keys under both Any
+                // and explicit unions across interpreter and native modes. This CR
+                // remains open; the Graphix relaxation is unsafe before the upstream
+                // contract changes.
                 Type::Primitive(p) if ordered && (*p & Typ::number()).len() > 1 => {
                     Some(Indiscernible::Numbers(t.clone()))
                 }
