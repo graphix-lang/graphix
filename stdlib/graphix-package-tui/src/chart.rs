@@ -129,6 +129,8 @@ impl PlotBounds {
 #[derive(Default)]
 struct LineData {
     points: LPooled<Vec<(f64, f64)>>,
+    /// The series needs no clipping: it is drawn from its own data.
+    raw: bool,
 }
 
 impl LineData {
@@ -136,6 +138,13 @@ impl LineData {
         self.points.clear();
         let pad = |[min, max]: [f64; 2]| [min - (max - min), max + (max - min)];
         let (x, y) = (pad(bounds.x), pad(bounds.y));
+        self.raw = bounds.scale == (1.0, 1.0)
+            && data
+                .iter()
+                .all(|p| p.0 >= x[0] && p.0 <= x[1] && p.1 >= y[0] && p.1 <= y[1]);
+        if self.raw {
+            return;
+        }
         for pair in data.windows(2) {
             let Some([a, b]) =
                 clip_line(bounds.point(pair[0]), bounds.point(pair[1]), x, y)
@@ -162,6 +171,11 @@ impl LineData {
                 self.points.push(p);
             }
         }
+    }
+
+    /// What the series draws: its own data, or the clipped points.
+    fn drawn<'a>(&'a self, data: &'a [(f64, f64)]) -> &'a [(f64, f64)] {
+        if self.raw { data } else { self.points.as_slice() }
     }
 
     // Disconnected endpoints lie on this box; each join stays on its perimeter,
@@ -240,7 +254,9 @@ impl<X: GXExt> DatasetW<X> {
 
     /// One dataset per series; its name is cut to `width`.
     fn build(&self, width: u16, bounds: PlotBounds) -> Dataset<'_> {
-        let data = if self.is_line() || bounds.scale != (1.0, 1.0) {
+        let data = if self.is_line() {
+            self.line.drawn(&self.data)
+        } else if bounds.scale != (1.0, 1.0) {
             self.line.points.as_slice()
         } else {
             self.data.as_slice()
@@ -425,10 +441,7 @@ mod tests {
         clipped.clip(&data, PlotBounds::new([0.0, 10.0], [0.0, 10.0]));
         let rect = Rect::new(0, 0, 11, 11);
         let expected = render_lines(std::iter::once(data.as_slice()), rect);
-        assert_eq!(
-            render_lines(std::iter::once(clipped.points.as_slice()), rect),
-            expected
-        );
+        assert_eq!(render_lines(std::iter::once(clipped.drawn(&data)), rect), expected);
     }
 
     #[test]
@@ -456,7 +469,7 @@ mod tests {
             .collect();
         let mut clipped = LineData::default();
         clipped.clip(&points, PlotBounds::new([0.0, 10.0], [0.0, 10.0]));
-        assert_eq!(clipped.points.len(), points.len());
+        assert_eq!(clipped.drawn(&points).len(), points.len());
         let rect = Rect::new(0, 0, 200, 50);
         let start = Instant::now();
         for _ in 0..100 {
@@ -466,7 +479,7 @@ mod tests {
         let start = Instant::now();
         for _ in 0..100 {
             clipped.clip(&points, PlotBounds::new([0.0, 10.0], [0.0, 10.0]));
-            black_box(render_lines(std::iter::once(clipped.points.as_slice()), rect));
+            black_box(render_lines(std::iter::once(clipped.drawn(&points)), rect));
         }
         eprintln!(
             "2000 points, 200x50: raw {baseline:?}, clipped {:?}",
@@ -551,7 +564,7 @@ mod tests {
                 let mut clipped = LineData::default();
                 clipped.clip(&data, PlotBounds::new([0.0, 10.0], [0.0, 10.0]));
                 assert_eq!(
-                    render_lines(std::iter::once(clipped.points.as_slice()), rect),
+                    render_lines(std::iter::once(clipped.drawn(&data)), rect),
                     render_lines(std::iter::once(data.as_slice()), rect),
                     "{a:?} -> {b:?}"
                 );

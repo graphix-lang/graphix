@@ -12,6 +12,9 @@ fn intersection(a: Point, b: Point, x: f64) -> Point {
     if x == b.0 {
         return b;
     }
+    if a.1 == b.1 {
+        return (x, a.1);
+    }
     let sx = scale(a.0, b.0);
     let sy = scale(a.1, b.1);
     let (ax, ay, bx, by) = (a.0 / sx, a.1 / sy, b.0 / sx, b.1 / sy);
@@ -67,6 +70,30 @@ pub(super) fn clip_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lines_along_a_constant_coordinate_clip_exactly() {
+        let (b, padded) = ([0.0, 10.0], [-10.0, 20.0]);
+        for k in 0..100 {
+            let lo = -20.0 - 0.3071 * k as f64;
+            for j in 0..100 {
+                let hi = 25.0 + 0.2903 * j as f64;
+                for (a, z, bx, by, expected) in [
+                    ((lo, 10.0), (hi, 10.0), b, b, [(0.0, 10.0), (10.0, 10.0)]),
+                    (
+                        (10.0, 5.0),
+                        (10.0, hi),
+                        padded,
+                        padded,
+                        [(10.0, 5.0), (10.0, 20.0)],
+                    ),
+                    ((5.0, lo), (5.0, hi), padded, padded, [(5.0, -10.0), (5.0, 20.0)]),
+                ] {
+                    assert_eq!(clip_line(a, z, bx, by), Some(expected), "{a:?} {z:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn huge_segments_clip_to_their_visible_part() {

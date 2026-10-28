@@ -624,7 +624,6 @@ async fn overflowing_chart_line_stays_visible() -> Result<()> {
     Ok(())
 }
 
-/// The rows a line chart over 0..10 draws for `data`.
 #[tokio::test]
 async fn enormous_chart_axes_preserve_each_graph_type() -> Result<()> {
     let program = |scale: f64, graph_type: &str| {
@@ -657,6 +656,7 @@ let result = chart(#x_axis: &axis({{min: 0.0, max: {max:e}}}),
     Ok(())
 }
 
+/// The rows a line chart over 0..10 draws for `data`.
 async fn line_chart_lines(data: &str) -> Result<Vec<String>> {
     let code = format_compact!(
         r#"
