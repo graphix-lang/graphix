@@ -186,8 +186,16 @@ they will be unsubscribed and unpublished until it is selected again).
 Sleep is a pause: when the arm is selected again it resumes where it
 stood. Its counters, <code>once</code>s and queues keep their state, a call it made
 is not made again, and the only events it sees are the ones that fired
-while it slept, each once, at its current value. The first time an arm
-is selected is its birth: its constants fire then, and only then.</p>
+while it slept and no consulted guard or selected arm already read, each
+once, at its current value. Guards and arm bodies share this catch-up:
+whichever arm reads a missed fire first spends it for the whole select,
+and an arm's guard and its body, one evaluation, both see it.
+The first time an arm
+is selected is its birth: its constants fire then, and only then. A select
+inside a seq step starts a new entry history at each run, so its arms
+can be born again in the new run, including after an asynchronous wait.
+An arm first entered with a new function instance or collection slot reads
+standing values as fired, just like the rest of that new instance or slot.</p>
 <p>A call still running when its arm falls asleep is never answered. It is
 cancelled where it can be; one that cannot be stopped part way (a
 database operation, a file open, a process spawn, a connect) still
@@ -204,6 +212,11 @@ up to the one it takes; a guard below the taken arm is not run, so a new
 value it would read changes nothing. If you want updates only when the
 value actually changes, wrap the argument (or the whole select) in <code>uniq</code>.</p>
 <h2 id="matching-types"><a class="header" href="#matching-types">Matching Types</a></h2>
+<p>A type test binds only the part of the argument's type that reaches the arm
+and passes the test. For an argument of type <code>[i64, string]</code>, <code>Number as n</code>
+binds <code>n</code> as <code>i64</code>, so <code>n + 1</code> is valid. The same narrowing applies inside
+collections and structures: testing <code>Array&lt;[i64, string]&gt;</code> as
+<code>Array&lt;Number&gt;</code> binds an <code>Array&lt;i64&gt;</code>.</p>
 <p>Consider we want to select from a value of type <code>[Array&lt;i64&gt;, i64, null]</code>,</p>
 <pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
 x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
@@ -598,8 +611,14 @@ effect whose arguments are all constants, and a <code>seq</code> with no trigger
 </code></pre>
 <p><code>e ~! v</code> is the strict sample: <code>v</code> at each fire of <code>e</code>, and bottom
 with no bank when <code>v</code> is bottom. <code>~</code> still banks: the fires that find
-<code>v</code> absent are paid once, with <code>v</code>'s first value, however many there
-were.</p>
+<code>v</code> absent are paid once when <code>v</code> arrives, however many there were.
+This also applies after <code>v</code> has produced a value and then gone bottom: the
+next value pays the banked trigger; the old value does not pay it.</p>
+<p>Both samples retain their last output while <code>e</code> is bottom: bottom is not a
+trigger fire. This lets an event written as <code>select .. { .., _ =&gt; never() }</code>
+leave its last sample available between events. A banked <code>~</code> can still pay
+when its argument arrives. A select over that event instead goes bottom
+between events.</p>
 
                     </main>
 

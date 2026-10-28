@@ -344,10 +344,29 @@ previous run's snapshot. After issuance, later argument changes or bottom
 do not change the snapshot or interrupt the pending result. Nested calls
 get their own snapshots. A call without arguments is read at entry like a
 level.</p>
+<p>A step snapshots every variable its text names together, including variables
+read only by an untaken select arm or an uncalled lambda. It waits until
+all of them are present before taking that whole snapshot:</p>
+<pre><code class="language-graphix">let mode: [`A, `B] = `A;
+let a_val = 1;
+let b_val = never&lt;i64&gt;();
+let go = 0;
+seq go { select mode { `A =&gt; a_val, `B =&gt; b_val } }
+</code></pre>
+<p>This step waits for <code>b_val</code> even though it selects arm <code>A</code>. It also delays
+reading <code>a_val</code>: if <code>a_val</code> becomes 5 before <code>b_val</code> arrives, the step
+returns 5. It does not retain the 1 that was present at entry. Initialize
+all named inputs before triggering the sequence when their entry-time
+values must be retained.</p>
+<p>A <code>let</code> defined by an earlier step keeps its completed value. Each later
+step that reads it takes a new entry snapshot, so sampling on that value
+can fire in each later step. This does not depend on which steps the
+compiler can run in the same cycle.</p>
 <p>A step completes when it produces a new value after its entry, never on a
 value left standing from an earlier run. A call's answer is what the call
 produces after it is issued; a step that reads a level (<code>let y = x</code>)
-takes the level as it stands at entry, and waits for it if it is absent.
+takes the level as it stands at entry, or when the whole step snapshot
+is ready if any named input is absent.
 One consequence: a function that returns a level it does not derive from
 its argument (<code>|v| k</code>) produces nothing new when called again, so a step
 calling it never completes after the first run. Sample the level on the
@@ -364,15 +383,19 @@ a <code>with</code> body's steps are steps like any other.</p>
 <p><code>seqq</code> captures the external values read by its body. At each trigger it
 samples them together into one tuple and queues that tuple. Later changes
 to those inputs do not change a queued request or reissue a waiting step.
-Bindings declared inside the block retain their ordinary scope.</p>
+Bindings declared inside the block retain their ordinary scope. A nested
+<code>seq</code> takes its own step snapshots when it enters, so it sees external
+variables as they stand then, rather than the enclosing <code>seqq</code>'s queued
+copies. The enclosing request's trigger value and local bindings still
+belong to that request.</p>
 <p>A capture uses its last produced value; it need not produce on the same
 cycle as the request. If its source becomes bottom, its previous value is
 still usable. These snapshots can therefore contain stale data.</p>
 <p>Until every capture has produced at least once, there is no complete tuple
-to sample. Requests wait for that first tuple, and those early requests can
-share the first available snapshot, including its latest trigger value.
-Initialize required inputs before issuing requests if each request must
-carry its exact arrival-time values.</p>
+to sample. Each request keeps its own trigger value while it waits.
+Those early requests share the first available snapshot of the external
+captures, and run in arrival order. Initialize required inputs before
+issuing requests if their external values must be captured at arrival.</p>
 <p>Capture is shallow: references retain their identity and remain live when
 dereferenced. Capturing a function does not snapshot the external state
 read inside that function.</p>
@@ -486,7 +509,13 @@ starts. <code>flush(event)</code> also empties the queue:</p>
 <pre><code class="language-graphix ignore">seqq request; abort(skip); flush(cancel_all) { ... }
 </code></pre>
 <p><code>flush</code> follows <code>abort</code> when both are present, and only <code>seqq</code> accepts
-it. A request that arrives with the flush or after it is kept.</p>
+it. The flush source stays active between runs, so it empties queued
+requests even during the handoff between short runs. A request already
+dispatched for the next run is no longer queued. A request that arrives
+with the flush or after it is kept. Only the abort of the running
+body is gated to fires after that run's entry. Unlike an <code>abort</code> source,
+a timer written in <code>flush</code> keeps running between requests; it is not a
+per-run timer.</p>
 <h2 id="sleeping"><a class="header" href="#sleeping">Sleeping</a></h2>
 <p>A sequence inside a <code>select</code> arm, or inside a function called from one,
 sleeps with the arm. A run in progress does not survive that: the
@@ -496,6 +525,13 @@ arm's first entry, and the check warns of it: to run at every entry,
 trigger it on the event that selects the arm. A <code>seq</code> nested in a step
 of an outer run that was aborted is idle too; a triggerless one starts
 again when a later run enters its step.</p>
+<p>A sample (<code>~</code>) inside a step starts each run with no banked trigger. An
+unpaid trigger from an aborted run cannot complete a later run when the
+sampled value arrives. An ordinary arm's sleep and wake preserves its bank;
+entering a step for a new run is a birth. A select inside the step also
+starts a new entry history: each arm's first selection in that run is
+its birth, even if an asynchronous scrutinee arrives after step entry.
+Constant writes in such an arm can therefore fire again in every run.</p>
 <p>The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
 Sleeping the enclosing expression keeps the queued requests, as <code>queue</code>

@@ -208,6 +208,11 @@ takes <code>.field</code> the same way,</p>
 -: string
 "I am foo"
 </code></pre>
+<p>A field can be read from a union of struct types when every member has that
+field. The result has the union of their field types. The other fields may
+differ, and the shared field need not have the same position in each struct.
+A functional update over such a union requires the replacement to fit that
+field in every member.</p>
 <h2 id="mutability-and-functional-update"><a class="header" href="#mutability-and-functional-update">Mutability and Functional Update</a></h2>
 <p>Structs are not mutable, like everything else in Graphix. However There is a
 quick way create a new struct from an existing struct with only some fields

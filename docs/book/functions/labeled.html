@@ -176,8 +176,14 @@ A default is checked where the function is defined: it must fit the
 argument's type, and when that type is a declared type variable, the
 variable's constraint. So <code>'a: [Int, Float] |#start: 'a = 0.0, x: 'a|</code>
 is fine; a call that omits <code>start</code> takes <code>'a</code> from the default, and a
-call that passes <code>#start: 1</code> takes it from the call.
-The compiler implements subtyping for functions with optional arguments. For
+call that passes <code>#start: 1</code> takes it from the call.</p>
+<p>A default that returns an enclosing function's open type requires a closed
+parameter type. Annotate the enclosing parameter (<code>|z: i64|</code>) or the
+defaulted parameter (<code>|#d: i64 = z, x|</code>). An unannotated factory such as
+<code>|z| { let g = |#d = z, x| (d, x); g }</code> is refused, as is a default
+like <code>#d: Array&lt;'q&gt; = [z]</code>: a call cannot safely infer the enclosing
+function's type from an omitted argument.</p>
+<p>The compiler implements subtyping for functions with optional arguments. For
 example if you write a function that takes a function with a labeled argument
 <code>foo</code>, you can pass any function that has a labeled argument <code>foo</code>, even if it
 also has other optional arguments. The non optional and non labeled arguments

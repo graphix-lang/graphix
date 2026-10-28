@@ -161,6 +161,10 @@ with ACID transactions, typed trees, cursors, and reactive subscriptions.
 A transaction's commit is on disk when it answers.</p>
 <p>Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, <code>db::tree</code> returns a <code>DbErr</code>.</p>
+<p>A tree orders and matches its keys by their data. For the primitive and
+structural types that is the language's own order; a key of an abstract
+type is stored as its <code>Cast</code> data, so a custom <code>Eq</code> or <code>Ord</code> on it does not
+reach the tree, and its <code>to_value</code> decides the stored order.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
 <pre><code class="language-graphix">/// An opaque handle to an embedded database.
 type Db;
@@ -173,7 +177,10 @@ type Db;
 /// run time.
 ///
 /// Keys are kept in the language's order (as `&lt;` orders them), which
-/// first, last, get_lt, get_gt and cursor::range follow.
+/// first, last, get_lt, get_gt and cursor::range follow. A key of an
+/// abstract type is stored as its `Cast` data, and is matched and ordered
+/// by that data, not by the type's own `Eq` or `Ord`: shape its
+/// `to_value` to store the order you want.
 type Tree&lt;'k, 'v&gt;;
 
 mod cursor;

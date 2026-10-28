@@ -180,7 +180,10 @@ program structures.</p>
 nominal: it is a new type, different from its representation and from any
 other type with the same representation. Where its definition is visible, its
 name is its constructor, <code>.0</code> reads the representation back, and the
-constructor is also a pattern:</p>
+constructor is also a pattern. A local definition is visible inside its
+defining body, including each call of that body and its nested scopes; a
+sibling block or sibling function does not gain access to the representation.</p>
+<p>For example:</p>
 <pre><code class="language-graphix">type Meters = Abstract&lt;f64&gt;;
 type Feet = Abstract&lt;f64&gt;;
 

@@ -336,6 +336,11 @@ everything else takes the structural case (compare values, or print
 them as Graphix syntax). Every type has the structural default, so
 the core traits hold as bounds for every type, and the dispatchers
 work on every value: <code>Eq::eq(1, 1)</code> is <code>1 == 1</code>.</p>
+<p>Each comparison uses only its own trait implementation. An <code>Eq</code> implementation
+allows equality on its abstract type without examining the representation,
+but ordering still requires that representation to be ordered unless <code>Ord</code>
+is also implemented. Likewise, <code>Ord</code> does not supply equality or excuse an
+ambiguous representation from the <code>Discernible</code> check.</p>
 <p>A case-insensitive key, equal however it is capitalized:</p>
 <pre><code class="language-graphix">type Key = Abstract&lt;string&gt;;
 impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };

@@ -175,6 +175,10 @@ deref operator *.</p>
 -: i64
 1
 </code></pre>
+<p>A union of reference types can be read: <code>*r</code> for <code>r: [&amp;mut i64, &amp;mut f64]</code>
+has type <code>[i64, f64]</code>. A write through a union requires every member to be
+writable and the new value to fit every referent type. A union containing a
+non-reference cannot be dereferenced.</p>
 <h2 id="but-why"><a class="header" href="#but-why">But Why</a></h2>
 <p>Now that we've got the basic semantics out of the way, what is this good for?
 Suppose we have a large struct, with many fields, or even a struct of structs of
@@ -233,7 +237,9 @@ even though the original bind of <code>v</code> isn't even in a scope that <code
 <h2 id="read-only-and-writable-references"><a class="header" href="#read-only-and-writable-references">Read-Only and Writable References</a></h2>
 <p><code>&amp;T</code> can only be read, so it may refer to anything that is a <code>T</code>: <code>&amp;[i64, null]</code> accepts <code>&amp;x</code> where <code>x: i64</code>, and a <code>&amp;mut T</code> can be passed where a <code>&amp;T</code> is
 expected. This is what lets a widget take an optional <code>&amp;[string, null]</code> that
-you hand <code>&amp;title</code>.</p>
+you hand <code>&amp;title</code>. A function parameter <code>&amp;'a</code> can therefore infer the widest
+referent type across its arguments, in either argument order. A parameter
+<code>&amp;mut 'a</code> requires all referents to agree exactly.</p>
 <p><code>&amp;mut T</code> can also be written, so it must refer to exactly a <code>T</code>. If <code>&amp;mut [i64, null]</code> accepted <code>&amp;mut x</code> with <code>x: i64</code>, writing <code>null</code> through it would
 put a <code>null</code> into <code>x</code>, so the checker refuses it. When a function wants a value
 it may or may not write, the parameter is an optional reference instead,

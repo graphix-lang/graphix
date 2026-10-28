@@ -1821,8 +1821,16 @@ they will be unsubscribed and unpublished until it is selected again).
 Sleep is a pause: when the arm is selected again it resumes where it
 stood. Its counters, <code>once</code>s and queues keep their state, a call it made
 is not made again, and the only events it sees are the ones that fired
-while it slept, each once, at its current value. The first time an arm
-is selected is its birth: its constants fire then, and only then.</p>
+while it slept and no consulted guard or selected arm already read, each
+once, at its current value. Guards and arm bodies share this catch-up:
+whichever arm reads a missed fire first spends it for the whole select,
+and an arm's guard and its body, one evaluation, both see it.
+The first time an arm
+is selected is its birth: its constants fire then, and only then. A select
+inside a seq step starts a new entry history at each run, so its arms
+can be born again in the new run, including after an asynchronous wait.
+An arm first entered with a new function instance or collection slot reads
+standing values as fired, just like the rest of that new instance or slot.</p>
 <p>A call still running when its arm falls asleep is never answered. It is
 cancelled where it can be; one that cannot be stopped part way (a
 database operation, a file open, a process spawn, a connect) still
@@ -1839,6 +1847,11 @@ up to the one it takes; a guard below the taken arm is not run, so a new
 value it would read changes nothing. If you want updates only when the
 value actually changes, wrap the argument (or the whole select) in <code>uniq</code>.</p>
 <h2 id="matching-types"><a class="header" href="#matching-types">Matching Types</a></h2>
+<p>A type test binds only the part of the argument's type that reaches the arm
+and passes the test. For an argument of type <code>[i64, string]</code>, <code>Number as n</code>
+binds <code>n</code> as <code>i64</code>, so <code>n + 1</code> is valid. The same narrowing applies inside
+collections and structures: testing <code>Array&lt;[i64, string]&gt;</code> as
+<code>Array&lt;Number&gt;</code> binds an <code>Array&lt;i64&gt;</code>.</p>
 <p>Consider we want to select from a value of type <code>[Array&lt;i64&gt;, i64, null]</code>,</p>
 <pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
 x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
@@ -2233,8 +2246,14 @@ effect whose arguments are all constants, and a <code>seq</code> with no trigger
 </code></pre>
 <p><code>e ~! v</code> is the strict sample: <code>v</code> at each fire of <code>e</code>, and bottom
 with no bank when <code>v</code> is bottom. <code>~</code> still banks: the fires that find
-<code>v</code> absent are paid once, with <code>v</code>'s first value, however many there
-were.</p>
+<code>v</code> absent are paid once when <code>v</code> arrives, however many there were.
+This also applies after <code>v</code> has produced a value and then gone bottom: the
+next value pays the banked trigger; the old value does not pay it.</p>
+<p>Both samples retain their last output while <code>e</code> is bottom: bottom is not a
+trigger fire. This lets an event written as <code>select .. { .., _ =&gt; never() }</code>
+leave its last sample available between events. A banked <code>~</code> can still pay
+when its argument arrives. A select over that event instead goes bottom
+between events.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="seq-and-seqq"><a class="header" href="#seq-and-seqq">Seq and Seqq</a></h1>
 <h2 id="why-sequences"><a class="header" href="#why-sequences">Why sequences</a></h2>
 <p>Sometimes you just want to run some steps one after another. Graphix
@@ -2424,10 +2443,29 @@ previous run's snapshot. After issuance, later argument changes or bottom
 do not change the snapshot or interrupt the pending result. Nested calls
 get their own snapshots. A call without arguments is read at entry like a
 level.</p>
+<p>A step snapshots every variable its text names together, including variables
+read only by an untaken select arm or an uncalled lambda. It waits until
+all of them are present before taking that whole snapshot:</p>
+<pre><code class="language-graphix">let mode: [`A, `B] = `A;
+let a_val = 1;
+let b_val = never&lt;i64&gt;();
+let go = 0;
+seq go { select mode { `A =&gt; a_val, `B =&gt; b_val } }
+</code></pre>
+<p>This step waits for <code>b_val</code> even though it selects arm <code>A</code>. It also delays
+reading <code>a_val</code>: if <code>a_val</code> becomes 5 before <code>b_val</code> arrives, the step
+returns 5. It does not retain the 1 that was present at entry. Initialize
+all named inputs before triggering the sequence when their entry-time
+values must be retained.</p>
+<p>A <code>let</code> defined by an earlier step keeps its completed value. Each later
+step that reads it takes a new entry snapshot, so sampling on that value
+can fire in each later step. This does not depend on which steps the
+compiler can run in the same cycle.</p>
 <p>A step completes when it produces a new value after its entry, never on a
 value left standing from an earlier run. A call's answer is what the call
 produces after it is issued; a step that reads a level (<code>let y = x</code>)
-takes the level as it stands at entry, and waits for it if it is absent.
+takes the level as it stands at entry, or when the whole step snapshot
+is ready if any named input is absent.
 One consequence: a function that returns a level it does not derive from
 its argument (<code>|v| k</code>) produces nothing new when called again, so a step
 calling it never completes after the first run. Sample the level on the
@@ -2444,15 +2482,19 @@ a <code>with</code> body's steps are steps like any other.</p>
 <p><code>seqq</code> captures the external values read by its body. At each trigger it
 samples them together into one tuple and queues that tuple. Later changes
 to those inputs do not change a queued request or reissue a waiting step.
-Bindings declared inside the block retain their ordinary scope.</p>
+Bindings declared inside the block retain their ordinary scope. A nested
+<code>seq</code> takes its own step snapshots when it enters, so it sees external
+variables as they stand then, rather than the enclosing <code>seqq</code>'s queued
+copies. The enclosing request's trigger value and local bindings still
+belong to that request.</p>
 <p>A capture uses its last produced value; it need not produce on the same
 cycle as the request. If its source becomes bottom, its previous value is
 still usable. These snapshots can therefore contain stale data.</p>
 <p>Until every capture has produced at least once, there is no complete tuple
-to sample. Requests wait for that first tuple, and those early requests can
-share the first available snapshot, including its latest trigger value.
-Initialize required inputs before issuing requests if each request must
-carry its exact arrival-time values.</p>
+to sample. Each request keeps its own trigger value while it waits.
+Those early requests share the first available snapshot of the external
+captures, and run in arrival order. Initialize required inputs before
+issuing requests if their external values must be captured at arrival.</p>
 <p>Capture is shallow: references retain their identity and remain live when
 dereferenced. Capturing a function does not snapshot the external state
 read inside that function.</p>
@@ -2566,7 +2608,13 @@ starts. <code>flush(event)</code> also empties the queue:</p>
 <pre><code class="language-graphix ignore">seqq request; abort(skip); flush(cancel_all) { ... }
 </code></pre>
 <p><code>flush</code> follows <code>abort</code> when both are present, and only <code>seqq</code> accepts
-it. A request that arrives with the flush or after it is kept.</p>
+it. The flush source stays active between runs, so it empties queued
+requests even during the handoff between short runs. A request already
+dispatched for the next run is no longer queued. A request that arrives
+with the flush or after it is kept. Only the abort of the running
+body is gated to fires after that run's entry. Unlike an <code>abort</code> source,
+a timer written in <code>flush</code> keeps running between requests; it is not a
+per-run timer.</p>
 <h2 id="sleeping"><a class="header" href="#sleeping">Sleeping</a></h2>
 <p>A sequence inside a <code>select</code> arm, or inside a function called from one,
 sleeps with the arm. A run in progress does not survive that: the
@@ -2576,6 +2624,13 @@ arm's first entry, and the check warns of it: to run at every entry,
 trigger it on the event that selects the arm. A <code>seq</code> nested in a step
 of an outer run that was aborted is idle too; a triggerless one starts
 again when a later run enters its step.</p>
+<p>A sample (<code>~</code>) inside a step starts each run with no banked trigger. An
+unpaid trigger from an aborted run cannot complete a later run when the
+sampled value arrives. An ordinary arm's sleep and wake preserves its bank;
+entering a step for a new run is a birth. A select inside the step also
+starts a new entry history: each arm's first selection in that run is
+its birth, even if an asynchronous scrutinee arrives after step entry.
+Constant writes in such an arm can therefore fire again in every run.</p>
 <p>The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
 Sleeping the enclosing expression keeps the queued requests, as <code>queue</code>
@@ -2608,8 +2663,8 @@ as here. In a file the catch's type is inferred from what it covers.</p>
 <p>Catching errors is NOT control flow: the catch statement is an installation,
 its type is bottom (it never produces a value), and an error being raised
 does not stop the execution of any node. The handler is an ordinary reactive
-expression that runs when an error value arrives — the natural idiom is to
-connect it to state your program reads,</p>
+expression. Read its binder to react to arriving errors, and connect
+the result to state your program reads:</p>
 <pre><code class="language-graphix fragment">let error_display: [null, string] = null;
 let x = {
     catch(e) error_display &lt;- "[e]";
@@ -2617,6 +2672,10 @@ let x = {
 };
 widget([x, text(error_display)])
 </code></pre>
+<p>A catch handler is a reactive expression, so it must read its error binder
+to wait for errors. Write <code>catch(e) failed &lt;- e ~ true</code>, rather than
+<code>catch(e) failed &lt;- true</code>, which writes at birth even when no error has
+arrived. The checker warns when a handler never reads its binder.</p>
 <p>The catch here covers <code>calc(in0)</code> — and only that block: a catch installed
 inside a block covers the rest of THAT block, nothing outside it. A second
 catch in the same block shadows the first for the statements below it; a
@@ -2789,8 +2848,14 @@ A default is checked where the function is defined: it must fit the
 argument's type, and when that type is a declared type variable, the
 variable's constraint. So <code>'a: [Int, Float] |#start: 'a = 0.0, x: 'a|</code>
 is fine; a call that omits <code>start</code> takes <code>'a</code> from the default, and a
-call that passes <code>#start: 1</code> takes it from the call.
-The compiler implements subtyping for functions with optional arguments. For
+call that passes <code>#start: 1</code> takes it from the call.</p>
+<p>A default that returns an enclosing function's open type requires a closed
+parameter type. Annotate the enclosing parameter (<code>|z: i64|</code>) or the
+defaulted parameter (<code>|#d: i64 = z, x|</code>). An unannotated factory such as
+<code>|z| { let g = |#d = z, x| (d, x); g }</code> is refused, as is a default
+like <code>#d: Array&lt;'q&gt; = [z]</code>: a call cannot safely infer the enclosing
+function's type from an omitted argument.</p>
+<p>The compiler implements subtyping for functions with optional arguments. For
 example if you write a function that takes a function with a labeled argument
 <code>foo</code>, you can pass any function that has a labeled argument <code>foo</code>, even if it
 also has other optional arguments. The non optional and non labeled arguments
@@ -2838,8 +2903,11 @@ a function argument it can trace to one) is resolved when the program
 compiles. A call through a function value it cannot trace, one read out
 of a data structure for example, is late bound: the runtime figures out
 which function it calls, and at compile time only the function's type
-is known. Late binding is a powerful abstraction tool.
-For example we can create two structs of type <code>T</code> that each contain a different
+is known. Late binding is a powerful abstraction tool.</p>
+<p>Writing a function variable fires its call's current result even when
+the write gives it the same function. The call keeps its existing
+instance: its counters and local state are not reset.</p>
+<p>For example we can create two structs of type <code>T</code> that each contain a different
 implementation of <code>f</code>, and we can use them interchangibly with any function that
 accepts a <code>T</code>. In this simple example we create one implementation of <code>f</code> that
 increments the count, and one that decrements it.</p>
@@ -3413,6 +3481,11 @@ takes <code>.field</code> the same way,</p>
 -: string
 "I am foo"
 </code></pre>
+<p>A field can be read from a union of struct types when every member has that
+field. The result has the union of their field types. The other fields may
+differ, and the shared field need not have the same position in each struct.
+A functional update over such a union requires the replacement to fit that
+field in every member.</p>
 <h2 id="mutability-and-functional-update"><a class="header" href="#mutability-and-functional-update">Mutability and Functional Update</a></h2>
 <p>Structs are not mutable, like everything else in Graphix. However There is a
 quick way create a new struct from an existing struct with only some fields
@@ -3500,6 +3573,9 @@ every element can be a different type and the length is known at compile time. F
 -: bool
 true
 </code></pre>
+<p>A field can be read from a union of tuple types when every member has that
+field number, even when their lengths differ. Its type is the union of the
+member fields' types.</p>
 <p>Tuple fields may also be bound in a pattern match in a let bind, a select arm, or a function argument. For example,</p>
 <pre><code class="language-graphix">〉let (f0, f1, f2) = t
 〉f0
@@ -3531,7 +3607,10 @@ program structures.</p>
 nominal: it is a new type, different from its representation and from any
 other type with the same representation. Where its definition is visible, its
 name is its constructor, <code>.0</code> reads the representation back, and the
-constructor is also a pattern:</p>
+constructor is also a pattern. A local definition is visible inside its
+defining body, including each call of that body and its nested scopes; a
+sibling block or sibling function does not gain access to the representation.</p>
+<p>For example:</p>
 <pre><code class="language-graphix">type Meters = Abstract&lt;f64&gt;;
 type Feet = Abstract&lt;f64&gt;;
 
@@ -3694,6 +3773,10 @@ deref operator *.</p>
 -: i64
 1
 </code></pre>
+<p>A union of reference types can be read: <code>*r</code> for <code>r: [&amp;mut i64, &amp;mut f64]</code>
+has type <code>[i64, f64]</code>. A write through a union requires every member to be
+writable and the new value to fit every referent type. A union containing a
+non-reference cannot be dereferenced.</p>
 <h2 id="but-why"><a class="header" href="#but-why">But Why</a></h2>
 <p>Now that we've got the basic semantics out of the way, what is this good for?
 Suppose we have a large struct, with many fields, or even a struct of structs of
@@ -3752,7 +3835,9 @@ even though the original bind of <code>v</code> isn't even in a scope that <code
 <h2 id="read-only-and-writable-references"><a class="header" href="#read-only-and-writable-references">Read-Only and Writable References</a></h2>
 <p><code>&amp;T</code> can only be read, so it may refer to anything that is a <code>T</code>: <code>&amp;[i64, null]</code> accepts <code>&amp;x</code> where <code>x: i64</code>, and a <code>&amp;mut T</code> can be passed where a <code>&amp;T</code> is
 expected. This is what lets a widget take an optional <code>&amp;[string, null]</code> that
-you hand <code>&amp;title</code>.</p>
+you hand <code>&amp;title</code>. A function parameter <code>&amp;'a</code> can therefore infer the widest
+referent type across its arguments, in either argument order. A parameter
+<code>&amp;mut 'a</code> requires all referents to agree exactly.</p>
 <p><code>&amp;mut T</code> can also be written, so it must refer to exactly a <code>T</code>. If <code>&amp;mut [i64, null]</code> accepted <code>&amp;mut x</code> with <code>x: i64</code>, writing <code>null</code> through it would
 put a <code>null</code> into <code>x</code>, so the checker refuses it. When a function wants a value
 it may or may not write, the parameter is an optional reference instead,
@@ -4018,6 +4103,11 @@ everything else takes the structural case (compare values, or print
 them as Graphix syntax). Every type has the structural default, so
 the core traits hold as bounds for every type, and the dispatchers
 work on every value: <code>Eq::eq(1, 1)</code> is <code>1 == 1</code>.</p>
+<p>Each comparison uses only its own trait implementation. An <code>Eq</code> implementation
+allows equality on its abstract type without examining the representation,
+but ordering still requires that representation to be ordered unless <code>Ord</code>
+is also implemented. Likewise, <code>Ord</code> does not supply equality or excuse an
+ambiguous representation from the <code>Discernible</code> check.</p>
 <p>A case-insensitive key, equal however it is capitalized:</p>
 <pre><code class="language-graphix">type Key = Abstract&lt;string&gt;;
 impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
@@ -7703,6 +7793,10 @@ with ACID transactions, typed trees, cursors, and reactive subscriptions.
 A transaction's commit is on disk when it answers.</p>
 <p>Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, <code>db::tree</code> returns a <code>DbErr</code>.</p>
+<p>A tree orders and matches its keys by their data. For the primitive and
+structural types that is the language's own order; a key of an abstract
+type is stored as its <code>Cast</code> data, so a custom <code>Eq</code> or <code>Ord</code> on it does not
+reach the tree, and its <code>to_value</code> decides the stored order.</p>
 <h2 id="interface-2"><a class="header" href="#interface-2">Interface</a></h2>
 <pre><code class="language-graphix">/// An opaque handle to an embedded database.
 type Db;
@@ -7715,7 +7809,10 @@ type Db;
 /// run time.
 ///
 /// Keys are kept in the language's order (as `&lt;` orders them), which
-/// first, last, get_lt, get_gt and cursor::range follow.
+/// first, last, get_lt, get_gt and cursor::range follow. A key of an
+/// abstract type is stored as its `Cast` data, and is matched and ordered
+/// by that data, not by the type's own `Eq` or `Ord`: shape its
+/// `to_value` to store the order you want.
 type Tree&lt;'k, 'v&gt;;
 
 mod cursor;
@@ -9382,6 +9479,10 @@ type Chart = {
   y_axis: &amp;[Axis, null]
 };
 
+/// A chart of `datasets` over `#x_axis` and `#y_axis`. `#legend_position` is
+/// where the legend — one entry per named dataset — is drawn and defaults to
+/// `TopRight`; null hides the legend. `#hidden_legend_constraints` hides it as
+/// well once it would cover more of the chart than they allow.
 val chart: fn(
   ?#hidden_legend_constraints: &amp;[LegendConstraints, null],
   ?#legend_position: &amp;[LegendPosition, null],
