@@ -95,9 +95,12 @@ a fast fn was easy to forget after declaring Sync + stateless; now the
 invalid combinations are unrepresentable and declaring a builtin
 stateless puts the fast-fn question in the author's face. The `Option`
 keeps the stateless fact (the JIT's native tail loop, a sleep-free arm)
-for a pure builtin that can never be a fast fn: a raw `Apply` that answers
-before all its args arrive, where a fast fn sees every arg present. The
-stdlib has none today.
+for a pure builtin without a direct entry: a raw `Apply` that answers
+before all its args arrive, or a data operation whose cost warrants
+keeping its last result when its own arguments stand stale. The latter
+are `str::parse`, `hbs::render`, the json/toml/pack writers,
+`array::sort`, `list::sort`, `array::dedup` and every `re::*` builtin.
+They use `CachedArgs` with `Effect::Stateless(None)`.
 An effect is never `Stateless`: an arm holding only stateless calls
 skips sleep and is slept at its re-entry, where a `Stateless` call
 recomputes its value by running `eval` again, which for an effect would
@@ -111,8 +114,8 @@ holding one sleeps, and its wake recomputes the value through
 a stack slot, the trampoline views it as `&[Value]`, and the args'
 discs decide the tag — a tainted arg bottoms the call without invoking
 the fn, all-stale args make the result stale, `None` is this cycle's
-bottom. `FastCall::Typed(fn(&Env, &Type, &[Value]) -> Option<Value>)`
-is for a result directed by its return type (`str::parse`'s `'b`): the
+bottom. `FastCall::Typed(fn(&Env, &FnType, &[Value]) -> Option<Value>)`
+is directed by the resolved function type (`str::sprintf`, for example): the
 site bakes its resolved `CallSite::typ()` beside the pointer and
 `graphix_typedcall` runs it under the kernel's env loan (`KERNEL_ENV`).
 The non-inline `cast<T>(x)` is the same dispatch with `cast_typed`, the
@@ -122,9 +125,8 @@ pair: the source's static type tells an array from a list). The interp runs the 
 
 A labeled default the call left unwritten is marshaled from the
 CallSite's own compiled default node (`MarshalArg::Default` →
-`CallSite::arg_named`), so `sort(a)`, `escape(s)` and
-`hbs::render(t, d)` fuse in their common spelling; the trampoline reads
-the buffer AS the args, so an unwritten label would otherwise be a
+`CallSite::arg_named`), so `str::escape(s)` fuses with its default
+configuration; the trampoline reads the buffer AS the args, so an unwritten label would otherwise be a
 hole. A configuration a fast fn compiles from its args — a regex, an
 escape table, a template registry — lives in a bounded thread-local
 `FastMemo` keyed by the configuring values: a cache, never state (a
@@ -134,10 +136,9 @@ reason those builtins could not be declared stateless, and they carried
 a partial production (a bad pattern erred before the subject arrived)
 that was an accident of the code shape.
 
-The stdlib is converted maximally (~110 fast fns across core, array,
-map, list, str, re, hbs, sys::time, sys paths, the json/toml/pack
-writers). What remains is out by rule, not by gap: opt's short-circuits
-and `filter_err`, which hold their last answer, the stateful family (`count`/`uniq`/`once`/`take`/`skip`/
+Fast calls cover core, array, map, list, str, sys::time and sys paths,
+except the cached data operations above. Other exclusions are opt's
+short-circuits and `filter_err`, which hold their last answer, the stateful family (`count`/`uniq`/`once`/`take`/`skip`/
 `hold`/`window`/`group`), the lambda-taking HOFs, effects, and the
 json/toml/pack readers (async by design). The pure aggregates (`sum`/
 `min`/`max`/`mean`/`product`/`and`/`or`) and the pure option builtins

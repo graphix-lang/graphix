@@ -85,11 +85,11 @@ fn fc_splitn(args: &[Value]) -> Option<Value> {
     }
 }
 
-graphix_package_core::fast_builtin!(IsMatch, IsMatchEv, "re_is_match", fc_is_match);
-graphix_package_core::fast_builtin!(Find, FindEv, "re_find", fc_find);
-graphix_package_core::fast_builtin!(Captures, CapturesEv, "re_captures", fc_captures);
-graphix_package_core::fast_builtin!(Split, SplitEv, "re_split", fc_split);
-graphix_package_core::fast_builtin!(SplitN, SplitNEv, "re_splitn", fc_splitn);
+graphix_package_core::fast_builtin!(IsMatch, IsMatchEv, "re_is_match", fc_is_match; cached);
+graphix_package_core::fast_builtin!(Find, FindEv, "re_find", fc_find; cached);
+graphix_package_core::fast_builtin!(Captures, CapturesEv, "re_captures", fc_captures; cached);
+graphix_package_core::fast_builtin!(Split, SplitEv, "re_split", fc_split; cached);
+graphix_package_core::fast_builtin!(SplitN, SplitNEv, "re_splitn", fc_splitn; cached);
 
 #[cfg(test)]
 mod test;

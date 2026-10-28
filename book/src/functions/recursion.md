@@ -19,6 +19,12 @@ raising to a handler, a `<-` to a variable outside the function, and a
 builtin without a fast call; move them out of the loop when the loop is
 deep.
 
+`str::parse`, `hbs::render`, the json/toml/pack writers, `array::sort`,
+`list::sort`, `array::dedup` and every `re::*` builtin run in the node-walk.
+They keep their last result while their own arguments are stale; a fused
+fast call can run again whenever any input of its kernel fires. Bind these
+operations outside a `#[native]` expression and pass their results in.
+
 That is what makes recursion the way to write a reactive traversal:
 
 ```graphix

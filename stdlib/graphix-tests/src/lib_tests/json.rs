@@ -65,7 +65,7 @@ run!(json_read_bytes, r#"{
     v
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(json_pretty, r#"{
     let compact = json::write_str({a: 1, b: 2})$;
@@ -313,7 +313,7 @@ run!(writers_refuse_functions, r#"{
 
 run!(json_composite_key_uses_pairs, r#"json::write_str({[1, 2] => 3})$"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == r#"[[[1,2],3]]"#)
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // json and toml write a list as a flat array and read it back so: a list
 // whose last element is an empty array keeps it.
@@ -505,4 +505,4 @@ run!(json_decimal_written_as_an_exact_number, r#"{
     let back: Result<[decimal, string], E> = json::read(json::write_str(u)$);
     let exact: Result<decimal, E> = json::read(json::write_str(d)$);
     (json::write_str(d)$, json::write_str(u)$, back$ == u, exact$ == d)
-}"#, prints(r#"["12345678901234567890.123456789", "1.10", true, true]"#); FuseExpect::Jit);
+}"#, prints(r#"["12345678901234567890.123456789", "1.10", true, true]"#); FuseExpect::None);

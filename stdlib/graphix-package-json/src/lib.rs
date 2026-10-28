@@ -407,7 +407,7 @@ graphix_package_core::typed_fast_builtin!(
     JsonWriteStr,
     JsonWriteStrEv,
     "json_write_str",
-    fc_write_str
+    fc_write_str; cached
 );
 
 fn fc_write_bytes(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
@@ -421,7 +421,7 @@ graphix_package_core::typed_fast_builtin!(
     JsonWriteBytes,
     JsonWriteBytesEv,
     "json_write_bytes",
-    fc_write_bytes
+    fc_write_bytes; cached
 );
 
 graphix_derive::defpackage! {

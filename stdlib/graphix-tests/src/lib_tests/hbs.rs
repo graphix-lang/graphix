@@ -11,42 +11,42 @@ run!(hbs_basic, r#"{
     r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Hello world!")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(hbs_struct_fields, r#"{
     let r = hbs::render("{{first}} {{last}}", {first: "Alice", last: "Smith"})$;
     r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Alice Smith")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(hbs_nested, r#"{
     let r = hbs::render("{{person.name}} is {{person.age}}", {person: {name: "Bob", age: 30}})$;
     r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Bob is 30")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(hbs_each, r#"{
     let r = hbs::render("{{#each items}}{{this}} {{/each}}", {items: ["a", "b", "c"]})$;
     r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "a b c ")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(hbs_if, r#"{
     let r = hbs::render("{{#if show}}visible{{else}}hidden{{/if}}", {show: true})$;
     r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "visible")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(hbs_if_false, r#"{
     let r = hbs::render("{{#if show}}visible{{else}}hidden{{/if}}", {show: false})$;
     r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hidden")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(hbs_partials, r#"{
     let r = hbs::render(
@@ -57,7 +57,7 @@ run!(hbs_partials, r#"{
     r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "<h1>Hi</h1> body")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(hbs_strict_missing, r#"{
     let r = hbs::render(#strict: true, "{{missing}}", {x: 1});
@@ -78,14 +78,14 @@ run!(hbs_numeric_data, r#"{
     r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "count: 42")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(hbs_non_strict_missing, r#"{
     let r = hbs::render("hello {{missing}}", {x: 1})$;
     r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello ")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // One thread-local template memo serves every site: a site whose
 // template VARIES per call rebuilds on the miss and renders the right
@@ -93,7 +93,7 @@ run!(hbs_non_strict_missing, r#"{
 run!(
     hbs_template_varies,
     r#"{
-    let r = |t: string| { let s = #[native] hbs::render(t, {name: "x"})$; s };
+    let r = |t: string| { let s = hbs::render(t, {name: "x"})$; s };
     array::map(["a {{name}}", "b {{name}}", "a {{name}}"], r)
 }"#,
     |v: Result<&Value>| {
@@ -106,8 +106,7 @@ run!(
             }
             _ => false,
         }
-    }
-);
+    }; FuseExpect::None);
 
 // The data renders as its type says: an array of pairs iterates as pairs
 // in any order, and a List as a flat sequence.

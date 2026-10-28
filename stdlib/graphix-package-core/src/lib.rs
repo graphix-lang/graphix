@@ -1182,15 +1182,25 @@ impl<R: Rt, C: Elements> Apply<R> for IterQ<C> {
 /// its `CachedArgs` alias `$alias`, its name and its fast fn.
 #[macro_export]
 macro_rules! fast_builtin {
+    ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path; cached; ordered($start:literal..$end:expr)) => {
+        $crate::fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc, None,
+            $crate::CachedArgs<$crate::OrderChecked<$ev, $start, { $end }>>);
+    };
+    ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path; cached) => {
+        $crate::fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc, None,
+            $crate::CachedArgs<$ev>);
+    };
     ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path; ordered($start:literal..$end:expr)) => {
         $crate::fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc,
+            Some(::graphix_compiler::FastCall::Plain($fc)),
             $crate::CachedArgs<$crate::OrderChecked<$ev, $start, { $end }>>);
     };
     ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path) => {
         $crate::fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc,
+            Some(::graphix_compiler::FastCall::Plain($fc)),
             $crate::CachedArgs<$ev>);
     };
-    (@impl $(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path, $wrapped:ty) => {
+    (@impl $(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path, $fast:expr, $wrapped:ty) => {
         $(#[$meta])*
         #[derive(Debug, Default)]
         $vis struct $ev;
@@ -1200,9 +1210,7 @@ macro_rules! fast_builtin {
             $crate::EvalCached<R> for $ev
         {
             const EFFECT: ::graphix_compiler::effects::Effect =
-                ::graphix_compiler::effects::Effect::Stateless(Some(
-                    ::graphix_compiler::FastCall::Plain($fc),
-                ));
+                ::graphix_compiler::effects::Effect::Stateless($fast);
             const NAME: &str = $name;
 
             fn eval(
@@ -1301,7 +1309,14 @@ impl<R: Rt, T: EvalCached<R>, const START: usize, const END: usize> EvalCached<R
 /// site's resolved function type.
 #[macro_export]
 macro_rules! typed_fast_builtin {
+    ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path; cached) => {
+        $crate::typed_fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc, None);
+    };
     ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path) => {
+        $crate::typed_fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc,
+            Some(::graphix_compiler::FastCall::Typed($fc)));
+    };
+    (@impl $(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path, $fast:expr) => {
         $(#[$meta])*
         #[derive(Debug, Default)]
         $vis struct $ev {
@@ -1328,9 +1343,7 @@ macro_rules! typed_fast_builtin {
             $crate::EvalCached<R> for $ev
         {
             const EFFECT: ::graphix_compiler::effects::Effect =
-                ::graphix_compiler::effects::Effect::Stateless(Some(
-                    ::graphix_compiler::FastCall::Typed($fc),
-                ));
+                ::graphix_compiler::effects::Effect::Stateless($fast);
             const NAME: &str = $name;
 
             fn init(

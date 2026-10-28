@@ -256,7 +256,7 @@ graphix_package_core::typed_fast_builtin!(
     TomlWriteStr,
     TomlWriteStrEv,
     "toml_write_str",
-    fc_write_str
+    fc_write_str; cached
 );
 
 fn fc_write_bytes(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
@@ -272,7 +272,7 @@ graphix_package_core::typed_fast_builtin!(
     TomlWriteBytes,
     TomlWriteBytesEv,
     "toml_write_bytes",
-    fc_write_bytes
+    fc_write_bytes; cached
 );
 
 graphix_derive::defpackage! {

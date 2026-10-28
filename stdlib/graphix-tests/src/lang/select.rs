@@ -2018,7 +2018,7 @@ async fn free_union_arm_is_not_inferred_from_sibling() {
 
 // The annotation types the union: `i64 ⊇ ['b, i64]` binds `'b`.
 const UNION_ARM_ANNOTATED: &str = r#"{let y = i64:0; let v: i64 = select i64:1 {i64:1 => str::parse("42")?, _ => y}; v}"#;
-run!(union_arm_annotated, UNION_ARM_ANNOTATED, is(Value::I64(42)));
+run!(union_arm_annotated, UNION_ARM_ANNOTATED, is(Value::I64(42)); FuseExpect::None);
 
 // Shallow arm discriminators: an ambiguous union (same tag, same arity)
 // stays on the deep walk; a mixed union dispatches the same shallow.

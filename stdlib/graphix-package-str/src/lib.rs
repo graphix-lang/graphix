@@ -591,7 +591,7 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     })
 }
 
-graphix_package_core::typed_fast_builtin!(Parse, ParseEv, "str_parse", fc_parse);
+graphix_package_core::typed_fast_builtin!(Parse, ParseEv, "str_parse", fc_parse; cached);
 
 graphix_derive::defpackage! {
     builtins => [

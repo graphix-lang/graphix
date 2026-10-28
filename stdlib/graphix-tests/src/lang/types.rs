@@ -2423,8 +2423,7 @@ run!(
   let k = 'y: i64 |y: 'y| array::sort([3, y]);
   g(2) == [1, 2, 3] && h("b") == ["a", "b"] && k(1) == [1, 3]
 }"#,
-    is(Value::Bool(true))
-);
+    is(Value::Bool(true)); FuseExpect::None);
 
 // `OneNumber` admits a nullable number of one numeric type.
 const ONE_NUMBER: &str = r#"{

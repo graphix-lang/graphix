@@ -640,8 +640,7 @@ run!(
         type Key = Abstract<string>;
         impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
         let result = array::len(array::dedup([Key("Foo"), Key("FOO"), Key("foo")]))
-    "##
-);
+    "##; FuseExpect::None);
 
 // A type with no Eq implementation dedups by its payload, beside a type
 // that has one and with none anywhere.
@@ -664,8 +663,7 @@ run!(
     "/test.gx" => r##"
         type T = Abstract<i64>;
         let result = array::len(array::dedup([T(1), T(2), T(1)]))
-    "##
-);
+    "##; FuseExpect::None);
 
 // Inside a composite the walk calls it per element; the structural
 // parts compare as values.
@@ -900,8 +898,7 @@ run!(
             })
         };
         let result = "[array::sort([K(3), K(1), K(2)])]"
-    "##
-);
+    "##; FuseExpect::None);
 
 // ..with a warning that it prints as often as the function runs, once
 // per definition; a definition without `dbg` warns of nothing.

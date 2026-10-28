@@ -13,6 +13,7 @@ mod errors;
 mod functions;
 mod fusion;
 mod fusion_parity;
+mod fusion_review;
 mod image;
 mod inference;
 

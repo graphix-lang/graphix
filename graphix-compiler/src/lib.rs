@@ -842,7 +842,7 @@ pub type TypedFastFn = fn(&env::Env, &FnType, &[Value]) -> Option<Value>;
 /// `eval` should delegate to the same fn (`graphix_package_core::
 /// fast_eval`). `Typed` also receives the site's resolved function type.
 #[derive(Debug, Clone, Copy)]
-// CR claude for claude: [perf/high] fast_dispatch calls the fn even when every argument
+// XCR claude for claude: [perf/high] fast_dispatch calls the fn even when every argument
 // is stale, so a fused fast call reruns at each kernel invocation, whichever input
 // fired. The node-walk's CachedArgs evaluates it only when one of its own arguments
 // fires. The stdlib registers fast fns whose cost scales with their data (str::parse
@@ -857,6 +857,34 @@ pub type TypedFastFn = fn(&env::Env, &FnType, &[Value]) -> Option<Value>;
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q64, A fused fast
 // call reruns on any input): yes, take it off those builtins (the recommendation: take
 // it off those builtins.)
+// 2026-10-28 codex: Reworked q64 on current main: removed FastCall from exactly
+// str_parse, hbs_render, json_write_str/json_write_bytes,
+// toml_write_str/toml_write_bytes, pack_write_bytes, array_sort/list_sort/array_dedup,
+// and re_is_match/re_find/re_captures/re_split/re_splitn. The existing cached
+// evaluators retain Stateless(None); every other registration is unchanged. Pin
+// lang::fusion_review::costly_builtins_keep_cached_arguments failed on str_parse before
+// the fix and passes afterward; it also checks min/max/all, map keys, short string
+// operations, array push/concat, list nth/to_array_rev retain FastCall.
+// fusion_review.rs was not included by lang/mod.rs on current main: enabled it,
+// retaining the requested native annotations on l1/l4, p2 and f/s. All 119
+// fusion_review tests pass. Updated fusion expectations only for fixtures using the
+// named families; book, language skill, rules and as-built docs updated, book rebuilt.
+// The original 20000-element parse/100-tick probe, dev binary --no-cache with
+// GRAPHIX_PAR=off: fused 24.784 s before, 0.591 s after, both ending (101, 20000);
+// before --no-fusion 1.014 s. A native max fold over 1000000 elements remains native:
+// 0.219 s / 98928 KB before, 0.151 s / 104932 KB after, both 999999 (cold process,
+// shared machine). fusecheck --bless (GRAPHIX_FUZZ_PAR=2) changed only four of 552
+// entries: interp-format-jul2026/01_union_array_typed_prefix.gx 3->2 (list::sort);
+// kernel-result-bottom-persists-aug2026/03_catch_qop_select.gx 7->6 (re::is_match);
+// mapq-standing-bottom-remint-aug2026/00_find_bottom_predicate_guard.gx 2->1
+// (re::is_match); tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx 1->0 (str::parse).
+// cargo test -p graphix-shell --offline --test examples_compile passes all 3 tests. The
+// compiler lib passes 54 tests; the core lib 7, re 28 and fuzz 127; the other changed
+// package libs have no tests. The first full graphix-tests lib run was 11100 passed,
+// 481 failed, 3 ignored: 34 failures belonged to the changed fusion/native expectations
+// and were corrected, the remaining 447 require sockets unavailable in this sandbox.
+// Final full-library and targeted rerun results are in the handoff report; no workspace
+// or external netidx gate run.
 pub enum FastCall {
     Plain(FastFn),
     Typed(TypedFastFn),

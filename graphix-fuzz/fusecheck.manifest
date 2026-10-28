@@ -219,7 +219,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	instance-copy-skew-jul2026/02_lambda_elem_ptr_leak.gx
 1	interface-ctor-trait-oct2026/00_two_collections.gx
 26	interface-ctor-trait-oct2026/01_six_modules.gx
-3	interp-format-jul2026/01_union_array_typed_prefix.gx
+2	interp-format-jul2026/01_union_array_typed_prefix.gx
 1	kernel-frame-init-const-fire-aug2026/00_rec_const_terminal_input_arm.gx
 4	kernel-frame-init-const-fire-aug2026/01_reactive_stale_refire.gx
 1	kernel-frame-init-const-fire-aug2026/02_tuple_ref_recursion.gx
@@ -227,7 +227,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 2	kernel-result-bottom-persists-aug2026/00_defused_select_reads_ride.gx
 5	kernel-result-bottom-persists-aug2026/01_guard_arm_epoch3.gx
 2	kernel-result-bottom-persists-aug2026/02_block_connect_qop.gx
-7	kernel-result-bottom-persists-aug2026/03_catch_qop_select.gx
+6	kernel-result-bottom-persists-aug2026/03_catch_qop_select.gx
 3	kernel-tainted-source-fire-aug2026/00_window_div0_fold.gx
 1	key0-dyncall-stale-fold-aug2026/00_refwrite_guard_echo.gx
 0	labeled-callback-param-aug2026/00_labeled_defaults_before_element.gx
@@ -245,7 +245,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	map-nest-drop-jul2026/01_selfkey_map_teardown_overflow.gx
 3	map-source-recovers-sep2026/00.gx
 3	map-source-recovers-sep2026/01_map_alone.gx
-2	mapq-standing-bottom-remint-aug2026/00_find_bottom_predicate_guard.gx
+1	mapq-standing-bottom-remint-aug2026/00_find_bottom_predicate_guard.gx
 1	missing-arg-firing-jul2026/01_str_sub_dropped_len.gx
 0	modstmt-fused-no-publish-aug2026/00_trailing_expr_module_exports_die.gx
 0	modstmt-fused-no-publish-aug2026/01_control_trailing_let_publishes.gx
@@ -456,7 +456,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 5	strict-bottom-collections-aug2026/01_empty_fold_bottom_init.gx
 1	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
 2	table-typedef-scope-oct2026/00_body_typedef_alias.gx
-1	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
+0	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
 1	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx
 1	tail-arg-bottom-jul2026/02_alternating_bottom_ride.gx
 1	tail-calls-are-calls-sep2026/00_fire_bit_consumed_in_a_frame.gx

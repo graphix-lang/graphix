@@ -269,7 +269,7 @@ graphix_package_core::typed_fast_builtin!(
     HbsRender,
     HbsRenderEv,
     "hbs_render",
-    fc_render
+    fc_render; cached
 );
 
 graphix_derive::defpackage! {

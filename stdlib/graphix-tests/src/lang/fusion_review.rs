@@ -5,6 +5,54 @@ use graphix_package_core::{
 };
 use netidx_value::Value;
 
+#[test]
+fn costly_builtins_keep_cached_arguments() -> Result<()> {
+    use graphix_compiler::effects::Effect;
+    use graphix_rt::{GXRt, NoExt};
+
+    let mut ctx = GXRt::<NoExt>::new_state()?;
+    graphix_package::register_packages(&mut ctx, crate::TEST_REGISTER.iter().copied())?;
+    for name in [
+        "str_parse",
+        "hbs_render",
+        "json_write_str",
+        "json_write_bytes",
+        "toml_write_str",
+        "toml_write_bytes",
+        "pack_write_bytes",
+        "array_sort",
+        "list_sort",
+        "array_dedup",
+        "re_is_match",
+        "re_find",
+        "re_captures",
+        "re_split",
+        "re_splitn",
+    ] {
+        assert!(matches!(ctx.builtin_effect(name), Effect::Stateless(None)), "{name}");
+    }
+    for name in [
+        "core_min",
+        "core_max",
+        "core_all",
+        "map_get",
+        "map_get_or",
+        "map_insert",
+        "map_remove",
+        "str_len",
+        "str_to_upper",
+        "str_join",
+        "list_nth",
+        "array_push_back",
+        "array_push_front",
+        "array_concat",
+        "list_to_array_rev",
+    ] {
+        assert!(matches!(ctx.builtin_effect(name), Effect::Stateless(Some(_))), "{name}");
+    }
+    Ok(())
+}
+
 // A callee first dispatched late, under an arm, prints its constant at
 // that dispatch, once. The arm node-walks: its callee's print does not
 // follow the arm's entry, which a kernel could not re-fire at a re-entry.

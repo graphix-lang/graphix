@@ -67,7 +67,7 @@ graphix_package_core::fast_builtin!(
     PackWriteBytes,
     PackWriteBytesEv,
     "pack_write_bytes",
-    fc_write_bytes
+    fc_write_bytes; cached
 );
 
 graphix_derive::defpackage! {

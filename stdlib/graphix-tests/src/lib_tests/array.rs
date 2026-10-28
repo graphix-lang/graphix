@@ -751,18 +751,17 @@ run!(array_sort0, ARRAY_SORT0, |v: Result<&Value>| {
     }
 }; FuseExpect::Jit);
 
-// Both labels defaulted: the plain spelling is a native fastcall.
-const ARRAY_SORT_NATIVE_DEFAULTS: &str = r#"{
-   let f = |a: Array<i64>| { let r = #[native] array::sort(a); r };
+const ARRAY_SORT_DEFAULTS: &str = r#"{
+   let f = |a: Array<i64>| { let r = array::sort(a); r };
    f([3, 1, 2])
 }"#;
 
-run!(array_sort_native_defaults, ARRAY_SORT_NATIVE_DEFAULTS, |v: Result<&Value>| {
+run!(array_sort_defaults, ARRAY_SORT_DEFAULTS, |v: Result<&Value>| {
     match v {
         Ok(v) => matches!(v.clone().cast_to::<[i64; 3]>(), Ok([1, 2, 3])),
         _ => false,
     }
-});
+}; FuseExpect::None);
 
 const ARRAY_SORT1: &str = r#"
 {

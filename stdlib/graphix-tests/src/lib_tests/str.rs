@@ -482,7 +482,7 @@ run!(str_parse, STR_PARSE, |v: Result<&Value>| {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A read can't forge a reference: `Concrete` excludes one.
 const STR_PARSE_REF_TARGET: &str = r#"{
@@ -611,15 +611,13 @@ run!(
     FuseExpect::Jit
 );
 
-// `str::parse` is a typed fast fn: the kernel casts the parsed value to
-// the site's resolved return type, here a struct under `#[native]`.
-const STR_PARSE_STRUCT_NATIVE: &str = r#"{
-  let p = |s: string| -> {x: i64, y: string} { let r = #[native] str::parse(s)$; r };
+const STR_PARSE_STRUCT_TARGET: &str = r#"{
+  let p = |s: string| -> {x: i64, y: string} { let r = str::parse(s)$; r };
   let {x, y} = p("\[\[\"x\", 41\], \[\"y\", \"z\"\]\]");
   (x + 1, y)
 }"#;
 
-run!(str_parse_struct_native, STR_PARSE_STRUCT_NATIVE, |v: Result<&Value>| {
+run!(str_parse_struct_target, STR_PARSE_STRUCT_TARGET, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
             matches!(&a[..], [Value::I64(42), Value::String(s)] if &**s == "z")

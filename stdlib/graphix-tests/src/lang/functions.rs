@@ -1363,7 +1363,7 @@ run!(
     tail_arg_bottom_unread_by_base,
     TAIL_ARG_BOTTOM_UNREAD_BY_BASE,
     |v: Result<&Value>| { matches!(v, Ok(Value::F64(x)) if *x == 0.0) };
-    FuseExpect::Jit
+    FuseExpect::None
 );
 
 // The consuming twin: a base arm that reads the bottomed argument is
@@ -2853,7 +2853,7 @@ const NESTED_TWO_DEEP: &str = r#"
 run!(nested_two_deep, NESTED_TWO_DEEP, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => a[..] == [Value::Bool(true), Value::Bool(true)],
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A builtin bound where the site's view omits a defaulted label is
 // typed at the instance's signature, which lists it.

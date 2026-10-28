@@ -665,7 +665,7 @@ but keeps cross-invocation state, or depends on WHICH args arrived),
 `Stateless(Option<FastCall>)` (a pure function of its args, never an
 effect; the payload is the direct-call entry the JIT uses, `Plain` or
 `Typed` by the site's resolved return type; `None` for partial-delivery
-producers), or `Io(Option<IoCall>)` (stateless, but it acts on the world
+producers and the cached data operations listed in `design/strict_fusion.md`), or `Io(Option<IoCall>)` (stateless, but it acts on the world
 at each fire of its trigger argument: the printers, `exit`; an arm
 holding one sleeps; `IoCall` is its result fast fn and trigger, and a
 kernel queues each call for `BuiltIn::perform`, which the wrapper runs
