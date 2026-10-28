@@ -57,6 +57,12 @@ fn grid_columns<X: GXExt>(
         .filter(|(_, c)| c.is_subscribed())
 }
 
+#[derive(Default)]
+pub(super) struct SubscriptionWindow {
+    rows: LPooled<AHashSet<Path>>,
+    columns: LPooled<AHashMap<ArcStr, Option<f64>>>,
+}
+
 /// One role a subscription plays. netidx dedupes subscriptions by
 /// path, so one `SubId` plays several roles when a cell is both
 /// displayed and listed in `sort_by`.
@@ -106,6 +112,8 @@ pub(super) struct SharedCellsInner {
     /// Latest `on_update` callable id, read by the dispatch task at
     /// the start of each batch.
     pub(super) on_update: Option<CallableId>,
+    #[cfg(test)]
+    role_checks: std::cell::Cell<usize>,
 }
 
 impl SharedCellsInner {
@@ -118,6 +126,8 @@ impl SharedCellsInner {
             routing: IntMap::default(),
             sparklines: AHashMap::default(),
             on_update: None,
+            #[cfg(test)]
+            role_checks: std::cell::Cell::new(0),
         }
     }
 
@@ -135,6 +145,8 @@ impl SharedCellsInner {
 
     /// Whether the cell `(row, col)` has a role `has`.
     fn has_role(&self, row: &Path, col: &ArcStr, has: impl Fn(&SubRole) -> bool) -> bool {
+        #[cfg(test)]
+        self.role_checks.set(self.role_checks.get() + 1);
         self.cells
             .get(&(row.clone(), col.clone()))
             .and_then(|id| self.routing.get(id))
@@ -160,6 +172,82 @@ impl SharedCellsInner {
             self.dvals.remove(&id);
             self.values.remove(&id);
             self.formatted.remove(&id);
+        }
+    }
+
+    fn reconcile(
+        &mut self,
+        previous: &SubscriptionWindow,
+        next: &SubscriptionWindow,
+        sort: Option<(&AHashMap<Path, usize>, &AHashSet<ArcStr>)>,
+        mut subscribe: impl FnMut(&mut Self, &Path, &ArcStr, SubRole),
+    ) {
+        let full = sort.is_some();
+        if let Some((rows, sort_cols)) = sort {
+            self.routing.retain(|_, roles| {
+                roles.retain(|r| match &*r {
+                    SubRole::Grid { row_path, col_name, .. } => {
+                        next.rows.contains(row_path)
+                            && next
+                                .columns
+                                .get(col_name)
+                                .is_some_and(|hs| r.is_grid(row_path, col_name, *hs))
+                    }
+                    SubRole::SortMarker { row_path, col_name } => {
+                        rows.contains_key(row_path) && sort_cols.contains(col_name)
+                    }
+                });
+                !roles.is_empty()
+            });
+            let routing = &self.routing;
+            self.dvals.retain(|id, _| routing.contains_key(id));
+            self.values.retain(|id, _| routing.contains_key(id));
+            self.formatted.retain(|id, _| routing.contains_key(id));
+            self.cells.retain(|_, id| routing.contains_key(id));
+        } else {
+            for row in previous.rows.iter() {
+                for (col, hs) in previous.columns.iter() {
+                    if !next.rows.contains(row) || next.columns.get(col) != Some(hs) {
+                        self.remove_grid(row, col);
+                    }
+                }
+            }
+        }
+        for row in next.rows.iter().filter(|p| Path::is_absolute(p)) {
+            for (col, hs) in next.columns.iter().filter(|(col, hs)| {
+                full || !previous.rows.contains(row)
+                    || previous.columns.get(*col) != Some(*hs)
+            }) {
+                if !self.has_role(row, col, |r| r.is_grid(row, col, *hs)) {
+                    subscribe(
+                        self,
+                        row,
+                        col,
+                        SubRole::Grid {
+                            row_path: row.clone(),
+                            col_name: col.clone(),
+                            sparkline_history_secs: *hs,
+                        },
+                    );
+                }
+            }
+        }
+        if let Some((rows, sort_cols)) = sort {
+            for row in rows.keys().filter(|p| Path::is_absolute(p)) {
+                for col in sort_cols {
+                    if !self.has_role(row, col, |r| r.is_sort_of(row, col)) {
+                        subscribe(
+                            self,
+                            row,
+                            col,
+                            SubRole::SortMarker {
+                                row_path: row.clone(),
+                                col_name: col.clone(),
+                            },
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -522,9 +610,8 @@ impl<X: GXExt> DataTableW<X> {
         let mut window: LPooled<AHashSet<Path>> = LPooled::take();
         window.extend(self.row_paths[s.min(e)..e].iter().cloned());
         let columns = self.display_col_range();
-        let old_columns = std::mem::replace(&mut self.subscription_columns, columns);
-        let full =
-            std::mem::take(&mut self.subscriptions_changed) || columns != old_columns;
+        self.subscription_columns = columns;
+        let full = std::mem::take(&mut self.subscriptions_changed);
         let mut sort_cols: LPooled<AHashSet<ArcStr>> = LPooled::take();
         if full {
             sort_cols.extend(
@@ -565,6 +652,24 @@ impl<X: GXExt> DataTableW<X> {
                 // resolver server shutdown (sandbox sockets). Live drop/re-subscribe and
                 // sort-role integration remain for coordinator review. Book documents
                 // both axes and on_update scope.
+                // 2026-10-28 codex: Column-window changes now take the incremental
+                // Grid-role path, preserving the sort subscriptions and their values.
+                // SharedCellsInner::reconcile owns the production role reconciliation,
+                // with a retained row/column SubscriptionWindow; simultaneous row and
+                // column changes remove their union and subscribe only newly exposed
+                // cells. column_delta_preserves_sort_roles_and_visits_only_new_cells
+                // failed against the extracted row-only implementation, then passed: a
+                // horizontal step checks 140 entering cells at both 20k and 100k total
+                // rows, and keeps every SortMarker. CPU core measurement with 140 buffered
+                // rows, seven buffered columns and one sort key, 40 steps: full
+                // reconciliation 1.41 ms at 20k / 7.32 ms at 100k; incremental 47 us / 46
+                // us. This measures production role reconciliation with seeded cells and a
+                // fake subscription callback, excluding actual netidx/network setup. cargo
+                // test -p graphix-package-gui --offline --lib
+                // widgets::data_table::subscriptions -- --nocapture: 7 passed.
+                // horizontal_subscription_window_follows_scroll_and_resize cannot run here
+                // (resolver server shutdown; sandbox sockets). Full GUI lib gate will run
+                // after the remaining GUI changes.
                 for (name, c) in grid_columns(&self.columns, columns) {
                     let hs = match &c.spec.typ {
                         ColumnType::Sparkline { history_seconds, .. } => {
@@ -579,76 +684,29 @@ impl<X: GXExt> DataTableW<X> {
                 shown.insert(VALUE_COL_KEY.clone(), None);
             }
         }
+        let window = SubscriptionWindow { rows: window, columns: shown };
         let mut inner = self.cells.inner.lock();
-        let inner = &mut *inner;
+        inner.reconcile(
+            &self.subscription_window,
+            &window,
+            full.then_some((&self.row_indices, &sort_cols)),
+            |inner, row, col, role| {
+                self.subscribe_cell(
+                    inner,
+                    row,
+                    col,
+                    Path::from(cell_path(row, col)),
+                    role,
+                )
+            },
+        );
         if full {
-            inner.routing.retain(|_, roles| {
-                roles.retain(|r| match &*r {
-                    SubRole::Grid { row_path, col_name, .. } => {
-                        window.contains(row_path)
-                            && shown
-                                .get(col_name)
-                                .is_some_and(|hs| r.is_grid(row_path, col_name, *hs))
-                    }
-                    SubRole::SortMarker { row_path, col_name } => {
-                        self.row_indices.contains_key(row_path)
-                            && sort_cols.contains(col_name)
-                    }
-                });
-                !roles.is_empty()
-            });
-            let routing = &inner.routing;
-            inner.dvals.retain(|id, _| routing.contains_key(id));
-            inner.values.retain(|id, _| routing.contains_key(id));
-            inner.formatted.retain(|id, _| routing.contains_key(id));
-            inner.cells.retain(|_, id| routing.contains_key(id));
-            let columns = &self.columns;
             inner.sparklines.retain(|(row, col), _| {
                 self.row_indices.contains_key(row)
-                    && columns.get(col).is_some_and(|c| {
+                    && self.columns.get(col).is_some_and(|c| {
                         matches!(c.spec.typ, ColumnType::Sparkline { .. })
                     })
             });
-        } else {
-            for row in self.subscription_window.difference(&window) {
-                for col in shown.keys() {
-                    inner.remove_grid(row, col);
-                }
-            }
-        }
-        for row in window.iter().filter(|p| {
-            Path::is_absolute(p) && (full || !self.subscription_window.contains(*p))
-        }) {
-            for (col, hs) in shown.iter() {
-                if !inner.has_role(row, col, |r| r.is_grid(row, col, *hs)) {
-                    let path = Path::from(cell_path(row, col));
-                    let role = SubRole::Grid {
-                        row_path: row.clone(),
-                        col_name: col.clone(),
-                        sparkline_history_secs: *hs,
-                    };
-                    self.subscribe_cell(inner, row, col, path, role);
-                }
-            }
-        }
-        if full {
-            for row in self.table_rows.iter().filter(|p| Path::is_absolute(p)) {
-                for col in sort_cols.iter() {
-                    if !inner.has_role(row, col, |r| r.is_sort_of(row, col)) {
-                        let role = SubRole::SortMarker {
-                            row_path: row.clone(),
-                            col_name: col.clone(),
-                        };
-                        self.subscribe_cell(
-                            inner,
-                            row,
-                            col,
-                            Path::from(cell_path(row, col)),
-                            role,
-                        );
-                    }
-                }
-            }
         }
         self.subscription_window = window;
     }
@@ -982,6 +1040,112 @@ mod column_window_tests {
             let wanted: LPooled<Vec<ArcStr>> =
                 expected.map(|i| format_compact!("c{i}").as_str().into()).collect();
             assert_eq!(names, wanted);
+        }
+    }
+}
+
+#[cfg(test)]
+mod column_delta_tests {
+    use super::*;
+    use compact_str::format_compact;
+    use std::time::Instant;
+
+    fn install(inner: &mut SharedCellsInner, row: &Path, col: &ArcStr, role: SubRole) {
+        let id =
+            *inner.cells.entry((row.clone(), col.clone())).or_insert_with(SubId::new);
+        inner.routing.entry(id).or_default().push(role);
+        inner.values.entry(id).or_insert(Value::I64(42));
+    }
+
+    fn window(
+        rows: std::ops::Range<usize>,
+        cols: std::ops::Range<usize>,
+    ) -> SubscriptionWindow {
+        SubscriptionWindow {
+            rows: rows
+                .map(|i| Path::from(ArcStr::from(format_compact!("/r{i}").as_str())))
+                .collect(),
+            columns: cols
+                .map(|i| (format_compact!("c{i}").as_str().into(), None))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn column_delta_preserves_sort_roles_and_visits_only_new_cells() {
+        for count in [20_000, 100_000] {
+            let rows: AHashMap<_, _> = (0..count)
+                .map(|i| (Path::from(ArcStr::from(format_compact!("/r{i}").as_str())), i))
+                .collect();
+            let sort_cols = AHashSet::from_iter([arcstr::literal!("c0")]);
+            let a = window(0..140, 0..7);
+            let b = window(0..140, 1..8);
+            let mut inner = SharedCellsInner::new();
+            inner.reconcile(
+                &SubscriptionWindow::default(),
+                &a,
+                Some((&rows, &sort_cols)),
+                install,
+            );
+            let sorted_id = inner.cells[&(Path::from("/r0"), arcstr::literal!("c0"))];
+            inner.role_checks.set(0);
+            inner.reconcile(&a, &b, None, install);
+            assert_eq!(inner.role_checks.get(), 140);
+            assert!(
+                inner.routing[&sorted_id].as_slice()
+                    == [SubRole::SortMarker {
+                        row_path: Path::from("/r0"),
+                        col_name: arcstr::literal!("c0")
+                    }]
+            );
+            assert_eq!(
+                inner.live_value(&Path::from("/r0"), &arcstr::literal!("c0")),
+                Some(&Value::I64(42))
+            );
+            for row in &*b.rows {
+                for col in b.columns.keys() {
+                    assert!(inner.has_role(row, col, |r| r.is_grid(row, col, None)));
+                }
+            }
+            for full in [true, false] {
+                let start = Instant::now();
+                for _ in 0..20 {
+                    inner.reconcile(&b, &a, full.then_some((&rows, &sort_cols)), install);
+                    inner.reconcile(&a, &b, full.then_some((&rows, &sort_cols)), install);
+                }
+                eprintln!(
+                    "{count} rows, 7 subscribed columns, full={full}: {:?}/column step",
+                    start.elapsed() / 40
+                );
+            }
+            let c = window(3..143, 2..9);
+            inner.role_checks.set(0);
+            inner.reconcile(&b, &c, None, install);
+            assert_eq!(inner.role_checks.get(), 137 + 3 * 7);
+            for (id, roles) in &inner.routing {
+                for role in roles {
+                    match role {
+                        SubRole::Grid { row_path, col_name, .. } => {
+                            assert!(
+                                c.rows.contains(row_path)
+                                    && c.columns.contains_key(col_name)
+                            );
+                        }
+                        SubRole::SortMarker { .. } => {
+                            assert_eq!(inner.values.get(id), Some(&Value::I64(42)))
+                        }
+                    }
+                }
+            }
+            assert_eq!(
+                inner
+                    .routing
+                    .values()
+                    .flatten()
+                    .filter(|r| matches!(r, SubRole::SortMarker { .. }))
+                    .count(),
+                count
+            );
         }
     }
 }

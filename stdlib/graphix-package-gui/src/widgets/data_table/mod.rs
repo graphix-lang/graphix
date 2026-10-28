@@ -8,7 +8,7 @@
 use super::{
     GuiW, GuiWidget, Handler, IcedElement, Message, Renderer, TableId, TableMsg, WidgetOp,
 };
-use ahash::{AHashMap, AHashSet, AHasher};
+use ahash::{AHashMap, AHasher};
 use anyhow::{Context, Result};
 use arcstr::{ArcStr, literal};
 use compact_str::CompactString;
@@ -40,7 +40,7 @@ mod types;
 #[cfg(test)]
 mod test_access;
 
-use subscriptions::{SharedCells, spawn_dispatch_task};
+use subscriptions::{SharedCells, SubscriptionWindow, spawn_dispatch_task};
 use types::{ColumnState, ResizeDrag, Selection, SortBy, parse_selection, parse_sort_by};
 
 #[cfg(test)]
@@ -118,7 +118,7 @@ pub(crate) struct DataTableW<X: GXExt> {
     row_paths: Vec<Path>,
     row_indices: AHashMap<Path, usize>,
     subscription_columns: (usize, usize),
-    subscription_window: LPooled<AHashSet<Path>>,
+    subscription_window: SubscriptionWindow,
     subscriptions_changed: bool,
     cells: Arc<SharedCells<X>>,
     first_row: usize,
@@ -242,7 +242,7 @@ impl<X: GXExt> DataTableW<X> {
             row_paths: vec![],
             row_indices: AHashMap::default(),
             subscription_columns: (0, 0),
-            subscription_window: LPooled::take(),
+            subscription_window: SubscriptionWindow::default(),
             subscriptions_changed: true,
             cells,
             first_row: 0,
