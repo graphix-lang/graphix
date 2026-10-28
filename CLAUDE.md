@@ -355,8 +355,11 @@ in and its `val`s and impls checked over the script's names, by the
 run as by the check (`check_script_sig`, right after the check); and under buffer overrides a path
 is never canonicalized (the editor's names rule). Checks are lazy and
 coalesced: a change marks its roots dirty and `ServerState::flush`
-checks them when the client has nothing queued; nothing is checked at
-startup. The last SUCCESSFUL check of a root (`Checked`: the env and the
+checks them when the client has nothing queued; a request will not wait
+for that quiet moment and first checks the roots of the document it
+names (`ServerState::flush_document`, one check at most), and one that
+names no document checks nothing new; nothing is checked at startup.
+The last SUCCESSFUL check of a root (`Checked`: the env and the
 `Ide` sinks, `ide.rs`) answers every query, so a buffer that does not
 compile still answers, stale; bind ids mean something only within one
 `Checked`. A query resolves the cursor to a target (bind id, canonical

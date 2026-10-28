@@ -1240,3 +1240,43 @@ fn each_super_names_the_module_it_climbs_to() {
         Some(c.site("a.gx", "|let x"))
     );
 }
+
+/// A request taken while more messages are queued behind it is answered
+/// from a check of the document it names, not from no check at all.
+#[test]
+fn a_request_mid_burst_checks_its_document() {
+    let mut c = Client::queued(&[
+        ("other.gx", "let a = 2;\nlet g = |y: i64| -> i64 y * a;\ng(a)\n"),
+        ("b.gx", "let v = 1;\nlet w = |x: i64| x + v;\nw(v)\n"),
+    ]);
+    // The server only starts once all of this is queued, and it reads one
+    // message at a time: both requests for b.gx are taken with `trailing`
+    // still in the queue, whatever the threads do.
+    c.queue_initialize();
+    c.open("other.gx");
+    c.open("b.gx");
+    let symbols = c.queue_symbols("b.gx");
+    let hover = c.queue_hover("b.gx", "let |w = ");
+    let trailing = c.queue_symbols("other.gx");
+    c.start_server();
+    let detail = |syms: &[(String, Option<String>)], n: &str| {
+        syms.iter().find(|(name, _)| name == n).and_then(|(_, d)| d.clone())
+    };
+    let syms = c.symbols_response(symbols);
+    assert_eq!(
+        (detail(&syms, "v").as_deref(), detail(&syms, "w").as_deref()),
+        (Some("i64"), Some("fn(x: i64) -> i64")),
+        "an outline taken mid-burst has no types: {syms:?}"
+    );
+    assert_eq!(
+        c.hover_response(hover).as_deref().and_then(|h| h.lines().nth(1)),
+        Some("w: fn(x: i64) -> i64"),
+        "a hover taken mid-burst has no type"
+    );
+    let trailing = c.symbols_response(trailing);
+    assert_eq!(
+        detail(&trailing, "g").as_deref(),
+        Some("fn(y: i64) -> i64"),
+        "what the burst left dirty went unchecked: {trailing:?}"
+    );
+}

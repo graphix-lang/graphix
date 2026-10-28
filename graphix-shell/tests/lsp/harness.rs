@@ -38,7 +38,12 @@ pub struct Client {
     root: PathBuf,
     _dir: Option<TempDir>,
     conn: Connection,
+    /// The server end of `conn`, handed to a thread by `start_server`.
+    server_conn: Option<Connection>,
     server: Option<JoinHandle<anyhow::Result<()>>>,
+    /// The messages held back until `start_server`. `None` once the
+    /// server is reading.
+    pending: Option<Vec<Message>>,
     next_id: i32,
     versions: HashMap<String, i32>,
     buffers: HashMap<String, String>,
@@ -53,6 +58,16 @@ pub struct Client {
 impl Client {
     /// Write `files` under a fresh root and start a server on it.
     pub fn start(files: &[(&str, &str)]) -> Self {
+        let mut t = Self::queued(files);
+        t.initialize();
+        t
+    }
+
+    /// Write `files` under a fresh root and connect to a server that is
+    /// not running yet: every message is queued until `start_server`, so
+    /// the queue the server works through is the one the test filled and
+    /// not what two threads raced to.
+    pub fn queued(files: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("proj [x] (copy) a:b*");
         for (name, text) in files {
@@ -60,32 +75,39 @@ impl Client {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, text).unwrap();
         }
-        Self::start_at(root, Some(dir))
+        Self::connected(root, Some(dir))
     }
 
     /// Start a server on a directory of this repository.
     pub fn start_in_repo(dir: &str) -> Self {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(dir);
-        Self::start_at(root.canonicalize().unwrap(), None)
+        let mut t = Self::connected(root.canonicalize().unwrap(), None);
+        t.initialize();
+        t
     }
 
-    fn start_at(root: PathBuf, dir: Option<TempDir>) -> Self {
+    fn connected(root: PathBuf, dir: Option<TempDir>) -> Self {
         let (server_conn, conn) = Connection::memory();
-        let server =
-            thread::spawn(move || graphix_shell::lsp_backend::serve(server_conn));
-        let mut t = Self {
+        Self {
             root,
             _dir: dir,
             conn,
-            server: Some(server),
+            server_conn: Some(server_conn),
+            server: None,
+            pending: Some(vec![]),
             next_id: 0,
             versions: HashMap::new(),
             buffers: HashMap::new(),
             opened: HashSet::new(),
             publishes: HashMap::new(),
             diagnostics: HashMap::new(),
-        };
-        let root = client_uri(&t.root);
+        }
+    }
+
+    /// Queue the `initialize` handshake without waiting for it, as a
+    /// client that opens its files while the server is busy would.
+    pub fn queue_initialize(&mut self) -> RequestId {
+        let root = client_uri(&self.root);
         #[allow(deprecated)]
         let params = InitializeParams {
             workspace_folders: Some(vec![WorkspaceFolder {
@@ -94,9 +116,29 @@ impl Client {
             }]),
             ..Default::default()
         };
-        t.request::<req::Initialize>(params);
-        t.notify::<notif::Initialized>(InitializedParams {});
-        t
+        let id = self.send_request::<req::Initialize>(params);
+        self.notify::<notif::Initialized>(InitializedParams {});
+        id
+    }
+
+    /// Start the server and run the `initialize` handshake to the end.
+    fn initialize(&mut self) {
+        let id = self.queue_initialize();
+        self.start_server();
+        self.response::<req::Initialize>(id);
+    }
+
+    /// Hand every queued message to a new server thread. The server
+    /// cannot have read one of them, so what is queued behind a message
+    /// the server answers is what the test queued after it.
+    pub fn start_server(&mut self) {
+        let pending = self.pending.take().expect("the server is already running");
+        for msg in pending {
+            self.conn.sender.send(msg).unwrap();
+        }
+        let conn = self.server_conn.take().expect("the server is already running");
+        self.server =
+            Some(thread::spawn(move || graphix_shell::lsp_backend::serve(conn)));
     }
 
     pub fn path(&self, file: &str) -> PathBuf {
@@ -145,24 +187,46 @@ impl Client {
         (file.to_string(), p.line, p.character)
     }
 
-    fn notify<N: notif::Notification>(&mut self, params: N::Params) {
-        let n = Notification::new(N::METHOD.to_string(), params);
-        self.conn.sender.send(Message::Notification(n)).unwrap();
+    fn send(&mut self, msg: Message) {
+        match &mut self.pending {
+            Some(pending) => pending.push(msg),
+            None => self.conn.sender.send(msg).unwrap(),
+        }
     }
 
-    /// Send a request and wait for its response, recording the
-    /// diagnostics published meanwhile.
-    fn exchange(&mut self, method: &str, params: serde_json::Value) -> Response {
+    fn notify<N: notif::Notification>(&mut self, params: N::Params) {
+        self.send(Message::Notification(Notification::new(
+            N::METHOD.to_string(),
+            params,
+        )));
+    }
+
+    /// Send `R` without waiting for its response.
+    fn send_request<R: req::Request>(&mut self, params: R::Params) -> RequestId {
+        self.send_raw_request(R::METHOD, serde_json::to_value(params).unwrap())
+    }
+
+    fn send_raw_request(&mut self, method: &str, params: serde_json::Value) -> RequestId {
         self.next_id += 1;
         let id = RequestId::from(self.next_id);
-        let r = Request { id: id.clone(), method: method.into(), params };
-        self.conn.sender.send(Message::Request(r)).unwrap();
+        self.send(Message::Request(Request {
+            id: id.clone(),
+            method: method.into(),
+            params,
+        }));
+        id
+    }
+
+    /// Wait for the response to `id`, recording the diagnostics
+    /// published meanwhile.
+    fn await_response(&mut self, id: RequestId) -> Response {
+        assert!(self.pending.is_none(), "start the server before waiting");
         loop {
             let msg = self
                 .conn
                 .receiver
                 .recv_timeout(TIMEOUT)
-                .unwrap_or_else(|e| panic!("no response to {method}: {e}"));
+                .unwrap_or_else(|e| panic!("no response to {id:?}: {e}"));
             match msg {
                 Message::Response(r) if r.id == id => return r,
                 Message::Notification(n)
@@ -186,8 +250,15 @@ impl Client {
         }
     }
 
+    /// Send a request and wait for its response.
     pub fn request<R: req::Request>(&mut self, params: R::Params) -> R::Result {
-        let r = self.exchange(R::METHOD, serde_json::to_value(params).unwrap());
+        let id = self.send_request::<R>(params);
+        self.response::<R>(id)
+    }
+
+    /// The answer to a request queued by one of the `queue_*` methods.
+    pub fn response<R: req::Request>(&mut self, id: RequestId) -> R::Result {
+        let r = self.await_response(id);
         if let Some(e) = r.error {
             panic!("{} failed: {}", R::METHOD, e.message)
         }
@@ -200,7 +271,8 @@ impl Client {
         method: &str,
         params: serde_json::Value,
     ) -> Option<String> {
-        self.exchange(method, params).error.map(|e| e.message)
+        let id = self.send_raw_request(method, params);
+        self.await_response(id).error.map(|e| e.message)
     }
 
     pub fn open(&mut self, file: &str) {
@@ -361,11 +433,22 @@ impl Client {
 
     /// The hover text at `marker`.
     pub fn hover(&mut self, file: &str, marker: &str) -> Option<String> {
+        let id = self.queue_hover(file, marker);
+        self.hover_response(id)
+    }
+
+    /// Queue a hover at `marker` without waiting for its answer.
+    pub fn queue_hover(&mut self, file: &str, marker: &str) -> RequestId {
         let params = HoverParams {
             text_document_position_params: self.doc_pos(file, marker),
             work_done_progress_params: Default::default(),
         };
-        match self.request::<req::HoverRequest>(params)?.contents {
+        self.send_request::<req::HoverRequest>(params)
+    }
+
+    /// The hover text of a queued hover.
+    pub fn hover_response(&mut self, id: RequestId) -> Option<String> {
+        match self.response::<req::HoverRequest>(id)?.contents {
             HoverContents::Markup(m) => Some(m.value),
             c => panic!("unexpected hover contents {c:?}"),
         }
@@ -439,12 +522,23 @@ impl Client {
 
     /// Document symbols: (name, detail).
     pub fn symbols(&mut self, file: &str) -> Vec<(String, Option<String>)> {
+        let id = self.queue_symbols(file);
+        self.symbols_response(id)
+    }
+
+    /// Queue a `documentSymbol` for `file` without waiting for its answer.
+    pub fn queue_symbols(&mut self, file: &str) -> RequestId {
         let params = DocumentSymbolParams {
             text_document: TextDocumentIdentifier { uri: self.uri(file) },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         };
-        match self.request::<req::DocumentSymbolRequest>(params) {
+        self.send_request::<req::DocumentSymbolRequest>(params)
+    }
+
+    /// The answer to a queued `documentSymbol`: (name, detail).
+    pub fn symbols_response(&mut self, id: RequestId) -> Vec<(String, Option<String>)> {
+        match self.response::<req::DocumentSymbolRequest>(id) {
             None => vec![],
             Some(DocumentSymbolResponse::Nested(s)) => {
                 s.into_iter().map(|s| (s.name, s.detail)).collect()
@@ -458,7 +552,7 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        if thread::panicking() {
+        if thread::panicking() || self.server.is_none() {
             return;
         }
         self.request::<req::Shutdown>(());

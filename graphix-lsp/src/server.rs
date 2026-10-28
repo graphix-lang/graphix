@@ -17,7 +17,7 @@ use lsp_types::{
     HoverProviderCapability, InitializeParams, InitializeResult, OneOf,
     PositionEncodingKind, PublishDiagnosticsParams, ReferenceParams, SaveOptions,
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, WorkspaceSymbolParams,
+    TextDocumentSyncOptions, Uri, WorkspaceSymbolParams,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{path::PathBuf, sync::Arc};
@@ -105,9 +105,9 @@ where
     info!("graphix lsp server initialized");
     for msg in &connection.receiver {
         // Checking waits for a quiet moment, so a burst of edits costs
-        // one check; a request the client is waiting on alone sees the
-        // text as it stands.
-        // CR claude for claude: [bug/low] A request taken while more messages are queued
+        // one check. A request will not wait that long: the document it
+        // names is checked whatever else is queued.
+        // XCR claude for claude: [bug/low] A request taken while more messages are queued
         // is answered without a flush. For a document opened while the server was busy,
         // no check exists yet, so documentSymbol has no types and hover/definition
         // answer null. Clients that ask once after didOpen keep that answer until the
@@ -117,16 +117,35 @@ where
         // design/review-2026-10-26/repro/lsp-request-mid-burst-unchecked.py (lsp-04)
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q73, An LSP
         // request taken mid-burst): yes, flush (the recommendation: flush.)
+        // 2026-10-27 qwen: Fixed as ruled. A request now checks what the document it
+        // names needs before it is answered, queue or not: ServerState::flush_document
+        // checks that document's dirty roots and nothing else, so a mid-burst request
+        // costs at most one check and the roots another document needs stay dirty for
+        // the quiet moment. The idle flush stands as it was: for every notification, and
+        // for a request taken with nothing queued, which is what keeps a
+        // workspace/symbol a barrier for the diagnostics an earlier edit caused.
+        // request_document (server.rs) reads textDocument.uri, the shape every document
+        // request has and a workspace/symbol does not, so a request that names no
+        // document flushes nothing new. Pinned by
+        // graphix-shell/tests/lsp/main.rs::a_request_mid_burst_checks_its_document. It
+        // cannot pass by luck: Client::queued (harness.rs) fills the queue before the
+        // server thread exists and the loop takes one message per cycle, so the hover
+        // and the documentSymbol under test are always taken with a third request behind
+        // them. Before the fix it failed every run with the probe's answer, symbols
+        // without types.
         let idle = connection.receiver.is_empty();
         match msg {
             Message::Request(req) => {
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-                if idle {
-                    let checked = guarded("a check", || state.flush());
-                    publish(&connection, checked.unwrap_or_default())?;
-                }
+                let document = request_document(&req);
+                let checked = guarded("a check", || match (idle, &document) {
+                    (true, _) => state.flush(),
+                    (false, Some(uri)) => state.flush_document(uri),
+                    (false, None) => vec![],
+                });
+                publish(&connection, checked.unwrap_or_default())?;
                 let response = handle_request(&state, req);
                 connection.sender.send(Message::Response(response))?;
             }
@@ -189,6 +208,13 @@ fn respond<P: DeserializeOwned, R: Serialize>(
             ),
         },
     }
+}
+
+/// The document `req` asks about, when it asks about one: every request
+/// this server answers about a document spells it `textDocument.uri`,
+/// and a `workspace/symbol` spells nothing.
+fn request_document(req: &Request) -> Option<Uri> {
+    req.params.get("textDocument")?.get("uri")?.as_str().and_then(|u| u.parse().ok())
 }
 
 fn handle_request(state: &ServerState, req: Request) -> Response {

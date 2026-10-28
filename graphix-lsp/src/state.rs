@@ -259,6 +259,26 @@ impl ServerState {
         self.publish_files(files)
     }
 
+    /// Check the dirty roots `uri`'s document is checked under, and only
+    /// those: a request waits on its own answer, so it does not wait for
+    /// the queue to empty, and the roots another document needs stay
+    /// dirty for the next quiet moment. A live root that was never
+    /// checked is dirty (`retire`), so dirty is what needs a check.
+    pub fn flush_document(&mut self, uri: &Uri) -> Diagnostics {
+        let Some(path) = uri_to_path(uri) else { return vec![] };
+        let stale: Vec<PathBuf> = self
+            .roots_of(&path)
+            .into_iter()
+            .filter(|root| self.dirty.contains(root))
+            .collect();
+        let mut files = AHashSet::default();
+        for root in stale {
+            self.dirty.remove(&root);
+            files.extend(self.check(&root));
+        }
+        self.publish_files(files)
+    }
+
     /// Check `root`, and the files its diagnostics change on. What stands
     /// on its files afterwards is the warnings of its last successful
     /// check and, when this one failed, the error: a buffer that stops
