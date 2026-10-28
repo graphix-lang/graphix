@@ -150,7 +150,16 @@ val queue: fn(#clock: Any, v: 'a) -> 'a
 
 Every time clock updates queue allows a 'a through. If no 'a is
 queued, it still remembers to allow that many through when they
-arrive. 
+arrive.
+
+`queuefn(#trigger, f)` applies this idea to function invocations, preserving
+which arguments fired together. It returns a wrapper with the same
+signature as `f` and one initial permit. Each later trigger fire releases
+one waiting invocation or saves a permit. Saved permits accumulate like a
+counting semaphore: several later calls can run between trigger ticks.
+A wrapper call site releases at most one invocation per runtime cycle,
+so each invocation keeps its own arguments. The optional `#count: &mut depth`
+reports the number of queued invocations.
 
 Lets use it to write two different subscription functions with
 different but equally valid and useful semantics.

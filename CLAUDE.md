@@ -527,6 +527,13 @@ whatever its bounds (`CallSite::settle_unread`): `publish`'s handler is
 `[fn(v: 'a) -> _, null] = null` under `'a: Concrete`. A definition's call sites settle with
 the enclosing statement, the signature's cells exempt.
 
+**Queued calls** (`design/queue_fn.md`): `queuefn` uses a counting
+semaphore, initially one permit, and banks unused post-birth trigger
+fires. Later invocations spend those permits without a new trigger;
+a wrapper site releases at most one call per runtime cycle so its
+argument deltas remain distinct. Sleep preserves credit and queued calls;
+a seq rebirth resets them.
+
 **Collection intrinsics** (`node/collection.rs`,
 `design/collection_intrinsics.md`): the Array/List/Map traversal HOFs
 are compiler nodes (`MapQ`/`FoldQ`) built when a lambda body is a

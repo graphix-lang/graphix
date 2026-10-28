@@ -652,11 +652,17 @@ Callback parameters retain caller-dependent effects, as in ordinary definitions.
 
 Core (always in scope): `print println dbg log cast<T>(x) error is_err
 filter filter_err count once uniq sum product min max mean and or all
-queue hold take skip throttle range`. `filter` and `filter_err` gate a
+queue queuefn hold take skip throttle range`. `filter` and `filter_err` gate a
 stream; `is_err` tests (`false` on every non-error value); to branch on a
 Result, select on it. `never()` / `never<T>()` is SYNTAX: typed bottom,
 args stay live; an unannotated `let` over `never()` takes its type from
 its first use, a reader or a writer, and a later writer must fit it.
+
+`queuefn(#trigger, f)` returns a wrapper with `f`'s signature and a
+counting semaphore starting at one permit. Later trigger fires release
+waiting invocations or bank permits; unused permits accumulate, so later
+calls can run without a new trigger. A wrapper site releases one call per
+runtime cycle. `#count: &mut depth` observes queued invocations.
 
 `opt` (over `['a, null]`): `is_some is_none or_default or and map
 flat_map filter ok_or zip`. Unwrapping is the `$` operator, above. The

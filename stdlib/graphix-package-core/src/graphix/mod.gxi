@@ -244,10 +244,13 @@ val queue: fn(#clock:Any, ?#flush:Any, ?#flush_before: [i64, null], v: 'a) -> 'a
 /// whose invocations are queued and released by an external trigger.
 ///
 /// Each call site of queuefn creates a fresh queue. The wrapper has an
-/// internal pop_count initialized to 1, so the first invocation runs
-/// immediately. Subsequent invocations push their args onto the queue and
-/// emit nothing until #trigger fires; each #trigger update releases one
-/// queued invocation, or banks a pop slot if the queue is empty. A fire
+/// counting semaphore initialized with one permit. An invocation spends
+/// a permit and runs immediately, or queues its arguments and emits nothing.
+/// Each #trigger update releases one queued invocation, or banks a permit
+/// when no awake invocation is waiting. Unused permits accumulate: later
+/// calls can consume them between trigger updates, so this is not a rate
+/// limit. One call site still releases at most one invocation per runtime
+/// cycle to keep argument deliveries separate. A fire
 /// of #trigger in the cycle the queuefn is born releases nothing. A call
 /// site that sleeps keeps its queued calls: no release takes one while it
 /// sleeps, and at its wake the slots banked meanwhile release them.

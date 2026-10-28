@@ -3,7 +3,8 @@
 Status: built.
 Pins: `stdlib/graphix-tests/src/lib_tests/core.rs` `queuefn_delta_per_cycle`, `queuefn_trigger_arg`,
 `queuefn_trigger_before_fn`, `queuefn_sleeping_site_keeps_its_calls`, `queuefn_birth_fire_is_no_credit`,
-`queuefn_wake_releases_one_call_a_cycle`, `queuefn_count_follows_a_moving_place`
+`queuefn_wake_releases_one_call_a_cycle`, `queuefn_count_follows_a_moving_place`;
+`tests/queue_credits.rs` `queuefn_banks_idle_permits`
 
 Lives in `graphix-package-core::queuefn`; the builtin is
 `core_queuefn`, bound in core's `mod.gx`.
@@ -43,9 +44,15 @@ val queuefn: fn<'a: Function>(?#count: [&mut i64, null], #trigger: Any, f: 'a) -
 ```graphix
 let trig = sys::time::timer(duration:1.s, true);
 let depth = 0;
-let slow = queuefn(#trigger: trig, #count: &depth, real_slow_fn);
-let result = slow(x, y);   // at most one release per tick
+let slow = queuefn(#trigger: trig, #count: &mut depth, real_slow_fn);
+let result = slow(x, y);   // spends a permit, or waits for one
 ```
+
+The trigger supplies permits to a counting semaphore. It starts with one
+permit and accumulates unused permits: several later invocations can run
+between two timer ticks. It therefore does not impose a rate limit. Calls
+released into the same site's bindings remain limited to one per runtime
+cycle, preserving each invocation's argument delta.
 
 ## Semantics
 
@@ -57,7 +64,7 @@ mutually exclusive.
 
 - **Wrapper invocation**: if `pop_count > 0`, decrement and invoke `f`;
   otherwise push the invocation and emit nothing this cycle.
-<!-- CR claude for claude: [doc-drift/low] Credit banks without bound: after N idle
+<!-- XCR claude for claude: [doc-drift/low] Credit banks without bound: after N idle
 trigger fires, N later calls dispatch at once. This contradicts the API example above
 ('at most one release per tick'), and queuefn is no rate limit. Decide: cap `pop_count`
 (at 1, if a trigger is meant to pace calls) or fix the example and say credit
@@ -67,6 +74,22 @@ design/review-2026-10-26/repro/x-async-io-queuefn-unbounded-credit.gx (x-async-i
 <!-- 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q19, queuefn's
 banked credit): yes, accumulate, fix the doc (the recommendation: accumulate (a
 semaphore), fix the doc.) -->
+<!-- 2026-10-28 codex: The implementation is graphix-package-core/src/queuefn.rs:
+QueueState::pop_count already implements the ruled counting semaphore, initially one
+permit, with trigger adding unused permits and wrapper calls consuming them. Kept that
+accumulating behaviour. Fixed the rate-limit claim and writable-reference example in
+queue_fn.md; documented banking and per-site cycle pacing in CLAUDE/AGENTS, the
+interface, book and language skill; built the book. The original probe reproduced all
+five answers at tick 6. Pin: graphix-tests --test queue_credits
+queuefn_banks_idle_permits, all four modes: five post-birth idle triggers plus the
+initial permit release exactly six calls without another trigger; the seventh stays
+queued and #count is one. The as-built implementation passes. Temporarily capping
+credit at one makes all four modes fail (one answer, six queued); restoring
+accumulation passes all four. cargo test -p graphix-tests --offline --test
+queue_credits: 4 passed; cargo test -p graphix-package-core --offline --lib: 7 passed.
+cargo fmt --all now passes again, as does git diff --check. No runtime semaphore
+replacement was needed: the existing synchronous counter under QueueState's mutex
+already has the requested semantics. -->
 - **`#trigger` update**: dequeue the oldest invocation of a site awake
   and invoke `f` with it; with none, `pop_count += 1`. A fire born with
   the queuefn (its first cycle, or a seq step's next run) is no credit:
