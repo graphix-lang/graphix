@@ -917,6 +917,12 @@ enum Body<R: Rt> {
     Dynamic { source: Node<R>, sig_env: Lexical },
 }
 
+impl<R: Rt> Body<R> {
+    fn dynamic(source: Node<R>, sig_env: Lexical) -> Self {
+        Body::Dynamic { source, sig_env }
+    }
+}
+
 #[derive(Debug)]
 pub struct Module<R: Rt> {
     spec: Arc<Expr>,
@@ -1011,10 +1017,7 @@ impl<R: Rt> Module<R> {
         let flags = image::flags_decode(buf)?;
         let body = match u8::decode(buf)? {
             0 => Body::Static,
-            1 => Body::Dynamic {
-                source: decode_node(ctx, buf)?,
-                sig_env: image::lexical_decode(buf)?,
-            },
+            1 => Body::dynamic(decode_node(ctx, buf)?, image::lexical_decode(buf)?),
             _ => return Err(PackError::UnknownTag),
         };
         let env = image::lexical_decode(buf)?;
@@ -1085,7 +1088,7 @@ impl<R: Rt> Module<R> {
                 env.grant_trait(tid)
             }
         }
-        let body = Body::Dynamic { source, sig_env: ctx.env.lexical() };
+        let body = Body::dynamic(source, ctx.env.lexical());
         Ok(Node::new(Self::with(
             spec,
             flags,
