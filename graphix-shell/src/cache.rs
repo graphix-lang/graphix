@@ -405,6 +405,13 @@ impl RegistrationCache {
     // -d /tmp/graphix-cr-rework-book passed. Rules, book and design updated;
     // AGENTS.md regenerated. Tested on Linux; other platforms were not exercised. No
     // render/update/dispatch/fork path changed.
+    // 2026-10-28 claude: Review (2026-10-28) fixes on merge: a write renames over a
+    // bad entry instead of refusing (the cache healed only by hand), collection
+    // removes an untrusted entry in a trusted directory, load warnings keep the
+    // reason ({e:#}), and a dangling cache-base link names its path.
+    // design/program_image.md states the path-based check's limit (an ancestor writer
+    // can swap the tree between check and use). Open for Eric: a trust refusal is
+    // silent without --log-dir; should it print one stderr line?
     pub(crate) fn load(&self, entry: Entry) -> Option<(ArcStr, Bytes)> {
         let path = self.path(entry)?;
         let file = (|| -> Result<fs::File> {

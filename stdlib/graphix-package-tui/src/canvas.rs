@@ -183,6 +183,14 @@ impl ShapeV {
     // cargo fmt --all completed. No terminal/socket-capable run or allocation
     // measurements; the requested graphix-tests lib gate is running and its results will
     // be in the final report.
+    // 2026-10-28 claude: Review (2026-10-28) found a line along a window edge lost or
+    // moved by rounding in clip::intersection, and an unclipped chart 30-80% slower than
+    // main (every draw re-clipped and copied). Fixed on merge: a segment along a
+    // constant coordinate clips exactly (pin
+    // clip::tests::lines_along_a_constant_coordinate_clip_exactly, fails without), and a
+    // series inside the padded box draws from its own data (LineData::raw). The commit's
+    // 25 ms -> 0.45 ms was against the rejected attempt; against main the re-entering
+    // case was 7-14% slower before the fast path.
     fn finite(&self) -> bool {
         let all = |cs: &[f64]| cs.iter().all(|c| c.is_finite());
         match self {

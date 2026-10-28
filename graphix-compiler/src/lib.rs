@@ -885,6 +885,12 @@ pub type TypedFastFn = fn(&env::Env, &FnType, &[Value]) -> Option<Value>;
 // and were corrected, the remaining 447 require sockets unavailable in this sandbox.
 // Final full-library and targeted rerun results are in the handoff report; no workspace
 // or external netidx gate run.
+// 2026-10-28 claude: Review (2026-10-28): the rework again removed five #[native]
+// assertions (re::find, re::is_match, hbs::render, array::sort, str::parse) and built
+// fusion_review twice. Fixed on merge:
+// lib_tests::native::native_over_cached_builtins_is_error pins #[native] refused over
+// each, with its message, and lang/mod.rs no longer includes fusion_review.
+// net_list_table now expects no fusion (array::sort is cached).
 pub enum FastCall {
     Plain(FastFn),
     Typed(TypedFastFn),

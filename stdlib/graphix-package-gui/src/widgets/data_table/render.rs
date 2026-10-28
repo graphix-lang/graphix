@@ -874,6 +874,13 @@ impl<X: GXExt> DataTableW<X> {
                 // lib_tests::toml::toml_stream_tcp and lib_tests::typecheck::. Book
                 // updated/rebuilt; cargo fmt --all completed. Actual window timers, GPU
                 // rendering and socket-dependent integration remain unverified here.
+                // 2026-10-28 claude: Review (2026-10-28) found expiry judged at the
+                // RedrawRequested instant, after the canvas's picture was built, so a
+                // frame drawn just before expiry could stay on screen, and an update
+                // cost two Duration conversions. Fixed on merge: SparklineCanvas::new
+                // decides once whether its picture is final (still), from its own now;
+                // expired_sparklines_stop_requesting_redraws pins the redraw after a
+                // pre-expiry picture.
                 let bounds = spark_bounds.unwrap_or(SparkBounds { min: 0.0, max: 1.0 });
                 let sparkline = history
                     .filter(|h| !h.is_empty())
