@@ -3630,6 +3630,20 @@ that defines the type can construct or read it: see
 <a href="udt/../modules/interfaces.html#abstract-types">abstract types</a>. Each construction
 costs one allocation, so nominal types suit handles and newtypes better than
 hot data.</p>
+<p>A nominal type may take parameters, and they are invariant: the
+representation is hidden, so nothing outside it can say a <code>Box&lt;i64&gt;</code> is a
+<code>Box&lt;[i64, string]&gt;</code>. A constructed value's parameters are decided by where
+it goes, with its payload's type as the least they can be:</p>
+<pre><code class="language-graphix">type Box&lt;'a&gt; = Abstract&lt;'a&gt;;
+let mk = |x| Box(x);
+let wide: Box&lt;[i64, string]&gt; = mk(1);
+let either: [Box&lt;i64&gt;, Box&lt;string&gt;] = Box("hi");
+let narrow = Box(2);
+narrow.0 + 1
+</code></pre>
+<p><code>wide</code> is a <code>Box&lt;[i64, string]&gt;</code> and <code>either</code> a <code>Box&lt;string&gt;</code>. <code>narrow</code>
+goes nowhere wider, so it is a <code>Box&lt;i64&gt;</code>. <code>let b: Box&lt;string&gt; = Box(1)</code> is
+refused: <code>Box&lt;string&gt; does not contain Box&lt;i64&gt;</code>.</p>
 <p>In the next section you'll see that we can do a lot more with them.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="parametric-polymorphism"><a class="header" href="#parametric-polymorphism">Parametric Polymorphism</a></h1>
 <p>We can define type variables as part of the definition of named types and then
