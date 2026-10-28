@@ -4484,3 +4484,19 @@ run!(
     prints(r#"["refused", "refused", ["A", "x", i64:2]]"#);
     FuseExpect::Jit
 );
+
+// A union member that holds a value without converting its elements comes
+// before one that would: [1, 2] reads as Array<i64>, not as (1, "2"), and
+// as List<i64>, not as ["1", "2"] (t-cast-setops-06, x-rerun-5-03).
+run!(
+    a_union_prefers_the_member_its_elements_fit,
+    r#"{
+  let a: Any = [1, 2];
+  let t = cast<[(i64, string), Array<i64>]>(a)$;
+  let l = cast<[List<i64>, Array<string>]>([1, 2])$;
+  (select t { Array<i64> as _ => "array", (i64, string) as _ => "tuple" },
+   select l { List<i64> as _ => "list", Array<string> as _ => "strings" })
+}"#,
+    prints(r#"["array", "list"]"#);
+    FuseExpect::Jit
+);

@@ -1360,7 +1360,7 @@ impl Type {
             };
         }
         // a writer wrote the tuple or the struct the data reads back as
-        // CR claude for claude: [bug/medium] The rank pass takes the first same-length
+        // XCR claude for claude: [bug/medium] The rank pass takes the first same-length
         // tuple (then struct) that casts at all, including by printing a number into a
         // string, ahead of a member the data reads without leaving its class. With T =
         // [List<i64>, (i64, string), Array<[i64, f64]>], json::write_str of [[<1, 2>],
@@ -1406,13 +1406,27 @@ impl Type {
         // (List<i64> and Array<[i64, f64]> write alike). Left: an Array<i64> value
         // cast to [Array<i64>, (i64, i64)] becoming the tuple, an in-program cast the
         // reader bounds do not decide.
+        // 2026-10-28 claude: Built per round 1's prefer-exact ruling: the rank pass
+        // takes a tuple (or a struct) for unmarked data only when every element stays
+        // in its own class, and in_own_class now judges a container by its elements,
+        // so [1, 2] under Any read as [(i64, string), Array<i64>] is the array, not
+        // (1, "2"). A value typed Array<i64> stays an array. Pin:
+        // lang::types::a_union_prefers_the_member_its_elements_fit.
         let mut ranked: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
         if let Value::Array(a) = v
             && rep::kind(v).is_none()
         {
             let rank = |t: &Type| match rep_head(env, t).as_deref() {
-                Some(Type::Tuple(es)) if es.len() == a.len() => Some(0),
-                Some(Type::Struct(_)) => Some(1),
+                Some(Type::Tuple(es))
+                    if es.len() == a.len()
+                        && es
+                            .iter()
+                            .zip(a.iter())
+                            .all(|(e, x)| in_own_class(env, e, x)) =>
+                {
+                    Some(0)
+                }
+                Some(Type::Struct(fs)) if fields_in_own_class(env, fs, a) => Some(1),
                 _ => None,
             };
             for r in 0..2 {
@@ -2859,8 +2873,10 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         None | Some(Type::Bottom) => true,
         Some(Type::Primitive(s)) => rep::kind(v).is_none() && s.intersects(own_class(v)),
         Some(Type::Set(ts)) => ts.iter().any(|t| in_own_class(env, t, v)),
-        Some(Type::Array(_)) => rep::array_elems(v).is_some(),
-        // CR claude for claude: [bug/medium] Unmarked array data never counts as a List
+        Some(Type::Array(e)) => {
+            rep::array_elems(v).is_some_and(|a| a.iter().all(|x| in_own_class(env, e, x)))
+        }
+        // XCR claude for claude: [bug/medium] Unmarked array data never counts as a List
         // member's class, while any Array member counts however its elements must
         // convert. Data from a list writer therefore reads back as another member:
         // cast<[List<i64>, Array<string>]> of [1, 2] is ["1", "2"], a pack round trip
@@ -2905,11 +2921,41 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         // gives ["1", "2"]; a reader bound does not decide a cast of a program value,
         // so whether a List member counts unmarked array data as its own class is still
         // this CR's question.
-        Some(Type::List(_)) => list::is_list(v),
-        Some(Type::Tuple(_)) => rep::tuple_elems(v).is_some(),
-        Some(Type::Struct(_)) => rep::struct_fields(v).is_some(),
-        Some(Type::Variant(..)) => rep::variant(v).is_some(),
-        Some(Type::Map { .. }) => matches!(v, Value::Map(_)),
+        // a list writer writes a list flat, so unmarked data is a list's too
+        // 2026-10-28 claude: Built per round 1's prefer-exact ruling: in_own_class
+        // judges a container by its elements (an Array member over [1, 2] needs i64
+        // elements to count), and unmarked array data counts as a List's own class (a
+        // list writer writes a list flat), so cast<[List<i64>, Array<string>]>([1, 2])
+        // is the list, not ["1", "2"]. The json Map-versus-pairs case is refused by
+        // JsonData. Pin: lang::types::a_union_prefers_the_member_its_elements_fit.
+        Some(Type::List(e)) if list::is_list(v) => {
+            list::Iter::new(v.clone()).all(|x| in_own_class(env, e, &x))
+        }
+        Some(Type::List(e)) => {
+            rep::kind(v).is_none()
+                && rep::array_elems(v)
+                    .is_some_and(|a| a.iter().all(|x| in_own_class(env, e, x)))
+        }
+        Some(Type::Tuple(ts)) => rep::tuple_elems(v).is_some_and(|a| {
+            a.len() == ts.len() && ts.iter().zip(a).all(|(t, x)| in_own_class(env, t, x))
+        }),
+        Some(Type::Struct(fs)) => rep::struct_fields(v).is_some_and(|a| {
+            a.len() == fs.len()
+                && fs.iter().zip(a).all(|((_, t, _), f)| {
+                    rep::field(f).is_some_and(|(_, x)| in_own_class(env, t, x))
+                })
+        }),
+        Some(Type::Variant(tag, ps, _)) => rep::variant(v).is_some_and(|(t, a)| {
+            t == tag
+                && a.len() == ps.len()
+                && ps.iter().zip(a).all(|(p, x)| in_own_class(env, p, x))
+        }),
+        Some(Type::Map { key, value }) => match v {
+            Value::Map(m) => m
+                .into_iter()
+                .all(|(k, x)| in_own_class(env, key, k) && in_own_class(env, value, x)),
+            _ => false,
+        },
         Some(Type::Error(_)) => matches!(v, Value::Error(_)),
         Some(_) => matches!(v, Value::Abstract(_)),
     })
@@ -2923,6 +2969,25 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
 /// datetime or duration to its plain printed form, a decimal to the float
 /// nearest it, and an array of numbers to bytes. Nothing converts to null
 /// or to an error.
+/// Whether unmarked struct data, `[name, value]` pairs, reads into the
+/// fields `fs` with each value in its own class.
+fn fields_in_own_class(
+    env: &Env,
+    fs: &[(ArcStr, Type, crate::typ::WrittenAt)],
+    a: &ValArray,
+) -> bool {
+    a.iter().all(|p| match p {
+        Value::Array(kv) if kv.len() == 2 => match (&kv[0], &kv[1]) {
+            (Value::String(n), x) => fs
+                .iter()
+                .find(|(f, _, _)| f == n)
+                .is_some_and(|(_, t, _)| in_own_class(env, t, x)),
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
 fn convert(v: Value, t: Typ) -> Option<Value> {
     match (&v, t) {
         (_, Typ::Null | Typ::Error) => None,
