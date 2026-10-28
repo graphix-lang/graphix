@@ -2158,7 +2158,7 @@ impl<R: Rt> CallSite<R> {
                         share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx))?;
                     } else if !ctx.attr_census.lock().is_empty() && ctx.fusion.available()
                     {
-                        fusion::fuse_instance(ctx, self.top_id, |ctx| apply.fuse(ctx))?;
+                        fusion::fuse_instance(ctx, self.top_id, apply)?;
                     }
                 }
                 crate::check_attribute_census(ctx)?;

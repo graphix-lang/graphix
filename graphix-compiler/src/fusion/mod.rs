@@ -416,6 +416,7 @@ pub struct FusionCtx {
     pub(crate) share: Option<share::Share>,
     /// Definitions deleted since the last link, whose kernels it forgets.
     dead: Vec<LambdaId>,
+    instances: Arc<parking_lot::Mutex<BTreeMap<KernelCacheKey, share::SlotShare>>>,
 }
 
 impl FusionCtx {
@@ -430,6 +431,7 @@ impl FusionCtx {
             top_id: self.top_id,
             share: None,
             dead: Vec::new(),
+            instances: self.instances.clone(),
         }
     }
 
@@ -596,6 +598,7 @@ impl FusionCtx {
 
     /// The definition `id` was deleted: the next link forgets its kernels.
     pub(crate) fn forget_def(&mut self, id: LambdaId) {
+        self.instances.lock().retain(|(def, ..), _| *def != id);
         if !matches!(self.emission.get_mut(), EmissionSlot::Root(None)) {
             self.dead.push(id)
         }
@@ -635,6 +638,7 @@ impl FusionCtx {
             top_id: None,
             share: None,
             dead: Vec::new(),
+            instances: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
         }
     }
 }
@@ -1385,15 +1389,29 @@ fn calls_a_function<R: Rt>(node: &Node<R>) -> bool {
 pub(crate) fn fuse_instance<R: Rt>(
     ctx: &mut CompileCtx<R>,
     top_id: ExprId,
-    f: impl FnOnce(&mut CompileCtx<R>) -> anyhow::Result<()>,
+    apply: &mut dyn crate::Apply<R>,
 ) -> anyhow::Result<()> {
+    let key = match apply.view() {
+        ApplyView::Lambda(g) => {
+            let (coverage, resolutions) = lowering::body_fingerprint(g.body(), ctx);
+            Some((g.id(), Arc::new(apply.typ().resolve_tvars()), coverage, resolutions))
+        }
+        _ => None,
+    };
+    let cached =
+        key.as_ref().and_then(|key| ctx.fusion.instances.lock().get(key).cloned());
+    if let Some(cached) = cached {
+        return TypeMemo::scope(|| {
+            share::fuse_slot(ctx, &cached, top_id, |ctx| apply.fuse(ctx))
+        });
+    }
     ctx.env.seed_typedef_refs();
     let local = matches!(*ctx.fusion.emission.lock(), EmissionSlot::NonEmitting);
     if local {
         *ctx.fusion.emission.get_mut() = EmissionSlot::Root(None);
     }
     let top = ctx.fusion.top_id.replace(top_id);
-    let result = TypeMemo::scope(|| f(ctx));
+    let result = TypeMemo::scope(|| share::fuse_prototype(ctx, |ctx| apply.fuse(ctx)));
     ctx.fusion.top_id = top;
     if ctx.fusion.unlinked() > 0 {
         ctx.fusion.link();
@@ -1401,7 +1419,10 @@ pub(crate) fn fuse_instance<R: Rt>(
     if local {
         *ctx.fusion.emission.get_mut() = EmissionSlot::NonEmitting;
     }
-    result
+    if let (Some(key), Some(shared)) = (key, result?) {
+        ctx.fusion.instances.lock().insert(key, shared);
+    }
+    Ok(())
 }
 
 /// Dispatch each registered attribute's check ([`crate::AttributeCheckFn`])

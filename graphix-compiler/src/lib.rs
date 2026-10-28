@@ -3556,6 +3556,11 @@ pub(crate) fn check_attribute_census<R: Rt>(ctx: &CompileCtx<R>) -> Result<()> {
             // write the read-only sibling graphix-types/src/typ/tvar.rs; formatting
             // the touched packages succeeds. Full graphix-tests lib gate remains
             // for session end.
+            // 2026-10-28 codex: Rework review: dynamic instances now reuse a fusion attempt table keyed by the definition, resolved signature and existing catch/callee fingerprint. The cache is shared across compile forks, populated after
+            // linking, and forgotten with the definition. Cache hits use the collection kernel-reuse checks and skip typedef seeding, emission and linking. Pin lang::attributes::dynamic_native_kernels_are_shared checks all 3000 results, native
+            // invocations and the emitted-region count. It failed before the fix: 3001 regions, 1.451 s; afterward: 2 regions, 0.106 s serial JIT and 0.096 s forced-parallel JIT (fixture timings include quiet waiting). Ran cargo test -p
+            // graphix-tests --offline --lib dynamic_native_kernels_are_shared -- --nocapture before/after and cargo test -p graphix-tests --offline --lib lang::attributes:: (154 passed). cargo fmt --all passed. Full requested crate gates follow
+            // at session end.
             if !dispatched.contains(&spec.id) && !absorbed.contains(&spec.id) {
                 let e = ::anyhow::anyhow!(
                     "attribute in a position the fusion pass cannot check — \

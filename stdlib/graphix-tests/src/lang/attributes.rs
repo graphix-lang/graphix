@@ -544,3 +544,52 @@ run!(
 }"#,
     prints("[i64:3, i64:5, i64:7]")
 );
+
+#[tokio::test]
+async fn dynamic_native_kernels_are_shared() -> Result<()> {
+    use graphix_package_core::testing::{
+        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    for mode in [Mode::Jit, Mode::JitPar] {
+        let (ctx, mut rx) = fixture_runtime(
+            [(
+                "/test.gx",
+                result_source(
+                    r#"{
+                let g = |x: i64| { let y = #[native] (x * 2 + 1); y + 1 };
+                let h = never(); h <- g;
+                array::map(array::init(3000, |i| i), |x| h(x))
+            }"#,
+                ),
+            )],
+            crate::TEST_REGISTER,
+            mode,
+            |_| {},
+        )
+        .await?;
+        let before = ctx.rt.fusion_stats().await?.fused;
+        let start = Instant::now();
+        let result = compile_result(&ctx).await?;
+        let values = updates_until_quiet(
+            &ctx.rt,
+            &mut rx,
+            result.exprs[0].id,
+            Duration::from_millis(100),
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
+        let emitted = ctx.rt.fusion_stats().await?.fused - before;
+        eprintln!("{mode:?}: elapsed {:?}, emitted {emitted}", start.elapsed());
+        assert_eq!(
+            values,
+            [Value::Array((0..3000).map(|i| Value::I64(i * 2 + 2)).collect())]
+        );
+        assert!(emitted < 20, "emitted {emitted} regions for one definition");
+        assert!(ctx.rt.control().invocations().1 >= 3000);
+        ctx.shutdown().await;
+    }
+    Ok(())
+}

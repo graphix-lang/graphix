@@ -1150,7 +1150,7 @@ pub(crate) type QopCoverage = SmallVec<[u64; 4]>;
 /// cache key, because a kernel bakes those resolutions as CLIF calls.
 pub(crate) type FnResolutions = SmallVec<[u64; 4]>;
 
-fn body_fingerprint<R: Rt>(
+pub(crate) fn body_fingerprint<R: Rt>(
     body: &Node<R>,
     ec: &CompileCtx<R>,
 ) -> (QopCoverage, FnResolutions) {
