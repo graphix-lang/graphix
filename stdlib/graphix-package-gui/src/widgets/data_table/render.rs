@@ -22,7 +22,7 @@ use iced_core::keyboard::{Key, key::Named};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
-use std::time::Instant;
+use std::{collections::VecDeque, time::Instant};
 
 type Col<'a> = widget::Column<'a, Message, GraphixTheme, Renderer>;
 type Row<'a> = widget::Row<'a, Message, GraphixTheme, Renderer>;
@@ -52,25 +52,37 @@ pub(super) struct SparkBounds {
 
 /// Canvas program that draws a sparkline polyline.
 struct SparklineCanvas {
-    /// (time_offset_secs, value) pairs
-    points: Vec<(f64, f64)>,
+    points: LPooled<Vec<(f64, f64)>>,
     bounds: SparkBounds,
 }
 
 impl SparklineCanvas {
+    fn new(
+        history: &VecDeque<(Instant, f64)>,
+        now: Instant,
+        history_seconds: f64,
+        bounds: SparkBounds,
+    ) -> Self {
+        let mut points: LPooled<Vec<_>> = history
+            .iter()
+            .map(|&(t, v)| {
+                let age = now.saturating_duration_since(t).as_secs_f64();
+                ((1.0 - age / history_seconds).clamp(0.0, 1.0), v)
+            })
+            .collect();
+        if let Some(&(_, v)) = points.last() {
+            points.push((1.0, v));
+        }
+        Self { points, bounds }
+    }
+
     fn path(&self, size: iced_core::Size) -> widget::canvas::Path {
         use widget::canvas::Path;
         let (mut min_v, mut max_v) = (self.bounds.min, self.bounds.max);
-        let finite = |(t, v): &&(f64, f64)| t.is_finite() && v.is_finite();
-        let Some(&(min_t, _)) = self.points.iter().find(finite) else {
-            return Path::new(|_| {});
-        };
-        let max_t = self.points.iter().rfind(finite).unwrap().0;
         if (max_v - min_v).abs() < 1e-12 {
             min_v -= 1.0;
             max_v += 1.0;
         }
-        let t_range = (max_t - min_t).max(1e-12);
         let v_range = max_v - min_v;
         let w = size.width;
         let h = size.height;
@@ -81,7 +93,7 @@ impl SparklineCanvas {
                     first = true;
                     continue;
                 }
-                let x = ((t - min_t) / t_range) as f32 * w;
+                let x = t as f32 * w;
                 let y = h - ((v - min_v) / v_range) as f32 * h;
                 if !x.is_finite() || !y.is_finite() {
                     first = true;
@@ -361,7 +373,8 @@ impl<X: GXExt> DataTableW<X> {
             header_row = header_row.push(cell);
         }
         let row_h = self.row_height();
-        let spark_bounds_by_col = self.compute_sparkline_bounds();
+        let now = Instant::now();
+        let spark_bounds_by_col = self.compute_sparkline_bounds(now);
         let mut body = Col::new()
             .spacing(0)
             .width(iced_core::Length::Shrink)
@@ -396,7 +409,9 @@ impl<X: GXExt> DataTableW<X> {
                         &ColumnType::Text
                     };
                     let sb = spark_bounds_by_col.get(col_name).copied();
-                    self.render_cell(col_name, col_type, text, row_idx, *w, row_h, sb)
+                    self.render_cell(
+                        col_name, col_type, text, row_idx, *w, row_h, sb, now,
+                    )
                 };
                 row_w = row_w.push(cell_el);
             }
@@ -532,11 +547,13 @@ impl<X: GXExt> DataTableW<X> {
     /// where set, else the union of every row's points in the window.
     /// Points older than the window are dropped here, so a row no update
     /// reaches still ages.
-    fn compute_sparkline_bounds(&self) -> LPooled<AHashMap<ArcStr, SparkBounds>> {
+    fn compute_sparkline_bounds(
+        &self,
+        now: Instant,
+    ) -> LPooled<AHashMap<ArcStr, SparkBounds>> {
         let mut out: LPooled<AHashMap<ArcStr, SparkBounds>> = LPooled::take();
         let mut ranges: LPooled<AHashMap<ArcStr, (f64, f64)>> = LPooled::take();
         {
-            let now = Instant::now();
             let mut inner = self.cells.inner.lock();
             for ((_row, col), history) in inner.sparklines.iter_mut() {
                 if let Some(ColumnType::Sparkline { history_seconds, .. }) =
@@ -585,6 +602,7 @@ impl<X: GXExt> DataTableW<X> {
         w: f32,
         row_h: f32,
         spark_bounds: Option<SparkBounds>,
+        now: Instant,
     ) -> IcedElement<'a> {
         let callback_id = self
             .columns
@@ -739,14 +757,14 @@ impl<X: GXExt> DataTableW<X> {
                 }
                 btn.into()
             }
-            ColumnType::Sparkline { .. } => {
+            ColumnType::Sparkline { history_seconds, .. } => {
                 let inner = self.cells.inner.lock();
                 let key = self
                     .row_paths
                     .get(row_idx)
                     .map(|row_path| (row_path.clone(), col_name.clone()));
                 let history = key.as_ref().and_then(|k| inner.sparklines.get(k));
-                // CR claude for claude: [bug/low] The sparkline's x-axis is the cell's
+                // XCR claude for claude: [bug/low] The sparkline's x-axis is the cell's
                 // own data span (first point to last change), not the rolling window:
                 // SparklineCanvas::path maps [min_t, max_t] onto the whole width. A
                 // value that changed 10 minutes ago is drawn as if it changed now, and
@@ -758,26 +776,32 @@ impl<X: GXExt> DataTableW<X> {
                 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2,
                 // q50, A sparkline's x axis): yes, rolling window (the recommendation:
                 // the rolling window.)
-                let points: Vec<(f64, f64)> = match history {
-                    Some(h) if h.len() >= 2 => {
-                        let first_t = h.front().unwrap().0;
-                        h.iter()
-                            .map(|(t, v)| (t.duration_since(first_t).as_secs_f64(), *v))
-                            .collect()
-                    }
-                    _ => vec![],
-                };
+                // 2026-10-28 codex: Sparkline points now use the rolling
+                // history_seconds window and one timestamp per table frame; the final
+                // value extends flat to now, including a single unchanged sample.
+                // Aging keeps the last value at/before the window start. Scratch
+                // points use LPooled. Pins sparkline_path_uses_the_rolling_window and
+                // sparkline_aging_keeps_the_value_at_the_window_start both failed
+                // before the fix and pass after;
+                // sparkline_timestamps_share_a_window_and_extend_to_now additionally
+                // checks distinct histories, timestamp normalization, a lone old
+                // sample and the terminal segment. cargo test -p graphix-package-gui
+                // --offline sparkline_tests: 4 passed. Updated the book and the
+                // existing integration expectation for retained history. Full GUI
+                // suite follows; GPU rendering and netidx-dependent table integration
+                // cannot run in this sandbox.
+                let bounds = spark_bounds.unwrap_or(SparkBounds { min: 0.0, max: 1.0 });
+                let sparkline = history
+                    .filter(|h| !h.is_empty())
+                    .map(|h| SparklineCanvas::new(h, now, *history_seconds, bounds));
                 drop(inner);
-                if points.is_empty() {
-                    widget::text(text.to_string()).size(13).into()
-                } else {
-                    let bounds =
-                        spark_bounds.unwrap_or(SparkBounds { min: 0.0, max: 1.0 });
-                    let sparkline = SparklineCanvas { points, bounds };
+                if let Some(sparkline) = sparkline {
                     widget::Canvas::new(sparkline)
                         .width(iced_core::Length::Fill)
                         .height(20.0)
                         .into()
+                } else {
+                    widget::text(text.to_string()).size(13).into()
                 }
             }
         };
@@ -791,6 +815,60 @@ mod sparkline_tests {
     use widget::canvas::path::lyon_path::Event;
 
     #[test]
+    fn sparkline_timestamps_share_a_window_and_extend_to_now() {
+        use std::time::Duration;
+        let now = Instant::now();
+        let bounds = SparkBounds { min: 0.0, max: 1.0 };
+        for ages in [[8, 6], [4, 2]] {
+            let history = ages
+                .into_iter()
+                .map(|age| (now - Duration::from_secs(age), 1.0))
+                .collect();
+            let canvas = SparklineCanvas::new(&history, now, 10.0, bounds);
+            for (point, age) in canvas.points.iter().zip(ages) {
+                assert!((point.0 - (10 - age) as f64 / 10.0).abs() < 1e-12);
+            }
+            assert_eq!(canvas.points.last(), Some(&(1.0, 1.0)));
+        }
+        let history = [(now - Duration::from_secs(20), 0.5)].into();
+        let canvas = SparklineCanvas::new(&history, now, 10.0, bounds);
+        assert_eq!(&*canvas.points, &[(0.0, 0.5), (1.0, 0.5)]);
+    }
+
+    #[test]
+    fn sparkline_path_uses_the_rolling_window() {
+        let canvas = SparklineCanvas {
+            points: [(0.2, 0.0), (0.4, 1.0), (1.0, 1.0)].into_iter().collect(),
+            bounds: SparkBounds { min: 0.0, max: 1.0 },
+        };
+        let path = canvas.path(iced_core::Size::new(100.0, 20.0));
+        let lines: LPooled<Vec<_>> = path
+            .raw()
+            .iter()
+            .filter_map(|e| match e {
+                Event::Line { from, to } => Some(((from.x, from.y), (to.x, to.y))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(&*lines, &[((20.0, 20.0), (40.0, 0.0)), ((40.0, 0.0), (100.0, 0.0))]);
+    }
+
+    #[test]
+    fn sparkline_aging_keeps_the_value_at_the_window_start() {
+        use std::{collections::VecDeque, time::Duration};
+        let now = Instant::now();
+        let mut history: VecDeque<_> = [(20, 1.0), (15, 2.0), (5, 3.0)]
+            .map(|(age, v)| (now - Duration::from_secs(age), v))
+            .into();
+        age_sparkline(&mut history, now, 10.0);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].1, 2.0);
+        age_sparkline(&mut history, now + Duration::from_secs(20), 10.0);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].1, 3.0);
+    }
+
+    #[test]
     fn sparkline_paths_skip_nonfinite_samples() {
         let canvas = SparklineCanvas {
             points: vec![
@@ -801,7 +879,9 @@ mod sparkline_tests {
                 (3.0, 0.0),
                 (4.0, 1.0),
                 (5.0, f64::INFINITY),
-            ],
+            ]
+            .into_iter()
+            .collect(),
             bounds: SparkBounds { min: 0.0, max: 1.0 },
         };
         let path = canvas.path(iced_core::Size::new(100.0, 20.0));

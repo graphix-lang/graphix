@@ -547,14 +547,14 @@ fn sparkline_cutoff(now: Instant, history_seconds: f64) -> Option<Instant> {
     now.checked_sub(Duration::try_from_secs_f64(history_seconds).ok()?)
 }
 
-/// Drop the points older than the window.
+/// Keep the last value before the window and every point within it.
 pub(super) fn age_sparkline(
     history: &mut VecDeque<(Instant, f64)>,
     now: Instant,
     history_seconds: f64,
 ) {
     if let Some(cutoff) = sparkline_cutoff(now, history_seconds) {
-        while history.front().is_some_and(|(t, _)| *t < cutoff) {
+        while history.get(1).is_some_and(|(t, _)| *t <= cutoff) {
             history.pop_front();
         }
     }

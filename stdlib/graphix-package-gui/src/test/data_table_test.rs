@@ -2134,7 +2134,7 @@ let result = data_table(#table: &tbl)
     let old = std::time::Instant::now() - std::time::Duration::from_secs(120);
     h.dt().dt_restamp_sparklines(old);
     let _ = h.view();
-    assert_eq!(h.dt().dt_sparkline_len("live", "load"), Some(0));
+    assert_eq!(h.dt().dt_sparkline_len("live", "load"), Some(1));
     Ok(())
 }
 

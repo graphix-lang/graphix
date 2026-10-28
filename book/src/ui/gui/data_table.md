@@ -120,7 +120,9 @@ escaping for a slash inside a name. Invalid names are ignored with a warning.
   current value.
 
 - **`sparkline_column`** -- Rolling-line visualization accumulating
-  published values over `history_seconds`. By default the y-axis is
+  published values over `history_seconds`. Every cell uses the same rolling time
+  axis, from now minus `history_seconds` to now. The last value extends flat to
+  now; the value at the window start is retained even when updates stop. By default the y-axis is
   shared across every cell in the column (auto-scaled to the union of
   all rows' values) so cells are visually comparable. Pass `#min` /
   `#max` to fix the axis instead.
