@@ -1603,6 +1603,14 @@ impl<R: Rt> Update<R> for Select<R> {
         } = arm_facts.as_mut().expect("arm facts built above");
         let ArmDiscriminants { shallow, scrutinee } = &**discriminants;
         let woke = slept.take();
+        if woke && ctx.event.born() {
+            *selected = None;
+            entered.fill(false);
+            missed.fill(false);
+            if let Some(runs) = guards.as_mut() {
+                runs.fill(GuardRun::Unborn);
+            }
+        }
         // The guarded arms' production tags. Only guards the chain
         // consults contribute fires or bottomness.
         let mut guard_tags: SmallVec<[(usize, Tag); 4]> = SmallVec::new();
@@ -1780,7 +1788,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 // constants stand, as a kernel's do. A pure arm, not slept
                 // when deselected since nothing in it runs, is slept now so
                 // its nodes recompute from what stands, as a slept arm's do.
-                // CR claude for claude: [bug/high] An arm's `entered` bit is never reset,
+                // XCR claude for claude: [bug/high] An arm's `entered` bit is never reset,
                 // so a select inside a seq step enters its arms as a Wake from the
                 // second run on whenever the scrutinee arrives after the step's entry
                 // cycle (an async call, a timer). A constant write or constant-argument
@@ -1797,6 +1805,14 @@ impl<R: Rt> Update<R> for Select<R> {
                 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q7,
                 // An arm entered in a reborn seq step): yes, born (the recommendation:
                 // born, consistent with your round-1 "always birth".)
+                // 2026-10-27 codex: Reset the select's selected arm, entered bits,
+                // missed-delivery bits and guard run state when it wakes into a reborn
+                // seq step. First selection later in that run is born, including after an
+                // asynchronous scrutinee. Pin: lang::seq_steps::arm_born_at_each_run,
+                // failed in all four modes before the fix and passed afterward. Ran the
+                // seq/select/sample regression filters; no FuseExpect changed. Updated
+                // rules, book, language skill and wake design. Socket/netidx-admin tests
+                // and the full workspace gate remain for coordinator review.
                 let view = match std::mem::replace(&mut entered[i], true) {
                     true => {
                         if !sleep_on_deselect[i] {

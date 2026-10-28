@@ -336,7 +336,9 @@ As built:
   `Wake` (`LazyArmFacts::entered`); a pure arm resumes as the others do, slept at its re-entry (it is not slept when
   deselected, since nothing in it runs) so its nodes recompute from what
   stands, as a kernel's do; a seq step entered for a run is a `Step`; a
-  birth nested in a resume is a `Step`. The WAKE bit is deleted, from the
+  birth nested in a resume is a `Step`. A seq step's rebirth resets its
+  inner selects' entry history and guard run state, so an arm first reached
+  later in that run is still born. The WAKE bit is deleted, from the
   tag and the JIT.
 - **A write that landed while asleep is a missed fire.** An arm local
   is no tracked input, yet a write can land on it while the arm sleeps

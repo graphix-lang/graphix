@@ -236,3 +236,22 @@ modes!(
     own_trigger_write_starts_the_next_run,
     restart_builtins_are_reborn_at_each_run,
 );
+
+async fn arm_born_at_each_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let request = array::iter([1, 2, 3, 4]);
+        let status = -1;
+        seqq let n = request {
+            status <- -1;
+            let chosen = select sys::time::after_idle(duration:1.ms, n % 2) {
+                0 => { status <- 0; 0 },
+                _ => { status <- 1; 1 }
+            };
+            status
+        }
+    }"#;
+    assert_eq!(run(code, mode).await?, [1, 0, 1, 0]);
+    Ok(())
+}
+
+modes!(arm_born_at_each_run);

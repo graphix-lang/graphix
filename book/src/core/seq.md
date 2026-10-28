@@ -428,7 +428,10 @@ again when a later run enters its step.
 A sample (`~`) inside a step starts each run with no banked trigger. An
 unpaid trigger from an aborted run cannot complete a later run when the
 sampled value arrives. An ordinary arm's sleep and wake preserves its bank;
-entering a step for a new run is a birth.
+entering a step for a new run is a birth. A select inside the step also
+starts a new entry history: each arm's first selection in that run is
+its birth, even if an asynchronous scrutinee arrives after step entry.
+Constant writes in such an arm can therefore fire again in every run.
 
 The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.

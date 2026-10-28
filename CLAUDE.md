@@ -618,7 +618,9 @@ node graph IS the IR — there is no parallel typed IR
   constants stand, a `<-` target keeps its value), `Step` (born into a
   world that stands: constants fire, standing values read stale), and
   nested views join (`View::join`). An arm's first entry is a `Step`,
-  every later one a `Wake`; a seq step entered for a run is a `Step`. A
+  every later one a `Wake`; a seq step entered for a run is a `Step`.
+  A step's rebirth resets the entry history of selects inside it, so an
+  arm's first entry in each run is born even when its scrutinee arrives later. A
   `let` re-raises, fired, a write to it that landed while it slept (a
   fire no reader saw: `Bind::reraise_writes_while_asleep`), to the
   readers that slept with it alone: its block takes it back after its

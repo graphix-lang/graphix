@@ -41,7 +41,9 @@ while it slept and no consulted guard or selected arm already read, each
 once, at its current value. Guards and arm bodies share this catch-up:
 whichever reads a missed fire first spends it for the whole select.
 The first time an arm
-is selected is its birth: its constants fire then, and only then.
+is selected is its birth: its constants fire then, and only then. A select
+inside a seq step starts a new entry history at each run, so its arms
+can be born again in the new run, including after an asynchronous wait.
 
 A call still running when its arm falls asleep is never answered. It is
 cancelled where it can be; one that cannot be stopped part way (a
