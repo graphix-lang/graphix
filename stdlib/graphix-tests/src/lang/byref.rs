@@ -1176,3 +1176,181 @@ run!(deref_union_fresh_cell, r#"{
     };
     [read(true), read(false)]
 }"#, prints("[i64:1, i64:2]"); FuseExpect::None);
+
+run!(
+    any_reference_equality_names_the_place,
+    r#"{
+    let x = 1;
+    let y = 1;
+    let a: Any = &x;
+    let b: Any = &x;
+    let c: Any = &y;
+    (a == b, a != b, a == c)
+}"#,
+    prints("[true, false, false]"); FuseExpect::None
+);
+
+run!(
+    any_reference_equality_walks_values,
+    r#"{
+    let x = [1, 2];
+    let a: Any = {"k" => (`V(&x[0]), [&x[1]])};
+    let b: Any = {"k" => (`V(&x[0]), [&x[1]])};
+    let c: Any = {"k" => (`V(&x[1]), [&x[0]])};
+    (a == b, a == c)
+}"#,
+    prints("[true, false]"); FuseExpect::Jit
+);
+
+run!(
+    any_reference_equality_walks_abstract_payload,
+    r#"{
+    type Box = Abstract<&i64>;
+    let x = 1;
+    let a: Any = Box(&x);
+    let b: Any = Box(&x);
+    a == b
+}"#,
+    is(Value::Bool(true)); FuseExpect::None
+);
+
+run!(
+    any_reference_equality_respects_eq,
+    r#"{
+    type Box = Abstract<&i64>;
+    impl Eq for Box { let eq = |a, b| false };
+    let x = 1;
+    let a: Any = Box(&x);
+    let b: Any = Box(&x);
+    a == b
+}"#,
+    is(Value::Bool(false)); FuseExpect::None
+);
+
+run!(any_reference_equality_selects_the_instantiated_impl, r#"{
+    type Box<'t> = Abstract<'t>;
+    impl Eq for Box<i64> { let eq = |a, b| false };
+    let x = 1;
+    let r: Any = &x;
+    let s: Any = &x;
+    let a = Box(r);
+    let b = Box(s);
+    let c: Any = a;
+    let d: Any = b;
+    (a == b, c == d)
+}"#, prints("[true, true]"); FuseExpect::None);
+
+run!(
+    any_reference_all_names_the_place,
+    r#"{
+    let x = 1;
+    let a: Any = &x;
+    let b: Any = &x;
+    all(a, b) == a
+}"#,
+    is(Value::Bool(true)); FuseExpect::None
+);
+
+run!(any_reference_all_in_lambda, r#"{
+    let same = |a: Any, b: Any| all(a, b);
+    let x = 1;
+    let a: Any = &x;
+    let b: Any = &x;
+    same(a, b) == a
+}"#, is(Value::Bool(true)); FuseExpect::None);
+
+async fn any_reference_ordering_is_refused(mode: Mode) -> Result<()> {
+    use compact_str::format_compact;
+    use graphix_package_core::testing::{
+        compile_result, fixture_runtime, result_source, updates_until_quiet,
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    let mut accepted = poolshark::local::LPooled::<Vec<_>>::take();
+    for operation in [
+        "a < a",
+        "a <= a",
+        "a > a",
+        "a >= a",
+        "min(a)",
+        "max(a)",
+        "array::sort([a])",
+        "array::sort(#numeric: true, [a])",
+        "array::dedup([a])",
+        "list::sort([<a>])",
+        "{a => 1}",
+        "map::insert(m, a, 1)",
+        "map::get(m, a)",
+        "map::get_or(m, a, 2)",
+        "map::remove(m, a)",
+        "m{a}",
+        "map::map({1 => 2}, |kv| (a, kv.1))",
+        "map::filter_map({1 => 2}, |kv| (a, kv.1))",
+        "{let nested: Any = (1, [a]); array::sort([nested])}",
+        "{type Box = Abstract<&i64>; let b: Any = Box(&x); array::sort([b])}",
+        "{type Box<'t> = Abstract<'t>; impl Eq for Box<i64> {let eq = |a, b| true}; impl Ord for Box<i64> {let cmp = |a, b| `Equal}; let b: Any = Box(a); array::sort([b])}",
+        "{type Box = Abstract<Any>; impl Eq for Box {let eq = |a, b| true}; let b = Box(a); b <= b}",
+        "{type Box<'t> = Abstract<'t>; impl Eq for Box<i64> {let eq = |a, b| true}; impl Ord for Box<i64> {let cmp = |a, b| `Equal}; let b = Box(a); b <= b}",
+        "array::len(array::sort([a]))",
+        "map::len({a => 1})",
+    ] {
+        let code = format_compact!(
+            "{{let x = 1; let a: Any = &x; let m: Map<Any, i64> = {{}}; {operation}}}"
+        );
+        let (ctx, mut rx) = fixture_runtime(
+            [("/test.gx", result_source(&code))],
+            crate::TEST_REGISTER,
+            mode,
+            |_| {},
+        )
+        .await?;
+        let result = compile_result(&ctx).await?;
+        let values = updates_until_quiet(
+            &ctx.rt,
+            &mut rx,
+            result.exprs[0].id,
+            Duration::from_millis(100),
+            Instant::now() + Duration::from_secs(20),
+        )
+        .await?;
+        if !values.is_empty() {
+            accepted.push((operation, values));
+        }
+        ctx.shutdown().await;
+    }
+    assert!(accepted.is_empty(), "unordered references produced values: {accepted:?}");
+    Ok(())
+}
+
+modes!(any_reference_ordering_is_refused);
+
+run!(any_ordering_keeps_scalar_values, r#"{
+    let a: Any = 3;
+    let b: Any = 2;
+    (a > b, array::sort([a, b]), map::len({a => 1}), array::len(array::dedup([a, a])))
+}"#, prints("[true, [i64:2, i64:3], i64:1, i64:1]"); FuseExpect::None);
+
+run!(any_ordering_respects_abstract_ord, r#"{
+    type Box = Abstract<&i64>;
+    impl Eq for Box { let eq = |a, b| true };
+    impl Ord for Box { let cmp = |a, b| `Equal };
+    let x = 1;
+    let a: Any = Box(&x);
+    let b: Any = Box(&x);
+    let cast_ok = select cast<Map<Any, i64>>([(a, 1)]) {
+        error as _ => false, _ => true
+    };
+    (a <= b, array::len(array::sort([a, b])), map::len({a => 1, b => 2}), cast_ok)
+}"#, prints("[true, i64:2, i64:1, true]"); FuseExpect::None);
+
+run!(
+    any_reference_cast_map_is_refused,
+    r#"{
+    let x = 1;
+    let a: Any = &x;
+    cast<Map<Any, i64>>([(a, 1)])
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(e))
+    if e.to_string().contains("references have no order")); FuseExpect::None
+);

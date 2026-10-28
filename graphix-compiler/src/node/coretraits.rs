@@ -77,19 +77,7 @@ struct Hook {
     ftype: Arc<FnType>,
 }
 
-/// The hook of the method `m` of the implementation `im`, at `target`;
-/// `open` is the substitution of the declared variables that matched it.
-/// The method's own signature is instantiated through it: a declared
-/// variable settles to ⊥ once the body is checked, which a plain reset
-/// would carry as a solved fact. `None` is a `Cast` method the
-/// implementation leaves out: the representation.
-fn hook_of(
-    env: &Env,
-    m: Method,
-    im: &ImplDef,
-    target: &Type,
-    open: &AHashMap<ArcStr, Type>,
-) -> Result<Option<Hook>> {
+fn method_bind(env: &Env, m: Method, im: &ImplDef) -> Result<Option<BindId>> {
     let t = m.of();
     let def = env
         .trait_def(t.id())
@@ -99,18 +87,27 @@ fn hook_of(
         .iter()
         .find(|d| d.name == m.name())
         .ok_or_else(|| anyhow!("core trait {} lacks {}", def.name, m.name()))?;
-    let bind = match im.methods.get(m.name()).copied().or(decl.default) {
-        Some(bind) => bind,
-        None if CoreTrait::runtime_method(t.id(), m.name()) => return Ok(None),
-        None => {
-            return Err(anyhow!(
-                "impl {} for {} has no {}",
-                def.name,
-                im.target,
-                m.name()
-            ));
-        }
-    };
+    match im.methods.get(m.name()).copied().or(decl.default) {
+        Some(bind) => Ok(Some(bind)),
+        None if CoreTrait::runtime_method(t.id(), m.name()) => Ok(None),
+        None => Err(anyhow!("impl {} for {} has no {}", def.name, im.target, m.name())),
+    }
+}
+
+/// The hook of the method `m` of the implementation `im`, at `target`;
+/// `open` is the substitution of the declared variables that matched it.
+/// The method's own signature is instantiated through it: a declared
+/// variable settles to ⊥ once the body is checked, which a plain reset
+/// would carry as a solved fact. `None` is a runtime method the
+/// implementation leaves out (`CoreTrait::runtime_method`).
+fn hook_of(
+    env: &Env,
+    m: Method,
+    im: &ImplDef,
+    target: &Type,
+    open: &AHashMap<ArcStr, Type>,
+) -> Result<Option<Hook>> {
+    let Some(bind) = method_bind(env, m, im)? else { return Ok(None) };
     let Some(ftype) = method_ftype(env, bind) else {
         return Err(anyhow!("core trait method {bind:?} is not a function"));
     };
@@ -550,6 +547,15 @@ fn dispatch_eq_applies<R: Rt>(state: *mut u8, a: &GxAbstract) -> bool {
     impls_on(&ctx.env, CoreTrait::Eq, a.id).next().is_some()
 }
 
+fn dispatch_cmp_applies<R: Rt>(state: *mut u8, a: &GxAbstract) -> bool {
+    // SAFETY: with_hooks lends its context exclusively to this dispatch.
+    let ctx = unsafe { lent::<R>(state) };
+    let typ = a.typ();
+    impl_for(&ctx.env, CoreTrait::Ord, &typ)
+        .and_then(|(im, _)| method_bind(&ctx.env, Method::Cmp, &im).ok().flatten())
+        .is_some()
+}
+
 fn dispatch_eq<R: Rt>(state: *mut u8, a: &GxAbstract, b: &GxAbstract) -> Option<bool> {
     // SAFETY: with_hooks lent its context for this dispatch.
     let ctx = unsafe { lent::<R>(state) };
@@ -703,6 +709,7 @@ pub fn with_hooks<R: Rt, T>(ctx: &mut ExecCtx<'_, R>, f: impl FnOnce() -> T) -> 
         eq_applies: dispatch_eq_applies::<R>,
         hash: dispatch_hash::<R>,
         cmp: dispatch_cmp::<R>,
+        cmp_applies: dispatch_cmp_applies::<R>,
         fmt: dispatch_fmt::<R>,
         to_value: dispatch_to_value::<R>,
         from_value: dispatch_from_value::<R>,
@@ -724,4 +731,14 @@ pub fn with_display_hooks<R: Rt, T>(
     }
     let env = ctx.env.clone();
     with_hooks(ctx, || f(&env))
+}
+
+/// Refuse a value whose ordering reaches a reference, under the caller's hooks.
+pub fn ordered(v: &Value) -> bool {
+    if crate::reference::orderable(v) {
+        true
+    } else {
+        super::error::report_failure!("references have no order, including under Any");
+        false
+    }
 }

@@ -285,9 +285,17 @@ macro_rules! compare_op {
         binary_node!($name, Type::boolean(), state: Equality, {
             fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
                 if matches!(self.state, Equality::Undecided) {
-                    self.state = Equality::of(&ctx.env, self.lhs.typ(), self.rhs.typ());
+                    self.state = Equality::of(&ctx.env, self.lhs.typ(), self.rhs.typ(), $ordered);
                 }
                 let (l, r, _, tag) = gated_operands!(self, ctx);
+                if $ordered && matches!(self.state, Equality::Targets(_)) {
+                    let valid = coretraits::with_hooks(ctx, || {
+                        l.with_value(coretraits::ordered) && r.with_value(coretraits::ordered)
+                    });
+                    if !valid {
+                        return self.resident.set_bottom_as(tag);
+                    }
+                }
                 let v = match &self.state {
                     Equality::Targets(t) if !$ordered => {
                         let lv = l.with_value(|v| ctx.ref_targets(t, v));
@@ -365,7 +373,7 @@ enum Equality {
 }
 
 impl Equality {
-    // CR claude for claude: [bug/medium] References held under Any compare by cell, not
+    // XCR claude for claude: [bug/medium] References held under Any compare by cell, not
     // by what they name: Targets is chosen only when an operand TYPE compares_refs, and
     // Any holds no reference statically. `let a: Any = &x; let b: Any = &x; (a == b, &x
     // == &x)` is (false, true) in both engines, against the CLAUDE.md rule that ==
@@ -377,8 +385,29 @@ impl Equality {
     // (c-error-op-02)
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q34, References
     // under Any): yes (the recommendation: walk for `==`, refuse the order.)
-    fn of(env: &Env, lhs: &Type, rhs: &Type) -> Self {
-        match compared_refs(env, lhs, rhs) {
+    // 2026-10-28 codex: Implemented q34: equality descends through Any and replaces
+    // references by their named places; statically ref-free subtrees retain the typed
+    // fast path. Ordering refuses a reference reached under Any, including singleton
+    // sort/min/max/dedup, map construction, queries, edits, casts, collection results,
+    // native map helpers and reference paths. An actual matching Eq/Ord implementation
+    // remains authoritative; reference walks match its type arguments, so an impl for
+    // another instantiation cannot hide a reference. Any comparisons remain unfused as
+    // the ruling explicitly recommended. Pins lang::byref::any_reference_* plus
+    // scalar/Ord controls cover all four modes; the final focused byref::any_ run
+    // passed 48 tests. Equality probes failed before the implementation; ordering and
+    // cast pins failed all four modes with the implementation removed; compiler
+    // map_helpers_refuse_reference_keys and map_paths_refuse_reference_keys both failed
+    // with it removed. The additional instantiated-impl equality and ordering probes
+    // failed eight cases before the exact lookup correction and passed afterward.
+    // Rules, book, design and language skill updated. Full-suite and fuzzer results are
+    // recorded in the completion report.
+    fn of(env: &Env, lhs: &Type, rhs: &Type, ordered: bool) -> Self {
+        let refs = if ordered {
+            [lhs, rhs].into_iter().find(|t| t.orders_refs(env))
+        } else {
+            compared_refs(env, lhs, rhs)
+        };
+        match refs {
             Some(t) => Self::Targets(t.clone()),
             None => Self::Values {
                 hooks: [lhs, rhs]

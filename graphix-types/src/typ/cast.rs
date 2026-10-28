@@ -21,7 +21,7 @@ use immutable_chunkmap::map::Map;
 use netidx_value::{NakedValue, Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{borrow::Cow, fmt, mem, ops::ControlFlow, sync::OnceLock};
+use std::{borrow::Cow, convert::Infallible, fmt, mem, ops::ControlFlow, sync::OnceLock};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -905,6 +905,12 @@ impl Type {
                                  v: &Value|
                  -> std::result::Result<_, CastFail> {
                     let ck = key.cast_int(env, cx, ks, k)?;
+                    if !crate::reference::orderable(ck.as_ref().unwrap_or(k)) {
+                        return Err(self.cast_fail(
+                            "references have no order, including under Any",
+                            k,
+                        ));
+                    }
                     let cv = value.cast_int(env, cx, vs, v)?;
                     Ok((ck.is_some() || cv.is_some()).then(|| {
                         (ck.unwrap_or_else(|| k.clone()), cv.unwrap_or_else(|| v.clone()))
@@ -1932,12 +1938,16 @@ fn flatten_union_members(
 /// applications and typedefs expanded; `None` for what it can't see into
 /// (an open cell, `Any`, a constructor), which takes any value.
 fn rep_head<'a>(env: &Env, t: &'a Type) -> Option<Cow<'a, Type>> {
-    let owned = |t: Type| rep_head(env, &t).map(|h| Cow::Owned(h.into_owned()));
+    resolved_head(env, t).filter(|h| !matches!(&**h, Type::Any))
+}
+
+fn resolved_head<'a>(env: &Env, t: &'a Type) -> Option<Cow<'a, Type>> {
+    let owned = |t: Type| resolved_head(env, &t).map(|h| Cow::Owned(h.into_owned()));
     ensure_sufficient(|| match t {
         Type::TVar(_) => t.deref_cloned().and_then(owned),
         Type::App(c, a) => Type::app_filled(c, a).and_then(owned),
         Type::Ref(_) => t.lookup_ref(env).ok().and_then(owned),
-        Type::Any | Type::Hole | Type::Bound(_) => None,
+        Type::Hole | Type::Bound(_) => None,
         t => Some(Cow::Borrowed(t)),
     })
 }
@@ -2705,9 +2715,22 @@ impl Type {
     }
 }
 
+fn reference_rep(
+    env: &Env,
+    id: AbstractId,
+    params: &Arc<[Type]>,
+    kind: CoreTrait,
+) -> Option<Type> {
+    let typ = Type::Abstract { id, params: params.clone() };
+    if env.find_impl(kind.id(), &typ).is_ok_and(|im| im.is_some()) {
+        return None;
+    }
+    Some(env.abstract_reps.get(&id)?.instantiate_with(params))
+}
+
 /// Whether a comparison of values of `t` meets a reference: one where
 /// [`Type::indiscernible`] looks.
-fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
+fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type, kind: CoreTrait) -> bool {
     ensure_sufficient(|| {
         walk(
             seen,
@@ -2715,13 +2738,13 @@ fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
             false,
             || true,
             |seen| {
-                let Some(t) = rep_head(env, t) else { return false };
+                let Some(t) = resolved_head(env, t) else { return false };
                 let t = &*t;
                 let mut any = |ts: &mut dyn Iterator<Item = &Type>| {
-                    Iterator::any(&mut &mut *ts, |t| compared_ref(env, seen, t))
+                    Iterator::any(&mut &mut *ts, |t| compared_ref(env, seen, t, kind))
                 };
                 match t {
-                    Type::ByRef(..) => true,
+                    Type::Any | Type::ByRef(..) => true,
                     Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => {
                         any(&mut ts.iter())
                     }
@@ -2731,14 +2754,14 @@ fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
                     Type::Struct(fs) => any(&mut fs.iter().map(|(_, t, _)| t)),
                     Type::Map { key, value } => any(&mut [&**key, &**value].into_iter()),
                     Type::Abstract { id, params } => {
-                        match compared_rep(env, *id, params, CoreTrait::Eq) {
+                        match reference_rep(env, *id, params, kind) {
                             None => false,
                             Some(rep) => walk(
                                 seen,
                                 abstract_at(t),
                                 false,
                                 || true,
-                                |seen| compared_ref(env, seen, &rep),
+                                |seen| compared_ref(env, seen, &rep, kind),
                             ),
                         }
                     }
@@ -3013,7 +3036,7 @@ fn map_refs(
         let refs = match holds.get(t) {
             Some(r) => *r,
             None => {
-                let r = compared_ref(env, &mut Expanded::default(), t);
+                let r = compared_ref(env, &mut Expanded::default(), t, CoreTrait::Eq);
                 holds.insert(t.clone(), r);
                 r
             }
@@ -3021,7 +3044,7 @@ fn map_refs(
         if !refs {
             return v.clone();
         }
-        let Some(t) = rep_head(env, t) else { return v.clone() };
+        let Some(t) = resolved_head(env, t) else { return v.clone() };
         let t = &*t;
         let mut each = |ts: &mut dyn Iterator<Item = (&Type, &Value)>| {
             let vs: LPooled<Vec<Value>> =
@@ -3030,6 +3053,7 @@ fn map_refs(
             vs
         };
         match (t, v) {
+            (Type::Any, v) => map_any_refs(env, holds, v, f).unwrap_or_else(|| v.clone()),
             (Type::ByRef(..), v) => f(v),
             (Type::Set(ts), v) => match member_of(env, ts, v) {
                 Some(i) => map_refs(env, holds, &ts[i], v, f),
@@ -3087,7 +3111,7 @@ fn map_refs(
             (Type::Abstract { id, params }, v)
                 if let Some(g) = abstract_value::get(v)
                     && g.id == *id
-                    && let Some(rep) = compared_rep(env, *id, params, CoreTrait::Eq) =>
+                    && let Some(rep) = reference_rep(env, *id, params, CoreTrait::Eq) =>
             {
                 let payload = map_refs(env, holds, &rep, &g.payload, f);
                 abstract_value::wrap(*id, g.name.clone(), g.params.clone(), payload)
@@ -3097,11 +3121,43 @@ fn map_refs(
     })
 }
 
+fn map_any_refs(
+    env: &Env,
+    holds: &mut HoldsRef,
+    v: &Value,
+    f: &mut dyn FnMut(&Value) -> Value,
+) -> Option<Value> {
+    ensure_sufficient(|| {
+        if crate::reference::cell(v).is_some() {
+            return Some(f(v));
+        }
+        if let Some(g) = abstract_value::get(v) {
+            let rep = reference_rep(env, g.id, &g.params, CoreTrait::Eq)?;
+            if !compared_ref(env, &mut Expanded::default(), &rep, CoreTrait::Eq) {
+                return None;
+            }
+            let payload = map_refs(env, holds, &rep, &g.payload, f);
+            return Some(abstract_value::wrap(
+                g.id,
+                g.name.clone(),
+                g.params.clone(),
+                payload,
+            ));
+        }
+        rep::map_parts(v, &mut |v| Ok::<_, Infallible>(map_any_refs(env, holds, v, f)))
+            .unwrap_or_else(|never| match never {})
+    })
+}
+
 impl Type {
     /// Whether comparing values of this type meets a reference: `==`
     /// compares such values by [`Self::map_refs`].
     pub fn compares_refs(&self, env: &Env) -> bool {
-        compared_ref(env, &mut Expanded::default(), self)
+        compared_ref(env, &mut Expanded::default(), self, CoreTrait::Eq)
+    }
+
+    pub fn orders_refs(&self, env: &Env) -> bool {
+        compared_ref(env, &mut Expanded::default(), self, CoreTrait::Ord)
     }
 
     /// `v`, a value of this type, with each reference a comparison meets
@@ -3112,7 +3168,7 @@ impl Type {
         v: &Value,
         f: &mut dyn FnMut(&Value) -> Value,
     ) -> Value {
-        map_refs(env, &mut HoldsRef::default(), self, v, f)
+        map_refs(env, &mut LPooled::take(), self, v, f)
     }
 }
 

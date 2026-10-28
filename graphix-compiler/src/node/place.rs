@@ -239,6 +239,10 @@ pub fn read_path<'a>(
             }
             (Step::Field(name), v) => field_of(v, name)?.1,
             (Step::Key(k), Value::Map(m)) => {
+                anyhow::ensure!(
+                    crate::reference::orderable(k),
+                    "references have no order, including under Any"
+                );
                 m.get(k).ok_or_else(|| anyhow!("no key {k}"))?
             }
             (step, v) => bail!("cannot apply {step:?} to {}", crate::typ::Naked(v)),
@@ -322,6 +326,10 @@ pub fn write_path<'a>(
                 f
             }
             (Step::Key(k), Value::Map(m)) => {
+                anyhow::ensure!(
+                    crate::reference::orderable(k),
+                    "references have no order, including under Any"
+                );
                 spine.push(Hole::Key(m, k));
                 match m.get(k) {
                     Some(c) => c,
@@ -369,6 +377,25 @@ impl Hole<'_> {
 mod tests {
     use super::*;
     use netidx_value::ValArray;
+
+    #[test]
+    fn map_paths_refuse_reference_keys() {
+        let key = crate::reference::reference(BindId::new(), None);
+        let root = Value::Map(netidx_value::Map::new());
+        let path = [Step::Key(key)];
+        assert!(
+            read_path(&root, &path)
+                .unwrap_err()
+                .to_string()
+                .contains("references have no order")
+        );
+        assert!(
+            write_path(&root, &path, Value::I64(1))
+                .unwrap_err()
+                .to_string()
+                .contains("references have no order")
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

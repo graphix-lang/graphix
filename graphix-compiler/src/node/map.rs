@@ -114,11 +114,17 @@ impl<R: Rt> Update<R> for Map<R> {
         let m = with_hooks(ctx, || {
             let mut m = CMap::new();
             while let (Some(k), Some(v)) = (vals.next(), vals.next()) {
+                if !super::coretraits::ordered(&k) {
+                    return None;
+                }
                 m.insert_cow(k, v);
             }
-            m
+            Some(Value::Map(m))
         });
-        self.resident.set(TagValue::tagged(Value::Map(m), tag))
+        match m {
+            Some(m) => self.resident.set(TagValue::tagged(m, tag)),
+            None => self.resident.set_bottom_as(tag),
+        }
     }
 
     composite_plumbing!(Map);
@@ -249,15 +255,18 @@ pub struct MapRef<R: Rt> {
 /// Look up `key` in a `Value::Map`, returning the value or the
 /// `map key not found` error. Shared by the node-walk and the JIT so
 /// both agree bit-for-bit. `src` must be a `Value::Map`.
-pub(crate) fn map_get(src: &Value, key: &Value) -> Value {
-    match src {
+pub(crate) fn map_get(src: &Value, key: &Value) -> Option<Value> {
+    if !super::coretraits::ordered(key) {
+        return None;
+    }
+    Some(match src {
         Value::Map(map) => match map.get(key) {
             Some(value) => value.clone(),
             // the printer a message uses: an abstract key by its Display
             None => errf!(ERR_TAG, "map key {} not found", NakedPrefix(key)),
         },
         _ => err!(ERR_TAG, "COMPILER BUG! expected a map"),
-    }
+    })
 }
 
 impl<R: Rt> MapRef<R> {
@@ -356,7 +365,10 @@ impl<R: Rt> Update<R> for MapRef<R> {
         let tag = s.tag().join(k.tag());
         dense_gate!(self, tag, tag.is_bottom());
         let v = with_hooks(ctx, || s.with_value(|s| k.with_value(|k| map_get(s, k))));
-        self.resident.set(TagValue::tagged(v, tag))
+        match v {
+            Some(v) => self.resident.set(TagValue::tagged(v, tag)),
+            None => self.resident.set_bottom_as(tag),
+        }
     }
 
     // The element cell binds from the source as in the check; the

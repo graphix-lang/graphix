@@ -580,6 +580,12 @@ delivery; a dynamic key (`&vals[focus]`) is a moving reference. Reading a union 
 types: `*r` over `[&mut i64, &mut f64]` is `[i64, f64]`. Writing through
 one must fit every referent and requires every member to be writable.
 
+Reference equality follows the named place even under `Any`, including nested
+collections and abstract payloads; an abstract's own `Eq` keeps control.
+Ordering references hidden under `Any` logs a failure and bottoms, including
+singleton sorts, dedup, min/max and map-key operations. A map cast returns an
+error for such a key. An abstract's own `Ord` controls its ordering.
+
 ## Modules, interfaces, traits
 
 Rust-2018-style imports: `use array::map;` `use str::join as sjoin;`

@@ -164,7 +164,7 @@ trait MapCollection: Debug + Clone + Default + Send + Sync + 'static {
     /// signature.
     fn element_type(ft: &FnType) -> Result<Type>;
     /// The elements `keep` keeps, as this collection is under `flavor`.
-    fn kept(&self, flavor: Flavor, keep: impl Iterator<Item = bool>) -> Value {
+    fn kept(&self, flavor: Flavor, keep: impl Iterator<Item = bool>) -> Option<Value> {
         let kept = self.values().zip(keep).filter_map(|(v, k)| k.then_some(v));
         flavor.build(&mut kept.collect())
     }
@@ -229,7 +229,9 @@ pub(crate) fn split_pair(value: &Value) -> Option<(Value, Value)> {
 /// last pair of a key wins, as in a literal, and a malformed pair is
 /// logged and skipped. Key order reads the core-trait hooks, so the
 /// caller runs this under them.
-pub(crate) fn pairs_to_map<'a>(pairs: impl IntoIterator<Item = &'a Value>) -> Value {
+pub(crate) fn pairs_to_map<'a>(
+    pairs: impl IntoIterator<Item = &'a Value>,
+) -> Option<Value> {
     let mut kv: LPooled<Vec<(Value, Value)>> = LPooled::take();
     kv.extend(pairs.into_iter().filter_map(|v| {
         let pair = split_pair(v);
@@ -238,19 +240,22 @@ pub(crate) fn pairs_to_map<'a>(pairs: impl IntoIterator<Item = &'a Value>) -> Va
         }
         pair
     }));
+    if !kv.iter().all(|(k, _)| super::coretraits::ordered(k)) {
+        return None;
+    }
     // insert_many keeps the first of equal keys, so it sees them last
     // first; an Ord that is no total order (a user impl) may panic its
     // sort, and the map is then built a pair at a time, wrong but whole
     let bulk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         CMap::from_iter(kv.iter().rev().cloned())
     }));
-    Value::Map(bulk.unwrap_or_else(|_| {
+    Some(Value::Map(bulk.unwrap_or_else(|_| {
         let mut m = CMap::new();
         for (k, v) in kv.drain(..) {
             m.insert_cow(k, v);
         }
         m
-    }))
+    })))
 }
 
 impl MapCollection for ValueMap {
@@ -263,9 +268,9 @@ impl MapCollection for ValueMap {
     }
 
     /// The kept entries are the source's, already a map's: no pairs.
-    fn kept(&self, _: Flavor, keep: impl Iterator<Item = bool>) -> Value {
+    fn kept(&self, _: Flavor, keep: impl Iterator<Item = bool>) -> Option<Value> {
         let kept = self.into_iter().zip(keep).filter(|(_, k)| *k);
-        Value::Map(CMap::from_iter(kept.map(|((k, v), _)| (k.clone(), v.clone()))))
+        Some(Value::Map(CMap::from_iter(kept.map(|((k, v), _)| (k.clone(), v.clone())))))
     }
 
     fn select(value: Value, _: bool) -> Option<Self> {
@@ -905,7 +910,7 @@ impl<R: Rt> MapQBase<R> {
     }
 
     /// The traversal's result once every slot holds a value.
-    fn finish<C: MapCollection>(&self, slots: &[Slot<R>], source: &C) -> Value {
+    fn finish<C: MapCollection>(&self, slots: &[Slot<R>], source: &C) -> Option<Value> {
         let taken = |slot: &Slot<R>| matches!(slot.value(), Value::Bool(true));
         let not_null = |v: &&Value| !matches!(v, Value::Null);
         let mut elems: LPooled<Vec<Value>> = match self.op {
@@ -942,11 +947,11 @@ impl<R: Rt> MapQBase<R> {
             }
             MapOp::Find => {
                 let found = slots.iter().zip(source.values()).find(|(s, _)| taken(s));
-                return found.map_or(Value::Null, |(_, v)| v);
+                return Some(found.map_or(Value::Null, |(_, v)| v));
             }
             MapOp::FindMap => {
                 let found = slots.iter().map(Slot::value).find(not_null);
-                return found.cloned().unwrap_or(Value::Null);
+                return Some(found.cloned().unwrap_or(Value::Null));
             }
         };
         self.flavor.build(&mut elems)
@@ -1034,7 +1039,7 @@ impl<R: Rt, C: MapCollection> MapQ<R, C> {
         Ok(Self::with(base, Callback::image_decode(ctx, buf)?))
     }
 
-    fn finish(&self, ctx: &mut ExecCtx<'_, R>) -> Value {
+    fn finish(&self, ctx: &mut ExecCtx<'_, R>) -> Option<Value> {
         with_hooks(ctx, || self.base.finish(&self.slots, &self.current))
     }
 }
@@ -1325,7 +1330,10 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
             }
             if self.slots.is_empty() {
                 let v = self.finish(ctx);
-                return self.resident.set(TagValue::tagged(v, tag));
+                return match v {
+                    Some(v) => self.resident.set(TagValue::tagged(v, tag)),
+                    None => self.resident.set_bottom_as(tag),
+                };
             }
         }
         let callback = self.callback.id;
@@ -1361,8 +1369,10 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
         if tag.is_bottom() || poisoned {
             return self.resident.set_bottom_as(tag);
         }
-        let v = self.finish(ctx);
-        self.resident.set(TagValue::tagged(v, tag))
+        match self.finish(ctx) {
+            Some(v) => self.resident.set(TagValue::tagged(v, tag)),
+            None => self.resident.set_bottom_as(tag),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
@@ -1867,10 +1877,10 @@ fn fuse_callback<R: Rt>(
 
 impl Flavor {
     /// This flavor's collection over `elems`, which it drains.
-    fn build(self, elems: &mut LPooled<Vec<Value>>) -> Value {
+    fn build(self, elems: &mut LPooled<Vec<Value>>) -> Option<Value> {
         match self {
-            Self::Array => Value::Array(ValArray::from_iter_exact(elems.drain(..))),
-            Self::List => list::from_iter(elems.drain(..)),
+            Self::Array => Some(Value::Array(ValArray::from_iter_exact(elems.drain(..)))),
+            Self::List => Some(list::from_iter(elems.drain(..))),
             Self::CMap => pairs_to_map(elems.iter()),
         }
     }

@@ -2,7 +2,7 @@
 //! no number and no other type's value can pass for, and what keeps the
 //! cell and the place it names alive while the reference does.
 
-use crate::BindId;
+use crate::{BindId, abstract_value, list, stack::ensure_sufficient};
 use anyhow::anyhow;
 use bytes::{Buf, BufMut};
 use netidx_core::pack::{Pack, PackError};
@@ -161,7 +161,7 @@ impl PartialOrd for Reference {
     }
 }
 
-// CR claude for claude: [bug/medium] References typed Any still sort, key maps and dedup
+// XCR claude for claude: [bug/medium] References typed Any still sort, key maps and dedup
 // through this impl, by the cell id that ByRef::compile mints. Slot instances compiled
 // or bound on forked branches mint those ids in scheduling order, so array::sort of an
 // Array<Any> of references differs between serial and parallel runs and from run to run
@@ -175,6 +175,21 @@ impl PartialOrd for Reference {
 // (x-parallel-02)
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q34, References
 // under Any): yes (the recommendation: walk for `==`, refuse the order.)
+// 2026-10-28 codex: Implemented q34: equality descends through Any and replaces
+// references by their named places; statically ref-free subtrees retain the typed fast
+// path. Ordering refuses a reference reached under Any, including singleton
+// sort/min/max/dedup, map construction, queries, edits, casts, collection results,
+// native map helpers and reference paths. An actual matching Eq/Ord implementation
+// remains authoritative; reference walks match its type arguments, so an impl for
+// another instantiation cannot hide a reference. Any comparisons remain unfused as the
+// ruling explicitly recommended. Pins lang::byref::any_reference_* plus scalar/Ord
+// controls cover all four modes; the final focused byref::any_ run passed 48 tests.
+// Equality probes failed before the implementation; ordering and cast pins failed all
+// four modes with the implementation removed; compiler map_helpers_refuse_reference_keys
+// and map_paths_refuse_reference_keys both failed with it removed. The additional
+// instantiated-impl equality and ordering probes failed eight cases before the exact
+// lookup correction and passed afterward. Rules, book, design and language skill
+// updated. Full-suite and fuzzer results are recorded in the completion report.
 impl Ord for Reference {
     fn cmp(&self, other: &Self) -> Ordering {
         self.cell.cmp(&other.cell)
@@ -277,4 +292,26 @@ impl FromValue for BindId {
         cell(&v)
             .ok_or_else(|| anyhow!("expected a reference, got {}", crate::typ::Naked(&v)))
     }
+}
+
+/// Whether ordering this value can reach a reference outside an `Ord` implementation.
+/// The caller lends its core-trait hooks.
+pub fn orderable(v: &Value) -> bool {
+    ensure_sufficient(|| {
+        if cell(v).is_some() {
+            return false;
+        }
+        if let Some(g) = abstract_value::get(v) {
+            return g.has_order_impl() || orderable(&g.payload);
+        }
+        if list::split(v).is_some() {
+            return list::Iter::new(v.clone()).all(|v| orderable(&v));
+        }
+        match v {
+            Value::Array(a) => a.iter().all(orderable),
+            Value::Map(m) => m.into_iter().all(|(k, v)| orderable(k) && orderable(v)),
+            Value::Error(e) => orderable(e),
+            _ => true,
+        }
+    })
 }

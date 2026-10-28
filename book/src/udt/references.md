@@ -140,9 +140,18 @@ let r = &x;
 is `[true, true, false]`. A reference made from a value rather than a
 binding, `&mut 0`, is its own place, equal only to itself.
 
+Equality still follows the target when a reference is held under `Any`,
+including references inside collections and abstract values without an
+`Eq` implementation. An abstract value's own `Eq` controls its equality.
+
 References have no order, so `<` and the other orderings refuse them,
 and so does anything that orders or hashes values: map keys, `min`,
-`max`, the sorts and `array::dedup`. `uniq` compares them as `==` does.
+`max`, the sorts and `array::dedup`. This also applies to references hidden
+under `Any`: the operation logs a failure and produces no value, even for
+a singleton collection. A cast that would create a map with such a key
+returns an error. Other values under `Any` remain orderable, and an
+abstract value's own `Ord` controls its ordering.
+`uniq` compares references as `==` does.
 
 ## Referencing a Name, a Place or an Expression
 

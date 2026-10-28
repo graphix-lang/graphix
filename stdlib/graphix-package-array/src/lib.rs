@@ -149,6 +149,9 @@ fn fc_dedup(args: &[Value]) -> Option<Value> {
             let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
             let mut kept: LPooled<Vec<Value>> = LPooled::take();
             for v in a.iter() {
+                if !graphix_compiler::node::coretraits::ordered(v) {
+                    return None;
+                }
                 if seen.insert(v.clone()) {
                     kept.push(v.clone());
                 }

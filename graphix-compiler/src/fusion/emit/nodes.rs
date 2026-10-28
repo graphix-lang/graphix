@@ -542,9 +542,12 @@ pub(crate) fn emit_cmp_node<R: Rt>(
     lhs: &Node<R>,
     rhs: &Node<R>,
 ) -> Result<CompiledExpr> {
-    if [lhs.typ(), rhs.typ()].iter().any(|t| t.compares_refs(cx.ctx.type_env)) {
+    if [lhs.typ(), rhs.typ()].iter().any(|t| match op {
+        CmpOp::Eq | CmpOp::Ne => t.compares_refs(cx.ctx.type_env),
+        _ => t.orders_refs(cx.ctx.type_env),
+    }) {
         return Err(anyhow!(
-            "emit_clif: == over references compares what they name, which the runtime knows"
+            "emit_clif: comparison over references requires runtime context"
         ));
     }
     let lprim = kernel_abi::freeze_for_abi_normalized(lhs.typ())

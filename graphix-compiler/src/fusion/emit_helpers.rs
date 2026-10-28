@@ -1000,7 +1000,8 @@ fn graphix_bytes_index(v: ManuallyDrop<TagValue>, i: i64) -> TagValue {
 /// [`map_get`]. Borrows both operands.
 fn graphix_map_ref(map: ManuallyDrop<TagValue>, key: ManuallyDrop<TagValue>) -> TagValue {
     guard_panic(TagValue::phantom(), || {
-        TagValue::fired(map.with_value(|m| key.with_value(|k| map_get(m, k))))
+        map.with_value(|m| key.with_value(|k| map_get(m, k)))
+            .map(TagValue::fired).unwrap_or_else(TagValue::phantom)
     })
 }
 
@@ -1298,6 +1299,9 @@ fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
         let mut m = netidx_value::Map::new();
         let mut entries = unsafe { (*buf).drain(..) };
         while let (Some(k), Some(v)) = (entries.next(), entries.next()) {
+            if !crate::node::coretraits::ordered(&k) {
+                return TagValue::phantom();
+            }
             m.insert_cow(k, v);
         }
         TagValue::fired(Value::Map(m))
@@ -1330,7 +1334,8 @@ fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
 fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
     guard_panic(TagValue::phantom(), || {
-        TagValue::fired(crate::node::collection::pairs_to_map(arr.iter()))
+        crate::node::collection::pairs_to_map(arr.iter())
+            .map(TagValue::fired).unwrap_or_else(TagValue::phantom)
     })
 }
 
@@ -2143,6 +2148,38 @@ pub fn record_fusion_invocation() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr::from_ref;
+
+    #[test]
+    fn map_helpers_refuse_reference_keys() {
+        let reference = crate::reference::reference(crate::BindId::new(), None);
+        for key in [reference.clone(), rep::tuple([Value::I64(1), reference])] {
+            unsafe {
+                let mut out = MaybeUninit::<TagValue>::uninit();
+                let buf = graphix_value_buf_new(2);
+                (*buf).extend([key.clone(), Value::I64(2)]);
+                graphix_map_finalize(buf, out.as_mut_ptr());
+                assert!(out.assume_init().is_bottom());
+
+                let pairs = ValArray::from_iter_exact(
+                    [rep::tuple([key.clone(), Value::I64(2)])].into_iter(),
+                );
+                let mut out = MaybeUninit::<TagValue>::uninit();
+                graphix_valarray_into_cmap(va_bits(pairs), out.as_mut_ptr());
+                assert!(out.assume_init().is_bottom());
+
+                let map = TagValue::fired(Value::Map(netidx_value::Map::new()));
+                let key = TagValue::fired(key);
+                let mut out = MaybeUninit::<TagValue>::uninit();
+                graphix_map_ref(
+                    from_ref(&map).cast(),
+                    from_ref(&key).cast(),
+                    out.as_mut_ptr(),
+                );
+                assert!(out.assume_init().is_bottom());
+            }
+        }
+    }
 
     #[test]
     fn value_arithmetic_borrows_operands() {

@@ -47,6 +47,8 @@ pub struct ValueHookDispatch {
     #[doc(hidden)]
     pub cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
     #[doc(hidden)]
+    pub cmp_applies: fn(*mut u8, &GxAbstract) -> bool,
+    #[doc(hidden)]
     pub fmt: fn(*mut u8, &GxAbstract) -> Option<ArcStr>,
     /// `None` means no `Cast` implementation.
     #[doc(hidden)]
@@ -120,6 +122,10 @@ pub struct GxAbstract {
 }
 
 impl GxAbstract {
+    pub fn has_order_impl(&self) -> bool {
+        hooked(|h| (h.cmp_applies)(h.state, self).then_some(())).is_some()
+    }
+
     /// The value's type.
     pub fn typ(&self) -> Type {
         Type::Abstract { id: self.id, params: self.params.clone() }

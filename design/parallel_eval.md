@@ -710,7 +710,8 @@ audit found the cycle loop, event delivery and every runtime map in the
 compiler order-free (lookups, or iteration into sets; `GX.nodes` is an
 `IndexMap` in insertion order). References and functions have
 no order (`Ordered` refuses them; `==` compares them by identity), so
-their ids reach no sort, ordering or map key, and a reference prints as
+their ids reach no sort, ordering or map key (operations validate reference
+values hidden under `Any` before comparing or inserting), and a reference prints as
 `&ref`. The sites that did depend on ids, each fixed or accepted:
 
 | site | depends on | reaches | verdict |

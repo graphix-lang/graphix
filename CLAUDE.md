@@ -1119,8 +1119,14 @@ cycle, across workers; the compiler never pins threads.
   its own cell, so `==`/`!=` compare references by what they name
   (`bind::ref_target`: the place, else the byref chain's binding, else
   the cell), rewriting each one the operand type holds
-  (`Type::map_refs`) before the value comparison; such a comparison
-  never fuses. References and functions have no order (`Ordered`);
+  (`Type::map_refs`) before the value comparison. An `Any` part walks its
+  runtime value; statically reference-free parts are shared untouched.
+  Such a comparison never fuses. References under `Any` are refused at
+  runtime by ordering operators, min/max, sorts, dedup and map-key
+  operations, including singleton collections and cast-created maps;
+  the operation logs a failure and bottoms (a cast returns its error).
+  An abstract's own `Eq` or `Ord` controls its corresponding operation.
+  References and functions have no order (`Ordered`);
   under `Any` a function orders by an id minted in run order, so an
   order over `Any`-typed functions is nondeterministic, and the fuzzer
   excludes a program that may make one (`oracle_tier`).

@@ -1718,6 +1718,9 @@ pub fn sort_values(
         _ => return None,
     };
     let mut buf: LPooled<Vec<Value>> = vals.collect();
+    if !buf.iter().all(coretraits::ordered) {
+        return None;
+    }
     // an Ord that is no total order (a user impl) may panic the sort,
     // which leaves every element in the buffer: its order is wrong, and
     // the runtime goes on
@@ -2843,6 +2846,9 @@ fn fc_divide(args: &[Value]) -> Option<Value> {
 /// whole value, as `fn(a: 'a, @args: 'a) -> 'a` promises.
 fn extremum(args: &[Value], keep: std::cmp::Ordering) -> Option<Value> {
     let mut res = args.first()?;
+    if !args.iter().all(coretraits::ordered) {
+        return None;
+    }
     for v in &args[1..] {
         if v.partial_cmp(res) == Some(keep) {
             res = v
