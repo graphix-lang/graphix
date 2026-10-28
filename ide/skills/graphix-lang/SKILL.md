@@ -331,8 +331,9 @@ across a bottom cycle).
   re-attached at the wake; a seq's run is aborted (a `seqq`'s queued
   requests stay and run). Only the inputs that fired
   while the arm slept are delivered at the wake, once each. A consulted
-  guard and an arm body share those missed fires: the first reader spends
-  the fire for the whole select.
+  guard and an arm body share those missed fires: the first arm to read
+  one spends it for the whole select, and an arm's guard and its own body
+  both see it.
 - A written type test narrows its binds to the values reaching it:
   `Number as n` over `[i64, string]` gives `n: i64`; `Array<Number> as ns`
   over `Array<[i64, string]>` gives `ns: Array<i64>`.

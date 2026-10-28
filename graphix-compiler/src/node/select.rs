@@ -231,6 +231,12 @@ impl LazyArmFacts {
             // change (one 2 / guard 2), and passes after it (one 1 / other). The lang::seq,
             // lang::select and lang::sample filters pass; no FuseExpect moved. The netidx-admin
             // socket tests and a fuzzer soak were not run here.
+            // 2026-10-27 claude: Eric ruled the scope (2026-10-27, after review): one fire per
+            // select is spent by whichever ARM reads it first, but a guard and the body of the
+            // arm it guards are one evaluation and both see it. Built: Select::update records the
+            // fires each guard took (guard_took) and evaluate_arm injects them again for that
+            // arm's body. Pin lang::select::guard_and_own_body_both_see_missed_fire (the review's
+            // probe: guarded twin now "guard 2" beside "arm 2"; was "guard 1").
             guards: has_guards.then(|| vec![GuardRun::Unborn; arms.len()]),
         }
     }
@@ -305,14 +311,20 @@ impl EmissionPlanes {
 }
 
 /// Evaluate the taken arm, consuming its tracked fire bits with the
-/// catch-up deliveries scoped to it.
+/// catch-up deliveries scoped to it, and the ones its own guard took.
 fn evaluate_arm<R: Rt>(
     tracked: &mut TrackedFires,
     arm: &mut (PatternNode<R>, Node<R>),
     i: usize,
+    guard_took: &[(usize, SmallVec<[BindId; 4]>)],
     ctx: &mut ExecCtx<'_, R>,
 ) -> (Tag, Option<Value>) {
-    let injected = tracked.deliver(ctx, i);
+    let mut injected = tracked.deliver(ctx, i);
+    for (_, ids) in guard_took.iter().filter(|(j, _)| *j == i) {
+        for id in ids {
+            super::wake::inject(ctx, *id, &mut injected);
+        }
+    }
     let scope = tracked.open(ctx, i);
     let tv = arm.1.update(ctx);
     let t = tv.tag();
@@ -1614,6 +1626,10 @@ impl<R: Rt> Update<R> for Select<R> {
         // The guarded arms' production tags. Only guards the chain
         // consults contribute fires or bottomness.
         let mut guard_tags: SmallVec<[(usize, Tag); 4]> = SmallVec::new();
+        // the missed fires each guard took: its own arm's body, one
+        // evaluation with it, sees them too
+        let mut guard_took: SmallVec<[(usize, SmallVec<[BindId; 4]>); 2]> =
+            SmallVec::new();
         let arg_prod = arg.update(ctx);
         tracked.observe(ctx);
         // A guard runs where the chain reaches it, an arm whose shape
@@ -1657,6 +1673,9 @@ impl<R: Rt> Update<R> for Select<R> {
             let saved = pat.bind_tentative(ctx, v, tag);
             let view = runs[i].reached();
             let caught_up = tracked.deliver(ctx, consumer);
+            if !caught_up.is_empty() {
+                guard_took.push((i, caught_up.iter().map(|(id, _)| *id).collect()));
+            }
             let t = ctx.under(view, |ctx| {
                 let scope = tracked.open(ctx, consumer);
                 let t = pat.update(ctx);
@@ -1753,7 +1772,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 return resident.set_bottom(planes.anyfire);
             }
             ChainOut::Quiet(i) => {
-                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, ctx);
+                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx);
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) if *selected == Some(i) => {
@@ -1761,7 +1780,7 @@ impl<R: Rt> Update<R> for Select<R> {
                     eprintln!("SELECT[{}] same-arm i={i} arg={v:?}", spec.pos);
                 }
                 arms[i].0.bind_event(ctx, v, arg_prod);
-                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, ctx);
+                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx);
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) => {
@@ -1851,8 +1870,9 @@ impl<R: Rt> Update<R> for Select<R> {
                     false if ctx.event.view == View::Birth => View::Birth,
                     false => View::Step,
                 };
-                let (t, v) =
-                    ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i], i, ctx));
+                let (t, v) = ctx.under(view, |ctx| {
+                    evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx)
+                });
                 planes.emit(t, v)
             }
             // No arm matches: the select has no value.

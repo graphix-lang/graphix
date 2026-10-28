@@ -65,9 +65,13 @@ A guard the chain does not reach sleeps as an unselected arm does and,
 when the chain next reaches it, catches up the fires its inputs had
 while it slept, through a consumer slot in the select's one tracker. A
 guard spends the same fire bit an arm body would; neither catches up a
-fire the other already consumed. Pins:
-`lang::select::{guard_below_the_claim_sleeps, guard_catches_up_a_direct_input,
-guard_and_arm_share_missed_fire}`.
+fire another arm already consumed. A guard and the body of the arm it
+guards are one evaluation: the fires the guard took are injected again
+for that body when its arm is taken in the same update (`Select::update`'s
+`guard_took`, `evaluate_arm`), so a guard never changes its own body's
+state. Pins: `lang::select::{guard_below_the_claim_sleeps,
+guard_catches_up_a_direct_input, guard_and_arm_share_missed_fire,
+guard_and_own_body_both_see_missed_fire}`.
 
 Outside the mechanism: the scrutinee (its own consult machinery);
 pattern binds of THIS select and of every enclosing select — a pattern

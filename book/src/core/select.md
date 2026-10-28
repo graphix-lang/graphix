@@ -39,7 +39,8 @@ stood. Its counters, `once`s and queues keep their state, a call it made
 is not made again, and the only events it sees are the ones that fired
 while it slept and no consulted guard or selected arm already read, each
 once, at its current value. Guards and arm bodies share this catch-up:
-whichever reads a missed fire first spends it for the whole select.
+whichever arm reads a missed fire first spends it for the whole select,
+and an arm's guard and its body, one evaluation, both see it.
 The first time an arm
 is selected is its birth: its constants fire then, and only then. A select
 inside a seq step starts a new entry history at each run, so its arms

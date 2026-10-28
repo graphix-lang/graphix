@@ -196,7 +196,8 @@ modes!(builtin_bottom_propagates);
 
 // A dynamic call whose function is briefly bottom: the argument that
 // moved in the window reaches the instance when the same function
-// returns, which fires the call: [0, 14].
+// returns, which fires the call. Each delivery of the function fires the
+// call too, the select's re-emission of `g` at ep 1 included: [0, 0, 14].
 const CALLEE_BACK_FROM_BOTTOM: &str = r#"{
   let ep = 0;
   ep <- select ep { n if n < 4 => n + 1, _ => never() };
@@ -211,7 +212,7 @@ const CALLEE_BACK_FROM_BOTTOM: &str = r#"{
 async fn callee_back_from_bottom(mode: Mode) -> Result<()> {
     let (values, _) =
         run_delta_fused(CALLEE_BACK_FROM_BOTTOM, mode, FuseExpect::Jit).await?;
-    assert_eq!(as_i64s(&values), vec![0, 14]);
+    assert_eq!(as_i64s(&values), vec![0, 0, 14]);
     Ok(())
 }
 

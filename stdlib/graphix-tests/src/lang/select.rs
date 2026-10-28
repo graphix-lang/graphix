@@ -5123,3 +5123,29 @@ run!(arm_in_born_slot_reads_standing_values, r#"{
     });
     select step { 6 => (outside, inside), _ => never() }
 }"#, prints("[i64:3, i64:3]"); FuseExpect::Jit);
+
+// A guard and the body of the arm it guards are one evaluation: both see
+// the fire the arm missed asleep, so a guard reading `input` leaves its
+// body's state as the unguarded twin's.
+run!(guard_and_own_body_both_see_missed_fire, r#"{
+    let input = 1;
+    let step = 0;
+    step <- select step { s if s < 7 => s + 1, _ => never() };
+    input <- select step { 2 => 7, _ => never() };
+    let chosen = select step { 0 | 5 => 2, _ => 1 };
+    let guarded = select chosen {
+        1 => "one",
+        n if input > 0 => "guard [count(input)]",
+        _ => "other"
+    };
+    let bodies = select chosen {
+        1 => "one",
+        n => "arm [count(input)]"
+    };
+    let seen = [];
+    seen <- select step {
+        0 | 5 => array::push(seen, (guarded, bodies)),
+        _ => never()
+    };
+    select step { 7 => seen, _ => never() }
+}"#, prints(r#"[["guard 1", "arm 1"], ["guard 2", "arm 2"]]"#); FuseExpect::Jit);

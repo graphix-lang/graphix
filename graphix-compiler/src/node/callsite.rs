@@ -2852,6 +2852,10 @@ impl<R: Rt> CallSite<R> {
         // modes before the fix with [1,2]. The lang::functions, lib_tests::callable,
         // lang::seq, lang::select and lang::sample filters pass after it. No FuseExpect
         // moved. No netidx-admin socket tests or fuzzer soak were run.
+        // 2026-10-27 claude: Eric ruled the scope (2026-10-27, after review): any fire
+        // of a function-valued callee fires the call (organic firing), a write or a
+        // re-emission alike, as built. lang::dense_deltas::callee_back_from_bottom now
+        // expects [0, 0, 14]: the select re-emitting g at ep 1 fires the call.
         if same {
             return false;
         }
