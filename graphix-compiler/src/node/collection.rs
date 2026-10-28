@@ -417,6 +417,17 @@ struct Callback {
 }
 
 impl Callback {
+    fn with(
+        scope: Scope,
+        id: BindId,
+        typ: Arc<FnType>,
+        top_id: ExprId,
+        share: Option<SlotShare>,
+        arg: Option<Arc<Expr>>,
+    ) -> Self {
+        Self { scope, id, typ, top_id, share, arg, slot_spec: Default::default() }
+    }
+
     /// The source's bind and the callback of an intrinsic whose formals
     /// are `args`: the source first, the callback last, taking `arity`
     /// arguments.
@@ -447,15 +458,7 @@ impl Callback {
             )
         }
         let id = name(callback, "callback")?;
-        let cb = Self {
-            scope: scope.clone(),
-            id,
-            typ,
-            top_id,
-            share: None,
-            arg: None,
-            slot_spec: Default::default(),
-        };
+        let cb = Self::with(scope.clone(), id, typ, top_id, None, None);
         Ok((name(source, "source")?, cb))
     }
 
@@ -487,7 +490,7 @@ impl Callback {
             _ => Some(SlotShare::image_decode(ctx, buf)?),
         };
         let arg = Option::<Expr>::decode(buf)?.map(Arc::new);
-        Ok(Self { scope, id, typ, top_id, share, arg, slot_spec: Default::default() })
+        Ok(Self::with(scope, id, typ, top_id, share, arg))
     }
 
     fn see_arg<R: Rt>(&mut self, ctx: &CompileCtx<R>) {
@@ -860,6 +863,30 @@ pub struct MapQBase<R: Rt> {
 }
 
 impl<R: Rt> MapQBase<R> {
+    fn with(
+        source: Node<R>,
+        prototype: Node<R>,
+        op: MapOp,
+        flavor: Flavor,
+        element_type: Type,
+        prototype_id: BindId,
+        spec: Arc<Expr>,
+        typ: Type,
+        check_keys: bool,
+    ) -> Self {
+        Self {
+            source,
+            prototype,
+            op,
+            flavor,
+            element_type,
+            prototype_id,
+            spec,
+            typ,
+            check_keys,
+        }
+    }
+
     /// The source and the prototype, in check order.
     fn nodes_mut(&mut self) -> [&mut Node<R>; 2] {
         [&mut self.source, &mut self.prototype]
@@ -1007,17 +1034,17 @@ impl<R: Rt, C: MapCollection> MapQ<R, C> {
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
         let prototype =
             Slot::new(ctx, &callback, &element_type, CallKind::Prototype(prototype));
-        let base = MapQBase {
+        let base = MapQBase::with(
             source,
-            prototype: prototype.call,
+            prototype.call,
             op,
             flavor,
             element_type,
-            prototype_id: prototype.id,
+            prototype.id,
             spec,
-            typ: typ.rtype.clone(),
-            check_keys: true,
-        };
+            typ.rtype.clone(),
+            true,
+        );
         Ok(Self::with(base, callback))
     }
 
@@ -1029,17 +1056,17 @@ impl<R: Rt, C: MapCollection> MapQ<R, C> {
         let CollectionIntrinsic::Map(op, flavor) = intrinsic else {
             return Err(PackError::InvalidFormat);
         };
-        let base = MapQBase {
-            source: decode_node(ctx, buf)?,
-            prototype: decode_node(ctx, buf)?,
+        let base = MapQBase::with(
+            decode_node(ctx, buf)?,
+            decode_node(ctx, buf)?,
             op,
             flavor,
-            element_type: Type::decode(buf)?,
-            prototype_id: BindId::decode(buf)?,
-            spec: Arc::new(Expr::decode(buf)?),
-            typ: Type::decode(buf)?,
-            check_keys: bool::decode(buf)?,
-        };
+            Type::decode(buf)?,
+            BindId::decode(buf)?,
+            Arc::new(Expr::decode(buf)?),
+            Type::decode(buf)?,
+            bool::decode(buf)?,
+        );
         Ok(Self::with(base, Callback::image_decode(ctx, buf)?))
     }
 
@@ -1543,6 +1570,19 @@ pub struct FoldQBase<R: Rt> {
 }
 
 impl<R: Rt> FoldQBase<R> {
+    fn with(
+        source: Node<R>,
+        init: Node<R>,
+        prototype: Node<R>,
+        flavor: Flavor,
+        element_type: Type,
+        prototype_ids: [BindId; 2],
+        spec: Arc<Expr>,
+        typ: Type,
+    ) -> Self {
+        Self { source, init, prototype, flavor, element_type, prototype_ids, spec, typ }
+    }
+
     /// The source, the init and the prototype, in check order.
     fn nodes_mut(&mut self) -> [&mut Node<R>; 3] {
         [&mut self.source, &mut self.init, &mut self.prototype]
@@ -1658,16 +1698,16 @@ impl<R: Rt, C: MapCollection> FoldQ<R, C> {
             &element_type,
             CallKind::Prototype(prototype),
         );
-        let base = FoldQBase {
+        let base = FoldQBase::with(
             source,
             init,
-            prototype: prototype.call,
+            prototype.call,
             flavor,
             element_type,
-            prototype_ids: [prototype.acc_id, prototype.element_id],
+            [prototype.acc_id, prototype.element_id],
             spec,
-            typ: typ.rtype.clone(),
-        };
+            typ.rtype.clone(),
+        );
         Ok(Self::with(base, callback, acc_type))
     }
 
@@ -1679,16 +1719,16 @@ impl<R: Rt, C: MapCollection> FoldQ<R, C> {
         let CollectionIntrinsic::Fold(flavor) = intrinsic else {
             return Err(PackError::InvalidFormat);
         };
-        let base = FoldQBase {
-            source: decode_node(ctx, buf)?,
-            init: decode_node(ctx, buf)?,
-            prototype: decode_node(ctx, buf)?,
+        let base = FoldQBase::with(
+            decode_node(ctx, buf)?,
+            decode_node(ctx, buf)?,
+            decode_node(ctx, buf)?,
             flavor,
-            element_type: Type::decode(buf)?,
-            prototype_ids: [BindId::decode(buf)?, BindId::decode(buf)?],
-            spec: Arc::new(Expr::decode(buf)?),
-            typ: Type::decode(buf)?,
-        };
+            Type::decode(buf)?,
+            [BindId::decode(buf)?, BindId::decode(buf)?],
+            Arc::new(Expr::decode(buf)?),
+            Type::decode(buf)?,
+        );
         let callback = Callback::image_decode(ctx, buf)?;
         let acc_type = Type::decode(buf)?;
         Ok(Self::with(base, callback, acc_type))
