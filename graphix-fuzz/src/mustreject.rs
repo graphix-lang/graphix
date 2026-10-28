@@ -81,6 +81,7 @@ impl Family {
             Family::WidenConsumer | Family::WidenHop => &[
                 "does not contain",
                 "missing match cases",
+                "cannot hold",
                 "cannot compute",
                 "cannot compare",
                 "expected struct not",

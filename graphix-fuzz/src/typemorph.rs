@@ -135,14 +135,17 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // block-wrap: `e` -> `{ let tm__0 = e; tm__0 }`; not on lambda
     // literals (let-extract's probe) or blocks, nor on `never()`: a `let`
     // over ⊥ is typed by its writers, an open cell where `never()` is ⊥;
-    // nor under `&`, where `e` may be a place's root
+    // nor under `&`, where `e` may be a place's root; nor a call's
+    // function, which would dispatch dynamically where it was static
     {
         let under_ref = |i: usize| {
             (0..i).any(|j| matches!(pre[j].kind, ExprKind::ByRef(..)) && i < j + sizes[j])
         };
+        let callee = |i: usize| i > 0 && matches!(pre[i - 1].kind, ExprKind::Apply(_));
         let sites: Vec<usize> = (0..pre.len())
             .filter(|&i| {
                 !under_ref(i)
+                    && !callee(i)
                     && value_pos(&pre[i].kind)
                     && !matches!(
                         unparen(&pre[i]).kind,
