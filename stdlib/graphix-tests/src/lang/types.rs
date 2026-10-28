@@ -3095,8 +3095,8 @@ run!(
     FuseExpect::None
 );
 
-/// A declared variable is a constant in its body: a payload of another
-/// type is no value of it.
+// A declared variable is a constant in its body: a payload of another
+// type is no value of it.
 run!(
     constructed_parameter_below_a_declared_variable_refused,
     r#"{
