@@ -71,6 +71,9 @@ verified by a run
 (`--expand` builds, to show each instance's steps). Files parse in
 parallel, so a large module split into several files checks faster.
 
+An expression attribute such as `#[native]` inside a function body is checked
+when a call builds that body. Defining an uncalled function is valid, including
+in the REPL; a later or dynamic call checks the attribute for its instance.
 
 ## Package Management
 

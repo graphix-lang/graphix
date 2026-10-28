@@ -2130,24 +2130,32 @@ impl<R: Rt> CallSite<R> {
         if perfdbg::enabled() {
             perfdbg::BIND_CALLS.fetch_add(1, Relaxed);
         }
-        let (scope, flags) = (self.scope.clone(), self.flags);
-        // The lazy-bound body's typecheck defers settles no statement
-        // boundary will drain.
-        let defaults = super::with_runtime_settles(ctx, |ctx| {
-            let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
-            let (apply, defaults, params) =
-                self.setup_dynamic_bind(ctx, &scope, flags, f)?;
-            drop(setup_span);
-            let res = self.elaborate_bound(ctx, fv, f, apply);
-            Self::unregister_fn_params(ctx, params);
-            res.map(|()| defaults)
-        })?;
-        if let Some(share) = &self.share
-            && let Some(apply) = self.callee.apply_mut()
-        {
-            share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx));
-        }
-        Ok(defaults)
+        crate::with_attribute_frame(ctx, |ctx| {
+            let (scope, flags) = (self.scope.clone(), self.flags);
+            // The lazy-bound body's typecheck defers settles no statement
+            // boundary will drain.
+            let defaults = super::with_runtime_settles(ctx, |ctx| {
+                let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
+                let (apply, defaults, params) =
+                    self.setup_dynamic_bind(ctx, &scope, flags, f)?;
+                drop(setup_span);
+                let res = self.elaborate_bound(ctx, fv, f, apply);
+                Self::unregister_fn_params(ctx, params);
+                res.map(|()| defaults)
+            })?;
+            if crate::fusion_on(flags) {
+                if let Some(apply) = self.callee.apply_mut() {
+                    if let Some(share) = &self.share {
+                        share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx))?;
+                    } else if !ctx.attr_census.lock().is_empty() && ctx.fusion.available()
+                    {
+                        fusion::fuse_instance(ctx, self.top_id, |ctx| apply.fuse(ctx))?;
+                    }
+                }
+                crate::check_attribute_census(ctx)?;
+            }
+            Ok(defaults)
+        })
     }
 
     /// Elaborate and analyze `apply`, this site's run-time instance of

@@ -222,8 +222,9 @@ fn compile_inner<R: Rt>(
                     if ctx.lookup_attribute(&attr.name).is_none() {
                         bailat!(spec, "unknown attribute #[{}]", attr.name);
                     }
-                    // Every registry attribute must be dispatched or absorbed
-                    // by the fusion walk (`compile_stmt` reconciles).
+                    if ctx.body.as_ref().is_some_and(|body| body.checking) {
+                        continue;
+                    }
                     let mut census = ctx.attr_census.lock();
                     if !census.iter().any(|e| e.id == spec.id) {
                         census.push(spec.clone());

@@ -1382,6 +1382,28 @@ fn calls_a_function<R: Rt>(node: &Node<R>) -> bool {
     calls
 }
 
+pub(crate) fn fuse_instance<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    top_id: ExprId,
+    f: impl FnOnce(&mut CompileCtx<R>) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    ctx.env.seed_typedef_refs();
+    let local = matches!(*ctx.fusion.emission.lock(), EmissionSlot::NonEmitting);
+    if local {
+        *ctx.fusion.emission.get_mut() = EmissionSlot::Root(None);
+    }
+    let top = ctx.fusion.top_id.replace(top_id);
+    let result = TypeMemo::scope(|| f(ctx));
+    ctx.fusion.top_id = top;
+    if ctx.fusion.unlinked() > 0 {
+        ctx.fusion.link();
+    }
+    if local {
+        *ctx.fusion.emission.get_mut() = EmissionSlot::NonEmitting;
+    }
+    result
+}
+
 /// Dispatch each registered attribute's check ([`crate::AttributeCheckFn`])
 /// on a node the fusion walk just resolved. A fused node was replaced by
 /// its [`FusedKernel`], which carries the region root's spec, so
@@ -1392,9 +1414,6 @@ fn check_node_attributes<R: Rt>(
     node: &Node<R>,
     ctx: &CompileCtx<R>,
 ) -> anyhow::Result<()> {
-    if ctx.fusion.reusing() {
-        return Ok(());
-    }
     if let Some(dec) = &node.spec().dec {
         let mut any = false;
         for attr in dec.attrs.iter() {

@@ -3470,63 +3470,102 @@ fn compile_top<R: Rt>(
         return Err(abandon_stmt(ctx, node, saved, e));
     }
     ctx.apply_deferred();
-    // An attribute the fusion walk neither dispatched nor absorbed
-    // would silently assert nothing; a check runs no fusion walk and
-    // leaves the attributes to a build.
-    if fusion_on(flags) && !flags.contains(CFlag::CheckOnly) {
-        let census = ctx.attr_census.lock();
-        // with no JIT no walk ran: `#[native]` cannot hold, the others
-        // assert nothing
-        if !census.is_empty()
-            && let Err(e) = ctx.fusion.jit().map(|_| ())
-        {
-            let native = <Native as Attribute<R>>::NAME;
-            let spec = census.iter().find(|spec| {
-                let attrs = spec.dec.as_ref().map(|d| &*d.attrs).unwrap_or(&[]);
-                attrs.iter().any(|a| a.name == native)
-            });
-            if let Some(spec) = spec {
-                let e = expr::At::at(e.context("#[native] cannot hold"), spec);
+    if fusion_on(flags)
+        && !flags.contains(CFlag::CheckOnly)
+        && let Err(e) = check_attribute_census(ctx)
+    {
+        return Err(abandon_stmt(ctx, node, saved, e));
+    }
+    Ok((node, out_scope))
+}
+
+pub(crate) fn check_attribute_census<R: Rt>(ctx: &CompileCtx<R>) -> Result<()> {
+    let census = ctx.attr_census.lock();
+    // with no JIT no walk ran: `#[native]` cannot hold, the others
+    // assert nothing
+    if !census.is_empty()
+        && let Err(e) = ctx.fusion.jit().map(|_| ())
+    {
+        let native = <Native as Attribute<R>>::NAME;
+        let spec = census.iter().find(|spec| {
+            let attrs = spec.dec.as_ref().map(|d| &*d.attrs).unwrap_or(&[]);
+            attrs.iter().any(|a| a.name == native)
+        });
+        if let Some(spec) = spec {
+            let e = expr::At::at(e.context("#[native] cannot hold"), spec);
+            drop(census);
+            return Err(e);
+        }
+    } else if !census.is_empty() {
+        let dispatched = ctx.attr_dispatched.lock();
+        let absorbed = ctx.attr_absorbed.lock();
+        for spec in census.iter() {
+            // XCR claude for claude: [bug/medium] [bug/medium] An attribute inside a
+            // function body is censused when the definition compiles, but only a
+            // static instance fused in this same compile dispatches it. A function
+            // that is never called, is called only dynamically, or is called in a
+            // later REPL input is therefore refused here. The refusal tells the
+            // user to put the decorated expression in its own statement, which it
+            // already is. `--check` accepts the program, and the REPL can never
+            // define such a function. Decide the rule. One option: treat a registry
+            // attribute in a definition body like a DefAssertion, pending until an
+            // instance's fusion dispatches it. The other: keep the refusal, but say
+            // the enclosing function was not instantiated in this compile, and add
+            // the message to analysis::BUILD_ONLY_REFUSALS. probe:
+            // design/review-2026-10-26/repro/c-lib-native-uncalled-body.gx
+            // (c-lib-01)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q38,
+            // `#[native]` in a body no instance fuses): yes, pending (the
+            // recommendation: pending.)
+            // 2026-10-28 codex: Implemented q38, including runtime binding.
+            // Definition checks validate attribute names but defer their dispatch
+            // census to instances. Each dynamic build has its own census; its
+            // fusion dispatch and census must succeed before the instance runs.
+            // Runtime compile tasks can emit and link an isolated native instance;
+            // shared collection kernels retain their dispatch/absorption checks.
+            // Pins:
+            // lang::attributes::{native_body_attribute_waits_for_instance,native_body_attribute_dynamic_instance,native_body_attribute_dynamic_rejects_stateful,native_body_attribute_survives_repl_inputs,native_body_attribute_in_collection_slots}.
+            // The dynamic success pin measures JIT invocations; the stateful pin
+            // asserts the body produces nothing. With only the old
+            // definition-census skip, the two dynamic pins failed (no JIT
+            // invocation and count produced 2). With all implementation changes
+            // removed, the final pins had 5 failures / 6 passes. With the fix, the
+            // temporary integration harness importing the actual attributes module
+            // passes all 153 tests: cargo test -p graphix-tests --offline --test
+            // cr_rework attributes::. Updated CLAUDE.md, regenerated AGENTS.md, the
+            // book and language skill. cargo fmt --all was attempted but cannot
+            // write the read-only sibling graphix-types/src/typ/tvar.rs; formatting
+            // the touched packages succeeds. Full graphix-tests lib gate remains
+            // for session end.
+            if !dispatched.contains(&spec.id) && !absorbed.contains(&spec.id) {
+                let e = ::anyhow::anyhow!(
+                    "attribute in a position the fusion pass cannot check — \
+                     put the decorated expression in its own statement \
+                     (or a select arm)"
+                );
+                let e = expr::At::at(e, spec);
                 drop(census);
-                return Err(abandon_stmt(ctx, node, saved, e));
-            }
-        } else if !census.is_empty() {
-            let dispatched = ctx.attr_dispatched.lock();
-            let absorbed = ctx.attr_absorbed.lock();
-            for spec in census.iter() {
-                // CR claude for claude: [bug/medium] [bug/medium] An attribute inside a
-                // function body is censused when the definition compiles, but only a
-                // static instance fused in this same compile dispatches it. A function
-                // that is never called, is called only dynamically, or is called in a
-                // later REPL input is therefore refused here. The refusal tells the
-                // user to put the decorated expression in its own statement, which it
-                // already is. `--check` accepts the program, and the REPL can never
-                // define such a function. Decide the rule. One option: treat a registry
-                // attribute in a definition body like a DefAssertion, pending until an
-                // instance's fusion dispatches it. The other: keep the refusal, but say
-                // the enclosing function was not instantiated in this compile, and add
-                // the message to analysis::BUILD_ONLY_REFUSALS. probe:
-                // design/review-2026-10-26/repro/c-lib-native-uncalled-body.gx
-                // (c-lib-01)
-                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q38,
-                // `#[native]` in a body no instance fuses): yes, pending (the
-                // recommendation: pending.)
-                if !dispatched.contains(&spec.id) && !absorbed.contains(&spec.id) {
-                    let e = ::anyhow::anyhow!(
-                        "attribute in a position the fusion pass cannot check — \
-                         put the decorated expression in its own statement \
-                         (or a select arm)"
-                    );
-                    let e = expr::At::at(e, spec);
-                    drop(census);
-                    drop(dispatched);
-                    drop(absorbed);
-                    return Err(abandon_stmt(ctx, node, saved, e));
-                }
+                drop(dispatched);
+                drop(absorbed);
+                return Err(e);
             }
         }
     }
-    Ok((node, out_scope))
+    Ok(())
+}
+
+pub(crate) fn with_attribute_frame<R: Rt, T>(
+    ctx: &mut CompileCtx<R>,
+    f: impl FnOnce(&mut CompileCtx<R>) -> T,
+) -> T {
+    let census = mem::take(ctx.attr_census.get_mut());
+    let dispatched = mem::take(ctx.attr_dispatched.get_mut());
+    let absorbed = mem::take(ctx.attr_absorbed.get_mut());
+    let result = f(ctx);
+    *ctx.attr_census.get_mut() = census;
+    *ctx.attr_dispatched.get_mut() = dispatched;
+    *ctx.attr_absorbed.get_mut() = absorbed;
+    result
 }
 
 /// Unwind a statement that was built but failed its checks: delete what

@@ -439,3 +439,108 @@ const SLOT_CAPTURED_PARAM_CALL: &str = r#"
 "#;
 
 run!(slot_captured_param_call_sync_refused, SLOT_CAPTURED_PARAM_CALL, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+
+run!(native_body_attribute_waits_for_instance, r#"{
+    let f = |x: i64| { let y = #[native] (x * 2); y + 1 };
+    0
+}"#, is(Value::I64(0)); FuseExpect::Jit);
+
+async fn check_dynamic_native(case: bool) -> Result<()> {
+    use graphix_package_core::testing::{
+        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    for mode in [Mode::Jit, Mode::JitPar] {
+        for (code, valid) in [
+            (
+                r#"{
+                let f = |x: i64| { let y = #[native] (x * 2); y + 1 };
+                let h = never(); h <- f; h(5)
+            }"#,
+                true,
+            ),
+            (
+                r#"{
+                let f = |x: i64| { let y = #[native] count(x); y + 1 };
+                let h = never(); h <- f; h(5)
+            }"#,
+                false,
+            ),
+        ] {
+            if valid != case {
+                continue;
+            }
+            let (ctx, mut rx) = fixture_runtime(
+                [("/test.gx", result_source(code))],
+                crate::TEST_REGISTER,
+                mode,
+                |_| {},
+            )
+            .await?;
+            ctx.rt.control().reset_invocations();
+            let result = compile_result(&ctx).await?;
+            let values = updates_until_quiet(
+                &ctx.rt,
+                &mut rx,
+                result.exprs[0].id,
+                Duration::from_millis(100),
+                Instant::now() + Duration::from_secs(20),
+            )
+            .await?;
+            if valid {
+                assert_eq!(values, [Value::I64(11)]);
+                assert!(
+                    ctx.rt.control().invocations().1 > 0,
+                    "native body never entered the JIT"
+                );
+            } else {
+                assert!(values.is_empty(), "invalid native body ran: {values:?}");
+            }
+            ctx.shutdown().await;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_body_attribute_survives_repl_inputs() -> Result<()> {
+    use arcstr::literal;
+    use graphix_package_core::testing::{Mode, fixture_runtime};
+    for mode in [Mode::Jit, Mode::JitPar] {
+        let (ctx, _rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+        let _f = ctx
+            .rt
+            .compile(literal!("let f = |x: i64| { let y = #[native] (x * 2); y + 1 }"))
+            .await?;
+        let _call = ctx.rt.compile(literal!("f(5)")).await?;
+        let _g = ctx
+            .rt
+            .compile(literal!("let g = |x: i64| { let y = #[native] count(x); y + 1 }"))
+            .await?;
+        let err = ctx.rt.compile(literal!("g(5)")).await.unwrap_err();
+        assert!(err.chain().any(|e| e.to_string().contains("#[native]")), "{err:#}");
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_body_attribute_dynamic_instance() -> Result<()> {
+    check_dynamic_native(true).await
+}
+
+#[tokio::test]
+async fn native_body_attribute_dynamic_rejects_stateful() -> Result<()> {
+    check_dynamic_native(false).await
+}
+
+run!(
+    native_body_attribute_in_collection_slots,
+    r#"{
+    let f = |x: i64| { let y = #[native] (x * 2); y + 1 };
+    array::map([1, 2, 3], |x| { count(x); f(x) })
+}"#,
+    prints("[i64:3, i64:5, i64:7]")
+);

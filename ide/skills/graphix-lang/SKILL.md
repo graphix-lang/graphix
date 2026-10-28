@@ -21,7 +21,10 @@ graphix fmt prog.gx         # format in place (--check, --stdout)
 ```
 
 `#[native]` on an expression asserts it fuses whole into native code: a
-build refuses it where anything stays in the node-walk.
+build refuses it where anything stays in the node-walk. Inside a function
+body the attribute waits for an instance: an uncalled definition is valid,
+and a dynamic call or a later REPL call checks the attribute when it builds
+that instance.
 
 A program under test must exit or the harness learns nothing:
 `sys::exit(sys::time::after_idle(duration:100.ms, 0))` at the end (a

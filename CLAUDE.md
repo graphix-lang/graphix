@@ -577,7 +577,10 @@ node graph IS the IR — there is no parallel typed IR
   `#[native]` asserts zero node-walk residue at a source location and is
   THE advertised performance model (an argument a fused call is fed by
   the node-walk is residue; bound outside the annotation it is an
-  input); `#[sync]`/`#[async]`/`#[pure]` assert analysis facts
+  input). A registry attribute inside a definition body stays pending until
+  an instance is built, including a dynamic call or a later REPL input;
+  the definition alone does not require fusion to dispatch it.
+  `#[sync]`/`#[async]`/`#[pure]` assert analysis facts
   (`#[pure]`: nothing that makes an arm sleep but `dbg`, which warns),
   and
   `#[tail_recursive]` analysis's gate plus the loop fusion built

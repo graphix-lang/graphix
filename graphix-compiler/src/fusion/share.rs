@@ -215,6 +215,10 @@ pub(crate) fn reuse<R: Rt>(
         let k = fused.downcast_mut::<FusedKernel<R>>().expect("a kernel");
         k.redirect(redirects);
     }
+    if !ctx.attr_census.lock().is_empty() {
+        let decorated = super::discover_lambda_calls(node, ctx);
+        ctx.attr_absorbed.lock().extend(decorated.decorated.iter().map(|n| n.spec().id));
+    }
     FusionAttempt::Fused(fused)
 }
 
@@ -260,15 +264,14 @@ pub(crate) fn fuse_slot<R: Rt>(
     share: &SlotShare,
     top_id: ExprId,
     f: impl FnOnce(&mut CompileCtx<R>) -> Result<()>,
-) {
+) -> Result<()> {
     let reuse = Share::Reuse { table: share.table.clone(), next: share.base };
     let saved = ctx.fusion.share.replace(reuse);
     let saved_top = ctx.fusion.top_id.replace(top_id);
-    if let Err(e) = f(ctx) {
-        log::debug!("fusion::share: a slot instance kept its node-walk: {e:#}");
-    }
+    let result = f(ctx);
     ctx.fusion.share = saved;
     ctx.fusion.top_id = saved_top;
+    result
 }
 
 impl SlotShare {
