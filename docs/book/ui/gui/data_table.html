@@ -482,8 +482,12 @@ current value.</p>
 <p><strong><code>sparkline_column</code></strong> -- Rolling-line visualization accumulating
 published values over <code>history_seconds</code>. Every cell uses the same rolling time
 axis, from now minus <code>history_seconds</code> to now. The last value extends flat to
-now; the value at the window start is retained even when updates stop. By default the y-axis is
-shared across every cell in the column (auto-scaled to the union of
+now; the value at the window start is retained even when updates stop. While
+the newest sample is inside the window, idle frames advance at one horizontal
+pixel per redraw, capped at 60 frames per second. Once that sample reaches the
+window start, the flat line needs no further timed redraws. A new sample
+resumes them. By default the y-axis is shared across every cell in the column
+(auto-scaled to the union of
 all rows' values) so cells are visually comparable. Pass <code>#min</code> /
 <code>#max</code> to fix the axis instead.</p>
 </li>

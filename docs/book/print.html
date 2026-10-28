@@ -2906,6 +2906,11 @@ f(2)
 <p><code>f</code> captures <code>v</code> and can use it even when it is called from a scope where <code>v</code>
 isn't visible. Closures allow functions to encapsulate data, just like an object
 in OOP.</p>
+<p>A closure keeps its captured variables alive after the collection slot or
+function activation that created it is deleted. A call first made after
+that deletion sees the retained values. Captures used by a nested closure
+or by a labeled argument's default have the same lifetime. Keeping a
+variable alive does not keep its former initializer or effects running.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="functions-are-first-class-values"><a class="header" href="#functions-are-first-class-values">Functions are First Class values</a></h1>
 <p>We can store a function in a structure, which can itself be stored in a data
 structure, passed to and returned from functions. A function exists only in the
@@ -3118,6 +3123,11 @@ keep a body out of native code are reading a reference (<code>*r</code>), a <cod
 raising to a handler, a <code>&lt;-</code> to a variable outside the function, and a
 builtin without a fast call; move them out of the loop when the loop is
 deep.</p>
+<p><code>str::parse</code>, <code>hbs::render</code>, the json/toml/pack writers, <code>array::sort</code>,
+<code>list::sort</code>, <code>array::dedup</code> and every <code>re::*</code> builtin run in the node-walk.
+They keep their last result while their own arguments are stale; a fused
+fast call can run again whenever any input of its kernel fires. Bind these
+operations outside a <code>#[native]</code> expression and pass their results in.</p>
 <p>That is what makes recursion the way to write a reactive traversal:</p>
 <pre><code class="language-graphix">let rec publish_all = |paths: Array&lt;string&gt;, i: i64| select paths {
   [] =&gt; null,
@@ -5550,6 +5560,15 @@ graphix --no-cache ./myprogram.gx
 # compile, write the cache and exit (prepare a deployment's first start)
 graphix --warm ./myprogram.gx
 </code></pre>
+<p>On Unix, the cache directories and entries must belong to the effective
+user and must not be writable by group or others. Your cache base
+(<code>$XDG_CACHE_HOME</code>, or <code>~/.cache</code>) may be a symlink if you own every
+link and its target directory meets those ownership and permission
+requirements. The shell refuses symlinks for its managed subdirectories
+and image files. It creates new directories with mode 0700 and entries
+with mode 0600. An untrusted cache is a miss and the program compiles
+normally; <code>--warm</code> fails if it cannot write a trusted
+entry.</p>
 <p>A <code>netidx:</code> script keeps no program entry, since nothing tells the cache
 its source changed: the program compiles at every start, and <code>--warm</code>
 refuses it.</p>
@@ -9615,6 +9634,9 @@ canvas(
 <li>Y increases upward</li>
 <li>Shapes outside bounds are clipped</li>
 </ul>
+<p>Finite line segments are clipped to the axis bounds before rendering. A segment
+that crosses the visible area stays visible even when its endpoints are very
+large.</p>
 <h2 id="see-also-5"><a class="header" href="#see-also-5">See Also</a></h2>
 <ul>
 <li><a href="ui/tui/chart.html">chart</a> - For pre-built line charts</li>
@@ -9822,6 +9844,9 @@ chart(
 <li><strong>Braille</strong>, <strong>Octant</strong>: 2x4, the finest grids.</li>
 </ul>
 <p>Braille needs a font with the Unicode Braille Patterns; Sextant and Octant need the Symbols for Legacy Computing block, which fewer terminals support. A terminal without the glyphs shows replacement characters (<code>�</code>).</p>
+<p>Each line series draws as one polyline, including when it leaves and re-enters
+the visible area. Finite segments crossing the axis bounds remain visible even
+when their endpoints are very large.</p>
 <h2 id="see-also-6"><a class="header" href="#see-also-6">See Also</a></h2>
 <ul>
 <li><a href="ui/tui/barchart.html">barchart</a> - For categorical data visualization</li>
@@ -16095,8 +16120,12 @@ current value.</p>
 <p><strong><code>sparkline_column</code></strong> -- Rolling-line visualization accumulating
 published values over <code>history_seconds</code>. Every cell uses the same rolling time
 axis, from now minus <code>history_seconds</code> to now. The last value extends flat to
-now; the value at the window start is retained even when updates stop. By default the y-axis is
-shared across every cell in the column (auto-scaled to the union of
+now; the value at the window start is retained even when updates stop. While
+the newest sample is inside the window, idle frames advance at one horizontal
+pixel per redraw, capped at 60 frames per second. Once that sample reaches the
+window start, the flat line needs no further timed redraws. A new sample
+resumes them. By default the y-axis is shared across every cell in the column
+(auto-scaled to the union of
 all rows' values) so cells are visually comparable. Pass <code>#min</code> /
 <code>#max</code> to fix the axis instead.</p>
 </li>

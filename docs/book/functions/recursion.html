@@ -173,6 +173,11 @@ keep a body out of native code are reading a reference (<code>*r</code>), a <cod
 raising to a handler, a <code>&lt;-</code> to a variable outside the function, and a
 builtin without a fast call; move them out of the loop when the loop is
 deep.</p>
+<p><code>str::parse</code>, <code>hbs::render</code>, the json/toml/pack writers, <code>array::sort</code>,
+<code>list::sort</code>, <code>array::dedup</code> and every <code>re::*</code> builtin run in the node-walk.
+They keep their last result while their own arguments are stale; a fused
+fast call can run again whenever any input of its kernel fires. Bind these
+operations outside a <code>#[native]</code> expression and pass their results in.</p>
 <p>That is what makes recursion the way to write a reactive traversal:</p>
 <pre><code class="language-graphix">let rec publish_all = |paths: Array&lt;string&gt;, i: i64| select paths {
   [] =&gt; null,
