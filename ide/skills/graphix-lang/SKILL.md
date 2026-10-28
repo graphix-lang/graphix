@@ -394,7 +394,10 @@ The trigger is any expression. `seqq sys::time::after_idle(duration:250.ms,
 key) { .. }` runs once per burst of presses, not once per press.
 `seq let c = e { .. }` names the trigger's value for the body and nothing
 after it; `seq let {x, y} = pt { .. }` destructures. Under `seqq` it is
-the value that queued the run. `seq let c = (*r)$ { .. c.f .. }`
+the value that queued the run, including requests waiting for absent
+captures. Each request retains its trigger; waiting requests share the
+first complete external snapshot and run in arrival order.
+`seq let c = (*r)$ { .. c.f .. }`
 is how a nullable reference is consumed; `(*r).f` is refused.
 
 `seq go; abort(cancel) { .. }` ends the run in progress when `cancel`

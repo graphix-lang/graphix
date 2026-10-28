@@ -649,14 +649,16 @@ method dispatchers, function-typed bindings and every name a call's
 function position spells left as static call targets, since a call
 through a projection of the request tuple would resolve dynamically and
 never fuse — and projects them
-out: every trigger samples ONE tuple (the request plus its captures),
-never separate queues of independently updating captures. Each capture
-is `hold`-latched on activation so a standing input is present for the
-first request; before all captures have produced, the tuple is absent
-and the sample accumulates request debt, so the first complete tuple
-can satisfy several pending requests with the same snapshot — ordinary
-sample behaviour, deliberately inherited; exact arrival-time snapshots
-require initialized inputs. The body reads its captures as tuple
+out: every trigger samples ONE tuple of external captures and is paired
+with it, never separate queues of independently updating captures. Each
+capture is `hold`-latched on activation so a standing input is present
+for the first request. Before all captures have produced, the request
+sampler banks each trigger value in a pooled FIFO. Waiting requests
+share the first complete external snapshot, retain their own trigger
+values and run in arrival order; exact arrival-time external snapshots
+require initialized inputs. Mailed payments retain their request and
+captures until received, including across a sleep; a new seq birth
+clears the debt. The body reads its captures as tuple
 projections of the dequeued request, an `until` condition's included
 (§5). The variables under a `live(e)`, address-taking and variables the
 body writes stay LIVE (read-modify-write

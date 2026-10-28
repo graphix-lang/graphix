@@ -1333,7 +1333,9 @@ cycle, across workers; the compiler never pins threads.
   each fire of that argument; a nullary call is issued on the entry clock
   as any call is): those are the ways a step waits for the world to change (`until live(ready)`; an `until` with
   no `live` part, no dereference and no call warns). `seqq` queues triggers
-  with captured values; a capture a step writes, a callee's write
+  with captured values. Each request retains its own trigger while
+  waiting for absent captures; waiting requests share the first complete
+  external snapshot and keep their arrival order. A capture a step writes, a callee's write
   included, is live (`SeqCapture`). `seq t; abort(e) { .. }` ends the run when
   `e` fires: silent, past any `try`, and it wins the cycle it fires in
   (the compiler-only `SeqAbort` node fails the machine's guards before

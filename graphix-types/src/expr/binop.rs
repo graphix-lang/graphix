@@ -24,9 +24,9 @@ pub enum BinOp {
     CheckedMod,
     Sample,
     StrictSample,
-    /// `~` paying every trigger that found its argument absent, where `~`
-    /// banks one: built only by a lowering (the `seqq` request queue),
-    /// never parsed, printed as `~`.
+    /// Each trigger's value paired with the RHS, banking every trigger
+    /// until the RHS arrives. Built only by the `seqq` lowering, never
+    /// parsed, printed as `~`.
     BankedSample,
 }
 

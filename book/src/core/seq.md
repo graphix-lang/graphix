@@ -295,10 +295,10 @@ cycle as the request. If its source becomes bottom, its previous value is
 still usable. These snapshots can therefore contain stale data.
 
 Until every capture has produced at least once, there is no complete tuple
-to sample. Requests wait for that first tuple, and those early requests can
-share the first available snapshot, including its latest trigger value.
-Initialize required inputs before issuing requests if each request must
-carry its exact arrival-time values.
+to sample. Each request keeps its own trigger value while it waits.
+Those early requests share the first available snapshot of the external
+captures, and run in arrival order. Initialize required inputs before
+issuing requests if their external values must be captured at arrival.
 
 Capture is shallow: references retain their identity and remain live when
 dereferenced. Capturing a function does not snapshot the external state

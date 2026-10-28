@@ -40,7 +40,7 @@ use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::{cell::Cell, iter, mem, sync::OnceLock};
+use std::{cell::Cell, collections::VecDeque, iter, sync::OnceLock};
 use triomphe::Arc;
 
 pub(crate) mod array;
@@ -2512,9 +2512,8 @@ enum Banking {
     /// absent, given from the held RHS in the cycle it arrives.
     One { owed: bool },
     /// `BinOp::BankedSample` (the `seqq` request queue): an answer per
-    /// trigger. The first is given from the held RHS; the rest are paid
-    /// through `pay`, one a cycle.
-    Each { owed: u64, pay: Payments },
+    /// trigger, paired with its captured RHS.
+    Each(Payments),
 }
 
 /// The private variable a [`Banking::Each`] sample pays through.
@@ -2522,7 +2521,66 @@ enum Banking {
 struct Payments {
     id: BindId,
     /// Paid through `id` and not yet received.
-    sent: u64,
+    sent: usize,
+    /// The first `sent` entries have been mailed but not received.
+    pending: LPooled<VecDeque<Payment>>,
+}
+
+#[derive(Debug)]
+enum Payment {
+    Waiting(Value),
+    Ready(Value),
+}
+
+impl Payments {
+    fn new(id: BindId) -> Self {
+        Self { id, sent: 0, pending: LPooled::take() }
+    }
+
+    fn update<R: Rt>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R>,
+        trigger: &TagValue,
+        arg: Option<&Value>,
+    ) -> Option<TagValue> {
+        if trigger.is_fired() {
+            self.pending.push_back(Payment::Waiting(trigger.value_cloned()));
+        }
+        let mut answer = ctx.event.variables.get(&self.id).cloned();
+        if answer.is_some() {
+            self.sent -= 1;
+            self.pending.pop_front().expect("a sent payment is pending");
+        }
+        for payment in self.pending.iter_mut().skip(self.sent) {
+            if let Payment::Waiting(request) = payment {
+                let Some(arg) = arg else { break };
+                *payment =
+                    Payment::Ready(crate::rep::tuple([request.clone(), arg.clone()]));
+            }
+        }
+        if answer.is_none()
+            && self.sent == 0
+            && matches!(self.pending.front(), Some(Payment::Ready(_)))
+            && let Some(Payment::Ready(value)) = self.pending.pop_front()
+        {
+            answer = Some(TagValue::fired(value));
+        }
+        for payment in self.pending.iter().skip(self.sent) {
+            let Payment::Ready(value) = payment else { break };
+            ctx.rt.set_var(self.id, value.clone());
+            self.sent += 1;
+        }
+        answer
+    }
+}
+
+impl Banking {
+    fn result_type(&self, trigger: &Type, arg: &Type) -> Type {
+        match self {
+            Self::Each(_) => Type::Tuple(Arc::from_iter([trigger.clone(), arg.clone()])),
+            Self::Strict | Self::One { .. } => arg.clone(),
+        }
+    }
 }
 
 /// What a banking sample owes the triggers that found its argument absent.
@@ -2560,7 +2618,7 @@ impl<R: Rt> Sample<R> {
             Some(None) => Banking::One { owed: false },
             Some(Some(id)) => {
                 ctx.record_ref(id, top_id);
-                Banking::Each { owed: 0, pay: Payments { id, sent: 0 } }
+                Banking::Each(Payments::new(id))
             }
         };
         let trigger = decode_node(ctx, buf)?;
@@ -2593,12 +2651,12 @@ impl<R: Rt> Sample<R> {
             Some(Owed::Each) => {
                 let id = BindId::new();
                 ctx.record_ref(id, top_id);
-                Banking::Each { owed: 0, pay: Payments { id, sent: 0 } }
+                Banking::Each(Payments::new(id))
             }
         };
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
         let arg = Held::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
-        let typ = arg.node.typ().clone();
+        let typ = banking.result_type(trigger.typ(), arg.node.typ());
         Ok(Node::new(Self {
             banking,
             top_id,
@@ -2615,7 +2673,7 @@ impl<R: Rt> Sample<R> {
     fn pay_id(&self) -> Option<BindId> {
         match &self.banking {
             Banking::Strict | Banking::One { .. } => None,
-            Banking::Each { pay, .. } => Some(pay.id),
+            Banking::Each(pay) => Some(pay.id),
         }
     }
 }
@@ -2639,8 +2697,10 @@ impl<R: Rt> Update<R> for Sample<R> {
         let banking = match &self.banking {
             Banking::Strict => None,
             Banking::One { owed: false } => Some(None),
-            Banking::Each { owed: 0, pay } if pay.sent == 0 => Some(Some(pay.id)),
-            Banking::One { .. } | Banking::Each { .. } => {
+            Banking::Each(pay) if pay.pending.is_empty() && pay.sent == 0 => {
+                Some(Some(pay.id))
+            }
+            Banking::One { .. } | Banking::Each(_) => {
                 return Err(PackError::Application(image::NOT_QUIESCENT));
             }
         };
@@ -2654,7 +2714,7 @@ impl<R: Rt> Update<R> for Sample<R> {
             match &mut self.banking {
                 Banking::Strict => (),
                 Banking::One { owed } => *owed = false,
-                Banking::Each { owed, .. } => *owed = 0,
+                Banking::Each(pay) => pay.pending.clear(),
             }
         }
         // XCR claude for claude: [bug/low] A bottom trigger is not `is_fired`, so both `~`
@@ -2693,9 +2753,10 @@ impl<R: Rt> Update<R> for Sample<R> {
         // the output with its trigger makes both pins fail in all four modes; restored
         // the implementation. The supplied shell probe still prints (0,5), then (1,5).
         // Book build passes; no FuseExpect moved.
-        let fired = self.trigger.update(ctx).tag().is_fired();
+        let trigger = self.trigger.update(ctx);
+        let fired = trigger.is_fired();
         self.arg.update(ctx);
-        let (mut owed, pay_id) = match &mut self.banking {
+        let owed = match &mut self.banking {
             Banking::Strict => {
                 return match (fired, self.arg.value.as_ref(), self.arg.tag.is_bottom()) {
                     (true, Some(v), false) => {
@@ -2705,12 +2766,18 @@ impl<R: Rt> Update<R> for Sample<R> {
                     (false, _, _) => self.resident.ride(),
                 };
             }
-            Banking::One { owed } => (u64::from(mem::take(owed) || fired), None),
-            Banking::Each { owed, pay } => {
-                (mem::take(owed) + u64::from(fired), Some(pay.id))
+            Banking::One { owed } => {
+                *owed |= fired;
+                owed
+            }
+            Banking::Each(pay) => {
+                let arg = self.arg.value.as_ref().filter(|_| !self.arg.tag.is_bottom());
+                return match pay.update(ctx, trigger, arg) {
+                    Some(tv) => self.resident.set(tv),
+                    None => self.resident.ride(),
+                };
             }
         };
-        let var = pay_id.and_then(|id| ctx.event.variables.get(&id).cloned());
         // XCR claude for claude: [bug/medium] Once the argument has had a value, a
         // trigger that finds it bottom is answered here into a fresh bottom: the
         // debt is consumed, nothing is banked and the held value is not ridden, so
@@ -2771,39 +2838,13 @@ impl<R: Rt> Update<R> for Sample<R> {
         // x-seq-sampling-sample-drops-trigger-on-bottom prints the payment at step
         // 10. mdbook build passes. No FuseExpect changed.
 
-        // a banked trigger is answered from the held arg this cycle; the
-        // rest of the debt is paid through `pay`; a bottom arg pays nothing
         let live = self.arg.value.as_ref().filter(|_| !self.arg.tag.is_bottom());
-        let answered = match live {
-            Some(v) if owed > 0 && var.is_none() => {
-                owed -= 1;
-                Some(v)
+        match live {
+            Some(value) if *owed => {
+                *owed = false;
+                self.resident.set(TagValue::fired(value.clone()))
             }
-            _ => None,
-        };
-        let mut paid = 0;
-        if let Some(v) = live
-            && let Some(id) = pay_id
-        {
-            paid = mem::take(&mut owed);
-            for _ in 0..paid {
-                ctx.rt.set_var(id, v.clone());
-            }
-        }
-        match &mut self.banking {
-            Banking::Strict => (),
-            Banking::One { owed: o } => *o = owed > 0,
-            Banking::Each { owed: o, pay } => {
-                *o = owed;
-                pay.sent = pay.sent + paid - u64::from(var.is_some());
-            }
-        }
-        match (answered, var) {
-            // paid in a cycle the trigger did not fire: the argument's
-            // arrival is the event
-            (Some(v), _) => self.resident.set(TagValue::fired(v.clone())),
-            (None, Some(tv)) => self.resident.set(tv),
-            (None, None) => self.resident.ride(),
+            _ => self.resident.ride(),
         }
     }
 
@@ -2838,15 +2879,13 @@ impl<R: Rt> Update<R> for Sample<R> {
     // socket tests and a fuzzer soak were not run here.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
-        // what was paid and not yet received is owed again under a fresh
-        // id, so a payment landing while asleep is not lost
-        if let Banking::Each { owed, pay } = &mut self.banking
+        if let Banking::Each(pay) = &mut self.banking
             && pay.sent > 0
         {
             ctx.release_var(pay.id, self.top_id);
             pay.id = BindId::new();
             ctx.ref_var(pay.id, self.top_id);
-            *owed += mem::take(&mut pay.sent);
+            pay.sent = 0;
         }
         self.arg.sleep(ctx);
         self.trigger.sleep(ctx);
@@ -3127,8 +3166,7 @@ impl<R: Rt> Sample<R> {
     ) -> Result<()> {
         wrap!(self.trigger, child(&mut self.trigger, ctx))?;
         wrap!(self.arg.node, child(&mut self.arg.node, ctx))?;
-        // the child may replace its typ during typecheck0
-        self.typ = self.arg.node.typ().clone();
+        self.typ = self.banking.result_type(self.trigger.typ(), self.arg.node.typ());
         Ok(())
     }
 }

@@ -1594,10 +1594,8 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         prelude.push(connect(pos, &requests, sample(pos, r#ref(pos, &request), next)));
     }
     let mut qlets: LPooled<Vec<Expr>> = LPooled::take();
-    // the request rides field 0; a capture of the trigger's own name is
-    // the request
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
-    // CR claude for claude: [bug/high] Field 0 is hold(request) inside the BankedSample
+    // XCR claude for claude: [bug/high] Field 0 is hold(request) inside the BankedSample
     // payload. When a capture has not produced yet, every banked trigger is paid with
     // the tuple as it stands once the capture lands, so all requests queued before it
     // run with the LAST request's value. Requests `A then `B before `ready` arrives
@@ -1611,13 +1609,26 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q13, seqq
     // requests that queue before a capture arrives): yes, each request keeps it's own
     // (the recommendation: each keeps its own.)
-    args.push(r#ref(pos, &request));
+    // 2026-10-27 codex: The compiler-only BankedSample now returns each original
+    // request paired with its external capture tuple. Its pooled FIFO retains each
+    // request while captures are absent and each mailed pair until it is received;
+    // sleep remints delivery without losing request identity or its captured payload.
+    // The seqq lowering separates the trigger from the capture tuple. Image format 96
+    // refuses older programs whose banked samples have the old result shape. Pin
+    // lang::seqq::delayed_capture_keeps_each_request failed in all four modes before
+    // the fix and passed afterward. The image pin
+    // lang::image::banked_request_values_restore verifies the same values after a warm
+    // restore. Ran seq/select/sample, low-level bottom and the image pin plus
+    // graphix-types seq lowering tests. Updated rules, book, design and language skill.
+    // No FuseExpect moved. Full workspace and socket/netidx-admin tests remain for
+    // coordinator review. The first full run caught my use of an unmarked array for the
+    // request/capture pair (269 failures); corrected the producer to use rep::tuple and
+    // reran the full filter.
     for (name, (expr, _, _)) in captures.iter() {
         if !is_trigger(name) {
             args.push(expr.clone());
         }
     }
-    let carried = args.len() > 1;
     for (i, arg) in args.iter_mut().enumerate() {
         let name = format_compact!("#seqqseed{id}_{i}");
         prelude.push(let_bind(
@@ -1638,18 +1649,13 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             [(Some(literal!("clock")), r#ref(pos, &name)), (None, r#ref(pos, &name))],
         );
     }
-    let payload = if carried {
-        ExprKind::Tuple { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
+    let payload = if args.is_empty() {
+        ExprKind::Constant(Value::Null).to_expr(pos)
     } else {
-        args.pop().unwrap()
+        ExprKind::Tuple { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
     };
     let dequeued_request = || {
-        let input = r#ref(pos, &input);
-        if carried {
-            ExprKind::TupleRef { source: Arc::new(input), field: 0 }.to_expr(pos)
-        } else {
-            input
-        }
+        ExprKind::TupleRef { source: Arc::new(r#ref(pos, &input)), field: 0 }.to_expr(pos)
     };
     let mut queue_args: SmallVec<[(Option<ArcStr>, Expr); 3]> = SmallVec::new();
     queue_args.push((
@@ -1668,7 +1674,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     }
     // every queued request is paid its captures, however many find one
     // absent
-    // CR claude for claude: [bug/medium] A request banked while a capture is absent is
+    // XCR claude for claude: [bug/medium] A request banked while a capture is absent is
     // paid with the payload as it stands at payment, and the payload holds
     // hold(request), so every banked request runs with the latest request's value: t =
     // 2, 3, 4 queued before the capture arrives run as x = 4 three times. seq_blocks.md
@@ -1683,6 +1689,21 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q13, seqq
     // requests that queue before a capture arrives): yes, each request keeps it's own
     // (the recommendation: each keeps its own.)
+    // 2026-10-27 codex: The compiler-only BankedSample now returns each original
+    // request paired with its external capture tuple. Its pooled FIFO retains each
+    // request while captures are absent and each mailed pair until it is received;
+    // sleep remints delivery without losing request identity or its captured payload.
+    // The seqq lowering separates the trigger from the capture tuple. Image format 96
+    // refuses older programs whose banked samples have the old result shape. Pin
+    // lang::seqq::delayed_capture_keeps_each_request failed in all four modes before
+    // the fix and passed afterward. The image pin
+    // lang::image::banked_request_values_restore verifies the same values after a warm
+    // restore. Ran seq/select/sample, low-level bottom and the image pin plus
+    // graphix-types seq lowering tests. Updated rules, book, design and language skill.
+    // No FuseExpect moved. Full workspace and socket/netidx-admin tests remain for
+    // coordinator review. The first full run caught my use of an unmarked array for the
+    // request/capture pair (269 failures); corrected the producer to use rep::tuple and
+    // reran the full filter.
     queue_args.push((
         None,
         ExprKind::BinOp {
@@ -1698,10 +1719,12 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         let capture = if is_trigger(var) {
             dequeued_request()
         } else {
-            field += 1;
-            let snapshot =
-                ExprKind::TupleRef { source: Arc::new(r#ref(pos, &input)), field }
+            let payload =
+                ExprKind::TupleRef { source: Arc::new(r#ref(pos, &input)), field: 1 }
                     .to_expr(pos);
+            let snapshot =
+                ExprKind::TupleRef { source: Arc::new(payload), field }.to_expr(pos);
+            field += 1;
             ExprKind::SeqCapture(Arc::new(SeqCaptureExpr {
                 machine: seq.spec.id,
                 snapshot: Arc::new(snapshot),

@@ -364,3 +364,23 @@ async fn flush_between_short_runs(mode: Mode) -> Result<()> {
 }
 
 modes!(flush_between_short_runs);
+pub(super) const DELAYED_CAPTURE_REQUESTS: &str = r#"{
+        let step = 0;
+        step <- select step { n if n < 15 => n + 1, _ => never() };
+        let request = select step { 1 | 2 | 3 => step, _ => never() };
+        let capture = never<i64>();
+        capture <- select step { 6 => 22, _ => never() };
+        seqq let value = request { (value, capture) }
+    }"#;
+
+async fn delayed_capture_keeps_each_request(mode: Mode) -> Result<()> {
+    use poolshark::local::LPooled;
+    let (values, _) = run_delta(DELAYED_CAPTURE_REQUESTS, mode).await?;
+    let expected: LPooled<Vec<_>> = (1..=3)
+        .map(|n| Value::Array(ValArray::from([Value::I64(n), Value::I64(22)])))
+        .collect();
+    assert_eq!(&values[..], &expected[..]);
+    Ok(())
+}
+
+modes!(delayed_capture_keeps_each_request);

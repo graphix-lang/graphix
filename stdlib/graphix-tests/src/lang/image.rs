@@ -1195,3 +1195,19 @@ async fn nested_sample_argument_slots_restore_fusion() -> Result<()> {
     warm.shutdown().await;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn banked_request_values_restore() -> Result<()> {
+    let ((_, cold), (_, warm)) =
+        cold_and_warm(super::seqq::DELAYED_CAPTURE_REQUESTS).await?;
+    assert_eq!(cold, warm);
+    assert_eq!(warm.len(), 3);
+    for (n, value) in warm.iter().enumerate() {
+        assert!(
+            matches!(value, Value::Array(a)
+            if a[..] == [Value::I64(n as i64 + 1), Value::I64(22)]),
+            "{value:?}"
+        );
+    }
+    Ok(())
+}
