@@ -188,8 +188,12 @@ where
     I::Range: Range,
 {
     const LITERAL_LETTERS: &str = "abdefinutvz";
-    look_ahead(satisfy(|c: char| !c.is_alphabetic() || LITERAL_LETTERS.contains(c)))
-        .map(|_| ())
+    look_ahead(satisfy(|c: char| {
+        !c.is_alphabetic()
+            || LITERAL_LETTERS.contains(c)
+            || (c == 'N' && super::PRINTED_DATA.get())
+    }))
+    .map(|_| ())
 }
 
 fn primary<I>(key: bool) -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>

@@ -40,7 +40,7 @@ use netidx_value::{
 };
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::sync::LazyLock;
+use std::{cell::Cell, sync::LazyLock};
 use triomphe::Arc;
 
 mod grow;
@@ -1182,6 +1182,86 @@ where
         )
 }
 
+thread_local! {
+    static PRINTED_DATA: Cell<bool> = const { Cell::new(false) };
+}
+
+fn printed_scalar<I>() -> impl Parser<I, Output = Value>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    let datetime = recognize((
+        take_while1(|c: char| c.is_ascii_digit() || c == '-' || c == '+'),
+        token(' '),
+        take_while1(|c: char| c.is_ascii_digit() || c == ':' || c == '.'),
+        string(" UTC"),
+    ))
+    .and_then(|s: CompactString| {
+        chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f UTC")
+            .map(|dt| Value::DateTime(Arc::new(dt.and_utc())))
+            .map_err(|_| {
+                StreamErrorFor::<I>::message_static_message("a printed datetime")
+            })
+    });
+    let duration = (
+        many1::<CompactString, _, _>(satisfy(|c: char| c.is_ascii_digit() || c == '.')),
+        choice((
+            attempt(string("ns")),
+            attempt(string("us")),
+            attempt(string("µs")),
+            attempt(string("ms")),
+            string("s"),
+            string("m"),
+            string("h"),
+            string("d"),
+        )),
+    )
+        .and_then(|(n, unit)| {
+            duration_of(&n, if unit == "µs" { "us" } else { unit })
+                .map(|d| Value::Duration(Arc::new(d)))
+                .ok_or_else(|| {
+                    StreamErrorFor::<I>::message_static_message("a printed duration")
+                })
+        });
+    let nonfinite = (
+        optional(choice((attempt(string("f32:")), string("f64:")))),
+        choice((
+            string("NaN").map(|_| f64::NAN),
+            string("inf").map(|_| f64::INFINITY),
+            string("-inf").map(|_| f64::NEG_INFINITY),
+        )),
+    )
+        .map(|(typ, n)| match typ {
+            Some("f32:") => Value::F32(n as f32),
+            _ => Value::F64(n),
+        });
+    let large_integer = recognize::<CompactString, _, _>((
+        optional(token('-')),
+        many1::<CompactString, _, _>(satisfy(|c: char| c.is_ascii_digit())),
+    ))
+    .and_then(|s: CompactString| match (s.parse::<i64>(), s.parse::<f64>()) {
+        (Err(_), Ok(n)) if n.is_finite() => Ok(Value::F64(n)),
+        _ => Err(StreamErrorFor::<I>::message_static_message("a large printed float")),
+    });
+    value(())
+        .and_then(|_| {
+            if PRINTED_DATA.get() {
+                Ok(())
+            } else {
+                Err(StreamErrorFor::<I>::message_static_message("printed data"))
+            }
+        })
+        .with(choice((
+            attempt(datetime),
+            attempt(duration),
+            attempt(nonfinite),
+            large_integer,
+        )))
+        .skip(not_prefix())
+}
+
 fn literal<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -1197,6 +1277,10 @@ where
     // at the boundary. A quoted string is `interpolated()`'s alone, so its
     // failure is reported inside it rather than past it.
     slice_bound
+        .or(attempt(
+            (position(), printed_scalar())
+                .map(|(pos, v)| ExprKind::Constant(v).to_expr(pos)),
+        ))
         .or(attempt(
             grow((
                 position(),
@@ -2164,6 +2248,19 @@ fn text_origin(s: &str) -> impl FnOnce() -> Arc<Origin> + '_ {
 /// Parse one and only one expression.
 pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
     parse_all!(s, text_origin(s), expr())
+}
+
+/// Read printed data through the expression grammar, without evaluating names
+/// or applications. Nonfinite float names are data only within this read.
+pub fn parse_literal_value(s: &str) -> Option<Value> {
+    struct Reading(bool);
+    impl Drop for Reading {
+        fn drop(&mut self) {
+            PRINTED_DATA.set(self.0);
+        }
+    }
+    let _reading = Reading(PRINTED_DATA.replace(true));
+    parse_one(s).ok().and_then(|e| e.literal_value())
 }
 
 /// Parse one fntype expression

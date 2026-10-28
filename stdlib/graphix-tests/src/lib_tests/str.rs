@@ -640,3 +640,27 @@ run!(
         matches!(v, Ok(Value::String(s)) if s.matches("escape and separator must differ").count() == 2)
     }
 );
+
+run!(parse_printed_primitive_composites, r#"{
+    type E = `ParseError(string);
+    let round = 'a: Data + Concrete + Discernible |v: 'a| {
+        let r: Result<'a, E> = str::parse("[v]");
+        select r { error as _ => false, got => got == v }
+    };
+    let inf = 7;
+    let dt = datetime:"2020-01-01T00:00:00.123456789Z";
+    let d = duration:1.5s;
+    let b = bytes:AQI=;
+    let nan: Result<Array<f64>, E> = str::parse("\[NaN\]");
+    [round([dt]), round(dt), round([d]), round(d), round([b]), round(b),
+     round(["a\[b\]", "a\]b", "a\"b"]),
+     round([u64:18446744073709551615]),
+     round({x: decimal:12345678901234567890.123456789}),
+     round((u8:2, i16:-3, f32:1.25)),
+     round([1.0 / 0.0, -1.0 / 0.0]),
+     round((i8:-1, u16:2, i32:-3, u32:4, v32:5, z32:-6, v64:7, z64:-8)),
+     round([duration:1.ns, duration:1.us, duration:1.ms]),
+     round([duration:120.s, duration:1800.s, duration:3600.s, duration:86400.s]),
+     round([1e20, -1e20, 1e100]),
+     !is_err(nan), inf == 7]
+}"#, prints("[true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]"); FuseExpect::Jit);

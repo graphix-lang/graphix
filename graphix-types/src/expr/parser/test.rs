@@ -2733,3 +2733,25 @@ fn editor_keyword_lists_name_every_keyword() {
         );
     }
 }
+
+#[test]
+fn printed_scalars_stay_in_data_reader() {
+    for src in [
+        "2020-01-01 00:00:00.123456789 UTC",
+        "1.5s",
+        "1µs",
+        "2.m",
+        "30.m",
+        "1.h",
+        "1.d",
+        "100000000000000000000",
+        "-100000000000000000000",
+    ] {
+        assert!(parse_literal_value(src).is_some(), "{src}");
+        assert!(parse_one(src).is_err(), "{src}");
+    }
+    assert!(matches!(parse_literal_value("NaN"), Some(Value::F64(n)) if n.is_nan()));
+    assert_eq!(parse_literal_value("-inf"), Some(Value::F64(f64::NEG_INFINITY)));
+    assert!(parse_literal_value("[NaN,").is_none());
+    assert_eq!(parse_one("inf").unwrap(), refx("inf"));
+}

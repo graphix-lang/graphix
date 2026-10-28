@@ -1400,7 +1400,7 @@ impl Expr {
 
     /// The value this expression writes when it is a literal: a constant,
     /// or an array, list, map, tuple, struct or variant of literals.
-    // CR claude for claude: [bug/medium] str::parse (fc_parse) promises to read what
+    // XCR claude for claude: [bug/medium] str::parse (fc_parse) promises to read what
     // Graphix prints, but several values print as text that is no Graphix literal. A
     // datetime prints `2020-01-01 00:00:00 UTC` (refused even alone), bytes print
     // `AQI=`, a string holding brackets prints `"a[b]"` (the parser reads an
@@ -1414,6 +1414,17 @@ impl Expr {
     // `str::parse` reads back): yes, a (the recommendation: (a) for strings and
     // numbers inside composites (escape brackets, type-prefix a number that is not
     // i64/f64), (b) for datetime and duration. Bytes: print as a bytes literal.)
+    // 2026-10-27 codex: Reworked q43 without extending program literal syntax. The
+    // scoped str::parse data reader accepts printed UTC timestamps, all duration
+    // units, nonfinite floats and integral-looking f64 values beyond i64. Composite
+    // strings and non-i64/f64 numbers use literal printing; error payloads and
+    // diagnostic prefixes retain unescaped brackets. Pins
+    // parse_printed_primitive_composites failed all four modes before the fix and pass
+    // afterward, including minutes/hours/days and 1e20/1e100.
+    // printed_scalars_stay_in_data_reader and printed_error_preserves_brackets pass.
+    // The focused harness passes 112 tests, including every cast_trait fixture and all
+    // three reviewed printing gates. Formatter-corpus and full-library results are
+    // reported separately. Book, interface and language skill updated.
     pub fn literal_value(&self) -> Option<Value> {
         fn all(args: &[Expr]) -> Option<LPooled<Vec<Value>>> {
             let mut vals: LPooled<Vec<Value>> = LPooled::take();

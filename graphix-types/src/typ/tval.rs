@@ -1,5 +1,7 @@
 use super::{PrintFlag, Type, cast::IsAFlags};
-use crate::{abstract_value, env::Env, list, rep, typ::format_with_flags};
+use crate::{
+    abstract_value, env::Env, expr::print::Literal, list, rep, typ::format_with_flags,
+};
 use ahash::AHashMap;
 use netidx_value::{NakedValue, Typ, Value};
 use poolshark::local::LPooled;
@@ -13,15 +15,29 @@ pub struct TVal<'a> {
     pub v: &'a Value,
 }
 
-/// The type-blind formatter: walks composite values printing every
-/// leaf naked (no `i64:` prefixes at any depth). Iterative on an
-/// explicit stack because value nesting depth is user-controlled.
-pub(crate) fn fmt_naked(f: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
-    fmt_naked_capped(f, v, usize::MAX)
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PrintContext {
+    Scalar,
+    Composite,
+    Diagnostic,
 }
 
-/// `v` as `println` shows a value with no type: every leaf naked, at
-/// any depth.
+impl PrintContext {
+    fn nested(self) -> Self {
+        match self {
+            Self::Diagnostic => self,
+            _ => Self::Composite,
+        }
+    }
+}
+
+/// The type-blind formatter. Composite leaves retain their literal types;
+/// the explicit stack bounds native stack use for arbitrary value nesting.
+pub(crate) fn fmt_naked(f: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
+    fmt_value(f, v, PrintContext::Scalar)
+}
+
+/// `v` as `println` shows a value with no static type.
 pub struct Naked<'a>(pub &'a Value);
 
 impl fmt::Display for Naked<'_> {
@@ -33,13 +49,23 @@ impl fmt::Display for Naked<'_> {
 /// The bytes of a string leaf a capped walk writes.
 const MAX_LEAF: usize = 256;
 
+fn fmt_value(f: &mut dyn fmt::Write, v: &Value, context: PrintContext) -> fmt::Result {
+    fmt_naked_capped(f, v, usize::MAX, context)
+}
+
 /// `cap` bounds the number of values written before the walk stops
 /// with a `…` (unbalanced by design: a truncated diagnostic dump); a
 /// capped walk also cuts a long string leaf. Each open array or map is a
 /// cursor, so the work is bounded by what is written.
-fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::Result {
+fn fmt_naked_capped(
+    f: &mut dyn fmt::Write,
+    v: &Value,
+    mut cap: usize,
+    mut context: PrintContext,
+) -> fmt::Result {
     type MapIter<'a> = <&'a netidx_value::Map as IntoIterator>::IntoIter;
     enum Open<'a> {
+        Restore(PrintContext),
         Seq { elems: &'a [Value], i: usize, close: &'static str },
         Fields(&'a [Value], usize),
         List { cur: &'a Value, first: bool },
@@ -87,6 +113,8 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                 },
                 Value::Error(e) => {
                     write!(f, "error:")?;
+                    stack.push(Open::Restore(context));
+                    context = PrintContext::Diagnostic;
                     next = Some(e);
                 }
                 Value::Map(m) => {
@@ -117,12 +145,27 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                     None if crate::reference::cell(v).is_some() => write!(f, "&ref")?,
                     None => write!(f, "{}", NakedValue(v))?,
                 },
+                Value::Bytes(_) if context != PrintContext::Diagnostic => {
+                    write!(f, "{}", Literal(v))?
+                }
+                v if context != PrintContext::Diagnostic
+                    && (context == PrintContext::Composite || !stack.is_empty())
+                    && (matches!(v, Value::String(_))
+                        || (Typ::get(v).is_number()
+                            && !matches!(v, Value::I64(_) | Value::F64(_)))) =>
+                {
+                    write!(f, "{}", Literal(v))?;
+                }
                 v => write!(f, "{}", NakedValue(v))?,
             }
             continue;
         }
         match stack.last_mut() {
             None => return Ok(()),
+            Some(Open::Restore(saved)) => {
+                context = *saved;
+                stack.pop();
+            }
             Some(Open::Seq { elems, i, close }) => match elems.get(*i) {
                 Some(v) => {
                     if *i > 0 {
@@ -198,7 +241,7 @@ pub struct NakedPrefix<'a>(pub &'a Value);
 
 impl fmt::Display for NakedPrefix<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_naked_capped(f, self.0, 128)
+        fmt_naked_capped(f, self.0, 128, PrintContext::Diagnostic)
     }
 }
 
@@ -247,14 +290,16 @@ impl<'a> TVal<'a> {
         &self,
         f: &mut fmt::Formatter<'_>,
         hist: &mut AHashMap<(usize, usize), usize>,
+        context: PrintContext,
     ) -> fmt::Result {
-        crate::stack::ensure_sufficient(|| self.fmt_inner(f, hist))
+        crate::stack::ensure_sufficient(|| self.fmt_inner(f, hist, context))
     }
 
     fn fmt_inner(
         &self,
         f: &mut fmt::Formatter<'_>,
         hist: &mut AHashMap<(usize, usize), usize>,
+        context: PrintContext,
     ) -> fmt::Result {
         if crate::dbgenv::graphix_dbg_tval() {
             format_with_flags(PrintFlag::DerefTVars, || {
@@ -271,7 +316,11 @@ impl<'a> TVal<'a> {
             }
             let typ = rep.instantiate_with(&g.params);
             write!(f, "{}(", g.name)?;
-            TVal { typ: &typ, env: self.env, v: &g.payload }.fmt_int(f, hist)?;
+            TVal { typ: &typ, env: self.env, v: &g.payload }.fmt_int(
+                f,
+                hist,
+                context.nested(),
+            )?;
             return write!(f, ")");
         }
         match (&self.typ, &self.v) {
@@ -283,14 +332,18 @@ impl<'a> TVal<'a> {
                 | Type::Bottom
                 | Type::Any,
                 v,
-            ) => fmt_naked(f, v),
+            ) => fmt_value(f, v, context),
             (Type::Error(et), Value::Error(e)) => {
                 write!(f, "error:")?;
-                TVal { typ: et, env: self.env, v: e }.fmt_int(f, hist)
+                TVal { typ: et, env: self.env, v: e }.fmt_int(
+                    f,
+                    hist,
+                    PrintContext::Diagnostic,
+                )
             }
-            (Type::Error(_), v) => fmt_naked(f, v),
+            (Type::Error(_), v) => fmt_value(f, v, context),
             (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
-            (Type::Fn(_), v) => fmt_naked(f, v),
+            (Type::Fn(_), v) => fmt_value(f, v, context),
             // `hist` is the path: a definition met again on the same value
             // with params no smaller expands without consuming it (or grows
             // at every level), so it prints naked; with smaller ones it is
@@ -303,10 +356,10 @@ impl<'a> TVal<'a> {
                 let key = (tr.def_key().unwrap_or(0), (*v as *const Value).addr());
                 let size = super::params_size(&tr.params);
                 if hist.get(&key).is_some_and(|prev| size >= *prev) {
-                    return fmt_naked(f, v);
+                    return fmt_value(f, v, context);
                 }
                 let outer = hist.insert(key, size);
-                let r = TVal { typ: &typ, env: self.env, v }.fmt_int(f, hist);
+                let r = TVal { typ: &typ, env: self.env, v }.fmt_int(f, hist, context);
                 match outer {
                     Some(o) => hist.insert(key, o),
                     None => hist.remove(&key),
@@ -316,20 +369,23 @@ impl<'a> TVal<'a> {
             (Type::Array(et), v) if let Some(a) = rep::array_elems(v) => {
                 write!(f, "[")?;
                 for (i, v) in a.iter().enumerate() {
-                    Self { typ: et, env: self.env, v }.fmt_int(f, hist)?;
+                    Self { typ: et, env: self.env, v }.fmt_int(
+                        f,
+                        hist,
+                        context.nested(),
+                    )?;
                     if i < a.len() - 1 {
                         write!(f, ", ")?
                     }
                 }
                 write!(f, "]")
             }
-            (Type::Array(_), v) => fmt_naked(f, v),
+            (Type::Array(_), v) => fmt_value(f, v, context),
             // Prints `[<a, b, c>]`; a non-list-shaped value falls
             // back to the naked print.
             (Type::List(et), v) => {
-                use crate::list;
                 if !list::is_list(v) {
-                    return fmt_naked(f, v);
+                    return fmt_value(f, v, context);
                 }
                 write!(f, "[<")?;
                 let mut cur: Value = (*v).clone();
@@ -340,7 +396,11 @@ impl<'a> TVal<'a> {
                         write!(f, ", ")?;
                     }
                     first = false;
-                    TVal { typ: et, env: self.env, v: h }.fmt_int(f, hist)?;
+                    TVal { typ: et, env: self.env, v: h }.fmt_int(
+                        f,
+                        hist,
+                        context.nested(),
+                    )?;
                     let t = t.clone();
                     cur = t;
                 }
@@ -349,16 +409,24 @@ impl<'a> TVal<'a> {
             (Type::Map { key, value }, Value::Map(m)) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in m.into_iter().enumerate() {
-                    Self { typ: key, env: self.env, v: k }.fmt_int(f, hist)?;
+                    Self { typ: key, env: self.env, v: k }.fmt_int(
+                        f,
+                        hist,
+                        context.nested(),
+                    )?;
                     write!(f, " => ")?;
-                    Self { typ: value, env: self.env, v: v }.fmt_int(f, hist)?;
+                    Self { typ: value, env: self.env, v: v }.fmt_int(
+                        f,
+                        hist,
+                        context.nested(),
+                    )?;
                     if i < m.len() - 1 {
                         write!(f, ", ")?
                     }
                 }
                 write!(f, "}}")
             }
-            (Type::Map { .. }, v) => fmt_naked(f, v),
+            (Type::Map { .. }, v) => fmt_value(f, v, context),
             // a reference's id is the session's, never the program's
             (Type::ByRef(..), _) => write!(f, "&ref"),
             (Type::Struct(flds), v) if let Some(a) = rep::struct_fields(v) => {
@@ -366,9 +434,11 @@ impl<'a> TVal<'a> {
                 for (i, ((n, et, _), v)) in flds.iter().zip(a.iter()).enumerate() {
                     write!(f, "{n}: ")?;
                     match rep::field(v) {
-                        Some((_, v)) => {
-                            Self { typ: et, env: self.env, v }.fmt_int(f, hist)?
-                        }
+                        Some((_, v)) => Self { typ: et, env: self.env, v }.fmt_int(
+                            f,
+                            hist,
+                            context.nested(),
+                        )?,
                         None => write!(f, "err")?,
                     }
                     if i < flds.len() - 1 {
@@ -377,25 +447,33 @@ impl<'a> TVal<'a> {
                 }
                 write!(f, "}}")
             }
-            (Type::Struct(_), v) => fmt_naked(f, v),
+            (Type::Struct(_), v) => fmt_value(f, v, context),
             (Type::Tuple(flds), v) if let Some(a) = rep::tuple_elems(v) => {
                 write!(f, "(")?;
                 for (i, (t, v)) in flds.iter().zip(a.iter()).enumerate() {
-                    Self { typ: t, env: self.env, v }.fmt_int(f, hist)?;
+                    Self { typ: t, env: self.env, v }.fmt_int(
+                        f,
+                        hist,
+                        context.nested(),
+                    )?;
                     if i < flds.len() - 1 {
                         write!(f, ", ")?
                     }
                 }
                 write!(f, ")")
             }
-            (Type::Tuple(_), v) => fmt_naked(f, v),
+            (Type::Tuple(_), v) => fmt_value(f, v, context),
             (Type::TVar(tv), v) => match tv.binding() {
-                None => fmt_naked(f, v),
-                Some(typ) => TVal { env: self.env, typ: &typ, v }.fmt_int(f, hist),
+                None => fmt_value(f, v, context),
+                Some(typ) => {
+                    TVal { env: self.env, typ: &typ, v }.fmt_int(f, hist, context)
+                }
             },
             (Type::App(c, a), v) => match Type::app_filled(c, a) {
-                Some(typ) => TVal { env: self.env, typ: &typ, v }.fmt_int(f, hist),
-                None => fmt_naked(f, v),
+                Some(typ) => {
+                    TVal { env: self.env, typ: &typ, v }.fmt_int(f, hist, context)
+                }
+                None => fmt_value(f, v, context),
             },
             (Type::Variant(n, flds, _), v)
                 if let Some((_, payload)) = rep::variant(v)
@@ -403,7 +481,11 @@ impl<'a> TVal<'a> {
             {
                 write!(f, "`{n}(")?;
                 for (i, (t, v)) in flds.iter().zip(payload.iter()).enumerate() {
-                    Self { typ: t, env: self.env, v }.fmt_int(f, hist)?;
+                    Self { typ: t, env: self.env, v }.fmt_int(
+                        f,
+                        hist,
+                        context.nested(),
+                    )?;
                     if i < flds.len() - 1 {
                         write!(f, ", ")?
                     }
@@ -413,10 +495,12 @@ impl<'a> TVal<'a> {
             (Type::Variant(_, _, _), v) if let Some((tag, [])) = rep::variant(v) => {
                 write!(f, "`{tag}")
             }
-            (Type::Variant(_, _, _), v) => fmt_naked(f, v),
+            (Type::Variant(_, _, _), v) => fmt_value(f, v, context),
             (Type::Set(ts), v) => match member_of(self.env, ts, v) {
-                None => fmt_naked(f, v),
-                Some(i) => Self { typ: &ts[i], env: self.env, v }.fmt_int(f, hist),
+                None => fmt_value(f, v, context),
+                Some(i) => {
+                    Self { typ: &ts[i], env: self.env, v }.fmt_int(f, hist, context)
+                }
             },
         }
     }
@@ -434,7 +518,7 @@ impl<'a> fmt::Display for TVal<'a> {
                 fmt_naked(f, self.v)
             });
         }
-        self.fmt_int(f, &mut LPooled::take())
+        self.fmt_int(f, &mut LPooled::take(), PrintContext::Scalar)
     }
 }
 
@@ -450,7 +534,15 @@ mod test {
         }
     }
 
-    // Printing must not recurse on value depth.
+    #[test]
+    fn printed_error_preserves_brackets() {
+        let value = Value::Error(Value::from("a[b]").into());
+        let text = format_compact!("{}", Naked(&value));
+        assert_eq!(text, r#"error:"a[b]""#);
+        let values = Value::Array([value, Value::from("a[b]")].into());
+        assert_eq!(format_compact!("{}", Naked(&values)), r#"[error:"a[b]", "a\[b\]"]"#);
+    }
+
     #[test]
     fn deep_value_prints_iteratively() {
         let mut v = Value::I64(0);

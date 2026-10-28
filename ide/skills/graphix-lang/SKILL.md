@@ -769,6 +769,12 @@ admits null. JSON/TOML maps with scalar keys write as objects/tables; a
 map with a composite, bytes or null key writes as an array of `[key, value]`
 pairs. TOML still refuses null keys and requires a table at the document root.
 
+Printed composites escape brackets in strings and retain numeric type prefixes
+except for i64/f64. Bytes print as `bytes:` literals. Only `str::parse` also
+reads printed UTC datetimes, every printed duration unit, large finite floats
+printed as integers, and bare NaN/inf/-inf. These do not extend source syntax.
+Error diagnostics keep unescaped brackets in their strings.
+
 Derive, do not add a second writer. Two unordered writers to one
 variable race when one replaces it wholesale (a file load landing after
 a seed erases the seed). State holds only what is written; the merged

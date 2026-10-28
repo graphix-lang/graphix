@@ -115,5 +115,7 @@ val sub: fn(#start:i64, #len:i64, s: string) -> Result<string, `SubError(string)
 /// text as a literal (a number, string, bool, null, datetime, duration or
 /// bytes, or an array, list, map, tuple, struct or variant of literals)
 /// cast to the type, or, where the text is no literal, the text cast to
-/// the type, so a number or an RFC3339 datetime reads bare.
+/// the type, so a number or an RFC3339 datetime reads bare. Printed UTC
+/// datetimes, durations in every printed unit and NaN/inf/-inf also read
+/// here, including inside composites. These forms do not extend source syntax.
 val parse: fn<'b: Concrete>(s: string) -> Result<'b, `ParseError(string)>;
