@@ -507,7 +507,11 @@ whatever stopping mid-way would lose) finish; nothing answers a call after
 its site's sleep, so such a reply is dropped, or settled by
 `EvalCachedAsync::reclaim` (a stream read's bytes return to the stream,
 and later reads of it wait for that). Bottom never reaches builtin authors: a bottomed arg bottoms the
-invocation before `eval`; raw `Apply` authors read args through
+invocation before `eval`. Line-reader handles re-delivered after EOF,
+error, or a stop generation (seek/TLS upgrade) restart at the current
+position; active readers ignore the same handle. Re-delivery never
+rewinds. Queued lines at an unchanged position drain before the new
+reader reads (`design/async_sleep_outputs.md`). Raw `Apply` authors read args through
 `seam_arg`/`seam_tick`/`seam_value`. Configuration a fast fn derives
 from its args (a regex, a template registry) lives in a bounded
 thread-local `FastMemo`, never in state. A type-directed builtin

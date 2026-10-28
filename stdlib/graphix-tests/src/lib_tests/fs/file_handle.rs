@@ -1,4 +1,5 @@
 use anyhow::Result;
+use compact_str::format_compact;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
@@ -142,3 +143,98 @@ const OPEN_IS_NOT_ANSWERED_AFTER_A_SLEEP: &str = r#"{
 run!(test_open_is_not_answered_after_a_sleep, OPEN_IS_NOT_ANSWERED_AFTER_A_SLEEP, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(false)))
 }; FuseExpect::Jit);
+
+const LINES_RESTART_AFTER_SEEK: &str = r#"{
+  use sys::fs::{Seek, open, write_all};
+  use sys::io::Lines;
+  let temp = sys::fs::tempdir::create(null)?;
+  let path = sys::join_path(sys::fs::tempdir::path(temp), "lines.txt");
+  let wrote = write_all(#path: path, "a\nb\n")?;
+  let f = open(`Read, wrote ~ path)?;
+  let src = f;
+  let batch = select batched {
+    true => Lines::lines_batched(src)?,
+    false => [Lines::lines(src)?]
+  };
+  let all = [];
+  all <- batch ~ array::concat(all, batch);
+  let first = select all { ["a", "b"] => null, _ => never() };
+  let rewind = Seek::seek(sys::time::after_idle(duration:20.ms, first) ~ f, `Start(u64:0))?;
+  src <- rewind ~ f;
+  select all { ["a", "b", "a", "b"] => true, _ => never() }
+}"#;
+
+run!(
+    lines_restart_after_seek,
+    format_compact!("{{ let batched = false; {LINES_RESTART_AFTER_SEEK} }}").as_str(),
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)))
+);
+
+run!(
+    batched_lines_restart_after_seek,
+    format_compact!("{{ let batched = true; {LINES_RESTART_AFTER_SEEK} }}").as_str(),
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)))
+);
+
+run!(
+    lines_restart_after_appending,
+    r#"{
+  use sys::fs::{open, write_all};
+  use sys::io::{Lines, Write};
+  let temp = sys::fs::tempdir::create(null)?;
+  let path = sys::join_path(sys::fs::tempdir::path(temp), "lines.txt");
+  let wrote = write_all(#path: path, "a\nb\n")?;
+  let f = open(`Read, wrote ~ path)?;
+  let src = f;
+  let line = Lines::lines(src)?;
+  let all = [];
+  all <- line ~ array::push(all, line);
+  let first = select all { ["a", "b"] => null, _ => never() };
+  let append = open(`Append, sys::time::after_idle(duration:20.ms, first) ~ path)?;
+  let wrote_more = Write::write_exact(append, buffer::from_string("c\n"))?;
+  let flushed = Write::flush(wrote_more ~ append)?;
+  src <- flushed ~ f;
+  select all { ["a", "b", "c"] => true, _ => never() }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)))
+);
+
+run!(
+    lines_restart_after_error,
+    r#"{
+  use sys::fs::open;
+  use sys::io::Lines;
+  let temp = sys::fs::tempdir::create(null)?;
+  let path = sys::join_path(sys::fs::tempdir::path(temp), "lines.txt");
+  let f = open(`Write, path)?;
+  let src = f;
+  let line = Lines::lines(src);
+  let n = 0;
+  n <- line ~ select line { error as _ => n + 1, _ => never() };
+  let first = select n { 1 => f, _ => never() };
+  src <- sys::time::after_idle(duration:20.ms, first);
+  select n { 2 => true, _ => never() }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)))
+);
+
+run!(
+    lines_restart_does_not_rewind,
+    r#"{
+  use sys::fs::{open, write_all};
+  use sys::io::Lines;
+  let temp = sys::fs::tempdir::create(null)?;
+  let path = sys::join_path(sys::fs::tempdir::path(temp), "lines.txt");
+  let wrote = write_all(#path: path, "a\nb\n")?;
+  let f = open(`Read, wrote ~ path)?;
+  let src = f;
+  let line = Lines::lines(src)?;
+  let all = [];
+  all <- line ~ array::push(all, line);
+  let first = select all { ["a", "b"] => f, _ => never() };
+  let retry = once(sys::time::after_idle(duration:20.ms, first));
+  src <- retry;
+  sys::time::after_idle(duration:50.ms, retry) ~ (all == ["a", "b"])
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)))
+);

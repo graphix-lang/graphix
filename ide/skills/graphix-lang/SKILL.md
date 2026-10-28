@@ -843,3 +843,11 @@ away the element it had in hand. Build the final row there:
   against `[1]` is `Array<i64>`.
 - Labeled arguments are never positional, even without a default.
 - `--check` a witness before arguing about a semantics question.
+
+## Line reader retries
+
+`sys::io::Lines::lines` and `lines_batched` stop at EOF or an error.
+Re-delivering the same handle afterward, or after a seek/TLS upgrade,
+starts reading at its current position. Seek explicitly before rereading
+a file from the beginning; re-delivery does not rewind. A delivery while
+the same reader is active leaves it running.

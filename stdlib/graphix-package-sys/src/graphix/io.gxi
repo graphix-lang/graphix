@@ -92,12 +92,13 @@ trait Read {
 /// is still a line. A line longer than 16 MiB is an error.
 ///
 /// Reads re-arm themselves, so either method is the whole "follow a
-/// stream" idiom in one call. Both stop at the end of the stream. A
-/// read error is returned, which also stops it — a stream that has
-/// failed once will not recover, and re-arming into the same error
-/// would spin. The error is a VALUE, like every other operation in
-/// this module: the caller decides whether to propagate it with `?`,
-/// log and drop it with `$`, or match on it.
+/// stream" idiom in one call. Both stop at EOF or a read error. A
+/// re-delivered handle restarts a finished reader, or one stopped by a
+/// seek or TLS upgrade, from the current stream position. It does not
+/// rewind: seek explicitly to read a file again. Re-delivery while the
+/// same reader is active leaves it reading. A read error is a value:
+/// propagate it with `?`, log and drop it with `$`, or match on it;
+/// re-deliver the handle to retry after addressing the error.
 trait Lines {
     /// One event per complete line, with the newline stripped. A chunk
     /// carrying several lines produces several events, and a chunk

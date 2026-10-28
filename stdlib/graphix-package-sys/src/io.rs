@@ -23,7 +23,7 @@ use poolshark::{
 use std::sync::{Arc, LazyLock};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    sync::Notify,
+    sync::{Notify, watch},
 };
 
 use crate::{
@@ -129,6 +129,12 @@ impl LineQueue {
         Self { pending: Mutex::new(LBATCH.take()), drained: Notify::new() }
     }
 
+    async fn wait_empty(&self) {
+        while !self.pending.lock().is_empty() {
+            self.drained.notified().await;
+        }
+    }
+
     fn pop(&self) -> Option<(Value, bool)> {
         let (value, more) = {
             let mut pending = self.pending.lock();
@@ -165,7 +171,7 @@ async fn send_lines(
         return false;
     }
     if !last {
-        queue.drained.notified().await;
+        queue.wait_empty().await;
     }
     true
 }
@@ -184,10 +190,11 @@ fn line_reader(
     batched: bool,
     queue: Arc<LineQueue>,
     mut tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
+    mut stopped: watch::Receiver<()>,
 ) -> impl Future<Output = ()> + Send {
-    let mut stopped = stream.lines_stopped();
     async move {
         let read = async {
+            queue.wait_empty().await;
             loop {
                 let mut guard = stream.reader().await;
                 let Some(s) = guard.as_mut() else { break };
@@ -280,6 +287,17 @@ struct Reading {
     stream: Arc<Halves>,
     task: tokio::task::AbortHandle,
     queue: Arc<LineQueue>,
+    stopped: watch::Receiver<()>,
+}
+
+impl Reading {
+    fn current_for(&self, stream: &Arc<Halves>) -> bool {
+        Arc::ptr_eq(&self.stream, stream) && !self.stopped.has_changed().unwrap_or(true)
+    }
+
+    fn active_for(&self, stream: &Arc<Halves>) -> bool {
+        self.current_for(stream) && !self.task.is_finished()
+    }
 }
 
 impl Drop for Reading {
@@ -335,10 +353,7 @@ impl<R: Rt, const BATCHED: bool> Apply<R> for IoLines<BATCHED> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
-        // One reader per stream: a re-delivery of the same handle is
-        // ignored (the reader consumes it); another stream replaces the
-        // reader, under a fresh id so the old one's lines land nowhere.
-        // CR claude for claude: [bug/medium] A re-delivered handle is ignored even when
+        // XCR claude for claude: [bug/medium] A re-delivered handle is ignored even when
         // the reader that held it has finished: at EOF, on an error, or stopped by a
         // seek or a TLS upgrade (stop_lines). So a site can never read lines from that
         // handle again. Seeking a file back to 0 and re-delivering it, or re-triggering
@@ -353,21 +368,54 @@ impl<R: Rt, const BATCHED: bool> Apply<R> for IoLines<BATCHED> {
         // should be possible to do that. An error should not make the handle
         // permanently unusable. Nor should a seek. Discuss if you want more
         // clarification.
+        // 2026-10-28 codex: Implemented Eric's retry ruling. Re-delivery restarts a
+        // finished or stopped reader, without rewinding the stream. A stop generation
+        // distinguishes a seek from an EOF/error and invalidates a reader before its
+        // task finishes. Unconsumed lines survive a same-position restart and drain
+        // before the replacement reads; seeks discard the old queue. Queue waits
+        // recheck emptiness so an old Notify permit cannot overwrite retained lines.
+        // Updated the interface, book, design record, language skill and project rules.
+        // Pins: lines_restart_after_seek and batched_lines_restart_after_seek (8 modes)
+        // failed by timeout with the original implementation;
+        // lines_restart_after_appending and lines_restart_after_error also failed
+        // before the fix. All 20 lines_restart cases pass, including the no-rewind
+        // control; all 52 file_handle tests pass. Mutating out the stop-generation
+        // check, retained-queue wait and predicate-based drain wait made
+        // a_stopped_reader_is_inactive_before_its_task_finishes,
+        // a_restarted_reader_drains_its_retained_lines_first and
+        // line_batches_wait_until_consumed fail; restored code passes them. Full
+        // graphix-package-sys lib: 30 passed, loader::test::a_miss_records_its_probe
+        // failed because its resolver needs sockets. Rebuilt shell runs the named seek
+        // probe with a temporary file and produces both lines again. No socket tests
+        // were worked around.
         if let Some(tv) = seam_value(from[0].update(ctx))
             && tv.is_fired()
             && let Some(stream) = stream_of(&tv.value_cloned())
-            && !self.reading.as_ref().is_some_and(|r| Arc::ptr_eq(&r.stream, &stream))
+            && !self.reading.as_ref().is_some_and(|r| r.active_for(&stream))
         {
-            if self.reading.take().is_some() {
+            let previous = self.reading.take();
+            let queue = previous
+                .as_ref()
+                .filter(|r| r.current_for(&stream))
+                .map(|r| r.queue.clone())
+                .unwrap_or_else(|| Arc::new(LineQueue::new()));
+            if previous.is_some() {
                 self.var.remint(ctx);
             }
+            drop(previous);
             let (tx, rx) = mpsc::channel(3);
             ctx.rt.watch_var(rx);
-            let queue = Arc::new(LineQueue::new());
-            let reader =
-                line_reader(stream.clone(), self.var.id, BATCHED, queue.clone(), tx);
+            let stopped = stream.lines_stopped();
+            let reader = line_reader(
+                stream.clone(),
+                self.var.id,
+                BATCHED,
+                queue.clone(),
+                tx,
+                stopped.clone(),
+            );
             let task = tokio::spawn(reader).abort_handle();
-            self.reading = Some(Reading { stream, task, queue });
+            self.reading = Some(Reading { stream, task, queue, stopped });
         }
         match self.reading.as_ref().and_then(|r| r.queue.pop()) {
             Some((value, more)) => {
@@ -641,6 +689,7 @@ mod test {
         use tokio::time::timeout;
 
         let queue = Arc::new(LineQueue::new());
+        queue.drained.notify_one();
         let sender_queue = queue.clone();
         let id = BindId::new();
         let (mut tx, mut rx) = mpsc::channel(3);
@@ -665,6 +714,52 @@ mod test {
         timeout(Duration::from_secs(1), sender).await.unwrap().unwrap();
         assert!(queue.pop().is_none());
     }
+    #[tokio::test]
+    async fn a_restarted_reader_drains_its_retained_lines_first() {
+        use arcstr::literal;
+        use futures::StreamExt;
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"new\n").unwrap();
+        let file = tokio::fs::File::open(file.path()).await.unwrap();
+        let stream = Arc::new(Halves::new(StreamKind::File(file)));
+        let queue = Arc::new(LineQueue::new());
+        queue.pending.lock().push((BindId::new(), Value::String(literal!("old"))));
+        let (tx, mut rx) = mpsc::channel(3);
+        let reader = tokio::spawn(line_reader(
+            stream.clone(),
+            BindId::new(),
+            false,
+            queue.clone(),
+            tx,
+            stream.lines_stopped(),
+        ));
+        assert!(timeout(Duration::from_millis(20), rx.next()).await.is_err());
+        assert_eq!(queue.pop(), Some((Value::String(literal!("old")), false)));
+        timeout(Duration::from_secs(1), rx.next()).await.unwrap().unwrap();
+        assert_eq!(queue.pop(), Some((Value::String(literal!("new")), false)));
+        timeout(Duration::from_secs(1), reader).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stopped_reader_is_inactive_before_its_task_finishes() {
+        let file = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        let stream = Arc::new(Halves::new(StreamKind::File(file)));
+        let task = tokio::spawn(std::future::pending::<()>());
+        let reading = Reading {
+            stopped: stream.lines_stopped(),
+            stream: stream.clone(),
+            task: task.abort_handle(),
+            queue: Arc::new(LineQueue::new()),
+        };
+        assert!(reading.active_for(&stream));
+        stream.stop_lines();
+        assert!(!task.is_finished());
+        assert!(!reading.active_for(&stream));
+    }
+
     #[cfg(unix)]
     async fn close_pending_read<F: Future>(read: impl FnOnce(Arc<Halves>) -> F) {
         use futures::poll;
@@ -815,8 +910,17 @@ mod test {
     async fn close_cancels_lines() {
         let (tx, _rx) = mpsc::channel(3);
         let queue = Arc::new(LineQueue::new());
-        close_pending_read(|stream| line_reader(stream, BindId::new(), true, queue, tx))
-            .await;
+        close_pending_read(|stream| {
+            line_reader(
+                stream.clone(),
+                BindId::new(),
+                true,
+                queue,
+                tx,
+                stream.lines_stopped(),
+            )
+        })
+        .await;
     }
 
     #[cfg(unix)]
@@ -836,7 +940,14 @@ mod test {
             Arc::new(Halves::new(StreamKind::ChildStdout(child.stdout.take().unwrap())));
         let (tx, mut rx) = mpsc::channel(3);
         let queue = Arc::new(LineQueue::new());
-        let reader = line_reader(stream.clone(), BindId::new(), true, queue.clone(), tx);
+        let reader = line_reader(
+            stream.clone(),
+            BindId::new(),
+            true,
+            queue.clone(),
+            tx,
+            stream.lines_stopped(),
+        );
         let reader = tokio::spawn(reader);
         timeout(Duration::from_secs(1), rx.next()).await.unwrap().unwrap();
         let (batch, more) = queue.pop().unwrap();

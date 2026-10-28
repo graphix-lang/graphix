@@ -23,6 +23,15 @@ written in terms of it, so they come for free. The system streams
 override `read_exact` with a single call into the operating system,
 which reads under one lock instead of looping.
 
+`Lines::lines` and `Lines::lines_batched` read until EOF or a read error.
+After they stop, delivering the same handle again starts a reader from
+its current position. To read a file again from the beginning, first
+call `sys::fs::Seek::seek` with `` `Start(u64:0) ``, then deliver the
+handle when the seek answers. Re-delivery never rewinds automatically;
+it can also read bytes appended after EOF or retry after an error.
+A handle delivered while its reader is still active leaves that reader
+running.
+
 ```graphix
 {{#include ../../../../stdlib/graphix-package-sys/src/graphix/io.gxi}}
 ```

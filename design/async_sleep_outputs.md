@@ -86,6 +86,17 @@ on the whole stream that stops the reader (a TLS upgrade, a seek) reads
 those bytes first. A reselected listener starts without an old output
 and receives later lines from the same reader.
 
+A handle re-delivered after EOF or an error starts a new reader at the
+current position, under a fresh reply id. Complete lines already queued
+at that position drain before the replacement reads more. A seek or TLS
+upgrade changes the stream's stop generation; re-delivery replaces that
+reader even if its task has not yet processed the stop notification,
+and discards its old queue. A re-delivery while the same reader remains
+active starts nothing. Neither EOF nor re-delivery rewinds a file.
+Pins: `lib_tests::fs::file_handle::*lines_restart*`,
+`io::test::a_stopped_reader_is_inactive_before_its_task_finishes`, and
+`io::test::line_batches_wait_until_consumed`.
+
 ## Strict consumers and kernels
 
 Resetting a builtin does not invalidate every enclosing expression's
