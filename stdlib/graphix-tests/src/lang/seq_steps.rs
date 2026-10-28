@@ -5,7 +5,11 @@
 
 use super::dense_deltas::run_delta;
 use anyhow::Result;
-use graphix_package_core::testing::{Mode, as_i64s};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, Mode, as_i64s},
+};
+use netidx::publisher::Value;
 
 async fn run(code: &str, mode: Mode) -> Result<Vec<i64>> {
     Ok(as_i64s(&run_delta(code, mode).await?.0))
@@ -235,6 +239,32 @@ modes!(
     dynamic_callee_write_is_seen,
     own_trigger_write_starts_the_next_run,
     restart_builtins_are_reborn_at_each_run,
+);
+
+// A read still in flight when a run aborts answers nothing after the
+// abort and its bytes go back to the stream: the next run reads its own,
+// not the one the aborted run asked for.
+#[cfg(unix)]
+run!(
+    an_aborted_runs_read_is_not_the_next_runs_answer,
+    r#"{
+  use sys::io::Read;
+  let opts = |script| sys::process::options(
+    #stdio: sys::process::stdio(#stdout: `Pipe), #args: ["-c", script], "sh");
+  // A's data lands after run 1 is aborted; B's stands ready for run 2.
+  let a = sys::process::spawn(opts("sleep 0.5; printf AAAA"))$.stdout$;
+  let b = sys::process::spawn(opts("printf BBBB"))$.stdout$;
+  let k = count(sys::time::timer(duration:300.ms, 2));
+  seq let n = k; abort(select n == 1 {
+    true => sys::time::after_idle(duration:100.ms, n),
+    false => never()
+  }) {
+    let s = select n == 1 { true => a, false => b };
+    buffer::to_string_lossy(Read::read(s, u64:100)$)
+  }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "BBBB");
+    FuseExpect::Jit
 );
 
 async fn arm_born_at_each_run(mode: Mode) -> Result<()> {
