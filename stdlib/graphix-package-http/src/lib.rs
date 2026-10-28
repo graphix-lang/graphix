@@ -328,7 +328,7 @@ impl<B: BodyKind> ImageState for HttpRequestEv<B> {
         _ctx: &mut ExecCtx<'_, R>,
         _buf: &mut &[u8],
     ) -> Result<Self, PackError> {
-        Ok(Self(PhantomData))
+        Ok(Self::default())
     }
 }
 
@@ -819,15 +819,7 @@ impl<R: Rt> BuiltIn<R> for HttpServe<R> {
         let typ = resolved.unwrap_or(typ);
         let handler = Handler::new(ctx, &typ.args[7].typ, scope, top_id)?;
         let var = RtVar::new(ctx, top_id);
-        Ok(Box::new(HttpServe {
-            var,
-            handler,
-            inbox: Arc::default(),
-            listening: None,
-            abort: None,
-            slept: WakeBit::default(),
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::with(var, handler)))
     }
 
     fn image_decode(
@@ -837,7 +829,13 @@ impl<R: Rt> BuiltIn<R> for HttpServe<R> {
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let handler = Handler::image_decode(ctx, buf)?;
-        Ok(Box::new(HttpServe {
+        Ok(Box::new(Self::with(var, handler)))
+    }
+}
+
+impl<R: Rt> HttpServe<R> {
+    fn with(var: RtVar, handler: Handler<R, oneshot::Sender<Value>>) -> Self {
+        Self {
             var,
             handler,
             inbox: Arc::default(),
@@ -845,11 +843,9 @@ impl<R: Rt> BuiltIn<R> for HttpServe<R> {
             abort: None,
             slept: WakeBit::default(),
             out: TagValue::phantom(),
-        }))
+        }
     }
-}
 
-impl<R: Rt> HttpServe<R> {
     fn stop(&mut self) {
         if let Some(abort) = self.abort.take() {
             abort.abort();
