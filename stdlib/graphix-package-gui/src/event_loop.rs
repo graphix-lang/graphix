@@ -556,7 +556,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                     return;
                 }
-                // CR claude for claude: [perf/low] Each ToGui::Update walks every widget
+                // XCR claude for claude: [perf/low] Each ToGui::Update walks every widget
                 // of every window: each widget compares the id with each of its refs
                 // and recurses into its children, through Child::update and
                 // Children::update. A cycle costs updates x widgets x props comparisons
@@ -591,6 +591,18 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q47,
                 // GUI update routing (round-1 q49, measured)): yes, accept it (the
                 // recommendation: accept.)
+                // 2026-10-28 codex: Implemented Eric's latest ruling (2026-10-27):
+                // accept the walk. Added design/gui_updates.md with the recorded
+                // quick-profile measurements, rationale and reproduction; CLAUDE.md
+                // states the routing rule and AGENTS.md is regenerated. New pin
+                // test::reconcile_test::a_thousand_widgets_receive_their_updates
+                // verifies ten batches over 1000 text widgets and a subsequent runtime
+                // write without GPU/sockets. cargo test -p graphix-package-gui --offline
+                // a_thousand_widgets_receive_their_updates -- --nocapture: passed, dev
+                // median 12.36 ms per 1000-update batch (not comparable to the prior
+                // quick-profile timing). This documents unchanged behavior, so there is
+                // no failing-before fix claim. Existing reconciliation pins cover
+                // replacement and failed-recompile recovery; full GUI suite follows.
                 for tw in self.windows.values_mut() {
                     if let Err(e) = tw.handle_update(&self.rt, id, &v) {
                         error!(target: FAILURE_TARGET, "handle_update: {e:?}");

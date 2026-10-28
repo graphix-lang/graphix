@@ -129,3 +129,58 @@ async fn a_changed_cell_keeps_its_row_siblings() -> Result<()> {
     assert_eq!(first(&h), before, "the unchanged cell is kept");
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_thousand_widgets_receive_their_updates() -> Result<()> {
+    use crate::widgets::text::TextW;
+    use poolshark::local::LPooled;
+    use std::time::Instant;
+
+    let mut code: LPooled<String> = LPooled::take();
+    code.push_str("use gui::{text::text, column::column}; let value = \"before\"; let result = column(&[");
+    for i in 0..1000 {
+        if i > 0 {
+            code.push(',');
+        }
+        code.push_str("text(&value)");
+    }
+    code.push_str("])");
+    let mut h = GuiTestHarness::new(&code).await?;
+    let mut ids: LPooled<Vec<_>> = LPooled::take();
+    h.root.w.for_each_child_mut(&mut |w| {
+        ids.push(w.as_any().downcast_ref::<TextW<NoExt>>().unwrap().content_ref());
+    });
+    assert_eq!(ids.len(), 1000);
+    let rt = tokio::runtime::Handle::current();
+    let mut times: LPooled<Vec<_>> = LPooled::take();
+    for value in
+        ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+    {
+        let value = Value::String(value.into());
+        let start = Instant::now();
+        for id in &*ids {
+            assert!(super::update_widget(&mut h.root, &h.f.gx, &rt, *id, &value)?);
+        }
+        times.push(start.elapsed());
+        h.root.w.for_each_child_mut(&mut |w| {
+            assert_eq!(
+                w.as_any().downcast_ref::<TextW<NoExt>>().unwrap().content(),
+                match &value {
+                    Value::String(s) => Some(s.as_str()),
+                    _ => unreachable!(),
+                }
+            );
+        });
+    }
+    times.sort_unstable();
+    eprintln!("1000 updates through 1000 widgets: median {:?}", times[5]);
+    h.set_var("test::value", Value::String(arcstr::literal!("runtime")))?;
+    h.drain().await?;
+    h.root.w.for_each_child_mut(&mut |w| {
+        assert_eq!(
+            w.as_any().downcast_ref::<TextW<NoExt>>().unwrap().content(),
+            Some("runtime")
+        );
+    });
+    Ok(())
+}

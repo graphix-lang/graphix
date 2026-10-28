@@ -1353,7 +1353,8 @@ test is a result.
   `kill_on_drop` child; redirects are `Pipe`/`Inherit`/`Null`. Shell tests are Unix-gated; the stdout and
   wait-status ones have `cmd.exe` twins.
 - GUI (iced): uses the iced sub-crates directly; `GuiTestHarness::dt()`
-  downcasts; tests fire callbacks via `gx.call(callable_id, args)`;
+  downcasts; updates walk every window’s widget tree, including newly
+  compiled children (`design/gui_updates.md`); tests fire callbacks via `gx.call(callable_id, args)`;
   test contexts default to `NetConfig::Internal`; publisher coalescing
   collapses rapid updates — space them with timers. A control's send
   (`widgets::Echoes`) shows until echoed, and is rejected only when its

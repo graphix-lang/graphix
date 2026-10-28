@@ -34,6 +34,11 @@ impl<X: GXExt> TextW<X> {
         self.0.content.r.id
     }
 
+    #[cfg(test)]
+    pub(crate) fn content(&self) -> Option<&str> {
+        self.0.content.t.as_deref()
+    }
+
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         Ok(GuiW::new(Self(Props::compile(&gx, &source).await.context("text")?)))
     }

@@ -70,6 +70,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 
 | doc | rule |
 |---|---|
+| `gui_updates.md` | GUI updates walk the widget trees; accepted scaling and delivery pin |
 | `netidx_extraction.md` | the core is network-free; `sys::net` owns netidx |
 | `graphix_fuzz.md` | the differential fuzzer: trace oracle, schedules, routes, twins, HDD, typemorph |
 | `must_reject.md` | Must-reject mutation from the base's types (rigid consumers, ten families, verdicts); labeled/optional argument generation for every lane |
