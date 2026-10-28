@@ -195,6 +195,18 @@ async fn own_trigger_write_starts_the_next_run(mode: Mode) -> Result<()> {
 // waits on Eric's ruling; the cancel-safe case needs a Fifo cancel-safe eval with a
 // delay the test controls, and the stdlib's (process wait) is Latest, whose next call
 // aborts the earlier one anyway.
+// 2026-10-28 qwen: The async call in flight across runs is now pinned. New fixture
+// lang::seq_steps::an_aborted_runs_read_is_not_the_next_runs_answer (run!, all four
+// modes): run 1 reads a child whose data arrives only after the run aborts, run 2 reads
+// a second child that is already ready. The aborted read answers nothing after the
+// abort and its bytes return to the stream, so run 2 answers its own read, "BBBB"; with
+// the reply kept across the abort (the old core-lib-01 behaviour) run 2 answers "AAAA"
+// and this test fails. It runs next to restart_builtins_are_reborn_at_each_run and ends
+// by itself (the count's timer fires twice, then nothing is awake). cargo test -p
+// graphix-tests --offline --lib lang::seq_steps is 64 passed, 0 failed. Remaining: the
+// reborn columns this CR lists that are unreachable from a seq step (skip, take, filter
+// see one value per argument per run and iter/range reset only out, which their sleep
+// already did); that part is unchanged by this commit. Commit f4cf3c3.
 async fn restart_builtins_are_reborn_at_each_run(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;

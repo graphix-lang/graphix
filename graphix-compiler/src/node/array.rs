@@ -160,6 +160,26 @@ impl<R: Rt> ArrayRef<R> {
         // local qwen lane, reviewed. lang::image and lang::errors pass. Remaining:
         // LambdaInstance, Module, CachedArgsAsync, Filter/Queue/Hold/Throttle, and the
         // net/time/watch/http builtins.
+        // 2026-10-28 qwen: 2026-10-28 qwen: The five kinds this batch named already
+        // build through one constructor at this base, so there was no code change to
+        // make here; recording what is there and what remains. LambdaInstance
+        // (node::lambda::GXLambda) has private with(id, instance_id, args, body, typ,
+        // self_call, env, typing, charged) at lambda.rs:1123, called from new_with_body
+        // (the compile path, shared by new/new_collection) and from image_decode;
+        // Module has Module::with (module.rs:971) called by compile, image_decode and
+        // typecheck0_instance; CachedArgsAsync::with (lib.rs:2279) is the one literal
+        // for both its eval-init and image_decode, with
+        // queued/inflight/replaced/abort/kept/panic_tag/ data_result/out derived there
+        // (kept from T::CANCEL_SAFE); Filter::with (lib.rs:3079), Hold::with (3305) and
+        // Throttle::with (3499) each hold the single literal used by init and
+        // image_decode, and Queue already had one new (3189) before this batch. Grep
+        // for each kind's runtime fields (self_call:, inflight:, kept:, triggered:,
+        // last_v:) finds exactly one literal per kind. Encoded fields and byte order
+        // are unchanged, so no image format bump. Verified at this tip: cargo test -p
+        // graphix-tests --offline --lib lang::image is 31 passed, 0 failed, 1 ignored,
+        // and cargo test -p graphix-shell --offline --test constructor_image
+        // (constructor_nodes_agree_cold_and_warm) passes. Remaining: the
+        // net/time/watch/http builtins, which this batch was told to leave.
         Ok(Self::with(spec, typ, etyp, source, i))
     }
 
