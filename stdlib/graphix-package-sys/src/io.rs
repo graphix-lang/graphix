@@ -316,6 +316,12 @@ pub(crate) struct IoLines<const BATCHED: bool> {
     out: TagValue,
 }
 
+impl<const BATCHED: bool> IoLines<BATCHED> {
+    fn with(var: RtVar) -> Self {
+        Self { var, reading: None, out: TagValue::phantom() }
+    }
+}
+
 impl<R: Rt, const BATCHED: bool> BuiltIn<R> for IoLines<BATCHED> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = if BATCHED { "sys_io_lines_batched" } else { "sys_io_lines" };
@@ -330,7 +336,7 @@ impl<R: Rt, const BATCHED: bool> BuiltIn<R> for IoLines<BATCHED> {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
         let var = RtVar::new(ctx, top_id);
-        Ok(Box::new(Self { var, reading: None, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(var)))
     }
 
     fn image_decode(
@@ -339,7 +345,7 @@ impl<R: Rt, const BATCHED: bool> BuiltIn<R> for IoLines<BATCHED> {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
-        Ok(Box::new(Self { var, reading: None, out: TagValue::phantom() }))
+        Ok(Box::new(Self::with(var)))
     }
 }
 
