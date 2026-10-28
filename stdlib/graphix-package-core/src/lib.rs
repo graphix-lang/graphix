@@ -2118,6 +2118,28 @@ fn data_result<T: EvalCachedAsync>(env: &Env, resolved: Option<&FnType>) -> Opti
 }
 
 impl<T: EvalCachedAsync> CachedArgsAsync<T> {
+    fn with(
+        cached: CachedVals,
+        var: RtVar,
+        panic_tag: Option<ArcStr>,
+        data_result: Option<Type>,
+        t: T,
+    ) -> Self {
+        Self {
+            cached,
+            var,
+            queued: VecDeque::new(),
+            inflight: 0,
+            replaced: SmallVec::new(),
+            abort: None,
+            kept: (!T::CANCEL_SAFE).then(Kept::default),
+            panic_tag,
+            data_result,
+            out: TagValue::phantom(),
+            t,
+        }
+    }
+
     /// Data that does not cross, answered as the call's declared error.
     fn not_data(&self, why: &impl std::fmt::Display) -> Value {
         match &self.panic_tag {
@@ -2256,19 +2278,13 @@ impl<R: Rt, T: EvalCachedAsync> BuiltIn<R> for CachedArgsAsync<T> {
         let var = RtVar::new(ctx, top_id);
         let panic_tag = panic_tag(&ctx.env, &resolved.unwrap_or(typ).rtype);
         let data_result = data_result::<T>(&ctx.env, resolved);
-        let t = CachedArgsAsync::<T> {
+        let t = CachedArgsAsync::<T>::with(
+            CachedVals::new(from),
             var,
-            cached: CachedVals::new(from),
-            queued: VecDeque::new(),
-            inflight: 0,
-            replaced: SmallVec::new(),
-            abort: None,
-            kept: (!T::CANCEL_SAFE).then(Kept::default),
             panic_tag,
             data_result,
-            out: TagValue::phantom(),
-            t: T::init(ctx, typ, resolved, scope, from, top_id),
-        };
+            T::init(ctx, typ, resolved, scope, from, top_id),
+        );
         Ok(Box::new(t))
     }
 
@@ -2282,19 +2298,7 @@ impl<R: Rt, T: EvalCachedAsync> BuiltIn<R> for CachedArgsAsync<T> {
         let panic_tag = Pack::decode(buf)?;
         let data_result = Pack::decode(buf)?;
         let t = T::image_decode(ctx, buf)?;
-        Ok(Box::new(Self {
-            cached,
-            var,
-            queued: VecDeque::new(),
-            inflight: 0,
-            replaced: SmallVec::new(),
-            abort: None,
-            kept: (!T::CANCEL_SAFE).then(Kept::default),
-            panic_tag,
-            data_result,
-            out: TagValue::phantom(),
-            t,
-        }))
+        Ok(Box::new(Self::with(cached, var, panic_tag, data_result, t)))
     }
 }
 
