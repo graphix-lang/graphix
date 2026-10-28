@@ -1008,6 +1008,10 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
         ApplyView::Lambda(self)
     }
 
+    fn for_each_body_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
+        f(&mut self.body)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let woke = self.slept.take();
         let first = mem::replace(&mut self.first_dispatch, false);

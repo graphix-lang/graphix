@@ -524,6 +524,11 @@ pub trait Apply<R: Rt>: Debug + Send + Sync + Any {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue;
 
     /// Delete any internally generated nodes.
+    /// Each node of the body, when the application has one.
+    fn for_each_body_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
+        let _ = f;
+    }
+
     fn delete(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         ()
     }
@@ -1784,6 +1789,11 @@ impl<R: Rt> CompileCtx<R> {
     /// [`ExecCtx::apply_deferred`].
     pub fn record_ref(&mut self, id: BindId, top_id: ExprId) {
         let reader = self.reader(top_id);
+        self.record_reader(id, reader)
+    }
+
+    /// [`Self::record_ref`] for a reader taken earlier.
+    pub(crate) fn record_reader(&mut self, id: BindId, reader: prune::Reader) {
         *self.pending_refs.entry((id, reader)).or_default() += 1;
     }
 
@@ -2295,7 +2305,13 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is
     /// cancelled, any other unregistered.
     pub fn unref_var(&mut self, id: BindId, top_id: ExprId) {
-        let key = (id, self.reader(top_id));
+        let reader = self.reader(top_id);
+        self.unref_reader(id, reader)
+    }
+
+    /// [`Self::unref_var`] for a reader taken earlier.
+    pub(crate) fn unref_reader(&mut self, id: BindId, reader: prune::Reader) {
+        let key = (id, reader);
         // read through the view first: a branch that compiled nothing
         // must not fork its compile view to find nothing pending
         if !self.cx.pending_refs.contains_key(&key) {

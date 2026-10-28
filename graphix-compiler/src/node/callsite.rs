@@ -1325,7 +1325,17 @@ pub(crate) enum Callee<R: Rt> {
     /// A statically bound instance the image holds in its heap, decoded
     /// by the first dispatch; `refs` is the body's summary until then,
     /// whose reads the site holds registered while it is imaged.
-    Imaged { instance: LambdaInstanceId, first_update: bool, refs: ImagedRefs },
+    Imaged {
+        instance: LambdaInstanceId,
+        first_update: bool,
+        refs: ImagedRefs,
+        /// The reader its reads stand for, and whether they are
+        /// registered: not while the instance around it decodes at its
+        /// own first dispatch, which dispatches this site too unless it
+        /// leaves it unreached (`CallSite::hold_imaged`).
+        reader: crate::prune::Reader,
+        held: bool,
+    },
 }
 
 /// The reads of an imaged instance's whole tree, flattened from the
@@ -1453,6 +1463,9 @@ pub struct CallSite<R: Rt> {
     /// A shrink kept this pure recursive callee asleep: re-reaching it
     /// dispatches it as a fresh bind.
     rebirth: bool,
+    /// The imaged instance decoded at this update's dispatch: the sites
+    /// its first update leaves imaged are held after it.
+    decoded: bool,
     /// Shrinks kept since this site last deleted its callee.
     kept_shrinks: u8,
     pub(crate) fork: ForkSite,
@@ -1514,6 +1527,7 @@ impl<R: Rt> CallSite<R> {
             defaults_open: true,
             absent: None,
             rebirth: false,
+            decoded: false,
             kept_shrinks: 0,
             fork: ForkSite::default(),
         }
@@ -2698,7 +2712,7 @@ impl<R: Rt> CallSite<R> {
             f.reborn(ctx)
         }
         if matches!(self.callee, Callee::Imaged { .. })
-            && let Err(e) = self.materialize(ctx)
+            && let Err(e) = self.materialize(ctx).map(|()| self.decoded = true)
         {
             warn!("decoding the instance of {}: {e:#}; resolving it afresh", self.spec);
             self.release_held(ctx);
@@ -2799,6 +2813,7 @@ impl<R: Rt> CallSite<R> {
                 self.spec,
             );
         }
+        let decoded = mem::take(&mut self.decoded);
         let absent = self.absent.take();
         let returned = absent.is_some();
         let res = match self.callee.apply_mut() {
@@ -2823,6 +2838,10 @@ impl<R: Rt> CallSite<R> {
                 Some(tv)
             }
         };
+        if decoded && let Some(f) = self.callee.apply_mut() {
+            f.for_each_body_mut(&mut |n| Self::hold_imaged(ctx, n));
+            ctx.apply_deferred();
+        }
         if dbgenv::gxdbg_cs() {
             eprintln!(
                 "CS-RES spec={} res={:?}",
@@ -3017,11 +3036,30 @@ impl<R: Rt> CallSite<R> {
 
     /// Release what this site registered for an imaged tree.
     fn release_held(&self, ctx: &mut ExecCtx<'_, R>) {
-        if let Callee::Imaged { instance, refs, .. } = &self.callee {
+        if let Callee::Imaged { instance, refs, reader, held: true, .. } = &self.callee {
             for id in refs.flat(*instance).refed.iter() {
-                ctx.unref_var(*id, self.top_id)
+                ctx.unref_reader(*id, reader.clone())
             }
         }
+    }
+
+    /// Register the reads of every imaged site in `node` that holds none:
+    /// the sites a just decoded instance's first update left imaged.
+    fn hold_imaged(ctx: &mut ExecCtx<'_, R>, node: &mut Node<R>) {
+        ensure_sufficient(|| {
+            if let Some(site) =
+                node.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
+                && let Callee::Imaged { instance, refs, reader, held, .. } =
+                    &mut site.callee
+                && !*held
+            {
+                for id in refs.flat(*instance).refed.iter() {
+                    ctx.record_reader(*id, reader.clone())
+                }
+                *held = true;
+            }
+            node.for_each_child_mut(&mut |c| Self::hold_imaged(ctx, c))
+        })
     }
 
     /// Decode the instance the image holds for this site and bind it.
@@ -3041,13 +3079,17 @@ impl<R: Rt> CallSite<R> {
             None => Err(anyhow!("instance {instance:?} is not in the image")),
             Some(at) => {
                 let image = dec.image().clone();
-                image::DecodeImage::with(&mut dec, || {
+                let outer =
+                    mem::replace(&mut dec.ext::<image::Restored>().materializing, true);
+                let decoded = image::DecodeImage::with(&mut dec, || {
                     let Some(mut sub) = image.get(at as usize..) else {
                         bail!("instance {instance:?} at {at} is past the image")
                     };
                     GXLambda::image_decode(ctx, &mut sub)
                         .map_err(|e| anyhow!("instance {instance:?} at {at}: {e:?}"))
-                })
+                });
+                dec.ext::<image::Restored>().materializing = outer;
+                decoded
             }
         };
         // an instance whose kernels do not install is deleted, not dropped
@@ -3097,6 +3139,7 @@ impl<R: Rt> CallSite<R> {
         if !buf.has_remaining() {
             return Err(PackError::BufferShort);
         }
+        let mut imaged = None;
         let (arg_refs, callee) = match buf.get_u8() {
             CALLEE_UNBOUND => (Vec::new(), Callee::DynamicUnbound),
             CALLEE_INSTANCE => {
@@ -3115,7 +3158,8 @@ impl<R: Rt> CallSite<R> {
                         })
                         .ok_or(PackError::Application(image::NOT_IMAGED))?;
                         let refs = ImagedRefs { table, flat: OnceLock::new() };
-                        Callee::Imaged { instance, first_update, refs }
+                        imaged = Some((instance, first_update, refs));
+                        Callee::DynamicUnbound
                     }
                 };
                 (arg_refs, callee)
@@ -3138,14 +3182,22 @@ impl<R: Rt> CallSite<R> {
             Self::unbound(spec, ftype, rtype, fnode, args, scope, flags, top_id);
         site.fork = fork;
         site.arg_refs = arg_refs;
-        site.callee = callee;
+        site.callee = match imaged {
+            None => callee,
+            Some((instance, first_update, refs)) => {
+                let held = !image::decoding(|d| d.ext::<image::Restored>().materializing)
+                    .unwrap_or(false);
+                let reader = ctx.reader(top_id);
+                Callee::Imaged { instance, first_update, refs, reader, held }
+            }
+        };
         site.static_target = static_target;
         site.recursive_edge = AtomicBool::new(recursive_edge);
         // an imaged callee's reads schedule this site's boundary before its
         // body decodes, as a cold compile's registrations do; the site holds
         // them until the body decodes and registers its own (recorded, so a
         // failed read unwinds them)
-        // CR claude for claude: [perf/medium] Every imaged site flattens and registers
+        // XCR claude for claude: [perf/medium] Every imaged site flattens and registers
         // its whole subtree's reads here (ImagedRefs::flat, recomputed per site).
         // materialize releases them, and each imaged site in the decoded body then
         // registers its own subtree again. A call chain of depth N costs O(N^2) at its
@@ -3177,9 +3229,22 @@ impl<R: Rt> CallSite<R> {
         // so it wants its own design pass. The held field is now derived from
         // Callee::Imaged (c-callsite-06), so the doc remark in this CR no longer
         // applies.
-        if let Callee::Imaged { instance, refs, .. } = &site.callee {
+        // 2026-10-28 claude: Fixed: an imaged site decoded while the instance around
+        // it decodes at its own first dispatch (image::Restored::materializing)
+        // registers none of its subtree's reads at decode; that first update
+        // dispatches it, and so decodes it, unless it leaves it unreached, and after
+        // the update CallSite::hold_imaged registers the reads of the sites left
+        // imaged, under the reader each took at decode (Callee::Imaged reader/held;
+        // release_held unrefs only what was held). A top-level decode registers at
+        // decode as before. Quick build, --no-fusion, the probe's chain: N=2000 cold
+        // 642 / warm 133 ms, 4000 1224 / 231, 8000 2976 / 409 (before: 754/1107,
+        // 1319/3962, 3216/15832). Pin: graphix-shell/tests/warm_chain.rs
+        // a_warm_chain_starts_faster_than_it_compiles (N=3000, debug: warm 4.7 s vs
+        // cold 2.1 s with every site held at decode; passes at under 1 s for both
+        // runs). lang::image passes under GRAPHIX_PRUNE=audit.
+        if let Callee::Imaged { instance, refs, reader, held: true, .. } = &site.callee {
             for id in refs.flat(*instance).refed.iter() {
-                ctx.record_ref(*id, top_id)
+                ctx.record_reader(*id, reader.clone())
             }
         }
         Ok(Node::new(CallNode::Call(site)))
