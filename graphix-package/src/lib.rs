@@ -1611,7 +1611,7 @@ impl GraphixPM {
             "Graphix Package Manager <eestokes@pm.me>",
             Duration::from_secs(1),
         )?;
-        // CR claude for claude: [risk/medium] A rebuild replaces whatever binary is
+        // XCR claude for claude: [risk/medium] A rebuild replaces whatever binary is
         // running, a cargo dev build (target/debug/graphix) included, with a release
         // build of the crates.io source of the same version number. The install_root
         // guard that refused an exe outside a cargo install root is gone, and cargo
@@ -1621,9 +1621,38 @@ impl GraphixPM {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q71, Which
         // binary a package rebuild may replace): yes, refuse target dir, allow
         // elsewhere (the recommendation: refuse under a target dir, allow elsewhere.)
+        // 2026-10-28 codex: Rebuilds check the resolved executable's ancestors for
+        // Cargo root/profile markers before unpacking source and before replacing the
+        // binary. Custom target roots, profiles, nested deps and cross-target
+        // directories are covered; an executable installed elsewhere remains
+        // replaceable. Pins a_cargo_output_cannot_be_replaced and
+        // a_target_root_marker_protects_nested_executables both failed before the
+        // guard because replacement succeeded, and pass afterward without modifying
+        // the output or staging a replacement. Existing
+        // a_replaced_exe_is_kept_as_a_backup remains green. cargo test -p
+        // graphix-package --offline --lib: 40 passed, five slow tests ignored. No
+        // real executable was replaced; tests use temporary files. Book and
+        // CLAUDE/AGENTS document the rule.
         let exe = std::env::current_exe().context("locating the running graphix")?;
         let target_dir = shared_target_dir()?;
         Ok(Self { cratesio, cargo, version: version.into(), exe, target_dir })
+    }
+
+    fn check_rebuild_exe(&self) -> Result<()> {
+        let exe = self.exe.canonicalize().context("resolving the running executable")?;
+        for dir in exe.ancestors().skip(1) {
+            for marker in [".rustc_info.json", ".cargo-lock"] {
+                if dir.join(marker).try_exists().with_context(|| {
+                    format_compact!("checking Cargo build markers in {}", dir.display())
+                })? {
+                    bail!(
+                        "cannot replace {} inside a Cargo target directory; copy the executable outside the build directory before rebuilding packages",
+                        exe.display()
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Open the lock file for the graphix data directory.
@@ -1679,6 +1708,7 @@ impl GraphixPM {
     /// Delete the scratch build dir and unpack a fresh graphix-shell source
     /// tree for `version`.
     async fn prepare_source(&self, version: &str) -> Result<PathBuf> {
+        self.check_rebuild_exe()?;
         println!("Unpacking graphix-shell source...");
         let build_dir = graphix_data_dir()?.join("build");
         if fs::metadata(&build_dir).await.is_ok() {
@@ -1738,29 +1768,33 @@ impl GraphixPM {
     /// cannot be written over on every host. The new binary is copied
     /// beside the old first, so the exe path only ever changes by rename.
     async fn replace_exe(&self, built: &Path) -> Result<()> {
+        self.check_rebuild_exe()?;
         let date = Local::now().format(BACKUP_STAMP);
-        let ext = self.exe.extension().map(|e| format!(".{}", e.to_string_lossy()));
-        let backup = self
-            .exe
-            .with_file_name(format!("{BACKUP_PREFIX}{date}{}", ext.unwrap_or_default()));
+        let ext =
+            self.exe.extension().map(|e| format_compact!(".{}", e.to_string_lossy()));
+        let backup = self.exe.with_file_name(
+            format_compact!("{BACKUP_PREFIX}{date}{}", ext.unwrap_or_default()).as_str(),
+        );
         let name = self.exe.file_name().ok_or_else(|| anyhow!("the exe has no name"))?;
-        let staged = self.exe.with_file_name(format!(".{}.new", name.to_string_lossy()));
+        let staged = self
+            .exe
+            .with_file_name(format_compact!(".{}.new", name.to_string_lossy()).as_str());
         if let Err(e) = fs::copy(built, &staged).await {
             let _ = fs::remove_file(&staged).await;
             return Err(e).with_context(|| {
-                format!("copying {} to {}", built.display(), staged.display())
+                format_compact!("copying {} to {}", built.display(), staged.display())
             });
         }
         if let Err(e) = fs::rename(&self.exe, &backup).await {
             let _ = fs::remove_file(&staged).await;
             return Err(e)
-                .with_context(|| format!("moving {} aside", self.exe.display()));
+                .with_context(|| format_compact!("moving {} aside", self.exe.display()));
         }
         if let Err(e) = fs::rename(&staged, &self.exe).await {
             let _ = fs::rename(&backup, &self.exe).await;
             let _ = fs::remove_file(&staged).await;
             return Err(e).with_context(|| {
-                format!("moving {} to {}", staged.display(), self.exe.display())
+                format_compact!("moving {} to {}", staged.display(), self.exe.display())
             });
         }
         Ok(())

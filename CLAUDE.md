@@ -1397,7 +1397,10 @@ test is a result.
 - Package manager: `packages.toml` v2 (`[stdlib]` tracks the shell
   version, `[packages]` for externals); `update` presents a maskable
   change set and builds before writing the manifest; hard error on
-  non-TTY without `--yes`.
+  non-TTY without `--yes`. Rebuilds refuse an executable beneath Cargo
+  build markers (`.rustc_info.json` or a profile's `.cargo-lock`), before
+  unpacking and again before replacement; binaries installed elsewhere
+  may rebuild.
 
 ## The admin-TUI dogfood campaign
 

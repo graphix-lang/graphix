@@ -186,6 +186,46 @@ async fn a_path_package_may_inherit_its_version() {
     assert!(e.to_string().contains("not graphix-package-bar"), "{e}");
 }
 
+#[tokio::test]
+async fn a_cargo_output_cannot_be_replaced() {
+    let tmp = tempfile::tempdir().unwrap();
+    let built = tmp.path().join("built");
+    std::fs::write(&built, "new").unwrap();
+    let mut pm = super::GraphixPM::new("0.0.0").await.unwrap();
+    for profile in ["debug", "release", "quick", "x86_64-unknown-linux-gnu/release"] {
+        let target = tmp.path().join("custom-output");
+        let bin = target.join(profile);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(".cargo-lock"), "").unwrap();
+        let exe = bin.join("graphix");
+        std::fs::write(&exe, "old").unwrap();
+        pm.exe = exe.clone();
+        let error = pm.replace_exe(&built).await.unwrap_err();
+        assert!(error.to_string().contains("Cargo target directory"), "{error:#}");
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        assert!(!bin.join(".graphix.new").exists());
+        assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 2);
+    }
+}
+
+#[tokio::test]
+async fn a_target_root_marker_protects_nested_executables() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("custom-output");
+    let bin = target.join("custom-profile/deps");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(target.join(".rustc_info.json"), "{}").unwrap();
+    let exe = bin.join("graphix");
+    std::fs::write(&exe, "old").unwrap();
+    let built = tmp.path().join("built");
+    std::fs::write(&built, "new").unwrap();
+    let mut pm = super::GraphixPM::new("0.0.0").await.unwrap();
+    pm.exe = exe.clone();
+    let error = pm.replace_exe(&built).await.unwrap_err();
+    assert!(error.to_string().contains("Cargo target directory"), "{error:#}");
+    assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+}
+
 /// The new binary takes the exe's path and the old one is kept beside it
 /// as a dated backup; the staged copy, one an interrupted run left
 /// included, does not stay.
