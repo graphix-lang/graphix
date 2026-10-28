@@ -1,0 +1,21 @@
+let result = {
+    let step = 0;
+    step <- select step { s if s < 8 => s + 1, _ => never() };
+    let input = 0;
+    input <- select step { 3 => 100, _ => never() };
+    let holder: [&mut i64, null] = null;
+    let result = select step < 3 || step > 5 {
+        true => {
+            let alias = input + 0;
+            let target = alias;
+            holder <- &mut target;
+            target
+        },
+        false => -1
+    };
+    let h = holder$;
+    *h <- select step { 4 => 555, _ => never() };
+    select step { 8 => result, _ => never() }
+};
+println(result);
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

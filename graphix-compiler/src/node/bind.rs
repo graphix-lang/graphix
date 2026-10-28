@@ -547,6 +547,20 @@ impl<R: Rt> Update<R> for Bind<R> {
             // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q4, A caught-up
             // initializer against a later write): yes, later wins (the recommendation: the
             // later write wins.)
+            // 2026-10-27 codex: Partial, no implementation landed. Reproduced both supplied
+            // probes. Tried retaining each target whose write stamp is newer than every free
+            // initializer input, excluding a rebirth. The direct target/write-order and
+            // queued-write pins passed (12 mode runs), but two additional pins still failed in
+            // all four modes: c-bind-wake-order-alias.gx gives 100 instead of 555 because the
+            // caught-up alias gets the wake cycle's stamp; c-bind-wake-order-sample.gx gives
+            // 200 instead of 555 because the sample argument's later update is not the fire
+            // that initialized the target. Added both probes under
+            // design/review-2026-10-26/repro. Reverted the local comparison: it does not
+            // implement the ruling through derived bindings or sampling. Remaining work is
+            // causal provenance for initializer fires across those nodes; the store's delivery
+            // stamp alone is insufficient and also serves read_var's live-delivery contract.
+            // Trial Rust pins and the candidate patch are retained in /tmp/q4-trial-select.rs
+            // and /tmp/q4-candidate.patch. No language rule or FuseExpect changed.
             self.reraise_writes_while_asleep(ctx);
         }
         let tv = self.node.update(ctx);
@@ -566,6 +580,21 @@ impl<R: Rt> Update<R> for Bind<R> {
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q4, A
         // caught-up initializer against a later write): yes, later wins (the
         // recommendation: the later write wins.)
+        // 2026-10-27 codex: Partial, no implementation landed. Reproduced both supplied
+        // probes. Tried retaining each target whose write stamp is newer than every free
+        // initializer input, excluding a rebirth. The direct target/write-order and
+        // queued-write pins passed (12 mode runs), but two additional pins still failed
+        // in all four modes: c-bind-wake-order-alias.gx gives 100 instead of 555 because
+        // the caught-up alias gets the wake cycle's stamp; c-bind-wake-order-sample.gx
+        // gives 200 instead of 555 because the sample argument's later update is not the
+        // fire that initialized the target. Added both probes under
+        // design/review-2026-10-26/repro. Reverted the local comparison: it does not
+        // implement the ruling through derived bindings or sampling. Remaining work is
+        // causal provenance for initializer fires across those nodes; the store's
+        // delivery stamp alone is insufficient and also serves read_var's live-delivery
+        // contract. Trial Rust pins and the candidate patch are retained in
+        // /tmp/q4-trial-select.rs and /tmp/q4-candidate.patch. No language rule or
+        // FuseExpect changed.
         if (woke || ctx.event.wake()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =

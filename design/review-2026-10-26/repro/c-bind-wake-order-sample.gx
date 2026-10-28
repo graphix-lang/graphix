@@ -1,0 +1,22 @@
+let result = {
+    let step = 0;
+    step <- select step { s if s < 10 => s + 1, _ => never() };
+    let trigger = 0;
+    trigger <- select step { 3 => 1, _ => never() };
+    let argument = 100;
+    argument <- select step { 5 => 200, _ => never() };
+    let holder: [&mut i64, null] = null;
+    let result = select step < 3 || step > 7 {
+        true => {
+            let target = trigger ~ argument;
+            holder <- &mut target;
+            target
+        },
+        false => -1
+    };
+    let h = holder$;
+    *h <- select step { 4 => 555, _ => never() };
+    select step { 10 => result, _ => never() }
+};
+println(result);
+sys::exit(sys::time::after_idle(duration:100.ms, 0))
