@@ -12,7 +12,7 @@ use super::{
 };
 use crate::cost::{ProbeSite, SlotPlan, SlotSite};
 use crate::{
-    ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope,
+    ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, PruneMode, Refs, Rt, Scope,
     SourcePosition, Tag, TagValue, Update, View,
     dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
@@ -1119,12 +1119,15 @@ fn woken_slots<R: Rt, T>(
     update: impl FnOnce(&mut ExecCtx<'_, R>, SlotViews) -> T,
 ) -> T {
     let Some(mut missed) = paused else {
-        return update(ctx, SlotViews { old_len, standing: View::Cycle });
+        return update(
+            ctx,
+            SlotViews { old_len, standing: View::Cycle, skip_idle: false },
+        );
     };
     let caught_up = missed.deliver(ctx, 0);
     // every slot runs under an init view: a standing one's wake, a fresh one's birth
     let scope = ctx.under(View::Wake, |ctx| missed.open(ctx, 0));
-    let r = update(ctx, SlotViews { old_len, standing: View::Wake });
+    let r = update(ctx, SlotViews { old_len, standing: View::Wake, skip_idle: false });
     missed.ran(ctx, 0, scope);
     TrackedFires::restore(ctx.event, caught_up);
     r
@@ -1136,6 +1139,7 @@ fn woken_slots<R: Rt, T>(
 struct SlotViews {
     old_len: usize,
     standing: View,
+    skip_idle: bool,
 }
 
 impl SlotViews {
@@ -1229,6 +1233,38 @@ fn build_fresh<R: Rt, S: Send>(
     ctx.apply_deferred();
 }
 
+fn skip_idle_slot<R: Rt>(ctx: &mut ExecCtx<'_, R>, slot: &mut Slot<R>) -> bool {
+    if slot.call.as_prune().is_some() {
+        return false;
+    }
+    let NodeView::CallSite(site) = slot.call.view() else { return false };
+    if site.slept.is_set() || site.args.len() != 1 {
+        return false;
+    }
+    let arg = site.args.values().next().expect("one argument");
+    if arg.stage.is_default()
+        || !arg.node.as_ref().is_some_and(
+            |node| matches!(node.view(), NodeView::Ref(r) if r.id == slot.id),
+        )
+    {
+        return false;
+    }
+    let Some(ApplyView::Lambda(callback)) = site.resolved_apply() else { return false };
+    let Some(body) = callback.body().as_prune() else { return false };
+    if !body.can_skip(ctx) {
+        return false;
+    }
+    body.visit(ctx);
+    if ctx.prune == PruneMode::Audit {
+        let resident = match &slot.state {
+            SlotState::Bottom => TagValue::phantom(),
+            SlotState::Value(v) => TagValue::tagged(v.clone(), Tag::STALE),
+        };
+        Prune::audit(&mut slot.call, ctx, &resident);
+    }
+    true
+}
+
 fn update_slots_in_order<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
     slots: &mut [Slot<R>],
@@ -1241,7 +1277,7 @@ fn update_slots_in_order<R: Rt>(
         if ctx.interrupted() {
             return None;
         }
-        // CR claude for claude: [perf/medium] Every standing slot is called here whenever
+        // XCR claude for claude: [perf/medium] Every standing slot is called here whenever
         // the collection walks, even when no element moved, the callback was not
         // rebound, and the slot's instance body boundary is unmarked. A clean slot
         // still pays CallSite::update_call, GXLambda formal publication, the Prune
@@ -1255,6 +1291,24 @@ fn update_slots_in_order<R: Rt>(
         // (x-perf-runtime-01)
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q65, Idle
         // collection slots): yes, skip (the recommendation: skip.)
+        // 2026-10-28 codex: Implemented the ruled early skip for clean standing lambda
+        // slots under Cycle when neither source nor callback moved. Calls with defaults,
+        // fences, an unmaterialized body or a wake still walk. Reused Prune's eligibility
+        // and audit: audit executes the skipped call and checks its output, publications
+        // and effects; production skips retain the slot state and stamp the body visited.
+        // Updated the pruning record and rule, regenerated AGENTS. Pin: graphix-tests
+        // --test runtime_cost idle_slots_do_not_enter_their_call_sites; observed failing
+        // before the change with 20300 idle boundaries, passes after in all four modes.
+        // Also checks independently changing defaults; reran with GRAPHIX_PRUNE=audit,
+        // passes. Probe x-perf-runtime-idle-slots.sh, rebuilt debug binary, three runs
+        // each: median microseconds/cycle at 500/2000/8000 slots before
+        // 203.366/760.508/3844.339, after 33.196/128.632/479.819 (6.1x/5.9x/8.0x faster;
+        // shared-machine timing). cargo test -p graphix-compiler --offline --lib: 54
+        // passed. cargo fmt --all and git diff --check passed. Full graphix-tests lib
+        // gate will run before the final report.
+        if views.skip_idle && views.of(i) == View::Cycle && skip_idle_slot(ctx, slot) {
+            continue;
+        }
         let tv = ctx.under(views.of(i), |ctx| slot.call.update(ctx));
         let tag = tv.tag();
         if gxdbg_slot() {
@@ -1342,10 +1396,11 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
             }
         }
         let callback = self.callback.id;
-        let slots = woken_slots(ctx, old_len, paused, |ctx, views| {
+        let slots = woken_slots(ctx, old_len, paused, |ctx, mut views| {
             // after the paused slots' catch-up, which delivers a callback
             // that changed meanwhile
             let rebound = ctx.event.variables.contains_key(&callback);
+            views.skip_idle = !moved && !rebound && ctx.event.view == View::Cycle;
             update_slots(ctx, &mut self.slots, &mut self.fork, views, rebound)
         });
         match slots {

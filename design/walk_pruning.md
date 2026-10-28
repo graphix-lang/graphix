@@ -49,9 +49,15 @@ Three kinds, each a wrapper node (`Prune`) around one child:
 
 Nodes between boundaries always run when their enclosing boundary runs.
 In particular a `CallSite` still updates its arguments every time its
-boundary runs (they belong to the caller's boundary), and `MapQ`/`FoldQ`
-still visit every slot's call site; a clean slot then costs its
-argument refs and one stamp check instead of its callback's body.
+boundary runs (they belong to the caller's boundary). `FoldQ` visits
+every slot because its accumulator may move. `MapQ` skips a standing
+slot's call when the source did not move, the callback did not rebind,
+the view is `Cycle`, and the bound lambda's body is clean and has run.
+This shortcut requires an awake call with just its supplied element
+reference: defaults, unresolved callees and fenced calls still run.
+The slot keeps its value or bottom and marks the body's visit stamp;
+audit mode walks the skipped call and checks its production and effects.
+Pins: `tests/runtime_cost.rs` in graphix-tests.
 
 A `Prune` holds:
 

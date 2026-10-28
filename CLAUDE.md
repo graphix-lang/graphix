@@ -205,7 +205,10 @@ boundaries and their ancestors: a stamped `store_insert` or a standing
 `store_insert_standing`, `notify_set`,
 `ExecCtx::publish`/`try_publish` (never `event.variables.insert` from a
 node), the cycle's deliveries; state a node polls without a variable
-marks its pollers (error handlers: `ErrorHandler::polled_by`). `Prune`
+marks its pollers (error handlers: `ErrorHandler::polled_by`). A map traversal may skip an awake standing lambda slot before its call
+when neither source nor callback moved, its only argument is the element
+reference and its body is clean; defaults and wake/step views run in full,
+and audit verifies the skipped call. `Prune`
 is transparent to analyses (view, children, spec, `downcast_*`);
 `fusion::fuse` fuses its child inside it. `GRAPHIX_PRUNE=off|on|audit`
 (on by default; `Control::set_prune_mode`): the audit walks everything

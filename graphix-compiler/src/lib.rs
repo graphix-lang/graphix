@@ -435,6 +435,10 @@ impl<R: Rt> Node<R> {
         stack::ensure_sufficient(|| self.0.fuse(ctx))
     }
 
+    pub(crate) fn as_prune(&self) -> Option<&node::prune::Prune<R>> {
+        (&**self.0 as &dyn Any).downcast_ref::<node::prune::Prune<R>>()
+    }
+
     /// The node, if it is a pruning boundary.
     pub(crate) fn as_prune_mut(&mut self) -> Option<&mut node::prune::Prune<R>> {
         (&mut **self.0 as &mut dyn Any).downcast_mut::<node::prune::Prune<R>>()

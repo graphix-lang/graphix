@@ -20,6 +20,7 @@ use crate::{
 use anyhow::Result;
 use graphix_types::BindId;
 use netidx_core::pack::PackError;
+use poolshark::local::LPooled;
 
 #[derive(Debug)]
 pub struct Prune<R: Rt> {
@@ -103,11 +104,21 @@ impl<R: Rt> Prune<R> {
         &mut self.child
     }
 
-    /// The walk of `child` in `boundary`, which pruning would have
+    pub(crate) fn can_skip(&self, ctx: &ExecCtx<'_, R>) -> bool {
+        ctx.prune != PruneMode::Off
+            && self.ride.as_ref().is_some_and(|ride| ride.walked)
+            && ctx.event.view == View::Cycle
+            && !ctx.rt.dirty(&self.boundary)
+    }
+
+    pub(crate) fn visit(&self, ctx: &ExecCtx<'_, R>) {
+        self.boundary.visit(ctx.rt.cycle());
+    }
+
+    /// The walk of `child`, which pruning would have
     /// skipped: it must deliver the ridden `resident`, publish nothing and
     /// queue no effect.
-    fn audit(
-        boundary: &BoundaryRef,
+    pub(crate) fn audit(
         child: &mut Node<R>,
         ctx: &mut ExecCtx<'_, R>,
         resident: &TagValue,
@@ -115,7 +126,7 @@ impl<R: Rt> Prune<R> {
         let mut expected = resident.clone();
         expected.ride();
         let ((tv, published), effects) = branch::alone(ctx, |ctx| {
-            let tv = ctx.in_boundary(Some(boundary), |ctx| child.update(ctx).clone());
+            let tv = child.update(ctx).clone();
             // a stale publication of what the store holds reads as no
             // publication in a plain cycle
             let standing = |id: &BindId, tv: &TagValue| {
@@ -126,7 +137,7 @@ impl<R: Rt> Prune<R> {
                                 || s.with_value(|a| tv.with_value(|b| a == b)))
                     })
             };
-            let published: Vec<(BindId, TagValue)> = ctx
+            let published: LPooled<Vec<(BindId, TagValue)>> = ctx
                 .event
                 .variables
                 .own_ids()
@@ -157,20 +168,17 @@ impl<R: Rt> Prune<R> {
 
 impl<R: Rt> Update<R> for Prune<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
-        self.boundary.visit(ctx.rt.cycle());
+        self.visit(ctx);
+        let skip = self.can_skip(ctx);
         let Self { boundary, child, ride } = self;
         let Some(ride) = ride else {
             return ctx.in_boundary(Some(boundary), |ctx| child.update(ctx));
         };
-        // skipped when walked before, in a plain cycle, with nothing it
-        // reads delivered
-        if ctx.prune != PruneMode::Off
-            && ride.walked
-            && ctx.event.view == View::Cycle
-            && !ctx.rt.dirty(boundary)
-        {
+        if skip {
             if ctx.prune == PruneMode::Audit {
-                let tv = Self::audit(boundary, child, ctx, &ride.resident);
+                let tv = ctx.in_boundary(Some(boundary), |ctx| {
+                    Self::audit(child, ctx, &ride.resident)
+                });
                 return ride.resident.set(tv);
             }
             ctx.control.note_boundary(false);
