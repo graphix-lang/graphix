@@ -118,6 +118,26 @@ fn pc_id<R: Rt>(pc: &Node<R>) -> Result<BindId> {
 }
 
 impl<R: Rt> SeqMachine<R> {
+    fn with(
+        spec: Arc<Expr>,
+        id: ExprId,
+        pc: Node<R>,
+        pc_id: BindId,
+        steps: Box<[Step<R>]>,
+        expand: bool,
+    ) -> Node<R> {
+        Node::new(Self {
+            spec,
+            id,
+            pc,
+            pc_id,
+            steps,
+            current: None,
+            tracked: None,
+            expand,
+        })
+    }
+
     fn update_serial(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let Self { spec: _, id: _, pc, pc_id, steps, current, tracked, expand: _ } = self;
         let (tracked, lets) = tracked.get_or_insert_with(|| {
@@ -235,16 +255,14 @@ impl<R: Rt> SeqMachine<R> {
                 Step::new(s.label.clone(), s.until, nodes, catches, value, next, false)?;
             steps.push(step);
         }
-        Ok(Node::new(Self {
+        Ok(Self::with(
             spec,
-            id: m.id,
+            m.id,
             pc,
             pc_id,
-            steps: steps.into_boxed_slice(),
-            current: None,
-            tracked: None,
-            expand: flags.contains(CFlag::ExpandSeq),
-        }))
+            steps.into_boxed_slice(),
+            flags.contains(CFlag::ExpandSeq),
+        ))
     }
 
     pub(crate) fn image_decode(
@@ -269,16 +287,7 @@ impl<R: Rt> SeqMachine<R> {
                 .map_err(|_| PackError::InvalidFormat)?;
             steps.push(step);
         }
-        Ok(Node::new(Self {
-            spec,
-            id,
-            pc,
-            pc_id,
-            steps: steps.into_boxed_slice(),
-            current: None,
-            tracked: None,
-            expand: false,
-        }))
+        Ok(Self::with(spec, id, pc, pc_id, steps.into_boxed_slice(), false))
     }
 }
 
@@ -486,6 +495,24 @@ pub struct SeqCapture<R: Rt> {
 }
 
 impl<R: Rt> SeqCapture<R> {
+    fn with(
+        spec: Arc<Expr>,
+        machine: ExprId,
+        snapshot: Node<R>,
+        live: Node<R>,
+        live_id: BindId,
+        is_live: bool,
+    ) -> Node<R> {
+        Node::new(Self {
+            spec,
+            machine,
+            snapshot,
+            live,
+            live_id,
+            is_live: AtomicBool::new(is_live),
+        })
+    }
+
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
@@ -498,8 +525,7 @@ impl<R: Rt> SeqCapture<R> {
         let live = compile(ctx, flags, (*c.live).clone(), scope, top_id)?;
         let live_id = pc_id(&live)?;
         let machine = c.machine;
-        let is_live = AtomicBool::new(false);
-        Ok(Node::new(Self { spec, machine, snapshot, live, live_id, is_live }))
+        Ok(Self::with(spec, machine, snapshot, live, live_id, false))
     }
 
     pub(crate) fn image_decode(
@@ -511,8 +537,8 @@ impl<R: Rt> SeqCapture<R> {
         let snapshot = decode_node(ctx, buf)?;
         let live = decode_node(ctx, buf)?;
         let live_id = pc_id(&live).map_err(|_| PackError::InvalidFormat)?;
-        let is_live = AtomicBool::new(bool::decode(buf)?);
-        Ok(Node::new(Self { spec, machine, snapshot, live, live_id, is_live }))
+        let is_live = bool::decode(buf)?;
+        Ok(Self::with(spec, machine, snapshot, live, live_id, is_live))
     }
 
     fn chosen(&mut self) -> &mut Node<R> {
