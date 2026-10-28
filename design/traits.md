@@ -295,7 +295,8 @@ real key and equal to its fellow bottom keys; real pairs answer by the
 implementation. Bottomness is detected by SELF-PROBES (`cmp(k, k)`),
 run only on the bottom path; a pair that bottoms while neither key
 self-bottoms is an inconsistent implementation — warn and answer
-`Equal`. `eq` follows the same shape; a bottoming `fmt` renders
+`Equal` for `Ord`, and `false` (unequal) for `Eq`; the warning names that
+answer. `eq` otherwise follows the same bottom-key classification. A bottoming `fmt` renders
 structurally with a warning (printing has no algebra to preserve).
 `a == b` on a hooked type with a bottoming impl therefore answers by
 the bottom-key rule like every other consumer rather than bottoming

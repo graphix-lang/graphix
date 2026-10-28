@@ -511,11 +511,11 @@ fn as_value(g: &GxAbstract) -> Value {
     abstract_value::wrap(g.id, g.name.clone(), g.params.clone(), g.payload.clone())
 }
 
-fn warn_pair_bottom(t: CoreTrait, a: &GxAbstract) {
+fn warn_pair_bottom(t: CoreTrait, a: &GxAbstract, answer: impl std::fmt::Display) {
     log::warn!(
         "core {:?} implementation for {} bottoms on a pair whose keys are both \
          real (neither self-comparison bottoms) — an inconsistent implementation; \
-         answering Equal",
+         answering {answer}",
         t,
         a.name
     );
@@ -565,7 +565,7 @@ fn dispatch_eq<R: Rt>(state: *mut u8, a: &GxAbstract, b: &GxAbstract) -> Option<
                 (true, true) => true,
                 (true, false) | (false, true) => false,
                 (false, false) => {
-                    // CR claude for claude: [bug/low] This logs "answering Equal" and
+                    // XCR claude for claude: [bug/low] This logs "answering Equal" and
                     // then returns false: an inconsistent Eq pair compares unequal on
                     // both engines. design/traits.md says such a pair is answered Equal
                     // and that eq follows the same shape. Decide which answer an
@@ -578,7 +578,16 @@ fn dispatch_eq<R: Rt>(state: *mut u8, a: &GxAbstract, b: &GxAbstract) -> Option<
                     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q35, An
                     // inconsistent Eq pair): yes, fix the doc (the recommendation: unequal:
                     // nothing merges on an inconsistent impl. Fix the doc.)
-                    warn_pair_bottom(CoreTrait::Eq, a);
+                    // 2026-10-27 codex: Documented q35's unequal result for an inconsistent Eq
+                    // pair. The implementation already returned false; its warning incorrectly
+                    // said Equal. The warning now says false, and design/traits.md describes
+                    // that result. Pin lang::traits::core_inconsistent_eq_pair_is_unequal passes
+                    // in all four modes before and after (documented existing behavior). The
+                    // Rust pin lang::traits::inconsistent_eq_warning_matches_answer failed with
+                    // the old warning deliberately restored and passed after restoration of the
+                    // fix. The selected trait suite passes 579 tests, excluding nine
+                    // socket-backed fixtures.
+                    warn_pair_bottom(CoreTrait::Eq, a, false);
                     false
                 }
             })
@@ -621,7 +630,7 @@ fn dispatch_cmp<R: Rt>(
                 (true, false) => Ordering::Less,
                 (false, true) => Ordering::Greater,
                 (false, false) => {
-                    warn_pair_bottom(CoreTrait::Ord, a);
+                    warn_pair_bottom(CoreTrait::Ord, a, "Equal");
                     Ordering::Equal
                 }
             })

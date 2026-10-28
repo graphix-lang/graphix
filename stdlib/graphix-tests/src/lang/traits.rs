@@ -2639,3 +2639,33 @@ run!(
 }"#,
     is(Value::Bool(true))
 );
+
+run!(
+    core_inconsistent_eq_pair_is_unequal,
+    r#"{
+    type T = Abstract<i64>;
+    impl Eq for T {
+        let eq = |a, b| select a.0 == b.0 { true => true, false => never() }
+    };
+    (T(1) == T(2), T(1) != T(2), T(1) == T(1))
+}"#,
+    prints("[false, true, true]")
+);
+
+#[test]
+fn inconsistent_eq_warning_matches_answer() -> Result<()> {
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "lang::traits::core_inconsistent_eq_pair_is_unequal::interp",
+            "--include-ignored",
+            "--nocapture",
+        ])
+        .env("RUST_LOG", "warn")
+        .output()?;
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("answering false"), "{stderr}");
+    assert!(!stderr.contains("answering Equal"), "{stderr}");
+    Ok(())
+}
