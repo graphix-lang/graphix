@@ -1,7 +1,10 @@
 use crate::{
     env::Env,
     stack::ensure_sufficient,
-    typ::{Bound, FnType, NodePairs, RefHist, RefPair, TVar, Type, TypeRef},
+    typ::{
+        Bound, ContainsFlags, FnType, NodePairs, RefHist, RefPair, TVar, Type, TypeRef,
+        contains::on_copies,
+    },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
@@ -476,7 +479,9 @@ impl Type {
     /// member: calling either takes the same arguments, and the union's
     /// call needs one signature. A generic member meets through a fresh
     /// instance; an occurrence's own cells bind, as the call would bind
-    /// them. `None` when no member changes.
+    /// them, once the meet holds on copies (a probe judges each part apart,
+    /// and a refused commit would leave its bindings behind). `None` when
+    /// no member changes.
     fn meet_open_fns(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
         let fns: SmallVec<[(usize, Arc<FnType>); 4]> = ts
             .iter()
@@ -507,6 +512,11 @@ impl Type {
                 let g = Type::Fn(g.clone());
                 if inst.contains_with_flags(probe, env, &g)?
                     && g.contains_with_flags(probe, env, &inst)?
+                    && on_copies([&inst, &g], |[i, g], trial| {
+                        let commit = ContainsFlags::Commit.into();
+                        Ok(i.contains_int(commit, env, trial, &g)?
+                            && g.contains_int(commit, env, trial, &i)?)
+                    })?
                     && inst.contains(env, &g)?
                     && g.contains(env, &inst)?
                 {

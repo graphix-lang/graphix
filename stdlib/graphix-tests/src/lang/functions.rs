@@ -3388,3 +3388,45 @@ run!(
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(0), Value::I64(0)])
 );
+
+// A select may return two function types as one value: an instance's
+// signature holds `fn(i: 'c) -> 'c` by its own member, never by the
+// `fn(path: string) -> ..` written before it.
+run!(
+    a_returned_union_of_two_function_types_instantiates,
+    r#"{
+        let f = |x| {
+            let s = |n, acc| select n { 0 => str::row_col, _ => |i| i };
+            s(-1, 20)
+        };
+        let v = f("foo");
+        v ~ 3
+    }"#,
+    is(Value::I64(3));
+    FuseExpect::None
+);
+
+run!(
+    a_returned_union_of_two_function_types_typed_member_first,
+    r#"{
+        let f = |x| select x { 0 => |p: string| -> i64 0, _ => |i| i };
+        f(1) ~ 3
+    }"#,
+    is(Value::I64(3));
+    FuseExpect::None
+);
+
+// Two function types that do not meet stay two members of the select's
+// type, and the attempt decides nothing of either: `h` (monomorphic, it is
+// written) still takes an i64.
+run!(
+    a_failed_meet_of_function_arms_binds_nothing,
+    r#"{
+        let h = |i| i;
+        h <- |i| i;
+        let u = select 0 { 0 => |p: string| -> i64 0, _ => h };
+        h(1)
+    }"#,
+    is(Value::I64(1));
+    FuseExpect::None
+);

@@ -117,6 +117,9 @@ pub(super) struct ContainsHist {
     /// (`FnType::contains_int`): a verdict reached under one depends on
     /// the gate, so the probe memo is neither read nor filled.
     pub(super) gated: u32,
+    /// The walk is a trial on copies ([`on_copies`]): a member a union
+    /// admits commits directly, whatever it leaves behind in the copies.
+    trial: bool,
 }
 
 /// How many expansions of one typedef in a row may take larger params. A
@@ -156,7 +159,12 @@ impl ContainsHist {
             closed: Lazy::new(),
             closed_pins: Lazy::new(),
             gated: 0,
+            trial: false,
         }
+    }
+
+    fn trial() -> Self {
+        ContainsHist { trial: true, ..Self::new() }
     }
 
     /// Whether `t` reaches no open cell, through bindings: a commit over
@@ -767,6 +775,33 @@ pub(super) fn hold_rigid(t: &Type, gates: &mut Vec<RigidGate>) {
         gates.push(tv.open_rigid());
         false
     });
+}
+
+/// A trial: `f` over copies of `ts` that share one cell map, each rigid
+/// cell's copy held rigid, and a walk state of its own; what `f` binds, it
+/// binds in the copies alone.
+pub(super) fn on_copies<const N: usize, R>(
+    ts: [&Type; N],
+    f: impl FnOnce([Type; N], &mut ContainsHist) -> Result<R>,
+) -> Result<R> {
+    let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    let copies = ts
+        .map(|t| t.reset_tvars_int(&mut known, Fresh::Copy).unwrap_or_else(|| t.clone()));
+    let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+    for t in ts {
+        find_open_cell(t, true, &mut |tv| {
+            if tv.is_rigid()
+                && let Some(c) = known.get(&tv.cell_addr())
+            {
+                gates.push(match tv.is_quantifier_rigid() {
+                    true => c.open_quantifier_rigid(),
+                    false => c.open_rigid(),
+                });
+            }
+            false
+        });
+    }
+    f(copies, &mut ContainsHist::trial())
 }
 
 /// How two distinct open cells unify.
@@ -2426,9 +2461,14 @@ impl Type {
 
     /// Decide `s ⊇ t` by the first member (structural members before
     /// bare unbound tvars, which admit anything: `['b, Array<'b>]` must
-    /// bind an array through `Array<'b>`) that a probe admits `t` into,
-    /// deciding with `flags` only there: a member that would bind a cell
-    /// and then fail is never tried. `None` when no member admits `t`.
+    /// bind an array through `Array<'b>`) that holds `t`, deciding with
+    /// `flags` only there. A probe judges each part apart, so it admits
+    /// `fn(i: 'c) -> 'c` into `fn(path: string) -> i64`, which a commit
+    /// refuses after binding 'c: where a later member admits `t` too, a
+    /// member that may bind commits only once it holds on copies. A trial
+    /// commits its members directly: one nested in each would double the
+    /// walk at every level of a union typedef chain. `None` when no member
+    /// admits `t`.
     fn set_commit(
         s: &[Type],
         flags: BitFlags<ContainsFlags>,
@@ -2441,18 +2481,30 @@ impl Type {
             .filter(|m| !is_unbound_tvar(m))
             .chain(s.iter().filter(|m| is_unbound_tvar(m)));
         let probe = guide(flags);
-        let mut admitted = false;
+        let commit = flags.contains(ContainsFlags::Commit);
+        let mut pending: Option<&Type> = None;
         for m in members {
-            if m.contains_int(probe, env, hist, t)? {
-                admitted = true;
-                if !flags.contains(ContainsFlags::Commit)
-                    || m.contains_int(flags, env, hist, t)?
-                {
+            if !m.contains_int(probe, env, hist, t)? {
+                continue;
+            }
+            if !commit {
+                return Ok(Some(true));
+            }
+            let Some(p) = pending.replace(m) else { continue };
+            if hist.trial || (hist.closed(p) && hist.closed(t)) {
+                if p.contains_int(flags, env, hist, t)? {
                     return Ok(Some(true));
                 }
+            } else if on_copies([p, t], |[p, t], trial| {
+                p.contains_int(flags, env, trial, &t)
+            })? {
+                return Ok(Some(p.contains_int(flags, env, hist, t)?));
             }
         }
-        Ok(admitted.then_some(false))
+        match pending {
+            Some(m) => Ok(Some(m.contains_int(flags, env, hist, t)?)),
+            None => Ok(None),
+        }
     }
 
     /// The distribution law for product heads: a set whose members
@@ -3133,6 +3185,34 @@ mod tests {
         let free = parsed("['b, Array<'b>]");
         assert!(linked.contains(&env, &free).unwrap());
         assert!(binding(&free, 0).is_none(), "captured: {free}");
+    }
+
+    fn formal(t: &Type) -> Option<Type> {
+        match t {
+            Type::Fn(f) => f.args[0].typ.deref_cloned(),
+            Type::Set(s) => s.iter().find_map(|m| match m {
+                Type::Fn(f) if f.args[0].name().is_some_and(|n| n == "i") => {
+                    f.args[0].typ.deref_cloned()
+                }
+                _ => None,
+            }),
+            _ => panic!("not a function: {t}"),
+        }
+    }
+
+    // the first member admits `fn(i: 'c) -> 'c` part by part but not whole
+    // ('c would be string and i64): the second takes it, at ⊥
+    #[test]
+    fn a_member_admitted_by_parts_alone_binds_nothing() {
+        let env = Env::default();
+        let written = |ms: [&str; 2]| Type::Set(Arc::from_iter(ms.map(parsed)));
+        let union = written(["fn(path: string) -> i64", "fn(i: _) -> _"]);
+        let one = parsed("fn(i: 'c) -> 'c");
+        assert!(union.contains(&env, &one).unwrap(), "{union} ⊇ {one}");
+        assert_eq!(formal(&one), Some(Type::Bottom), "{one}");
+        let both = written(["fn(path: string) -> i64", "fn(i: 'c) -> 'c"]);
+        assert!(union.contains(&env, &both).unwrap(), "{union} ⊇ {both}");
+        assert_eq!(formal(&both), Some(Type::Bottom), "{both}");
     }
 
     #[test]
