@@ -151,7 +151,8 @@ stripped): `Exact` — pure programs, exact per-cycle trace agreement,
 with captured print output compared as well; `FinalValues` —
 value-deterministic async (IO pacing races quiescence, but each
 epoch's settled value is deterministic, so compare per-epoch finals,
-and each epoch's prints as a multiset);
+and each epoch's prints as a set: how often a print fires is pacing
+too, once per cycle its async inputs land in);
 `Excluded` — random values, the wall clock, OS-assigned ports and
 paths, child processes (a child's lifetime is program data, so the
 epoch its exit lands in is the wall clock's), an fs mutation racing

@@ -909,7 +909,7 @@ async fn drive_inner(
         }
     }
     let mut trace = trace::Trace::from_segments(&segs, eid);
-    // Every tier that compares (FinalValues as a per-epoch multiset). The
+    // Every tier that compares (FinalValues as a per-epoch set). The
     // runtime runs on past a capped trace, so the capture stops at the last
     // segment's cycle.
     if tier != OracleTier::Excluded {

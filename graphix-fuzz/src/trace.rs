@@ -330,12 +330,15 @@ impl Trace {
             && self.prints() == other.prints()
     }
 
-    /// Each epoch's printed texts, as a multiset: offsets are not
-    /// contractual where values compare final.
+    /// Each epoch's printed texts, as a set: where values compare final,
+    /// neither a print's offset nor how often it fired is contractual (a
+    /// print over a collection of async replies fires once per cycle
+    /// the replies land in).
     fn prints(&self) -> Vec<(u32, &str)> {
         let mut p: Vec<(u32, &str)> =
             self.stdout.iter().map(|l| (l.epoch, l.text.as_str())).collect();
         p.sort();
+        p.dedup();
         p
     }
 
@@ -510,5 +513,31 @@ mod tests {
         f.epochs[0].capped = true;
         assert!(!a.agrees_final(&f));
         assert_eq!(a.first_final_difference(&f), a.first_difference(&f));
+    }
+
+    /// At final strength an epoch's prints are a set: a print fired
+    /// once per cycle its async inputs landed in compares as one, and a
+    /// different text still differs.
+    #[test]
+    fn final_prints_are_a_set() {
+        let printed = |lines: &[(u32, i64, &str)]| {
+            let mut t = tr(vec![vec![(0, 7)]]);
+            t.stdout = lines
+                .iter()
+                .map(|&(epoch, offset, text)| Printed {
+                    epoch,
+                    offset,
+                    text: text.into(),
+                })
+                .collect();
+            t
+        };
+        let once = printed(&[(0, 1, "hello\n")]);
+        let twice = printed(&[(0, 2, "hello\n"), (0, 3, "hello\n")]);
+        assert!(once.agrees_final(&twice));
+        assert_eq!(once.first_final_difference(&twice), None);
+        let other = printed(&[(0, 1, "hello\n"), (0, 1, "bye\n")]);
+        assert!(!once.agrees_final(&other));
+        assert_eq!(once.first_final_difference(&other), Some(TraceDiff::Stdout));
     }
 }
