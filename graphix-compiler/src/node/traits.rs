@@ -389,6 +389,30 @@ impl<R: Rt> Update<R> for Trait<R> {
         TagValue::phantom_ref()
     }
 
+    /// A default is held to its method's `#[pure]` or `#[sync]` whether
+    /// or not an impl or a call takes it, as each impl's method is.
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self.defaults, self.defaults.typecheck1(ctx))?;
+        let Some(record) = ctx.env.trait_def(self.def.id).cloned() else { return Ok(()) };
+        for m in record.methods.iter().filter(|m| !m.requires.is_empty()) {
+            let Some(id) = m.default else { continue };
+            let Some(def) = ctx
+                .bind_to_lambda
+                .get(&id)
+                .and_then(|v| v.downcast_ref::<LambdaDef<R>>())
+            else {
+                continue;
+            };
+            for name in m.requires.iter() {
+                let kind = DefAssertionKind::from_name(name).expect("method requirement");
+                if let Some(message) = crate::analysis::assertion_failure(kind, def) {
+                    return Err(anyhow!("{message}").at(&self.spec));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
         let Some(record) = ctx.env.trait_def(self.def.id).cloned() else { return Ok(()) };
@@ -795,7 +819,7 @@ impl<R: Rt> Impl<R> {
     /// The core-trait prototypes: a call site per method over
     /// synthesized argument bindings of the target type, typechecked
     /// and statically resolved like any call, never updated.
-    // CR claude for claude: [bug/medium] Only core traits get prototype call sites, so a
+    // XCR claude for claude: [bug/medium] Only core traits get prototype call sites, so a
     // user trait's declared #[pure]/#[sync] is checked of an impl only when some
     // build-time call reaches it. An uncalled violating impl compiles. A dynamic
     // module's impure impl of a sig-declared `#[pure]` method loads with status null:
@@ -827,6 +851,13 @@ impl<R: Rt> Impl<R> {
     // default included: trait Score { #[pure] val score: fn(self) -> i64 = |x| 1; #[pure]
     // val bump: fn(self) -> i64 = |x| count(x) }; impl Score for i64 { let score = |x| x
     // }; 0 compiles and runs; only a call Score::bump(3) refuses.
+    // 2026-10-29 claude: The trait node's typecheck1 now holds each default to its
+    // method's #[pure]/#[sync] from the default's checked definition facts (the same
+    // assertion_failure the impl check uses), whether or not an impl or a call takes it;
+    // the impl check skipped a method an impl leaves to its default, and a default's own
+    // attributes are asserted only when an instance is built. Pins:
+    // lang::traits::uncalled_trait_default_must_be_pure (the review's probe, refused),
+    // a_pure_trait_default_passes. graphix-tests lib: 11588 passed.
     fn build_prototypes(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());

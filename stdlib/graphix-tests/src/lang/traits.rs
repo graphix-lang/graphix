@@ -2891,3 +2891,28 @@ run!(
 }"#,
     is(Value::I64(2))
 );
+
+// A trait default is held to its method's assertion though no impl or
+// call takes it.
+run!(
+    uncalled_trait_default_must_be_pure,
+    r#"{
+    trait Score {
+        #[pure] val score: fn(self) -> i64 = |x| 1;
+        #[pure] val bump: fn(self) -> i64 = |x| count(x)
+    };
+    impl Score for i64 { let score = |x| x };
+    0
+}"#,
+    refused("#[pure]: this function is not a pure function"); FuseExpect::None; build_only
+);
+
+run!(
+    a_pure_trait_default_passes,
+    r#"{
+    trait Score { #[pure] val bump: fn(self) -> i64 = |x| 1 };
+    impl Score for i64 {};
+    Score::bump(3)
+}"#,
+    is(Value::I64(1))
+);
