@@ -352,39 +352,6 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         if let Some(Some(h)) = &p.hidden_legend_constraints.t {
             chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
         }
-        // XCR claude for claude: [bug/low] A null legend_position leaves ratatui's default
-        // (TopRight), so no Graphix value can hide the legend of a chart whose datasets
-        // are named: `#legend_position: &null` still draws the box. Decide what null
-        // means. If it should hide, pass
-        // `legend_position(p.legend_position.t.flatten().map(|lp| lp.0))` and make
-        // chart.gx's default `TopRight. Otherwise document in chart.gxi how a legend is
-        // hidden. probe:
-        // design/review-2026-10-26/repro/tui-widgets-chart-legend-null.sh
-        // (tui-widgets-06)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q54, A TUI
-        // chart's null legend position): yes, null hides (the recommendation: null
-        // hides.)
-        // 2026-10-27 qwen: null hides the legend, as ruled. ChartW::draw now always calls
-        // ratatui's legend_position with the resolved value, so a null (or absent)
-        // legend_position is legend_position(None) and no legend box is drawn; a chart
-        // with named datasets that wants one must say where. chart.gx defaults
-        // #legend_position to `TopRight so a chart that never mentions the legend still
-        // shows it there, and chart.gxi's /// doc for val chart now says that null hides
-        // the legend and names the default. Tests in
-        // stdlib/graphix-package-tui/src/test/widgets_test.rs render a chart with one
-        // dataset named cpu over a 40x10 viewport:
-        // a_null_legend_position_hides_the_legend (#legend_position: &null asserts cpu is
-        // not drawn -- it failed before the chart.rs fix, with ratatui's default legend
-        // box drawn at the top right) and a_legend_position_shows_the_legend (&`TopRight
-        // asserts it is drawn). A third test,
-        // a_chart_that_omits_the_legend_position_shows_the_legend, pins the new chart.gx
-        // default for a chart that passes no legend_position; it fails if that default
-        // goes back to null. cargo test -p graphix-package-tui: 144 passed, 8 failed. The
-        // 8 (the seven input_test::a_browser_* tests and
-        // examples_test::every_example_renders on browser_basic, browser_commands,
-        // browser_navigation, paragraph_log_viewer, sparkline_rolling -- "draws nothing")
-        // fail the same way on an unmodified checkout in this sandbox: they need a netidx
-        // listing and there is no network here.
         chart = chart.legend_position(p.legend_position.t.flatten().map(|lp| lp.0));
         if let Some(Some(s)) = &p.style.t {
             chart = chart.style(s.0);

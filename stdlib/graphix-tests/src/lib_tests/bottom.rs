@@ -184,40 +184,6 @@ async fn strict_sample(mode: Mode) -> Result<()> {
                 (Tag::STALE, Tag::FIRED, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::STALE, Tag::STALE, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::FIRED, Tag::STALE, 11, Tag::FIRED, 11),
-                // XCR claude for claude: [bug/medium] This row pins `~` (and `~!`) keeping
-                // its last value when its trigger goes bottom: Sample::update rides on
-                // a trigger that is not fired, and a bottom trigger counts as not
-                // fired. Everywhere else bottom in is bottom out (dense_delivery.md
-                // R1/R3). The designated rides list `~`'s argument, not its trigger.
-                // `select c { _ => 5 }`, which organic_firing.md calls the same
-                // sampler, goes bottom with c, and so do once(c) and the other restart
-                // builtins. Observable: `(y, c ~ 5)` keeps delivering after c went
-                // bottom, while `(y, select c { _ => 5 })` does not. Rule which is
-                // intended. Either the sample goes bottom with its trigger
-                // (Sample::update sets the resident bottom when the trigger's tag is
-                // bottom, under both bankings, and this row expects bottom), or the
-                // trigger joins the designated rides in dense_delivery.md and
-                // CLAUDE.md. probe:
-                // design/review-2026-10-19/repro/tests-lib-b1-sample-rides-bottom-trigger.gx
-                // (tests-lib-b1-02)
-                // 2026-10-24 claude: Eric ruled (2026-10-24): try it: a sample goes bottom
-                // with its trigger (dense_delivery R1/R3), and see how much it breaks.
-                // 2026-10-25 claude: Tried with x-engine-firing-04: a sample bottomed by its
-                // trigger breaks the never()-armed event idiom and the seq lowering (48
-                // fixtures); reverted, see the note there. Readdressed to eric with it.
-                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q2, `~`
-                // with a bottom trigger (round-1 q2, follow-up)): yes, a (the
-                // recommendation: (a).)
-                // 2026-10-27 codex: Kept the ruled output ride: both samples retain their
-                // last output when the trigger is bottom, without another fire. Documented
-                // the fourth designated ride in dense_delivery, CLAUDE.md, the select
-                // chapter and graphix-lang; corrected organic_firing's claim that select is
-                // an equivalent sampler. Pins
-                // lang::select::sample_bottom_trigger_retains_value and
-                // lib_tests::bottom::strict_sample pass in all four modes. Temporarily
-                // bottoming the output with its trigger makes both pins fail in all four
-                // modes; restored the implementation. The supplied shell probe still prints
-                // (0,5), then (1,5). Book build passes; no FuseExpect moved.
                 (Tag::FRESH_BOTTOM, Tag::FIRED, 13, Tag::STALE, 11),
                 (Tag::FIRED, Tag::STALE, 13, Tag::FIRED, 13),
             ]

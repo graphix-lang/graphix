@@ -861,27 +861,6 @@ fn draw_bar_chart<DB: DrawingBackend, X: GXExt>(
     for (group, (i, ds)) in series.enumerate() {
         let DatasetEntry::Bar { style, .. } = ds else { continue };
         let fill = ShapeStyle::from(series_color(cs, style.color, i)).filled();
-        // XCR claude for claude: [bug/low] Each bar series is a separate Histogram over
-        // the same category segments, so series overlap full-width at a shared
-        // category, and a later series hides every earlier one it is at least as tall
-        // as. nearest gives every series at a slot the same distance and keeps the
-        // first, so the tooltip names the earliest, possibly hidden, series. Needs a
-        // decision on the multi-series layout: grouped (each series takes 1/n of the
-        // slot, nearest picks by sub-slot) or stacked. Found by reading; not run.
-        // (gui-chart-05)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q49, Bar
-        // charts with several series): yes, grouped (the recommendation: grouped.)
-        // 2026-10-28 codex: Grouped bar series in dataset order with a stable sub-slot
-        // per series and hover selection by that sub-slot (missing values leave a
-        // gap). CPU pin
-        // widgets::chart::draw::grouped_tests::grouped_bar_geometry_and_hover
-        // reproduced overlapping rectangles before the fix and passes after it; it
-        // covers positive/negative values, per-series hover and a missing value. Added
-        // GuiTestHarness pin grouped_bars_remain_visible_and_hover_their_subslot, but
-        // it cannot render in this sandbox: no GPU adapter, including software
-        // fallback. Updated the bar-chart book page. Ran cargo test -p
-        // graphix-package-gui --offline grouped_bar_geometry_and_hover (1 passed);
-        // full GUI suite follows with the batch.
         let coord = chart.as_coord_spec().clone();
         let bars = (0..categories.len()).filter_map(|slot| {
             let v = w.bars.value(i, slot).filter(|v| v.is_finite())?;

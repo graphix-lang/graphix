@@ -2129,33 +2129,6 @@ impl<R: Rt> ByRef<R> {
 }
 
 impl<R: Rt> Deref<R> {
-    // XCR claude for claude: [bug/low] A read through a union of writable references is
-    // refused where a write through the same union is accepted. With `x: i64`, `y:
-    // f64` and `let r = select b { true => &mut x, false => &mut y }`, `*r <- ..` is
-    // checked against every member (ConnectDeref::typecheck0_with) but `*r` fails
-    // "expected a reference not [&mut i64, &mut f64]". `select b { true => &mut x,
-    // false => &mut (i64:2) }` fails the same way, as `[&mut i64, &mut '_: unbound]`:
-    // the fresh cell is still open when the arms join, so the two members do not
-    // merge. A union of `&` references reads, since `&` merges covariantly. Question:
-    // does `*r` over a union of references read the union of their referents (the
-    // natural dual of the write rule)? If so, share ConnectDeref's member expansion
-    // (typedefs included) and take the union here; if not, the write should be
-    // refused too. Found by the fuzz generator's arm-minted references
-    // (fuzz-gen-a-06), which now mint only named targets. (deref-union-01)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q25, Reading
-    // through a union of references): yes, read the union (the recommendation: read
-    // the union.)
-    // 2026-10-27 codex: Implemented Eric's q25 ruling. Deref and ConnectDeref share a
-    // pooled reference-target traversal that expands aliases and union members; reads
-    // union every referent, writes retain the requirement that every target be
-    // writable and accept the value. Pins
-    // lang::byref::deref_union_{reads_every_referent,alias_members,fresh_cell}: all 12
-    // mode cases failed without the fix with expected-reference diagnostics. With the
-    // fix the complete lang::byref:: module passes (250 tests); the read pin also
-    // asserts its observed JIT fusion. Validation: shared flock,
-    // CARGO_TARGET_DIR=$PWD/target, cargo test -p graphix-tests --offline --lib
-    // lang::byref::. Rules, book references page and language skill updated. No netidx
-    // public signature changed.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,

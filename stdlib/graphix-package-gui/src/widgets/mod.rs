@@ -409,40 +409,6 @@ impl<X: GXExt, T: Item<X>, S: Shape> Children<X, T, S> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        // XCR claude for claude: [structure/low] This recompile-on-change block is
-        // copied by hand in MenuItems::update, MenuBarW::handle_update and twice in
-        // TableW::handle_update. The matching None-or-cast at compile time is copied in
-        // MenuItems::compile, MenuBarW::compile and TableW::compile. Children is
-        // already this pair for GuiW items, and MenuItems is the same struct for menu
-        // items. Make Children generic over its item (Children<X, T = GuiW<X>>, with
-        // compile and update taking the item's compile function) and use it for menu
-        // items, menu groups and table columns and rows. That deletes the copies, which
-        // today differ in their error context. Found by reading; not run.
-        // (gui-widgets-b-03)
-        // 2026-10-26 claude: Children<X, T = GuiW<X>> holds any Item (compile from a
-        // value, take an update); GuiW, MenuItemKind, CompiledMenuGroup, CompiledColumn
-        // and a table row (Vec<GuiW>) implement it, so MenuItems is Children<X,
-        // MenuItemKind<X>> and MenuBarW's menus and TableW's columns and rows are
-        // Children; the four hand copies and the three None-or-cast blocks are gone,
-        // each list's context now added by its caller. Pins: the gui package's menu,
-        // context menu, table and reconcile tests (all 324 pass).
-        // 2026-10-27 claude: Children<X, T> with Item covers menu items, menu groups
-        // and table columns. But c8dd9bc2b (gui-widgets-b-02) replaced the table-row
-        // Item with table::Rows, and that brought back a hand copy. Rows::update
-        // repeats Children::update's recompile-on-change block (id == r.id && last !=
-        // v, block_on reconcile, set last, then update each item), and Rows::field
-        // repeats the None-or-cast seeding. This note's claim that 'TableW's rows are
-        // Children' no longer holds. Fold Rows into Children so only one copy remains:
-        // for example, give Children a hook for how a list value becomes its flat items
-        // (rows flatten and record ends), or make Rows a Children over the flattened
-        // cells plus its ends.
-        // 2026-10-27 claude: Children takes a Shape (how a list value lays out its
-        // items, and what of that layout it keeps): Flat for every list but table rows,
-        // whose RowEnds flattens rows into cells and keeps where each row ends;
-        // table::Rows is Children<X, GuiW<X>, RowEnds> with len and row, so Rows' copy
-        // of the recompile-on-change block and of the None-or-cast seeding are gone. A
-        // failed reconcile keeps the old layout with the old items. Covered by the gui
-        // reconcile and table tests (335 pass).
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
             let (vals, shape) = S::items(v.clone())?;
             rt.block_on(reconcile(&mut self.ws, vals, |v| T::compile(gx, v)))?;
@@ -862,42 +828,6 @@ flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 
 /// Compile a widget value into a GuiW. Returns a boxed future to
 /// avoid infinite-size futures from recursive async calls.
-// XCR claude for claude: [bug/medium] This compile, and the handle_update, view and
-// on_message recursion over the widget tree, run with no stack guard. A container chain
-// 300 deep, compiled as the event loop does it (Handle::block_on on the 8 MiB main
-// thread), overflows and aborts the process; 100 deep compiles. The TUI got the fix for
-// x-stack-01 (StackGuarded around its compile future, ensure_sufficient in
-// handle_update and draw), but the GUI never did. Fix: move StackGuarded to one place
-// both UI packages share (graphix-rt, beside reconcile), wrap this Box::pin in it, and
-// run the GuiWidget recursion under ensure_sufficient. probe:
-// design/review-2026-10-26/repro/x-stack-gui-deep-widget.rs (x-stack-02)
-// 2026-10-26 claude: StackGuarded moved to graphix_types::stack beside
-// ensure_sufficient (the TUI imports it there; graphix-rt does not reach graphix-types,
-// so not beside reconcile). widgets::compile is Box::pin(StackGuarded(..)), and GuiW is
-// now a newtype over the boxed widget whose handle_update, view, on_message, take_ops,
-// before_view and idle run under ensure_sufficient (Deref gives the rest), so every
-// walk into a child goes through the guard. Pin: a_deep_widget_tree_compiles_and_walks
-// (widgets_test.rs) compiles a 1000-deep container chain and runs every walk on a 128
-// KiB thread; it aborts with a stack overflow without the compile guard, and again
-// without the walk guards. Not covered: iced's own layout, draw and event recursion
-// over the Element tree, which is upstream.
-// 2026-10-27 claude: StackGuarded around widgets::compile and the GuiW newtype guarding
-// handle_update, view, on_message, take_ops, before_view and idle are what the CR asked
-// for, and the pin shows those walks hold at 1000 deep. But the CR's problem is a
-// 300-deep chain aborting the process in a window, and the pin never runs iced's side
-// of a frame: layout, update, operate and draw over the Element tree. Nothing shows
-// that the reported scenario now runs. Add an h.render() (frame()) of the deep tree to
-// the pin, on a stack no bigger than the event loop's. Also, per CLAUDE.md, iced's
-// unbounded Element recursion is either an UPSTREAM.md entry (as handlebars' depth
-// recursion is) or, since it is a crash, something Graphix bounds or works around, e.g.
-// a depth limit refused at compile with a clear error. Dropping a deep GuiW chain is
-// unguarded destructor recursion too, which the stack-discipline rules list.
-// 2026-10-27 claude: Pin added: widgets_test::a_deep_widget_tree_draws builds a
-// 300-deep container chain and runs a whole frame (frame::frame: build, operate,
-// update, redraw, draw) on an 8 MiB thread, the event loop's size. iced's own recursion
-// is no crash at depths a program reaches: the same frame ran at 1000, 3000 and 10000
-// deep on 8 MiB (10000 in 78 s, debug), and dropping the 10000-deep GuiW chain did not
-// overflow, so no UPSTREAM entry.
 pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
     Box::pin(StackGuarded(async move {
         let Some((s, [v])) = rep::variant(&source) else {

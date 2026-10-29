@@ -121,31 +121,6 @@ graphix_package_core::fast_builtin!(Sort, SortEv, "array_sort", fc_sort; cached;
 fn fc_dedup(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Array(a) => {
-            // XCR claude for claude: [perf/medium] Under the hook loan, every abstract
-            // value whose type implements Eq hashes to its id alone (GxAbstract::hash,
-            // eq_applies), so this set compares each element with every kept one
-            // through the Eq hook. That is quadratic: 4000 elements take 7 s in debug
-            // where the impl-free run takes 0.1 s. Decide whether dedup keys by Ord
-            // where the type implements it (as map keys do), or accept and document the
-            // cost. probe:
-            // design/review-2026-10-26/repro/c-module-traits-dedup-quadratic.sh Also
-            // reported as (tests-fusion-traits-04). (c-module-traits-05)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q58,
-            // discussed): add a hash method to the core Eq trait that returns the part
-            // of the value to be hashed (what the implementer's eq compares). The
-            // runtime hashes that, so hashing and dedup over such values stop degrading
-            // to the type id.
-            // 2026-10-28 claude: Ruling built: core Eq has an optional hash method
-            // (fn(self) -> Any), the part of a value its eq reads;
-            // CoreTrait::runtime_method lets an impl leave it out and refuses a
-            // program's call ("Eq::hash is called by hashing, never by a program").
-            // GxAbstract's Hash, where an Eq impl decides equality, hashes the id, the
-            // params and that part (ValueHookDispatch::hash,
-            // coretraits::dispatch_hash); left out, the type alone, as before. dedup of
-            // 4000 distinct values: 184 ms with hash, 3.6 s without. Pins:
-            // abstract_value::test::eq_hashes_by_its_part,
-            // lang::traits::{eq_hash_merges_what_eq_calls_equal,
-            // eq_hash_is_not_called_by_a_program}.
             let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
             let mut kept: LPooled<Vec<Value>> = LPooled::take();
             for v in a.iter() {

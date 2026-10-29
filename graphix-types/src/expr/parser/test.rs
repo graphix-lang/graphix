@@ -317,38 +317,6 @@ fn comment_above_impl_method() {
 }
 
 #[test]
-// XCR claude for claude: [bug/medium] [bug/medium] This pins a refusal that the documented
-// comment rule does not make. A comment at the end of a list item's line, or below a
-// list's last item or a file's, is legal everywhere `commented` parses. `impl_decl`,
-// `trait_decl` and interface items use `sep_by_tok` instead, so impl and trait method
-// lists and .gxi files refuse both forms. Most of these refusals are a bare "Unexpected
-// `/`", or "Unexpected `}`" after a trailing `;`, with no reason note. Either parse
-// these lists through `commented` (impl methods are `Expr`s already;
-// `TraitMethod`/`SigItem` need eol/below) and flip this test, or narrow the rule in
-// CLAUDE.md and give the refusals the "a comment stands on a line of its own" note.
-// probe: design/review-2026-10-26/repro/tests-parser-comment-lists.sh (tests-parser-01)
-// 2026-10-26 claude: The for-claude twins (t-parser-b-02, t-parser-a-04, t-parser-b-03,
-// t-parser-a-03) were fixed by taking 'the rule covers every list': interface items and
-// trait methods take an eol comment (`Eol`) and the lines below the last (`Sig::below`,
-// `TraitExpr::below`), impl bodies parse as statements, and a comment-only .gx or .gxi
-// parses; CLAUDE.md and the book's comment section say so. If you rule the rule
-// narrower, those XCRs come back to CR. tests-parser-01's test is now
-// a_comment_below_the_last_impl_method_rides_it.
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
-// every list (built)): yes, keep and extend (the recommendation: keep and extend.)
-// 2026-10-28 codex: Kept the already-built interface, trait/impl, map, never/any and
-// comment-only-file behavior. Extended labeled call arguments, lambda formals (including
-// variadic and empty lists), and use trees through the shared commented-list parser.
-// Formal comments live in ItemComments/LambdaExpr; use comments retain their prefix depth
-// alongside canonical import paths, with comment-aware grouping in program and interface
-// printers. The formatter verifies these ornaments on reparse and does not merge
-// decorated use statements. Pins comments_on_labeled_arguments_and_formals and
-// comments_in_use_trees both failed on the old parsers and now pass, with comment-count
-// preservation and idempotence at widths 30/90 for programs and interfaces. Existing
-// comments_after_list_items_stay and a_comment_below_the_last_impl_method_rides_it retain
-// the earlier fixes; their named probes already passed before this change. Full
-// graphix-types lib: 343 passed. Book, language skill, CLAUDE/AGENTS and module-system
-// design updated; session format bumped.
 fn a_comment_below_the_last_impl_method_rides_it() {
     for src in [
         "impl Show for Counter { let show = |c| \"c\"\n// below\n}",

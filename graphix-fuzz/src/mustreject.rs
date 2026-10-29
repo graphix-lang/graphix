@@ -643,52 +643,6 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         | ExprKind::Tuple { args }
         | ExprKind::Variant { args, .. } => args.iter().any(open),
         ExprKind::Struct(st) => st.args.iter().any(|(_, a)| open(a)),
-        // XCR claude for claude: [bug/medium] `ExprTypeSite::cell` is true for any node
-        // whose own type is a TVar, bound or not. So this fallback calls an operator's,
-        // a negation's and a `$`/`?` result open, and retype, widen-hop, shared-var and
-        // ref-widen (and abstract_widen's own `types.cell` test) skip every let over `a
-        // + 1`, `-a` or `cast<i64>(x)$`, the commonest lets in generated programs. In
-        // the other direction, the Apply arm checks a callee's body only for syntactic
-        // ⊥ (`open_init(types, &[], 0, b)`). So `mk(1)` with `let mk = |u: i64| z` over
-        // `let z = never()` looks concrete, retype writes `v <- "tm"` before the use
-        // that decides z's cell, and the refusal at that use is a false MISPLACED.
-        // Decide openness one way in both modules: reuse typemorph's `Open` closure
-        // (lambda captures included) plus the generalized-return rule, and recurse into
-        // operator and postfix operands instead of reading `cell`. probe:
-        // design/review-2026-10-26/repro/fuzz-mutate-cell-skips-operators.sh and
-        // design/review-2026-10-26/repro/fuzz-mutate-open-init-captured-cell.gx
-        // (fuzz-mutate-02)
-        // 2026-10-26 claude: open_init recurses into operator, negation, $/?, part-read
-        // and constructor operands instead of reading ExprTypeSite::cell (a $/? over a
-        // value that is only an error is open: succeeds), comparisons and logic ops are
-        // bools, and a call is open through a callee let with no return type whose let
-        // reaches an open cell by typemorph::open_lets (typemorph's closure, now one
-        // function both modules use). abstract_widen's own per-node cell test is
-        // unchanged. Pins: must_reject_families_are_refused_where_their_rules_say (let
-        // v = 2 + 1, -(2 + 1), cast<i64>(2.5)$ now get a retype site) and
-        // must_reject_families_skip_what_their_rules_allow (the captured-cell mk(1)
-        // subject).
-        // 2026-10-27 claude: Partial fix. open_init now recurses into operators,
-        // negation, $/?, part reads and constructors, and treats a callee whose let
-        // reaches an open cell (typemorph::open_lets) as open. Pinned (let v = 2 + 1 /
-        // -(2 + 1) / cast<i64>(2.5)$ get retype; the captured-cell mk(1) is skipped).
-        // But the CR also names abstract_widen's own types.cell test, and that is
-        // unchanged. abstract_widen (mustreject.rs:480) still skips a let when any
-        // non-Apply preorder node is a cell, and ExprTypeSite::cell is true for a bound
-        // TVar (ide.rs:115). So `let v = m0::mkb(x + i64:1)` still gets no
-        // abstract-widen site. Remains: decide abstract_widen's skip with open_init
-        // (its Apply arm already treats an open argument as open), and pin a B<i64> let
-        // over an operator argument.
-        // 2026-10-27 claude: abstract_widen now skips a let only when open_init says
-        // its initializer is open (the rule retype and the others use), not when any
-        // preorder node's type is a cell, bound or not. Pin:
-        // must_reject_families_are_refused_where_their_rules_say's new case, B<i64>
-        // over m0::mkb(x + i64:1) gets an abstract-widen site (the old per-node test
-        // skipped it).
-        // 2026-10-28 claude: Family 11 is now abstract-param (abstract_param): under D3
-        // a constructed value's parameter is bounded below by its payload, so a wider
-        // annotation decides it and is no mutant; the mutation is now the disjoint
-        // m::B<string>. The open_init skip is unchanged.
         _ => types.cell(value),
     }
 }

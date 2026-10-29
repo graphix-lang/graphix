@@ -1155,34 +1155,6 @@ pub enum Type {
     Hole,
     /// A conjunct a cell's constraints may hold ([`Bound`]). Legal only as
     /// a constraint.
-    // XCR claude for claude: [structure/medium] Concrete, Function, Singleton, OneNumber,
-    // Discernible and Ordered are each a Type variant that is "legal only as a
-    // constraint". Yet every type walk (print, matches, setops, normalize, cast, tval,
-    // contains, fusion, pattern) lists all six, often in both pair orders, and they can
-    // appear in any type position. Adding the next bound means editing about thirty
-    // arms. Sites with a fallback (`require_bounds`'s `_ => ()`, settle's per-kind
-    // checks) silently give a new bound the default treatment. Two fixes are possible.
-    // The first is `Type::Bound(BoundKind)`, so the uniform arms become one pattern and
-    // only tvar/settle/contains match on the kind. The second is to take bounds out of
-    // Type altogether, as a constraint enum on the cell, so a bound in a type position
-    // cannot be written. (x-dup-07)
-    // 2026-10-18 claude: `Data` (the writers' bound) was added beside these, through the
-    // same thirty arms.
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Take Type::Bound(BoundKind).
-    // 2026-10-27 claude: Not done in batch L1-b08, sized only: the eight bound variants
-    // are named 378 times across 22 files (typ/mod.rs 144, setops 40, cast 33, matches
-    // 24, normalize 24, print 24, contains 20, tvar 11, fusion/mod.rs 8, pattern.rs 8,
-    // typexp.rs 8, expr/test.rs 8, tval 8, the rest 1-4). Type::Bound(BoundKind) also
-    // moves Type's derived Ord and its image encoding (a format bump), so it wants a
-    // batch of its own run while no other lane edits graphix-types/src/typ.
-    // 2026-10-27 claude: Type's eight bound variants are one, Type::Bound(Bound), with
-    // Bound { Concrete, Data, Function, Singleton, OneNumber, NoError, Discernible,
-    // Ordered }. The 29 or-pattern runs that listed all eight, each sharing one arm
-    // body, are now one Type::Bound(_) alternative (31 sites), so a ninth bound needs no
-    // edit there. The 152 references left name their bound (Debug, Eq/Ord/Hash, the
-    // image tags, contains, settle, tvar, print). Image bytes and Type's order are
-    // unchanged: each bound keeps its own tag, so no format bump. Whole gate green.
     Bound(Bound),
 }
 

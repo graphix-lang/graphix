@@ -39,31 +39,6 @@ pub(super) fn labeled_first(labeled: impl IntoIterator<Item = bool>) -> bool {
 
 pub(super) const LABELED_FIRST: &str = "labeled arguments come before positional ones";
 
-// XCR claude for claude: [bug/low] Several lists that the formatter lays out one item per
-// line refuse comments, although CLAUDE.md allows them on any list item. Refused: a
-// comment above a labeled argument (`#width:` takes no `leading_decorations` here), an
-// above or end-of-line comment on a lambda formal, an end-of-line or below comment on a
-// map literal entry (`brace` parses the entries with `sep_by_tok`, not `comma_items`),
-// and any comment inside a `use` tree. Arrays, positional arguments and struct fields
-// accept the same placements. Either extend these parsers the way struct fields work,
-// or narrow the rule in CLAUDE.md. probe:
-// design/review-2026-10-26/repro/t-format-resolver-comment-gaps.sh
-// (t-format-resolver-02)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
-// every list (built)): yes, keep and extend (the recommendation: keep and extend.)
-// 2026-10-28 codex: Kept the already-built interface, trait/impl, map, never/any and
-// comment-only-file behavior. Extended labeled call arguments, lambda formals (including
-// variadic and empty lists), and use trees through the shared commented-list parser.
-// Formal comments live in ItemComments/LambdaExpr; use comments retain their prefix
-// depth alongside canonical import paths, with comment-aware grouping in program and
-// interface printers. The formatter verifies these ornaments on reparse and does not
-// merge decorated use statements. Pins comments_on_labeled_arguments_and_formals and
-// comments_in_use_trees both failed on the old parsers and now pass, with comment-count
-// preservation and idempotence at widths 30/90 for programs and interfaces. Existing
-// comments_after_list_items_stay and a_comment_below_the_last_impl_method_rides_it
-// retain the earlier fixes; their named probes already passed before this change. Full
-// graphix-types lib: 343 passed. Book, language skill, CLAUDE/AGENTS and module-system
-// design updated; session format bumped.
 fn applyarg<I>() -> impl Parser<I, Output = (Option<ArcStr>, Expr)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,

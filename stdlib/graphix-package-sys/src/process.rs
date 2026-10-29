@@ -253,48 +253,6 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
 #[derive(Debug, Default)]
 pub(crate) struct ProcessSpawnEv;
 
-// XCR claude for claude: [bug/medium] spawn takes the CANCEL_SAFE default. When an arm
-// sleeps before the spawn's reply lands, CachedArgsAsync::sleep remints the reply id
-// and GX::deliver drops the Child: the process runs, but the program never gets its
-// handle. It is orphaned with kill_on_drop false (the default) and killed unseen with
-// true. In the probe, 201 children ran and the program received 1 Child.
-// design/async_sleep_outputs.md keeps a call that is not cancel-safe exactly when
-// dropping it would lose what it already did, and a started child is that.
-// sys_tcp_accept and sys_tcp_connect lose their connection the same way. Decide whether
-// these evals are CANCEL_SAFE = false (the reply answers at the wake) or whether the
-// loss is the rule, and document it. probe:
-// design/review-2026-10-26/repro/x-concurrency-spawn-handle-lost-at-sleep.sh
-// (x-concurrency-02)
-// 2026-10-26 claude: sys-io-01's fix made spawn, tcp connect and tcp
-// listen CANCEL_SAFE = false, applying design/async_sleep_outputs.md's existing rule (a
-// call whose dropped reply loses what it did finishes and answers at the wake); pin
-// lib_tests::process::spawn_answers_at_the_wake. tcp accept is Calls::Latest, which
-// cannot be non-cancel-safe, so its loss stands until (x-async-io-01) is decided.
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q16/q18, discussed):
-// nothing delivers after a sleep. A call site that sleeps opens a fresh reply slot and
-// drops any reply to the old one; work is cancelled where it can be, and the book
-// documents what cannot be (a write still happens, its result is not seen). A stream
-// read whose reply is dropped returns its bytes to the stream's buffer, so no data is
-// lost. This replaces the CANCEL_SAFE split (a call not cancel-safe finishing and
-// answering at the wake).
-// 2026-10-27 claude: Built Eric's q16/q18 ruling: nothing answers a call after its
-// site's sleep. A sleep counts a generation in the site's KeptReplies, and a reply of
-// an older generation, kept or arriving later, is settled by the new
-// EvalCachedAsync::reclaim (stream reads give their bytes back to the stream through a
-// ReadTicket; later reads of that stream wait until every earlier read settles) or
-// dropped. Calls not cancel-safe still finish their work (a pop, a commit, a spawn, a
-// connect happen) and are not answered; cancel-safe ones abort as before. Docs:
-// CLAUDE.md, design/async_sleep_outputs.md, book core/select.md and
-// embedding/builtins.md, the graphix-lang skill. Pins:
-// lib_tests::{db::db_pop_is_not_answered_after_a_sleep,
-// db::db_txn_commit_is_not_answered_after_a_sleep,
-// fs::file_handle::test_open_is_not_answered_after_a_sleep,
-// sqlite::sqlite_exec_is_not_answered_after_a_sleep,
-// process::spawn_is_not_answered_after_a_sleep,
-// tcp::tcp_connect_is_not_answered_after_a_sleep, tcp::tcp_read_across_sleep (bytes
-// returned in order), db::db_not_data_answers_after_a_sleep}, sys
-// io::test::a_dropped_read_lets_the_next_read. The repro now prints only len after=1,
-// the ruled behaviour. Semantics change: needs a soak.
 impl EvalCachedAsync for ProcessSpawnEv {
     const NAME: &str = "sys_process_spawn";
     const CANCEL_SAFE: bool = false;

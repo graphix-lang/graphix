@@ -38,30 +38,6 @@ impl EvalCachedAsync for IoReadEv {
     type Args = (Arc<Halves>, u64, Arc<ReadTicket>);
 
     const NAME: &str = "sys_io_read";
-    // XCR claude for claude: [bug/medium] `read` is one `read_buf`, which is cancel-safe:
-    // dropped before it completes, it has read nothing. Declaring it not cancel-safe
-    // lets a read in a sleeping arm keep the reader lock and take the next chunk. Only
-    // that arm's wake answers it, while the selected arm's read of the same stream
-    // waits behind. With `A => read(out, 100), `B => read(out, 100)` and `B selected,
-    // the bytes go to `A at its wake, or are lost if it never wakes. read_exact and
-    // read_all accumulate and should stay not cancel-safe. Decide whether `read` aborts
-    // at a sleep. It is safe once completed replies are kept (see
-    // EvalCachedAsync::CANCEL_SAFE). probe:
-    // design/review-2026-10-26/repro/x-async-io-read-diverted-to-sleeping-arm.gx
-    // (x-async-io-05)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q16/q18,
-    // discussed): nothing delivers after a sleep. A call site that sleeps opens a fresh
-    // reply slot and drops any reply to the old one; work is cancelled where it can be,
-    // and the book documents what cannot be (a write still happens, its result is not
-    // seen). A stream read whose reply is dropped returns its bytes to the stream's
-    // buffer, so no data is lost. This replaces the CANCEL_SAFE split (a call not
-    // cancel-safe finishing and answering at the wake).
-    // 2026-10-27 claude: Under the ruling built here (see x-async-io-01's note), the
-    // sleeping arm's read still takes the bytes, but nothing answers it: its bytes go
-    // back to the stream (ReadTicket::settle), and the selected arm's read, waiting for
-    // that read to settle, gets them. The repro now prints ("B", "one"). Pin:
-    // lib_tests::tcp::tcp_read_across_sleep (a slept read_exact's bytes reach the read
-    // issued at the wake, in order); sys io::test::a_dropped_read_lets_the_next_read.
     const CANCEL_SAFE: bool = false;
 
     fn reclaim((_, _, ticket): &Self::Args) -> Option<Reclaim> {
@@ -359,41 +335,6 @@ impl<R: Rt, const BATCHED: bool> Apply<R> for IoLines<BATCHED> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
-        // XCR claude for claude: [bug/medium] A re-delivered handle is ignored even when
-        // the reader that held it has finished: at EOF, on an error, or stopped by a
-        // seek or a TLS upgrade (stop_lines). So a site can never read lines from that
-        // handle again. Seeking a file back to 0 and re-delivering it, or re-triggering
-        // after appended lines, yields nothing. The reason in the comment (two readers
-        // racing) does not apply to a finished reader. Rule needed: either restart when
-        // the old task is finished (test the AbortHandle's is_finished and remint the
-        // var), or document in io.gxi that a site reads a handle once. probe:
-        // design/review-2026-10-26/repro/sys-io-lines-dead-after-seek.gx (sys-io-03)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q20, Reading
-        // lines from a re-delivered handle): When a handle is at EOF we should not
-        // automatically seek to the beginning. The programmer must call seek on it. It
-        // should be possible to do that. An error should not make the handle
-        // permanently unusable. Nor should a seek. Discuss if you want more
-        // clarification.
-        // 2026-10-28 codex: Implemented Eric's retry ruling. Re-delivery restarts a
-        // finished or stopped reader, without rewinding the stream. A stop generation
-        // distinguishes a seek from an EOF/error and invalidates a reader before its
-        // task finishes. Unconsumed lines survive a same-position restart and drain
-        // before the replacement reads; seeks discard the old queue. Queue waits
-        // recheck emptiness so an old Notify permit cannot overwrite retained lines.
-        // Updated the interface, book, design record, language skill and project rules.
-        // Pins: lines_restart_after_seek and batched_lines_restart_after_seek (8 modes)
-        // failed by timeout with the original implementation;
-        // lines_restart_after_appending and lines_restart_after_error also failed
-        // before the fix. All 20 lines_restart cases pass, including the no-rewind
-        // control; all 52 file_handle tests pass. Mutating out the stop-generation
-        // check, retained-queue wait and predicate-based drain wait made
-        // a_stopped_reader_is_inactive_before_its_task_finishes,
-        // a_restarted_reader_drains_its_retained_lines_first and
-        // line_batches_wait_until_consumed fail; restored code passes them. Full
-        // graphix-package-sys lib: 30 passed, loader::test::a_miss_records_its_probe
-        // failed because its resolver needs sockets. Rebuilt shell runs the named seek
-        // probe with a temporary file and produces both lines again. No socket tests
-        // were worked around.
         if let Some(tv) = seam_value(from[0].update(ctx))
             && tv.is_fired()
             && let Some(stream) = stream_of(&tv.value_cloned())

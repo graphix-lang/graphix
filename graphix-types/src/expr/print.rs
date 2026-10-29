@@ -1357,21 +1357,6 @@ enum PatElt<'a> {
 }
 
 /// A bracketed pattern, one element to a line.
-// XCR claude for claude: [readability/low] A pattern's lone bracketed element never hugs.
-// `` `Beta({ first, second: s }) `` prints as `` `Beta( ``, `{`, the fields, `}`, `)`,
-// while the same shape as a type or a value hugs (`` `Beta({ ``), per the Formatter
-// rule for expressions and types. Decide whether patterns follow the hug rule. If they
-// do, give a single bracketed PatElt::Pat the hug_parens treatment here. If they do
-// not, the Formatter rules in CLAUDE.md should say so. probe:
-// design/review-2026-10-26/repro/t-print-pattern-no-hug.gx (t-print-03)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q77, Do patterns
-// hug?): yes, follow it (the recommendation: follow it.)
-// 2026-10-28 codex: Patterns now share the expression printer's bracket-layout helper. A
-// single bracketed child hugs when its opening fits, including nested variants, arrays
-// and structs; multi-element patterns keep their list layout. Pin
-// a_lone_bracketed_pattern_hugs failed before the change and passes afterward. Full
-// graphix-types lib: 344 passed. CLAUDE/AGENTS, the book formatter page and language
-// skill now include patterns in the rule.
 fn pretty_pattern_elts(
     buf: &mut PrettyBuf,
     open: &str,

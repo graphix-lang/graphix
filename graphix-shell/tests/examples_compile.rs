@@ -410,67 +410,6 @@ async fn fence_failure(f: &Fence) -> Option<String> {
 
 /// Every ```graphix fence in the book holds what its tag claims
 /// ([`Claim`]); an `{{#include}}` is checked where the file lives.
-// XCR claude for claude: [test-gap/low] This gate only parses untagged fences and REPL
-// inputs. A `refused` fence passes on any refusal, and transcript output is never
-// compared, so stale type readouts and stale coverage rules in the book pass it. 45 of
-// the 114 untagged fences in core/, functions/ and the top-level pages fail --check
-// (schematic names, .gxi signatures). Tag those `ignore` (or a `sig` tag that runs
-// parse_sig) and check the rest, and consider comparing each transcript's `-:` line.
-// probe: ran --check over every fence in those pages. (book-core-11)
-// 2026-10-27 claude: book_fences_check (was book_fences_parse) now checks every
-// untagged program fence as a script; the 136 that fail as written are tagged
-// ,fragment (parses: schematic names, context from earlier fences) or ,sig
-// (parse_sig); a ,refused fence followed by an error transcript must refuse with the
-// transcript's last message (shown_error). The check found two stale fences in
-// packages/using.md (subscribe with no target type), fixed. Verified by untagging a
-// let_binds fence and editing a select.md transcript: both fail the test. Not done:
-// REPL transcripts' output lines (-:) are still not compared, and a refused fence
-// without a transcript passes on any refusal.
-// 2026-10-27 claude: Done: untagged fences are checked as scripts, the 136 that cannot
-// be are tagged ,fragment or ,sig, and a ,refused fence followed by an error
-// transcript must refuse with that transcript's message. CLAUDE.md states this. Still
-// open, and part of the defect this CR describes: REPL transcripts' output lines (-:)
-// are never compared, so a stale type readout or value in the book still passes, and a
-// ,refused fence with no transcript passes on any refusal. Remaining: compare each
-// transcript input's -: line with the checked type (or the printed value), or say in
-// the CR why that cannot be done.
-// 2026-10-27 codex: The requested REPL -: check is implemented. Each page has a
-// persistent check-only REPL context, explicitly seeded by ,repl fences; each prompt's
-// checked type is compared with the printed type, renaming only generated variable IDs
-// consistently. Values are not executed. Failed inputs restore the session. The new
-// transcript_type_readouts_are_checked pin rejects a deliberately wrong -: string for
-// an i64; observed it fail with the comparison disabled, then pass with comparison
-// enabled. The full examples_compile target passed its examples and pin but found
-// three stale book readouts: Error<'a> omitted the inferred `Foo constraint, and two
-// struct readouts omitted printer spaces. Corrected those; book_fences_check then
-// passed (direct current test executable), and mdbook build passed. Added three ,repl
-// setup tags for earlier declarations that transcripts use. Generated site output was
-// restored because the installed mdbook rewrites site-wide assets unrelated to this
-// edit. The older CR's separate issue remains: a ,refused fence without an error
-// transcript still accepts any refusal. Leaving the CR open for that remaining policy;
-// no image bytes changed.
-// 2026-10-28 qwen: The remaining policy is now enforced: a graphix,refused fence with
-// no error transcript after it fails the book gate. fence_failure (extracted from
-// book_fences_check, which now maps fences through it) reports "tagged refused with no
-// error transcript: the check refuses it as .." when a refused fence's shown is None,
-// so a fence can no longer pass on any refusal at all; the transcript's message is
-// still compared with shown_error as before. The scan is likewise extracted as
-// page_fences so a page's text can be checked without the whole book. New pin
-// graphix-shell/tests/examples_compile::refused_fences_need_a_transcript, next to
-// transcript_type_readouts_are_checked: a refused fence with no transcript is
-// reported, the same page with the check's own message as the transcript's last line
-// passes, and a transcript naming a different message is still reported as stale.
-// Observed before the enforcement: the pin failed at examples_compile.rs:359 ("a
-// refused fence with no error transcript is reported") because fence_failure returned
-// None for that fence. book_fences_check then reported exactly three fences that had
-// no transcript — core/block.md:11, core/let_binds.md:6 and core/let_binds.md:27 — and
-// each now shows its refusal, taken from graphix --check of the fence's program (x not
-// defined at block.md line 8 and let_binds line 2, and type mismatch string does not
-// contain [i64, null] at let_binds line 4). Nothing under docs/ was touched. cargo
-// test -p graphix-shell --offline --test examples_compile is 4 passed, 0 failed. With
-// the transcript rule in place nothing this CR describes remains: untagged fences are
-// checked as scripts, ,fragment and ,sig cover what cannot be, REPL -: readouts are
-// compared, and a refused fence must show which refusal. Commit 82b08b4.
 #[tokio::test(flavor = "multi_thread")]
 async fn book_fences_check() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../book/src");

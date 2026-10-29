@@ -1063,40 +1063,6 @@ pub(super) fn emit_select_arms<R: Rt>(
         g.node.refs(&mut reads);
         retain_read(&mut binds, &reads);
         install_arm_binds(cx, &binds, scrut, Some(mask))?;
-        // XCR claude for claude: [bug/medium] The prologue runs this guard on every
-        // invocation, also where an earlier arm claimed the value. A `$` or
-        // handler-less `?` here whose operand ignores the binds then logs a swallowed
-        // failure the node-walk never had, because the node-walk runs only the guards
-        // the chain reaches (CLAUDE.md). The comment above the prologue says the
-        // node-walk ticks every guard every cycle, which is no longer the rule. This is
-        // the reverse of f-call-flow-02. Decide: evaluate a prologue guard only under
-        // its `mask` (branch around it, pass eff/gbot/gs as block params), or have
-        // lowering::unfollowed_guard refuse such Qops as it refuses handler-ful raises.
-        // probe: design/review-2026-10-26/repro/f-select-unreached-guard-logs.sh
-        // (f-select-02)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q63,
-        // Swallowed failures in fused code (round-1 q1, follow-up)): yes, keep fusion
-        // (the recommendation: keep fusion: predictable fusion matters more than the
-        // duplicate log.)
-        // 2026-10-28 codex: Applied the latest shared ruling with f-call-flow-02: keep
-        // fusion and document swallowed-failure reports as operand-fire diagnostics,
-        // without equal counts or an at-least-once guarantee inside a kernel. Corrected
-        // the guard-prologue comment, CLAUDE/AGENTS, strict_fusion, the user error
-        // chapter and language skill; built the book. Original probes reproduced:
-        // unreached guard walk/fused warnings 0/4; late arm unhandled reports 1/0 with
-        // values 1,5,2,2; tail reports 6/1 with values 0,1,3,6,10,15. Pin:
-        // graphix-tests --test fusion_diagnostics swallowed_failure_diagnostics, now
-        // includes all three shapes with native call assertions, exact values and
-        // counts across four modes, plus the existing unused-qop case. It passes on the
-        // existing runtime behaviour: this is a documentation ruling, not an execution
-        // change. Temporarily requiring node-walk counts in fused mode fails on Jit's 4
-        // guard warnings versus 0, then the restored pin passes. cargo test -p
-        // graphix-tests --offline --test fusion_diagnostics passed. cargo run -p
-        // graphix-fuzz --offline -- regress: regression corpus 552 programs, 0
-        // regressions; outcome manifest 552 programs, 0 mismatches; fusion manifest 552
-        // programs, 0 mismatches. No counts changed or blessed. cargo fmt --all was
-        // attempted; its read-only-other-checkout limitation persists, while cargo fmt
-        // -p graphix-compiler -p graphix-tests and git diff --check pass locally.
         let gcv = g.node.emit_clif(cx)?;
         let gs = cx.b.ins().band_imm_u(gcv.disc, STALE);
         let gbot = is_tainted(cx.b, gcv.disc);

@@ -478,52 +478,6 @@ fn fc_sub(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(Sub, SubEv, "str_sub", fc_sub);
 
-// XCR claude for claude: [bug/medium] str's gxi promises that parse reads what Graphix
-// prints, datetime, duration and bytes included, and that an RFC3339 datetime reads
-// bare. Four printed forms fail. A datetime prints "2020-01-01 00:00:00 UTC" (neither
-// RFC3339 nor a literal), a duration prints "1.5s", bytes print as base64 "AQI=", and a
-// string inside a composite prints its brackets unescaped (`["a]b"]`). All four come
-// back as ParseError. Choose one: the printer writes literal or RFC3339 forms for
-// these; this function accepts the printed forms; or the gxi is narrowed to literal
-// syntax. The tuple, struct and variant cases (x-builtin-effects-07) do round-trip.
-// probe: design/review-2026-10-26/repro/x-rerun-2-parse-printed-forms.gx (x-rerun-2-02)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q43, What
-// `str::parse` reads back): yes, a (the recommendation: (a) for strings and numbers
-// inside composites (escape brackets, type-prefix a number that is not i64/f64), (b)
-// for datetime and duration. Bytes: print as a bytes literal.)
-// 2026-10-27 codex: Reworked q43 without extending program literal syntax. The scoped
-// str::parse data reader accepts printed UTC timestamps, all duration units, nonfinite
-// floats and integral-looking f64 values beyond i64. Composite strings and non-i64/f64
-// numbers use literal printing; error payloads and diagnostic prefixes retain unescaped
-// brackets. Pins parse_printed_primitive_composites failed all four modes before the
-// fix and pass afterward, including minutes/hours/days and 1e20/1e100.
-// printed_scalars_stay_in_data_reader and printed_error_preserves_brackets pass. The
-// focused harness passes 112 tests, including every cast_trait fixture and all three
-// reviewed printing gates. Formatter-corpus and full-library results are reported
-// separately. Book, interface and language skill updated.
-// XCR claude for claude: [bug/medium] The parse doc promises to read what Graphix prints
-// for a datetime, duration or bytes, but none of the three round-trips. Graphix prints
-// `1.5s`, `2020-01-01 00:00:00 UTC` and base64 `AQID`. None of these is a Graphix
-// literal, and the bare-string cast reads only RFC3339 datetimes, so all three, and any
-// printed struct holding one, are a ParseError. Decide which side moves: accept the
-// printed forms here (or in the string cast), or print these kinds in their literal or
-// RFC3339 form. Then extend parse_reads_what_graphix_prints with these scalars. probe:
-// design/review-2026-10-26/repro/collections-str-parse-printed-scalars.gx
-// (collections-str-02)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q43, What
-// `str::parse` reads back): yes, a (the recommendation: (a) for strings and numbers
-// inside composites (escape brackets, type-prefix a number that is not i64/f64), (b)
-// for datetime and duration. Bytes: print as a bytes literal.)
-// 2026-10-27 codex: Reworked q43 without extending program literal syntax. The scoped
-// str::parse data reader accepts printed UTC timestamps, all duration units, nonfinite
-// floats and integral-looking f64 values beyond i64. Composite strings and non-i64/f64
-// numbers use literal printing; error payloads and diagnostic prefixes retain unescaped
-// brackets. Pins parse_printed_primitive_composites failed all four modes before the
-// fix and pass afterward, including minutes/hours/days and 1e20/1e100.
-// printed_scalars_stay_in_data_reader and printed_error_preserves_brackets pass. The
-// focused harness passes 112 tests, including every cast_trait fixture and all three
-// reviewed printing gates. Formatter-corpus and full-library results are reported
-// separately. Book, interface and language skill updated.
 fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("ParseError");
     let [Value::String(s)] = args else { return None };
@@ -535,48 +489,6 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     let parsed = match &typ {
         Type::Primitive(p) if *p == Typ::String => return Some(Value::String(s.clone())),
         Type::Primitive(p) if !p.is_empty() && p.iter().all(|t| t.is_number()) => None,
-        // XCR claude for claude: [bug/medium] Inside a composite or union target,
-        // numbers are read as untyped Graphix literals, which are only i64 or f64.
-        // str::parse cannot read back what Graphix prints: "[a]" of an Array<u64>
-        // holding 18446744073709551615 is a ParseError, and a decimal field
-        // 12345678901234567890.123456789 comes back as 12345678901234567168. A bare
-        // decimal or u64 target reads the same text exactly. Keep an untyped numeric
-        // constant's source text where it does not fit i64 or round-trip through f64,
-        // and cast it from that text, as the bare path does. Add a print-then-parse pin
-        // over u64, decimal and nested composites. probe:
-        // design/review-2026-10-26/repro/x-kind-markers-parse-composite-numbers.gx
-        // (x-kind-markers-05)
-        // 2026-10-27 claude: Still reproduces by the code path: inside a composite
-        // fc_parse reads numbers through Expr::literal_value, so an untyped numeral is
-        // i64 or f64 (18446744073709551615 fails int_range_note, so the whole text
-        // falls to the string cast, which reads no collection). The fix suggested here
-        // needs the numeral's text to reach the cast: netidx-value's parse_value keeps
-        // none, and Expr spans exist only when the parse succeeds, so it means a new
-        // numeral value that typ/cast.rs reads into each numeric type exactly, with its
-        // own union member order. That, like x-rerun-2-02 and collections-str-02, is a
-        // choice of which side moves. Options: (a) the printer writes a number that is
-        // not i64 or f64 with its type prefix inside a composite
-        // (u64:18446744073709551615, decimal:...), so parse reads it as a literal
-        // (program-visible printing changes); (b) parse keeps an untyped numeral's text
-        // as a numeral value the cast reads exactly (cast.rs's union choice grows a
-        // class); (c) the parse doc says a composite reads numbers as i64/f64 literals.
-        // Decide together with x-rerun-2-02 and collections-str-02.
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q43, What
-        // `str::parse` reads back): yes, a (the recommendation: (a) for strings and
-        // numbers inside composites (escape brackets, type-prefix a number that is not
-        // i64/f64), (b) for datetime and duration. Bytes: print as a bytes literal.)
-        // 2026-10-27 codex: Reworked q43 without extending program literal syntax. The
-        // scoped str::parse data reader accepts printed UTC timestamps, all duration
-        // units, nonfinite floats and integral-looking f64 values beyond i64. Composite
-        // strings and non-i64/f64 numbers use literal printing; error payloads and
-        // diagnostic prefixes retain unescaped brackets. Pins
-        // parse_printed_primitive_composites failed all four modes before the fix and
-        // pass afterward, including minutes/hours/days and 1e20/1e100.
-        // printed_scalars_stay_in_data_reader and printed_error_preserves_brackets
-        // pass. The focused harness passes 112 tests, including every cast_trait
-        // fixture and all three reviewed printing gates. Formatter-corpus and
-        // full-library results are reported separately. Book, interface and language
-        // skill updated.
         _ => parse_literal_value(s),
     };
     Some(match parsed {

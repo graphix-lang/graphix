@@ -573,28 +573,6 @@ fn dispatch_eq<R: Rt>(state: *mut u8, a: &GxAbstract, b: &GxAbstract) -> Option<
                 (true, true) => true,
                 (true, false) | (false, true) => false,
                 (false, false) => {
-                    // XCR claude for claude: [bug/low] This logs "answering Equal" and
-                    // then returns false: an inconsistent Eq pair compares unequal on
-                    // both engines. design/traits.md says such a pair is answered Equal
-                    // and that eq follows the same shape. Decide which answer an
-                    // inconsistent Eq pair gets, make the code and the design agree,
-                    // have warn_pair_bottom name the answer each trait gives, and pin
-                    // it next to core_bottom_key_rule (no fixture covers this branch).
-                    // probe:
-                    // design/review-2026-10-26/repro/tests-fusion-traits-eq-inconsistent-pair.gx
-                    // (tests-fusion-traits-06)
-                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q35, An
-                    // inconsistent Eq pair): yes, fix the doc (the recommendation: unequal:
-                    // nothing merges on an inconsistent impl. Fix the doc.)
-                    // 2026-10-27 codex: Documented q35's unequal result for an inconsistent Eq
-                    // pair. The implementation already returned false; its warning incorrectly
-                    // said Equal. The warning now says false, and design/traits.md describes
-                    // that result. Pin lang::traits::core_inconsistent_eq_pair_is_unequal passes
-                    // in all four modes before and after (documented existing behavior). The
-                    // Rust pin lang::traits::inconsistent_eq_warning_matches_answer failed with
-                    // the old warning deliberately restored and passed after restoration of the
-                    // fix. The selected trait suite passes 579 tests, excluding nine
-                    // socket-backed fixtures.
                     warn_pair_bottom(CoreTrait::Eq, a, false);
                     false
                 }

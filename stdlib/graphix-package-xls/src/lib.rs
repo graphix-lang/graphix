@@ -321,45 +321,12 @@ fn check_shared_strings<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(),
 }
 
 fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
-    // XCR claude for claude: [bug/high] Only ods is guarded against calamine's dense open.
-    // The BIFF .xls reader also builds every sheet over its cells' bounding box when
-    // the workbook opens, so a 5.6 KB .xls with cells at A1 and at (65535, 65535)
-    // OOM-kills the runtime through xls::sheets alone. MAX_CELLS is checked only after
-    // the range exists. Either scan the BIFF cell or DIMENSIONS records before open and
-    // refuse past MAX_CELLS, as check_ods does, or decide to refuse .xls input that
-    // cannot be vouched for. The UPSTREAM.md calamine entry should name the xls reader
-    // too. probe: design/review-2026-10-26/repro/small-pkgs-xls-dense-oom.sh
-    // (small-pkgs-03)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q56, A dense
-    // .xls): document and add an UPSTREAM bug
-    // 2026-10-28 codex: Implemented Eric's document-only ruling: book/API and CLAUDE.md
-    // state that sheets and read eagerly open every BIFF xls sheet densely, and MAX_CELLS
-    // does not bound opening memory; regenerated AGENTS.md. Expanded the calamine
-    // UPSTREAM.md entry to cover xls and its lack of a preflight guard. Reproduced the
-    // probe with its generated 5.6 KB input through target/debug/graphix --no-cache
-    // --no-fusion under an 8 GiB address-space limit (TOKIO_WORKER_THREADS=2,
-    // GRAPHIX_EVAL_THREADS=2): abort requesting 137438953472 bytes. An initial 1 GiB
-    // limit aborted during startup and was not counted as reproduction. Bounded pin
-    // test::xls_sparse_cells_open_as_a_dense_range uses the same layout with A1 and
-    // (255,255): two cells open as 65536 cells. This pins unchanged behavior; no
-    // red-before-fix claim. cargo test -p graphix-package-xls --offline --lib: 12 passed.
-    // mdbook build -d ../docs/book: passed. The xls allocation risk remains intentionally
-    // unfixed under the ruling.
-    // 2026-10-28 codex: Renamed the bounded pin to
-    // xls_sparse_cells_span_the_full_bounding_box. It verifies the 256x256 range
-    // dimensions, two populated cells and their values; it does not observe backing
-    // allocation or when it happens. UPSTREAM.md now states that limit explicitly and
-    // attributes the eager-allocation claim to the reader implementation and the
-    // previously recorded memory-limited probe. No allocation regression is claimed for
-    // this pin, and no failing-before production-fix claim applies to this clarification.
-    // cargo test -p graphix-package-xls --offline --lib: all 12 passed. The accepted xls
-    // opening-memory limitation remains unchanged.
     if let Ok(mut zip) = ZipArchive::new(rs.clone())
         && let Err(e) = check_ods(&mut zip).and_then(|()| check_shared_strings(&mut zip))
     {
         return Err(errf!("XlsErr", "{e}"));
     }
-    // XCR claude for claude: [bug/high] calamine's xlsx open reserves the strings vector
+    // CR claude for claude: [bug/high] calamine's xlsx open reserves the strings vector
     // to sharedStrings.xml's uniqueCount attribute, unchecked. A 1 KB xlsx declaring
     // uniqueCount="100000000000" makes xls::read fail to allocate 2.4 TB and abort the
     // process; spawn_blocking cannot contain an abort. Guard xlsx as check_ods guards
@@ -391,6 +358,15 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     // padding no longer raises the bound (the reservation calamine makes is at most the
     // strings the part holds). Pin: test::xlsx_refuses_a_count_its_padding_would_cover
     // (1000 declared, one string, 4 KB of spaces; the byte bound let it through).
+    // 2026-10-28 claude: Review (2026-10-28): check_shared_strings counts every <si>
+    // start, including <si/> after </sst> (which calamine never reads, its loop ends at
+    // End(sst)) and nested ones, so <si/> padding (5 bytes each, ~1000:1 deflate) still
+    // raises the bound: uniqueCount=1000 with one string and 999 <si/> after </sst>
+    // passes and xls::read returns [["hi"]]; scaled to ~30 MB it would reserve over 100
+    // GB. Count only top-level si before </sst>, or cap at MAX_CELLS. probe
+    // ~/tmp/xcr-review-2026-10-28/5/x/ (mk.py, after.xlsx, r.gx).
+    // xlsx_refuses_a_count_its_padding_would_cover covers whitespace only. UPSTREAM.md's
+    // xlsx entry still describes the old byte check.
     open_workbook_auto_from_rs(rs).map_err(|e| errf!("XlsErr", "{e}"))
 }
 

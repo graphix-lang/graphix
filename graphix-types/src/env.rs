@@ -613,26 +613,6 @@ impl Env {
 
     /// A snapshot of the lexical environment, which a definition keeps.
     #[doc(hidden)]
-    // XCR claude for claude: [structure/low] This is the only constructor of the lexical
-    // set that is not exhaustive: it fills everything but the four maps with
-    // `..Self::default()`, as image::env::lexical_decode does. A new lexical field is
-    // silently left out of every definition and module snapshot. Each snapshot is also
-    // a whole Env with default globals, and building it allocates an Arc<Vec> and an
-    // Arc<Mutex> that are never used. Suggest a `Lexical` struct field for binds,
-    // modules, typedefs and traits: swap_lexical becomes one mem::swap, and snapshots
-    // and with_restored take a `Lexical`. Found by reading; not run. (t-env-08)
-    // 2026-10-27 claude: Readdressed: a structure refactor with no rule to decide; do
-    // it as written.
-    // 2026-10-27 claude: Env's lexical maps are one field, env.lexical: Lexical {
-    // binds, modules, typedefs, traits }. lexical() clones it, swap_lexical is one
-    // mem::swap, fork/join and the image codec take the field (bytes unchanged: same
-    // fields, same order), and a snapshot (LambdaDef, an instance's def env, make_init,
-    // Module and a dynamic module's sig_env, with_restored) holds a Lexical, not an Env
-    // with default globals. One site builds an Env around a snapshot: DefTable::record
-    // seeds its table's type refs in the definition's env, as it did with the old
-    // lexical-only Env. queuefn's wrapper def kept a whole ctx.env clone and now keeps
-    // the snapshot. A Dynamic module's source type is checked in ctx.env (it was the
-    // lexical-only snapshot). Whole gate green.
     pub fn lexical(&self) -> Lexical {
         self.lexical.clone()
     }
@@ -2029,30 +2009,6 @@ impl Env {
     /// its subtree).
     pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
         let r = self.abstract_reps.get(&id)?;
-        // XCR claude for claude: [bug/medium] under_some_instance matches any `#`
-        // component against any other, so a sibling block or a lambda body in the same
-        // module counts as an instance of the block that declared the abstract type.
-        // `let v = { type T = Abstract<i64>; let x = T(5); x }; let w = { let k = 1;
-        // v.0 + k }; w` prints 6, while `v.0` at the top level is refused. That breaks
-        // the rule that `x.0` works only where the definition is visible. Decide what
-        // an instance of the defining body is, for example the declaration place
-        // AbstractId::declared already uses, store it in AbstractRep, and match only
-        // components of that body. probe:
-        // design/review-2026-10-26/repro/t-env-abstract-rep-sibling-block.gx (t-env-04)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q37, Which
-        // bodies see an abstract's representation): yes, record (the recommendation:
-        // record the place.)
-        // 2026-10-27 codex: Implemented declaration-specific visibility by reusing the
-        // recorded declaration place already encoded in AbstractId::declared: a private
-        // representation is visible only through an actual lexical typedef with that id
-        // and a representation. This replaces the wildcard matching of anonymous scope
-        // components; no duplicate place metadata or image field is needed. Pins
-        // lang::traits::sibling_{block,lambda}_cannot_see_abstract_representation
-        // failed in all eight modes before the fix and pass now;
-        // abstract_representation_visible_in_each_instance verifies defining-body
-        // instances and nested scopes retain access. The selected trait suite passes
-        // 579 tests, excluding nine socket-backed fixtures. Book and language skill
-        // updated.
         let visible = r.public || chain_levels(from).any(|scope| {
             self.lexical.typedefs.get(scope).and_then(|defs| defs.get(r.name.as_str())).is_some_and(|def| {
                 def.rep.is_some() && matches!(def.typ(), Type::Abstract { id: declared, .. } if *declared == id)

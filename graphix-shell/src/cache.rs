@@ -396,60 +396,6 @@ impl RegistrationCache {
     /// never rewritten in place (written to a temporary file and renamed),
     /// so the mapping stays valid. A program entry whose sources changed
     /// is a miss.
-    // XCR claude for claude: [risk/medium] An entry's integrity rests on the cache
-    // directory's permissions alone, and nothing checks them. load restores any entry
-    // at the keyed path whatever its owner or mode, store applies 0700 only to
-    // directories it creates itself, and the crc32 seal can be recomputed by anyone.
-    // The entry carries JIT machine code. With a cache root another user can write
-    // first (HOME or XDG_CACHE_HOME under /tmp, a shared CI cache), a planted or
-    // patched entry runs as the next user's program; patching a literal and resealing
-    // ran the modified program. Proposal: on Unix, refuse an entry or directory not
-    // owned by the euid or writable by group/other. probe:
-    // design/review-2026-10-26/repro/x-security-cache-trust.sh (x-security-05)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q70, Trusting
-    // the image cache directory): yes, and set the permissions correctly when
-    // creating it (the recommendation: refuse.)
-    // 2026-10-28 codex: Reworked the unmerged cache trust checks. The cache base
-    // follows up to 40 symlinks, checking each link's effective-user ownership and
-    // the final directory's ownership and permissions before creating managed
-    // subdirectories. Relative targets work. Managed directories and entry files
-    // still refuse symlinks; files open O_NOFOLLOW/O_NONBLOCK and are checked before
-    // mapping; collection skips untrusted paths. Created directories/files use
-    // 0700/0600. owned_cache_base_links_are_trusted failed against the earlier
-    // no-symlink implementation and passes now. Restoring main's unchecked
-    // load/store/collect bodies made five refusal pins fail (shared entries, shared
-    // directories, entry/build links, collector links, unsafe symlink targets).
-    // Removing only the link-owner check failed
-    // foreign_cache_base_link_is_refused_even_with_a_private_target, using
-    // /proc/self's foreign-owned link and current-user-owned target; it also covers a
-    // link chain. Invalid/dangling/cyclic links are refused. cargo test -p
-    // graphix-shell --offline --lib passes all 19 tests after restoring the fix;
-    // focused mutation runs used --lib cache::tests::privacy and --lib
-    // foreign_cache_base_link. The named poisoning probe printed
-    // PWNED-by-a-cache-file on main and hello-from-the-author with this fix.
-    // /tmp/x-security-05-symlink-cli.py verified --warm and a warm run through an
-    // owned relative cache-base symlink, then --warm refusal after making its target
-    // 0777. cargo build -p graphix-shell --offline, cargo fmt --all and mdbook build
-    // -d /tmp/graphix-cr-rework-book passed. Rules, book and design updated;
-    // AGENTS.md regenerated. Tested on Linux; other platforms were not exercised. No
-    // render/update/dispatch/fork path changed.
-    // 2026-10-28 claude: Review (2026-10-28) fixes on merge: a write renames over a
-    // bad entry instead of refusing (the cache healed only by hand), collection
-    // removes an untrusted entry in a trusted directory, load warnings keep the
-    // reason ({e:#}), and a dangling cache-base link names its path.
-    // design/program_image.md states the path-based check's limit (an ancestor writer
-    // can swap the tree between check and use). Open for Eric: a trust refusal is
-    // silent without --log-dir; should it print one stderr line?
-    // 2026-10-28 claude: Eric ruled (2026-10-28): yes, a trust refusal prints one
-    // stderr line. Built: the trust checks raise cache::Untrusted (foreign owner,
-    // group/other writable, not a directory or regular file, a symlinked entry via
-    // O_NOFOLLOW's ELOOP), and cache::report logs every cache failure and prints
-    // 'graphix: not using the image cache: <reason>' for the first refusal in a
-    // process; a store's failure goes through it too. Pins:
-    // graphix-shell/tests/cache_trust_report.rs (an_untrusted_cache_is_reported_once,
-    // a_trusted_cache_is_quiet); without the stderr line the first fails with 0
-    // lines, without the once guard with 4. Book (shell.md), CLAUDE.md and
-    // design/program_image.md say so.
     pub(crate) fn load(&self, entry: Entry) -> Option<(ArcStr, Bytes)> {
         let path = self.path(entry)?;
         let file = (|| -> Result<fs::File> {

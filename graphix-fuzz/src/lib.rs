@@ -258,49 +258,6 @@ impl Outcome {
             (RuntimeErr(_), RuntimeErr(_)) => true,
             // a node-walk budget beside a JIT deadline is settled by
             // `Oracle::settle`, which knows the engines
-            // XCR claude for claude: [risk/medium] Two timeouts agree here whatever
-            // stopped each side, a Containment::Compile included. A construction
-            // timeout is no race between descents: on the JIT side it is fusion or the
-            // link hanging or going superlinear, on a warm run a restore that never
-            // finished, and Oracle::construction only re-runs the node-walk's. Beside a
-            // node-walk StackBudget, ActivationBudget or Deadline (any runaway
-            // recursion) it agrees, Verdict::of calls it contained, and regress trusts
-            // a contained pin, so such a hang is never seen. Proposed rule: Compile
-            // agrees only with Compile, and a Compile beside a run-time containment
-            // takes the one-sided slow retry. Found by reading; not run.
-            // (fuzz-lib-a-02)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q72, A
-            // construction timeout in the fuzzer): yes, compile only with compile (the
-            // recommendation: Compile only with Compile.)
-            // 2026-10-28 codex: Compile containment now agrees only with Compile, at
-            // every comparison strength; mixed construction/runtime timeouts are Unsure
-            // rather than a trusted Contained verdict and retry the construction side
-            // at the slow budget. A successful retry is checked again against the
-            // normal runtime-budget containment rules. Updated the fuzzer record and
-            // rules, regenerated AGENTS, and corrected the Auto-threshold description
-            // to include the preceding cost-feedback change. Pins:
-            // tests::construction_timeouts_only_agree_with_construction covers all
-            // timeout pairs at all strengths and their verdicts;
-            // tests::mixed_construction_timeouts_retry_the_construction_side seeds
-            // mixed outcomes in both directions, proves the construction run is
-            // actually remade, and preserves containment when a recovered JIT outruns
-            // the node-walk budget. Both pins failed before the fix, then passed (cargo
-            // test -p graphix-fuzz --offline --lib construction_timeouts). Full cargo
-            // test -p graphix-fuzz --offline --lib: 127 passed after the related
-            // x-builtin-effects-02 string-return fixture correction. Final
-            // whole-session verification: cargo test -p graphix-tests --offline --lib:
-            // 10971 passed, 447 socket-dependent failures, 3 ignored; no new failures
-            // beyond the prior socket failures. Integration targets
-            // fusion_review/fusion_diagnostics/runtime_cost/handler_cost/queue_credits:
-            // 126 passed. All other touched crate lib targets passed except
-            // graphix-package-sys::loader::test::a_miss_records_its_probe (resolver
-            // server shutdown under the socket restriction): compiler 60, core 7, re
-            // 28, sys 28 passed; array/str/map/list/json/toml/hbs/pack have no lib
-            // tests. Final cargo run -p graphix-fuzz --offline -- regress: regression
-            // corpus 552 programs, 0 regressions; outcome manifest 552 programs, 0
-            // mismatches; fusion manifest 552 programs, 0 mismatches. cargo fmt --all
-            // and git diff --check passed. No actual hanging compiler was induced: the
-            // retry pin supplies the timed-out outcomes and runs the real retry path.
             (Timeout(a), Timeout(b)) => a.agrees_with(*b),
             _ => false,
         }

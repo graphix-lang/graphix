@@ -1448,18 +1448,6 @@ run_with_tempdir!(
     }
 );
 
-// XCR claude for claude: [test-gap/low] Failed once (jit mode) in a full cargo test
-// gate on 2026-10-27 (assertion at the expect's assert_eq), and passed 5 runs alone
-// and 10 runs under taskset -c 0. The program ends its arm's sleep when db::get, polled
-// on a 10 ms timer, sees the insert landed, so the wake's position against the insert's
-// reply depends on the timer. Find the failing value (loop the full gate's
-// graphix-tests run under load), then derive the wake from the insert's completion
-// rather than a polling timer. (flake-db-notdata-01)
-// 2026-10-27 claude: The pin is now lib_tests::db::db_not_data_answers_after_a_sleep
-// and expects []: the insert's reply is dropped by the sleep whatever cycle it lands
-// in, so the timer-polled wake no longer races it. Passed in the full gate; X'd for a
-// few more gates under load before deleting.
-
 // A tree orders an abstract key by its Cast data, not by the type's own
 // Ord: a reversing Ord sorts Rev(2) first in the language, and the tree
 // still holds Rev(1) first.

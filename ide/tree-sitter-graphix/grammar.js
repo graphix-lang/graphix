@@ -153,26 +153,6 @@ module.exports = grammar({
     // interface item or a trait method, on a line of its own). Anywhere
     // else a `///` is an ERROR here and the graphix parser refuses it
     // too, ending a line after code included.
-    // XCR claude for claude: [bug/low] graphix takes `///` ending a list item's line (`1,
-    // /// first`) as a plain end-of-line comment: eol_comment takes `//` and any text.
-    // It refuses the same `///` on a line of its own in a .gx (comment_line notes it is
-    // a doc comment). This token refuses a third `/`, and the doc_comment scanner
-    // refuses off a line start, so tree-sitter makes it an ERROR. The comment above,
-    // which says the parser refuses `///` elsewhere, is stale. Decide which is right:
-    // eol_comment refusing `///` like comment_line does, or this token taking `//` plus
-    // any text (the scanner runs first, so doc_comment still wins where a doc is
-    // legal). probe: design/review-2026-10-26/repro/ide-tooling-eol-triple-slash.gx
-    // (ide-tooling-05)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q76, `///` at
-    // the end of a line): yes, refuse (the recommendation: refuse it.)
-    // 2026-10-28 qwen: eol_comment now refuses a `///` ending a line itself, in
-    // comment_line's own words (note_reason "`///` is a doc comment, legal only in a
-    // .gxi interface file; a .gx file comments with //`, unexpected doc comment); until
-    // now it only declined one and the refusal surfaced incidentally from a later
-    // backtracked comment_line attempt. tree-sitter needs no grammar change: its
-    // line_comment already refuses a third `/`, so `1, /// first` is an ERROR there and
-    // in graphix alike; the stale comment above the token now says so. Pin:
-    // parser/test.rs a_doc_comment_never_ends_a_line.
     line_comment: $ => token(choice(
       '//',
       seq('//', /[^\/\n]/, optional(/[^\n]*/)),

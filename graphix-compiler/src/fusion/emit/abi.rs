@@ -332,7 +332,7 @@ impl LocalKind {
             AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Self::Composite,
             AbiKind::String => Self::String,
             AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => Self::Value,
-            // XCR claude for claude: [perf/low] A formal whose instance type is bare
+            // CR claude for claude: [perf/low] A formal whose instance type is bare
             // null binds no local, so a read of it does not fuse: `let show = |p| ->
             // string #[native] "<[p]>"; show(null)` is refused with "emit_clif:
             // undefined local `p`" (show(1) and a union holding null fuse). The value
@@ -345,6 +345,13 @@ impl LocalKind {
             // reads fuse. Pin: lang::fusion::null_formal_fuses (show(null) under
             // #[native], refused as 'undefined local p' before). regress: 552 pins,
             // no fusion or outcome manifest change.
+            // 2026-10-28 claude: Review (2026-10-28): only a kernel's own null formal
+            // fuses. LocalKind::of (fusion/emit/abi.rs) still returns None for
+            // AbiKind::Null, so under #[native]: show(null) called from a kernel
+            // ('arg/capture type null not lowered on the calling side'), let q = p
+            // over a null p ('let value of shape Some(Null)') and array::map over
+            // nulls are refused, where the i64 forms fuse. null_formal_fuses covers
+            // the top-level formal only.
             AbiKind::Unit | AbiKind::Null => return None,
         })
     }

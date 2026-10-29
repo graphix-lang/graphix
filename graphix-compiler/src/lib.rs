@@ -847,55 +847,6 @@ pub type TypedFastFn = fn(&env::Env, &FnType, &[Value]) -> Option<Value>;
 /// `eval` should delegate to the same fn (`graphix_package_core::
 /// fast_eval`). `Typed` also receives the site's resolved function type.
 #[derive(Debug, Clone, Copy)]
-// XCR claude for claude: [perf/high] fast_dispatch calls the fn even when every argument
-// is stale, so a fused fast call reruns at each kernel invocation, whichever input
-// fired. The node-walk's CachedArgs evaluates it only when one of its own arguments
-// fires. The stdlib registers fast fns whose cost scales with their data (str::parse
-// runs the Graphix parser, hbs::render, the json/toml/pack writers, sort/dedup, re::*),
-// against the 'keep it cheap' contract above. A lambda that parses a constant
-// 20000-element literal and takes a ticking i64 runs 23x slower fused (17 s vs 0.7 s).
-// Decide between standing a stale call's last production (per-site memory, which strict
-// fusion forbids), taking the FastCall off the builtins whose cost scales with their
-// data, or documenting the cliff in the #[native] chapter. probe:
-// design/review-2026-10-26/repro/x-builtin-effects-fastcall-recompute.gx
-// (x-builtin-effects-02)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q64, A fused fast
-// call reruns on any input): yes, take it off those builtins (the recommendation: take
-// it off those builtins.)
-// 2026-10-28 codex: Reworked q64 on current main: removed FastCall from exactly
-// str_parse, hbs_render, json_write_str/json_write_bytes,
-// toml_write_str/toml_write_bytes, pack_write_bytes, array_sort/list_sort/array_dedup,
-// and re_is_match/re_find/re_captures/re_split/re_splitn. The existing cached
-// evaluators retain Stateless(None); every other registration is unchanged. Pin
-// lang::fusion_review::costly_builtins_keep_cached_arguments failed on str_parse before
-// the fix and passes afterward; it also checks min/max/all, map keys, short string
-// operations, array push/concat, list nth/to_array_rev retain FastCall.
-// fusion_review.rs was not included by lang/mod.rs on current main: enabled it,
-// retaining the requested native annotations on l1/l4, p2 and f/s. All 119
-// fusion_review tests pass. Updated fusion expectations only for fixtures using the
-// named families; book, language skill, rules and as-built docs updated, book rebuilt.
-// The original 20000-element parse/100-tick probe, dev binary --no-cache with
-// GRAPHIX_PAR=off: fused 24.784 s before, 0.591 s after, both ending (101, 20000);
-// before --no-fusion 1.014 s. A native max fold over 1000000 elements remains native:
-// 0.219 s / 98928 KB before, 0.151 s / 104932 KB after, both 999999 (cold process,
-// shared machine). fusecheck --bless (GRAPHIX_FUZZ_PAR=2) changed only four of 552
-// entries: interp-format-jul2026/01_union_array_typed_prefix.gx 3->2 (list::sort);
-// kernel-result-bottom-persists-aug2026/03_catch_qop_select.gx 7->6 (re::is_match);
-// mapq-standing-bottom-remint-aug2026/00_find_bottom_predicate_guard.gx 2->1
-// (re::is_match); tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx 1->0 (str::parse).
-// cargo test -p graphix-shell --offline --test examples_compile passes all 3 tests. The
-// compiler lib passes 54 tests; the core lib 7, re 28 and fuzz 127; the other changed
-// package libs have no tests. The first full graphix-tests lib run was 11100 passed,
-// 481 failed, 3 ignored: 34 failures belonged to the changed fusion/native expectations
-// and were corrected, the remaining 447 require sockets unavailable in this sandbox.
-// Final full-library and targeted rerun results are in the handoff report; no workspace
-// or external netidx gate run.
-// 2026-10-28 claude: Review (2026-10-28): the rework again removed five #[native]
-// assertions (re::find, re::is_match, hbs::render, array::sort, str::parse) and built
-// fusion_review twice. Fixed on merge:
-// lib_tests::native::native_over_cached_builtins_is_error pins #[native] refused over
-// each, with its message, and lang/mod.rs no longer includes fusion_review.
-// net_list_table now expects no fusion (array::sort is cached).
 pub enum FastCall {
     Plain(FastFn),
     Typed(TypedFastFn),
@@ -3611,48 +3562,6 @@ pub(crate) fn check_attribute_census<R: Rt>(ctx: &CompileCtx<R>) -> Result<()> {
         let dispatched = ctx.attr_dispatched.lock();
         let absorbed = ctx.attr_absorbed.lock();
         for spec in census.iter() {
-            // XCR claude for claude: [bug/medium] [bug/medium] An attribute inside a
-            // function body is censused when the definition compiles, but only a
-            // static instance fused in this same compile dispatches it. A function
-            // that is never called, is called only dynamically, or is called in a
-            // later REPL input is therefore refused here. The refusal tells the
-            // user to put the decorated expression in its own statement, which it
-            // already is. `--check` accepts the program, and the REPL can never
-            // define such a function. Decide the rule. One option: treat a registry
-            // attribute in a definition body like a DefAssertion, pending until an
-            // instance's fusion dispatches it. The other: keep the refusal, but say
-            // the enclosing function was not instantiated in this compile, and add
-            // the message to analysis::BUILD_ONLY_REFUSALS. probe:
-            // design/review-2026-10-26/repro/c-lib-native-uncalled-body.gx
-            // (c-lib-01)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q38,
-            // `#[native]` in a body no instance fuses): yes, pending (the
-            // recommendation: pending.)
-            // 2026-10-28 codex: Implemented q38, including runtime binding.
-            // Definition checks validate attribute names but defer their dispatch
-            // census to instances. Each dynamic build has its own census; its
-            // fusion dispatch and census must succeed before the instance runs.
-            // Runtime compile tasks can emit and link an isolated native instance;
-            // shared collection kernels retain their dispatch/absorption checks.
-            // Pins:
-            // lang::attributes::{native_body_attribute_waits_for_instance,native_body_attribute_dynamic_instance,native_body_attribute_dynamic_rejects_stateful,native_body_attribute_survives_repl_inputs,native_body_attribute_in_collection_slots}.
-            // The dynamic success pin measures JIT invocations; the stateful pin
-            // asserts the body produces nothing. With only the old
-            // definition-census skip, the two dynamic pins failed (no JIT
-            // invocation and count produced 2). With all implementation changes
-            // removed, the final pins had 5 failures / 6 passes. With the fix, the
-            // temporary integration harness importing the actual attributes module
-            // passes all 153 tests: cargo test -p graphix-tests --offline --test
-            // cr_rework attributes::. Updated CLAUDE.md, regenerated AGENTS.md, the
-            // book and language skill. cargo fmt --all was attempted but cannot
-            // write the read-only sibling graphix-types/src/typ/tvar.rs; formatting
-            // the touched packages succeeds. Full graphix-tests lib gate remains
-            // for session end.
-            // 2026-10-28 codex: Rework review: dynamic instances now reuse a fusion attempt table keyed by the definition, resolved signature and existing catch/callee fingerprint. The cache is shared across compile forks, populated after
-            // linking, and forgotten with the definition. Cache hits use the collection kernel-reuse checks and skip typedef seeding, emission and linking. Pin lang::attributes::dynamic_native_kernels_are_shared checks all 3000 results, native
-            // invocations and the emitted-region count. It failed before the fix: 3001 regions, 1.451 s; afterward: 2 regions, 0.106 s serial JIT and 0.096 s forced-parallel JIT (fixture timings include quiet waiting). Ran cargo test -p
-            // graphix-tests --offline --lib dynamic_native_kernels_are_shared -- --nocapture before/after and cargo test -p graphix-tests --offline --lib lang::attributes:: (154 passed). cargo fmt --all passed. Full requested crate gates follow
-            // at session end.
             if !dispatched.contains(&spec.id) && !absorbed.contains(&spec.id) {
                 let e = ::anyhow::anyhow!(
                     "attribute in a position the fusion pass cannot check — \

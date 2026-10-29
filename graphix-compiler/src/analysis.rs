@@ -1554,49 +1554,6 @@ fn own_access<R: Rt>(
                 }
                 Some(ApplyView::BuiltIn(name)) if current || cs.bound_statically() => {
                     s.ordered |= ctx.builtin_ordered(name);
-                    // XCR claude for claude: [bug/medium] A builtin handed any function
-                    // makes the step opaque, and an opaque step marks every seqq
-                    // capture live. So `let a = x; let c = filter(3, |v| v > 0)` in a
-                    // seqq body reads x live, not as it stood at enqueue: the probe
-                    // gives (2, 3) where the rule gives (1, 3); array::map gives (1,
-                    // ..). The seq lowering's own `core::filter(.., |x| x ~ idle)` does
-                    // the same to any nested `seq` in a step. callback_facts already
-                    // resolves a lambda literal argument to its definition. The summary
-                    // could walk that definition as a callee and stay opaque only for
-                    // unresolved function values, and the seq go-gate could be lowered
-                    // without a lambda. This changes the conservative rule written in
-                    // design/dependency_summaries.md §2, so it needs your call. probe:
-                    // design/review-2026-10-26/repro/x-dup-seqq-filter-unsnapshots.gx
-                    // (and x-dup-seqq-nested-seq-unsnapshots.gx) (x-dup-01)
-                    // 2026-10-26 claude: x-seq-sampling-01's fix (builtin_reach) makes
-                    // a builtin handed a write-free function read all and write
-                    // nothing, so the filter probe prints (1, 3). The nested-seq probe
-                    // prints (1, 1): before, every nested seq made all captures live,
-                    // so whether a nested seq reads the seqq's queued capture or takes
-                    // its own snapshot at its entry was never visible. The lowering
-                    // passes seqq captures into a nested seq (rewrite_with_inner drops
-                    // only Entry redirects there; the Redirect docs say a nested seq
-                    // takes its own entries), which gives 1; the probe and CLAUDE.md's
-                    // 'a nested seq excepted, which takes its own' read as 2. Question:
-                    // does a nested seq in a seqq read the queued capture (1, today) or
-                    // the variable at its own entry (2: give seqq captures a redirect
-                    // of their own that rewrite_with_inner drops at a nested seq, as it
-                    // drops Entry)?
-                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2,
-                    // q9, A nested seq inside a seqq): yes, own entry (the
-                    // recommendation: own entry, as CLAUDE.md says.)
-                    // 2026-10-27 codex: Separated seqq external captures from
-                    // trigger-value redirects. A nested seq drops the queued external
-                    // captures and takes its own entry snapshot, while retaining the
-                    // enclosing trigger and local cells. Pin
-                    // lang::seq::nested_seq_in_seqq_takes_own_entry failed in all four
-                    // modes without the fix (1,1) and passed with it (1,2); rewrite pin
-                    // expr::seq::test::nested_seq_keeps_request_and_takes_own_entries
-                    // covers the retained trigger/local redirects. Ran
-                    // seq/select/sample regression filters and the targeted
-                    // graphix-types test. Updated book, design and language skill. No
-                    // FuseExpect moved; socket/netidx-admin and full workspace tests
-                    // remain for coordinator review.
                     let reach = builtin_reach(cs, ctx);
                     if reach != Reach::Nothing && gxdbg_seqplan() {
                         let what = match reach {

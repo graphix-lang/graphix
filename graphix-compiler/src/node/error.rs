@@ -178,49 +178,6 @@ impl<R: Rt> AbortRole<R> {
 
 /// Join `etyp`, an error type raised to `handler`'s catch, into the type
 /// its bind infers. A sealed catch takes only what its bind holds.
-// XCR claude for claude: [bug/medium] An open raise (r? over Result<i64, 'e>, or a
-// callback's throws 'e) into an ascribed catch is judged only by the Contains
-// pushed below. That push ignores def_gate_depth, unlike defer_settle, so it
-// drains at the statement's typecheck1 and narrows the definition's 'e only
-// after a later statement's call has been checked. `let run = |r: Result<i64,
-// 'e>| { catch(e: Error<ErrChain<`A>>) ..; r? + 1 }; run(error(`B))` passes
-// --check, and elaboration refuses the instance (GRAPHIX_ELAB_AUDIT reports
-// it). Judge open raises into a sealed catch where they join (T.check_contains
-// in join_raised, which also lets `thrown` and this Contains go), or inside the
-// definition's own settle ahead of PendingSettle::Body. Whether a rigid
-// declared 'e is then refused ("declare the bound") or narrowed is your call.
-// The `thrown` doc is stale either way: Catch::compile binds T, so the snapshot
-// is T plus open raises. probe:
-// design/review-2026-10-26/repro/c-error-op-ascribed-catch-open-throws.gx
-// (c-error-op-01)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q28, An open
-// raise into an ascribed catch): yes, judge at join (the recommendation: judge
-// at the join; refuse a rigid `'e`.)
-// 2026-10-28 codex: Sealed catches check every raised type at join_raised, while
-// declared error variables are rigid. Removed Catch's delayed Contains and
-// redundant constraint/thrown fields and advanced the image format. Pins
-// lang::errors::catch_ascription_refuses_open_raise and
-// catch_ascription_refuses_open_callback failed in all four modes without the fix
-// (8 failures); catch_ascription_accepts_bounded_raise passed before and after.
-// cargo test -p graphix-tests --offline --lib lang::errors:: passes all 255
-// tests. Updated the book, design/catch.md, language skill and rules; regenerated
-// AGENTS.md; mdbook build passed. Broader checks will be reported to the
-// coordinator. The other block sharing this id remains open with a note
-// explaining its unrelated ruling.
-// 2026-10-28 codex: Follow-up pin
-// lang::errors::catch_ascription_refuses_rigid_union_raise covers the review's
-// c13.gx: a declared rigid 'e bounded by [`A, `B] raises into catch(e:
-// Error<ErrChain<`A>>), even though its only call supplies error(`A). It requires
-// the join_raised diagnostic, and the interp fixture checks both check-only and
-// build verdicts. Temporarily restoring the old guard that skips open types at a
-// sealed catch made all four modes fail (the program was accepted and timed out);
-// restoring the join check passes the pin. Commands: cargo test -p graphix-tests
-// --offline --lib catch_ascription_refuses_rigid_union_raise (0 passed, 4 failed
-// with the guard disabled); cargo test -p graphix-tests --offline --lib
-// lang::errors:: (259 passed after restoration). The supplied c13.gx also refuses
-// under --no-cache --check at r?'s join. Only the regression fixture changes; no
-// runtime or type-checking implementation change, and no semantics/documentation
-// change. The unrelated receipt-accounting CR sharing this id remains untouched.
 pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Result<()> {
     let (catch, _) = handler.id();
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {

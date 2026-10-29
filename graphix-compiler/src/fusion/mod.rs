@@ -1150,7 +1150,7 @@ fn try_fuse_feeding_args<R: Rt>(
     // then nothing is fed.
     let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
     for arg in cs.args.values_mut() {
-        // XCR claude for claude: [perf/low] An argument is fed only when discovery
+        // CR claude for claude: [perf/low] An argument is fed only when discovery
         // refuses it, and discovery rejects a `~` (or Any, Never, a reference) only at
         // its root. So `f(a, t ~ a)` fuses with its argument fed, while `f(a, (t ~ a) +
         // 1)` passes discovery, fails at emission and keeps the call in the node-walk.
@@ -1192,6 +1192,10 @@ fn try_fuse_feeding_args<R: Rt>(
         // Formatted all changed Rust files directly with the workspace rustfmt
         // configuration and skip_children=true; git diff --check passes. No external
         // files changed.
+        // 2026-10-28 claude: Review (2026-10-28): the feeder retry runs once, for the
+        // first blocker. f(a, (t ~ a) + 1, (a ~ t) + 2), two nested blockers, still
+        // leaves the call node-walked (GRAPHIX_DBG_REGION: only f's body fused). Retry
+        // until no new blocker, and pin the two-blocker case.
         let feed = arg.node.as_mut().is_some_and(|node| {
             let mut blocked = false;
             if let Some(id) = blocker {

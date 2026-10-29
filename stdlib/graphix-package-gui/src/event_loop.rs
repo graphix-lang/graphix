@@ -556,67 +556,6 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                     return;
                 }
-                // XCR claude for claude: [perf/low] Each ToGui::Update walks every widget
-                // of every window: each widget compares the id with each of its refs
-                // and recurses into its children, through Child::update and
-                // Children::update. A cycle costs updates x widgets x props comparisons
-                // and dynamic calls on the main thread. A 1000-widget UI that updates a
-                // few hundred values a cycle does on the order of a million of them
-                // before drawing. Options: an IntMap<ExprId, owner> filled when refs
-                // and children compile and cleared when they recompile, so an update
-                // goes to its owner only. Or keep the walk and accept the cost. The
-                // index has to track widget recompiles. (gui-core-08)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. Build the IntMap<ExprId, owner> index, maintained on
-                // widget recompile.
-                // 2026-10-24 claude: Not obvious after all, so back to Eric (question 49
-                // in cr-questions.md): the index needs every one of the 33 widget types
-                // to list its refs and to follow subtree recompiles, and a ref one omits
-                // silently stops updating, which the walk cannot do. Proposed: measure
-                // the walk on a synthetic 1000-widget UI first.
-                // 2026-10-24 claude: Eric ruled (2026-10-24): measure first, on a
-                // synthetic 1000-widget UI, and decide on the numbers.
-                // 2026-10-25 claude: Measured (quick profile, current_thread harness,
-                // headless): a column of n text widgets, each over its own reference to
-                // one variable, so one write delivers n updates and each walks all n
-                // widgets. The walk alone (the update_widget calls over the delivered
-                // batches, the runtime's cycle excluded), median of 10 writes: n=100, 80
-                // us a write (0.8 us an update); n=1000, 5.0 ms a write (5.0 us an
-                // update, about 5 ns a widget visited). The whole write at n=1000,
-                // runtime cycle and walk, is 31 ms median (12 to 57), so the walk is a
-                // sixth of it; at a few hundred updates in a 1000-widget UI it is about
-                // 1.5 ms. Quadratic as stated, and visible at the frame budget only when
-                // most of a 1000-widget UI updates at once. Back to eric to decide:
-                // build the index, or accept.
-                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q47,
-                // GUI update routing (round-1 q49, measured)): yes, accept it (the
-                // recommendation: accept.)
-                // 2026-10-28 codex: Implemented Eric's latest ruling (2026-10-27):
-                // accept the walk. Added design/gui_updates.md with the recorded
-                // quick-profile measurements, rationale and reproduction; CLAUDE.md
-                // states the routing rule and AGENTS.md is regenerated. New pin
-                // test::reconcile_test::a_thousand_widgets_receive_their_updates
-                // verifies ten batches over 1000 text widgets and a subsequent runtime
-                // write without GPU/sockets. cargo test -p graphix-package-gui --offline
-                // a_thousand_widgets_receive_their_updates -- --nocapture: passed, dev
-                // median 12.36 ms per 1000-update batch (not comparable to the prior
-                // quick-profile timing). This documents unchanged behavior, so there is
-                // no failing-before fix claim. Existing reconciliation pins cover
-                // replacement and failed-recompile recovery; full GUI suite follows.
-                // 2026-10-28 codex: Strengthened
-                // a_thousand_widgets_receive_their_updates: every widget receives a
-                // distinct batch-and-index string in each of ten direct-update batches,
-                // and its own interpolated value on the subsequent runtime write. The
-                // correct test passed (dev median 12.01 ms per 1000-update batch);
-                // deliberately rotating deliveries by one widget failed with one-1 versus
-                // one-0, then the mutation was removed. This is a test-strengthening
-                // change, not a production routing fix. Updated design/gui_updates.md.
-                // cargo test -p graphix-package-gui --offline --lib: 90 passed, 258
-                // failed, 1 ignored; all failure messages are environmental: 78
-                // test::data_table_test failures report resolver shutdown, and 180 tests
-                // under canvas_test/chart_test/frame_test/interaction_test/widgets_test
-                // report no GPU adapter. The distinct-delivery pin and all new CPU
-                // subscription/sparkline pins pass in that full run.
                 for tw in self.windows.values_mut() {
                     if let Err(e) = tw.handle_update(&self.rt, id, &v) {
                         error!(target: FAILURE_TARGET, "handle_update: {e:?}");

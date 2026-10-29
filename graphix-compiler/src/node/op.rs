@@ -373,57 +373,6 @@ enum Equality {
 }
 
 impl Equality {
-    // XCR claude for claude: [bug/medium] References held under Any compare by cell, not
-    // by what they name: Targets is chosen only when an operand TYPE compares_refs, and
-    // Any holds no reference statically. `let a: Any = &x; let b: Any = &x; (a == b, &x
-    // == &x)` is (false, true) in both engines, against the CLAUDE.md rule that ==
-    // compares references by what they name. Either give map_refs an Any arm that walks
-    // the value and rewrites every reference abstract it finds (chosen here when an
-    // operand type holds Any, never fused), or rule that Any compares references by
-    // cell and document and pin it. The orderings under Any order references by cell
-    // number, too. probe: design/review-2026-10-26/repro/c-error-op-any-ref-eq.gx
-    // (c-error-op-02)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q34, References
-    // under Any): yes (the recommendation: walk for `==`, refuse the order.)
-    // 2026-10-28 codex: Implemented q34: equality descends through Any and replaces
-    // references by their named places; statically ref-free subtrees retain the typed
-    // fast path. Ordering refuses a reference reached under Any, including singleton
-    // sort/min/max/dedup, map construction, queries, edits, casts, collection results,
-    // native map helpers and reference paths. An actual matching Eq/Ord implementation
-    // remains authoritative; reference walks match its type arguments, so an impl for
-    // another instantiation cannot hide a reference. Any comparisons remain unfused as
-    // the ruling explicitly recommended. Pins lang::byref::any_reference_* plus
-    // scalar/Ord controls cover all four modes; the final focused byref::any_ run
-    // passed 48 tests. Equality probes failed before the implementation; ordering and
-    // cast pins failed all four modes with the implementation removed; compiler
-    // map_helpers_refuse_reference_keys and map_paths_refuse_reference_keys both failed
-    // with it removed. The additional instantiated-impl equality and ordering probes
-    // failed eight cases before the exact lookup correction and passed afterward.
-    // Rules, book, design and language skill updated. Full-suite and fuzzer results are
-    // recorded in the completion report.
-    // 2026-10-28 codex: Gate reference-order walks on resolved argument/key types. Map
-    // nodes, collection builders, by-reference map paths and ordered builtins retain the
-    // decision from typecheck1 (and image it); native helpers receive constant gates.
-    // The fast builtin path is used only when its argument type cannot conceal
-    // references. Cast nodes and reader targets retain a conservative target-level gate;
-    // the generic Type cast API also checks the static map-key type once before
-    // iterating entries, so an unrelated Any in a map value never causes a key walk.
-    // Existing netidx-facing signatures are unchanged. Pins:
-    // ordered_builtin_checks_only_unknown_types and typed_map_cast_skips_reference_walk
-    // both failed with their guards removed, then passed restored. Extended
-    // map_helpers_refuse_reference_keys covers both native gate values;
-    // key_type_check_does_not_change_place_identity pins that gate metadata is not
-    // reference identity. The complete graphix-types, graphix-compiler and
-    // graphix-package-core unit suites pass (336, 54 and 6 tests), and all 48
-    // lang::byref::any_ integration tests pass. No socket tests are involved in these
-    // focused runs.
-    // 2026-10-28 codex: Follow-up validation found an abstract target can hide a map
-    // representation behind a custom Ord. The outer type's comparison walk is not its
-    // cast's representation walk. Pretyped casts now keep the key guard for any abstract
-    // target (and Any); each actual map still checks only keys whose static type can
-    // conceal references. The new any_reference_cast_abstract_map_is_refused pin failed
-    // in all four modes with the earlier target gate. This does not change the unchecked
-    // path for concrete structural targets such as Map<string, i64>.
     fn of(env: &Env, lhs: &Type, rhs: &Type, ordered: bool) -> Self {
         let refs = if ordered {
             [lhs, rhs].into_iter().find(|t| t.orders_refs(env))

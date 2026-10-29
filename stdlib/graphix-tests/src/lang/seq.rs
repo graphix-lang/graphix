@@ -638,33 +638,6 @@ async fn reentry_fired_only(mode: Mode) -> Result<()> {
         // a step's own level, a timer born at each run's entry, is waited for
         // in every run
         (
-            // XCR claude for claude: [test-gap/low] The comment says an outer level
-            // absent at the first entry is waited for and then read as it stands, but
-            // lvl is bound inside the seqq body: it is a step whose timer is reborn
-            // every run. Bound outside as described, the fixture gives [342, 342, 342]
-            // (every queued request runs as the last one; see the CR in
-            // desugar_queued). Move lvl outside the body and keep [142, 242, 342].
-            // probe:
-            // design/review-2026-10-26/repro/tests-seq-seqq-absent-level-outside.gx
-            // (tests-seq-03)
-            // 2026-10-27 claude: The case's comment now says what it pins (lvl is a
-            // step, its timer born at each run's entry, waited for in every run). The
-            // outside variant still gives 342 342 342 at this tip: it is the seqq
-            // banked-request bug of tests-seq-01 / x-seq-sampling-02, both for eric.
-            // Add the outside case with [142, 242, 342] as that fix's pin once the
-            // request rule is ruled; landing it now would fail the gate.
-            // 2026-10-28 qwen: 2026-10-28 qwen: Done. The banked-request bug is fixed,
-            // so the outside case is now a pin. In reentry_fired_only, next to the
-            // absent_level case, the absent_level_outside fixture binds let lvl =
-            // sys::time::timer(duration:20.ms, false) ~ 42 above the seqq (so lvl is a
-            // level, not a step reborn at each run) and expects [142, 242, 342]: each
-            // queued request runs with the level reading as it stands at that run, not
-            // as the last one. Undoes to [342, 342, 342] if the request rule
-            // regresses, which is what this test fails on. Run: cargo test -p
-            // graphix-tests --offline --lib lang::seq is 691 passed, 0 failed, and
-            // lang::seq::reentry_fired_only is 4 passed. Probe
-            // design/review-2026-10-26/repro/tests-seq-seqq-absent-level-outside.gx
-            // prints 142, 242, 342. Commit 0db941b.
             "absent_level",
             "let lvl = sys::time::timer(duration:20.ms, false) ~ 42; let q = request; let y = lvl; q * 100 + y",
             vec![142, 242, 342],

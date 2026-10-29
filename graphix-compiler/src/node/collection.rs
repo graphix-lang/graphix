@@ -795,45 +795,6 @@ struct Slot<R: Rt> {
 }
 
 impl<R: Rt> Slot<R> {
-    // XCR claude for claude: [perf/medium] Every slot is a full run-time bind: an env
-    // binding for the synthetic `collection_element` argument, a fresh instantiate of
-    // the callback type, and at first dispatch build_bound (compile, typecheck0/1,
-    // analysis::analyze_bound_callee and share::fuse_slot). The analysis gives the same
-    // result for every sibling. Measured with `array::init(100000, |i| i)` under
-    // --no-fusion: about 4.5 KB resident and about 40 us of setup per slot (debug
-    // build). A 1M-element node-walk collection therefore needs gigabytes. probe:
-    // design/review-2026-10-12/repro/c-collection-03.gx. Candidates: mint the element
-    // BindId without an env binding nothing looks up by name; run analyze_bound_callee
-    // once per prototype definition and copy its facts to sibling instances; reuse the
-    // prototype's instance types instead of instantiating per slot. (c-collection-03)
-    // 2026-10-16 claude: Done: apply_deferred and drop_deferred shrink pending_refs
-    // after a batch (a drain walked the table's whole capacity, so the slots' first
-    // large batch made every later bind quadratic: 300k slots 8.2 s, now 4.3 s on the
-    // perf profile, linear from 50k to 400k at about 10 us a slot); a slot's arguments
-    // are bare ids, no env binding (peak RSS at 100k 468 MB to 450 MB). Open:
-    // analyze_bound_callee (about 5% of a slot) writes each instance's plans into its
-    // own nodes, so running it once per prototype means copying node state; instantiate
-    // per slot (about 10%) and the about 4 KB a slot keeps. Measured with
-    // ~/tmp/target/perf/graphix --no-fusion over array::init(n, |i| i),
-    // GRAPHIX_PAR=off, taskset -c 2.
-    // 2026-10-17 claude: Profiled 10-17 (perf build, --no-fusion, array::init(100000,
-    // |i| i), 2.4 s): no hot spot left. Self time spreads over the runtime's per-slot
-    // variables (read_var, the store's and the event's maps, ref_var: about 15%), the
-    // per-slot env copy and insert (about 10%), instantiation's cell work (about 5%)
-    // and a long tail. What remains is the slot itself: each is a full node graph with
-    // its own variables, so going further means slots sharing their prototype's graph,
-    // the node-graph sharing question left open (not ruled out, not advocated).
-    // Readdressed for that decision.
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q68, Activation
-    // memory and depth churn):
-    // 2026-10-27 claude: Under the D1 ruling, slots and activations sharing their
-    // prototype's graph (lever 2) is not taken now; lever 1 (smaller instances) applies
-    // to slots as to activations and is next under x-fix-nodes-03.
-    // 2026-10-28 codex: Slots share call metadata by resolved/dynamic kind, and callers
-    // name their slot arguments. Serial no-fusion recursion_memory measured 3890 B/slot
-    // before and 3319-3392 after; collection_slot_memory_is_linear checks
-    // length/endpoints with a 3700 B ceiling. Per-slot graphs and state remain
-    // independent.
     fn new(
         ctx: &mut CompileCtx<R>,
         callback: &Callback,
@@ -1314,35 +1275,6 @@ fn update_slots_in_order<R: Rt>(
         if ctx.interrupted() {
             return None;
         }
-        // XCR claude for claude: [perf/medium] Every standing slot is called here whenever
-        // the collection walks, even when no element moved, the callback was not
-        // rebound, and the slot's instance body boundary is unmarked. A clean slot
-        // still pays CallSite::update_call, GXLambda formal publication, the Prune
-        // check and two TagValue clones: about 190 ns each in a debug build. A map over
-        // [&i, &z, ...] where only slot 0 ticks costs 101/371/1525 us a cycle at
-        // n=500/2000/8000. design/walk_pruning.md accepted the visit as 'one stamp
-        // check'. Decide whether to skip such a slot here: under View::Cycle, with
-        // !moved, !rebound and the slot body's boundary not dirty, keep slot.state
-        // without calling it. Wake and Step views keep the full walk. probe:
-        // design/review-2026-10-26/repro/x-perf-runtime-idle-slots.sh
-        // (x-perf-runtime-01)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q65, Idle
-        // collection slots): yes, skip (the recommendation: skip.)
-        // 2026-10-28 codex: Implemented the ruled early skip for clean standing lambda
-        // slots under Cycle when neither source nor callback moved. Calls with defaults,
-        // fences, an unmaterialized body or a wake still walk. Reused Prune's eligibility
-        // and audit: audit executes the skipped call and checks its output, publications
-        // and effects; production skips retain the slot state and stamp the body visited.
-        // Updated the pruning record and rule, regenerated AGENTS. Pin: graphix-tests
-        // --test runtime_cost idle_slots_do_not_enter_their_call_sites; observed failing
-        // before the change with 20300 idle boundaries, passes after in all four modes.
-        // Also checks independently changing defaults; reran with GRAPHIX_PRUNE=audit,
-        // passes. Probe x-perf-runtime-idle-slots.sh, rebuilt debug binary, three runs
-        // each: median microseconds/cycle at 500/2000/8000 slots before
-        // 203.366/760.508/3844.339, after 33.196/128.632/479.819 (6.1x/5.9x/8.0x faster;
-        // shared-machine timing). cargo test -p graphix-compiler --offline --lib: 54
-        // passed. cargo fmt --all and git diff --check passed. Full graphix-tests lib
-        // gate will run before the final report.
         if views.skip_idle && views.of(i) == View::Cycle && skip_idle_slot(ctx, slot) {
             continue;
         }

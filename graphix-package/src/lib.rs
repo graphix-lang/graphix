@@ -1611,28 +1611,6 @@ impl GraphixPM {
             "Graphix Package Manager <eestokes@pm.me>",
             Duration::from_secs(1),
         )?;
-        // XCR claude for claude: [risk/medium] A rebuild replaces whatever binary is
-        // running, a cargo dev build (target/debug/graphix) included, with a release
-        // build of the crates.io source of the same version number. The install_root
-        // guard that refused an exe outside a cargo install root is gone, and cargo
-        // will not notice its output was swapped. Decide which binaries a rebuild may
-        // replace: refuse an exe under a cargo target directory, require
-        // $CARGO_HOME/bin, or require a flag. Found by reading; not run. (package-02)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q71, Which
-        // binary a package rebuild may replace): yes, refuse target dir, allow
-        // elsewhere (the recommendation: refuse under a target dir, allow elsewhere.)
-        // 2026-10-28 codex: Rebuilds check the resolved executable's ancestors for
-        // Cargo root/profile markers before unpacking source and before replacing the
-        // binary. Custom target roots, profiles, nested deps and cross-target
-        // directories are covered; an executable installed elsewhere remains
-        // replaceable. Pins a_cargo_output_cannot_be_replaced and
-        // a_target_root_marker_protects_nested_executables both failed before the
-        // guard because replacement succeeded, and pass afterward without modifying
-        // the output or staging a replacement. Existing
-        // a_replaced_exe_is_kept_as_a_backup remains green. cargo test -p
-        // graphix-package --offline --lib: 40 passed, five slow tests ignored. No
-        // real executable was replaced; tests use temporary files. Book and
-        // CLAUDE/AGENTS document the rule.
         let exe = std::env::current_exe().context("locating the running graphix")?;
         let target_dir = shared_target_dir()?;
         Ok(Self { cratesio, cargo, version: version.into(), exe, target_dir })

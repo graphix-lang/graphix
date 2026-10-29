@@ -1116,61 +1116,6 @@ impl Type {
                         Err(self.cast_fail("variant tag mismatch", v))
                     }
                     (Some(_), _) => Err(self.cast_fail("variant length mismatch", v)),
-                    // XCR claude for claude: [bug/medium] This tagless read takes any
-                    // array of the payload's length, including another variant's
-                    // written form. json::write_str(`B(2)) is ["B",2], and reading it
-                    // into `A(string, i64) gives `A("B", 2) instead of InvalidCast. An
-                    // untagged [1, 2] read into [`A(i64, i64), `B(i64, i64)] becomes
-                    // `A(1, 2), with nothing to choose the member. No writer here emits
-                    // a tagless payload (rep::strip and core's shape always write the
-                    // tag), so the arm only turns a mismatch into a wrong value. Delete
-                    // it, or admit it only for a lone variant target whose data does
-                    // not open with a string. probe:
-                    // design/review-2026-10-26/repro/x-kind-markers-tagless-variant-read.gx
-                    // (x-kind-markers-03)
-                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42,
-                    // Union members that share a data form): yes a for json/toml, b for
-                    // pack and db (the recommendation: (a) for json/toml targets; (b) for
-                    // pack and db.)
-                    // 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and
-                    // validate composite kind markers; their casts defer a converting array
-                    // member until every array member has had a chance to hold the value
-                    // unchanged. Reused Restore for the decoder's scoped marker permission.
-                    // Pins pack_preserves_union_member_kinds failed all four modes on
-                    // current main; pack_array_union_prefers_unchanged_elements and
-                    // db_array_union_prefers_unchanged_elements failed all eight modes with
-                    // the old patch, then passed with the revised member selection. The
-                    // temporary cr_rework harness (exact retained fixtures) passes 20
-                    // tests, including db_preserves_union_member_kind and the recursive
-                    // abstract-alias guard. Binary rule, book, interface and skill docs
-                    // updated. The JSON/TOML target restriction remains unimplemented:
-                    // putting a format-specific bound on json::read would change a public
-                    // signature used by
-                    // ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx,
-                    // contrary to this brief's explicit restriction. Applying it to
-                    // Concrete generally would incorrectly reject the pack/db targets this
-                    // ruling requires. No such signature change was made. This CR stays
-                    // open; the text-data constraint needs coordination or an approved
-                    // checker design preserving that API.
-                    // 2026-10-27 codex: Rechecked finding 10 in this continuation. The
-                    // q42(a) target restriction is still blocked by the brief's ban on
-                    // changing public signatures used by ../netidx: json::read is used in
-                    // graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is
-                    // shared with pack/db, which must accept these unions. A
-                    // format-specific builtin refusal in typecheck1 would make build reject
-                    // what check accepts, contrary to the project rule. No such workaround
-                    // or signature change was made; q42 remains partial and needs
-                    // coordinator authorization for a format-specific target bound.
-                    // 2026-10-28 claude: q42(a) built, but it does not cover this: the
-                    // target here is one variant, not a union, and reading ["B", 2] into
-                    // `A(string, i64) still gives `A("B", 2) (probe run 2026-10-28). The
-                    // tagless arm is still to delete or narrow as the CR proposes.
-                    // 2026-10-28 claude: Fixed as the CR proposed: the tagless read is
-                    // deleted, since no writer emits a payload without its tag and the arm
-                    // only turned a mismatch into a wrong value. A variant reads only data
-                    // that names its tag; another variant's written form is a tag mismatch
-                    // (now named so), an untagged array not a variant. Pin:
-                    // lang::types::a_variant_reads_only_its_own_tag.
                     _ => Err(self.cast_fail("not a variant", v)),
                 }
             }
@@ -1286,62 +1231,6 @@ impl Type {
         }
         // a member whose tag the value carries is its reading, whatever a
         // tagless reading of an earlier member says
-        // XCR claude for claude: [bug/medium] The data a writer emits does not say which
-        // union member it came from, and this order reads it back as the wrong one. A
-        // tuple ("B", 7) of [(string, i64), `B(i64)] comes back from pack, json and db
-        // as `B(7), against the stated rule that unmarked data reads as a tuple of its
-        // length first. A List of [List<i64>, (i64, i64)] comes back from pack as a
-        // tuple. A Map of [Map<string, i64>, Array<(string, i64)>] comes back from json
-        // as the pairs. The checker accepts these unions, so a reloaded state takes the
-        // wrong select arm. Decide one rule: refuse, under Data/Concrete, unions whose
-        // members share a data form (as Discernible refuses shared runtime forms), or
-        // have pack and db keep kinds, since only Graphix reads them back. probe:
-        // design/review-2026-10-26/repro/x-kind-markers-tuple-reads-back-as-variant.gx
-        // (x-kind-markers-02)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union
-        // members that share a data form): yes a for json/toml, b for pack and db (the
-        // recommendation: (a) for json/toml targets; (b) for pack and db.)
-        // 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and
-        // validate composite kind markers; their casts defer a converting array member
-        // until every array member has had a chance to hold the value unchanged. Reused
-        // Restore for the decoder's scoped marker permission. Pins
-        // pack_preserves_union_member_kinds failed all four modes on current main;
-        // pack_array_union_prefers_unchanged_elements and
-        // db_array_union_prefers_unchanged_elements failed all eight modes with the old
-        // patch, then passed with the revised member selection. The temporary cr_rework
-        // harness (exact retained fixtures) passes 20 tests, including
-        // db_preserves_union_member_kind and the recursive abstract-alias guard. Binary
-        // rule, book, interface and skill docs updated. The JSON/TOML target
-        // restriction remains unimplemented: putting a format-specific bound on
-        // json::read would change a public signature used by
-        // ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx, contrary
-        // to this brief's explicit restriction. Applying it to Concrete generally would
-        // incorrectly reject the pack/db targets this ruling requires. No such
-        // signature change was made. This CR stays open; the text-data constraint needs
-        // coordination or an approved checker design preserving that API.
-        // 2026-10-27 codex: Rechecked finding 10 in this continuation. The q42(a)
-        // target restriction is still blocked by the brief's ban on changing public
-        // signatures used by ../netidx: json::read is used in
-        // graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is shared
-        // with pack/db, which must accept these unions. A format-specific builtin
-        // refusal in typecheck1 would make build reject what check accepts, contrary to
-        // the project rule. No such workaround or signature change was made; q42
-        // remains partial and needs coordinator authorization for a format-specific
-        // target bound.
-        // 2026-10-28 claude: q42(a) built for json/toml: json::read's target is 'b:
-        // Concrete + JsonData and toml::read's 'b: Concrete + TomlData (new bounds,
-        // typ::textdata): no union anywhere in the target holds two members one value
-        // of the format could be written by (any-length arrays share the empty array,
-        // an object reads as its sorted key/value pairs, a struct takes only its fields
-        // and leaves out only nullable ones, ints and floats write apart, JSON writes a
-        // datetime and a tag as strings and a duration as a float, TOML has no null and
-        // a native datetime). Judged of the call's settled binding in site_bounds,
-        // never at the bind, where a refusal would narrow a union target to one member.
-        // Pins: lang::types::{json_target_union_its_data_cannot_tell_apart_refused,
-        // toml_target_union_its_data_cannot_tell_apart_refused,
-        // json_target_members_written_apart_read_back},
-        // typ::textdata::test::unions_whose_members_write_alike;
-        // data_reads_back_as_written keeps the pack half.
         let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
         if tagged.peek().is_some() {
             let mut read = Err(None);
@@ -1360,58 +1249,6 @@ impl Type {
             };
         }
         // a writer wrote the tuple or the struct the data reads back as
-        // XCR claude for claude: [bug/medium] The rank pass takes the first same-length
-        // tuple (then struct) that casts at all, including by printing a number into a
-        // string, ahead of a member the data reads without leaving its class. With T =
-        // [List<i64>, (i64, string), Array<[i64, f64]>], json::write_str of [[<1, 2>],
-        // [1, 2.5]] reads back as [(1, "2"), (1, "2.5")], and an Array<i64> value cast
-        // to [Array<i64>, (i64, i64)] becomes a tuple. The Set arm's 'a member the
-        // value already inhabits wins' and this function's doc both claim otherwise.
-        // Should the tuple and struct rank only win when no element leaves its class,
-        // with the comments updated to the order chosen? probe:
-        // design/review-2026-10-26/repro/t-cast-setops-tuple-rank-cross-class.gx
-        // (t-cast-setops-06)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union
-        // members that share a data form): yes a for json/toml, b for pack and db (the
-        // recommendation: (a) for json/toml targets; (b) for pack and db.)
-        // 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and
-        // validate composite kind markers; their casts defer a converting array member
-        // until every array member has had a chance to hold the value unchanged.
-        // Reused Restore for the decoder's scoped marker permission. Pins
-        // pack_preserves_union_member_kinds failed all four modes on current main;
-        // pack_array_union_prefers_unchanged_elements and
-        // db_array_union_prefers_unchanged_elements failed all eight modes with the
-        // old patch, then passed with the revised member selection. The temporary
-        // cr_rework harness (exact retained fixtures) passes 20 tests, including
-        // db_preserves_union_member_kind and the recursive abstract-alias guard.
-        // Binary rule, book, interface and skill docs updated. The JSON/TOML target
-        // restriction remains unimplemented: putting a format-specific bound on
-        // json::read would change a public signature used by
-        // ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx, contrary
-        // to this brief's explicit restriction. Applying it to Concrete generally
-        // would incorrectly reject the pack/db targets this ruling requires. No such
-        // signature change was made. This CR stays open; the text-data constraint
-        // needs coordination or an approved checker design preserving that API.
-        // 2026-10-27 codex: Rechecked finding 10 in this continuation. The q42(a)
-        // target restriction is still blocked by the brief's ban on changing public
-        // signatures used by ../netidx: json::read is used in
-        // graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is shared
-        // with pack/db, which must accept these unions. A format-specific builtin
-        // refusal in typecheck1 would make build reject what check accepts, contrary
-        // to the project rule. No such workaround or signature change was made; q42
-        // remains partial and needs coordinator authorization for a format-specific
-        // target bound.
-        // 2026-10-28 claude: q42(a) built (JsonData/TomlData): the probe's json read
-        // into Array<[List<i64>, (i64, string), Array<[i64, f64]>]> is now refused
-        // (List<i64> and Array<[i64, f64]> write alike). Left: an Array<i64> value
-        // cast to [Array<i64>, (i64, i64)] becoming the tuple, an in-program cast the
-        // reader bounds do not decide.
-        // 2026-10-28 claude: Built per round 1's prefer-exact ruling: the rank pass
-        // takes a tuple (or a struct) for unmarked data only when every element stays
-        // in its own class, and in_own_class now judges a container by its elements,
-        // so [1, 2] under Any read as [(i64, string), Array<i64>] is the array, not
-        // (1, "2"). A value typed Array<i64> stays an array. Pin:
-        // lang::types::a_union_prefers_the_member_its_elements_fit.
         let mut ranked: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
         if let Value::Array(a) = v
             && rep::kind(v).is_none()
@@ -2263,25 +2100,6 @@ fn compared_rep(
     params: &[Type],
     kind: CoreTrait,
 ) -> Option<Type> {
-    // XCR claude for claude: [bug/medium] Either impl excuses the representation from both
-    // judgments, but an Eq impl says nothing about order. type B = Abstract<[i64, f64]>
-    // with only `impl Eq for B` passes Ordered, and array::sort([B(2), B(1.5), B(1)])
-    // returns [B(1), B(2), B(1.5)], the mixed-numeric order Ordered refuses when the
-    // impl is absent. An Ord-only abstract likewise escapes the Discernible check that
-    // == relies on. Should the representation be skipped per trait instead (Ordered
-    // when Ord is implemented, Discernible and compared_ref when Eq is)? The CLAUDE.md
-    // sentence 'no Eq or Ord implementation' would need the same change. probe:
-    // design/review-2026-10-26/repro/t-cast-setops-eq-only-ordered.gx
-    // (t-cast-setops-05)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q32, An Eq-only
-    // abstract and Ordered): yes, per trait (the recommendation: per trait.)
-    // 2026-10-27 codex: Implemented the per-trait ruling: Ord alone bypasses the Ordered
-    // representation check; Eq alone bypasses Discernible and equality-reference
-    // traversal. Diagnostics name the missing trait. Pins
-    // lang::traits::{eq_only_abstract_does_not_supply_order,ord_only_abstract_does_not_supply_equality}
-    // failed in all four modes before the fix; the corresponding positive tests cover
-    // each implemented trait. The equality refusal uses differing function signatures,
-    // which share a runtime form. Rules, book and language skill updated.
     if env.implements(kind, id) {
         return None;
     }
@@ -2508,34 +2326,6 @@ impl Indiscernible {
     }
 }
 
-// XCR claude for claude: [perf/medium] [perf/medium] This walk has no memo of shared
-// nodes: `Expanded` covers only Type::Ref expansion, so a DAG type is walked once per
-// path to each node. A let chain of pairs makes `xN == xN`, `uniq(xN)` or `{xN => 1}`
-// cost 2^N in the check: N=26 takes 3.4 s, while `[xN, xN]` stays at 0.03 s. Every
-// Discernible/Ordered judgment comes through here (lib.rs discernible and site_bounds,
-// contains.rs). Remember the shared nodes a walk found nothing under, outside a
-// recursive decision, as Type::holds now does, and give rep_collision's RepSeen the
-// same treatment. probe: design/review-2026-10-26/repro/c-lib-discernible-dag.sh
-// (c-lib-02)
-// 2026-10-27 claude: rep_ambiguity and rep_collision remember the shared nodes (a pair
-// of them for rep_collision) a walk found nothing under (Expanded::once; sound because
-// a node walked to nothing has every application in it expanded, and an expanded one
-// is not walked again), and keep each head they build alive until the walk ends
-// (Expanded::keep). x60 == x60, x60 < x60, uniq(x60), {x60 => 1} and
-// array::sort([x60]) check in about 1.2 s, as the bare value does. Pin: graphix-shell
-// deep_nesting comparisons_over_a_shared_type_dag_check_in_linear_time (fails past 15
-// s with the memo undone). Not fixed: select x60 { v => 1 } still does not check in 30
-// s, a walk in the select's check the repro's header names.
-// 2026-10-27 claude: reviewed: the Discernible/Ordered half holds
-// (Expanded::once/keep, deep_nesting comparisons pin), but the repro's select x60 { v
-// => 1 } still does not check in 30 s, which this CR's probe covers. Back to CR for
-// that walk.
-// 2026-10-27 claude: The select's walk was Type::could_match (a select arm's form
-// test), which walked the pair DAG as a tree. could_match_int now remembers the pairs
-// of shared nodes it found could match (MatchHist::found, a NodePairs, as contains'
-// Link::equal and setops do; each pair is held for the walk). select x60 { v => 1 }
-// now checks in 0.02 s; it did not finish in 30 s before. Pin: deep_nesting
-// comparisons_over_a_shared_type_dag_check_in_linear_time now also checks the select.
 fn rep_ambiguity(
     env: &Env,
     seen: &mut Expanded<Type>,
@@ -2876,58 +2666,6 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         Some(Type::Array(e)) => {
             rep::array_elems(v).is_some_and(|a| a.iter().all(|x| in_own_class(env, e, x)))
         }
-        // XCR claude for claude: [bug/medium] Unmarked array data never counts as a List
-        // member's class, while any Array member counts however its elements must
-        // convert. Data from a list writer therefore reads back as another member:
-        // cast<[List<i64>, Array<string>]> of [1, 2] is ["1", "2"], a pack round trip
-        // of [<1, 2>] typed so gives ["1", "2"], and a Map member round-tripped through
-        // json reads back as the array-of-pairs member. The t-rep-01 fix ranked tuples
-        // and structs only. Decide whether data counts as a List's (and an object's as
-        // a Map's) own class, or whether the class test looks at elements. probe:
-        // design/review-2026-10-26/repro/x-rerun-5-list-member-cast.gx (x-rerun-5-03)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union
-        // members that share a data form): yes a for json/toml, b for pack and db (the
-        // recommendation: (a) for json/toml targets; (b) for pack and db.)
-        // 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and
-        // validate composite kind markers; their casts defer a converting array member
-        // until every array member has had a chance to hold the value unchanged. Reused
-        // Restore for the decoder's scoped marker permission. Pins
-        // pack_preserves_union_member_kinds failed all four modes on current main;
-        // pack_array_union_prefers_unchanged_elements and
-        // db_array_union_prefers_unchanged_elements failed all eight modes with the old
-        // patch, then passed with the revised member selection. The temporary cr_rework
-        // harness (exact retained fixtures) passes 20 tests, including
-        // db_preserves_union_member_kind and the recursive abstract-alias guard. Binary
-        // rule, book, interface and skill docs updated. The JSON/TOML target
-        // restriction remains unimplemented: putting a format-specific bound on
-        // json::read would change a public signature used by
-        // ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx, contrary
-        // to this brief's explicit restriction. Applying it to Concrete generally would
-        // incorrectly reject the pack/db targets this ruling requires. No such
-        // signature change was made. This CR stays open; the text-data constraint needs
-        // coordination or an approved checker design preserving that API.
-        // 2026-10-27 codex: Rechecked finding 10 in this continuation. The q42(a)
-        // target restriction is still blocked by the brief's ban on changing public
-        // signatures used by ../netidx: json::read is used in
-        // graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is shared
-        // with pack/db, which must accept these unions. A format-specific builtin
-        // refusal in typecheck1 would make build reject what check accepts, contrary to
-        // the project rule. No such workaround or signature change was made; q42
-        // remains partial and needs coordinator authorization for a format-specific
-        // target bound.
-        // 2026-10-28 claude: q42(a) built (JsonData/TomlData): the probe's json read of
-        // a Map member beside an array of pairs is now refused at the read. Left: the
-        // probe's in-program cast<[List<i64>, Array<string>]>([1, 2]), which still
-        // gives ["1", "2"]; a reader bound does not decide a cast of a program value,
-        // so whether a List member counts unmarked array data as its own class is still
-        // this CR's question.
-        // a list writer writes a list flat, so unmarked data is a list's too
-        // 2026-10-28 claude: Built per round 1's prefer-exact ruling: in_own_class
-        // judges a container by its elements (an Array member over [1, 2] needs i64
-        // elements to count), and unmarked array data counts as a List's own class (a
-        // list writer writes a list flat), so cast<[List<i64>, Array<string>]>([1, 2])
-        // is the list, not ["1", "2"]. The json Map-versus-pairs case is refused by
-        // JsonData. Pin: lang::types::a_union_prefers_the_member_its_elements_fit.
         Some(Type::List(e)) if list::is_list(v) => {
             list::Iter::new(v.clone()).all(|x| in_own_class(env, e, &x))
         }

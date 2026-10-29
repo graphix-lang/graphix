@@ -163,44 +163,6 @@ impl LazyArmFacts {
                 .map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n))
                 .collect(),
             entered: vec![false; arms.len()],
-            // XCR claude for claude: [perf/medium] [perf/medium] Each arm's
-            // shallow_discriminant re-walks the whole scrutinee union
-            // (covers_what_it_meets -> union_members, Type::shallow_discriminant ->
-            // flatten_union_members), expanding every named member's typedef. That is
-            // O(arms x members) per select instance, paid again by every call instance
-            // and every collection slot. 2000 slots calling a function whose select has
-            // N type-test arms over N abstract types reach their first value in 0.66 /
-            // 2.35 / 7.7 s at N = 25 / 50 / 100 (node-walk). All gdb samples are here,
-            // and a warm image start of a 1600-arm select spends 0.89 s here. Compute
-            // the scrutinee's members once per build and hand them to every arm.
-            // Better, compute the discriminants once per definition, since they depend
-            // only on the patterns and the scrutinee type. probe:
-            // design/review-2026-10-26/repro/x-perf-compile-select-facts-per-instance.sh
-            // (x-perf-compile-05)
-            // 2026-10-26 claude: Partial: LazyArmFacts::shallow is now a OnceLock per
-            // arm, filled when the chain first consults the arm, so an instance pays
-            // only for the arms it tries. The probe (values hitting arm 0, load ~250)
-            // went 1.2/3.0/10.6 s (old binary) to 1.7/1.8/2.2 s at 25/50/100 arms. A
-            // variant whose values hit the last arm is still quadratic (2.3/4.6/15.1 s):
-            // each consulted arm still re-walks the scrutinee union. What remains is the
-            // per-definition share (the discriminants depend only on the patterns and
-            // the scrutinee type), which needs the instance rows (DefTable) to carry
-            // them or a reuse rule for unsubstituted instances.
-            // 2026-10-27 codex: Cache select discriminants on definition check tables
-            // when both the scrutinee and predicate rows are closed; open rows retain
-            // instance-local facts. Each scrutinee flattens and checks its members once,
-            // and exact predicates skip that work entirely. Pins:
-            // deep_nesting::select_discriminants_first_value_in_time failed without the
-            // fix at its 4 s deadline and passed with it in 1.43 s;
-            // lang::select::select_discriminants_follow_instantiation exercises
-            // differently shaped generic instantiations. Debug --no-cache --no-fusion
-            // first-value probe, 2000 slots and 25/50/100 last-arm nominal members:
-            // 0.679/2.401/8.040 s before, 0.452/0.558/1.122 s after, same values.
-            // Timings are on the shared host. Targeted shallow-discriminant, select,
-            // fusion, seq and kernel-image tests pass; no FuseExpect changed. The
-            // derivable definition cache is not serialized, so already-imaged instance
-            // bodies rebuild their local facts on restore; the cold-path timing pin does
-            // not measure that path.
             discriminants,
             logged_no_match: false,
             guarded: arms
@@ -210,33 +172,6 @@ impl LazyArmFacts {
                 .map(|(i, _)| i)
                 .collect(),
             missed: vec![false; arms.len()],
-            // XCR claude for claude: [bug/medium] The guards get a catch-up tracker of
-            // their own, separate from the arms', so neither side consumes the other's
-            // bits. A fire a selected arm body read is caught up again by a woken guard
-            // (`n if count(b) > 1` gives "guard 2" where the body twin `n => count(b)`
-            // gives 1). A fire a consulted guard read is caught up again at an arm's
-            // first entry. Between bodies, a fire reaches one arm. Rule whether a
-            // guard's read spends a fire. If it does, track guard refs in the select's
-            // one TrackedFires with a consumer slot per guard. If not, say so in
-            // CLAUDE.md's guard rule and pin it. probe:
-            // design/review-2026-10-26/repro/tests-select-guard-and-arm-catch-up-the-same-fire.gx
-            // (tests-select-04)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q5, Do a guard and
-            // an arm spend one fire?): yes, one tracker (the recommendation: one tracker.)
-            // 2026-10-27 codex: Guards now occupy consumer slots in the select's single
-            // TrackedFires, sharing pending fires with arm bodies while keeping independent guard
-            // sleep state. Removed the separate GuardSleep tracker and updated CLAUDE.md,
-            // wake_catchup, the select chapter and graphix-lang. New pin
-            // lang::select::guard_and_arm_share_missed_fire failed in all four modes before the
-            // change (one 2 / guard 2), and passes after it (one 1 / other). The lang::seq,
-            // lang::select and lang::sample filters pass; no FuseExpect moved. The netidx-admin
-            // socket tests and a fuzzer soak were not run here.
-            // 2026-10-27 claude: Eric ruled the scope (2026-10-27, after review): one fire per
-            // select is spent by whichever ARM reads it first, but a guard and the body of the
-            // arm it guards are one evaluation and both see it. Built: Select::update records the
-            // fires each guard took (guard_took) and evaluate_arm injects them again for that
-            // arm's body. Pin lang::select::guard_and_own_body_both_see_missed_fire (the review's
-            // probe: guarded twin now "guard 2" beside "arm 2"; was "guard 1").
             guards: has_guards.then(|| vec![GuardRun::Unborn; arms.len()]),
         }
     }
@@ -1807,31 +1742,6 @@ impl<R: Rt> Update<R> for Select<R> {
                 // constants stand, as a kernel's do. A pure arm, not slept
                 // when deselected since nothing in it runs, is slept now so
                 // its nodes recompute from what stands, as a slept arm's do.
-                // XCR claude for claude: [bug/high] An arm's `entered` bit is never reset,
-                // so a select inside a seq step enters its arms as a Wake from the
-                // second run on whenever the scrutinee arrives after the step's entry
-                // cycle (an async call, a timer). A constant write or constant-argument
-                // effect in the arm then fires on the first run that takes the arm and
-                // never again. The check stays silent, because typecheck0 exempts
-                // CFlag::SeqStep on the claim that a step is born at every run.
-                // CallSite::update_call reborns on `woke && ctx.event.born()`; doing
-                // the same here (clear `entered` and the guard sleep state when the
-                // select wakes under a born view) makes the arm's first entry in each
-                // run a Step. Needs your ruling on whether an arm entered in a reborn
-                // step is born; add a seq_steps pin either way. probe:
-                // design/review-2026-10-26/repro/c-select-seq-step-arm-write-once.gx
-                // (c-select-seq-01)
-                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q7,
-                // An arm entered in a reborn seq step): yes, born (the recommendation:
-                // born, consistent with your round-1 "always birth".)
-                // 2026-10-27 codex: Reset the select's selected arm, entered bits,
-                // missed-delivery bits and guard run state when it wakes into a reborn
-                // seq step. First selection later in that run is born, including after an
-                // asynchronous scrutinee. Pin: lang::seq_steps::arm_born_at_each_run,
-                // failed in all four modes before the fix and passed afterward. Ran the
-                // seq/select/sample regression filters; no FuseExpect changed. Updated
-                // rules, book, language skill and wake design. Socket/netidx-admin tests
-                // and the full workspace gate remain for coordinator review.
                 let view = match std::mem::replace(&mut entered[i], true) {
                     true => {
                         if !sleep_on_deselect[i] {
@@ -1842,31 +1752,6 @@ impl<R: Rt> Update<R> for Select<R> {
                             false => View::Wake,
                         }
                     }
-                    // XCR claude for claude: [bug/medium] An arm's first entry under a
-                    // Birth (a fresh collection slot, a callee instance bound at run
-                    // time, a REPL input) runs as Birth join Step = Step, so it reads
-                    // standing values stale while the rest of the same born subtree
-                    // reads them as delivered. `{ b <- k ~ b + 1 }` therefore fires in
-                    // a new slot, but the same statement inside `select e { _ => .. }`
-                    // in that slot does not. Taking View::Birth here when the enclosing
-                    // view is Birth would make the two agree; alternatively make
-                    // View::join(Birth, Step) Birth if the rule should be general. Your
-                    // ruling: which does an arm born with its subtree see? probe:
-                    // design/review-2026-10-26/repro/c-select-seq-arm-in-birth-reads-stale.gx
-                    // (and c-select-seq-arm-in-birth-instance.gx) (c-select-seq-02)
-                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q8, An
-                    // arm first entered inside a born subtree): yes, arm takes birth from
-                    // enclosing view (the recommendation: the arm takes Birth (local, no
-                    // change to join).)
-                    // 2026-10-27 codex: A select arm's first entry takes Birth when its
-                    // enclosing view is Birth; it otherwise takes Step. View::join is
-                    // unchanged. Pins
-                    // lang::select::arm_in_born_instance_reads_standing_values and
-                    // arm_in_born_slot_reads_standing_values failed in all four modes before
-                    // the fix and passed afterward. Ran lang::seq, lang::select and
-                    // lang::sample regression filters; no FuseExpect moved. Updated rules,
-                    // book, language skill and wake design. No socket/netidx-admin tests or
-                    // full workspace gate here.
                     false if ctx.event.view == View::Birth => View::Birth,
                     false => View::Step,
                 };

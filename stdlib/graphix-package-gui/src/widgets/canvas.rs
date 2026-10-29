@@ -330,26 +330,6 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
     }
 }
 
-// XCR claude for claude: [bug/medium] A shape is tessellated whole, with no clipping to
-// the canvas, at a fixed tolerance, so its cost grows with its size, not with what is
-// visible. A filled circle of radius 1e12 in a 300x200 canvas takes about 1 s and 1 GB
-// per draw (1e8: 10 ms, 1e10: 94 ms), and each 100x of radius costs 10x. A radius of
-// 1e14 or more (any finite value passes Finite) freezes the GUI thread or exhausts
-// memory. Arc, Ellipse, RoundedRect, the Bezier curves and Path curves behave the same.
-// Bound the cost by the canvas: either refuse a shape whose extent passes a fixed bound
-// and log it, as a non-finite shape is skipped, or clip the geometry to the frame
-// before tessellating. probe:
-// design/review-2026-10-26/repro/gui-widgets-a-canvas-huge-radius.rs (gui-widgets-a-01)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q48, Canvas shapes
-// much larger than the canvas): yes, refuse past a bound (the recommendation: refuse
-// past a bound (simple, predictable); clipping later if needed.)
-// 2026-10-27 claude: Built as ruled (refuse past a bound), in canvas-huge-line-01's fix
-// (codex, reviewed and merged by claude): draw_shape refuses every shape whose extent
-// passes 1,000,000 logical pixels: circle, arc and ellipse radii, rect sizes, curve
-// control points, stroke widths, text size times length, and path segments. A refused
-// shape is logged once through the invalid-geometry path, as a non-finite one is. Pins:
-// widgets::canvas::tests::every_shape_has_a_bounded_extent (each shape kind at 100 and
-// at 1e30), widgets::canvas::path::tests::huge_finite_line_is_rejected.
 fn draw_shape(
     frame: &mut iced_widget::canvas::Frame<Renderer>,
     shape: &CanvasShape,
@@ -363,29 +343,6 @@ fn draw_shape(
         return None;
     }
     match shape {
-        // XCR claude for claude: [bug/low] A finite line far past the canvas draws
-        // nothing. A `Line` from x=-1e30 to x=1e30 at y 10..20 leaves the test
-        // harness's 200x200 frame black and is not flagged as invalid geometry, while
-        // the same line at x=±1e12 draws across rows 14 and 15. Found by the pixel
-        // probes added for (tests-gui-a-01): canvas_huge_line_keeps_finite_endpoints
-        // (±3e38) can only assert that the line is not skipped. Fix: clip a stroke's
-        // segments, in f64, to a box far past any canvas before tessellating
-        // (CheckedPath), or flag such geometry as invalid; which, and for which shapes
-        // (lines, or every path), is to decide. (canvas-huge-line-01)
-        // 2026-10-27 codex: Applied Eric's question-48 ruling: draw_shape refuses
-        // every shape outside a conservative extent of 1,000,000 logical pixels and
-        // logs through the existing invalid-geometry path. This is over 60 16K screen
-        // widths from the origin, far beyond a useful canvas drawing, while keeping
-        // curve tessellation far below the measured 1e12-radius allocation. Checks
-        // include stroke widths, curve controls, circle/ellipse radii, rectangle
-        // sizes, text position/size/content length and Path segments; CheckedPath also
-        // rejects derived points outside the bound. Pin
-        // widgets::canvas::path::tests::huge_finite_line_is_rejected reproduces the
-        // finite +/-1e30 line and failed before the fix, then passed.
-        // widgets::canvas::tests::every_shape_has_a_bounded_extent covers all shape
-        // kinds; four widgets::canvas unit tests pass. Updated
-        // canvas_huge_line_is_skipped for the new policy, but did not run GPU/runtime
-        // harness tests in the socket-restricted sandbox. No image encoding changed.
         CanvasShape::Line { from, to, color, width } => {
             let path = CheckedPath::build(|b| {
                 b.move_to(from.0);

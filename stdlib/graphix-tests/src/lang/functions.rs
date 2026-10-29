@@ -2066,29 +2066,6 @@ run!(
     FuseExpect::None
 );
 
-// XCR claude for claude: [bug/medium] This pins a refusal for read-only `&'a` formals, and
-// its reason is wrong: nothing can write through a `&'a`, only through `&mut`. The
-// refusal also depends on argument order: `f(r, n)` is refused, but `f(n, r)` is
-// accepted and yields 0, because callsite.rs `holds_invariantly`/`data_positions` treat
-// every `ByRef` as fixing 'a and the first argument wins. CLAUDE.md says the arguments
-// settle 'whatever the order the call writes'. Decide: either a read-only `&` holds 'a
-// as data (covariant, so widen and flip this fixture to accept), or both orders are
-// refused. Then rewrite this fixture: with `&mut 'a` it says what its comment says.
-// probe: design/review-2026-10-26/repro/tests-functions-readonly-ref-order.gx
-// (tests-functions-02)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q26, Read-only `&'a`
-// formals and argument order): yes, covariant (the recommendation: covariant, as `&T`
-// already is.)
-// 2026-10-27 codex: Implemented Eric's q26 ruling. Call-site widening treats read-only
-// references covariantly; only writable references fix their referent invariantly.
-// Updated the existing pin to use writable references and added both argument orders for
-// each case. Pins lang::functions::readonly_reference_variable_widens{,_reversed} and
-// writable_reference_variable_does_not_widen{,_reversed}. Before the fix, narrow-first
-// readonly failed in all four modes and reversed passed; after the fix all pass. Complete
-// lang::functions:: passes: 962 tests, via shared flock and cargo test -p graphix-tests
-// --offline --lib lang::functions:: with CARGO_TARGET_DIR=$PWD/target. This also verifies
-// q23's updated default fixtures. Rules, book references page and language skill describe
-// the inference behavior.
 run!(
     writable_reference_variable_does_not_widen,
     r#"{

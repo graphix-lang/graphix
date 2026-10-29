@@ -225,59 +225,6 @@ fn arm_raise_blocker<R: Rt>(
     selects: &[&Node<R>],
     ctx: &CompileCtx<R>,
 ) -> Option<FusionBlocker> {
-    // XCR claude for claude: [bug/medium] Only handler-ful raises count here and in
-    // `claims_no_site_memory`. A handler-less `?` or a `$` over a constant error also
-    // owes its report to a birth or Step view a kernel lacks: a fused select arm never
-    // reports `e?` at the arm's first entry, and a native tail loop reports it at its
-    // entry depth only, not at each newly reached depth. The node-walk reports both, so
-    // a failure that `--no-fusion` prints is missing from the default run, against the
-    // rule that `$` and handler-less `?` log from both backends. The fuzzer cannot see
-    // this, because its oracle compares neither FAILURE_TARGET nor warn logs. Decide
-    // whether these reports are owed. If they are, gate a handler-less Qop whose
-    // operand does not follow the arm's entry binds (as `io_follows` does for Io) here,
-    // and on the formals in `claims_no_site_memory`. If they are not, say so in
-    // CLAUDE.md. probe:
-    // design/review-2026-10-19/repro/f-call-flow-arm-entry-unhandled-raise.gx (0 vs 1
-    // reports) and f-call-flow-tail-loop-unhandled-raise.gx (1 vs 6) (f-call-flow-02)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): a swallowed failure is reported at
-    // least once, the count is not owed, as with dbg: a constant error in a native tail
-    // loop reporting once is fine; a handler-less raise under an arm whose operand does
-    // not follow the arm's entry de-fuses. Measure what that costs fusion first.
-    // 2026-10-25 claude: Built and measured, then reverted (patch kept at
-    // /tmp/claude-1000/-home-eric-proj-graphix/096880cb-83ab-4a55-9b9d-52c39aec8c97/scratchpad/f-call-flow-02-attempt.patch).
-    // A handler-less raise or a $ under an arm node-walked unless its operand fires
-    // with the arm's entry (the scrutinee or its binds, no guard in the select),
-    // mirroring arm_io_blocker; callees through their formals; tail loops untouched; a
-    // computed scrutinee's own reads also counted as entry. The arm-entry probe then
-    // reports in the default run as with --no-fusion. Cost: #[native] refuses 3 sites
-    // in 2 book examples (collection/native_array_ops.gx: find_go's inner select
-    // f(a[i]$) { true => a[i]$, .. } has a call as its scrutinee, so its entry cannot
-    // be traced; gui/mandelbrot.gx), the fixture
-    // lang::fusion::native_guard_and_body_share_a_bind (xs[0]$ under a guarded arm: a
-    // guard-flip first entry fires the constant 0 in the node-walk and a kernel cannot,
-    // so the guard rule is needed, not over-conservative),
-    // lang::functions::tail_arg_bottom_unread_by_base fuses nothing, and 19 of 552 fuzz
-    // pins lose regions (e.g. taint-cache-callee-jul2026/01 1 -> 6,
-    // select-merge-taint-ride-aug2026/03 1 -> 5). a[i]$ under an arm is the common
-    // idiom this hits. Back to eric: accept that cost, or keep fusion and let a
-    // kernel's report be owed only on a fired operand (CLAUDE.md then says a constant
-    // swallow in a fused arm may go unreported).
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q63, Swallowed failures in fused code (round-1 q1,
-    // follow-up)): yes, keep fusion (the recommendation: keep fusion: predictable fusion matters more than the duplicate
-    // log.)
-    // 2026-10-28 codex: Applied the latest shared ruling with f-call-flow-02: keep fusion and document swallowed-failure
-    // reports as operand-fire diagnostics, without equal counts or an at-least-once guarantee inside a kernel. Corrected the
-    // guard-prologue comment, CLAUDE/AGENTS, strict_fusion, the user error chapter and language skill; built the book.
-    // Original probes reproduced: unreached guard walk/fused warnings 0/4; late arm unhandled reports 1/0 with values
-    // 1,5,2,2; tail reports 6/1 with values 0,1,3,6,10,15. Pin: graphix-tests --test fusion_diagnostics
-    // swallowed_failure_diagnostics, now includes all three shapes with native call assertions, exact values and counts
-    // across four modes, plus the existing unused-qop case. It passes on the existing runtime behaviour: this is a
-    // documentation ruling, not an execution change. Temporarily requiring node-walk counts in fused mode fails on Jit's 4
-    // guard warnings versus 0, then the restored pin passes. cargo test -p graphix-tests --offline --test fusion_diagnostics
-    // passed. cargo run -p graphix-fuzz --offline -- regress: regression corpus 552 programs, 0 regressions; outcome manifest
-    // 552 programs, 0 mismatches; fusion manifest 552 programs, 0 mismatches. No counts changed or blessed. cargo fmt --all
-    // was attempted; its read-only-other-checkout limitation persists, while cargo fmt -p graphix-compiler -p graphix-tests
-    // and git diff --check pass locally.
     for s in selects {
         if let NodeView::Select(sel) = s.view()
             && let Some(g) =

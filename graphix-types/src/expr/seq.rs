@@ -487,35 +487,6 @@ fn run_events(
     let flush_var = queue.as_ref().and_then(|q| q.flush);
     let push_flush = |out: &mut Vec<Expr>, events: &mut SmallVec<[Expr; 2]>| {
         if let Some(e) = flush {
-            // XCR claude for claude: [bug/high] A seqq's flush reaches the queue only
-            // through run_event, which passes a fire only after the current run's entry
-            // cycle. A run that completes in its entry cycle leaves no such cycle, and
-            // neither do the handoff cycles between queued runs (a queued request takes
-            // 4 cycles from one run's end to the next run's entry). So while a backlog
-            // of short runs drains, every flush is dropped and the queue is never
-            // emptied: in the probe all ten queued requests run although flush fires on
-            // 17 consecutive cycles. The abort half is run-scoped by
-            // design/seq_blocks.md §9, but emptying the queue is not. Fix: feed queue's
-            // #flush (and #flush_before) from the ungated event, and gate only the
-            // machine's abort on the run. The gate came with the per-run birth of the
-            // clauses (x-engine-seq-errors-01). probe:
-            // design/review-2026-10-26/repro/x-engine-seq-errors-flush-lost-between-runs.gx
-            // (x-engine-seq-errors-01)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q10, `flush`
-            // between short runs): yes, ungated (the recommendation: ungated for the
-            // queue.)
-            // 2026-10-27 codex: The flush source is evaluated once outside the run gate.
-            // The queue reads its ungated event (or the existing request-count marker when
-            // the flush reads the dequeued request); only aborting the current body uses
-            // the run gate. Pin lang::seqq::flush_between_short_runs expects requests 0
-            // through 3: request 3 was already dispatched at the flush, and queued requests
-            // 4 through 9 are discarded. It fails in all four modes before the fix and
-            // passes afterward. An initial expectation of only 0 through 2 was corrected
-            // after the full regression run exposed this handoff boundary; the corrected
-            // pin was retested against the old gating. Ran lang::seq, lang::select and
-            // lang::sample regression filters; no FuseExpect moved. Docs now distinguish
-            // per-run abort sources from continuously active flush sources. No
-            // socket/netidx-admin or full workspace gate here.
             out.push(let_bind(e.pos, &flushed, None, rewrite(e, visible)));
             if let Some((v, count)) = flush_var {
                 let mark = sample(e.pos, r#ref(e.pos, &flushed), r#ref(e.pos, count));
@@ -858,68 +829,12 @@ impl Machine<'_> {
                 vars.insert(ArcStr::from(key), read);
             }
         };
-        // XCR claude for claude: [bug/medium] [bug/medium] The entry snapshot takes every
-        // free variable of the step's text, arm bodies and callbacks included, into one
-        // strict tuple. A variable that only an untaken arm or an uncalled lambda reads
-        // therefore holds the whole step. `seq t { select mode { `A => a_val, `B =>
-        // b_val } }` with b_val absent never produces, while `t ~ select mode { .. }`
-        // gives a_val. §5 and CLAUDE.md say an absent variable "is read at its first
-        // arrival", which does not say that an unread one blocks. A per-variable
-        // snapshot (x-seq-sampling's fix) would still wait here. Rule needed: document
-        // that a step waits for every variable it names, or make a read wait only where
-        // its node runs. probe:
-        // design/review-2026-10-26/repro/t-seq-untaken-arm-stalls.gx (t-seq-05)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q11, The
-        // step snapshot is one strict tuple): yes, document (the recommendation:
-        // document; it is the "snapshot everything" rule you ruled, stated honestly.
-        // See D4 if you want to talk about it.)
-        // 2026-10-27 codex: Kept the whole-step snapshot as ruled. The seq chapter now
-        // includes an untaken-arm select example and states both consequences: every
-        // textually named variable must be present, and a missing input delays reading
-        // the present ones until the whole tuple is ready. Corrected the rules, language
-        // skill, design and helper documentation. Pins
-        // lang::seq::step_waits_for_untaken_arm and
-        // step_reads_present_values_when_untaken_arm_arrives pass in all four modes
-        // against the unchanged implementation. This is documentation of existing
-        // behavior, so there is no implementation fix to remove for a negative run. No
-        // FuseExpect moved. Full workspace and socket tests remain for coordinator
-        // review.
         captured(e, false, &mut |r| {
             let (ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. }) =
                 &r.kind
             else {
                 return;
             };
-            // XCR claude for claude: [risk/medium] A seq-local let is left out of the
-            // entry snapshot. A later step gets the let's fire only through the one
-            // catch-up bit, which the first later-cycle reader consumes. So `seq go {
-            // let v = go + 1; a <- v ~ 5; b <- v ~ 6; v ~ 9 }` yields 9, but the same
-            // seq with an unrelated `*r <- 7` after the first step stalls forever at `b
-            // <- v ~ 6`, because plan_machines put that step a cycle later. An outer
-            // variable in the same place is snapshotted and fires at every entry.
-            // Whether a step fires should not depend on an invisible same/next-cycle
-            // decision. Either snapshot step-local lets that later steps read, or warn
-            // where a step's only trigger is a local let an earlier step consumed.
-            // SKILL.md's "a second `t ~ x` on it does not write" then needs rewording
-            // to match. probe:
-            // design/review-2026-10-26/repro/lang-skill-let-fire-cycle-placement.gx
-            // (lang-skill-01)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q12, A
-            // step-local let read by a later step): yes, snapshot (the recommendation:
-            // snapshot them, as outer variables are.)
-            // 2026-10-27 codex: Every local let is recorded in the lowering's
-            // visible-name map (lambda literals retain function redirects). Later steps
-            // include those local reads in their entry snapshots, so one step cannot
-            // consume the only fire available to another. Pin
-            // lang::seq_steps::local_let_is_sampled_at_each_later_step fails in all
-            // four modes without the fix and passes with it. The first regression run
-            // found missing original expression text in errors after local references
-            // were lowered. ErrorContext now uses the preserved source span for
-            // rewritten expressions; the existing a_step_error_names_nothing_lowered
-            // pin and a source-text unit pin cover it. Ran seq/select/sample
-            // regressions and graphix-types expr::seq::test. Updated rules, book,
-            // design and language skill. No FuseExpect moved. Full workspace and
-            // socket/netidx-admin tests remain for coordinator review.
             read(name, r)
         });
         for w in sink {
@@ -964,31 +879,6 @@ impl Machine<'_> {
         let (pc, id) = (self.issue.pc, self.id);
         let input = format_compact!("#seqsin{id}_{n}");
         let snap = format_compact!("#seqs{id}_{n}");
-        // XCR claude for claude: [doc-drift/low] The snapshot is one strict tuple of every
-        // variable the step reads, so when one is absent at entry, the ones present
-        // then are read in the cycle the last arrives, not at entry: x = 0 at entry and
-        // y arriving when x is 5 gives 5100, where CLAUDE.md and seq_blocks.md §5
-        // ("read once, at the step's entry, or at its first arrival if absent") give
-        // 100. Rule which is intended: a cell per variable (`any(pc, once(x)) ~! x`
-        // each), or the docs say the snapshot is taken whole once all of it is present,
-        // as an issued call's arguments are. probe:
-        // design/review-2026-10-26/repro/x-seq-sampling-partial-absent-snapshot.gx
-        // (x-seq-sampling-08)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q11, The
-        // step snapshot is one strict tuple): yes, document (the recommendation:
-        // document; it is the "snapshot everything" rule you ruled, stated honestly.
-        // See D4 if you want to talk about it.)
-        // 2026-10-27 codex: Kept the whole-step snapshot as ruled. The seq chapter now
-        // includes an untaken-arm select example and states both consequences: every
-        // textually named variable must be present, and a missing input delays reading
-        // the present ones until the whole tuple is ready. Corrected the rules, language
-        // skill, design and helper documentation. Pins
-        // lang::seq::step_waits_for_untaken_arm and
-        // step_reads_present_values_when_untaken_arm_arrives pass in all four modes
-        // against the unchanged implementation. This is documentation of existing
-        // behavior, so there is no implementation fix to remove for a negative run. No
-        // FuseExpect moved. Full workspace and socket tests remain for coordinator
-        // review.
         let tuple = ExprKind::Tuple {
             args: Arc::from_iter(
                 std::iter::once(r#ref(pos, pc))
@@ -1642,35 +1532,6 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     }
     let mut qlets: LPooled<Vec<Expr>> = LPooled::take();
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
-    // XCR claude for claude: [bug/high] Field 0 is hold(request) inside the BankedSample
-    // payload. When a capture has not produced yet, every banked trigger is paid with
-    // the tuple as it stands once the capture lands, so all requests queued before it
-    // run with the LAST request's value. Requests `A then `B before `ready` arrives
-    // both run as `B. This contradicts 'seqq queues triggers with captured values' and
-    // the book's 'Under seqq it is the value that queued the run'; §8's 'deliberately
-    // inherited' covers the captures, not the request. Fix: bank the request values
-    // (FIFO) and pay each with its own request plus the captures as they stand.
-    // seqq.rs::delayed_capture should read the request too, so it pins this. probe:
-    // design/review-2026-10-26/repro/tests-seq-seqq-request-before-capture.gx
-    // (tests-seq-01)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q13, seqq
-    // requests that queue before a capture arrives): yes, each request keeps it's own
-    // (the recommendation: each keeps its own.)
-    // 2026-10-27 codex: The compiler-only BankedSample now returns each original
-    // request paired with its external capture tuple. Its pooled FIFO retains each
-    // request while captures are absent and each mailed pair until it is received;
-    // sleep remints delivery without losing request identity or its captured payload.
-    // The seqq lowering separates the trigger from the capture tuple. Image format 96
-    // refuses older programs whose banked samples have the old result shape. Pin
-    // lang::seqq::delayed_capture_keeps_each_request failed in all four modes before
-    // the fix and passed afterward. The image pin
-    // lang::image::banked_request_values_restore verifies the same values after a warm
-    // restore. Ran seq/select/sample, low-level bottom and the image pin plus
-    // graphix-types seq lowering tests. Updated rules, book, design and language skill.
-    // No FuseExpect moved. Full workspace and socket/netidx-admin tests remain for
-    // coordinator review. The first full run caught my use of an unmarked array for the
-    // request/capture pair (269 failures); corrected the producer to use rep::tuple and
-    // reran the full filter.
     for (name, (expr, _, _)) in captures.iter() {
         if !is_trigger(name) {
             args.push(expr.clone());
@@ -1721,36 +1582,6 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     }
     // every queued request is paid its captures, however many find one
     // absent
-    // XCR claude for claude: [bug/medium] A request banked while a capture is absent is
-    // paid with the payload as it stands at payment, and the payload holds
-    // hold(request), so every banked request runs with the latest request's value: t =
-    // 2, 3, 4 queued before the capture arrives run as x = 4 three times. seq_blocks.md
-    // §8 accepts one shared snapshot of the captures, but the request is an event no
-    // program can initialize, and `seqq let x = t` promises the value that queued the
-    // run. Rule whether the request may be shared. If not, keep it out of the banked
-    // payload: let BinOp::BankedSample bank each trigger's own value and pay (trigger
-    // value, payload), or queue the request beside a banked sample of the captures
-    // alone. probe:
-    // design/review-2026-10-26/repro/x-seq-sampling-seqq-banked-requests-lose-values.gx
-    // (x-seq-sampling-02)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q13, seqq
-    // requests that queue before a capture arrives): yes, each request keeps it's own
-    // (the recommendation: each keeps its own.)
-    // 2026-10-27 codex: The compiler-only BankedSample now returns each original
-    // request paired with its external capture tuple. Its pooled FIFO retains each
-    // request while captures are absent and each mailed pair until it is received;
-    // sleep remints delivery without losing request identity or its captured payload.
-    // The seqq lowering separates the trigger from the capture tuple. Image format 96
-    // refuses older programs whose banked samples have the old result shape. Pin
-    // lang::seqq::delayed_capture_keeps_each_request failed in all four modes before
-    // the fix and passed afterward. The image pin
-    // lang::image::banked_request_values_restore verifies the same values after a warm
-    // restore. Ran seq/select/sample, low-level bottom and the image pin plus
-    // graphix-types seq lowering tests. Updated rules, book, design and language skill.
-    // No FuseExpect moved. Full workspace and socket/netidx-admin tests remain for
-    // coordinator review. The first full run caught my use of an unmarked array for the
-    // request/capture pair (269 failures); corrected the producer to use rep::tuple and
-    // reran the full filter.
     queue_args.push((
         None,
         ExprKind::BinOp {
@@ -1903,36 +1734,6 @@ fn redirect<'a>(p: &ModPath, map: &'a Names) -> Option<&'a Redirect> {
 }
 
 /// A read of `p`.
-// XCR claude for claude: [bug/medium] A redirected read becomes a read of its `#seq..`
-// cell, and the language server only ever sees that cell, so a name the seq redirects
-// loses its IDE sites. Affected: every read after the first of an entry-snapshotted
-// variable in a step; the trigger variable read in the body; `seq let t = ..` names (a
-// destructured one gets a bogus reference at the `seq` keyword instead of its uses);
-// and `try .. with(err)` names. All have no hover, definition or references, so
-// find-references misses uses in seq bodies. Fix: have the lowering record each
-// redirect for the Ide (cell -> written name, source bind, declaration position), and
-// have Ref/Connect under `is_lsp` record the reference under the written name and the
-// source bind. Then add these seq forms to `every_declared_name_is_a_site`. probe:
-// design/review-2026-10-26/repro/x-lsp-probe-seq-lowered-names.py (x-lsp-probe-01)
-// 2026-10-26 claude: Not done in batch L5-b04 (skipped for size): it needs a redirect
-// record from the lowering (cell -> written name, source bind, declaration position)
-// carried to compile, Ref/Connect recording the written name under is_lsp, the query
-// side reading it, and an e2e case in graphix-shell/tests/lsp. The batch's other seq
-// changes keep positions on every redirected read (rewrite keeps e.pos), and Redirect
-// gained a Function variant that maps a name to itself, so it adds no lost sites.
-// 2026-10-28 claude: Fixed: under a language server's check the seq lowering notes,
-// for each cell it sends a written name to, the name written there, the positions
-// where the source reads or writes it, and, for a name the seq declares (seq let,
-// with(err)), where it is declared (ide::Lowered, Env::note_lowered).
-// Env::push_reference tells a site of a lowered name only at a noted position, under
-// the written name: the binding that name resolves to, or the cell for a name the seq
-// declares; Env::mirror_bind gives the IDE a declared cell under its written name at
-// its declaration, and a declared cell's let is placed there. The lowering's own uses
-// of its cells are no sites, so the stray references at the seq and try keywords are
-// gone and completion offers err, not the #seq cells. Pin: graphix-shell/tests/lsp
-// seq_names_are_sites (entry snapshots, the trigger read in the body, seq let, a
-// destructuring seq let, try with(err), completion), which fails with the notes
-// disabled.
 fn rewrite_path(p: &ModPath, at: SourcePosition, map: &Names) -> ModPath {
     match redirect(p, map) {
         Some(r) => {
@@ -2157,29 +1958,6 @@ fn inline_lambda(mut e: &Expr) -> bool {
 /// the entry event, and again at each fire of an argument read live;
 /// only the call's own fired production is this invocation's answer. A
 /// nullary call is issued on the entry clock as any other.
-// XCR claude for claude: [bug/medium] A `live(..)` inside an issued call's argument is
-// silently dropped. The argument goes into the `once((pc, args..))` snapshot and
-// strip_live removes the `live`. So in a step, `select big(live(x)) {..}` and the guard
-// `v if big(v)` under `select live(x)` issue `big` once over the entry value and stall
-// forever, with no diagnostic. The inline guard `v if v > 2` and `live(big(x))`
-// complete. The book says `live(e)`'s variables are read live, and the t-seq-07 ruling
-// says inline and call forms stall alike; under `live` they do not. Two fixes, your
-// choice: (a) lower a call whose arguments read a live variable as if the whole call
-// were under `live`; or (b) refuse or warn at such a `live` and name `live(f(x))`.
-// probe: design/review-2026-10-26/repro/x-rerun-1-seq-live-call-arg.gx (x-rerun-1-01)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q14, discussed):
-// big(live(x)) is legal and means what it reads: a call whose argument reads a live
-// variable is issued again at each fire of that argument, and the step completes on the
-// call's first value after entry. Implement that; no refusal.
-// 2026-10-27 claude: Built as ruled. issue_call keeps an argument that reads live at
-// the call site rather than in the entry snapshot: one holding its own live(..), or
-// naming a pattern bind of a scrutinee read live (Redirect::Live, given to an arm's
-// binds when its select's scrutinee reads live). The call is issued again at each fire
-// of that argument, and the step completes on its first fired value after entry. The
-// probe prints all four lines (inline guard, call guard, call scrutinee, live call).
-// Pin: lang::seq_calls::a_call_over_a_live_argument_is_issued_at_each_fire (the guard
-// and the scrutinee forms; both stalled before). CLAUDE.md and book/src/core/seq.md say
-// so.
 fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Expr {
     let pc = issue.pc;
     // XCR claude for claude: [bug/medium] [bug/medium] A nullary call is lowered as a
@@ -2210,48 +1988,6 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
     let issued = format_compact!("#seqissued{}", spec.id.inner());
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
     args.reserve(call.args.len() + 1);
-    // XCR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,
-    // carries pc, whose type is the set of all step labels. Each call site therefore
-    // costs the check O(steps): 250/500/1000 call steps check in 0.25/1.07/7.1 s
-    // (debug), against 0.07/0.10/0.13 s for constant writes. The tuple only needs an
-    // entry clock: `pc ~! true` (still a free read of pc, typed bool) in place of pc
-    // keeps the type constant-size. probe:
-    // design/review-2026-10-19/repro/t-seq-issue-tuple-check-cost.sh (t-seq-06)
-    // 2026-10-19 claude: Tried and reverted. With `pc ~! true` in the tuple and the
-    // snapshot's any(..), 1000 call steps check in 0.2 s (was 8.8 s, debug), but `~`
-    // node-walks, so every issue site loses its fused region (the t-seq-05 probe's
-    // annotated program goes from 4 regions to 3). `select pc { _ => true }` keeps the
-    // fusion but checks in 36 s at 1000 steps. Plain pc is kept: the choice is
-    // check time on long seqs against fusion at every call step, or a cheaper check
-    // of pc's union.
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Find a cheaper check of pc's union that keeps plain pc (and the fusion).
-    // 2026-10-26 claude: Measured on the lane's debug build before any change:
-    // 250/500/1000 call steps checked in 2.8/16.5/99 s, 14x the 2026-10-19 figures.
-    // Two causes fixed, plain pc kept. Type::narrow_member ran open_over_any over
-    // every pattern (c-pattern-03's walk), N^2 per issue select over pc's union; it
-    // now runs only when pred.has_unbound(), since a pattern type with no open cell
-    // has nothing to bind. And pc_type built its union unnormalized, so a check of it
-    // against its normal form missed the identity walk and took the member-wise
-    // pre-pass (N^2); it now normalizes. Now 250/500/1000/2000 steps check in
-    // 0.18/0.35/1.9/7.0 s (consts: 0.08 s at 1000). Pins: deep_nesting
-    // a_long_seq_of_calls_checks_in_time (1000 steps in 15 s; 15 s+ without the guard)
-    // and graphix-types seq::test::the_pc_type_is_normal. What remains is O(steps) per
-    // call site, as the CR says: normalize, lower, ContainsHist::closed, holds_fn and
-    // union_of_alternatives each walk pc's union at every issue site. Keeping fusion
-    // with constant-size types still needs an entry clock that is not pc.
-    // 2026-10-27 codex: The machine pc now holds an i64 step index (-1 while idle), so
-    // issue tuples and entry snapshots retain the plain pc read with a constant-size
-    // type and unchanged firing. Runtime jumps use the index directly; try jumps,
-    // aborts and sleep resets use the same representation. The expansion retains
-    // S-index labels. Pin: expr::seq::test::the_pc_type_has_constant_size failed on
-    // the old union and passes now. Strengthened
-    // deep_nesting::a_long_seq_of_calls_checks_in_time to 4000 steps/15 s; it passes
-    // (0.40 s harness time). Debug --check timings at 250/500/1000/4000 steps: before
-    // 0.259/0.471/1.534/21.15 s, after 0.187/0.210/0.293/0.757 s. Seven seq lowering
-    // unit tests, all 651 lang::seq* fixtures, 401 lang::fusion tests and 1351
-    // lang::select tests pass. No FuseExpect changed. The enlarged shell pin was not
-    // run against old sources; the structural pin was.
     args.push(r#ref(pos, pc));
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
         // a function stays at the call site, where the call resolves it: a

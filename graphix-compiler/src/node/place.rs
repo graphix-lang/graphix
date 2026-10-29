@@ -265,49 +265,6 @@ pub fn read_path<'a>(
 
 /// `root` with the value at `path` replaced by `v`. A map step compares
 /// keys, so the caller runs this under `coretraits::with_hooks`.
-// XCR claude for claude: [bug/medium] write_path recurses once per path step with no
-// stack guard, and paths compose: `&mut (*r)[0]` extends r's path, so a flat chain of
-// lets builds a path as long as the program. A 10000-step chain overflows the tokio
-// worker at the write and aborts. Each reference also clones its whole prefix, so the
-// chain's paths take O(n^2) memory: n = 20000 is OOM-killed at 6 GB. Fix: make
-// write_path iterative, collecting the spine as read_path walks it and rebuilding
-// bottom-up (or guard each level with ensure_sufficient), and share path prefixes
-// instead of copying them. probe:
-// design/review-2026-10-26/repro/x-stack-place-path-chain.py (x-stack-03)
-// 2026-10-27 claude: The stack half is fixed: write_path walks the path in a loop,
-// recording a Hole per step (the container and the position it takes), and rebuilds
-// bottom-up by folding the holes; the probe at n = 10000 prints 1 and exits 0. Pin:
-// node::place::tests::deep_write_keeps_a_flat_stack (a 50000-step write on a 512 KB
-// stack; aborts on overflow with the recursive version). Still open: the O(n^2)
-// paths. Place::update clears and rebuilds its whole path from root_place's prefix at
-// every update, so each place of a chain holds a copy of its prefix. Sharing prefixes
-// needs a persistent path (an Arc'd parent link per place) that every reader
-// (read_path, write_path, the RefPath equality in Deref's registration, branch
-// patch_level) walks root-first, and Place::update would then allocate a node per
-// step per update unless it reuses an unchanged one; left for a later batch.
-// 2026-10-27 codex: Paths now hold shared Arc prefix links with an inline local
-// suffix. Place::update rebuilds only its own suffix and reuses the existing link
-// when that suffix and its parent link are unchanged. Dereference registration and
-// queued patches clone the shared path, readers/writers iterate root-first using
-// pooled scratch, equality compares contents, and link teardown is iterative.
-// ExecCtx::ref_target necessarily returns &Path rather than a slice (one-line lib.rs
-// change); a repository search found no ../netidx caller. Pin
-// node::place::tests::retained_path_prefixes_use_linear_memory retained 3000 prefixes
-// and failed on the original representation at 80600 KiB; it passes below the 32 MiB
-// ceiling with sharing. All four node::place::tests pass, including
-// unchanged_path_reuses_its_link_and_pack_order,
-// deep_shared_path_drops_on_a_small_stack and the existing
-// deep_write_keeps_a_flat_stack. Path's encoded count and root-first Step sequence
-// are unchanged: no image format bump. Full Graphix runtime chain probe not yet run;
-// the regression measured the actual Path representation directly. Initial
-// compilation found temporary empty-path references; fixed with a static empty path
-// before the passing run.
-// 2026-10-27 codex: Further verification with the newly rebuilt target/debug/graphix
-// --no-cache and the CR's x-stack-place-path-chain.py: n=10000 exits 0 in 3.018 s at
-// 179840 KiB peak RSS; n=20000 exits 0 in 9.730 s at 292288 KiB peak RSS (both print
-// 1 before and after the write). Measured with Python time.monotonic and
-// resource.getrusage because /usr/bin/time is unavailable. Place's temporary local
-// suffix is pooled, so even a long unchanged suffix does not allocate every update.
 pub fn write_path<'a>(
     root: &Value,
     path: impl IntoIterator<Item = &'a Step>,

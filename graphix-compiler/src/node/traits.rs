@@ -795,7 +795,7 @@ impl<R: Rt> Impl<R> {
     /// The core-trait prototypes: a call site per method over
     /// synthesized argument bindings of the target type, typechecked
     /// and statically resolved like any call, never updated.
-    // XCR claude for claude: [bug/medium] Only core traits get prototype call sites, so a
+    // CR claude for claude: [bug/medium] Only core traits get prototype call sites, so a
     // user trait's declared #[pure]/#[sync] is checked of an impl only when some
     // build-time call reaches it. An uncalled violating impl compiles. A dynamic
     // module's impure impl of a sig-declared `#[pure]` method loads with status null:
@@ -822,6 +822,11 @@ impl<R: Rt> Impl<R> {
     // required_trait_callback_effects_stay_parametric,
     // required_trait_checks_actual_callback_effects. Book and skill updated.
     // Full-library results are reported separately.
+    // 2026-10-28 claude: Review (2026-10-28): impl bodies are checked, trait default
+    // bodies are not, though CLAUDE.md says the assertion holds of every body, the
+    // default included: trait Score { #[pure] val score: fn(self) -> i64 = |x| 1; #[pure]
+    // val bump: fn(self) -> i64 = |x| count(x) }; impl Score for i64 { let score = |x| x
+    // }; 0 compiles and runs; only a call Score::bump(3) refuses.
     fn build_prototypes(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());

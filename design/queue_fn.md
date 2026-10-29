@@ -64,32 +64,6 @@ mutually exclusive.
 
 - **Wrapper invocation**: if `pop_count > 0`, decrement and invoke `f`;
   otherwise push the invocation and emit nothing this cycle.
-<!-- XCR claude for claude: [doc-drift/low] Credit banks without bound: after N idle
-trigger fires, N later calls dispatch at once. This contradicts the API example above
-('at most one release per tick'), and queuefn is no rate limit. Decide: cap `pop_count`
-(at 1, if a trigger is meant to pace calls) or fix the example and say credit
-accumulates. probe:
-design/review-2026-10-26/repro/x-async-io-queuefn-unbounded-credit.gx (x-async-io-06)
--->
-<!-- 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q19, queuefn's
-banked credit): yes, accumulate, fix the doc (the recommendation: accumulate (a
-semaphore), fix the doc.) -->
-<!-- 2026-10-28 codex: The implementation is graphix-package-core/src/queuefn.rs:
-QueueState::pop_count already implements the ruled counting semaphore, initially one
-permit, with trigger adding unused permits and wrapper calls consuming them. Kept that
-accumulating behaviour. Fixed the rate-limit claim and writable-reference example in
-queue_fn.md; documented banking and per-site cycle pacing in CLAUDE/AGENTS, the
-interface, book and language skill; built the book. The original probe reproduced all
-five answers at tick 6. Pin: graphix-tests --test queue_credits
-queuefn_banks_idle_permits, all four modes: five post-birth idle triggers plus the
-initial permit release exactly six calls without another trigger; the seventh stays
-queued and #count is one. The as-built implementation passes. Temporarily capping
-credit at one makes all four modes fail (one answer, six queued); restoring
-accumulation passes all four. cargo test -p graphix-tests --offline --test
-queue_credits: 4 passed; cargo test -p graphix-package-core --offline --lib: 7 passed.
-cargo fmt --all now passes again, as does git diff --check. No runtime semaphore
-replacement was needed: the existing synchronous counter under QueueState's mutex
-already has the requested semantics. -->
 - **`#trigger` update**: dequeue the oldest invocation of a site awake
   and invoke `f` with it; with none, `pop_count += 1`. A fire born with
   the queuefn (its first cycle, or a seq step's next run) is no credit:

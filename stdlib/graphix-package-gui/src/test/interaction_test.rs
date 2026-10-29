@@ -1336,45 +1336,6 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// XCR claude for claude: [test-gap/medium] These echo tests judge a rejected send
-// through GuiTestHarness::drain, which calls root.w.idle() after every drain whether or
-// not a widget asked. testing::drain_idle drops GXEvent::Idle. A real window runs
-// idle() only on GXEvent::Idle, which the runtime sends only after a widget's ask_idle
-// -> GXHandle::notify_idle. So these tests still pass if ToggleW, TextInputW or
-// TextEditorW stop calling ask_idle, or if the runtime stops sending GXEvent::Idle,
-// while a rejected toggle or edit in a real window keeps the user's value forever. No
-// test anywhere calls notify_idle or observes GXEvent::Idle. Fix: have the harness call
-// root.w.idle() only when a GXEvent::Idle batch arrives (a hook in drain_idle or
-// GuiTestHarness::drain), as event_loop.rs does on ToGui::Idle. Found by reading; not
-// run. (tests-gui-b-01)
-// 2026-10-26 claude: GuiTestHarness::drain now calls root.w.idle() only for a
-// GXEvent::Idle, as event_loop.rs does on ToGui::Idle (deliver_batch too), through the
-// new testing::drain_events, which hands every event to its callback in order;
-// drain_idle is drain_events over updates. The runtime now sends the Idle batch before
-// it answers the idle waiters of the same verdict, so a wait_idle answered means the
-// Idle is already in the stream (GXHandle::wait_idle's doc says so). Pin: with ask_idle
-// a no-op, rejected_toggles_return_to_the_program_value,
-// rejected_text_input_returns_to_the_program_value and
-// rejected_text_editor_returns_to_the_program_value fail.
-// 2026-10-27 claude: The harness change is right: GuiTestHarness::drain calls idle()
-// only for GXEvent::Idle, through testing::drain_events. But the ordering this note
-// relies on no longer holds. f036c94b3 (rt-01) changed the run loop in
-// graphix-rt/src/gx.rs: the idle verdict now answers idle_waiters and only marks the
-// Idle as owed (idle_owed); the Idle batch is sent later, in the select's
-// reserve_or_never arm. So a wait_idle can be answered before the Idle is in the
-// stream. drain_events then returns from a round that delivered no updates without
-// handing the Idle to the widgets, and the rejected_* pins pass only because the
-// runtime thread usually reaches the select first. GXHandle::wait_idle's doc
-// (graphix-rt/src/lib.rs), which says the same verdict's Idle is already in the stream,
-// is now wrong too. Fix in the runtime: when an Idle is owed, answer the idle waiters
-// only after the Idle batch is sent (in the reserve arm), or try_reserve and send
-// before answering, deferring only when the channel is full.
-// 2026-10-27 claude: The runtime now sends a verdict's owed Idle before it answers that
-// verdict's idle waiters (gx.rs: try_reserve and send at the verdict; when the channel
-// is full the Idle stays owed and the waiters are answered at the verdict after its
-// send), so GXHandle::wait_idle's doc holds again and drain_events always sees the
-// Idle. No pin: a test of the old order passed too, because the runtime reaches its
-// send before the waiter's caller is scheduled; the order is now by construction.
 async fn rejected_toggles_return_to_the_program_value() -> Result<()> {
     for kind in ["checkbox", "toggler"] {
         let code = format_compact!(

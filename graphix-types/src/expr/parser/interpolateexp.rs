@@ -69,7 +69,7 @@ parser! {
         }
         // a splice prints on its string's line, where no comment can stand
         let spliced = |(e, end): (Expr, SourcePosition)| {
-            // XCR claude for claude: [bug/medium] This checks only `dec.comments`, so a
+            // CR claude for claude: [bug/medium] This checks only `dec.comments`, so a
             // comment ending a line inside a splice (`"[{ let x = 1; // hi\n x }]"`) or
             // standing below a list in one parses. The formatter then refuses the file
             // as its own bug. An attribute in a splice also gets through, and the
@@ -99,6 +99,13 @@ parser! {
             // \\[..] and on a trait method; a plain splice still parses); the expr
             // round-trip generator now strips attributes as well as comments from
             // splice expressions (expr/test.rs uncommented).
+            // 2026-10-28 claude: Review (2026-10-28): the attribute half holds; the
+            // comment half does not. holds_comment (parser/mod.rs) never checks
+            // TraitMethod.eol, TraitExpr.below, SigItem.eol or Sig.below, so a trait or
+            // dynamic sig comment inside a string splice parses and graphix fmt then
+            // refuses its own output ('formatter bug: the formatted text lost or moved
+            // a comment'). probes ~/tmp/xcr-review-2026-10-28/1/p/sp1.gx sp2.gx; no pin
+            // covers these fields.
             match (holds_comment(&e), holds_attr(&e)) {
                 (true, _) => refuse(end, "a comment cannot stand inside a string's splice")
                     .right(),

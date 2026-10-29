@@ -1784,46 +1784,6 @@ impl StructPatternNode {
         }
     }
 
-    // XCR claude for claude: [bug/high] Deleting a collection slot unbinds its parameters
-    // here even when a closure the slot made escaped and still captures them. A call
-    // site that binds that closure after the deletion fails with 'binding the callee
-    // failed: k not defined', and no value is produced; a site bound earlier keeps
-    // working. References have a rule to outlive their site (reference::Lives);
-    // function values need one. Proposed rule: a function value keeps its captures
-    // alive, enforced by pinning a closure's captured ids as Lives pins referenced
-    // ones. probe: design/review-2026-10-26/repro/core-aux-closure-outlives-slot.gx
-    // (core-aux-02)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q60, A closure
-    // that outlives its collection slot): yes, keep them alive (the recommendation:
-    // keep them alive.)
-    // 2026-10-28 codex: Function values now retain their free binding types and stored
-    // values using Lives capture pins, including transitive nested closures and
-    // omitted-argument defaults. The definition check records capture paths relative to
-    // the definition scope, so cloned instances and restored images resolve their own
-    // captures. Slot deletion removes the lexical name but retains by-id metadata until
-    // the last capture/reference releases it. Pins: closure_outlives_collection_slot,
-    // closure_outlives_collection_slot_transitively,
-    // closure_outlives_collection_slot_default, a_restored_closure_outlives_its_slot,
-    // captures_release_orphans_after_the_last_owner. All 13 runtime/image cases pass;
-    // restoring the old slot deletion makes all 13 fail with missing k. Full functions:
-    // 986 passed; images: 32 passed, one slow test ignored;
-    // graphix-types/compiler/package-core lib suites: 341/54/7 passed. Docs and image
-    // format updated. Cyclic closure/reference ownership still needs the collector
-    // tracked by x-refs-catchup-02; this change does not collect cycles. cargo fmt --all
-    // is blocked by read-only sibling netidx-value/src/op.rs; affected crates formatted
-    // separately.
-    // 2026-10-28 claude: Collected (orphan-gc): a let rec closure captures its own
-    // binding, so its Captures pin and the binding's stored closure kept each other
-    // alive. reference::Lives::collect now releases orphans that only orphans' values
-    // (and the cells their references own) keep, walking stored values through
-    // netidx-value's Value::edges with owner counts; anything held from outside, or that
-    // the walk cannot count, keeps what it reaches. A saved recursive closure still works
-    // after its slot is deleted. Pins:
-    // lang::orphans::recursive_closures_in_deleted_slots_are_collected,
-    // mutually_reaching_closures_in_deleted_slots_are_collected (fail in interp/par with
-    // collect disabled; under jit the slots fuse and bind nothing),
-    // a_saved_recursive_closure_outlives_its_slot, plus
-    // lang::functions::closure_outlives_collection_slot*.
     pub fn delete<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
         self.ids(&mut |id| {
             if ctx.control.lives().orphan_if_pinned(id) {
@@ -1925,33 +1885,6 @@ impl<R: Rt> PatternNode<R> {
             && self.type_predicate.contains_with_flags(BitFlags::empty(), env, scrut)?)
     }
 
-    // XCR claude for claude: [bug/medium] Only an error test's bind is narrowed to what
-    // reaches the arm. Every other written test binds the full written type, contrary
-    // to CLAUDE.md's rule that an arm's binds narrow to what reaches it. So `|x: [i64,
-    // string]| select x { Number as n => n + 1, string as s => 0 }` is refused (n is
-    // [Int, Real]), and an inner select over `[i64, string, f64] as n` with x: [i64,
-    // string, bool] must cover f64. Needs a ruling: whether the bind should be the
-    // written type intersected with the reaching members it can match (the error
-    // filter, generalized), or stay the written type with CLAUDE.md saying so. probe:
-    // design/review-2026-10-26/repro/x-typecheck-patterns-typetest-bind-not-narrowed.gx
-    // (x-typecheck-patterns-06)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q24, A type
-    // test's bind narrows to what reaches it): yes, narrow (the recommendation: narrow,
-    // as CLAUDE.md already says arm binds do.)
-    // 2026-10-27 codex: Implemented Eric's q24 ruling: an explicit test binds the
-    // intersection of its written predicate and the type reaching the arm. The runtime
-    // predicate remains written; explicit pattern leaves receive the narrowed type,
-    // including written slice element layouts. The non-mutating type intersection
-    // memoizes shared subproblems and cuts recursive definition expansion
-    // conservatively. Pins:
-    // lang::select::written_test_narrows_{number,union,struct,array}; all 16 mode cases
-    // failed without the fix and pass with it. Existing Any/slice refusal pins now name
-    // the narrowed i64; the written-union and growing-typedef tests caught regressions
-    // during development and pass after correction. Validation:
-    // CARGO_TARGET_DIR=$PWD/target, shared flock, cargo test -p graphix-tests --offline
-    // --lib lang::select:: (1371 passed) and lang::types:: (1113 passed). cargo fmt
-    // --all passed. Book select page and language skill updated. Combined final GUI
-    // checker timings will accompany the review report.
     pub(super) fn capture_type(&self, env: &Env, reaching: &Type) -> Result<Type> {
         if !self.explicit_type_predicate {
             return Ok(self.type_predicate.any_as_tvar());
@@ -1973,20 +1906,6 @@ impl<R: Rt> PatternNode<R> {
     /// union of its part of each member the arm can match, where a plain
     /// bind takes the union of its position's parts. Over `scrut`, an open
     /// cell, `reaching` is empty and the whole capture is the cell.
-    // XCR claude for claude: [bug/medium] A whole capture over an open rigid cell
-    // with a typed bound takes the pattern's fresh cells, not the cell:
-    // `'a: (i64, string) |x: 'a| -> 'a select x { v@ (n, _) => v }` is refused
-    // ("'a: unbound within (i64, string) does not contain ('_1: unbound, '_2:
-    // unbound)"), though every value reaching the arm is an 'a. The select's form
-    // test and coverage read the cell through its bound (x-rerun-3-04); the
-    // narrowing here does not, since `reaching` has no members. A whole capture
-    // at the scrutinee's position should be the cell itself. (bounded-capture-01)
-    // 2026-10-27 claude: bind_narrowed takes the scrutinee: over an open cell (no
-    // reaching members), an inferred arm's whole capture
-    // (StructPatternNode::capture, the name@ of the whole value) is typed as the
-    // cell itself rather than from the pattern's fresh cells. Pin:
-    // lang::select::capture_over_a_bounded_open_cell (the CR's program, refused
-    // before).
     pub(super) fn bind_narrowed(
         &self,
         env: &Env,

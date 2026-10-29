@@ -517,58 +517,6 @@ impl Control {
         self.pool
             .get_or_init(|| {
                 build_eval_pool(eval_threads(), spawn)
-                    // XCR claude for claude: [bug/medium] The halving above does not
-                    // degrade. A failed rayon build only signals its spawned threads to
-                    // terminate, and they still count when the next, smaller build is
-                    // tried at once. So under a thread limit every retry fails down to
-                    // one worker, this panic fires, and the program dies at startup
-                    // ('loading initial modules: channel closed'). cost::calibrate
-                    // makes it worse: it builds a second all-core pool at the same
-                    // moment and `.expect`s it, which panicked the calibration thread
-                    // in the same runs. Wait for the failed build's threads to exit, or
-                    // size the pool from the threads that can actually be spawned. Run
-                    // parts inline rather than panicking here. Calibrate on a few
-                    // workers and leave the calibration unset when that fails. probe:
-                    // design/review-2026-10-26/repro/x-perf-runtime-thread-limit.sh
-                    // (x-perf-runtime-04)
-                    // 2026-10-27 claude: Done: the pool is built by
-                    // stack::build_eval_pool, whose spawn handler keeps each worker's
-                    // JoinHandle; a failed try joins the workers it started (rayon's
-                    // Terminator has signalled them) and the next try asks for as many
-                    // as started, at most one fewer, so the pool is as large as the
-                    // limit allows (the calibration part was done under
-                    // x-perf-compile-06). Pin:
-                    // stack::test::a_thread_limit_sizes_the_pool (a spawner that
-                    // refuses past 3 live threads gets a 3-worker pool from a request
-                    // for 8; with the halving and no join restored the build fails).
-                    // Under the repro the log shows one '32 workers' warning and the
-                    // program runs where at least one worker can start. Remains: when
-                    // not one worker can start the build still panics here. Running
-                    // parts inline needs Control::eval_pool to be fallible and a serial
-                    // path at every pool user (branch::on_pool's four callers, which
-                    // call rayon::join and par_iter inside it and would otherwise reach
-                    // rayon's global pool, which cannot start either;
-                    // node::check_in_tasks; fusion::fuse_each), and the fork plans to
-                    // go Serial when there is no pool; not done in this batch. In this
-                    // host's repro the zero-worker case is reached at margins up to
-                    // about 70 threads, since the user's thread count moves by tens
-                    // with the other lanes' builds.
-                    // 2026-10-27 codex: Zero workers is now a cached None from
-                    // Control::eval_pool, with a warning, instead of a startup panic.
-                    // Statement tasks and compile_each retain their task contexts while
-                    // running inline; fork plans, fork_each/fork_join and outlined
-                    // kernel loops select serial execution; fuse_each visits serially.
-                    // No fallback reaches Rayon's global pool. eval_workers reports one
-                    // inline execution lane so grain calculations cannot divide by
-                    // zero. Pin stack::test::no_worker_can_start injects a spawner
-                    // refusing every thread: observed the old panic, now verifies None
-                    // is remembered, one inline lane, and saturation. All five
-                    // stack::test tests and all thirteen cost::tests pass. This
-                    // necessarily touches fusion/mod.rs and fusion/par_loop.rs, limited
-                    // to their pool-unavailable paths. Did not run the variable
-                    // host-wide RLIMIT_NPROC probe or end-to-end runtime under zero
-                    // workers; spawn failure was injected deterministically in the unit
-                    // pin. No image bytes changed.
                     .map_err(|e| {
                         log::warn!(
                             "the evaluation pool: no worker starts: {e}; running inline"

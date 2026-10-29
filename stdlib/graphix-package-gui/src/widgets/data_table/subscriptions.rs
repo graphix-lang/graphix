@@ -624,52 +624,6 @@ impl<X: GXExt> DataTableW<X> {
         let mut shown: LPooled<AHashMap<ArcStr, Option<f64>>> = LPooled::take();
         match self.mode {
             DisplayMode::Table => {
-                // XCR claude for claude: [perf/medium] Every netidx column of every row in
-                // the window is subscribed: `shown` holds all columns, and
-                // handle_scroll reconciles only when the row window moves. Only rows
-                // are virtualized for subscriptions. A 500-column table in a 40-row
-                // view holds about 65k subscriptions while about 300 cells are drawn,
-                // and a scrollbar jump re-subscribes all of them. Either window `shown`
-                // to display_col_range plus a column buffer (and reconcile when
-                // first_col changes in handle_scroll), or rule that whole rows stay
-                // subscribed so on_update stays complete per row, and say so in the
-                // book. Found by reading; not run. (gui-datatable-01)
-                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q51,
-                // Data-table column subscriptions): yes, window the columns (the
-                // recommendation: window the columns.)
-                // 2026-10-28 codex: Grid subscriptions now follow the visible column
-                // range plus two columns per side. A changed column window forces full
-                // role reconciliation; horizontal scroll, keyboard navigation and layout
-                // changes schedule it. Sort roles remain subscribed across all rows. The
-                // production grid-column selection was extracted unchanged before
-                // testing: grid_columns_follow_the_horizontal_window reproduced all 500
-                // columns selected for a 3-column viewport, then passed with the fix
-                // (start, middle and end windows). cargo test -p graphix-package-gui
-                // --offline horizontal_: CPU pin passed; two unrelated integration tests
-                // failed on missing resolver/GPU. Added
-                // horizontal_subscription_window_follows_scroll_and_resize; after
-                // correcting its constructor arguments it compiles but cannot run:
-                // resolver server shutdown (sandbox sockets). Live drop/re-subscribe and
-                // sort-role integration remain for coordinator review. Book documents
-                // both axes and on_update scope.
-                // 2026-10-28 codex: Column-window changes now take the incremental
-                // Grid-role path, preserving the sort subscriptions and their values.
-                // SharedCellsInner::reconcile owns the production role reconciliation,
-                // with a retained row/column SubscriptionWindow; simultaneous row and
-                // column changes remove their union and subscribe only newly exposed
-                // cells. column_delta_preserves_sort_roles_and_visits_only_new_cells
-                // failed against the extracted row-only implementation, then passed: a
-                // horizontal step checks 140 entering cells at both 20k and 100k total
-                // rows, and keeps every SortMarker. CPU core measurement with 140 buffered
-                // rows, seven buffered columns and one sort key, 40 steps: full
-                // reconciliation 1.41 ms at 20k / 7.32 ms at 100k; incremental 47 us / 46
-                // us. This measures production role reconciliation with seeded cells and a
-                // fake subscription callback, excluding actual netidx/network setup. cargo
-                // test -p graphix-package-gui --offline --lib
-                // widgets::data_table::subscriptions -- --nocapture: 7 passed.
-                // horizontal_subscription_window_follows_scroll_and_resize cannot run here
-                // (resolver server shutdown; sandbox sockets). Full GUI lib gate will run
-                // after the remaining GUI changes.
                 for (name, c) in grid_columns(&self.columns, columns) {
                     let hs = match &c.spec.typ {
                         ColumnType::Sparkline { history_seconds, .. } => {

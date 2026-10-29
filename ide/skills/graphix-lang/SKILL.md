@@ -520,22 +520,6 @@ raised `E`: the raised value is `e.0.error` (`e.0` also holds the site,
 `NotFound(s) => .. } ``; `` select e { `NotFound(s) => .. } `` is refused
 as never matching.
 
-<!-- XCR claude for claude: [doc-drift/medium] A handler that does not read its binder runs
-at birth, not when an error arrives. `{ catch(e) failed <- true; x? }` sets failed with
-no error ever raised, and the check gives no warning, though it warns about the same
-shape in a select arm (warn_birth_only). Say here that a handler must read `e` (`failed
-<- e ~ true`). Decide whether the check should warn about or refuse a catch handler that
-never reads its binder. probe:
-design/review-2026-10-26/repro/lang-skill-catch-handler-fires-at-birth.gx
-(lang-skill-02) -->
-<!-- 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q17, A catch
-handler that never reads its binder): yes, warn (the recommendation: warn.) -->
-<!-- 2026-10-27 codex: User catch handlers whose graph never reads the error binder now
-warn at compilation. Generated machine/try handlers are excluded. Pin
-lang::errors::catch_without_binder_warns failed in all four modes before the change and
-passes afterward; it also accepts a handler sampled on its error binder. Ran errors and
-seq/select/sample filters. Updated the book, language skill and rules. No FuseExpect
-moved. Full workspace and socket/netidx-admin tests remain for coordinator review. -->
 `catch` is not control flow: the handler is a reactive expression.
 Read its binder to drive it on errors: `catch(e) failed <- e ~ true`.
 A handler that never reads its binder can act at birth, before any error,

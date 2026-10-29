@@ -2736,42 +2736,6 @@ impl<R: Rt> Update<R> for Sample<R> {
                 Banking::Each(pay) => pay.pending.clear(),
             }
         }
-        // XCR claude for claude: [bug/low] A bottom trigger is not `is_fired`, so both `~`
-        // and `~!` ride their resident while the trigger is bottom. The sample keeps
-        // showing its last value: in the probe (7, 2) fires while `a / z` is bottom.
-        // design/dense_delivery.md R3 has a consumed bottom bottom the production. Its
-        // designated rides are the select scrutinee, a guard's truth and `~`'s
-        // argument, not its trigger, and a bottom scrutinee bottoms a select. Decide
-        // one way. Either bottom the sample when the trigger is bottom
-        // (set_bottom(t.tag().triggers()), the debt untouched), or name the trigger as
-        // a fourth designated ride in R3 and CLAUDE.md. Pin it either way. probe:
-        // design/review-2026-10-19/repro/x-engine-firing-sample-bottom-trigger.gx
-        // (x-engine-firing-04)
-        // 2026-10-24 claude: Eric ruled (2026-10-24): try it: a sample goes bottom with
-        // its trigger (dense_delivery R1/R3), and see how much it breaks.
-        // 2026-10-25 claude: Tried (bottom the sample when its trigger is bottom, debt
-        // kept): 48 fixtures fail, 196 runs. The cause is one idiom: an event written as
-        // a select with never() arms (select step { 2 => null, _ => never() }) stands
-        // bottom between its fires, and `t ~ v` over it is how a program samples on it;
-        // with the change the sample is bottom at every cycle but the fire, so a tuple or
-        // select over it never produces (lang::byref::place_bottom_key hangs on (t3 ~ a,
-        // t5 ~ a, ..)). The seq lowering samples its pc and step events the same way,
-        // which is most of the failures (seq, seqq, seq_errors, seq_abort). Reverted; the
-        // sample rides a bottom trigger as before. The rule wants a decision on that
-        // idiom: either a bottom trigger keeps the ride (named as R3's fourth designated
-        // ride), or events are written some other way than never() arms. Readdressed to
-        // eric.
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q2, `~` with a
-        // bottom trigger (round-1 q2, follow-up)): yes, a (the recommendation: (a).)
-        // 2026-10-27 codex: Kept the ruled output ride: both samples retain their last
-        // output when the trigger is bottom, without another fire. Documented the fourth
-        // designated ride in dense_delivery, CLAUDE.md, the select chapter and
-        // graphix-lang; corrected organic_firing's claim that select is an equivalent
-        // sampler. Pins lang::select::sample_bottom_trigger_retains_value and
-        // lib_tests::bottom::strict_sample pass in all four modes. Temporarily bottoming
-        // the output with its trigger makes both pins fail in all four modes; restored
-        // the implementation. The supplied shell probe still prints (0,5), then (1,5).
-        // Book build passes; no FuseExpect moved.
         let trigger = self.trigger.update(ctx);
         let fired = trigger.is_fired();
         self.arg.update(ctx);
@@ -2797,65 +2761,6 @@ impl<R: Rt> Update<R> for Sample<R> {
                 };
             }
         };
-        // XCR claude for claude: [bug/medium] Once the argument has had a value, a
-        // trigger that finds it bottom is answered here into a fresh bottom: the
-        // debt is consumed, nothing is banked and the held value is not ridden, so
-        // `~` behaves exactly like `~!` (the step-7 fire in the probe is lost).
-        // book/src/core/select.md contrasts `~!` (bottom, no bank when v is bottom)
-        // with `~` that "still banks", and dense_delivery.md R3 names `~`'s
-        // argument a designated Held ride ("sample the latest"); CLAUDE.md's
-        // "absent" fits either. Rule which is intended: bank (skip answering while
-        // arg.tag is bottom and pay at the next value), ride, or keep the code and
-        // say in CLAUDE.md, the book and R3 that `~` banks only before its
-        // argument's first value. probe:
-        // design/review-2026-10-26/repro/x-seq-sampling-sample-drops-trigger-on-bottom.gx
-        // (x-seq-sampling-05)
-        // 2026-10-27 claude: The bottom-answer branch is gone (c-node-mod-01): the probe
-        // now prints '~ at 10: 20', the bank. Pin
-        // lang::select::sample_banks_a_returning_bottom. Stands for Eric to confirm the
-        // rule (bank, as CLAUDE.md and the book say, over ride).
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q1, `~` when
-        // its argument goes bottom after a value): Agree (the recommendation: bank, as
-        // built.)
-        // 2026-10-27 codex: Accepted the ruled banking behavior already implemented by
-        // c-node-mod-01. Clarified dense_delivery R3, the select chapter and
-        // graphix-lang: a bottom argument never pays from its old value, and its next
-        // value pays the bank. Existing pin lang::select::sample_banks_a_returning_bottom
-        // passes in all four modes. Removing the argument-bottom exclusion makes all four
-        // fail, paying (4,20) instead of (6,60); restored the exclusion. The shell probe
-        // x-seq-sampling-sample-drops-trigger-on-bottom prints the payment at step 10.
-        // mdbook build passes. No FuseExpect changed.
-        // XCR claude for claude: [bug/medium] Once the argument has had a value, a
-        // trigger that finds it bottom takes this branch: the output is bottom and
-        // the debt is spent. So `~` behaves like `~!` and differs from it only
-        // before the argument's first value. The docs say otherwise: the book
-        // (core/select.md) says `~!` is bottom with no bank when v is bottom while
-        // `~` still banks, CLAUDE.md says a fire that finds v absent is banked, and
-        // dense_delivery R3 calls `~`'s argument a ride ("sample the latest"). Pick
-        // one rule: bank (leave the debt and pay when the argument returns), ride
-        // (answer from the held value), or document that "absent" means "never
-        // produced". Then pin it; no fixture covers an argument that goes bottom
-        // after a value. probe:
-        // design/review-2026-10-26/repro/x-engine-firing-bank-after-bottom.gx
-        // (x-engine-firing-01)
-        // 2026-10-27 claude: The code now banks (c-node-mod-01): a fire that finds
-        // the argument bottom after a value is paid when it returns, so the probe's
-        // step-4 fire is paid at step 6 (na 2 at cycle 7). Pin
-        // lang::select::sample_banks_a_returning_bottom. This CR stands for Eric to
-        // confirm bank over ride; ride or 'never produced only' would revert that
-        // change and the two byref fixtures it updated.
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q1, `~`
-        // when its argument goes bottom after a value): Agree (the recommendation:
-        // bank, as built.)
-        // 2026-10-27 codex: Accepted the ruled banking behavior already implemented
-        // by c-node-mod-01. Clarified dense_delivery R3, the select chapter and
-        // graphix-lang: a bottom argument never pays from its old value, and its
-        // next value pays the bank. Existing pin
-        // lang::select::sample_banks_a_returning_bottom passes in all four modes.
-        // Removing the argument-bottom exclusion makes all four fail, paying (4,20)
-        // instead of (6,60); restored the exclusion. The shell probe
-        // x-seq-sampling-sample-drops-trigger-on-bottom prints the payment at step
-        // 10. mdbook build passes. No FuseExpect changed.
 
         let live = self.arg.value.as_ref().filter(|_| !self.arg.tag.is_bottom());
         match live {
@@ -2875,27 +2780,6 @@ impl<R: Rt> Update<R> for Sample<R> {
         self.trigger.delete(ctx);
     }
 
-    // XCR claude for claude: [bug/medium] A `~`'s debt survives its step's sleep and the
-    // step's next entry, which is a birth for the run (View::Step). A trigger banked in
-    // an aborted seq run is paid in the next run when the argument arrives, completing
-    // that run's step on an event of the dead run ("result 100 at 12" with no ev in run
-    // 2). Builtins are reborn there (CallSite calls Apply::reborn when its update after
-    // a sleep is born); Sample has no counterpart. Either clear `owed` on the first
-    // update after a sleep under a born view (a slept bit as CallSite keeps), or rule
-    // that a banked trigger outlives its run and document it. probe:
-    // design/review-2026-10-26/repro/x-seq-sampling-bank-survives-run.gx
-    // (x-seq-sampling-04)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q3, A banked
-    // trigger across a seq run): yes, clear it (the recommendation: clear it, which
-    // follows "entering a step is its birth".)
-    // 2026-10-27 codex: Sample now records sleep and clears owed triggers when its next
-    // update is born (including a new seq run); a normal wake retains the bank. Updated
-    // the seq chapter, CLAUDE.md and graphix-lang. New pin
-    // lang::seq::sample_bank_cleared_at_seq_rebirth failed in all four modes before the
-    // fix, completing the second run on the aborted run's trigger. It passes after the
-    // fix, together with the lang::seq, lang::select, lang::sample and
-    // lib_tests::bottom regression filters. No FuseExpect moved. The netidx-admin
-    // socket tests and a fuzzer soak were not run here.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         if let Banking::Each(pay) = &mut self.banking

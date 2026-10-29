@@ -94,62 +94,6 @@ impl Lives {
 
     /// The binding `id` is deleted: true when a reference still names it,
     /// whose value then goes with the last such reference.
-    // XCR claude for claude: [bug/medium] An orphan whose own stored value holds a copy of
-    // the reference that pins it is never released. Its value keeps the Keep alive, and
-    // the Keep keeps the value. A slot doing `x <- {me: &x, data: ..}` leaks x's value
-    // and the cell's entries each time it is deleted (about 800 MB per 100 cycles in
-    // the probe, against a flat run with `me: null`). Either collect such cycles in
-    // ExecCtx::release_references, for example by releasing orphans pinned only from
-    // orphaned values, or rule the leak acceptable and document it in
-    // design/place_references.md. probe:
-    // design/review-2026-10-26/repro/x-refs-catchup-self-ref-leak.gx
-    // (x-refs-catchup-02)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q61, A reference
-    // cycle through an orphan's own value): yes, collect them (the recommendation:
-    // collect them (orphans pinned only from orphaned values).)
-    // 2026-10-28 codex: Reproduced the retention with the named probe reduced to 10 slots
-    // and stopped at 200 cycles: RSS rose from 73400 to 144764 kB versus 71956 to 101464
-    // kB with me: null. No collector implemented. Safe orphan-only collection must
-    // distinguish a reference reachable only from orphan values from the same Value
-    // retained by an embedder. Value::Abstract clones its private
-    // std::sync::Arc<AbstractInner>; that does not clone Reference::_keep, so Keep's
-    // strong count cannot make the distinction. ValArray also hides ownership of its
-    // shared bases/slices, so counting the references found by walking orphan values is
-    // unsound when a containing value has an external alias. netidx-value exposes neither
-    // these ownership counts nor a trace/root API. Changing the reference to use a
-    // different inner Arc does not fix the outer Value sharing. This needs an agreed
-    // netidx ownership/tracing API (and work in the read-only sibling), or an
-    // embedder-root protocol; no unsafe layout access or premature release was added.
-    // Closure capture pins share this cycle-collection limitation. The CR remains open.
-    // 2026-10-28 claude: Collected as ruled (q61), branch orphan-gc:
-    // reference::Lives::collect, run by ExecCtx::release_references, walks every orphan's
-    // stored value and the cells its references own through netidx-value's new
-    // Value::edges / trace::Edge (each shared allocation's address and strong count: an
-    // array's inner arc and base, an error's arc, a map's nodes, an abstract), reading a
-    // reference's keep, a nominal abstract's payload and a function value's captures. An
-    // allocation with an owner the walk did not find, or an orphan with an unfound pin,
-    // is held from outside, and all it reaches lives; the other orphans are released. A
-    // map's inner nodes report no count, so a cycle through a map is not collected (needs
-    // NodeRef::strong_count in immutable-chunkmap). Runs when an orphan was made or lost
-    // a pin, else backs off 1..1024 cycles. Pins:
-    // lang::orphans::self_referencing_values_in_deleted_slots_are_collected (fails in all
-    // modes with collect disabled),
-    // a_saved_reference_into_a_self_referencing_value_outlives_its_slot; netidx-value
-    // trace::test::edges_count_every_owner. design/place_references.md.
-    // 2026-10-28 claude: The cells of the collected references are released too: a
-    // reference's cell mirrors its place's value, so the cell's own copy held the
-    // reference and kept the cycle alive after the orphan went (the review's probe still
-    // grew 800 MB per 100 cycles). The probe now stays at 312 MB over 600 cycles (281 MB
-    // with me: null; 4.2 GB before). The lang::orphans harness now keeps slots alive three
-    // cycles so the self-write lands, and counts live reference cells (Lives::cells)
-    // beside bindings; self_referencing_values_in_deleted_slots_are_collected fails in all
-    // four modes without the cell release.
-    // 2026-10-28 claude: Maps are collected through too: immutable-chunkmap 2.1.5's
-    // NodeRef::strong_count gives every map node an owner count (netidx-value trace
-    // reports it; graphix requires 2.1.5), so the collector no longer reads a map's inner
-    // nodes as held from outside. Pin:
-    // lang::orphans::self_referencing_maps_in_deleted_slots_are_collected (fails in all
-    // four modes with map nodes uncounted).
     pub fn orphan_if_pinned(&self, id: BindId) -> bool {
         let mut st = self.0.lock();
         let pinned = st.pins.contains_key(&id);
@@ -458,56 +402,6 @@ impl PartialOrd for Reference {
     }
 }
 
-// XCR claude for claude: [bug/medium] References typed Any still sort, key maps and dedup
-// through this impl, by the cell id that ByRef::compile mints. Slot instances compiled
-// or bound on forked branches mint those ids in scheduling order, so array::sort of an
-// Array<Any> of references differs between serial and parallel runs and from run to run
-// (force: a different order on each of 5 runs; off: always slot order). This
-// contradicts design/parallel_eval.md §8, which says reference ids reach no sort.
-// CLAUDE.md admits the problem only for functions under Any, and the fuzzer misses it
-// because oracle_tier excludes Any + sort programs. Needs a ruling: refuse ordering a
-// reference under Any, order references deterministically, or document the case beside
-// functions. probe:
-// design/review-2026-10-26/repro/x-parallel-any-ref-sort-nondeterministic.gx
-// (x-parallel-02)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q34, References
-// under Any): yes (the recommendation: walk for `==`, refuse the order.)
-// 2026-10-28 codex: Implemented q34: equality descends through Any and replaces
-// references by their named places; statically ref-free subtrees retain the typed fast
-// path. Ordering refuses a reference reached under Any, including singleton
-// sort/min/max/dedup, map construction, queries, edits, casts, collection results,
-// native map helpers and reference paths. An actual matching Eq/Ord implementation
-// remains authoritative; reference walks match its type arguments, so an impl for
-// another instantiation cannot hide a reference. Any comparisons remain unfused as the
-// ruling explicitly recommended. Pins lang::byref::any_reference_* plus scalar/Ord
-// controls cover all four modes; the final focused byref::any_ run passed 48 tests.
-// Equality probes failed before the implementation; ordering and cast pins failed all
-// four modes with the implementation removed; compiler map_helpers_refuse_reference_keys
-// and map_paths_refuse_reference_keys both failed with it removed. The additional
-// instantiated-impl equality and ordering probes failed eight cases before the exact
-// lookup correction and passed afterward. Rules, book, design and language skill
-// updated. Full-suite and fuzzer results are recorded in the completion report.
-// 2026-10-28 codex: Gate reference-order walks on resolved argument/key types. Map nodes,
-// collection builders, by-reference map paths and ordered builtins retain the decision
-// from typecheck1 (and image it); native helpers receive constant gates. The fast builtin
-// path is used only when its argument type cannot conceal references. Cast nodes and
-// reader targets retain a conservative target-level gate; the generic Type cast API also
-// checks the static map-key type once before iterating entries, so an unrelated Any in a
-// map value never causes a key walk. Existing netidx-facing signatures are unchanged.
-// Pins: ordered_builtin_checks_only_unknown_types and typed_map_cast_skips_reference_walk
-// both failed with their guards removed, then passed restored. Extended
-// map_helpers_refuse_reference_keys covers both native gate values;
-// key_type_check_does_not_change_place_identity pins that gate metadata is not reference
-// identity. The complete graphix-types, graphix-compiler and graphix-package-core unit
-// suites pass (336, 54 and 6 tests), and all 48 lang::byref::any_ integration tests pass.
-// No socket tests are involved in these focused runs.
-// 2026-10-28 codex: Follow-up validation found an abstract target can hide a map
-// representation behind a custom Ord. The outer type's comparison walk is not its cast's
-// representation walk. Pretyped casts now keep the key guard for any abstract target (and
-// Any); each actual map still checks only keys whose static type can conceal references.
-// The new any_reference_cast_abstract_map_is_refused pin failed in all four modes with
-// the earlier target gate. This does not change the unchecked path for concrete
-// structural targets such as Map<string, i64>.
 impl Ord for Reference {
     fn cmp(&self, other: &Self) -> Ordering {
         self.cell.cmp(&other.cell)

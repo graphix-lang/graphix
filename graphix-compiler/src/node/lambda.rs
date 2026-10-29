@@ -2210,55 +2210,6 @@ fn check_defaults<R: Rt>(
                     .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
                 // a variable inside the type is checked as any instance of
                 // it: each omitting call checks the default again
-                // XCR claude for claude: [bug/medium] A default that reads an enclosing
-                // definition's open cell is tied to its parameter only when the
-                // parameter type is a bare variable (the arm above). Under a written
-                // type holding one (`#d: Array<'q> = [z]`, `{v: 'q}`, `[null, 'q]`) it
-                // lands here and is checked against a fresh copy, so z's cell is never
-                // reached and the factory settles z to bottom. The check accepts
-                // `mk(1)`, and the build refuses it with the internal 'an instance at
-                // fn(z: i64) -> ..' error (graphix-fuzz: DIVERGENCE). Fix: when
-                // holds_enclosing_cell(&typ, ..) holds, check against at.typ itself
-                // whatever its shape. probe:
-                // design/review-2026-10-26/repro/x-typecheck-generics-default-enclosing-written-param.gx
-                // (x-typecheck-generics-04)
-                // 2026-10-27 claude: Not fixed; the root is wider than check_defaults and needs a typing
-                // rule. Traced (GRAPHIX_DBG_BIND, GRAPHIX_DBG_BIND_BT): the bottom comes from the
-                // omitting site, not the factory's check. CallSite::check_omitted_defaults compiles the
-                // default in g's definition env, where z is mk's GENERIC parameter cell; 'q_copy ⊇ z
-                // aliases the site's copy onto that generic cell, and the site's settle
-                // (FnType::settle_terminal in drain_pending_settles) binds mk's definition cell to
-                // bottom, so mk(1)'s elaboration then refuses its instance. The same leak breaks the
-                // already-pinned bare form with two factory instances: `let mk = |z| { let g = |#d = z,
-                // x| [d, x]; g }; let f = mk(1); let h = mk("s"); (f(2), h(3))` is refused 'string does
-                // not contain i64' (f(2)'s site check bound mk's generic z to i64). Tried the CR's fix
-                // (check a default holding an enclosing cell against at.typ itself whatever its shape):
-                // a written undeclared 'q is rigid in g's check (DefGate rigidifies every named sig
-                // var), so z binds to g's rigid 'q; one shape per program then works, but `|#d:
-                // Array<'q> = [z], #n: [null, 'q] = z, x|` (which runs today) is refused "'q: null does
-                // not contain i64", and two written variables tied to one z are refused as rigid apart;
-                // reverted. Question for Eric: what type does a default that reads an enclosing
-                // definition's open cell have at a site that cannot know which instance of the factory
-                // the callee came from? Options: (a) the site check instantiates the enclosing
-                // definitions' generic cells fresh (never writes them), and the definition ties a
-                // non-quantifier parameter to the cell (written undeclared vars would need to stop being
-                // rigid, or the tie stays for unannotated params only); (b) refuse a default that reads
-                // an enclosing open cell unless the parameter's type is closed, asking to annotate the
-                // factory's parameter; (c) carry the default's type in the callee's FnType so an
-                // instance's copy holds it.
-                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q23, A default that
-                // reads an enclosing open cell): yes, b (the recommendation: (b) now, small and sound;
-                // (c) later if it bites.)
-                // 2026-10-27 codex: Implemented Eric's q23 ruling in check_defaults: a default whose
-                // type reaches an enclosing definition's open cell is refused unless its parameter type
-                // is closed, with a diagnostic asking for a factory or defaulted-parameter annotation.
-                // Removed the special bare-variable tie. Pins:
-                // lang::types::default_reads_the_factorys_parameter and
-                // default_factory_open_{array,struct,union}; all four failed in all four modes without
-                // the fix (16 failures). default_factory_closed_{parameter,capture} pin both annotation
-                // routes (8 passes before and after). The full lang::types module passes: 1113 tests.
-                // Updated CLAUDE.md, regenerated AGENTS.md, and updated the labeled-arguments book page
-                // and graphix-lang skill. Further verification is recorded with the commit report.
                 t if t.has_unbound() => t.reset_tvars().check_contains(&ctx.env, &typ),
                 t => t.check_contains(&ctx.env, &typ),
             }

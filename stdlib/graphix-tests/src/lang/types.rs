@@ -672,47 +672,6 @@ run!(
 // Unmarked data reads back as the member that reads it exactly: a tuple of
 // its length, then a struct, before an array, so what pack and json write
 // of a tuple or a struct reads back as it.
-// XCR claude for claude: [bug/medium] Only the members that win the tie-break round-trip.
-// An Array<i64> of length 2 in [(i64, i64), Array<i64>] reads back from json or pack as
-// the tuple (1, 2). A bare `A in [string, `A] reads back as the string "A". Both are
-// silent member changes after a save and reload. The writer refuses keys that collide
-// this way (colliding_data_keys_refused_by_a_writer) but writes such values. Decide:
-// refuse at the writer (or through the 'a: Data check), or accept and say so in this
-// comment and in CLAUDE.md's 'reads back into its type'. Then pin the colliding case
-// here. probe:
-// design/review-2026-10-26/repro/tests-types-data-roundtrip-member-change.gx
-// (tests-types-01)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union members
-// that share a data form): yes a for json/toml, b for pack and db (the recommendation:
-// (a) for json/toml targets; (b) for pack and db.)
-// 2026-10-27 codex: Partial rework of q42. Pack and db now preserve and validate
-// composite kind markers; their casts defer a converting array member until every array
-// member has had a chance to hold the value unchanged. Reused Restore for the decoder's
-// scoped marker permission. Pins pack_preserves_union_member_kinds failed all four modes
-// on current main; pack_array_union_prefers_unchanged_elements and
-// db_array_union_prefers_unchanged_elements failed all eight modes with the old patch,
-// then passed with the revised member selection. The temporary cr_rework harness (exact
-// retained fixtures) passes 20 tests, including db_preserves_union_member_kind and the
-// recursive abstract-alias guard. Binary rule, book, interface and skill docs updated.
-// The JSON/TOML target restriction remains unimplemented: putting a format-specific
-// bound on json::read would change a public signature used by
-// ../netidx/graphix-package-netidx-admin/src/graphix/tui/landing.gx, contrary to this
-// brief's explicit restriction. Applying it to Concrete generally would incorrectly
-// reject the pack/db targets this ruling requires. No such signature change was made.
-// This CR stays open; the text-data constraint needs coordination or an approved checker
-// design preserving that API.
-// 2026-10-27 codex: Rechecked finding 10 in this continuation. The q42(a) target
-// restriction is still blocked by the brief's ban on changing public signatures used by
-// ../netidx: json::read is used in
-// graphix-package-netidx-admin/src/graphix/tui/landing.gx. Concrete is shared with
-// pack/db, which must accept these unions. A format-specific builtin refusal in
-// typecheck1 would make build reject what check accepts, contrary to the project rule.
-// No such workaround or signature change was made; q42 remains partial and needs
-// coordinator authorization for a format-specific target bound.
-// 2026-10-28 claude: q42 complete: pack and db keep kinds (lane C), and json/toml
-// targets carry JsonData/TomlData, which refuse [(i64, i64), Array<i64>] and [string,
-// `A]. Pins: lang::types::{json_target_union_its_data_cannot_tell_apart_refused,
-// json_target_members_written_apart_read_back, data_reads_back_as_written}.
 const DATA_READS_BACK_AS_WRITTEN: &str = r#"
 {
   type U = [(i64, i64), Array<f64>];
@@ -4228,24 +4187,6 @@ run!(ref_test_over_any_in_a_second_pair, r#"{
 // A string casts to a decimal or a float exactly: digits past f64 stay,
 // a float reads anything Rust's float parse reads, and a pre-epoch
 // datetime truncates toward zero as a float does.
-// XCR claude for claude: [bug/low] This pins "12345678901234567890." as the plain print of
-// a scale-0 decimal. A float prints plainly with no trailing dot (f64 5.0 -> "5"), but
-// Value::fmt_naked routes a decimal through DecimalFmt (netidx-value print.rs), which
-// appends the literal syntax's '.'. That holds for cast<string> and interpolation
-// alike. Decide whether plain means unadorned: if so, fmt_naked needs a plain decimal
-// arm (an upstream change in netidx-value) and this expectation changes; if not, say so
-// in CLAUDE.md's cast rule. probe:
-// design/review-2026-10-26/repro/tests-types-decimal-plain-print.gx (tests-types-06)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q46, A decimal's
-// plain print): yes, unadorned (the recommendation: unadorned.)
-// 2026-10-27 codex: Reapplied q46 in Graphix's printer: scalar decimals use plain decimal
-// Display, while composite decimal leaves retain literal syntax. No upstream change. Pin
-// lang::types::decimal_plain_print_is_unadorned failed all four modes without the change
-// and passes in all four afterward; updated string_casts_to_decimal_and_float_exactly,
-// the book and language skill. Both decimal pins pass together (8 tests). cargo fmt --all
-// was attempted but cannot write a file in the read-only sibling Graphix checkout;
-// formatting the touched workspace packages succeeds. Full-library results are reported
-// separately.
 run!(string_casts_to_decimal_and_float_exactly, r#"{
   let d1 = cast<decimal>("1.23456789012345678901234567")$;
   let d2 = cast<decimal>("12345678901234567890")$;

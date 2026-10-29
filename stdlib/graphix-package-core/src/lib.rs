@@ -454,7 +454,7 @@ pub use memo::FastMemo;
 /// RFC3339, a duration in seconds, any other value in its naked form. A
 /// reader's cast reads back these scalar object keys. [`shape`] writes
 /// a map holding any other key as an array of pairs.
-// XCR claude for claude: [bug/medium] The doc says a reader's cast reads this text back,
+// CR claude for claude: [bug/medium] The doc says a reader's cast reads this text back,
 // but it does not for a bare variant or a composite key. Map<`A, i64> writes
 // {"\"A\"":2} (the data string printed with its quotes) and Map<(i64, i64), i64> writes
 // {"[1, 2]":3`}; json::read into the same types gives InvalidCast for both, so the json
@@ -477,58 +477,10 @@ pub use memo::FastMemo;
 // restored in the focused cr_rework harness. The harness passed 44 tests. Full
 // library-suite results will be reported separately. Book, interfaces and language
 // skill describe the pairs representation and TOML restrictions.
-// XCR claude for claude: [bug/medium] The text this writes for a tuple, struct, variant or
-// list key, for a null key ("null") and for a bytes key (base64) does not read back.
-// The reader casts the object key string to the key type, and a cast parses a string
-// only into a scalar. So json/toml write {(1, 2) => "q"} as {"[1, 2]":"q"}, and reading
-// it back as Map<(i64, i64), string> gives InvalidCast "not a tuple". That breaks this
-// doc's promise and CLAUDE.md's "what the json and toml writers emit reads back into
-// its type". Decide between two fixes: write such a map as the array of its (key,
-// value) pairs, which the cast already reads as a map, or refuse it at the writer.
-// probe: design/review-2026-10-26/repro/core-lib-composite-map-key-no-roundtrip.gx
-// (core-lib-02)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q41, Map keys that
-// are not strings or scalars, in json and toml): yes, the pairs array (the
-// recommendation: the pairs array.)
-// 2026-10-27 codex: Implemented q41 with a shared pairs shape for composite, bytes and
-// null keys. JSON and TOML check the serialized key data for collisions before writing
-// each pair, including collisions between bytes and integer arrays. Pins
-// lib_tests::{json,toml}::{composite_map_keys_use_pairs,colliding_pair_keys_are_refused,colliding_bytes_and_array_keys_are_refused};
-// all 16 collision cases failed with the collision guards disabled and pass with them
-// restored in the focused cr_rework harness. The harness passed 44 tests. Full
-// library-suite results will be reported separately. Book, interfaces and language skill
-// describe the pairs representation and TOML restrictions.
-// XCR claude for claude: [bug/high] A bare-variant or composite map key is written as
-// the quoted Naked text of its data: `A becomes the JSON key "\"A\"" (TOML '"A"', hbs
-// &quot;A&quot;), and (1, "a") becomes "[1, \"a\"]". No reader casts those back, so
-// json::read/toml::read into the same Map type fail with InvalidCast, and an enum-keyed
-// map writes unreadable JSON. The doc above says the opposite. Fix: write a bare
-// variant as its tag (refuse two keys that write alike, as to_data does), and have the
-// json/toml readers parse an object key as a Graphix literal (Expr::literal_value, as
-// str::parse does) when the key type is neither a string nor a scalar. Pin enum, tuple
-// and struct keys beside time_map_keys_read_back. probe:
-// design/review-2026-10-26/repro/x-kind-markers-composite-map-keys.gx
-// (x-kind-markers-01)
-// 2026-10-26 claude: The bare-variant half is fixed with t-rep-02: map_key writes a
-// key's data, so `A is the JSON key "A" (TOML A) and reads back; a bare variant beside
-// the string it writes as is refused by the writers' duplicate-key checks. Pins:
-// lib_tests::json::string_data_map_keys_read_back,
-// lib_tests::toml::toml_variant_map_key_reads_back. What remains is the composite keys,
-// (1, "a") written as "[1, \"a\"]": parse an object key as a Graphix literal on read
-// (this CR's suggestion), write such a map as its (key, value) pairs, or refuse it at
-// the writer. That is the choice core-lib-02 and x-rerun-5-04 already ask Eric to make,
-// so this is readdressed rather than decided here.
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q41, Map keys that
-// are not strings or scalars, in json and toml): yes, the pairs array (the
-// recommendation: the pairs array.)
-// 2026-10-27 codex: Implemented q41 with a shared pairs shape for composite, bytes and
-// null keys. JSON and TOML check the serialized key data for collisions before writing
-// each pair, including collisions between bytes and integer arrays. Pins
-// lib_tests::{json,toml}::{composite_map_keys_use_pairs,colliding_pair_keys_are_refused,colliding_bytes_and_array_keys_are_refused};
-// all 16 collision cases failed with the collision guards disabled and pass with them
-// restored in the focused cr_rework harness. The harness passed 44 tests. Full
-// library-suite results will be reported separately. Book, interfaces and language
-// skill describe the pairs representation and TOML restrictions.
+// 2026-10-28 claude: Review (2026-10-28): composite, null and bytes keys round-trip as pairs; a key union of string and another
+// scalar does not: Map<[string, i64], i64> {1 => 1, "a" => 2} writes {"1":1,"a":2} and reads back {"1" => 1, "a" => 2} (== is
+// false); [bool, string] keys alike. map_shape writes an object because every key is scalar, and JsonData models a map only as pairs
+// (textdata.rs Type::Map -> Shape::Pairs), missing the string-key collision. probe ~/tmp/xcr-review-2026-10-28/5/b/p5.gx
 pub fn map_key(k: &Value) -> Result<ArcStr> {
     Ok(match graphix_compiler::abstract_value::to_data(k)? {
         Value::String(s) => s,
@@ -2015,7 +1967,7 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     /// site sleeps. Either way nothing answers after a sleep: a reply to a
     /// call made before it is dropped, or handed to [`Self::reclaim`]'s
     /// closure. Never `false` under [`Calls::Latest`], which aborts.
-    // XCR claude for claude: [bug/high] The default makes a sleep throw away the reply of
+    // CR claude for claude: [bug/high] The default makes a sleep throw away the reply of
     // evals whose work no abort stops. The db and sqlite ops run under spawn_blocking,
     // process spawn completes on its first poll, and a tcp accept may have completed
     // before the sleep. Their reply is the only copy of what they did: a popped or
@@ -2058,6 +2010,15 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     // returned in order), db::db_not_data_answers_after_a_sleep}, sys
     // io::test::a_dropped_read_lets_the_next_read. The repro now prints only len
     // after=1, the ruled behaviour. Semantics change: needs a soak.
+    // 2026-10-28 claude: Review (2026-10-28): the ruling holds (nothing answers after a
+    // sleep), but the fix broke Fifo ordering. CachedArgsAsync::sleep's kept branch sets
+    // inflight = 0 and remints while a call that is not CANCEL_SAFE keeps running; its
+    // reply goes to the old generation and never decrements, so at the wake a Fifo site's
+    // next call starts beside it: a db insert(k, v1) running when its arm slept can land
+    // after the insert(k, v2) issued at the wake. Track the old generation's calls in
+    // flight and hold the queue until they finish. The generation compare is also weakly
+    // pinned (only tcp_read_across_sleep, by a hang); add a fixture issuing a second db
+    // call at the wake.
     const CANCEL_SAFE: bool = true;
 
     /// What settles the reply of a call `args` made, for an eval not
@@ -2651,32 +2612,6 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
     /// eval not cancel-safe is let finish instead, its replies taken back
     /// ([`EvalCachedAsync::reclaim`]).
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        // XCR claude for claude: [bug/high] CachedArgsAsync has no `reborn`, so a seq step
-        // entered for a new run inherits the calls of the run before. A call that is
-        // not CANCEL_SAFE and was in flight when the run was aborted (by abort(e) or
-        // its arm's sleep) finishes asleep. At the new run's first update its kept
-        // reply is popped as this run's answer, and the new run's own call is spawned
-        // behind it, so every later run gets the previous run's reply. The repro's run
-        // 2 reads stream B but answers child A's "AAAA", and run 3 answers run 2's
-        // "BBBB". Fix: a `reborn` that gives in-flight calls a fresh `Kept`, remints
-        // the reply id, and resets inflight, slept and queued. Rule whether the bytes
-        // those orphaned calls consumed are dropped or whether a rebirth waits for
-        // them. probe:
-        // design/review-2026-10-26/repro/core-lib-kept-reply-crosses-rebirth.gx Also
-        // reported as (x-async-io-02). (core-lib-01)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q16/q18,
-        // discussed): nothing delivers after a sleep. A call site that sleeps opens a
-        // fresh reply slot and drops any reply to the old one; work is cancelled where
-        // it can be, and the book documents what cannot be (a write still happens, its
-        // result is not seen). A stream read whose reply is dropped returns its bytes
-        // to the stream's buffer, so no data is lost. This replaces the CANCEL_SAFE
-        // split (a call not cancel-safe finishing and answering at the wake).
-        // 2026-10-27 claude: Fixed by the ruling built under x-async-io-01: a sleep
-        // (which a seq abort also brings the step) advances the site's reply generation,
-        // so the aborted run's read is never answered and its bytes go back to the
-        // stream; the next run reads its own stream. The repro now prints "run 2: BBBB"
-        // and run 3 stalls, as expected. Pins: the *_is_not_answered_after_a_sleep
-        // fixtures and lib_tests::tcp::tcp_read_across_sleep; no seq-specific pin yet.
         match &self.kept {
             None => self.renew(ctx),
             Some(kept) => {

@@ -289,51 +289,6 @@ impl<R: Rt> Apply<R> for Timer {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        // XCR claude for claude: [bug/medium] Clearing the output here, as every event
-        // source's sleep does, makes the source bottom at the wake. A bottomed argument
-        // bottoms its consumer, so state built on the event is hidden until the next
-        // event. In the probe, count(timer) in a woken arm shows nothing for three
-        // outer ticks though it kept its 2. count(x) over a variable shows its count at
-        // a re-entry, as wake_resumes_quietly pins. A UI arm showing count(tick) or
-        // hold(#clock: tick, v) blanks for up to a period at every re-entry.
-        // wake_resumes_standing_timers relies on this: it counts count(timer)'s fires,
-        // and a count shown at the re-entry would add one. Rule on what a woken event
-        // source reads as to its consumers: absent without bottom (no fire), or bottom
-        // as now, documented in design/async_sleep_outputs.md. Then pin count(timer) at
-        // a re-entry. probe:
-        // design/review-2026-10-19/repro/x-engine-firing-event-clear-bottoms-consumer.gx
-        // (x-engine-firing-03)
-        // 2026-10-24 claude: Eric ruled (2026-10-24): absent without bottom: a woken
-        // event source does not fire and is not bottom, so its consumers keep showing
-        // their state.
-        // 2026-10-25 claude: Tried the ruling in its one form the tags can hold today:
-        // each of the 15 event sources' sleep() kept its output and rode it stale
-        // (out.ride() for out = phantom) instead of clearing it, so a woken source
-        // neither fires nor is bottom and count(timer) keeps showing its count. Six pins
-        // of the rule this replaces then fail in every mode:
-        // async_restart::{iter_reentry_emits_no_old_element, line_reader_rewake,
-        // wake_resumes_standing_timers},
-        // db::db_subscription_accessors_do_not_replay_on_wake,
-        // net::{net_subscribe_arm_rewake, net_subscribe_arm_rewake_moved_path}. A select
-        // emits its arm's current value at a re-entry, so an arm whose body is the event
-        // itself (`On => subscribe(p)`, a line reader, an iter) re-emits the old event
-        // as new, which design/async_sleep_outputs.md names as the reason for the clear.
-        // Reverted. The ruling as worded needs a third state beside value and bottom,
-        // absent: never fires, does not bottom a consumer (count rides its resident over
-        // it), and gives a select nothing to emit at the re-entry, in the TagValue tags
-        // and the JIT's discs alike. Back to eric: build that state, or accept the
-        // re-emission (and rewrite those six pins), or keep the clear.
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, D2,
-        // discussed): option B. Keep today's clear (a woken event source is bottom until
-        // its next event) and document in design/async_sleep_outputs.md and the book
-        // that state built on an event blanks until the event fires again (hold(..)
-        // keeps it).
-        // 2026-10-28 claude: Ruled B built as documentation: a woken event source's
-        // cleared output is bottom until its next event, so state built on it blanks
-        // through the wake (design/async_sleep_outputs.md's event-source paragraph, book
-        // core/select.md: hold it outside the arm to keep showing it). Pin:
-        // lang::async_restart::woken_event_state_blanks_until_the_next_event, [1, 2, 3,
-        // 4] with no re-emitted 2 at the wake.
         self.out = TagValue::phantom();
         self.slept.set();
         self.stop(ctx)

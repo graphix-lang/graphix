@@ -805,45 +805,6 @@ fn typecheck_arg<R: Rt>(
                 wrap!(n, added_bound(&ctx.env, name, q, declared))?;
             }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
-            // XCR claude for claude: [bug/medium] A lambda argument that writes an outer
-            // variable (`apply(|x| { r <- x; x })`, or `*p <- x`) carries the rank-2
-            // quantifier out, and neither check here sees it. The quantifier's copy is
-            // generic (FnType::generic_inner_quantifiers), and tvar::lower never lowers
-            // a generic cell, so the merged cell keeps Level::Generic and carried_out
-            // does not count it as foreign. escapes_through walks only refs, and a
-            // Lambda node has no children and a Connect target is not a ref. The check
-            // accepts the program and the build refuses the instance
-            // (GRAPHIX_ELAB_AUDIT). Fix: let a merge with a Top/Def cell lower a
-            // generic cell, or walk the argument's written bindings and its lambda
-            // body's refs in escapes_through. probe:
-            // design/review-2026-10-26/repro/t-fntyp-rank2-quantifier-escapes.gx
-            // (t-fntyp-02)
-            // 2026-10-26 claude: Not fixed; the rank-2 parts it reads now take every
-            // quantifier at a data position (x-typecheck-generics-05). Tried: walking
-            // each lambda literal of the argument through the types its definition's
-            // check recorded (DefTable rows, nested tables included) for a cell above
-            // the literal's level that reaches a quantifier. That refuses the repro and
-            // the nested-lambda form, but not r <- [x], {f: |x| { r <- x; x }} or *p <-
-            // x: a Connect target is no node of the body, so r's binding type is in no
-            // row, and where r's cell MERGES with the quantifier copy the merged cell
-            // stays generic (t-tvar-01's merge_into level rule), so no level test sees
-            // it. Reverted. What a fix needs: the bindings a literal's body reads and
-            // WRITES (Connect targets included, nested literals' too), recorded by its
-            // definition's check (DefTable, imaged) and walked by escapes_through, plus
-            // t-tvar-01's shallower-level merge for the *p <- x form.
-            // 2026-10-28 claude: Fixed: the rank-2 argument check now also walks the
-            // bindings every lambda literal in the argument captures, its definition's
-            // DefTable::captures (reads and writes, nested literals' included;
-            // core-aux-02 recorded them), so a write to an outer variable carries the
-            // quantifier into a binding escapes_through sees. Writes through a
-            // reference (*p <- x) were not recorded as captures at all, which also left
-            // an escaped closure that writes through a captured reference without p
-            // after its slot went: capture_names now records ConnectDeref's reference
-            // binding. Pins: lang::types::unsound_acceptances_are_refused
-            // RANK2_ARG_WRITES_OUTER, _ARRAY, RANK2_ARG_WRITES_THROUGH_A_REFERENCE,
-            // RANK2_ARG_NESTED_LAMBDA_WRITES_OUTER, RANK2_FIELD_WRITES_OUTER;
-            // lang::orphans::a_saved_closure_writing_through_a_captured_reference_outlives_its_slot.
-            // All fail with the capture walk and the ConnectDeref capture removed.
             let quantified: SmallVec<[(ArcStr, usize); 2]> = quantified
                 .iter()
                 .map(|(name, tv)| (name.clone(), tv.cell_addr()))
@@ -2896,33 +2857,6 @@ impl<R: Rt> CallSite<R> {
             }
             _ => false,
         };
-        // XCR claude for claude: [bug/low] When the function variable fires with the
-        // definition already bound, the site keeps its instance and, with no argument
-        // fired, rides: the call does not fire. A dereference whose reference variable
-        // is rewritten with the same reference does fire. In the probe, `*r` fires at
-        // cycle 3 and `g(x)` does not. Organic firing (a node fires iff a consumed
-        // input fires) names neither exception. Rule whether a same-definition write is
-        // a fire. If it is, re-tag the standing output fired here and keep the
-        // instance. If not, stop Deref firing on a same-target write. Then document and
-        // pin it. probe:
-        // design/review-2026-10-26/repro/x-engine-firing-same-fn-write-no-fire.gx
-        // (x-engine-firing-06)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q6, Writing
-        // the same function to a function variable): yes, a write is a fire (the
-        // recommendation: a write is a fire, as for every variable.)
-        // 2026-10-27 codex: A fired dynamic function input now retags the instance's
-        // current production fired, including a same-definition write; rebind still
-        // retains that instance. Documented the rule in CLAUDE.md, organic_firing, the
-        // late-binding chapter and graphix-lang. Pin
-        // lang::functions::same_function_write_fires_without_reset sees [1,2,2],
-        // proving both the extra fire and preserved count state; it failed in all four
-        // modes before the fix with [1,2]. The lang::functions, lib_tests::callable,
-        // lang::seq, lang::select and lang::sample filters pass after it. No FuseExpect
-        // moved. No netidx-admin socket tests or fuzzer soak were run.
-        // 2026-10-27 claude: Eric ruled the scope (2026-10-27, after review): any fire
-        // of a function-valued callee fires the call (organic firing), a write or a
-        // re-emission alike, as built. lang::dense_deltas::callee_back_from_bottom now
-        // expects [0, 0, 14]: the select re-emitting g at ep 1 fires the call.
         if same {
             return false;
         }
@@ -3205,51 +3139,6 @@ impl<R: Rt> CallSite<R> {
         // body decodes, as a cold compile's registrations do; the site holds
         // them until the body decodes and registers its own (recorded, so a
         // failed read unwinds them)
-        // XCR claude for claude: [perf/medium] Every imaged site flattens and registers
-        // its whole subtree's reads here (ImagedRefs::flat, recomputed per site).
-        // materialize releases them, and each imaged site in the decoded body then
-        // registers its own subtree again. A call chain of depth N costs O(N^2) at its
-        // first dispatch, and a warm start is slower than compiling. Measured on a
-        // debug build with --no-fusion: a 2000-function chain takes 0.85 s cold and
-        // 3.36 s warm; 4000 takes 2.66 s cold and 14.7 s warm. Commit 966be26bf had
-        // this chain at 75 ms warm before walk pruning removed its in_instance rule.
-        // Fix: memoize the flat reads per instance in the shared table, and pass the
-        // outer site's held set down at materialize instead of re-registering whole
-        // subtrees per level; the right shape depends on how readers must sit per
-        // boundary. The `held` field's doc still describes the old rule. probe:
-        // design/review-2026-10-19/repro/c-callsite-warm-chain-quadratic.sh
-        // (c-callsite-04)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Take the fix: memoize the flat reads per instance in the shared
-        // table and pass the held set down at materialize.
-        // 2026-10-26 claude: Still quadratic: lane debug build, --no-fusion, warm 0.41
-        // s at N=1000 and 1.57 s at N=2000 (cold 1.2 s / 2.0 s on a loaded host). Not
-        // fixed in L3-b03. Memoizing the flat set per instance in the shared table
-        // does not remove the square: each nested imaged site must still register its
-        // whole subtree's reads under its own reader (its boundary is the one a write
-        // must mark for the walk to reach it), so each level pays O(subtree) in
-        // record_ref, apply_deferred and the release. A linear shape has to avoid
-        // registering a nested site's held set at all when that site materializes
-        // during its parent's first body update (every level of this chain does), e.g.
-        // register a nested site's held set only once the parent's first update leaves
-        // it still imaged, or have a site hold one registration per held set rather
-        // than one per read. Either is a change to how imaged reads sit per boundary,
-        // so it wants its own design pass. The held field is now derived from
-        // Callee::Imaged (c-callsite-06), so the doc remark in this CR no longer
-        // applies.
-        // 2026-10-28 claude: Fixed: an imaged site decoded while the instance around
-        // it decodes at its own first dispatch (image::Restored::materializing)
-        // registers none of its subtree's reads at decode; that first update
-        // dispatches it, and so decodes it, unless it leaves it unreached, and after
-        // the update CallSite::hold_imaged registers the reads of the sites left
-        // imaged, under the reader each took at decode (Callee::Imaged reader/held;
-        // release_held unrefs only what was held). A top-level decode registers at
-        // decode as before. Quick build, --no-fusion, the probe's chain: N=2000 cold
-        // 642 / warm 133 ms, 4000 1224 / 231, 8000 2976 / 409 (before: 754/1107,
-        // 1319/3962, 3216/15832). Pin: graphix-shell/tests/warm_chain.rs
-        // a_warm_chain_starts_faster_than_it_compiles (N=3000, debug: warm 4.7 s vs
-        // cold 2.1 s with every site held at decode; passes at under 1 s for both
-        // runs). lang::image passes under GRAPHIX_PRUNE=audit.
         if let Callee::Imaged { instance, refs, reader, held: true, .. } = &site.callee {
             for id in refs.flat(*instance).refed.iter() {
                 ctx.record_reader(*id, reader.clone())
@@ -3653,35 +3542,6 @@ impl<R: Rt> CallSite<R> {
             let mut carriers = SmallVec::new();
             self.defaults_open =
                 !self.check_omitted_defaults(ctx, ftype, &mut carriers)?;
-            // XCR claude for claude: [bug/low] Only a builtin's unread Concrete quantifier
-            // settles. So a lambda that forwards publish's optional handler,
-            // `|#on_write: [fn(v: 'a) -> _, null] = null, p: string|
-            // sys::net::publish(#on_write: on_write, p, 1)`, refuses `w("/a")`, though
-            // publish itself accepts the same call. The message, 'a type-directed
-            // operation reads it: annotate it', names a read that does not happen, at a
-            // call with nothing to annotate. test_builtins::unread_quantifier_settles
-            // pins this refusal for its lambda case. Rule: should a definition whose
-            // body uses the quantifier only through a forwarded function argument get
-            // the builtin's settle (recorded in its DefTable)? If not, the message
-            // should say the quantifier is unread here and that a typed handler or a
-            // typed null settles it. probe:
-            // design/review-2026-10-26/repro/tests-lang-rest-a-wrapped-publish-unread-quantifier.gx
-            // (tests-lang-rest-a-05)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q29, A quantifier
-            // used only through a forwarded function): yes, the message (the recommendation: the
-            // message.)
-            // 2026-10-28 codex: Implemented q29 at the call's deferred settle. ConcreteRequired
-            // retains the refused cell while preserving the original Display text. The call records
-            // unread callback cells, including inferred quantifiers, and specializes only a refusal
-            // of one of those cells. Builtin settling and inference are unchanged. Pins:
-            // lang::test_builtins::unread_forwarded_quantifier_message (4 modes failed before, now
-            // pass with both typed remedies) and read_quantifier_keeps_type_directed_message (real
-            // result reads and supplied open callbacks retain the original message). cargo test -p
-            // graphix-tests --offline --test cr_rework quantifier: 12 passed. cargo run -p
-            // graphix-fuzz --offline -- regress --bless: 552 programs, zero regressions; the
-            // manifest is unchanged, including the three Concrete rows identified by review. cargo
-            // fmt --all attempted, blocked by read-only sibling tvar.rs; touched packages formatted
-            // successfully. Full lib gate follows at session end.
             if !self.defaults_open {
                 if static_builtin(ctx, self).is_some() {
                     self.for_each_unread(&ctx.env, ftype, &carriers, |name, tv| {

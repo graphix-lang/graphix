@@ -926,25 +926,6 @@ pub(crate) fn struct_field_types<R: Rt>(
         }
         return Ok((index, ts));
     }
-    // XCR claude for claude: [bug/low] A union of structs whose names differ lands here,
-    // and the read is refused with "expected struct not [..]" even when every member
-    // has the field. In [{a: i64, b: i64}, {a: i64, c: i64}], `a` sits at the same
-    // sorted index in both. tuple_field_types does the same for tuples of different
-    // arity. Decide: either read a field every member holds at one index (the node-walk
-    // and the JIT read by index already), or keep the refusal and say the members'
-    // field names (arities) differ. probe:
-    // design/review-2026-10-26/repro/c-data-map-union-field-read.gx (c-data-map-05)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q27, A field
-    // read over a union of structs): I'm in favor of reading it, but I point out that
-    // fast struct reads depend on the type being sorted by key at compile time and
-    // baking in the index at runtime. In [T0, T1] if T0 has a common field with T1 it
-    // is not guaranteed that that field appears at the same index.
-    // 2026-10-27 codex: Implemented the ruling: a field present in every union member
-    // is readable; differing struct offsets resolve by name at runtime, while a common
-    // offset retains the indexed path. Tuple members may differ in arity. Replacement
-    // checks every member and uses the resident struct offset. Pins:
-    // lang::tuples_structs::union_field_{common_index,different_indices,different_types,tuple_arities,missing_struct,missing_tuple,replace_indices};
-    // all 28 failed before the fix. Book and language skill updated.
     deref_typ!("struct", ctx, source,
         Some(Type::Struct(flds)) => field(flds).map(|(i, t)| (Some(i), LPooled::from_iter([t])))
     )
@@ -1277,7 +1258,7 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
-        // XCR claude for claude: [bug/medium] With invariant abstract parameters,
+        // CR claude for claude: [bug/medium] With invariant abstract parameters,
         // `Box(1)` is typed `Box<i64>` eagerly. A wider annotation can only decide
         // the parameter here (a let whose initializer is itself the construction)
         // and at call arguments (`pre_unify_arg`, which does not look inside an
@@ -1344,6 +1325,11 @@ impl<R: Rt> Construct<R> {
         // lang::image::a_restored_constructor_keeps_its_lower_bound. Must-reject
         // family 11 is now abstract-param (mutation m::B<string>: a wider
         // annotation is legal now). Gate green, regress 0/0/0, GUI suite A/B equal.
+        // 2026-10-28 claude: Review (2026-10-28): the inference fix holds (all nine
+        // probe cases check). The CR's last clause remains: let b: Box<i64> =
+        // Box(1); b <- Box("s") suggests 'declare b: [Box<i64>, Box<'_7761>]', an
+        // unwritable cell; write_mismatch (node/mod.rs) should print a resolved or
+        // widened type (Box<[i64, string]> or [Box<i64>, Box<string>] both check).
         wrap!(self.arg, self.rep.check_contains_lower(&ctx.env, &self.arg.typ()))?;
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {

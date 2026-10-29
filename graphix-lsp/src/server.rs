@@ -107,32 +107,6 @@ where
         // Checking waits for a quiet moment, so a burst of edits costs
         // one check. A request will not wait that long: the document it
         // names is checked whatever else is queued.
-        // XCR claude for claude: [bug/low] A request taken while more messages are queued
-        // is answered without a flush. For a document opened while the server was busy,
-        // no check exists yet, so documentSymbol has no types and hover/definition
-        // answer null. Clients that ask once after didOpen keep that answer until the
-        // next edit. Proposal: before a request, flush when the requested document's
-        // roots are dirty or unchecked, queue or not, and keep the idle rule for
-        // notifications. That is at most one check per request. probe:
-        // design/review-2026-10-26/repro/lsp-request-mid-burst-unchecked.py (lsp-04)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q73, An LSP
-        // request taken mid-burst): yes, flush (the recommendation: flush.)
-        // 2026-10-27 qwen: Fixed as ruled. A request now checks what the document it
-        // names needs before it is answered, queue or not: ServerState::flush_document
-        // checks that document's dirty roots and nothing else, so a mid-burst request
-        // costs at most one check and the roots another document needs stay dirty for
-        // the quiet moment. The idle flush stands as it was: for every notification, and
-        // for a request taken with nothing queued, which is what keeps a
-        // workspace/symbol a barrier for the diagnostics an earlier edit caused.
-        // request_document (server.rs) reads textDocument.uri, the shape every document
-        // request has and a workspace/symbol does not, so a request that names no
-        // document flushes nothing new. Pinned by
-        // graphix-shell/tests/lsp/main.rs::a_request_mid_burst_checks_its_document. It
-        // cannot pass by luck: Client::queued (harness.rs) fills the queue before the
-        // server thread exists and the loop takes one message per cycle, so the hover
-        // and the documentSymbol under test are always taken with a third request behind
-        // them. Before the fix it failed every run with the probe's answer, symbols
-        // without types.
         let idle = connection.receiver.is_empty();
         match msg {
             Message::Request(req) => {
