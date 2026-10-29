@@ -450,13 +450,21 @@ fn desugar_plain(
     Ok(block(pos, exprs.drain(..)))
 }
 
-// CR claude for claude: [bug/medium] A seqq flush empties the queue but not the requests
+// XCR claude for claude: [bug/medium] A seqq flush empties the queue but not the requests
 // still waiting for an absent capture (those `BinOp::BankedSample` banks until the
 // capture arrives). In the probe, requests `A and `B arrive while `ready` is absent,
 // the flush fires before `ready` does, and both still run once it arrives (prints "a 7"
 // and "b 7"). "flush(e) also empties the queue" should drop them: the flush must reach
 // the banked requests too. probe: ~/tmp/xcr-review-2026-10-28/1/p/flushwait.gx
 // (seqq-flush-wait-01)
+// 2026-10-29 claude: A flush now drops the requests still waiting for a capture as well
+// as the queued ones. Every seqq with a flush counts its requests, and the queue is
+// flushed by number (#flush_before: the flush sampling the count, the same cycle; a
+// flush reading the run's request keeps its cycle-late path), and core queue keeps a
+// floor: a value arriving later numbered below the latest flush_before is dropped, since
+// the BankedSample pays requests in order. Pin:
+// lang::seq_abort::seqq_flush_drops_a_request_waiting_for_a_capture (gives [17, 27, 87]
+// without the floor, [87] with it). CLAUDE.md and queue's doc updated.
 /// The prelude that makes a seq's `abort(..)` and `flush(..)` one event
 /// bound to `aborted`, and a `seqq`'s queue. The queue takes the flush
 /// event in the cycle it fires, so a request that arrives with it stays,
@@ -1522,7 +1530,11 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     });
     if flush_reads_request {
         prelude.push(let_bind(pos, &flushed, None, never(pos)));
-        // the requests arrived so far; read in a cycle, those before it
+    }
+    if flush.is_some() {
+        // the requests arrived so far; read in a cycle, those before it. A
+        // flush drops every one before it, queued or still waiting for a
+        // capture, which reaches the queue numbered below the flush
         prelude.push(let_bind(
             pos,
             &requests,
@@ -1581,11 +1593,15 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         .to_expr(pos),
     ));
     if flush.is_some() {
-        let (label, event) = match flush_reads_request {
-            true => (literal!("flush_before"), flushed.clone()),
-            false => (literal!("flush"), format_compact!("#seqfl{id}")),
+        let before = match flush_reads_request {
+            true => r#ref(pos, &flushed),
+            false => sample(
+                pos,
+                r#ref(pos, &format_compact!("#seqfl{id}")),
+                r#ref(pos, &requests),
+            ),
         };
-        queue_args.push((Some(label), r#ref(pos, &event)));
+        queue_args.push((Some(literal!("flush_before")), before));
     }
     // every queued request is paid its captures, however many find one
     // absent

@@ -3194,6 +3194,9 @@ struct Queue {
     queue: VecDeque<(u64, Value)>,
     /// How many values have arrived.
     pushed: u64,
+    /// The values numbered below it were flushed, even those that had not
+    /// arrived yet.
+    floor: u64,
     sent: InFlight<(u64, Value)>,
     var: RtVar,
     out: TagValue,
@@ -3205,6 +3208,7 @@ impl Queue {
             triggered: 0,
             queue: VecDeque::new(),
             pushed: 0,
+            floor: 0,
             sent: InFlight::default(),
             var,
             out: TagValue::phantom(),
@@ -3266,10 +3270,14 @@ impl<R: Rt> Apply<R> for Queue {
             self.queue.clear();
         }
         if let Some(n) = before {
-            self.queue.retain(|(i, _)| *i as i64 >= n);
+            self.floor = self.floor.max(n.max(0) as u64);
+            let floor = self.floor;
+            self.queue.retain(|(i, _)| *i >= floor);
         }
         if let Some(tv) = seam_tick(x) {
-            self.queue.push_back((self.pushed, tv.value_cloned()));
+            if self.pushed >= self.floor {
+                self.queue.push_back((self.pushed, tv.value_cloned()));
+            }
             self.pushed += 1;
         }
         let bottom = bottom_of([x_tag]);

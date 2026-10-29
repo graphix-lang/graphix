@@ -192,6 +192,25 @@ async fn seqq_flush_keeps_a_request_arriving_with_it(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A flush drops the requests still waiting for a capture, as it drops
+// the queued ones: 1 and 2 wait for `ready`, the flush at step 4 drops
+// them, and 8, requested after it, runs once `ready` arrives.
+async fn seqq_flush_drops_a_request_waiting_for_a_capture(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { s if s < 20 => s + 1, _ => never() };
+        let req = select step { 1 => 1, 2 => 2, 8 => 8, _ => never() };
+        let ready = never<i64>();
+        ready <- select step { 6 => 7, _ => never() };
+        seqq req; flush(select step { 4 => true, _ => never() }) {
+            req * 10 + ready
+        }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [87]);
+    Ok(())
+}
+
 // A machine whose arm sleeps mid-run is idle when the arm wakes.
 async fn sleep_resets_the_machine(mode: Mode) -> Result<()> {
     for kw in ["seq", "seqq"] {
@@ -321,6 +340,7 @@ modes!(abort_reads_the_trigger);
 modes!(seqq_abort_starts_the_next);
 modes!(seqq_flush_empties_the_queue);
 modes!(seqq_flush_keeps_a_request_arriving_with_it);
+modes!(seqq_flush_drops_a_request_waiting_for_a_capture);
 modes!(sleep_resets_the_machine);
 modes!(nested_machine_restarts);
 modes!(nested_abort_reads_live);

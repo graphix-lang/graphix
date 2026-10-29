@@ -1422,7 +1422,8 @@ cycle, across workers; the compiler never pins threads.
   the machine updates); `e` is an initial step, asleep between runs and
   born at each run's entry (`CFlag::RunEvent`), and only its fires after
   the entry cycle count. `flush(e)` (`seqq` only)
-  also empties the queue: its source stays active between runs and the
+  also empties the queue: requests still waiting for a capture
+  included, numbered by arrival (`queue`'s `flush_before`); its source stays active between runs and the
   queue sees its ungated fires; only its abort of the current run is gated.
   A machine resets to idle in its handler's
   `sleep()`: a run does not survive its arm's sleep, and a `seqq`'s
