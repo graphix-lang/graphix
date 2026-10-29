@@ -4,7 +4,7 @@
 
 use super::{ch, key};
 use crate::testing::TuiTestHarness;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use std::time::Duration;
@@ -569,6 +569,25 @@ async fn done_string(h: &mut TuiTestHarness) -> Result<Value> {
     Ok(h.get_watched("test::done").cloned().unwrap_or(Value::Null))
 }
 
+/// Wait for `test::done` to read `expected`. A report that follows the
+/// browser reaches it once netidx's listing has caught up, however late
+/// that is; a browser that never gets there times out.
+async fn done_reaches(h: &mut TuiTestHarness, expected: &'static str) -> Result<()> {
+    h.watch("test::done").await?;
+    let want = Value::from(expected);
+    let reached = h
+        .wait_for(Duration::from_secs(15), |h| {
+            Ok(h.get_watched("test::done") == Some(&want))
+        })
+        .await;
+    match reached {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            bail!("test::done is {:?}, not {expected}: {e}", h.get_watched("test::done"))
+        }
+    }
+}
+
 /// A listing that shrinks under a window scrolled to its end shows every
 /// row that fits, and Up moves from the window that shows.
 #[tokio::test(flavor = "multi_thread")]
@@ -589,19 +608,25 @@ let shown = select b {
 let loaded = false;
 loaded <- select (loaded, sel) { (false, "/local/refill/r0") => true, _ => never() };
 let i = 0;
-let tick = select loaded { true => sys::time::timer(duration:300.ms, 14), false => never() };
+let tick = select loaded { true => sys::time::timer(duration:300.ms, 4), false => never() };
 i <- tick ~ i + 1;
-cur <- select i { 1 => i ~ `Down(20), 2 => i ~ `Down(20), 10 => i ~ `Up(1), 11 => i ~ `Up(1), _ => never() };
+cur <- select i { 1 => i ~ `Down(20), 2 => i ~ `Down(20), _ => never() };
 n <- select i { 4 => i ~ 3, _ => never() };
-let done = select i { 14 => i ~ "[shown] [sel]", _ => never() };
+// the Ups wait for the browser to show the shrunk listing
+let shrunk = false;
+shrunk <- select (shrunk, i >= 4, shown) { (false, true, 3) => true, _ => never() };
+let j = 0;
+let tock = select shrunk { true => sys::time::timer(duration:300.ms, 2), false => never() };
+j <- tock ~ j + 1;
+cur <- select j { x if x >= 1 => j ~ `Up(1), _ => never() };
+let done = select j { 2 => "[shown] [sel]", _ => never() };
 let result = b
 "##,
         40,
         6,
     )
     .await?;
-    assert_eq!(done_string(&mut h).await?, Value::from("3 /local/refill/r0"));
-    Ok(())
+    done_reaches(&mut h, "3 /local/refill/r0").await
 }
 
 /// A listing whose columns shrink under a window scrolled past them shows
@@ -630,19 +655,18 @@ loaded <- select (loaded, sel) {
   _ => never()
 };
 let i = 0;
-let tick = select loaded { true => sys::time::timer(duration:300.ms, 14), false => never() };
+let tick = select loaded { true => sys::time::timer(duration:300.ms, 8), false => never() };
 i <- tick ~ i + 1;
 cur <- select i { x if x >= 1 && x < 8 => i ~ `Right(1), _ => never() };
 n <- select i { 8 => i ~ 3, _ => never() };
-let done = select i { 14 => i ~ "[shown] [sel]", _ => never() };
+let done = select i { 8 => "[shown] [sel]", _ => never() };
 let result = b
 "##,
         24,
         6,
     )
     .await?;
-    assert_eq!(done_string(&mut h).await?, Value::from("3 /local/refill_cols/row0/col2"));
-    Ok(())
+    done_reaches(&mut h, "3 /local/refill_cols/row0/col2").await
 }
 
 /// A listing whose columns shrink under a window scrolled past them keeps
@@ -664,19 +688,18 @@ let b: Tui = browser(#size: {width: 24, height: 6}, #cursor: cur, #selected_path
 let loaded = false;
 loaded <- select (loaded, sel) { (false, "/local/fewer/row0/col0") => true, _ => never() };
 let i = 0;
-let tick = select loaded { true => sys::time::timer(duration:300.ms, 14), false => never() };
+let tick = select loaded { true => sys::time::timer(duration:300.ms, 8), false => never() };
 i <- tick ~ i + 1;
 cur <- select i { x if x >= 1 && x < 8 => i ~ `Right(1), _ => never() };
 n <- select i { 8 => i ~ 2, _ => never() };
-let done = select i { 14 => i ~ sel, _ => never() };
+let done = select i { 8 => sel, _ => never() };
 let result = b
 "##,
         24,
         6,
     )
     .await?;
-    assert_eq!(done_string(&mut h).await?, Value::from("/local/fewer/row0/col1"));
-    Ok(())
+    done_reaches(&mut h, "/local/fewer/row0/col1").await
 }
 
 #[tokio::test]
