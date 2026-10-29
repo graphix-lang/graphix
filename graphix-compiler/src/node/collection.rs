@@ -932,6 +932,10 @@ impl<R: Rt> MapQBase<R> {
             // as (x-engine-collections-01). (c-collection-01)
             // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q30, The
             // `Keep marker is in-band):
+            // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat,
+            // 2026-10-27, D5): "I like B, lets try it": the marker becomes a form no
+            // value can take, a Rust-registered abstract like the kind markers, built
+            // by a core function keep(v), which callbacks write instead of `Keep(v).
             MapOp::FilterMap => slots
                 .iter()
                 .map(Slot::value)

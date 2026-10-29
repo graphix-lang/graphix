@@ -3413,6 +3413,11 @@ impl<R: Rt> CallSite<R> {
         // design/recursive_activations.md. Open for Eric: a depth left for good stays
         // allocated, asleep, until its site shrinks again; a time-driven cleanup would
         // need a per-runtime queue of kept activations. Needs a soak.
+        // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat,
+        // 2026-10-27, D1): "lets try lever 1 and 3. for 3 I propose we do something like
+        // delete only 1% of the cells we could delete for a shorter activation, which
+        // saves a lot of work, but eventually cleans up after a transient large
+        // activation."
         if super::in_deselected_arm() && self.is_recursive_edge() {
             if self.kept_shrinks < KEPT_SHRINKS && self.callee_is_pure(ctx) {
                 self.kept_shrinks += 1;

@@ -1357,6 +1357,10 @@ impl<R: Rt> GXLambda<R> {
     // consumed from Typing, and Select avoids the unused row lookup. Pins:
     // deep_recursion_memory_is_linear (10240 B ceiling) and
     // mistyped_function_value_reports_bind_context (four modes).
+    // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat, 2026-10-27,
+    // D1): "lets try lever 1 and 3. for 3 I propose we do something like delete only 1%
+    // of the cells we could delete for a shorter activation, which saves a lot of work,
+    // but eventually cleans up after a transient large activation."
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,

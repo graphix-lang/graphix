@@ -2037,6 +2037,10 @@ impl Type {
             // as (x-engine-collections-03). (gx-stdlib-01)
             // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q30, The
             // `Keep marker is in-band):
+            // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat,
+            // 2026-10-27, D5): "I like B, lets try it": the marker becomes a form no
+            // value can take, a Rust-registered abstract like the kind markers, built
+            // by a core function keep(v), which callbacks write instead of `Keep(v).
             (t0 @ Self::Set(s0), Self::Set(s1)) if s0.iter().any(is_unbound_tvar) => {
                 if !commit || !shares_bare_cell(s0) {
                     return Self::place_members(flags, env, hist, t0, s0, s1);
