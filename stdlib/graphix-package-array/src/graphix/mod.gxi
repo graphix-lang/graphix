@@ -1,10 +1,9 @@
 /// filter returns a new array containing only elements where f returned true
 val filter: fn(a: Array<'a>, f: fn(x: 'a) -> bool throws 'e) -> Array<'a> throws 'e;
 
-/// filter_map returns a new array of the outputs of f, in order: a
-/// null output drops its element, `Keep(v) keeps v (null included),
-/// and any other output is kept
-val filter_map: fn(a: Array<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e) -> Array<'b> throws 'e;
+/// filter_map returns a new array of the values f keeps, in order: a
+/// null output drops its element and `Keep(v) keeps v, null included
+val filter_map: fn(a: Array<'a>, f: fn(x: 'a) -> [`Keep('b), null] throws 'e) -> Array<'b> throws 'e;
 
 /// return a new array where each element is the output of f applied to the
 /// corresponding element in a

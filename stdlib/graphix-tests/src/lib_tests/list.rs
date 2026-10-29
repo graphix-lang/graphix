@@ -249,8 +249,8 @@ run!(list_filter, LIST_FILTER, prints("[i64:4, i64:5, i64:6, i64:7, i64:8]"); Fu
 const LIST_FILTER_MAP: &str = r#"
 {
   let l = list::from_array([1, 2, 3, 4, 5, 6, 7, 8]);
-  list::to_array(list::filter_map(l, |x: i64| -> [i64, null] select x > 5 {
-    true => x + 1,
+  list::to_array(list::filter_map(l, |x: i64| -> [`Keep(i64), null] select x > 5 {
+    true => `Keep(x + 1),
     false => x ~ null
   }))
 }

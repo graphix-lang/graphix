@@ -15,4 +15,4 @@
 // The rejection that remained was false: the collection's callback
 // site aliased its type's variables by NAME, joining find_map's 'b
 // with filter_map's. Accepted since 2026-09-27; both modes agree.
-{let a = [i64:100, array::find_map, i64:3]; array::filter_map(a, |x| [x, i64:1 * i64:1])}
+{let a = [i64:100, array::find_map, i64:3]; array::filter_map(a, |x| `Keep([x, i64:1 * i64:1]))}

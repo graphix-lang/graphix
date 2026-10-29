@@ -1286,7 +1286,7 @@ async fn any_reference_ordering_is_refused(mode: Mode) -> Result<()> {
         "map::remove(m, a)",
         "m{a}",
         "map::map({1 => 2}, |kv| (a, kv.1))",
-        "map::filter_map({1 => 2}, |kv| (a, kv.1))",
+        "map::filter_map({1 => 2}, |kv| `Keep((a, kv.1)))",
         "{let nested: Any = (1, [a]); array::sort([nested])}",
         "{type Box = Abstract<&i64>; let b: Any = Box(&x); array::sort([b])}",
         "{type Box<'t> = Abstract<'t>; impl Eq for Box<i64> {let eq = |a, b| true}; impl Ord for Box<i64> {let cmp = |a, b| `Equal}; let b: Any = Box(a); array::sort([b])}",

@@ -4,5 +4,5 @@
 // render (corrupt inner pointers). Fixed by emit_return_from_node.
 {
   let a = [i64:1, i64:2, i64:3];
-  array::filter_map(a, |x| [x, x + i64:1])
+  array::filter_map(a, |x| `Keep([x, x + i64:1]))
 }

@@ -679,9 +679,10 @@ an event samples it: see the banking under `$` gates).
 `array`: map filter filter_map fold flatten find find_map concat push
 window(#n, arr, @v) len iter iterq sort enumerate zip (`window`'s second
 argument is the array windowed, usually `t ~ data`, and its values after
-it are variadic). `filter_map`'s callback returns `` ['b, null,
-`Keep('b)] ``: `null` drops the element and `` `Keep(v) `` keeps `v`, a
-null included, so `|x| x` over `[1, null, 2]` gives `[1, 2]`. `list`
+it are variadic). `filter_map`'s callback returns `` [`Keep('b),
+null] ``: `null` drops the element and `` `Keep(v) `` keeps `v`, a null
+included; a bare `v` is refused. `|x| select x { null as _ => null, v =>
+`Keep(v) }` over `[1, null, 2]` gives `[1, 2]`. `list`
 (the same over `List<'a>`, plus `cons head tail uncons nth take drop
 to_array from_array ..`), `map`, `str` (`contains split trim replace
 join len parse ..`), `re`, `rand`, `db` (an embedded key-value store:
@@ -759,7 +760,7 @@ data <- array::window(#n: 60, v ~ data, cast<f64>(v)?)   // sliding window
 select x { n if n < limit => x <- x + 1, _ => never() }  // state that stops
 // first element passing a test: filter_map, then an emptiness select —
 // never map to options and find the non-null one
-select array::filter_map(xs, |x| select probe(x) { error as _ => null, v if ok(v) => x, _ => null }) {
+select array::filter_map(xs, |x| select probe(x) { error as _ => null, v if ok(v) => `Keep(x), _ => null }) {
   [] => `Absent,
   [a, ..] => `Present(a)
 }
@@ -817,7 +818,7 @@ let known = select local_domain(true) { null as _ => book, own => upsert(book, o
 
 A mapped array zipped back against its source means the callback threw
 away the element it had in hand. Build the final row there:
-`array::filter_map(xs, |x| select probe(x) { [] => null, [a, ..] => {x, a} })`.
+`array::filter_map(xs, |x| select probe(x) { [] => null, [a, ..] => `Keep({x, a}) })`.
 
 ## Gotchas
 

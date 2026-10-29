@@ -2164,11 +2164,11 @@ run!(
     prints(r#"[[i64:1, i64:1], ["s", "s"]]"#)
 );
 
-// A callback typed body-first returns a cell constrained to an array;
-// `Option<'b>` holds it through `'b`, not as the whole `['b, null]`.
+// A callback typed body-first keeps a cell constrained to an array;
+// `` [`Keep('b), null] `` holds it through `'b`.
 const EXTRACTED_FILTER_MAP_CALLBACK: &str = r#"
 {
-  let tm = |x| [x, x];
+  let tm = |x| `Keep([x, x]);
   array::filter_map([1, 2], tm)
 }
 "#;
@@ -2185,7 +2185,7 @@ const SAME_NAMED_TVAR_IN_CALLBACK_ARG: &str = r#"
 {
   let g = |x: 'b| x;
   let a = array::map([100, g, 3], |x| [x, 1]);
-  let b = array::filter_map([100, array::find_map, 3], |x| [x, 1]);
+  let b = array::filter_map([100, array::find_map, 3], |x| `Keep([x, 1]));
   (array::len(a), array::len(b))
 }
 "#;

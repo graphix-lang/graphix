@@ -118,12 +118,11 @@ run!(
             `N => acc,
             `C(x, rest) => fold_l(rest, f(acc, x), f)
         };
-        let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e| -> L<'b> throws 'e select l {
+        let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> [`Keep('b), null] throws 'e| -> L<'b> throws 'e select l {
             `N => `N,
             `C(x, rest) => select f(x) {
                 null as _ => filter_map_l(rest, f),
-                `Keep(y) => `C(y, filter_map_l(rest, f)),
-                y => `C(y, filter_map_l(rest, f))
+                `Keep(y) => `C(y, filter_map_l(rest, f))
             }
         };
         let rec append_l = |a: L<'a>, b: L<'a>| -> L<'a> select a { `N => b, `C(x, rest) => `C(x, append_l(rest, b)) };
@@ -340,12 +339,11 @@ run!(
     "#
 );
 
-// A total filter_map callback (no null in its return type) routes to
-// the map loop and fuses.
+// A total filter_map callback (no null in its return type) fuses.
 const FILTER_MAP_TOTAL_CALLBACK: &str = r#"
 {
   let a = array::init(10, |i| i);
-  #[native] array::fold(array::filter_map(a, |x| x * 3 + 1), 0, |s, x| s + x)
+  #[native] array::fold(array::filter_map(a, |x| `Keep(x * 3 + 1)), 0, |s, x| s + x)
 }
 "#;
 
@@ -500,7 +498,7 @@ async fn shrinking_slots_over_an_absent_callback(mode: Mode) -> Result<()> {
             let n = 0;
             n <- select n { 4 => never(), v => v + 1 };
             let xs = uniq(select n { 0 => [1, 2, 3], 1 => [1, 2, 3], _ => [1] });
-            let f: fn(x: i64) -> [i64, null] = never();
+            let f: fn(x: i64) -> [`Keep(i64), null] = never();
             let g: fn(acc: i64, x: i64) -> i64 = never();
             let r = array::filter_map(xs, f);
             let t = array::fold(xs, 0, g);
@@ -663,12 +661,11 @@ run!(
             `N => acc,
             `C(x, rest) => fold_l(rest, f(acc, x), f)
         };
-        let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e| -> L<'b> throws 'e select l {
+        let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> [`Keep('b), null] throws 'e| -> L<'b> throws 'e select l {
             `N => `N,
             `C(x, rest) => select f(x) {
                 null as _ => filter_map_l(rest, f),
-                `Keep(y) => `C(y, filter_map_l(rest, f)),
-                y => `C(y, filter_map_l(rest, f))
+                `Keep(y) => `C(y, filter_map_l(rest, f))
             }
         };
         let rec append_l = |a: L<'a>, b: L<'a>| -> L<'a> select a { `N => b, `C(x, rest) => `C(x, append_l(rest, b)) };
@@ -686,7 +683,7 @@ run!(
         let m: Map<string, [i64, null]> = {"a" => 1, "b" => null};
         let result = [
             cast<Any>(array::filter_map(a, |x| `Keep(x)))$,
-            cast<Any>(array::filter_map(a, |x| x))$,
+            cast<Any>(array::filter_map(a, |x| select x { null as _ => null, v => `Keep(v) }))$,
             cast<Any>(Collection::len(Collection::map(ln, |x| x)))$,
             cast<Any>(Collection::len(Collection::filter(ln, |x| true)))$,
             cast<Any>(map::len(map::filter_map(m, |(k, v)| `Keep((k, v)))))$
@@ -718,4 +715,68 @@ run!(
         )
     "#;
     FuseExpect::Jit
+);
+
+// A filter_map callback keeps a value only as `Keep(v)`: a bare one is
+// refused, a generic one included, which would otherwise unwrap a 'x that
+// is itself a `Keep`.
+run!(
+    filter_map_generic_bare_value_refused,
+    refused("a filter_map callback keeps a value v by returning `Keep(v)"),
+    "/test.gx" => r#"
+        let f = |a: Array<'x>| -> Array<'x> array::filter_map(a, |x| x);
+        let result = f([`Keep(1), `Keep(2)])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    filter_map_bare_value_refused,
+    refused("a filter_map callback keeps a value v by returning `Keep(v)"),
+    "/test.gx" => r#"
+        let result = array::filter_map([1, 2, 3], |x| select x > 1 { true => x, false => null })
+    "#;
+    FuseExpect::None
+);
+
+// The unwrap strips the one `Keep` layer the callback's type has, so a
+// kept value that is itself a `Keep` stays whole, over each flavor.
+run!(
+    filter_map_keeps_keep_values_whole,
+    prints(r#"[[i64:10, i64:-1, i64:20], [["Keep", i64:1], ["Keep", i64:2]], [["Keep", i64:1]], {"a" => ["Keep", i64:1]}, {"a" => ["Keep", i64:1]}]"#),
+    "/test.gx" => r#"
+        type T = [`Keep(i64), `Other];
+        let g = |xs: Array<'b>| -> Array<'b> array::filter_map(xs, |x| `Keep(x));
+        let r = g([`Keep(1), `Other, `Keep(2)]);
+        let m: Map<string, i64> = {"a" => 1};
+        let result = (
+            array::map(r, |v: T| select v { `Keep(n) => n * 10, `Other => -1 }),
+            array::filter_map([1, 2], |x| `Keep(`Keep(x))),
+            list::filter_map([<1>], |x| `Keep(`Keep(x))),
+            map::filter_map(m, |(k, v)| `Keep((k, `Keep(v)))),
+            Collection::filter_map(m, |v| `Keep(`Keep(v)))
+        )
+    "#
+);
+
+// Keeping a null beside other values: every kept value is `Keep(..)`,
+// so the kept type is the union of what the callback keeps.
+run!(
+    filter_map_keeps_null_beside_values,
+    prints(r#"[[i64:2, null, i64:4], {"a" => i64:2, "b" => null}]"#),
+    "/test.gx" => r#"
+        let xs: Array<[i64, null]> = [1, null, 3, -1];
+        let m: Map<string, [i64, null]> = {"a" => 1, "b" => null};
+        let result = (
+            array::filter_map(xs, |x| select x {
+                i64 as v if v > 0 => `Keep(v + 1),
+                i64 as _ => null,
+                null as _ => `Keep(null)
+            }),
+            Collection::filter_map(m, |x| select x {
+                i64 as v => `Keep(v + 1),
+                null as _ => `Keep(null)
+            })
+        )
+    "#
 );

@@ -75,18 +75,17 @@ trait Cast {
 /// the element type. `fold`, `filter_map` and `flat_map` are required;
 /// the rest derive from them, and an implementation overrides what it
 /// can do better. `filter_map`'s callback drops an element by returning
-/// null and keeps one by returning it, or `` `Keep(v) `` to keep a `v`
-/// that may itself be null, which is how the derived `map` and `filter`
-/// keep null elements.
+/// null and keeps `v` by returning `` `Keep(v) ``, a null `v` included,
+/// so the derived `map` and `filter` keep null elements.
 /// `use Collection::*` makes the methods callable bare, and `map(c, f)`
 /// then does the same thing whatever `c` is. A parameter typed
 /// `Collection` accepts any collection: `|c: Collection| fold(c, ..)`.
 trait Collection {
     /// fold the elements, front to back
     val fold: fn(self<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;
-    /// the elements `f` maps to a value, in order: null drops one,
+    /// the values `f` keeps, in order: null drops an element,
     /// `` `Keep(v) `` keeps `v`, null included
-    val filter_map: fn(self<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e) -> self<'b> throws 'e;
+    val filter_map: fn(self<'a>, f: fn(x: 'a) -> [`Keep('b), null] throws 'e) -> self<'b> throws 'e;
     /// the concatenation of `f` over the elements
     val flat_map: fn(self<'a>, f: fn(x: 'a) -> self<'b> throws 'e) -> self<'b> throws 'e;
     /// `f` over every element

@@ -969,6 +969,31 @@ fn positional_arity(t: &Type) -> Option<usize> {
     })
 }
 
+/// Whether `expected` is, or returns, a `filter_map` callback's result,
+/// `` [`Keep('b), null] ``, and `actual` holds, or returns, a value that
+/// is neither: one kept bare.
+fn kept_bare(expected: &Type, actual: &Type) -> bool {
+    fn result(t: &Type) -> Type {
+        t.with_deref(|d| match d {
+            Some(Type::Fn(ft)) => ft.rtype.clone(),
+            _ => t.clone(),
+        })
+    }
+    fn members(t: &Type) -> SmallVec<[Type; 4]> {
+        t.with_deref(|d| match d {
+            Some(Type::Set(ms)) => ms.iter().flat_map(members).collect(),
+            Some(d) => smallvec::smallvec![d.clone()],
+            None => smallvec::smallvec![t.clone()],
+        })
+    }
+    let keep = |t: &Type| matches!(t, Type::Variant(tag, ts, _) if &**tag == "Keep" && ts.len() == 1);
+    let null = |t: &Type| matches!(t, Type::Primitive(p) if *p == Typ::Null);
+    let (expected, actual) = (members(&result(expected)), members(&result(actual)));
+    expected.iter().any(keep)
+        && expected.iter().all(|m| keep(m) || null(m))
+        && actual.iter().any(|m| !keep(m) && !null(m))
+}
+
 /// Two types identical up to `Fn` equality whose cells can be welded.
 fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
     union_identical(t0, t1)
@@ -1008,6 +1033,12 @@ impl std::fmt::Display for TypeMismatch {
                 format_compact!("{}", Brief(&self.actual)),
             );
             write!(f, "type mismatch {expected} does not contain {actual}")?;
+            if kept_bare(&self.expected, &self.actual) {
+                write!(
+                    f,
+                    ": a filter_map callback keeps a value v by returning `Keep(v)"
+                )?;
+            }
             // sides that print alike name two definitions of one name
             if expected == actual
                 && let Some((name, p0, p1)) = &self.apart
@@ -2058,7 +2089,7 @@ impl Type {
             // A set with a bare unbound tvar member binds the tvar to
             // the residue (the rhs members no concrete lhs member
             // covers) in one act; per-member it would capture greedily.
-            // CR claude for claude: [bug/medium] filter_map's ['b, null, `Keep('b)]
+            // XCR claude for claude: [bug/medium] filter_map's ['b, null, `Keep('b)]
             // refuses a callback returning [i64, `Keep(null)]. Both placement orders
             // here bind the bare 'b from one member and then refuse the other:
             // `Keep(null) fixes 'b to null and i64 no longer fits, or the reverse.
@@ -2076,6 +2107,24 @@ impl Type {
             // 2026-10-27, D5): "I like B, lets try it": the marker becomes a form no
             // value can take, a Rust-registered abstract like the kind markers, built
             // by a core function keep(v), which callbacks write instead of `Keep(v).
+            // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D1): W,
+            // always wrap. A filter_map callback returns [`Keep('b), null]: null drops
+            // the element, `Keep(v) keeps v (null included); there is no bare 'b
+            // member, so the unwrap strips exactly the one layer the type has. This
+            // replaces round 2's B (an abstract keep(v) marker), which alone was not
+            // sound. x-engine-collections-02's exemption is fixed on its own either
+            // way.
+            // 2026-10-29 claude: Under W the question disappears: the callback type has
+            // no bare 'b beside `Keep('b), so every kept value is written `Keep(v) and
+            // 'b takes the union of what is kept (`Keep(v + 1) and `Keep(null) give 'b
+            // = [i64, null]). The mixed bare spelling is refused with the hint to write
+            // `Keep(v). The bare-cell placement below stays: it serves any union with a
+            // bare cell beside a constructor of it (['b, Array<'b>], faf1ea32b), not
+            // filter_map alone.
+            // 2026-10-29 claude: Resolved by the signature (D1 W). Pins:
+            // lang::collection::filter_map_keeps_null_beside_values (keeps null beside
+            // values over an array and Collection::filter_map over a map) and
+            // filter_map_bare_value_refused (fails if the bare member comes back).
             (t0 @ Self::Set(s0), Self::Set(s1)) if s0.iter().any(is_unbound_tvar) => {
                 if !commit || !shares_bare_cell(s0) {
                     return Self::place_members(flags, env, hist, t0, s0, s1);

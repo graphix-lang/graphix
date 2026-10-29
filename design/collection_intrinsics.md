@@ -113,9 +113,11 @@ may be Value-shaped too (`FoldAcc::Value`): an owned two-word loop slot
 whose real disc is carried whole with TAINT|STALE riding the tag bits,
 so nullable max-by and map group-by folds fuse.
 
-A `filter_map` callback's `null` drops its element and `` `Keep(v) ``
-keeps `v`, null included (`node::collection::kept`, which the kernel's
-push helpers share). A callback whose frozen return may be `` `Keep ``
+A `filter_map` callback returns `` [`Keep('b), null] ``: `null` drops
+its element and `` `Keep(v) `` keeps `v`, null included. There is no
+bare `'b` member, so the unwrap (`node::collection::kept`, which the
+kernel's push helpers share) strips exactly the one layer the type has,
+and a `'b` that is itself a `` `Keep `` round trips. A callback whose frozen return may be `` `Keep ``
 runs the filter_map loop even where it never returns null, which is
 what lets the trait's `map` and `filter` defaults (`` |x| `Keep(f(x)) ``)
 fuse at parity with the intrinsics. A TOTAL callback with no `` `Keep ``

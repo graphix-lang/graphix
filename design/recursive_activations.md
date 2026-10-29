@@ -325,10 +325,10 @@ child and bounds peak RSS at 800MB.
 ```graphix
 trait Collection {
     val fold: fn(self<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;
-    val filter_map: fn(self<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> self<'b> throws 'e;
+    val filter_map: fn(self<'a>, f: fn(x: 'a) -> [`Keep('b), null] throws 'e) -> self<'b> throws 'e;
     val flat_map: fn(self<'a>, f: fn(x: 'a) -> self<'b> throws 'e) -> self<'b> throws 'e;
-    val map: ..    = |c, f| filter_map(c, |x| f(x));
-    val filter: .. = |c, f| filter_map(c, |x| select f(x) { true => x, false => null });
+    val map: ..    = |c, f| filter_map(c, |x| `Keep(f(x)));
+    val filter: .. = |c, f| filter_map(c, |x| select f(x) { true => `Keep(x), false => null });
     val find: ..   = fold over an Option<'a> accumulator;
     val find_map: .. = fold over an Option<'b> accumulator;
     val len: fn(self<'a>) -> i64 = |c| fold(c, 0, |n, _| n + 1);

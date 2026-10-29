@@ -2695,6 +2695,12 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     // D5): "I like B, lets try it": the marker becomes a form no value can take, a
     // Rust-registered abstract like the kind markers, built by a core function keep(v),
     // which callbacks write instead of `Keep(v).
+    // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D1): W, always
+    // wrap. A filter_map callback returns [`Keep('b), null]: null drops the element,
+    // `Keep(v) keeps v (null included); there is no bare 'b member, so the unwrap
+    // strips exactly the one layer the type has. This replaces round 2's B (an abstract
+    // keep(v) marker), which alone was not sound. x-engine-collections-02's exemption
+    // is fixed on its own either way.
     cells(test, &mut own);
     let owned = |t: &Type| matches!(t, Type::TVar(tv) if own.contains(&tv.cell_addr()));
     if let Indiscernible::Pair(a, b) = &why

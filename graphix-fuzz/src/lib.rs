@@ -6991,28 +6991,28 @@ mod tests {
         agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
              array::filter_map(a, |x| \
-               select x % i64:2 { i64:0 => x * i64:10, _ => null }) }",
+               select x % i64:2 { i64:0 => `Keep(x * i64:10), _ => null }) }",
         )
         .await;
         // capture
         agree_fused_clean(
             "{ let k = i64:2; let a = [i64:1, i64:2, i64:3]; \
              array::filter_map(a, |x| \
-               select x { i64:2 => x * k, _ => null }) }",
+               select x { i64:2 => `Keep(x * k), _ => null }) }",
         )
         .await;
         // composite element
         agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; \
              array::filter_map(a, |p| \
-               select p.0 { i64:1 => p.1, _ => null }) }",
+               select p.0 { i64:1 => `Keep(p.1), _ => null }) }",
         )
         .await;
         // owned input array
         agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::filter_map((a[1..])$, |x| \
-               select x { i64:2 => x, _ => null }) }",
+               select x { i64:2 => `Keep(x), _ => null }) }",
         )
         .await;
     }

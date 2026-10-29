@@ -126,7 +126,7 @@ run!(map_filter, MAP_FILTER, |v: Result<&Value>| match v {
 const MAP_FILTER_MAP: &str = r#"
 {
   let m = {"a" => 1, "b" => 2, "c" => 3, "d" => 4};
-  map::filter_map(m, |(k, v)| select v { v if v > 2 => (k, v * 10), _ => null })
+  map::filter_map(m, |(k, v)| select v { v if v > 2 => `Keep((k, v * 10)), _ => null })
 }
 "#;
 
@@ -228,7 +228,7 @@ const MAP_MAP_KEY_COLLISION: &str = r#"
 {
   let m = {"a" => 1, "b" => 2};
   let collided = map::map(m, |(k, v)| ("same", v));
-  let filtered = map::filter_map(m, |(k, v)| ("same", v));
+  let filtered = map::filter_map(m, |(k, v)| `Keep(("same", v)));
   (
     map::len(collided),
     map::get(collided, "same")$,

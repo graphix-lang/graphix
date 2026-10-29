@@ -201,12 +201,12 @@ impl MapCollection for ValArray {
 
 type ValueMap = CMap<Value, Value, 32>;
 
-/// filter_map's element for a result it keeps: `Keep(v)` is `v`, any
-/// other value itself.
-pub(crate) fn kept(v: &Value) -> &Value {
+/// The element a filter_map result keeps: `v` for `Keep(v)`, none for
+/// null, the callback's only other result.
+pub(crate) fn kept(v: &Value) -> Option<&Value> {
     match crate::rep::variant(v) {
-        Some((tag, [kept])) if &**tag == "Keep" => kept,
-        _ => v,
+        Some((tag, [kept])) if &**tag == "Keep" => Some(kept),
+        _ => None,
     }
 }
 
@@ -916,8 +916,7 @@ impl<R: Rt> MapQBase<R> {
         let mut elems: LPooled<Vec<Value>> = match self.op {
             MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
             MapOp::Filter => return source.kept(self.flavor, slots.iter().map(taken)),
-            // null drops an element, `Keep(v) keeps v, null included
-            // CR claude for claude: [bug/high] The `Keep marker is in-band for 'b:
+            // XCR claude for claude: [bug/high] The `Keep marker is in-band for 'b:
             // nothing stops 'b from holding a `Keep variant, so a generic callback that
             // returns its own 'b-typed `Keep(1) is unwrapped here. The result then
             // holds values outside its static type. `let f = |a: Array<'x>| ->
@@ -936,12 +935,26 @@ impl<R: Rt> MapQBase<R> {
             // 2026-10-27, D5): "I like B, lets try it": the marker becomes a form no
             // value can take, a Rust-registered abstract like the kind markers, built
             // by a core function keep(v), which callbacks write instead of `Keep(v).
-            MapOp::FilterMap => slots
-                .iter()
-                .map(Slot::value)
-                .filter(not_null)
-                .map(|v| kept(v).clone())
-                .collect(),
+            // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D1): W,
+            // always wrap. A filter_map callback returns [`Keep('b), null]: null drops
+            // the element, `Keep(v) keeps v (null included); there is no bare 'b
+            // member, so the unwrap strips exactly the one layer the type has. This
+            // replaces round 2's B (an abstract keep(v) marker), which alone was not
+            // sound. x-engine-collections-02's exemption is fixed on its own either
+            // way.
+            // 2026-10-29 claude: W built: filter_map's callback returns [`Keep('b),
+            // null] over array, list, map, core's filter_map_pairs and the Collection
+            // trait; kept() strips the one `Keep layer and nothing else, and the JIT
+            // push helpers share it. A bare return is refused, the message saying to
+            // return `Keep(v). Pins:
+            // lang::collection::filter_map_generic_bare_value_refused (this CR's probe;
+            // accepted and unwrapped to [1, 2] without the signature change, shown by
+            // reverting it), filter_map_bare_value_refused (same),
+            // filter_map_keeps_keep_values_whole (`Keep values kept whole over array,
+            // list, map and Collection::filter_map).
+            MapOp::FilterMap => {
+                slots.iter().filter_map(|s| kept(s.value())).cloned().collect()
+            }
             MapOp::FlatMap => {
                 let mut elems = LPooled::take();
                 for s in slots {

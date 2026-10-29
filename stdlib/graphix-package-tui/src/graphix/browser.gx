@@ -39,7 +39,10 @@ let browser = |
                     null as _ => "/",
                     s => s
                 };
-                let names = array::filter_map(listed, |r| str::basename(r));
+                let names = array::filter_map(listed, |r| select str::basename(r) {
+                    null as _ => null,
+                    n => `Keep(n)
+                });
                 let names = array::sort(#numeric:true, names);
                 array::map(names, |name| select base {
                     "/" => "/[name]",

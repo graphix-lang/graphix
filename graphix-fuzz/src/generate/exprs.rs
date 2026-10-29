@@ -278,10 +278,17 @@ fn map_parts(
     })
 }
 
+/// A `filter_map` callback's body keeping an `e`: `` `Keep(..) `` of
+/// one under a generated condition, else null.
+fn keep_body(ctx: &GenCtx, rng: &mut Rng, e: &GenType, d: usize) -> String {
+    let keep = gen_typed(ctx, rng, e, d.min(2));
+    let cond = gen_typed(ctx, rng, &GenType::Bool, d.min(1));
+    format!("select {cond} {{ true => `Keep({keep}), false => null }}")
+}
+
 /// A `filter_map` over a source `coll(..)` to the scalar `e`: the
-/// callback's body is an `e` or null, half the time a select that
-/// keeps an `e` as `` `Keep(..) `` under a return written `[e, null,
-/// `Keep(e)]`.
+/// callback keeps an `e` or drops its element, half the time under a
+/// return written `` [`Keep(e), null] ``.
 fn filter_map_parts(
     ctx: &GenCtx,
     rng: &mut Rng,
@@ -290,19 +297,12 @@ fn filter_map_parts(
     d: usize,
 ) -> HofParts {
     let d_ty = map_source_elem(rng, e);
-    let nullable = GenType::Nullable(Box::new(e.clone()));
     callback_parts(ctx, rng, &coll(Box::new(d_ty.clone())), &d_ty, d, |inner, rng| {
-        let dropped = gen_typed(inner, rng, &nullable, d.min(2));
-        if !chance(rng, 0.5) {
-            return dropped;
+        let body = keep_body(inner, rng, e, d);
+        match chance(rng, 0.5) {
+            true => format!("-> [`Keep({}), null] {body}", e.render()),
+            false => body,
         }
-        let keep = gen_typed(inner, rng, e, d.min(2));
-        let cond = gen_typed(inner, rng, &GenType::Bool, d.min(1));
-        let t = e.render();
-        format!(
-            "-> [{t}, null, `Keep({t})] \
-             select {cond} {{ true => `Keep({keep}), false => {dropped} }}"
-        )
     })
 }
 
@@ -864,8 +864,7 @@ fn try_map_builtin(
                 4 => {
                     let mut inner = ctx.clone();
                     let binder = callback_binder(&mut inner, rng, &kv, &[]);
-                    let body =
-                        gen_typed(&inner, rng, &GenType::Nullable(Box::new(kv)), d);
+                    let body = keep_body(&inner, rng, &kv, d);
                     Some(format!("map::filter_map({m}, |{binder}| {body})"))
                 }
                 // both over the same small key pool, so their keys overlap

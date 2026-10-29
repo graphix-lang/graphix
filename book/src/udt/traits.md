@@ -390,7 +390,7 @@ program's own `Tree<'_>`) selects the implementation. Core's
 trait Collection {
     val fold: fn(self<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;
     // null drops an element, `Keep(v) keeps v, null included
-    val filter_map: fn(self<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e) -> self<'b> throws 'e;
+    val filter_map: fn(self<'a>, f: fn(x: 'a) -> [`Keep('b), null] throws 'e) -> self<'b> throws 'e;
     val flat_map: fn(self<'a>, f: fn(x: 'a) -> self<'b> throws 'e) -> self<'b> throws 'e;
     // a default, as are filter, find, find_map and len
     val map: fn(self<'a>, f: fn(x: 'a) -> 'b throws 'e) -> self<'b> throws 'e

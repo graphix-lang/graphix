@@ -35,7 +35,7 @@ const CHUNK_FIND_TAKES_LOWEST: &str = r#"
   let xs = [1, 2, 8, 3, 9, 7];
   let f = array::find(xs, |x| x > 5)$;
   let g = array::find_map(xs, |x| select x > 6 { true => x * 100, false => null })$;
-  let h = array::filter_map(xs, |x| select x > 2 { true => x, false => null });
+  let h = array::filter_map(xs, |x| select x > 2 { true => `Keep(x), false => null });
   let k = array::flat_map(xs, |x| [x, -x]);
   "[f] [g] [h] [k]"
 }

@@ -179,8 +179,8 @@ run!(array_flat_map_destructure, ARRAY_FLAT_MAP_DESTRUCTURE, |v: Result<&Value>|
 const ARRAY_FILTER_MAP: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8];
-  array::filter_map(a, |x: i64| -> [i64, null] select x > 5 {
-    true => x + 1,
+  array::filter_map(a, |x: i64| -> [`Keep(i64), null] select x > 5 {
+    true => `Keep(x + 1),
     false => x ~ null
   })
 }
@@ -193,8 +193,8 @@ run!(array_filter_map, ARRAY_FILTER_MAP, prints("[i64:7, i64:8, i64:9]"));
 const ARRAY_FILTER_MAP_SCALAR: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8];
-  array::filter_map(a, |x: i64| -> [i64, null] select x > 5 {
-    true => x + 1,
+  array::filter_map(a, |x: i64| -> [`Keep(i64), null] select x > 5 {
+    true => `Keep(x + 1),
     false => null
   })
 }
@@ -1169,7 +1169,7 @@ run!(hof_leaf_string_twice, HOF_LEAF_STRING_TWICE, |v: Result<&Value>| {
 // A tuple element whose callback tests its i64 key and returns its value or
 // null.
 const HOF_LEAF_NULLABLE: &str = r#"
-array::filter_map([(1, 10), (2, 20)], |(k, v)| select k == 2 { true => v, false => null })
+array::filter_map([(1, 10), (2, 20)], |(k, v)| select k == 2 { true => `Keep(v), false => null })
 "#;
 run!(hof_leaf_nullable, HOF_LEAF_NULLABLE, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 1]>()),
@@ -1188,7 +1188,7 @@ run!(find_map_captured_array, FIND_MAP_CAPTURED_ARRAY, |v: Result<&Value>| {
 const FILTER_MAP_FRESH_ARRAY: &str = r#"
 {
   let a = [i64:1, i64:2, i64:3];
-  array::filter_map(a, |x| [x, x + i64:1])
+  array::filter_map(a, |x| `Keep([x, x + i64:1]))
 }
 "#;
 run!(filter_map_fresh_array, FILTER_MAP_FRESH_ARRAY, |v: Result<&Value>| {

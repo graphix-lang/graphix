@@ -5,4 +5,4 @@
 // the payload word held — type confusion; the [T, Error] result union
 // could also put an Error where T was assumed). The push_block now
 // always pushes the two-word Value.
-{let a = [i64:1, i64:2, i64:9223372036854775807]; array::filter_map(a, |x| a[i64:1..])}
+{let a = [i64:1, i64:2, i64:9223372036854775807]; array::filter_map(a, |x| `Keep(a[i64:1..]))}

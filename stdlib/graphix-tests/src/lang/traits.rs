@@ -1132,7 +1132,7 @@ run!(
         let m = {T(0) => 0, T(1) => 1, T(2) => 2};
         let filtered = map::filter(m, |_| true);
         let mapped = map::map(m, |(k, v)| (k, v + 1));
-        let fm = map::filter_map(m, |(k, v)| select v { 2 => (k, v), _ => null });
+        let fm = map::filter_map(m, |(k, v)| select v { 2 => `Keep((k, v)), _ => null });
         let result = "[filtered]|[filtered{T(0)}$]|[mapped]|[fm]"
     "##
 );
