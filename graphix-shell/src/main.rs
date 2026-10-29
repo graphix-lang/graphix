@@ -479,7 +479,7 @@ fn tokio_main(
             .await
     });
     // a blocking task (a stdin read) must not hold the exit
-    // CR claude for claude: [bug/high] The process exits without waiting for the
+    // XCR claude for claude: [bug/high] The process exits without waiting for the
     // runtime's teardown. Teardown only aborts the runtime task, and
     // shutdown_background abandons both GX's drop and the blocking thread where Reaped
     // flushes the database. So a db insert followed by sys::exit is lost in most runs:
@@ -514,6 +514,16 @@ fn tokio_main(
     // wait: a SIGTERM/SIGHUP during load_env (the return Ok(code) in its select) and a
     // failed load_env (env?). Send both through the same bounded wait; exit_teardown.rs
     // covers neither path.
+    // 2026-10-29 claude: Both early returns now go through the same end as a normal
+    // exit: Teardown::finish (interrupt, clear the display, then await
+    // GXHandle::ended() and await_reaps() within one TEARDOWN_BOUND) runs for a
+    // SIGTERM/SIGHUP during load_env and for a failed load_env, which before skipped
+    // the wait and the display's clear. No reap can be outstanding there today (db,
+    // files and processes open asynchronously, after the first cycle), so the exit
+    // itself is the pin:
+    // interrupt_wedge::terminate_frees_first_cycle_wedge_{jit,interp} send SIGTERM
+    // inside the env load and fail if the wait held the exit; exit_teardown covers the
+    // normal path.
     rt.shutdown_background();
     res
 }

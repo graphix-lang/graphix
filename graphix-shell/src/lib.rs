@@ -230,6 +230,25 @@ struct Teardown<X: GXExt> {
     sigint: tokio::task::JoinHandle<()>,
 }
 
+impl<X: GXExt> Teardown<X> {
+    /// End the session. A custom display holds the terminal (or a window)
+    /// until it is cleared; interrupt first, since a wedged runtime cannot
+    /// serve the clear. The session gives up what it held as the runtime's
+    /// task ends, and the work a last drop starts runs on this runtime, so
+    /// it must stay up while that task is awaited. The two waits share the
+    /// bound, so what is still blocked when it runs out (a read that never
+    /// answers) is abandoned with the runtime.
+    async fn finish(self, output: &mut Output<X>) {
+        self.gx.interrupt();
+        output.clear().await;
+        let gx = self.gx.clone();
+        let deadline = tokio::time::Instant::now() + TEARDOWN_BOUND;
+        drop(self);
+        let _ = tokio::time::timeout_at(deadline, gx.ended()).await;
+        let _ = tokio::time::timeout_at(deadline, await_reaps()).await;
+    }
+}
+
 impl<X: GXExt> Drop for Teardown<X> {
     fn drop(&mut self) {
         self.gx.abort();
@@ -707,7 +726,7 @@ impl<X: GXExt> Shell<X> {
                 }
             })
         };
-        let _teardown = Teardown { gx: gx.clone(), sigint };
+        let teardown = Teardown { gx: gx.clone(), sigint };
         let mut terminated = Terminated::new()?;
         let script = self.mode.file_mode();
         let mut input = InputReader::new();
@@ -716,11 +735,19 @@ impl<X: GXExt> Shell<X> {
         let mut exprs = vec![];
         // a program whose first cycle does not end holds the env load, so a
         // termination signal must be heard there too
-        let mut env = tokio::select! {
-            env = self.load_env(&gx, &mut newenv, &mut output, &mut exprs, &run_on_main) => env?,
-            code = terminated.recv() => {
-                gx.interrupt();
-                return Ok(code)
+        let loaded = tokio::select! {
+            env = self.load_env(&gx, &mut newenv, &mut output, &mut exprs, &run_on_main) => Ok(env),
+            code = terminated.recv() => Err(code),
+        };
+        let mut env = match loaded {
+            Ok(Ok(env)) => env,
+            Ok(Err(e)) => {
+                teardown.finish(&mut output).await;
+                return Err(e);
+            }
+            Err(code) => {
+                teardown.finish(&mut output).await;
+                return Ok(code);
             }
         };
         if !script {
@@ -832,20 +859,7 @@ impl<X: GXExt> Shell<X> {
                 },
             }
         };
-        // A custom display holds the terminal (or a window) until it is
-        // cleared. Interrupt first: a wedged runtime cannot serve
-        // `output.clear()`.
-        gx.interrupt();
-        output.clear().await;
-        // The session gives up what it held as the runtime's task ends, and
-        // the work a last drop starts runs on this runtime, so it must stay
-        // up while that task is awaited. The two waits share the bound, so
-        // what is still blocked when it runs out — a read that never answers
-        // — is abandoned with the runtime.
-        let deadline = tokio::time::Instant::now() + TEARDOWN_BOUND;
-        drop(_teardown);
-        let _ = tokio::time::timeout_at(deadline, gx.ended()).await;
-        let _ = tokio::time::timeout_at(deadline, await_reaps()).await;
+        teardown.finish(&mut output).await;
         exit
     }
 }
