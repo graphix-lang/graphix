@@ -3470,7 +3470,9 @@ pub struct Saved {
 }
 
 impl Saved {
-    pub fn take<R: Rt>(ctx: &CompileCtx<R>) -> Self {
+    /// Takes the mutable view: a branch's snapshot must be its own, the
+    /// one [`Self::restore`] writes, never the parent's it reads through.
+    pub fn take<R: Rt>(ctx: &mut CompileCtx<R>) -> Self {
         // every field is named, so a new one is decided here: program
         // state a failed compile rolls back, or scratch
         let CompileCtx {

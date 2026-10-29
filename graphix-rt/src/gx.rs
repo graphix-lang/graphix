@@ -1125,7 +1125,7 @@ impl<X: GXExt> GX<X> {
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
         let scope = self.scope.clone();
-        let saved = Saved::take(&self.ctx.cx);
+        let saved = Saved::take(&mut self.ctx.cx);
         let mut nodes: LPooled<Vec<_>> = LPooled::take();
         let mut failed = None;
         for e in exprs.iter() {
@@ -1213,7 +1213,7 @@ impl<X: GXExt> GX<X> {
     ) -> Result<crate::CheckResult> {
         let env = self.ctx.env.clone();
         // a check runs nothing: everything it compiled is rolled back
-        let saved = Saved::take(&self.ctx.cx);
+        let saved = Saved::take(&mut self.ctx.cx);
         if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
             *sink = Some(Arc::new(parking_lot::Mutex::new(Ide::new())));
         }

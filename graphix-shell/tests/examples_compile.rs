@@ -251,7 +251,7 @@ impl Repl {
 
     fn input(&mut self, text: &str) -> Result<CompactString> {
         let exprs = parser::parse(Origin::unspecified(text))?;
-        let saved = Saved::take(&self.ctx);
+        let saved = Saved::take(&mut self.ctx);
         let scope = self.scope.clone();
         let before = self.nodes.len();
         let mut shown = CompactString::default();
