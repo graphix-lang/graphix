@@ -46,6 +46,8 @@ parking_lot = { workspace = true }
 poolshark = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
+serde = { workspace = true }
+serde_derive = { workspace = true }
 smallvec = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

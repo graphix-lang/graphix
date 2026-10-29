@@ -222,7 +222,7 @@ run!(
         #spec: {x: {default: 0, doc: "input"}},
         #f: |args: {x: i64}| args.x * 2
     );
-    let v: i64 = sys::net::call("/local/typed_call_rpc", {x: 21})?;
+    let v: i64 = sys::net::call("/local/typed_call_rpc", {x: 21}).1?;
     v
 }"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::None);
@@ -260,7 +260,7 @@ run!(
         #spec: {name: {default: "world", doc: "who to greet"}, count: {default: 1, doc: "how many"}},
         #f: |args: {name: string, count: i64}| str::concat("hello ", args.name)
     );
-    let v: string = sys::net::call("/local/typed_rpc", {name: "graphix", count: 1})?;
+    let v: string = sys::net::call("/local/typed_rpc", {name: "graphix", count: 1}).1?;
     v
 }"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::String(s)) if &**s == "hello graphix") }; FuseExpect::None);

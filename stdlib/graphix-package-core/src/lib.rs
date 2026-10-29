@@ -101,7 +101,12 @@ fn without_errors(t: &Type) -> Option<Type> {
 }
 
 pub fn extract_cast_type(env: &Env, resolved_typ: Option<&FnType>) -> Option<Type> {
-    cast_target(&resolved_typ?.rtype).filter(|t| castable(env, t))
+    result_cast_type(env, &resolved_typ?.rtype)
+}
+
+/// The success member of the `Result` `t`, when a read can cast to it.
+fn result_cast_type(env: &Env, t: &Type) -> Option<Type> {
+    cast_target(t).filter(|t| castable(env, t))
 }
 
 /// Whether a read can cast to `t`: the checker's Concrete rule.
@@ -123,7 +128,12 @@ impl CastTarget {
     }
 
     pub fn of(env: &Env, resolved: Option<&FnType>) -> Self {
-        let typ = extract_cast_type(env, resolved);
+        Self::of_result(env, resolved.map(|ft| &ft.rtype))
+    }
+
+    /// The target of a value of the `Result` type `result`.
+    pub fn of_result(env: &Env, result: Option<&Type>) -> Self {
+        let typ = result.and_then(|t| result_cast_type(env, t));
         let check_keys = typ.as_ref().is_some_and(|t| t.holds_abstract(env));
         Self { typ, check_keys }
     }

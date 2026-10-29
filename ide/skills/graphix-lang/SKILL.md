@@ -695,9 +695,9 @@ handlebars templates), `args` (command-line parsing: `positional`,
 repeat count ends it; an arm's sleep pauses it), `after_idle(timeout, v)`,
 `now(trigger)`, and the pure arithmetic `add`, `sub`, `add_dur`,
 `sub_dur`, `diff`, `scale`. `sys::net`: `subscribe(path)`,
-`publish(path, v)`, `rpc`, `list`, `write`, every path a `string`; an
-unselected arm tears a subscription or publication down and drops an rpc
-call in flight. `sys::fs`, `sys::tcp`, `sys::tls`, `sys::process`
+`publish(path, v)`, `rpc`, `call`, `list`, `write`, every path a
+`string`; an unselected arm tears a subscription or publication down and
+abandons its rpc calls in flight. `sys::fs`, `sys::tcp`, `sys::tls`, `sys::process`
 (`spawn`, `options`, `Proc`, `wait`), `http`. `json` and `toml`:
 `read(string | bytes)` (async), `write_str` and `write_bytes` (pure);
 `pack`: `read(bytes)` (async) and `write_bytes`. Pack and db values preserve
@@ -848,10 +848,18 @@ starts reading at its current position. Seek explicitly before rereading
 a file from the beginning; re-delivery does not rewind. A delivery while
 the same reader is active leaves it running.
 
-## RPC reply lifetime
+## RPC calls
 
-`sys::net::call` abandons a pending reply when a new call starts or its
-site sleeps. This does not undo work already started on the server. Its
-last completed result survives sleep, and waking alone sends no request.
-To observe a result, keep the call outside a sleeping arm or in a seq
-step that waits for it.
+`sys::net::call(path, args)` is `(RpcId, result)`: take the pair, `let
+(_, r) = sys::net::call(..)`, or its `.1`. Each fire of an argument
+starts a call, and calls run side by side: each answers once, its reply,
+an error or `` `Aborted ``, in the order the answers come, one a cycle,
+tagged with its id. Name a call with `#id: id` (`let id =
+sys::net::call_id(e)` mints a fresh id at each fire of `e`) and a new call
+under that id replaces the one still in flight, which answers
+`` `Aborted ``: one id for a search box keeps only the latest query.
+`sys::net::abort_call(id)` aborts a call from anywhere. Aborting stops the
+wait, not the server: its handler still runs. An arm's sleep abandons its
+calls silently (no `` `Aborted ``); the last completed result survives,
+and waking sends nothing. To observe a result, keep the call outside a
+sleeping arm or in a seq step that waits for it.

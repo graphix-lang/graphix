@@ -10,13 +10,38 @@ val write: fn<'a: Data>(path: string, value: 'a) -> Result<_, `WriteError(string
 /// subscribe to the specified path
 val subscribe: fn<'a: Concrete>(path: string) -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]>;
 
-/// Call the specified RPC. args must be a struct or null. A new call or
-/// a sleep discards any pending reply. This does not undo work already
-/// started on the server: its handler can finish, but its reply is ignored.
-/// The last completed result survives sleep; waking starts no call unless
-/// an argument fires. Keep the call outside a sleeping arm, or in a seq
-/// step that waits for its result, when that result must be observed.
-val call: fn<'a: Data, 'b: Concrete>(path: string, args: 'a) -> Result<'b, [`RpcError(string), `InvalidCast(string)]>;
+/// A call's id: equal only to itself, ordered by when it was minted, so
+/// it keys a map. It is not data: no writer takes it, and it prints as
+/// `abstract:`.
+type RpcId;
+
+/// A fresh id at each fire of `e`.
+val call_id: fn(e: Any) -> RpcId;
+
+/// Call the procedure at `path` with `args`, a struct or null. Each fire
+/// of an argument starts a call, named `#id`, or a fresh id when `#id` is
+/// null; a new call cancels nothing and waits for nothing. Each call
+/// answers `(id, result)` once: its reply, an error, or `` `Aborted ``.
+/// The answers come in the order they arrive, one a cycle, a fast one
+/// never behind a slow one. A call under an id that is still in flight,
+/// from this call site or another, replaces it: the old call answers
+/// `` `Aborted ``. When the call site's arm sleeps, the calls it has in
+/// flight are abandoned and answer nothing. Aborting, replacing or
+/// abandoning a call stops the wait for its reply: the server is not
+/// told, its handler still runs and its effects still happen. A
+/// completed result survives a sleep; waking starts no call unless an
+/// argument fires.
+val call: fn<'a: Data, 'b: Concrete>(
+    ?#id: [RpcId, null],
+    path: string,
+    args: 'a
+) -> (RpcId, Result<'b, [`RpcError(string), `InvalidCast(string), `Aborted]>);
+
+/// At each fire of `id`, abort the call in flight under it, from any call
+/// site: it answers `` `Aborted ``, and its reply, when it comes, is
+/// ignored. An id not in flight (answered, or never used) is left alone.
+/// The server is not told: its handler still runs.
+val abort_call: fn(id: RpcId) -> null;
 
 /// Publish an rpc,
 /// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)

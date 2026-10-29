@@ -179,8 +179,8 @@ const NET_RPC0: &str = r#"
       v <- args.val;
       args.val ~ null
     });
-  let r: null = sys::net::call(set_val, {val: 42})?;
-  let r2: i64 = sys::net::call(get_val, r)?;
+  let r: null = sys::net::call(set_val, {val: 42}).1?;
+  let r2: i64 = sys::net::call(get_val, r).1?;
   r2
 }
 "#;
@@ -200,7 +200,7 @@ run!(net_rpc_defaults, r#"{
     #doc: "add",
     #spec: {a: {default: 1, doc: "a"}, b: {default: 2, doc: "b"}},
     #f: |args: {a: i64, b: i64}| args.a + args.b);
-  let r: i64 = sys::net::call(p, {a: 10})?;
+  let r: i64 = sys::net::call(p, {a: 10}).1?;
   r
 }"#, is(Value::I64(12)); FuseExpect::None);
 
@@ -213,9 +213,9 @@ run!(net_rpc_refused_cast_answered, r#"{
     #doc: "add",
     #spec: {a: {default: 1, doc: "a"}, b: {default: 2, doc: "b"}},
     #f: |args: {a: i64, b: i64}| args.a + args.b);
-  let bad: [i64, Error<[`RpcError(string), `InvalidCast(string)]>] =
-    sys::net::call(p, {a: "x", b: 1});
-  let good: i64 = sys::net::call(bad ~ p, {a: 3, b: 4})?;
+  let bad: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> =
+    sys::net::call(p, {a: "x", b: 1}).1;
+  let good: i64 = sys::net::call(bad ~ p, {a: 3, b: 4}).1?;
   (bad, good)
 }"#, |v: Result<&Value>| {
     let bad = r#"error:["RpcError", "can't cast \"x\" to i64: no primitive conversion"]"#;
@@ -235,25 +235,102 @@ run!(net_rpc_republish_answers, r#"{
     #f: |a: {x: i64}| a.x + k);
   let fails = 0;
   fails <- r ~ fails + 1;
-  let res: i64 = sys::net::call(p, sys::time::after_idle(duration:25.ms, t) ~ {x: 100})$;
+  let res: i64 = sys::net::call(p, sys::time::after_idle(duration:25.ms, t) ~ {x: 100}).1$;
   let answers = array::group(res, |n, _| n >= 6);
   (array::len(answers), answers ~ fails)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(6), Value::I64(0)])
 }; FuseExpect::None);
 
-// A reply to a call the client moved on from lands nowhere: the value
-// settles on the latest call's answer.
-run!(net_rpc_latest_call_wins, r#"{
-  sys::net::rpc(#path: "/local/rpc_slow", #doc: "slow", #spec: null,
-    #f: |a: null| sys::time::after_idle(duration:300.ms, a ~ 1));
-  sys::net::rpc(#path: "/local/rpc_fast", #doc: "fast", #spec: null,
-    #f: |a: null| a ~ 2);
-  let p = "/local/rpc_slow";
-  p <- sys::time::timer(duration:50.ms, false) ~ "/local/rpc_fast";
-  let r: i64 = sys::net::call(p, null)?;
-  sys::time::after_idle(duration:600.ms, r)
-}"#, is(Value::I64(2)); FuseExpect::None);
+// Two calls in flight from one site answer in the order they complete,
+// each with its id: the slow call's handler answers only once the fast
+// call's answer is in.
+run!(net_rpc_calls_answer_as_they_complete, r#"{
+  let release = never<null>();
+  let slow_seen = never<null>();
+  sys::net::rpc(#path: "/local/ids/slow", #doc: "slow", #spec: null,
+    #f: |a: null| { slow_seen <- a; release ~ 1 });
+  sys::net::rpc(#path: "/local/ids/fast", #doc: "fast", #spec: null, #f: |a: null| a ~ 2);
+  let path = "/local/ids/slow";
+  path <- slow_seen ~ "/local/ids/fast";
+  let id = sys::net::call_id(path);
+  let slow = once(id);
+  let (got, r) = sys::net::call(#id: id, path, null);
+  let v: i64 = r$;
+  release <- select v { 2 => v ~ null, _ => never() };
+  array::group((got == slow, v), |n, _| n == 2)
+}"#, prints("[[false, i64:2], [true, i64:1]]"); FuseExpect::Jit);
+
+// A call under an id still in flight replaces it: the old call answers
+// `Aborted, the new one answers under the same id.
+run!(net_rpc_reused_id_replaces, r#"{
+  let held_seen = never<null>();
+  sys::net::rpc(#path: "/local/ids/held", #doc: "held", #spec: null,
+    #f: |a: null| { held_seen <- a; never<i64>() });
+  sys::net::rpc(#path: "/local/ids/two", #doc: "two", #spec: null, #f: |a: null| a ~ 2);
+  let id = sys::net::call_id(null);
+  let path = "/local/ids/held";
+  path <- held_seen ~ "/local/ids/two";
+  let (got, r) = sys::net::call(#id: id, path, null);
+  let v: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> = r;
+  array::sort(array::group((got == id, "[v]"), |n, _| n == 2))
+}"#, prints(r#"[[true, "2"], [true, "error:`Aborted"]]"#); FuseExpect::None);
+
+// abort_call answers `Aborted, and the reply the server sends after it
+// is ignored: the next call is made once the server has replied, and its
+// answer is the next one.
+run!(net_rpc_abort_call, r#"{
+  let release = never<null>();
+  let late_seen = never<null>();
+  let replied = never<i64>();
+  sys::net::rpc(#path: "/local/ids/late", #doc: "late", #spec: null,
+    #f: |a: null| { late_seen <- a; let v = release ~ 1; replied <- v; v });
+  sys::net::rpc(#path: "/local/ids/next", #doc: "next", #spec: null, #f: |a: null| a ~ 2);
+  let path = "/local/ids/late";
+  path <- replied ~ "/local/ids/next";
+  let id = sys::net::call_id(path);
+  let first = once(id);
+  sys::net::abort_call(late_seen ~ first);
+  let (got, r) = sys::net::call(#id: id, path, null);
+  let v: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> = r;
+  release <- select v { error as _ => v ~ null, _ => never() };
+  array::group((got == first, "[v]"), |n, _| n == 2)
+}"#, prints(r#"[[true, "error:`Aborted"], [false, "2"]]"#); FuseExpect::None);
+
+// The calls in flight when the call site's arm sleeps are abandoned: none
+// answers, not at the wake and not when the server replies. The arm wakes
+// once the server has replied, with a new call, whose answer is the first.
+run!(net_rpc_sleep_abandons_silently, r#"{
+  let release = never<null>();
+  let asleep_seen = never<null>();
+  let replied = never<i64>();
+  sys::net::rpc(#path: "/local/ids/asleep", #doc: "asleep", #spec: null,
+    #f: |a: null| { asleep_seen <- a; let v = release ~ 1; replied <- v; v });
+  sys::net::rpc(#path: "/local/ids/awake", #doc: "awake", #spec: null, #f: |a: null| a ~ 2);
+  let path = "/local/ids/asleep";
+  let on = true;
+  on <- asleep_seen ~ false;
+  release <- select on { false => on ~ null, true => never() };
+  on <- replied ~ true;
+  path <- replied ~ "/local/ids/awake";
+  let out = select on { true => sys::net::call(path, null), false => never() };
+  let (_, r) = out;
+  let v: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> = r;
+  once("[v]")
+}"#, prints(r#""2""#); FuseExpect::None);
+
+// Without #id each call mints a fresh id, and ids key a map.
+run!(net_rpc_default_ids_are_fresh, r#"{
+  sys::net::rpc(#path: "/local/ids/echo", #doc: "echo", #spec: {x: {default: 0, doc: "x"}},
+    #f: |a: {x: i64}| a.x);
+  let args = {x: 1};
+  let (got, r) = sys::net::call("/local/ids/echo", args);
+  let v: i64 = r$;
+  args <- once(v) ~ {x: 2};
+  let ids = array::group(got, |n, _| n == 2);
+  let (a, b) = (ids[0]$, ids[1]$);
+  (a != b, map::len({a => 1, b => 2}), array::group(v, |n, _| n == 2))
+}"#, prints("[true, i64:2, [i64:1, i64:2]]"); FuseExpect::Jit);
 
 // A re-woken arm's subscribe re-establishes, and its last event does not
 // survive the sleep: every value it delivers, either side of a sleep
@@ -368,8 +445,8 @@ run!(net_write_refusal_answers_the_writer, r#"
   let x = 0;
   sys::net::publish(#on_write: |v: i64| x <- v, "/local/pin/wrefuse", x);
   let s: i64 = sys::net::subscribe("/local/pin/wrefuse")$;
-  let r: [i64, Error<[`RpcError(string), `InvalidCast(string)]>] =
-    sys::net::call(s ~ "/local/pin/wrefuse", null);
+  let r: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> =
+    sys::net::call(s ~ "/local/pin/wrefuse", null).1;
   r
 }
 "#, |v: Result<&Value>| {
@@ -488,7 +565,7 @@ run!(net_second_subscriber, r#"
 run!(net_rewoken_reader_of_a_held_path, r#"
 {
   sys::net::rpc(#path: "/local/pin/held", #doc: "d", #spec: {x: {default: 0, doc: "x"}}, #f: |a: {x: i64}| a.x)$;
-  let c: i64 = sys::net::call("/local/pin/held", {x: 5})$;
+  let c: i64 = sys::net::call("/local/pin/held", {x: 5}).1$;
   let on = true;
   let b = select on {
     true => { let x: Array<string> = sys::net::subscribe(c ~ "/local/pin/held")$; x },
@@ -583,8 +660,8 @@ run!(net_publisher_gone_and_back, r#"
 run!(net_rpc_handler_raises, r#"{
   sys::net::rpc(#path: "/local/pin/raise", #doc: "raise", #spec: null,
     #f: |a: null| { let e: Result<i64, `Boom> = error(`Boom); a ~ e? });
-  let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
-    sys::net::call("/local/pin/raise", null);
+  let r: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> =
+    sys::net::call("/local/pin/raise", null).1;
   r
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(e)) if matches!(&**e, Value::Array(a)
@@ -598,10 +675,10 @@ run!(net_rpc_max_inflight, r#"{
   let holding = never<null>();
   sys::net::rpc(#path: "/local/pin/inflight", #doc: "hold", #spec: null, #max_inflight: 1,
     #f: |a: null| { holding <- a; never<i64>() });
-  let held: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
-    sys::net::call("/local/pin/inflight", null);
-  let refused: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
-    sys::net::call(holding ~ "/local/pin/inflight", null);
+  let held: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> =
+    sys::net::call("/local/pin/inflight", null).1;
+  let refused: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> =
+    sys::net::call(holding ~ "/local/pin/inflight", null).1;
   refused
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(e)) if matches!(&**e, Value::Array(a)
@@ -610,8 +687,8 @@ run!(net_rpc_max_inflight, r#"{
 }; FuseExpect::None);
 
 const NET_RPC_MISSING: &str = r#"{
-  let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
-    sys::net::call("/local/pin/missing", null);
+  let r: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> =
+    sys::net::call("/local/pin/missing", null).1;
   r
 }"#;
 
@@ -841,7 +918,7 @@ async fn request_after_wake(call: &str, issues: i64) -> Result<()> {
 
 #[tokio::test]
 async fn net_call_not_repeated_after_wake() -> Result<()> {
-    request_after_wake("{ let answer: i64 = sys::net::call(path, args)?; answer }", 1)
+    request_after_wake("{ let answer: i64 = sys::net::call(path, args).1?; answer }", 1)
         .await
 }
 

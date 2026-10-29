@@ -1,4 +1,4 @@
-use crate::netstate::{NetRpcWake, NetState, NetWrite, Reader};
+use crate::netstate::{NetRpcWake, NetState, NetWrite, Reader, RpcAnswer, RpcId};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
@@ -14,7 +14,8 @@ use graphix_compiler::{
     typ::{FnType, Naked, Type},
 };
 use graphix_package_core::{
-    CastTarget, ErrorText, Handler, Inbox, Reply, RtVar, castable, seam_arg, write_data,
+    CastTarget, ErrorText, Handler, Inbox, Reply, RtVar, castable, seam_arg, seam_value,
+    write_data,
 };
 use netidx::{
     path::Path,
@@ -367,8 +368,156 @@ impl<R: Rt> Apply<R> for Subscribe {
     }
 }
 
+graphix_package_core::abstract_wrapper!(
+    RpcId,
+    static RPC_ID_WRAPPER = "sys::net::RpcId"
+);
+
+fn rpc_id(v: &Value) -> Option<RpcId> {
+    match v {
+        Value::Abstract(a) => a.downcast_ref::<RpcId>().copied(),
+        _ => None,
+    }
+}
+
+/// `call_id(e)`: a fresh id at each fire of `e`.
+#[derive(Debug)]
+pub(crate) struct CallId {
+    out: TagValue,
+}
+
+impl CallId {
+    fn new() -> Self {
+        Self { out: TagValue::phantom() }
+    }
+}
+
+impl<R: Rt> BuiltIn<R> for CallId {
+    const EFFECT: Effect = Effect::Sync;
+    const NAME: &str = "sys_net_call_id";
+    /// Ids order as they are minted.
+    const ORDERED: bool = true;
+
+    fn init<'a, 'b, 'c, 'd>(
+        _ctx: &'a mut CompileCtx<R>,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R>>> {
+        Ok(Box::new(Self::new()))
+    }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
+        _buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
+        Ok(Box::new(Self::new()))
+    }
+}
+
+impl<R: Rt> Apply<R> for CallId {
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        Ok(())
+    }
+
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
+        let tag = from[0].update(ctx).tag();
+        if tag.is_bottom() {
+            self.out.set_bottom_as(tag)
+        } else if tag.is_fired() {
+            self.out.set(TagValue::fired(RPC_ID_WRAPPER.wrap(RpcId::new())))
+        } else {
+            self.out.ride()
+        }
+    }
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
+}
+
+/// `abort_call(id)`: the call in flight under `id`, if any, answers
+/// `` `Aborted ``.
+#[derive(Debug)]
+pub(crate) struct AbortCall {
+    out: TagValue,
+}
+
+impl AbortCall {
+    fn new() -> Self {
+        Self { out: TagValue::phantom() }
+    }
+}
+
+impl<R: Rt> BuiltIn<R> for AbortCall {
+    const EFFECT: Effect = Effect::Io(None);
+    const NAME: &str = "sys_net_abort_call";
+    /// Calls and aborts under one id decide each other's answers.
+    const ORDERED: bool = true;
+
+    fn init<'a, 'b, 'c, 'd>(
+        _ctx: &'a mut CompileCtx<R>,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R>>> {
+        Ok(Box::new(Self::new()))
+    }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
+        _buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
+        Ok(Box::new(Self::new()))
+    }
+}
+
+impl<R: Rt> Apply<R> for AbortCall {
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        Ok(())
+    }
+
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
+        let id = from[0].update(ctx);
+        let tag = id.tag();
+        let Some(id) = seam_value(id).map(|tv| tv.value_cloned()) else {
+            return self.out.set_bottom_as(tag);
+        };
+        if tag.is_fired()
+            && let Some(id) = rpc_id(&id)
+            && let Some(net) = ctx.libstate.get::<NetState>()
+        {
+            net.abort_call(id)
+        }
+        self.out.set(TagValue::tagged(Value::Null, tag))
+    }
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
+}
+
+/// The reply's target: the success type of the second element of
+/// `call`'s `(RpcId, Result<'b, ..>)`.
+fn reply_target(env: &Env, resolved: Option<&FnType>) -> CastTarget {
+    let reply = resolved.and_then(|ft| {
+        ft.rtype.with_deref(|t| match t? {
+            Type::Tuple(elems) if elems.len() == 2 => Some(elems[1].clone()),
+            _ => None,
+        })
+    });
+    CastTarget::of_result(env, reply.as_ref())
+}
+
+/// `call(#id, path, args)`: each fire of an argument starts a call, as
+/// `#id` or under a fresh id, and each call answers `(id, result)` once,
+/// in the order the answers come, one a cycle.
 #[derive(Debug)]
 pub(crate) struct RpcCall {
+    /// Where this site's calls answer: reminted at sleep, so the answers
+    /// of the calls it abandons land nowhere.
     var: RtVar,
     target: CastTarget,
     out: TagValue,
@@ -377,18 +526,19 @@ pub(crate) struct RpcCall {
 impl<R: Rt> BuiltIn<R> for RpcCall {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_call";
+    /// Calls and aborts under one id decide each other's answers.
+    const ORDERED: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R>],
+        _from: &'c [Node<R>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
         let var = RtVar::new(ctx, top_id);
-        let _ = from;
-        Ok(Box::new(Self::with(var, CastTarget::of(&ctx.env, resolved))))
+        Ok(Box::new(Self::with(var, reply_target(&ctx.env, resolved))))
     }
 
     fn image_decode(
@@ -429,10 +579,11 @@ impl<R: Rt> Apply<R> for RpcCall {
             };
             Ok((path, args))
         }
-        let (path, path_fired) = seam_arg(ctx, &mut from[0]);
-        let (args, args_fired) = seam_arg(ctx, &mut from[1]);
-        if (path_fired || args_fired)
-            && let (Some(path), Some(args)) = (&path, &args)
+        let (id, id_fired) = seam_arg(ctx, &mut from[0]);
+        let (path, path_fired) = seam_arg(ctx, &mut from[1]);
+        let (args, args_fired) = seam_arg(ctx, &mut from[2]);
+        if (id_fired || path_fired || args_fired)
+            && let (Some(id), Some(path), Some(args)) = (&id, &path, &args)
         {
             // XCR claude for claude: [bug/medium] This remint, and the one in
             // RpcCall::sleep, abort a call in flight that the server has already run: a
@@ -469,33 +620,53 @@ impl<R: Rt> Apply<R> for RpcCall {
             // exercise a live RPC transport or prove remote cancellation; the named
             // server probes and existing latest-call integration test require sockets,
             // which the sandbox forbids. No production behavior changed.
-            self.remint(ctx);
-            let args = match write_data(ctx, args) {
-                Ok(args) => args,
-                Err(e) => {
-                    return self
-                        .out
-                        .set(TagValue::fired(errf!(literal!("RpcError"), "{e:#}")));
-                }
-            };
-            match parse_args(path, &args) {
-                Err(e) => {
-                    return self
-                        .out
-                        .set(TagValue::fired(errf!(literal!("RpcError"), "{e}")));
-                }
-                Ok((path, args)) => {
-                    NetState::get(ctx).call_rpc(ctx, path, args, self.var.id)
-                }
-            }
+            // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D6): rpc is
+            // a building block of distributed systems, so calls run concurrently. An
+            // abstract RpcId (Rust-registered, Eq/Ord/hash) minted by call_id(e), a
+            // fresh id per fire of e; call(?#id: [RpcId, null] = null, path, args)
+            // returns (RpcId, Result<'b, [`RpcError(string), `InvalidCast(string),
+            // `Aborted]>), minting an id when #id is null; a new call cancels nothing
+            // and waits for nothing; results come in completion order, one a cycle; a
+            // call under an id still in flight replaces it (the old answers `Aborted);
+            // abort_call(id) makes that call answer `Aborted and ignores the server's
+            // reply, an id not in flight does nothing, ids are runtime-wide (NetState),
+            // the server is not told; every call answers exactly once except at a
+            // sleep, where the site's calls are abandoned silently (the 10-27 rule);
+            // everything stays in sys::net and the server stays rpc.
+            // 2026-10-29 claude: Built D6. sys::net gains the Rust-backed type RpcId,
+            // call_id(e) and abort_call(id); call(?#id, path, args) returns (RpcId,
+            // Result<'b, [.., `Aborted]>). NetState keeps the calls in flight
+            // (rpc_calls: id -> serial, site, abort handle); every call is one spawned
+            // task that delivers one RpcAnswer to its site's reply id, so the runtime
+            // queues answers one a cycle in arrival order; settle_call gives the reply
+            // only when the answer's serial is still the id's call, else the call
+            // answers `Aborted, which covers a reply already sent when its call was
+            // replaced or aborted. Sleep and delete abandon the site's calls
+            // (NetState::abandon_calls) and remint or release the reply id, so none
+            // answers. call, abort_call and call_id are ORDERED.
+            // net::test::rpc_abandons_old_reply_slots and
+            // lib_tests::net::net_rpc_latest_call_wins went with the old latest-wins
+            // design. Pins: lib_tests::net::{net_rpc_calls_answer_as_they_complete,
+            // net_rpc_reused_id_replaces, net_rpc_abort_call,
+            // net_rpc_sleep_abandons_silently, net_rpc_default_ids_are_fresh} and
+            // netstate::test::an_answer_settles_only_its_own_call. With latest-wins per
+            // site, abort_call a no-op and sleep doing nothing, the completion-order,
+            // abort and sleep pins fail; with settle_call ignoring the serial and sleep
+            // doing nothing, the replace and sleep pins and the unit test fail. Needs a
+            // soak.
+            let id = rpc_id(id).unwrap_or_else(RpcId::new);
+            let request = write_data(ctx, args).and_then(|args| parse_args(path, &args));
+            NetState::get(ctx).call_rpc(ctx, self.var.id, id, request);
         }
-        let got = ctx.event.variables.get(&self.var.id).map(|v| v.value_cloned());
-        let res = got.map(|v| match v {
-            Value::Error(e) => remote_err(&literal!("RpcError"), &e),
-            v => coretraits::with_display_hooks(ctx, |env| self.target.cast(env, v)),
+        let answer = ctx.event.take_custom(&self.var.id).and_then(|a| {
+            let a: Box<dyn Any> = a;
+            a.downcast::<RpcAnswer>().ok()
         });
-        match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
+        match answer {
+            Some(answer) => {
+                let v = self.answer(ctx, *answer);
+                self.out.set(TagValue::fired(v))
+            }
             None => self.out.ride(),
         }
     }
@@ -514,16 +685,18 @@ impl<R: Rt> Apply<R> for RpcCall {
         _from: &mut [Node<R>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.target.refresh(&ctx.env, resolved);
+        self.target = reply_target(&ctx.env, Some(resolved));
         Ok(())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        self.release(ctx);
+        self.abandon(ctx);
+        self.var.release(ctx);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        self.remint(ctx);
+        self.abandon(ctx);
+        self.var.remint(ctx);
     }
 }
 
@@ -532,19 +705,28 @@ impl RpcCall {
         Self { var, target, out: TagValue::phantom() }
     }
 
-    fn release<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
+    /// Abort the calls in flight here; the caller remints or releases the
+    /// var, so none of them answers.
+    fn abandon<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(net) = ctx.libstate.get::<NetState>() {
-            net.stop_request(self.var.id);
+            net.abandon_calls(self.var.id);
         }
-        self.var.release(ctx);
     }
 
-    /// A fresh delivery id: a reply to an earlier call lands nowhere.
-    fn remint<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        if let Some(net) = ctx.libstate.get::<NetState>() {
-            net.stop_request(self.var.id);
-        }
-        self.var.remint(ctx);
+    /// `(id, result)` for `answer`: the reply cast to the target, or
+    /// `` `Aborted `` when the call was aborted or replaced first.
+    fn answer<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>, answer: RpcAnswer) -> Value {
+        let id = answer.id;
+        let result = match NetState::get(ctx).settle_call(answer) {
+            None => Value::Error(
+                rep::make_variant(literal!("Aborted"), std::iter::empty()).into(),
+            ),
+            Some(Value::Error(e)) => remote_err(&literal!("RpcError"), &e),
+            Some(v) => {
+                coretraits::with_display_hooks(ctx, |env| self.target.cast(env, v))
+            }
+        };
+        rep::tuple([RPC_ID_WRAPPER.wrap(id), result])
     }
 }
 
@@ -1284,47 +1466,6 @@ impl<R: Rt> Apply<R> for PublishRpc<R> {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[tokio::test]
-    async fn rpc_abandons_old_reply_slots() -> Result<()> {
-        use graphix_compiler::{node::Nop, typ::Type};
-        use graphix_rt::{GXRt, NoExt};
-
-        for sleep in [true, false] {
-            let mut state = GXRt::<NoExt>::new_state()?;
-            let var = RtVar::new(&mut state, ExprId::new());
-            let mut call = RpcCall {
-                var,
-                target: CastTarget::default(),
-                out: TagValue::fired(Value::I64(7)),
-            };
-            let mut ctx = state.view();
-            ctx.apply_deferred();
-            let old = call.var.id;
-            ctx.publish(old, TagValue::fired(Value::I64(9)));
-            if sleep {
-                call.sleep(&mut ctx);
-            } else {
-                call.remint(&mut ctx);
-            }
-            let mut from =
-                std::array::from_fn::<_, 2, _>(|_| Node::new(Nop { typ: Type::Any }));
-            let out = call.update(&mut ctx, &mut from);
-            assert!(!out.is_fired());
-            assert_eq!(out.value_cloned(), Value::I64(7));
-            ctx.publish(old, TagValue::fired(Value::I64(10)));
-            let out = call.update(&mut ctx, &mut from);
-            assert!(!out.is_fired());
-            assert_eq!(out.value_cloned(), Value::I64(7));
-            ctx.publish(call.var.id, TagValue::fired(Value::I64(11)));
-            let out = call.update(&mut ctx, &mut from);
-            assert!(out.is_fired());
-            assert_eq!(out.value_cloned(), Value::I64(11));
-            assert!(ctx.libstate.get::<NetState>().is_none());
-            call.delete(&mut ctx);
-        }
-        Ok(())
-    }
 
     #[test]
     fn list_error_preserves_remote_message() {

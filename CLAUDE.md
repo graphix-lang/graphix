@@ -514,10 +514,15 @@ whatever stopping mid-way would lose) finish; nothing answers a call after
 its site's sleep, so such a reply is dropped, or settled by
 `EvalCachedAsync::reclaim` (a stream read's bytes return to the stream,
 and later reads of it wait for that), and a `Fifo` site's next call waits
-for such calls to finish. `sys::net::call` cancels its local
-wait and remints its reply ID on sleep or a new call; old replies cannot
-answer it. Remote effects are not undone. Its completed result survives
-sleep, and wake alone starts no call. Bottom never reaches builtin authors: a bottomed arg bottoms the
+for such calls to finish. `sys::net::call` runs its calls side
+by side: each answers `(RpcId, result)` once (reply, error or
+`` `Aborted ``), in arrival order, one a cycle (its site's reply id
+queues them). A call under an id in flight replaces that call, which
+answers `` `Aborted ``; `abort_call` aborts one from anywhere (the table
+is `NetState`'s, so `call` and `abort_call` are `ORDERED`); a sleep
+abandons the site's calls and remints its reply id, so none answers.
+Remote effects are not undone. Its completed result survives sleep, and
+wake alone starts no call. Bottom never reaches builtin authors: a bottomed arg bottoms the
 invocation before `eval`. Line-reader handles re-delivered after EOF,
 error, or a stop generation (seek/TLS upgrade) restart at the current
 position; active readers ignore the same handle. Re-delivery never

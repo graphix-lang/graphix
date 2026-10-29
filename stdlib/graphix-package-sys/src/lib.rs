@@ -931,6 +931,8 @@ graphix_derive::defpackage! {
         net::Write,
         net::Subscribe,
         net::RpcCall,
+        net::CallId,
+        net::AbortCall,
         net::List,
         net::ListTable,
         net::Publish as net::Publish<GXRt<X>>,

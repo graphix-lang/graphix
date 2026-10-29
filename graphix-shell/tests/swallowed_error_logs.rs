@@ -121,8 +121,8 @@ sys::net::rpc(#path: p, #doc: "d", #spec: null, #f: |a: null| -> i64 {
     let x: i64 = error(`Boom("bad"))?;
     x
 });
-let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
-    sys::net::call(sys::time::after_idle(duration:100.ms, p), null);
+let r: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> =
+    sys::net::call(sys::time::after_idle(duration:100.ms, p), null).1;
 sys::exit(r ~ 0)
 "#;
     const HTTP: &str = r#"

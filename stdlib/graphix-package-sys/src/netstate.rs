@@ -29,8 +29,12 @@ use netidx_value::Value;
 use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::global::{GPooled, Pool};
+use serde_derive::{Deserialize, Serialize};
 use std::{
-    sync::{Arc, LazyLock, OnceLock},
+    sync::{
+        Arc, LazyLock, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -261,6 +265,44 @@ impl Drop for PendingRequest {
     }
 }
 
+/// What `sys::net::call_id` mints and a call is known by, unique in the
+/// process. Its `Pack` refuses, so no peer can send one and it prints as
+/// `abstract:`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct RpcId(u64);
+
+impl nohash::IsEnabled for RpcId {}
+
+impl RpcId {
+    pub(crate) fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+graphix_package_core::impl_no_pack!(RpcId);
+
+netidx_core::atomic_id!(CallSerial);
+
+/// A call in flight: the site it answers, and its request, which dropping
+/// aborts.
+struct InFlight {
+    serial: CallSerial,
+    site: BindId,
+    _request: PendingRequest,
+}
+
+/// A call's one answer, delivered to its site: the server's reply, or
+/// nothing where the request was aborted first.
+#[derive(Debug)]
+pub(crate) struct RpcAnswer {
+    pub(crate) id: RpcId,
+    serial: CallSerial,
+    reply: Option<Value>,
+}
+
+impl CustomBuiltinType for RpcAnswer {}
+
 struct Inner {
     handles: NetHandles,
     /// The publish builtin's write BindId of each published Id.
@@ -274,6 +316,7 @@ struct Inner {
     flusher: task::JoinHandle<()>,
     // rpc client procs, GC'd on use
     rpc_clients: Mutex<Vec<(Path, netidx_protocols::rpc::client::Proc, time::Instant)>>,
+    rpc_calls: Mutex<IntMap<RpcId, InFlight>>,
     requests: Mutex<IntMap<BindId, PendingRequest>>,
     /// A tracker is retained only after its listing completes successfully.
     change_trackers:
@@ -354,6 +397,7 @@ impl NetState {
             flush,
             flusher,
             rpc_clients: Mutex::new(Vec::new()),
+            rpc_calls: Mutex::new(IntMap::default()),
             requests: Mutex::new(IntMap::default()),
             change_trackers: Mutex::new(IntMap::default()),
         }));
@@ -547,62 +591,106 @@ impl NetState {
         self.0.requests.lock().remove(&id);
     }
 
+    /// The client of the procedure at `path`, kept a minute past its last
+    /// use.
+    fn rpc_client<R: Rt>(
+        &self,
+        ctx: &mut ExecCtx<'_, R>,
+        path: &Path,
+    ) -> Result<netidx_protocols::rpc::client::Proc> {
+        use netidx_protocols::rpc::client::Proc;
+        let subscriber = self.handles(ctx)?.subscriber.clone();
+        let now = time::Instant::now();
+        let mut clients = self.0.rpc_clients.lock();
+        clients.retain(|(_, _, last)| {
+            now.saturating_duration_since(*last) < Duration::from_secs(60)
+        });
+        match clients.iter_mut().find(|(p, _, _)| p == path) {
+            Some((_, proc, last)) => {
+                *last = now;
+                Ok(proc.clone())
+            }
+            None => {
+                let proc = Proc::new(&subscriber, path.clone())?;
+                clients.push((path.clone(), proc.clone(), now));
+                Ok(proc)
+            }
+        }
+    }
+
+    /// Call the procedure `request` names as `id`, answering `site`: a
+    /// call in flight under `id` is replaced, and answers aborted.
     pub(crate) fn call_rpc<R: Rt>(
         &self,
         ctx: &mut ExecCtx<'_, R>,
-        path: Path,
-        args: Vec<(arcstr::ArcStr, Value)>,
-        id: BindId,
+        site: BindId,
+        id: RpcId,
+        request: Result<(Path, Vec<(arcstr::ArcStr, Value)>)>,
     ) {
-        use netidx_protocols::rpc::client::Proc;
-        let dbg_path = path.clone();
-        let proc = {
-            let subscriber = match self.handles(ctx) {
-                Ok(h) => h.subscriber.clone(),
-                Err(e) => {
-                    ctx.rt.set_var(id, error_value(e));
-                    return;
-                }
-            };
-            let now = time::Instant::now();
-            let mut clients = self.0.rpc_clients.lock();
-            clients.retain(|(_, _, last)| {
-                now.saturating_duration_since(*last) < Duration::from_secs(60)
-            });
-            match clients.iter_mut().find(|(p, _, _)| p == &path) {
-                Some((_, proc, last)) => {
-                    *last = now;
-                    Ok(proc.clone())
-                }
-                None => match Proc::new(&subscriber, path.clone()) {
-                    Err(e) => Err(e),
-                    Ok(proc) => {
-                        clients.push((path, proc.clone(), now));
-                        Ok(proc)
-                    }
-                },
-            }
-        };
-        match proc {
-            Err(e) => {
-                ctx.rt.set_var(id, error_value(e));
-            }
-            Ok(proc) => {
+        let call = request
+            .and_then(|(path, args)| Ok((self.rpc_client(ctx, &path)?, path, args)));
+        match call {
+            Err(e) => self.start_call(ctx, site, id, std::future::ready(error_value(e))),
+            Ok((proc, path, args)) => {
                 if rpc_dbg() {
-                    eprintln!("RPCDBG client: calling {dbg_path} for {id:?}");
+                    eprintln!("RPCDBG client: calling {path} as {id:?}");
                 }
-                self.spawn_request(ctx, id, async move {
+                self.start_call(ctx, site, id, async move {
                     let r = match proc.call(args).await {
                         Ok(v) => v,
                         Err(e) => error_value(e),
                     };
                     if rpc_dbg() {
-                        eprintln!("RPCDBG client: reply from {dbg_path} for {id:?}: {r}");
+                        eprintln!("RPCDBG client: reply from {path} to {id:?}: {r}");
                     }
                     r
-                });
+                })
             }
         }
+    }
+
+    fn start_call<R: Rt>(
+        &self,
+        ctx: &mut ExecCtx<'_, R>,
+        site: BindId,
+        id: RpcId,
+        reply: impl Future<Output = Value> + Send + 'static,
+    ) {
+        let serial = CallSerial::new();
+        let (abort, registration) = AbortHandle::new_pair();
+        let call = InFlight { serial, site, _request: PendingRequest(abort) };
+        self.0.rpc_calls.lock().insert(id, call);
+        ctx.rt.spawn(async move {
+            let reply = Abortable::new(reply, registration).await.ok();
+            let answer = RpcAnswer { id, serial, reply };
+            (site, Box::new(answer) as Box<dyn CustomBuiltinType>)
+        });
+    }
+
+    /// The reply `answer` carries when it answers the call in flight under
+    /// its id, which is in flight no more; `None` when that call was
+    /// aborted or replaced.
+    pub(crate) fn settle_call(&self, answer: RpcAnswer) -> Option<Value> {
+        let mut calls = self.0.rpc_calls.lock();
+        match calls.get(&answer.id) {
+            Some(call) if call.serial == answer.serial => {
+                calls.remove(&answer.id);
+                answer.reply
+            }
+            Some(_) | None => None,
+        }
+    }
+
+    /// Abort the call in flight under `id`, if there is one: it answers
+    /// aborted.
+    pub(crate) fn abort_call(&self, id: RpcId) {
+        self.0.rpc_calls.lock().remove(&id);
+    }
+
+    /// Abort every call `site` has in flight. Their answers still come to
+    /// `site`'s delivery id, which its caller remints or releases.
+    pub(crate) fn abandon_calls(&self, site: BindId) {
+        self.0.rpc_calls.lock().retain(|_, call| call.site != site);
     }
 
     pub(crate) fn publish_rpc<R: Rt>(
@@ -724,6 +812,7 @@ impl NetState {
 #[cfg(test)]
 mod test {
     use super::*;
+    use graphix_compiler::ExecState;
     use graphix_rt::{GXRt, NoExt};
 
     #[test]
@@ -746,6 +835,38 @@ mod test {
         })
         .await
         .expect("the flusher outlived its NetState");
+    }
+
+    /// A reply settles its call only while that call is in flight under
+    /// its id: one replaced or aborted after its reply was sent answers
+    /// aborted, an abort of an id not in flight does nothing, and a site
+    /// abandons only its own calls.
+    #[tokio::test]
+    async fn an_answer_settles_only_its_own_call() {
+        let mut ctx = GXRt::<NoExt>::new_state().unwrap();
+        let state = NetState::get(&mut ctx.view());
+        let (site, other) = (BindId::new(), BindId::new());
+        let id = RpcId::new();
+        let call = |ctx: &mut ExecState<GXRt<NoExt>>, site, id| {
+            state.start_call(&mut ctx.view(), site, id, std::future::pending());
+            state.0.rpc_calls.lock()[&id].serial
+        };
+        let answer = |id, serial, v| RpcAnswer { id, serial, reply: Some(Value::I64(v)) };
+        let replaced = call(&mut ctx, site, id);
+        let current = call(&mut ctx, site, id);
+        assert_eq!(state.settle_call(answer(id, replaced, 1)), None);
+        assert_eq!(state.settle_call(answer(id, current, 2)), Some(Value::I64(2)));
+        assert_eq!(state.settle_call(answer(id, current, 2)), None);
+        let aborted = call(&mut ctx, site, id);
+        state.abort_call(id);
+        state.abort_call(id);
+        assert_eq!(state.settle_call(answer(id, aborted, 3)), None);
+        let kept = RpcId::new();
+        let mine = call(&mut ctx, site, id);
+        let theirs = call(&mut ctx, other, kept);
+        state.abandon_calls(site);
+        assert_eq!(state.settle_call(answer(id, mine, 4)), None);
+        assert_eq!(state.settle_call(answer(kept, theirs, 5)), Some(Value::I64(5)));
     }
 
     #[tokio::test]

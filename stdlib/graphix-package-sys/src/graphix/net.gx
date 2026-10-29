@@ -1,6 +1,9 @@
 let write = 'a: Data |path: string, value: 'a| -> Result<_, `WriteError(string)> 'sys_net_write;
 let subscribe = 'a: Concrete |path: string| -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]> 'sys_net_subscribe;
-let call = 'a: Data, 'b: Concrete |path: string, args: 'a| -> Result<'b, [`RpcError(string), `InvalidCast(string)]> 'sys_net_call;
+let call_id = |e: Any| -> RpcId 'sys_net_call_id;
+let call = 'a: Data, 'b: Concrete |#id: [RpcId, null] = null, path: string, args: 'a|
+    -> (RpcId, Result<'b, [`RpcError(string), `InvalidCast(string), `Aborted]>) 'sys_net_call;
+let abort_call = |id: RpcId| -> null 'sys_net_abort_call;
 let rpc = 'spec: Data, 'result: Data, 'args: Concrete + Data |
     #path: string,
     #doc: string,

@@ -207,7 +207,7 @@ async fn sleep_aborts_a_call_in_flight(mode: Mode) -> Result<()> {
 async fn seq_network(mode: Mode) -> Result<()> {
     for expr in [
         r#"sys::net::subscribe("/restart/[go]")?"#,
-        r#"sys::net::call("/restart/echo", {n: go})?"#,
+        r#"sys::net::call("/restart/echo", {n: go}).1?"#,
     ] {
         let code = format!(
             r#"{{
