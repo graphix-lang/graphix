@@ -1875,9 +1875,28 @@ impl<R: Rt> Update<R> for Connect<R> {
 
 /// A written `<-` whose value `bind` cannot hold: the target, its type,
 /// and the declaration that would hold both.
+/// `t` with each open cell that has lower bounds as their union: the type
+/// a value written there has, which a declaration can name.
+fn lower_shown(t: &Type) -> Type {
+    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    t.collect_tvars(&mut named);
+    let known: AHashMap<ArcStr, Type> = named
+        .iter()
+        .filter_map(|(n, tv)| {
+            let lower = tv.open_cell()?.cell_lower();
+            (!lower.is_empty())
+                .then(|| (n.clone(), Type::Set(Arc::from_iter(lower)).normalize()))
+        })
+        .collect();
+    match known.is_empty() {
+        true => t.clone(),
+        false => t.replace_tvars(&known),
+    }
+}
+
 fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow::Error {
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
-    let (held, written) = (deref(&bind.typ), deref(written));
+    let (held, written) = (deref(&bind.typ), lower_shown(&deref(written)));
     let both = Type::Set(Arc::from_iter([held.clone(), written.clone()])).normalize();
     let inferred = match &bind.typ {
         Type::TVar(tv) if tv.bottom_fed() => ", inferred from an earlier use,",

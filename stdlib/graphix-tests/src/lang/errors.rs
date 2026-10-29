@@ -1174,3 +1174,19 @@ run!(
     }"#,
     is(Value::I64(6))
 );
+
+// A write a declaration would admit names the type to declare as one the
+// program can write: a constructed value's open parameter shows as what
+// its payload put below it.
+run!(
+    a_write_hint_names_a_writable_type,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let b: Box<i64> = Box(1);
+    b <- Box("s");
+    0
+}"#,
+    refused(
+        "b is Box<i64> and cannot hold Box<string>; declare b: [Box<i64>, Box<string>]"
+    )
+);
