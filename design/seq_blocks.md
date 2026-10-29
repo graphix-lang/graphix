@@ -241,15 +241,17 @@ completion, so `never()` in a step stalls the run and needs no special
 treatment; a third-party effect with no completion event cannot be
 waited on without adapting its API.
 
-The casualties of the rule: a lambda that returns a standing level it
-does not derive from its argument (`|v| k`) produces no fire when
-re-called, in a seq as anywhere else, so a step calling it never
-completes on the second run. `|v| v ~ k` is the spelling. And entering
-a step is a birth for the functions it calls too, so a callee whose
-answer starts from a constant completes the step on that constant:
-`let counter = |t| { let n = 0; n <- t ~ n + 1; n }` makes `let a =
-counter(t)` 0 at every run, its count landing a cycle later, unseen. A
-`never()` initializer, or state kept outside the seq, is the spelling.
+**A call a step issues is a fresh frame at every run** (§6.3). Its
+callee's body is born again at each issue, reading what stands, its
+formals and captures included, as delivered: a lambda that returns a
+standing level it does not derive from its argument (`|v| k`, `||
+read_all(path)`) answers at every run, where outside a seq it fires
+nothing when re-called. State inside the callee starts afresh, so a
+callee whose answer starts from a constant completes the step on that
+constant: `let counter = |t| { let n = 0; n <- t ~ n + 1; n }` makes
+`let a = counter(t)` 0 at every run, its count landing a cycle later,
+unseen. What the callee captures keeps its value across runs: a count
+that must outlive the run lives outside the callee.
 
 **A `let` binds the step's production for the rest of the run.**
 Later steps read the binding itself; shadowing is sequential as in a
@@ -394,12 +396,28 @@ clears it at the step's entry for a run). All
 arguments, constants and labeled arguments included, come from one
 snapshot. Inline lambda arguments stay at the call site, sampled with
 `pc ~!` on the same cycle: moving them into the tuple would deprive
-their bodies of the call's contextual parameter types. A nullary call
-has nothing to re-issue and is a level read at entry.
+their bodies of the call's contextual parameter types. A nullary
+call's tuple is the entry clock alone.
 
 The completion guard sits on the CALL inside the snapshot select, not
 outside it: the select fires at entry carrying the call's resident,
 and only the call's own fired production is this invocation's answer.
+The guard's first update in a run is the issue, and the call is a
+fresh frame (`SeqGuard`, `wake::FreshFrame`): for that update every
+input of the call that stands (its arguments, a function value and a
+`live` read included, its callee's captures, nested callees' included)
+is delivered fired, and so is every input of a callee it binds as it
+runs (a catch-up scope that owes everything standing). The view stays
+the step's (`View::Step`), so the callee's body, slept since the last
+run, is born again: constants fire, its builtins are reborn, an async
+one holding no answer (`CachedArgsAsync::reborn`), so a previous run's
+answer is never this issue's; its `let`s take their initializers again,
+its selects forget their entry history, and what is bound inside it
+(a `catch` binder, a nested seq's `pc`) reads stale, never re-raising a
+previous run's event. A fused call is its kernel run born, its interior
+memory cleared, over the same delivered inputs. What the callee captures
+from outside keeps its value. A call outside a seq is never born again:
+a wake resumes it.
 The select watches the snapshot, not live inputs: once issued, a
 pending callee keeps running if an input later bottoms, and later
 input events cannot reissue it. Calls nested in expressions and in
@@ -426,10 +444,11 @@ than only when a catch-up fire happens to deliver it.
 The machine keeps one step awake. A step enters when `pc` fires its
 label (the start event, a `try` jump, a next-cycle boundary), and is
 updated under `View::Step`, a birth for the run (constants fire, the
-builtins in it are reborn), with `Select`'s catch-up
-(`node/wake.rs::TrackedFires`: one fire bit per step-body input per
-machine, consumed by whichever step reads it, so a fire while a step
-waits its turn is re-raised at its entry). It completes when its
+builtins in it are reborn, each call it issues is a fresh frame:
+§6.3), with `Select`'s catch-up (`node/wake.rs::TrackedFires`: one
+fire bit per step-body input per machine, consumed by whichever step
+reads it, so a fire while a step waits its turn is re-raised at its
+entry). It completes when its
 value's `let` publishes a FIRED production (a fired `true` for an
 `until`); only then do its writes run. The completed step sleeps, as a
 select deselects an arm, and the next enters: in the same cycle when

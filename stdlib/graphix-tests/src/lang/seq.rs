@@ -676,12 +676,12 @@ async fn reentry_fired_only(mode: Mode) -> Result<()> {
     );
     let (values, out) = run_delta(&outside, mode).await?;
     assert_eq!(as_i64s(&values), [142, 242, 342], "absent_level_outside\n{out}");
-    // A lambda whose result is a standing level not derived from its
-    // argument produces no fire when re-called: the run never completes.
-    let stalls =
+    // A call a step issues is a fresh frame: a lambda whose result is a
+    // standing level not derived from its argument answers at every run.
+    let level =
         format!("{{ {CLOCK} let k = 7; let f = |v| k; seqq request {{ f(request) }} }}");
-    let (values, _) = run_delta(&stalls, mode).await?;
-    assert_eq!(as_i64s(&values), [7]);
+    let (values, _) = run_delta(&level, mode).await?;
+    assert_eq!(as_i64s(&values), [7, 7, 7]);
     let sampled = format!(
         "{{ {CLOCK} let k = 7; let f = |v| v ~ k; seqq request {{ f(request) }} }}"
     );

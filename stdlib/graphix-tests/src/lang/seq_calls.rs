@@ -2,7 +2,7 @@ use super::dense_deltas::run_delta;
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{Mode, as_i64s},
+    testing::{Mode, as_i64s, escape_path},
 };
 use netidx_value::{ValArray, Value};
 
@@ -278,4 +278,110 @@ run!(
     |v: Result<&Value>| {
         matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::I64(2), Value::I64(3)])
     }
+);
+
+// A call a step issues is a fresh frame at every run (t-seq-03): the
+// callee reads what stands, its captures included, as a fresh call would,
+// so each run reads back the file it wrote, through a function, a function
+// it calls, a function value (bound at its first call or before) and a
+// callback alike.
+async fn a_callee_reads_its_world_fresh_each_run(mode: Mode) -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = escape_path(dir.path().join("f.txt").display());
+    for call in [
+        "sys::fs::read_all(path)",
+        "load()",
+        "load1(n)",
+        "nested(n)",
+        "pick(path)",
+        "bound()",
+        "apply(|p| sys::fs::read_all(p))",
+    ] {
+        let code = r#"{
+            let path = "PATH";
+            let next = never<i64>();
+            let runs = 0;
+            let t = select (any(0, next) ~ runs) { k if k < 3 => k, _ => never() };
+            let load = || sys::fs::read_all(path);
+            let load1 = |u| sys::fs::read_all(path);
+            let nested = |u| u ~ load();
+            let pick = select runs {
+                100 => |p| sys::fs::read_all(p),
+                _ => |p| sys::fs::read_all(p)
+            };
+            let bound = select t {
+                100 => || sys::fs::read_all(path),
+                _ => || sys::fs::read_all(path)
+            };
+            let apply = |f: fn(p: string) -> Result<string, `IOError(string)>| f(path);
+            let r = seq t {
+                let n = runs + 1;
+                runs <- n;
+                sys::fs::write_all(#path: path, "[n]")$;
+                let a = cast<i64>(CALL$)$;
+                a
+            };
+            next <- r ~ 1;
+            r
+        }"#
+        .replace("PATH", &path)
+        .replace("CALL", call);
+        let (values, _) = run_delta(&code, mode).await?;
+        assert_eq!(as_i64s(&values), [1, 2, 3], "{call}");
+    }
+    Ok(())
+}
+
+// The state a callee keeps starts afresh at each run, `count`'s and a
+// written `let`'s alike, while what it captures from outside keeps its
+// value across runs (t-seq-03).
+async fn a_callees_own_state_starts_fresh_each_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let next = never<i64>();
+        let runs = 0;
+        let t = select (any(0, next) ~ runs) { k if k < 3 => k, _ => never() };
+        let base = 0;
+        let bump = |u| { let n = base; n <- u ~ n + 1; u ~ n * 10 + count(u) };
+        let total = 0;
+        let add = |u| { total <- u ~ total + 1; u ~ total };
+        let r = seq t {
+            let n = runs + 1;
+            runs <- n;
+            let a = bump(n);
+            let b = add(n);
+            n * 1000 + a * 10 + b
+        };
+        next <- r ~ 1;
+        r
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [1010, 2011, 3012]);
+    Ok(())
+}
+
+// Outside a seq a call is not born again: the arm holding it resumes, and
+// the state its callee keeps goes on from where it paused.
+async fn a_call_outside_a_seq_resumes(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 40 => n + 1, _ => never() };
+        let phase = select step {
+            k if k < 10 => `A,
+            k if k < 20 => `B,
+            k if k < 30 => `A,
+            _ => `B
+        };
+        let base = 0;
+        let bump = |u| { let n = base; n <- u ~ n + 1; n };
+        select phase { `A => bump(step), `B => never() }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), (0..20).collect::<Vec<i64>>());
+    Ok(())
+}
+
+modes!(
+    a_callee_reads_its_world_fresh_each_run,
+    a_callees_own_state_starts_fresh_each_run,
+    a_call_outside_a_seq_resumes,
 );

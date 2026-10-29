@@ -61,6 +61,11 @@ constant argument to `exit` runs at init — always gate it).
 - **A function returning a level it does not derive from its argument
   fires nothing when re-called** (`|v| k`); write `|v| v ~ k`. This is
   what makes `f(trigger)` a sequencing tool only when `f` uses its arg.
+  A seq step is the exception: a call a step makes is a fresh call at
+  every run, its body born again reading its arguments and captures as
+  they stand, so `let load = || sys::fs::read_all(path)` reads the file
+  at each run. State inside the callee starts afresh each run; what it
+  captures from outside keeps its value.
 - **A `never()` arm adds nothing to a select's type**: `let r = select b
   { true => never(), false => error(`E) }` makes `r` the error type alone,
   and a downstream `select r { error as e => .., v => .. }` is refused for
@@ -91,7 +96,8 @@ constant argument to `exit` runs at init — always gate it).
   entry. A step waits for a change only through `live(e)`: `until
   live(ready)`, `select live(x) > 2 { .. }`; a bare `until ready` warns.
   The rule is lexical: a function the step calls reads its own captures
-  live, so pass what must agree as an argument. `live` outside a seq is
+  live, as they stand when the call is made, so pass what must agree as
+  an argument. `live` outside a seq is
   refused.
 - **A seq's value is bottom until its first run completes**, and so is
   every tuple, select or call over it: `select (polling, array::len(rows))`

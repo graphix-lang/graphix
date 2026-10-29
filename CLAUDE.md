@@ -704,7 +704,8 @@ node graph IS the IR — there is no parallel typed IR
   its next update takes — no ExecCtx globals (parallel compile and a
   parallel evaluator stay possible). A builtin's state starts afresh
   only where it is born again: a call site whose update after a sleep
-  is a birth calls `Apply::reborn` (a seq step's next run). A labeled
+  is a birth calls `Apply::reborn` (a seq step's next run, a call it
+  issues). A labeled
   DEFAULT is born with the binding and delivers
   FIRED at a fresh callee's first dispatch. Sleep aborts an async call
   in flight (one not cancel-safe finishes, unanswered) and
@@ -1233,7 +1234,14 @@ cycle, across workers; the compiler never pins threads.
   counts as every variable; `until` and `try` follow the same rule.
   Entering a step is its birth for the run (`View::Step`: constants fire,
   the builtins in it are reborn) with `Select`'s catch-up
-  (`node/wake.rs`).
+  (`node/wake.rs`). A call a step issues is a fresh frame at each run
+  (`SeqGuard`, `wake::FreshFrame`): at its issue everything it reads that
+  stands, its callee's captures and a callee it binds included, is
+  delivered fired, and its callee's body, slept since the last run, is
+  born again with the step (builtins reborn, an async one holding no
+  answer; lets take their initializers; selects forget their entry
+  history); what the callee captures keeps its value. A call outside a
+  seq is never born again.
   A `{ .. }` statement issues its statements together with local lets. `until`,
   `try { .. } with(e[: T]) { .. }` (the error branch; `catch` is refused
   in a seq body outside lambda literals). A step completes on a FIRED

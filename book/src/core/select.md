@@ -43,8 +43,9 @@ whichever arm reads a missed fire first spends it for the whole select,
 and an arm's guard and its body, one evaluation, both see it.
 The first time an arm
 is selected is its birth: its constants fire then, and only then. A select
-inside a seq step starts a new entry history at each run, so its arms
-can be born again in the new run, including after an asynchronous wait.
+inside a seq step, or inside a function a step calls, starts a new entry
+history at each run, so its arms can be born again in the new run,
+including after an asynchronous wait.
 An arm first entered with a new function instance or collection slot reads
 standing values as fired, just like the rest of that new instance or slot.
 

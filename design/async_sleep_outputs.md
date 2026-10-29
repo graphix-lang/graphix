@@ -62,7 +62,8 @@ its output is.
 
 A builtin starts afresh only where it is born again: `Apply::reborn`,
 which a call site runs before an update that follows its sleep under a
-born view, a seq step entered for its next run.
+born view, a seq step entered for its next run or a call it issues.
+`CachedArgsAsync` then holds no answer: its last one was the last run's.
 
 ## Audit
 

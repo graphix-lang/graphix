@@ -1,4 +1,4 @@
-use super::{VarRead, read_var};
+use super::{VarRead, read_var, wake::FreshFrame};
 use crate::{
     BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, HandlerKind, Node, NodeView,
     PrintFlag, Refs, Rt, Scope, Tag, TagValue, Update, View,
@@ -1145,6 +1145,9 @@ pub struct SeqGuard<R: Rt> {
     /// try-body arm's nearest handler is its jump.
     machine: ErrorHandler,
     state: GuardState,
+    /// It guards a call, not a nested seq: the call is issued as a fresh
+    /// frame, everything it reads delivered.
+    call: bool,
     resident: TagValue,
     /// The boundary this guard polls its handlers from.
     polled: Option<BoundaryRef>,
@@ -1159,12 +1162,15 @@ impl<R: Rt> SeqGuard<R> {
         polled: Option<BoundaryRef>,
     ) -> Node<R> {
         handler.polled_by(&polled);
+        let call = matches!(&spec.kind, ExprKind::SeqGuard(e)
+            if matches!(e.kind, ExprKind::Apply(_)));
         Node::new(Self {
             spec,
             n,
             handler,
             machine,
             state: GuardState::Sleeping,
+            call,
             resident: TagValue::phantom(),
             polled,
         })
@@ -1223,7 +1229,7 @@ impl<R: Rt> Update<R> for SeqGuard<R> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let current = (self.handler.generation(), self.machine.generation());
-        let (generation, passed, owed) = match self.state {
+        let (generation, passed, owed, issue) = match self.state {
             GuardState::Sleeping if self.machine.aborted_in(ctx.rt.cycle()) => {
                 self.state = GuardState::Failed;
                 return self.resident.set_bottom(true);
@@ -1234,10 +1240,10 @@ impl<R: Rt> Update<R> for SeqGuard<R> {
                     passed: false,
                     owed: false,
                 };
-                (current, false, false)
+                (current, false, false, self.call)
             }
             GuardState::Running { generation, passed, owed } => {
-                (generation, passed, owed)
+                (generation, passed, owed, false)
             }
             GuardState::Failed => {
                 if self.handler.has_nested_errors() {
@@ -1247,7 +1253,12 @@ impl<R: Rt> Update<R> for SeqGuard<R> {
             }
         };
         if generation == current || self.handler.has_nested_errors() {
-            let value = self.n.update(ctx);
+            let n = &mut self.n;
+            let frame = issue.then(|| FreshFrame::open(ctx, |r| n.refs(r)));
+            let value = n.update(ctx);
+            if let Some(frame) = frame {
+                frame.close(ctx)
+            }
             if generation == (self.handler.generation(), self.machine.generation()) {
                 if self.handler.has_nested_errors() {
                     if value.is_fired() {

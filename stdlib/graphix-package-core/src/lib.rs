@@ -2696,6 +2696,12 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
             }
         }
     }
+
+    /// Born again, the site holds no answer: its last one was the last
+    /// run's.
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R>) {
+        self.out = TagValue::phantom();
+    }
 }
 
 fn fc_is_err(args: &[Value]) -> Option<Value> {

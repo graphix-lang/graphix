@@ -28,6 +28,9 @@ pub(crate) struct CatchUp {
     /// consumes their bits when it ends.
     taken: Mutex<IntSet<BindId>>,
     outer: Option<Arc<CatchUp>>,
+    /// A call issued as a fresh frame ([`FreshFrame`]): every input that
+    /// stands is owed, unless a select inside it tracks the input.
+    fresh: bool,
 }
 
 impl CatchUp {
@@ -43,9 +46,47 @@ impl CatchUp {
                 }
                 return owed;
             }
+            if s.fresh {
+                return true;
+            }
             scope = s.outer.as_deref();
         }
         true
+    }
+}
+
+/// A call a seq step issues, run as a fresh frame: everything it reads
+/// that stands is delivered, fired, whether it reads it now (its
+/// arguments, its callee's captures) or learns it as it runs (a callee
+/// bound at its dispatch).
+pub(crate) struct FreshFrame {
+    outer: Option<Arc<CatchUp>>,
+    injected: Injected,
+}
+
+impl FreshFrame {
+    /// Open the frame around the update of the call `fill` collects.
+    pub(crate) fn open<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
+        fill: impl FnOnce(&mut Refs),
+    ) -> Self {
+        let scope = CatchUp {
+            unseen: 0,
+            tracked: Arc::default(),
+            pending: Arc::default(),
+            taken: Mutex::default(),
+            outer: ctx.catch_up.clone(),
+            fresh: true,
+        };
+        let outer = mem::replace(&mut ctx.catch_up, Some(Arc::new(scope)));
+        let injected = deliver_owed(ctx, fill);
+        Self { outer, injected }
+    }
+
+    /// Close the frame once the call has updated.
+    pub(crate) fn close<R: Rt>(self, ctx: &mut ExecCtx<'_, R>) {
+        TrackedFires::restore(ctx.event, self.injected);
+        ctx.catch_up = self.outer;
     }
 }
 
@@ -421,6 +462,7 @@ impl TrackedFires {
             pending: self.pending.clone(),
             taken: Mutex::default(),
             outer: ctx.catch_up.clone(),
+            fresh: false,
         };
         Some(mem::replace(&mut ctx.catch_up, Some(Arc::new(scope))))
     }

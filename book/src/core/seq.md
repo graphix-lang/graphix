@@ -264,15 +264,18 @@ value left standing from an earlier run. A call's answer is what the call
 produces after it is issued; a step that reads a level (`let y = x`)
 takes the level as it stands at entry, or when the whole step snapshot
 is ready if any named input is absent.
-One consequence: a function that returns a level it does not derive from
-its argument (`|v| k`) produces nothing new when called again, so a step
-calling it never completes after the first run. Sample the level on the
-argument instead (`|v| v ~ k`). Another: entering a step is a fresh
-start for the functions it calls, so a function whose answer starts from
-a constant completes the step on that constant. `let counter = |t| { let
-n = 0; n <- t ~ n + 1; n }` makes `let a = counter(t)` 0 at every run,
-its count arriving a cycle later. Start such state at `never()`, or keep
-it outside the seq.
+A call a step makes is a fresh call at every run, as in an ordinary
+language: the function's body starts again, reading its arguments and
+the variables it captures as they stand. So `let load = ||
+sys::fs::read_all(path)` reads the file again at each run, though `path`
+never changed, where outside a seq a function that returns a level it
+does not derive from its argument (`|v| k`) produces nothing new when
+called again. State inside the function starts afresh too, so a
+function whose answer starts from a constant completes the step on that
+constant: `let counter = |t| { let n = 0; n <- t ~ n + 1; n }` makes
+`let a = counter(t)` 0 at every run, its count arriving a cycle later.
+What the function captures from outside keeps its value: keep a count
+that must last across runs outside the function.
 
 This clocks the call site, not the function body: callbacks and captured
 state inside a function remain reactive. References are sampled as

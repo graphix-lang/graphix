@@ -2006,6 +2006,29 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
     // read_all(path) does (the |v| k rule: nothing fires the read again). Making a
     // nullary call re-run its body like a call in an ordinary language would need its
     // body born again at each issue.
+    // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D4): (b), rebirth
+    // the callee: a call a seq step issues runs its callee's body fresh each run as the
+    // step's own nodes are (constants fire, builtins reborn, select entry history
+    // reset, nested calls included), every call, not only nullary; state inside the
+    // callee starts fresh, captured state outside is untouched; calls outside seq are
+    // unchanged; needs a soak.
+    // 2026-10-29 claude: Built as ruled (D4): a call a step issues is a fresh frame at
+    // every run. SeqGuard's first update in a run (the issue) opens wake::FreshFrame:
+    // every standing input of the call (arguments, function values, live reads, its
+    // callee's captures, nested callees') is delivered fired for that update, and a
+    // catch-up scope that owes everything standing delivers the inputs of a callee
+    // bound as it runs. The step's View::Step rebirths the slept callee body as before
+    // (builtins reborn, lets re-initialized, selects' entry history reset); what is
+    // bound inside it (a catch binder, a nested seq's pc) still reads stale.
+    // CachedArgsAsync::reborn drops its last answer, so a previous run's reply never
+    // answers the issue. The probe's read_all(path), load() and load1(n) now answer 1,
+    // 2, 3. Pins that fail without it:
+    // lang::seq_calls::a_callee_reads_its_world_fresh_each_run (load() answers nothing
+    // without the frame; nested(n) answers 1, 1, 1 without the async reborn),
+    // a_callees_own_state_starts_fresh_each_run ([1010, 2111, 3212] without),
+    // lang::seq::reentry_fired_only (its |v| k case answers [7] without);
+    // a_call_outside_a_seq_resumes pins that a call outside a seq resumes. Needs a
+    // soak.
     let pos = spec.pos;
     let input = format_compact!("#seqargs{}", spec.id.inner());
     let issued = format_compact!("#seqissued{}", spec.id.inner());
