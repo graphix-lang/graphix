@@ -2869,3 +2869,25 @@ run!(required_trait_checks_actual_callback_effects, r#"{
     impl Apply for i64 { let apply = |s, f| f(s) };
     Apply::apply(1, |x| sys::time::after_idle(duration:1.ms, x))
 }"#, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+
+// A trait bound on a union reaches its open member: every member of a
+// union implements the trait, `x`'s cell included.
+run!(trait_bound_reaches_an_open_union_member, r#"{
+    trait Sz { val sz: fn(self) -> i64 };
+    impl Sz for i64 { let sz = |x| x };
+    let g = 'c: Sz |x: 'c| -> i64 Sz::sz(x);
+    let h = |b: bool, x| -> i64 g(select b { true => 1, false => x });
+    h(true, "s")
+}"#, refused("string does not implement Sz"); FuseExpect::None);
+
+run!(
+    trait_bound_on_an_open_union_member_admits_an_impl,
+    r#"{
+    trait Sz { val sz: fn(self) -> i64 };
+    impl Sz for i64 { let sz = |x| x };
+    let g = 'c: Sz |x: 'c| -> i64 Sz::sz(x);
+    let h = |b: bool, x| -> i64 g(select b { true => 1, false => x });
+    h(false, 2)
+}"#,
+    is(Value::I64(2))
+);

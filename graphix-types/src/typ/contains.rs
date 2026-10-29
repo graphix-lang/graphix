@@ -433,7 +433,8 @@ fn exact(t: &Type) -> bool {
 
 /// Give the open cells inside `t`, about to be bound into the cell, their
 /// part of each exact structural conjunct (`Array<i64> ⊇ Array<'y>` binds
-/// `'y`): a probe admits them free, and the bind passes down only the
+/// `'y`) and each trait conjunct (every member of a union implements the
+/// trait): a probe admits them free, and the bind passes down only the
 /// predicates.
 fn commit_cell_constraints(
     tv: &TVar,
@@ -443,8 +444,17 @@ fn commit_cell_constraints(
     t: &Type,
 ) -> Result<bool> {
     for c in tv.cell_constraints().iter() {
-        let predicate = c.is_predicate();
-        if predicate || c.is_trait_ref(env) {
+        if c.is_trait_ref(env) {
+            for m in Type::dispatch_members(env, t)?.iter() {
+                if let Type::TVar(m) = m
+                    && !m.is_rigid()
+                {
+                    m.add_cell_constraint(c.clone())
+                }
+            }
+            continue;
+        }
+        if c.is_predicate() {
             continue;
         }
         let held = match exact(c) {

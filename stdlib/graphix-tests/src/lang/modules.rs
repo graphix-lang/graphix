@@ -1776,3 +1776,13 @@ const TWO_BLOCK_MODULES_CROSSED: &str = r#"
 }
 "#;
 run!(two_block_modules_crossed, TWO_BLOCK_MODULES_CROSSED, refused("type mismatch T does not contain T"); FuseExpect::None);
+
+// A glob `use` in a collection callback: forked slots each compile the
+// callback's body, and its glob is registered once.
+const GLOB_IN_FORKED_SLOTS: &str = r#"
+{ let a = [1, 2]; array::map(a, |x: i64| { use str::*; let w = once(x); len("ab") + w }) }
+"#;
+run!(glob_in_forked_slots, GLOB_IN_FORKED_SLOTS, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Array(a)) if &a[..] == [Value::I64(3), Value::I64(4)]
+); FuseExpect::Jit);

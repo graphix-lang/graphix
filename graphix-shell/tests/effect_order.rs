@@ -29,3 +29,19 @@ fn map_literal_entries_run_in_written_order() {
     assert_eq!(fused, ["10", "11", "12", "13"]);
     assert_eq!(walked, ["10", "11", "12", "13"]);
 }
+
+/// A `dbg` whose argument a seq step's lowering rewrote names no lowered
+/// expression: its id differs from run to run.
+#[test]
+fn dbg_in_a_seq_step_names_no_lowered_expression() {
+    let program = "let r = seq { dbg(i64:7) };\n\
+                   sys::exit(sys::time::after_idle(duration:100.ms, 0));\n\
+                   r\n";
+    for args in [&["--no-cache"][..], &["--no-cache", "--no-fusion"]] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ran = graphix(dir.path(), program, args, &[]);
+        let out = format!("{}{}{}", ran.stdout, ran.stderr, ran.log);
+        let line = out.lines().find(|l| l.contains("dbg")).expect(&out);
+        assert!(line.ends_with("dbg: 7") && !line.contains('#'), "{line}");
+    }
+}

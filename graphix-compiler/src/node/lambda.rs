@@ -190,8 +190,20 @@ impl DefTable {
                 crate::typ::settle::position_cells(t, &mut cells)
             }
         });
+        let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.for_each_type(&mut |t, _| {
+            t.each_quantifier(&mut |_, tv| {
+                if let Some(open) = tv.open_cell() {
+                    for c in open.cell_constraints().iter() {
+                        c.reached_cells(&mut quantifiers)
+                    }
+                    quantifiers.insert(open.cell_addr(), open);
+                }
+            })
+        });
         for (addr, tv) in cells.iter() {
             if !exempt.contains(addr)
+                && !quantifiers.contains_key(addr)
                 && !tv.is_bound()
                 && !tv.requires_concrete()
                 && tv.level().owner() == Some(owner)
@@ -626,6 +638,13 @@ pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) {
     t.alias_tvars(&mut known);
 }
 
+// CR claude for claude: [bug/medium] A quantifier a definition declares but only its
+// body writes is not the definition's variable: the gate (`DefGate::open`) and this
+// walk take only the signature's variables, so `'a: Number |x| -> i64 { let v: 'a =
+// x; 0 }` checks, and `f("s")` over it runs, where a declared variable should be
+// rigid in the body and `x: string` refused against `Number`. The declaration is
+// silently dropped. Found root-causing oct28d's check-vs-build findings; no finding
+// hits it alone. probe: ~/tmp/triage-oct28d/elab/ (body-quantifier-01)
 /// The variables the definitions around the body being compiled declare,
 /// by name, the innermost's where two share one.
 fn enclosing_tvars<R: Rt>(ctx: &CompileCtx<R>, known: &mut AHashMap<ArcStr, TVar>) {

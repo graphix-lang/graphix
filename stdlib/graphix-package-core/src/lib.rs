@@ -3927,6 +3927,8 @@ impl Printer {
     ) {
         let mut line: LPooled<String> = LPooled::take();
         match self {
+            // a lowering's rewrite of the argument is not what was written
+            Self::Dbg if arg.mentions_lowered() => write!(line, "{} dbg: ", arg.pos),
             Self::Dbg => write!(line, "{} dbg({arg}): ", arg.pos),
             Self::Log => write!(line, "{}: ", arg.pos),
             Self::Print | Self::Println => Ok(()),

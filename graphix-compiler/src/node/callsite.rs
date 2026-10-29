@@ -3460,6 +3460,7 @@ impl<R: Rt> CallSite<R> {
     pub(crate) fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         let mut fresh = false;
+        let mut self_call = false;
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
             None => {
@@ -3485,6 +3486,7 @@ impl<R: Rt> CallSite<R> {
                 let ftype = if let Some(active) = active_ftype {
                     active
                 } else if is_rec_self_call {
+                    self_call = true;
                     // A shallow clone shares the def's TVar cells.
                     (*ftype).clone()
                 } else if is_param_knot {
@@ -3547,11 +3549,13 @@ impl<R: Rt> CallSite<R> {
         }
         self.check_value_defaults(ctx, ftype)?;
         let mut unread_callbacks = SmallVec::new();
-        if fresh {
+        // a recursive call shares its definition's cells, which the
+        // defaults it omits narrow as a fresh instance's
+        if fresh || self_call {
             let mut carriers = SmallVec::new();
             self.defaults_open =
                 !self.check_omitted_defaults(ctx, ftype, &mut carriers)?;
-            if !self.defaults_open {
+            if fresh && !self.defaults_open {
                 if static_builtin(ctx, self).is_some() {
                     self.for_each_unread(&ctx.env, ftype, &carriers, |name, tv| {
                         if ftype.quantifiers.contains(name) {

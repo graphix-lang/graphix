@@ -355,6 +355,12 @@ impl FnType {
         // type the signature holds is its callers' to pick
         let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.inner_quantifiers(&mut quantifiers);
+        let owned: LPooled<Vec<TVar>> = quantifiers.values().cloned().collect();
+        for tv in owned.iter() {
+            for c in tv.cell_constraints().iter() {
+                reached_cells(c, &mut quantifiers)
+            }
+        }
         // a `Concrete` or `Function` cell met only inside a conjunct is no
         // position of the signature: nothing reads it, so it is left as
         // it stands

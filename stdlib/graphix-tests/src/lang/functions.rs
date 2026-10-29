@@ -3297,3 +3297,28 @@ run!(
     }"#,
     is(Value::I64(40))
 );
+
+// A lambda literal's own quantifier is its callers' to pick: the check of
+// the definition around it settles neither it nor its constructor element.
+run!(
+    an_argument_lambdas_quantifier_stays_open,
+    r#"{ let f = |x: 'z| 0; let g = || f('c: Collection |c: 'c| 0); g() }"#,
+    is(Value::I64(0))
+);
+
+// A `let rec` self-call that omits a default checks it against the shared
+// signature, which a monomorphic recursion narrows.
+run!(
+    a_self_calls_omitted_default_is_checked,
+    r#"{ let rec g = |#s = 0, x: i64| g(x - -1); g(#s: "top", 1) }"#,
+    refused("type mismatch i64 does not contain string")
+);
+
+run!(
+    a_self_calls_omitted_default_takes_the_shared_type,
+    r#"{
+        let rec g = |#s = 0, x: i64| select x { 0 => s, x => g(x - 1) };
+        (g(#s: 5, 1), g(1))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(0), Value::I64(0)])
+);

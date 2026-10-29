@@ -1774,14 +1774,15 @@ impl Env {
         }
     }
 
-    /// Register a glob (`use m::*`) source module at `scope`.
-    /// Idempotent.
+    /// Register a glob (`use m::*`) source module at `scope`. A glob
+    /// already there is no write: two compile tasks registering it again
+    /// would each replace the entry, which their joins refuse.
     pub fn import_glob(&mut self, scope: &ModPath, src: Glob) {
-        let sn = self.names.get_or_default(scope.clone());
-        let globs = Arc::make_mut(&mut sn.globs);
-        if !globs.contains(&src) {
-            globs.push(src)
+        if self.names.get(scope).is_some_and(|sn| sn.globs.contains(&src)) {
+            return;
         }
+        let sn = self.names.get_or_default(scope.clone());
+        Arc::make_mut(&mut sn.globs).push(src)
     }
 
     /// Whether `level` itself declares `name`: a binding, a type or a
@@ -2283,6 +2284,19 @@ impl Env {
 mod test {
     use super::*;
     use crate::is_block_component;
+
+    #[test]
+    fn two_forks_registering_one_glob_join() {
+        let mut env = Env::default();
+        let scope = ModPath::from(["blk"]);
+        let str = || Glob::Module(ModPath::from(["str"]));
+        env.import_glob(&scope, str());
+        let (mut a, mut b) = (env.fork(), env.fork());
+        a.import_glob(&scope, str());
+        b.import_glob(&scope, str());
+        env.join(a);
+        env.join(b);
+    }
 
     #[test]
     fn mod_root_strips_marked() {
