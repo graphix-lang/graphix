@@ -2096,6 +2096,15 @@ impl<R: Rt> Select<R> {
                 }))
                 .at(&site);
             }
+            // CR claude for claude: [bug/medium] A slice arm's element test is not told
+            // apart from an open element type. `let f = |x: Array<['b, `Keep('b)]>| ->
+            // ['b, null] select x { [`Keep(r), ..] => r, _ => null }` checks, and over
+            // `xs: Array<[`Keep(i64), `Keep(`Keep(i64))]> = [`Keep(1)]` f(xs) returns 1
+            // typed [`Keep(i64), null], so `select v { `Keep(n) => n, null as _ => 0 }`
+            // then matches no arm (both engines). The tuple spelling, `(`Keep(r), _)`
+            // over ('b, i64), is refused since (x-engine-collections-02), so this arm
+            // makes no Told judgment here, or one that finds nothing: not located.
+            // (keep-slice-told-01)
             if checking && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate) {
                 if let Some(why) = pat.type_predicate.rep_collision(&ctx.env, &rest) {
                     return Err(format_with_flags(PrintFlag::DerefTVars, || {

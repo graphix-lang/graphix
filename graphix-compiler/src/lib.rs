@@ -2661,24 +2661,7 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
 /// Whether a select arm testing for `test` tells it from `rest`, what
 /// else reaches the arm, open cells read as any type they may yet bind.
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
-    let Some(why) = test.rep_collision_open(env, rest) else { return Ok(()) };
-    let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
-    // a cell the arm's own predicate holds (a slice pattern's element) is
-    // the arm's to narrow, not a type it must tell apart
-    fn cells(t: &Type, own: &mut AHashSet<usize>) {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                if own.insert(tv.cell_addr())
-                    && let Some(b) = tv.binding()
-                {
-                    cells(&b, own)
-                }
-            }
-            t => t.for_each_child(&mut |c| cells(c, own)),
-        })
-    }
-    let mut own: LPooled<AHashSet<usize>> = LPooled::take();
-    // CR claude for claude: [bug/high] This exemption waives every cell the test merely
+    // XCR claude for claude: [bug/high] This exemption waives every cell the test merely
     // mentions, not only a slice pattern's element cells. So `|y: 'b, x: ['b,
     // `Keep('b)]| select x { `Keep(r) => r, r => r }` passes, although an instance may
     // bind 'b to a `Keep variant. `g(`Keep(6), `Keep(5))` then returns 5 typed
@@ -2701,13 +2684,20 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     // strips exactly the one layer the type has. This replaces round 2's B (an abstract
     // keep(v) marker), which alone was not sound. x-engine-collections-02's exemption
     // is fixed on its own either way.
-    cells(test, &mut own);
-    let owned = |t: &Type| matches!(t, Type::TVar(tv) if own.contains(&tv.cell_addr()));
-    if let Indiscernible::Pair(a, b) = &why
-        && ((open(a) && owned(a)) || (open(b) && owned(b)))
-    {
-        return Ok(());
-    }
+    // 2026-10-29 claude: told() no longer exempts a pair after the fact. The collision
+    // walk takes the arm's side (Type::rep_collision_tested): an open cell of the
+    // test's is a part the arm binds and does not test, so it collides with nothing and
+    // the walk keeps looking; an open cell of the rest's collides even where the arm's
+    // capture shares it. The rule this CR suggests (never a cell rest also holds)
+    // refused lang::select::generic_slice_arms_check, since an unannotated scrutinee's
+    // type is the slice predicate itself. Pins:
+    // lang::select::generic_select_telling_quantifier_from_keep_refused (this probe)
+    // and generic_tuple_part_telling_quantifier_from_keep_refused ((`Keep(r), _) over
+    // ('b, i64)) fail without it; generic_slice_arms_check and
+    // generic_annotated_slice_arms_check hold the slice arms. A slice arm's element
+    // test over Array<['b, `Keep('b)]> is still accepted: keep-slice-told-01.
+    let Some(why) = test.rep_collision_tested(env, rest) else { return Ok(()) };
+    let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
     format_with_flags(PrintFlag::DerefTVars, || {
         if let Indiscernible::Pair(a, b) = &why
             && (open(a) || open(b))

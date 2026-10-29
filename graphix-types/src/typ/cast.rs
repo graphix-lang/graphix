@@ -1869,10 +1869,12 @@ pub enum Open {
 /// type it may yet bind, collides with the other: it may share the
 /// other's form, or, `ordered`, be another numeric type. A bound that is
 /// a type holds every value of the cell, so a cell with such bounds
-/// collides only where each of them does.
+/// collides only where each of them does. Under `tested`, an open cell
+/// of `a`'s collides with nothing.
 fn open_collision(
     env: &Env,
     seen: &mut RepSeen,
+    tested: bool,
     ordered: bool,
     a: &Type,
     b: &Type,
@@ -1899,7 +1901,7 @@ fn open_collision(
         }
         let mut why = None;
         for b in typed.iter() {
-            why = Some(rep_collision(env, seen, Open::Unknown, ordered, t, b)?);
+            why = Some(rep_collision(env, seen, tested, Open::Unknown, ordered, t, b)?);
         }
         match why? {
             Indiscernible::Numbers(_) => Some(Indiscernible::OpenNumber(t.clone())),
@@ -1907,6 +1909,7 @@ fn open_collision(
         }
     };
     match (open(a), open(b)) {
+        (Some(_), _) if tested => None,
         (Some(x), Some(y)) => (x.cell_addr() != y.cell_addr()).then(pair).flatten(),
         (Some(x), None) => beside(&x, b),
         (None, Some(y)) => beside(&y, a),
@@ -2119,10 +2122,12 @@ fn rep_overlaps(a: &Type, b: &Type) -> bool {
 
 /// Two parts of `a` and `b` a runtime test can't tell apart, or,
 /// `ordered`, two numeric types at one position, whose values have no
-/// order between them.
+/// order between them. `tested`: `a` is a select arm's test, whose open
+/// cells are parts the arm binds and does not test.
 fn rep_collision(
     env: &Env,
     seen: &mut RepSeen,
+    tested: bool,
     open: Open,
     ordered: bool,
     a: &Type,
@@ -2138,7 +2143,7 @@ fn rep_collision(
         walk(seen, pair_at(a, b), None, grows, |seen| {
             let pairs =
                 |seen: &mut RepSeen, xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
-                    xs.map(|(x, y)| rep_collision(env, seen, open, ordered, x, y))
+                    xs.map(|(x, y)| rep_collision(env, seen, tested, open, ordered, x, y))
                         .find(Option::is_some)
                         .flatten()
                 };
@@ -2158,7 +2163,9 @@ fn rep_collision(
                         (Open::Unknown, Some(Type::Set(ts)), _) => {
                             pairs(seen, &mut ts.iter().map(|t| (t, b)))
                         }
-                        (Open::Unknown, _, _) => open_collision(env, seen, ordered, a, b),
+                        (Open::Unknown, _, _) => {
+                            open_collision(env, seen, tested, ordered, a, b)
+                        }
                     };
                 };
                 let (a, b) = (ha, hb);
@@ -2238,13 +2245,22 @@ impl Type {
     /// carry it, `array` and `Array<i64>`). A test that tells them apart
     /// can't tell such a value's type.
     pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        rep_collision(env, &mut RepSeen::default(), Open::Benign, false, self, t)
+        rep_collision(env, &mut RepSeen::default(), false, Open::Benign, false, self, t)
     }
 
     /// [`Self::rep_collision`] with an open cell read as any type it may
     /// yet bind ([`Open::Unknown`]): what a definition must rule out.
     pub fn rep_collision_open(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        rep_collision(env, &mut RepSeen::default(), Open::Unknown, false, self, t)
+        rep_collision(env, &mut RepSeen::default(), false, Open::Unknown, false, self, t)
+    }
+
+    /// [`Self::rep_collision_open`] for a select arm testing for `self`
+    /// among `t`: an open cell of the test's is a part the arm binds and
+    /// does not test (a slice pattern's element), so it collides with
+    /// nothing; one of `t`'s may be any type, even where the arm's
+    /// capture shares it.
+    pub fn rep_collision_tested(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
+        rep_collision(env, &mut RepSeen::default(), true, Open::Unknown, false, self, t)
     }
 }
 
@@ -2431,6 +2447,7 @@ fn rep_ambiguity(
                                 let c = rep_collision(
                                     env,
                                     &mut RepSeen::default(),
+                                    false,
                                     open,
                                     ordered,
                                     a,

@@ -1065,7 +1065,10 @@ cycle, across workers; the compiler never pins threads.
   member there, or in a union dispatch, reads as any type it may yet bind
   (`Open::Unknown`, judged at the statement's settle, `PendingSettle::
   Told`): beside a member whose form another type may share it is refused
-  ("annotate it"), a `NoError` cell sharing no error's form. A
+  ("annotate it"), a `NoError` cell sharing no error's form. An open cell
+  of the arm's own test (a slice element: a part it binds, not one it
+  tests) collides with nothing; one of what else reaches the arm does,
+  even where the arm's capture shares it (`Type::rep_collision_tested`). A
   compared type (`==` and the orderings), a map key type and what the
   stdlib compares or hashes (`uniq`, `min`/`max`, the sorts, `dedup`,
   `map::` keys) may hold no such pair anywhere: the `'a: Discernible`

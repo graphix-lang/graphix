@@ -140,7 +140,13 @@ they may yet bind (`PendingSettle::Told`), and a union dispatch reads its
 open members the same way (`dispatch_members` keeps them): beside a
 reference, a function, an error, a map, an array or a Rust-backed abstract
 an open member is refused ("annotate it"). A `NoError` cell shares no
-error's form, so a select over `Result<'a, E>` stays legal.
+error's form, so a select over `Result<'a, E>` stays legal. The arm's own
+test is judged from the arm's side (`Type::rep_collision_tested`): an
+open cell of the test's is a part the arm binds and does not test (a
+slice pattern's element), so it collides with nothing and the walk looks
+on; an open cell of what else reaches the arm may be any type, even where
+the arm's capture shares it, so `` |x: ['b, `Keep('b)]| select x {
+`Keep(r) => r, r => r } `` is refused as its `` `Keep(i64) `` spelling is.
 
 **Seq machines.** A machine's `pc` holds its step labels as bare variants
 (`seq_machine.rs`, `SeqAbort`).

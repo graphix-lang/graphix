@@ -4685,6 +4685,29 @@ run!(generic_slice_arms_check, r#"{
     matches!(v, Ok(v) if v.to_string() == "[false, i64:1, i64:1]")
 }; FuseExpect::Jit);
 
+// A definition's own quantifier is not the arm's to narrow: an instance
+// may bind 'b to a `Keep, which the arm would take apart.
+run!(generic_select_telling_quantifier_from_keep_refused, r#"{
+  let g = |y: 'b, x: ['b, `Keep('b)]| -> 'b select x { `Keep(r) => r, r => r };
+  g(`Keep(6), `Keep(5))
+}"#, refused("isn't known here and may share `Keep("); FuseExpect::None);
+
+run!(generic_tuple_part_telling_quantifier_from_keep_refused, r#"{
+  let f = |x: ('b, i64)| -> ['b, null] select x { (`Keep(r), _) => r, _ => null };
+  f((`Keep(1), 2))
+}"#, refused("isn't known here and may share `Keep("); FuseExpect::None);
+
+// Over a written element type the slice arms' own cells are still theirs.
+run!(generic_annotated_slice_arms_check, r#"{
+  let first = |a: Array<'a>| select a { [h, ..] => h, [] => never() };
+  let snd = |a: Array<'a>| select a { [_, h, ..] => h, _ => never() };
+  let pair = |a: Array<'a>| select a { [h, t] => (h, t), _ => never() };
+  let lit = |a| select a { [1, h, ..] => h, _ => 0 };
+  (first([1, 2]) + snd([1, 2]), pair([3, 4]), lit([1, 5]))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:3, [i64:3, i64:4], i64:5]")
+}; FuseExpect::Jit);
+
 // Under a written union a slice pattern narrows to the member it can
 // match, as a tuple or variant pattern does.
 run!(slice_pattern_under_written_union, r#"{
