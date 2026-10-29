@@ -1967,7 +1967,7 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     /// site sleeps. Either way nothing answers after a sleep: a reply to a
     /// call made before it is dropped, or handed to [`Self::reclaim`]'s
     /// closure. Never `false` under [`Calls::Latest`], which aborts.
-    // CR claude for claude: [bug/high] The default makes a sleep throw away the reply of
+    // XCR claude for claude: [bug/high] The default makes a sleep throw away the reply of
     // evals whose work no abort stops. The db and sqlite ops run under spawn_blocking,
     // process spawn completes on its first poll, and a tcp accept may have completed
     // before the sleep. Their reply is the only copy of what they did: a popped or
@@ -2019,6 +2019,14 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     // flight and hold the queue until they finish. The generation compare is also weakly
     // pinned (only tcp_read_across_sleep, by a hang); add a fixture issuing a second db
     // call at the wake.
+    // 2026-10-29 claude: Fixed: KeptReplies counts the calls made before the latest sleep
+    // that still run (running, from the unanswered inflight less the replies waiting) and
+    // holds the site's current reply id; a Fifo site's queue waits while running > 0
+    // (CachedArgsAsync::waits_on_old), and the last such call to finish wakes the site
+    // under its current id. Pin: lang::test_builtins::calls_in_order_across_a_sleep (a
+    // test-only eval not cancel-safe logs its start and end; without the gate every mode
+    // logs start 1, start 2, end 2, end 1). CLAUDE.md and design/async_sleep_outputs.md
+    // say so. Needs the soak.
     const CANCEL_SAFE: bool = true;
 
     /// What settles the reply of a call `args` made, for an eval not
@@ -2160,16 +2168,27 @@ pub type Reclaim = Box<dyn FnOnce(Option<Value>) + Send>;
 /// The replies of a site whose evals finish across a sleep, oldest first,
 /// and the sleeps it has had: a reply to a call made before the latest
 /// sleep is reclaimed, never answered.
-#[derive(Default)]
 struct KeptReplies {
     sleeps: u64,
     replies: VecDeque<(Value, Option<Reclaim>)>,
+    /// calls made before the latest sleep still running: a `Fifo` site's
+    /// next call waits for them
+    running: usize,
+    /// the reply id the site answers under now, which the last of those
+    /// calls to finish wakes
+    id: BindId,
 }
 
 impl KeptReplies {
-    /// Take back every reply waiting, for a sleep.
-    fn reclaim_all(&mut self) {
+    fn new(id: BindId) -> Self {
+        Self { sleeps: 0, replies: VecDeque::new(), running: 0, id }
+    }
+
+    /// Take back every reply waiting, for a sleep, of the `inflight`
+    /// calls not answered yet: those not among them still run.
+    fn reclaim_all(&mut self, inflight: usize) {
         self.sleeps += 1;
+        self.running += inflight.saturating_sub(self.replies.len());
         for (v, reclaim) in self.replies.drain(..) {
             if let Some(reclaim) = reclaim {
                 reclaim(Some(v))
@@ -2272,6 +2291,9 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         data_result: Option<Type>,
         t: T,
     ) -> Self {
+        let kept = (!T::CANCEL_SAFE).then(|| {
+            triomphe::Arc::new(parking_lot::Mutex::new(KeptReplies::new(var.id)))
+        });
         Self {
             cached,
             var,
@@ -2279,7 +2301,7 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
             inflight: 0,
             replaced: SmallVec::new(),
             abort: None,
-            kept: (!T::CANCEL_SAFE).then(Kept::default),
+            kept,
             panic_tag,
             data_result,
             out: TagValue::phantom(),
@@ -2347,11 +2369,11 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
     /// of the calls replaced.
     fn drop_calls<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.abort = None;
+        if let Some(kept) = &self.kept {
+            kept.lock().reclaim_all(self.inflight)
+        }
         self.inflight = 0;
         self.queued.clear();
-        if let Some(kept) = &self.kept {
-            kept.lock().reclaim_all()
-        }
         for id in self.replaced.drain(..) {
             ctx.release_var(id, self.var.top_id());
         }
@@ -2366,6 +2388,13 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         self.queued.clear();
         let old = self.var.fresh(ctx);
         self.replaced.push(old);
+    }
+
+    /// Whether calls made before the latest sleep still run, which a
+    /// `Fifo` site's next call waits for.
+    fn waits_on_old(&self) -> bool {
+        T::CALLS == Calls::Fifo
+            && self.kept.as_ref().is_some_and(|k| k.lock().running > 0)
     }
 
     /// Answer `v` as a call in flight would, in a later cycle.
@@ -2529,7 +2558,8 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
             }
             self.queued.push_back(args);
         }
-        while (T::CALLS == Calls::Concurrent || self.inflight == 0)
+        while (T::CALLS == Calls::Concurrent
+            || (self.inflight == 0 && !self.waits_on_old()))
             && let Some(args) = self.queued.pop_front()
         {
             self.inflight += 1;
@@ -2559,10 +2589,17 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
                         let mut kept = kept.lock();
                         if kept.sleeps == sleeps {
                             kept.replies.push_back((v, reclaim));
-                        } else if let Some(reclaim) = reclaim {
+                            return (id, Value::Null);
+                        }
+                        if let Some(reclaim) = reclaim {
                             reclaim(Some(v))
                         }
-                        (id, Value::Null)
+                        kept.running -= 1;
+                        match kept.running {
+                            // the last call before the sleep lets the queue go on
+                            0 => (kept.id, Value::Null),
+                            _ => (id, Value::Null),
+                        }
                     }
                 }
             });
@@ -2615,10 +2652,12 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
         match &self.kept {
             None => self.renew(ctx),
             Some(kept) => {
-                kept.lock().reclaim_all();
+                let mut kept = kept.lock();
+                kept.reclaim_all(self.inflight);
                 self.queued.clear();
                 self.inflight = 0;
                 self.var.remint(ctx);
+                kept.id = self.var.id;
             }
         }
     }

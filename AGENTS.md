@@ -697,7 +697,8 @@ file open or seek, a db or sqlite op, a spawn, a tcp connect or listen:
 whatever stopping mid-way would lose) finish; nothing answers a call after
 its site's sleep, so such a reply is dropped, or settled by
 `EvalCachedAsync::reclaim` (a stream read's bytes return to the stream,
-and later reads of it wait for that). `sys::net::call` cancels its local
+and later reads of it wait for that), and a `Fifo` site's next call waits
+for such calls to finish. `sys::net::call` cancels its local
 wait and remints its reply ID on sleep or a new call; old replies cannot
 answer it. Remote effects are not undone. Its completed result survives
 sleep, and wake alone starts no call. Bottom never reaches builtin authors: a bottomed arg bottoms the

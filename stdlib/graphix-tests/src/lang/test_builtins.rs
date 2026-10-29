@@ -5,13 +5,13 @@
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, Effect, ExecCtx, Node, PruneMode, Rt, Scope,
     TagValue, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, fast_builtin,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, fast_builtin,
     testing::{Mode, TestState},
 };
 use netidx_core::pack::PackError;
@@ -370,7 +370,69 @@ async fn prune_audit_refuses_a_queued_effect() -> Result<()> {
     }
 }
 
+/// Where each `test_slow_log` call started and ended, by the key its
+/// fixture passes.
+static SLOW_LOG: Mutex<Vec<(i64, CompactString)>> = Mutex::new(Vec::new());
+static SLOW_KEYS: AtomicI64 = AtomicI64::new(0);
+
+/// `test_slow_log(key, k, ms)`: answers `k` after `ms`, and may not be
+/// dropped once started, as a write or a db op may not.
+#[derive(Debug, Default)]
+struct SlowLogEv;
+
+graphix_package_core::unit_image_state!(SlowLogEv);
+
+impl EvalCachedAsync for SlowLogEv {
+    const NAME: &str = "test_slow_log";
+    const CANCEL_SAFE: bool = false;
+    type Args = (i64, i64, i64);
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        Some((cached.get(0)?, cached.get(1)?, cached.get(2)?))
+    }
+
+    fn eval((key, k, ms): Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            SLOW_LOG.lock().push((key, format_compact!("start {k}")));
+            tokio::time::sleep(Duration::from_millis(ms as u64)).await;
+            SLOW_LOG.lock().push((key, format_compact!("end {k}")));
+            Value::I64(k)
+        }
+    }
+}
+
+/// A call that may not be dropped runs on when its arm sleeps, unanswered,
+/// and a one-at-a-time site's next call, issued at the wake, waits for it.
+async fn calls_in_order_across_a_sleep(mode: Mode) -> Result<()> {
+    let key = SLOW_KEYS.fetch_add(1, Ordering::Relaxed);
+    let code = format!(
+        "{{
+  let step = 0;
+  step <- select step {{ s if s < 3 => s + 1, _ => never() }};
+  let ev = select step {{ 0 => `Call(1), 3 => `Call(2), _ => `Idle }};
+  let slow = |key: i64, k: i64, ms: i64| -> i64 'test_slow_log;
+  select ev {{
+    `Call(k) => slow({key}, k, select k {{ 1 => 300, _ => 10 }}),
+    `Idle => never()
+  }}
+}}"
+    );
+    let setup = |ctx: &mut TestState| {
+        ctx.register_builtin::<CachedArgsAsync<SlowLogEv>>().unwrap();
+    };
+    run_delta_with(&code, mode, setup, Duration::from_millis(700)).await?;
+    let log: Vec<CompactString> = SLOW_LOG
+        .lock()
+        .iter()
+        .filter(|(k, _)| *k == key)
+        .map(|(_, e)| e.clone())
+        .collect();
+    assert_eq!(log, ["start 1", "end 1", "start 2", "end 2"]);
+    Ok(())
+}
+
 modes!(
+    calls_in_order_across_a_sleep,
     rust_panics_in_a_kernel,
     a_panic_stops_a_kernel_loop,
     mistyped_function_value_is_refused,

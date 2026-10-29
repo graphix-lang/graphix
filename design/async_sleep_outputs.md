@@ -63,7 +63,7 @@ born view, a seq step entered for its next run.
 
 | Family | Sleep | Wake |
 | --- | --- | --- |
-| `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, db, sqlite, other packages on the wrapper) | aborts the call in flight, remints the reply ID; keeps args and result; an eval not cancel-safe (stream reads and writes, cursor reads, tls handshakes, file open/seek/fstat/truncate, db and sqlite ops, process spawn, tcp connect/listen) finishes instead, unanswered; a read's bytes return to the stream | starts a call only on an argument fire |
+| `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, db, sqlite, other packages on the wrapper) | aborts the call in flight, remints the reply ID; keeps args and result; an eval not cancel-safe (stream reads and writes, cursor reads, tls handshakes, file open/seek/fstat/truncate, db and sqlite ops, process spawn, tcp connect/listen) finishes instead, unanswered, and a one-at-a-time site's next call waits for it; a read's bytes return to the stream | starts a call only on an argument fire |
 | rpc `call` | cancels the local wait and remints the reply ID; keeps the result; remote work may finish unanswered | starts a call only on an argument fire |
 | `timer` | cancels the armed fire; keeps the run; clears its output | re-arms the run if fires remain |
 | `after_idle` | cancels a pending wait; clears its output | resumes a pending wait |
