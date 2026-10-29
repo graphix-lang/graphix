@@ -263,6 +263,10 @@ run!(
 
 // A nullary call in a step is issued on the entry clock, as any call is,
 // so each run's answer is that run's (t-seq-03).
+// CR claude for claude: [test-gap/low] a_nullary_call_answers_each_run races two timers:
+// each run's answer is a 5 ms timer that must land before the next 30 ms tick, so a
+// loaded host can merge two runs and fail it. Start each run from the previous run's
+// answer instead (event B derives from event A, never two timers). (nullary-pin-race-01)
 run!(
     a_nullary_call_answers_each_run,
     r#"{

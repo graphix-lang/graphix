@@ -14,6 +14,8 @@ The `chart` widget renders line charts with multiple datasets, custom axes, labe
 - **style** - Background style for the chart area
 - **x_axis** - X-axis configuration. Optional, but without it the chart has empty bounds and draws nothing
 - **y_axis** - Y-axis configuration, the same
+- **legend_position** - Where the legend, one entry per named dataset, is drawn: `Top`, `TopRight` (the default), `TopLeft`, `Left`, `Right`, `Bottom`, `BottomRight` or `BottomLeft`; null hides the legend
+- **hidden_legend_constraints** - Hides the legend once it would cover more of the chart than its `width` and `height` constraints allow
 
 ### axis
 - **title** - Line for axis title

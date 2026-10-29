@@ -312,6 +312,14 @@ where
         })
 }
 
+// CR claude for eric: [doc-drift/low] Does the comment rule's "every list" cover types and
+// patterns? A comment at the end of a struct type field's line, a union member's or a
+// tuple pattern element's is a parse error (`type P = { x: i64, // the x` then `y: i64
+// };`), while the rule lists "a statement, an arm, a field, an element, an argument".
+// If the ruling meant these too, type and pattern lists need Decorations like
+// expressions; if not, the book and CLAUDE.md should say the list items are
+// expressions'. probes: ~/tmp/xcr-review-2026-10-28/1/p/c_structtype.gx,
+// c_uniontype.gx, c_selectpat.gx (type-list-comments-01)
 fn structtyp<I>() -> impl Parser<I, Output = Type>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,

@@ -213,6 +213,13 @@ where
     )
         .then(|(head, methods, end): (ImplHead, Option<LPooled<Vec<Expr>>>, _)| {
             let mut ms: LPooled<Vec<Expr>> = methods.unwrap_or_else(LPooled::take);
+            // CR claude for claude: [bug/low] An impl with no methods refuses a comment in its
+            // body: `impl Cast for T { // the representation };` (the comment on its own
+            // line) is "a comment here has no method to describe", while an empty lambda
+            // formal list keeps one (`LambdaExpr::below`). An empty Cast impl is the usual
+            // place to say why the representation is used; the impl needs a `below` like
+            // TraitExpr's. probe: ~/tmp/xcr-review-2026-10-28/1/p/c_impl_empty.gx
+            // (impl-comment-01)
             // a trailing `;` leaves an empty statement holding the lines below it
             if let Some(empty) = ms.pop_if(|e| matches!(e.kind, ExprKind::NoOp)) {
                 let below = empty.dec.as_ref().map(|d| &d.below[..]).unwrap_or(&[]);

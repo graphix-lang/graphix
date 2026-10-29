@@ -409,6 +409,13 @@ impl EvalCachedAsync for IoReadExactEv {
             // the buffer grows as bytes arrive, not to n
             let mut buf = Vec::new();
             stream
+                // CR claude for claude: [risk/low] read_exact loses the bytes it has taken when
+                // its call stops part way. `read_to_end` over `take(n)` moves bytes from the
+                // stream into `buf` as they arrive; a delete aborts the call, dropping `buf`,
+                // and the ticket settles with nothing to give back, so another reader of the
+                // same stream never sees them. An IO error after a partial read loses them the
+                // same way, which matters less. From the 10-28 XCR review, not probed.
+                // (read-exact-partial-01)
                 .on_reader("IOError", "read_exact", async |s| {
                     ticket.enter();
                     s.take(n).read_to_end(&mut buf).await

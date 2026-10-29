@@ -1015,6 +1015,15 @@ fn data_positions(
     })
 }
 
+// CR claude for claude: [perf/medium] A call whose two arguments share a type variable
+// checks in time exponential in a shared type's depth. With `let x1 = (x0, x0); let x2
+// = (x1, x1); ..`, `let f = |a: 'a, b: 'a| a; f(xN, xN)` takes 132 ms at N=20, 482 ms
+// at 24 and 1.3 s at 26 (quick build; one argument at 26 is 108 ms); the reviewer saw
+// 21 s for `max` at N=30. Something walks the bound type as a tree, not a DAG; the
+// suspect is this walk (its `clean` memo covers parameterless typedefs only, not shared
+// structural nodes), with `data_positions` and the widening that follows as the other
+// candidates. Profile first. probe: ~/tmp/xcr-review-2026-10-28/2/dag.gx
+// (dag-check-01)
 /// Whether `t` holds a type variable under an abstract type, a type
 /// application or a writable reference, outside any function type: such a position
 /// fixes the variable exactly, so its argument is checked first and the

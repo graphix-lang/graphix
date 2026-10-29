@@ -2195,6 +2195,15 @@ fn check_defaults<R: Rt>(
         })?;
         let res = node.typecheck0(ctx).and_then(|()| {
             let typ = node.typ().clone();
+            // CR claude for eric: [bug/low] This refuses a default of the factory's own
+            // declared variable, with advice the author has already followed: `|z: 'a| ->
+            // 'a { let g = |#d: 'a = z, y: i64| d; g(1) }` is "default reads an enclosing
+            // open type: annotate the factory's parameter or give the defaulted parameter a
+            // closed type", though both are annotated 'a. Should an enclosing definition's
+            // declared variable count as closed here, since each instance of the factory
+            // fixes it? If not, the message should name the variable and say a type
+            // variable is not a closed type. probe: ~/tmp/xcr-review-2026-10-28/new/dflt.gx
+            // (default-tvar-01)
             if at.typ.has_unbound() && holds_enclosing_cell(&typ, def.level.depth()) {
                 bail!(
                     "default reads an enclosing open type: annotate the factory's \

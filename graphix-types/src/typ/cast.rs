@@ -2832,6 +2832,11 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.
+// CR claude for eric: [bug/low] A whole float prints without its fraction, so a print and
+// parse round trip through a union changes its class: `let x: [i64, f64] = 3.0;
+// cast<[i64, f64]>("[x]")` is i64:3, since the union takes the narrowest integer that
+// holds "3". Should a float's plain print keep its ".0", or is this round trip not
+// promised? probe: ~/tmp/xcr-review-2026-10-28/new/rt.gx (print-roundtrip-01)
 fn holds_exactly(v: &Value, c: &Value) -> bool {
     match v {
         Value::String(s) => match s.trim().parse::<Value>() {

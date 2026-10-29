@@ -1621,6 +1621,14 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| self.covers_inner(env, typ, inferred))
     }
 
+    // CR claude for claude: [bug/medium] A partial struct pattern does not cover a rigid
+    // declared variable bounded by a struct: `'a: {a: i64, b: string} |x: 'a| -> i64
+    // select x { {a, ..} => a }` is refused "missing match cases: no arm covers 'a:
+    // unbound within { a: i64, b: string }", though every value of 'a is a value of its
+    // bound. covers_inner's `expand(env, typ)` finds no shape in the unbound cell; a cell
+    // whose constraints give it one shape should be judged against that shape, and
+    // child_types should type the binds from it. probe:
+    // ~/tmp/xcr-review-2026-10-28/3/bc/s5.gx, s6.gx (bounded-cover-01)
     fn covers_inner(&self, env: &Env, typ: &Type, inferred: bool) -> bool {
         if let Self::Bind(_) | Self::Ignore = self {
             return true;

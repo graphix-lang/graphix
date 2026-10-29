@@ -450,6 +450,13 @@ fn desugar_plain(
     Ok(block(pos, exprs.drain(..)))
 }
 
+// CR claude for claude: [bug/medium] A seqq flush empties the queue but not the requests
+// still waiting for an absent capture (those `BinOp::BankedSample` banks until the
+// capture arrives). In the probe, requests `A and `B arrive while `ready` is absent,
+// the flush fires before `ready` does, and both still run once it arrives (prints "a 7"
+// and "b 7"). "flush(e) also empties the queue" should drop them: the flush must reach
+// the banked requests too. probe: ~/tmp/xcr-review-2026-10-28/1/p/flushwait.gx
+// (seqq-flush-wait-01)
 /// The prelude that makes a seq's `abort(..)` and `flush(..)` one event
 /// bound to `aborted`, and a `seqq`'s queue. The queue takes the flush
 /// event in the cycle it fires, so a request that arrives with it stays,
