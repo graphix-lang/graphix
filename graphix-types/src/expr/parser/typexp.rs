@@ -23,7 +23,7 @@ use combine::{
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
 };
-use compact_str::CompactString;
+use compact_str::{CompactString, format_compact};
 use netidx_core::utils::Either;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
@@ -279,7 +279,13 @@ where
                 explicit_throws,
                 ..Default::default()
             };
-            value(ft.declaring(&constraints)).right()
+            let ft = ft.declaring(&constraints);
+            if let Err(e) = ft.check_quantifiers_held() {
+                super::grow::note_reason(end, None, format_compact!("{e}"));
+                return because("a declared quantifier the signature does not hold")
+                    .left();
+            }
+            value(ft).right()
         })
 }
 

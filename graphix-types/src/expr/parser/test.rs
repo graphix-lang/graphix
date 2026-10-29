@@ -2470,6 +2470,37 @@ fn a_fn_type_names_each_argument_once() {
 }
 
 #[test]
+fn a_fn_type_holds_each_quantifier_it_declares() {
+    const WHY: &str = "'a is declared but the signature does not hold it";
+    for src in [
+        "let f: fn<'a: Number>(x: i64) -> i64 = |x| x",
+        "type F = fn<'a: Number, 'b: Int>(x: 'b) -> 'b",
+        "type F = fn<'a: Array<'b>, 'b: Int>(x: 'b) -> 'b",
+        "let f = |g: fn<'a: Int>(x: i64, h: fn<'a: Int>(y: 'a) -> 'a) -> i64| 1",
+    ] {
+        let msg = format!("{:#}", parse_one(src).unwrap_err());
+        assert!(msg.contains(WHY), "{src}: {msg}");
+    }
+    for src in [
+        "trait T { val m: fn<'a: Number>(self) -> i64 }",
+        "val f: fn<'a: Number>(x: i64) -> i64",
+    ] {
+        let msg = format!("{:#}", parse_sig(Origin::unspecified(src)).unwrap_err());
+        assert!(msg.contains(WHY), "{src}: {msg}");
+    }
+    for src in [
+        "type F = fn<'a: Number>(x: 'a) -> i64",
+        "type F = fn<'a: Number>(x: i64) -> 'a",
+        "type F = fn<'a: Number>(x: i64) -> i64 throws 'a",
+        "type F = fn<'a: Array<'b>, 'b: Array<'c>, 'c: Int>(x: 'a) -> i64",
+        "type F = fn<'a: Number>(g: fn(x: 'a) -> i64) -> i64",
+        "type F = fn<'a: Int>(g: fn<'b: Array<'a>>(x: 'b) -> i64) -> i64",
+    ] {
+        parse_one(src).unwrap_or_else(|e| panic!("{src}: {e:#}"));
+    }
+}
+
+#[test]
 fn an_impl_records_where_each_trait_segment_was_written() {
     let e = parse_one("impl super::m::Show for i64").unwrap();
     let ExprKind::Impl(i) = &e.kind else { panic!("{e:?}") };

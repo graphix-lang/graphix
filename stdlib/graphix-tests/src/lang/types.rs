@@ -1317,6 +1317,56 @@ run!(
     refused("'e: unbound within Number does not contain i64");
     FuseExpect::None
 );
+// A quantifier a definition declares is one its signature holds: no call
+// can choose one only the body names.
+run!(
+    a_quantifier_only_the_body_reads_is_refused,
+    "{ let f = 'a: Number |x| -> i64 { let v: 'a = x; 0 }; f(\"s\") }",
+    refused("'a is declared but the signature does not hold it");
+    FuseExpect::None
+);
+run!(
+    a_quantifier_only_a_body_annotation_names_is_refused,
+    "{ let f = 'a: Number |x: i64| -> i64 { let v: 'a = 1; 0 }; f(1) }",
+    refused("'a is declared but the signature does not hold it");
+    FuseExpect::None
+);
+run!(
+    an_unused_quantifier_is_refused,
+    "{ let f = 'a: Number |x: i64| -> i64 x; f(1) }",
+    refused("'a is declared but the signature does not hold it");
+    FuseExpect::None
+);
+run!(
+    a_nested_definitions_unheld_quantifier_is_refused,
+    "{ let f = 'a: Number |k: 'a| 'b: Int |x: 'a| [x, k]; f(1)(2) }",
+    refused("'b is declared but the signature does not hold it");
+    FuseExpect::None
+);
+run!(
+    a_written_fn_types_unheld_quantifier_is_refused,
+    "{ type F = fn<'a: Number>(x: i64) -> i64; let f: F = |x| x; f(1) }",
+    refused("'a is declared but the signature does not hold it");
+    FuseExpect::None
+);
+run!(
+    a_quantifier_a_parameter_holds_checks,
+    "{ let f = 'a: Number |x: 'a| -> 'a x; f(f32:1.5) }",
+    prints("f32:1.5")
+);
+run!(
+    a_quantifier_held_through_bounds_checks,
+    "{ let f = 'a: Array<'b>, 'b: Array<'c>, 'c: Int |x: 'a| -> i64 array::len(x); \
+       f([[u8:7], [u8:8]]) }",
+    prints("i64:2")
+);
+run!(
+    a_quantifier_held_through_bounds_keeps_its_bound,
+    "{ let f = 'a: Array<'b>, 'b: Array<'c>, 'c: Int |x: 'a| -> i64 array::len(x); \
+       f([[\"s\"]]) }",
+    refused("does not contain");
+    FuseExpect::None
+);
 run!(
     body_annotation_takes_the_definitions_variable,
     "{ let g = 'e: Number |x: 'e| -> 'e { let v: 'e = x; v }; g(2) }",

@@ -70,6 +70,13 @@ u8:1)` returns at most `('x, u8)`; `(i64, [u8, null]) ⊇` it holds).
   (`typexp::fntype`) and `Lambda::compile` alias same-named signature
   leaves onto the declared quantifier's cell first, then
   `add_cell_constraint` — the conjunct lands in the one shared cell.
+  A declared quantifier is one the signature holds: a position names
+  it, or the bound of a quantifier the signature holds does (`'a:
+  Array<'b>, 'b: Int |x: 'a|`). Any other is refused where it is
+  declared (`FnType::check_quantifiers_held`: the parser for a written
+  `fn<..>`, `Lambda::compile` for a definition), since no call could
+  choose it. Pins: `lang::types::a_quantifier_only_the_body_reads_is_refused`
+  and its neighbours, `parser::test::a_fn_type_holds_each_quantifier_it_declares`.
 - A definition's gate keeps what its body bound: the signature is the
   scheme, relations between its positions included (`|x| [x, x]` is
   `fn(x: 'a) -> Array<'a>`), so a call's types follow from the signature

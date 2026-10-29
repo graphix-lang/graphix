@@ -272,6 +272,12 @@ greet(#greeting: "hi", "world")   // labeled always by name, before positionals
 let f = |@args: i64| args         // variadic (builtins only)
 ```
 
+A declared type variable must appear in the signature: on a parameter,
+the return type, the throws, or in the bound of another declared
+variable that does. `'a: Number |x: i64| -> i64 { let v: 'a = 1; x }`
+is refused (no call could choose `'a`), and so is a written
+`fn<'a: Number>(x: i64) -> i64`.
+
 Calls resolve statically where the compiler can trace the function. A
 function-variable write fires its call's current result even when it
 writes the same function; the call keeps its instance and state. A HOF

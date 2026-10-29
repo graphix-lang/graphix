@@ -768,7 +768,10 @@ node graph IS the IR — there is no parallel typed IR
   annotation, `never<T>`, a nested lambda's signature) names one
   variable per name, and a name a definition around it declares, and
   the written place does not declare itself, is that definition's
-  variable (`lambda::body_annotation`, `enclosing_tvars`); a def's declared tvars are
+  variable (`lambda::body_annotation`, `enclosing_tvars`); a quantifier
+  a definition or a written `fn<..>` declares must be held by its
+  signature (a parameter, the return, the throws, a held quantifier's
+  bound), else it is refused (`FnType::check_quantifiers_held`); a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥ and no
   two unify (`contains.rs` Distinct), so a function type without
   `throws` (which throws nothing) refuses one that throws `'e`, while a call instantiates them

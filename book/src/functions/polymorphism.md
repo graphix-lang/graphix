@@ -102,6 +102,21 @@ caller may still pass two values of the same type to a two-variable
 function; the promise is about what the body may assume, not about what
 callers may do.
 
+A call chooses a type for each declared variable from its arguments, its
+result and what it throws, so a variable must appear in the signature:
+on an argument, the return type or the throws, or inside the bound of
+another variable that does (`'a: Array<'b>, 'b: Int |x: 'a|`). One that
+only the body names could be chosen by no call, and the definition is
+refused,
+
+```graphix
+〉let h = 'a: Number |x: i64| -> i64 { let v: 'a = 1; x }
+error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type or the throws, or remove it
+```
+
+A written function type follows the same rule: `fn<'a: Number>(x: i64)
+-> i64` is refused too.
+
 A third bound, `Discernible`, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
 can: a string, an array, a tuple, a struct, a list and each variant are

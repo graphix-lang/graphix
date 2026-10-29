@@ -629,7 +629,7 @@ fn typexp() -> impl Strategy<Value = Type> {
                 ),
                 option::of(inner.clone()),
                 inner.clone(),
-                collection::vec((random_fname(), bound(inner.clone())), (0, 4)),
+                collection::vec((any::<sample::Index>(), bound(inner.clone())), (0, 4)),
                 option::of(inner.clone())
             )
                 .prop_map(|(mut args, vargs, rtype, constraints, throws)| {
@@ -662,10 +662,21 @@ fn typexp() -> impl Strategy<Value = Type> {
                         explicit_throws,
                         ..Default::default()
                     };
-                    let constraints: Vec<(TVar, Type)> = constraints
-                        .into_iter()
-                        .map(|(a, t)| (TVar::empty_named(a), t))
-                        .collect();
+                    // a fn type declares only variables its positions hold
+                    // as the parser reads them (`[Any, 'a]` is `Any`)
+                    let mut held = ahash::AHashMap::new();
+                    ft.for_each_type(&mut |t| t.normalize().collect_tvars(&mut held));
+                    let mut held: Vec<ArcStr> = held.into_keys().collect();
+                    held.sort();
+                    let constraints: Vec<(TVar, Type)> = match held.len() {
+                        0 => vec![],
+                        n => constraints
+                            .into_iter()
+                            .map(|(i, t)| {
+                                (TVar::empty_named(held[i.index(n)].clone()), t)
+                            })
+                            .collect(),
+                    };
                     let ft = ft.declaring(&constraints);
                     Type::Fn(Arc::new(ft))
                 })

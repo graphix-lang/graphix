@@ -638,13 +638,31 @@ pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) {
     t.alias_tvars(&mut known);
 }
 
-// CR claude for claude: [bug/medium] A quantifier a definition declares but only its
+// XCR claude for claude: [bug/medium] A quantifier a definition declares but only its
 // body writes is not the definition's variable: the gate (`DefGate::open`) and this
 // walk take only the signature's variables, so `'a: Number |x| -> i64 { let v: 'a =
 // x; 0 }` checks, and `f("s")` over it runs, where a declared variable should be
 // rigid in the body and `x: string` refused against `Number`. The declaration is
 // silently dropped. Found root-causing oct28d's check-vs-build findings; no finding
 // hits it alone. probe: ~/tmp/triage-oct28d/elab/ (body-quantifier-01)
+// 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D2): (b), refuse it
+// at the definition: a quantifier the signature does not hold (no parameter, return,
+// throws or held quantifier's bound reaches it) is an error, "'a is declared but the
+// signature does not hold it".
+// 2026-10-29 claude: Built: FnType::check_quantifiers_held (graphix-types
+// typ/fntyp.rs) closes the signature's variables over the bounds of the ones it
+// holds and refuses a declared quantifier outside them; Lambda::compile calls it on
+// every definition's signature, and the parser's fntype on every written fn<..> type
+// (formals, lets, typedefs, interface vals, trait methods). No stdlib, example, book
+// or netidx-admin declaration needed changing; the expr round-trip generator now
+// declares only variables its positions hold. Pins that fail without it:
+// lang::types::{a_quantifier_only_the_body_reads_is_refused,
+// a_quantifier_only_a_body_annotation_names_is_refused,
+// an_unused_quantifier_is_refused,
+// a_nested_definitions_unheld_quantifier_is_refused,
+// a_written_fn_types_unheld_quantifier_is_refused}; without the bound closure,
+// a_quantifier_held_through_bounds_checks and _keeps_its_bound and
+// parser::test::a_fn_type_holds_each_quantifier_it_declares fail.
 /// The variables the definitions around the body being compiled declare,
 /// by name, the innermost's where two share one.
 fn enclosing_tvars<R: Rt>(ctx: &CompileCtx<R>, known: &mut AHashMap<ArcStr, TVar>) {
@@ -1967,7 +1985,9 @@ impl Lambda {
                         .any(|(_, e)| matches!(e, Type::TVar(e) if e.name == *name))
             });
             ft.alias_tvars(&mut known);
-            Arc::new(ft.declaring(&constraints))
+            let ft = ft.declaring(&constraints);
+            ft.check_quantifiers_held()?;
+            Arc::new(ft)
         };
         typ.lambda_ids.set_id(id);
         typ.claim(level);

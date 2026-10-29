@@ -853,6 +853,37 @@ impl FnType {
         }
     }
 
+    /// Refuse a declared quantifier the signature does not hold: no
+    /// position names it, nor a bound of a variable the signature holds.
+    /// No call can choose one, so its declaration would decide nothing.
+    pub fn check_quantifiers_held(&self) -> Result<()> {
+        if self.quantifiers.is_empty() {
+            return Ok(());
+        }
+        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        self.collect_tvars(&mut held);
+        let mut todo: LPooled<Vec<TVar>> = held.values().cloned().collect();
+        let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        while let Some(tv) = todo.pop() {
+            for tc in tv.cell_constraints() {
+                tc.normalize().collect_tvars(&mut found);
+            }
+            for (name, tv) in found.drain() {
+                if !held.contains_key(&name) {
+                    todo.push(tv.clone());
+                    held.insert(name, tv);
+                }
+            }
+        }
+        match self.quantifiers.iter().find(|q| !held.contains_key(*q)) {
+            None => Ok(()),
+            Some(q) => bail!(
+                "'{q} is declared but the signature does not hold it: write it on \
+                 a parameter, the return type or the throws, or remove it"
+            ),
+        }
+    }
+
     /// Each of the signature's own quantifiers whose cell is open, as the
     /// signature names it and as its open cell.
     fn open_quantifiers(&self, mut f: impl FnMut(&TVar, TVar)) {
