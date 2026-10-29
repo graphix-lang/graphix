@@ -456,20 +456,22 @@ fn mp(s: &str) -> ModPath {
 /// A node a value can stand at — statement forms wrapped in parens or
 /// a block are nonsense, not probes.
 fn value_pos(k: &ExprKind) -> bool {
-    !matches!(
-        k,
+    match k {
         ExprKind::NoOp
-            | ExprKind::Bind(_)
-            | ExprKind::Use { .. }
-            | ExprKind::Module { .. }
-            | ExprKind::TypeDef(_)
-            | ExprKind::Trait(_)
-            | ExprKind::Impl(_)
-            | ExprKind::Connect { .. }
-            | ExprKind::Catch(_)
-            | ExprKind::Until(_)
-            | ExprKind::TryWith(_)
-    )
+        | ExprKind::Bind(_)
+        | ExprKind::Use { .. }
+        | ExprKind::Module { .. }
+        | ExprKind::TypeDef(_)
+        | ExprKind::Trait(_)
+        | ExprKind::Impl(_)
+        | ExprKind::Connect { .. }
+        | ExprKind::Catch(_)
+        | ExprKind::Until(_)
+        | ExprKind::TryWith(_) => false,
+        // a seq's statement group may end in a `let`, and has no value then
+        ExprKind::Block { exprs } => exprs.last().is_none_or(|e| value_pos(&e.kind)),
+        _ => true,
+    }
 }
 
 /// Deterministic spread of up to `cap` sites (stride over the list —
@@ -958,6 +960,15 @@ mod test {
                 .iter()
                 .all(|p| p.kind != TmKind::BlockWrap || p.body.contains("&a[1]")),
             "a place root wrapped"
+        );
+    }
+
+    #[test]
+    fn a_step_group_ending_in_a_let_is_no_value() {
+        let (probes, _) = probes("{ let x = 1; seq { { 2; let r = 3 }; x } }", 16);
+        assert!(
+            probes.iter().all(|p| !p.body.contains("({ 2; let r = 3 })")),
+            "a let-ending group wrapped"
         );
     }
 
