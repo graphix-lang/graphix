@@ -1252,6 +1252,8 @@ where
             string("m"),
             string("h"),
             string("d"),
+            string("M"),
+            string("y"),
         )),
     )
         .and_then(|(n, unit)| {

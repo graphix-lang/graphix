@@ -1489,7 +1489,7 @@ impl Expr {
 
     /// The value this expression writes when it is a literal: a constant,
     /// or an array, list, map, tuple, struct or variant of literals.
-    // CR claude for claude: [bug/medium] str::parse (fc_parse) promises to read what
+    // XCR claude for claude: [bug/medium] str::parse (fc_parse) promises to read what
     // Graphix prints, but several values print as text that is no Graphix literal. A
     // datetime prints `2020-01-01 00:00:00 UTC` (refused even alone), bytes print
     // `AQI=`, a string holding brackets prints `"a[b]"` (the parser reads an
@@ -1520,6 +1520,10 @@ impl Expr {
     // duration, top level and nested: [duration:31557600.s, duration:2630016.s] prints
     // [1.y, 1.M] and parses to ParseError. parse_printed_primitive_composites never
     // tries y or M; extend it. probe ~/tmp/xcr-review-2026-10-28/1/p/dur.gx
+    // 2026-10-29 claude: printed_scalar accepts the M and y units the duration printer
+    // uses, so a printed year or month duration parses back, top level and nested.
+    // Pin: lib_tests::str::parse_printed_primitive_composites now round-trips
+    // [duration:31557600.s, duration:2630016.s] (prints [1.y, 1.M]) and duration:1.y.
     pub fn literal_value(&self) -> Option<Value> {
         fn all(args: &[Expr]) -> Option<LPooled<Vec<Value>>> {
             let mut vals: LPooled<Vec<Value>> = LPooled::take();

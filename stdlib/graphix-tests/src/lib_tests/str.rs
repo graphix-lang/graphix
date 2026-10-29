@@ -659,6 +659,7 @@ run!(parse_printed_primitive_composites, r#"{
      round((i8:-1, u16:2, i32:-3, u32:4, v32:5, z32:-6, v64:7, z64:-8)),
      round([duration:1.ns, duration:1.us, duration:1.ms]),
      round([duration:120.s, duration:1800.s, duration:3600.s, duration:86400.s]),
+     round([duration:31557600.s, duration:2630016.s]), round(duration:1.y),
      round([1e20, -1e20, 1e100]),
      !is_err(nan), inf == 7]
-}"#, prints("[true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]"); FuseExpect::Jit);
+}"#, prints("[true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]"); FuseExpect::Jit);
