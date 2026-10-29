@@ -314,7 +314,10 @@ pub(super) fn holds_comment(e: &Expr) -> bool {
                 || d.attrs.iter().any(|a| a.args.iter().any(holds_comment))
         }) || match &e.kind {
             ExprKind::Trait(t) => {
-                t.methods.iter().any(|m| !m.comments.lines().is_empty())
+                !t.below.lines().is_empty()
+                    || t.methods
+                        .iter()
+                        .any(|m| !m.comments.lines().is_empty() || m.eol.text().is_some())
             }
             ExprKind::Use { names, .. } => {
                 names.iter().any(|n| !n.comments.lines().is_empty())
@@ -329,7 +332,10 @@ pub(super) fn holds_comment(e: &Expr) -> bool {
             }
             ExprKind::Module { value, .. } => match &**value {
                 ModuleKind::Dynamic { sig, .. } => {
-                    sig.items.iter().any(|si| !si.comments.lines().is_empty())
+                    !sig.below.lines().is_empty()
+                        || sig.items.iter().any(|si| {
+                            !si.comments.lines().is_empty() || si.eol.text().is_some()
+                        })
                 }
                 _ => false,
             },

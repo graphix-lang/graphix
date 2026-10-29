@@ -2569,6 +2569,19 @@ fn no_comment_stands_inside_a_splice_or_an_attribute() {
         ("let s = \"a[[\n  1, // one\n  2\n][0]$]b\";\ns", splice),
         ("let s = \"\"\"a \\[f(\n // c\n 1)] b\"\"\";\ns", splice),
         ("let s = \"[{ trait T {\n // c\n val f: fn(self) -> i64 }; 1 }]\";\ns", splice),
+        ("let s = \"[{ trait T {\n val f: fn(self) -> i64 // c\n }; 1 }]\";\ns", splice),
+        (
+            "let s = \"[{ trait T {\n val f: fn(self) -> i64;\n // c\n }; 1 }]\";\ns",
+            splice,
+        ),
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { val x: i64 // c\n }; source \"let x = 1\" }; 1 }]\";\ns",
+            splice,
+        ),
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { val x: i64;\n // c\n }; source \"let x = 1\" }; 1 }]\";\ns",
+            splice,
+        ),
         (
             "#[parallel(f(\n    1, // which\n    2\n))]\nlet a = f(1);\na",
             "a comment cannot stand inside an attribute",
