@@ -453,6 +453,17 @@ run!(ctor_quantifier, CTOR_QUANTIFIER, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(3)])
 });
 
+// A generic function's own quantifiers are known: a collection of a
+// polymorphic builtin dispatches as any other.
+run!(
+    ctor_quantifier_over_a_generic_element,
+    r#"{
+        let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
+        csize([<bit_not, 2, 3>])
+    }"#,
+    is(Value::I64(3))
+);
+
 run!(
     ctor_quantifier_in_an_interface,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(3)]),

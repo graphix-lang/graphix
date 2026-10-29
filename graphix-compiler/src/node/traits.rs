@@ -1097,7 +1097,13 @@ impl<R: Rt> CallSite<R> {
                 self_t = self_t.lookup_ref(&ctx.env)?;
             }
         }
-        if self_t.has_unbound() {
+        // a function type's own quantifiers are known: it is generic in them
+        let unknown = {
+            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            self_t.collect_tvars(&mut tvs);
+            tvs.values().any(|tv| Type::TVar(tv.clone()).has_unbound())
+        };
+        if unknown {
             if ctx.def_gate_depth > 0 {
                 return Ok(None);
             }
