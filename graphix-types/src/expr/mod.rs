@@ -1527,6 +1527,13 @@ impl Expr {
     // uses, so a printed year or month duration parses back, top level and nested.
     // Pin: lib_tests::str::parse_printed_primitive_composites now round-trips
     // [duration:31557600.s, duration:2630016.s] (prints [1.y, 1.M]) and duration:1.y.
+    // 2026-10-29 claude: Eric (2026-10-29, cr-discuss round 3 D13): use netidx's
+    // parser and add microseconds to netidx. Done: netidx-value exports
+    // parser::duration (float literal + unit, µs read as us), its duration: literal
+    // uses it, and printed_scalar here uses it in place of its own unit list, so the
+    // two cannot drift again. parser::test::printed_scalars_stay_in_data_reader reads
+    // 1.µs (printers always write the point); netidx-value duration_units_round_trip
+    // pins duration:7.µs.
     pub fn literal_value(&self) -> Option<Value> {
         fn all(args: &[Expr]) -> Option<LPooled<Vec<Value>>> {
             let mut vals: LPooled<Vec<Value>> = LPooled::take();

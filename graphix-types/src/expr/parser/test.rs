@@ -2791,7 +2791,7 @@ fn printed_scalars_stay_in_data_reader() {
     for src in [
         "2020-01-01 00:00:00.123456789 UTC",
         "1.5s",
-        "1µs",
+        "1.µs",
         "2.m",
         "30.m",
         "1.h",

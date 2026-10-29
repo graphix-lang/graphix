@@ -1248,28 +1248,7 @@ where
                 StreamErrorFor::<I>::message_static_message("a printed datetime")
             })
     });
-    let duration = (
-        many1::<CompactString, _, _>(satisfy(|c: char| c.is_ascii_digit() || c == '.')),
-        choice((
-            attempt(string("ns")),
-            attempt(string("us")),
-            attempt(string("µs")),
-            attempt(string("ms")),
-            string("s"),
-            string("m"),
-            string("h"),
-            string("d"),
-            string("M"),
-            string("y"),
-        )),
-    )
-        .and_then(|(n, unit)| {
-            duration_of(&n, if unit == "µs" { "us" } else { unit })
-                .map(|d| Value::Duration(Arc::new(d)))
-                .ok_or_else(|| {
-                    StreamErrorFor::<I>::message_static_message("a printed duration")
-                })
-        });
+    let duration = netidx_value::parser::duration().map(|d| Value::Duration(Arc::new(d)));
     let nonfinite = (
         optional(choice((attempt(string("f32:")), string("f64:")))),
         choice((
@@ -1408,7 +1387,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    const UNITS: [&str; 9] = ["ns", "us", "ms", "s", "m", "h", "d", "M", "y"];
+    const UNITS: [&str; 10] = ["ns", "us", "µs", "ms", "s", "m", "h", "d", "M", "y"];
     (
         attempt(string("duration:")),
         position(),
@@ -1424,11 +1403,13 @@ where
                     pos,
                     None,
                     compact_str::format_compact!(
-                        "`{unit}` is not a duration unit; the units are ns, us, ms, \
-                         s, m, h, d, M and y (`duration:30.m`)"
+                        "`{unit}` is not a duration unit; the units are ns, us (or µs), \
+                         ms, s, m, h, d, M and y (`duration:30.m`)"
                     ),
                 );
-            } else if n.parse::<f64>().is_ok() && duration_of(&n, &unit).is_none() {
+            } else if n.parse::<f64>().is_ok()
+                && duration_of(&n, if unit == "µs" { "us" } else { &unit }).is_none()
+            {
                 grow::note_reason(
                     start,
                     Some(n.len() + unit.len()),
