@@ -100,10 +100,9 @@ Graphix TUIs excel at displaying real-time data. Connect to data sources via net
 
 ## Printing While a TUI Runs
 
-The display owns stdout: `print`, `println` and a log written to stdout
-land in the terminal between frames and stay there. Write debug output
-to stderr instead. When stderr goes where the display draws (the
-terminal), the display holds it while it runs and writes what was held
-after it gives the terminal back; when stderr is redirected (`graphix
-app.gx 2>debug.log`), every write goes straight to the file, so `tail -f
-debug.log` follows the program live.
+The display holds neither stdout nor stderr: whatever a program, a
+library or a child process writes to either while the display runs goes
+straight to where it points. On the terminal it lands over the display
+and stays until the display draws over it. To keep debug output off the display, redirect stderr and write
+to it (`graphix app.gx 2>debug.log`, then `tail -f debug.log` in another
+terminal follows the program live).

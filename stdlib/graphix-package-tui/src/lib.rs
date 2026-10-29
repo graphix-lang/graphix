@@ -91,10 +91,6 @@ mod overlay;
 mod paragraph;
 mod scrollbar;
 mod sparkline;
-#[cfg(unix)]
-mod stderr;
-#[cfg(unix)]
-use stderr::StderrHeld;
 mod table;
 mod tabs;
 mod text;
@@ -1040,36 +1036,13 @@ impl Drop for GiveBack {
     }
 }
 
-/// Hold stderr while the display runs, only when it is the display's own
-/// output: a redirected stderr (a debug log) is written straight through.
-#[cfg(unix)]
-fn hold_stderr() -> Option<StderrHeld> {
-    if !same_file(1, 2) {
-        return None;
-    }
-    StderrHeld::hold().inspect_err(|e| error!("stderr stays on the terminal: {e:?}")).ok()
-}
-
-/// Whether descriptors `a` and `b` name one file.
-#[cfg(unix)]
-fn same_file(a: libc::c_int, b: libc::c_int) -> bool {
-    let stat = |fd| {
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        (unsafe { libc::fstat(fd, &mut st) } == 0).then_some((st.st_dev, st.st_ino))
-    };
-    matches!((stat(a), stat(b)), (Some(x), Some(y)) if x == y)
-}
-
 /// The terminal while the display holds it: raw mode, the alternate
-/// screen, bracketed paste, its events and stderr. Dropping it gives all
-/// of that back, the event reader first.
+/// screen, bracketed paste and its events. Dropping it gives all of that
+/// back, the event reader first.
 struct Live {
     events: Fuse<EventStream>,
     terminal: DefaultTerminal,
     _give_back: GiveBack,
-    /// Last, so what it kept is written after the terminal is given back.
-    #[cfg(unix)]
-    _stderr: Option<StderrHeld>,
 }
 
 impl Live {
@@ -1080,15 +1053,11 @@ impl Live {
             std::panic::set_hook(Box::new(move |info| {
                 if TERMINAL_ACTIVE.load(Ordering::Acquire) {
                     give_back_terminal();
-                    #[cfg(unix)]
-                    stderr::restore_for_panic();
                     TERMINAL_INTERRUPTED.store(true, Ordering::Release);
                 }
                 prev(info)
             }))
         });
-        #[cfg(unix)]
-        let stderr = hold_stderr();
         terminal::enable_raw_mode().context("raw mode")?;
         let give_back = GiveBack;
         TERMINAL_INTERRUPTED.store(false, Ordering::Release);
@@ -1101,23 +1070,12 @@ impl Live {
         let terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(
             std::io::stdout(),
         ))?;
-        Ok(Self {
-            events: EventStream::new().fuse(),
-            terminal,
-            _give_back: give_back,
-            #[cfg(unix)]
-            _stderr: stderr,
-        })
+        Ok(Self { events: EventStream::new().fuse(), terminal, _give_back: give_back })
     }
 
     fn recover(&mut self, mouse: bool) -> Result<bool> {
         if !TERMINAL_INTERRUPTED.swap(false, Ordering::AcqRel) {
             return Ok(false);
-        }
-        #[cfg(unix)]
-        {
-            drop(self._stderr.take());
-            self._stderr = hold_stderr();
         }
         terminal::enable_raw_mode().context("recover raw mode")?;
         take_terminal_modes(&mut std::io::stdout())?;

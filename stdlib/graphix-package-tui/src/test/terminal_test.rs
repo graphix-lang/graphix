@@ -124,64 +124,6 @@ async fn in_child(
 
 #[cfg(unix)]
 #[tokio::test]
-async fn held_stderr_keeps_a_bounded_head_and_tail() -> anyhow::Result<()> {
-    use std::io::Write;
-    if let Some(output) =
-        in_child("held_stderr_keeps_a_bounded_head_and_tail", None, || {
-            let held = crate::StderrHeld::hold()?;
-            // fd 2 remains owned by this process while it is duplicated.
-            let writer =
-                unsafe { std::os::fd::BorrowedFd::borrow_raw(2) }.try_clone_to_owned()?;
-            let mut stderr = std::io::stderr().lock();
-            stderr.write_all(b"HEAD\n")?;
-            for _ in 0..4096 {
-                stderr.write_all(&[b'x'; 256])?;
-            }
-            stderr.write_all(b"\nTAIL\n")?;
-            drop(stderr);
-            drop(held);
-            drop(writer);
-            Ok(())
-        })
-        .await?
-    {
-        assert!(output.status.success(), "{output:?}");
-        assert!(output.stderr.len() < 70_000, "{} bytes replayed", output.stderr.len());
-        assert!(output.stderr.starts_with(b"HEAD\n"));
-        assert!(output.stderr.ends_with(b"\nTAIL\n"));
-        assert!(std::str::from_utf8(&output.stderr)?.contains("bytes dropped"));
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn stderr_inherited_while_held_outlives_the_hold() -> anyhow::Result<()> {
-    use std::io::Write;
-    if let Some(output) =
-        in_child("stderr_inherited_while_held_outlives_the_hold", None, || {
-            let held = crate::StderrHeld::hold()?;
-            // what a child spawned now inherits as its stderr
-            let inherited =
-                unsafe { std::os::fd::BorrowedFd::borrow_raw(2) }.try_clone_to_owned()?;
-            std::io::stderr().write_all(b"HELD\n")?;
-            drop(held);
-            std::fs::File::from(inherited).write_all(b"LATE\n")?;
-            let held = crate::StderrHeld::hold()?;
-            std::io::stderr().write_all(b"AGAIN\n")?;
-            drop(held);
-            Ok(())
-        })
-        .await?
-    {
-        assert!(output.status.success(), "{output:?}");
-        assert!(output.stderr.ends_with(b"HELD\nLATE\nAGAIN\n"), "{output:?}");
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-#[tokio::test]
 async fn caught_panics_do_not_leave_the_display_cooked() -> anyhow::Result<()> {
     if let Some(output) =
         in_child("caught_panics_do_not_leave_the_display_cooked", Some(b""), || {
@@ -204,72 +146,15 @@ async fn caught_panics_do_not_leave_the_display_cooked() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Nothing written to stderr reaches the alternate screen, however
-/// close to the display taking or recovering the terminal.
 #[cfg(unix)]
 #[tokio::test]
-async fn stderr_never_reaches_the_alternate_screen() -> anyhow::Result<()> {
-    use std::{
-        io::Write,
-        sync::atomic::{AtomicBool, Ordering},
-    };
-    if let Some(output) =
-        in_child("stderr_never_reaches_the_alternate_screen", Some(b""), || {
-            // stderr joins the display's stream, so the order of the two shows
-            if unsafe { libc::dup2(1, 2) } < 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            let stop = AtomicBool::new(false);
-            std::thread::scope(|s| {
-                s.spawn(|| {
-                    while !stop.load(Ordering::Relaxed) {
-                        let _ = std::io::stderr().write_all(b"LEAK\n");
-                    }
-                });
-                let r = (0..20).try_for_each(|_| {
-                    let mut live = crate::Live::take(false)?;
-                    let _ =
-                        std::panic::catch_unwind(|| panic!("caught while displaying"));
-                    assert!(live.recover(false)?);
-                    Ok(())
-                });
-                stop.store(true, Ordering::Relaxed);
-                r
-            })
-        })
-        .await?
-    {
-        assert!(output.status.success(), "{output:?}");
-        let out = &output.stdout[..];
-        let find = |hay: &[u8], needle: &[u8]| {
-            hay.windows(needle.len()).position(|w| w == needle)
-        };
-        let mut rest = out;
-        let mut screens = 0;
-        while let Some(i) = find(rest, b"\x1b[?1049h") {
-            let screen = &rest[i..];
-            let end = find(screen, b"\x1b[?1049l").unwrap_or(screen.len());
-            let screen_text = String::from_utf8_lossy(&screen[..end]);
-            assert!(!screen_text.contains("LEAK"), "{screen_text:?}");
-            screens += 1;
-            rest = &screen[end..];
-        }
-        assert_eq!(screens, 40);
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn aborting_panics_replay_stderr_and_the_diagnostic() -> anyhow::Result<()> {
+async fn aborting_panics_give_back_the_terminal() -> anyhow::Result<()> {
     extern "C" fn aborting() {
         panic!("TUI_ABORT_DIAGNOSTIC");
     }
     if let Some(output) =
-        in_child("aborting_panics_replay_stderr_and_the_diagnostic", Some(b""), || {
-            use std::io::Write;
+        in_child("aborting_panics_give_back_the_terminal", Some(b""), || {
             let _live = crate::Live::take(false)?;
-            std::io::stderr().write_all(b"TUI_BEFORE_PANIC\n")?;
             aborting();
             Ok(())
         })
@@ -277,7 +162,6 @@ async fn aborting_panics_replay_stderr_and_the_diagnostic() -> anyhow::Result<()
     {
         assert!(!output.status.success());
         let stderr = std::str::from_utf8(&output.stderr)?;
-        assert!(stderr.contains("TUI_BEFORE_PANIC"), "{stderr}");
         assert!(stderr.contains("TUI_ABORT_DIAGNOSTIC"), "{stderr}");
         assert!(std::str::from_utf8(&output.stdout)?.contains("\x1b[?1049l"));
     }
@@ -322,31 +206,49 @@ async fn ctrl_c_is_read_while_work_waits() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A stderr redirected away from the display (a debug log) is not held:
-/// what the program writes reaches the file while the display runs.
+/// Stderr is never held: what is written to it while the display runs
+/// reaches the terminal at once, over the display, before and after a
+/// recovery alike.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_redirected_stderr_is_written_while_displaying() -> anyhow::Result<()> {
-    use std::{io::Write, os::fd::AsRawFd};
+async fn stderr_is_written_through_while_displaying() -> anyhow::Result<()> {
+    use std::io::Write;
     if let Some(output) =
-        in_child("a_redirected_stderr_is_written_while_displaying", Some(b""), || {
-            let path = std::env::temp_dir()
-                .join(format!("graphix-tui-stderr-{}.log", std::process::id()));
-            let log = std::fs::File::create(&path)?;
-            if unsafe { libc::dup2(log.as_raw_fd(), 2) } < 0 {
+        in_child("stderr_is_written_through_while_displaying", Some(b""), || {
+            // stderr joins the display's stream, so the order of the two shows
+            if unsafe { libc::dup2(1, 2) } < 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
-            let live = crate::Live::take(false)?;
-            std::io::stderr().write_all(b"LOGGED\n")?;
-            let seen = std::fs::read(&path)?;
+            let mut live = crate::Live::take(false)?;
+            std::io::stderr().write_all(b"FIRST\n")?;
+            let _ = std::panic::catch_unwind(|| panic!("caught while displaying"));
+            assert!(live.recover(false)?);
+            std::io::stderr().write_all(b"RECOVERED\n")?;
             drop(live);
-            let _ = std::fs::remove_file(&path);
-            anyhow::ensure!(seen == b"LOGGED\n", "held while displaying: {seen:?}");
             Ok(())
         })
         .await?
     {
         assert!(output.status.success(), "{output:?}");
+        let find = |hay: &[u8], needle: &[u8]| {
+            hay.windows(needle.len()).position(|w| w == needle)
+        };
+        let mut rest = &output.stdout[..];
+        let mut screens: LPooled<Vec<&[u8]>> = LPooled::take();
+        while let Some(i) = find(rest, b"\x1b[?1049h") {
+            let screen = &rest[i..];
+            let end = find(screen, b"\x1b[?1049l").unwrap_or(screen.len());
+            screens.push(&screen[..end]);
+            rest = &screen[end..];
+        }
+        assert_eq!(screens.len(), 2, "{output:?}");
+        for (screen, written) in screens.iter().zip([&b"FIRST\n"[..], b"RECOVERED\n"]) {
+            assert!(
+                find(screen, written).is_some(),
+                "{:?}",
+                String::from_utf8_lossy(screen)
+            );
+        }
     }
     Ok(())
 }
