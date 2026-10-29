@@ -310,7 +310,11 @@ impl StructurePattern {
         mut complete: impl FnMut(&Type) -> Result<Option<Type>>,
     ) -> Result<Option<Type>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        union_members(env, scrutinee, &mut members)?;
+        // an open scrutinee completes against its bound, whose values it holds
+        match scrutinee.open_bound(env) {
+            Some(bound) => union_members(env, &bound, &mut members)?,
+            None => union_members(env, scrutinee, &mut members)?,
+        }
         let mut found: Option<Type> = None;
         for m in members.iter() {
             let Some(t) = complete(m)? else { continue };

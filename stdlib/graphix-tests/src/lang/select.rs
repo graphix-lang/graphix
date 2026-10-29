@@ -5159,3 +5159,16 @@ run!(guard_and_own_body_both_see_missed_fire, r#"{
     };
     select step { 7 => seen, _ => never() }
 }"#, prints(r#"[["guard 1", "arm 1"], ["guard 2", "arm 2"]]"#); FuseExpect::Jit);
+
+// A partial struct pattern over a declared variable bounded by a struct
+// completes against the bound, whose values the variable holds: it covers
+// the variable, and its run-time test is the bound's.
+run!(
+    partial_struct_pattern_over_a_struct_bounded_variable,
+    r#"{
+        let g = 'a: {a: i64, b: string} |x: 'a| -> i64 select x { {a, ..} => a };
+        let h = 'a: {a: i64, b: string} |x: 'a| -> 'a select x { v@ {a, ..} => v };
+        (g({a: 1, b: "x"}), h({a: 2, b: "y"}).b)
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::String(arcstr::literal!("y"))])
+);

@@ -1621,7 +1621,7 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| self.covers_inner(env, typ, inferred))
     }
 
-    // CR claude for claude: [bug/medium] A partial struct pattern does not cover a rigid
+    // XCR claude for claude: [bug/medium] A partial struct pattern does not cover a rigid
     // declared variable bounded by a struct: `'a: {a: i64, b: string} |x: 'a| -> i64
     // select x { {a, ..} => a }` is refused "missing match cases: no arm covers 'a:
     // unbound within { a: i64, b: string }", though every value of 'a is a value of its
@@ -1629,6 +1629,16 @@ impl StructPatternNode {
     // whose constraints give it one shape should be judged against that shape, and
     // child_types should type the binds from it. probe:
     // ~/tmp/xcr-review-2026-10-28/3/bc/s5.gx, s6.gx (bounded-cover-01)
+    // 2026-10-29 claude: The fix is in completion, not coverage: a partial struct pattern
+    // completes against the one member holding its fields, and an open scrutinee had no
+    // members (union_members skips an unbound cell), so the arm kept its partial shape {
+    // a: _ } as its type and run-time test. StructurePattern::unique_completion now
+    // completes against an open scrutinee's one structural bound (Type::open_bound: its
+    // one constraint that is neither a predicate nor a trait), whose values the cell
+    // holds; the arm then covers the variable and tests the bound's struct at run time.
+    // (Patching coverage alone made the check pass and the run hit 'no arm matches'.)
+    // Pin: lang::select::partial_struct_pattern_over_a_struct_bounded_variable (both
+    // probes). CLAUDE.md's coverage rule says so.
     fn covers_inner(&self, env: &Env, typ: &Type, inferred: bool) -> bool {
         if let Self::Bind(_) | Self::Ignore = self {
             return true;
