@@ -1,3 +1,9 @@
+//! The peak RSS a call activation and a collection slot cost the
+//! node-walk, its stack included: a loose backstop (12 KB an activation,
+//! 4 KB a slot), since RSS differs between hosts by more than a tight
+//! margin. `stdlib/graphix-tests/tests/activation_heap.rs` holds their live
+//! heap bytes to caps a few percent over the cost.
+
 #![cfg(target_os = "linux")]
 
 use compact_str::{CompactString, format_compact};
@@ -7,7 +13,7 @@ use std::{
 };
 
 const SIZES: [i64; 3] = [1, 5_000, 20_000];
-const MAX_BYTES_PER_ACTIVATION: i64 = 10 * 1024;
+const MAX_BYTES_PER_ACTIVATION: i64 = 12 * 1024;
 
 fn peak_rss_kb(program: &str) -> i64 {
     let file = tempfile::Builder::new().suffix(".gx").tempfile().unwrap();
@@ -42,7 +48,7 @@ fn assert_linear_cost(what: &str, ceiling: i64, program: impl Fn(i64) -> Compact
     eprintln!(
         "{what}: peak RSS at {SIZES:?}: {base}KB {mid}KB {deep}KB; {low}/{high} bytes per {what}"
     );
-    assert!(high <= ceiling, "a {what} costs {high} bytes, over {ceiling}");
+    assert!(high <= ceiling, "one {what} costs {high} bytes, over {ceiling}");
     assert!(
         high <= 2 * low.max(1024) && low <= 2 * high.max(1024),
         "{what} cost {low} bytes below {} deep, {high} bytes above",
@@ -61,7 +67,7 @@ fn deep_recursion_memory_is_linear() {
     });
 }
 
-const MAX_BYTES_PER_SLOT: i64 = 3_700;
+const MAX_BYTES_PER_SLOT: i64 = 4 * 1024;
 
 #[test]
 fn collection_slot_memory_is_linear() {

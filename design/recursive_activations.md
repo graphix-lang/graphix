@@ -16,6 +16,7 @@ Pins: `lang/functions.rs` (`tail_stateful_per_iteration`,
 (`shallow_ambiguous_same_tag_union`, `shallow_mixed_union_dispatch`),
 `lib_tests/lift.rs` (`recursion_shrink_deletes_unreached_activations`,
 `fused_recursion_sheds_unreached_blocks`),
+`stdlib/graphix-tests/tests/activation_heap.rs`,
 `graphix-shell/tests/recursion_memory.rs`,
 `graphix-shell/tests/check_leaves_assertions_to_the_build.rs`,
 `bench/collection/README.md`
@@ -334,8 +335,11 @@ it.
 | flat async map | unchanged (0.41s / 197MB) | unchanged (0.83s / 359MB) |
 
 Nested cases are linear now (~25µs, ~10KB per activation above the
-36MB base). `recursion_memory.rs` runs 20k interpreted activations in a
-child and bounds peak RSS at 800MB.
+36MB base). `activation_heap.rs` counts the live heap bytes of 1, 5k and
+20k node-walked activations and slots in-process (~6.0KB an activation,
+~3.2KB a slot, the same on every host) and caps their slope a few percent
+over; `recursion_memory.rs` holds the peak RSS slope of the same programs,
+stacks included, to a loose 12KB and 4KB.
 
 ## 6. The Collection trait
 
