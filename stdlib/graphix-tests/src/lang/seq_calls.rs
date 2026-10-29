@@ -262,18 +262,17 @@ run!(
 );
 
 // A nullary call in a step is issued on the entry clock, as any call is,
-// so each run's answer is that run's (t-seq-03).
-// CR claude for claude: [test-gap/low] a_nullary_call_answers_each_run races two timers:
-// each run's answer is a 5 ms timer that must land before the next 30 ms tick, so a
-// loaded host can merge two runs and fail it. Start each run from the previous run's
-// answer instead (event B derives from event A, never two timers). (nullary-pin-race-01)
+// so each run's answer is that run's (t-seq-03). Each run after the first
+// starts from the answer before it.
 run!(
     a_nullary_call_answers_each_run,
     r#"{
-  let t = sys::time::timer(duration:30.ms, 3);
+  let next = never<i64>();
+  let t = any(0, next);
   let runs = 0;
   let f = || sys::time::timer(duration:5.ms, false) ~ runs;
   let r = seq t { runs <- runs + 1; let a = f(); a };
+  next <- select r { n if n < 3 => n, _ => never() };
   array::group(r, |n, _| n == 3)
 }"#,
     |v: Result<&Value>| {
