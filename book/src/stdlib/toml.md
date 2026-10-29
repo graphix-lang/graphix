@@ -15,7 +15,8 @@ could be written by, as with [json](json.md#unions-in-the-target):
 datetime of its own, so `[string, datetime]` reads apart here.
 
 Maps follow JSON's key rule: scalar keys form a table, while a map holding
-a composite or bytes key is an array of `[key, value]` pairs. Such a map must
+a composite or bytes key, or strings beside keys of another kind, is an
+array of `[key, value]` pairs. Such a map must
 be inside a document field because TOML requires a table at the root. TOML
 cannot represent a null key. Bytes write as an array of byte integers.
 

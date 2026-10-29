@@ -454,7 +454,7 @@ pub use memo::FastMemo;
 /// RFC3339, a duration in seconds, any other value in its naked form. A
 /// reader's cast reads back these scalar object keys. [`shape`] writes
 /// a map holding any other key as an array of pairs.
-// CR claude for claude: [bug/medium] The doc says a reader's cast reads this text back,
+// XCR claude for claude: [bug/medium] The doc says a reader's cast reads this text back,
 // but it does not for a bare variant or a composite key. Map<`A, i64> writes
 // {"\"A\"":2} (the data string printed with its quotes) and Map<(i64, i64), i64> writes
 // {"[1, 2]":3`}; json::read into the same types gives InvalidCast for both, so the json
@@ -481,6 +481,12 @@ pub use memo::FastMemo;
 // scalar does not: Map<[string, i64], i64> {1 => 1, "a" => 2} writes {"1":1,"a":2} and reads back {"1" => 1, "a" => 2} (== is
 // false); [bool, string] keys alike. map_shape writes an object because every key is scalar, and JsonData models a map only as pairs
 // (textdata.rs Type::Map -> Shape::Pairs), missing the string-key collision. probe ~/tmp/xcr-review-2026-10-28/5/b/p5.gx
+// 2026-10-29 claude: map_shape writes an object only when the keys are of one class: all strings, or none a string under a key type
+// that may hold none (Any counts as may); strings beside another class, or a [string, ..] key type over non-string keys, take pairs,
+// since an object's keys read back as strings. {1 => 1, "a" => 2} over Map<[string, i64], i64> now round-trips. Pins:
+// lib_tests::json::mixed_class_map_keys_use_pairs ([string, i64] mixed and alone, [bool, string]);
+// json_keys_writing_alike_are_not_merged (was ..._refused: JSON now writes both as pairs, TOML still refuses at its root);
+// string_data_map_keys_read_back's [`A, string] refusal now comes from the pairs check. Book json and toml pages updated.
 pub fn map_key(k: &Value) -> Result<ArcStr> {
     Ok(match graphix_compiler::abstract_value::to_data(k)? {
         Value::String(s) => s,
@@ -653,7 +659,13 @@ fn map_shape<'a>(
         ) || Typ::number().contains(Typ::get(k))
             || rep::variant(k).is_some_and(|(_, payload)| payload.is_empty())
     };
-    if pairs.iter().all(|(k, _, _, _)| scalar(k)) {
+    // an object's keys read back as strings, so strings beside keys of
+    // another class, or a key type that may hold both, take pairs
+    let strings =
+        pairs.iter().filter(|(k, _, _, _)| matches!(k, Value::String(_))).count();
+    let one_class = strings == pairs.len()
+        || (strings == 0 && !key_type.is_some_and(|t| holds_string(env, t)));
+    if one_class && pairs.iter().all(|(k, _, _, _)| scalar(k)) {
         Ok(Shape::Object(
             pairs
                 .drain(..)
@@ -664,6 +676,19 @@ fn map_shape<'a>(
     } else {
         Ok(Shape::Pairs(pairs))
     }
+}
+
+/// Whether a value of `t` may be a string.
+fn holds_string(env: &Env, t: &Type) -> bool {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    if graphix_compiler::expr::union_members(env, t, &mut members).is_err() {
+        return true;
+    }
+    members.iter().any(|m| match m {
+        Type::Primitive(p) => p.contains(Typ::String),
+        Type::Any => true,
+        _ => false,
+    })
 }
 
 /// `v`'s shape by its kind marker, or as data where it has none.

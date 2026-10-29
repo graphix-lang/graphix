@@ -261,13 +261,15 @@ async fn an_empty_innermost_container_counts() -> Result<()> {
     deepest_written_reads_back("Map<string, i64>", "{}", 1).await
 }
 
-// Two map keys that print alike are refused, never merged into one.
-run!(json_keys_writing_alike_refused, r#"{
+// Two map keys that print alike are never merged into one: a key type
+// holding strings and another class writes pairs, which a TOML document
+// cannot hold at its top.
+run!(json_keys_writing_alike_are_not_merged, r#"{
     let m: Map<[i64, string], i64> = {1 => 10, "1" => 20};
     "[json::write_str(m)] [toml::write_str(m)]"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s))
-        if s.contains("same JSON key 1") && s.contains("same TOML key 1"))
+        if s.contains(r#"[[1,10],["1",20]]"#) && s.contains("TomlErr"))
 }; FuseExpect::Jit);
 
 // An f32 is written as the number the program holds, not its exact f64
@@ -404,7 +406,7 @@ run!(string_data_map_keys_read_back, r#"{
     let m2: Result<Map<[`A, `B], i64>, E> = json::read(json::write_str(m)$);
     let i2: Result<Map<Id, i64>, E> = json::read(json::write_str(i)$);
     (json::write_str(m)$, m2$ == m, json::write_str(i)$, i2$ == i, json::write_str(both))
-}"#, prints(r#"["{\"A\":1,\"B\":2}", true, "{\"abc\":3}", true, error:["JsonErr", "two keys write as the same JSON key A"]]"#); FuseExpect::Jit);
+}"#, prints(r#"["{\"A\":1,\"B\":2}", true, "{\"abc\":3}", true, error:["JsonErr", "two keys write as the same JSON data"]]"#); FuseExpect::Jit);
 
 // An integer or decimal target reads a number's text exactly, refusing
 // what does not fit, a float target the float nearest it, and a read with
@@ -465,6 +467,25 @@ run!(
 }
 "#,
     prints("[true, true, true, true, true, true, true]")
+);
+
+// an object's keys read back as strings: string keys beside keys of
+// another class, or under a key type that may hold both, round-trip as pairs
+run!(
+    mixed_class_map_keys_use_pairs,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let round_trip = 'k: Ordered + Concrete |m: Map<'k, i64>| {
+        let r: Result<Map<'k, i64>, E> = json::read(json::write_str(m)$);
+        select r { error as _ => false, v => v == m }
+    };
+    let a: Map<[string, i64], i64> = {1 => 1, "a" => 2};
+    let b: Map<[string, i64], i64> = {1 => 1};
+    let c: Map<[bool, string], i64> = {true => 1, "true" => 2};
+    [round_trip(a), round_trip(b), round_trip(c), round_trip({1 => 2}), round_trip({"x" => 2})]
+}
+"#,
+    prints("[true, true, true, true, true]")
 );
 
 run!(colliding_pair_keys_are_refused, r#"{
