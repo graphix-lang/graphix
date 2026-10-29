@@ -595,13 +595,15 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
     let open = |e: &Expr| open_init(types, block, si, e);
     match &typemorph::unparen(value).kind {
         ExprKind::Apply(ap) => {
-            ap.args.iter().any(|(_, a)| open(a))
+            type_directed(&ap.function)
+                || payload_read(&ap.function)
+                || ap.args.iter().any(|(_, a)| open(a))
                 || earlier_let(block, si, &ap.function).is_some_and(|(j, d)| {
                     match &typemorph::unparen(&d.value).kind {
                         ExprKind::Lambda(l) => {
                             l.rtype.is_none()
                                 && (matches!(&l.body, LambdaBody::Expr(b)
-                                    if open_init(types, &[], 0, b))
+                                    if open_body(types, d, b))
                                     || matches!(&d.pattern, StructurePattern::Bind(n)
                                         if typemorph::open_lets(&block[..=j])
                                             .contains_key(n.name.as_str())))
@@ -628,7 +630,7 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         }
         // a comparison or a logical operator is a bool
         ExprKind::BinOp { .. } => false,
-        // a value that is only an error succeeds with ⊥
+        // a value that is only what the operator takes off is ⊥
         ExprKind::OrNever(x) | ExprKind::Qop { arg: x, .. } => {
             open(x) || !types.of(x).first().is_some_and(succeeds)
         }
@@ -643,18 +645,78 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         | ExprKind::Tuple { args }
         | ExprKind::Variant { args, .. } => args.iter().any(open),
         ExprKind::Struct(st) => st.args.iter().any(|(_, a)| open(a)),
+        ExprKind::Select(se) => {
+            !se.arms.is_empty() && se.arms.iter().all(|(_, b)| open(b))
+        }
         _ => types.cell(value),
     }
 }
 
-/// Whether a value of `t` may be other than an error.
+/// Whether a definition's body `b` returns what its uses decide: it is
+/// open, or a `let rec`'s every branch is open or calls itself again.
+fn open_body(types: &TypeMap, d: &BindExpr, b: &Expr) -> bool {
+    let StructurePattern::Bind(n) = &d.pattern else { return false };
+    let recurses = |e: &Expr| {
+        d.rec
+            && matches!(&typemorph::unparen(e).kind, ExprKind::Apply(ap)
+                if matches!(&typemorph::unparen(&ap.function).kind,
+                    ExprKind::Ref { name } if name.to_string() == *n.name))
+    };
+    match &typemorph::unparen(b).kind {
+        ExprKind::Select(se) => {
+            !se.arms.is_empty()
+                && se.arms.iter().all(|(_, a)| recurses(a) || open_init(types, &[], 0, a))
+        }
+        _ => open_init(types, &[], 0, b),
+    }
+}
+
+/// Whether `f` is a type-directed read, whose result type (its `'b:
+/// Concrete` target, which no argument holds) is what its uses decide.
+fn type_directed(f: &Expr) -> bool {
+    const READS: &[&str] = &[
+        "str::parse",
+        "json::read",
+        "toml::read",
+        "pack::read",
+        "sqlite::query",
+        "sys::net::subscribe",
+        "sys::net::call",
+    ];
+    matches!(&typemorph::unparen(f).kind, ExprKind::Ref { name }
+        if READS.contains(&name.to_string().trim_start_matches('/')))
+}
+
+/// Whether `f` is a generated module's `unb`, which reads a constructed
+/// abstract's payload back at its parameter: the payload only bounds the
+/// parameter from below, so the uses decide the result's type.
+fn payload_read(f: &Expr) -> bool {
+    matches!(&typemorph::unparen(f).kind, ExprKind::Ref { name }
+        if netidx_core::path::Path::basename(&name.0) == Some("unb"))
+}
+
+/// Whether `x?` or `x$` over a value of `t` may produce: they take off
+/// its errors, or its null where it holds no error.
 fn succeeds(t: &Type) -> bool {
-    t.with_deref(|d| match d {
-        None | Some(Type::Bottom | Type::Error(_)) => false,
-        Some(Type::Set(ts)) => ts.iter().any(succeeds),
-        Some(Type::Primitive(p)) => p.iter().any(|k| k != Typ::Error),
-        Some(_) => true,
-    })
+    fn holds_error(t: &Type) -> bool {
+        t.with_deref(|d| match d {
+            Some(Type::Error(_)) => true,
+            Some(Type::Set(ts)) => ts.iter().any(holds_error),
+            Some(Type::Primitive(p)) => p.iter().any(|k| k == Typ::Error),
+            _ => false,
+        })
+    }
+    fn left(t: &Type, null: bool) -> bool {
+        t.with_deref(|d| match d {
+            None | Some(Type::Bottom | Type::Error(_)) => false,
+            Some(Type::Set(ts)) => ts.iter().any(|t| left(t, null)),
+            Some(Type::Primitive(p)) => {
+                p.iter().any(|k| k != Typ::Error && (null || k != Typ::Null))
+            }
+            Some(_) => true,
+        })
+    }
+    left(t, holds_error(t))
 }
 
 /// The last `let` of the name `r` reads among the statements of `block`
@@ -1505,6 +1567,12 @@ fn variant_widen(
     cap: usize,
     out: &mut Vec<RejectProbe>,
 ) {
+    let block = match &root.kind {
+        ExprKind::Block { exprs } => &exprs[..],
+        _ => &[],
+    };
+    let sizes = mutate::sizes(root);
+    let stmts = mutate::top_statements(root, &sizes);
     let mut taken = 0usize;
     for i in spread(pre.len()) {
         if taken >= cap {
@@ -1519,7 +1587,13 @@ fn variant_widen(
             continue;
         }
         let Some(t) = types.of(arg).first() else { continue };
-        if !only_variants(t) || typemorph::leaks_binds(arg) {
+        // a scrutinee its arms type (a ⊥ let, a raise) takes the fresh tag
+        // as its type rather than refusing it
+        let si = stmts.iter().rposition(|(_, at, _)| *at <= i).unwrap_or(0);
+        if !only_variants(t)
+            || typemorph::leaks_binds(arg)
+            || open_init(types, block, si, arg)
+        {
             continue;
         }
         let fresh =

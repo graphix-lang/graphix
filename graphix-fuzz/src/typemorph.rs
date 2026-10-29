@@ -307,12 +307,16 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             if raises && catch_between {
                 continue;
             }
-            // a name under `&` may be a place root; a seq body refuses a `catch`
-            let holds_catch = b
-                .value
-                .fold(false, &mut |a, n| a || matches!(n.kind, ExprKind::Catch(_)));
+            // a name under `&` may be a place root; a seq body refuses a
+            // `catch`, a function body a trait or an impl
+            let holds = |k: fn(&ExprKind) -> bool| {
+                b.value.fold(false, &mut |a, n| a || k(&n.kind))
+            };
+            let holds_catch = holds(|k| matches!(k, ExprKind::Catch(_)));
+            let declares = holds(|k| matches!(k, ExprKind::Trait(_) | ExprKind::Impl(_)));
             if under(|k| matches!(k, ExprKind::ByRef(..)))
                 || (holds_catch && under(|k| matches!(k, ExprKind::Seq(_))))
+                || (declares && under(|k| matches!(k, ExprKind::Lambda(_))))
             {
                 continue;
             }
@@ -540,7 +544,7 @@ pub(crate) fn open_value(e: &Expr) -> bool {
 /// Whether the body needs an unannotated parameter's type before it
 /// checks: a select over a value the parameter's type decides (a type
 /// test binds it, coverage reads it), a field read or a `with` update on
-/// it, a call through it or a deref of it. Only the call supplies that
+/// it, a call through it, a deref of it, or a `?` or `$` of it. Only the call supplies that
 /// type, so a `let` of the lambda is refused by language rule, not by an
 /// ordering bug.
 fn reads_param_type(l: &LambdaExpr) -> bool {
@@ -561,7 +565,9 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
                 | ExprKind::TupleRef { source, .. } => is_param(source),
                 ExprKind::StructWith(w) => is_param(&w.source),
                 ExprKind::Apply(ap) => is_param(&ap.function),
-                ExprKind::Deref(x) => is_param(x),
+                ExprKind::Deref(x)
+                | ExprKind::OrNever(x)
+                | ExprKind::Qop { arg: x, .. } => is_param(x),
                 _ => false,
             }
     })
@@ -933,14 +939,15 @@ mod test {
     #[test]
     fn inline_keeps_places_seq_bodies_and_binders() {
         // (body, the let that must stay: its use is a place root, its
-        // value holds a catch and its use sits in a seq body, or its value
-        // binds a name a statement before the use reads)
+        // value holds a catch and its use sits in a seq body, or a trait
+        // and its use sits in a lambda)
         for (body, kept) in [
             ("{ let a = [10, 20]; let r = &a[1]; let t = *r; t }", "let a"),
             (
                 "{ let v = { catch(e) 1; (in0 %? in0)? }; let t = in0; seq t { v } }",
                 "let v",
             ),
+            ("{ let x = { trait T { val v: fn(self) -> i64 }; 1 }; 2; |i| x }", "let x"),
         ] {
             let (probes, _) = probes(body, 8);
             assert!(
@@ -1127,6 +1134,8 @@ mod test {
             "{ let k = 1; array::map([((1, 2), k)], |(pt, n)| pt.0 + n) }",
             "{ let k = i64:2; array::map([|n: i64| n + k], |g| g(2)) }",
             "{ let k = i64:1; let c = &k; array::map([c], |r| *r + 1) }",
+            "{ let k: [i64, null] = 1; array::map([k], |x| x$ + 1) }",
+            "{ let k: [bool, null] = false; array::filter([k], |x| { catch(e) false; x? }) }",
         ] {
             let (probes, _) = probes(body, 8);
             assert!(
