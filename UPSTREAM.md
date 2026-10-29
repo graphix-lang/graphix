@@ -76,8 +76,10 @@ the state of a fix, and Graphix's side.
 - **Graphix's side.** Worked around (a crafted file aborts the runtime):
   `check_shared_strings` streams every zip entry calamine would take for
   `xl/sharedStrings.xml` before it opens and refuses a count past the
-  `si` elements the part holds, mirroring how calamine finds the part and
-  reads the attribute. Not reported.
+  `si` elements the sst element holds (those calamine reads), and a part
+  holding more than `MAX_CELLS` strings, which calamine would build
+  before any cell bound applies; it mirrors how calamine finds the part
+  and reads the attribute. Not reported.
 
 ## handlebars-rust 6.4: template depth recurses without a bound
 
