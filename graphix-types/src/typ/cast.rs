@@ -2350,7 +2350,7 @@ fn rep_ambiguity(
             };
             let ordered = refs && !keys_only;
             match &t {
-                // CR claude for eric: [bug/medium] This check refuses an order over two
+                // XCR claude for claude: [bug/medium] This check refuses an order over two
                 // numeric types only where the type shows them. Any reaches the `_ =>
                 // None` arm and passes Ordered, and the run-time order then puts every
                 // i64 below every f64. json::read(r"[3, 2.5, 1, 0.5]") read as
@@ -2413,6 +2413,14 @@ fn rep_ambiguity(
                 // order for Any keys and document that it differs from Value's. Recommend
                 // (b): Ordered already refuses mixed numeric key types, Any is the one
                 // hole, and it changes no file.
+                // 2026-10-29 claude: Eric (2026-10-29, cr-discuss round 3 D12): document
+                // the byte order. Merged: netidx 96c7d4a2 (Value::partial_cmp orders
+                // numbers of different types by exact value, ties by type, every number
+                // before every other kind) and graphix 700ac73f3 (pin
+                // lang::types::any_mixed_numbers_order_by_value, CLAUDE.md). A db tree
+                // keeps its byte order: keys of one type sort by value, keys of different
+                // types by type; book db page says so, and graphix-package-db
+                // encoding::test::key_bytes_sort_as_values pins the documented order.
                 Type::Primitive(p) if ordered && (*p & Typ::number()).len() > 1 => {
                     Some(Indiscernible::Numbers(t.clone()))
                 }

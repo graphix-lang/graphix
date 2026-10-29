@@ -533,12 +533,19 @@ mod test {
         }
     }
 
+    /// Keys of one type sort as the language orders their values, and keys
+    /// of different types by type, where the language orders numbers by
+    /// value and before every other kind (the db's documented byte order).
     #[test]
     fn key_bytes_sort_as_values() {
         let vs = values();
         for a in &vs {
             for b in &vs {
-                assert_eq!(a.cmp(b), key(a).cmp(&key(b)), "{a} vs {b}");
+                let want = match Typ::get(a) == Typ::get(b) {
+                    true => a.cmp(b),
+                    false => Typ::get(a).cmp(&Typ::get(b)),
+                };
+                assert_eq!(want, key(a).cmp(&key(b)), "{a} vs {b}");
                 if Typ::get(a) == Typ::get(b) {
                     assert_eq!(a.cmp(b), typed(a).cmp(&typed(b)), "typed {a} vs {b}");
                 }

@@ -9,10 +9,15 @@ rewrite stored records.
 Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, `db::tree` returns a `DbErr`.
 
-A tree orders and matches its keys by their data. For the primitive and
-structural types that is the language's own order; a key of an abstract
-type is stored as its `Cast` data, so a custom `Eq` or `Ord` on it does not
-reach the tree, and its `to_value` decides the stored order.
+A tree orders and matches its keys by their stored bytes. For a key type
+of one class (a primitive or a structural type) that is the language's own
+order; a key of an abstract type is stored as its `Cast` data, so a custom
+`Eq` or `Ord` on it does not reach the tree, and its `to_value` decides the
+stored order. A tree keyed by `Any` may hold keys of different types, and
+orders them by type first, in a fixed order of the types (every `i64`
+before every `f64`, every `f64` before every `bool`), where the language
+orders numbers by value and before every other kind: iterating such a tree
+is not `array::sort`'s order.
 
 ## Interface
 
