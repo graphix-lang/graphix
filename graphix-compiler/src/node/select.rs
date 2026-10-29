@@ -85,6 +85,8 @@ struct LazyArmFacts {
     missed: Vec<bool>,
     /// A select with guards: the ones the chain does not reach sleep.
     guards: Option<Vec<GuardRun>>,
+    /// The arms whose deselect kept a recursive callee asleep.
+    kept: ArmMask,
 }
 
 #[derive(Debug)]
@@ -173,6 +175,7 @@ impl LazyArmFacts {
                 .collect(),
             missed: vec![false; arms.len()],
             guards: has_guards.then(|| vec![GuardRun::Unborn; arms.len()]),
+            kept: ArmMask::new(arms.len()),
         }
     }
 }
@@ -182,6 +185,12 @@ impl LazyArmFacts {
 struct ArmMask(SmallVec<[u64; 1]>);
 
 impl ArmMask {
+    fn new(arms: usize) -> Self {
+        let mut mask = Self::default();
+        mask.clear(arms);
+        mask
+    }
+
     fn clear(&mut self, arms: usize) {
         self.0.clear();
         self.0.resize(arms.div_ceil(64), 0);
@@ -189,6 +198,14 @@ impl ArmMask {
 
     fn set(&mut self, i: usize) {
         self.0[i / 64] |= 1 << (i % 64);
+    }
+
+    fn unset(&mut self, i: usize) {
+        self.0[i / 64] &= !(1 << (i % 64));
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.iter().all(|w| *w == 0)
     }
 
     fn get(&self, i: usize) -> bool {
@@ -970,21 +987,42 @@ impl Ladder {
 }
 
 /// Deselect arm `j`: sleep it unless it is pure, then refresh its
-/// tracked refs. Under [`super::deselecting_arm`] a recursive-edge callee inside
-/// the arm is deleted, not retained (`CallSite::sleep`), so unreached
-/// activations are shed.
+/// tracked refs. Under [`super::deselecting_arm`] a recursive-edge callee
+/// inside the arm is deleted, or kept asleep when pure (`CallSite::sleep`),
+/// which marks the arm `kept`.
 fn deselect<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
     tracked: &mut TrackedFires,
+    kept: &mut ArmMask,
     j: usize,
     arm: &mut (PatternNode<R>, Node<R>),
     sleep: bool,
 ) {
-    if sleep {
-        super::deselecting_arm(true, || arm.1.sleep(ctx));
+    if sleep && super::deselecting_arm(true, || arm.1.sleep(ctx)) {
+        kept.set(j)
     }
     tracked.fell_asleep(j, ctx.rt.cycle());
     tracked.refresh(&ctx.env, j, |r| arm_refs(arm, r));
+}
+
+/// The chain ran and took `taken` (`None`: no arm, or a bottom scrutinee),
+/// an exit of a recursion through this select: each other kept arm sheds
+/// part of what it keeps (`callsite::shed_kept`), and the arm taken
+/// rebirths what it kept.
+fn exit_kept<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    kept: &mut ArmMask,
+    arms: &mut [(PatternNode<R>, Node<R>)],
+    taken: Option<usize>,
+) {
+    if kept.is_empty() {
+        return;
+    }
+    for (j, (_, body)) in arms.iter_mut().enumerate() {
+        if kept.get(j) && (taken == Some(j) || !super::callsite::shed_kept(ctx, body)) {
+            kept.unset(j)
+        }
+    }
 }
 
 /// An arm's free reads: its body's refs less its pattern's binds.
@@ -1547,6 +1585,7 @@ impl<R: Rt> Update<R> for Select<R> {
             guarded,
             missed,
             guards,
+            kept,
         } = arm_facts.as_mut().expect("arm facts built above");
         let ArmDiscriminants { shallow, scrutinee } = &**discriminants;
         let woke = slept.take();
@@ -1636,8 +1675,11 @@ impl<R: Rt> Update<R> for Select<R> {
             if woke {
                 slept.set();
             }
+            if arg_prod.triggers() || woke {
+                exit_kept(ctx, kept, arms, None)
+            }
             if let Some(j) = selected.take() {
-                deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);
+                deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
             }
             return resident.set_bottom(arg_prod.triggers());
         }
@@ -1689,6 +1731,11 @@ impl<R: Rt> Update<R> for Select<R> {
                 out
             }
         };
+        match chain {
+            ChainOut::Quiet(_) => (),
+            ChainOut::Taken(i) => exit_kept(ctx, kept, arms, i),
+            ChainOut::Undet => exit_kept(ctx, kept, arms, None),
+        }
         let planes = EmissionPlanes::new(&guard_tags, arg_prod, consulted_guard_mask);
         // A selection stays undecidable while a consulted guard stands
         // bottom: no arm is evaluated.
@@ -1702,7 +1749,7 @@ impl<R: Rt> Update<R> for Select<R> {
                     slept.set();
                 }
                 if let Some(j) = selected.take() {
-                    deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);
+                    deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
                 }
                 return resident.set_bottom(planes.anyfire);
             }
@@ -1727,7 +1774,7 @@ impl<R: Rt> Update<R> for Select<R> {
                     );
                 }
                 if let Some(j) = selected.replace(i) {
-                    deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);
+                    deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
                 }
                 // A bind is a facet of its scrutinee's delivery: a stale
                 // scrutinee binds stale, at a first consult, a wake or a
@@ -1769,7 +1816,7 @@ impl<R: Rt> Update<R> for Select<R> {
                     ));
                 }
                 if let Some(j) = selected.take() {
-                    deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);
+                    deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
                 }
                 return resident.set_bottom(false);
             }

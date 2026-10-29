@@ -1434,21 +1434,86 @@ pub struct CallSite<R: Rt> {
     defaults_open: bool,
     /// The bound callee's function went bottom and its instance sleeps.
     absent: Option<Absent>,
-    /// A shrink kept this pure recursive callee asleep: re-reaching it
-    /// dispatches it as a fresh bind.
-    rebirth: bool,
+    /// What a shrink kept of this recursive edge's pure callee.
+    kept: Kept,
     /// The imaged instance decoded at this update's dispatch: the sites
     /// its first update leaves imaged are held after it.
     decoded: bool,
-    /// Shrinks kept since this site last deleted its callee.
-    kept_shrinks: u8,
     pub(crate) fork: ForkSite,
 }
 
-/// A recursive edge keeps its pure callee across this many shrinks in a
-/// row and deletes it at the next, so a depth left for good is freed in
-/// time while a depth that swings rebuilds once in a hundred.
-const KEPT_SHRINKS: u8 = 99;
+/// A pure callee a shrink left asleep at a recursive edge (`CallSite::
+/// sleep`). Re-reaching the edge dispatches it as a fresh bind, which no
+/// program can tell from one, and restarts the count; each exit of the
+/// recursion past the edge sheds its deepest levels (`CallSite::shed`). An
+/// exit is an update of the select whose arm holds the edge in which the
+/// chain runs (the scrutinee or a consulted guard fired, or the select
+/// woke) and takes another arm, or the scrutinee is bottom
+/// (`select.rs::exit_kept`); the update that deselects the arm is the
+/// shrink, not an exit.
+#[derive(Debug, Clone, Copy, Default)]
+enum Kept {
+    #[default]
+    Nothing,
+    /// No exit has passed it since the shrink.
+    Asleep,
+    /// `levels` deep at the first exit past it; `exits` exits have shed
+    /// the deepest `levels * exits / 100` of them.
+    Shedding { levels: u32, exits: u8 },
+}
+
+/// Each recursive edge in `node`'s graph, not looking into callees.
+fn for_each_edge<R: Rt>(node: &mut Node<R>, f: &mut dyn FnMut(&mut CallSite<R>)) {
+    ensure_sufficient(|| {
+        if let Some(site) =
+            node.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
+            && site.is_recursive_edge()
+        {
+            f(site)
+        }
+        node.for_each_child_mut(&mut |c| for_each_edge(c, f))
+    })
+}
+
+/// The levels of recursion `f` holds: itself and its deepest chain of
+/// recursive edges.
+fn kept_levels<R: Rt>(f: &mut dyn Apply<R>) -> u32 {
+    let mut below = 0;
+    f.for_each_body_mut(&mut |body| {
+        for_each_edge(body, &mut |site| {
+            if let Some(callee) = site.callee.apply_mut() {
+                below = below.max(kept_levels(callee))
+            }
+        })
+    });
+    below + 1
+}
+
+/// Delete every callee more than `keep` levels below `f`, `f` itself the
+/// first.
+fn cut_below<R: Rt>(ctx: &mut ExecCtx<'_, R>, f: &mut dyn Apply<R>, keep: u32) {
+    f.for_each_body_mut(&mut |body| {
+        for_each_edge(body, &mut |site| {
+            if keep > 1 {
+                if let Some(callee) = site.callee.apply_mut() {
+                    cut_below(ctx, callee, keep - 1)
+                }
+            } else if let Some(mut callee) = site.callee.take_apply() {
+                site.kept = Kept::Nothing;
+                callee.delete(ctx)
+            }
+        })
+    });
+}
+
+/// An exit of a recursion through the select whose untaken arm `node` is:
+/// each callee a recursive edge in it kept sheds its deepest levels
+/// (`CallSite::shed`). Whether any still keeps something.
+pub(super) fn shed_kept<R: Rt>(ctx: &mut ExecCtx<'_, R>, node: &mut Node<R>) -> bool {
+    let mut kept = false;
+    for_each_edge(node, &mut |site| kept |= site.shed(ctx));
+    kept
+}
 
 /// The registered builtin a site calls by name: its function is a
 /// binding the index resolves to a builtin's definition, or one bound to
@@ -1500,9 +1565,8 @@ impl<R: Rt> CallSite<R> {
             share: None,
             defaults_open: true,
             absent: None,
-            rebirth: false,
+            kept: Kept::Nothing,
             decoded: false,
-            kept_shrinks: 0,
             fork: ForkSite::default(),
         }
     }
@@ -2682,7 +2746,7 @@ impl<R: Rt> CallSite<R> {
 impl<R: Rt> CallSite<R> {
     fn update_call(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
-        let rebirth = mem::take(&mut self.rebirth);
+        let rebirth = !matches!(mem::take(&mut self.kept), Kept::Nothing);
         if woke
             && (rebirth || ctx.event.born())
             && let Some(f) = self.callee.apply_mut()
@@ -3385,9 +3449,8 @@ impl<R: Rt> CallSite<R> {
     pub(crate) fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         // A recursive edge deselected by a shrink deletes its callee, so
-        // re-reaching this depth binds a fresh activation; a pure callee is
-        // kept asleep instead and reborn when re-reached, which no program
-        // can tell from a fresh bind.
+        // re-reaching this depth binds a fresh activation, or keeps a pure
+        // one asleep (`Kept`).
         // XCR claude for claude: [perf/medium] Deleting the callee here (shrink = delete)
         // makes a recursion whose depth swings rebuild every activation between the two
         // depths every cycle, as fresh run-time binds that cost ~15x an update.
@@ -3418,16 +3481,44 @@ impl<R: Rt> CallSite<R> {
         // delete only 1% of the cells we could delete for a shorter activation, which
         // saves a lot of work, but eventually cleans up after a transient large
         // activation."
+        // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D5): "we should
+        // delete 1% of the cells we could delete on every activation where cells <
+        // capacity, so 100 activations later we should have deleted all eligible cells.
+        // 2. we should collect cells every recursion exit. 3. [a pin of the gain] sounds
+        // good. NB: unused cells are birthed again when the recursion reaches them again"
+        // (they are: Apply::reborn, every argument read as new).
+        // 2026-10-29 claude: Built as ruled: KEPT_SHRINKS and the per-shrink count are
+        // gone; every shrink keeps a pure callee (CallSite::kept, enum Kept). An exit
+        // past a kept edge is an update of the select whose arm holds it in which the
+        // chain runs (scrutinee or consulted guard fired, or the select woke) and takes
+        // another arm, or the scrutinee is bottom (select.rs::exit_kept); the deselecting
+        // update is the shrink, not an exit, and a quiet walk of the select is none
+        // (ticking there trips GRAPHIX_PRUNE=audit). At the first exit the edge measures
+        // what it keeps in levels (kept_levels: the callee and its deepest chain of
+        // recursive edges); at the k-th it deletes every callee more than levels -
+        // levels*k/100 levels down (cut_below, deepest first), at the 100th the callee
+        // itself (CallSite::shed). Judged: floor pacing, so a surplus under 100 levels
+        // frees a level every 100/levels exits rather than one per exit; in a tree a
+        // level holds every activation at that depth. A re-reach rebirths what is left
+        // and restarts the count. Pins: lang::functions::rec_pure_depth_swing_binds_once
+        // (linear 10/5 and fib 10/9 bind what a fixed depth does; 1891 binds against 31
+        // with keeping disabled), rec_transient_depth_is_shed (exact live activations
+        // after 1, 50, 99, 100, 150 exits, linear 200/5 and fib 12/4; interp, par and
+        // unpruned; keeps all 195 levels without exit shedding),
+        // rec_partly_shed_depth_reached_again. Probe at load 14: fixed fib(14) 118-126 ms
+        // per 100 cycles, alternating 141-166. Docs: CLAUDE.md activation state,
+        // design/recursive_activations.md. Needs a soak.
         if super::in_deselected_arm() && self.is_recursive_edge() {
-            if self.kept_shrinks < KEPT_SHRINKS && self.callee_is_pure(ctx) {
-                self.kept_shrinks += 1;
-                self.rebirth = true;
+            if self.callee_is_pure(ctx) {
+                if let Kept::Nothing = self.kept {
+                    self.kept = Kept::Asleep
+                }
+                super::kept_in_arm();
                 if let Some(f) = self.callee.apply_mut() {
                     f.sleep(ctx)
                 }
             } else if let Some(mut f) = self.callee.take_apply() {
-                self.kept_shrinks = 0;
-                self.rebirth = false;
+                self.kept = Kept::Nothing;
                 f.delete(ctx)
             }
         } else if let Some(f) = self.callee.apply_mut() {
@@ -3446,6 +3537,38 @@ impl<R: Rt> CallSite<R> {
 
     pub(crate) fn typ(&self) -> &Type {
         &self.rtype
+    }
+
+    /// An exit of the recursion past this edge's kept callee: the
+    /// deepest `levels * exits / 100` of the `levels` it held at the first
+    /// exit are deleted, the callee itself at the hundredth exit. Whether
+    /// anything stays kept.
+    fn shed(&mut self, ctx: &mut ExecCtx<'_, R>) -> bool {
+        let (levels, exits) = match (self.kept, self.callee.apply_mut()) {
+            (Kept::Nothing, _) => return false,
+            (_, None) => {
+                self.kept = Kept::Nothing;
+                return false;
+            }
+            (Kept::Asleep, Some(f)) => (kept_levels(f), 1),
+            (Kept::Shedding { levels, exits }, Some(_)) => (levels, exits + 1),
+        };
+        let shed = |exits: u8| (u64::from(levels) * u64::from(exits) / 100) as u32;
+        let keep = levels - shed(exits);
+        if keep == 0 {
+            if let Some(mut f) = self.callee.take_apply() {
+                f.delete(ctx)
+            }
+            self.kept = Kept::Nothing;
+            return false;
+        }
+        if shed(exits) > shed(exits - 1)
+            && let Some(f) = self.callee.apply_mut()
+        {
+            cut_below(ctx, f, keep)
+        }
+        self.kept = Kept::Shedding { levels, exits };
+        true
     }
 
     /// Whether the bound callee is a lambda whose definition is pure

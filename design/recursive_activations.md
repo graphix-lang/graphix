@@ -161,15 +161,32 @@ generation (`kernel_instance_state.md`).
 
 A pure callee (its definition's facts sync and stateless: nothing in it
 outlives a birth) is the exception that removes oscillation thrash: the
-shrink keeps it asleep (`CallSite::rebirth`), and re-reaching the depth
+shrink keeps it asleep (`callsite::Kept`), and re-reaching the depth
 dispatches it as a fresh bind does, under `View::Birth` after
 `Apply::reborn`, its arguments read as new, which no program can tell
-from a fresh activation. Each site deletes at every hundredth shrink in
-a row (`KEPT_SHRINKS`), so a swinging depth rebuilds once in a hundred
-swings; a depth left for good stays allocated, asleep, until its site
-shrinks again or the recursion's caller deletes it. Pins:
+from a fresh activation.
+
+What a site keeps is its capacity; what a run of the recursion reaches is
+what it uses, and the surplus is shed at the exits that do not use it. An
+exit past a kept edge is an update of the select whose arm holds it in
+which the chain runs (the scrutinee or a consulted guard fired, or the
+select woke) and takes another arm, or the scrutinee is bottom
+(`select.rs::exit_kept`); the update that deselects the arm is the shrink,
+not an exit. At its first exit the site measures what it keeps in levels
+(its callee and the deepest chain of recursive edges below it,
+`kept_levels`); at its k-th it deletes every callee more than `levels -
+levels * k / 100` levels down (`cut_below`), deepest first, and at the
+hundredth the callee itself (`CallSite::shed`). A linear recursion's
+levels are its activations; a tree's level holds every activation at
+that depth. A run that reaches the edge again rebirths what is left and
+restarts the count; a depth that swings every cycle sees no exit and is
+never rebuilt. A recursion that never runs again keeps what it kept,
+asleep, until its caller deletes it. Pins:
 `lang::functions::rec_pure_depth_swing_answers_each_cycle` (10/5 for
-250 cycles), `rec_reborn_depth_reads_its_capture`.
+250 cycles), `rec_reborn_depth_reads_its_capture`,
+`rec_pure_depth_swing_binds_once` (a swinging linear recursion and fib
+bind what a fixed depth does), `rec_transient_depth_is_shed` (the live
+activations after 1, 50, 99, 100 and 150 exits, linear and fib).
 
 Rejected: retaining shrunk activations (the initial call; revisited
 for the semantics reason above). Rejected: an iterative slot-vector

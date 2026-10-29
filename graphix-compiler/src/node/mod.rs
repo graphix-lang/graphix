@@ -211,20 +211,29 @@ impl WakeBit {
 
 thread_local! {
     static DESELECTING_ARM: Cell<bool> = const { Cell::new(false) };
+    static KEPT_IN_ARM: Cell<bool> = const { Cell::new(false) };
     static RUNTIME_BIND: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Run `f` inside (`true`) or outside (`false`) the sleep of an arm a
 /// select or a seq machine is deselecting: under it a recursive-edge
-/// `CallSite::sleep` deletes its callee (shrink = delete). A callee body
-/// is outside, so a whole-recursion pause retains.
-pub(crate) fn deselecting_arm<T>(inside: bool, f: impl FnOnce() -> T) -> T {
+/// `CallSite::sleep` deletes its callee (shrink = delete), or keeps a pure
+/// one asleep. A callee body is outside, so a whole-recursion pause
+/// retains. Whether a recursive edge kept its callee.
+pub(crate) fn deselecting_arm(inside: bool, f: impl FnOnce()) -> bool {
     let _restore = Restore::replace(&DESELECTING_ARM, inside);
-    f()
+    let _kept = Restore::replace(&KEPT_IN_ARM, false);
+    f();
+    KEPT_IN_ARM.get()
 }
 
 pub(crate) fn in_deselected_arm() -> bool {
     DESELECTING_ARM.get()
+}
+
+/// A recursive edge in the arm being deselected kept its callee.
+pub(crate) fn kept_in_arm() {
+    KEPT_IN_ARM.set(true)
 }
 
 #[derive(Debug)]

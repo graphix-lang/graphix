@@ -1200,8 +1200,8 @@ async fn rec_shrink_deletes_unreached_depths(mode: Mode) -> Result<()> {
 modes!(rec_shrink_deletes_unreached_depths);
 
 // A pure recursion's depth swinging 10, 5, 10, .. for 250 cycles: the
-// depths left asleep are reborn when reached again (and deleted at every
-// hundredth shrink), and every cycle answers its own sum.
+// depths left asleep are reborn when reached again, and every cycle
+// answers its own sum.
 async fn rec_pure_depth_swing_answers_each_cycle(mode: Mode) -> Result<()> {
     let code = r#"{
         let t = array::iter(array::init(250, |i| 10 - i % 2 * 5));
@@ -1232,6 +1232,174 @@ async fn rec_reborn_depth_reads_its_capture(mode: Mode) -> Result<()> {
 }
 
 modes!(rec_reborn_depth_reads_its_capture);
+
+const LINEAR: &str = "let rec f = |n: i64| -> i64 select n { 0 => 0, _ => n + f(n - 1) }";
+const FIB: &str =
+    "let rec f = |n: i64| -> i64 select n { n if n < 2 => n, n => f(n - 1) + f(n - 2) }";
+
+fn linear(n: i64) -> i64 {
+    n * (n + 1) / 2
+}
+
+fn fib(n: i64) -> i64 {
+    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+/// What a node-walked run of the recursion `def` over the arguments `ts`,
+/// one a cycle, a 0 a cycle in which the recursion does not run, left: its
+/// values, the activations live once it settled, and the run-time binds
+/// and rebuild batches its cycles made.
+async fn run_rec(def: &str, ts: &[i64], mode: Mode) -> Result<(Vec<i64>, u64, u64)> {
+    use graphix_package_core::testing::{
+        compile_result, fixture_runtime, result_source, updates_until_quiet,
+    };
+    use std::{fmt::Write, time::Duration};
+    let mut code = String::from("{\n let t = filter(array::iter([");
+    for (i, t) in ts.iter().enumerate() {
+        write!(code, "{}{t}", if i == 0 { "" } else { ", " })?;
+    }
+    write!(code, "]), |n| n > 0);\n {def};\n f(t)\n}}")?;
+    let (ctx, mut rx) = fixture_runtime(
+        [("/test.gx", result_source(&code))],
+        &crate::TEST_REGISTER,
+        mode,
+        |_| (),
+    )
+    .await?;
+    let control = ctx.rt.control();
+    let rebuilds = control.rebuilds();
+    let res = compile_result(&ctx).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let quiet = Duration::from_millis(700);
+    let values =
+        updates_until_quiet(&ctx.rt, &mut rx, res.exprs[0].id, quiet, deadline).await?;
+    let counts = (control.live_activations(), control.rebuilds() - rebuilds);
+    ctx.shutdown().await;
+    Ok((as_i64s(&values), counts.0, counts.1))
+}
+
+/// A pure recursion swinging between two depths every cycle binds about
+/// what one held at the deeper depth does: the depths a shrink leaves are
+/// kept asleep and reborn when reached again, never bound afresh. Deleting
+/// them at each shrink binds the linear swing's five depths and fib's 72
+/// activations every other cycle.
+async fn rec_pure_depth_swing_binds_once(mode: Mode) -> Result<()> {
+    for (def, eval, deep, shallow) in
+        [(LINEAR, linear as fn(i64) -> i64, 10, 5), (FIB, fib, 10, 9)]
+    {
+        let swing: Vec<i64> = (0..250).map(|i| [deep, shallow][i % 2]).collect();
+        let (values, _, swing_binds) = run_rec(def, &swing, mode).await?;
+        assert_eq!(values, swing.iter().map(|n| eval(*n)).collect::<Vec<_>>());
+        let (_, _, fixed_binds) = run_rec(def, &[deep; 250], mode).await?;
+        assert!(
+            swing_binds <= fixed_binds + 5,
+            "{def}: {swing_binds} binds swinging against {fixed_binds} held deep"
+        );
+    }
+    Ok(())
+}
+
+/// The activations kept after `exits` exits under a site that kept a fib(m)
+/// tree, `levels(m)` deep: `levels * exits / 100` of its deepest levels are
+/// shed, all of them at the hundredth.
+fn fib_kept(m: i64, exits: u64) -> u64 {
+    fn levels(m: i64) -> u64 {
+        if m < 2 { 1 } else { 1 + levels(m - 1) }
+    }
+    fn cells(m: i64, depth: u64) -> u64 {
+        match depth {
+            0 => 0,
+            _ if m < 2 => 1,
+            _ => 1 + cells(m - 1, depth - 1) + cells(m - 2, depth - 1),
+        }
+    }
+    let levels = levels(m);
+    cells(m, levels - levels * exits.min(100) / 100)
+}
+
+/// A transient deep recursion is shed after it: each exit through a
+/// shallow depth deletes the deepest 1% of the levels a site kept, all of
+/// them after 100 exits; a cycle the recursion does not run is no exit. Linear 200 then 5 keeps 195 levels at one site;
+/// fib(12) then fib(4) keeps two subtrees at each of fib(4)'s leaves,
+/// fib(8) and fib(7) under a leaf of 1, fib(7) and fib(6) under one of 0.
+async fn rec_transient_depth_is_shed(mode: Mode) -> Result<()> {
+    let linear_kept = |exits: u64| 195 - 195 * exits.min(100) / 100;
+    let fib_leaves = |exits: u64| {
+        3 * (fib_kept(8, exits) + fib_kept(7, exits))
+            + 2 * (fib_kept(7, exits) + fib_kept(6, exits))
+    };
+    let cases: [(&str, i64, i64, &dyn Fn(u64) -> u64, fn(i64) -> i64); 2] =
+        [(LINEAR, 200, 5, &linear_kept, linear), (FIB, 12, 4, &fib_leaves, fib)];
+    for (def, deep, shallow, kept, eval) in cases {
+        for exits in [1, 50, 99, 100, 150] {
+            let mut ts = vec![deep];
+            ts.extend(std::iter::repeat_n([shallow, 0], exits as usize + 1).flatten());
+            let (values, live, _) = run_rec(def, &ts, mode).await?;
+            let runs = ts.iter().filter(|n| **n > 0);
+            assert_eq!(values, runs.map(|n| eval(*n)).collect::<Vec<_>>());
+            let (_, base, _) =
+                run_rec(def, &vec![shallow; exits as usize + 2], mode).await?;
+            assert_eq!(live, base + kept(exits), "{def}: {exits} exits");
+        }
+    }
+    Ok(())
+}
+
+/// A depth partly shed is reached again: what is left is reborn, what was
+/// shed is bound afresh, and every cycle answers its own value. A deeper
+/// edge's own kept levels are shed with its caller's, once its caller
+/// keeps them.
+async fn rec_partly_shed_depth_reached_again(mode: Mode) -> Result<()> {
+    let cases: [(&str, [i64; 4], fn(i64) -> i64); 2] =
+        [(LINEAR, [200, 5, 150, 3], linear), (FIB, [12, 4, 11, 3], fib)];
+    for (def, [deep, shallow, again, last], eval) in cases {
+        let mut ts = vec![deep];
+        ts.extend(std::iter::repeat_n(shallow, 51));
+        ts.extend([deep, again]);
+        ts.extend(std::iter::repeat_n(last, 101));
+        let (values, live, _) = run_rec(def, &ts, mode).await?;
+        assert_eq!(values, ts.iter().map(|n| eval(*n)).collect::<Vec<_>>());
+        let (_, base, _) = run_rec(def, &vec![last; ts.len()], mode).await?;
+        assert_eq!(live, base, "{def}");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_pure_depth_swing_binds_once_interp() -> Result<()> {
+    rec_pure_depth_swing_binds_once(Mode::Interp).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_pure_depth_swing_binds_once_par() -> Result<()> {
+    rec_pure_depth_swing_binds_once(Mode::Par).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_transient_depth_is_shed_interp() -> Result<()> {
+    rec_transient_depth_is_shed(Mode::Interp).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_transient_depth_is_shed_par() -> Result<()> {
+    rec_transient_depth_is_shed(Mode::Par).await
+}
+
+/// An exit is the chain running, not a walk of its select.
+#[tokio::test(flavor = "current_thread")]
+async fn rec_transient_depth_is_shed_unpruned() -> Result<()> {
+    rec_transient_depth_is_shed(Mode::Unpruned).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_partly_shed_depth_reached_again_interp() -> Result<()> {
+    rec_partly_shed_depth_reached_again(Mode::Interp).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_partly_shed_depth_reached_again_par() -> Result<()> {
+    rec_partly_shed_depth_reached_again(Mode::Par).await
+}
 
 // Pure non-tail recursion re-fired with changing args recomputes:
 // [fib(8), fib(9), fib(10)] = [21, 34, 55].
