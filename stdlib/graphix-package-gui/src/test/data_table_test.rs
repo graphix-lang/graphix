@@ -1070,7 +1070,7 @@ let result = data_table(
     );
     assert_eq!(
         h.get_watched("test::log"),
-        Some(&Value::String(arcstr::literal!("r0/c0=6"))),
+        Some(&Value::String(arcstr::literal!("r0/c0=6.0"))),
     );
     Ok(())
 }

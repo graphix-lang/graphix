@@ -653,6 +653,28 @@ run!(
     prints("[f64:3.5, i64:3, decimal:3.1, u8:3]")
 );
 
+// No integer holds a float's text exactly, so a whole float's print reads
+// back as a float wherever a float member takes it; an integer's text still
+// takes the narrowest integer, and an integer target alone drops the point.
+const CAST_FLOAT_TEXT_READS_AS_A_FLOAT: &str = r#"
+{
+  let p: Result<[i64, f64], `ParseError(string)> = str::parse("3.0");
+  (
+    cast<[i64, f64]>("3.0")$,
+    cast<[u8, f32]>("2.0")$,
+    cast<[i64, u8]>("3")$,
+    cast<i64>("3.0")$,
+    p$
+  )
+}
+"#;
+
+run!(
+    cast_float_text_reads_as_a_float,
+    CAST_FLOAT_TEXT_READS_AS_A_FLOAT,
+    prints("[f64:3., f32:2., u8:3, i64:3, f64:3.]")
+);
+
 // Data composites are judged by every leaf (a union of tuples has no kernel
 // ABI form, so the cast node-walks).
 const CAST_UNION_PREFERS_EXACT_COMPOSITE: &str = r#"
@@ -4198,7 +4220,7 @@ run!(string_casts_to_decimal_and_float_exactly, r#"{
   let w = json::write_str(d1)$;
   let r: decimal = json::read(w)$;
   "[d1] [d2] [f1] [f2] [f3] [f4] [t1] [r]"
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.23456789012345678901234567 12345678901234567890 9223372036854776000 inf 3 -0 0 1.23456789012345678901234567"); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.23456789012345678901234567 12345678901234567890 9223372036854776000.0 inf 3.0 -0.0 0 1.23456789012345678901234567"); FuseExpect::Jit);
 
 // A string holding a typed literal reads into a float as into an
 // integer: what Rust's parse refuses is read as a value, then converted.
@@ -4207,7 +4229,7 @@ run!(typed_strings_cast_to_floats_as_to_integers, r#"{
   let g = cast<f64>("i64:3")$;
   let n = cast<i64>("i64:3")$;
   "[f] [g] [n]"
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.5 3 3"); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.5 3.0 3"); FuseExpect::Jit);
 
 // A union whose members are one type once bound counts that type once:
 // `[i64, 'y]` with 'y bound to i64 is a singleton for arithmetic.

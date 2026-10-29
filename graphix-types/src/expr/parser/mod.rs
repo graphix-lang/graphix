@@ -1268,6 +1268,7 @@ where
         optional(token('-')),
         many1::<CompactString, _, _>(satisfy(|c: char| c.is_ascii_digit())),
     ))
+    .skip(not_followed_by(token('.')))
     .and_then(|s: CompactString| match (s.parse::<i64>(), s.parse::<f64>()) {
         (Err(_), Ok(n)) if n.is_finite() => Ok(Value::F64(n)),
         _ => Err(StreamErrorFor::<I>::message_static_message("a large printed float")),

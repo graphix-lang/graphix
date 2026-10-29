@@ -67,7 +67,7 @@ Try a more complex expression:
 53
 〉2.5 * 4.0
 -: f64
-10
+10.0
 ```
 
 Notice that integer arithmetic produces `i64` (integer) results, while floating-point arithmetic produces `f64` (float) results.

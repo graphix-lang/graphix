@@ -27,7 +27,7 @@ use crate::{
         op::{ArithOp, arith, neg},
     },
     rep,
-    typ::{IsAFlags, Type},
+    typ::{IsAFlags, PlainScalar, Type},
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
@@ -1174,7 +1174,7 @@ fn graphix_variant_payload_array(v: ManuallyDrop<TagValue>, payload_idx: usize) 
 // A String SSA value is the raw `ArcStr` pointer; every owned one is
 // consumed by a helper or returned across the kernel boundary.
 
-/// Render a primitive as `Value::<T>(v).to_string()` does.
+/// Append `v` as its `Display` writes it.
 fn push_display<T: std::fmt::Display>(buf: *mut StringBuf, v: T) {
     use std::fmt::Write;
     let _ = write!(unsafe { &mut **buf }, "{v}");
@@ -1648,10 +1648,10 @@ macro_rules! prim_family {
             })*
         }
     };
-    (string_buf_push $registry:ident: $($name:ident, $t:ty;)*) => {
+    (string_buf_push $registry:ident: $($name:ident, $t:ty, $ctor:expr;)*) => {
         jit_helpers! { registry = $registry;
             $(fn $name(buf: *mut StringBuf, v: $t) {
-                push_display(buf, v)
+                push_display(buf, PlainScalar(&$ctor(v)))
             })*
         }
     };
@@ -1728,16 +1728,16 @@ prim_family! { value_buf_push value_buf_push_helpers:
 }
 
 prim_family! { string_buf_push string_buf_push_helpers:
-    graphix_string_buf_push_i64, i64;
-    graphix_string_buf_push_u64, u64;
-    graphix_string_buf_push_i32, i32;
-    graphix_string_buf_push_u32, u32;
-    graphix_string_buf_push_i16, i16;
-    graphix_string_buf_push_u16, u16;
-    graphix_string_buf_push_i8, i8;
-    graphix_string_buf_push_u8, u8;
-    graphix_string_buf_push_f64, f64;
-    graphix_string_buf_push_f32, f32;
+    graphix_string_buf_push_i64, i64, Value::I64;
+    graphix_string_buf_push_u64, u64, Value::U64;
+    graphix_string_buf_push_i32, i32, Value::I32;
+    graphix_string_buf_push_u32, u32, Value::U32;
+    graphix_string_buf_push_i16, i16, Value::I16;
+    graphix_string_buf_push_u16, u16, Value::U16;
+    graphix_string_buf_push_i8, i8, Value::I8;
+    graphix_string_buf_push_u8, u8, Value::U8;
+    graphix_string_buf_push_f64, f64, Value::F64;
+    graphix_string_buf_push_f32, f32, Value::F32;
 }
 
 jit_helpers! { registry = string_bool_helpers;

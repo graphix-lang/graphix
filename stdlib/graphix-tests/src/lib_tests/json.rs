@@ -167,7 +167,7 @@ run!(json_read_never_an_error, JSON_READ_NEVER_AN_ERROR, |v: Result<&Value>| mat
     Ok(Value::Array(a)) => {
         a.len() == 3
             && a[0] == Value::Bool(true)
-            && a[1] == Value::String(literal!("ok 1"))
+            && a[1] == Value::String(literal!("ok 1.0"))
             && a[2] == Value::Bool(true)
     }
     _ => false,

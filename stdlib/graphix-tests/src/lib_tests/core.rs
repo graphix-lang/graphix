@@ -748,7 +748,7 @@ run!(
     TVAL_UNION_BLIND_PRINT,
     |v: Result<&Value>| {
         match v {
-            Ok(Value::String(s)) => &**s == r#"[[("foo", 42)]]"#,
+            Ok(Value::String(s)) => &**s == r#"[[("foo", 42.0)]]"#,
             _ => false,
         }
     };

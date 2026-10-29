@@ -109,7 +109,9 @@ reads back as it (`Type::cast_member`). An array the source type says is
 one (`Type::cast_from`, which both engines' casts call) reads as an
 array member it inhabits before any of that. Every way, a member that holds
 the value exactly comes before one that would drop part of it (a
-fraction, a sub-second part, a rounding: `holds_exactly`).
+fraction, a sub-second part, a rounding: `holds_exactly`), and no
+integer holds a float's text, so a whole float's print (`"3.0"`) reads
+back as the float.
 `cast<string>` of a bare variant is its tag; no other marked
 value has a primitive form, and the primitive `array` holds arrays only
 (`contains`, `is_a`, `setops`). A list casts to an array element by
@@ -125,7 +127,10 @@ mutates a select into a reference test (`design/must_reject.md`).
 
 **Printing.** The naked printer renders a marked value in Graphix syntax
 (`(..)`, `{f: ..}`, `` `A(..) ``, `[<..>]`) and descends into errors, as
-the typed printer does; interpolating a bare variant gives `` `A ``.
+the typed printer does; interpolating a bare variant gives `` `A ``. A
+whole finite float prints with its point (`3.0`, `typ::PlainScalar`), in
+both engines' interpolation, the printers and `cast<string>`; netidx's
+own typed print (`f64:3.`) is untouched.
 
 **JIT.** Constructors push the marker through
 `graphix_value_buf_push_marker`; tuple and array literals emit apart

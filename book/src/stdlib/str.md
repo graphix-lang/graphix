@@ -2,7 +2,9 @@
 
 `str::parse` reads printed values into its annotated type. Inside composites,
 strings escape interpolation brackets and numeric kinds other than `i64` and
-`f64` retain their type prefix. Bytes print as `bytes:` literals.
+`f64` retain their type prefix. A whole float prints with its point (`3.0`),
+so `cast<[i64, f64]>("[x]")` of a float `x` reads back the float. Bytes print as
+`bytes:` literals.
 
 The data reader accepts printed UTC datetimes, durations in every printed unit
 (`ns`, `µs`, `ms`, `s`, `m`, `h`, `d`), large finite floats printed as integers,

@@ -9,7 +9,7 @@ use crate::{
     typ::{
         AbstractId, Bound, CoreTrait, TVar, Type, TypeRef, params_size,
         setops::union_identical,
-        tval::{NakedPrefix, has_form, member_of},
+        tval::{NakedPrefix, PlainScalar, has_form, member_of},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -18,7 +18,7 @@ use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use enumflags2::{BitFlags, bitflags, make_bitflags};
 use immutable_chunkmap::map::Map;
-use netidx_value::{NakedValue, Typ, ValArray, Value};
+use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{borrow::Cow, convert::Infallible, fmt, mem, ops::ControlFlow, sync::OnceLock};
@@ -2815,14 +2815,17 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
 }
 
 /// A number, bool, datetime or duration printed without its type: a
-/// datetime in RFC3339 and a duration in seconds, as json writes them.
+/// datetime in RFC3339 and a duration in seconds, as json writes them,
+/// and a whole float with its point.
 fn printed(v: &Value) -> Option<Value> {
     let s = match v {
         Value::Bool(b) => format_compact!("{b}"),
         Value::DateTime(d) => format_compact!("{}", d.to_rfc3339()),
-        Value::Duration(d) => format_compact!("{}", d.as_secs_f64()),
+        Value::Duration(d) => {
+            format_compact!("{}", PlainScalar(&Value::F64(d.as_secs_f64())))
+        }
         Value::Decimal(d) => format_compact!("{d}"),
-        v if Typ::get(v).is_number() => format_compact!("{}", NakedValue(v)),
+        v if Typ::get(v).is_number() => format_compact!("{}", PlainScalar(v)),
         _ => return None,
     };
     Some(Value::String(s.as_str().into()))
@@ -2856,16 +2859,32 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
-/// held exactly by 3.5 and not by 3.
-// CR claude for eric: [bug/low] A whole float prints without its fraction, so a print and
+/// held exactly by 3.5 and not by 3, and a float's or a decimal's text
+/// (`"3.0"`, as a whole float prints) by no integer.
+// XCR claude for claude: [bug/low] A whole float prints without its fraction, so a print and
 // parse round trip through a union changes its class: `let x: [i64, f64] = 3.0;
 // cast<[i64, f64]>("[x]")` is i64:3, since the union takes the narrowest integer that
 // holds "3". Should a float's plain print keep its ".0", or is this round trip not
 // promised? probe: ~/tmp/xcr-review-2026-10-28/new/rt.gx (print-roundtrip-01)
+// 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D11): (a) a whole float
+// keeps its point in plain prints (3.0), as json, toml and the formatter already print
+// it.
+// 2026-10-29 claude: A whole finite f64/f32 prints with its point in every plain print
+// (typ::PlainScalar: the typed printer, interpolation in both engines, println, the REPL,
+// cast<string>, a duration's seconds); and holds_exactly holds a float's or decimal's text
+// by no integer, since the print alone did not fix the round trip (the union took i64 for
+// "3.0" too); the printed-data reader's large-integer arm no longer swallows the integer
+// part of "100000000000000000000.0". Pins: lang::printing::{whole_float_keeps_its_point,
+// fused_whole_float_keeps_its_point, printers_keep_a_whole_floats_point},
+// lang::types::cast_float_text_reads_as_a_float,
+// expr::parser::test::printed_scalars_stay_in_data_reader,
+// lib_tests::str_tests::parse_printed_primitive_composites; each fails with its part of the
+// fix undone (node-walk printer, JIT push helpers, holds_exactly, the reader arm).
 fn holds_exactly(v: &Value, c: &Value) -> bool {
     match v {
         Value::String(s) => match s.trim().parse::<Value>() {
             Ok(Value::String(_)) | Err(_) => true,
+            Ok(p) if Typ::get(&p).is_real() && Typ::get(c).is_integer() => false,
             Ok(p) => holds_exactly(&p, c),
         },
         v => convert(c.clone(), Typ::get(v)).as_ref() == Some(v),

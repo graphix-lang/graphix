@@ -1870,7 +1870,7 @@ run!(
     select_recursive_adt_chain,
     SELECT_RECURSIVE_ADT_CHAIN,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s.as_str()
-        == "`A(`M(`A(`M(`N(1), `V), `M(`A(`V, `N(1)), `N(1))), `V), `M(`M(`A(`V, `N(1)), `V), `N(1)))");
+        == "`A(`M(`A(`M(`N(1.0), `V), `M(`A(`V, `N(1.0)), `N(1.0))), `V), `M(`M(`A(`V, `N(1.0)), `V), `N(1.0)))");
     FuseExpect::Jit
 );
 

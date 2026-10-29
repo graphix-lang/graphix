@@ -52,7 +52,7 @@ Caused by:
     1: cannot compute f64 + i64: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)
 〉1. + cast<f64>(1)$
 -: f64
-2
+2.0
 ```
 
 With unchecked operators, a division by zero returns bottom (logged by the interpreter only) -- the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.
@@ -232,7 +232,17 @@ such expressions are surrounded by unescaped `[]` in the string. For example,
 ```
 
 Values in an interpolation need not be strings, they are printed into the
-string when they are used. You can write a literal `[` or `]` in a string by escaping
+string when they are used. A whole float keeps its point, so the text
+reads back as the float it printed:
+
+```graphix
+〉let x = 1.5
+〉"[x] doubled is [x * 2.0]"
+-: string
+"1.5 doubled is 3.0"
+```
+
+You can write a literal `[` or `]` in a string by escaping
 it.
 
 ```graphix
@@ -309,7 +319,8 @@ when it holds the value exactly), and a union target takes a member of
 the value's own kind first, so `cast<[i8, Array<f64>]>([1, 2])` is
 `[1., 2.]`. Across kinds a cast only parses a string (`cast<i64>("42")`,
 `cast<bool>("true")`), prints a number, bool, datetime or duration
-plainly (`cast<string>(42)` is `"42"`), converts between a number and
+plainly (`cast<string>(42)` is `"42"`, and a whole float keeps its
+point: `cast<string>(3.0)` is `"3.0"`), converts between a number and
 a datetime (Unix seconds) or a duration (seconds), turns a bool into a
 number (1 or 0), or reads an array of numbers as bytes; anything else,
 such as `cast<bool>(1)`, `cast<string>([1, 2])` or `cast<Array<i64>>(5)`,

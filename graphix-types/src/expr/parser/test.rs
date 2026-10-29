@@ -2807,6 +2807,11 @@ fn printed_scalars_stay_in_data_reader() {
         assert!(parse_literal_value(src).is_some(), "{src}");
         assert!(parse_one(src).is_err(), "{src}");
     }
+    // a whole float past i64 prints with its point, which the integer reader
+    // leaves to the float literal
+    assert_eq!(parse_literal_value("100000000000000000000.0"), Some(Value::F64(1e20)));
+    let a = parse_literal_value("[-100000000000000000000.0, 100000000000000000000.]");
+    assert!(a.is_some() && a == parse_literal_value("[-1e20, 1e20]"), "{a:?}");
     assert!(matches!(parse_literal_value("NaN"), Some(Value::F64(n)) if n.is_nan()));
     assert_eq!(parse_literal_value("-inf"), Some(Value::F64(f64::NEG_INFINITY)));
     assert!(parse_literal_value("[NaN,").is_none());

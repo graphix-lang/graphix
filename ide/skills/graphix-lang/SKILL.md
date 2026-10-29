@@ -803,7 +803,9 @@ JSON/TOML maps with scalar keys write as objects/tables; a
 map with a composite, bytes or null key writes as an array of `[key, value]`
 pairs. TOML still refuses null keys and requires a table at the document root.
 
-A scale-zero decimal prints plainly without a trailing point.
+A whole float prints with its point (`3.0`) in interpolation, `println` and
+`cast<string>`, so the text reads back as a float (`cast<[i64, f64]>("3.0")`
+is 3.0); a scale-zero decimal prints plainly without a trailing point.
 Printed composites escape brackets in strings and retain numeric type prefixes
 except for i64/f64. Bytes print as `bytes:` literals. Only `str::parse` also
 reads printed UTC datetimes, every printed duration unit, large finite floats

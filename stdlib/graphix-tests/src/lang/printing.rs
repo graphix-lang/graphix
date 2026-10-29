@@ -1,6 +1,9 @@
 use super::dense_deltas::run_delta;
 use anyhow::Result;
-use graphix_package_core::testing::{Mode, as_i64s};
+use graphix_package_core::{
+    run,
+    testing::{Mode, as_i64s, prints},
+};
 use netidx_value::{ValArray, Value};
 
 async fn acknowledgements(mode: Mode) -> Result<()> {
@@ -318,3 +321,58 @@ async fn arm_entry_prints_a_constant_at_birth_only(mode: Mode) -> Result<()> {
 }
 
 modes!(arm_entry_prints_a_constant_at_birth_only);
+
+// A whole float prints with its point, so what a plain print writes reads
+// back as the float it printed: interpolation, `cast<string>` (a duration's
+// seconds too) and a value of static type `Any` alike; a fraction, `-0.0`,
+// a large float and the non-finite floats print in their shortest form.
+const WHOLE_FLOAT_KEEPS_ITS_POINT: &str = r#"
+{
+  let u: [i64, f64] = 3.0;
+  let a: Any = 3.0;
+  let big = 1e20;
+  let s = "[u]";
+  let back: Result<f64, `ParseError(string)> = str::parse("[big]");
+  (
+    s, "[a]", "[f32:3.0]", "[-0.0]", "[0.5]", "[big]", "[[3.0, 0.5]]",
+    cast<string>(u)$, cast<string>(f32:3.0)$, cast<string>(duration:3.s)$,
+    "[1.0 / 0.0] [-1.0 / 0.0] [0.0 / 0.0]",
+    cast<[i64, f64]>(s)$, cast<[i64, f64]>("[a]")$, back$ == big
+  )
+}
+"#;
+
+run!(
+    whole_float_keeps_its_point,
+    WHOLE_FLOAT_KEEPS_ITS_POINT,
+    prints(
+        r#"["3.0", "3.0", "3.0", "-0.0", "0.5", "100000000000000000000.0", "[3.0, 0.5]", "3.0", "3.0", "3.0", "inf -inf NaN", f64:3., f64:3., true]"#
+    )
+);
+
+// A kernel interpolating a float part writes it as the node-walk does.
+run!(
+    fused_whole_float_keeps_its_point,
+    r#"{
+  let xs = [3.0, 0.5, -0.0, 1e20];
+  #[native]
+  array::map(xs, |x| "[x];[f32:2.0]")
+}"#,
+    prints(r#"["3.0;2.0", "0.5;2.0", "-0.0;2.0", "100000000000000000000.0;2.0"]"#)
+);
+
+/// The printers write a whole float with its point.
+async fn printers_keep_a_whole_floats_point(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let x = 3.0;
+        let a = println(x);
+        let b = println(f32:4.0);
+        let c = println([5.0, 0.5]);
+        (a, b, c) ~ 1
+    }"#;
+    let (_, out) = run_delta(code, mode).await?;
+    assert_eq!(sorted_lines(&out), ["3.0", "4.0", "[5.0, 0.5]"], "{out}");
+    Ok(())
+}
+
+modes!(printers_keep_a_whole_floats_point);

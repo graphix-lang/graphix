@@ -46,6 +46,21 @@ impl fmt::Display for Naked<'_> {
     }
 }
 
+/// A scalar as a plain print writes it: a whole finite float keeps its
+/// point (`3.0`), so the text reads back as a float; anything else prints
+/// as netidx prints it without its type.
+pub struct PlainScalar<'a>(pub &'a Value);
+
+impl fmt::Display for PlainScalar<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Value::F64(v) if v.is_finite() && v.fract() == 0. => write!(f, "{v}.0"),
+            Value::F32(v) if v.is_finite() && v.fract() == 0. => write!(f, "{v}.0"),
+            v => write!(f, "{}", NakedValue(v)),
+        }
+    }
+}
+
 /// The bytes of a string leaf a capped walk writes.
 const MAX_LEAF: usize = 256;
 
@@ -157,7 +172,7 @@ fn fmt_naked_capped(
                     write!(f, "{}", Literal(v))?;
                 }
                 Value::Decimal(d) => write!(f, "{d}")?,
-                v => write!(f, "{}", NakedValue(v))?,
+                v => write!(f, "{}", PlainScalar(v))?,
             }
             continue;
         }
