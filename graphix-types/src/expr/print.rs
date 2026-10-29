@@ -679,6 +679,7 @@ fn kind_decorated(k: &ExprKind) -> bool {
     ensure_sufficient(|| {
         let mut any = match k {
             ExprKind::Trait(t) => t.decorated(),
+            ExprKind::Impl(i) => shows_comments(i.below.lines()),
             ExprKind::Use { names, .. } => use_decorated(names),
             ExprKind::Lambda(l) => {
                 l.args.iter().any(|a| a.comments.decorated())
@@ -1148,15 +1149,18 @@ impl fmt::Display for ImplExpr {
 
 impl PrettyDisplay for ImplExpr {
     fn decorated(&self) -> bool {
-        self.methods.iter().any(decorated)
+        shows_comments(self.below.lines()) || self.methods.iter().any(decorated)
     }
 
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        if self.methods.is_empty() {
+        if self.methods.is_empty() && !shows_comments(self.below.lines()) {
             return self.head.fmt_pretty_inner(buf);
         }
         writeln!(buf, "{} {{", self.head)?;
-        buf.nested(|buf| pretty_items(buf, &self.methods, ";"))?;
+        buf.nested(|buf| {
+            pretty_items(buf, &self.methods, ";")?;
+            write_comments(buf, self.below.lines())
+        })?;
         writeln!(buf, "}}")
     }
 }
@@ -1987,7 +1991,7 @@ fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
 fn ends_bodyless(e: &Expr) -> bool {
     use ExprKind::*;
     match &e.kind {
-        Impl(i) => i.methods.is_empty(),
+        Impl(i) => i.methods.is_empty() && !shows_comments(i.below.lines()),
         Bind(b) => ends_bodyless(&b.value),
         Connect { value, .. } => ends_bodyless(value),
         Lambda(l) => matches!(&l.body, LambdaBody::Expr(b) if ends_bodyless(b)),

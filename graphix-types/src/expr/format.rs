@@ -470,6 +470,7 @@ impl<'a> Ornaments<'a> {
                     .iter()
                     .for_each(|(p, _)| self.pattern(&p.structure_predicate)),
                 ExprKind::Trait(t) => self.methods(t, |_, _| ()),
+                ExprKind::Impl(im) => self.push(Ornament::Comments(im.below.lines())),
                 ExprKind::Use { names, .. } => self.uses(names),
                 ExprKind::Module { value, .. }
                     if let ModuleKind::Dynamic { sig, .. } = &**value =>
@@ -738,6 +739,13 @@ mod tests {
     #[test]
     fn nested_uses_keep_the_quantifier() {
         let src = "type F = fn<'a: Number>(g: fn(x: 'a) -> 'a, y: 'a) -> f64;\n0\n";
+        formats_to(SourceKind::Program, src, src);
+    }
+
+    // an impl with no method keeps the comment its body holds
+    #[test]
+    fn an_empty_impl_keeps_its_comment() {
+        let src = "type T = Abstract<i64>;\n\nimpl Cast for T {\n    // the representation\n};\n\n0\n";
         formats_to(SourceKind::Program, src, src);
     }
 

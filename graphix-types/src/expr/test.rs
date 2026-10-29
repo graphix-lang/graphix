@@ -1016,6 +1016,7 @@ macro_rules! impl_decl {
                         target,
                     },
                     methods: Arc::from_iter(methods),
+                    below: Comments::default(),
                 }))
                 .to_expr_nopos()
             })

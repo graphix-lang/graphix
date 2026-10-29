@@ -317,7 +317,7 @@ fn comment_above_impl_method() {
 }
 
 #[test]
-fn a_comment_below_the_last_impl_method_rides_it() {
+fn a_comment_below_the_last_impl_method_rides_it_or_the_impl() {
     for src in [
         "impl Show for Counter { let show = |c| \"c\"\n// below\n}",
         "impl Show for Counter { let show = |c| \"c\";\n// below\n}",
@@ -327,7 +327,11 @@ fn a_comment_below_the_last_impl_method_rides_it() {
         assert_eq!(i.methods.len(), 1, "{src}");
         assert_eq!(&dec_of(&i.methods[0]).below[..], [literal!(" below")], "{src}");
     }
-    assert!(parse_one("impl Show for Counter {\n// nothing\n}").is_err());
+    // with no method, the impl keeps it
+    let e = parse_one("impl Show for Counter {\n// nothing\n}").unwrap();
+    let ExprKind::Impl(i) = &e.kind else { panic!("not an impl") };
+    assert!(i.methods.is_empty());
+    assert_eq!(i.below.lines(), [literal!(" nothing")]);
 }
 
 #[test]

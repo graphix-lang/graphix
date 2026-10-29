@@ -1257,7 +1257,8 @@ cycle, across workers; the compiler never pins threads.
   or a trait method: `Eol`; a formal: `ItemComments`; an import:
   `UseComment`) and below a list's last item or a file's
   (`Decorations::below`, on a trailing `;`'s empty statement when there
-  is one; `Sig::below`, `TraitExpr::below`, `LambdaExpr::below`); none inside a string's
+  is one; `Sig::below`, `TraitExpr::below`, `LambdaExpr::below`, and an impl with no
+  method's `ImplExpr::below`); none inside a string's
   splice or an attribute's arguments, which print on one line; `///`
   docs only in an interface. Parse errors report the furthest point
   reached with the source line and a caret, and a refusal its reason.

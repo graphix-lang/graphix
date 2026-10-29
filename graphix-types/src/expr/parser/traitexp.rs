@@ -213,7 +213,7 @@ where
     )
         .then(|(head, methods, end): (ImplHead, Option<LPooled<Vec<Expr>>>, _)| {
             let mut ms: LPooled<Vec<Expr>> = methods.unwrap_or_else(LPooled::take);
-            // CR claude for claude: [bug/low] An impl with no methods refuses a comment in its
+            // XCR claude for claude: [bug/low] An impl with no methods refuses a comment in its
             // body: `impl Cast for T { // the representation };` (the comment on its own
             // line) is "a comment here has no method to describe", while an empty lambda
             // formal list keeps one (`LambdaExpr::below`). An empty Cast impl is the usual
@@ -221,15 +221,20 @@ where
             // TraitExpr's. probe: ~/tmp/xcr-review-2026-10-28/1/p/c_impl_empty.gx
             // (impl-comment-01)
             // a trailing `;` leaves an empty statement holding the lines below it
+            // 2026-10-29 claude: ImplExpr has a below (Comments): a body holding no method
+            // keeps its comment lines there, printed as written between braces, walked by the
+            // formatter's comment guard and by holds_comment (no splice holds one); below a
+            // method they still ride it. Pins: format::tests::an_empty_impl_keeps_its_comment
+            // (formats back unchanged),
+            // parser::test::a_comment_below_the_last_impl_method_rides_it_or_the_impl (was
+            // asserting the refusal). Corpus harness over both repos clean. CLAUDE.md names
+            // ImplExpr::below.
+            let mut alone = Comments::default();
             if let Some(empty) = ms.pop_if(|e| matches!(e.kind, ExprKind::NoOp)) {
                 let below = empty.dec.as_ref().map(|d| &d.below[..]).unwrap_or(&[]);
                 match ms.last_mut() {
                     Some(m) => trail(m, None, below),
-                    None if below.is_empty() => (),
-                    None => {
-                        return refuse(end, "a comment here has no method to describe")
-                            .right();
-                    }
+                    None => alone = Comments::of(below.iter().cloned()),
                 }
             }
             let simple = |m: &Expr| {
@@ -240,6 +245,7 @@ where
                 return refuse(end, "an impl body holds only `let name = ..` methods")
                     .right();
             }
-            value(ImplExpr { head, methods: Arc::from_iter(ms.drain(..)) }).left()
+            value(ImplExpr { head, methods: Arc::from_iter(ms.drain(..)), below: alone })
+                .left()
         })
 }

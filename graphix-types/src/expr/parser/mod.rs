@@ -322,6 +322,7 @@ pub(super) fn holds_comment(e: &Expr) -> bool {
             ExprKind::Use { names, .. } => {
                 names.iter().any(|n| !n.comments.lines().is_empty())
             }
+            ExprKind::Impl(im) => !im.below.lines().is_empty(),
             ExprKind::Lambda(l) => {
                 l.args.iter().any(|a| {
                     !a.comments.above.lines().is_empty()

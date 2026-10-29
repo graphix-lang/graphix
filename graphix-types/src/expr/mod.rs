@@ -335,6 +335,9 @@ pub struct ImplHead {
 pub struct ImplExpr {
     pub head: ImplHead,
     pub methods: Arc<[Expr]>,
+    /// The `//` lines of a body that holds no method; below a method they
+    /// are its own.
+    pub below: Comments,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -1863,6 +1866,7 @@ impl Expr {
             Impl(im) => Impl(Arc::new(ImplExpr {
                 head: im.head.clone(),
                 methods: xs(f, &im.methods),
+                below: im.below.clone(),
             })),
             Select(SelectExpr { arg, arms }) => Select(SelectExpr {
                 arg: a(f, arg),
