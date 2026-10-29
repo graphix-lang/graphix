@@ -952,6 +952,17 @@ impl<R: Rt> MapQBase<R> {
             // reverting it), filter_map_bare_value_refused (same),
             // filter_map_keeps_keep_values_whole (`Keep values kept whole over array,
             // list, map and Collection::filter_map).
+            // 2026-10-29 claude: Fused loop (cr29 1b): emit_filter_map_kind takes any
+            // callback whose frozen return is a two-word Value or null and always
+            // pushes the kept element through the helpers that share kept(); the
+            // Keep-free route to the map loop and the keeps flag are gone, so a typedef
+            // of the marker, an always-keep and an always-drop callback fuse alike.
+            // Pins: lang::collection::filter_map_keep_unwraps_fused (#[native] over
+            // array, list and map, Keep(null), strings, tuples, a typedef'd Keep,
+            // always-null callbacks; the always-null rows fail to fuse without it),
+            // filter_map_keeps_keep_values_whole now #[native] with FuseExpect::Jit
+            // (fails in jit and jit_par when the loop pushes results unwrapped, as do
+            // filter_map_keep_fuses and map_filter_map).
             MapOp::FilterMap => {
                 slots.iter().filter_map(|s| kept(s.value())).cloned().collect()
             }

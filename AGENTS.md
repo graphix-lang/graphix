@@ -1064,7 +1064,8 @@ size while a fresh one cannot hold the batch; a
 
 Coverage today: scalar arithmetic/comparison/logic/casts, producers and
 accessors, string interpolation of every part kind, `?`/`$`, the eight array HOFs as native loops (nesting
-included), structural select destructuring with scalar and variant
+included; filter_map's unwraps a `` `Keep `` result and skips a null),
+structural select destructuring with scalar and variant
 payload binds, owned binds of a nullable's payload, of a slice's rest,
 head or whole (`[x, tail..]`, `all@ [_, ..]`) and of non-scalar elements,
 tag tests and binds over a primitive union, every pattern at an
@@ -1269,8 +1270,7 @@ cycle, across workers; the compiler never pins threads.
   Array<'b>`), so nothing splices by shape; `filter_map`'s returns
   `` [`Keep('b), null] ``: null drops an element, `` `Keep(v) `` keeps
   `v`, null included, and the unwrap strips that one layer, so a `'b`
-  that is itself a `` `Keep `` round trips (a callback that may return
-  `Keep` node-walks).
+  that is itself a `` `Keep `` round trips.
 - **`name@ pattern` captures** are typed from the SCRUTINEE: under an
   inferred predicate a capture is a type variable that
   `PatternNode::bind_narrowed` binds, after the select narrows the arm,

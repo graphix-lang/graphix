@@ -32,9 +32,9 @@ rows, 10k for the rows quadratic by representation (`map_push`,
 `flatmap_*`: each step copies the array), 4k for `lfold_intr_4k` and
 `lfold_rec`.
 
-Every bench but the two `*_fmshape`, whose `` `Keep `` callback node-walks,
-asserts `#[native]` on its timed expressions, so the corpus build in
-`graphix-shell/tests/examples_compile.rs` fails when one stops fusing.
+Every bench asserts `#[native]` on its timed expressions, so the corpus
+build in `graphix-shell/tests/examples_compile.rs` fails when one stops
+fusing.
 
 `collection_bodies_*` in `stdlib/graphix-tests/src/lang/collection.rs`
 pins VALUE agreement across all the implementation routes of each
@@ -85,12 +85,10 @@ rows move little.
 
 - **Trait dispatch costs nothing** once resolved: `fold_trait` and
   `mfold_trait` match their intrinsics under the JIT.
-- **`map` and `filter` through the defaults node-walk**: their
-  `filter_map` callback may return `` `Keep(x) ``, which does not fuse,
-  so `map_fmshape` and `filter_fmshape` cost what the node-walk does
-  (in a debug build 1.5 s and 1.3 s, against 1.8 ms and 1.2 ms for
-  `map_intr` and `filter_intr`). `map_init`, `map` by construction over
-  the length, runs with `map_intr`.
+- **`map` and `filter` through the defaults fuse**, and pay what the
+  intrinsics do not: each kept element is built as a `` `Keep(x) ``
+  value that the loop then unwraps. `map_init`, `map` by construction
+  over the length, runs with `map_intr`.
 - **The hand-written fold** (`fold_rec`) runs a few times the
   intrinsic: the loop pays its own bounds check, `$` and select per
   element. Its node-walk is linear; each activation costs tens of

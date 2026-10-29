@@ -952,21 +952,13 @@ pub(crate) fn emit_filter_map_loop<F>(
     cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
-    out_elem: &Type,
     out_src: CompositeSource,
-    keeps: bool,
     facts: &LoopBody,
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    if matches!(
-        kernel_abi::abi_kind(out_elem),
-        Some(AbiKind::Unit | AbiKind::Null) | None
-    ) {
-        return Err(anyhow!("filter_map output element is not representable"));
-    }
     array_buf_loop(cx, arr, LoopKind::Slots, facts, {
         |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots, buf: ClifValue| {
             let (bound, value) =
@@ -980,19 +972,11 @@ where
             cx.b.ins().brif(is_null, advance, &[], push_block, &[]);
             cx.b.switch_to_block(push_block);
             cx.b.seal_block(push_block);
-            // The result is always the callback's 2-word Nullable-shaped
-            // Value, never an unwrapped element (a `[T, Error]` result may
-            // hold an Error where the arm expects T): push it as a value,
-            // bit-for-bit, or, where it may be `Keep(v)`, its kept element.
-            let helper = match (out_src, keeps) {
-                (CompositeSource::Owned, false) => "graphix_value_buf_push_value",
-                (CompositeSource::Borrowed, false) => {
-                    "graphix_value_buf_push_value_borrowed"
-                }
-                (CompositeSource::Owned, true) => "graphix_value_buf_push_kept",
-                (CompositeSource::Borrowed, true) => {
-                    "graphix_value_buf_push_kept_borrowed"
-                }
+            // A non-null result is a two-word `Keep(v)` Value; the helper
+            // pushes its `v`.
+            let helper = match out_src {
+                CompositeSource::Owned => "graphix_value_buf_push_kept",
+                CompositeSource::Borrowed => "graphix_value_buf_push_kept_borrowed",
             };
             cx.call_helper(helper, &[buf, value.disc, value.payload])?;
             cx.b.ins().jump(advance, &[]);

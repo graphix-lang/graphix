@@ -368,9 +368,10 @@ trait Collection {
   (Eric's call).
 
 Deletable at parity today (`bench/collection/README.md`): Array `map`
-(two parity derivations: `filter_map` with a total callback, and via
-`init`), Array `filter`, and Map's whole impl (already Graphix, at
-parity through `fold_pairs`). Not yet: `fold` (the loop itself),
+via `init`, and Map's whole impl (already Graphix, at parity through
+`fold_pairs`). Array `map` and `filter` derived from `filter_map` fuse
+but build and unwrap a `` `Keep `` per element, which the intrinsics do
+not. Not yet: `fold` (the loop itself),
 `find`/`find_map` (an Option-carrying fold can't early-exit, 2.4x),
 `flat_map` (fold+concat is O(n²) by construction and doesn't fuse), and
 List (per-element call overhead in a hand-written loop — `len`/`a[i]$`

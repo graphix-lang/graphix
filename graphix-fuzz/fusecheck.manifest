@@ -424,7 +424,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 2	soak-jul2026/32_connect_as_hof_source.gx
 6	soak-jul2026/33_arm_wake_replay_ref_write.gx
 5	soak-jul2026/34_arm_wake_replay_ref_write_b.gx
-2	soak-jul2026/35_per_slot_lift_aliasing.gx
+3	soak-jul2026/35_per_slot_lift_aliasing.gx
 9	soak-jul2026/36_slot_prime_cached_replay.gx
 0	soak-jul2026/37_nested_select_rtype_orphan.gx
 2	soak-jul2026/38_queuefn_clone_ftyp_lost.gx

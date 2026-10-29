@@ -3,7 +3,8 @@
 Status: built 2026-07-13 (List/Map lowering 2026-07-14)
 Pins: `stdlib/graphix-tests/src/lang/collection.rs`
 (`nested_same_intrinsic`, `nested_map_in_map`, `user_hof_nested`,
-`filter_map_total_callback`, the `collection_bodies_*` fixtures), the
+`filter_map_total_callback`, `filter_map_keep_unwraps_fused`, the
+`collection_bodies_*` fixtures), the
 Array/List/Map package suites, `findings/fold-midchain-fired-aug2026/`
 Supersedes: sync_subset, sync_control, value_returning_loops,
 impure_hof_fusion, composite_hof_fusion, clone_rebind_testing
@@ -117,13 +118,15 @@ A `filter_map` callback returns `` [`Keep('b), null] ``: `null` drops
 its element and `` `Keep(v) `` keeps `v`, null included. There is no
 bare `'b` member, so the unwrap (`node::collection::kept`, which the
 kernel's push helpers share) strips exactly the one layer the type has,
-and a `'b` that is itself a `` `Keep `` round trips. A callback whose frozen return may be `` `Keep ``
-runs the filter_map loop even where it never returns null, which is
-what lets the trait's `map` and `filter` defaults (`` |x| `Keep(f(x)) ``)
-fuse at parity with the intrinsics. A TOTAL callback with no `` `Keep ``
-(frozen return provably null-free, `frozen_may_be_null` conservative)
-can never produce the `Null` the intrinsic drops, so
-`emit_filter_map_kind` routes it to the map loop.
+and a `'b` that is itself a `` `Keep `` round trips. The fused loop
+(`emit_filter_map_kind`) takes any callback whose frozen return is a
+two-word Value or `null`: it skips a null result and pushes the kept
+element of any other through those helpers, so a callback that always
+keeps, always drops or keeps through a typedef of the marker fuses as
+one that does both, and the trait's `map` and `filter` defaults
+(`` |x| `Keep(f(x)) ``) fuse. Each kept element is still built as a
+`` `Keep `` value and then unwrapped, a cost the `map` and `filter`
+intrinsics do not pay.
 
 ## Rejected alternatives
 

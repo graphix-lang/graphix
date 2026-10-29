@@ -717,6 +717,36 @@ run!(
     FuseExpect::Jit
 );
 
+// The fused filter_map loop unwraps the one `Keep layer over each
+// collection kind: a kept null, kept strings and tuples, a callback that
+// always keeps, one that keeps through a typedef of the marker, and one
+// that always drops.
+run!(
+    filter_map_keep_unwraps_fused,
+    prints(
+        r#"[[i64:1, null, i64:3], ["one", "3"], [[i64:1, "a"]], [i64:2, i64:4, i64:6], [i64:1, i64:3], ["1", null], {"a" => "x", "b" => null}, [], [], {}]"#
+    ),
+    "/test.gx" => r#"
+        type K = `Keep(i64);
+        let xs = [1, 2, 3];
+        let l = [<1, 2, 3>];
+        let m: Map<string, [string, null]> = {"a" => "x", "b" => null, "c" => "z"};
+        let result = (
+            #[native] array::filter_map(xs, |x| select x { 2 => `Keep(null), v => `Keep(v) }),
+            #[native] array::filter_map(xs, |x| select x { 1 => `Keep("one"), 2 => null, v => `Keep("[v]") }),
+            #[native] array::filter_map(xs, |x| select x { 1 => `Keep((x, "a")), _ => null }),
+            #[native] array::filter_map(xs, |x| `Keep(x * 2)),
+            #[native] array::filter_map(xs, |x| -> [K, null] select x { 2 => null, v => `Keep(v) }),
+            #[native] list::filter_map(l, |x| select x { 1 => `Keep("[x]"), 2 => `Keep(null), _ => null }),
+            #[native] map::filter_map(m, |(k, v)| select k { "c" => null, _ => `Keep((k, v)) }),
+            #[native] array::filter_map(xs, |x| null),
+            #[native] list::filter_map(l, |x| null),
+            #[native] map::filter_map(m, |(k, v)| null)
+        )
+    "#;
+    FuseExpect::Jit
+);
+
 // A filter_map callback keeps a value only as `Keep(v)`: a bare one is
 // refused, a generic one included, which would otherwise unwrap a 'x that
 // is itself a `Keep`.
@@ -740,23 +770,25 @@ run!(
 );
 
 // The unwrap strips the one `Keep` layer the callback's type has, so a
-// kept value that is itself a `Keep` stays whole, over each flavor.
+// kept value that is itself a `Keep` stays whole, over each flavor, fused
+// as node-walked.
 run!(
     filter_map_keeps_keep_values_whole,
     prints(r#"[[i64:10, i64:-1, i64:20], [["Keep", i64:1], ["Keep", i64:2]], [["Keep", i64:1]], {"a" => ["Keep", i64:1]}, {"a" => ["Keep", i64:1]}]"#),
     "/test.gx" => r#"
         type T = [`Keep(i64), `Other];
-        let g = |xs: Array<'b>| -> Array<'b> array::filter_map(xs, |x| `Keep(x));
+        let g = |xs: Array<'b>| -> Array<'b> #[native] array::filter_map(xs, |x| `Keep(x));
         let r = g([`Keep(1), `Other, `Keep(2)]);
         let m: Map<string, i64> = {"a" => 1};
         let result = (
-            array::map(r, |v: T| select v { `Keep(n) => n * 10, `Other => -1 }),
-            array::filter_map([1, 2], |x| `Keep(`Keep(x))),
-            list::filter_map([<1>], |x| `Keep(`Keep(x))),
-            map::filter_map(m, |(k, v)| `Keep((k, `Keep(v)))),
-            Collection::filter_map(m, |v| `Keep(`Keep(v)))
+            #[native] array::map(r, |v: T| select v { `Keep(n) => n * 10, `Other => -1 }),
+            #[native] array::filter_map([1, 2], |x| `Keep(`Keep(x))),
+            #[native] list::filter_map([<1>], |x| `Keep(`Keep(x))),
+            #[native] map::filter_map(m, |(k, v)| `Keep((k, `Keep(v)))),
+            #[native] Collection::filter_map(m, |v| `Keep(`Keep(v)))
         )
-    "#
+    "#;
+    FuseExpect::Jit
 );
 
 // Keeping a null beside other values: every kept value is `Keep(..)`,

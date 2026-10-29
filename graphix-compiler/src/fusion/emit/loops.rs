@@ -19,7 +19,6 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use cranelift_codegen::ir::{InstBuilder, Value as ClifValue, types};
-use netidx_value::Typ;
 use smallvec::SmallVec;
 
 #[derive(Debug)]
@@ -118,38 +117,22 @@ fn is_unit(typ: &Type) -> bool {
     matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit))
 }
 
-fn is_unit_or_null(typ: &Type) -> bool {
-    matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit | AbiKind::Null))
-}
-
-/// Whether a filter_map callback's result type may be `Keep(..)`.
-fn holds_keep(t: &Type) -> bool {
-    t.with_deref(|t| match t {
-        Some(Type::Variant(tag, _, _)) => &**tag == "Keep",
-        Some(Type::Set(ms)) => ms.iter().any(holds_keep),
-        _ => false,
-    })
-}
-
-/// Whether a frozen type admits `null`, filter_map's drop marker.
-/// An unknown shape answers true, so the caller keeps interpreting.
-fn frozen_may_be_null(t: &Type) -> bool {
-    t.with_deref(|t| match t {
-        Some(Type::Primitive(p)) => p.contains(Typ::Null),
-        Some(Type::Set(ms)) => ms.iter().any(frozen_may_be_null),
-        Some(
-            Type::Array(_)
-            | Type::List(_)
-            | Type::Tuple(_)
-            | Type::Struct(_)
-            | Type::Variant(_, _, _)
-            | Type::Fn(_)
-            | Type::Error(_)
-            | Type::Map { .. }
-            | Type::Abstract { .. }
-            | Type::ByRef(..),
-        ) => false,
-        _ => true,
+/// What a filter_map callback's frozen result keeps: the `v` of its one
+/// `Keep(v)` member; `None` where it has none or several.
+fn kept_element(t: &Type) -> Option<Type> {
+    t.with_deref(|t| match t? {
+        Type::Variant(tag, args, _) if &**tag == "Keep" => match &**args {
+            [v] => Some(v.clone()),
+            _ => None,
+        },
+        Type::Set(ms) => {
+            let mut kept = ms.iter().filter_map(kept_element);
+            match (kept.next(), kept.next()) {
+                (Some(v), None) => Some(v),
+                _ => None,
+            }
+        }
+        _ => None,
     })
 }
 
@@ -367,21 +350,17 @@ pub(crate) fn emit_filter_map_kind<R: Rt>(
     let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
         return Ok(None);
     };
-    let keeps = holds_keep(&output_type);
-    let output_element = match kernel_abi::nullable_inner(&output_type) {
-        Some(element) => element,
-        None if keeps => output_type,
-        // A callback that can never return null makes filter_map a map.
-        None if frozen_may_be_null(&output_type) => return Ok(None),
-        None => return emit_map_kind(cx, source, body, param, element_type, flavor),
-    };
+    if !matches!(
+        kernel_abi::abi_kind(&output_type),
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
+    ) {
+        return Ok(None);
+    }
     let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
         return Ok(None);
     };
-    if is_unit_or_null(&output_element) {
-        return Ok(None);
-    }
+    let kept = kept_element(&output_type).unwrap_or(Type::Bottom);
     emit_loop(cx, source, flavor, |cx, src| {
         let output_source = emit::node_composite_source(body);
         let sites = emit::loop_body(cx, body);
@@ -389,13 +368,11 @@ pub(crate) fn emit_filter_map_kind<R: Rt>(
             cx,
             src,
             &param.elem(&element_type, &leaves),
-            &output_element,
             output_source,
-            keeps,
             &sites,
             |cx| body.emit_clif(cx),
         )?;
-        Ok((flavor.emit_result(cx, ptr, &output_element)?, flags))
+        Ok((flavor.emit_result(cx, ptr, &kept)?, flags))
     })
 }
 
