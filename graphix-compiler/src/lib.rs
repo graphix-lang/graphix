@@ -1118,6 +1118,8 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// variables are delivered in one event; a second write to the same
     /// variable waits a cycle. The event must not change mid-cycle.
     fn set_var(&mut self, id: BindId, value: Value);
+    /// The writes to `id` queued and not delivered yet.
+    fn waiting_writes(&self, id: &BindId) -> usize;
     /// [`Self::set_var`] for a level whose intermediate values nobody
     /// needs: it replaces the variable's last waiting level write, so the
     /// changes a cycle makes cost one delivery.
@@ -2689,6 +2691,10 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     // (x-engine-collections-02)
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q30, The `Keep
     // marker is in-band):
+    // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat, 2026-10-27,
+    // D5): "I like B, lets try it": the marker becomes a form no value can take, a
+    // Rust-registered abstract like the kind markers, built by a core function keep(v),
+    // which callbacks write instead of `Keep(v).
     cells(test, &mut own);
     let owned = |t: &Type| matches!(t, Type::TVar(tv) if own.contains(&tv.cell_addr()));
     if let Indiscernible::Pair(a, b) = &why

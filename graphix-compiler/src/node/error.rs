@@ -1570,6 +1570,8 @@ pub struct ErrorRelay {
 struct Receipts {
     /// Deliveries arrived, taken or passed over.
     arrived: u64,
+    /// Raises were given up at a sleep and the catch has not woken since.
+    gave_up: bool,
     /// Raises acknowledged to the enclosing handlers: taken, or given up.
     acked: u64,
     /// The cycle a delivery arrived in: a later raise that cycle arrives
@@ -1587,6 +1589,9 @@ impl Receipts {
     ) -> Option<Value> {
         let (bind_id, _) = handler.id();
         let cycle = ctx.rt.cycle();
+        if std::mem::take(&mut self.gave_up) {
+            self.landed_asleep(ctx, handler, &bind_id);
+        }
         // a catch updated twice in one cycle would read its delivery twice
         let v = match read_var(ctx, &bind_id) {
             Some(VarRead::Delivered(tv))
@@ -1608,9 +1613,26 @@ impl Receipts {
         Some(v)
     }
 
+    /// At the wake, count as arrived the given-up deliveries that landed
+    /// while the catch slept, unread: those owed less those still on their
+    /// way (queued, or delivered this cycle), ahead of the deliveries of the
+    /// raises made since.
+    fn landed_asleep<R: Rt>(
+        &mut self,
+        ctx: &ExecCtx<'_, R>,
+        handler: &ErrorHandler,
+        id: &BindId,
+    ) {
+        let owed = self.acked - self.arrived;
+        let now = matches!(read_var(ctx, id), Some(VarRead::Delivered(tv)) if tv.tag().is_fired());
+        let coming = ctx.rt.waiting_writes(id) as u64 + now as u64;
+        let since = handler.raised() - self.acked;
+        self.arrived += owed - owed.min(coming.saturating_sub(since));
+    }
+
     /// Acknowledge every raise not taken yet, so no enclosing handler
     /// waits on them; their deliveries are passed over.
-    // CR claude for claude: [bug/high] give_up acks raises whose deliveries have not
+    // XCR claude for claude: [bug/high] give_up acks raises whose deliveries have not
     // landed yet. A delivery that then lands while the catch is asleep is never seen by
     // take, so `arrived` lags `acked` after the wake. The next real raises are then
     // passed over as given up, and handled() is never called for them. The ancestors'
@@ -1651,7 +1673,23 @@ impl Receipts {
     // suppress their wake deliveries. The separate type-checking block is being
     // addressed in this worktree. The receipt probe was read but not run or pinned in
     // this change.
+    // 2026-10-29 claude: Eric ruled (2026-10-27, cr-questions round 2, the receipts
+    // question at c-error-op-01 node/error.rs:1614): yes, b. give_up stays at sleep
+    // (nothing waits on a sleeping arm), and the wake's one catch-up fire stands for
+    // every given-up delivery that landed: arrived catches up to acked and the handler
+    // does not hear them.
+    // 2026-10-29 claude: Built (b): give_up still acks at sleep and marks the receipts;
+    // at the wake Receipts::landed_asleep counts as arrived the given-up deliveries
+    // that landed while the catch slept: those owed (acked - arrived) less the writes
+    // still on their way to its variable (the new Rt::waiting_writes, the root's queue
+    // plus a fork's logged set_vars, and one delivered this cycle), less the raises
+    // made since, which queue behind them. The probe's step now passes (done 12, was 0
+    // forever) and the handler hears six raises, the two given up at the sleeps passed
+    // over, in every mode. Pin:
+    // lang::errors::a_catch_asleep_with_raises_in_flight_lets_its_step_pass (times out
+    // without the wake count). design/catch.md says so.
     fn give_up(&mut self, handler: &ErrorHandler, cycle: u64) {
+        self.gave_up = true;
         while self.acked < handler.raised() {
             self.acked += 1;
             handler.handled(cycle);

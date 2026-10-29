@@ -137,6 +137,11 @@ impl<T> Waiting<T> {
         self.by_id.remove(id);
     }
 
+    /// The writes waiting for `id`.
+    pub(super) fn waiting(&self, id: &BindId) -> usize {
+        self.by_id.get(id).map_or(0, |q| q.q.len() - q.head)
+    }
+
     pub(super) fn has(&self, id: &BindId) -> bool {
         self.by_id.contains_key(id)
     }
@@ -442,6 +447,10 @@ impl<X: GXExt> Rt for GXRt<X> {
             eprintln!("SET_VAR {id:?} = {value}");
         }
         self.var_updates.push(id, VarUpdate::Set(value), Via::Write);
+    }
+
+    fn waiting_writes(&self, id: &BindId) -> usize {
+        self.var_updates.waiting(id)
     }
 
     fn set_level(&mut self, id: BindId, value: Value) {

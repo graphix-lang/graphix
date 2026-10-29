@@ -101,3 +101,11 @@ flow — `design/seq_blocks.md` §7).
   `catch_ascription_accepts_bounded_raise`.
 - A handler in a callee stays in the callee; a handler's `?` rethrows
   to the previous install or the next one out.
+- A catch that sleeps gives up the raises it has not taken, so no seq step
+  or `try` above waits on a sleeping arm, and its handler never hears them.
+  Their deliveries still land on the error variable, one a cycle, maybe
+  while it sleeps; at its wake `Receipts::landed_asleep` counts those
+  as arrived: the given-up deliveries owed less the writes to the variable
+  still on their way (`Rt::waiting_writes`, plus one delivered this cycle),
+  less the raises made since, which queue behind them. Pin:
+  `a_catch_asleep_with_raises_in_flight_lets_its_step_pass`.

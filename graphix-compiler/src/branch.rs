@@ -225,6 +225,26 @@ impl<'a, R: Rt> RtView<'a, R> {
         b.marked(self.cycle())
     }
 
+    /// The writes to `id` queued and not delivered yet: the runtime's,
+    /// and those the branches above made this cycle.
+    pub fn waiting_writes(&self, id: &BindId) -> usize {
+        let mut n = 0;
+        let mut view: &RtView<'_, R> = self;
+        loop {
+            match view {
+                RtView::Root(r) => return n + r.waiting_writes(id),
+                RtView::Fork(f) => {
+                    n += f
+                        .log
+                        .iter()
+                        .filter(|op| matches!(op, RtOp::SetVar(i, _) if i == id))
+                        .count();
+                    view = f.parent();
+                }
+            }
+        }
+    }
+
     #[inline]
     pub fn set_var(&mut self, id: BindId, value: Value) {
         logged!(self, set_var(id, value), RtOp::SetVar(id, value))

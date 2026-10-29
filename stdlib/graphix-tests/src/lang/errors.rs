@@ -1147,3 +1147,30 @@ run!(
     }"#,
     is(Value::I64(3))
 );
+
+// A catch that sleeps with raises in flight gives them up, and at its wake
+// counts as arrived those whose deliveries landed while it slept: the seq
+// step that called into it passes once its later raises are handled, and
+// the handler hears no given-up error: six of the eight raises before the
+// step passes, the two given up at the sleeps passed over.
+run!(
+    a_catch_asleep_with_raises_in_flight_lets_its_step_pass,
+    r#"{
+        let t = 0;
+        let n = 0;
+        t <- select t { t if t < 14 => t + 1, _ => never() };
+        let g = |k: i64| -> i64 select t {
+            t if (t % 3 == 1) || (t >= 7) => {
+                catch(e) n <- e ~ n + 1;
+                let a = select t % 3 { 1 => error(`A(t))?, _ => 0 };
+                let b = select t % 3 { 1 => error(`B(t))?, _ => 0 };
+                select t { 12 => t, _ => never() }
+            },
+            _ => never()
+        };
+        let done = 0;
+        let s = seq { let v = g(0); done <- v };
+        select done { 12 => n, _ => never() }
+    }"#,
+    is(Value::I64(6))
+);
