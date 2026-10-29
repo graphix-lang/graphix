@@ -3099,6 +3099,72 @@ run!(
     "#
 ; FuseExpect::None);
 
+// A generic function value is generic wherever it stands: an element of
+// a collection keeps its quantifier, and each call picks it anew.
+run!(
+    generic_function_elements_stay_generic,
+    r#"{
+        let fs = array::map([1, 2], |x| 'a: Number |x: 'a, y: 'a| -> 'a x + y);
+        array::map(fs, |f| (f(1, 2), f(f32:1.5, f32:2.0)))
+    }"#,
+    prints("[[i64:3, f32:3.5], [i64:3, f32:3.5]]");
+    FuseExpect::None
+);
+
+// A parameter the body unifies with a declared quantifier is that
+// quantifier in every copy of the signature: a call site's settle leaves
+// it to the function value's callers.
+run!(
+    generic_function_element_with_an_unannotated_parameter,
+    r#"{
+        let tm = |x| 0;
+        array::map(['a: Number |x, y: 'a| -> 'a x + y, 2], tm)
+    }"#,
+    prints("[i64:0, i64:0]");
+    FuseExpect::None
+);
+
+run!(
+    generic_function_value_with_an_unannotated_parameter,
+    r#"{
+        let f = 'a: Number |x, y: 'a| -> 'a x + y;
+        let tm = |x| 0;
+        tm(f)
+    }"#,
+    is(Value::I64(0));
+    FuseExpect::Jit
+);
+
+/// The statements of a block elaborate in compile tasks of their own, in
+/// parallel. A quantifier the check left open in a type both read (`m`'s
+/// element) is compared as a fresh copy and written by neither, so the
+/// build accepts the program whatever order the tasks run in.
+#[tokio::test(flavor = "multi_thread")]
+async fn generic_function_elements_elaborate_in_any_task_order() -> Result<()> {
+    use graphix_package_core::testing::init;
+    const RUNS: usize = 60;
+    let code = arcstr::literal!(
+        "{ let m = array::map([1, 2], |x| 'a: Number |x: 'a, y: 'a| -> 'a x + y); \
+         array::len(m) }"
+    );
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let mut refused: Vec<String> = Vec::new();
+    for _ in 0..RUNS {
+        if let Err(e) = ctx.rt.compile(code.clone()).await {
+            refused.push(format!("{e:#}"));
+        }
+    }
+    ctx.shutdown().await;
+    assert!(
+        refused.is_empty(),
+        "{} of {RUNS} builds refused: {}",
+        refused.len(),
+        refused[0]
+    );
+    Ok(())
+}
+
 // A callee's own declared quantifier that only its return holds is the
 // caller's to narrow: its check held it rigid, so the body produced
 // nothing into it.

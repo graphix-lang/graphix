@@ -328,7 +328,7 @@ impl Type {
                     return Some(t.clone());
                 }
                 if let Some(fresh) = cx.fresh.get(&addr) {
-                    return Some(Type::TVar(fresh.clone()));
+                    return Some(Type::TVar(fresh.named_as(tv)));
                 }
                 if !cx.in_progress.insert(addr) {
                     return Some(Type::TVar(tv.fresh_copy()));

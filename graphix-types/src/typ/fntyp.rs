@@ -830,6 +830,15 @@ impl FnType {
         any
     }
 
+    /// A quantifier an earlier compile task left open: the check decided
+    /// it open, so a later task compares the type as any instance of
+    /// itself and never writes the cell (`tvar::earlier_task`).
+    fn has_earlier_quantifier(&self) -> bool {
+        let mut any = false;
+        self.open_quantifiers(|_, open| any |= open.earlier_task());
+        any
+    }
+
     /// Each of the signature's own quantifiers, as the signature names it.
     pub fn each_quantifier(&self, mut f: impl FnMut(&ArcStr, &TVar)) {
         if self.quantifiers.is_empty() {
@@ -928,6 +937,12 @@ impl FnType {
     /// its own and its rank-2 formals'.
     #[doc(hidden)]
     pub fn shared_call(&self) -> Self {
+        self.fresh_quantified(true)
+    }
+
+    /// A copy whose own open quantifiers are fresh cells, and its rank-2
+    /// formals' when `formals`; every other cell is shared.
+    fn fresh_quantified(&self, formals: bool) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let image = |known: &AHashMap<usize, TVar>, a| {
             known.get(&a).map(|f| Type::TVar(f.clone()))
@@ -936,7 +951,9 @@ impl FnType {
             c.swap_cells(&|a| image(known, a))
         };
         self.fresh_quantifiers(&mut known, walk);
-        self.generic_inner_quantifiers(&mut known, |_| false, walk);
+        if formals {
+            self.generic_inner_quantifiers(&mut known, |_| false, walk);
+        }
         if known.is_empty() {
             return self.clone();
         }
@@ -1140,11 +1157,20 @@ impl FnType {
     ) -> Result<bool> {
         // A quantifier self has not picked stands for every type its bound
         // admits, since each call through the value picks it anew: t must
-        // fit it held rigid, wherever the type stands.
-        let gates = self.open_quantifier_gates(flags.contains(ContainsFlags::Adopt));
+        // fit it held rigid, wherever the type stands; one an earlier task
+        // left open is held rigid in a copy.
+        let copy;
+        let this = match self.has_earlier_quantifier() {
+            true => {
+                copy = self.fresh_quantified(false);
+                &copy
+            }
+            false => self,
+        };
+        let gates = this.open_quantifier_gates(flags.contains(ContainsFlags::Adopt));
         let gated = u32::from(!gates.is_empty());
         hist.gated += gated;
-        let r = self.contains_gated(flags, env, hist, t);
+        let r = this.contains_gated(flags, env, hist, t);
         hist.gated -= gated;
         drop(gates);
         r
@@ -1158,10 +1184,11 @@ impl FnType {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        // a rank-2 formal passed on is any instance of itself: its
-        // quantifiers are fresh for this comparison, so self's bind them
+        // a rank-2 formal passed on is any instance of itself, as is a
+        // type whose quantifier an earlier task left open: its quantifiers
+        // are fresh for this comparison, so self's bind them
         let fresh;
-        let t = match t.is_rigid_formal() {
+        let t = match t.is_rigid_formal() || t.has_earlier_quantifier() {
             true => {
                 fresh = t.shared_call();
                 &fresh

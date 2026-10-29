@@ -1534,6 +1534,17 @@ impl TVar {
         self.read().cell.data_ptr().addr()
     }
 
+    /// `self`'s cell under `like`'s name when a program wrote that name: a
+    /// parameter's cell merged into a declared quantifier's keeps the
+    /// quantifier's name in a copy, since a signature finds its
+    /// quantifiers by name. Inferred names of one cell collapse to one.
+    pub(crate) fn named_as(&self, like: &Self) -> Self {
+        match self.name == like.name || like.name.starts_with('_') {
+            true => self.clone(),
+            false => self.renamed(like.name.clone()),
+        }
+    }
+
     /// A fresh cell standing for this one in a copy: the name, and the
     /// conjuncts, refusal and binding rebuilt through `walk`; memoized
     /// by cell in `fresh`, so a copy keeps the source's alias topology.
@@ -1546,7 +1557,7 @@ impl TVar {
     ) -> TVar {
         let addr = self.cell_addr();
         if let Some(f) = fresh.get(&addr) {
-            return f.clone();
+            return f.named_as(self);
         }
         let f = match how {
             Fresh::Copy => self.fresh_copy(),
@@ -2612,7 +2623,7 @@ impl Type {
                         r
                     }
                 }),
-                None => known.get(&tv.cell_addr()).map(|f| Type::TVar(f.clone())),
+                None => known.get(&tv.cell_addr()).map(|f| Type::TVar(f.named_as(tv))),
             },
             Type::Fn(ft) => {
                 ft.cow_walk(|t| t.rename_memo(known, memo)).map(|f| Type::Fn(Arc::new(f)))

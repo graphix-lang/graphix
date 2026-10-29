@@ -226,7 +226,14 @@ An image carries each cell's level and each definition's depth.
   settles, then the operator operand and `let`-over-⊥ settles, then the
   rules judged over them (`PendingSettle`). Elaboration never settles
   a cell an earlier compile task created (`tvar::earlier_task`): what
-  the check left open, it decided open.
+  the check left open, it decided open. An open quantifier of such a
+  function type (a generic function value in `m: Array<fn<'a: Number>
+  (..)>`) is any instance of itself to a later task: `FnType::
+  contains_int` compares it as a fresh copy, held rigid on self's side
+  and instantiated on t's, so neither side links it to the task's own
+  cells. A block's statements elaborate in parallel tasks that all read
+  the check's cells, and a link made by one is seen by the others at
+  whatever point they have reached.
 - ⊥ never binds a cell: the `(TVar-unbound, ⊥)` arm of `contains` is
   no-bind (⊥ is contained by whatever the cell may become, so binding
   gains nothing and forecloses the cell's writers), and `flatten_set`
@@ -326,6 +333,14 @@ since they hold only where `'b` is `i64`. A call of `apply` copies `'b` generic
 (`FnType::generic_inner_quantifiers`): the argument's cells the check
 aliases to it stay its own scheme's, which each call of `f` copies,
 and the passing site's settle leaves it.
+
+A signature finds its quantifiers by name (`FnType::quantifiers`). A
+parameter the body unifies with a declared quantifier (`x` in `'a:
+Number |x, y: 'a| -> 'a x + y`) is a second name for the quantifier's
+cell, and every copy keeps the written name beside the inferred one
+(`TVar::named_as`; inferred names of one cell collapse to one), so the
+copy still knows the cell for a quantifier and a site's settle leaves
+it.
 
 `FnType::contains` checks a declared bound only for a BOUND variable
 (`bounds_hold`). An open one stays open, standing for one type the

@@ -791,8 +791,14 @@ node graph IS the IR — there is no parallel typed IR
   (`ContainsFlags::Adopt`); a call copies `'b`
   generic, the formal passed on is any instance of itself in an
   instance's elaboration as in the definition's check
-  (`CellFact::FormalQuantifier`), and an open quantifier never binds to its bound, no site's
-  settle decides it (`design/tvar_constraints.md`); `Any` binds an open
+  (`CellFact::FormalQuantifier`), as is a quantifier an earlier compile
+  task left open, which a later task's `contains` compares as a fresh
+  copy on either side and never writes (`FnType::has_earlier_quantifier`:
+  parallel elaborations share the check's cells), and an open quantifier
+  never binds to its bound, no site's settle decides it; a copy of a type
+  keeps each written variable name, so a parameter merged into a declared
+  quantifier still names it (`TVar::named_as`;
+  `design/tvar_constraints.md`); `Any` binds an open
   cell only in a contravariant position (a `|v: Any|` callback fixes its
   formal's type; `let x: Any = y` decides nothing of `y`);
   union collapse requires strict tvar identity; in a union checked against
