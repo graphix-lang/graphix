@@ -24,7 +24,7 @@ You'll see a prompt that looks like this:
 
 ```
 Welcome to the graphix shell
-Press ctrl-c to cancel, ctrl-d to exit, and tab for help
+Press ctrl-c to reset the session, ctrl-d to exit, and tab for help
 〉
 ```
 
@@ -54,10 +54,11 @@ the value. You may be wondering why you don't get the 〉 prompt after
 running this expression. This is because, being a dataflow language,
 expressions are pipelines that can output more than one value, they
 will run until you stop them by hitting ctrl-c. Do this now to get the
-prompt back.
+prompt back. Ctrl-c stops the whole session: the shell starts a fresh
+one, so the bindings you made before it are gone.
 
-Since ctrl-c is used to stop the currently running pipeline, if you
-want to exit the REPL press ctrl-d.
+Since ctrl-c is used to stop the session, if you want to exit the REPL
+press ctrl-d.
 
 Try a more complex expression:
 

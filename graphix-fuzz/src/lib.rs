@@ -641,8 +641,10 @@ async fn drive(
         && ctx.rt.budget_aborted()
     {
         let control = ctx.rt.control();
-        return Outcome::Timeout(match control.aborted_by() {
-            Some(graphix_compiler::Budget::Activations) => Containment::ActivationBudget,
+        return Outcome::Timeout(match control.stopped_by() {
+            Some(graphix_compiler::StopCause::Activations) => {
+                Containment::ActivationBudget
+            }
             _ => Containment::StackBudget,
         });
     }
@@ -671,10 +673,10 @@ async fn drive_inner(
         future::pending::<()>().await
     };
     tokio::pin!(drain);
-    // A deadline breach is `Timeout` on every step. The interrupt is a
-    // one-shot flag that may bottom an in-flight cycle's output, so a
-    // step that completes after it cannot be trusted; reclassifying is
-    // a race. `check()` retries one-sided timeouts at a bigger budget.
+    // A deadline breach is `Timeout` on every step. The interrupt stops
+    // the runtime, so a step that completes after it cannot be trusted;
+    // reclassifying is a race. `check()` retries one-sided timeouts at a
+    // bigger budget.
     macro_rules! step_or_timeout {
         ($fut:expr, $on_ok:pat => $ok:expr, $on_err:pat => $err:expr) => {{
             let f = $fut;

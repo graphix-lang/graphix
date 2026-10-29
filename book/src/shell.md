@@ -21,7 +21,9 @@ In REPL mode:
 - The value and type of output expressions are
     - built into TUIs if they are of type Tui
     - printed to stdout if they are not
-- `Ctrl+C` cancels the currently running expression/tui
+- `Ctrl+C` resets the session, whether something is running or not: it
+  stops the runtime, forgets every binding, starts a fresh one and says
+  `interrupted: the session was reset`
 - `Ctrl+D` exits the shell
 - with input piped in (`graphix < lines.gx`), the end of the input ends
   the shell once what its lines started has run (at most five seconds for
@@ -45,7 +47,7 @@ In script mode:
 - The value of the last expression is
     - built into a TUI if it is of type Tui
     - printed to stdout as it updates if it is not
-- `Ctrl+C` exits the program
+- `Ctrl+C` stops the program and exits with status 130
 - Warnings about unhandled errors are enabled by default
 
 Script mode is for running complete programs. The shell stays running to
@@ -135,7 +137,7 @@ count
 
 The last line `count` is an output expression. Its value changes every second as the timer fires. The shell stays running, printing each new value.
 
-To stop watching the output and return to the REPL prompt, press `Ctrl+C`. In script mode, `Ctrl+C` exits the entire program.
+To stop watching the output and return to the REPL prompt, press `Ctrl+C`. It resets the session: the runtime is replaced by a fresh one, so the bindings made before it are gone. In script mode, `Ctrl+C` exits the entire program.
 
 ### Non-Terminating Expressions
 
@@ -190,8 +192,8 @@ won't print the expression returned by `tui::text::text(&"count is [count]")` to
 ![TUI Output](ui/tui/media/tui_output_example.gif)
 
 When you type `Ctrl+C` the shell will exit TUI mode and return to the
-normal shell mode. You can use this behavior to experiment with TUI
-widgets interactively.
+normal shell mode, in a fresh session. You can use this behavior to
+experiment with TUI widgets interactively.
 
 ## Module Resolution
 
@@ -563,7 +565,7 @@ The Graphix shell is designed around the reactive nature of Graphix programs:
 
 - **Output expressions** produce values that can update over time
 - **Programs keep running** to display ongoing updates
-- **Ctrl+C** stops the current expression (REPL) or exits (file mode)
+- **Ctrl+C** resets the session (REPL) or exits (file mode)
 - **Module resolution** is automatic based on where you run from
 - **Project structure** can be flat or hierarchical
 - **Shared code** can live in the init directory, GRAPHIX_MODPATH, or netidx

@@ -320,8 +320,11 @@ closures in `defpackage!`:
   window, the script called your exit builtin), `Ok(Ended::Interrupted)`
   when the user interrupted it (Ctrl-C), and `Err(e)` when the display
   cannot go on (the terminal went away). Dropping it unsent means the display
-  died. The shell calls `clear()` before dropping the display; a script then
-  exits, with the error if there was one, and the REPL returns to its prompt.
+  died. The shell calls `clear()` before dropping the display, and the
+  runtime may already be stopped then, so `clear()` must not wait on it; a
+  script then exits, with the error if there was one, or with status 130
+  when interrupted, and the REPL returns to its prompt, in a fresh session
+  when interrupted.
   It also receives `run_on_main`, for a display that needs the main thread.
 
 Here is a minimal example that prints every update to stderr:

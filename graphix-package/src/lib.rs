@@ -108,7 +108,8 @@ pub trait CustomDisplay<X: GXExt>: Any {
     ///
     /// This is called when the shell user has indicated that they
     /// want to return to the normal display mode or when the stop
-    /// channel has been triggered by this custom display.
+    /// channel has been triggered by this custom display. The runtime may
+    /// already be stopped, so a clear must not wait on it.
     ///
     /// If the custom display has started a closure on the main thread, it must
     /// now stop it.
@@ -134,7 +135,8 @@ pub trait CustomDisplay<X: GXExt>: Any {
 /// Why a custom display ended without failing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
-    /// The user interrupted it (Ctrl-C): a script exits as interrupted.
+    /// The user interrupted it (Ctrl-C): a script exits as interrupted, a
+    /// REPL resets its session.
     Interrupted,
     /// The program asked to end (`tui::exit`), or its last window closed:
     /// a script exits successfully.

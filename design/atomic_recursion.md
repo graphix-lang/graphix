@@ -1,8 +1,10 @@
 # Atomic recursion
 
-Status: current principle (ruled 2026-08-15)
+Status: current principle (ruled 2026-08-15; the interrupt final,
+2026-10-29)
 Pins: `stdlib/graphix-tests/src/lib_tests/interrupt.rs`,
-`graphix-shell/tests/interrupt_wedge.rs`
+`graphix-shell/tests/interrupt_wedge.rs`,
+`graphix-shell/tests/repl_interrupt.rs`
 
 ## The rule
 
@@ -75,9 +77,11 @@ bound resources. Infinite time is the same decision as infinite space.
 The interrupt is the right shape precisely because it is NOT
 semantics:
 
-- `GXHandle::interrupt()` sets a flag (`CtlFlag::Interrupt` on the
-  runtime's `Control`); in-flight loops abort and the runtime keeps
-  running. `abort()` additionally shuts down.
+- `GXHandle::interrupt()` stops the runtime for good, busy or idle
+  (`Control::stop`: `CtlFlag::Interrupt` beside `Abort` on the runtime's
+  `Control`): in-flight loops abort, the run loop ends and every call on
+  its handle fails, naming the interrupt. `abort()` is the same stop
+  with no cause, the embedder's own shutdown.
 - The node-walk polls it at each lambda dispatch (`node/lambda.rs`: an
   interrupted dispatch rides its last result, it is not a bottom) and
   before each collection slot (`node/collection.rs`); a kernel polls it
@@ -88,30 +92,29 @@ semantics:
   an embedder. Credits change what CORRECT programs observe; an
   interrupt only changes what BROKEN programs experience, loudly. It is
   the browser's slow-script dialog, not a scheduler.
-- Abort is not bottom, and not a retry: the aborted cycle's values keep
-  their last results and recompute only when an input fires again, so
-  the result the interrupted event would have produced is lost (a
-  re-fire would re-wedge an infinite loop on every cycle). The one
-  exception is a reply no reader reached: a reply the interrupted cycle
-  kept from every reader, their boundaries unvisited, is delivered again
-  the next cycle (`GX::redeliver_unseen_replies`), so the builtin
-  waiting on it is not left waiting forever.
+- Nothing resumes: stopping a calculation at an arbitrary point and
+  resuming it later would need every builtin, timer and reply a cut
+  cycle left half-delivered to be made whole again, so the stopped
+  runtime is dropped and a new one minted.
 
 The shell arms Ctrl-C before the first cycle (a top-level infinite loop
-wedges inside `load_env`, before the input loop exists) and `abort()`s
-on the way out; without the abort the tokio runtime's shutdown waits
-forever on the `block_in_place` section the cycle runs in, and only
-SIGKILL could end the process. An embedder watchdog is buildable today
-(arm `interrupt()` on a wall-clock timer); it is deliberately not built
-into the engine, because a default timeout would be a credit system
-wearing a hat.
+wedges inside `load_env`, before the input loop exists). A script's
+Ctrl-C ends the run, after the bounded teardown, with status 130; the
+REPL's Ctrl-C, idle or busy, replaces the runtime with a fresh empty one
+and says so, and Ctrl-D exits. The shell `abort()`s on the way out;
+without the stop the tokio runtime's shutdown waits forever on the
+`block_in_place` section the cycle runs in, and only SIGKILL could end
+the process. An embedder watchdog is buildable today (arm `interrupt()`
+on a wall-clock timer, then start a new runtime); it is deliberately not
+built into the engine, because a default timeout would be a credit
+system wearing a hat.
 
 The memory twin is the stack budget (`GRAPHIX_STACK_BUDGET` /
 `set_stack_budget`, unlimited by default): a recursion that would
-exceed it aborts the runtime through the same `Control`
-(`Control::abort_budget`: `CtlFlag::StackBudget` beside `Abort`, read
-back by `Control::aborted_by`), on both engines, and the fuzz harness reads that
-abort as a timeout — containment, like the deadline, not a program
+exceed it stops the runtime through the same `Control`
+(`Control::stop`: `CtlFlag::StackBudget` beside `Abort`, read back by
+`Control::stopped_by`), on both engines, and the fuzz harness reads that
+stop as a timeout — containment, like the deadline, not a program
 outcome.
 
 The activation budget counts what a runaway recursion actually grows:
@@ -123,7 +126,7 @@ released at its delete, against the runtime's `Control`
 chooses). A node-walked activation holds about 20 KB of heap, so memory
 runs out long before stack, and a count follows the program where stack
 bytes follow the thread and the fork schedule; past the budget the
-runtime aborts the same way (`CtlFlag::ActivationBudget` beside
+runtime stops the same way (`CtlFlag::ActivationBudget` beside
 `Abort`). The fuzzer's children
 run at 50,000, below where their 1 GiB stack budget would trip. A JIT
 tail loop binds nothing and is not counted; the interrupt stops it.

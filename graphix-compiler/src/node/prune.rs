@@ -1,8 +1,7 @@
 //! A boundary of walk pruning (`design/walk_pruning.md`): a statement,
 //! an instance body or a select arm, which rides its resident in a cycle
-//! that delivered nothing its subtree reads, or a fence no cycle skips
-//! (a collection slot's call). Transparent to every analysis: its view,
-//! children, spec and type are its child's.
+//! that delivered nothing its subtree reads. Transparent to every
+//! analysis: its view, children, spec and type are its child's.
 
 use crate::{
     CompileCtx, ExecCtx, Node, NodeView, PruneMode, Refs, Rt, TagValue, Update, View,
@@ -10,7 +9,7 @@ use crate::{
     expr::Expr,
     fusion::emit::{BodyCx, CompiledExpr},
     image::{
-        self, ImageBuf,
+        ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
     node::lambda::InstanceTypes,
@@ -26,13 +25,7 @@ use poolshark::local::LPooled;
 pub struct Prune<R: Rt> {
     boundary: BoundaryRef,
     child: Node<R>,
-    /// What a cycle that skips the boundary rides; `None` for a boundary
-    /// no cycle skips ([`Self::fence`]).
-    ride: Option<Ride>,
-}
-
-#[derive(Debug)]
-struct Ride {
+    /// What a cycle that skips the boundary rides.
     resident: TagValue,
     /// Walked at least once: until then nothing stands to ride.
     walked: bool,
@@ -56,30 +49,7 @@ impl<R: Rt> Prune<R> {
 
     /// `child`, compiled inside `boundary`.
     pub(crate) fn wrap(boundary: BoundaryRef, child: Node<R>) -> Node<R> {
-        let ride = Some(Ride { resident: TagValue::phantom(), walked: false });
-        Node::new(Self { boundary, child, ride })
-    }
-
-    /// `child`, compiled by `f` inside a new boundary within the current
-    /// one that no cycle skips: the walk reaching it is what its visit
-    /// records, so a reply whose reader sits in a part an interrupt cut
-    /// short is delivered again (a collection slot's call).
-    pub(crate) fn fence(
-        ctx: &mut CompileCtx<R>,
-        f: impl FnOnce(&mut CompileCtx<R>) -> Node<R>,
-    ) -> Node<R> {
-        let boundary = Self::boundary(ctx);
-        let child = ctx.in_boundary(Some(&boundary), f);
-        Node::new(Self { boundary, child, ride: None })
-    }
-
-    /// Run `f` over the child inside the boundary.
-    pub(crate) fn within<T>(
-        &mut self,
-        ctx: &mut CompileCtx<R>,
-        f: impl FnOnce(&mut CompileCtx<R>, &mut Node<R>) -> T,
-    ) -> T {
-        ctx.in_boundary(Some(&self.boundary), |ctx| f(ctx, &mut self.child))
+        Node::new(Self { boundary, child, resident: TagValue::phantom(), walked: false })
     }
 
     pub(crate) fn image_decode(
@@ -93,7 +63,9 @@ impl<R: Rt> Prune<R> {
 
     /// Fuse the child, as a region or by its parts, inside the boundary.
     pub(crate) fn fuse_child(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        self.within(ctx, |ctx, child| crate::fusion::fuse(child, ctx))
+        ctx.in_boundary(Some(&self.boundary), |ctx| {
+            crate::fusion::fuse(&mut self.child, ctx)
+        })
     }
 
     pub(crate) fn child(&self) -> &Node<R> {
@@ -106,7 +78,7 @@ impl<R: Rt> Prune<R> {
 
     pub(crate) fn can_skip(&self, ctx: &ExecCtx<'_, R>) -> bool {
         ctx.prune != PruneMode::Off
-            && self.ride.as_ref().is_some_and(|ride| ride.walked)
+            && self.walked
             && ctx.event.view == View::Cycle
             && !ctx.rt.dirty(&self.boundary)
     }
@@ -170,24 +142,20 @@ impl<R: Rt> Update<R> for Prune<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         self.visit(ctx);
         let skip = self.can_skip(ctx);
-        let Self { boundary, child, ride } = self;
-        let Some(ride) = ride else {
-            return ctx.in_boundary(Some(boundary), |ctx| child.update(ctx));
-        };
+        let Self { boundary, child, resident, walked } = self;
         if skip {
             if ctx.prune == PruneMode::Audit {
-                let tv = ctx.in_boundary(Some(boundary), |ctx| {
-                    Self::audit(child, ctx, &ride.resident)
-                });
-                return ride.resident.set(tv);
+                let tv = ctx
+                    .in_boundary(Some(boundary), |ctx| Self::audit(child, ctx, resident));
+                return resident.set(tv);
             }
             ctx.control.note_boundary(false);
-            return ride.resident.ride();
+            return resident.ride();
         }
-        ride.walked = true;
+        *walked = true;
         ctx.control.note_boundary(true);
         let tv = ctx.in_boundary(Some(boundary), |ctx| child.update(ctx).clone());
-        ride.resident.set(tv)
+        resident.set(tv)
     }
 
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
@@ -207,9 +175,7 @@ impl<R: Rt> Update<R> for Prune<R> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        if let Some(ride) = &mut self.ride {
-            ride.walked = false;
-        }
+        self.walked = false;
         ctx.in_boundary(Some(&self.boundary), |ctx| self.child.sleep(ctx))
     }
 
@@ -247,12 +213,7 @@ impl<R: Rt> Update<R> for Prune<R> {
         self.child.view()
     }
 
-    /// A fence stands only around a collection slot, which exists only
-    /// once a cycle ran.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if self.ride.is_none() {
-            return Err(PackError::Application(image::NOT_QUIESCENT));
-        }
         put_tag(NodeTag::Prune, buf);
         self.child.image_encode(buf)
     }

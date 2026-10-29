@@ -64,6 +64,6 @@ validity mask. Emission lives under `fusion/emit/`.
 
 Evaluation is atomic within a cycle on both engines: a program may
 legally spin forever inside one, and a native loop cannot yield to the
-scheduler. Containment is the cooperative interrupt
-(`GXHandle::interrupt`, polled by the interpreter's tail driver and
+scheduler. Containment is the interrupt (`GXHandle::interrupt`, which
+stops the runtime for good, polled by the interpreter's tail driver and
 every emitted loop head), not a bottom the kernel fails to represent.

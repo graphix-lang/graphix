@@ -22,7 +22,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 
 | doc | rule |
 |---|---|
-| `atomic_recursion.md` | evaluation is atomic within a cycle; containment is the cooperative interrupt |
+| `atomic_recursion.md` | evaluation is atomic within a cycle; containment (the interrupt, the budgets) stops the runtime for good |
 | `recursive_activations.md` | activations are collection slots; shrink = delete; no depth limit; `trait Collection` |
 | `tail_calls_are_calls.md` | the node-walk has no frames: every call is an activation; the JIT's native loop must answer the same; what keeps a loop in the node-walk |
 | `kernel_instance_state.md` | per-instance / per-call-site / per-activation kernel words for firing exactness |

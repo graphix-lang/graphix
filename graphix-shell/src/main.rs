@@ -410,7 +410,7 @@ fn tokio_main(
             let net_config = net_config.clone();
             let publish = p.publish_timeout.map(Duration::from_secs);
             shell = shell.setup_context(Box::new(move |ctx| {
-                ctx.libstate.set(net_config);
+                ctx.libstate.set(net_config.clone());
                 ctx.libstate.set(NetTimeouts { publish });
             }));
         }
@@ -524,6 +524,10 @@ fn tokio_main(
     // interrupt_wedge::terminate_frees_first_cycle_wedge_{jit,interp} send SIGTERM
     // inside the env load and fail if the wait held the exit; exit_teardown covers the
     // normal path.
+    // 2026-10-29 claude: Teardown is now Session (D7, the interrupt is final):
+    // Session::finish aborts the runtime and its Ctrl-C task, clears the display, then
+    // awaits GXHandle::ended() and await_reaps() within one TEARDOWN_BOUND; a Ctrl-C
+    // during the env load now ends the run with 130 through the same finish.
     rt.shutdown_background();
     res
 }

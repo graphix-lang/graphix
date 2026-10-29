@@ -31,7 +31,7 @@ pub(crate) mod perfdbg;
 pub mod prune;
 
 pub use node::{WriteTarget, error::diagnostic_site, module::check_script_sig};
-pub use stack::{Budget, Control, CtlFlag, ParMode, PruneMode, with_control};
+pub use stack::{Control, CtlFlag, ParMode, PruneMode, StopCause, with_control};
 pub use stack::{set_activation_budget, set_stack_budget};
 pub mod tval;
 
@@ -1387,7 +1387,7 @@ struct Registry<R: Rt> {
 /// compile in progress. The runtime half is [`ExecCtx`].
 pub struct CompileCtx<R: Rt> {
     registry: Arc<Registry<R>>,
-    /// Interrupt/abort control, shared with the runtime handle, and the
+    /// Stop control, shared with the runtime handle, and the
     /// runtime's evaluation pool, which its compile tasks fork onto too.
     /// See [`Control`].
     pub control: Arc<Control>,
@@ -2373,8 +2373,8 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         !self.cx.pending_refs.is_empty() || !self.cx.discarded.is_empty()
     }
 
-    /// True if an `interrupt()` or `abort()` is pending; loops poll this
-    /// at their head.
+    /// True once the runtime is stopping (an interrupt, a budget or a
+    /// shutdown); loops poll this at their head.
     pub fn interrupted(&self) -> bool {
         self.control.interrupted()
     }

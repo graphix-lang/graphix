@@ -100,20 +100,12 @@ impl InputReader {
                 Err(_) => bail!("the display died"),
             },
             // a REPL's piped lines go on being read while a value shows, a
-            // new one replacing it, as Enter does after Ctrl-C at a terminal
+            // new one replacing it
             Output::Text(_) if !script && !std::io::stdin().is_terminal() => {
-                tokio::select! {
-                    r = tokio::signal::ctrl_c() => {
-                        r?;
-                        Ok(Read::Signal(Signal::CtrlC))
-                    }
-                    r = self.next_line(env) => r.map(Read::Signal),
-                }
+                self.next_line(env).await.map(Read::Signal)
             }
-            Output::EmptyScript | Output::Text(_) => {
-                tokio::signal::ctrl_c().await?;
-                Ok(Read::Signal(Signal::CtrlC))
-            }
+            // left by Ctrl-C, which the shell hears as SIGINT
+            Output::EmptyScript | Output::Text(_) => std::future::pending().await,
             Output::None => self.next_line(env).await.map(Read::Signal),
         }
     }

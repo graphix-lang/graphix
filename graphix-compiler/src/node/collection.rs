@@ -4,7 +4,7 @@ use super::{
     callsite::{CallNode, CallSite},
     coretraits::with_hooks,
     genn,
-    lambda::{GXLambda, LambdaDef},
+    lambda::GXLambda,
     list,
     pattern::StructPatternNode,
     prune::Prune,
@@ -540,40 +540,8 @@ impl Callback {
 
     /// A call of the callback over `args`: the prototype, whose dispatch
     /// the typecheck resolves, or a slot, which calls the definition the
-    /// prototype resolved to when it resolved one. A slot that may call
-    /// a builtin stands in a boundary of its own ([`Prune::fence`]), as
-    /// a lambda's instance body does: an interrupt stops the slot loop
-    /// between slots, and a reply to a slot it kept the walk from is
-    /// delivered again.
-    /// `args` builds the call's arguments, with what the slot keeps of
-    /// them, inside the boundary the call stands in.
-    fn call<R: Rt, T>(
-        &self,
-        ctx: &mut CompileCtx<R>,
-        kind: CallKind,
-        args: impl FnOnce(&mut CompileCtx<R>) -> (T, SmallVec<[Node<R>; 2]>),
-    ) -> (T, Node<R>) {
-        let fenced = match &kind {
-            CallKind::Prototype(_) => false,
-            CallKind::Slot(Some(def)) => {
-                !def.downcast_ref::<LambdaDef<R>>().is_some_and(|d| !d.is_builtin())
-            }
-            CallKind::Slot(None) => true,
-        };
-        let mut kept = None;
-        let build = |ctx: &mut CompileCtx<R>| {
-            let (k, args) = args(ctx);
-            kept = Some(k);
-            self.build_call(ctx, args, kind)
-        };
-        let call = match fenced {
-            true => Prune::fence(ctx, build),
-            false => build(ctx),
-        };
-        (kept.expect("the call built its arguments"), call)
-    }
-
-    fn build_call<R: Rt>(
+    /// prototype resolved to when it resolved one.
+    fn call<R: Rt>(
         &self,
         ctx: &mut CompileCtx<R>,
         args: SmallVec<[Node<R>; 2]>,
@@ -801,11 +769,8 @@ impl<R: Rt> Slot<R> {
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let (id, call) = callback.call(ctx, kind, |ctx| {
-            let (id, element) =
-                callback.slot_arg(ctx, 0, "collection_element", element_type);
-            (id, smallvec![element])
-        });
+        let (id, element) = callback.slot_arg(ctx, 0, "collection_element", element_type);
+        let call = callback.call(ctx, smallvec![element], kind);
         Self { id, call, state: SlotState::Bottom }
     }
 
@@ -1222,18 +1187,12 @@ fn build_fresh<R: Rt, S: Send>(
     if fresh.is_empty() {
         return;
     }
-    let prebind_call = |ctx: &mut CompileCtx<R>, call: &mut Node<R>| {
-        if let Some(cs) = call.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
-        {
-            cs.prebind(ctx)
-        }
-    };
     let prebind = |ctx: &mut CompileCtx<R>, slots: &mut [S]| {
         for slot in slots {
-            let call = call(slot);
-            match call.as_prune_mut() {
-                Some(fence) => fence.within(ctx, prebind_call),
-                None => prebind_call(ctx, call),
+            if let Some(cs) =
+                call(slot).downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
+            {
+                cs.prebind(ctx)
             }
         }
     };
@@ -1512,12 +1471,10 @@ impl<R: Rt> FoldSlot<R> {
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let ((acc_id, element_id), call) = callback.call(ctx, kind, |ctx| {
-            let (acc_id, acc) = callback.slot_arg(ctx, 0, "collection_acc", acc_type);
-            let (element_id, element) =
-                callback.slot_arg(ctx, 1, "collection_element", element_type);
-            ((acc_id, element_id), smallvec![acc, element])
-        });
+        let (acc_id, acc) = callback.slot_arg(ctx, 0, "collection_acc", acc_type);
+        let (element_id, element) =
+            callback.slot_arg(ctx, 1, "collection_element", element_type);
+        let call = callback.call(ctx, smallvec![acc, element], kind);
         Self { acc_id, element_id, call, state: SlotState::Bottom }
     }
 

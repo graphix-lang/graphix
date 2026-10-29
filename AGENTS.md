@@ -378,9 +378,7 @@ shell shows that target on stderr.
 **Walk pruning** (`design/walk_pruning.md`): a block statement, a select
 arm body and an instance body each sit in a `Prune` boundary
 (`prune::BoundaryRef`, parent-linked), which rides its resident in a
-`Cycle` view when nothing marked it this cycle; a collection slot that
-may call a builtin sits in a fence, a boundary no cycle skips
-(`Prune::fence`). A registration names its
+`Cycle` view when nothing marked it this cycle. A registration names its
 root and the boundary around the reader (`prune::Reader`), taken from the
 traversal (`CompileCtx`/`ExecCtx::boundary`, set by every `Prune` method,
 copied into the compile view by `ExecCtx`'s `deref_mut`; a discard and a
@@ -920,13 +918,16 @@ node graph IS the IR — there is no parallel typed IR
   recursion past the kept edge (its select's chain runs and takes another
   arm) deletes the deepest 1% of the levels it kept, all of them at the
   hundredth (`callsite::Kept`). No depth limit; evaluation is
-  atomic within a cycle; containment is the cooperative interrupt
-  (`GXHandle::interrupt`, Ctrl-C, `GRAPHIX_STACK_BUDGET`; a reply the
-  interrupted cycle kept from every reader, their boundaries unvisited,
-  is delivered again the next cycle: `GX::redeliver_unseen_replies`) and the
-  activation budget: live activations (calls, slots, kernel blocks)
-  bound per runtime, unlimited by default, set by an embedder
-  (`Control::set_activation_budget`) or `GRAPHIX_ACTIVATION_BUDGET`. Kernel
+  atomic within a cycle; containment stops the runtime for good, busy or
+  idle, never to resume (`Control::stop`, its cause read back by
+  `Control::stopped_by`): the interrupt (`GXHandle::interrupt`, Ctrl-C),
+  the stack budget (`GRAPHIX_STACK_BUDGET`) and the activation budget:
+  live activations (calls, slots, kernel blocks) bound per runtime,
+  unlimited by default, set by an embedder
+  (`Control::set_activation_budget`) or `GRAPHIX_ACTIVATION_BUDGET`. A
+  stopped runtime's handle fails every call; an embedder mints a new
+  runtime, the shell's script exits 130 at Ctrl-C and its REPL's Ctrl-C,
+  idle or busy, replaces the runtime with a fresh one (Ctrl-D exits). Kernel
   interior memory (`design/kernel_instance_state.md`) gives one compiled
   body the interp's per-slot/per-activation multiplicity for exactly the
   state that decides firing; only a site's first-ever dispatch, and a

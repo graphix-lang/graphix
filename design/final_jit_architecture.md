@@ -90,6 +90,6 @@ non-termination into a permanently pending node and masked the bug.
 An *async* infinite recursion (timer- or poll-driven) still advances
 per cycle, because it is event-driven; drawing the in-cycle/reactive
 split at purity is what makes both correct. Containment is the
-cooperative interrupt (`GXHandle::interrupt`, polled by the interp's
-tail driver and every emitted loop head) and the stack budget, never a
-depth limit.
+interrupt (`GXHandle::interrupt`, which stops the runtime for good,
+polled by the interp's tail driver and every emitted loop head) and the
+stack budget, never a depth limit.

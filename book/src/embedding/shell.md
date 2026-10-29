@@ -74,8 +74,9 @@ programs that never touch `sys::net` never create it.
 To connect to a real netidx environment, seed a
 [`NetConfig`](https://docs.rs/graphix-package-core/latest/graphix_package_core/enum.NetConfig.html)
 into the context with `setup_context` — the general hook for
-embedder-seeded package state, run against the freshly created context
-before anything compiles:
+embedder-seeded package state, run against each freshly created context
+before anything compiles (a REPL's Ctrl-C starts a fresh runtime, and the
+hook seeds it too):
 
 ```rust
 use graphix_package_core::NetConfig;
@@ -86,7 +87,7 @@ ShellBuilder::<NoExt>::default()
     .mode(Mode::Script(Load::File(PathBuf::from("main.gx"))))
     .setup_context(Box::new(move |ctx| {
         ctx.libstate.set(NetConfig::Config {
-            config,
+            config: config.clone(),
             auth: DesiredAuth::Anonymous,
             bind: None,
         });

@@ -9,7 +9,7 @@ use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CFlag, ExecState, FusionStats, PrintFlag,
+    CFlag, ExecState, FusionStats, PrintFlag, StopCause,
     env::Env,
     expr::{
         CouldNotResolve, ExprId, FilesResolver, Load, ModPath, ResolverFactory,
@@ -221,39 +221,61 @@ impl<X: GXExt> Output<X> {
 /// read that never returns does not hold the exit.
 pub const TEARDOWN_BOUND: Duration = Duration::from_secs(5);
 
-/// Stops the runtime and the Ctrl-C task when a run ends, whichever way:
-/// the Ctrl-C task holds a handle, so the runtime would outlive the run.
+/// The status a shell reports for SIGINT.
+const INTERRUPTED: i32 = 128 + 2;
+
+/// A runtime the shell runs and what the shell holds of it, its Ctrl-C
+/// task among them: a REPL's Ctrl-C replaces it with a fresh one. Its end
+/// stops the runtime and the Ctrl-C task, whichever way the run ends: the
+/// Ctrl-C task holds a handle, so the runtime would outlive the run.
 /// `abort()` breaks a cycle still spinning before stopping the runtime;
 /// the tokio runtime's drop would block on it.
-struct Teardown<X: GXExt> {
+struct Session<X: GXExt> {
     gx: GXHandle<X>,
+    from_gx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+    /// Where `sys::exit` asks the shell to end; `None` once it asked or
+    /// the runtime stopped.
+    exit: Option<oneshot::Receiver<i32>>,
     sigint: tokio::task::JoinHandle<()>,
 }
 
-impl<X: GXExt> Teardown<X> {
+impl<X: GXExt> Session<X> {
+    /// Whether a Ctrl-C stopped the runtime.
+    fn interrupted(&self) -> bool {
+        self.gx.control().stopped_by() == Some(StopCause::Interrupt)
+    }
+
     /// End the session. A custom display holds the terminal (or a window)
-    /// until it is cleared; interrupt first, since a wedged runtime cannot
-    /// serve the clear. The session gives up what it held as the runtime's
-    /// task ends, and the work a last drop starts runs on this runtime, so
-    /// it must stay up while that task is awaited. The two waits share the
-    /// bound, so what is still blocked when it runs out (a read that never
-    /// answers) is abandoned with the runtime.
-    async fn finish(self, output: &mut Output<X>) {
-        self.gx.interrupt();
+    /// until it is cleared, which needs nothing of the stopped runtime.
+    /// The session gives up what it held as the runtime's task ends, and
+    /// the work a last drop starts runs on this runtime, so it must stay up
+    /// while that task is awaited. The two waits share the bound, so what
+    /// is still blocked when it runs out (a read that never answers) is
+    /// abandoned with the runtime.
+    async fn finish(&mut self, output: &mut Output<X>) {
+        self.gx.abort();
+        self.sigint.abort();
         output.clear().await;
-        let gx = self.gx.clone();
         let deadline = tokio::time::Instant::now() + TEARDOWN_BOUND;
-        drop(self);
-        let _ = tokio::time::timeout_at(deadline, gx.ended()).await;
+        let _ = tokio::time::timeout_at(deadline, self.gx.ended()).await;
         let _ = tokio::time::timeout_at(deadline, await_reaps()).await;
     }
 }
 
-impl<X: GXExt> Drop for Teardown<X> {
+impl<X: GXExt> Drop for Session<X> {
     fn drop(&mut self) {
         self.gx.abort();
         self.sigint.abort();
     }
+}
+
+/// The code `sys::exit` asked for, or `None` when the runtime stopped
+/// without asking; then never again.
+async fn exit_requested(exit: &mut Option<oneshot::Receiver<i32>>) -> Option<i32> {
+    let Some(rx) = exit else { return std::future::pending().await };
+    let code = rx.await.ok();
+    *exit = None;
+    code
 }
 
 /// The signals that ask the process to end (SIGTERM, SIGHUP): the shell
@@ -297,12 +319,12 @@ impl Terminated {
 pub enum Mode {
     /// Read input line by line from the user and compile/execute it.
     /// provide completion and print the value of the last expression
-    /// as it executes. Ctrl-C cancel's execution of the last
-    /// expression and Ctrl-D exits the shell.
+    /// as it executes. Ctrl-C, idle or busy, replaces the runtime with a
+    /// fresh one and Ctrl-D exits the shell.
     Repl,
     /// Load compile and execute a file. Print the value
-    /// of the last expression in the file to stdout. Ctrl-C exits the
-    /// shell.
+    /// of the last expression in the file to stdout. Ctrl-C stops the
+    /// program and exits the shell with status 130.
     Script(Load),
     /// Check that the specified file compiles but do not run it
     Check(Load),
@@ -317,11 +339,12 @@ impl Mode {
     }
 }
 
-/// The embedder's context-setup hook — runs against the freshly
-/// created [`ExecState`] before anything compiles. The place to seed
-/// package libstate entries (the CLI seeds sys::net's `NetConfig`
-/// and `NetTimeouts` here); embedders can do whatever they need.
-pub type SetupContext<X> = Box<dyn FnOnce(&mut ExecState<GXRt<X>>) + Send + 'static>;
+/// The embedder's context-setup hook — runs against each freshly
+/// created [`ExecState`] before anything compiles: the first runtime's
+/// and each one a REPL's Ctrl-C starts. The place to seed package
+/// libstate entries (the CLI seeds sys::net's `NetConfig` and
+/// `NetTimeouts` here); embedders can do whatever they need.
+pub type SetupContext<X> = Box<dyn FnMut(&mut ExecState<GXRt<X>>) + Send + 'static>;
 
 /// What a run does with the session image cache.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -456,7 +479,7 @@ impl<X: GXExt> Shell<X> {
             *p = p.canonicalize().with_context(|| p.display().to_string())?;
         }
         let mut ctx = GXRt::<X>::new_state().context("creating graphix context")?;
-        if let Some(setup) = self.setup_context.take() {
+        if let Some(setup) = &mut self.setup_context {
             setup(&mut ctx);
         }
         let (exit, exit_rx) = graphix_package_core::ExitRequest::new();
@@ -480,7 +503,7 @@ impl<X: GXExt> Shell<X> {
         {
             args.push(name)
         }
-        args.extend(self.program_args.drain(..));
+        args.extend(self.program_args.iter().cloned());
         if !args.is_empty() {
             ctx.libstate.set(ProgramArgs(args));
         }
@@ -567,7 +590,7 @@ impl<X: GXExt> Shell<X> {
         {
             mods.push(FilesResolver::new(dir.to_path_buf(), None));
         }
-        mods.extend(self.module_resolvers.drain(..));
+        mods.extend(self.module_resolvers.iter().cloned());
         let mut gx = GXConfig::builder(ctx, sub);
         if let Some(r) = registration {
             gx = gx.registration(r);
@@ -579,7 +602,7 @@ impl<X: GXExt> Shell<X> {
             gx = gx.program_image(tx);
         }
         if !self.resolver_factories.is_empty() {
-            gx = gx.resolver_factories(std::mem::take(&mut self.resolver_factories));
+            gx = gx.resolver_factories(self.resolver_factories.clone());
         }
         gx = gx.flags(flags);
         let config =
@@ -705,7 +728,8 @@ impl<X: GXExt> Shell<X> {
     }
 
     /// Run the shell; `Some(code)` when the program asked to exit with it,
-    /// after the display is cleared and the runtime stopped.
+    /// or 130 when a script was interrupted, after the display is cleared
+    /// and the runtime stopped.
     /// `Mode::Check` checks, and is `Some(0)` when the check passes.
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
         if let Mode::Check(_) = self.mode {
@@ -714,19 +738,8 @@ impl<X: GXExt> Shell<X> {
         if self.cache == CacheMode::Warm {
             return self.warm().await.map(|()| None);
         }
-        let (tx, mut from_gx) = mpsc::channel(100);
-        let gx = self.init(tx).await?;
-        // Armed before the first cycle: a program may wedge inside
-        // `load_env`, before the input loop exists.
-        let sigint = {
-            let gx = gx.clone();
-            tokio::spawn(async move {
-                while tokio::signal::ctrl_c().await.is_ok() {
-                    gx.interrupt();
-                }
-            })
-        };
-        let teardown = Teardown { gx: gx.clone(), sigint };
+        let (sigint_tx, mut sigint) = mpsc::unbounded_channel();
+        let mut session = self.start(&sigint_tx).await?;
         let mut terminated = Terminated::new()?;
         let script = self.mode.file_mode();
         let mut input = InputReader::new();
@@ -736,43 +749,48 @@ impl<X: GXExt> Shell<X> {
         // a program whose first cycle does not end holds the env load, so a
         // termination signal must be heard there too
         let loaded = tokio::select! {
-            env = self.load_env(&gx, &mut newenv, &mut output, &mut exprs, &run_on_main) => Ok(env),
+            env = self.load_env(&session.gx, &mut newenv, &mut output, &mut exprs, &run_on_main) => Ok(env),
             code = terminated.recv() => Err(code),
+            _ = sigint.recv() => Err(Some(INTERRUPTED)),
         };
         let mut env = match loaded {
             Ok(Ok(env)) => env,
+            Ok(Err(_)) if session.interrupted() => {
+                session.finish(&mut output).await;
+                return Ok(Some(INTERRUPTED));
+            }
             Ok(Err(e)) => {
-                teardown.finish(&mut output).await;
+                session.finish(&mut output).await;
                 return Err(e);
             }
             Err(code) => {
-                teardown.finish(&mut output).await;
+                session.finish(&mut output).await;
                 return Ok(code);
             }
         };
         if !script {
             println!("Welcome to the graphix shell");
-            println!("Press ctrl-c to cancel, ctrl-d to exit, and tab for help")
+            println!(
+                "Press ctrl-c to reset the session, ctrl-d to exit, and tab for help"
+            )
         }
-        let mut exit_rx = self.exit.take().expect("init installs the exit request");
-        let mut exit_open = true;
         let exit = 'repl: loop {
+            let mut ctrl_c = false;
             select! {
-                code = &mut exit_rx, if exit_open => match code {
+                code = exit_requested(&mut session.exit) => if let Some(code) = code {
                     // the runtime answers once the cycle that asked has sent
                     // its batch: show it, and every batch before it
-                    Ok(code) => match output
-                        .process_sent(&gx, &mut from_gx, &mut env, &mut newenv)
+                    match output
+                        .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
                         .await
                     {
                         ControlFlow::Break(r) => break 'repl r,
                         ControlFlow::Continue(()) => break 'repl Ok(Some(code)),
-                    },
-                    // the runtime stopped: from_gx's end says why
-                    Err(_) => exit_open = false,
+                    }
                 },
-                batch = from_gx.recv() => match batch {
-                    None => break 'repl Err(gx.stopped("graphix runtime is dead")),
+                batch = session.from_gx.recv() => match batch {
+                    None if session.interrupted() => ctrl_c = true,
+                    None => break 'repl Err(session.gx.stopped("graphix runtime is dead")),
                     Some(mut batch) => {
                         let shown =
                             output.process_batch(&mut env, &mut newenv, &mut batch).await;
@@ -782,6 +800,7 @@ impl<X: GXExt> Shell<X> {
                     }
                 },
                 code = terminated.recv() => break 'repl Ok(code),
+                _ = sigint.recv() => ctrl_c = true,
                 input = input.read_line(&mut output, &mut newenv, script) => {
                     match input {
                         // with no display up the error is the input's own
@@ -789,41 +808,34 @@ impl<X: GXExt> Shell<X> {
                         Err(e) => {
                             eprintln!("error: {e:?}");
                             // A display that failed is still the output.
-                            gx.interrupt();
                             output.clear().await;
                         }
                         // a program that ended its display ended successfully
                         Ok(Read::Ended) if script => break Ok(None),
                         Ok(Read::Ended) => output.clear().await,
-                        // the status a shell reports for SIGINT
-                        Ok(Read::Signal(Signal::CtrlC)) if script => break Ok(Some(128 + 2)),
-                        Ok(Read::Signal(Signal::CtrlC)) => {
-                            // Interrupt first: a wedged runtime cannot serve `output.clear()`.
-                            gx.interrupt();
-                            output.clear().await;
-                        }
+                        Ok(Read::Signal(Signal::CtrlC)) => ctrl_c = true,
                         // piped input ended: what its lines started runs
                         // first, a program that never idles for at most the
                         // teardown's bound, and may end the shell with its
                         // own status
                         Ok(Read::Signal(Signal::CtrlD)) if !io::stdin().is_terminal() => {
-                            let _ = tokio::time::timeout(TEARDOWN_BOUND, gx.wait_idle()).await;
+                            let _ = tokio::time::timeout(TEARDOWN_BOUND, session.gx.wait_idle()).await;
                             let shown = output
-                                .process_sent(&gx, &mut from_gx, &mut env, &mut newenv)
+                                .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
                                 .await;
-                            match (shown, exit_rx.try_recv()) {
+                            match (shown, session.exit.as_mut().map(|rx| rx.try_recv())) {
                                 (ControlFlow::Break(r), _) => break 'repl r,
-                                (ControlFlow::Continue(()), Ok(code)) => {
+                                (ControlFlow::Continue(()), Some(Ok(code))) => {
                                     break 'repl Ok(Some(code))
                                 }
-                                (ControlFlow::Continue(()), Err(_)) => break 'repl Ok(None),
+                                (ControlFlow::Continue(()), _) => break 'repl Ok(None),
                             }
                         }
                         Ok(Read::Signal(Signal::CtrlD | Signal::ExternalBreak(_))) => {
                             break Ok(None)
                         }
                         Ok(Read::Signal(Signal::Success(line))) => {
-                            match gx.compile(ArcStr::from(line)).await {
+                            match session.gx.compile(ArcStr::from(line)).await {
                                 Err(e) => eprintln!("error: {e:?}"),
                                 Ok(res) => {
                                     env = res.env;
@@ -840,7 +852,7 @@ impl<X: GXExt> Shell<X> {
                                         );
                                         output.clear().await;
                                         let o = Output::from_expr(
-                                            &gx, &env, e, &run_on_main,
+                                            &session.gx, &env, e, &run_on_main,
                                             &self.packages,
                                         ).await;
                                         output = o.unwrap_or_else(|e| {
@@ -849,7 +861,7 @@ impl<X: GXExt> Shell<X> {
                                         });
                                     } else {
                                         output.clear().await;
-                                        Output::chosen(&gx, &self.packages, None).await;
+                                        Output::chosen(&session.gx, &self.packages, None).await;
                                     }
                                 }
                             }
@@ -858,9 +870,50 @@ impl<X: GXExt> Shell<X> {
                     }
                 },
             }
+            if !ctrl_c {
+                continue;
+            }
+            if script {
+                break Ok(Some(INTERRUPTED));
+            }
+            session.finish(&mut output).await;
+            exprs.clear();
+            session = self.start(&sigint_tx).await?;
+            env = match self
+                .load_env(&session.gx, &mut newenv, &mut output, &mut exprs, &run_on_main)
+                .await
+            {
+                Ok(env) => env,
+                Err(e) => break Err(e),
+            };
+            // a Ctrl-C pressed while the session was reset is that reset's
+            while sigint.try_recv().is_ok() {}
+            eprintln!("interrupted: the session was reset");
         };
-        teardown.finish(&mut output).await;
+        session.finish(&mut output).await;
         exit
+    }
+
+    /// Start a runtime and its Ctrl-C task, which stops the runtime and
+    /// tells `sigint`.
+    async fn start(&mut self, sigint: &mpsc::UnboundedSender<()>) -> Result<Session<X>> {
+        let (tx, from_gx) = mpsc::channel(100);
+        let gx = self.init(tx).await?;
+        let exit = self.exit.take().expect("init installs the exit request");
+        // Armed before the first cycle: a program may wedge inside
+        // `load_env`, before the input loop exists.
+        let sigint = {
+            let (gx, sigint) = (gx.clone(), sigint.clone());
+            tokio::spawn(async move {
+                while tokio::signal::ctrl_c().await.is_ok() {
+                    gx.interrupt();
+                    if sigint.send(()).is_err() {
+                        break;
+                    }
+                }
+            })
+        };
+        Ok(Session { gx, from_gx, exit: Some(exit), sigint })
     }
 }
 

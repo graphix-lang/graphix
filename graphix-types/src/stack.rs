@@ -147,7 +147,7 @@ pub fn activation_born() -> Option<usize> {
     // SAFETY: see `current_control`.
     let c = unsafe { &*p };
     let live = c.activations.fetch_add(1, Ordering::Relaxed) + 1;
-    if live > c.activation_budget() && c.abort_budget(Budget::Activations) {
+    if live > c.activation_budget() && c.stop(StopCause::Activations) {
         log::error!(
             "activation budget ({}) exceeded by a recursion — aborting the runtime \
              (raise via GRAPHIX_ACTIVATION_BUDGET or Control::set_activation_budget)",
@@ -319,7 +319,7 @@ impl Drop for Grown {
 }
 
 /// Run `f` on a fresh segment. Over budget, the current runtime is
-/// aborted first; the segment is still granted so the node-walk can
+/// stopped first; the segment is still granted so the node-walk can
 /// unwind at its next interrupt poll instead of overflowing here.
 #[doc(hidden)]
 pub fn grow<R>(f: impl FnOnce() -> R) -> R {
@@ -331,13 +331,15 @@ pub fn grow<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Runtime control signals shared between a runtime handle and the
-/// running `ExecCtx`. `Interrupt` makes in-flight loops abort to bottom
-/// while the runtime keeps going; `Abort` also shuts the runtime down.
-/// Polled lock-free via [`Control::interrupted`] and `graphix_interrupted`.
+/// running `ExecCtx`. `Abort` stops the runtime for good: in-flight loops
+/// abort and the run loop ends. A cause beside it says what stopped the
+/// runtime; none when its embedder shut it down. Polled lock-free via
+/// [`Control::interrupted`] and `graphix_interrupted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[bitflags]
 #[repr(u32)]
 pub enum CtlFlag {
+    /// Set beside `Abort` when an interrupt stopped the runtime.
     Interrupt = 1,
     Abort = 2,
     /// Set beside `Abort` when the stack budget stopped the runtime.
@@ -346,17 +348,27 @@ pub enum CtlFlag {
     ActivationBudget = 8,
 }
 
-/// Which budget stopped a runtime.
+/// What stopped a runtime before its embedder shut it down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Budget {
+pub enum StopCause {
     Stack,
     Activations,
+    Interrupt,
 }
 
-/// Lock-free [`CtlFlag`] set. A loop polls [`Control::interrupted`];
-/// the run loop polls [`Control::aborted`]. Also this runtime's stack
-/// budget: the grown stack a recursion may hold before
-/// [`Control::abort_budget`].
+impl StopCause {
+    fn flag(self) -> u32 {
+        match self {
+            Self::Stack => CtlFlag::StackBudget as u32,
+            Self::Activations => CtlFlag::ActivationBudget as u32,
+            Self::Interrupt => CtlFlag::Interrupt as u32,
+        }
+    }
+}
+
+/// Lock-free [`CtlFlag`] set, polled by loops and the run loop through
+/// [`Control::interrupted`]. Also this runtime's stack budget: the grown
+/// stack a recursion may hold before [`Control::stop`].
 #[derive(Debug)]
 pub struct Control {
     flags: AtomicU32,
@@ -695,67 +707,51 @@ impl Control {
         });
     }
 
-    /// Request that in-flight loops abort this cycle; cleared when the
-    /// next cycle starts, so one sent while the runtime is idle is dropped.
+    /// Stop the runtime for good, idle or busy: [`Self::stop`] by the
+    /// interrupt.
     pub fn interrupt(&self) {
-        self.flags.fetch_or(CtlFlag::Interrupt as u32, Ordering::Release);
+        self.stop(StopCause::Interrupt);
     }
 
-    /// Request shutdown: in-flight loops abort and the run loop returns
-    /// before the next cycle. Sticky.
+    /// Shut the runtime down: in-flight loops abort and the run loop
+    /// returns before the next cycle. Sticky.
     pub fn abort(&self) {
         self.flags.fetch_or(CtlFlag::Abort as u32, Ordering::Release);
     }
 
-    /// [`Self::abort`], marked as `budget`'s doing unless a budget already
-    /// stopped the runtime; whether this call was the first budget to.
-    pub fn abort_budget(&self, budget: Budget) -> bool {
-        const CAUSES: u32 =
-            CtlFlag::StackBudget as u32 | CtlFlag::ActivationBudget as u32;
-        let cause = match budget {
-            Budget::Stack => CtlFlag::StackBudget as u32,
-            Budget::Activations => CtlFlag::ActivationBudget as u32,
-        };
+    /// [`Self::abort`], marked as `cause`'s doing unless a cause already
+    /// stopped the runtime; whether this call was the first cause to.
+    pub fn stop(&self, cause: StopCause) -> bool {
+        const CAUSES: u32 = CtlFlag::Interrupt as u32
+            | CtlFlag::StackBudget as u32
+            | CtlFlag::ActivationBudget as u32;
         let prev = self.flags.fetch_or(CtlFlag::Abort as u32, Ordering::AcqRel);
         prev & CAUSES == 0
             && self
                 .flags
                 .try_update(Ordering::Release, Ordering::Acquire, |f| {
-                    (f & CAUSES == 0).then_some(f | cause)
+                    (f & CAUSES == 0).then_some(f | cause.flag())
                 })
                 .is_ok()
     }
 
-    /// The budget that aborted this runtime, if one did.
-    pub fn aborted_by(&self) -> Option<Budget> {
+    /// What stopped this runtime, if a cause did.
+    pub fn stopped_by(&self) -> Option<StopCause> {
         let f = self.flags.load(Ordering::Acquire);
-        if f & CtlFlag::StackBudget as u32 != 0 {
-            Some(Budget::Stack)
-        } else if f & CtlFlag::ActivationBudget as u32 != 0 {
-            Some(Budget::Activations)
-        } else {
-            None
-        }
+        [StopCause::Interrupt, StopCause::Stack, StopCause::Activations]
+            .into_iter()
+            .find(|c| f & c.flag() != 0)
     }
 
-    /// True if a budget, stack or activations, aborted this runtime.
+    /// True if a budget, stack or activations, stopped this runtime.
     pub fn budget_aborted(&self) -> bool {
-        self.aborted_by().is_some()
+        matches!(self.stopped_by(), Some(StopCause::Stack | StopCause::Activations))
     }
 
-    /// True if any control flag is set: a loop should abort.
+    /// True once the runtime is stopping, whatever stopped it: a loop
+    /// aborts and the run loop ends.
     pub fn interrupted(&self) -> bool {
-        self.flags.load(Ordering::Acquire) != 0
-    }
-
-    /// True if `Abort` is set.
-    pub fn aborted(&self) -> bool {
         self.flags.load(Ordering::Acquire) & (CtlFlag::Abort as u32) != 0
-    }
-
-    /// Clear the `Interrupt` bit, leaving `Abort` sticky.
-    pub fn clear_interrupt(&self) {
-        self.flags.fetch_and(!(CtlFlag::Interrupt as u32), Ordering::Release);
     }
 }
 
@@ -765,8 +761,7 @@ thread_local! {
     static CURRENT: Cell<*const Control> = const { Cell::new(std::ptr::null()) };
 }
 
-/// Whether the runtime whose cycle this thread is running has an
-/// interrupt or an abort pending.
+/// Whether the runtime whose cycle this thread is running is stopping.
 pub fn interrupted() -> bool {
     CURRENT.with(|c| {
         let p = c.get();
@@ -801,7 +796,7 @@ pub(crate) fn abort_current_control_budget() -> bool {
     CURRENT.with(|c| {
         let p = c.get();
         // SAFETY: see `interrupted`.
-        !p.is_null() && unsafe { (*p).abort_budget(Budget::Stack) }
+        !p.is_null() && unsafe { (*p).stop(StopCause::Stack) }
     })
 }
 

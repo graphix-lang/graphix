@@ -1,8 +1,9 @@
 //! Ctrl-C must always get the user their process back: a program may
-//! spin forever inside one cycle, and the cooperative interrupt
+//! spin forever inside one cycle, and the interrupt
 //! (`GXHandle::interrupt`) is what stops it. These tests spawn the real
-//! binary on wedging programs, in both engines, and assert SIGINT (and
-//! SIGTERM, which asks the process to end) still exits the shell.
+//! binary on wedging programs, in both engines, and assert one SIGINT
+//! (and SIGTERM, which asks the process to end) ends the run with the
+//! status a shell reports for the signal.
 #![cfg(unix)]
 
 use parking_lot::Mutex;
@@ -73,8 +74,7 @@ fn spawn(path: &std::path::Path, out: fs::File, no_fusion: bool) -> Child {
 
 /// Run `program` until `wedged_after`, or until it has grown past
 /// [`GROWN`], check it is alive and printing nothing more, then send `sig`
-/// and require it to exit: twice for SIGINT (cancel, then exit, as a user
-/// would), once for SIGTERM.
+/// once and require the run to end with `128 + sig`.
 fn signal_frees_process(
     program: &str,
     no_fusion: bool,
@@ -120,12 +120,6 @@ fn signal_frees_process(
         assert!(r < 2 * GROWN, "{label}: grew to {} MB before the signal", r >> 20);
     }
     signal(&child, sig);
-    if sig == libc::SIGINT {
-        thread::sleep(Duration::from_millis(750));
-        if child.try_wait().expect("try_wait").is_none() {
-            signal(&child, sig);
-        }
-    }
     let status = exited_within(&mut child, Duration::from_secs(30));
     if status.is_none() {
         let _ = child.kill();
@@ -136,7 +130,11 @@ fn signal_frees_process(
         panic!("{label}: wedged shell survived signal {sig}: only SIGKILL frees it")
     });
     // an interrupted program did not succeed: `graphix x.gx && next` stops
-    assert!(!status.success(), "{label}: signal {sig} ended the shell with {status}");
+    assert_eq!(
+        status.code(),
+        Some(128 + sig),
+        "{label}: signal {sig} ended the shell with {status}"
+    );
 }
 
 #[test]

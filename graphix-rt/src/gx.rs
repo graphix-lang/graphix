@@ -354,10 +354,6 @@ pub(super) struct GX<X: GXExt> {
     /// Answers whose call's cycle queued writes: they go out at the end of
     /// the next cycle, once those writes have landed.
     held_answers: Vec<(ExprId, Value)>,
-    /// The replies delivered this cycle, variables and custom: those an
-    /// interrupt kept from every reader are delivered again
-    /// ([`Self::redeliver_unseen_replies`]).
-    replied: Vec<BindId>,
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     resolvers: Resolvers,
     batch_pool: Pool<Vec<GXEvent>>,
@@ -417,7 +413,6 @@ impl<X: GXExt> GX<X> {
             callables: IntMap::default(),
             calls: VecDeque::new(),
             held_answers: Vec::new(),
-            replied: Vec::new(),
             sub: cfg.sub,
             resolvers: std::sync::Arc::from(cfg.resolvers),
             batch_pool: Pool::new(10, 1000000),
@@ -624,9 +619,6 @@ impl<X: GXExt> GX<X> {
         // `block_in_place` keeps a wedged node from starving the IO tasks
         // and the caller that would `interrupt()`/`abort()` it; on
         // `current_thread` there is nowhere to migrate, so run inline.
-        // The interrupt bit is meaningful only to the cycle in flight when
-        // it is set: one that arrived while idle must not poison this cycle.
-        self.ctx.control.clear_interrupt();
         let control = self.ctx.control.clone();
         let mut run_nodes = || {
             // On the thread that runs the nodes: the task may migrate
@@ -660,7 +652,6 @@ impl<X: GXExt> GX<X> {
         } else {
             tokio::task::block_in_place(run_nodes);
         }
-        self.redeliver_unseen_replies();
         // before the send loop, which may compile roots for the next cycle
         self.ctx.event.clear();
         self.ctx.rt.updated.clear();
@@ -673,8 +664,8 @@ impl<X: GXExt> GX<X> {
         let sub = self.sub.clone();
         let mut open = true;
         loop {
-            // an aborted runtime sends what has room and waits for nothing
-            if self.ctx.control.aborted() {
+            // a stopped runtime sends what has room and waits for nothing
+            if self.ctx.control.interrupted() {
                 if let Ok(permit) = sub.try_reserve() {
                     permit.send(batch)
                 }
@@ -685,14 +676,16 @@ impl<X: GXExt> GX<X> {
                 permit = sub.reserve() => {
                     match permit {
                         Ok(permit) => permit.send(batch),
-                        // a subscriber gone after an abort is the abort
-                        Err(_) if self.ctx.control.aborted() => (),
+                        // a subscriber gone after a stop is the stop
+                        Err(_) if self.ctx.control.interrupted() => (),
                         Err(_) => error!("could not send batch"),
                     }
                     break;
                 }
                 n = to_rt.recv_many(input, INPUT_BATCH), if open => match n {
                     0 => open = false,
+                    // a stopped runtime answers nothing more
+                    _ if self.ctx.control.interrupted() => (),
                     _ => self.process_input_batch(sets, input, &mut batch).await,
                 },
                 _ = aborted.notified() => (),
@@ -815,72 +808,7 @@ impl<X: GXExt> GX<X> {
         };
         self.ctx.rt.store_insert(id, graphix_compiler::TagValue::fired(v.clone()));
         self.ctx.event.variables.insert(id, graphix_compiler::TagValue::fired(v));
-        if matches!(via, Via::Reply) {
-            self.replied.push(id);
-        }
         self.wake_readers(&id);
-    }
-
-    /// After a cycle the interrupt cut short: a reply no reader reached,
-    /// its boundary unvisited (a dispatch or a loop the interrupt skipped),
-    /// is delivered again next cycle, so the builtin waiting on it is not
-    /// left waiting forever. A reply some reader reached was consumed.
-    fn redeliver_unseen_replies(&mut self) {
-        let cycle = self.ctx.rt.cycle;
-        let interrupted = self.ctx.control.interrupted();
-        for id in self.replied.drain(..) {
-            // XCR claude for claude: [bug/medium] A visited boundary is not a reader
-            // reached. A builtin passed directly as a collection callback has no
-            // boundary of its own: its reply reader registers under the enclosing
-            // statement, which the cycle visits before the slot loop stops on
-            // ctx.interrupted(). A reply landing in the interrupted cycle is counted as
-            // seen and dropped, and the slot waits forever (5 of 11 runs; the
-            // lambda-wrapped callback is redelivered). Give each slot call its own
-            // Prune boundary, or have readers mark their own replies consumed. probe:
-            // design/review-2026-10-26/repro/x-refs-catchup-interrupt-builtin-slot-reply.sh
-            // (x-refs-catchup-07)
-            // 2026-10-26 claude: The reported scenario no longer loses the reply: the
-            // fold's own call (a GXLambda) stops at the interrupt before its body, whose
-            // boundary the reply's reader sits in, so the reply is redelivered
-            // (stdlib/graphix-tests
-            // lib_tests::interrupt::interrupted_slot_reply_is_delivered_again drives it
-            // deterministically: two wedges, both timers landing in the second; it passes
-            // with and without the change below, and the REPL repro printed the fold in 16
-            // of 16 runs at HEAD and with the review binary). The gap the CR names is still
-            // there for an interrupt that lands inside the slot loop: a slot that may call
-            // a builtin had no boundary of its own. Callback::call now puts every such slot
-            // (a builtin definition, or a dynamic callee) in a boundary no cycle skips
-            // (Prune::fence; Prune's ride state is an Option, None for a fence), so every
-            // interrupt cut point sits at a boundary edge. No pin fails without it: that
-            // window needs an interrupt landing mid-loop, which no test drives
-            // deterministically. Review whether the fence is worth its per-slot boundary.
-            // 2026-10-27 claude: Checked: Callback::call puts every slot whose callee may
-            // be a builtin (a builtin def or a dynamic callee) inside Prune::fence. A fence
-            // is a boundary no cycle skips, so its visit means the walk reached the slot.
-            // It is never imaged (image_encode refuses NOT_QUIESCENT, and slots exist only
-            // after a cycle). This is the CR's own suggested remedy, and CLAUDE.md's
-            // walk-pruning rule now states it. Two things are open: the fence has no
-            // failing pin, and I see no deterministic way to land an interrupt between two
-            // builtin-callee slots (a builtin slot cannot spin, and a lambda callee already
-            // has its instance boundary); and the note asks whether one boundary per
-            // builtin slot is worth its cost. That trade-off is Eric's call. If he accepts
-            // an unpinned containment fence, delete this; if not, revert the fence and
-            // write a CR for redelivery keyed per reader.
-            let seen = self.ctx.rt.by_ref.get(&id).is_none_or(|readers| {
-                readers
-                    .iter()
-                    .any(|(r, _)| r.boundary.as_ref().is_none_or(|b| b.visited(cycle)))
-            });
-            if !interrupted || seen {
-                continue;
-            }
-            if let Some(u) = self.ctx.event.take_custom(&id) {
-                self.ctx.rt.custom_updates.push(id, u, Via::Reply);
-            } else if let Some((tv, _)) = self.ctx.rt.store_get(&id) {
-                let u = VarUpdate::Set(tv.value_cloned());
-                self.ctx.rt.var_updates.push(id, u, Via::Reply);
-            }
-        }
     }
 
     /// `id`'s delivery this cycle, or its wait behind what `id` has waiting
@@ -930,9 +858,6 @@ impl<X: GXExt> GX<X> {
             return;
         }
         self.ctx.event.custom.lock().insert(id, u);
-        if matches!(via, Via::Reply) {
-            self.replied.push(id);
-        }
         self.wake_readers(&id);
     }
 
@@ -1551,7 +1476,7 @@ impl<X: GXExt> GX<X> {
         'main: loop {
             // Pending commands' response channels drop on return, so blocked
             // callers get an error instead of hanging.
-            if self.ctx.control.aborted() {
+            if self.ctx.control.interrupted() {
                 return Ok(());
             }
             macro_rules! peek {
@@ -1771,7 +1696,11 @@ impl<X: GXExt> GX<X> {
             // Still open: a deadlock on a lock inside the aborted cycle's unwind or the
             // GX's drop would look the same (every thread in futex_wait), and only a core
             // from the 120 s trap would tell.
-            if self.ctx.control.aborted() {
+            // 2026-10-29 claude: Control::aborted is gone (D7, the interrupt is final):
+            // the run loop's top check and the send loop poll Control::interrupted, true
+            // once Abort is set by any stop; GXHandle::interrupt now also notifies the run
+            // loop, as GXHandle::abort does, and a budget stop still does not.
+            if self.ctx.control.interrupted() {
                 return Ok(());
             }
             let mut batch = self.batch_pool.take();

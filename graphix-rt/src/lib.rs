@@ -15,7 +15,8 @@ use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    BindId, CFlag, Control, ExecState, FusionStats, LambdaId, ParMode, Scope, cost,
+    BindId, CFlag, Control, ExecState, FusionStats, LambdaId, ParMode, Scope, StopCause,
+    cost,
     env::Env,
     expr::{BufferOverrides, ExprId, Load, ModPath, Probe, ResolverFactory, ResolverRef},
     ide::Ide,
@@ -608,16 +609,18 @@ impl<X: GXExt> GXHandle<X> {
                     let _ = tx.send(f(ctx));
                 }),
             })
-            .map_err(|_| anyhow!("runtime is shut down"))?;
+            .map_err(|_| self.stopped("runtime is shut down"))?;
         Ok(rx.await?)
     }
 
-    /// Abort in-flight loops in the runtime; each value keeps its last
-    /// result, and the runtime keeps running. This is the only
-    /// containment for a program that spins forever inside one cycle,
-    /// which the language permits. Nothing arms it but a human or an
-    /// embedder: the shell arms it on Ctrl-C, and an embedder that wants
-    /// a watchdog builds one:
+    /// Stop the runtime for good, busy or idle: in-flight loops abort
+    /// and the runtime ends, as when a budget stops it. Every call on its
+    /// handles fails after it ([`Self::stopped`]); an embedder that wants
+    /// to go on starts a new runtime. This is the only containment for a
+    /// program that spins forever inside one cycle, which the language
+    /// permits. Nothing arms it but a human or an embedder: the shell
+    /// arms it on Ctrl-C, and an embedder that wants a watchdog builds
+    /// one:
     ///
     /// ```ignore
     /// let gx = handle.clone();
@@ -627,29 +630,28 @@ impl<X: GXExt> GXHandle<X> {
     ///         // a round trip the runtime cannot answer within the budget
     ///         let budget = Duration::from_secs(5);
     ///         if tokio::time::timeout(budget, gx.get_env()).await.is_err() {
-    ///             log::error!("graphix program exceeded its budget; interrupting");
+    ///             log::error!("graphix program exceeded its budget; stopping it");
     ///             gx.interrupt();
+    ///             break;
     ///         }
     ///     }
     /// });
     /// ```
     ///
-    /// The interrupted cycle's work is abandoned: each value keeps its
-    /// last result and recomputes only when an input fires again, so a
-    /// result an interrupted event would have produced is lost. Set a
-    /// watchdog's budget well above the longest legitimate cycle.
+    /// Set a watchdog's budget well above the longest legitimate cycle.
     pub fn interrupt(&self) {
-        self.0.control.interrupt()
+        self.0.control.interrupt();
+        self.0.aborted.notify_one()
     }
 
-    /// The runtime's interrupt, budget and parallel control.
+    /// The runtime's stop, budget and parallel control.
     pub fn control(&self) -> &Control {
         &self.0.control
     }
 
     /// True if a budget, the stack's (`graphix_compiler::set_stack_budget`)
-    /// or the activations' (`Control::set_activation_budget`), aborted this
-    /// runtime; `Control::aborted_by` says which.
+    /// or the activations' (`Control::set_activation_budget`), stopped this
+    /// runtime; `Control::stopped_by` says which.
     pub fn budget_aborted(&self) -> bool {
         self.0.control.budget_aborted()
     }
@@ -680,15 +682,18 @@ impl<X: GXExt> GXHandle<X> {
         Ok(rx.await.map_err(|_| self.stopped("runtime did not respond"))?)
     }
 
-    /// Why the runtime stopped, when a budget stopped it, else `what`.
+    /// Why the runtime stopped, when a budget or an interrupt stopped it,
+    /// else `what`.
     pub fn stopped(&self, what: &'static str) -> anyhow::Error {
-        if self.budget_aborted() {
-            anyhow!(
+        match self.0.control.stopped_by() {
+            Some(StopCause::Stack | StopCause::Activations) => anyhow!(
                 "a runaway recursion exceeded the runtime's budget \
                  (GRAPHIX_STACK_BUDGET or GRAPHIX_ACTIVATION_BUDGET) and it stopped"
-            )
-        } else {
-            anyhow!(what)
+            ),
+            Some(StopCause::Interrupt) => {
+                anyhow!("the runtime was interrupted and stopped")
+            }
+            None => anyhow!(what),
         }
     }
 

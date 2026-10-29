@@ -172,7 +172,7 @@ slow budget, is a finding of its own, `Pair::Construction`), or a
 runaway the stack or activation budget aborted: any failed request to a runtime
 whose `Control` reports `budget_aborted()` is `Timeout(ActivationBudget)`
 or `Timeout(StackBudget)` by the budget the abort recorded
-(`Control::aborted_by`; the driver maps it, in one place), because the deadline and the budget are the same
+(`Control::stopped_by`; the driver maps it, in one place), because the deadline and the budget are the same
 containment and which one stops an unbounded descent first is a race
 between the engines' descent speeds, not a property of the program.
 Runtime timeouts agree with other runtime timeouts. `Compile` agrees only
