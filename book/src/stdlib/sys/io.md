@@ -23,6 +23,13 @@ written in terms of it, so they come for free. The system streams
 override `read_exact` with a single call into the operating system,
 which reads under one lock instead of looping.
 
+A read whose call site is deleted while it runs is stopped. A
+`read_exact` or `read_all` stopped this way discards the bytes it has
+already taken, and the stream continues after them. On a
+file, a program that must resume where it was seeks back to a position
+it saved before the read. (A read whose arm sleeps is different: it
+finishes, and its bytes go back to the stream.)
+
 `Lines::lines` and `Lines::lines_batched` read until EOF or a read error.
 After they stop, delivering the same handle again starts a reader from
 its current position. To read a file again from the beginning, first
