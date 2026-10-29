@@ -3,7 +3,7 @@ use crate::{
     expr::{
         Decorations, Expr, ExprKind, ModuleKind, Origin, SeqExpr, SeqTrigger, Sig,
         SigItem, SigKind, StrForm, StructurePattern, TraitExpr, TraitMethod, TryWithExpr,
-        UseItem,
+        TypeDefBody, TypeDefExpr, UseItem,
         parser::{parse, parse_sig},
         print::{
             PrettyBuf, PrettyDisplay, below_of, cmp_use_items, eol_of, pretty_file_items,
@@ -471,6 +471,7 @@ impl<'a> Ornaments<'a> {
                     .for_each(|(p, _)| self.pattern(&p.structure_predicate)),
                 ExprKind::Trait(t) => self.methods(t, |_, _| ()),
                 ExprKind::Impl(im) => self.push(Ornament::Comments(im.below.lines())),
+                ExprKind::TypeDef(td) => self.typedef(td),
                 ExprKind::Use { names, .. } => self.uses(names),
                 ExprKind::Module { value, .. }
                     if let ModuleKind::Dynamic { sig, .. } = &**value =>
@@ -503,6 +504,28 @@ impl<'a> Ornaments<'a> {
         self.push(Ornament::Comments(t.below.lines()))
     }
 
+    /// The comments on a type definition's fields and members, each item's
+    /// in canonical order, so one that moved to another item shows.
+    fn typedef(&mut self, td: &'a TypeDefExpr) {
+        let (TypeDefBody::Alias(t) | TypeDefBody::Abstract(Some(t))) = &td.body else {
+            return;
+        };
+        if td.notes.is_empty() {
+            return;
+        }
+        td.notes.each_in(t, &mut |n| {
+            let (above, eol, below) = match n {
+                Some(n) => {
+                    (n.comments.above.lines(), n.comments.eol.text(), n.below.lines())
+                }
+                None => (&[][..], None, &[][..]),
+            };
+            self.push(Ornament::Comments(above));
+            self.push(Ornament::Eol(eol));
+            self.push(Ornament::Comments(below));
+        })
+    }
+
     fn uses(&mut self, names: &'a [UseItem]) {
         for n in names {
             self.push(Ornament::UseComments(n.comments.lines()));
@@ -516,6 +539,7 @@ impl<'a> Ornaments<'a> {
             self.push(Ornament::Eol(si.eol.text()));
             match &si.kind {
                 SigKind::Trait(t) => self.methods(t, |w, d| w.expr(d)),
+                SigKind::TypeDef(td) => self.typedef(td),
                 SigKind::Use { names, .. } => self.uses(names),
                 _ => (),
             }
@@ -1457,6 +1481,73 @@ mod tests {
             Interface,
             "val x: i64;\n// val y: i64\n",
             "val x: i64\n// val y: i64\n",
+        );
+    }
+
+    // a type definition's struct fields and union members take comments
+    // as a list's items do, at any depth of fields and members
+    #[test]
+    fn comments_on_type_fields_and_members() {
+        use SourceKind::*;
+        for (kind, src) in [
+            (
+                Program,
+                "type Config = {\n    port: i64, // the listening port\n    host: string\n};\n\ntype Msg = [\n    `Start, // begin a run\n    `Stop\n];\n\n0\n",
+            ),
+            (
+                Program,
+                "type Config = {\n    // where\n    port: i64,\n    host: string\n};\n\n0\n",
+            ),
+            (
+                Program,
+                "type Msg = [\n    `Start,\n    `Stop\n    // more to come\n];\n\n0\n",
+            ),
+            (Program, "type Msg = [\n    `Start,\n    `Stop // halt\n];\n\n0\n"),
+            (Program, "type V = [\n    null,\n    `A(i64), // a\n    Named\n];\n\n0\n"),
+            (
+                Program,
+                "type Cfg = {\n    net: {\n        port: i64, // the port\n        host: string\n    },\n    mode: [\n        `Fast, // quick\n        `Slow\n        // below\n    ]\n};\n\n0\n",
+            ),
+            (
+                Program,
+                "type H = Abstract<{\n    fd: i64, // the descriptor\n    name: string\n}>;\n\n0\n",
+            ),
+            (
+                Program,
+                "let f = |x| {\n    type T = {\n        a: i64, // a\n        b: i64\n    };\n    x\n};\n\nf(1)\n",
+            ),
+            (
+                Interface,
+                "type Config = {\n    port: i64, // the listening port\n    host: string\n}\n",
+            ),
+        ] {
+            formats_to(kind, src, src)
+        }
+        // a trailing separator after the last field is not kept
+        formats_to(
+            Program,
+            "type Msg = [\n  `Start,\n  `Stop, // halt\n];\n0",
+            "type Msg = [\n    `Start,\n    `Stop // halt\n];\n\n0\n",
+        );
+        // a nested union's members join the union that holds it, their
+        // comments with them
+        formats_to(
+            Program,
+            "type T = [\n    `A, // a\n    [\n        // b\n        `B,\n        `C // c\n    ]\n];\n0",
+            "type T = [\n    `A, // a\n    // b\n    `B,\n    `C // c\n];\n\n0\n",
+        );
+        // a member that prints in canonical order takes no comment, so the
+        // lines below the last go below the last variant
+        formats_to(
+            Program,
+            "type V = [\n    `A,\n    i64\n    // below\n];\n0",
+            "type V = [\n    i64,\n    `A\n    // below\n];\n\n0\n",
+        );
+        refused(
+            Program,
+            "type T = {\n    a: i64, // c\n    b: i64\n};\n0",
+            "type T = {\n    a: i64,\n    b: i64 // c\n};\n0",
+            "comment",
         );
     }
 

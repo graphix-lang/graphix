@@ -494,7 +494,10 @@ after and below an interface item or a trait method. Lambda formals carry
 `LambdaExpr`. Use-tree comments carry their prefix depth (`UseComment`)
 beside the sorted imports; a single path's comments follow its imported
 name and a group's follow its prefix. Ending comments merged at one
-prefix become leading lines (`design/module_system.md`).
+prefix become leading lines (`design/module_system.md`). A type
+definition's comments ride on it, keyed by where each field or member
+was written (`TypeNotes`, which packs to nothing, printed through
+`typ::Noted`), and the guard reads them in canonical order.
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
 program-visible values (a cast error, a null error), so comments print
@@ -1464,7 +1467,12 @@ cycle, across workers; the compiler never pins threads.
   is one; `Sig::below`, `TraitExpr::below`, `LambdaExpr::below`, and an impl with no
   method's `ImplExpr::below`); none inside a string's
   splice or an attribute's arguments, which print on one line; `///`
-  docs only in an interface. Parse errors report the furthest point
+  docs only in an interface. A type definition's struct fields and union
+  members take all three, through the fields and members of their types
+  (not a type argument, a payload or a function type); a union member
+  takes one only as a variant or a named type, which print as written,
+  and the lines below the last go under the last of those; anywhere
+  else in a type a comment is refused (`expr/parser/typexp.rs`). Parse errors report the furthest point
   reached with the source line and a caret, and a refusal its reason.
 - **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
   comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is

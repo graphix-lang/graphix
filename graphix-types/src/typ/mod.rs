@@ -45,7 +45,7 @@ mod matches;
 mod normalize;
 pub use normalize::{NormKey, norm_key};
 mod print;
-pub use print::Brief;
+pub use print::{Brief, Noted};
 pub(crate) mod regular;
 mod textdata;
 pub use textdata::Format;

@@ -110,7 +110,30 @@ select point.x {
 }
 ```
 
-Anywhere else is a parse error: between an operator and its operand
+A type definition's struct fields and union members take comments the
+same way, through the fields and members of the types inside them too.
+In a union only a variant or a named type takes one: the other members
+print in a fixed order, so a comment could not stay beside them.
+
+```graphix
+type Config = {
+  port: i64, // the listening port
+  host: string
+};
+type Msg = [
+  // begin a run
+  `Start,
+  `Stop
+  // more to come
+];
+let c: Config = { port: 8080, host: "localhost" };
+let m: Msg = `Start;
+c.port
+```
+
+A comment anywhere else in a type, in an annotation, a type argument
+(`Array<..>`), a variant's payload or a function type, is a parse error.
+So is a comment anywhere else in a program: between an operator and its operand
 (`x + // no`), after an opening bracket on its line, or inside a string's
 `[..]` splice or an attribute's arguments, which print on one line. The rule is what
 lets the parser keep every comment in the syntax tree, so tools that

@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     expr::{
         ApplyExpr, Arg, ArgKind, BinOp, BindExpr, Doc, ExprKind, LambdaBody, LambdaExpr,
-        ModuleKind, SelectExpr, SigKind, StructExpr, StructurePattern, UseItem,
-        WrittenAt, print::PrettyDisplay,
+        ModuleKind, SelectExpr, SigKind, StructExpr, StructurePattern, TypeDefBody,
+        UseItem, WrittenAt, print::PrettyDisplay,
     },
     typ::{FnArgKind, FnArgType, Mutability, TVar, Type, TypeRef},
 };
@@ -2586,6 +2586,11 @@ fn no_comment_stands_inside_a_splice_or_an_attribute() {
             "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { val x: i64;\n // c\n }; source \"let x = 1\" }; 1 }]\";\ns",
             splice,
         ),
+        ("let s = \"[{ type T = {\n a: i64, // c\n b: i64\n }; 1 }]\";\ns", splice),
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { type T = [\n `A, // a\n `B\n ] }; source \"let x = 1\" }; 1 }]\";\ns",
+            splice,
+        ),
         (
             "#[parallel(f(\n    1, // which\n    2\n))]\nlet a = f(1);\na",
             "a comment cannot stand inside an attribute",
@@ -2820,4 +2825,73 @@ Expected mod, pub, use, catch, try, until, type, trait, impl, let, whitespaces, 
     let x = ;
             ^"####
     );
+}
+
+// a type definition's fields and members take comments, at any depth of
+// fields and members, and the parse keeps each beside what it describes
+#[test]
+fn type_definitions_keep_comments_on_fields_and_members() {
+    let src = "type C = {\n    // where\n    port: i64, // the port\n    mode: [\n        `Fast, // quick\n        Named\n        // below\n    ]\n};\n0";
+    let ori = crate::expr::Origin {
+        parent: None,
+        source: crate::expr::Source::Vfs(literal!("/test")),
+        text: ArcStr::from(src),
+    };
+    let exprs = parse(ori).unwrap();
+    let ExprKind::TypeDef(td) = &exprs[0].kind else { panic!("{:?}", exprs[0]) };
+    let TypeDefBody::Alias(body) = &td.body else { panic!("{td:?}") };
+    let mut notes = vec![];
+    td.notes.each_in(body, &mut |n| {
+        notes.push(n.map(|n| {
+            let (above, eol) = (n.comments.above.lines(), n.comments.eol.text());
+            format!("{above:?} {eol:?} {:?}", n.below.lines())
+        }))
+    });
+    // canonical order: the fields by name, mode's members after mode, a
+    // named type before a variant
+    assert_eq!(
+        notes,
+        [
+            None,
+            Some(r#"[] None [" below"]"#.to_string()),
+            Some(r#"[] Some(" quick") []"#.to_string()),
+            Some(r#"[" where"] Some(" the port") []"#.to_string()),
+        ]
+    );
+}
+
+// a comment stands in a type only beside a type definition's field or
+// variant or named type, which keeps it as written
+#[test]
+fn a_comment_elsewhere_in_a_type_is_refused() {
+    let anywhere = "a comment in a type stands only in a type definition";
+    let member = "a comment in a union stands beside a variant or a named type";
+    for (src, note) in [
+        ("let x: {\n a: i64, // c\n b: i64\n} = { a: 1, b: 2 };\nx", anywhere),
+        ("let x: [\n `A, // c\n `B\n] = `A;\nx", anywhere),
+        ("|x: {\n // c\n a: i64\n}| x.a", anywhere),
+        ("type T = [`A({\n x: i64, // c\n y: i64\n}), `B];\n0", anywhere),
+        ("type T = Array<{\n x: i64, // c\n y: i64\n}>;\n0", anywhere),
+        ("type T = fn(x: {\n a: i64 // c\n}) -> i64;\n0", anywhere),
+        ("type T = [\n i64, // c\n string\n];\n0", member),
+        ("type T = [\n // c\n null,\n `A\n];\n0", member),
+        ("type T = [\n i64,\n string\n // c\n];\n0", member),
+        (
+            "type T = [\n `A, // a\n `A,\n `B\n];\n0",
+            "a commented member merges with another member of the union",
+        ),
+        (
+            "type T = [\n `A // a\n];\n0",
+            "a comment in a union describes one of two or more members",
+        ),
+        ("type T = [\n // c\n];\n0", "a comment here has no member to describe"),
+        (
+            "type T = [\n [\n `A,\n `B\n // below\n ],\n `C\n];\n0",
+            "comments below a nested union's last member have no place",
+        ),
+        ("type T = {\n // c\n};\n0", "a comment here has no field to describe"),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(note), "{src}: {msg}");
+    }
 }

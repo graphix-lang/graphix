@@ -2,8 +2,8 @@ use crate::{
     expr::{
         Attr, BindExpr, CatchExpr, CatchRole, Comments, Decorations, Doc, Eol, Expr,
         ExprKind, ModPath, ModuleKind, Name, Origin, OriginScope, ParserContext, Pattern,
-        SelectExpr, SeqExpr, SeqKind, SeqTrigger, Sig, SigItem, StrForm, StructExpr,
-        StructWithExpr, TraitMethod, TryWithExpr, WrittenAt,
+        SelectExpr, SeqExpr, SeqKind, SeqTrigger, Sig, SigItem, SigKind, StrForm,
+        StructExpr, StructWithExpr, TraitMethod, TryWithExpr, WrittenAt,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -323,6 +323,7 @@ pub(super) fn holds_comment(e: &Expr) -> bool {
                 names.iter().any(|n| !n.comments.lines().is_empty())
             }
             ExprKind::Impl(im) => !im.below.lines().is_empty(),
+            ExprKind::TypeDef(td) => !td.notes.is_empty(),
             ExprKind::Lambda(l) => {
                 l.args.iter().any(|a| {
                     !a.comments.above.lines().is_empty()
@@ -335,7 +336,9 @@ pub(super) fn holds_comment(e: &Expr) -> bool {
                 ModuleKind::Dynamic { sig, .. } => {
                     !sig.below.lines().is_empty()
                         || sig.items.iter().any(|si| {
-                            !si.comments.lines().is_empty() || si.eol.text().is_some()
+                            !si.comments.lines().is_empty()
+                                || si.eol.text().is_some()
+                                || matches!(&si.kind, SigKind::TypeDef(td) if !td.notes.is_empty())
                         })
                 }
                 _ => false,

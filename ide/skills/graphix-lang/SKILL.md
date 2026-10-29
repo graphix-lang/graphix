@@ -129,9 +129,12 @@ constant argument to `exit` runs at init — always gate it).
   arm, an impl or trait method, a struct-literal field, a lambda formal,
   a use-tree item or an interface item; end a list item's line after its `;` or `,` (a statement, an arm,
   a field, an element, an argument: `x: 1, // across`); or stand below a
-  list's last item or at the end of a file. One between an operator and
-  its operand, or after an opening bracket on its line, is a parse
-  error. `///` doc comments only in `.gxi`.
+  list's last item or at the end of a file. A type definition's struct
+  fields and union members take them the same way (in a union only a
+  variant or a named type); a comment anywhere else in a type is a parse
+  error. One between an operator and its operand, or after an opening
+  bracket on its line, is a parse error. `///` doc comments only in
+  `.gxi`.
 
 - **Formatting:** a lone bracketed argument hugs its parent's brackets
   when its opening fits, in patterns as in expressions and types:

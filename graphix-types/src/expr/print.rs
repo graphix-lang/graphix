@@ -11,7 +11,7 @@ use crate::{
     print_as_written,
     stack::ensure_sufficient,
     typ::{
-        Type,
+        Noted, Type,
         fntyp::{Ret, write_bounds},
     },
 };
@@ -565,7 +565,7 @@ pub(crate) fn write_leading(
 
 /// Comments as written, which only the formatter prints: canonical text
 /// is a function of the syntax alone, and a comment is not syntax.
-fn write_comments(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
+pub(crate) fn write_comments(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
     if !print_as_written() {
         return Ok(());
     }
@@ -650,7 +650,11 @@ fn shows_trailing(eol: Option<&ArcStr>, below: &[ArcStr]) -> bool {
 }
 
 /// `sep` after a list item, then `eol`, the comment ending its line.
-fn item_sep(buf: &mut PrettyBuf, sep: &str, eol: Option<&ArcStr>) -> fmt::Result {
+pub(crate) fn item_sep(
+    buf: &mut PrettyBuf,
+    sep: &str,
+    eol: Option<&ArcStr>,
+) -> fmt::Result {
     buf.kill_newline();
     write!(buf, "{sep}")?;
     if let Some(c) = eol.filter(|_| print_as_written()) {
@@ -661,7 +665,11 @@ fn item_sep(buf: &mut PrettyBuf, sep: &str, eol: Option<&ArcStr>) -> fmt::Result
 
 /// After a list's last item: the comment ending its line, then the lines
 /// below it.
-fn item_end(buf: &mut PrettyBuf, eol: Option<&ArcStr>, below: &[ArcStr]) -> fmt::Result {
+pub(crate) fn item_end(
+    buf: &mut PrettyBuf,
+    eol: Option<&ArcStr>,
+    below: &[ArcStr],
+) -> fmt::Result {
     if !shows_trailing(eol, below) {
         return Ok(());
     }
@@ -680,6 +688,7 @@ fn kind_decorated(k: &ExprKind) -> bool {
         let mut any = match k {
             ExprKind::Trait(t) => t.decorated(),
             ExprKind::Impl(i) => shows_comments(i.below.lines()),
+            ExprKind::TypeDef(td) => td.decorated(),
             ExprKind::Use { names, .. } => use_decorated(names),
             ExprKind::Lambda(l) => {
                 l.args.iter().any(|a| a.comments.decorated())
@@ -703,6 +712,7 @@ fn sig_item_decorated(si: &SigItem) -> bool {
         || shows_comments(si.comments.lines())
         || shows_trailing(si.eol.text(), &[])
         || matches!(&si.kind, SigKind::Trait(t) if t.decorated())
+        || matches!(&si.kind, SigKind::TypeDef(td) if td.decorated())
         || matches!(&si.kind, SigKind::Use { names, .. } if use_decorated(names))
 }
 
@@ -1000,19 +1010,23 @@ impl fmt::Display for TypeDefExpr {
 }
 
 impl PrettyDisplay for TypeDefExpr {
+    fn decorated(&self) -> bool {
+        print_as_written() && !self.notes.is_empty()
+    }
+
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         self.write_name_and_params(buf)?;
         match &self.body {
             TypeDefBody::Abstract(None) => writeln!(buf),
             TypeDefBody::Abstract(Some(rep)) => {
                 write!(buf, " = Abstract<")?;
-                rep.fmt_pretty(buf)?;
+                Noted(rep, &self.notes).fmt_pretty(buf)?;
                 buf.kill_newline();
                 writeln!(buf, ">")
             }
             TypeDefBody::Alias(typ) => {
                 write!(buf, " = ")?;
-                typ.fmt_pretty(buf)
+                Noted(typ, &self.notes).fmt_pretty(buf)
             }
         }
     }

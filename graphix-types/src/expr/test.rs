@@ -55,7 +55,8 @@ fn untrailed(e: &Expr) -> Expr {
 
 /// `e` with no comment after a list item, nor, when `above`, above one;
 /// `above` drops attributes too, which stand nowhere a splice's
-/// expression prints.
+/// expression prints. A type's comments go either way: no single line
+/// holds one.
 fn stripped(e: &Expr, above: bool) -> Expr {
     let lines = |c: &Comments| if above { Comments::default() } else { c.clone() };
     let mut e = e.map_children(&mut |c| stripped(c, above));
@@ -80,8 +81,11 @@ fn stripped(e: &Expr, above: bool) -> Expr {
             ..t.clone()
         })
     };
+    let unnoted =
+        |td: &TypeDefExpr| TypeDefExpr { notes: TypeNotes::default(), ..td.clone() };
     let kind = match &e.kind {
         ExprKind::Trait(t) => Some(ExprKind::Trait(methods(t))),
+        ExprKind::TypeDef(td) => Some(ExprKind::TypeDef(Arc::new(unnoted(td)))),
         ExprKind::Module { name, value } => match &**value {
             ModuleKind::Dynamic { sandbox, sig, source } => {
                 let items = sig.items.iter().map(|si| SigItem {
@@ -89,6 +93,7 @@ fn stripped(e: &Expr, above: bool) -> Expr {
                     eol: Eol::default(),
                     kind: match &si.kind {
                         SigKind::Trait(t) => SigKind::Trait(methods(t)),
+                        SigKind::TypeDef(td) => SigKind::TypeDef(unnoted(td)),
                         k => k.clone(),
                     },
                     ..si.clone()
@@ -865,16 +870,83 @@ fn usestmt() -> impl Strategy<Value = Expr> {
     })
 }
 
+/// The comments around one field or member: mostly none.
+fn type_note() -> impl Strategy<Value = Option<(Comments, Option<ArcStr>)>> {
+    let some = (comments(), option::of(comment()))
+        .prop_filter("a comment", |(c, eol)| !c.lines().is_empty() || eol.is_some());
+    prop_oneof![2 => Just(None), 1 => some.prop_map(Some)]
+}
+
+/// A struct type of distinct fields or a union of distinct variants,
+/// canonical, its fields or members written one to a line in that order,
+/// and the comments on them; the lines below the last on the last.
+fn noted_body() -> impl Strategy<Value = (Type, TypeNotes)> {
+    let at = |i: usize| SourcePosition { line: i as i32 + 1, column: 1 };
+    let fields =
+        collection::vec((field_name(), typexp()), 1..6).prop_map(move |mut fs| {
+            fs.sort_by(|(a, _), (b, _)| a.cmp(b));
+            fs.dedup_by(|(a, _), (b, _)| a == b);
+            let fs =
+                fs.into_iter().enumerate().map(|(i, (n, t))| (n, t, WrittenAt(at(i))));
+            Type::Struct(Arc::from_iter(fs))
+        });
+    let variants = collection::vec((typart(), collection::vec(typexp(), 0..3)), 2..6)
+        .prop_map(move |mut vs| {
+            vs.sort_by(|(a, _), (b, _)| a.cmp(b));
+            vs.dedup_by(|(a, _), (b, _)| a == b);
+            let vs = vs.into_iter().map(|(tag, ts)| {
+                Type::Variant(tag, Arc::from_iter(ts), WrittenAt::NOWHERE)
+            });
+            match &Type::flatten_set(vs) {
+                Type::Set(ms) => Type::Set(Arc::from_iter(ms.iter().enumerate().map(
+                    |(i, m)| match m {
+                        Type::Variant(tag, ts, _) => {
+                            Type::Variant(tag.clone(), ts.clone(), WrittenAt(at(i)))
+                        }
+                        m => m.clone(),
+                    },
+                ))),
+                t => t.clone(),
+            }
+        });
+    prop_oneof![fields, variants]
+        .prop_flat_map(|t| {
+            let mut n = 0;
+            noted_items(&t, &mut |_| n += 1);
+            (Just(t), collection::vec(type_note(), n), comments())
+        })
+        .prop_map(|(t, mut notes, below)| {
+            let mut ats: Vec<SourcePosition> = vec![];
+            noted_items(&t, &mut |at| ats.push(at));
+            let last = ats.iter().max_by_key(|at| (at.line, at.column)).copied();
+            let mut kept: Vec<TypeNote> = vec![];
+            for (at, n) in ats.into_iter().zip(notes.drain(..)) {
+                let below =
+                    if Some(at) == last { below.clone() } else { Comments::default() };
+                let (above, eol) = n.unwrap_or_default();
+                if !above.lines().is_empty() || eol.is_some() || !below.lines().is_empty()
+                {
+                    let comments = ItemComments { above, eol: Eol::new(eol) };
+                    kept.push(TypeNote { at, comments, below })
+                }
+            }
+            (t, TypeNotes::of(&mut kept))
+        })
+}
+
 fn typedef() -> impl Strategy<Value = Expr> {
     let body = prop_oneof![
-        typexp().prop_map(TypeDefBody::Alias),
-        option::of(typexp()).prop_map(TypeDefBody::Abstract),
+        4 => typexp().prop_map(|t| (TypeDefBody::Alias(t), TypeNotes::default())),
+        2 => option::of(typexp())
+            .prop_map(|t| (TypeDefBody::Abstract(t), TypeNotes::default())),
+        1 => noted_body().prop_map(|(t, notes)| (TypeDefBody::Alias(t), notes)),
+        1 => noted_body().prop_map(|(t, notes)| (TypeDefBody::Abstract(Some(t)), notes)),
     ];
     (typart(), collection::vec((tvar(), option::of(typexp())), 0..4), body).prop_map(
-        |(name, params, body)| {
+        |(name, params, (body, notes))| {
             let params = Arc::from_iter(params.into_iter());
-            ExprKind::TypeDef(Arc::new(TypeDefExpr { name: name.into(), params, body }))
-                .to_expr_nopos()
+            let td = TypeDefExpr { name: name.into(), params, body, notes };
+            ExprKind::TypeDef(Arc::new(td)).to_expr_nopos()
         },
     )
 }
@@ -2063,10 +2135,26 @@ fn check_opt(s0: &Option<Arc<Expr>>, s1: &Option<Arc<Expr>>) -> bool {
     }
 }
 
+/// A type definition's comments, each field's and member's that has any,
+/// in canonical order.
+fn type_notes(td: &TypeDefExpr) -> Vec<String> {
+    let mut out = vec![];
+    if let TypeDefBody::Alias(t) | TypeDefBody::Abstract(Some(t)) = &td.body {
+        td.notes.each_in(t, &mut |n| {
+            if let Some(n) = n {
+                let (above, eol) = (n.comments.above.lines(), n.comments.eol.text());
+                out.push(format!("{above:?} {eol:?} {:?}", n.below.lines()))
+            }
+        })
+    }
+    out
+}
+
 fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
-    let TypeDefExpr { name: name0, params: p0, body: body0 } = td0;
-    let TypeDefExpr { name: name1, params: p1, body: body1 } = td1;
-    (name0 == name1)
+    let TypeDefExpr { name: name0, params: p0, body: body0, notes: _ } = td0;
+    let TypeDefExpr { name: name1, params: p1, body: body1, notes: _ } = td1;
+    type_notes(td0) == type_notes(td1)
+        && (name0 == name1)
         && (p0.len() == p1.len()
             && p0.iter().zip(p1.iter()).all(|((t0, c0), (t1, c1))| {
                 t0.name == t1.name

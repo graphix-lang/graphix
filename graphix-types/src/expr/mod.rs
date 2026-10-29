@@ -268,6 +268,7 @@ pub struct TypeDefExpr {
     pub name: Name,
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub body: TypeDefBody,
+    pub notes: TypeNotes,
 }
 
 /// What a `type` definition says about its name.
@@ -1294,6 +1295,85 @@ decides_nothing!(WrittenPath);
 pub struct WrittenForm(pub StrForm);
 
 decides_nothing!(WrittenForm);
+
+/// The comments a type definition keeps beside one field of a struct type
+/// or one member of a union, written at `at`: the lines above it, the one
+/// ending its line and, under a list's last, the lines below.
+#[derive(Debug, Clone)]
+pub struct TypeNote {
+    pub at: SourcePosition,
+    pub comments: ItemComments,
+    pub below: Comments,
+}
+
+/// A type definition's [`TypeNote`]s, sorted by where each field or member
+/// was written. Like [`WrittenAt`], what it keys on, it decides nothing:
+/// equal to every other, hashes and packs to nothing.
+#[derive(Debug, Clone, Default)]
+pub struct TypeNotes(Option<Arc<[TypeNote]>>);
+
+decides_nothing!(TypeNotes);
+
+impl TypeNotes {
+    pub fn of(notes: &mut Vec<TypeNote>) -> Self {
+        notes.sort_by_key(|n| (n.at.line, n.at.column));
+        Self((!notes.is_empty()).then(|| Arc::from_iter(notes.drain(..))))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// The note on the field or member written at `at`.
+    pub fn at(&self, at: SourcePosition) -> Option<&TypeNote> {
+        let notes = self.0.as_deref()?;
+        let key = (at.line, at.column);
+        notes
+            .binary_search_by_key(&key, |n| (n.at.line, n.at.column))
+            .ok()
+            .map(|i| &notes[i])
+    }
+
+    /// Each field and member of `t` a note can describe, in canonical
+    /// order, with its note.
+    pub fn each_in<'a>(&'a self, t: &Type, f: &mut impl FnMut(Option<&'a TypeNote>)) {
+        noted_items(t, &mut |at| f(self.at(at)))
+    }
+
+    /// Whether a note describes a field or a member of `t`.
+    pub fn any_in(&self, t: &Type) -> bool {
+        let mut any = false;
+        if !self.is_empty() {
+            self.each_in(t, &mut |n| any |= n.is_some())
+        }
+        any
+    }
+}
+
+/// Where each field and member of `t` that a [`TypeNote`] can describe
+/// was written, in canonical order: a struct type's fields and a union's
+/// variants and named types, through the fields' types and the members.
+pub(crate) fn noted_items(t: &Type, f: &mut impl FnMut(SourcePosition)) {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::Struct(fields) => {
+            for (_, t, at) in fields.iter() {
+                if let Some(at) = at.get() {
+                    f(at)
+                }
+                noted_items(t, f)
+            }
+        }
+        Type::Set(members) => {
+            for m in members.iter() {
+                if let Some(at) = m.written_at() {
+                    f(at)
+                }
+                noted_items(m, f)
+            }
+        }
+        _ => (),
+    })
+}
 
 /// A name where it is declared or selected: the identifier and where it
 /// was written. A `Name` is its identifier to every comparison, hash

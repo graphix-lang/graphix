@@ -429,6 +429,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 name: Name::from(TYP),
                 params: Arc::from_iter(std::iter::empty::<(TVar, Option<Type>)>()),
                 body: TypeDefBody::Alias(t.clone()),
+                notes: Default::default(),
             }))
             .to_expr_nopos();
             let nb = ExprKind::Bind(Arc::new(BindExpr {

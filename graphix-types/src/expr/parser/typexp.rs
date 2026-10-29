@@ -1,13 +1,17 @@
 use super::{
-    ONE_TUPLE, csep, fldname, fname, fname_noting,
+    COMMA_WHY, Commentable, Listed, ONE_TUPLE, commented, csep, fldname, fname,
+    fname_noting,
     grow::{because, grow, refuse},
     ident,
     lambdaexp::{LABELED_FIRST, labeled_first},
-    not_prefix, path_root, sep_by_tok, sep_by1_tok, sep_by1_tok_trailing, sort_unique,
-    spaces, spaces1, spstring, sptoken, typname,
+    leading_comments, not_prefix, path_root, sep_by_tok, sep_by1_tok,
+    sep_by1_tok_trailing, sort_unique, spaces, spaces1, spstring, sptoken, typname,
 };
 use crate::{
-    expr::{ModPath, Name, TypeDefBody, TypeDefExpr, WrittenAt, WrittenPath, get_origin},
+    expr::{
+        Comments, Eol, ItemComments, ModPath, Name, TypeDefBody, TypeDefExpr, TypeNote,
+        TypeNotes, WrittenAt, WrittenPath, get_origin, noted_items,
+    },
     typ::{Bound, FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use arcstr::{ArcStr, literal};
@@ -312,7 +316,79 @@ where
         })
 }
 
-// CR claude for eric: [doc-drift/low] Does the comment rule's "every list" cover types and
+/// A type with the notes of the lists in it that take comments.
+type Noted = (Type, LPooled<Vec<TypeNote>>);
+
+/// Where a comment in a type may not stand.
+const TYPE_COMMENT: &str = "a comment in a type stands only in a type definition, beside a \
+     field or a union member outside any type argument, payload or function type";
+const MEMBER_COMMENT: &str =
+    "a comment in a union stands beside a variant or a named type";
+
+/// A struct type's field or a union's member as written: the comments
+/// above it, ending its line and, as the last, below it, and the notes of
+/// the lists inside it.
+struct ListItem<T> {
+    above: LPooled<Vec<ArcStr>>,
+    eol: Option<ArcStr>,
+    below: LPooled<Vec<ArcStr>>,
+    item: T,
+    notes: LPooled<Vec<TypeNote>>,
+}
+
+impl<T> Commentable for ListItem<T> {
+    fn take_eol(&mut self, eol: ArcStr) {
+        self.eol = Some(eol)
+    }
+}
+
+impl<T> ListItem<T> {
+    fn commented(&self) -> bool {
+        !self.above.is_empty() || self.eol.is_some() || !self.below.is_empty()
+    }
+
+    /// Its comments, as the note on what was written at `at`.
+    fn note(&mut self, at: SourcePosition) -> Option<TypeNote> {
+        self.commented().then(|| TypeNote {
+            at,
+            comments: ItemComments {
+                above: Comments::of(self.above.drain(..)),
+                eol: Eol::new(self.eol.take()),
+            },
+            below: Comments::of(self.below.drain(..)),
+        })
+    }
+}
+
+/// The items of a list of fields or members, the lines below the last
+/// on it; `None` for comments with no item to describe.
+fn list_items<T>(mut l: Listed<ListItem<T>>) -> Option<LPooled<Vec<ListItem<T>>>> {
+    let mut items: LPooled<Vec<ListItem<T>>> =
+        l.slots.drain(..).filter_map(|(_, i)| i).collect();
+    match items.last_mut() {
+        Some(last) => last.below.extend(l.below.drain(..)),
+        None if !l.below.is_empty() => return None,
+        None => (),
+    }
+    Some(items)
+}
+
+/// A refusal at a position, or what was parsed.
+fn parsed<I>(
+    r: Result<Noted, (SourcePosition, &'static str)>,
+) -> impl Parser<I, Output = Noted>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    match r {
+        Ok(t) => value(t).left(),
+        Err((pos, why)) => refuse(pos, why).right(),
+    }
+}
+
+// XCR claude for claude: [doc-drift/low] Does the comment rule's "every list" cover types and
 // patterns? A comment at the end of a struct type field's line, a union member's or a
 // tuple pattern element's is a parse error (`type P = { x: i64, // the x` then `y: i64
 // };`), while the rule lists "a statement, an arm, a field, an element, an argument".
@@ -320,29 +396,182 @@ where
 // expressions; if not, the book and CLAUDE.md should say the list items are
 // expressions'. probes: ~/tmp/xcr-review-2026-10-28/1/p/c_structtype.gx,
 // c_uniontype.gx, c_selectpat.gx (type-list-comments-01)
-fn structtyp<I>() -> impl Parser<I, Output = Type>
+// 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D10): (b) a typedef's
+// struct fields and union members take comments as an expression list's items do (above an
+// item, ending an item's line after its separator, below the last item); patterns, tuple
+// types, variant payloads and fn types stay without.
+// 2026-10-29 claude: Built per D10: a type definition's struct fields and union members take
+// comments above, ending the line and below the last, through the fields and members their
+// types reach (TypeNotes on TypeDefExpr, keyed by where each was written, packing to
+// nothing; printed through typ::Noted; the formatter's guard reads them in canonical order;
+// holds_comment sees them). A union member takes one only as a variant or a named type, the
+// members that print as written. A comment anywhere else in a type (an annotation, a type
+// argument, a payload, a fn type) is refused with a reason; patterns stay without, as ruled.
+// Pins, each failing with the change undone:
+// format::tests::comments_on_type_fields_and_members,
+// parser::test::{type_definitions_keep_comments_on_fields_and_members,
+// a_comment_elsewhere_in_a_type_is_refused,
+// no_comment_stands_inside_a_splice_or_an_attribute}, and expr::test::expr_pp_round_trip,
+// whose generator now hangs notes on typedef bodies.
+/// `{ name: T, .. }`, each field's type read by `field`; in a type
+/// definition (`noted`) each field takes comments as a list's item does.
+fn structtyp<I, P, PF>(field: PF, noted: bool) -> impl Parser<I, Output = Noted>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
+    P: Parser<I, Output = Noted>,
+    PF: Fn() -> P,
 {
-    between(
-        token('{'),
-        sptoken('}'),
-        sep_by1_tok(
-            (spaces().with(position()), fldname().skip(sptoken(':')), typ()),
-            csep(),
-            token('}'),
+    let item = move || {
+        (
+            leading_comments(false),
+            spaces().with(position()),
+            fldname().skip(sptoken(':')),
+            field(),
+        )
+            .map(|(above, at, name, (typ, notes))| ListItem {
+                above,
+                eol: None,
+                below: LPooled::take(),
+                item: (at, name, typ),
+                notes,
+            })
+    };
+    (
+        between(
+            token('{'),
+            sptoken('}'),
+            commented(item, ',', COMMA_WHY, || token('}'), false),
         ),
+        position(),
     )
-    .and(position())
-    .then(|(mut exps, end): (LPooled<Vec<(SourcePosition, ArcStr, Type)>>, _)| {
-        if !sort_unique(&mut exps, |(_, n, _)| n) {
-            return refuse(end, "struct field names must be unique").left();
+        .then(move |(listed, end)| parsed(struct_fields(listed, end, noted)))
+}
+
+fn struct_fields(
+    listed: Listed<ListItem<(SourcePosition, ArcStr, Type)>>,
+    end: SourcePosition,
+    noted: bool,
+) -> Result<Noted, (SourcePosition, &'static str)> {
+    let mut items = match list_items(listed) {
+        Some(items) if !items.is_empty() => items,
+        Some(_) => return Err((end, "a struct type has at least one field")),
+        None => return Err((end, "a comment here has no field to describe")),
+    };
+    if !noted && items.iter().any(|i| i.commented()) {
+        return Err((end, TYPE_COMMENT));
+    }
+    if !sort_unique(&mut items, |i| &i.item.1) {
+        return Err((end, "struct field names must be unique"));
+    }
+    let mut notes: LPooled<Vec<TypeNote>> = LPooled::take();
+    let mut fields: LPooled<Vec<(ArcStr, Type, WrittenAt)>> = LPooled::take();
+    for mut i in items.drain(..) {
+        let at = i.item.0;
+        notes.extend(i.notes.drain(..));
+        notes.extend(i.note(at));
+        let (_, name, typ) = i.item;
+        fields.push((name, typ, WrittenAt(at)));
+    }
+    Ok((Type::Struct(Arc::from_iter(fields.drain(..))), notes))
+}
+
+/// `[T, ..]`, each member read by `member`; in a type definition
+/// (`noted`) each variant and named type takes comments as a list's item
+/// does.
+fn uniontyp<I, P, PF>(member: PF, noted: bool) -> impl Parser<I, Output = Noted>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    P: Parser<I, Output = Noted>,
+    PF: Fn() -> P,
+{
+    let item = move || {
+        (leading_comments(false), member()).map(|(above, (typ, notes))| ListItem {
+            above,
+            eol: None,
+            below: LPooled::take(),
+            item: typ,
+            notes,
+        })
+    };
+    (
+        between(
+            token('['),
+            sptoken(']'),
+            commented(item, ',', COMMA_WHY, || token(']'), false),
+        ),
+        position(),
+    )
+        .then(move |(listed, end)| parsed(union_members(listed, end, noted)))
+}
+
+fn union_members(
+    listed: Listed<ListItem<Type>>,
+    end: SourcePosition,
+    noted: bool,
+) -> Result<Noted, (SourcePosition, &'static str)> {
+    let Some(mut items) = list_items(listed) else {
+        return Err((end, "a comment here has no member to describe"));
+    };
+    if !noted && items.iter().any(|i| i.commented()) {
+        return Err((end, TYPE_COMMENT));
+    }
+    // the lines below the last member print below the last that records
+    // where it was written, which prints last
+    let below = items.last_mut().map(|i| std::mem::take(&mut i.below));
+    if let Some(mut below) = below.filter(|b| !b.is_empty()) {
+        match items.iter_mut().rev().find(|i| i.item.written_at().is_some()) {
+            Some(i) => i.below.extend(below.drain(..)),
+            None => return Err((end, MEMBER_COMMENT)),
         }
-        let fields = exps.drain(..).map(|(pos, n, t)| (n, t, WrittenAt(pos)));
-        value(Type::Struct(Arc::from_iter(fields))).right()
-    })
+    }
+    let mut notes: LPooled<Vec<TypeNote>> = LPooled::take();
+    for i in items.iter_mut() {
+        notes.extend(i.notes.drain(..));
+        if i.commented() {
+            match i.item.written_at() {
+                Some(at) => notes.extend(i.note(at)),
+                None => return Err((end, MEMBER_COMMENT)),
+            }
+        }
+    }
+    let typ = Type::flatten_set(items.drain(..).map(|i| i.item));
+    if !notes.is_empty() {
+        let key = |at: SourcePosition| (at.line, at.column);
+        let mut kept: LPooled<Vec<(i32, i32)>> = LPooled::take();
+        noted_items(&typ, &mut |at| kept.push(key(at)));
+        kept.sort();
+        if notes.iter().any(|n| kept.binary_search(&key(n.at)).is_err()) {
+            let why = match typ {
+                Type::Set(_) => {
+                    "a commented member merges with another member of the union"
+                }
+                _ => "a comment in a union describes one of two or more members",
+            };
+            return Err((end, why));
+        }
+        // a nested union's members join this one, and only the last
+        // prints the lines below
+        if let Type::Set(members) = &typ {
+            let ats = || members.iter().filter_map(|m| m.written_at()).map(key);
+            let last = ats().max();
+            let misplaced = |n: &TypeNote| {
+                !n.below.lines().is_empty()
+                    && ats().any(|at| at == key(n.at))
+                    && Some(key(n.at)) != last
+            };
+            if notes.iter().any(misplaced) {
+                return Err((
+                    end,
+                    "comments below a nested union's last member have no place in the union that holds it",
+                ));
+            }
+        }
+    }
+    Ok((typ, notes))
 }
 
 fn tupletyp<I>() -> impl Parser<I, Output = Type>
@@ -412,14 +641,9 @@ parser! {
             (token('&'), super::arithexp::mutability(), typ())
                 .map(|(_, m, t)| Type::ByRef(m, Arc::new(t))),
             token('_').map(|_| Type::Bottom),
-            between(
-                token('['),
-                sptoken(']'),
-                sep_by_tok(typ(), csep(), attempt(sptoken(']'))),
-            )
-                .map(|mut ts: LPooled<Vec<Type>>| Type::flatten_set(ts.drain(..))),
+            uniontyp(plain_typ, false).map(|(t, _)| t),
             tupletyp(),
-            structtyp(),
+            structtyp(plain_typ, false).map(|(t, _)| t),
             varianttyp(),
             fntype().map(|f| Type::Fn(Arc::new(f))),
             attempt(string("Array").skip(not_prefix())).with(between(sptoken('<'), sptoken('>'), typ()))
@@ -451,6 +675,31 @@ parser! {
                     Some(arg) => Type::App(Arc::new(Type::TVar(tv)), Arc::new(arg)),
                 }),
             typref(),
+        ))))
+    }
+}
+
+/// [`typ`], noting no comment.
+fn plain_typ<I>() -> impl Parser<I, Output = Noted>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    typ().map(|t| (t, LPooled::take()))
+}
+
+parser! {
+    /// A type in a type definition: a struct's fields and a union's
+    /// members, and the fields and members their types reach, take
+    /// comments.
+    fn noted_typ[I]()(I) -> Noted
+    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
+    {
+        grow(spaces().with(choice((
+            structtyp(noted_typ, true),
+            uniontyp(noted_typ, true),
+            plain_typ(),
         ))))
     }
 }
@@ -487,16 +736,17 @@ where
         spaces().with(optional(
             attempt(token('=').skip(not_followed_by(token('>')))).with(choice((
                 attempt(spaces().with(string("Abstract")).skip(not_prefix()))
-                    .with(between(sptoken('<'), sptoken('>'), typ()))
-                    .map(|rep| TypeDefBody::Abstract(Some(rep))),
-                typ().map(TypeDefBody::Alias),
+                    .with(between(sptoken('<'), sptoken('>'), noted_typ()))
+                    .map(|(rep, notes)| (TypeDefBody::Abstract(Some(rep)), notes)),
+                noted_typ().map(|(t, notes)| (TypeDefBody::Alias(t), notes)),
             ))),
         )),
     )
         .map(|((at, name), params, body)| {
             let name = Name::written(name, at);
             let params = params.unwrap_or_else(|| Arc::from_iter([]));
-            let body = body.unwrap_or(TypeDefBody::Abstract(None));
-            TypeDefExpr { name, params, body }
+            let (body, mut notes) =
+                body.unwrap_or_else(|| (TypeDefBody::Abstract(None), LPooled::take()));
+            TypeDefExpr { name, params, body, notes: TypeNotes::of(&mut notes) }
         })
 }

@@ -1,13 +1,14 @@
 use crate::{
     PRINT_FLAGS, PrintFlag,
     expr::{
-        WrittenAt,
-        print::{PrettyBuf, PrettyDisplay},
+        TypeNote, TypeNotes, WrittenAt,
+        print::{PrettyBuf, PrettyDisplay, item_end, item_sep, write_comments},
     },
     print_as_written,
     typ::{Bound, Mutability, Type, TypeRef},
 };
 use arcstr::ArcStr;
+use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
@@ -19,13 +20,21 @@ use std::fmt::{self, Write};
 fn set_members(s: &[Type]) -> SmallVec<[&Type; 16]> {
     let mut members: SmallVec<[&Type; 16]> = s.iter().collect();
     if print_as_written() {
-        members.sort_by_key(|t| match t {
-            Type::Variant(_, _, at) => at.get().map(|p| (p.line, p.column)),
-            Type::Ref(r) => r.pos.map(|p| (p.line, p.column)),
-            _ => None,
-        });
+        members.sort_by_key(|t| t.written_at().map(|p| (p.line, p.column)));
     }
     members
+}
+
+impl Type {
+    /// Where a union's member was written, for the members that record
+    /// it: a variant and a named type.
+    pub fn written_at(&self) -> Option<SourcePosition> {
+        match self {
+            Type::Variant(_, _, at) => at.get(),
+            Type::Ref(r) => r.pos,
+            _ => None,
+        }
+    }
 }
 
 /// The named classes of primitives, a class before any class inside it.
@@ -53,25 +62,73 @@ fn write_list<T: fmt::Display>(
 }
 
 /// Each of `items` on its own line, one level in, `,` after all but the
-/// last; the members of a set when `set`.
+/// last, with the comments `note` finds for it.
+fn pretty_items<'a, T>(
+    buf: &mut PrettyBuf,
+    items: impl IntoIterator<Item = T>,
+    note: impl Fn(&T) -> Option<&'a TypeNote>,
+    mut item: impl FnMut(&mut PrettyBuf, T) -> fmt::Result,
+) -> fmt::Result {
+    buf.nested(|buf| {
+        let mut prev: Option<&TypeNote> = None;
+        for (i, it) in items.into_iter().enumerate() {
+            let n = note(&it);
+            if i > 0 {
+                item_sep(buf, ",", prev.and_then(|p| p.comments.eol.text()))?
+            }
+            if let Some(n) = n {
+                write_comments(buf, n.comments.above.lines())?
+            }
+            item(buf, it)?;
+            prev = n;
+        }
+        match prev {
+            Some(p) => item_end(buf, p.comments.eol.text(), p.below.lines()),
+            None => Ok(()),
+        }
+    })
+}
+
+/// Each of `items` on its own line, one level in, `,` after all but the
+/// last.
 fn pretty_list<'a>(
     buf: &mut PrettyBuf,
     items: impl IntoIterator<Item = &'a Type>,
-    set: bool,
 ) -> fmt::Result {
-    buf.nested(|buf| {
-        for (i, t) in items.into_iter().enumerate() {
-            if i > 0 {
-                buf.kill_newline();
-                writeln!(buf, ",")?;
-            }
-            match t {
-                Type::Primitive(_) if set => writeln!(buf, "{}", SetMember(t))?,
-                t => t.fmt_pretty(buf)?,
-            }
-        }
-        Ok(())
-    })
+    pretty_items(buf, items, |_| None, |buf, t| t.fmt_pretty(buf))
+}
+
+/// The note on what was written at `at`.
+fn noted(notes: Option<&TypeNotes>, at: Option<SourcePosition>) -> Option<&TypeNote> {
+    notes.zip(at).and_then(|(notes, at)| notes.at(at))
+}
+
+/// `t` beside `notes`, when its definition keeps any.
+fn pretty_child(buf: &mut PrettyBuf, t: &Type, notes: Option<&TypeNotes>) -> fmt::Result {
+    match notes {
+        Some(notes) => Noted(t, notes).fmt_pretty(buf),
+        None => t.fmt_pretty(buf),
+    }
+}
+
+/// A type beside the comments its definition keeps on its fields and
+/// members, which print only as written.
+pub struct Noted<'a>(pub &'a Type, pub &'a TypeNotes);
+
+impl fmt::Display for Noted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PrettyDisplay for Noted<'_> {
+    fn decorated(&self) -> bool {
+        print_as_written() && self.1.any_in(self.0)
+    }
+
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        self.0.pretty(buf, Some(self.1))
+    }
 }
 
 /// A primitive set; `bracketed` is false for a member of a larger set,
@@ -316,6 +373,12 @@ fn pretty_lone_arg(
 
 impl PrettyDisplay for Type {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        self.pretty(buf, None)
+    }
+}
+
+impl Type {
+    fn pretty(&self, buf: &mut PrettyBuf, notes: Option<&TypeNotes>) -> fmt::Result {
         match self {
             Self::Abstract { .. } | Self::App(..) | Self::Hole | Self::Bound(_) => {
                 writeln!(buf, "{self}")
@@ -329,7 +392,7 @@ impl PrettyDisplay for Type {
                     [p] => pretty_lone_arg(buf, &format_compact!("{name}<"), p, ">"),
                     params => {
                         writeln!(buf, "{name}<")?;
-                        pretty_list(buf, params.iter(), false)?;
+                        pretty_list(buf, params.iter())?;
                         writeln!(buf, ">")
                     }
                 }
@@ -355,7 +418,7 @@ impl PrettyDisplay for Type {
             }
             Self::Tuple(ts) => {
                 writeln!(buf, "(")?;
-                pretty_list(buf, ts.iter(), false)?;
+                pretty_list(buf, ts.iter())?;
                 writeln!(buf, ")")
             }
             Self::Variant(tag, ts, _) if ts.is_empty() => writeln!(buf, "`{tag}"),
@@ -364,32 +427,38 @@ impl PrettyDisplay for Type {
             }
             Self::Variant(tag, ts, _) => {
                 writeln!(buf, "`{tag}(")?;
-                pretty_list(buf, ts.iter(), false)?;
+                pretty_list(buf, ts.iter())?;
                 writeln!(buf, ")")
             }
             Self::Struct(ts) => {
                 writeln!(buf, "{{")?;
-                buf.nested(|buf| {
-                    for (i, (n, t, _)) in struct_fields(ts).into_iter().enumerate() {
-                        if i > 0 {
-                            buf.kill_newline();
-                            writeln!(buf, ",")?;
-                        }
+                pretty_items(
+                    buf,
+                    struct_fields(ts),
+                    |(_, _, at)| noted(notes, at.get()),
+                    |buf, (n, t, _)| {
                         write!(buf, "{n}: ")?;
                         // a bracketed value hugs its name; any other nests
                         if opens_with_bracket(t) {
-                            t.fmt_pretty(buf)?;
+                            pretty_child(buf, t, notes)
                         } else {
-                            buf.nested(|buf| t.fmt_pretty(buf))?;
+                            buf.nested(|buf| pretty_child(buf, t, notes))
                         }
-                    }
-                    Ok(())
-                })?;
+                    },
+                )?;
                 writeln!(buf, "}}")
             }
             Self::Set(s) => {
                 writeln!(buf, "[")?;
-                pretty_list(buf, set_members(s), true)?;
+                pretty_items(
+                    buf,
+                    set_members(s),
+                    |t| noted(notes, t.written_at()),
+                    |buf, t| match t {
+                        Type::Primitive(_) => writeln!(buf, "{}", SetMember(t)),
+                        t => pretty_child(buf, t, notes),
+                    },
+                )?;
                 writeln!(buf, "]")
             }
             Self::Primitive(_) => {
