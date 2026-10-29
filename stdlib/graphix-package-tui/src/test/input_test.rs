@@ -559,16 +559,6 @@ let result = b
     Ok(())
 }
 
-/// The string a browser fixture's `done` ends with.
-async fn done_string(h: &mut TuiTestHarness) -> Result<Value> {
-    h.watch("test::done").await?;
-    h.wait_for(Duration::from_secs(15), |h| {
-        Ok(matches!(h.get_watched("test::done"), Some(Value::String(_))))
-    })
-    .await?;
-    Ok(h.get_watched("test::done").cloned().unwrap_or(Value::Null))
-}
-
 /// Wait for `test::done` to read `expected`. A report that follows the
 /// browser reaches it once netidx's listing has caught up, however late
 /// that is; a browser that never gets there times out.
