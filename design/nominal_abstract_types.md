@@ -87,7 +87,14 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    over `B(["a"])` makes `'p` an `Array<'a>` with `'a` at least
    `string`. A definition that
    constructs (`|x| Box(x)`) keeps the bound in its signature, so each
-   call's context decides its own. A trait bound or a dispatch on the
+   call's context decides its own, unless its body binds the parameter:
+   then the argument is held to that binding, and the call's context
+   decides nothing the argument fixed (`|x| { let b = Box(x);
+   array::len(b.0); b }` is `fn(x: Array<'a>) -> Box<Array<'a>>`, so
+   `let q: Box<Array<[string, i64]>> = g(["a"])` is refused where the
+   same lines written inline are accepted). A statement's settle binds a
+   parameter a ⊥ was produced into as well to the payload's type, never
+   ⊥. A trait bound or a dispatch on the
    value reads its parameters and so settles them. An
    unknown constructor's argument (`'c<a>`) is invariant too. Declared
    variance is the extension if a covariant abstract container is ever

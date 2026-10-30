@@ -2459,6 +2459,24 @@ impl Type {
                 })
             }
             (None, None) => {
+                // CR claude for eric: [bug/high] An occurs-check refusal
+                // between two open cells answers true and keeps neither
+                // relation, so a cycle that runs through a lower bound drops
+                // the bound and the program runs a wrong answer (main too).
+                // `type B<'p> = Abstract<'p>; let t =
+                // sys::time::timer(duration:10.ms, false); let b = B([]); b <-
+                // B([t ~ b.0]); select b.0 { [x, ..] => x + 1, _ => 0 }`
+                // checks and prints 0 then 1 (`[] + 1`): the connect's
+                // `'p0 ⊇ 'p1`, with 'p1 above `Array<'p0>`, is refused here
+                // (CYCLE-REFUSED under GRAPHIX_DBG_BIND), the cells stay
+                // apart, and the select later binds 'p0 alone. Without the
+                // abstract (`let b = []; b <- [t ~ b]`) the write is refused.
+                // A cell above a type holding it under a constructor has no
+                // finite solution, so a refusal reached through a lower bound
+                // should answer false; but a bare-variable lower bound (the
+                // Lower arm below adds one) closes a cycle that equality
+                // solves, so the rule needs a walk that tells the two apart.
+                // probe: ~/tmp/cr29/scratch/laneL/r2/cyc6.gx (lower-cycle-01)
                 if cyc0() || cyc1() {
                     return refuse();
                 }

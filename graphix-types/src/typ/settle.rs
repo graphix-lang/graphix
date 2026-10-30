@@ -106,12 +106,17 @@ impl TVar {
     }
 
     /// Bind an unbound cell once its writers are checked: to ⊥ when only
-    /// ⊥ was produced into it ([`CellFact::BottomFed`]), whatever bounds
-    /// it, else as [`Self::settle_witness`].
+    /// ⊥ was produced into it ([`CellFact::BottomFed`], and no lower bound
+    /// but ⊥), whatever constrains it, else as [`Self::settle_witness`].
     ///
     /// [`CellFact::BottomFed`]: super::tvar::CellFact::BottomFed
     pub fn settle(&self, env: &Env) -> Result<()> {
-        if self.cell().read().facts.contains(CellFact::BottomFed) {
+        if self.cell().read().facts.contains(CellFact::BottomFed)
+            && self
+                .cell_lower()
+                .iter()
+                .all(|l| l.with_deref(|l| matches!(l, Some(Type::Bottom))))
+        {
             return self.settle_bottom();
         }
         self.settle_witness(env)

@@ -658,8 +658,9 @@ pub(crate) enum CellFact {
     /// terminal settle must error rather than default to ⊥.
     CycleRefused,
     /// A ⊥ was produced into the cell while it was unbound. Every other
-    /// production binds a cell, so one still open once its writers are
-    /// checked had only ⊥ produced into it (`TVar::settle`).
+    /// production binds a cell or bounds it from below, so one still open
+    /// once its writers are checked, with no lower bound but ⊥, had only ⊥
+    /// produced into it (`TVar::settle`).
     BottomFed,
     /// The cell is bound to ⊥ because something required it (`⊥ ⊇ 'x`:
     /// a `_` annotation, a `-> _` return): a fact the gate keeps, where a
@@ -2378,16 +2379,16 @@ impl Type {
         self.open_beneath(true)
     }
 
-    /// [`Self::has_unbound`] less the rigid cells: a declared variable in
-    /// its own body never binds, so it stands as a constant.
     /// The lower bounds of the open cell `self` ends in, if it is one.
-    pub(crate) fn open_lower(&self) -> SmallVec<[Type; 1]> {
+    pub fn open_lower(&self) -> SmallVec<[Type; 1]> {
         match self {
             Type::TVar(tv) => tv.open_cell().map(|c| c.cell_lower()).unwrap_or_default(),
             _ => SmallVec::new(),
         }
     }
 
+    /// [`Self::has_unbound`] less the rigid cells: a declared variable in
+    /// its own body never binds, so it stands as a constant.
     pub fn has_free(&self) -> bool {
         self.open_beneath(false)
     }

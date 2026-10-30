@@ -59,7 +59,8 @@ lower bound when it is added; a merge joins both cells' lists after
 each side's conjuncts admit the other's (a rigid cell admits none but
 itself); a copy, an image and a level claim carry the list. The witness
 of a cell with lower bounds is their union, so every settle binds it
-there; a probe of a trait bound reads it so, and a commit settles it.
+there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
+included; a probe of a trait bound reads it so, and a commit settles it.
 
 A conjunct is an upper bound, so a type wider than the cell's witness
 holds the cell without the cell becoming it: `t ⊇ 'a` that the

@@ -3692,7 +3692,11 @@ run!(
     let g = |x| { let b = B(x); let n = array::len(b.0); select b.0 { [y, ..] => y + n, _ => 0 } };
     g([41]) + g(["a"])
 }"#,
-    refused("does not contain Array<string>");
+    |v: Result<&Value>| matches!(v, Err(e) if {
+        let e = format!("{e:#}");
+        e.contains("in: [\"a\"]: type mismatch Array<")
+            && e.ends_with("does not contain Array<string>")
+    });
     FuseExpect::None
 );
 
@@ -3724,6 +3728,67 @@ run!(
     refused("B<_> does not contain B<i64>");
     FuseExpect::None
 );
+
+// A `$` over an element a payload bounds, before anything decides it.
+run!(
+    payload_bounded_operand_is_not_decided,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let b = B([null, 1]);
+    let n = array::len(b.0);
+    select b.0 { [x, ..] => x$ + n, _ => 0 }
+}"#,
+    refused("the operand of $ has a type not decided here (at least [i64, null]): annotate it");
+    FuseExpect::None
+);
+
+/// An input's settle binds a parameter both a payload bounded and a ⊥ was
+/// produced into to the payload's type, never ⊥: a later input reading
+/// the payload is held to it, whether the ⊥ reached the parameter
+/// directly or through a construction's.
+#[tokio::test(flavor = "current_thread")]
+async fn settle_keeps_a_payload_bound_beside_bottom() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    use graphix_rt::GXEvent;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let inputs = [
+        "type B<'p> = Abstract<'p>",
+        "let f = |x: B<'q>, y: B<'q>| -> B<'q> x",
+        "let g = |x: B<'q>, y: 'q| x",
+        "let r = f(B(\"a\"), B(never()))",
+        "let q = g(B(\"b\"), never())",
+    ];
+    let mut held = Vec::new();
+    for i in inputs {
+        held.push(ctx.rt.compile(ArcStr::from(i)).await?);
+    }
+    for read in ["let z: i64 = r.0", "let z: i64 = q.0"] {
+        let Err(e) = ctx.rt.compile(ArcStr::from(read)).await else {
+            anyhow::bail!("{read} was accepted")
+        };
+        assert!(format!("{e:#}").ends_with("i64 does not contain 'q: string"), "{e:#}");
+    }
+    let probe =
+        ctx.rt.compile(ArcStr::from("{ let s: string = r.0; \"[s][q.0]\" }")).await?;
+    let id = probe.exprs[0].id;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let batch = tokio::time::timeout_at(deadline, rx.recv()).await;
+        let Ok(Some(batch)) = batch else { anyhow::bail!("the read never produced") };
+        if let Some(v) = batch.iter().find_map(|ev| match ev {
+            GXEvent::Updated(eid, v) if *eid == id => Some(v.clone()),
+            _ => None,
+        }) {
+            assert_eq!(v, Value::String("ab".into()));
+            break;
+        }
+    }
+    drop(held);
+    ctx.shutdown().await;
+    Ok(())
+}
 
 /// A union of a bare variable and a constructor of it places every
 /// member: when the constructor's first fit would strand one, the

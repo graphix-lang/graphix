@@ -608,11 +608,23 @@ impl Strip {
         // an open operand would take the error form here and fail an
         // instance whose type has neither: its type must be known
         if typ.with_deref(|t| t.is_none()) {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                bail!(
+            let below = typ.open_lower();
+            format_with_flags(PrintFlag::DerefTVars, || match &below[..] {
+                [] => bail!(
                     "the operand of {op} has type {typ}, not known here: annotate it \
                      with a type that holds an error or null"
-                )
+                ),
+                [l, ls @ ..] => {
+                    use std::fmt::Write;
+                    let mut at_least = format_compact!("{l}");
+                    for l in ls {
+                        write!(at_least, " | {l}")?
+                    }
+                    bail!(
+                        "the operand of {op} has a type not decided here (at least \
+                         {at_least}): annotate it"
+                    )
+                }
             })?
         }
         // what `?` raises is the operand's error part, which Any does not say
