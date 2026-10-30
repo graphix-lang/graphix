@@ -7,10 +7,9 @@ use compact_str::format_compact;
 use graphix_compiler::{Effect, ExecCtx, Rt};
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, run,
-    testing::{Mode, as_i64s, is},
+    testing::{Collect, Mode, as_i64s, is},
 };
 use netidx::publisher::Value;
-use std::time::Duration;
 
 #[derive(Debug, Default)]
 struct LiveBindings;
@@ -47,7 +46,7 @@ async fn slot_bindings_settle(mode: Mode, decls: &str, body: &str) -> Result<()>
         |ctx| {
             ctx.register_builtin::<CachedArgs<LiveBindings>>().unwrap();
         },
-        Duration::from_millis(700),
+        Collect::Settled,
     )
     .await?;
     let counts = as_i64s(&delta.values);

@@ -6,8 +6,8 @@ use anyhow::Result;
 use graphix_package_core::{
     PrintSink,
     testing::{
-        FuseExpect, Mode, TestState, as_i64s, check_fixture, compile_result,
-        fixture_runtime, result_source, updates_until_quiet, verdicts_agree,
+        Collect, FuseExpect, Mode, TestState, as_i64s, check_fixture, compile_result,
+        fixture_runtime, result_source, updates_until, verdicts_agree,
     },
 };
 use netidx::publisher::Value;
@@ -34,22 +34,30 @@ pub(super) struct Delta {
     pub regions: usize,
 }
 
+/// How long a run may take before it counts as a hang: a guard, never
+/// what a fixture asserts.
+const HANG_GUARD: Duration = Duration::from_secs(600);
+
+/// [`run_delta`]'s window: 700ms with no event ends a program that has
+/// a standing source.
+pub(super) const QUIET: Collect = Collect::Quiet(Duration::from_millis(700));
+
 /// Run `code` (wrapped as `let result = {code}`) in `mode` until the
 /// runtime settles (else, under a standing source, until no event arrives
 /// for 700ms), collecting every update of the result and the captured
 /// print output.
 pub(super) async fn run_delta(code: &str, mode: Mode) -> Result<(Vec<Value>, String)> {
-    let d = run_delta_with(code, mode, |_| (), Duration::from_millis(700)).await?;
+    let d = run_delta_with(code, mode, |_| (), QUIET).await?;
     Ok((d.values, d.out))
 }
 
 /// [`run_delta`] with `setup` run over the state before the runtime
-/// starts, until the runtime settles or no event arrives for `quiet`.
+/// starts, collecting the result's updates as `until` says.
 pub(super) async fn run_delta_with(
     code: &str,
     mode: Mode,
     setup: impl FnOnce(&mut TestState),
-    quiet: Duration,
+    until: Collect,
 ) -> Result<Delta> {
     let sink = PrintSink::default();
     let seeded = sink.clone();
@@ -77,9 +85,9 @@ pub(super) async fn run_delta_with(
     }
     let res = built?;
     let regions = ctx.fusion_stats().await.map(|s| s.fused).unwrap_or(0);
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + HANG_GUARD;
     let values =
-        updates_until_quiet(&ctx.rt, &mut rx, res.exprs[0].id, quiet, deadline).await?;
+        updates_until(&ctx.rt, &mut rx, res.exprs[0].id, until, deadline).await?;
     let out = sink.take();
     let forks = control.forks() - forks_before;
     let build_forks = control.build_forks() - build_forks_before;
@@ -116,7 +124,7 @@ pub(super) async fn run_delta_fused_with(
     setup: impl FnOnce(&mut TestState),
     expect: FuseExpect,
 ) -> Result<(Vec<Value>, String)> {
-    let d = run_delta_with(code, mode, setup, Duration::from_millis(700)).await?;
+    let d = run_delta_with(code, mode, setup, QUIET).await?;
     #[cfg(debug_assertions)]
     if matches!(mode, Mode::Jit | Mode::JitPar) {
         graphix_package_core::testing::check_fuse_expectation(

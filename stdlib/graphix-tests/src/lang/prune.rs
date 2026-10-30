@@ -4,7 +4,7 @@
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
-use graphix_package_core::testing::{Mode, TestState, data};
+use graphix_package_core::testing::{Collect, Mode, TestState, data};
 use netidx::publisher::Value;
 use std::time::Duration;
 
@@ -12,7 +12,8 @@ use std::time::Duration;
 /// in `mode`, pruning for real.
 async fn walks(code: &str, mode: Mode) -> Result<(Vec<Value>, (u64, u64))> {
     let setup = |ctx: &mut TestState| ctx.control.set_prune_mode(mode.prune());
-    let d = run_delta_with(code, mode, setup, Duration::from_millis(300)).await?;
+    let d = run_delta_with(code, mode, setup, Collect::Quiet(Duration::from_millis(300)))
+        .await?;
     Ok((d.values, d.boundaries))
 }
 

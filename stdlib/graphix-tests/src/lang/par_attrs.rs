@@ -4,7 +4,7 @@
 use super::dense_deltas::{Delta, run_delta_with};
 use anyhow::Result;
 use graphix_compiler::ParMode;
-use graphix_package_core::testing::Mode;
+use graphix_package_core::testing::{Collect, Mode};
 use netidx::publisher::Value;
 use std::time::Duration;
 
@@ -32,7 +32,7 @@ async fn run_with(code: &str, par: ParMode, mode: Mode) -> Result<Delta> {
         code,
         mode,
         move |ctx| ctx.control.set_par_mode(par),
-        Duration::from_millis(300),
+        Collect::Quiet(Duration::from_millis(300)),
     )
     .await
 }

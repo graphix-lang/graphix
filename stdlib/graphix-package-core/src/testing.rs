@@ -339,6 +339,40 @@ pub async fn updates_until_quiet(
     quiet: Duration,
     deadline: Instant,
 ) -> Result<Vec<Value>> {
+    updates_until_settled(rt, rx, id, Some(quiet), deadline).await
+}
+
+/// Every update of `id` as `until` says, failing at `deadline`.
+pub async fn updates_until(
+    rt: &GXHandle<NoExt>,
+    rx: &mut Events,
+    id: ExprId,
+    until: Collect,
+    deadline: Instant,
+) -> Result<Vec<Value>> {
+    match until {
+        Collect::First(n) => {
+            let mut values = Vec::with_capacity(n);
+            while values.len() < n {
+                values.push(next_update(rx, id, deadline).await?);
+            }
+            Ok(values)
+        }
+        Collect::Quiet(window) => {
+            updates_until_settled(rt, rx, id, Some(window), deadline).await
+        }
+        Collect::Settled => updates_until_settled(rt, rx, id, None, deadline).await,
+    }
+}
+
+/// [`updates_until_quiet`], where no `quiet` waits for the settle alone.
+async fn updates_until_settled(
+    rt: &GXHandle<NoExt>,
+    rx: &mut Events,
+    id: ExprId,
+    quiet: Option<Duration>,
+    deadline: Instant,
+) -> Result<Vec<Value>> {
     fn take(batch: &mut GPooled<Vec<GXEvent>>, id: ExprId, values: &mut Vec<Value>) {
         for e in batch.drain(..) {
             if let GXEvent::Updated(eid, v) = e
@@ -352,9 +386,12 @@ pub async fn updates_until_quiet(
     let settled = rt.wait_settled();
     tokio::pin!(settled);
     loop {
-        if Instant::now() >= deadline {
-            bail!("the program did not quiesce: {values:?}");
-        }
+        let batch = async {
+            match quiet {
+                Some(quiet) => tokio::time::timeout(quiet, rx.recv()).await,
+                None => Ok(rx.recv().await),
+            }
+        };
         tokio::select! {
             r = &mut settled => {
                 if r.is_err() {
@@ -366,7 +403,10 @@ pub async fn updates_until_quiet(
                 }
                 return Ok(values);
             }
-            r = tokio::time::timeout(quiet, rx.recv()) => match r {
+            () = tokio::time::sleep_until(deadline) => {
+                bail!("the program did not quiesce: {values:?}")
+            }
+            r = batch => match r {
                 // a first value may be slow to come under load: quiet only
                 // counts once one has
                 Err(_) if values.is_empty() => continue,
@@ -734,8 +774,12 @@ pub async fn eval_modes(
 pub enum Collect {
     /// Its first `n` updates.
     First(usize),
-    /// Every update until none arrives for the window.
+    /// Every update until the runtime settles, or none arrives for the
+    /// window after the first (a program with a standing source).
     Quiet(Duration),
+    /// Every update until the runtime settles, however far apart they
+    /// come: a program that ends by itself.
+    Settled,
 }
 
 /// `code` (as `let result = {code}`) run in `mode`: its result's updates
@@ -753,18 +797,7 @@ pub async fn collect(
     let res = compile_result(&ctx).await?;
     let id = res.exprs[0].id;
     let deadline = Instant::now() + deadline;
-    let values = match until {
-        Collect::First(n) => {
-            let mut values = Vec::with_capacity(n);
-            while values.len() < n {
-                values.push(next_update(&mut rx, id, deadline).await?);
-            }
-            values
-        }
-        Collect::Quiet(window) => {
-            updates_until_quiet(&ctx.rt, &mut rx, id, window, deadline).await?
-        }
-    };
+    let values = updates_until(&ctx.rt, &mut rx, id, until, deadline).await?;
     ctx.shutdown().await;
     Ok(values)
 }
