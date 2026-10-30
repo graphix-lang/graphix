@@ -826,7 +826,7 @@ impl FnType {
 
     fn any_open_quantifier(&self, also: impl Fn(&TVar) -> bool) -> bool {
         let mut any = false;
-        self.open_quantifiers(|tv, _| any |= also(tv));
+        self.open_quantifiers(|_, open| any |= also(&open));
         any
     }
 
@@ -1263,8 +1263,9 @@ impl FnType {
     }
 
     /// Every declared bound holds for its bound variable. An open one
-    /// stays open: it stands for one type the bound admits, and its cell
-    /// enforces the bound at every binding.
+    /// (its cell open at the end of any forward link) stays open: it
+    /// stands for one type the bound admits, and its cell enforces the
+    /// bound at every binding.
     fn bounds_hold(
         &self,
         flags: BitFlags<ContainsFlags>,
@@ -1272,7 +1273,7 @@ impl FnType {
         hist: &mut ContainsHist,
     ) -> Result<bool> {
         for (tv, tc) in self.constraint_view().iter() {
-            if tv.is_bound()
+            if tv.open_cell().is_none()
                 && !tc.contains_int(flags, env, hist, &Type::TVar(tv.clone()))?
             {
                 return Ok(false);

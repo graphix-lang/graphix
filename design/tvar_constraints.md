@@ -347,10 +347,19 @@ Number |x, y: 'a| -> 'a x + y`) is a second name for the quantifier's
 cell, and every copy keeps the written name beside the inferred one
 (`TVar::named_as`; inferred names of one cell collapse to one), so the
 copy still knows the cell for a quantifier and a site's settle leaves
-it.
+it. A merge re-points only the var it merges; every other var of the
+abandoned cell reads it as a forward link to the survivor (`TVar::
+open_cell` follows it), and is a second name for the survivor: a copy
+names the survivor's image after it too (`TVar::forwarded_as`), a gate
+holds the cell at the end of the link (`TVar::open_rigid`), and a
+quantifier is open, rigid or a formal's by that cell (`FnType::
+bounds_hold`, `is_rigid_formal`). A gate on the forwarding cell would
+leave the survivor flexible, and `Number ⊇ 'q` would bind it to
+`Number`'s first member.
 
 `FnType::contains` checks a declared bound only for a BOUND variable
-(`bounds_hold`). An open one stays open, standing for one type the
+(`bounds_hold`), one whose cell is bound at the end of any forward
+link. An open one stays open, standing for one type the
 bound admits; its cell enforces the bound at every binding. Binding
 it to its bound would type the argument's parameter as the whole set
 (`Number`), which is a different claim: values of several numeric

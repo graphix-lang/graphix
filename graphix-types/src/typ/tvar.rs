@@ -1413,8 +1413,10 @@ impl TVar {
         c.facts.remove(CellFact::BottomRequired);
     }
 
-    /// Open a rigid gate on the cell this var reads now; see
-    /// [`TCell::rigid_gates`].
+    /// Open a rigid gate on the open cell this var stands for
+    /// ([`Self::open_cell`]: a merge re-points one var and leaves the
+    /// others reading a cell that forwards), else on the cell it reads;
+    /// see [`TCell::rigid_gates`].
     pub fn open_rigid(&self) -> RigidGate {
         self.open_gate(false)
     }
@@ -1426,7 +1428,10 @@ impl TVar {
     }
 
     fn open_gate(&self, quantifier: bool) -> RigidGate {
-        let cell = self.cell();
+        let cell = match self.open_cell() {
+            Some(open) => open.cell(),
+            None => self.cell(),
+        };
         {
             let mut c = cell.write();
             written(&c);
@@ -1545,9 +1550,21 @@ impl TVar {
         }
     }
 
+    /// A copy's image `r` of this var's binding, under this var's name
+    /// ([`Self::named_as`]) when `r` is a var: the binding is a merge's
+    /// forward link, and the var a second name for the cell it reaches.
+    pub(crate) fn forwarded_as(&self, r: Type) -> Type {
+        match &r {
+            Type::TVar(v) => Type::TVar(v.named_as(self)),
+            _ => r,
+        }
+    }
+
     /// A fresh cell standing for this one in a copy: the name, and the
     /// conjuncts, refusal and binding rebuilt through `walk`; memoized
-    /// by cell in `fresh`, so a copy keeps the source's alias topology.
+    /// by cell in `fresh`, so a copy keeps the source's alias topology. A
+    /// var whose cell a merge forwarded to a cell the copy holds an image
+    /// of names that image, whether or not its own cell is copied.
     fn freshen<M>(
         &self,
         fresh: &mut AHashMap<usize, TVar>,
@@ -1557,6 +1574,12 @@ impl TVar {
     ) -> TVar {
         let addr = self.cell_addr();
         if let Some(f) = fresh.get(&addr) {
+            return f.named_as(self);
+        }
+        if matches!(self.read().cell.read().binding, Some(Type::TVar(_)))
+            && let Some(end) = self.open_cell()
+            && let Some(f) = fresh.get(&end.cell_addr())
+        {
             return f.named_as(self);
         }
         let f = match how {
@@ -2615,14 +2638,14 @@ impl Type {
     ) -> Option<Type> {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match tv.binding() {
-                Some(t) => Some(match memo.get(&tv.cell_addr()) {
+                Some(t) => Some(tv.forwarded_as(match memo.get(&tv.cell_addr()) {
                     Some(r) => r.clone().unwrap_or(t),
                     None => {
                         let r = t.rename_memo(known, memo).unwrap_or(t);
                         memo.insert(tv.cell_addr(), Some(r.clone()));
                         r
                     }
-                }),
+                })),
                 None => known.get(&tv.cell_addr()).map(|f| Type::TVar(f.named_as(tv))),
             },
             Type::Fn(ft) => {
@@ -2655,14 +2678,14 @@ impl Type {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 Some(match tv.binding() {
-                    Some(t) => match memo.get(&tv.cell_addr()) {
+                    Some(t) => tv.forwarded_as(match memo.get(&tv.cell_addr()) {
                         Some(r) => r.clone().unwrap_or(t),
                         None => {
                             let r = t.instantiate_memo(known, memo, how).unwrap_or(t);
                             memo.insert(tv.cell_addr(), Some(r.clone()));
                             r
                         }
-                    },
+                    }),
                     None => Type::TVar(tv.freshen(known, memo, how, |t, k, m| {
                         t.instantiate_memo(k, m, how)
                     })),

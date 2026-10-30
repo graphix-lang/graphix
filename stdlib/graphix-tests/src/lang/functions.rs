@@ -3398,6 +3398,108 @@ async fn generic_function_elements_elaborate_in_any_task_order() -> Result<()> {
     Ok(())
 }
 
+// Two copies of a generic function value meet as one generic member
+// wherever they stand together (an array, a select's arms), so each
+// call through either picks the quantifier anew: an unannotated
+// parameter the body unifies with the declared quantifier names its
+// cell under a second name, and nothing binds the quantifier.
+const GENERIC_ADD: &str = "let g = 'q: Number |x, y: 'q| -> 'q x + y;";
+
+run!(
+    generic_function_copies_in_an_array,
+    is(Value::I64(3)),
+    "/test.gx" => format!("{GENERIC_ADD} let fs = [g, g]; let result = fs[0]$(1, 2)")
+; FuseExpect::None);
+
+run!(
+    generic_function_copies_mapped,
+    prints("[i64:3, i64:3]"),
+    "/test.gx" => format!(
+        "{GENERIC_ADD} let fs = [g, g]; let result = array::map(fs, |f| f(1, 2))"
+    )
+; FuseExpect::None);
+
+run!(
+    generic_function_copies_mapped_at_another_type,
+    prints("[u8:3, u8:3]"),
+    "/test.gx" => format!(
+        "{GENERIC_ADD} let result = array::map([g, g], |f| f(u8:1, u8:2))"
+    )
+; FuseExpect::None);
+
+run!(
+    generic_function_copies_through_a_select,
+    prints("u8:3"),
+    "/test.gx" => format!(
+        "{GENERIC_ADD} let s = select 1 {{ 0 => g, _ => g }}; let result = s(u8:1, u8:2)"
+    )
+; FuseExpect::None);
+
+run!(
+    generic_function_literals_in_an_array,
+    prints("[[u8:3, f64:4.], [u8:2, f64:3.75]]"),
+    "/test.gx" => r#"
+        let fs = ['q: Number |x, y: 'q| -> 'q x + y, 'q: Number |x, y: 'q| -> 'q x * y];
+        let result = array::map(fs, |f| (f(u8:1, u8:2), f(1.5, 2.5)))
+    "#
+; FuseExpect::None);
+
+run!(
+    generic_function_beside_a_function_literal_in_an_array,
+    prints("[[u8:6, f64:3.], [u8:5, f64:3.5]]"),
+    "/test.gx" => format!(
+        "{GENERIC_ADD} let fs = [|x, y| x * y, g]; \
+         let result = array::map(fs, |f| (f(u8:2, u8:3), f(1.5, 2.0)))"
+    )
+; FuseExpect::None);
+
+run!(
+    generic_function_returned_through_a_select,
+    prints("[u8:5, f64:3.5]"),
+    "/test.gx" => format!(
+        "{GENERIC_ADD} let pick = |b: bool| select b {{ true => g, false => g }}; \
+         let h = pick(true); let result = (h(u8:2, u8:3), h(1.5, 2.0))"
+    )
+; FuseExpect::None);
+
+// The copies' quantifier is held rigid when the array's type is checked
+// against what is written to it: a monomorphic function is no generic one,
+// and the earlier call at u8 relies on the quantifier staying open.
+run!(
+    generic_function_copies_refuse_a_monomorphic_write,
+    refused("and cannot hold Array<fn(x: i64, y: i64) -> i64>"),
+    "/test.gx" => format!(
+        "{GENERIC_ADD} let fs = [g, g]; let a = fs[0]$(u8:1, u8:2); \
+         fs <- [|x: i64, y: i64| x * y]; let result = a"
+    )
+; FuseExpect::None);
+
+/// A later input copies an earlier input's generic function value twice,
+/// and the copies stay generic, as in one program.
+#[tokio::test(flavor = "current_thread")]
+async fn generic_function_copies_in_a_later_input() -> Result<()> {
+    use graphix_package_core::testing::{init, next_update};
+    use std::time::Duration;
+    use tokio::time::Instant;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let _g = ctx.rt.compile(arcstr::ArcStr::from(GENERIC_ADD)).await?;
+    let mut values = Vec::new();
+    for input in ["array::map([g, g], |f| f(u8:1, u8:2))", "g(1.5, 2.5)"] {
+        let res = ctx.rt.compile(arcstr::ArcStr::from(input)).await?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        values.push(next_update(&mut rx, res.exprs[0].id, deadline).await?);
+        drop(res);
+    }
+    ctx.shutdown().await;
+    assert!(
+        matches!(&values[..], [Value::Array(a), Value::F64(f)]
+            if a[..] == [Value::U8(3), Value::U8(3)] && *f == 4.0),
+        "{values:?}"
+    );
+    Ok(())
+}
+
 // A callee's own declared quantifier that only its return holds is the
 // caller's to narrow: its check held it rigid, so the body produced
 // nothing into it.

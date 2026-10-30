@@ -1004,8 +1004,11 @@ node graph IS the IR — there is no parallel typed IR
   parallel elaborations share the check's cells), and an open quantifier
   never binds to its bound, no site's settle decides it; a copy of a type
   keeps each written variable name, so a parameter merged into a declared
-  quantifier still names it (`TVar::named_as`;
-  `design/tvar_constraints.md`); `Any` binds an open
+  quantifier still names it (`TVar::named_as`), and a name whose cell a
+  merge forwarded stands for the cell at the end of the link: a copy names
+  that cell's image after it, and a rigid gate holds that cell
+  (`TVar::forwarded_as`, `open_rigid`; `design/tvar_constraints.md`);
+  `Any` binds an open
   cell only in a contravariant position (a `|v: Any|` callback fixes its
   formal's type; `let x: Any = y` decides nothing of `y`);
   union collapse requires strict tvar identity; in a union checked against

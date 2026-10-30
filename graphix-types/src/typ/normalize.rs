@@ -325,7 +325,7 @@ impl Type {
             Type::TVar(tv) => Some({
                 let addr = tv.cell_addr();
                 if let Some(t) = cx.done.get(&addr) {
-                    return Some(t.clone());
+                    return Some(tv.forwarded_as(t.clone()));
                 }
                 if let Some(fresh) = cx.fresh.get(&addr) {
                     return Some(Type::TVar(fresh.named_as(tv)));
@@ -340,7 +340,7 @@ impl Type {
                             None => t,
                         };
                         cx.done.insert(addr, r.clone());
-                        r
+                        tv.forwarded_as(r)
                     }
                     None => {
                         let fresh = tv.fresh_copy();
