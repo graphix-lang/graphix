@@ -562,12 +562,6 @@ impl FusionCtx {
         self.emission.lock().as_ref()?.kernel(key)
     }
 
-    /// Whether a lambda kernel of the definition `id` runs its tail
-    /// recursion as a loop.
-    pub(crate) fn has_tail_loop(&self, id: LambdaId) -> bool {
-        self.emission.lock().as_ref().is_some_and(|em| em.has_tail_loop(id))
-    }
-
     pub(crate) fn cache_kernel(&self, key: KernelCacheKey, info: LambdaCallInfo) {
         if let Ok(mut em) = self.emission() {
             em.cache_kernel(key, info)

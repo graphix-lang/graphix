@@ -1020,11 +1020,6 @@ impl Caches {
     fn kernel(&self, key: &crate::fusion::KernelCacheKey) -> Option<&LambdaCallInfo> {
         self.kernels.get(key).or_else(|| self.base.as_ref()?.kernel(key))
     }
-
-    fn has_tail_loop(&self, id: LambdaId) -> bool {
-        self.kernels.iter().any(|((l, ..), info)| *l == id && info.kernel.has_tail_loop)
-            || self.base.as_ref().is_some_and(|b| b.has_tail_loop(id))
-    }
 }
 
 /// What emission builds before a link: the names its bodies are emitted
@@ -1074,12 +1069,6 @@ impl Emission {
         key: &crate::fusion::KernelCacheKey,
     ) -> Option<LambdaCallInfo> {
         self.caches.kernel(key).cloned()
-    }
-
-    /// Whether a lambda kernel of the definition `id` runs its tail
-    /// recursion as a loop.
-    pub(crate) fn has_tail_loop(&self, id: LambdaId) -> bool {
-        self.caches.has_tail_loop(id)
     }
 
     pub(crate) fn cache_kernel(

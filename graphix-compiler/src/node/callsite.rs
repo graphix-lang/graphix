@@ -2311,25 +2311,33 @@ impl<R: Rt> CallSite<R> {
             let (scope, flags) = (self.scope.clone(), self.flags);
             // The lazy-bound body's typecheck defers settles no statement
             // boundary will drain.
-            let defaults = super::with_runtime_settles(ctx, |ctx| {
+            let (defaults, tail_loops) = super::with_runtime_settles(ctx, |ctx| {
                 let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
                 let (apply, defaults, params) =
                     self.setup_dynamic_bind(ctx, &scope, flags, f)?;
                 drop(setup_span);
                 let res = self.elaborate_bound(ctx, fv, f, apply);
                 Self::unregister_fn_params(ctx, params);
-                res.map(|()| defaults)
+                res.map(|tail_loops| (defaults, tail_loops))
             })?;
             if crate::fusion_on(flags) {
+                // an assertion the bind reaches asks for the kernels its
+                // check reads
+                let asserted =
+                    !ctx.attr_census.lock().is_empty() || !tail_loops.is_empty();
                 if let Some(apply) = self.callee.apply_mut() {
                     if let Some(share) = &self.share {
                         share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx))?;
-                    } else if !ctx.attr_census.lock().is_empty() && ctx.fusion.available()
-                    {
+                    } else if asserted && ctx.fusion.available() {
                         fusion::fuse_instance(ctx, self.top_id, apply)?;
                     }
                 }
                 crate::check_attribute_census(ctx)?;
+                if ctx.fusion.available()
+                    && let Some(ApplyView::Lambda(g)) = self.resolved_apply()
+                {
+                    analysis::check_bound_tail_loops(tail_loops, &self.spec, g, ctx);
+                }
             }
             Ok(defaults)
         })
@@ -2337,14 +2345,15 @@ impl<R: Rt> CallSite<R> {
 
     /// Elaborate and analyze `apply`, this site's run-time instance of
     /// `f` (the value `fv`), checked with its fn-typed formals registered,
-    /// leaving it `DynamicBound`.
+    /// leaving it `DynamicBound`: the `#[tail_recursive]`s its analysis
+    /// passed.
     fn elaborate_bound(
         &mut self,
         ctx: &mut CompileCtx<R>,
         fv: Value,
         f: &LambdaDef<R>,
         apply: Box<dyn Apply<R>>,
-    ) -> Result<()> {
+    ) -> Result<analysis::TailLoops> {
         // its defaults are elaborated as a static bind's are: trait
         // dispatch resolves in typecheck1
         if let Err(e) = self.typecheck_static_defaults(ctx, f) {
@@ -2361,6 +2370,7 @@ impl<R: Rt> CallSite<R> {
         // The lazy-bound body postdates the program-wide typecheck1 and
         // analysis passes: resolve its call sites and analyze it here.
         let identity = self.fn_arg_identity(ctx);
+        let mut tail_loops = analysis::TailLoops::default();
         if let Some(apply) = self.callee.apply_mut()
             && let ApplyView::Lambda(g) = apply.view()
         {
@@ -2405,13 +2415,13 @@ impl<R: Rt> CallSite<R> {
                     NodeView::Ref(r) => Some(r.id),
                     _ => None,
                 };
-                analysis::analyze_bound_callee(g, self_bind, ctx);
+                tail_loops = analysis::analyze_bound_callee(g, self_bind, ctx);
             }
         }
         if restored_def {
             ctx.lambda_defs.remove(&f.id);
         }
-        Ok(())
+        Ok(tail_loops)
     }
 
     /// Prime `defaults`, the outer variables a fresh bind's compiled

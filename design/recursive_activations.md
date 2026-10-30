@@ -90,10 +90,25 @@ are not.
 for every instance, which also needs positional formals the loop can
 rebind): a stateful or async body, or a labeled or variadic formal,
 fails the assertion. The gate is analysis's; the loop is the JIT's: a
-passed assertion holds once fusion has built a kernel of the
-definition with `has_tail_loop` (`analysis::check_tail_loops`, after the
-link), and where fusion does not run (`--no-fusion`, a dynamic module,
-a run-time bind) only the gate is checked, as `#[native]` is not.
+passed assertion holds once every instance of the definition the program
+runs is inside a fused kernel, where its tail recursion is the kernel's
+loop (`has_tail_loop`). After fusion, `analysis::check_tail_loops` walks
+what is left of the node-walk (the callee bodies it binds, a kernel's
+feeders) and refuses the first call it finds to an instance of the
+definition, naming it: an instance over a callback that does not fuse
+fails even where another instance fused. The assertion stays pending as
+`DefAssertionKind::TailLoop` once its definition's check passed: that
+check is not run again (a node-walked activation's analysis, its body
+lazy, would misjudge it), but every instance a later analysis reaches
+owes its loop, and one whose recursion it finds is none
+(`GXLambda::tail_loop`) is refused too. So a later compile (a REPL
+input) checks its own instances, and a run-time bind it covers is fused (`fusion::fuse_instance`, as for a `#[native]`
+it holds) and checked (`check_bound_tail_loops`): the bound instance
+itself is a dynamic call, dispatched in the node-walk, so a function
+value that is the loop fails, while one whose body calls it builds the
+loop; the program already runs, so the failure is reported as an
+unhandled error is, once. Where fusion does not run (`--no-fusion`, a
+dynamic module) only the gate is checked, as `#[native]` is not.
 
 What follows for the three kinds of body:
 

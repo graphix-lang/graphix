@@ -97,7 +97,8 @@ struct Tables<'a, R: Rt> {
     batch_connect_targets: Vec<BindId>,
     static_callees: Vec<(BindId, &'a Arc<Expr>)>,
     tags: Vec<ArcStr>,
-    /// The `#[sync]` assertions a later run-time bind still checks.
+    /// The definition assertions a later compile or run-time bind still
+    /// checks.
     def_assertions: Vec<DefAssertion>,
 }
 

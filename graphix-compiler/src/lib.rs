@@ -941,6 +941,9 @@ pub enum DefAssertionKind {
     Async,
     TailRecursive,
     Pure,
+    /// A `#[tail_recursive]` whose definition passed its check: each
+    /// instance built after it still owes its loop.
+    TailLoop,
 }
 
 impl DefAssertionKind {
@@ -950,7 +953,7 @@ impl DefAssertionKind {
         match self {
             Self::Sync => "sync",
             Self::Async => "async",
-            Self::TailRecursive => "tail_recursive",
+            Self::TailRecursive | Self::TailLoop => "tail_recursive",
             Self::Pure => "pure",
         }
     }
@@ -3155,7 +3158,7 @@ fn check_and_fuse_inner<R: Rt>(
         drop(p);
         fused?;
         info!("fusion time {:?}", st.elapsed());
-        analysis::check_tail_loops(tail_loops, ctx)?;
+        analysis::check_tail_loops(tail_loops, node)?;
     }
     Ok(())
 }

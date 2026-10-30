@@ -122,7 +122,62 @@ const TAIL_RECURSIVE_UNFUSED: &str = r#"
 }
 "#;
 
-run!(tail_recursive_unfused, TAIL_RECURSIVE_UNFUSED, refused("#[tail_recursive]: no loop is built — the body did not fuse"); FuseExpect::None; jit_only);
+run!(tail_recursive_unfused, TAIL_RECURSIVE_UNFUSED, refused("#[tail_recursive]: no loop is built for the call `f(10, 0)` (line 5, column 3): it did not fuse"); FuseExpect::None; jit_only);
+
+// Every instance the assertion covers builds its own loop: the one over a
+// callback that reads a reference does not fuse, and the instance over
+// `|x| x` beside it, written before or after, does not stand in for it.
+const TAIL_RECURSIVE_UNFUSED_INSTANCE: &str = r#"
+{
+  let v = 1;
+  let rv = &v;
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let h = |x: i64| -> i64 x + *rv;
+  (loop(h, 3, 0), loop(|x| x, 3, 0))
+}
+"#;
+
+run!(
+    tail_recursive_unfused_instance,
+    TAIL_RECURSIVE_UNFUSED_INSTANCE,
+    refused("#[tail_recursive]: no loop is built for the call `loop(h, 3, 0)` (line 9, column 4)"); FuseExpect::None; jit_only);
+
+const TAIL_RECURSIVE_UNFUSED_INSTANCE_LAST: &str = r#"
+{
+  let v = 1;
+  let rv = &v;
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let h = |x: i64| -> i64 x + *rv;
+  (loop(|x| x, 3, 0), loop(h, 3, 0))
+}
+"#;
+
+run!(
+    tail_recursive_unfused_instance_last,
+    TAIL_RECURSIVE_UNFUSED_INSTANCE_LAST,
+    refused("#[tail_recursive]: no loop is built for the call `loop(h, 3, 0)` (line 9, column 23)"); FuseExpect::None; jit_only);
+
+// Alone, the instance over the reference is refused as well.
+const TAIL_RECURSIVE_UNFUSED_INSTANCE_ALONE: &str = r#"
+{
+  let v = 1;
+  let rv = &v;
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let h = |x: i64| -> i64 x + *rv;
+  loop(h, 3, 0)
+}
+"#;
+
+run!(
+    tail_recursive_unfused_instance_alone,
+    TAIL_RECURSIVE_UNFUSED_INSTANCE_ALONE,
+    refused("#[tail_recursive]: no loop is built for the call `loop(h, 3, 0)` (line 9, column 3)"); FuseExpect::None; jit_only);
 
 // A vacuous assertion is an error: the function never recurses.
 const TAIL_RECURSIVE_NOT_RECURSIVE: &str = r#"
@@ -681,6 +736,43 @@ async fn native_body_attribute_survives_repl_inputs() -> Result<()> {
             .await?;
         let err = ctx.rt.compile(literal!("g(5)")).await.unwrap_err();
         assert!(err.chain().any(|e| e.to_string().contains("#[native]")), "{err:#}");
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
+/// A `#[tail_recursive]` covers the instances later inputs build: one
+/// that does not fuse is refused after one that did, so is one whose
+/// callback keeps state, and one after them that fuses is accepted.
+#[tokio::test]
+async fn tail_recursive_covers_later_inputs() -> Result<()> {
+    use arcstr::literal;
+    use graphix_package_core::testing::{Mode, fixture_runtime};
+    for mode in [Mode::Jit, Mode::JitPar] {
+        let (ctx, _rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+        let _loop = ctx
+            .rt
+            .compile(literal!(
+                "#[tail_recursive] let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| \
+                 -> i64 select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) }"
+            ))
+            .await?;
+        let _v = ctx.rt.compile(literal!("let v = 1")).await?;
+        let _fused = ctx.rt.compile(literal!("loop(|x| x, 3, 0)")).await?;
+        let err = ctx
+            .rt
+            .compile(literal!("loop(|x: i64| -> i64 x + *(&v), 3, 0)"))
+            .await
+            .unwrap_err();
+        let msg = "#[tail_recursive]: no loop is built for the call \
+                   `loop(|x: i64| -> i64 x + *(&v), 3, 0)`";
+        assert!(err.chain().any(|e| e.to_string().contains(msg)), "{mode:?}: {err:#}");
+        let err = ctx.rt.compile(literal!("loop(|x| count(x), 3, 0)")).await.unwrap_err();
+        let msg = "#[tail_recursive]: no loop is built for the call \
+                   `loop(|x| count(x), 3, 0)` (line 1, column 1): the recursion of its \
+                   instance is not a stateless tail recursion";
+        assert!(err.chain().any(|e| e.to_string().contains(msg)), "{mode:?}: {err:#}");
+        let _again = ctx.rt.compile(literal!("loop(|x| x * 2, 3, 0)")).await?;
         ctx.shutdown().await;
     }
     Ok(())

@@ -816,8 +816,11 @@ node graph IS the IR — there is no parallel typed IR
   `#[sync]`/`#[async]`/`#[pure]` assert analysis facts
   (`#[pure]`: nothing that makes an arm sleep but `dbg`, which warns),
   and
-  `#[tail_recursive]` analysis's gate plus the loop fusion built
-  (`analysis::check_tail_loops`; unchecked where fusion does not run).
+  `#[tail_recursive]` analysis's gate plus, for every instance a compile
+  or a run-time bind builds (a later REPL input's included), the loop
+  fusion built: no call to it left in the node-walk, a dynamic call's
+  included (`analysis::check_tail_loops`; a bind it covers is fused;
+  unchecked where fusion does not run).
 - **Bottom is dense** (`design/dense_delivery.md`,
   `design/representable_bottom.md`): `update` returns a `TagValue`
   every cycle — `Fired(v)`/`Stale(v)`/`FreshBottom`/`StaleBottom`, the

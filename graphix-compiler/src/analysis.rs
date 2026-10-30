@@ -297,10 +297,86 @@ fn components(
     res
 }
 
-/// The `#[tail_recursive]` assertions an analysis passed: each holds
-/// once fusion has built its loop ([`check_tail_loops`]).
+/// The `#[tail_recursive]` assertions whose definitions an analysis
+/// reached: each holds once every instance of its definition the program
+/// runs is a loop in a fused kernel ([`check_tail_loops`]).
 #[derive(Default)]
-pub struct TailLoops(LPooled<Vec<DefAssertion>>);
+pub struct TailLoops {
+    due: LPooled<Vec<DefAssertion>>,
+    /// The first call the analysis bound to an instance of a `due`
+    /// definition whose recursion is no loop, by its assertion's index.
+    unlooped: Option<(usize, Expr)>,
+}
+
+impl TailLoops {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.due.is_empty()
+    }
+
+    /// The assertion over the definition `g` instantiates.
+    fn of<R: Rt>(&self, g: &GXLambda<R>) -> Option<&DefAssertion> {
+        self.due.iter().find(|a| a.id == g.id())
+    }
+
+    /// Owe `a` the loops of the instances of its definition `graph` reached.
+    fn owe<R: Rt>(&mut self, a: &DefAssertion, graph: &StaticCallGraph<'_, R>) {
+        if self.unlooped.is_none() {
+            let unlooped = |e: &&StaticEdge<'_, R>| {
+                e.caller != Some(e.callee)
+                    && graph
+                        .instances
+                        .get(&e.callee)
+                        .is_some_and(|g| g.id() == a.id && !g.tail_loop())
+            };
+            self.unlooped = graph
+                .edges
+                .iter()
+                .find(unlooped)
+                .map(|e| (self.due.len(), e.site.spec().clone()));
+        }
+        self.due.push(a.clone())
+    }
+
+    /// The first instance of a `due` definition that runs no loop once
+    /// `root` is fused: its assertion, the call and why.
+    fn unbuilt<'a, R: Rt>(
+        &'a self,
+        root: &'a Node<R>,
+    ) -> Option<(&'a DefAssertion, &'a Expr, NoLoopAt)> {
+        match &self.unlooped {
+            Some((i, call)) => Some((&self.due[*i], call, NoLoopAt::NotALoop)),
+            None => walked_call(root, self).map(|(a, call)| (a, call, NoLoopAt::Unfused)),
+        }
+    }
+}
+
+/// Why an instance of a `#[tail_recursive]` definition runs no loop.
+#[derive(Clone, Copy)]
+enum NoLoopAt {
+    /// Its call is left in the node-walk.
+    Unfused,
+    /// Its recursion is not a loop, fused or not.
+    NotALoop,
+}
+
+impl NoLoopAt {
+    fn message(self, call: &Expr) -> CompactString {
+        let why = match self {
+            Self::Unfused => {
+                "it did not fuse, and only a fused kernel runs a tail recursion as a \
+                 loop (GXDBG_NATIVE_ALL=1 lists the fusion failures)"
+            }
+            Self::NotALoop => {
+                "the recursion of its instance is not a stateless tail recursion over \
+                 formals a loop can rebind"
+            }
+        };
+        format_compact!(
+            "#[tail_recursive]: no loop is built for the call {}: {why}",
+            site(call)
+        )
+    }
+}
 
 /// Run the analysis over the whole compiled program. Results land via
 /// interior mutability on the nodes reached.
@@ -321,10 +397,12 @@ pub fn analyze<R: Rt>(root: &Node<R>, ctx: &CompileCtx<R>) -> Result<TailLoops> 
     Ok(due)
 }
 
-/// Refuse each passed `#[tail_recursive]` whose loop fusion did not
-/// build: only a fused kernel runs a tail recursion as a loop.
-pub fn check_tail_loops<R: Rt>(due: TailLoops, ctx: &CompileCtx<R>) -> Result<()> {
-    // CR claude for claude: [bug/low] The loop-built check is per definition: it
+/// Refuse a `#[tail_recursive]` an instance of whose definition `root`
+/// runs without a loop: its recursion is none, or its call is left in the
+/// node-walk once `root` is fused, and only a fused kernel runs a tail
+/// recursion as a loop.
+pub fn check_tail_loops<R: Rt>(due: TailLoops, root: &Node<R>) -> Result<()> {
+    // XCR claude for claude: [bug/low] The loop-built check is per definition: it
     // asks whether any instance of the asserted definition built a loop, so an
     // instance that runs in the node-walk passes whenever another instance
     // fuses. `#[tail_recursive] let rec loop = |f: fn(x: i64) -> i64, n, acc|
@@ -341,27 +419,89 @@ pub fn check_tail_loops<R: Rt>(due: TailLoops, ctx: &CompileCtx<R>) -> Result<()
     // ~/tmp/cr29/scratch/review4/u2/g1.gx, g1h.gx (tail-loop-per-def-01)
     // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 D3): option
     // (1), every instance the assertion covers must build its loop.
-    match due.0.iter().find(|a| !ctx.fusion.has_tail_loop(a.id)) {
+    // 2026-10-30 claude: Per instance now (lane A, cr31-A). After fusion
+    // check_tail_loops walks what is left of the node-walk (callee bodies, kernel
+    // feeders) and refuses the first call to an instance of the asserted
+    // definition, naming the call; an instance whose recursion is no loop
+    // (tail_loop false) is refused too. The assertion stays pending as
+    // DefAssertionKind::TailLoop once its definition's check passed (the check is
+    // not run again: node-walk activations' analyses misjudge a callback call as
+    // async), so a later REPL input's instances are checked, and a run-time bind
+    // it covers is fused (fuse_instance, as for a #[native]) and checked
+    // (check_bound_tail_loops), reported once. Pins that fail without it:
+    // lang::attributes::tail_recursive_unfused_instance and _instance_last (the
+    // mixed program, both orders; the old check accepted both),
+    // tail_recursive_unfused_instance_alone and tail_recursive_unfused (new
+    // message), tail_recursive_covers_later_inputs; graphix-shell
+    // bound_callee_assertion::bound_callee_tail_loop_is_checked (also fails with
+    // the bind's fuse trigger removed) and
+    // bound_callee_stateful_instance_is_reported. Two fusing instances:
+    // tail_recursive_pure_instances (unchanged, passes).
+    match due.unbuilt(root) {
         None => Ok(()),
-        Some(a) => Err(anyhow!(
-            "#[tail_recursive]: no loop is built — the body did not fuse, and \
-             only a fused kernel runs a tail recursion as a loop \
-             (GXDBG_NATIVE_ALL=1 lists the fusion failures)"
-        )
-        .at(&a.spec)),
+        Some((a, call, why)) => Err(anyhow!("{}", why.message(call)).at(&a.spec)),
     }
+}
+
+/// [`check_tail_loops`] for `g`, bound at run time at the call `call`,
+/// which dispatches it in the node-walk. The program already runs, so a
+/// failure is reported as an unhandled error is, and once.
+pub(crate) fn check_bound_tail_loops<R: Rt>(
+    due: TailLoops,
+    call: &Expr,
+    g: &GXLambda<R>,
+    ctx: &CompileCtx<R>,
+) {
+    let found = match due.of(g) {
+        Some(a) => Some((a, call, NoLoopAt::Unfused)),
+        None => due.unbuilt(g.body()),
+    };
+    if let Some((a, call, why)) = found {
+        let e = anyhow!("{}", why.message(call)).at(&a.spec);
+        ctx.def_assertions
+            .lock()
+            .retain(|p| p.id != a.id || p.kind != DefAssertionKind::TailLoop);
+        crate::node::error::report_failure!(&format_compact!("{e:#}"));
+    }
+}
+
+/// The first call `root` leaves in the node-walk, through the bodies of
+/// the callees it binds and the feeders of its kernels, to an instance of
+/// a definition `due` asserts, with that assertion.
+fn walked_call<'a, R: Rt>(
+    root: &'a Node<R>,
+    due: &'a TailLoops,
+) -> Option<(&'a DefAssertion, &'a Expr)> {
+    let mut roots: LPooled<Vec<&'a Node<R>>> = LPooled::take();
+    roots.push(root);
+    let mut found = None;
+    while found.is_none()
+        && let Some(root) = roots.pop()
+    {
+        fusion::for_each_reachable_node(root, &mut |n| match n.view() {
+            NodeView::FusedKernel(k) => roots.extend(k.feeders()),
+            NodeView::CallSite(cs) if found.is_none() => {
+                if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
+                    found = due.of(g).map(|a| (a, cs.spec()));
+                }
+            }
+            _ => (),
+        });
+    }
+    found
 }
 
 /// [`analyze`] for a callee bound at runtime (`CallSite::bind`), whose
 /// body compiled after the program-wide pass, seeded with the outer
 /// `(callee, self_bind)` pair. A definition assertion first reached
 /// here is checked here; the program already runs, so a failure is
-/// reported as an unhandled error is.
+/// reported as an unhandled error is. The passed `#[tail_recursive]`s
+/// are for [`check_bound_tail_loops`].
 pub(crate) fn analyze_bound_callee<R: Rt>(
     g: &GXLambda<R>,
     self_bind: Option<BindId>,
     ctx: &CompileCtx<R>,
-) {
+) -> TailLoops {
     let _profile = profile::phase(Phase::Analysis);
     let mut graph = collect_static_graph(g.body(), Some(g));
     if let Some(sb) = self_bind {
@@ -375,13 +515,16 @@ pub(crate) fn analyze_bound_callee<R: Rt>(
         graph.parallels.iter().try_for_each(|f| check_parallel(&f.spec, &f.n, ctx));
     let mut due = TailLoops::default();
     if let Err(e) = parallels.and_then(|()| check_def_assertions(&graph, ctx, &mut due)) {
-        crate::node::error::report_failure!(&compact_str::format_compact!("{e:#}"));
+        crate::node::error::report_failure!(&format_compact!("{e:#}"));
     }
+    due
 }
 
 /// Check every pending assertion whose definition this analysis
-/// reached, retiring all but a `#[sync]`, a passed `#[tail_recursive]`
-/// into `due`. Stops at the first failure.
+/// reached, retiring a passed `#[async]`, which no later instance undoes.
+/// A passed `#[tail_recursive]` is `due`, and stays as the loops the
+/// instances later analyses reach owe (`TailLoop`), its definition's check
+/// not run again. Stops at the first failure.
 fn check_def_assertions<R: Rt>(
     graph: &StaticCallGraph<'_, R>,
     ctx: &CompileCtx<R>,
@@ -418,11 +561,29 @@ fn check_def_assertions<R: Rt>(
                  lookup, a kernel recomputing), as many times as each engine needs",
             )?;
         }
+        // CR claude for claude: [bug/medium] A `#[sync]` or `#[pure]` stays
+        // pending, so every run-time bind's analysis checks it again, a
+        // node-walked self-call activation's included. That activation's body
+        // stays lazy (`CallSite::elaborate_bound`, `already_active`), its call
+        // through a fn-typed formal unresolved, so its facts read async and the
+        // assertion fails falsely: `#[sync] let rec loop = |f: fn(x: i64) -> i64,
+        // n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(f, n - 1, acc +
+        // f(n)) }; loop(|x| x, 3, 0)` under --no-fusion prints 6 and reports
+        // "#[sync]: this function is async"; `#[pure]` alike (seen on cr31-A,
+        // whose change does not reach it). The activation's analysis also joins
+        // those facts into the definition's.
+        // `#[tail_recursive]` escapes it only because its definition's check runs
+        // once (`TailLoop`). probes: ~/tmp/cr29/scratch/laneA/sync_act.gx,
+        // pure_act.gx (def-assert-activation-01)
         // an instance a later analysis reaches can still make the
-        // function async; the other facts are the definition's alone
+        // function async, or build no loop
         match pending[i].kind {
             DefAssertionKind::Sync | DefAssertionKind::Pure => i += 1,
-            DefAssertionKind::TailRecursive => due.0.push(pending.remove(i)),
+            DefAssertionKind::TailRecursive | DefAssertionKind::TailLoop => {
+                pending[i].kind = DefAssertionKind::TailLoop;
+                due.owe(&pending[i], graph);
+                i += 1
+            }
             DefAssertionKind::Async => drop(pending.remove(i)),
         }
     }
@@ -475,6 +636,7 @@ pub(crate) fn assertion_failure<R: Rt>(
                  output to a later cycle",
             )
         }),
+        DefAssertionKind::TailLoop => None,
         DefAssertionKind::TailRecursive => match *d.recursion.lock() {
             RecursionKind::TailRecursive => None,
             RecursionKind::TailCalls if !def_facts(d).is_pure() => said(
@@ -497,13 +659,15 @@ pub(crate) fn assertion_failure<R: Rt>(
     }
 }
 
+/// `e` and where it is written, for a message.
+fn site(e: &Expr) -> CompactString {
+    format_compact!("`{e}` (line {}, column {})", e.pos.line, e.pos.column)
+}
+
 /// Why every recursive call is in tail position and still no loop is built.
 fn no_loop_message(why: Option<&NoLoop>) -> CompactString {
     const HEAD: &str = "#[tail_recursive]: every recursive call is in tail position, but \
                         no loop is built";
-    let site = |e: &Expr| {
-        format_compact!("`{e}` (line {}, column {})", e.pos.line, e.pos.column)
-    };
     match why {
         Some(NoLoop::Io(e)) => format_compact!(
             "{HEAD}: {} performs Io that does not fire with the formals, so a \

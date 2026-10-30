@@ -72,9 +72,13 @@ a function that holds one, which each activation keeps apart), if the
 function does not recurse at all, or if it recurses mutually, the
 program does not compile. Only compiled code runs the loop: the
 interpreter keeps an activation per call, so the assertion also needs
-the body to compile to native code, and a body that does not (it takes
-a reference, say) fails the compile. With `--no-fusion` that last part
-is not checked, nor is `#[native]`; the rest still fails the compile.
+every call of the function to compile to native code. A body that does
+not (it takes a reference, say) fails the compile, and so does one call
+whose callback does not, even beside a call that does. A call through a
+function value chosen at runtime is made by the interpreter, so it
+fails too; a function the value holds may call the recursive one
+directly, and that call compiles. With `--no-fusion` that last part is
+not checked, nor is `#[native]`; the rest still fails the compile.
 
 Two related assertions document a function's timing: `#[sync]` asserts that
 every output appears on the same cycle as its trigger (the body reaches no
@@ -86,9 +90,11 @@ only fail the compile when the compiler disagrees with your expectation.
 
 The check needs a call to look at. A function called only through a
 value chosen at runtime (`let g = select b { true => f, false => h };
-g(x)`) is checked when that call first reaches it; the program is
-already running then, so a failure is reported the way an unhandled
-error is, on stderr and in the log.
+g(x)`) is checked when that call first reaches it, a
+`#[tail_recursive]` one at every such call; the program is already
+running then, so a failure is reported the way an unhandled error is, on
+stderr and in the log. A later input to the REPL checks the calls it
+makes as any compile does.
 
 With that out of the way, lets
 write a recursive function to add up pairs of numbers in an array,
