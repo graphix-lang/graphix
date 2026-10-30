@@ -36,7 +36,10 @@ its output is.
   wake alone starts no call. Pins:
   `lib_tests::net::net_rpc_sleep_abandons_silently` in `graphix-tests`,
   `netstate::test::an_answer_settles_only_its_own_call` in
-  `graphix-package-sys`.
+  `graphix-package-sys`. `callq` (`RpcCallQ`, the same `RpcSite`)
+  abandons its calls the same way and drops the answers its reorder
+  buffer held behind them: delivering a later one alone would break call
+  order. Pin: `lib_tests::net::net_callq_sleep_drops_its_calls`.
 - **An event source** (timers, `after_idle`, `throttle`'s pending
   emission, line readers, net and db subscriptions, watches, servers,
   `iter`/`range` deliveries): it pauses. A timer's run and a pending
@@ -63,15 +66,15 @@ its output is.
 A builtin starts afresh only where it is born again: `Apply::reborn`,
 which a call site runs before an update that follows its sleep under a
 born view, a seq step entered for its next run or a call it issues.
-`CachedArgsAsync` and rpc `call` (`RpcCall`) then hold no answer: the
-last one was the last run's.
+`CachedArgsAsync` and rpc `call` and `callq` (`RpcCall`, `RpcCallQ`)
+then hold no answer: the last one was the last run's.
 
 ## Audit
 
 | Family | Sleep | Wake |
 | --- | --- | --- |
 | `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, db, sqlite, other packages on the wrapper) | aborts the call in flight, remints the reply ID; keeps args and result; an eval not cancel-safe (stream reads and writes, cursor reads, tls handshakes, file open/seek/fstat/truncate, db and sqlite ops, process spawn, tcp connect/listen) finishes instead, unanswered, and a one-at-a-time site's next call waits for it; a read's bytes return to the stream | starts a call only on an argument fire |
-| rpc `call` | abandons its calls in flight (aborts their requests, remints the reply ID), none answers; keeps the result; remote work may finish unanswered | starts a call only on an argument fire |
+| rpc `call`, `callq` | abandons its calls in flight (aborts their requests, remints the reply ID), none answers, and `callq` drops the answers held behind them; keeps the result; remote work may finish unanswered | starts a call only on an argument fire |
 | `timer` | cancels the armed fire; keeps the run; clears its output | re-arms the run if fires remain |
 | `after_idle` | cancels a pending wait; clears its output | resumes a pending wait |
 | `throttle` | pauses the pending emission (its timer starts again at the next update); keeps the held value and the window the last emission opened; clears the output | — |

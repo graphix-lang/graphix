@@ -30,12 +30,29 @@ val call_id: fn(e: Any) -> RpcId;
 /// abandoning a call stops the wait for its reply: the server is not
 /// told, its handler still runs and its effects still happen. A
 /// completed result survives a sleep; waking starts no call unless an
-/// argument fires.
+/// argument fires. When the answers are wanted in the order the calls
+/// were made and no call is aborted, `callq` is simpler.
 val call: fn<'a: Data, 'b: Concrete>(
     ?#id: [RpcId, null],
     path: string,
     args: 'a
 ) -> (RpcId, Result<'b, [`RpcError(string), `InvalidCast(string), `Aborted]>);
+
+/// Call the procedure at `path` with `args`, a struct or null, answering
+/// in call order. Each fire of an argument starts a call at once, and any
+/// number may be in flight. Each call answers once, its reply or an
+/// error, in the order the calls were made, one a cycle: an answer that
+/// comes before an earlier call's waits for it, so a call the server never
+/// answers holds every later answer. No id is taken or returned, so
+/// nothing replaces or aborts a call. When the call site's arm sleeps,
+/// its calls in flight are abandoned and the answers waiting behind them
+/// dropped: none of them answers. The server is not told: its handler
+/// still runs and its effects still happen. A completed result survives
+/// a sleep; waking starts no call unless an argument fires.
+val callq: fn<'a: Data, 'b: Concrete>(
+    path: string,
+    args: 'a
+) -> Result<'b, [`RpcError(string), `InvalidCast(string)]>;
 
 /// At each fire of `id`, abort the call in flight under it, from any call
 /// site: it answers `` `Aborted ``, and its reply, when it comes, is

@@ -511,15 +511,101 @@ fn reply_target(env: &Env, resolved: Option<&FnType>) -> CastTarget {
     CastTarget::of_result(env, reply.as_ref())
 }
 
+/// The procedure and arguments of a call to `path` with `args`, a struct
+/// or null.
+fn rpc_request(path: &Value, args: &Value) -> Result<(Path, Vec<(ArcStr, Value)>)> {
+    let path = as_path(path.clone()).ok_or_else(|| anyhow!("invalid path"))?;
+    let args = match args {
+        Value::Null => vec![],
+        args => match rep::read_struct(args).map(rep::Parts::elems) {
+            Some(fields) => fields
+                .iter()
+                .map(|f| match rep::field(f) {
+                    Some((name, value)) => Ok((name.clone(), value.clone())),
+                    None => Err(anyhow!("rpc args expected [name, value] pair")),
+                })
+                .collect::<Result<Vec<_>>>()?,
+            None => bail!("rpc args expected to be a struct or null"),
+        },
+    };
+    Ok((path, args))
+}
+
+/// What `call` and `callq` share: where a site's calls answer, and the
+/// type their replies cast to.
+#[derive(Debug)]
+struct RpcSite {
+    /// Reminted at sleep, so the answers of the calls the site abandons
+    /// land nowhere.
+    var: RtVar,
+    target: CastTarget,
+}
+
+impl RpcSite {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.var.image_encode(buf)?;
+        self.target.encode(buf)
+    }
+
+    fn image_decode<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let var = RtVar::image_decode(ctx, buf)?;
+        let target = CastTarget::decode(buf)?;
+        Ok(Self { var, target })
+    }
+
+    /// Call the procedure at `path` with `args` as `id`, answering here.
+    fn issue<R: Rt>(
+        &self,
+        ctx: &mut ExecCtx<'_, R>,
+        id: RpcId,
+        path: &Value,
+        args: &Value,
+    ) {
+        let request = write_data(ctx, args).and_then(|args| rpc_request(path, &args));
+        NetState::get(ctx).call_rpc(ctx, self.var.id, id, request);
+    }
+
+    /// The call this cycle's answer settles and its result: the reply cast
+    /// to the target or an `` `RpcError ``, `None` when the call was
+    /// aborted or replaced first.
+    fn answer<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) -> Option<(RpcId, Option<Value>)> {
+        let answer: Box<dyn Any> = ctx.event.take_custom(&self.var.id)?;
+        let answer = *answer.downcast::<RpcAnswer>().ok()?;
+        let id = answer.id;
+        let result = NetState::get(ctx).settle_call(answer).map(|reply| match reply {
+            Value::Error(e) => remote_err(&literal!("RpcError"), &e),
+            v => coretraits::with_display_hooks(ctx, |env| self.target.cast(env, v)),
+        });
+        Some((id, result))
+    }
+
+    /// Abandon the calls in flight here: none of them answers.
+    fn sleep<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.abandon(ctx);
+        self.var.remint(ctx);
+    }
+
+    fn delete<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.abandon(ctx);
+        self.var.release(ctx);
+    }
+
+    fn abandon<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
+        if let Some(net) = ctx.libstate.get::<NetState>() {
+            net.abandon_calls(self.var.id);
+        }
+    }
+}
+
 /// `call(#id, path, args)`: each fire of an argument starts a call, as
 /// `#id` or under a fresh id, and each call answers `(id, result)` once,
 /// in the order the answers come, one a cycle.
 #[derive(Debug)]
 pub(crate) struct RpcCall {
-    /// Where this site's calls answer: reminted at sleep, so the answers
-    /// of the calls it abandons land nowhere.
-    var: RtVar,
-    target: CastTarget,
+    site: RpcSite,
     out: TagValue,
 }
 
@@ -538,7 +624,8 @@ impl<R: Rt> BuiltIn<R> for RpcCall {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R>>> {
         let var = RtVar::new(ctx, top_id);
-        Ok(Box::new(Self::with(var, reply_target(&ctx.env, resolved))))
+        let target = reply_target(&ctx.env, resolved);
+        Ok(Box::new(Self { site: RpcSite { var, target }, out: TagValue::phantom() }))
     }
 
     fn image_decode(
@@ -546,39 +633,17 @@ impl<R: Rt> BuiltIn<R> for RpcCall {
         _from: &[Node<R>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R>>, PackError> {
-        let var = RtVar::image_decode(ctx, buf)?;
-        let target = CastTarget::decode(buf)?;
-        Ok(Box::new(Self::with(var, target)))
+        let site = RpcSite::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { site, out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt> Apply<R> for RpcCall {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.var.image_encode(buf)?;
-        self.target.encode(buf)
+        self.site.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
-        fn parse_args(
-            path: &Value,
-            args: &Value,
-        ) -> Result<(Path, Vec<(ArcStr, Value)>)> {
-            let path = as_path(path.clone()).ok_or_else(|| anyhow!("invalid path"))?;
-            let args = match args {
-                Value::Null => vec![],
-                args => match rep::read_struct(args).map(rep::Parts::elems) {
-                    Some(fields) => fields
-                        .iter()
-                        .map(|f| match rep::field(f) {
-                            Some((name, value)) => Ok((name.clone(), value.clone())),
-                            None => Err(anyhow!("rpc args expected [name, value] pair")),
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                    None => bail!("rpc args expected to be a struct or null"),
-                },
-            };
-            Ok((path, args))
-        }
         let (id, id_fired) = seam_arg(ctx, &mut from[0]);
         let (path, path_fired) = seam_arg(ctx, &mut from[1]);
         let (args, args_fired) = seam_arg(ctx, &mut from[2]);
@@ -662,17 +727,21 @@ impl<R: Rt> Apply<R> for RpcCall {
             // lang::seq_calls::a_steps_rpc_call_answers_its_own_run (seven call shapes,
             // all four modes); without the reborn its nested(n) case (a sample over a
             // call through a function) answers [1, 1, 1] for [1, 2, 3].
-            let id = rpc_id(id).unwrap_or_else(RpcId::new);
-            let request = write_data(ctx, args).and_then(|args| parse_args(path, &args));
-            NetState::get(ctx).call_rpc(ctx, self.var.id, id, request);
+            // 2026-10-29 claude: cr29 item Q: call's issue and answer path (request
+            // parsing, NetState::call_rpc, settle_call and the cast, abandon at sleep
+            // and delete) moved into RpcSite, which sys::net::callq (RpcCallQ) shares;
+            // call's behaviour is unchanged (lib_tests::net::net_rpc_* and
+            // lang::seq_calls::a_steps_rpc_call_answers_its_own_run pass).
+            self.site.issue(ctx, rpc_id(id).unwrap_or_else(RpcId::new), path, args);
         }
-        let answer = ctx.event.take_custom(&self.var.id).and_then(|a| {
-            let a: Box<dyn Any> = a;
-            a.downcast::<RpcAnswer>().ok()
-        });
-        match answer {
-            Some(answer) => {
-                let v = self.answer(ctx, *answer);
+        match self.site.answer(ctx) {
+            Some((id, result)) => {
+                let result = result.unwrap_or_else(|| {
+                    Value::Error(
+                        rep::make_variant(literal!("Aborted"), std::iter::empty()).into(),
+                    )
+                });
+                let v = rep::tuple([RPC_ID_WRAPPER.wrap(id), result]);
                 self.out.set(TagValue::fired(v))
             }
             None => self.out.ride(),
@@ -693,18 +762,16 @@ impl<R: Rt> Apply<R> for RpcCall {
         _from: &mut [Node<R>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.target = reply_target(&ctx.env, Some(resolved));
+        self.site.target = reply_target(&ctx.env, Some(resolved));
         Ok(())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        self.abandon(ctx);
-        self.var.release(ctx);
+        self.site.delete(ctx);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        self.abandon(ctx);
-        self.var.remint(ctx);
+        self.site.sleep(ctx);
     }
 
     /// Born again, the site holds no answer: its last one was the last
@@ -714,33 +781,123 @@ impl<R: Rt> Apply<R> for RpcCall {
     }
 }
 
-impl RpcCall {
-    fn with(var: RtVar, target: CastTarget) -> Self {
-        Self { var, target, out: TagValue::phantom() }
+/// `callq(path, args)`: each fire of an argument starts a call under an
+/// id of its own, and each call answers once, in the order the calls were
+/// made, one a cycle.
+#[derive(Debug)]
+pub(crate) struct RpcCallQ {
+    site: RpcSite,
+    /// The calls made here and not answered yet, in call order, each with
+    /// its result once it came. A site mints its ids in call order, so
+    /// this is sorted by id.
+    calls: VecDeque<(RpcId, Option<Value>)>,
+    out: TagValue,
+}
+
+impl RpcCallQ {
+    fn new(site: RpcSite) -> Self {
+        Self { site, calls: VecDeque::new(), out: TagValue::phantom() }
+    }
+}
+
+impl<R: Rt> BuiltIn<R> for RpcCallQ {
+    const EFFECT: Effect = Effect::Async;
+    const NAME: &str = "sys_net_callq";
+
+    fn init<'a, 'b, 'c, 'd>(
+        ctx: &'a mut CompileCtx<R>,
+        _typ: &'a FnType,
+        resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R>>> {
+        let var = RtVar::new(ctx, top_id);
+        let target = CastTarget::of(&ctx.env, resolved);
+        Ok(Box::new(Self::new(RpcSite { var, target })))
     }
 
-    /// Abort the calls in flight here; the caller remints or releases the
-    /// var, so none of them answers.
-    fn abandon<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
-        if let Some(net) = ctx.libstate.get::<NetState>() {
-            net.abandon_calls(self.var.id);
+    fn image_decode(
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
+        Ok(Box::new(Self::new(RpcSite::image_decode(ctx, buf)?)))
+    }
+}
+
+impl<R: Rt> Apply<R> for RpcCallQ {
+    /// A call in flight exists only once a cycle ran.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if !self.calls.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
         }
+        self.site.image_encode(buf)
     }
 
-    /// `(id, result)` for `answer`: the reply cast to the target, or
-    /// `` `Aborted `` when the call was aborted or replaced first.
-    fn answer<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>, answer: RpcAnswer) -> Value {
-        let id = answer.id;
-        let result = match NetState::get(ctx).settle_call(answer) {
-            None => Value::Error(
-                rep::make_variant(literal!("Aborted"), std::iter::empty()).into(),
-            ),
-            Some(Value::Error(e)) => remote_err(&literal!("RpcError"), &e),
-            Some(v) => {
-                coretraits::with_display_hooks(ctx, |env| self.target.cast(env, v))
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
+        let (path, path_fired) = seam_arg(ctx, &mut from[0]);
+        let (args, args_fired) = seam_arg(ctx, &mut from[1]);
+        if (path_fired || args_fired)
+            && let (Some(path), Some(args)) = (&path, &args)
+        {
+            let id = RpcId::new();
+            self.site.issue(ctx, id, path, args);
+            self.calls.push_back((id, None));
+        }
+        if let Some((id, result)) = self.site.answer(ctx)
+            && let Ok(i) = self.calls.binary_search_by_key(&id, |(id, _)| *id)
+        {
+            match result {
+                Some(v) => self.calls[i].1 = Some(v),
+                None => drop(self.calls.remove(i)),
             }
+        }
+        // the wake a held answer asked for
+        ctx.event.variables.remove(&self.site.var.id);
+        let Some((_, Some(v))) = self.calls.pop_front_if(|(_, result)| result.is_some())
+        else {
+            return self.out.ride();
         };
-        rep::tuple([RPC_ID_WRAPPER.wrap(id), result])
+        if let Some((_, Some(_))) = self.calls.front() {
+            ctx.rt.set_var(self.site.var.id, Value::Null);
+        }
+        self.out.set(TagValue::fired(v))
+    }
+
+    fn typecheck0(
+        &mut self,
+        _ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.site.target.refresh(&ctx.env, resolved);
+        Ok(())
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.site.delete(ctx);
+    }
+
+    /// The answers held behind an abandoned call go with it: a later one
+    /// alone would break call order.
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.site.sleep(ctx);
+        self.calls.clear();
+    }
+
+    /// Born again, the site holds no answer: its last one was the last
+    /// run's, and the sleep before it dropped the calls in flight.
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R>) {
+        self.out = TagValue::phantom();
     }
 }
 

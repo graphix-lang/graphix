@@ -332,6 +332,77 @@ run!(net_rpc_default_ids_are_fresh, r#"{
   (a != b, map::len({a => 1, b => 2}), array::group(v, |n, _| n == 2))
 }"#, prints("[true, i64:2, [i64:1, i64:2]]"); FuseExpect::Jit);
 
+// callq answers in call order: the first call is answered only once the
+// server has seen the second (both are in flight at once), whose answer,
+// which comes first, waits for it.
+run!(net_callq_answers_in_call_order, r#"{
+  let second_seen = never<null>();
+  let release = never<null>();
+  sys::net::rpc(#path: "/local/q/order", #doc: "order", #spec: {n: {default: 0, doc: "n"}},
+    #f: |a: {n: i64}| select a.n {
+      1 => release ~ 1,
+      n => { second_seen <- a ~ null; n }
+    });
+  release <- second_seen;
+  let args = {n: 1};
+  args <- once(args) ~ {n: 2};
+  let r: i64 = sys::net::callq("/local/q/order", args)$;
+  array::group(r, |n, _| n == 2)
+}"#, prints("[i64:1, i64:2]"); FuseExpect::Jit);
+
+// An error keeps its call's place: a path that is no path fails at once
+// and a reply that does not cast fails on arrival, and both wait for the
+// slow call made before them, which answers once the last is seen.
+run!(net_callq_errors_keep_their_place, r#"{
+  let str_seen = never<null>();
+  let release = never<null>();
+  sys::net::rpc(#path: "/local/q/slow", #doc: "slow", #spec: null, #f: |a: null| release ~ 1);
+  sys::net::rpc(#path: "/local/q/str", #doc: "str", #spec: null,
+    #f: |a: null| { str_seen <- a; a ~ "x" });
+  release <- str_seen;
+  let path = array::iter(["/local/q/slow", "relative", "/local/q/str"]);
+  let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::callq(path, null);
+  array::group("[r]", |n, _| n == 3)
+}"#, prints(r#"["1", "error:`RpcError(\"invalid path\")", "error:`InvalidCast(\"can't cast \\\"x\\\" to i64: no primitive conversion\")"]"#); FuseExpect::None);
+
+// The arm holding callq sleeps with two calls in flight, the second
+// answered (a while before the sleep) and waiting for the first: neither
+// answers, not when the server replies and not at the wake. The arm
+// wakes once the server has replied, with a new call, whose answer is
+// the first.
+run!(net_callq_sleep_drops_its_calls, r#"{
+  let release = never<null>();
+  let second_seen = never<null>();
+  let replied = never<i64>();
+  sys::net::rpc(#path: "/local/q/asleep", #doc: "asleep", #spec: {n: {default: 0, doc: "n"}},
+    #f: |a: {n: i64}| select a.n {
+      1 => { let v = release ~ 1; replied <- v; v },
+      n if n == 2 => { second_seen <- a ~ null; n },
+      n => n
+    });
+  let args = {n: 1};
+  args <- once(args) ~ {n: 2};
+  let on = true;
+  on <- sys::time::after_idle(duration:100.ms, second_seen) ~ false;
+  release <- select on { false => on ~ null, true => never() };
+  on <- replied ~ true;
+  args <- replied ~ {n: 3};
+  let r = select on { true => sys::net::callq("/local/q/asleep", args), false => never() };
+  let v: Result<i64, [`RpcError(string), `InvalidCast(string)]> = r;
+  once("[v]")
+}"#, prints(r#""3""#); FuseExpect::Jit);
+
+// callq shares no in-language state with another call site, so a
+// `#[parallel]` fan-out over it forks (one with nothing to fork is
+// refused).
+run!(net_callq_fans_out_in_parallel, r#"{
+  sys::net::rpc(#path: "/local/q/echo", #doc: "echo", #spec: {n: {default: 0, doc: "n"}},
+    #f: |a: {n: i64}| a.n);
+  let r: Array<i64> = #[parallel] array::map([1, 2, 3, 4], |n: i64| -> i64
+    sys::net::callq("/local/q/echo", {n})$);
+  r
+}"#, prints("[i64:1, i64:2, i64:3, i64:4]"); FuseExpect::None);
+
 // A re-woken arm's subscribe re-establishes, and its last event does not
 // survive the sleep: every value it delivers, either side of a sleep
 // marker (-1), is newer than the last (a resubscribe may first see the

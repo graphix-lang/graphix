@@ -931,6 +931,7 @@ graphix_derive::defpackage! {
         net::Write,
         net::Subscribe,
         net::RpcCall,
+        net::RpcCallQ,
         net::CallId,
         net::AbortCall,
         net::List,

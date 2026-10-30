@@ -682,6 +682,7 @@ fn type_directed(f: &Expr) -> bool {
         "sqlite::query",
         "sys::net::subscribe",
         "sys::net::call",
+        "sys::net::callq",
     ];
     matches!(&typemorph::unparen(f).kind, ExprKind::Ref { name }
         if READS.contains(&name.to_string().trim_start_matches('/')))

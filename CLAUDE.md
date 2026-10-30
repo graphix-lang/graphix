@@ -524,7 +524,9 @@ answers `` `Aborted ``; `abort_call` aborts one from anywhere (the table
 is `NetState`'s, so `call`, `call_id` and `abort_call` are `ORDERED`); a sleep
 abandons the site's calls and remints its reply id, so none answers.
 Remote effects are not undone. Its completed result survives sleep, and
-wake alone starts no call. Bottom never reaches builtin authors: a bottomed arg bottoms the
+wake alone starts no call. `sys::net::callq` is `call` (the same
+`RpcSite`) with no id in or out, answering in call order (a reorder
+buffer of its own, dropped at sleep), and is not `ORDERED`. Bottom never reaches builtin authors: a bottomed arg bottoms the
 invocation before `eval`. Line-reader handles re-delivered after EOF,
 error, or a stop generation (seek/TLS upgrade) restart at the current
 position; active readers ignore the same handle. Re-delivery never

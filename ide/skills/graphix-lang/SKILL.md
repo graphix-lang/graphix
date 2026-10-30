@@ -728,7 +728,7 @@ handlebars templates), `args` (command-line parsing: `positional`,
 repeat count ends it; an arm's sleep pauses it), `after_idle(timeout, v)`,
 `now(trigger)`, and the pure arithmetic `add`, `sub`, `add_dur`,
 `sub_dur`, `diff`, `scale`. `sys::net`: `subscribe(path)`,
-`publish(path, v)`, `rpc`, `call`, `list`, `write`, every path a
+`publish(path, v)`, `rpc`, `callq`, `call`, `list`, `write`, every path a
 `string`; an unselected arm tears a subscription or publication down and
 abandons its rpc calls in flight. `sys::fs`, `sys::tcp`, `sys::tls`, `sys::process`
 (`spawn`, `options`, `Proc`, `wait`), `http`. `json` and `toml`:
@@ -884,6 +884,14 @@ a file from the beginning; re-delivery does not rewind. A delivery while
 the same reader is active leaves it running.
 
 ## RPC calls
+
+`sys::net::callq(path, args)` is the usual call: its result is the
+reply or an error, with no id. Each fire of an argument starts a call at
+once, any number run side by side, and the answers come in the order the
+calls were made, one a cycle (an early answer waits for the earlier
+calls'). Nothing aborts a `callq` call; an arm's sleep drops its calls in
+flight and the answers waiting behind them. A fan-out over `callq` can run
+in parallel; one over `call` runs in order.
 
 `sys::net::call(path, args)` is `(RpcId, result)`: take the pair, `let
 (_, r) = sys::net::call(..)`, or its `.1`. Each fire of an argument
