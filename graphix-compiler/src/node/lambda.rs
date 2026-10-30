@@ -2201,7 +2201,9 @@ impl<R: Rt> DefGate<R> {
         ctx.def_gate_depth -= 1;
         self.sig.generalize(self.depth);
         for s in frame.iter_mut() {
-            if let crate::PendingSettle::Site { sigs, .. } = s {
+            if let crate::PendingSettle::Site { sigs, .. }
+            | crate::PendingSettle::OneMember { sigs, .. } = s
+            {
                 sigs.push(self.sig.clone());
             }
         }

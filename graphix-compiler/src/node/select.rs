@@ -56,7 +56,12 @@ fn defer_one_member<R: Rt>(
         let spec = Arc::new(site.clone());
         super::defer_judgment(
             ctx,
-            crate::PendingSettle::OneMember { pairs, covered, spec },
+            crate::PendingSettle::OneMember {
+                pairs,
+                covered,
+                sigs: SmallVec::new(),
+                spec,
+            },
         )
     }
 }
@@ -2040,6 +2045,20 @@ impl<R: Rt> Select<R> {
         Ok(())
     }
 
+    // CR claude for claude: [bug/medium] A pattern over a variant whose payload is a
+    // union of structs told apart only by cells decided after the select covers only
+    // the payload's first member: `let v = select b { true => `P({a: [1], c: x}), false
+    // => `P({a: ["s"], c: y}) }` read by `` `P({a, ..}) => "[a]", _ => "other" `` with `x
+    // <- 1; y <- 2` after it prints `[1]`, then `other` for `` `P({a: ["s"], c: 2}) ``
+    // (node-walk and JIT; `` `P({a, c: _}) `` alike), and without the `_` arm the check
+    // refuses "missing match cases: no arm covers `P([{ a: Array<i64>, c: '_ }, { a:
+    // Array<string>, c: '_ }])". At top level (`{a, ..}` over the two structs) both
+    // members reach the arm and `_` is refused as unreachable, and with the cells
+    // decided before the select both members reach the payload arm too. Pre-existing
+    // (main 5f4b4677f and cr31-P alike), found by the review of partial-hole-01; not
+    // the partial completion's doing, since the exhaustive `{a, c: _}` misroutes too.
+    // probes: ~/tmp/cr29/scratch/review7/P/p/pay2_alike.gx,
+    // ~/tmp/cr29/scratch/laneP/r2/pay3.gx .. pay6.gx, pay_before.gx (payload-union-01)
     /// `checking`: the definition's check, which also judges coverage,
     /// dead arms and guards; an instance does only what they decide.
     fn typecheck0_with(

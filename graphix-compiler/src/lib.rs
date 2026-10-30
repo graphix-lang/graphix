@@ -2481,7 +2481,14 @@ pub(crate) enum PendingSettle {
     /// after arms covering `covered`: refused where the check decided them
     /// apart. Judged after every other rule: it reads the cells as they
     /// end up.
-    OneMember { pairs: Vec<expr::Undecided>, covered: Vec<Type>, spec: Arc<Expr> },
+    OneMember {
+        pairs: Vec<expr::Undecided>,
+        covered: Vec<Type>,
+        /// The signatures of the enclosing definitions: a cell of theirs
+        /// holds a value only where a caller can hand it one.
+        sigs: SmallVec<[triomphe::Arc<FnType>; 1]>,
+        spec: Arc<Expr>,
+    },
 }
 
 /// What a [`PendingSettle::Discernible`] judges.
@@ -2617,9 +2624,16 @@ impl PendingSettle {
             }
         }
         for s in frame.iter() {
-            if let PendingSettle::OneMember { pairs, covered, spec } = s {
+            if let PendingSettle::OneMember { pairs, covered, sigs, spec } = s {
+                let inputs = (!sigs.is_empty()).then(|| {
+                    let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
+                    for sig in sigs.iter() {
+                        sig.input_cells(env, &mut cells)
+                    }
+                    cells
+                });
                 for pair in pairs {
-                    if let Err(e) = pair.judge(env, covered) {
+                    if let Err(e) = pair.judge(env, covered, inputs.as_deref()) {
                         on_err(spec, e)?
                     }
                 }

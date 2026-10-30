@@ -8,8 +8,9 @@ use crate::{
     env::Env,
     format_with_flags,
     typ::{
-        Bound, FnType, TVar, Type,
+        Bound, FnType, Mutability, TVar, Type,
         contains::{ContainsHist, INFINITE_TYPE_MSG},
+        setops::strictly_identical,
         tvar::{CellFact, Fresh, would_cycle_inner},
     },
 };
@@ -387,6 +388,102 @@ impl FnType {
     #[doc(hidden)]
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         self.for_each_part(&mut |t, _| reached_cells(t, out))
+    }
+
+    /// The cells a caller can hand a value of to the definition this
+    /// signature types, by address: every cell a parameter reaches, and
+    /// those the result and throws reach under a writable reference, a
+    /// nominal type, a constructor application or a function's parameter
+    /// (a typedef as its expansion).
+    #[doc(hidden)]
+    pub fn input_cells(&self, env: &Env, out: &mut AHashMap<usize, TVar>) {
+        let mut nodes = LPooled::take();
+        for arg in self.args.iter() {
+            reached(&arg.typ, out, &mut nodes)
+        }
+        if let Some(vargs) = &self.vargs {
+            reached(vargs, out, &mut nodes)
+        }
+        let mut outputs = Outputs {
+            env,
+            expanding: SmallVec::new(),
+            cells: LPooled::take(),
+            nodes: LPooled::take(),
+        };
+        outputs.walk(&self.rtype, out, &mut nodes);
+        outputs.walk(&self.throws, out, &mut nodes);
+    }
+}
+
+/// [`FnType::input_cells`]' walk of what a definition hands out: each
+/// cell and shared composite once (`cells`, `nodes`); an input position
+/// beneath it adds every cell it reaches to `inputs`.
+struct Outputs<'a> {
+    env: &'a Env,
+    /// The typedefs being expanded, by key, with their parameters.
+    expanding: SmallVec<[(usize, triomphe::Arc<[Type]>); 4]>,
+    cells: LPooled<AddrSet>,
+    nodes: LPooled<AddrSet>,
+}
+
+impl Outputs<'_> {
+    fn walk(
+        &mut self,
+        t: &Type,
+        inputs: &mut AHashMap<usize, TVar>,
+        in_nodes: &mut AddrSet,
+    ) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if self.cells.insert(tv.cell_addr()) {
+                    let (bound, cons, below) = {
+                        let cell = tv.cell();
+                        let cell = cell.read();
+                        (
+                            cell.binding.clone(),
+                            cell.constraints.clone(),
+                            cell.lower.clone(),
+                        )
+                    };
+                    for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
+                        self.walk(t, inputs, in_nodes)
+                    }
+                }
+            }
+            t if t.shared_identity().is_some_and(|n| !self.nodes.insert(n)) => (),
+            Type::Ref(tr) if let Some((key, whole)) = t.lookup_ref_probe(self.env) => {
+                match self.expanding.iter().find(|(k, _)| *k == key) {
+                    // a recursive typedef met again over its own parameters
+                    Some((_, params))
+                        if params.len() == tr.params.len()
+                            && params
+                                .iter()
+                                .zip(tr.params.iter())
+                                .all(|(p, q)| strictly_identical(p, q)) => {}
+                    Some(_) => reached(t, inputs, in_nodes),
+                    None => {
+                        self.expanding.push((key, tr.params.clone()));
+                        self.walk(&whole, inputs, in_nodes);
+                        self.expanding.pop();
+                    }
+                }
+            }
+            Type::Fn(ft) => {
+                for arg in ft.args.iter() {
+                    reached(&arg.typ, inputs, in_nodes)
+                }
+                if let Some(vargs) = &ft.vargs {
+                    reached(vargs, inputs, in_nodes)
+                }
+                self.walk(&ft.rtype, inputs, in_nodes);
+                self.walk(&ft.throws, inputs, in_nodes);
+            }
+            Type::ByRef(Mutability::Mut, _)
+            | Type::Ref(_)
+            | Type::Abstract { .. }
+            | Type::App(..) => reached(t, inputs, in_nodes),
+            t => t.for_each_child(&mut |c| self.walk(c, inputs, in_nodes)),
+        })
     }
 }
 

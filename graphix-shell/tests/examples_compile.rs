@@ -119,7 +119,11 @@ fn page_fences(page: &Path, text: &str, fences: &mut Vec<Fence>) {
     let mut open: Option<Open> = None;
     let mut refused: Option<usize> = None;
     for (n, line) in text.lines().enumerate() {
-        match (&mut open, line.starts_with("```")) {
+        // an opening fence's info string holds no backtick (CommonMark):
+        // "```x```" is inline code
+        let fence = line.starts_with("```")
+            && (open.is_some() || !line.trim_start_matches('`').contains('`'));
+        match (&mut open, fence) {
             (None, false) => (),
             (None, true) => {
                 open = Some(match line.strip_prefix("```graphix") {
@@ -375,6 +379,20 @@ async fn refused_fences_need_a_transcript() -> Result<()> {
     let stale = fence_failure(&fences[0]).await.expect("a stale transcript is reported");
     assert!(stale.contains("the page shows"), "{stale}");
     Ok(())
+}
+
+/// A line of inline code between triple backticks opens no fence, so the
+/// fences after it pair as written.
+#[test]
+fn inline_code_opens_no_fence() {
+    let page = "```(1, w, _)```\n\n```graphix,refused\nlet x: i64 = \"a\";\nx\n```\n\n\
+                ```\nError: in file test.gx\n    0: no\n```\n";
+    let mut fences = vec![];
+    page_fences(Path::new("page.md"), page, &mut fences);
+    assert_eq!(fences.len(), 1);
+    assert_eq!(fences[0].tag, ",refused");
+    assert_eq!(fences[0].body, "let x: i64 = \"a\";\nx\n");
+    assert_eq!(fences[0].shown.as_deref(), Some("no"));
 }
 
 /// Why the page's claim about `f` is false, if it is false: the fence

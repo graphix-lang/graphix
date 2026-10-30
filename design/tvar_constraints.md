@@ -249,13 +249,22 @@ An image carries each cell's level and each definition's depth.
   settles, then the operator operand and `let`-over-⊥ settles, then the
   rules judged over them (`PendingSettle`), and last the completions a
   partial struct pattern took for one member while cells not decided
-  yet told them apart (`PendingSettle::OneMember`): refused unless they
-  are one type now (`setops::settled_identical`) or an earlier arm's
-  cover holds the other member. What holds no value, ⊥ or a top-level
-  cell still open (nothing decides it), is apart from no type: its
-  run-time test passes any value. Any other open cell is itself (a
-  definition's, which its calls bind). It reads the cells and decides
-  none, so it comes after every rule that may. Elaboration never settles
+  yet told them apart (`PendingSettle::OneMember`): refused unless an
+  earlier arm's cover holds the other member or every value of the
+  other member passes the arm's run-time test, the first member's
+  completion, in every instance (`setops::settled_identical`, which is
+  directional). ⊥ and a top-level cell still open (nothing decides it)
+  pass any value as the test and hold none as the other. A definition's
+  open cell its calls may still bind: as the test it passes only its own
+  values; as the other it holds none unless a caller can hand it one,
+  which the enclosing definitions' signatures say
+  (`FnType::input_cells`: what a parameter reaches, and what the result
+  reaches under a `&mut`, a nominal type, a constructor application or a
+  returned function's parameter). So an empty
+  `[]` a definition returns is apart from nothing beside its other
+  members, and one it returns as the test is apart from a parameter's
+  values. It reads the cells and decides none, so it comes after every
+  rule that may. Elaboration never settles
   a cell an earlier compile task created (`tvar::earlier_task`): what
   the check left open, it decided open. An open quantifier of such a
   function type (a generic function value in `m: Array<fn<'a: Number>

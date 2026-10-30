@@ -1100,9 +1100,12 @@ cycle, across workers; the compiler never pins threads.
   (`StructurePattern::complete_type_predicate`); members told apart only
   by cells not decided yet complete alike and count as one, and the
   check's end refuses such a pair decided apart, unless an earlier arm
-  takes the other member (⊥ and a top-level cell still open are apart
-  from nothing, a definition's open cell is itself:
-  `PendingSettle::OneMember`, judged last, reading the cells).
+  takes the other member: the other member's values must pass the arm's
+  test, the first member's completion, in every instance (⊥ and a
+  top-level open cell pass any value and hold none; a definition's open
+  cell holds none unless a caller can hand it one, `FnType::input_cells`,
+  and passes only its own: `PendingSettle::OneMember`, judged last,
+  reading the cells).
   Refutability is judged
   against a type (`StructPatternNode::covers`): a constructor pattern
   covers only a position whose type is that constructor, so under a

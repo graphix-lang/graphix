@@ -3,13 +3,15 @@ use crate::{
     PrintFlag,
     env::Env,
     format_with_flags, print_as_written,
-    typ::{Type, settled_identical, strictly_identical},
+    typ::{TVar, Type, settled_identical, strictly_identical, tvar::Level},
 };
+use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_derive::Pack;
 use netidx_value::Value;
+use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
 use std::fmt;
 use triomphe::Arc;
@@ -405,6 +407,24 @@ impl StructurePattern {
             // over-refusal stays (partial_struct_beside_a_bound_cell_is_two_members). A
             // later REPL input can still decide an earlier input's open top-level cells:
             // partial-hole-repl-01.
+            // 2026-10-30 claude: Round 2 (review7 of cr31-P): the late judgment is
+            // directional (setops::settled_identical): every value of the other member
+            // must pass the arm's test, the first completion, in every instance. A
+            // definition's open cell holds no value unless a caller can hand it one
+            // (FnType::input_cells over the enclosing signatures, which Gate::close adds
+            // to PendingSettle::OneMember: a parameter, or the result under a &mut, a
+            // nominal type, a constructor application or a returned function's
+            // parameter), and as the test it passes only its own values. Accepted again
+            // as on main (round 1 refused them):
+            // partial_struct_empty_cells_a_definition_returns_are_one_member (fails with
+            // round 1's rule). Refused, holes on main:
+            // partial_struct_empty_cells_a_definition_hands_out_writable_are_two_members,
+            // partial_struct_empty_cells_a_definition_hands_to_a_caller_function_are_two_members,
+            // partial_struct_empty_test_cell_a_definition_returns_beside_a_parameter_is_two_members
+            // (this one also fails under a symmetric rule). A slice element decided
+            // apart after the select is refused as its decided-before twin is:
+            // partial_struct_slice_elements_decided_apart_are_two_members,
+            // _before_are_two_members.
             match &found {
                 None => found = Some(t),
                 Some(f) if *f == t => {
@@ -583,22 +603,46 @@ pub struct Undecided {
 }
 
 impl Undecided {
-    /// Refused unless the completions are one type now the check has
-    /// decided what it will ([`settled_identical`]) or an earlier arm,
-    /// covering `covered`, takes every value of the other member. It
-    /// reads the cells and decides none.
-    pub fn judge(&self, env: &Env, covered: &[Type]) -> Result<()> {
-        if settled_identical(&self.first, &self.other) || self.taken(env, covered)? {
+    /// Refused unless every value of the other member passes the arm's
+    /// test once the check has decided what it will
+    /// ([`settled_identical`]) or an earlier arm, covering `covered`,
+    /// takes every value of the other member. `inputs` are the cells the
+    /// enclosing definitions' callers can hand a value of
+    /// ([`crate::typ::FnType::input_cells`]), `None` outside any
+    /// definition; no other cell of theirs holds a value. It reads the
+    /// cells and decides none.
+    pub fn judge(
+        &self,
+        env: &Env,
+        covered: &[Type],
+        inputs: Option<&AHashMap<usize, TVar>>,
+    ) -> Result<()> {
+        let input = |tv: &TVar| inputs.is_none_or(|i| i.contains_key(&tv.cell_addr()));
+        if settled_identical(&self.first, &self.other, &input)
+            || self.taken(env, covered)?
+        {
             return Ok(());
         }
         let Self { pattern, scrutinee, .. } = self;
+        let apart = match self.open_in_a_definition() {
+            true => "whose cells its calls may decide apart",
+            false => "once its cells are decided",
+        };
         format_with_flags(PrintFlag::DerefTVars, || {
             bail!(
-                "the pattern {pattern} matches more than one member of {scrutinee} once \
-                 its cells are decided; annotate the member you mean, e.g. `T as \
-                 {pattern}`, or name every field"
+                "the pattern {pattern} matches more than one member of {scrutinee} \
+                 {apart}; annotate the member you mean, e.g. `T as {pattern}`, or name \
+                 every field"
             )
         })
+    }
+
+    /// Whether a completion still holds a definition's open cell.
+    fn open_in_a_definition(&self) -> bool {
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.first.reached_cells(&mut cells);
+        self.other.reached_cells(&mut cells);
+        cells.values().any(|tv| !tv.is_bound() && tv.level() != Level::TOP)
     }
 
     /// Whether one of `covered` holds the other member, both closed.

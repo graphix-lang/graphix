@@ -3912,7 +3912,74 @@ run!(partial_struct_parameter_cells_are_two_members, r#"{
         select v { {a, ..} => "[a]" }
     };
     f(true, 1, 2)
-}"#, refused("once its cells are decided"); FuseExpect::None);
+}"#, refused("whose cells its calls may decide apart"); FuseExpect::None);
+
+// An empty array's element a definition hands out only to be read holds
+// no value: a caller may name it, but never put one in it.
+run!(partial_struct_empty_cells_a_definition_returns_are_one_member, r#"{
+    let view = |done: bool, data: Array<i64>| {
+        let s = select done {
+            true => {loading: false, items: data, notes: []},
+            false => {loading: true, items: data, notes: []}
+        };
+        let label = select s {
+            {loading, ..} => select loading { true => "loading", false => "ready" }
+        };
+        (label, s)
+    };
+    let f = |b: bool, y| {
+        let v = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} };
+        let w = select b { true => {a: [1], c: [y]}, false => {a: ["s"], c: []} };
+        (select v { {a, ..} => "[a]" }, select w { {a, ..} => "[a]" }, v, w, || v)
+    };
+    let (l0, _) = view(false, [1]);
+    let (l1, _) = view(true, [1]);
+    let (r0, s0, v0, w0, _) = f(true, "y");
+    let (r1, s1, v1, w1, _) = f(false, "y");
+    let n0: [{a: Array<i64>, c: Array<i64>}, {a: Array<string>, c: Array<string>}] = v0;
+    let n1: [{a: Array<i64>, c: Array<i64>}, {a: Array<string>, c: Array<string>}] = v1;
+    let m1: [{a: Array<i64>, c: Array<string>}, {a: Array<string>, c: Array<i64>}] = w1;
+    "[l0] [l1] [r0] [r1] [s0] [s1]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == r#"loading ready [1] ["s"] [1] ["s"]"#); FuseExpect::Jit);
+
+// A caller can put a value in a cell handed out under `&mut`, or as a
+// returned function's parameter, so two calls may decide them apart.
+run!(partial_struct_empty_cells_a_definition_hands_out_writable_are_two_members, r#"{
+    let f = |b: bool| {
+        let e1 = [];
+        let e2 = [];
+        let v = select b { true => {a: [1], c: e1}, false => {a: ["s"], c: e2} };
+        (select v { {a, ..} => "[a]" }, &mut e1, &mut e2)
+    };
+    let (r, p, q) = f(true);
+    *p <- [1];
+    *q <- ["w"];
+    r
+}"#, refused("whose cells its calls may decide apart"); FuseExpect::None);
+
+run!(partial_struct_empty_cells_a_definition_hands_to_a_caller_function_are_two_members, r#"{
+    let f = |b: bool| {
+        let e1 = [];
+        let e2 = [];
+        let v = select b { true => {a: [1], c: e1}, false => {a: ["s"], c: e2} };
+        (select v { {a, ..} => "[a]" }, |x| { e1 <- x; 0 }, |y| { e2 <- y; 0 })
+    };
+    let (r, p, q) = f(true);
+    "[r] [p([1])] [q(["w"])]"
+}"#, refused("whose cells its calls may decide apart"); FuseExpect::None);
+
+// The first member's completion is the arm's run-time test: an empty
+// array's element there, which a caller may name, tests the other
+// member's values from a parameter.
+run!(partial_struct_empty_test_cell_a_definition_returns_beside_a_parameter_is_two_members, r#"{
+    let f = |b: bool, y| {
+        let v = select b { true => {a: [1], c: []}, false => {a: ["s"], c: [y]} };
+        (select v { {a, ..} => "[a]" }, v)
+    };
+    let (r, v) = f(false, "w");
+    let w: [{a: Array<i64>, c: Array<i64>}, {a: Array<string>, c: Array<string>}] = v;
+    r
+}"#, refused("whose cells its calls may decide apart"); FuseExpect::None);
 
 // Function types decided apart are two members, as they are when the
 // writes come before the select.
@@ -4029,6 +4096,25 @@ run!(literal_arms_over_members_told_apart_by_an_empty_array, r#"{
     let m = select w { [x, ..] => x + 1, [] => 0 };
     "[show(!t, [1])], [show(t, [1, 2])], [n], [m]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "loading [], got [1, 2], 0, 2"); FuseExpect::Jit);
+
+// A slice element's members decided apart after the select are two
+// members, as they are when decided before it.
+run!(partial_struct_slice_elements_decided_apart_are_two_members, r#"{
+    let b = true;
+    let x = never();
+    let y = never();
+    let v = select b { true => [{a: [1], c: x}], false => [{a: [2], c: y}] };
+    let r = select v { [{a, ..}, ..] => "[a]", _ => "other" };
+    x <- 1;
+    y <- "w";
+    r
+}"#, refused("once its cells are decided"); FuseExpect::None);
+
+run!(partial_struct_slice_elements_decided_apart_before_are_two_members, r#"{
+    let b = true;
+    let v = select b { true => [{a: [1], c: 1}], false => [{a: [2], c: "w"}] };
+    select v { [{a, ..}, ..] => "[a]", _ => "other" }
+}"#, refused("matches more than one member"); FuseExpect::None);
 
 // A string beside a cell bound to string is two members at completion.
 run!(partial_struct_beside_a_bound_cell_is_two_members, r#"{

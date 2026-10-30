@@ -70,20 +70,22 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
 /// binding, and inside a function type the cells pair consistently
 /// (`fn('a) -> 'a` is `fn('b) -> 'b`, not `fn('a) -> 'b`).
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::<false>::new(false).same(t0, t1)
+    Identity::<false>::new(false, &|_| true).same(t0, t1)
 }
 
 /// [`union_identical`] with every unbound cell by identity, inside a
 /// function type too: one signature's variables are its own.
 pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::<false>::new(true).same(t0, t1)
+    Identity::<false>::new(true, &|_| true).same(t0, t1)
 }
 
-/// [`union_identical`] once the check has decided what it will: what
-/// holds no value, ⊥ or a top-level cell nothing decided, is apart from
-/// no type (its run-time test passes any value); any other unbound cell
-/// is a definition's, which its calls bind, so it is one type only with
-/// itself.
+/// [`union_identical`] of an arm's run-time test `test` and another
+/// member's completion `other` once the check has decided what it will:
+/// whether every value of `other` passes `test` in every instance. An
+/// unbound cell of `test` passes any value only at top level, where
+/// nothing decides it later; ⊥ passes any. An unbound cell of `other`
+/// holds no value at top level, nor where `input` says no caller can hand
+/// it one; ⊥ holds none.
 // CR claude for eric: [bug/low] A later REPL input can bind a top-level cell an
 // earlier input left open, so the earlier input's judgment (open beside open) no
 // longer holds, and the coverage hole the fix of partial-hole-01 closes in a script
@@ -98,14 +100,20 @@ pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
 // input's write to an earlier input's cell is held to a copy, as a generalized
 // binding's is. probe: ~/tmp/cr29/scratch/laneP/repl3.txt piped into `graphix
 // --no-cache` (partial-hole-repl-01)
-pub(crate) fn settled_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::<true>::new(false).same(t0, t1)
+pub(crate) fn settled_identical(
+    test: &Type,
+    other: &Type,
+    input: &dyn Fn(&TVar) -> bool,
+) -> bool {
+    Identity::<true>::new(false, input).same(test, other)
 }
 
-/// `SETTLED`: what holds no value is one with any type
-/// ([`settled_identical`]).
-struct Identity<const SETTLED: bool> {
+/// Identity of `t0` and `t1`; `SETTLED`, of a test `t0` and the type
+/// `t1` of the values it must pass ([`settled_identical`]).
+struct Identity<'a, const SETTLED: bool> {
     strict: bool,
+    /// `SETTLED`: whether a caller can hand an unbound cell a value.
+    input: &'a dyn Fn(&TVar) -> bool,
     /// Inside a function type: the cells paired so far, by address.
     pairs: Option<SmallVec<[(usize, usize); 4]>>,
     /// The nodes found identical outside a function type.
@@ -115,10 +123,11 @@ struct Identity<const SETTLED: bool> {
     found_in_fn: NodePairs,
 }
 
-impl<const SETTLED: bool> Identity<SETTLED> {
-    fn new(strict: bool) -> Self {
+impl<'a, const SETTLED: bool> Identity<'a, SETTLED> {
+    fn new(strict: bool, input: &'a dyn Fn(&TVar) -> bool) -> Self {
         Self {
             strict,
+            input,
             pairs: None,
             found: NodePairs::default(),
             found_in_fn: NodePairs::default(),
@@ -152,7 +161,7 @@ impl<const SETTLED: bool> Identity<SETTLED> {
     }
 
     fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
-        if a.same_cell(b) || self.undecided(a) || self.undecided(b) {
+        if a.same_cell(b) || self.passes_any(a) || self.holds_none(b) {
             return true;
         }
         let (x, y) = (a.cell_addr(), b.cell_addr());
@@ -167,18 +176,21 @@ impl<const SETTLED: bool> Identity<SETTLED> {
         }
     }
 
-    /// Whether the unbound cell `a` is one with any type: `SETTLED` and
+    /// Whether the unbound test cell `a` passes any value: `SETTLED` and
     /// top-level.
-    fn undecided(&self, a: &TVar) -> bool {
+    fn passes_any(&self, a: &TVar) -> bool {
         SETTLED && a.level() == Level::TOP
     }
 
-    /// The unbound cell `a` beside `t`, a type or a bound cell: one type
-    /// only when `SETTLED`, where `a` or `t` holds no value.
-    fn open(&self, a: &TVar, t: &Type) -> bool {
-        SETTLED
-            && (a.level() == Level::TOP
-                || t.with_deref(|t| matches!(t, Some(Type::Bottom))))
+    /// Whether the unbound cell `b` of the tested values holds none.
+    fn holds_none(&self, b: &TVar) -> bool {
+        SETTLED && (b.level() == Level::TOP || !(self.input)(b))
+    }
+
+    /// Whether `SETTLED` and `t` is ⊥, which passes any value and holds
+    /// none.
+    fn settled_bottom(&self, t: &Type) -> bool {
+        SETTLED && t.with_deref(|t| matches!(t, Some(Type::Bottom)))
     }
 
     fn same_inner(&mut self, t0: &Type, t1: &Type) -> bool {
@@ -186,12 +198,18 @@ impl<const SETTLED: bool> Identity<SETTLED> {
             (Type::TVar(a), Type::TVar(b)) => match (a.binding(), b.binding()) {
                 (Some(x), Some(y)) => a.same_cell(b) || self.same(&x, &y),
                 (None, None) => self.cells(a, b),
-                (None, Some(t)) => self.open(a, &t),
-                (Some(t), None) => self.open(b, &t),
+                (None, Some(t)) => self.passes_any(a) || self.settled_bottom(&t),
+                (Some(t), None) => self.holds_none(b) || self.settled_bottom(&t),
             },
-            (Type::TVar(a), t) | (t, Type::TVar(a)) => match a.binding() {
+            (Type::TVar(a), t) => match a.binding() {
                 Some(x) => self.same(&x, t),
-                None => self.open(a, t),
+                None => self.passes_any(a) || self.settled_bottom(t),
+            },
+            (t, Type::TVar(b)) => match b.binding() {
+                // a settled test keeps its side
+                Some(y) if SETTLED => self.same(t, &y),
+                Some(y) => self.same(&y, t),
+                None => self.holds_none(b) || self.settled_bottom(t),
             },
             (Type::Bottom, Type::Bottom)
             | (Type::Any, Type::Any)

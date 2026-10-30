@@ -412,17 +412,37 @@ pattern takes them for one member. Once the whole program (or REPL
 input) is checked, the pattern is refused the same way if they turned
 out different:
 
-```graphix,ignore
+```graphix,refused
+let b = true;
 let x = never();
 let y = never();
 let v = select b { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
-select v { {a, ..} => "[a]" }   // refused: x <- 1 and y <- "w" come later
+let r = select v { {a, ..} => "[a]" };
+// x and y are decided here, after the select
+x <- 1;
+y <- "w";
+r
 ```
 
-A function's parameters count as different (its calls may bind them
-apart), while a type that holds no value, such as the element type of
-an empty `[]` nothing decides, differs from none. Naming every field,
-`{a, c: _}`, matches both members as they are.
+```
+$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 5, column: 20 in file test.gx
+    1: the pattern { a, .. } matches more than one member of [{ a: Array<i64>, c: i64 }, { a: Array<string>, c: string }] once its cells are decided; annotate the member you mean, e.g. `T as { a, .. }`, or name every field
+```
+
+Inside a function, a type its callers decide counts as different from
+every other, since two calls may decide them apart: a type whose values
+a caller passes in, as a parameter's are, or can put in later (under a
+`&mut`, or as a parameter of a function it returns). A type that holds
+no value, such as the element type of an empty `[]` nothing else
+decides, differs from none, even when the function returns it. The
+first member is what the arm tests at run time, though, so an empty
+`[]` there that the function returns, whose element a caller may name,
+still differs from a type in another member that holds values. Naming
+every field, `{a, c: _}`, matches both members as they are.
 
 ### Variant Patterns
 
