@@ -131,6 +131,95 @@ fn within_deadline(mut child: Child) -> std::process::Output {
     }
 }
 
+/// The instructions retired in user space, from when it is opened, by
+/// the thread that opened it and every thread and process that thread
+/// starts afterwards: the work a run does, the same under any load. One
+/// kernel counter for each kind of core (a hybrid CPU has two), summed.
+#[cfg(target_os = "linux")]
+pub struct Instructions(Vec<std::os::fd::OwnedFd>);
+
+#[cfg(target_os = "linux")]
+impl Instructions {
+    /// Start counting. The kernel refuses while
+    /// `kernel.perf_event_paranoid` is above 2.
+    pub fn count() -> std::io::Result<Self> {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        /// `struct perf_event_attr` as its first version laid it out.
+        #[repr(C)]
+        struct Attr {
+            kind: u32,
+            size: u32,
+            config: u64,
+            sample_period: u64,
+            sample_type: u64,
+            read_format: u64,
+            flags: u64,
+            wakeup_events: u32,
+            bp_type: u32,
+            config1: u64,
+        }
+        const HARDWARE: u32 = 0;
+        const INSTRUCTIONS: u64 = 1;
+        const INHERIT: u64 = 1 << 1;
+        const EXCLUDE_KERNEL: u64 = 1 << 5;
+        const EXCLUDE_HV: u64 = 1 << 6;
+        const FD_CLOEXEC: libc::c_ulong = 8;
+        let open = |pmu: u64| {
+            let attr = Attr {
+                kind: HARDWARE,
+                size: size_of::<Attr>() as u32,
+                config: pmu << 32 | INSTRUCTIONS,
+                sample_period: 0,
+                sample_type: 0,
+                read_format: 0,
+                flags: INHERIT | EXCLUDE_KERNEL | EXCLUDE_HV,
+                wakeup_events: 0,
+                bp_type: 0,
+                config1: 0,
+            };
+            // SAFETY: attr outlives the call; pid 0 and cpu -1 count this
+            // thread on any core.
+            let fd = unsafe {
+                libc::syscall(libc::SYS_perf_event_open, &attr, 0, -1, -1, FD_CLOEXEC)
+            };
+            match fd {
+                -1 => Err(std::io::Error::last_os_error()),
+                // SAFETY: the kernel returned a descriptor no one else owns.
+                fd => Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) }),
+            }
+        };
+        // each core PMU of a hybrid CPU lists its cores, and a counter
+        // naming no PMU counts on one kind of core only
+        let pmus: Vec<u64> = fs::read_dir("/sys/bus/event_source/devices")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|d| d.path().join("cpus").exists())
+            .filter_map(|d| fs::read_to_string(d.path().join("type")).ok())
+            .filter_map(|t| t.trim().parse().ok())
+            .collect();
+        match pmus.iter().map(|p| open(*p)).collect::<std::io::Result<Vec<_>>>() {
+            Ok(fds) if !fds.is_empty() => Ok(Self(fds)),
+            _ => Ok(Self(vec![open(0)?])),
+        }
+    }
+
+    /// The count so far, running threads' included.
+    pub fn read(&self) -> u64 {
+        use std::os::fd::AsRawFd;
+        self.0
+            .iter()
+            .map(|fd| {
+                let mut n = 0u64;
+                // SAFETY: reads one u64 into n.
+                let r = unsafe { libc::read(fd.as_raw_fd(), (&raw mut n).cast(), 8) };
+                assert_eq!(r, 8, "read the instruction count");
+                n
+            })
+            .sum()
+    }
+}
+
 /// The env that logs what the image cache does.
 pub const CACHE_LOG: (&str, &str) = ("RUST_LOG", "warn,graphix_shell::cache=info");
 

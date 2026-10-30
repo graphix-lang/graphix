@@ -28,7 +28,18 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
     time::SystemTime,
+};
+
+mod common;
+#[cfg(target_os = "linux")]
+use {
+    common::Instructions,
+    std::{
+        process::Output,
+        time::{Duration, Instant},
+    },
 };
 
 const STACK: usize = 512 * 1024;
@@ -424,7 +435,7 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
         }
     };
     if mode == "fmt" {
-        let r = std::thread::Builder::new()
+        let r = thread::Builder::new()
             .stack_size(STACK)
             .spawn(move || {
                 format_source(SourceKind::Program, &text, &FormatConfig::default())
@@ -515,30 +526,39 @@ fn cache_entries() -> BTreeMap<PathBuf, SystemTime> {
     out
 }
 
-/// `graphix --check` of `program` finishes, accepted, within `budget`;
-/// a check still running then is killed.
-fn checks_within(program: &str, budget: std::time::Duration) {
+/// One billion instructions, the unit of a run's work budget.
+#[cfg(target_os = "linux")]
+const BILLION: u64 = 1_000_000_000;
+
+/// How long a run may take before it is taken for a hang, at any load.
+#[cfg(target_os = "linux")]
+const HANG: Duration = Duration::from_secs(600);
+
+/// `graphix --check` of `program` finishes, accepted, within `budget`
+/// instructions.
+#[cfg(target_os = "linux")]
+fn checks_within(program: &str, budget: u64) {
     completes_within(&["--check", "--no-cache"], program, budget)
 }
 
-fn completes_within(args: &[&str], program: &str, budget: std::time::Duration) {
+#[cfg(target_os = "linux")]
+fn completes_within(args: &[&str], program: &str, budget: u64) {
     let out = exits_within(args, &[("program.gx", program)], budget);
     assert!(out.status.success(), "{args:?} failed: {}", out.status);
 }
 
 /// `graphix` with `args` over `files` (the first is the program, the
-/// others its modules) exits within `budget`, with its stderr; one still
-/// running then is killed.
-fn exits_within(
-    args: &[&str],
-    files: &[(&str, &str)],
-    budget: std::time::Duration,
-) -> std::process::Output {
+/// others its modules) exits within `budget` instructions, its threads'
+/// together, with its stderr; one that passes the budget is killed.
+#[cfg(target_os = "linux")]
+fn exits_within(args: &[&str], files: &[(&str, &str)], budget: u64) -> Output {
     let dir = tempfile::tempdir().expect("a dir for the program");
     for (name, text) in files {
         fs::write(dir.path().join(name), text).expect("write the program");
     }
-    let start = std::time::Instant::now();
+    let work = Instructions::count()
+        .expect("count instructions (kernel.perf_event_paranoid must be 2 or lower)");
+    let start = Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_graphix"))
         .args(args)
         .arg(dir.path().join(files[0].0))
@@ -547,17 +567,35 @@ fn exits_within(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("run the check");
+        .expect("run graphix");
+    let over = |done: u64| {
+        format!("{args:?} retired {:.1}G instructions, over {:.1}G", gi(done), gi(budget))
+    };
     loop {
-        if child.try_wait().expect("wait for the check").is_some() {
-            break child.wait_with_output().expect("the check's output");
+        if child.try_wait().expect("wait for graphix").is_some() {
+            let out = child.wait_with_output().expect("graphix's output");
+            let done = work.read();
+            eprintln!("{args:?}: {:.1}G instructions of {:.1}G", gi(done), gi(budget));
+            assert!(done <= budget, "{}", over(done));
+            break out;
         }
-        if start.elapsed() > budget {
+        let done = work.read();
+        if done > budget || start.elapsed() > HANG {
             let _ = child.kill();
-            panic!("{args:?} ran past {budget:?}");
+            let _ = child.wait();
+            match done > budget {
+                true => panic!("{}", over(done)),
+                false => panic!("{args:?} ran past {HANG:?}"),
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// `n` instructions in billions.
+#[cfg(target_os = "linux")]
+fn gi(n: u64) -> f64 {
+    n as f64 / BILLION as f64
 }
 
 /// A type as deep as the program is long checks in time linear in the
@@ -567,16 +605,15 @@ fn exits_within(
 /// in their depth: a name's lookup consults its module's root once per
 /// scope chain, not once per level.
 #[test]
+#[cfg(target_os = "linux")]
 fn nested_trys_check_in_time() {
-    checks_within(&program("trywith", 993), std::time::Duration::from_secs(30))
+    checks_within(&program("trywith", 993), 250 * BILLION)
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn flat_type_chain_checks_in_linear_time() {
-    checks_within(
-        &program("flattype", 8 * FLAT_DEPTH),
-        std::time::Duration::from_secs(15),
-    )
+    checks_within(&program("flattype", 8 * FLAT_DEPTH), 30 * BILLION)
 }
 
 /// A let chain that wraps the last value in any constructor, or in an
@@ -584,6 +621,7 @@ fn flat_type_chain_checks_in_linear_time() {
 /// a let's single name binds without an occurs walk of the value, and a
 /// literal's element of an earlier element's very type adds nothing.
 #[test]
+#[cfg(target_os = "linux")]
 fn wrapped_let_chains_check_in_linear_time() {
     const LETS: usize = 20_000;
     for wrap in ["{a: X}", "(X, 1)", "`A(X)", "[X, X]", "&X"] {
@@ -595,7 +633,7 @@ fn wrapped_let_chains_check_in_linear_time() {
             ));
         }
         s.push_str("1");
-        checks_within(&s, std::time::Duration::from_secs(15))
+        checks_within(&s, 30 * BILLION)
     }
 }
 
@@ -604,6 +642,7 @@ fn wrapped_let_chains_check_in_linear_time() {
 /// proved again) checks in time linear in the chain and the reads: the
 /// first read walks the chain once, the others stop at its head.
 #[test]
+#[cfg(target_os = "linux")]
 fn a_let_chain_read_after_a_call_checks_in_linear_time() {
     const LETS: usize = 20_000;
     const READS: usize = 4_000;
@@ -616,23 +655,22 @@ fn a_let_chain_read_after_a_call_checks_in_linear_time() {
         s.push_str(&format!("let y{j} = [x{LETS}];\n"));
     }
     s.push_str("1");
-    checks_within(&s, std::time::Duration::from_secs(15))
+    checks_within(&s, 30 * BILLION)
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn a_long_seq_of_calls_checks_in_time() {
     const STEPS: usize = 4000;
     let body = vec!["a <- str::len(\"x\")"; STEPS].join("; ");
-    checks_within(
-        &format!("let a = 0;\nlet r = seq {{ {body}; a }};\nr"),
-        std::time::Duration::from_secs(15),
-    )
+    checks_within(&format!("let a = 0;\nlet r = seq {{ {body}; a }};\nr"), 15 * BILLION)
 }
 
 /// A chain of typedefs each naming the next, written before it is
 /// defined, checks in time near linear in its length: a typedef with no
 /// parameters rechecks nothing pending.
 #[test]
+#[cfg(target_os = "linux")]
 fn forward_typedef_chain_checks_in_time() {
     const TYPES: usize = 1000;
     let mut s = String::new();
@@ -640,7 +678,7 @@ fn forward_typedef_chain_checks_in_time() {
         s.push_str(&format!("type T{i} = [`A{i}(i64), T{}];\n", i + 1));
     }
     s.push_str(&format!("type T{TYPES} = `End;\n1"));
-    checks_within(&s, std::time::Duration::from_secs(15))
+    checks_within(&s, 15 * BILLION)
 }
 
 /// A value whose type shares each level twice (`(x, x)`), written to a
@@ -648,6 +686,7 @@ fn forward_typedef_chain_checks_in_time() {
 /// way, checks in time linear in its depth: a walk of it as a tree takes
 /// 2^depth steps.
 #[test]
+#[cfg(target_os = "linux")]
 fn shared_type_dags_check_in_linear_time() {
     const DEPTH: usize = 60;
     let chain = |name: &str| {
@@ -666,7 +705,7 @@ fn shared_type_dags_check_in_linear_time() {
     typedef.push_str(&chain("x"));
     typedef.push_str(&format!("let y: T{DEPTH} = x{DEPTH};\ny"));
     for program in [written, typedef] {
-        checks_within(&program, std::time::Duration::from_secs(15))
+        checks_within(&program, 10 * BILLION)
     }
 }
 
@@ -675,6 +714,7 @@ fn shared_type_dags_check_in_linear_time() {
 /// judgments, the bounds they hand its cells and an arm's match walk each
 /// shared node once.
 #[test]
+#[cfg(target_os = "linux")]
 fn comparisons_over_a_shared_type_dag_check_in_linear_time() {
     const DEPTH: usize = 60;
     let mut chain = String::from("let x0 = 1;\n");
@@ -689,7 +729,7 @@ fn comparisons_over_a_shared_type_dag_check_in_linear_time() {
         format!("{{{x} => 1}}"),
         format!("select {x} {{ v => 1 }}"),
     ] {
-        checks_within(&format!("{chain}{use_}"), std::time::Duration::from_secs(15))
+        checks_within(&format!("{chain}{use_}"), 10 * BILLION)
     }
 }
 
@@ -698,6 +738,7 @@ fn comparisons_over_a_shared_type_dag_check_in_linear_time() {
 /// default is not expanded, and a DAG of 4-tuples checked against a
 /// typedef built the same way is walked once per part.
 #[test]
+#[cfg(target_os = "linux")]
 fn hidden_defaults_judge_in_linear_time() {
     const DEPTH: usize = 60;
     let tree = "type T = [`Leaf(fn(x: i64) -> i64), `Node(T, T, T, T, T, T, T, T)];\n\
@@ -714,7 +755,7 @@ fn hidden_defaults_judge_in_linear_time() {
     }
     typedef.push_str(&format!("let y: T{DEPTH} = x{DEPTH};\ny"));
     for program in [tree.to_string(), typedef] {
-        checks_within(&program, std::time::Duration::from_secs(15))
+        checks_within(&program, 10 * BILLION)
     }
 }
 
@@ -722,6 +763,7 @@ fn hidden_defaults_judge_in_linear_time() {
 // node is taken once, so a call of a definition building a DAG of pairs
 // elaborates in time linear in the DAG.
 #[test]
+#[cfg(target_os = "linux")]
 fn a_call_over_a_shared_type_dag_elaborates_in_linear_time() {
     const DEPTH: usize = 60;
     let mut program = String::from("let f = |a| {\n  let x0 = a;\n");
@@ -729,13 +771,14 @@ fn a_call_over_a_shared_type_dag_elaborates_in_linear_time() {
         program.push_str(&format!("  let x{i} = (x{}, x{});\n", i - 1, i - 1));
     }
     program.push_str(&format!("  x{DEPTH}\n}};\nlet r = f(1);\nsys::exit(0)\n"));
-    completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
+    completes_within(&["--no-cache"], &program, 10 * BILLION)
 }
 
 // A search over a shared type walks each shared node once: the definition
 // called at two types, whose kernels' types are DAGs, builds in time
 // linear in the DAG.
 #[test]
+#[cfg(target_os = "linux")]
 fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
     const DEPTH: usize = 60;
     let mut program = String::from("let f = |a| {\n  let x0 = a;\n");
@@ -745,13 +788,14 @@ fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
     program.push_str(&format!(
         "  x{DEPTH}\n}};\nlet r = f(1);\nlet q = f(\"s\");\nsys::exit(0)\n"
     ));
-    completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
+    completes_within(&["--no-cache"], &program, 10 * BILLION)
 }
 
 /// A pair DAG named through a typedef builds in time linear in its depth:
 /// a call's argument checked against its formal compares and welds two
 /// equal DAGs, in different allocations, once per pair of nodes.
 #[test]
+#[cfg(target_os = "linux")]
 fn a_typedef_named_type_dag_builds_in_linear_time() {
     const DEPTH: usize = 60;
     let mut program = String::from(
@@ -761,7 +805,7 @@ fn a_typedef_named_type_dag_builds_in_linear_time() {
         program.push_str(&format!("  let x{i} = mk(x{});\n", i - 1));
     }
     program.push_str(&format!("  x{DEPTH}\n}};\nlet r = f(1);\nsys::exit(0)\n"));
-    completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
+    completes_within(&["--no-cache"], &program, 10 * BILLION)
 }
 
 /// A pair DAG built through a generic constructor, and one reached
@@ -769,6 +813,7 @@ fn a_typedef_named_type_dag_builds_in_linear_time() {
 /// callback, builds in time linear in its depth: the position and
 /// pre-unification walks of a signature take a shared node once.
 #[test]
+#[cfg(target_os = "linux")]
 fn shared_type_dags_through_generic_calls_build_in_linear_time() {
     const DEPTH: usize = 60;
     let body = |pair: &dyn Fn(usize) -> String| {
@@ -790,7 +835,7 @@ fn shared_type_dags_through_generic_calls_build_in_linear_time() {
         body(&|i| format!("(x{i}, x{i})"))
     );
     for program in [constructor, callers] {
-        completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
+        completes_within(&["--no-cache"], &program, 10 * BILLION)
     }
 }
 
@@ -798,6 +843,7 @@ fn shared_type_dags_through_generic_calls_build_in_linear_time() {
 /// names the binding in time linear in the types in scope, a pair DAG's
 /// included.
 #[test]
+#[cfg(target_os = "linux")]
 fn a_foreign_write_refusal_beside_a_shared_type_dag_is_linear() {
     const DEPTH: usize = 60;
     let mut main = String::from("let a = never();\nlet x0 = 1;\n");
@@ -812,7 +858,7 @@ fn a_foreign_write_refusal_beside_a_shared_type_dag_is_linear() {
             ("m.gxi", "val y: i64;\n"),
             ("m.gx", "let y = { super::a <- 1; 1 };\n"),
         ],
-        std::time::Duration::from_secs(15),
+        10 * BILLION,
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -893,6 +939,7 @@ fn deep_nesting_does_not_overflow() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn select_discriminants_first_value_in_time() {
     let mut source: LPooled<String> = LPooled::take();
     let mut union: LPooled<String> = LPooled::take();
@@ -915,9 +962,5 @@ fn select_discriminants_first_value_in_time() {
         "let r = array::fold(array::map(xs, |x| f(x)), 0, |a, b| a + b);\n\
         sys::exit(select r { 2197000 => 0, _ => 1 }); r",
     );
-    completes_within(
-        &["--no-cache", "--no-fusion"],
-        &source,
-        std::time::Duration::from_secs(4),
-    );
+    completes_within(&["--no-cache", "--no-fusion"], &source, 45 * BILLION);
 }
