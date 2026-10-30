@@ -432,69 +432,6 @@ pub fn analyze<R: Rt>(root: &Node<R>, ctx: &CompileCtx<R>) -> Result<TailLoops> 
 /// node-walk once `root` is fused, and only a fused kernel runs a tail
 /// recursion as a loop.
 pub fn check_tail_loops<R: Rt>(due: TailLoops, root: &Node<R>) -> Result<()> {
-    // XCR claude for claude: [bug/low] The loop-built check is per definition: it
-    // asks whether any instance of the asserted definition built a loop, so an
-    // instance that runs in the node-walk passes whenever another instance
-    // fuses. `#[tail_recursive] let rec loop = |f: fn(x: i64) -> i64, n, acc|
-    // ..` called as `loop(h, 3, 0)` with `h = |x| x + *rv` (it reads a
-    // reference, so it does not fuse) beside `loop(|x| x, 3, 0)` is accepted and
-    // prints (9, 6); with only `loop(h, 3, 0)` it is refused "the body did not
-    // fuse" (main 24ae12e91). Whether a program is refused depends on which other
-    // calls it makes. design/recursive_activations.md describes the
-    // per-definition check as built ("a kernel of the definition"), while
-    // book/src/functions/recursion.md says the body must compile to native code.
-    // Options: (1) every instance the assertion covers must build its loop (the
-    // assertion promises a loop for each call it covers), or (2) keep the
-    // per-definition check and say so in the book. I recommend (1). probes:
-    // ~/tmp/cr29/scratch/review4/u2/g1.gx, g1h.gx (tail-loop-per-def-01)
-    // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 D3): option
-    // (1), every instance the assertion covers must build its loop.
-    // 2026-10-30 claude: Per instance now (lane A, cr31-A). After fusion
-    // check_tail_loops walks what is left of the node-walk (callee bodies, kernel
-    // feeders) and refuses the first call to an instance of the asserted
-    // definition, naming the call; an instance whose recursion is no loop
-    // (tail_loop false) is refused too. The assertion stays pending as
-    // DefAssertionKind::TailLoop once its definition's check passed (the check is
-    // not run again: node-walk activations' analyses misjudge a callback call as
-    // async), so a later REPL input's instances are checked, and a run-time bind
-    // it covers is fused (fuse_instance, as for a #[native]) and checked
-    // (check_bound_tail_loops), reported once. Pins that fail without it:
-    // lang::attributes::tail_recursive_unfused_instance and _instance_last (the
-    // mixed program, both orders; the old check accepted both),
-    // tail_recursive_unfused_instance_alone and tail_recursive_unfused (new
-    // message), tail_recursive_covers_later_inputs; graphix-shell
-    // bound_callee_assertion::bound_callee_tail_loop_is_checked (also fails with
-    // the bind's fuse trigger removed) and
-    // bound_callee_stateful_instance_is_reported. Two fusing instances:
-    // tail_recursive_pure_instances (unchanged, passes).
-    // 2026-10-30 claude: Round 2 (review7 A). A runtime whose flags disable
-    // fusion disables its context's (FusionCtx::disable, set by GX from its
-    // flags), so under --no-fusion no run-time bind fuses or checks a loop, a
-    // collection slot's or a builtin's generated call site included (they carry
-    // no flags; their empty flags read as fusion on). A run-time report no longer
-    // drops the assertion: the TailLoop entry stays, its said bit makes the
-    // report once a definition, and a later compile is still refused. A refusal
-    // names the user's collection call for a call a collection makes of its
-    // callback, and no call for one a builtin builds (analysis::written). The
-    // loop itself bound at run time is judged by whether its body fused into one
-    // kernel leaving no call of it, not assumed unfused. A bind fuses for the
-    // assertion only while it still checks, so a node-walked recursion through a
-    // function value tries one fusion, not one a level. Pins that fail without
-    // it: lang::attributes::tail_recursive_slot_instances::interp and
-    // native_body_attribute_in_collection_slots::interp/par (run! now fails a
-    // node-walk mode that ran fused code), tail_recursive_collection_callback
-    // (message), tail_recursive_covers_later_inputs (now after a run-time
-    // report), tail_recursive_reported_bind_fuses_once; graphix-shell
-    // bound_callee_assertion::no_fusion_checks_no_loop,
-    // bound_slot_tail_loop_names_no_built_call.
-    // 2026-10-30 claude: Round 2, second commit: a run-time bind's fusion is its
-    // runtime's alone (CallSite::build_bound no longer reads the site's flags): a
-    // function value calling the loop, bound inside a stdlib function's body
-    // (compiled in the package root, fusion off), now builds the loop as one
-    // bound directly does, where opt::map(4, f) was reported and f(4) was not.
-    // Pin: graphix-shell
-    // bound_callee_assertion::bound_callee_in_package_body_builds_the_loop (fails
-    // without it).
     match due.unbuilt(root) {
         None => Ok(()),
         Some((a, call, why)) => Err(anyhow!("{}", why.message(call)).at(&a.spec)),
