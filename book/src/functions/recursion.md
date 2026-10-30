@@ -70,10 +70,10 @@ holds memory of its own per call (a collection operation, or a call to
 a function that holds one, which each activation keeps apart), if the
 function does not recurse at all, or if it recurses mutually, the
 program does not compile. Only compiled code runs the loop: the
-interpreter keeps an activation per call, so the assertion holds when
-fusion is on and the body compiles to native code, and a body that
-does not (it takes a reference, say) fails the compile. With
-`--no-fusion` it is not checked, as `#[native]` is not.
+interpreter keeps an activation per call, so the assertion also needs
+the body to compile to native code, and a body that does not (it takes
+a reference, say) fails the compile. With `--no-fusion` that last part
+is not checked, nor is `#[native]`; the rest still fails the compile.
 
 Two related assertions document a function's timing: `#[sync]` asserts that
 every output appears on the same cycle as its trigger (the body reaches no
