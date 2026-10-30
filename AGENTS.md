@@ -1441,8 +1441,11 @@ cycle, across workers; the compiler never pins threads.
   delivered fired, and its callee's body, slept since the last run, is
   born again with the step (builtins reborn, an async one holding no
   answer; lets take their initializers; selects forget their entry
-  history); what the callee captures keeps its value. A call outside a
-  seq is never born again.
+  history); what the callee captures keeps its value, an event's last
+  fire included. A bound callee whose function value is bottom then is
+  born so when the function returns (`callsite.rs::Unborn`), as is a
+  call in the callee meeting a bottom function at its birth. A call
+  outside a seq is never born again.
   A `{ .. }` statement issues its statements together with local lets. `until`,
   `try { .. } with(e[: T]) { .. }` (the error branch; `catch` is refused
   in a seq body outside lambda literals). A step completes on a FIRED

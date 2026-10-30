@@ -233,8 +233,8 @@ seq request {
 If an argument is bottom at entry, the call waits; it cannot reuse a
 previous run's snapshot. After issuance, later argument changes or bottom
 do not change the snapshot or interrupt the pending result. Nested calls
-get their own snapshots. A call without arguments is read at entry like a
-level.
+get their own snapshots. A call without arguments is issued at entry as
+any call is.
 
 A step snapshots every variable its text names together, including variables
 read only by an untaken select arm or an uncalled lambda. It waits until
@@ -275,7 +275,11 @@ function whose answer starts from a constant completes the step on that
 constant: `let counter = |t| { let n = 0; n <- t ~ n + 1; n }` makes
 `let a = counter(t)` 0 at every run, its count arriving a cycle later.
 What the function captures from outside keeps its value: keep a count
-that must last across runs outside the function.
+that must last across runs outside the function. An event it captures
+is read as it stands too: a call to `let wait = |u| ev` answers `ev`'s
+last event at once at every run, never waiting for the next one. A call
+through a function value that is bottom when the step issues it is made
+when the function arrives, and is a fresh call all the same.
 
 This clocks the call site, not the function body: callbacks and captured
 state inside a function remain reactive. References are sampled as

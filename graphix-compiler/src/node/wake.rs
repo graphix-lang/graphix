@@ -90,6 +90,18 @@ impl FreshFrame {
     }
 }
 
+/// Whether the evaluation runs inside a call a seq step issues.
+pub(crate) fn in_fresh_frame<R: Rt>(ctx: &ExecCtx<'_, R>) -> bool {
+    let mut scope = ctx.catch_up.as_deref();
+    while let Some(s) = scope {
+        if s.fresh {
+            return true;
+        }
+        scope = s.outer.as_deref();
+    }
+    false
+}
+
 /// Whether the catch-up scope owes `id` a fire: it was written while the
 /// arm slept, is not delivered this cycle, and no reader saw its fire.
 pub(crate) fn owed<R: Rt>(ctx: &ExecCtx<'_, R>, id: &BindId) -> bool {

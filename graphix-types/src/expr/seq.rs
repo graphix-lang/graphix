@@ -2047,6 +2047,21 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
     // lang::seq::reentry_fired_only (its |v| k case answers [7] without);
     // a_call_outside_a_seq_resumes pins that a call outside a seq resumes. Needs a
     // soak.
+    // 2026-10-29 claude: (cr29 fix G4, RV4 findings 2 and 4) A bound callee whose
+    // function value is bottom at the issue makes up the birth it missed when the
+    // function returns: CallSite's Absent records the view it was due and whether it
+    // sat in an issued call's fresh frame (callsite.rs::Unborn), and that dispatch runs
+    // under that view, inside a FreshFrame of its own over the callee's inputs and its
+    // arguments (Absent::dispatch); a call inside the callee that meets a bottom
+    // function at its birth is born the same way. RV4's p1_absent_fn now gives 1 2 3
+    // (was 1 1 1) and p1c_absent_state (n, 1) at each run (was (n, n)). Pins:
+    // lang::seq_calls::a_callee_bottom_at_the_issue_is_born_when_it_returns (each of
+    // its three calls fails with the change off: g(n) and h(n) give [11, 22, 33],
+    // load() gives [11, 21, 31]);
+    // lang::seq_calls::a_callee_answers_a_captured_event_as_it_stands pins the ruled
+    // answer of a captured event ([1050, 2150, 3150]; main's binary stalls after the
+    // second run). Docs: book seq.md (also: a nullary call is issued, not read as a
+    // level), design/seq_blocks.md, CLAUDE.md, the skill. Needs a soak.
     let pos = spec.pos;
     let input = format_compact!("#seqargs{}", spec.id.inner());
     let issued = format_compact!("#seqissued{}", spec.id.inner());

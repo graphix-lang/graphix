@@ -251,7 +251,9 @@ callee whose answer starts from a constant completes the step on that
 constant: `let counter = |t| { let n = 0; n <- t ~ n + 1; n }` makes
 `let a = counter(t)` 0 at every run, its count landing a cycle later,
 unseen. What the callee captures keeps its value across runs: a count
-that must outlive the run lives outside the callee.
+that must outlive the run lives outside the callee. A captured event
+stands like any value, so `|u| ev` answers `ev`'s last event at each
+run; it does not wait for the next one.
 
 **A `let` binds the step's production for the rest of the run.**
 Later steps read the binding itself; shadowing is sequential as in a
@@ -416,8 +418,13 @@ initializers again, its selects forget their entry history, and what is
 bound inside it (a `catch` binder, a nested seq's `pc`) reads stale,
 never re-raising a previous run's event. A fused call is its kernel run
 born, its interior memory cleared, over the same delivered inputs. What
-the callee captures from outside keeps its value. A call outside a seq is never born again:
-a wake resumes it.
+the callee captures from outside keeps its value. A bound callee whose
+function value is bottom at the issue sleeps until the function returns,
+and that dispatch is the birth it missed (`callsite.rs::Unborn`): under
+the view it was due and, inside an issued call, a fresh frame of its own
+over its callee's inputs and its arguments; a call in the callee meeting
+a bottom function at its birth is born the same way. A call outside a
+seq is never born again: a wake resumes it.
 The select watches the snapshot, not live inputs: once issued, a
 pending callee keeps running if an input later bottoms, and later
 input events cannot reissue it. Calls nested in expressions and in

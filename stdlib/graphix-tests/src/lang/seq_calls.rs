@@ -428,9 +428,71 @@ async fn a_call_outside_a_seq_resumes(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A call issued through a function value that is bottom at the issue is
+// the run's fresh frame when the function returns, a cycle later: the
+// callee reads the file this run wrote and its own `count` starts afresh,
+// a call inside it through such a function included (t-seq-03).
+async fn a_callee_bottom_at_the_issue_is_born_when_it_returns(mode: Mode) -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = escape_path(dir.path().join("f.txt").display());
+    for (call, expect) in [
+        ("g(n)", [11, 21, 31]),
+        ("h(n)", [11, 21, 31]),
+        ("cast<i64>(load()$)$", [11, 22, 33]),
+    ] {
+        let code = r#"{
+            let path = "PATH";
+            let next = never<i64>();
+            let runs = 0;
+            let t = select (any(0, next) ~ runs) { k if k < 3 => k, _ => never() };
+            let on = true;
+            on <- select on { false => true, true => never() };
+            let g = select on { true => |u: i64| u ~ count(u), false => never() };
+            let h = |u: i64| g(u);
+            let load = select on { true => || sys::fs::read_all(path), false => never() };
+            let r = seq t {
+                let n = runs + 1;
+                runs <- n;
+                sys::fs::write_all(#path: path, "[n]")$;
+                on <- false;
+                until live(!on);
+                let c = CALL;
+                n * 10 + c
+            };
+            next <- r ~ 1;
+            r
+        }"#
+        .replace("PATH", &path)
+        .replace("CALL", call);
+        let (values, _) = run_delta(&code, mode).await?;
+        assert_eq!(as_i64s(&values), expect, "{call}");
+    }
+    Ok(())
+}
+
+// A callee that returns an event it captures answers the event as it
+// stands at each run, its last fire, as a fresh call reads it; it does not
+// wait for the next fire (t-seq-03).
+async fn a_callee_answers_a_captured_event_as_it_stands(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 40 => n + 1, _ => never() };
+        let ev = never<i64>();
+        ev <- select step { 5 => 50, 15 => 150, _ => never() };
+        let go = select step { 10 => 1, 20 => 2, 30 => 3, _ => never() };
+        let wait = |u| ev;
+        seq let m = go { let a = wait(m); m * 1000 + a }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [1050, 2150, 3150]);
+    Ok(())
+}
+
 modes!(
     a_callee_reads_its_world_fresh_each_run,
     a_steps_rpc_call_answers_its_own_run,
     a_callees_own_state_starts_fresh_each_run,
     a_call_outside_a_seq_resumes,
+    a_callee_bottom_at_the_issue_is_born_when_it_returns,
+    a_callee_answers_a_captured_event_as_it_stands,
 );

@@ -65,7 +65,9 @@ constant argument to `exit` runs at init — always gate it).
   every run, its body born again reading its arguments and captures as
   they stand, so `let load = || sys::fs::read_all(path)` reads the file
   at each run. State inside the callee starts afresh each run; what it
-  captures from outside keeps its value.
+  captures from outside keeps its value. A captured event is read as it
+  stands too: a step's call to `|u| ev` answers `ev`'s last event at
+  once, never waiting for the next.
 - **A `never()` arm adds nothing to a select's type**: `let r = select b
   { true => never(), false => error(`E) }` makes `r` the error type alone,
   and a downstream `select r { error as e => .., v => .. }` is refused for

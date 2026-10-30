@@ -7,7 +7,7 @@ use super::{
         BuiltInLambda, GXLambda, InstanceTypes, Lambda, LambdaDef, same_parameters,
     },
     pattern::StructPatternNode,
-    wake::TrackedFires,
+    wake::{FreshFrame, TrackedFires},
 };
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
@@ -2778,10 +2778,8 @@ impl<R: Rt> CallSite<R> {
     fn update_call(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         let rebirth = !matches!(mem::take(&mut self.kept), Kept::Nothing);
-        if woke
-            && (rebirth || ctx.event.born())
-            && let Some(f) = self.callee.apply_mut()
-        {
+        let reborn = woke && (rebirth || ctx.event.born());
+        if reborn && let Some(f) = self.callee.apply_mut() {
             f.reborn(ctx)
         }
         if matches!(self.callee, Callee::Imaged { .. })
@@ -2821,14 +2819,25 @@ impl<R: Rt> CallSite<R> {
         };
         if fnode_tag.is_bottom() && !static_callee {
             // a bound instance sleeps while its callee is bottom, so it wakes
-            // with catch-up when the same function returns
+            // with catch-up when the same function returns, or is born then
+            // if it was due a birth meanwhile
             if let Some(f) = self.callee.apply_mut() {
                 let absent = self.absent.get_or_insert_with(|| Absent {
                     missed: SmallVec::new(),
                     captured: TrackedFires::new(&ctx.env, ctx.rt.cycle(), 1, |_, r| {
                         f.refs(r)
                     }),
+                    unborn: None,
                 });
+                if reborn {
+                    let view = if rebirth {
+                        ctx.event.view.join(View::Birth)
+                    } else {
+                        ctx.event.view
+                    };
+                    let frame = super::wake::in_fresh_frame(ctx);
+                    absent.unborn = Some(Unborn { view, frame });
+                }
                 absent.observe(ctx, &set);
                 f.sleep(ctx);
                 self.slept.set();
@@ -2895,10 +2904,7 @@ impl<R: Rt> CallSite<R> {
                 let arg_refs = &mut self.arg_refs;
                 match absent {
                     None => Some(f.update(ctx, arg_refs).clone()),
-                    // the same function back: its instance wakes, caught up
-                    Some(absent) => {
-                        Some(absent.wake(ctx, |ctx| f.update(ctx, arg_refs).clone()))
-                    }
+                    Some(absent) => Some(absent.dispatch(ctx, f, arg_refs)),
                 }
             }
             Some(f) => {
@@ -4011,16 +4017,52 @@ struct ArgsOut {
 
 /// A bound instance asleep while its function is bottom: what fired that
 /// it did not see, caught up when the same function returns, as a
-/// deselected arm is at its wake.
+/// deselected arm is at its wake, or the birth it was due meanwhile,
+/// which it makes up then.
 #[derive(Debug)]
 struct Absent {
     /// The arguments that fired meanwhile.
     missed: SmallVec<[BindId; 2]>,
     /// The inputs the instance captures.
     captured: TrackedFires,
+    unborn: Option<Unborn>,
+}
+
+/// A birth an instance was due while its function was bottom: the view
+/// it was due (`Birth` or `Step`), and whether a seq step issued it as a
+/// fresh frame ([`FreshFrame`]).
+#[derive(Debug, Clone, Copy)]
+struct Unborn {
+    view: View,
+    frame: bool,
 }
 
 impl Absent {
+    /// Dispatch `f` as the same function returns: the birth it was due,
+    /// else a resume caught up.
+    fn dispatch<R: Rt>(
+        self,
+        ctx: &mut ExecCtx<'_, R>,
+        f: &mut dyn Apply<R>,
+        from: &mut [Node<R>],
+    ) -> TagValue {
+        match self.unborn {
+            Some(Unborn { view, frame: true }) => {
+                let frame = FreshFrame::open(ctx, |r| {
+                    f.refs(r);
+                    from.iter().for_each(|n| n.refs(r))
+                });
+                let tv = ctx.under(view, |ctx| f.update(ctx, from).clone());
+                frame.close(ctx);
+                tv
+            }
+            unborn => {
+                let view = unborn.map_or(View::Wake, |u| u.view);
+                self.wake(ctx, view, |ctx| f.update(ctx, from).clone())
+            }
+        }
+    }
+
     /// Record this cycle's fires: the arguments published in `set`, and
     /// the captured inputs.
     fn observe<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>, set: &Published) {
@@ -4033,12 +4075,13 @@ impl Absent {
         self.captured.observe(ctx);
     }
 
-    /// Run `update` under the wake view with one catch-up fire for each
-    /// argument and captured input that fired unseen and is not delivered
-    /// live this cycle, at its current value.
+    /// Run `update` under `view` with one catch-up fire for each argument
+    /// and captured input that fired unseen and is not delivered live
+    /// this cycle, at its current value.
     fn wake<R: Rt, T>(
         mut self,
         ctx: &mut ExecCtx<'_, R>,
+        view: View,
         update: impl FnOnce(&mut ExecCtx<'_, R>) -> T,
     ) -> T {
         let mut injected = super::wake::Injected::new();
@@ -4046,7 +4089,7 @@ impl Absent {
             super::wake::inject(ctx, id, &mut injected);
         }
         let captured = &mut self.captured;
-        let r = ctx.under(View::Wake, |ctx| {
+        let r = ctx.under(view, |ctx| {
             let caught_up = captured.deliver(ctx, 0);
             let scope = captured.open(ctx, 0);
             let r = update(ctx);
