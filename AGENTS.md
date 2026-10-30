@@ -822,9 +822,10 @@ node graph IS the IR — there is no parallel typed IR
   fusion built: no call to it left in the node-walk, a dynamic call's
   included (`analysis::check_tail_loops`; a bind it covers is fused, and
   its failure reported once; unchecked where fusion does not run). A
-  runtime whose flags disable fusion disables its context's
-  (`FusionCtx::disable`): no run-time bind fuses there, a call site a
-  collection or a builtin builds included.
+  run-time bind fuses as its runtime does, whatever its site's flags (the
+  package root's have fusion off, a site a collection or a builtin builds
+  has none): a runtime whose flags disable fusion disables its context's
+  (`FusionCtx::disable`).
 - **Bottom is dense** (`design/dense_delivery.md`,
   `design/representable_bottom.md`): `update` returns a `TagValue`
   every cycle — `Fired(v)`/`Stale(v)`/`FreshBottom`/`StaleBottom`, the

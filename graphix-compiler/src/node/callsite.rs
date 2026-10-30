@@ -2320,7 +2320,10 @@ impl<R: Rt> CallSite<R> {
                 Self::unregister_fn_params(ctx, params);
                 res.map(|tail_loops| (defaults, tail_loops))
             })?;
-            if crate::fusion_on(flags) && !ctx.fusion.disabled() {
+            // the runtime's fusion, not the site's flags: those are its
+            // compile's (the package root's fusion off) or none (a site a
+            // collection or a builtin builds)
+            if !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads
                 let asserted =

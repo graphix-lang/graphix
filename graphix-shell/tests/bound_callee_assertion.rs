@@ -167,3 +167,27 @@ fn bound_slot_tail_loop_names_no_built_call() {
     assert!(ran.stderr.contains(MSG), "{}", ran.stderr);
     assert!(ran.stdout.lines().any(|l| l == "[0, 0, 0]"), "{}", ran.stderr);
 }
+
+/// A run-time bind fuses as its runtime does, wherever its call site was
+/// compiled: a function value calling the loop, called through a function
+/// of the package root's (compiled with fusion off) or directly, builds the
+/// loop either way.
+const BOUND_IN_PACKAGE: &str = r#"
+#[tail_recursive]
+let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, acc + n) };
+let b = true;
+let f = select b { true => |x: i64| -> i64 loop(x, 0), false => |x: i64| -> i64 x };
+println(CALL);
+sys::exit(sys::time::after_idle(duration:100.ms, 0))
+"#;
+
+#[test]
+fn bound_callee_in_package_body_builds_the_loop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for call in ["f(4)", "opt::map(4, f)"] {
+        let program = BOUND_IN_PACKAGE.replace("CALL", call);
+        let ran = graphix(dir.path(), &program, &["--no-cache"], &[]);
+        assert!(!ran.stderr.contains("#[tail_recursive]"), "{call}:\n{}", ran.stderr);
+        assert!(ran.stdout.lines().any(|l| l == "10"), "{call}:\n{}", ran.stderr);
+    }
+}

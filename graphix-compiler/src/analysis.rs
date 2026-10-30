@@ -487,6 +487,14 @@ pub fn check_tail_loops<R: Rt>(due: TailLoops, root: &Node<R>) -> Result<()> {
     // report), tail_recursive_reported_bind_fuses_once; graphix-shell
     // bound_callee_assertion::no_fusion_checks_no_loop,
     // bound_slot_tail_loop_names_no_built_call.
+    // 2026-10-30 claude: Round 2, second commit: a run-time bind's fusion is its
+    // runtime's alone (CallSite::build_bound no longer reads the site's flags): a
+    // function value calling the loop, bound inside a stdlib function's body
+    // (compiled in the package root, fusion off), now builds the loop as one
+    // bound directly does, where opt::map(4, f) was reported and f(4) was not.
+    // Pin: graphix-shell
+    // bound_callee_assertion::bound_callee_in_package_body_builds_the_loop (fails
+    // without it).
     match due.unbuilt(root) {
         None => Ok(()),
         Some((a, call, why)) => Err(anyhow!("{}", why.message(call)).at(&a.spec)),

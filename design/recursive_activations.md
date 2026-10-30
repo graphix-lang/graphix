@@ -112,11 +112,12 @@ leaves no call of it, while one whose body calls it builds the loop; the
 program already runs, so the failure is reported as an unhandled error
 is, once a definition (`DefAssertion::said`), and the assertion stays for
 the compiles after it. Where fusion does not run (`--no-fusion`, a
-dynamic module) only the gate is checked, as `#[native]` is not: a
-runtime whose flags disable fusion disables its context's
-(`FusionCtx::disable`), so no run-time bind fuses there either, a call
-site a collection or a builtin builds, which has no flags of its own,
-included.
+dynamic module) only the gate is checked, as `#[native]` is not. A
+run-time bind fuses as its runtime does, not as its call site's flags
+say: a site the package root compiled (a stdlib function's body) has
+fusion off, and one a collection or a builtin builds has no flags of its
+own; a runtime whose flags disable fusion disables its context's
+(`FusionCtx::disable`), so no run-time bind fuses there.
 
 What follows for the three kinds of body:
 
