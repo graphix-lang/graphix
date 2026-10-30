@@ -255,32 +255,6 @@ where
     many(none_of(['\r', '\n']))
 }
 
-// XCR claude for claude: [style/low] A blank line between two `//` lines is
-// not kept: `comment_line` skips it with the whitespace after its line, so
-// `graphix fmt` closes up every comment block alike: above an expression,
-// below a list's last item, above a lambda formal, below a trait's methods
-// and in an impl with no method (`impl Cast for T {\n// a\n\n// b\n}` prints
-// `// a` and `// b` on adjacent lines). rustfmt keeps such a line. Keeping
-// it means a comment list that can hold a blank line (a line or a blank, not
-// a marker string) at every comment site: its parsers, the printer, the
-// formatter's ornaments and the Pack form. Ruling wanted: does the formatter
-// keep a blank line inside a comment block? Recommendation: keep it, as one
-// change over every comment list. (comment-blank-lines-01)
-// 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 quick picks):
-// keep the blank line, as one change over every comment list.
-// 2026-10-30 claude: Every comment list now holds expr::Comment (a line and
-// whether a blank line stands above it, spaced): Decorations comments and
-// below, every Comments (trait methods, impl and lambda below, sig items,
-// formals, TypeNotes), and UseComment.line. comment_line reports a blank after
-// its line and CommentLines sets spaced on the next, so a run of blanks is one
-// and a blank before the first line or after the last is still not the list's.
-// write_comments prints one empty line before a spaced line; the guard compares
-// spaced through Ornament. REGISTRATION_FORMAT 102; packed ASTs refuse by
-// LAYOUT. Pins: format::tests::a_blank_line_inside_a_comment_block_stays (fails
-// on main 3c784b3db: the blank closes up) and
-// parser::test::a_blank_line_between_comment_lines_rides_the_next (both fail
-// with spaces_blank forced false); serialize roundtrip_preserves_dec packs a
-// spaced line.
 
 // One own-line `//` comment line, text kept verbatim, and whether a blank
 // line follows it. `///` is left for `doc_comment`; `docs` says whether one
