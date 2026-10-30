@@ -3753,7 +3753,7 @@ async fn must_reject(
     else {
         return (out, None);
     };
-    let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test");
+    let types = mustreject::TypeMap::new(&checked.ide.expr_types, &checked.env, "test");
     for p in mustreject::probes(body, &types, modules, cap) {
         let verdict = match tm_check(ctx, &compose(&p.body), false, per_check).await {
             TmCheck::Unparsed(_) => continue,
@@ -6028,6 +6028,8 @@ mod tests {
             ("{ let v = 2 + 1; v }", "retype#"),
             ("{ let v = -(2 + 1); v }", "retype#"),
             ("{ let v = cast<i64>(2.5)$; v }", "retype#"),
+            // a callee whose declared return every argument decides
+            ("{ let v = str::len(\"a\"); let w = v + 1; w }", "retype#"),
             // the hop: the widened `a` reaches `+` through `w`'s let
             ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-hop#"),
             ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-var#"),
@@ -6220,8 +6222,25 @@ mod tests {
                 "{ let z = never(); let mk = |u: i64| z; let v = mk(1); let w = v + 1; w }",
                 "retype#",
             ),
+            // a callee's declared return holds a variable no parameter
+            // holds: the first use decides it, a writer's or the reader's
+            (
+                "{ let s = list::head(list::nil(null)); \
+                 select s { error as e => 1, null as _ => 2 } }",
+                "retype#",
+            ),
+            ("{ let v = str::parse(\"1\")$; let w = v + 1; w }", "retype#"),
+            (
+                "{ let mk = |t| list::nil(t); let s = list::head(mk(null)); \
+                 select s { error as e => 1, null as _ => 2 } }",
+                "retype#",
+            ),
             // the annotation would decide the open referent
             ("{ let x = never(); let r = &mut x; *r <- 2; x }", "ref-widen#"),
+            (
+                "{ let x = list::head(list::nil(null))$; let r = &mut x; let y = x + 1; y }",
+                "ref-widen#",
+            ),
             // the call decides the open first argument's type
             (
                 "{ let g = |x: 'a, y: 'a| -> 'a x; let z = never(); let r = g(z, 1); [r, z] }",

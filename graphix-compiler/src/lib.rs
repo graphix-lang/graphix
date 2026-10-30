@@ -3355,6 +3355,10 @@ pub fn record_expr_types<R: Rt>(nodes: &[Node<R>], out: &mut Vec<ide::ExprTypeSi
                 end: spec.end.get(),
                 typ: n.typ().snapshot(),
                 cell: matches!(n.typ(), typ::Type::TVar(_)),
+                bind: match n.view() {
+                    NodeView::Ref(r) => Some(r.id),
+                    _ => None,
+                },
             })
         });
     }

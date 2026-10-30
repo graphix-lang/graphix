@@ -54,9 +54,9 @@ resolved (`resolve_tvars`, so later unification cannot move it) and
 keyed by its span in the body; nodes sharing a span answer with the
 first type recorded. It is a new `Ide` sink, filled by one
 walk over the checked root nodes after typecheck and only when a check
-asks for it; a check without it pays nothing. The binds and references
-`Ide` already records give the variable-level view (a binding's type,
-its use sites).
+asks for it; a check without it pays nothing. A reference's entry also
+names its binding (`ExprTypeSite::bind`), whose declared type the
+check's env holds.
 
 A candidate uses the map to pick its site and its disjoint type. A
 type is DISJOINT from `T` when it is a primitive `T` does not contain
@@ -168,8 +168,16 @@ Mutations: the initializer replaced with a value of a disjoint type, or
 a writer `v <- u` added. Rule: an unannotated `let` takes its
 initializer's type, and a later writer must fit it
 (`node/mod.rs::write_mismatch`); the pinned use then conflicts. A `let`
-over ⊥ is skipped (its type is a cell the first use decides, so an
-inserted writer decides it; `ExprTypeSite::cell` marks it). Right site:
+over ⊥ is skipped: its type is a cell the first use decides, so an
+inserted writer decides it (`ExprTypeSite::cell` marks it). So is a
+`let` over a call whose callee's declared type returns a cell that no
+parameter holds, nor the bound of one a parameter holds, nor a payload
+bounds from below (`list::nil`'s element, a type-directed read's `'b:
+Concrete` target, `sys::exit`'s result, `db::tree`'s key and value): no
+argument decides that part of the result, so its first use does
+(`mustreject.rs::open_return`). The same judgment of an open value
+(`open_init`) skips family 3's argument, the hop's `let`, family 5's
+scrutinee, 9 (b)'s referent and family 11's value. Right site:
 for the writer, the writer or the `let`; for the retyped initializer,
 the `let` and every later statement that reads or writes `v` or a `let`
 built from it, since every one now meets the new type and the checker

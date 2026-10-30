@@ -150,6 +150,8 @@ pub struct ExprTypeSite {
     /// The node's own type is an inference cell (a `let` over ⊥, a
     /// call's result, ...), `typ` what it resolved to.
     pub cell: bool,
+    /// The binding a reference names; `None` for any other node.
+    pub bind: Option<BindId>,
 }
 
 /// The warnings printed while a record is open (`Some`), in the order

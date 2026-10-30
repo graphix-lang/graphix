@@ -13,15 +13,17 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use graphix_compiler::{
     SourcePosition,
+    env::Env,
     expr::{
         ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
         ModPath, Name, Origin, Pattern, SelectExpr, Source, StructurePattern, WrittenAt,
         parser,
     },
     ide::ExprTypeSite,
-    typ::{Bound, FnArgType, FnType, Mutability, Type},
+    typ::{Bound, FnArgType, FnType, Mutability, TVar, Type},
 };
 use netidx_value::Typ;
+use poolshark::local::LPooled;
 use triomphe::Arc;
 
 /// A must-reject family.
@@ -167,11 +169,15 @@ struct Entry {
     types: Vec<Type>,
     /// A node here had a type its uses decided (`ExprTypeSite::cell`).
     cell: bool,
+    /// A reference here names a function whose declared type leaves part
+    /// of its result to its uses ([`open_return`]).
+    open_return: bool,
 }
 
 impl TypeMap {
-    /// From a check's sites in the subject's module `module`.
-    pub fn new(sites: &[ExprTypeSite], module: &str) -> Self {
+    /// From a check's sites in the subject's module `module`, and the
+    /// check's `env`, which holds each reference's binding.
+    pub fn new(sites: &[ExprTypeSite], env: &Env, module: &str) -> Self {
         let mut map: AHashMap<(i32, i32, i32, i32), Entry> = AHashMap::new();
         for s in sites.iter().filter(|s| in_module(&s.ori, module)) {
             let Some(end) = s.end else { continue };
@@ -179,6 +185,10 @@ impl TypeMap {
             let e = map.entry((a.line, a.column, b.line, b.column)).or_default();
             e.types.push(s.typ.clone());
             e.cell |= s.cell;
+            e.open_return |= s
+                .bind
+                .and_then(|id| env.by_id.get(&id))
+                .is_some_and(|b| open_return(&b.typ));
         }
         TypeMap(map)
     }
@@ -194,6 +204,52 @@ impl TypeMap {
 
     fn cell(&self, e: &Expr) -> bool {
         self.entry(e).is_some_and(|x| x.cell)
+    }
+
+    fn open_return(&self, f: &Expr) -> bool {
+        self.entry(typemorph::unparen(f)).is_some_and(|x| x.open_return)
+    }
+}
+
+/// Whether `t` is a function type whose return holds an open cell that no
+/// parameter holds, nor the bound of one a parameter holds, nor anything
+/// bounds from below (an abstract's parameter, which its payload does):
+/// no argument decides it, so a call's uses do (`list::nil`'s element, a
+/// type-directed read's `'b: Concrete` target).
+fn open_return(t: &Type) -> bool {
+    t.with_deref(|d| match d {
+        Some(Type::Fn(ft)) => {
+            let mut held: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            for p in ft.args.iter().map(|a| &a.typ).chain(&ft.vargs) {
+                open_cells(p, true, &mut held)
+            }
+            let mut ret: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            open_cells(&ft.rtype, false, &mut ret);
+            ret.iter().any(|(c, tv)| !held.contains_key(c) && tv.cell_lower().is_empty())
+        }
+        _ => false,
+    })
+}
+
+/// The open cells `t` holds, by identity, bindings followed; with
+/// `bounds`, those each one's bound holds too.
+fn open_cells(t: &Type, bounds: bool, out: &mut AHashMap<usize, TVar>) {
+    match t {
+        Type::TVar(tv) => match tv.open_cell() {
+            Some(c) => {
+                if out.insert(c.cell_addr(), c.clone()).is_none() && bounds {
+                    for b in c.cell_constraints() {
+                        open_cells(&b, bounds, out)
+                    }
+                }
+            }
+            None => {
+                if let Some(b) = tv.binding() {
+                    open_cells(&b, bounds, out)
+                }
+            }
+        },
+        t => t.for_each_child(&mut |c| open_cells(c, bounds, out)),
     }
 }
 
@@ -580,7 +636,8 @@ fn holds(t: &Type, p: &impl Fn(&Type) -> bool) -> bool {
 /// Whether `value`, the initializer of a statement at `si` in `block`, is
 /// over ⊥: its type a cell its uses decide, so a writer or an annotation
 /// decides it rather than being refused. A call's return is decided by
-/// its callee and its arguments, open through an open argument or a
+/// its callee and its arguments, open through an open argument, a callee
+/// whose type returns a cell no parameter holds ([`open_return`]), or a
 /// callee bound to a lambda with no return type whose body is open or
 /// reads an open let (a generalized return, fresh at each call; the
 /// captures are typemorph's [`typemorph::open_lets`]); an unannotated let
@@ -595,7 +652,7 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
     let open = |e: &Expr| open_init(types, block, si, e);
     match &typemorph::unparen(value).kind {
         ExprKind::Apply(ap) => {
-            type_directed(&ap.function)
+            types.open_return(&ap.function)
                 || payload_read(&ap.function)
                 || ap.args.iter().any(|(_, a)| open(a))
                 || earlier_let(block, si, &ap.function).is_some_and(|(j, d)| {
@@ -669,23 +726,6 @@ fn open_body(types: &TypeMap, d: &BindExpr, b: &Expr) -> bool {
         }
         _ => open_init(types, &[], 0, b),
     }
-}
-
-/// Whether `f` is a type-directed read, whose result type (its `'b:
-/// Concrete` target, which no argument holds) is what its uses decide.
-fn type_directed(f: &Expr) -> bool {
-    const READS: &[&str] = &[
-        "str::parse",
-        "json::read",
-        "toml::read",
-        "pack::read",
-        "sqlite::query",
-        "sys::net::subscribe",
-        "sys::net::call",
-        "sys::net::callq",
-    ];
-    matches!(&typemorph::unparen(f).kind, ExprKind::Ref { name }
-        if READS.contains(&name.to_string().trim_start_matches('/')))
 }
 
 /// Whether `f` is a generated module's `unb`, which reads a constructed
