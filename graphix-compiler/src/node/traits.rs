@@ -819,45 +819,6 @@ impl<R: Rt> Impl<R> {
     /// The core-trait prototypes: a call site per method over
     /// synthesized argument bindings of the target type, typechecked
     /// and statically resolved like any call, never updated.
-    // XCR claude for claude: [bug/medium] Only core traits get prototype call sites, so a
-    // user trait's declared #[pure]/#[sync] is checked of an impl only when some
-    // build-time call reaches it. An uncalled violating impl compiles. A dynamic
-    // module's impure impl of a sig-declared `#[pure]` method loads with status null:
-    // the violation is only logged at the consumer's runtime bind, and the stateful
-    // body runs. CLAUDE.md says the requirement is asserted of every impl body, and an
-    // impure core-trait impl in the same position is refused as a DynamicLoadError.
-    // Decide whether the requirement is a contract on every impl. If it is, build
-    // prototypes here for every method whose TraitMethodDef carries a requirement, and
-    // pin both the static and the dynamic case. probe:
-    // design/review-2026-10-26/repro/tests-fusion-traits-trait-requirement-unchecked.gx
-    // (tests-fusion-traits-01)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q36, A trait
-    // method's `#[pure]` is a contract on every impl): yes, every impl (the
-    // recommendation: every impl, as CLAUDE.md says.)
-    // 2026-10-28 codex: Reworked q36 by checking each required method's checked
-    // definition facts with the ordinary assertion checker at implementation
-    // elaboration. Core prototypes remain; user methods do not need artificial argument
-    // bindings, so callback effects remain parametric until a real call. The three
-    // uncalled invalid-implementation pins failed in all 12 modes before the fix; the
-    // valid callback pin failed all four modes with the earlier prototype patch. All 16
-    // cases now pass, and the actual async-callback refusal plus valid callback control
-    // pass all eight modes. Pins: uncalled_trait_impl_must_be_pure,
-    // uncalled_trait_impl_must_be_sync, uncalled_dynamic_trait_impl_must_be_pure,
-    // required_trait_callback_effects_stay_parametric,
-    // required_trait_checks_actual_callback_effects. Book and skill updated.
-    // Full-library results are reported separately.
-    // 2026-10-28 claude: Review (2026-10-28): impl bodies are checked, trait default
-    // bodies are not, though CLAUDE.md says the assertion holds of every body, the
-    // default included: trait Score { #[pure] val score: fn(self) -> i64 = |x| 1; #[pure]
-    // val bump: fn(self) -> i64 = |x| count(x) }; impl Score for i64 { let score = |x| x
-    // }; 0 compiles and runs; only a call Score::bump(3) refuses.
-    // 2026-10-29 claude: The trait node's typecheck1 now holds each default to its
-    // method's #[pure]/#[sync] from the default's checked definition facts (the same
-    // assertion_failure the impl check uses), whether or not an impl or a call takes it;
-    // the impl check skipped a method an impl leaves to its default, and a default's own
-    // attributes are asserted only when an instance is built. Pins:
-    // lang::traits::uncalled_trait_default_must_be_pure (the review's probe, refused),
-    // a_pure_trait_default_passes. graphix-tests lib: 11588 passed.
     fn build_prototypes(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());

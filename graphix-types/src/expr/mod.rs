@@ -1572,48 +1572,6 @@ impl Expr {
 
     /// The value this expression writes when it is a literal: a constant,
     /// or an array, list, map, tuple, struct or variant of literals.
-    // XCR claude for claude: [bug/medium] str::parse (fc_parse) promises to read what
-    // Graphix prints, but several values print as text that is no Graphix literal. A
-    // datetime prints `2020-01-01 00:00:00 UTC` (refused even alone), bytes print
-    // `AQI=`, a string holding brackets prints `"a[b]"` (the parser reads an
-    // interpolation), and NaN/inf print as names. So this returns None, and the
-    // fallback cast refuses every collection holding one of them. Decide whether the
-    // printer emits literal syntax inside collections or str::parse learns the printed
-    // forms, then pin `str::parse("[v]") == v` per primitive. probe:
-    // design/review-2026-10-26/repro/t-expr-core-parse-printed-collections.gx
-    // (t-expr-core-01)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q43, What
-    // `str::parse` reads back): yes, a (the recommendation: (a) for strings and
-    // numbers inside composites (escape brackets, type-prefix a number that is not
-    // i64/f64), (b) for datetime and duration. Bytes: print as a bytes literal.)
-    // 2026-10-27 codex: Reworked q43 without extending program literal syntax. The
-    // scoped str::parse data reader accepts printed UTC timestamps, all duration
-    // units, nonfinite floats and integral-looking f64 values beyond i64. Composite
-    // strings and non-i64/f64 numbers use literal printing; error payloads and
-    // diagnostic prefixes retain unescaped brackets. Pins
-    // parse_printed_primitive_composites failed all four modes before the fix and pass
-    // afterward, including minutes/hours/days and 1e20/1e100.
-    // printed_scalars_stay_in_data_reader and printed_error_preserves_brackets pass.
-    // The focused harness passes 112 tests, including every cast_trait fixture and all
-    // three reviewed printing gates. Formatter-corpus and full-library results are
-    // reported separately. Book, interface and language skill updated.
-    // 2026-10-28 claude: Review (2026-10-28): not done. Durations print in y and M
-    // units (netidx-value duration_display) but printed_scalar (expr/parser/mod.rs)
-    // accepts only ns/us/µs/ms/s/m/h/d, so str::parse refuses a printed year or month
-    // duration, top level and nested: [duration:31557600.s, duration:2630016.s] prints
-    // [1.y, 1.M] and parses to ParseError. parse_printed_primitive_composites never
-    // tries y or M; extend it. probe ~/tmp/xcr-review-2026-10-28/1/p/dur.gx
-    // 2026-10-29 claude: printed_scalar accepts the M and y units the duration printer
-    // uses, so a printed year or month duration parses back, top level and nested.
-    // Pin: lib_tests::str::parse_printed_primitive_composites now round-trips
-    // [duration:31557600.s, duration:2630016.s] (prints [1.y, 1.M]) and duration:1.y.
-    // 2026-10-29 claude: Eric (2026-10-29, cr-discuss round 3 D13): use netidx's
-    // parser and add microseconds to netidx. Done: netidx-value exports
-    // parser::duration (float literal + unit, µs read as us), its duration: literal
-    // uses it, and printed_scalar here uses it in place of its own unit list, so the
-    // two cannot drift again. parser::test::printed_scalars_stay_in_data_reader reads
-    // 1.µs (printers always write the point); netidx-value duration_units_round_trip
-    // pins duration:7.µs.
     pub fn literal_value(&self) -> Option<Value> {
         fn all(args: &[Expr]) -> Option<LPooled<Vec<Value>>> {
             let mut vals: LPooled<Vec<Value>> = LPooled::take();

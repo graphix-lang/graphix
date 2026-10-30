@@ -1859,66 +1859,6 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     /// site sleeps. Either way nothing answers after a sleep: a reply to a
     /// call made before it is dropped, or handed to [`Self::reclaim`]'s
     /// closure. Never `false` under [`Calls::Latest`], which aborts.
-    // XCR claude for claude: [bug/high] The default makes a sleep throw away the reply of
-    // evals whose work no abort stops. The db and sqlite ops run under spawn_blocking,
-    // process spawn completes on its first poll, and a tcp accept may have completed
-    // before the sleep. Their reply is the only copy of what they did: a popped or
-    // removed entry, a commit's outcome, a child's handle and pipes, an accepted
-    // connection. This breaks this constant's own contract. A db::pop_min in an arm
-    // deselected the next cycle loses the entry. A spawn there leaves an orphan process
-    // the program never sees. Fix: keep every completed reply across a sleep (route all
-    // replies through `kept`) and let a sleep abort only the cancel-safe calls still
-    // pending. Failing that, mark those evals not cancel-safe. Accept is Latest, so
-    // only the first fix covers it. probe:
-    // design/review-2026-10-26/repro/x-async-io-db-pop-reply-lost.gx,
-    // design/review-2026-10-26/repro/x-async-io-spawn-reply-lost.gx (x-async-io-01)
-    // 2026-10-26 claude: The 'failing that' branch is done for the evals named in
-    // db2-01, x-builtin-effects-01, http-sqlite-db1-01 and sys-io-01 (db and sqlite
-    // ops, spawn, open, tcp connect/listen are CANCEL_SAFE = false, pinned by
-    // lib_tests::*::*answer*_at_the_wake). The root fix (keep every completed reply
-    // across a sleep) and tcp accept under Latest remain for this decision.
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q16/q18,
-    // discussed): nothing delivers after a sleep. A call site that sleeps opens a fresh
-    // reply slot and drops any reply to the old one; work is cancelled where it can be,
-    // and the book documents what cannot be (a write still happens, its result is not
-    // seen). A stream read whose reply is dropped returns its bytes to the stream's
-    // buffer, so no data is lost. This replaces the CANCEL_SAFE split (a call not
-    // cancel-safe finishing and answering at the wake).
-    // 2026-10-27 claude: Built Eric's q16/q18 ruling: nothing answers a call after its
-    // site's sleep. A sleep counts a generation in the site's KeptReplies, and a reply
-    // of an older generation, kept or arriving later, is settled by the new
-    // EvalCachedAsync::reclaim (stream reads give their bytes back to the stream through
-    // a ReadTicket; later reads of that stream wait until every earlier read settles) or
-    // dropped. Calls not cancel-safe still finish their work (a pop, a commit, a spawn,
-    // a connect happen) and are not answered; cancel-safe ones abort as before. Docs:
-    // CLAUDE.md, design/async_sleep_outputs.md, book core/select.md and
-    // embedding/builtins.md, the graphix-lang skill. Pins:
-    // lib_tests::{db::db_pop_is_not_answered_after_a_sleep,
-    // db::db_txn_commit_is_not_answered_after_a_sleep,
-    // fs::file_handle::test_open_is_not_answered_after_a_sleep,
-    // sqlite::sqlite_exec_is_not_answered_after_a_sleep,
-    // process::spawn_is_not_answered_after_a_sleep,
-    // tcp::tcp_connect_is_not_answered_after_a_sleep, tcp::tcp_read_across_sleep (bytes
-    // returned in order), db::db_not_data_answers_after_a_sleep}, sys
-    // io::test::a_dropped_read_lets_the_next_read. The repro now prints only len
-    // after=1, the ruled behaviour. Semantics change: needs a soak.
-    // 2026-10-28 claude: Review (2026-10-28): the ruling holds (nothing answers after a
-    // sleep), but the fix broke Fifo ordering. CachedArgsAsync::sleep's kept branch sets
-    // inflight = 0 and remints while a call that is not CANCEL_SAFE keeps running; its
-    // reply goes to the old generation and never decrements, so at the wake a Fifo site's
-    // next call starts beside it: a db insert(k, v1) running when its arm slept can land
-    // after the insert(k, v2) issued at the wake. Track the old generation's calls in
-    // flight and hold the queue until they finish. The generation compare is also weakly
-    // pinned (only tcp_read_across_sleep, by a hang); add a fixture issuing a second db
-    // call at the wake.
-    // 2026-10-29 claude: Fixed: KeptReplies counts the calls made before the latest sleep
-    // that still run (running, from the unanswered inflight less the replies waiting) and
-    // holds the site's current reply id; a Fifo site's queue waits while running > 0
-    // (CachedArgsAsync::waits_on_old), and the last such call to finish wakes the site
-    // under its current id. Pin: lang::test_builtins::calls_in_order_across_a_sleep (a
-    // test-only eval not cancel-safe logs its start and end; without the gate every mode
-    // logs start 1, start 2, end 2, end 1). CLAUDE.md and design/async_sleep_outputs.md
-    // say so. Needs the soak.
     const CANCEL_SAFE: bool = true;
 
     /// What settles the reply of a call `args` made, for an eval not

@@ -479,55 +479,6 @@ fn tokio_main(
             .await
     });
     // a blocking task (a stdin read) must not hold the exit
-    // XCR claude for claude: [bug/high] The process exits without waiting for the
-    // runtime's teardown. Teardown only aborts the runtime task, and
-    // shutdown_background abandons both GX's drop and the blocking thread where Reaped
-    // flushes the database. So a db insert followed by sys::exit is lost in most runs:
-    // sled had not flushed it, and db's interface does not say an insert needs
-    // db::flush to be durable. Await the runtime task's end after the abort (GXHandle
-    // holds its JoinHandle), then let blocking reaps finish within a bounded
-    // shutdown_timeout, or have Reaped count outstanding reaps for the exit to wait on,
-    // so a stdin read still cannot hold the exit. probe:
-    // design/review-2026-10-26/repro/x-concurrency-db-write-lost-at-exit.sh
-    // (x-concurrency-01)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q21, Exit waits
-    // for teardown): yes, await (the recommendation: await with a bound (a few
-    // seconds).)
-    // 2026-10-28 qwen: Awaited the teardown's own work and nothing else. Reaped counts
-    // the reaps it has spawned that have not finished (an AtomicUsize and a Notify in
-    // one static, process-wide: the process is what is exiting; the count drops once
-    // the blocking thread has dropped the value, and a spawn cancelled with the pool
-    // drops its value all the same) and graphix_package_core::await_reaps() waits for
-    // zero. Shell::run drops Teardown, awaits GXHandle::ended() then await_reaps(),
-    // both within one TEARDOWN_BOUND deadline, so a stdin read that never answers is
-    // abandoned at once; main.rs is back to shutdown_background. Pin
-    // exit_teardown::a_stdin_read_that_never_ends_does_not_hold_the_exit now times the
-    // exit from the program's first value and refuses 2.5 s: 5.53 s (the whole bound,
-    // spent waiting on the read) before this, 0.51 s after — its own 500 ms exit timer,
-    // the wait costing ~10 ms. The db pin is unchanged and still passes. cargo test -p
-    // graphix-shell --offline: 181 passed, 0 failed, 1 ignored. Left alone: a signal
-    // that arrives during the initial env load returns from Shell::run before the wait
-    // (graphix-shell/src/lib.rs:705), a narrow window that still races its reaps; a
-    // signal during a run does wait.
-    // 2026-10-28 claude: Review (2026-10-28): normal exits await ended() and
-    // await_reaps() within TEARDOWN_BOUND; two early returns in Shell::run skip that
-    // wait: a SIGTERM/SIGHUP during load_env (the return Ok(code) in its select) and a
-    // failed load_env (env?). Send both through the same bounded wait; exit_teardown.rs
-    // covers neither path.
-    // 2026-10-29 claude: Both early returns now go through the same end as a normal
-    // exit: Teardown::finish (interrupt, clear the display, then await
-    // GXHandle::ended() and await_reaps() within one TEARDOWN_BOUND) runs for a
-    // SIGTERM/SIGHUP during load_env and for a failed load_env, which before skipped
-    // the wait and the display's clear. No reap can be outstanding there today (db,
-    // files and processes open asynchronously, after the first cycle), so the exit
-    // itself is the pin:
-    // interrupt_wedge::terminate_frees_first_cycle_wedge_{jit,interp} send SIGTERM
-    // inside the env load and fail if the wait held the exit; exit_teardown covers the
-    // normal path.
-    // 2026-10-29 claude: Teardown is now Session (D7, the interrupt is final):
-    // Session::finish aborts the runtime and its Ctrl-C task, clears the display, then
-    // awaits GXHandle::ended() and await_reaps() within one TEARDOWN_BOUND; a Ctrl-C
-    // during the env load now ends the run with 130 through the same finish.
     rt.shutdown_background();
     res
 }
