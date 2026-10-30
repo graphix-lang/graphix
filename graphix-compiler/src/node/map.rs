@@ -18,7 +18,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{Bound, NakedPrefix, Type, tvar::require_bounds},
+    typ::{Bound, NakedPrefix, TVar, Type, tvar::require_bounds},
     wrap,
 };
 use anyhow::Result;
@@ -252,7 +252,14 @@ impl<R: Rt> Map<R> {
         };
         if !bound {
             let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
-            self.typ.check_contains(&ctx.env, &rtype)?;
+            self.typ.check_contains(&ctx.env, &rtype).map_err(|e| {
+                match (&self.typ, &rtype) {
+                    (Type::Map { key, value }, Type::Map { key: kt, value: vt }) => {
+                        TVar::refusal_over(value, vt, TVar::refusal_over(key, kt, e))
+                    }
+                    _ => e,
+                }
+            })?;
         }
         let judgment = crate::PendingSettle::Discernible {
             typ: self.typ.clone(),

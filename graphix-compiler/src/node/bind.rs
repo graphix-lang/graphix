@@ -26,7 +26,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     typ::{
-        CoreTrait, FnType, Mutability, Type,
+        CoreTrait, FnType, Mutability, TVar, Type,
         tvar::{AtLevel, Level, current_level},
     },
     wrap,
@@ -2100,6 +2100,19 @@ impl<R: Rt> ByRef<R> {
             Referent::Channel(n)
                 if *mutability == Mutability::Mut && !(&**n as &dyn Any).is::<Ref>() =>
             {
+                // CR claude for claude: [bug/high] Inside a definition's body this
+                // check never runs: defer_settle drops a settle while
+                // ctx.def_gate_depth is nonzero, and an instance does not check
+                // again. `{ let f = |x: i64| { let r: &mut string = &mut [x];
+                // str::len(*r) }; f(1) }` passes --check and runs, with r a &mut
+                // string holding an array (main 24ae12e91, quick); the same let at
+                // top level is refused ("string does not contain Array<i64>"). An
+                // inferred infinite type gets past it the same way: `{ let rec f =
+                // |x| f(&mut [f]); 0 }` checks, leaving x: &mut '_ open. Run the
+                // check in the definition's own settle (it holds no cell a caller
+                // decides), or keep it on the definition's DefTable for its check's
+                // end. op.rs's UnaryOp::Neg defers its Contains the same way.
+                // (mut-channel-settle-01)
                 super::defer_settle(ctx, || crate::PendingSettle::Contains {
                     outer: (**cell).clone(),
                     inner: n.typ().clone(),
@@ -2123,8 +2136,9 @@ impl<R: Rt> ByRef<R> {
         if cell.shares_content(&t) || super::array::bind_element(cell, &t) {
             return Ok(());
         }
-        let t = Type::ByRef(*mutability, Arc::new(t));
-        wrap!(self, self.typ.check_contains(&ctx.env, &t))
+        let rtype = Type::ByRef(*mutability, Arc::new(t.clone()));
+        let checked = self.typ.check_contains(&ctx.env, &rtype);
+        wrap!(self, checked.map_err(|e| TVar::refusal_over(cell, &t, e)))
     }
 }
 

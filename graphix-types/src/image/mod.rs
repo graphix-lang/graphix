@@ -1475,6 +1475,7 @@ fn cell_encode(
                     quantifier_gates: _,
                     level,
                     task: _,
+                    ground: _,
                 } = &*c;
                 if *rigid_gates != 0 {
                     log::warn!(

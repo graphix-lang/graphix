@@ -18,7 +18,7 @@ use crate::{
             opt_node_encode, put_tag,
         },
     },
-    typ::Type,
+    typ::{TVar, Type},
     wrap,
 };
 use ahash::AHashSet;
@@ -71,11 +71,11 @@ pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
     }
 }
 
-/// Bind `cell`, a literal's own element cell, to `t` without an occurs
-/// walk of `t`'s whole depth: nothing else holds the cell. False when it
-/// is not such a cell.
-pub(super) fn bind_element(cell: &Type, t: &Type) -> bool {
-    matches!(cell, Type::TVar(tv) if !matches!(t, Type::Bottom) && tv.bind_unshared(t))
+/// Bind the cell `slot` holds, a literal's own element cell, to `t`
+/// without an occurs walk of `t`'s whole depth: nothing else reaches the
+/// cell. False when it is not such a cell.
+pub(super) fn bind_element(slot: &Arc<Type>, t: &Type) -> bool {
+    !matches!(t, Type::Bottom) && TVar::bind_unshared(slot, t)
 }
 
 /// An array index or slice bound: any integer. An open cell is narrowed
@@ -954,11 +954,14 @@ impl<R: Rt, K: SeqKind> SeqLit<R, K> {
         {
             return Ok(());
         }
-        let rtype = match union {
+        let rtype = match &union {
             Type::Bottom => K::typ(Type::empty_tvar()),
-            t => K::typ(t),
+            t => K::typ(t.clone()),
         };
-        Ok(self.typ.check_contains(&ctx.env, &rtype)?)
+        self.typ.check_contains(&ctx.env, &rtype).map_err(|e| match &self.typ {
+            Type::Array(slot) | Type::List(slot) => TVar::refusal_over(slot, &union, e),
+            _ => e,
+        })
     }
 }
 

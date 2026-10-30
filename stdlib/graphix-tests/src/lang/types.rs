@@ -981,6 +981,182 @@ run!(
     FuseExpect::None
 );
 
+// A call pre-unifies its formal with the argument's type before the
+// argument is checked, so the literal's element cell is reachable when
+// the literal binds it: `x` would hold `Array<[i64, fn(x: <x>) -> _]>`.
+const REC_SELF_IN_ARRAY_ARG_REJECTS: &str = "{ let rec f = |x| f([1, f]); 0 }";
+
+run!(
+    rec_self_in_array_arg_rejects,
+    REC_SELF_IN_ARRAY_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_ALONE_IN_ARRAY_ARG_REJECTS: &str = "{ let rec f = |x| f([f]); 0 }";
+
+run!(
+    rec_self_alone_in_array_arg_rejects,
+    REC_SELF_ALONE_IN_ARRAY_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_PARAM_IN_ARRAY_ARG_REJECTS: &str = "{ let rec f = |x| f([1, x]); 0 }";
+
+run!(
+    rec_param_in_array_arg_rejects,
+    REC_PARAM_IN_ARRAY_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_IN_LIST_ARG_REJECTS: &str = "{ let rec f = |x| f([<f>]); 0 }";
+
+run!(
+    rec_self_in_list_arg_rejects,
+    REC_SELF_IN_LIST_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_IN_MAP_ARG_REJECTS: &str = r#"{ let rec f = |x| f({"a" => f}); 0 }"#;
+
+run!(
+    rec_self_in_map_arg_rejects,
+    REC_SELF_IN_MAP_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_IN_STRUCT_ARG_REJECTS: &str = "{ let rec f = |x| f({a: f}); 0 }";
+
+run!(
+    rec_self_in_struct_arg_rejects,
+    REC_SELF_IN_STRUCT_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_IN_STRUCT_ARRAY_ARG_REJECTS: &str = "{ let rec f = |x| f({a: [f]}); 0 }";
+
+run!(
+    rec_self_in_struct_array_arg_rejects,
+    REC_SELF_IN_STRUCT_ARRAY_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_IN_TUPLE_ARG_REJECTS: &str = "{ let rec f = |x| f((1, f)); 0 }";
+
+run!(
+    rec_self_in_tuple_arg_rejects,
+    REC_SELF_IN_TUPLE_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_IN_TUPLE_ARRAY_ARG_REJECTS: &str = "{ let rec f = |x| f(([f], 1)); 0 }";
+
+run!(
+    rec_self_in_tuple_array_arg_rejects,
+    REC_SELF_IN_TUPLE_ARRAY_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_IN_REF_ARRAY_ARG_REJECTS: &str = "{ let rec f = |x| f(&[f]); 0 }";
+
+run!(
+    rec_self_in_ref_array_arg_rejects,
+    REC_SELF_IN_REF_ARRAY_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_IN_LET_BOUND_ARRAY_REJECTS: &str =
+    "{ let rec f = |x| { let v = [1, f]; f(v) }; 0 }";
+
+run!(
+    rec_self_in_let_bound_array_rejects,
+    REC_SELF_IN_LET_BOUND_ARRAY_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const REC_SELF_LET_BOUND_IN_ARRAY_ARG_REJECTS: &str =
+    "{ let rec f = |x| { let g = f; g([g]) }; 0 }";
+
+run!(
+    rec_self_let_bound_in_array_arg_rejects,
+    REC_SELF_LET_BOUND_IN_ARRAY_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const CLOSURE_PASSES_REC_SELF_IN_ARRAY_REJECTS: &str =
+    "{ let rec f = |x| { let g = |y| f([y, f]); g(x) }; 0 }";
+
+run!(
+    closure_passes_rec_self_in_array_rejects,
+    CLOSURE_PASSES_REC_SELF_IN_ARRAY_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+// Without `rec` a closure reaches itself only through a parameter, whose
+// function type no call can know.
+const CLOSURE_PASSES_ITSELF_IN_ARRAY_REJECTS: &str = "{ let f = |g, x| g(g, [1, g]); 0 }";
+
+run!(
+    closure_passes_itself_in_array_rejects,
+    CLOSURE_PASSES_ITSELF_IN_ARRAY_REJECTS,
+    refused("reading a fn needs its type known here");
+    FuseExpect::None
+);
+
+// A literal over values another literal shares (each `let` holds its
+// literal's type) binds its element cell as before.
+const SHARED_LITERAL_CHAIN: &str = r#"
+{
+  let a = [1, 2];
+  let b = [a, a];
+  let c = [b, [a]];
+  c
+}
+"#;
+
+run!(
+    shared_literal_chain,
+    SHARED_LITERAL_CHAIN,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(c)) => {
+            let one_two = Value::Array([Value::I64(1), Value::I64(2)].into());
+            let b = Value::Array([one_two.clone(), one_two.clone()].into());
+            let a1 = Value::Array([one_two].into());
+            &**c == [b, a1]
+        }
+        _ => false,
+    };
+    FuseExpect::Jit
+);
+
+// A recursive call's element in the literal its definition returns is
+// the literal's own element type: `'e ⊇ [i64, 'e]` collapses to i64.
+const REC_ELEMENT_OF_OWN_LITERAL_COLLAPSES: &str = r#"
+{
+  let rec g = |x: i64| select x { 0 => [1], _ => [2, g(x - 1)[0]$] };
+  g(3)
+}
+"#;
+
+run!(
+    rec_element_of_own_literal_collapses,
+    REC_ELEMENT_OF_OWN_LITERAL_COLLAPSES,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if &**a == [Value::I64(2), Value::I64(2)]);
+    FuseExpect::Jit
+);
+
 // Two bound cells, one reachable from the other's binding, are decided
 // by walking the bindings: the inferred nesting is refused like the
 // annotated twin.

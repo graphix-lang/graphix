@@ -8,7 +8,7 @@ use crate::{
     typ::{Bound, PRINT_FLAGS, PrintFlag, Type, node_addr, setops::union_identical},
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{Result, bail};
+use anyhow::{Error, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::format_compact;
@@ -26,10 +26,68 @@ use std::{
     hash::Hash,
     mem::ManuallyDrop,
     ops::{ControlFlow, Deref},
+    sync::atomic::{self, AtomicU64},
 };
 use triomphe::Arc;
 
 image_id!(TVarId);
+
+/// Advanced by every change to a bound cell's binding, constraints or
+/// lower bounds: only such a change can make a type that reached no open
+/// cell reach one, so a cell's [`TCell::ground`] holds while the epoch
+/// that proved it stands.
+static GROUND_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+fn ground_epoch() -> u64 {
+    GROUND_EPOCH.load(atomic::Ordering::SeqCst)
+}
+
+/// A bound cell is about to change.
+fn bound_cell_changes() {
+    GROUND_EPOCH.fetch_add(1, atomic::Ordering::SeqCst);
+}
+
+/// Whether no open cell is reachable from `t` through the bindings,
+/// constraints and lower bounds [`would_cycle_inner`] walks: then `t`
+/// reaches no open cell's address. A cell proved ground at `epoch` is not
+/// walked again.
+fn reaches_no_open_cell(t: &Type, epoch: u64, seen: &mut AddrSet) -> bool {
+    ensure_sufficient(|| {
+        if let Some(node) = node_addr(t)
+            && !seen.insert(node)
+        {
+            return true;
+        }
+        match t {
+            Type::Ref(r) => r.params.iter().all(|p| reaches_no_open_cell(p, epoch, seen)),
+            Type::TVar(tv) => {
+                let cell = tv.cell();
+                if !seen.insert(cell.data_ptr().addr()) {
+                    return true;
+                }
+                let (binding, cons, below) = {
+                    let c = cell.read();
+                    match &c.binding {
+                        None => return false,
+                        Some(_) if c.ground == epoch => return true,
+                        Some(b) => (b.clone(), c.constraints.clone(), c.lower.clone()),
+                    }
+                };
+                reaches_no_open_cell(&binding, epoch, seen)
+                    && cons
+                        .iter()
+                        .chain(below.iter())
+                        .all(|c| reaches_no_open_cell(c, epoch, seen))
+            }
+            t => t
+                .try_for_each_child(&mut |c| match reaches_no_open_cell(c, epoch, seen) {
+                    true => ControlFlow::Continue(()),
+                    false => ControlFlow::Break(()),
+                })
+                .is_continue(),
+        }
+    })
+}
 
 pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
     would_cycle_seen(addr, t, &mut LPooled::take())
@@ -531,6 +589,9 @@ pub struct TCell {
     pub(crate) level: Level,
     /// The compile task that created the cell ([`written`]).
     pub(crate) task: TaskId,
+    /// The [`GROUND_EPOCH`] at which the cell was bound to a type
+    /// reaching no open cell; 0, never.
+    pub(crate) ground: u64,
 }
 
 /// What [`Type::tvar_occurrences`] found: each variable met, once, and
@@ -592,6 +653,7 @@ impl Default for TCell {
             quantifier_gates: 0,
             level: current_level(),
             task: TASK.get(),
+            ground: 0,
         }
     }
 }
@@ -1017,34 +1079,78 @@ impl TVar {
         }
     }
 
-    /// Bind an open, flexible, unbounded cell to `t`, which is not a
-    /// var and does not hold this one, when nothing but this var holds
-    /// the cell: every way a type reaches a cell is a clone of a var
-    /// sharing it, so `t` cannot reach it and the occurs check would find
-    /// nothing. False, binding nothing, when any of that fails.
-    pub fn bind_unshared(&self, t: &Type) -> bool {
-        let unshared = Arc::count(&self.0) == 1 && Arc::count(&self.read().cell) == 1;
-        if !unshared
+    /// Bind the open, flexible, unbounded var `slot` holds to `t`, which
+    /// is not a var, without an occurs walk of `t`'s whole depth, when
+    /// `t` cannot reach the var's cell: nothing but `slot` holds the var
+    /// and nothing but the var holds the cell, and either nothing but its
+    /// owner holds `slot` (a type reaches a cell only through a clone of
+    /// one of the three) or `t` reaches no open cell at all. False,
+    /// binding nothing, when any of that fails.
+    pub fn bind_unshared(slot: &Arc<Type>, t: &Type) -> bool {
+        let Type::TVar(tv) = &**slot else { return false };
+        if Arc::count(&tv.0) != 1
+            || Arc::count(&tv.read().cell) != 1
             || matches!(t, Type::TVar(_))
-            || self.is_bound()
-            || self.is_rigid()
-            || !self.cell_constraints().is_empty()
-            || !self.cell_lower().is_empty()
+            || tv.is_bound()
+            || tv.is_rigid()
+            || !tv.cell_constraints().is_empty()
+            || !tv.cell_lower().is_empty()
         {
             return false;
         }
-        self.bind(t.clone());
+        let epoch = ground_epoch();
+        let shared = Arc::count(slot) > 1;
+        if shared && !reaches_no_open_cell(t, epoch, &mut LPooled::take()) {
+            return false;
+        }
+        tv.bind(t.clone());
+        if shared {
+            let cell = tv.cell();
+            let mut c = cell.write();
+            if c.binding.is_some() {
+                c.ground = epoch;
+            }
+        }
         true
+    }
+
+    /// `e`, the refusal of the var `slot` holds against `t`, as the
+    /// infinite type when a member of `t` that is a constructor reaches
+    /// the var's cell: no finite type contains a constructor holding
+    /// itself.
+    pub fn refusal_over(slot: &Type, t: &Type, e: Error) -> Error {
+        let Type::TVar(tv) = slot else { return e };
+        let members = match t {
+            Type::Set(ms) => &ms[..],
+            t => std::slice::from_ref(t),
+        };
+        let constructor_reaches = |m: &Type| {
+            !matches!(m, Type::TVar(_) | Type::Ref(_) | Type::App(..) | Type::Set(_))
+                && tv.would_cycle(m)
+        };
+        match members.iter().any(constructor_reaches) {
+            true => anyhow!("{}", super::contains::INFINITE_TYPE_MSG),
+            false => e,
+        }
     }
 
     /// Bind the cell, replacing any binding.
     #[doc(hidden)]
     pub fn bind(&self, t: Type) {
+        self.write_binding(t, true)
+    }
+
+    /// Bind the cell; `reaching` when `t` may reach an open cell a
+    /// binding it replaces did not.
+    fn write_binding(&self, t: Type, reaching: bool) {
         require_bounds(&self.cell_constraints(), &t);
         lower(&t, self.level());
         let cell = self.cell();
         let mut c = cell.write();
         if decided(&c) {
+            if reaching && c.binding.is_some() {
+                bound_cell_changes();
+            }
             c.binding = Some(t)
         }
     }
@@ -1061,6 +1167,9 @@ impl TVar {
         if !new.is_empty() {
             let mut c = cell.write();
             if decided(&c) {
+                if c.binding.is_some() {
+                    bound_cell_changes();
+                }
                 c.constraints.extend(new.drain(..));
             }
         }
@@ -1101,6 +1210,9 @@ impl TVar {
         lower(&t, cell.read().level);
         let mut c = cell.write();
         if decided(&c) {
+            if c.binding.is_some() {
+                bound_cell_changes();
+            }
             c.lower.push(t)
         }
     }
@@ -1244,6 +1356,9 @@ impl TVar {
         let level = s_cell.read().level;
         {
             let mut oc = o_cell.write();
+            if oc.binding.is_some() && !(to_add.is_empty() && below.is_empty()) {
+                bound_cell_changes();
+            }
             oc.constraints.extend(to_add.drain(..));
             oc.lower.extend(below.drain(..));
             if !earlier_task(&oc) {
@@ -1375,6 +1490,9 @@ impl TVar {
             if !decided(&sc) {
                 return;
             }
+            if sc.binding.is_some() {
+                bound_cell_changes();
+            }
             sc.binding = Some(binding.clone());
             sc.constraints.extend(to_add.drain(..));
             sc.constraints.clone()
@@ -1391,12 +1509,13 @@ impl TVar {
         // write back: the lock is non-reentrant.
         // A cell an earlier task owns keeps its binding as it stands: the
         // normal form means the same, and writing it would be a decision.
+        // The normal form reaches only cells its source reached.
         if cx.cells.insert(self.cell_addr())
             && !self.earlier_task()
             && let Some(t) = self.binding()
             && let Some(n) = t.normalize_int(cx)
         {
-            self.bind(n);
+            self.write_binding(n, false);
         }
         self.clone()
     }
@@ -1408,6 +1527,9 @@ impl TVar {
         let mut c = cell.write();
         if c.binding.is_some() && !decided(&c) {
             return;
+        }
+        if c.binding.is_some() {
+            bound_cell_changes();
         }
         c.binding = None;
         c.facts.remove(CellFact::BottomRequired);

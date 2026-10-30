@@ -54,6 +54,16 @@ structure is returned SHARED, never copied.
   only on leaves reachable from the allocation); `Map` is excluded from
   node-level dedup (two Arcs — a one-address key could alias a
   different pairing and skip the value).
+- A literal's element cell (an array's, a list's, a map's key and
+  value, a `&`'s referent: `TVar::bind_unshared`) binds to its
+  elements' union without an occurs walk when nothing but the literal
+  holds it, or, when something does (a call pre-unifies its formal
+  with the argument's type before checking it; a `let` holds its
+  value's type), when the union reaches no open cell
+  (`reaches_no_open_cell`). A cell bound that way remembers it
+  (`TCell::ground`) at the `GROUND_EPOCH` that proved it; every change
+  to a bound cell's binding, constraints or lower bounds advances the
+  epoch, so a chain of lets over literals checks in linear time.
 
 **`flatten_set` worklist.** The accumulator is merge-saturated by
 invariant, so only the incoming (or just-merged) element can enable a
