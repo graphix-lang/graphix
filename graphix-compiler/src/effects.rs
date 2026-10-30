@@ -218,3 +218,25 @@ pub enum NoLoop {
     /// A raise to a handler that does not fire with the formals.
     Raise(crate::expr::Expr),
 }
+
+impl NoLoop {
+    /// Whether a refusal names this reason before `other`: sites first,
+    /// in the order they are written, then a formal, then memory.
+    pub(crate) fn named_before(&self, other: &Self) -> bool {
+        let rank = |n: &Self| match n {
+            Self::Io(_) => 0,
+            Self::Raise(_) => 1,
+            Self::Formals => 2,
+            Self::Memory => 3,
+        };
+        let order = match (self, other) {
+            (Self::Io(a) | Self::Raise(a), Self::Io(b) | Self::Raise(b)) => a
+                .pos
+                .cmp(&b.pos)
+                .then(rank(self).cmp(&rank(other)))
+                .then_with(|| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)),
+            _ => rank(self).cmp(&rank(other)),
+        };
+        order.is_lt()
+    }
+}

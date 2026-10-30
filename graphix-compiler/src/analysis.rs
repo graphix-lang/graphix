@@ -1178,20 +1178,10 @@ fn mark_recursion<R: Rt>(
             if summary == RecursionKind::TailCalls
                 && let Some(b) = blocker
             {
-                // CR claude for claude: [bug/low] The reason a refused
-                // `#[tail_recursive]` names is that of the first instance this
-                // loop judges, in `graph.instances`' hash order, so it varies
-                // from run to run when two instances of one definition are
-                // blocked for different reasons: `loop(|x| { println("p"); x },
-                // 3, 0)` beside `loop(sum, 3, 0)`, over `let rec loop = |f: fn(x:
-                // i64) -> i64, n: i64, acc: i64| -> i64 select n { 0 => acc, _ =>
-                // loop(f, n - 1, acc + f(n)) }` and a non-tail `sum`, named
-                // `f(n)`'s Io in 4 of 8 runs (`GRAPHIX_PAR=force graphix
-                // --no-cache --no-fusion`) and per-call memory in the others. The
-                // verdict holds; keep the reason by a fixed order (a named site
-                // before `Memory`, then its position) instead of `get_or_insert`.
-                // (tail-reason-01)
-                d.no_loop.lock().get_or_insert(b);
+                let mut named = d.no_loop.lock();
+                if named.as_ref().is_none_or(|n| b.named_before(n)) {
+                    *named = Some(b);
+                }
             }
         }
     }

@@ -401,8 +401,7 @@ const TAIL_RECURSIVE_MUTUAL_INSTANCE: &str = r#"
 
 run!(tail_recursive_mutual_instance, TAIL_RECURSIVE_MUTUAL_INSTANCE, refused("every recursive call must be in tail position"); FuseExpect::None; build_only);
 
-// A callee whose own recursion is not a tail call holds per-call memory,
-// whichever of the two instances the analysis judges first.
+// A callee holding a non-tail self-call is per-call memory.
 const TAIL_RECURSIVE_NON_TAIL_CALLEE: &str = r#"
 {
   let rec sum = |x: i64| -> i64 select x { 0 => 0, _ => x + sum(x - 1) };
@@ -440,6 +439,32 @@ const INNER_REC_UNASSERTED: &str = r#"
 "#;
 
 run!(inner_rec_unasserted, INNER_REC_UNASSERTED, prints("[i64:6, i64:12]"));
+
+// Instances blocked for different reasons: the refusal names a site
+// before per-call memory, and of two sites the one written first.
+const TAIL_RECURSIVE_TWO_REASONS: &str = r#"
+{
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let rec sum = |x: i64| -> i64 select x { 0 => 0, _ => x + sum(x - 1) };
+  (loop(|x| { println("p"); x }, 3, 0), loop(sum, 3, 0))
+}
+"#;
+
+run!(tail_recursive_two_reasons, TAIL_RECURSIVE_TWO_REASONS, refused("no loop is built: `f(n)` (line 5, column 52) performs Io"); FuseExpect::None; build_only);
+
+const TAIL_RECURSIVE_TWO_SITES: &str = r#"
+{
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, g: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, g, n - 1, acc + f(n) + g(n)) };
+  let p = |x: i64| -> i64 { println("p"); x };
+  (loop(p, |x| x, 3, 0), loop(|x| x, p, 3, 0))
+}
+"#;
+
+run!(tail_recursive_two_sites, TAIL_RECURSIVE_TWO_SITES, refused("no loop is built: `f(n)` (line 5, column 55) performs Io"); FuseExpect::None; build_only);
 
 // A lambda literal called in place is an instance like any other: its
 // async body makes the enclosing function async.
