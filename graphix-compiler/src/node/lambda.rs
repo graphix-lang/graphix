@@ -2162,28 +2162,25 @@ impl<R: Rt> DefGate<R> {
     }
 }
 
-/// Whether `t` holds an open cell a definition enclosing one at `depth`
-/// owns.
-fn holds_enclosing_cell(t: &Type, depth: u32) -> bool {
-    fn go(t: &Type, depth: u32, seen: &mut AHashSet<usize>) -> bool {
+/// Whether `t` holds an unbound cell `f` accepts.
+fn holds_unbound(t: &Type, f: &impl Fn(&TVar) -> bool) -> bool {
+    fn go(t: &Type, f: &impl Fn(&TVar) -> bool, seen: &mut AHashSet<usize>) -> bool {
         crate::stack::ensure_sufficient(|| match t {
             Type::TVar(tv) => {
                 seen.insert(tv.cell_addr())
                     && match tv.binding() {
-                        Some(b) => go(&b, depth, seen),
-                        None => {
-                            matches!(tv.level(), Level::Def { depth: d, .. } if d < depth)
-                        }
+                        Some(b) => go(&b, f, seen),
+                        None => f(tv),
                     }
             }
             t => {
                 let mut found = false;
-                t.for_each_child(&mut |c| found = found || go(c, depth, seen));
+                t.for_each_child(&mut |c| found = found || go(c, f, seen));
                 found
             }
         })
     }
-    go(t, depth, &mut LPooled::take())
+    go(t, f, &mut LPooled::take())
 }
 
 fn capture_names<R: Rt>(
@@ -2217,6 +2214,10 @@ fn capture_names<R: Rt>(
 /// Against a declared tvar it must fit the tvar's constraints, not the
 /// variable, since a default is allowed to instantiate the variable at
 /// a site that omits the argument (`CallSite::check_omitted_defaults`).
+/// A default whose type holds an enclosing definition's declared
+/// variable fits its parameter whole: a call instantiates no variable of
+/// the definitions around it, and an omitting site outside them sees
+/// their schemes (`callsite::Judge`).
 fn check_defaults<R: Rt>(
     ctx: &mut CompileCtx<R>,
     def: &LambdaDef<R>,
@@ -2238,7 +2239,10 @@ fn check_defaults<R: Rt>(
         })?;
         let res = node.typecheck0(ctx).and_then(|()| {
             let typ = node.typ().clone();
-            // CR claude for eric: [bug/low] This refuses a default of the factory's own
+            let depth = def.level.depth();
+            let enclosing =
+                |tv: &TVar| matches!(tv.level(), Level::Def { depth: d, .. } if d < depth);
+            // XCR claude for claude: [bug/low] This refuses a default of the factory's own
             // declared variable, with advice the author has already followed: `|z: 'a| ->
             // 'a { let g = |#d: 'a = z, y: i64| d; g(1) }` is "default reads an enclosing
             // open type: annotate the factory's parameter or give the defaulted parameter a
@@ -2247,13 +2251,36 @@ fn check_defaults<R: Rt>(
             // fixes it? If not, the message should name the variable and say a type
             // variable is not a closed type. probe: ~/tmp/xcr-review-2026-10-28/new/dflt.gx
             // (default-tvar-01)
-            if at.typ.has_unbound() && holds_enclosing_cell(&typ, def.level.depth()) {
+            // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D9): count a
+            // rigid declared variable of an enclosing definition as closed for the default
+            // rule (option a).
+            // 2026-10-29 claude: check_defaults skips a rigid enclosing cell in the
+            // open-type refusal; a default holding one fits its parameter whole (an
+            // unannotated parameter takes the variable), and a site's check-time judgment
+            // (callsite::Judge::Check) takes a copy of an enclosing definition's scheme
+            // instead of deciding it, so an escaped closure omitting the default at mk(1)
+            // and mk("s") no longer writes mk's 'a. Pins in lang::types:
+            // default_of_the_factorys_declared_variable{,_at_a_string},
+            // default_of_an_array_of_the_factorys_declared_variable,
+            // default_of_a_declared_variable_{outside_the_factory,types_its_parameter,types_an_escaping_parameter,is_the_instances},
+            // default_of_one_declared_variable_for_another: all 8 fail in every mode
+            // without the rigid skip; is_the_instances, types_an_escaping_parameter and
+            // one_for_another fail without the whole-parameter check (the first then checks
+            // and its bind refuses); outside_the_factory and types_an_escaping_parameter
+            // fail without the site copy. Needs a soak (typemorph).
+            if at.typ.has_unbound()
+                && holds_unbound(&typ, &|tv| !tv.is_rigid() && enclosing(tv))
+            {
                 bail!(
                     "default reads an enclosing open type: annotate the factory's \
                      parameter or give the defaulted parameter a closed type"
                 );
             }
+            let declared = holds_unbound(&typ, &|tv| tv.is_rigid() && enclosing(tv));
             match &at.typ {
+                // no call instantiates an enclosing definition's variable:
+                // the default fits for every instance of it, or not at all
+                _ if declared => at.typ.check_contains(&ctx.env, &typ),
                 // each conjunct narrows the default's open cells, which
                 // may be the environment's, rather than deciding them
                 Type::TVar(tv) if !tv.is_bound() => tv

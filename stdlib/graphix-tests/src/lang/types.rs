@@ -1475,6 +1475,54 @@ run!(
        [f(2), f(#d: 5, 3)] }",
     prints("[[i64:1, i64:2], [i64:5, i64:3]]"); FuseExpect::None
 );
+run!(
+    default_of_the_factorys_declared_variable,
+    "{ let mk = |z: 'a| -> 'a { let g = |#d: 'a = z, y: i64| d; g(1) }; mk(3) }",
+    is(Value::I64(3))
+);
+run!(
+    default_of_the_factorys_declared_variable_at_a_string,
+    "{ let mk = |z: 'a| -> 'a { let g = |#d: 'a = z, y: i64| d; g(1) }; mk(\"s\") }",
+    is(Value::String("s".into()))
+);
+run!(
+    default_of_an_array_of_the_factorys_declared_variable,
+    "{ let mk = |z: 'a| -> Array<'a> { let g = |#d: Array<'a> = [z], y: i64| d; g(1) }; \
+       (mk(3), mk(\"s\")) }",
+    prints(r#"[[i64:3], ["s"]]"#)
+);
+run!(
+    default_of_a_declared_variable_outside_the_factory,
+    "{ let mk = |z: 'a| { let g = |#d: Array<'a> = [z], y: i64| (d, y); g }; \
+       let f = mk(1); let h = mk(\"s\"); \
+       let k: fn(y: i64) -> (Array<string>, i64) = h; \
+       (f(2), h(3), f(#d: [7], 4), k(5)) }",
+    prints(r#"[[[i64:1], i64:2], [["s"], i64:3], [[i64:7], i64:4], [["s"], i64:5]]"#);
+    FuseExpect::None
+);
+run!(
+    default_of_a_declared_variable_types_its_parameter,
+    "{ let mk = |z: 'a| { let g = |#d = z, y: i64| (d, y); g(1) }; (mk(3), mk(\"s\")) }",
+    prints(r#"[[i64:3, i64:1], ["s", i64:1]]"#)
+);
+run!(
+    default_of_a_declared_variable_types_an_escaping_parameter,
+    "{ let mk = |z: 'a| { let g = |#d = z, y: i64| (d, y); g }; \
+       let f = mk(1); let h = mk(\"s\"); (f(2), h(3), f(#d: 7, 4)) }",
+    prints(r#"[[i64:1, i64:2], ["s", i64:3], [i64:7, i64:4]]"#); FuseExpect::None
+);
+run!(
+    default_of_a_declared_variable_is_the_instances,
+    "{ let mk = |z: 'a| { let g = |#d = z, y: i64| (d, y); g }; \
+       let f = mk(1); let r: (string, i64) = f(2); r }",
+    refused("(string, i64) does not contain ('a: i64, i64)"); FuseExpect::None
+);
+run!(
+    default_of_one_declared_variable_for_another,
+    "{ let mk = |z: 'b, w: 'a| { let g = |#d: Array<'a> = [z], y: i64| d; (g, w) }; \
+       let p = mk(\"s\", 1); p.0(2) }",
+    refused("Array<'a: unbound> does not contain"); FuseExpect::None
+);
 
 const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
 {

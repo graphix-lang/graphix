@@ -38,6 +38,14 @@ defaulted parameter (`|#d: i64 = z, x|`). An unannotated factory such as
 like `#d: Array<'q> = [z]`: a call cannot safely infer the enclosing
 function's type from an omitted argument.
 
+A type variable the enclosing function declares is closed, since each
+call of that function fixes it: `|z: 'a| { let g = |#d: 'a = z, y: i64| d;
+g(1) }` is fine, as are `#d: Array<'a> = [z]` and an unannotated `#d = z`,
+which takes the type `'a`. Such a default must fit its parameter whatever
+`'a` is, so `|z: 'b, w: 'a| { let g = |#d: Array<'a> = [z], y: i64| d; g }`
+is refused. A closure returned this way keeps its default per call of the
+factory: `mk(1)` and `mk("s")` each omit `#d` at their own type.
+
 The compiler implements subtyping for functions with optional arguments. For
 example if you write a function that takes a function with a labeled argument
 `foo`, you can pass any function that has a labeled argument `foo`, even if it

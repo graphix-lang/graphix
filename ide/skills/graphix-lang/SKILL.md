@@ -291,7 +291,9 @@ initializer does not keep running.
 A labeled default returning an enclosing function's open type requires a
 closed defaulted parameter type. Annotate the factory's parameter
 (`|z: i64|`) or the defaulted one (`|#d: i64 = z, x|`); `|z| { let g =
-|#d = z, x| (d, x); g }` and `#d: Array<'q> = [z]` are refused.
+|#d = z, x| (d, x); g }` and `#d: Array<'q> = [z]` are refused. A
+variable the factory declares is closed: `|z: 'a| { let g = |#d: 'a = z,
+y: i64| d; g(1) }` checks, and `#d = z` there takes `'a`.
 
 A function is more than a computation: each call is a live piece of
 graph that stays. It can hold state (`let x = ..; x <- ..`), run seqs

@@ -182,8 +182,11 @@ them:
   never by position;
 - a default is checked at the definition against its parameter's type
   (or a declared variable's constraints, `lambda.rs::check_defaults`; a
-  variable nested in the type is any instance of it there) and again at
-  each site that omits it, where it may narrow that site's cells;
+  variable nested in the type is any instance of it there, and a default
+  holding an enclosing definition's declared variable fits its parameter
+  whole) and again at each site that omits it, where it may narrow that
+  site's cells, never an enclosing definition's scheme
+  (`callsite::Judge`);
 - `F ⊇ G` for function types (`fntyp.rs::align`): the same number of
   positionals, paired in order; every label of `F` present in `G`;
   every label of `G` that `F` lacks optional in `G`; and never `?#x` in

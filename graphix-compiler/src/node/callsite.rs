@@ -214,6 +214,17 @@ impl ArgStage {
     }
 }
 
+/// Where a site judges a default. At the check, the default compiles in
+/// its definition's environment, where a variable of an enclosing
+/// definition whose check has closed is that definition's scheme, of which
+/// the callee is one instance: the judgment takes a copy of it rather than
+/// deciding it. At the bind, the environment is the instance's.
+#[derive(Clone, Copy)]
+enum Judge {
+    Check,
+    Bind,
+}
+
 /// A labeled default of `f` compiled in `f`'s environment, where its
 /// names are, and judged in the site's, where the site's types are:
 /// against the site's view of the label, which the default narrows and
@@ -232,6 +243,7 @@ fn checked_default<R: Rt>(
     defaults: &mut Refs,
     site: Option<&FnType>,
     value: Option<&FnType>,
+    judge: Judge,
 ) -> Result<Node<R>> {
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
@@ -243,15 +255,22 @@ fn checked_default<R: Rt>(
     let label = |ft: &FnType| -> Option<Type> {
         ft.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
     };
+    let copy = match judge {
+        Judge::Check if node.typ().has_unbound() => {
+            Some(node.typ().instantiate_with(&mut LPooled::take(), &ctx.rec_defs))
+        }
+        Judge::Check | Judge::Bind => None,
+    };
+    let typ = copy.as_ref().unwrap_or(node.typ());
     let res = res.and_then(|()| match site.and_then(label) {
-        Some(t) => t.check_contains(&ctx.env, node.typ()),
+        Some(t) => t.check_contains(&ctx.env, typ),
         None => {
             let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
             for t in callee_param(ctx, f, name, site, &mut gates)
                 .into_iter()
                 .chain(value.and_then(label))
             {
-                t.check_contains(&ctx.env, node.typ())?
+                t.check_contains(&ctx.env, typ)?
             }
             Ok(())
         }
@@ -300,6 +319,7 @@ fn judge_hidden_defaults<R: Rt>(
                 &mut Refs::default(),
                 Some(formal),
                 Some(value),
+                Judge::Check,
             )?;
             ctx.discard(node);
         }
@@ -1735,8 +1755,16 @@ impl<R: Rt> CallSite<R> {
             let Some(expr) = argspec.kind.default() else {
                 bail!("expected default value")
             };
-            let default_node =
-                self.checked_default(ctx, flags, scope, f, name, expr, defaults)?;
+            let default_node = self.checked_default(
+                ctx,
+                flags,
+                scope,
+                f,
+                name,
+                expr,
+                defaults,
+                Judge::Bind,
+            )?;
             let typ = default_node.typ().clone();
             let id = BindId::new();
             let spec = TArc::new(default_node.spec().clone());
@@ -1769,6 +1797,7 @@ impl<R: Rt> CallSite<R> {
         name: &ArcStr,
         expr: &Expr,
         defaults: &mut Refs,
+        judge: Judge,
     ) -> Result<Node<R>> {
         let entered = ctx.enter_default(f.id, name);
         let node = checked_default(
@@ -1782,6 +1811,7 @@ impl<R: Rt> CallSite<R> {
             defaults,
             self.ftype.as_deref(),
             None,
+            judge,
         );
         if entered {
             ctx.leave_default(f.id, name)
@@ -1913,6 +1943,7 @@ impl<R: Rt> CallSite<R> {
                     name,
                     expr,
                     &mut Refs::default(),
+                    Judge::Check,
                 )?;
                 if carries(&ctx.env, node.typ()) {
                     carriers.push(name.clone());
