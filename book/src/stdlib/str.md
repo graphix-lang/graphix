@@ -7,7 +7,7 @@ so `cast<[i64, f64]>("[x]")` of a float `x` reads back the float. Bytes print as
 `bytes:` literals.
 
 The data reader accepts printed UTC datetimes, durations in every printed unit
-(`ns`, `µs`, `ms`, `s`, `m`, `h`, `d`), large finite floats printed as integers,
+(`ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `M`, `y`; `µs` too), large finite floats printed as integers,
 and `NaN`, `inf`, and `-inf`. These printed forms do not extend program syntax.
 Diagnostic strings inside errors retain their readable, unescaped brackets.
 

@@ -1391,7 +1391,6 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    const UNITS: [&str; 10] = ["ns", "us", "µs", "ms", "s", "m", "h", "d", "M", "y"];
     (
         attempt(string("duration:")),
         position(),
@@ -1402,7 +1401,7 @@ where
         many1::<CompactString, _, _>(satisfy(|c: char| c.is_alphabetic())),
     )
         .then(|(_, start, n, pos, unit): (_, _, CompactString, _, CompactString)| {
-            if !UNITS.contains(&unit.as_str()) {
+            if duration_of("0", &unit).is_none() {
                 grow::note_reason(
                     pos,
                     None,
@@ -1411,9 +1410,7 @@ where
                          ms, s, m, h, d, M and y (`duration:30.m`)"
                     ),
                 );
-            } else if n.parse::<f64>().is_ok()
-                && duration_of(&n, if unit == "µs" { "us" } else { &unit }).is_none()
-            {
+            } else if n.parse::<f64>().is_ok() && duration_of(&n, &unit).is_none() {
                 grow::note_reason(
                     start,
                     Some(n.len() + unit.len()),
