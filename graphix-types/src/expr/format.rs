@@ -1,9 +1,9 @@
 use crate::{
     PrintFlag,
     expr::{
-        Decorations, Expr, ExprKind, ModuleKind, Origin, SeqExpr, SeqTrigger, Sig,
-        SigItem, SigKind, StrForm, StructurePattern, TraitExpr, TraitMethod, TryWithExpr,
-        TypeDefBody, TypeDefExpr, UseItem,
+        Expr, ExprKind, ModuleKind, Origin, SeqExpr, Sig, SigItem, SigKind, TraitExpr,
+        TraitMethod, TryWithExpr, UseItem,
+        ornament::{Ornament, Ornaments},
         parser::{parse, parse_sig},
         print::{
             PrettyBuf, PrettyDisplay, below_of, cmp_use_items, eol_of, pretty_file_items,
@@ -16,7 +16,6 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
-use netidx_value::Value;
 use poolshark::local::LPooled;
 use serde_derive::Deserialize;
 use smallvec::SmallVec;
@@ -337,16 +336,17 @@ impl Parsed {
     }
 
     /// What equality does not see that the formatter must hand back, in
-    /// source order: every comment and attribute, and every string
+    /// source order: every comment, doc and attribute, and every string
     /// literal's delimiters, each with the preorder ordinal of the node it
     /// stands on, so one that moves to a neighbour is a difference.
     fn ornaments(&self) -> LPooled<Vec<(usize, Ornament<'_>)>> {
-        let mut w = Ornaments { node: 0, acc: LPooled::take() };
+        let mut acc: LPooled<Vec<(usize, Ornament<'_>)>> = LPooled::take();
+        let mut w = Ornaments::new(|n, o| acc.push((n, o)));
         match self {
             Self::Program(exprs) => exprs.iter().for_each(|e| w.expr(e)),
             Self::Interface(sig) => w.sig(sig),
         }
-        w.acc
+        acc
     }
 
     /// The first place `other` says something else, as the text each
@@ -390,161 +390,6 @@ impl Parsed {
             (Self::Program(_), Self::Interface(_))
             | (Self::Interface(_), Self::Program(_)) => unreachable!(),
         }
-    }
-}
-
-/// Something a parse keeps beside the syntax, for the formatter to hand
-/// back.
-#[derive(Debug, PartialEq)]
-enum Ornament<'a> {
-    UseComments(&'a [super::UseComment]),
-    Decorations(&'a Decorations),
-    Comments(&'a [ArcStr]),
-    Eol(Option<&'a ArcStr>),
-    Delimiters(StrForm),
-}
-
-/// The delimiters of every string literal in `e`, an expression's or a
-/// pattern's, in source order: what printing as written must keep.
-#[cfg(test)]
-pub(super) fn str_forms(e: &Expr) -> LPooled<Vec<StrForm>> {
-    let mut w = Ornaments { node: 0, acc: LPooled::take() };
-    w.expr(e);
-    w.acc
-        .drain(..)
-        .filter_map(|(_, o)| match o {
-            Ornament::Delimiters(form) => Some(form),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The ornaments of a tree in preorder, each beside its node's ordinal.
-struct Ornaments<'a> {
-    node: usize,
-    acc: LPooled<Vec<(usize, Ornament<'a>)>>,
-}
-
-impl<'a> Ornaments<'a> {
-    fn push(&mut self, o: Ornament<'a>) {
-        self.acc.push((self.node, o))
-    }
-
-    /// A pattern's string literals' delimiters, in order.
-    fn pattern(&mut self, p: &'a StructurePattern) {
-        ensure_sufficient(|| {
-            if let StructurePattern::Literal(Value::String(_), form) = p {
-                self.push(Ornament::Delimiters(form.0))
-            }
-            p.for_each_sub(&mut |c| self.pattern(c))
-        })
-    }
-
-    fn expr(&mut self, e: &'a Expr) {
-        ensure_sufficient(|| {
-            self.node += 1;
-            if let Some(d) = &e.dec {
-                self.push(Ornament::Decorations(d));
-                for a in d.attrs.iter() {
-                    a.args.iter().for_each(|a| self.expr(a))
-                }
-            }
-            match &e.kind {
-                ExprKind::Constant(Value::String(_))
-                | ExprKind::StringInterpolate { .. } => {
-                    self.push(Ornament::Delimiters(e.str_form))
-                }
-                ExprKind::Bind(b) => self.pattern(&b.pattern),
-                ExprKind::Lambda(l) => {
-                    for a in l.args.iter() {
-                        self.pattern(&a.pattern);
-                        self.push(Ornament::Comments(a.comments.above.lines()));
-                        self.push(Ornament::Eol(a.comments.eol.text()));
-                    }
-                    self.push(Ornament::Comments(l.vargs_comments.above.lines()));
-                    self.push(Ornament::Eol(l.vargs_comments.eol.text()));
-                    self.push(Ornament::Comments(l.below.lines()));
-                }
-                ExprKind::Select(sel) => sel
-                    .arms
-                    .iter()
-                    .for_each(|(p, _)| self.pattern(&p.structure_predicate)),
-                ExprKind::Trait(t) => self.methods(t, |_, _| ()),
-                ExprKind::Impl(im) => self.push(Ornament::Comments(im.below.lines())),
-                ExprKind::TypeDef(td) => self.typedef(td),
-                ExprKind::Use { names, .. } => self.uses(names),
-                ExprKind::Module { value, .. }
-                    if let ModuleKind::Dynamic { sig, .. } = &**value =>
-                {
-                    self.sig(sig)
-                }
-                ExprKind::Seq(sq) if let Some(SeqTrigger::Bind(b)) = &sq.trigger => {
-                    self.pattern(&b.pattern)
-                }
-                _ => (),
-            }
-            e.for_each_child(&mut |c| self.expr(c))
-        })
-    }
-
-    /// A trait's comments; `default` walks a method's default body, which
-    /// an expression's walk reaches as a child.
-    fn methods(
-        &mut self,
-        t: &'a TraitExpr,
-        mut default: impl FnMut(&mut Self, &'a Expr),
-    ) {
-        for m in t.methods.iter() {
-            self.push(Ornament::Comments(m.comments.lines()));
-            self.push(Ornament::Eol(m.eol.text()));
-            if let Some(d) = &m.default {
-                default(self, d)
-            }
-        }
-        self.push(Ornament::Comments(t.below.lines()))
-    }
-
-    /// The comments on a type definition's fields and members, each item's
-    /// in canonical order, so one that moved to another item shows.
-    fn typedef(&mut self, td: &'a TypeDefExpr) {
-        let (TypeDefBody::Alias(t) | TypeDefBody::Abstract(Some(t))) = &td.body else {
-            return;
-        };
-        if td.notes.is_empty() {
-            return;
-        }
-        td.notes.each_in(t, &mut |n| {
-            let (above, eol, below) = match n {
-                Some(n) => {
-                    (n.comments.above.lines(), n.comments.eol.text(), n.below.lines())
-                }
-                None => (&[][..], None, &[][..]),
-            };
-            self.push(Ornament::Comments(above));
-            self.push(Ornament::Eol(eol));
-            self.push(Ornament::Comments(below));
-        })
-    }
-
-    fn uses(&mut self, names: &'a [UseItem]) {
-        for n in names {
-            self.push(Ornament::UseComments(n.comments.lines()));
-        }
-    }
-
-    fn sig(&mut self, sig: &'a Sig) {
-        for si in sig.items.iter() {
-            self.node += 1;
-            self.push(Ornament::Comments(si.comments.lines()));
-            self.push(Ornament::Eol(si.eol.text()));
-            match &si.kind {
-                SigKind::Trait(t) => self.methods(t, |w, d| w.expr(d)),
-                SigKind::TypeDef(td) => self.typedef(td),
-                SigKind::Use { names, .. } => self.uses(names),
-                _ => (),
-            }
-        }
-        self.push(Ornament::Comments(sig.below.lines()))
     }
 }
 
@@ -1555,7 +1400,7 @@ mod tests {
     // parser refuses
     #[test]
     fn the_guard_reads_attribute_arguments() {
-        use crate::expr::Attr;
+        use crate::expr::{Attr, Decorations};
         use SourceKind::Program;
         use arcstr::literal;
         let src = "#[a(b)]\nlet x = 1";

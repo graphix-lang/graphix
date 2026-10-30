@@ -2622,8 +2622,46 @@ fn no_comment_stands_inside_a_splice_or_an_attribute() {
             "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { type T = [\n `A, // a\n `B\n ] }; source \"let x = 1\" }; 1 }]\";\ns",
             splice,
         ),
+        // what an interface item holds: a trait's method comments and
+        // default bodies, a use tree's comments and a `///` doc
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { val f: fn(self) -> i64 // c\n } }; source \"\" }; 1 }]\";\ns",
+            splice,
+        ),
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { val f: fn(self) -> i64;\n // c\n } }; source \"\" }; 1 }]\";\ns",
+            splice,
+        ),
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T {\n // c\n val f: fn(self) -> i64 } }; source \"\" }; 1 }]\";\ns",
+            splice,
+        ),
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig {\n/// d\nval f: i64 }; source \"\" }; 1 }]\";\ns",
+            splice,
+        ),
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T {\n /// d\n val f: fn(self) -> i64 } }; source \"\" }; 1 }]\";\ns",
+            splice,
+        ),
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { val f: fn(self) -> i64 = |x| { let y = 1; // c\ny } } }; source \"\" }; 1 }]\";\ns",
+            splice,
+        ),
+        (
+            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { use core::{\n// c\nprint}; val f: i64 }; source \"\" }; 1 }]\";\ns",
+            splice,
+        ),
+        (
+            "let s = \"[{ trait T {\n/// d\nval f: fn(self) -> i64 }; 1 }]\";\ns",
+            "`///` is a doc comment, legal only in a .gxi interface file",
+        ),
         (
             "#[parallel(f(\n    1, // which\n    2\n))]\nlet a = f(1);\na",
+            "a comment cannot stand inside an attribute",
+        ),
+        (
+            "#[parallel({ mod m dynamic { sandbox whitelist [core]; sig {\n /// d\n val x: i64 }; source \"let x = 1\" }; 1 })]\nlet a = f(1);\na",
             "a comment cannot stand inside an attribute",
         ),
     ] {
@@ -2641,6 +2679,8 @@ fn no_attribute_stands_inside_a_splice() {
         "let s = \"a [{ #[pure] let y = 1; y }] b\";\ns",
         "let s = \"\"\"a \\[#[pure] 1] b\"\"\";\ns",
         "let s = \"[{ trait T { #[pure] val f: fn(self) -> i64 }; 1 }]\";\ns",
+        "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { #[pure] val f: fn(self) -> i64 } }; source \"\" }; 1 }]\";\ns",
+        "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { val f: fn(self) -> i64 = |x| { #[pure] let y = |z| z; y(1) } } }; source \"\" }; 1 }]\";\ns",
     ] {
         let msg = parse_program(src);
         assert!(msg.contains(attr), "{src}: {msg}");

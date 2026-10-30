@@ -1,9 +1,12 @@
 use super::{
     GRAPHIX_ESC, GRAPHIX_MUST_ESC, expr,
     grow::{grow, note_reason, refuse},
-    holds_attr, holds_comment, sptoken,
+    sptoken,
 };
-use crate::expr::{Expr, ExprKind, StrForm};
+use crate::expr::{
+    Expr, ExprKind, StrForm,
+    ornament::{holds_attr, holds_comment},
+};
 use arcstr::ArcStr;
 use combine::{
     RangeStream, attempt, between, choice, many, many1, not_followed_by, optional,
@@ -67,7 +70,8 @@ parser! {
                 .to_expr(pos),
             }
         }
-        // a splice prints on its string's line, where no comment can stand
+        // a splice prints on its string's line, where no comment, doc or
+        // attribute can stand
         let spliced = |(e, end): (Expr, SourcePosition)| {
             // XCR claude for claude: [bug/medium] This checks only `dec.comments`, so a
             // comment ending a line inside a splice (`"[{ let x = 1; // hi\n x }]"`) or
@@ -112,6 +116,30 @@ parser! {
             // of them stands inside a string's splice. Pin:
             // parser::test::no_comment_stands_inside_a_splice_or_an_attribute has a
             // case for each.
+            // 2026-10-29 claude: Review (2026-10-29, cr29 R1): holds_comment and
+            // holds_attr look at a dynamic sig's own items only. They never descend
+            // into a sig item that is a trait (its methods' comments, eol comments,
+            // attributes and default bodies, and its below comments), a sig use item's
+            // comments, or a sig item's /// doc. Probes
+            // ~/tmp/cr29/scratch/review/r1/sp/a1.gx-a8.gx all pass --check; graphix fmt
+            // refuses its own output for a1, a2, a5, a8 ('the formatted text lost or
+            // moved a comment'), and for a3, a4, a6 breaks the splice across lines with
+            // #[pure] or /// a doc on their own lines, which ruling q75 said to refuse.
+            // No pin has a case nested in a sig item.
+            // 2026-10-29 claude: The parser's holds_comment and holds_attr are now the
+            // formatter guard's own walk (expr/ornament.rs: Ornaments, moved out of
+            // format.rs), which already reached a dynamic sig's trait methods, their
+            // default bodies, its use items and its typedef notes; it now also yields
+            // each trait method's and interface item's /// doc and each trait method's
+            // attributes, so a splice refuses anything the guard would compare,
+            // wherever it stands (a resolved module's sig included). Probes
+            // ~/tmp/cr29/scratch/review/r1/sp/a1-a8 are all refused at parse (a3, a6 as
+            // attributes, a7 as a /// in a .gx). Pins:
+            // parser::test::no_comment_stands_inside_a_splice_or_an_attribute (7 new
+            // sig cases, a7, and a /// doc inside an attribute's argument) and
+            // no_attribute_stands_inside_a_splice (a3, a6); both fail with the old
+            // walks. The corpus harness (gxfmt over every .gx/.gxi in both repos)
+            // reports 0 bad.
             match (holds_comment(&e), holds_attr(&e)) {
                 (true, _) => refuse(end, "a comment cannot stand inside a string's splice")
                     .right(),

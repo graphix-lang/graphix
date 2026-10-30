@@ -41,8 +41,8 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
     .prop_map(ArcStr::from)
 }
 
-/// `e` with no comment or attribute anywhere, as a string's splice holds
-/// neither.
+/// `e` with no comment, doc or attribute anywhere, as a string's splice
+/// holds none.
 fn uncommented(e: &Expr) -> Expr {
     stripped(e, true)
 }
@@ -54,11 +54,12 @@ fn untrailed(e: &Expr) -> Expr {
 }
 
 /// `e` with no comment after a list item, nor, when `above`, above one;
-/// `above` drops attributes too, which stand nowhere a splice's
+/// `above` drops docs and attributes too, which stand nowhere a splice's
 /// expression prints. A type's comments go either way: no single line
 /// holds one.
 fn stripped(e: &Expr, above: bool) -> Expr {
     let lines = |c: &Comments| if above { Comments::default() } else { c.clone() };
+    let doc = |d: &Doc| if above { Doc(None) } else { d.clone() };
     let mut e = e.map_children(&mut |c| stripped(c, above));
     if let Some(d) = e.dec.clone() {
         let d = Decorations {
@@ -74,6 +75,7 @@ fn stripped(e: &Expr, above: bool) -> Expr {
             methods: Arc::from_iter(t.methods.iter().map(|m| TraitMethod {
                 comments: lines(&m.comments),
                 eol: Eol::default(),
+                doc: doc(&m.doc),
                 attrs: if above { Arc::from_iter([]) } else { m.attrs.clone() },
                 ..m.clone()
             })),
@@ -85,12 +87,17 @@ fn stripped(e: &Expr, above: bool) -> Expr {
         |td: &TypeDefExpr| TypeDefExpr { notes: TypeNotes::default(), ..td.clone() };
     let kind = match &e.kind {
         ExprKind::Trait(t) => Some(ExprKind::Trait(methods(t))),
+        ExprKind::Impl(im) => Some(ExprKind::Impl(Arc::new(ImplExpr {
+            below: Comments::default(),
+            ..(**im).clone()
+        }))),
         ExprKind::TypeDef(td) => Some(ExprKind::TypeDef(Arc::new(unnoted(td)))),
         ExprKind::Module { name, value } => match &**value {
             ModuleKind::Dynamic { sandbox, sig, source } => {
                 let items = sig.items.iter().map(|si| SigItem {
                     comments: lines(&si.comments),
                     eol: Eol::default(),
+                    doc: doc(&si.doc),
                     kind: match &si.kind {
                         SigKind::Trait(t) => SigKind::Trait(methods(t)),
                         SigKind::TypeDef(td) => SigKind::TypeDef(unnoted(td)),
@@ -517,7 +524,7 @@ fn str_form() -> impl Strategy<Value = StrForm> {
 /// `e0` and `e1` write their strings, expressions' and patterns', between
 /// the same delimiters.
 fn same_str_forms(e0: &Expr, e1: &Expr) -> bool {
-    *format::str_forms(e0) == *format::str_forms(e1)
+    *ornament::str_forms(e0) == *ornament::str_forms(e1)
 }
 
 fn reference() -> impl Strategy<Value = Expr> {
@@ -1090,6 +1097,10 @@ macro_rules! impl_decl {
                     })
                     .collect();
                 trailers.on(methods.iter_mut());
+                let below = match methods.is_empty() {
+                    true => Comments::of(trailers.below.iter().cloned()),
+                    false => Comments::default(),
+                };
                 ExprKind::Impl(Arc::new(ImplExpr {
                     head: ImplHead {
                         trait_name,
@@ -1099,7 +1110,7 @@ macro_rules! impl_decl {
                         target,
                     },
                     methods: Arc::from_iter(methods),
-                    below: Comments::default(),
+                    below,
                 }))
                 .to_expr_nopos()
             })
@@ -1657,6 +1668,7 @@ fn check_trait(t0: &TraitExpr, t1: &TraitExpr) -> bool {
 
 fn check_impl(i0: &ImplExpr, i1: &ImplExpr) -> bool {
     check_impl_head(&i0.head, &i1.head)
+        && (i0.below.lines() == i1.below.lines())
         && (i0.methods.len() == i1.methods.len())
         && i0.methods.iter().zip(i1.methods.iter()).all(|(a, b)| check(a, b))
 }
@@ -2709,8 +2721,10 @@ fn decorations_of(e: &Expr) -> Vec<String> {
     let mut out = vec![];
     e.fold((), &mut |(), e| {
         out.push(format!("{:?}", e.dec));
-        if let ExprKind::Trait(t) = &e.kind {
-            out.extend(trait_comments(t))
+        match &e.kind {
+            ExprKind::Trait(t) => out.extend(trait_comments(t)),
+            ExprKind::Impl(im) => out.push(format!("{:?}", im.below.lines())),
+            _ => (),
         }
     });
     out

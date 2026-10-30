@@ -1,9 +1,9 @@
 use crate::{
     expr::{
         Attr, BindExpr, CatchExpr, CatchRole, Comments, Decorations, Doc, Eol, Expr,
-        ExprKind, ModPath, ModuleKind, Name, Origin, OriginScope, ParserContext, Pattern,
-        SelectExpr, SeqExpr, SeqKind, SeqTrigger, Sig, SigItem, SigKind, StrForm,
-        StructExpr, StructWithExpr, TraitMethod, TryWithExpr, WrittenAt,
+        ExprKind, ModPath, Name, Origin, OriginScope, ParserContext, Pattern, SelectExpr,
+        SeqExpr, SeqKind, SeqTrigger, Sig, SigItem, StrForm, StructExpr, StructWithExpr,
+        TraitMethod, TryWithExpr, WrittenAt, ornament::holds_comment,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -255,6 +255,18 @@ where
     many(none_of(['\r', '\n']))
 }
 
+// CR claude for eric: [style/low] A blank line between two `//` lines is
+// not kept: `comment_line` skips it with the whitespace after its line, so
+// `graphix fmt` closes up every comment block alike: above an expression,
+// below a list's last item, above a lambda formal, below a trait's methods
+// and in an impl with no method (`impl Cast for T {\n// a\n\n// b\n}` prints
+// `// a` and `// b` on adjacent lines). rustfmt keeps such a line. Keeping
+// it means a comment list that can hold a blank line (a line or a blank, not
+// a marker string) at every comment site: its parsers, the printer, the
+// formatter's ornaments and the Pack form. Ruling wanted: does the formatter
+// keep a blank line inside a comment block? Recommendation: keep it, as one
+// change over every comment list. (comment-blank-lines-01)
+
 // One own-line `//` comment line, text kept verbatim. `///` is left for
 // `doc_comment`; `docs` says whether one is legal here.
 fn comment_line<I>(docs: bool) -> impl Parser<I, Output = ArcStr>
@@ -301,63 +313,6 @@ where
     I::Range: Range,
 {
     spaces().with(many(comment_line(docs)))
-}
-
-/// Whether a `//` comment stands anywhere in `e`, an attribute's
-/// arguments included: none can in what prints on one line.
-pub(super) fn holds_comment(e: &Expr) -> bool {
-    e.fold(false, &mut |c, e| {
-        c || e.dec.as_ref().is_some_and(|d| {
-            !d.comments.is_empty()
-                || d.eol.is_some()
-                || !d.below.is_empty()
-                || d.attrs.iter().any(|a| a.args.iter().any(holds_comment))
-        }) || match &e.kind {
-            ExprKind::Trait(t) => {
-                !t.below.lines().is_empty()
-                    || t.methods
-                        .iter()
-                        .any(|m| !m.comments.lines().is_empty() || m.eol.text().is_some())
-            }
-            ExprKind::Use { names, .. } => {
-                names.iter().any(|n| !n.comments.lines().is_empty())
-            }
-            ExprKind::Impl(im) => !im.below.lines().is_empty(),
-            ExprKind::TypeDef(td) => !td.notes.is_empty(),
-            ExprKind::Lambda(l) => {
-                l.args.iter().any(|a| {
-                    !a.comments.above.lines().is_empty()
-                        || a.comments.eol.text().is_some()
-                }) || !l.vargs_comments.above.lines().is_empty()
-                    || l.vargs_comments.eol.text().is_some()
-                    || !l.below.lines().is_empty()
-            }
-            ExprKind::Module { value, .. } => match &**value {
-                ModuleKind::Dynamic { sig, .. } => {
-                    !sig.below.lines().is_empty()
-                        || sig.items.iter().any(|si| {
-                            !si.comments.lines().is_empty()
-                                || si.eol.text().is_some()
-                                || matches!(&si.kind, SigKind::TypeDef(td) if !td.notes.is_empty())
-                        })
-                }
-                _ => false,
-            },
-            _ => false,
-        }
-    })
-}
-
-/// Whether a `#[..]` attribute stands anywhere in `e`, a trait method's
-/// included: none can in what prints on one line.
-pub(super) fn holds_attr(e: &Expr) -> bool {
-    e.fold(false, &mut |c, e| {
-        c || e.dec.as_ref().is_some_and(|d| !d.attrs.is_empty())
-            || match &e.kind {
-                ExprKind::Trait(t) => t.methods.iter().any(|m| !m.attrs.is_empty()),
-                _ => false,
-            }
-    })
 }
 
 // `#[name]` or `#[name(arg, ...)]`; the args are full expressions, which

@@ -1303,7 +1303,9 @@ cycle, across workers; the compiler never pins threads.
   (`Decorations::below`, on a trailing `;`'s empty statement when there
   is one; `Sig::below`, `TraitExpr::below`, `LambdaExpr::below`, and an impl with no
   method's `ImplExpr::below`); none inside a string's
-  splice or an attribute's arguments, which print on one line; `///`
+  splice or an attribute's arguments, which print on one line, and no
+  `///` doc or attribute in a splice either, anywhere in what it holds
+  (judged over the formatter guard's own list, `expr/ornament.rs`); `///`
   docs only in an interface. A type definition's struct fields and union
   members take all three, through the fields and members of their types
   (not a type argument, a payload or a function type); a union member

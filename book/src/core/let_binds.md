@@ -135,6 +135,7 @@ A comment anywhere else in a type, in an annotation, a type argument
 (`Array<..>`), a variant's payload or a function type, is a parse error.
 So is a comment anywhere else in a program: between an operator and its operand
 (`x + // no`), after an opening bracket on its line, or inside a string's
-`[..]` splice or an attribute's arguments, which print on one line. The rule is what
+`[..]` splice or an attribute's arguments, which print on one line; a
+splice holds no `///` doc or `#[..]` attribute either. The rule is what
 lets the parser keep every comment in the syntax tree, so tools that
 rewrite a program (the formatter, the REPL echo) never lose one.

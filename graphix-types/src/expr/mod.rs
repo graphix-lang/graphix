@@ -40,6 +40,7 @@ mod binop;
 mod context;
 pub mod format;
 mod modpath;
+mod ornament;
 pub mod parser;
 mod pattern;
 pub mod print;
