@@ -56,7 +56,8 @@ soak_pid() {
 campaign_procs() {
     local bin=$1/graphix-fuzz
     if [[ -d /proc/self ]]; then
-        find /proc -mindepth 2 -maxdepth 2 -name exe -lname "$bin*" 2>/dev/null |
+        # a process that exits mid-walk fails find on its vanished entry
+        { find /proc -mindepth 2 -maxdepth 2 -name exe -lname "$bin*" 2>/dev/null || true; } |
             cut -d/ -f3
     else
         ps -axo pid=,comm= | awk -v bin="$bin" 'index($2, bin) == 1 { print $1 }'
