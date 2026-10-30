@@ -333,8 +333,8 @@ run!(net_rpc_default_ids_are_fresh, r#"{
 }"#, prints("[true, i64:2, [i64:1, i64:2]]"); FuseExpect::Jit);
 
 // callq answers in call order: the first call is answered only once the
-// server has seen the second (both are in flight at once), whose answer,
-// which comes first, waits for it.
+// server has seen the second (both are in flight at once), and idle a
+// while after, so the second's answer arrives first and waits for it.
 run!(net_callq_answers_in_call_order, r#"{
   let second_seen = never<null>();
   let release = never<null>();
@@ -343,7 +343,7 @@ run!(net_callq_answers_in_call_order, r#"{
       1 => release ~ 1,
       n => { second_seen <- a ~ null; n }
     });
-  release <- second_seen;
+  release <- sys::time::after_idle(duration:50.ms, second_seen);
   let args = {n: 1};
   args <- once(args) ~ {n: 2};
   let r: i64 = sys::net::callq("/local/q/order", args)$;
@@ -366,10 +366,10 @@ run!(net_callq_errors_keep_their_place, r#"{
 }"#, prints(r#"["1", "error:`RpcError(\"invalid path\")", "error:`InvalidCast(\"can't cast \\\"x\\\" to i64: no primitive conversion\")"]"#); FuseExpect::None);
 
 // The arm holding callq sleeps with two calls in flight, the second
-// answered (a while before the sleep) and waiting for the first: neither
-// answers, not when the server replies and not at the wake. The arm
-// wakes once the server has replied, with a new call, whose answer is
-// the first.
+// answered (a while before the sleep) and waiting for the first. The arm
+// wakes once the server has replied to the first, with a new call, and
+// the first value it answers is the new call's: neither abandoned call
+// answered at the reply or at the wake.
 run!(net_callq_sleep_drops_its_calls, r#"{
   let release = never<null>();
   let second_seen = never<null>();

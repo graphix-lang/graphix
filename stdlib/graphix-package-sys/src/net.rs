@@ -894,9 +894,10 @@ impl<R: Rt> Apply<R> for RpcCallQ {
         self.calls.clear();
     }
 
-    /// Born again, the site holds no answer: its last one was the last
-    /// run's, and the sleep before it dropped the calls in flight.
+    /// Born again, the site holds no answer and no call: both were the
+    /// last run's.
     fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R>) {
+        self.calls.clear();
         self.out = TagValue::phantom();
     }
 }
