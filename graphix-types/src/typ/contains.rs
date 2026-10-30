@@ -441,16 +441,20 @@ fn exact(t: &Type) -> bool {
 
 /// Give the open cells inside `t`, about to be bound into the cell, their
 /// part of each exact structural conjunct (`Array<i64> ⊇ Array<'y>` binds
-/// `'y`) and each trait conjunct (every member of a union implements the
-/// trait): a probe admits them free, and the bind passes down only the
-/// predicates.
-fn commit_cell_constraints(
+/// `'y`), each trait conjunct (every member of a union implements the
+/// trait) and each lower bound (`'p` above `Array<string>` bound to
+/// `Array<'y>` puts `'y` above `string`): a probe admits them free, and
+/// the bind passes down only the predicates.
+fn commit_cell_bounds(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
     env: &Env,
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
+    if !holds_lower(tv, below(flags) | ContainsFlags::Commit, env, hist, t)? {
+        return Ok(false);
+    }
     for c in tv.cell_constraints().iter() {
         if c.is_trait_ref(env) {
             for m in Type::dispatch_members(env, t)?.iter() {
@@ -635,16 +639,31 @@ fn cell_constraints_ok(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    if !conjuncts_admit(tv, flags, env, hist, t)? {
-        return Ok(false);
-    }
-    let probe = guide(flags) & !ContainsFlags::Lower;
+    Ok(conjuncts_admit(tv, flags, env, hist, t)?
+        && holds_lower(tv, below(flags), env, hist, t)?)
+}
+
+/// Whether `t` contains each lower bound of the cell under `flags`.
+fn holds_lower(
+    tv: &TVar,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<bool> {
     for l in tv.cell_lower().iter() {
-        if !t.contains_int(probe, env, hist, l)? {
+        if !t.contains_int(flags, env, hist, l)? {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// The flags `t ⊇ l` runs with for a lower bound `l` of a cell bound to
+/// `t`: the open cells of `t` take their parts of `l` as lower bounds in
+/// turn, so a cell above two bounds holds both whatever their order.
+fn below(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
+    guide(flags) | ContainsFlags::Lower
 }
 
 /// True iff every conjunct of the cell's constraints contains `t`. A
@@ -1776,13 +1795,21 @@ impl Type {
                 }
                 Ok(true)
             }
-            // ⊥ ⊇ 'r has one solution, so an open cell commits; a bound
-            // cell answers for its binding; a rigid one may be anything.
+            // ⊥ ⊇ 'r has one solution, so an open cell commits unless it is
+            // bounded from below; a bound cell answers for its binding; a
+            // rigid one may be anything.
             (Self::Bottom, Self::TVar(t0)) => match t0.binding() {
                 Some(b) => Self::Bottom.contains_int(flags, env, hist, &b),
                 None if (rigid || commit) && t0.is_rigid() => Ok(false),
                 None => {
+                    if !holds_lower(t0, below(flags), env, hist, &Self::Bottom)? {
+                        return Ok(false);
+                    }
                     if commit {
+                        let flags = below(flags) | ContainsFlags::Commit;
+                        if !holds_lower(t0, flags, env, hist, &Self::Bottom)? {
+                            return Ok(false);
+                        }
                         t0.bind_bottom_required();
                     }
                     Ok(true)
@@ -1836,7 +1863,7 @@ impl Type {
                     && let Some(cell) = t1.open_cell()
                     && !cell.is_rigid()
                     && cell_constraints_ok(&cell, flags, env, hist, &Self::Any)?
-                    && commit_cell_constraints(&cell, flags, env, hist, &Self::Any)?
+                    && commit_cell_bounds(&cell, flags, env, hist, &Self::Any)?
                 {
                     if graphix_dbg_bind() {
                         eprintln!(
@@ -2001,7 +2028,7 @@ impl Type {
                             t0.cell_addr()
                         );
                     }
-                    if !commit_cell_constraints(t0, flags, env, hist, t1)? {
+                    if !commit_cell_bounds(t0, flags, env, hist, t1)? {
                         return Ok(false);
                     }
                     t0.bind(t1.clone());
@@ -2044,6 +2071,9 @@ impl Type {
                         && cell_constraints_ok(t1, flags, env, hist, &w)?
                     {
                         if commit && !t1.is_rigid() {
+                            if !commit_cell_bounds(t1, flags, env, hist, &w)? {
+                                return Ok(false);
+                            }
                             t1.bind(w);
                         }
                         return Ok(true);
@@ -2085,7 +2115,7 @@ impl Type {
                             t1.cell_addr()
                         );
                     }
-                    if !commit_cell_constraints(t1, flags, env, hist, t0)? {
+                    if !commit_cell_bounds(t1, flags, env, hist, t0)? {
                         return Ok(false);
                     }
                     t1.bind(t0.clone());
@@ -2380,7 +2410,7 @@ impl Type {
                             t1.read().id.inner()
                         );
                     }
-                    if !commit_cell_constraints(t0, flags, env, hist, &b1)? {
+                    if !commit_cell_bounds(t0, flags, env, hist, &b1)? {
                         return Ok(false);
                     }
                     t0.copy(t1, b1);
@@ -2408,7 +2438,7 @@ impl Type {
                             t0.read().id.inner()
                         );
                     }
-                    if !commit_cell_constraints(t1, flags, env, hist, &b0)? {
+                    if !commit_cell_bounds(t1, flags, env, hist, &b0)? {
                         return Ok(false);
                     }
                     t1.copy(t0, b0);

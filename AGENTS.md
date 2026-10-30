@@ -1377,8 +1377,9 @@ cycle, across workers; the compiler never pins threads.
   constructed value's payload bounds its parameters from below (`TCell::
   lower`), so the type it flows into decides them (a return, an element,
   a union of instantiations, a call through a definition that constructs)
-  and one nothing decides settles to the payload's type; a trait bound or
-  dispatch reads it, so decides it there. Two values compare their
+  and one nothing decides settles to the payload's type; a binding of
+  such a parameter passes the bound to its open parts (`commit_cell_bounds`);
+  a trait bound or dispatch reads it, so decides it there. Two values compare their
   parameters, as regular trees (`typ::regular`), before their payloads. A pattern `T(p)` with no
   type test tests the tag and takes its parameters from the scrutinee,
   never from `p` (`StructPatternNode::narrow_payloads`).

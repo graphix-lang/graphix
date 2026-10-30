@@ -48,9 +48,13 @@ the "unsatisfiable constraints on 'a: i64 & string" error.
 
 A cell may also be bounded from below: `TCell::lower`, a list every
 binding must contain (`cell_constraints_ok` checks it beside the
-conjuncts). Only a constructed abstract value's parameters get one
+conjuncts). A constructed abstract value's parameters get one
 (`ContainsFlags::Lower`, outside function arguments: the payload's part
-becomes the bound instead of the binding). Each conjunct must contain a
+becomes the bound instead of the binding), and so do the open parts of
+what such a cell binds to: every bind of the cell commits `t ⊇ l` for
+each bound under `ContainsFlags::Lower` (`commit_cell_bounds`), so `'p`
+above `Array<i64>` and `Array<string>` bound to `Array<'a>` puts `'a`
+above both, whatever their order, and `⊥` holds no bound but `⊥`. Each conjunct must contain a
 lower bound when it is added; a merge joins both cells' lists after
 each side's conjuncts admit the other's (a rigid cell admits none but
 itself); a copy, an image and a level claim carry the list. The witness

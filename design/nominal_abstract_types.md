@@ -82,7 +82,10 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    (`let b: Box<[i64, string]> = Box(1)`, a return, an element, a
    field, select arms, a connect, a union of instantiations, which
    takes the member the payload fits), and the statement's settle binds
-   one nothing decided to the payload's type. A definition that
+   one nothing decided to the payload's type. A use that binds `'p` to a
+   type with open parts passes the bound on to them: `array::len(b.0)`
+   over `B(["a"])` makes `'p` an `Array<'a>` with `'a` at least
+   `string`. A definition that
    constructs (`|x| Box(x)`) keeps the bound in its signature, so each
    call's context decides its own. A trait bound or a dispatch on the
    value reads its parameters and so settles them. An

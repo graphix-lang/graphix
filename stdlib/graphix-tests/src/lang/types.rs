@@ -3582,6 +3582,149 @@ run!(
     FuseExpect::Jit
 );
 
+// A payload's bound outlives its parameter's binding to a type with open
+// parts: `array::len` makes `'p` an `Array<'a>`, and `'a` holds the
+// payload's element type.
+run!(
+    payload_bound_reaches_the_open_parts_of_a_binding,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let b = B(["a"]);
+    let n = array::len(b.0);
+    n + select b.0 { [x, ..] => x + 1, _ => 0 }
+}"#,
+    refused("cannot compute string + i64");
+    FuseExpect::None
+);
+
+run!(
+    payload_bound_fits_the_open_parts_of_a_binding,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let b = B([41]);
+    let n = array::len(b.0);
+    n + select b.0 { [x, ..] => x + 1, _ => 0 }
+}"#,
+    is(Value::I64(43));
+    FuseExpect::Jit
+);
+
+// A definition that constructs: the call's bound reaches the binding too.
+run!(
+    constructing_definition_bound_reaches_a_binding,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let mk = |x| B(x);
+    let b = mk(["a"]);
+    let n = array::len(b.0);
+    n + select b.0 { [x, ..] => x + 1, _ => 0 }
+}"#,
+    refused("cannot compute string + i64");
+    FuseExpect::None
+);
+
+// Two bounds reach the open parts of a binding together, in either
+// order: the element is their union.
+run!(
+    payload_bounds_reach_a_binding_together,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |x: B<'q>, y: B<'q>| -> B<'q> y;
+    let r = f(B([1]), B(["a"]));
+    let n = array::len(r.0);
+    n + select r.0 { [x, ..] => x + 1, _ => 0 }
+}"#,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+const PAYLOAD_BOUNDS_FIT_A_BINDING_TOGETHER: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let f = |x: B<'q>, y: B<'q>| -> B<'q> y;
+    let r = f(B([1]), B([null, 20]));
+    let n = array::len(r.0);
+    let w = f(B(["a"]), B([1]));
+    let m = array::len(w.0);
+    let s: B<Array<[i64, string]>> = w;
+    m + array::fold(r.0, n, |acc, x| select x { null => acc, i64 as k => acc + k })
+}
+"#;
+
+run!(
+    payload_bounds_fit_a_binding_together,
+    PAYLOAD_BOUNDS_FIT_A_BINDING_TOGETHER,
+    is(Value::I64(23));
+    FuseExpect::Jit
+);
+
+run!(
+    payload_bounds_held_by_the_binding_after_it,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |x: B<'q>, y: B<'q>| -> B<'q> y;
+    let r = f(B([1]), B(["a"]));
+    let n = array::len(r.0);
+    let s: B<Array<i64>> = r;
+    n
+}"#,
+    refused("B<Array<i64>> does not contain B<'q: Array<'a: unbound above i64 | string>>");
+    FuseExpect::None
+);
+
+// A definition whose body binds a constructed parameter holds its
+// argument to that binding.
+run!(
+    definition_binding_a_bounded_parameter_holds_its_argument,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let g = |x| { let b = B(x); let n: B<[i64, string]> = b; x };
+    g(true)
+}"#,
+    refused("[i64, string] does not contain bool");
+    FuseExpect::None
+);
+
+run!(
+    definition_binding_open_parts_holds_its_argument,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let g = |x| { let b = B(x); let n = array::len(b.0); select b.0 { [y, ..] => y + n, _ => 0 } };
+    g([41]) + g(["a"])
+}"#,
+    refused("does not contain Array<string>");
+    FuseExpect::None
+);
+
+const DEFINITION_BINDING_A_BOUNDED_PARAMETER: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let g = |x| { let b = B(x); let n = array::len(b.0); select b.0 { [y, ..] => y + n, _ => 0 } };
+    let h = |x| { let b = B(x); let n: B<[i64, string]> = b; n };
+    let r = h(1);
+    g([41]) + select r.0 { i64 as k => k + 1, string as _ => 0 }
+}
+"#;
+
+run!(
+    definition_binding_a_bounded_parameter,
+    DEFINITION_BINDING_A_BOUNDED_PARAMETER,
+    is(Value::I64(44));
+    FuseExpect::Jit
+);
+
+// ⊥ holds no payload: a parameter bounded from below never binds to it.
+run!(
+    payload_bound_refuses_bottom,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let b: B<_> = B(1);
+    0
+}"#,
+    refused("B<_> does not contain B<i64>");
+    FuseExpect::None
+);
+
 /// A union of a bare variable and a constructor of it places every
 /// member: when the constructor's first fit would strand one, the
 /// deepest member fit decides the variable.
