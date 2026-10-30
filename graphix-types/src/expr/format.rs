@@ -637,6 +637,8 @@ mod tests {
         refused(Program, "let x = 1; x", "let x = 2; x", "says something else");
         refused(Interface, "val x: i64", "val x: string", "says something else");
         refused(Program, "// c\nlet x = 1;\nx", "let x = 1;\n// c\nx", "comment");
+        refused(Program, "// a\n\n// b\nx", "// a\n// b\nx", "comment");
+        refused(Program, "// a\n// b\nx", "// a\n\n// b\nx", "comment");
         refused(
             Interface,
             "// c\nval x: i64;\nval y: i64",

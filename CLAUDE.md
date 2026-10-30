@@ -312,10 +312,11 @@ prefix become leading lines (`design/module_system.md`). A type
 definition's comments ride on it, keyed by where each field or member
 was written (`TypeNotes`, which packs to nothing, printed through
 `typ::Noted`), and the guard reads them in canonical order. Every
-comment list, all of the above and `Decorations`, holds `Comment`s: a
-line, and whether a blank line stands between it and the line before
-(`Comment::spaced`), so a run of blank lines inside a block is one and
-one before a block's first line or after its last is not the block's.
+comment list above and `Decorations` (not an `Eol`, which is one line)
+holds `Comment`s: a line, and whether a blank line stands between it and
+the line before (`Comment::spaced`), so a run of blank lines inside a
+block is one and one before a block's first line or after its last is
+not the block's.
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
 program-visible values (a cast error, a null error), so comments print
