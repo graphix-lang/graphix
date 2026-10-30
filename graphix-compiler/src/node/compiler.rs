@@ -272,7 +272,7 @@ fn compile_inner<R: Rt>(
                     kind,
                     spec: spec.clone(),
                     flags,
-                    warned: false,
+                    said: false,
                 });
             }
         }

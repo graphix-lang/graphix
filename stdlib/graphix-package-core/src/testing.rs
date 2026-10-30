@@ -808,7 +808,8 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 /// ([`refused`]).
 ///
 /// - **interp**: `CFlag::FusionDisabled`; the program runs purely
-///   through the node-walk. It first checks the program alone (the
+///   through the node-walk, and fails (debug builds) if any fused code
+///   ran, a run-time bind's included. It first checks the program alone (the
 ///   `--check` path) and fails unless the check refuses exactly when the
 ///   build does; the `; build_only` form skips that for a refusal only a
 ///   build makes (`#[native]`, the definition assertions).
@@ -937,6 +938,11 @@ macro_rules! run {
                     }
                 }
                 let invocations = ctx.rt.control().invocations();
+                #[cfg(debug_assertions)]
+                assert!(
+                    !mode.node_walk() || invocations == (0, 0),
+                    "{mode:?} ran fused code: (kernel runs, JIT entries) = {invocations:?}"
+                );
                 // The blocker list includes stdlib-root noise (stats
                 // are per-ExecCtx).
                 if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok()

@@ -95,8 +95,10 @@ runs is inside a fused kernel, where its tail recursion is the kernel's
 loop (`has_tail_loop`). After fusion, `analysis::check_tail_loops` walks
 what is left of the node-walk (the callee bodies it binds, a kernel's
 feeders) and refuses the first call it finds to an instance of the
-definition, naming it: an instance over a callback that does not fuse
-fails even where another instance fused. The assertion stays pending as
+definition, naming it (a call a collection makes of its callback by the
+collection's own call; a call a builtin builds, by none): an instance
+over a callback that does not fuse fails even where another instance
+fused. The assertion stays pending as
 `DefAssertionKind::TailLoop` once its definition's check passed: that
 check is not run again (a node-walked activation's analysis, its body
 lazy, would misjudge it), but every instance a later analysis reaches
@@ -105,10 +107,16 @@ owes its loop, and one whose recursion it finds is none
 input) checks its own instances, and a run-time bind it covers is fused (`fusion::fuse_instance`, as for a `#[native]`
 it holds) and checked (`check_bound_tail_loops`): the bound instance
 itself is a dynamic call, dispatched in the node-walk, so a function
-value that is the loop fails, while one whose body calls it builds the
-loop; the program already runs, so the failure is reported as an
-unhandled error is, once. Where fusion does not run (`--no-fusion`, a
-dynamic module) only the gate is checked, as `#[native]` is not.
+value that is the loop fails unless its body fused into one kernel that
+leaves no call of it, while one whose body calls it builds the loop; the
+program already runs, so the failure is reported as an unhandled error
+is, once a definition (`DefAssertion::said`), and the assertion stays for
+the compiles after it. Where fusion does not run (`--no-fusion`, a
+dynamic module) only the gate is checked, as `#[native]` is not: a
+runtime whose flags disable fusion disables its context's
+(`FusionCtx::disable`), so no run-time bind fuses there either, a call
+site a collection or a builtin builds, which has no flags of its own,
+included.
 
 What follows for the three kinds of body:
 

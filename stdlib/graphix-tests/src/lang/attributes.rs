@@ -425,6 +425,39 @@ run!(
     TAIL_RECURSIVE_PURE_INSTANCES,
     prints("[i64:6, i64:12]"); FuseExpect::Jit);
 
+// A collection's slots, each an instance bound as the program runs, reach
+// the loop: fused, each slot's instance runs it as a loop; under the
+// node-walk nothing fuses, a slot's instance included.
+const TAIL_RECURSIVE_SLOT_INSTANCES: &str = r#"
+{
+  let v = 1;
+  let rv = &v;
+  #[tail_recursive]
+  let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, acc + n) };
+  array::map([1, 2, 3], |x| loop(x, 0) + *rv)
+}
+"#;
+
+run!(
+    tail_recursive_slot_instances,
+    TAIL_RECURSIVE_SLOT_INSTANCES,
+    prints("[i64:2, i64:4, i64:7]"); FuseExpect::Jit);
+
+// A collection handed the loop itself calls it through a function value,
+// in the node-walk: the refusal names the collection's call.
+const TAIL_RECURSIVE_COLLECTION_CALLBACK: &str = r#"
+{
+  #[tail_recursive]
+  let rec tri = |n: i64| -> i64 select n { 0 => 0, _ => tri(n - 1) };
+  array::map([1, 2, 3], tri)
+}
+"#;
+
+run!(
+    tail_recursive_collection_callback,
+    TAIL_RECURSIVE_COLLECTION_CALLBACK,
+    refused("#[tail_recursive]: no loop is built for the call `array::map([1, 2, 3], tri)` (line 5, column 3)"); FuseExpect::None; jit_only);
+
 // Labeled formals loop as positional ones do: a self-call passes each by
 // name, in any order, and one it omits takes its default.
 const TAIL_RECURSIVE_LABELED: &str = r#"
@@ -742,14 +775,19 @@ async fn native_body_attribute_survives_repl_inputs() -> Result<()> {
 }
 
 /// A `#[tail_recursive]` covers the instances later inputs build: one
-/// that does not fuse is refused after one that did, so is one whose
-/// callback keeps state, and one after them that fuses is accepted.
+/// that does not fuse is refused after one that did, and after the loop
+/// called through a function value was reported as the program ran; so is
+/// one whose callback keeps state, and one after them that fuses is
+/// accepted.
 #[tokio::test]
 async fn tail_recursive_covers_later_inputs() -> Result<()> {
     use arcstr::literal;
-    use graphix_package_core::testing::{Mode, fixture_runtime};
+    use graphix_package_core::testing::{Mode, fixture_runtime, updates_until_quiet};
+    use std::time::Duration;
+    use tokio::time::Instant;
     for mode in [Mode::Jit, Mode::JitPar] {
-        let (ctx, _rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+        let (ctx, mut rx) =
+            fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
         let _loop = ctx
             .rt
             .compile(literal!(
@@ -759,6 +797,24 @@ async fn tail_recursive_covers_later_inputs() -> Result<()> {
             .await?;
         let _v = ctx.rt.compile(literal!("let v = 1")).await?;
         let _fused = ctx.rt.compile(literal!("loop(|x| x, 3, 0)")).await?;
+        let _b = ctx.rt.compile(literal!("let b = true")).await?;
+        let _g = ctx
+            .rt
+            .compile(literal!(
+                "let g = select b { true => loop, false => |f: fn(x: i64) -> i64, n: i64, \
+                 acc: i64| -> i64 n }"
+            ))
+            .await?;
+        let bound = ctx.rt.compile(literal!("g(|x| x, 3, 0)")).await?;
+        let values = updates_until_quiet(
+            &ctx.rt,
+            &mut rx,
+            bound.exprs[0].id,
+            Duration::from_millis(100),
+            Instant::now() + Duration::from_secs(20),
+        )
+        .await?;
+        assert_eq!(values, [Value::I64(6)], "{mode:?}");
         let err = ctx
             .rt
             .compile(literal!("loop(|x: i64| -> i64 x + *(&v), 3, 0)"))
@@ -774,6 +830,53 @@ async fn tail_recursive_covers_later_inputs() -> Result<()> {
         assert!(err.chain().any(|e| e.to_string().contains(msg)), "{mode:?}: {err:#}");
         let _again = ctx.rt.compile(literal!("loop(|x| x * 2, 3, 0)")).await?;
         ctx.shutdown().await;
+    }
+    Ok(())
+}
+
+/// The loop called through a function value runs in the node-walk, each
+/// level a bind of its own: the first bind tries to fuse its instance and
+/// is reported, and the levels after it do not try again, so a deeper
+/// recursion fails no more fusions.
+#[tokio::test]
+async fn tail_recursive_reported_bind_fuses_once() -> Result<()> {
+    use graphix_package_core::testing::{
+        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
+    const CODE: &str = "{
+  #[tail_recursive]
+  let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, acc + n) };
+  let b = true;
+  let g = select b { true => loop, false => |n: i64, acc: i64| -> i64 n + acc };
+  g(DEPTH, 0)
+}";
+    for mode in [Mode::Jit, Mode::JitPar] {
+        let mut failed = vec![];
+        for (depth, sum) in [(10, 55), (100, 5050)] {
+            let code = CODE.replace("DEPTH", &depth.to_string());
+            let (ctx, mut rx) = fixture_runtime(
+                [("/test.gx", result_source(&code))],
+                crate::TEST_REGISTER,
+                mode,
+                |_| {},
+            )
+            .await?;
+            let result = compile_result(&ctx).await?;
+            let values = updates_until_quiet(
+                &ctx.rt,
+                &mut rx,
+                result.exprs[0].id,
+                Duration::from_millis(100),
+                Instant::now() + Duration::from_secs(20),
+            )
+            .await?;
+            assert_eq!(values, [Value::I64(sum)], "{mode:?}");
+            failed.push(ctx.fusion_stats().await?.failed.len());
+            ctx.shutdown().await;
+        }
+        assert_eq!(failed[0], failed[1], "{mode:?}: fusions failed at depth 10, 100");
     }
     Ok(())
 }

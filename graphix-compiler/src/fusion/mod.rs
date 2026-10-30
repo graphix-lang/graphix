@@ -365,6 +365,8 @@ enum JitSlot {
     Built(emit::Jit),
     /// The build failed, for this reason: the context runs unfused.
     Unavailable(ArcStr),
+    /// Its runtime runs unfused ([`FusionCtx::disable`]): nothing builds one.
+    Disabled,
 }
 
 enum EmissionSlot {
@@ -503,21 +505,37 @@ impl FusionCtx {
         }
         MutexGuard::try_map(jit, |jit| match jit {
             JitSlot::Built(j) => Some(j),
-            JitSlot::Unbuilt | JitSlot::Unavailable(_) => None,
+            JitSlot::Unbuilt | JitSlot::Unavailable(_) | JitSlot::Disabled => None,
         })
         .map_err(|jit| match &*jit {
             JitSlot::Unavailable(reason) => {
                 anyhow::anyhow!("fusion is unavailable: {reason}")
             }
+            JitSlot::Disabled => anyhow::anyhow!("fusion is disabled"),
             _ => anyhow::anyhow!("fusion is unavailable"),
         })
+    }
+
+    /// Run this context unfused, as its runtime's compiles do
+    /// (`CFlag::FusionDisabled`): a run-time bind fuses nothing, whatever
+    /// its site's flags, which a call site the compiler or a builtin
+    /// builds does not have. Before anything fuses.
+    pub fn disable(&self) {
+        let mut jit = self.jit.lock();
+        assert!(matches!(*jit, JitSlot::Unbuilt), "disabling a context that fused");
+        *jit = JitSlot::Disabled
+    }
+
+    /// Whether this context runs unfused by [`Self::disable`].
+    pub fn disabled(&self) -> bool {
+        matches!(*self.jit.lock(), JitSlot::Disabled)
     }
 
     /// [`emit::jit::Jit::restored_mark`], 0 before the JIT is built.
     pub(crate) fn restored_mark(&self) -> usize {
         match &*self.jit.lock() {
             JitSlot::Built(jit) => jit.restored_mark(),
-            JitSlot::Unbuilt | JitSlot::Unavailable(_) => 0,
+            JitSlot::Unbuilt | JitSlot::Unavailable(_) | JitSlot::Disabled => 0,
         }
     }
 
@@ -533,7 +551,7 @@ impl FusionCtx {
     pub(crate) fn install_restored(&self) -> anyhow::Result<()> {
         match &mut *self.jit.lock() {
             JitSlot::Built(jit) => jit.install_restored(),
-            JitSlot::Unbuilt | JitSlot::Unavailable(_) => Ok(()),
+            JitSlot::Unbuilt | JitSlot::Unavailable(_) | JitSlot::Disabled => Ok(()),
         }
     }
 

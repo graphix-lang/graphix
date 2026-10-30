@@ -820,8 +820,11 @@ node graph IS the IR — there is no parallel typed IR
   `#[tail_recursive]` analysis's gate plus, for every instance a compile
   or a run-time bind builds (a later REPL input's included), the loop
   fusion built: no call to it left in the node-walk, a dynamic call's
-  included (`analysis::check_tail_loops`; a bind it covers is fused;
-  unchecked where fusion does not run).
+  included (`analysis::check_tail_loops`; a bind it covers is fused, and
+  its failure reported once; unchecked where fusion does not run). A
+  runtime whose flags disable fusion disables its context's
+  (`FusionCtx::disable`): no run-time bind fuses there, a call site a
+  collection or a builtin builds included.
 - **Bottom is dense** (`design/dense_delivery.md`,
   `design/representable_bottom.md`): `update` returns a `TagValue`
   every cycle — `Fired(v)`/`Stale(v)`/`FreshBottom`/`StaleBottom`, the
@@ -1180,7 +1183,8 @@ cycle, across workers; the compiler never pins threads.
 - `run!` (`graphix-package-core/src/testing.rs`) runs a fixture in
   each `testing::Mode`: `interp` and `jit` (serial unless `GRAPHIX_PAR`
   is set), and each again with every fork point forked (`par`,
-  `jit_par`), asserting its predicate in each; nothing compares the
+  `jit_par`), asserting its predicate in each (and, in debug builds, that
+  `interp` and `par` ran no fused code); nothing compares the
   modes, so a predicate pins the value exactly and a refusal names its
   message (`testing::refused`). The value must be of its static type in
   every form it carries, and the predicate sees it as data

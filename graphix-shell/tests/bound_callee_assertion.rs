@@ -122,3 +122,48 @@ fn bound_callee_stateful_instance_is_reported() {
     assert_eq!(ran.stderr.matches(MSG).count(), 1, "{}", ran.stderr);
     assert!(ran.stdout.lines().any(|l| l == "(6, 3)"), "{}", ran.stderr);
 }
+
+/// Where fusion does not run no loop is checked: a collection's slots,
+/// bound as the program runs, call the loop in the node-walk and nothing
+/// is reported.
+const NO_FUSION: &str = r#"
+#[tail_recursive]
+let rec tri = |n: i64| -> i64 select n { 0 => 0, _ => tri(n - 1) };
+#[tail_recursive]
+let rec step = |acc: i64, x: i64| -> i64 select x { 0 => acc, _ => step(acc + x, x - 1) };
+println(array::map([1, 2, 3], tri));
+println(array::fold([1, 2, 3], 0, step));
+sys::exit(sys::time::after_idle(duration:100.ms, 0))
+"#;
+
+#[test]
+fn no_fusion_checks_no_loop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ran = graphix(dir.path(), NO_FUSION, &["--no-cache", "--no-fusion"], &[]);
+    assert!(!ran.stderr.contains("#[tail_recursive]"), "{}", ran.stderr);
+    let out: Vec<&str> = ran.stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(out, ["[0, 0, 0]", "10"], "{}", ran.stderr);
+}
+
+/// A collection handed the loop through a function value calls it in the
+/// node-walk, from each slot: reported once, naming no call the collection
+/// built.
+const SLOT_LOOP: &str = r#"
+#[tail_recursive]
+let rec tri = |n: i64| -> i64 select n { 0 => 0, _ => tri(n - 1) };
+let b = true;
+let f = select b { true => tri, false => |n: i64| -> i64 n };
+println(array::map([1, 2, 3], f));
+sys::exit(sys::time::after_idle(duration:100.ms, 0))
+"#;
+
+#[test]
+fn bound_slot_tail_loop_names_no_built_call() {
+    const MSG: &str = "#[tail_recursive]: no loop is built for a call a collection or a \
+                       builtin makes through a function value: it did not fuse";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ran = graphix(dir.path(), SLOT_LOOP, &["--no-cache"], &[]);
+    assert_eq!(ran.stderr.matches("#[tail_recursive]").count(), 1, "{}", ran.stderr);
+    assert!(ran.stderr.contains(MSG), "{}", ran.stderr);
+    assert!(ran.stdout.lines().any(|l| l == "[0, 0, 0]"), "{}", ran.stderr);
+}

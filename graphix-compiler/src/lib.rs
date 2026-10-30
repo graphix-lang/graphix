@@ -972,8 +972,10 @@ pub(crate) struct DefAssertion {
     pub(crate) spec: Expr,
     /// The compile's flags, for a warning the check makes.
     pub(crate) flags: BitFlags<CFlag>,
-    /// A `#[pure]` that holds only diagnostic output has warned of it.
-    pub(crate) warned: bool,
+    /// It gave the diagnostic it gives once: a `#[pure]` that holds only
+    /// diagnostic output warned of it, a `TailLoop` reported an instance a
+    /// run-time bind built without its loop.
+    pub(crate) said: bool,
 }
 
 /// Trait implemented by graphix attributes (`#[name]`; arguments are refused).

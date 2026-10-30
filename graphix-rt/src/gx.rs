@@ -407,6 +407,9 @@ impl<X: GXExt> GX<X> {
         if cfg.lsp_mode {
             ctx.env.ide = IdeMode::Lsp(None);
         }
+        if !fusion_on(cfg.flags) {
+            ctx.fusion.disable();
+        }
         let mut t = Self {
             ctx,
             nodes: Roots::default(),

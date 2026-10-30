@@ -2320,11 +2320,11 @@ impl<R: Rt> CallSite<R> {
                 Self::unregister_fn_params(ctx, params);
                 res.map(|tail_loops| (defaults, tail_loops))
             })?;
-            if crate::fusion_on(flags) {
+            if crate::fusion_on(flags) && !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads
                 let asserted =
-                    !ctx.attr_census.lock().is_empty() || !tail_loops.is_empty();
+                    !ctx.attr_census.lock().is_empty() || tail_loops.checking();
                 if let Some(apply) = self.callee.apply_mut() {
                     if let Some(share) = &self.share {
                         share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx))?;
@@ -3942,6 +3942,18 @@ impl<R: Rt> CallSite<R> {
         {
             return emit_lambda_call_node(cx, self, Called::Own(own));
         }
+        // CR claude for claude: [perf/medium] A self-recursive instance bound at
+        // run time does not fuse: `fusion::fuse_instance` refuses its body here
+        // ("mutually recursive static call edge is not supported", twice), so
+        // each level of its recursion is a node-walked call bound at run time. A
+        // function value that is the loop (`let g = select b { true => loop, ..
+        // }; g(10, 0)`, GXDBG_INSTANCE_FUSION=1: fused_delta=0) and a collection
+        // handed it (`array::map([1, 2, 3], tri)`) run that way on main 3c784b3db
+        // as on cr31-A, so a `#[tail_recursive]` over either fails, at run time
+        // or refused at compile, where calling the loop from a lambda (`|n, acc|
+        // loop(n, acc)`) builds it. CLAUDE.md asks to push on such de-fuse
+        // corners. probes: ~/tmp/cr29/scratch/review7/A/bs10.gx, map_self.gx
+        // (bound-self-defuse-01)
         if self.is_recursive_edge() {
             bail!("emit_clif: mutually recursive static call edge is not supported")
         }
