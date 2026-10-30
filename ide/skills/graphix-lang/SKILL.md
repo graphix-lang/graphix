@@ -382,7 +382,13 @@ across a bottom cycle).
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   Everything else is told apart: a string from a bare variant, an array
-  from a tuple, struct, variant or list, `[]` from `[<>]`.
+  from a tuple, struct, variant or list, `[]` from `[<>]`. A type
+  variable may be any type, so a test beside one is refused where an
+  instance could share the tested form: `` `Keep(r) `` over `` ['b,
+  `Keep('b)] ``, and a slice element alike, `` [`Keep(r), ..] `` over
+  `` Array<['b, `Keep('b)]> `` (`[h, ..]` tests nothing and checks). Over
+  an unannotated parameter a slice's rest is such a variable: annotate
+  the parameter.
 - References, functions and a type holding two numeric types cannot
   be ordered, sorted or used as map keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
 

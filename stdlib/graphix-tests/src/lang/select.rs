@@ -4708,6 +4708,82 @@ run!(generic_annotated_slice_arms_check, r#"{
     matches!(v, Ok(v) if v.to_string() == "[i64:3, [i64:3, i64:4], i64:5]")
 }; FuseExpect::Jit);
 
+// A slice's element test sees any member of the element type at its
+// position, whatever the slice's rest stands over: an instance may bind
+// 'b to a `Keep, which the element's pattern would take apart.
+macro_rules! element_untold {
+    ($name:ident, $typ:literal, $pat:literal, $arg:literal) => {
+        run!($name, concat!(
+            "{ let f = |x: ", $typ, "| -> ['b, null] select x { ", $pat,
+            " => r, _ => null }; f(", $arg, ") }"
+        ), refused("isn't known here and may share `Keep("); FuseExpect::None);
+    };
+}
+
+element_untold!(
+    slice_element_telling_quantifier_from_keep_refused,
+    "Array<['b, `Keep('b)]>",
+    "[`Keep(r)]",
+    "[`Keep(1)]"
+);
+element_untold!(
+    slice_rest_element_telling_quantifier_from_keep_refused,
+    "Array<['b, `Keep('b)]>",
+    "[`Keep(r), ..]",
+    "[`Keep(1)]"
+);
+element_untold!(
+    slice_suffix_element_telling_quantifier_from_keep_refused,
+    "Array<['b, `Keep('b)]>",
+    "[.., `Keep(r)]",
+    "[`Keep(1)]"
+);
+element_untold!(
+    list_element_telling_quantifier_from_keep_refused,
+    "List<['b, `Keep('b)]>",
+    "[<`Keep(r), ..>]",
+    "[<`Keep(1)>]"
+);
+element_untold!(
+    nested_slice_element_telling_quantifier_from_keep_refused,
+    "Array<Array<['b, `Keep('b)]>>",
+    "[[`Keep(r), ..], ..]",
+    "[[`Keep(1)]]"
+);
+element_untold!(
+    tuple_slice_element_telling_quantifier_from_keep_refused,
+    "(Array<['b, `Keep('b)]>, i64)",
+    "([`Keep(r), ..], _)",
+    "([`Keep(1)], 2)"
+);
+element_untold!(
+    variant_slice_element_telling_quantifier_from_keep_refused,
+    "[`W(Array<['b, `Keep('b)]>), null]",
+    "`W([`Keep(r), ..])",
+    "`W([`Keep(1)])"
+);
+
+// An unannotated scrutinee's slice rest is a type variable too: an
+// instance may bind it to a `Keep.
+run!(unannotated_slice_element_telling_rest_from_keep_refused, r#"{
+  let f = |a| select a { [`Keep(r), ..] => r, _ => null };
+  f([`Keep(1)])
+}"#, refused("isn't known here and may share `Keep("); FuseExpect::None);
+
+// A bind and a literal test nothing a quantifier could share: the binds
+// take the element type whole.
+run!(generic_slice_binds_beside_keep_check, r#"{
+  let first = |x: Array<['b, `Keep('b)]>| -> ['b, `Keep('b), null]
+    select x { [h, ..] => h, _ => null };
+  let lit = |x: Array<['b, `Keep('b)]>| -> ['b, `Keep('b), null]
+    select x { [h, 1] => h, _ => null };
+  let snd = |x: List<['b, `Keep('b)]>| -> ['b, `Keep('b), null]
+    select x { [<_, h, ..>] => h, _ => null };
+  (first([2, `Keep(1)]), lit([`Keep(3), 1]), snd([<2, `Keep(1)>]))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"[i64:2, ["Keep", i64:3], ["Keep", i64:1]]"#)
+}; FuseExpect::Jit);
+
 // Under a written union a slice pattern narrows to the member it can
 // match, as a tuple or variant pattern does.
 run!(slice_pattern_under_written_union, r#"{

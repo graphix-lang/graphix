@@ -2148,7 +2148,7 @@ impl<R: Rt> Select<R> {
                 }))
                 .at(&site);
             }
-            // CR claude for claude: [bug/medium] A slice arm's element test is not told
+            // XCR claude for claude: [bug/medium] A slice arm's element test is not told
             // apart from an open element type. `let f = |x: Array<['b, `Keep('b)]>| ->
             // ['b, null] select x { [`Keep(r), ..] => r, _ => null }` checks, and over
             // `xs: Array<[`Keep(i64), `Keep(`Keep(i64))]> = [`Keep(1)]` f(xs) returns 1
@@ -2157,20 +2157,56 @@ impl<R: Rt> Select<R> {
             // over ('b, i64), is refused since (x-engine-collections-02), so this arm
             // makes no Told judgment here, or one that finds nothing: not located.
             // (keep-slice-told-01)
-            if checking && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate) {
-                if let Some(why) = pat.type_predicate.rep_collision(&ctx.env, &rest) {
-                    return Err(format_with_flags(PrintFlag::DerefTVars, || {
-                        why.untold("this pattern", &pat.type_predicate, &rest)
-                    }))
-                    .at(&site);
+            // 2026-10-29 claude: Located: the arm's own judgment found nothing, since a
+            // slice predicate's rest cell holds the whole element type, so
+            // reaching.diff(pred) subtracted everything (rest = []), at the top and
+            // inside a tuple or variant (same_resolved). Fixed: each element of a slice
+            // under an inferred predicate is judged as a test of its own.
+            // StructPatternNode::element_tests walks the arm's structure with its
+            // narrowed predicate and what reaches it (through tuples, variants,
+            // structs, or-patterns and nested slices) and gives each slice element that
+            // is not a bind or _ with the element type of what reaches the slice;
+            // select.rs Told-judges each among that type less itself, as it does the
+            // arm. And Type::rep_collision_tested now passes over a cell of the test's
+            // whether bound or open: 336d891's open-only rule refused [h, ..] and [h,
+            // 1] over Array<['b, `Keep('b)]>, which main accepted. Pins (lang::select):
+            // slice_rest_element_, slice_suffix_element_, list_element_,
+            // nested_slice_element_, tuple_slice_element_ and
+            // variant_slice_element_telling_quantifier_from_keep_refused and
+            // unannotated_slice_element_telling_rest_from_keep_refused fail without
+            // element_tests; generic_slice_binds_beside_keep_check fails without the
+            // bound-cell rule; slice_element_telling_quantifier_from_keep_refused (no
+            // rest) was refused before too. Consequence: an unannotated parameter's
+            // slice that tests an element of a shared form (|a| select a { [(x, y), ..]
+            // => x, _ => 0 }) is now refused, annotate it, as its rest is the
+            // definition's open cell; main accepted it. The written-type spelling is
+            // keep-written-told-01.
+            if checking {
+                let mut tests: SmallVec<[(Type, Type); 4]> =
+                    smallvec![(pat.type_predicate.clone(), reaching.clone())];
+                if !pat.explicit_type_predicate {
+                    pat.structure_predicate.element_tests(
+                        &ctx.env,
+                        &pat.type_predicate,
+                        &reaching,
+                        &mut tests,
+                    );
                 }
-                let test = pat.type_predicate.clone();
-                let judgment = crate::PendingSettle::Told {
-                    test,
-                    rest,
-                    spec: Arc::new(site.clone()),
-                };
-                super::defer_judgment(ctx, judgment);
+                let spec = Arc::new(site.clone());
+                for (test, among) in tests {
+                    let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
+                    if let Some(why) = test.rep_collision(&ctx.env, &rest) {
+                        return Err(format_with_flags(PrintFlag::DerefTVars, || {
+                            why.untold("this pattern", &test, &rest)
+                        }))
+                        .at(&site);
+                    }
+                    let spec = spec.clone();
+                    super::defer_judgment(
+                        ctx,
+                        crate::PendingSettle::Told { test, rest, spec },
+                    );
+                }
             }
             // The guard typechecks after the narrowing so it sees the
             // arm's binds at their settled type; it must be bool.

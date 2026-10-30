@@ -148,12 +148,22 @@ open members the same way (`dispatch_members` keeps them): beside a
 reference, a function, an error, a map, an array or a Rust-backed abstract
 an open member is refused ("annotate it"). A `NoError` cell shares no
 error's form, so a select over `Result<'a, E>` stays legal. The arm's own
-test is judged from the arm's side (`Type::rep_collision_tested`): an
-open cell of the test's is a part the arm binds and does not test (a
-slice pattern's element), so it collides with nothing and the walk looks
-on; an open cell of what else reaches the arm may be any type, even where
-the arm's capture shares it, so `` |x: ['b, `Keep('b)]| select x {
+test is judged from the arm's side (`Type::rep_collision_tested`): a
+cell of the test's, bound or open, is a part the arm binds and does not
+test (a bind, a slice's rest), so it collides with nothing and the walk
+looks on; an open cell of what else reaches the arm may be any type, even
+where the arm's capture shares it, so `` |x: ['b, `Keep('b)]| select x {
 `Keep(r) => r, r => r } `` is refused as its `` `Keep(i64) `` spelling is.
+A slice pattern's predicate is a Set whose rest cell holds the whole
+element type, so as a type it covers every array and subtracts everything
+from what reaches the arm; its test is its elements', each of which sees
+any member of the element type. So each element that is not a bind is
+judged on its own, its test among the element type less itself
+(`StructPatternNode::element_tests`, through tuples, variants, structs
+and nested slices): `` [`Keep(r), ..] `` over `` Array<['b, `Keep('b)]> ``
+is refused, `[h, ..]` over it is not. Over an unannotated parameter the
+slice's rest is an open cell of the definition, so a tested element whose
+form another type shares is refused there too ("annotate it").
 
 **Seq machines.** A machine's `pc` holds its step labels as bare variants
 (`seq_machine.rs`, `SeqAbort`).

@@ -1273,10 +1273,13 @@ cycle, across workers; the compiler never pins threads.
   member there, or in a union dispatch, reads as any type it may yet bind
   (`Open::Unknown`, judged at the statement's settle, `PendingSettle::
   Told`): beside a member whose form another type may share it is refused
-  ("annotate it"), a `NoError` cell sharing no error's form. An open cell
-  of the arm's own test (a slice element: a part it binds, not one it
-  tests) collides with nothing; one of what else reaches the arm does,
-  even where the arm's capture shares it (`Type::rep_collision_tested`). A
+  ("annotate it"), a `NoError` cell sharing no error's form. A cell of
+  the arm's own test, bound or open (a bind, a slice's rest: a part it
+  binds, not one it tests), collides with nothing; an open one of what
+  else reaches the arm does, even where the arm's capture shares it
+  (`Type::rep_collision_tested`). Each element of a slice pattern is a
+  test of its own among the whole element type, whatever the rest covers
+  (`StructPatternNode::element_tests`). A
   compared type (`==` and the orderings), a map key type and what the
   stdlib compares or hashes (`uniq`, `min`/`max`, the sorts, `dedup`,
   `map::` keys) may hold no such pair anywhere: the `'a: Discernible`

@@ -2695,6 +2695,10 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     // ('b, i64)) fail without it; generic_slice_arms_check and
     // generic_annotated_slice_arms_check hold the slice arms. A slice arm's element
     // test over Array<['b, `Keep('b)]> is still accepted: keep-slice-told-01.
+    // 2026-10-29 claude: keep-slice-told-01 is fixed: slice elements are judged one by
+    // one (StructPatternNode::element_tests), and rep_collision_tested passes over a
+    // test cell bound as well as open, so [h, ..] over Array<['b, `Keep('b)]> checks
+    // again (refused since this fix, accepted on main). The pins named above still hold.
     let Some(why) = test.rep_collision_tested(env, rest) else { return Ok(()) };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
     format_with_flags(PrintFlag::DerefTVars, || {

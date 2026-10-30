@@ -646,6 +646,42 @@ impl StructPatternNode {
         merge_leaves(env, all, out)
     }
 
+    /// Each element test of a slice under this pattern, with the element
+    /// type of what reaches the slice: any member of it may stand at the
+    /// element's position, however the predicate's Set covers it as a
+    /// type. `pred` is this pattern's inferred predicate as narrowed,
+    /// `typ` what reaches it.
+    pub(super) fn element_tests(
+        &self,
+        env: &Env,
+        pred: &Type,
+        typ: &Type,
+        out: &mut SmallVec<[(Type, Type); 4]>,
+    ) {
+        crate::stack::ensure_sufficient(|| {
+            let children = self.children();
+            if children.is_empty() || !self.children_inferred(true) {
+                return;
+            }
+            let Some(ts) = self.child_types(env, pred, true) else { return };
+            let slice = matches!(
+                self,
+                Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
+                    | Self::SlicePrefix { .. }
+                    | Self::SliceSuffix { .. }
+            );
+            for (_, parts) in self.member_parts(env, typ, false) {
+                for ((c, t), p) in children.iter().zip(&ts).zip(&parts) {
+                    let (Some((t, _)), Some((p, _))) = (t, p) else { continue };
+                    if slice && !matches!(c, Self::Bind(_) | Self::Ignore) {
+                        out.push((t.clone(), p.clone()))
+                    }
+                    c.element_tests(env, t, p, out)
+                }
+            }
+        })
+    }
+
     /// What this pattern's structure test admits over `typ`: `typ` with
     /// every position the structure does not test as `Any`. An
     /// or-alternative is taken by its structure alone, so a value of
@@ -714,6 +750,15 @@ impl StructPatternNode {
     /// `matched`, when not empty, is the scrutinee's members this slice can
     /// match: an array or list member's elements are its own, not the
     /// predicate's cells, which stand for any other member (`Any`).
+    // CR claude for claude: [bug/low] An exact-length slice holding a bind and a literal
+    // over an element type with an open member is refused with a type mismatch naming
+    // a cell: `let f = |x: Array<['b, i64]>| select x { [h, 1] => h, _ => null }`
+    // (and `[1, h]`) gives "type mismatch '_N: unbound does not contain [i64, 'b]";
+    // `[h, ..]` over it, and `[h, 1]` over Array<[string, i64]> or Array<['b,
+    // `Keep('b)]>, check. GRAPHIX_DBG_BIND shows `CHK-CONTAINS '_N >= [i64, 'b] ->
+    // false`, `'_N` the bind's cell in the predicate's Set [i64, '_N], after `SET-T [i64,
+    // '_N] >= i64`; whether this check or bind_narrowed's makes it is not located. Main
+    // (a3d9a2d7c) refuses it too. (slice-bind-mismatch-01)
     fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
@@ -991,6 +1036,17 @@ impl StructPatternNode {
                 ctx.env.retype(id, typ)
             }
             let env = &ctx.env;
+            // CR claude for claude: [bug/medium] Under a written type, a constructor
+            // pattern at a union position is told from the union's other members with open
+            // cells benign, and the select arm's Told judgment tests the written type, which
+            // covers what reaches it, so neither tells the constructor from a quantifier
+            // beside it. `let g = |x: ['b, `Keep('b)]| -> ['b, null] select x { ['b,
+            // `Keep('b)] as `Keep(r) => r, _ => null }` checks, and over `v: [`Keep(i64),
+            // `Keep(`Keep(i64))] = `Keep(5)` g(v) prints 5, typed ['b, null] at 'b =
+            // `Keep(i64); `Array<['b, `Keep('b)]> as [`Keep(r), ..]` over an array of them
+            // does the same. The inferred spellings are refused (keep-slice-told-01). A Told
+            // judgment of (shape, rest) deferred from here would refuse them; this compile
+            // does not know whether it is the definition's check. (keep-written-told-01)
             if let Ok(rest) = type_predicate.diff(env, &shape)
                 && node.footprint(env, &shape, false).rep_collision(env, &rest).is_some()
             {
