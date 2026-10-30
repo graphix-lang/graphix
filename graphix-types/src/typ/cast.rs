@@ -922,7 +922,16 @@ impl Type {
                     );
                 }
                 let own = own_class(v);
-                let mut members = (*s & own).iter().chain((*s & !own).iter());
+                // a real value tries the reals first; real text finds one
+                // past an integer reading
+                let reals = match Typ::get(v).is_real() {
+                    true => *s & Typ::real(),
+                    false => BitFlags::empty(),
+                };
+                let mut members = reals
+                    .iter()
+                    .chain((*s & own & !reals).iter())
+                    .chain((*s & !own).iter());
                 let mut exact = members.clone().filter_map(|t| {
                     convert(v.clone(), t).filter(|c| holds_exactly(v, c))
                 });
@@ -931,6 +940,7 @@ impl Type {
                 let read = match exact.next() {
                     Some(c)
                         if Typ::get(&c).is_integer()
+                            && matches!(v, Value::String(_))
                             && s.intersects(Typ::real())
                             && kind() == Some(NumKind::Real) =>
                     {
