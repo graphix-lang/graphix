@@ -636,8 +636,8 @@ node graph IS the IR — there is no parallel typed IR
   `#[tail_recursive]` analysis's gate plus, for every instance a compile
   or a run-time bind builds (a later REPL input's included), the loop
   fusion built: no call to it left in the node-walk, a dynamic call's
-  included (`analysis::check_tail_loops`; a bind it covers is fused, and
-  its failure reported once; unchecked where fusion does not run). A
+  included (`analysis::check_tail_loops`; a bind it covers is fused until
+  its failure is reported, once; unchecked where fusion does not run). A
   run-time bind fuses as its runtime does, whatever its site's flags (the
   package root's have fusion off, a site a collection or a builtin builds
   has none): a runtime whose flags disable fusion disables its context's

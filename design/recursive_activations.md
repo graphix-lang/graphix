@@ -104,8 +104,10 @@ check is not run again (a node-walked activation's analysis, its body
 lazy, would misjudge it), but every instance a later analysis reaches
 owes its loop, and one whose recursion it finds is none
 (`GXLambda::tail_loop`) is refused too. So a later compile (a REPL
-input) checks its own instances, and a run-time bind it covers is fused (`fusion::fuse_instance`, as for a `#[native]`
-it holds) and checked (`check_bound_tail_loops`): the bound instance
+input) checks its own instances, and a run-time bind it covers is fused
+(`fusion::fuse_instance`, as for a `#[native]` it holds) and checked
+(`check_bound_tail_loops`) until the definition's failure is reported
+(`TailLoops::checking`): the bound instance
 itself is a dynamic call, dispatched in the node-walk, so a function
 value that is the loop fails unless its body fused into one kernel that
 leaves no call of it, while one whose body calls it builds the loop; the

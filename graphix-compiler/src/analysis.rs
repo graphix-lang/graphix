@@ -510,6 +510,9 @@ pub(crate) fn check_bound_tail_loops<R: Rt>(
     g: &GXLambda<R>,
     ctx: &CompileCtx<R>,
 ) {
+    if !due.checking() {
+        return;
+    }
     let found = match due.of(g) {
         // the loop itself, the call dispatching it: one kernel, its body,
         // runs it as a loop, else each level is a call of its own
