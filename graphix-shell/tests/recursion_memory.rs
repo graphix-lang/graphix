@@ -1,8 +1,14 @@
 //! The peak RSS a call activation and a collection slot cost the
-//! node-walk, its stack included: a loose backstop (12 KB an activation,
-//! 4 KB a slot), since RSS differs between hosts by more than a tight
-//! margin. `stdlib/graphix-tests/tests/activation_heap.rs` holds their live
-//! heap bytes to caps a few percent over the cost.
+//! node-walk, its stack included: the backstop for what
+//! `stdlib/graphix-tests/tests/activation_heap.rs` does not count, which
+//! holds their live heap bytes exactly, to caps a few percent over the cost.
+//!
+//! RSS is not exact: a run's peak moves by up to 2 MB with its threads'
+//! timing (the allocator's arenas, the compile's thread-local pools), so a
+//! slope over 15,000 items moves by about 100 bytes, one standard deviation,
+//! at any load. The slopes measure 10.3 KB an activation and 3.4 KB a slot,
+//! and each ceiling sits more than six deviations over its slope: the noise
+//! does not reach it, and growth of 2 KB an activation or 0.7 KB a slot does.
 
 #![cfg(target_os = "linux")]
 
