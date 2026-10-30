@@ -3100,6 +3100,10 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // lib_tests::toml::{toml_target_f32_tuple_beside_an_exact_reader_refused,
 // toml_target_string_tuple_beside_a_number_tuple_refused}, textdata's unit tests. The open
 // semantics questions are holds-exactly-open-01.
+// 2026-10-30 claude: Also: a nested union counts as in the data's class where
+// any member is, as in_own_class does, so [(i64, f64), (u8, [i64, string])] is refused
+// (the cast tries (u8, [i64, string]) first and reads (3, 3.5) back as (u8:3, "3.5")).
+// Pin: lib_tests::json::json_target_union_part_in_the_class_refused.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.

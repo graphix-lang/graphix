@@ -725,8 +725,10 @@ holds), the pass (a tuple, then a struct, keeping the data's class, then
 any member keeping it, then the rest; a primitive set by class and then
 bit), the union's order within a pass, and `Choice`: a reading that
 crosses the line between integers and reals gives way to a later one
-keeping every number its kind; an abstract type written as its
-representation is built from the data, never read in its class. Each outcome of a written value records,
+keeping every number its kind; a union is in the data's class where any
+member is, whichever member reads it, a composite where all its parts
+are; an abstract type written as its representation is built from the
+data, never read in its class. Each outcome of a written value records,
 for the writer's own member and for the other, whether its reading
 rounds, leaves the data's class, crosses that line or reads a number as
 no number; a composite's outcomes are its parts' together. So `[(f32,

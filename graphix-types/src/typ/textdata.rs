@@ -20,6 +20,7 @@ use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use smallvec::SmallVec;
+use std::cell::RefCell;
 
 /// The format a type is read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,6 +206,20 @@ impl Leaf {
         }
     }
 
+    /// The class of the data it writes, or of its text as a key.
+    fn data_class(self, key: bool) -> Class {
+        match self {
+            _ if key => Class::String,
+            Leaf::Null => Class::Null,
+            Leaf::Bool => Class::Bool,
+            Leaf::Int(_) | Leaf::F32 | Leaf::F64 | Leaf::Decimal | Leaf::Duration => {
+                Class::Number
+            }
+            Leaf::Str | Leaf::DateText => Class::String,
+            Leaf::DateTime => Class::DateTime,
+        }
+    }
+
     /// The values it writes.
     fn writes(self) -> &'static [Token] {
         match self {
@@ -349,6 +364,22 @@ impl Outs {
         }
     }
 
+    /// Each outcome with the side `shift` names in the class or out of it,
+    /// as `own` and `foreign` allow, whatever its reading said.
+    fn classed(self, shift: u8, own: bool, foreign: bool) -> Outs {
+        let mut r = Outs::NONE;
+        for x in self.iter() {
+            let x = x & !(FOREIGN << shift);
+            if own {
+                r.insert(x)
+            }
+            if foreign {
+                r.insert(x | FOREIGN << shift)
+            }
+        }
+        r
+    }
+
     fn with(self, bits: u8) -> Outs {
         let mut r = Outs::NONE;
         for x in self.iter() {
@@ -413,6 +444,8 @@ struct Shapes<'a> {
     /// Each reference expanded, by its definition and its arguments'
     /// nodes, so a recursive type is a cycle.
     refs: AHashMap<(usize, SmallVec<[usize; 4]>), usize>,
+    /// [`Shapes::class_of`] by reader, writer and key.
+    classes: RefCell<AHashMap<(usize, usize, bool), (bool, bool)>>,
 }
 
 impl<'a> Shapes<'a> {
@@ -718,6 +751,71 @@ impl<'a> Shapes<'a> {
         }
     }
 
+    /// Whether a value `w` writes (as an object's key where `key`) may be
+    /// in the reader `r`'s class and whether it may be out of it
+    /// (`in_own_class`, which decides a union member's pass): a union's
+    /// class is its members', a composite's all of its parts', an empty
+    /// array is in any array's; a pair met again claims both.
+    fn class_of(&self, r: usize, w: usize, key: bool) -> (bool, bool) {
+        if let Some(c) = self.classes.borrow().get(&(r, w, key)) {
+            return *c;
+        }
+        self.classes.borrow_mut().insert((r, w, key), (true, true));
+        let c = crate::stack::ensure_sufficient(|| self.class_of_int(r, w, key));
+        self.classes.borrow_mut().insert((r, w, key), c);
+        c
+    }
+
+    fn class_of_int(&self, r: usize, w: usize, key: bool) -> (bool, bool) {
+        use Shape::*;
+        let parts = |ps: &mut dyn Iterator<Item = (usize, usize)>| {
+            ps.fold((true, false), |(o, f), (r, w)| {
+                let (o1, f1) = self.class_of(r, w, key);
+                (o && o1, f || f1)
+            })
+        };
+        match (&self.nodes[w].0, &self.nodes[r].0) {
+            (Union(ms, _), _) => ms.iter().fold((false, false), |(o, f), m| {
+                let (o1, f1) = self.class_of(r, *m, key);
+                (o || o1, f || f1)
+            }),
+            (Foreign(w), _) => self.class_of(r, *w, key),
+            (_, Union(ms, _)) => ms.iter().fold((false, true), |(o, f), m| {
+                let (o1, f1) = self.class_of(*m, w, key);
+                (o || o1, f && f1)
+            }),
+            (None | Unknown, _) | (_, Unknown) => (true, true),
+            (_, None | Foreign(_) | Lit(_) | Pairs(..) | Fixed(_, true)) => (false, true),
+            (Scalar(x, _), Scalar(y, _)) => {
+                let c = x.data_class(key) == y.class();
+                (c, !c)
+            }
+            (Lit(_), Scalar(y, _)) => {
+                let c = y.class() == Class::String;
+                (c, !c)
+            }
+            (Scalar(..) | Lit(_), _) | (_, Scalar(..)) => (false, true),
+            (Seq(e, _), Seq(f, own)) => (*own, !own || self.class_of(*f, *e, key).1),
+            (Fixed(ts, _), Seq(f, true)) => parts(&mut ts.iter().map(|t| (*f, *t))),
+            (Seq(e, _), Fixed(us, false)) => parts(&mut us.iter().map(|u| (*u, *e))),
+            (Fixed(ts, _), Fixed(us, false)) if ts.len() == us.len() => {
+                parts(&mut us.iter().copied().zip(ts.iter().copied()))
+            }
+            (Struct(fs), Struct(gs)) => {
+                let field = |n: &ArcStr| gs.iter().find(|(m, _, _)| m == n);
+                match fs.iter().all(|(n, _, _)| field(n).is_some()) {
+                    true => parts(
+                        &mut fs
+                            .iter()
+                            .filter_map(|(n, f, _)| field(n).map(|(_, g, _)| (*g, *f))),
+                    ),
+                    false => (false, true),
+                }
+            }
+            _ => (true, true),
+        }
+    }
+
     /// How a value `a` writes (as an object's key where `key`) is read by
     /// `a`'s own member and by `b`. A pair met again along one walk claims
     /// nothing: a written value is finite.
@@ -744,11 +842,14 @@ impl<'a> Shapes<'a> {
             o
         };
         match (&self.nodes[a].0, &self.nodes[b].0) {
-            (Union(ms, _), _) => {
-                Outs::any(ms.iter().map(|m| self.outs(*m, key, b, seen)))
-            }
+            (Union(ms, _), _) => Outs::any(ms.iter().map(|m| {
+                let (own, foreign) = self.class_of(a, *m, key);
+                self.outs(*m, key, b, seen).classed(0, own, foreign)
+            })),
             (_, Union(ms, _)) => {
+                let (own, foreign) = self.class_of(b, a, key);
                 Outs::any(ms.iter().map(|m| self.outs(a, key, *m, seen)))
+                    .classed(4, own, foreign)
             }
             (Foreign(x), _) => self.outs(*x, key, b, seen).with(FOREIGN),
             (_, Foreign(y)) => self.outs(a, key, *y, seen).with(FOREIGN << 4),
@@ -1018,8 +1119,13 @@ impl Type {
     /// one writes may read back as the other; `None` when every union reads
     /// back what each member writes.
     pub fn text_ambiguity(&self, env: &Env, format: Format) -> Option<(Type, Type)> {
-        let mut shapes =
-            Shapes { env, format, nodes: Vec::new(), refs: AHashMap::default() };
+        let mut shapes = Shapes {
+            env,
+            format,
+            nodes: Vec::new(),
+            refs: AHashMap::default(),
+            classes: RefCell::default(),
+        };
         shapes.node(self);
         let mut seen = Seen::default();
         let unions = (0..shapes.nodes.len()).map(|n| (n, false));
@@ -1157,6 +1263,8 @@ mod test {
     #[test]
     fn readings_outside_the_class_go_by_the_union_order() {
         let json = |t| ambiguous(t, Format::Json);
+        assert!(json("[(i64, f64), (u8, [i64, string])]"));
+        assert!(json("[(i64, f64), (u8, [bool, i64, string])]"));
         assert!(json("[(duration, string), (f64, bool)]"));
         assert!(json("[(duration, string), (f64, i64)]"));
         assert!(json("[(i64, duration), (u8, string)]"));

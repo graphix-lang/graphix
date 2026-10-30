@@ -685,6 +685,21 @@ run!(
     refused("'b: JsonData refuses [(u8, string), (i64, duration)]")
 );
 
+// A union is in the data's class where any member is, whichever member
+// reads it: (u8, [i64, string]) keeps the class of [3, 3.5] (i64 is a
+// number) and comes first, so (3, 3.5) reads back as (u8:3, "3.5").
+run!(
+    json_target_union_part_in_the_class_refused,
+    r#"{
+    type T = [(i64, f64), (u8, [i64, string])];
+    let v: T = (3, 3.5);
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [(u8, [i64, string]), (i64, f64)]")
+);
+
 // A map's keys are written as their text, which reads back by the key
 // union's order: a decimal's "3" as the datetime 3 seconds past the epoch.
 run!(
