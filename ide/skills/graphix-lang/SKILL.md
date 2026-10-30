@@ -831,8 +831,8 @@ A whole float prints with its point (`3.0`) in interpolation, `println` and
 is 3.0); a scale-zero decimal prints plainly without a trailing point.
 Printed composites escape brackets in strings and retain numeric type prefixes
 except for i64/f64. Bytes print as `bytes:` literals. Only `str::parse` also
-reads printed UTC datetimes, every printed duration unit, large finite floats
-printed as integers, and bare NaN/inf/-inf. These do not extend source syntax.
+reads printed UTC datetimes, every printed duration unit and bare
+NaN/inf/-inf. These do not extend source syntax.
 Error diagnostics keep unescaped brackets in their strings.
 
 Derive, do not add a second writer. Two unordered writers to one

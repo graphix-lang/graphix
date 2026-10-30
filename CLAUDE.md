@@ -317,7 +317,7 @@ the formatter sets it**: printed types and expressions reach
 program-visible values (a cast error, a null error), so comments print
 only under it; `WrittenAt` and
 `str_form` are not part of a session image (`Expr::pos` and comments
-are), and a type is shared by content, so whose written order it carries
+are, but not a typedef's field and member comments, `TypeNotes`), and a type is shared by content, so whose written order it carries
 is incidental. A tree holding a comment,
 an attribute or a doc has no single-line form. What the formatter
 does normalize: `i64`/`f64` literals print bare and an `f32` in its
@@ -521,7 +521,7 @@ by side: each answers `(RpcId, result)` once (reply, error or
 `` `Aborted ``), in arrival order, one a cycle (its site's reply id
 queues them). A call under an id in flight replaces that call, which
 answers `` `Aborted ``; `abort_call` aborts one from anywhere (the table
-is `NetState`'s, so `call` and `abort_call` are `ORDERED`); a sleep
+is `NetState`'s, so `call`, `call_id` and `abort_call` are `ORDERED`); a sleep
 abandons the site's calls and remints its reply id, so none answers.
 Remote effects are not undone. Its completed result survives sleep, and
 wake alone starts no call. Bottom never reaches builtin authors: a bottomed arg bottoms the

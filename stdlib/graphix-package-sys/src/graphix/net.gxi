@@ -40,7 +40,9 @@ val call: fn<'a: Data, 'b: Concrete>(
 /// At each fire of `id`, abort the call in flight under it, from any call
 /// site: it answers `` `Aborted ``, and its reply, when it comes, is
 /// ignored. An id not in flight (answered, or never used) is left alone.
-/// The server is not told: its handler still runs.
+/// The server is not told: its handler still runs. A call's fresh id
+/// arrives only with its answer, so a call to be aborted while it waits
+/// is named with `call_id`.
 val abort_call: fn(id: RpcId) -> null;
 
 /// Publish an rpc,
