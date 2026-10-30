@@ -321,6 +321,22 @@ impl StructurePattern {
             if !t.could_match(env, m)? {
                 continue;
             }
+            // CR claude for eric: [bug/high] `*f == t` holds two completions that
+            // differ only in undecided cells to be one member, so a partial struct
+            // pattern is checked as covering both while a later statement decides the
+            // cells apart, and the select matches no arm at run time: `let x = never();
+            // let y = never(); let v = select b { true => {a: [1], c: x}, false => {a:
+            // ["s"], c: y} }; let r = select v { {a, ..} => "[a]" }; x <- 1; y <- "w"`
+            // prints [1], then "no arm matches: a coverage hole in the check" once b
+            // turns false (main df6600e9b; GRAPHIX_ABORT_ON_NO_MATCH=1 dumps core). The
+            // same in a block, a lambda or an arm. The fuzzer finds the reverse too, a
+            // valid partial pattern refused as matching two members
+            // (fuzz/pending-triage/oct29a/ryouko/typeflip_000003.gx). Four review rounds
+            // on branch cr30-u4 judged such pairs at the statement's settle; each round
+            // opened a new over-refusal or order split (round 4: `{loading: true,
+            // items: []} | {loading: false, items: data}` under bool-literal arms is
+            // refused "missing match cases"). The rule is cr-discuss round 4 D2. probe:
+            // ~/tmp/cr29/scratch/review3/u4/r2b.gx (partial-hole-01)
             match &found {
                 None => found = Some(t),
                 Some(f) if *f == t => (),

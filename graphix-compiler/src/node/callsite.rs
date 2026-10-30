@@ -1117,6 +1117,20 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
+// CR claude for eric: [bug/medium] An argument whose type holds a cell its uses decide
+// (a read target such as str::parse's or sys::net::subscribe's, an unwritten `let x =
+// never()`, an empty `[]`'s element) is not widened over: its cell is decided by
+// whichever argument the loop meets first, so "the widest argument, whatever the
+// order" fails for it. `{ let f = |#x: Array<'a> = [1], y: 'a| -> 'a y;
+// f(sys::net::subscribe("/local/dimpl1")) }` checks, and the same call with the
+// default written, `f(#x: [1], sys::net::subscribe(..))`, is refused ("'a: iN does
+// not contain ['a: iN, Error<..>]"): typemorph's default-materialize flip,
+// fuzz/pending-triage/oct29a/aieka/typeflip_000000.gx, still flips on main
+// df6600e9b. Four review rounds on branch cr30-u3 built a widening over such
+// arguments (+557/-114 lines here); each round's review found a new path dependence
+// (round 4: renaming f's type variables flips acceptance, and a parse result held in
+// a `let` is refused where main runs it). The rule is cr-discuss round 4 D1; the
+// rounds' probes are under ~/tmp/cr29/scratch/review{3,4,5,6}/u3/ (widen-open-01)
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument, whatever the order. An argument that does not
 /// fit is probed once against its formal with those variables open; it
@@ -1885,6 +1899,28 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
+    // CR claude for eric: [risk/medium] An omitted labeled default only narrows: it is
+    // checked after Widening::settle has set the call's widenable variables, so a
+    // default wider than the arguments is refused when omitted and accepted when
+    // written. Over `let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y`, `f(#x: [1,
+    // null], 1)` checks and `f(1)` is refused ("Array<'a: i64> does not contain
+    // Array<[i64, null]>"); with an open argument, `f(#x: [1, null], str::parse("5"),
+    // 1)` checks and `f(str::parse("5"), 1)` is refused, a default-elide TYPEFLIP the
+    // fuzzer's typemorph reports. CLAUDE.md says an omitting site's check "may narrow
+    // that site's cells", and design/must_reject.md grades default-elide flips EXPECTED.
+    // Options: (1) an omitted default takes part in widening as a written labeled
+    // argument does (one more closed argument to Widening, before settle), so the two
+    // spellings always agree; (2) it stays narrowing-only and the flip is documented
+    // (the book's labeled-default section, CLAUDE.md). Recommend (1): a default is an
+    // argument the caller did not write, and the widest-argument rule promises a type
+    // that does not depend on how the arguments are written. probe:
+    // ~/tmp/cr29/scratch/review3/u3/d1_omit.gx against d1_written.gx, flip2_omit.gx
+    // against flip2_written.gx (default-widen-01)
+    // 2026-10-30 claude: Written on branch cr30-u3 (round 2 of the U3 soak fix, which
+    // did not land) and copied here unchanged. On main df6600e9b the closed pair splits
+    // as stated (d1_written checks, d1_omit is refused), but the open-argument pair is
+    // refused in both spellings: its written form checks only under the branch's
+    // widening of open arguments, which is cr-discuss round 4 D1.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the
