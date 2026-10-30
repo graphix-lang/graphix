@@ -311,6 +311,36 @@ An image carries each cell's level and each definition's depth.
   only the witness (`settle_witness`): the cell's writers are not
   checked yet.
 
+### The occurs check
+
+Before a cell binds, takes a lower bound or merges with another, the
+check walks from the other side to it through bindings, conjuncts and
+lower bounds (`tvar::would_cycle_inner`); where the walk reaches it,
+`tvar::cycle_through` says how. Where two cells meet
+(`contains_tvars`):
+
+- A path through a constructor's part (an element, a field, a payload,
+  a function's argument or result, a referent, an abstract's
+  parameter, a typedef parameter its body holds under a constructor):
+  the cell would hold itself, which no finite type does, as no
+  non-contractive typedef does. The relation is refused. `b <- B([t ~
+  b.0])` over `B([])` (`type B<'p> = Abstract<'p>`) asks `'p ⊇ 'q`
+  with `'q` above `Array<'p>`, and is refused as `b <- [t ~ b]` is
+  (pins `lang::types::payload_cycle_*`, `array_cycle*`).
+- An open cell meeting a bound cell whose binding reaches it walks the
+  binding, where a union collapses (`'r ⊇ [T, 'r]` binds `'r := T`;
+  pins `lang::types::rec_block_*_collapses`).
+- A path through cells and unions alone otherwise (`'p` above `'q`
+  above `'p`): the relation holds and neither cell records it; a commit
+  marks both `CellFact::CycleRefused`, and one still open at the
+  terminal settle is refused as the infinite type (pin
+  `lang::types::payload_cycle_of_cells`).
+
+The merges' own guards (`TVar::alias`, `alias_cells`, `copy`) skip a
+merge that would close a cycle and mark the cells the same way: the
+relations that reach them were checked here first, and a written
+type's names or a union's open members cannot be refused there.
+
 ### `Concrete`: a conjunct that is a predicate
 
 `'b: Concrete` (`Type::Concrete`, parsed only as a bound) says whatever

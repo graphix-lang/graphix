@@ -119,54 +119,106 @@ fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
 }
 
 pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
-    would_cycle_seen(addr, t, &mut LPooled::take())
+    CycleWalk::new(addr, false).go(t, false).is_break()
 }
 
-// Conjunct graphs can be cyclic; a revisited cell adds no
-// reachability, so it answers false.
-fn would_cycle_seen(addr: usize, t: &Type, seen: &mut AddrSet) -> bool {
-    ensure_sufficient(|| would_cycle_seen_inner(addr, t, seen))
+/// How a type reaches a cell along the edges [`would_cycle_inner`] walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Cycle {
+    /// Through cells and unions alone: the cells are one type.
+    Bare,
+    /// Through a constructor's part (an element, a field, a payload, an
+    /// argument, a referent, a parameter its typedef holds under one): no
+    /// finite type holds itself there.
+    Constructor,
 }
 
-fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut AddrSet) -> bool {
-    // `seen` is a true visited set holding both cell and composite
-    // node addresses; the answer depends only on reachable leaves.
-    if let Some(node) = node_addr(t)
-        && !seen.insert(node)
-    {
-        return false;
+/// How `t` reaches the cell at `addr`, a constructor path over a bare
+/// one; `None` where [`would_cycle_inner`] is false.
+pub(super) fn cycle_through(addr: usize, t: &Type) -> Option<Cycle> {
+    if !would_cycle_inner(addr, t) {
+        return None;
     }
-    match t {
-        // Expansion reaches every cell a Ref's params hold; a typedef
-        // body's free tvars are its params, so the params cover it.
-        Type::Ref(r) => r.params.iter().any(|p| would_cycle_seen(addr, p, seen)),
-        Type::TVar(t) => {
-            let cell = t.cell();
-            let cell_addr = cell.data_ptr().addr();
-            cell_addr == addr || {
-                if !seen.insert(cell_addr) {
-                    return false;
-                }
-                let (binding, cons, below) = {
-                    let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
-                };
-                binding.is_some_and(|b| would_cycle_seen(addr, &b, seen))
-                    || cons
-                        .iter()
-                        .chain(below.iter())
-                        .any(|c| would_cycle_seen(addr, c, seen))
-            }
+    Some(match CycleWalk::new(addr, true).go(t, false) {
+        ControlFlow::Break(()) => Cycle::Constructor,
+        ControlFlow::Continue(()) => Cycle::Bare,
+    })
+}
+
+/// A walk from a type to the cell at `addr` through bindings, conjuncts
+/// and lower bounds. It breaks at the first path or, tracking, at the
+/// first path under a constructor.
+struct CycleWalk {
+    addr: usize,
+    /// Visited nodes and cells.
+    seen: LPooled<AddrSet>,
+    /// Tracking, the visits under a constructor: another state of the
+    /// walk than a visit of the same node that is not.
+    seen_under: Option<LPooled<AddrSet>>,
+}
+
+impl CycleWalk {
+    fn new(addr: usize, track: bool) -> Self {
+        Self { addr, seen: LPooled::take(), seen_under: track.then(LPooled::take) }
+    }
+
+    fn visit(&mut self, key: usize, under: bool) -> bool {
+        match &mut self.seen_under {
+            Some(seen) if under => seen.insert(key),
+            _ => self.seen.insert(key),
         }
-        t => t
-            .try_for_each_child(&mut |c| {
-                if would_cycle_seen(addr, c, seen) {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
+    }
+
+    fn go(&mut self, t: &Type, under: bool) -> ControlFlow<()> {
+        ensure_sufficient(|| {
+            if let Some(node) = node_addr(t)
+                && !self.visit(node, under)
+            {
+                return ControlFlow::Continue(());
+            }
+            match t {
+                Type::Set(ms) => ms.iter().try_for_each(|m| self.go(m, under)),
+                // a typedef body's free tvars are its params, so the params
+                // reach every cell its expansion does
+                Type::Ref(r) => {
+                    let def = self.seen_under.as_ref().and_then(|_| r.resolved());
+                    r.params.iter().enumerate().try_for_each(|(i, p)| {
+                        let guarded = def.as_ref().is_some_and(|d| d.param_guarded(i));
+                        self.go(p, under || guarded)
+                    })
                 }
-            })
-            .is_break(),
+                Type::TVar(tv) => {
+                    let cell = tv.cell();
+                    let cell_addr = cell.data_ptr().addr();
+                    if cell_addr == self.addr {
+                        return match under || self.seen_under.is_none() {
+                            true => ControlFlow::Break(()),
+                            false => ControlFlow::Continue(()),
+                        };
+                    }
+                    if !self.visit(cell_addr, under) {
+                        return ControlFlow::Continue(());
+                    }
+                    let (binding, cons, below) = {
+                        let cell = cell.read();
+                        (
+                            cell.binding.clone(),
+                            cell.constraints.clone(),
+                            cell.lower.clone(),
+                        )
+                    };
+                    binding
+                        .iter()
+                        .chain(cons.iter())
+                        .chain(below.iter())
+                        .try_for_each(|c| self.go(c, under))
+                }
+                t => {
+                    let under = self.seen_under.is_some();
+                    t.try_for_each_child(&mut |c| self.go(c, under))
+                }
+            }
+        })
     }
 }
 
@@ -1143,22 +1195,12 @@ impl TVar {
     }
 
     /// `e`, the refusal of the var `slot` holds against `t`, as the
-    /// infinite type when a member of `t` that is a constructor reaches
-    /// the var's cell: no finite type contains a constructor holding
-    /// itself.
+    /// infinite type when `t` reaches the var's cell under a constructor.
     pub fn refusal_over(slot: &Type, t: &Type, e: Error) -> Error {
         let Type::TVar(tv) = slot else { return e };
-        let members = match t {
-            Type::Set(ms) => &ms[..],
-            t => std::slice::from_ref(t),
-        };
-        let constructor_reaches = |m: &Type| {
-            !matches!(m, Type::TVar(_) | Type::Ref(_) | Type::App(..) | Type::Set(_))
-                && tv.would_cycle(m)
-        };
-        match members.iter().any(constructor_reaches) {
-            true => anyhow!("{}", super::contains::INFINITE_TYPE_MSG),
-            false => e,
+        match cycle_through(tv.cell_addr(), t) {
+            Some(Cycle::Constructor) => anyhow!("{}", super::contains::INFINITE_TYPE_MSG),
+            Some(Cycle::Bare) | None => e,
         }
     }
 

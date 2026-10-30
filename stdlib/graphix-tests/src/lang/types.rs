@@ -3815,6 +3815,175 @@ async fn settle_keeps_a_payload_bound_beside_bottom() -> Result<()> {
     Ok(())
 }
 
+/// A refusal naming the held type and the written one, whose cells'
+/// ids vary.
+fn holds_itself(
+    held: &'static str,
+    written: &'static str,
+) -> impl Fn(Result<&Value>) -> bool {
+    move |v: Result<&Value>| {
+        matches!(v, Err(e) if {
+            let e = format!("{e:#}");
+            e.contains(held) && e.contains(written)
+        })
+    }
+}
+
+// A parameter bounded below by an array of itself has no finite type:
+// the write that closes the cycle is refused, as `b <- [t ~ b]` is.
+const PAYLOAD_CYCLE_UNDER_A_CONSTRUCTOR: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = B([]);
+    b <- B([t ~ b.0]);
+    select b.0 { [x, ..] => x + 1, _ => 0 }
+}
+"#;
+
+run!(
+    payload_cycle_under_a_constructor,
+    PAYLOAD_CYCLE_UNDER_A_CONSTRUCTOR,
+    holds_itself("b is B<Array<'", "and cannot hold B<Array<Array<'");
+    FuseExpect::None
+);
+
+const PAYLOAD_CYCLE_UNDER_A_CONSTRUCTOR_KNOWN: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = B([1]);
+    b <- B([t ~ b.0]);
+    select b.0 { [x, ..] => x + 1, _ => 0 }
+}
+"#;
+
+run!(
+    payload_cycle_under_a_constructor_known,
+    PAYLOAD_CYCLE_UNDER_A_CONSTRUCTOR_KNOWN,
+    refused("b is B<Array<i64>> and cannot hold B<Array<Array<i64>>>");
+    FuseExpect::None
+);
+
+const PAYLOAD_CYCLE_WRITE_ALONE: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = B([]);
+    b <- B([t ~ b.0]);
+    b
+}
+"#;
+
+run!(
+    payload_cycle_write_alone,
+    PAYLOAD_CYCLE_WRITE_ALONE,
+    holds_itself("b is B<Array<'", "and cannot hold B<Array<Array<'");
+    FuseExpect::None
+);
+
+const PAYLOAD_CYCLE_WRITE_ALONE_KNOWN: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = B([1]);
+    b <- B([t ~ b.0]);
+    b
+}
+"#;
+
+run!(
+    payload_cycle_write_alone_known,
+    PAYLOAD_CYCLE_WRITE_ALONE_KNOWN,
+    refused("b is B<Array<i64>> and cannot hold B<Array<Array<i64>>>");
+    FuseExpect::None
+);
+
+// A typedef whose body holds its parameter in a field is a constructor
+// of it.
+const PAYLOAD_CYCLE_THROUGH_A_TYPEDEF: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    type Bx<'a> = {v: 'a};
+    let mk = |x: 'a| -> Bx<'a> {v: x};
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = B(1);
+    b <- B(mk(t ~ b.0));
+    b
+}
+"#;
+
+run!(
+    payload_cycle_through_a_typedef,
+    PAYLOAD_CYCLE_THROUGH_A_TYPEDEF,
+    holds_itself("b is B<i64>", "and cannot hold B<{ v: '");
+    FuseExpect::None
+);
+
+// The same writes without the abstract.
+const ARRAY_CYCLE_KNOWN: &str = r#"
+{
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = [1];
+    b <- [t ~ b];
+    select b { [x, ..] => x + 1, _ => 0 }
+}
+"#;
+
+run!(
+    array_cycle_known,
+    ARRAY_CYCLE_KNOWN,
+    refused("b is Array<i64> and cannot hold Array<Array<i64>>");
+    FuseExpect::None
+);
+
+const ARRAY_CYCLE: &str = r#"
+{
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = [];
+    b <- [t ~ b];
+    select b { [x, ..] => x + 1, _ => 0 }
+}
+"#;
+
+run!(
+    array_cycle,
+    ARRAY_CYCLE,
+    holds_itself("b is Array<'", "and cannot hold Array<Array<'");
+    FuseExpect::None
+);
+
+const ARRAY_CYCLE_THROUGH_A_LET: &str = r#"
+{
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = [];
+    let c = [t ~ b];
+    b <- c;
+    select b { [x, ..] => x + 1, _ => 0 }
+}
+"#;
+
+run!(
+    array_cycle_through_a_let,
+    ARRAY_CYCLE_THROUGH_A_LET,
+    holds_itself("b is Array<'", "and cannot hold Array<Array<'");
+    FuseExpect::None
+);
+
+// A cycle through cells alone is no refusal.
+const PAYLOAD_CYCLE_OF_CELLS: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = B(1);
+    let y = B(t ~ x.0);
+    x <- y;
+    x.0 + 1
+}
+"#;
+
+run!(payload_cycle_of_cells, PAYLOAD_CYCLE_OF_CELLS, is(Value::I64(2)));
+
 /// A union of a bare variable and a constructor of it places every
 /// member: when the constructor's first fit would strand one, the
 /// deepest member fit decides the variable.

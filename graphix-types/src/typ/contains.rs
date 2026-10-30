@@ -10,7 +10,7 @@ use crate::{
         Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
         node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
-        tvar::{CellFact, Fresh, RigidGate, would_cycle_inner},
+        tvar::{CellFact, Cycle, Fresh, RigidGate, cycle_through, would_cycle_inner},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -2339,7 +2339,8 @@ impl Type {
     /// bind or alias: an open cell meeting a bound cell whose binding
     /// reaches it is the μ-shape through a binding (a copy would bind
     /// the infinite type, so the binding is walked, where `'r ⊇ [T,
-    /// 'r]` collapses); any other cycle is refused.
+    /// 'r]` collapses); any other cycle under a constructor is refused,
+    /// and one through cells and unions alone holds ([`Cycle::Bare`]).
     fn contains_tvars(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -2350,21 +2351,44 @@ impl Type {
         let commit = flags.contains(ContainsFlags::Commit);
         let rigid = flags.contains(ContainsFlags::RigidCheck);
         let (addr0, addr1) = (t0.cell_addr(), t1.cell_addr());
-        let cyc0 = || would_cycle_inner(addr0, tt1);
-        let cyc1 = || would_cycle_inner(addr1, tt0);
-        // a probe answers the verdict alone; a commit records the refusal
-        let refuse = || {
+        let cyc0 = || cycle_through(addr0, tt1);
+        let cyc1 = || cycle_through(addr1, tt0);
+        // A cycle under a constructor has no finite solution. A bare one
+        // answers true and keeps neither relation; a commit records it on
+        // both cells.
+        let refuse = |cycle: Cycle| {
             if graphix_dbg_cycle_bt() {
                 eprintln!(
-                    "CYCLE-REFUSED-PAIR ({addr0:x},{addr1:x})\n{}",
+                    "CYCLE-REFUSED-PAIR {cycle:?} ({addr0:x},{addr1:x})\n{}",
                     std::backtrace::Backtrace::force_capture()
                 );
             }
-            if commit {
-                t0.mark_cycle_refused();
-                t1.mark_cycle_refused();
+            match cycle {
+                Cycle::Constructor => Ok(false),
+                // CR claude for claude: [bug/high] A cycle through cells
+                // alone answers true and keeps neither relation, so the
+                // cells stay apart and a later write decides one of them
+                // alone: `type B<'p> = Abstract<'p>; let x = B(1); let y =
+                // B(t ~ x.0); x <- y; y <- B(t ~ "a"); println(x.0 + 1)`
+                // checks ('p0 binds i64, 'p1 settles to [i64, string]) and
+                // runs `"a" + 1`: it prints 2, 2, then 1 (an arith error
+                // under --no-fusion), on main too. Eric's ruling on
+                // (lower-cycle-01) says the cells of a bare cycle merge:
+                // every cell on the path is one type, so the fix merges them
+                // all and drops the merged cell's bounds that are itself (a
+                // union holding it collapses, as `'r ⊇ [T, 'r]` does).
+                // Merging t0 and t1 alone leaves a cycle through any cells
+                // between them. No fixture before
+                // `lang::types::payload_cycle_of_cells` reached this arm.
+                // probe: ~/tmp/cr29/scratch/laneL/r3/bare4.gx (bare-cycle-01)
+                Cycle::Bare => {
+                    if commit {
+                        t0.mark_cycle_refused();
+                        t1.mark_cycle_refused();
+                    }
+                    Ok(true)
+                }
             }
-            Ok(true)
         };
         match (t0.binding(), t1.binding()) {
             // Two bound cells decide by walking the bindings; every bind
@@ -2374,11 +2398,11 @@ impl Type {
                 b0.contains_int(flags, env, hist, &b1)
             }),
             (None, Some(b1)) => {
-                if cyc0() {
+                if would_cycle_inner(addr0, tt1) {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
-                if cyc1() {
-                    return refuse();
+                if let Some(cycle) = cyc1() {
+                    return refuse(cycle);
                 }
                 // A rigid receiver must not bind; re-verdict against
                 // the binding.
@@ -2418,11 +2442,11 @@ impl Type {
                 Ok(true)
             }
             (Some(b0), None) => {
-                if cyc1() {
+                if would_cycle_inner(addr1, tt0) {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
-                if cyc0() {
-                    return refuse();
+                if let Some(cycle) = cyc0() {
+                    return refuse(cycle);
                 }
                 if (rigid || commit) && t1.is_rigid() {
                     return b0.contains_int(flags, env, hist, tt1);
@@ -2459,7 +2483,7 @@ impl Type {
                 })
             }
             (None, None) => {
-                // CR claude for claude: [bug/high] An occurs-check refusal
+                // XCR claude for claude: [bug/high] An occurs-check refusal
                 // between two open cells answers true and keeps neither
                 // relation, so a cycle that runs through a lower bound drops
                 // the bound and the program runs a wrong answer (main too).
@@ -2483,8 +2507,27 @@ impl Type {
                 // are; a cycle of bare cells, or through a union that
                 // collapses, keeps its solution (the cells merge). Readdressed
                 // to claude.
-                if cyc0() || cyc1() {
-                    return refuse();
+                // 2026-10-30 claude: Fixed as ruled: contains_tvars asks how a
+                // cycle runs (tvar::cycle_through, the occurs check's own walk
+                // carrying whether a path passed a constructor, a typedef
+                // parameter counting where its body holds it under one); a
+                // cycle under a constructor answers false on all three arms, so
+                // cyc6/cyc3 and the same writes without the select are refused
+                // at the write (b is B<Array<i64>> and cannot hold
+                // B<Array<Array<i64>>>), as b <- [t ~ b] is. A cycle through
+                // cells and unions alone keeps today's answer (true, both cells
+                // marked CycleRefused, so CycleRefused and its settle check
+                // stay); that path drops the relation too and runs a wrong
+                // answer: bare-cycle-01. Pins
+                // lang::types::payload_cycle_under_a_constructor(_known),
+                // payload_cycle_write_alone(_known),
+                // payload_cycle_through_a_typedef (main accepts all five
+                // programs: cyc6 prints 0 then 1, cyc3 2 then 1, the typedef
+                // one writes B({v: 1}) into a B<i64>); array_cycle(_known,
+                // _through_a_let) and payload_cycle_of_cells unchanged; the
+                // mu-shape pins rec_block_*_collapses pass. Needs a soak.
+                if let Some(cycle) = cyc0().max(cyc1()) {
+                    return refuse(cycle);
                 }
                 if !quantifier_admits(env, t0, t1) || !quantifier_admits(env, t1, t0) {
                     return Ok(false);

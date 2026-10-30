@@ -634,6 +634,44 @@ impl ResolvedRef {
         n == 1
     }
 
+    /// Whether the body holds parameter `i` under a constructor, through
+    /// the filled cells of the typedefs it names.
+    pub(crate) fn param_guarded(&self, i: usize) -> bool {
+        self.guarded_seen(i, &mut LPooled::take())
+    }
+
+    /// `defs` holds the (definition, parameter) pairs asked already.
+    fn guarded_seen(&self, i: usize, defs: &mut AHashSet<(usize, usize)>) -> bool {
+        fn go(
+            t: &Type,
+            name: &ArcStr,
+            under: bool,
+            defs: &mut AHashSet<(usize, usize)>,
+        ) -> bool {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => under && &tv.name == name,
+                Type::Set(ms) => ms.iter().any(|m| go(m, name, under, defs)),
+                Type::Ref(r) => {
+                    let def = r.resolved();
+                    r.params.iter().enumerate().any(|(j, p)| {
+                        let guarded = def.as_ref().is_some_and(|d| {
+                            defs.insert((d.def_key(), j)) && d.guarded_seen(j, defs)
+                        });
+                        go(p, name, under || guarded, defs)
+                    })
+                }
+                t => t
+                    .try_for_each_child(&mut |c| match go(c, name, true, defs) {
+                        true => ControlFlow::Break(()),
+                        false => ControlFlow::Continue(()),
+                    })
+                    .is_break(),
+            })
+        }
+        let Some((formal, _)) = self.params.get(i) else { return false };
+        go(&self.typ, &formal.name, false, defs)
+    }
+
     pub(crate) fn new(
         canonical_scope: ModPath,
         pos: SourcePosition,
