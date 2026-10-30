@@ -1219,9 +1219,6 @@ fn build_fresh<R: Rt, S: Send>(
 }
 
 fn skip_idle_slot<R: Rt>(ctx: &mut ExecCtx<'_, R>, slot: &mut Slot<R>) -> bool {
-    if slot.call.as_prune().is_some() {
-        return false;
-    }
     let NodeView::CallSite(site) = slot.call.view() else { return false };
     if site.slept.is_set() || site.args.len() != 1 {
         return false;

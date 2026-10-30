@@ -105,6 +105,16 @@ impl InputReader {
                 self.next_line(env).await.map(Read::Signal)
             }
             // left by Ctrl-C, which the shell hears as SIGINT
+            // CR claude for eric: [design/medium] At a terminal a value display
+            // gives the prompt back only at Ctrl-C, and Ctrl-C now resets the
+            // session (D7), so a REPL keeps no binding across anything it shows:
+            // `let x = 41`, `x + 1`, Ctrl-C, then `x` is undefined; before D7 the
+            // same Ctrl-C left the display and kept `x`. This follows the ruling
+            // ("ctrl-c to clear the rt, ctrl-d to exit"), which may not have
+            // counted Ctrl-C's second job. If it did not: keep Ctrl-C uniform and
+            // let another key (Enter or Esc) leave a text display without
+            // stopping anything; a piped REPL is unaffected. probe:
+            // ~/tmp/cr29/scratch/review2/RV6/repl_tty_value.py (repl-value-reset-01)
             Output::EmptyScript | Output::Text(_) => std::future::pending().await,
             Output::None => self.next_line(env).await.map(Read::Signal),
         }

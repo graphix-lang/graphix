@@ -151,7 +151,7 @@ However, some expressions produce a single value and effectively "complete":
 4
 ```
 
-Even though this printed its value immediately, the shell is still waiting for potential updates. Since `2 + 2` can never update, nothing more will happen, but you still need `Ctrl+C` to return to the prompt.
+Even though this printed its value immediately, the shell is still waiting for potential updates. Since `2 + 2` can never update, nothing more will happen, but you still need `Ctrl+C` to return to the prompt, and that resets the session as above.
 
 ### Script Output Behavior
 

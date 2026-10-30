@@ -54,7 +54,8 @@ every slot because its accumulator may move. `MapQ` skips a standing
 slot's call when the source did not move, the callback did not rebind,
 the view is `Cycle`, and the bound lambda's body is clean and has run.
 This shortcut requires an awake call with just its supplied element
-reference: defaults, unresolved callees and builtin callees still run.
+reference whose callee is a lambda: one a dynamic call site has bound now is
+skipped as a static one is; defaults and builtin callees still run.
 The slot keeps its value or bottom and marks the body's visit stamp;
 audit mode walks the skipped call and checks its production and effects.
 Pins: `tests/runtime_cost.rs` in graphix-tests.
