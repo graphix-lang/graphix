@@ -410,13 +410,13 @@ is delivered fired, and so is every input of a callee it binds as it
 runs (a catch-up scope that owes everything standing). The view stays
 the step's (`View::Step`), so the callee's body, slept since the last
 run, is born again: constants fire, its builtins are reborn, an async
-one holding no answer (`CachedArgsAsync::reborn`), so a previous run's
-answer is never this issue's; its `let`s take their initializers again,
-its selects forget their entry history, and what is bound inside it
-(a `catch` binder, a nested seq's `pc`) reads stale, never re-raising a
-previous run's event. A fused call is its kernel run born, its interior
-memory cleared, over the same delivered inputs. What the callee captures
-from outside keeps its value. A call outside a seq is never born again:
+one holding no answer (`CachedArgsAsync::reborn`, `RpcCall::reborn`),
+so a previous run's answer is never this issue's; its `let`s take their
+initializers again, its selects forget their entry history, and what is
+bound inside it (a `catch` binder, a nested seq's `pc`) reads stale,
+never re-raising a previous run's event. A fused call is its kernel run
+born, its interior memory cleared, over the same delivered inputs. What
+the callee captures from outside keeps its value. A call outside a seq is never born again:
 a wake resumes it.
 The select watches the snapshot, not live inputs: once issued, a
 pending callee keeps running if an input later bottoms, and later

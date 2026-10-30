@@ -332,6 +332,54 @@ async fn a_callee_reads_its_world_fresh_each_run(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// An rpc call a step issues answers its own run: the server answers the
+// run it serves, and a run never completes on the reply that answered the
+// run before it, through a function value or a sample.
+async fn a_steps_rpc_call_answers_its_own_run(mode: Mode) -> Result<()> {
+    for call in [
+        "sys::net::call(p, null)",
+        "load()",
+        "load1(n)",
+        "nested(n)",
+        "pick(p)",
+        "bound()",
+        "apply(|q| sys::net::call(q, null))",
+    ] {
+        let code = r#"{
+            let p = "/local/seq/runs";
+            let next = never<i64>();
+            let runs = 0;
+            sys::net::rpc(#path: p, #doc: "runs", #spec: null, #f: |a: null| a ~ runs);
+            let t = select (any(0, next) ~ runs) { k if k < 3 => k, _ => never() };
+            let load = || sys::net::call(p, null);
+            let load1 = |u| sys::net::call(p, null);
+            let nested = |u| u ~ load();
+            let pick = select runs {
+                100 => |q| sys::net::call(q, null),
+                _ => |q| sys::net::call(q, null)
+            };
+            let bound = select t {
+                100 => || sys::net::call(p, null),
+                _ => || sys::net::call(p, null)
+            };
+            let apply = |f: fn(q: string) -> (sys::net::RpcId, Result<i64,
+                [`RpcError(string), `InvalidCast(string), `Aborted]>)| f(p);
+            let r = seq t {
+                let n = runs + 1;
+                runs <- n;
+                let a: i64 = (CALL).1$;
+                a
+            };
+            next <- r ~ 1;
+            r
+        }"#
+        .replace("CALL", call);
+        let (values, _) = run_delta(&code, mode).await?;
+        assert_eq!(as_i64s(&values), [1, 2, 3], "{call}");
+    }
+    Ok(())
+}
+
 // The state a callee keeps starts afresh at each run, `count`'s and a
 // written `let`'s alike, while what it captures from outside keeps its
 // value across runs (t-seq-03).
@@ -382,6 +430,7 @@ async fn a_call_outside_a_seq_resumes(mode: Mode) -> Result<()> {
 
 modes!(
     a_callee_reads_its_world_fresh_each_run,
+    a_steps_rpc_call_answers_its_own_run,
     a_callees_own_state_starts_fresh_each_run,
     a_call_outside_a_seq_resumes,
 );

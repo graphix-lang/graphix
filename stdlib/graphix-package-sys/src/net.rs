@@ -654,6 +654,14 @@ impl<R: Rt> Apply<R> for RpcCall {
             // abort and sleep pins fail; with settle_call ignoring the serial and sleep
             // doing nothing, the replace and sleep pins and the unit test fail. Needs a
             // soak.
+            // 2026-10-29 claude: cr29 fix F5: RpcCall gains Apply::reborn, which drops
+            // its last answer as CachedArgsAsync::reborn does (D4, t-seq-03), so a call
+            // a seq step issues answers only its own run; the sleep before a rebirth
+            // already abandons the site's calls and remints its reply id, so reborn
+            // does nothing more. Pin:
+            // lang::seq_calls::a_steps_rpc_call_answers_its_own_run (seven call shapes,
+            // all four modes); without the reborn its nested(n) case (a sample over a
+            // call through a function) answers [1, 1, 1] for [1, 2, 3].
             let id = rpc_id(id).unwrap_or_else(RpcId::new);
             let request = write_data(ctx, args).and_then(|args| parse_args(path, &args));
             NetState::get(ctx).call_rpc(ctx, self.var.id, id, request);
@@ -697,6 +705,12 @@ impl<R: Rt> Apply<R> for RpcCall {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.abandon(ctx);
         self.var.remint(ctx);
+    }
+
+    /// Born again, the site holds no answer: its last one was the last
+    /// run's, and the sleep before it abandoned the calls in flight.
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R>) {
+        self.out = TagValue::phantom();
     }
 }
 
