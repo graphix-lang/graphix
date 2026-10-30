@@ -265,6 +265,11 @@ impl Drop for PendingRequest {
     }
 }
 
+// CR claude for claude: [style/low] RpcId writes its own AtomicU64 counter and
+// nohash::IsEnabled where atomic_id! gives both (this file's CallSerial uses it;
+// impl_no_pack! takes the macro's type). Also the refusal for an RpcId as data says
+// "implement Cast for it where it is defined", which no user can do for a Rust type in
+// sys::net. (RV2 finding 4) (rpcid-atomic-id-01)
 /// What `sys::net::call_id` mints and a call is known by, unique in the
 /// process. Its `Pack` refuses, so no peer can send one and it prints as
 /// `abstract:`.
@@ -687,6 +692,13 @@ impl NetState {
         self.0.rpc_calls.lock().remove(&id);
     }
 
+    // CR claude for claude: [perf/low] Every sleep or delete of a call or callq site runs
+    // retain over every call in flight in the runtime, under the mutex, even when the
+    // site has none, and every seq step holding a call sleeps when it passes: a step's
+    // completion costs the whole table, quadratic under a busy server. callq already
+    // holds its own ids (RpcCallQ::calls) and could abandon exactly those; call needs a
+    // per-site index. (RV2 finding 3, ~/tmp/cr29/review2-reports.md)
+    // (rpc-abandon-scan-01)
     /// Abort every call `site` has in flight. Their answers still come to
     /// `site`'s delivery id, which its caller remints or releases.
     pub(crate) fn abandon_calls(&self, site: BindId) {
