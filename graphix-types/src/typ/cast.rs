@@ -234,6 +234,33 @@ impl NumReads {
     }
 }
 
+// CR claude for eric: [design/low] What the one exactness rule (holds-exactly-class-01)
+// leaves open, each a semantics question; JsonData/TomlData refuse the unions these make
+// read back as another member (textdata.rs follows the pick). (1) An exact integer comes
+// before a rounding real: cast<[i64, f32]>(1234567900.0) is i64, so an f32 1234567936's
+// text "1234568000.0" reads back as i64 in [i64, f32] while the value stays f32. Options:
+// keep exactness before kind, or a reading keeping every number its kind before one that
+// crosses, across the Holds rounds (JsonData could then admit [f32, i64]). (2) A scale-0
+// decimal prints "3", so cast<[i64, decimal]>(3.0) is decimal 3 whose text reads back as
+// i64 3, and decimal 3 into [i64, f64] is f64 3.0 while its text is i64 3 (main: i64 for
+// both). Options: a scale-0 decimal prints with a point, a decimal made from a whole float
+// keeps scale 1, or leave it. (3) The rounds come before the class: an exact reading
+// outside the value's class beats a rounded one inside it, so cast<[f32, string]>(0.1) is
+// "0.1" and [(string, f32), (i64, f64)] reads ("1", f32:0.1) as (1, 0.1). Options: keep
+// it, or the members keeping the class first across the rounds (JsonData could then admit
+// both). (4) Readings outside the class go by the union's order, which follows the
+// members' canonical order and so their typedef names: [(i64, duration), (u8, string)]
+// reads (1, 3.5s) as (u8:1, "3.5") where [(u8, duration), (i64, string)] keeps (u8:1,
+// 3.5s); cast<[duration, decimal]>("3.0") is a duration while the value 3.0 is decimal,
+// and [DU, D] under typedef names reads that text as decimal; duration 3s into [i64, f64]
+// is i64 3, its text "3.0" f64. Options: order numeric text by the class of the value it
+// parses as (as values are), or leave it. (5) Where every reading crosses, the first
+// member in canonical order wins however many leaves it crosses:
+// cast<[(f32, f32, i64), (i64, i64, f32)]>([1.0, 2.0, 3.0]) is (1, 2, f32:3.0). Options:
+// keep it, or the fewest crossings. (6) An integer stays an integer in a union whose
+// members are named (type B = u8; cast<[f64, B]>(2) is u8 2), a lane judgment (13b0e1a9a)
+// not yet ruled. Probes: ~/tmp/cr29/scratch/review7/B/r1/{order2,tdef}.gx,
+// ~/tmp/cr29/scratch/laneB/r3/{strhole,strhole2,f32str}.gx (holds-exactly-open-01)
 /// A union's reading of a value among those its members offer, in its
 /// order: the first, except that in a round that drops no part one reading
 /// a number across the line between integers and reals gives way to a
@@ -3045,6 +3072,34 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // lib_tests::json::json_f32_beside_a_narrow_integer_reads_back,
 // lib_tests::toml::toml_f32_beside_a_narrow_integer_reads_back (all fail on 322a66957 or
 // 16f7ced15's cast.rs).
+// 2026-10-30 claude: Round 2 (review7 B): the JsonData/TomlData relaxation of 13b0e1a9a
+// judged a tuple's or struct's positions apart while the reader judges a member's reading
+// whole, so [(f32, u16), (i64, f32)], [(f32, u8), (f64, f32)] and the struct form were
+// admitted and read back as the other member; [(f32, u8), (f64, f64)] was such a hole on
+// main. textdata.rs now follows the union reader's pick over classes of written values
+// (Token): for each, how the writer's own member and the other read it (rounded, outside
+// the data's class, crossing the integer/real line, a number as no number), a composite's
+// parts together, then the round, a payload variant's tag, the pass (tuple, struct, own
+// class, the rest; a primitive set by class and bit), the union's order and Choice; a map
+// key union is also judged from its text. That closes the review's holes and the
+// cross-class ones main had ([f32, string], [(string, f32), (i64, f64)], [(i64, duration),
+// (u8, string)], Map<[decimal, datetime], i64>), and admits unions main refused that read
+// back ([{a: i64}, {a: i64, b: [i64, null]}] in JSON, [`B(u8), (datetime, f32)]).
+// Validated against the cast with JsonData off over ~330 random and hand-made unions
+// (~/tmp/cr29/scratch/laneB/r3/{fuzz,oracle}.py): no union admitted that fails to read
+// back. Pins (each failing on 5fa76d1e2):
+// lib_tests::json::{json_target_f32_tuple_beside_an_exact_reader_refused,
+// json_target_f32_tuple_beside_a_wide_integer_refused,
+// json_target_f32_struct_beside_an_exact_reader_refused,
+// json_target_duration_tuple_beside_an_exact_reader_refused,
+// json_target_f32_beside_a_string_refused,
+// json_target_string_tuple_beside_a_number_tuple_refused,
+// json_target_readings_outside_the_class_refused,
+// json_target_key_text_read_as_another_member_refused,
+// json_unions_read_back_by_their_pick},
+// lib_tests::toml::{toml_target_f32_tuple_beside_an_exact_reader_refused,
+// toml_target_string_tuple_beside_a_number_tuple_refused}, textdata's unit tests. The open
+// semantics questions are holds-exactly-open-01.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.

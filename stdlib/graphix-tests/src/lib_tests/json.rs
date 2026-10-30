@@ -568,6 +568,221 @@ run!(
     )
 );
 
+// A tuple whose f32s a narrow integer could hold reads back beside a
+// tuple of such integers: an f32 the integer holds is written exactly.
+run!(
+    json_f32_tuple_beside_a_narrow_integer_tuple_reads_back,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type T = [(f32, f32), (u8, u8)];
+    type A = [Array<f32>, (u8, u8)];
+    let t = |v: T| -> bool {
+        let r: Result<T, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let a = |v: A| -> bool {
+        let r: Result<A, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    (
+        [t((f32:2.0, f32:3.0)), t((f32:0.1, f32:3.0)), t((u8:2, u8:3)), t((f32:1e10, f32:0.5))],
+        [a([f32:2.0, f32:3.0]), a([f32:0.1, f32:3.0]), a((u8:2, u8:3))]
+    )
+}"#,
+    prints("[[true, true, true, true], [true, true, true]]")
+);
+
+// A member's reading is judged whole: an f32 its own member rounds loses
+// to a member reading every part exactly, numbers crossed or not.
+run!(
+    json_target_f32_tuple_beside_an_exact_reader_refused,
+    r#"{
+    type T = [(f32, u8), (f64, f64)];
+    let v: T = (f32:0.1, u8:1);
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [(f32, u8), (f64, f64)]")
+);
+
+run!(
+    json_target_f32_tuple_beside_a_wide_integer_refused,
+    r#"{
+    type T = [(f32, u16), (i64, f32)];
+    let v: T = (f32:1234567936.0, u16:1);
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [(i64, f32), (f32, u16)]")
+);
+
+run!(
+    json_target_f32_struct_beside_an_exact_reader_refused,
+    r#"{
+    type T = [{a: f32, b: u8}, {a: f64, b: f32}];
+    let v: T = {a: f32:0.1, b: u8:1};
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [{ a: f32, b: u8 }, { a: f64, b: f32 }]")
+);
+
+// A duration's member reads its seconds as no number, so a member reading
+// every part exactly takes the tuple whatever it crosses.
+run!(
+    json_target_duration_tuple_beside_an_exact_reader_refused,
+    r#"{
+    type T = [(duration, u8), (f64, f64)];
+    let v: T = (duration:3.s, u8:1);
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [(f64, f64), (duration, u8)]")
+);
+
+// A member reading a value outside its class takes it where the writer's
+// own member only rounds it: an f32's 0.1 reads back as the string "0.1",
+// a string's "1" beside an f32's 0.1 as the integer 1.
+run!(
+    json_target_f32_beside_a_string_refused,
+    r#"{
+    let v: [f32, string] = f32:0.1;
+    let r: Result<[f32, string], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [f32, string]")
+);
+
+run!(
+    json_target_string_tuple_beside_a_number_tuple_refused,
+    r#"{
+    type T = [(string, f32), (i64, f64)];
+    let v: T = ("1", f32:0.1);
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [(i64, f64), (string, f32)]")
+);
+
+// Two readings outside the data's class go by the union's order: (1, 3.5)
+// written by (i64, duration) reads back as (u8:1, "3.5"), which comes
+// first.
+run!(
+    json_target_readings_outside_the_class_refused,
+    r#"{
+    type T = [(i64, duration), (u8, string)];
+    let v: T = (1, duration:3.5s);
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [(u8, string), (i64, duration)]")
+);
+
+// A map's keys are written as their text, which reads back by the key
+// union's order: a decimal's "3" as the datetime 3 seconds past the epoch.
+run!(
+    json_target_key_text_read_as_another_member_refused,
+    r#"{
+    type M = Map<[decimal, datetime], i64>;
+    let v: M = {cast<decimal>(3)$ => 1};
+    let r: Result<M, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses Map<[datetime, decimal], i64>")
+);
+
+// What the union's pick reads back as written: a struct that takes no
+// field the data lacks comes first, the reader refuses a field it has
+// not; a datetime's text names no variant; a reading outside the class
+// that comes first in the union keeps a tuple.
+run!(
+    json_unions_read_back_by_their_pick,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type S = [{a: i64}, {a: i64, b: [i64, null]}];
+    type V = [`B(u8), (datetime, f32)];
+    type D = [(u8, duration), (i64, string)];
+    type O = [(duration, u8), (string, u8)];
+    let s = |v: S| -> bool {
+        let r: Result<S, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let d = |v: D| -> bool {
+        let r: Result<D, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let vt = |v: V| -> bool {
+        let r: Result<V, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let o = |v: O| -> bool {
+        let r: Result<O, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    (
+        [s({a: 1}), s({a: 1, b: null}), s({a: 1, b: 2})],
+        [vt(`B(u8:2)), vt((datetime:"2020-01-01T00:00:00Z", f32:0.1))],
+        [d((u8:1, duration:3.5s)), d((1, "3.5")), d((300, "a"))],
+        [o((duration:3.5s, u8:1)), o(("3.5", u8:1))]
+    )
+}"#,
+    prints("[[true, true, true], [true, true], [true, true, true], [true, true]]")
+);
+
+// An abstract type written as its representation is built from the data,
+// never read in its class: a bool member that comes first takes S's
+// "true", an integer member Id's "1"; the abstract still takes a number
+// a float member would read across into a real.
+run!(
+    json_target_abstract_string_beside_a_bool_refused,
+    r#"{
+    type S = Abstract<string>;
+    impl Cast for S {};
+    let v: [S, bool] = S("true");
+    let r: Result<[S, bool], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [bool, S]")
+);
+
+run!(
+    json_target_abstract_key_beside_an_integer_refused,
+    r#"{
+    type Id = Abstract<string>;
+    impl Cast for Id {};
+    let m: Map<[Id, i64], i64> = {Id("1") => 1};
+    let r: Result<Map<[Id, i64], i64>, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(m)$);
+    r
+}"#,
+    refused("'b: JsonData refuses Map<[i64, Id], i64>")
+);
+
+run!(
+    json_abstract_number_beside_a_float_reads_back,
+    r#"{
+    type N = Abstract<i64>;
+    impl Cast for N {};
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let rt = |v: [N, f64]| -> bool {
+        let r: Result<[N, f64], E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    [rt(N(2)), rt(f64:2.5), rt(f64:2.0)]
+}"#,
+    prints("[true, true, true]");
+    FuseExpect::None
+);
+
 // An f64 member keeps a whole float beside an integer, and a duration
 // key beside a bool reads back.
 run!(

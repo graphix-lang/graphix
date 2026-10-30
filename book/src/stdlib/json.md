@@ -39,22 +39,38 @@ let maybe: [string, null] = json::read(data)?;
 ### Unions in the target
 
 JSON keeps no record of which member of a union a value was written as,
-so a target holds no union two of whose members one JSON value could be
-written by: the read could hand back the other one. `[u8, i64]` (two
-integers), `[string, datetime]` (a datetime is written as a string),
-`` [string, `A] `` (a variant with no payload is written as its tag),
-`[decimal, f64]`, `[duration, i64]` (a whole `duration` is written as a
-float such as `2.0`, which the integer member reads), `[f32, i64]` (a
-large whole `f32` is written as its shortest text, `1234567936` as
-`1234568000.0`, which the integer member holds exactly and the `f32` only
-rounded), `[Array<string>, Array<i64>]` (both write `[]`) and a struct
-beside a map of strings (an object reads as both) are refused.
+so a target holds no union one of whose members writes a value that
+reads back as another. The reader picks a member as a cast does: one
+that holds the value exactly before one that rounds it, a variant whose
+tag the data names, then a member keeping the data's kind (a number, a
+string) before one reading it as another kind, then the union's order.
+`[u8, i64]` (two integers), `[string, datetime]` (a datetime is written
+as a string), `` [string, `A] `` (a variant with no payload is written as
+its tag), `[decimal, f64]`, `[duration, i64]` (a whole `duration` is
+written as a float such as `2.0`, which the integer member reads), `[f32,
+i64]` (a large whole `f32` is written as its shortest text, `1234567936`
+as `1234568000.0`, which the integer member holds exactly and the `f32`
+only rounded), `[f32, string]` (`0.1` reads back as the string `"0.1"`,
+which holds it exactly), `[Array<string>, Array<i64>]` (both write `[]`)
+and a struct beside a map of strings (an object reads as both) are
+refused. A tuple or a struct is read whole: `[(f32, u8), (f64, f64)]`
+writes `(f32:0.1, u8:1)` as `[0.1,1]`, which the `(f64, f64)` member
+reads exactly and the first member only rounded; `[(string, f32), (i64,
+f64)]` reads `("1", f32:0.1)` back as `(1, 0.1)`; `[(i64, duration), (u8,
+string)]` reads `(1, 3.5s)` back as `(u8:1, "3.5")`, since both read the
+`3.5` as another kind and `(u8, string)` comes first. A map's keys are
+written as their text where none can be a string, so
+`Map<[decimal, datetime], i64>` is refused: the key `"3"` reads back as a
+datetime. An abstract type the reader builds from its representation's
+data comes after every member that reads the data as it is: beside
+`bool`, `type S = Abstract<string>` (with `impl Cast for S {}`) is
+refused, since `S("true")` reads back as `true`.
 Members JSON writes apart are fine: `[i64, f64]` (an integer and a number
 with a fraction), `[f32, u16]` (an integer no wider than 16 bits holds
 no `f32` text the `f32` does not hold too, and a real member takes it
-first), `` [`A(i64), `B(string)] ``, `[{a: i64}, {b: i64}]`,
-`[T, null]`. Pack and db keep the member, so their reads take these
-unions.
+first), `[string, i64]`, `` [`A(i64), `B(string)] ``, `[{a: i64}, {b:
+i64}]`, `[T, null]`. Pack and db keep the member, so their reads take
+these unions.
 
 ### Numbers
 

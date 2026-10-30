@@ -562,12 +562,13 @@ thread-local `FastMemo`, never in state. A type-directed builtin
 refuses the target where it settles open or holds a reference (data
 can't be one; the run-time cast refuses one too) or an abstract type
 with no `Cast` impl, `json::read`'s and `toml::read`'s target is also
-`'b: JsonData`/`TomlData` (`typ::textdata`: no union in it holds two
-members one of which may read a value the other writes: a union reads
-a number into its own class first, so an integer member takes the whole
-float a JSON duration writes, and one wider than 16 bits a large whole
-f32's shortest text, which only rounds back to the f32 (1234567936 writes
-1234568000.0); `[f32, u16]` reads back), judged of the
+`'b: JsonData`/`TomlData` (`typ::textdata`: no union in it has a member
+whose written value may read back as another, judged by the cast's pick
+(round, payload tag, class, the union's order, `Choice`) over classes of
+values, a composite whole and a map key from its text: `[f32, string]`,
+`[(f32, u8), (f64, f64)]`, `[(string, f32), (i64, f64)]`,
+`Map<[decimal, datetime], i64>` are refused, `[f32, u16]` and
+`[string, i64]` read back), judged of the
 call's settled binding (`site_bounds`; refused at the bind, a union
 target would narrow to one member), a writer declares its value `'a: Data` (no
 reference, function or such abstract type; open is fine), an async

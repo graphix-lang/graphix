@@ -1153,7 +1153,7 @@ pub enum Bound {
     /// of the type order, hash and compare by value alone.
     Ordered,
     /// The conjunct `'a: JsonData`: no union anywhere in whatever binds
-    /// the cell holds two members one JSON value could be written by
+    /// the cell has a member whose JSON value may read back as another
     /// ([`Type::text_ambiguity`]), so what `json::read` reads is what was
     /// written; an open cell holds.
     JsonData,

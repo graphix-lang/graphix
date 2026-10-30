@@ -709,21 +709,36 @@ and `array::dedup` require it; `==`, `!=` and `uniq` require only
 ### `JsonData`, `TomlData`: what a text reader can tell apart
 
 `'b: JsonData` (`json::read`'s target) and `'b: TomlData` (`toml::read`'s)
-hold of a type with no union anywhere in it whose two members one value
-of the format could be written by (`Type::text_ambiguity`,
-`typ/textdata.rs`): the reader picks one member per value, so a value
-written as one could read back as the other. Each member is read as the
-data it writes (ints and f64 apart; JSON writes a datetime and a
-variant's tag as strings, a duration as a float and a decimal as an exact
-number; TOML has no null and a native datetime; a union reads a number
-into its own class first, so an integer member takes a whole float a
-JSON duration wrote, which no real member holds, and one wider than 16
-bits a large whole f32's shortest text, which it holds exactly and the
-f32 only rounded), composites as arrays (an
-object reads as its sorted key/value pairs, a struct takes exactly its
-fields less the nullable ones, any-length arrays share the empty array),
-and two members overlap where some finite value is written by one and
-read by the other. Unlike the other predicates it is judged only of the
+hold of a type with no union anywhere in it one of whose members writes
+a value of the format that reads back as another (`Type::text_ambiguity`,
+`typ/textdata.rs`). Values are judged by class (`Token`: an integer by
+which types hold it, a whole float, a fraction an f32 holds or rounds, a
+decimal no float holds, the text of each, a bool's, a datetime's, a
+tag's, other text), as the format writes them (JSON writes a datetime
+and a variant's tag as strings, a duration as its seconds, a decimal as
+an exact number; TOML has no null and a native datetime; an object
+reads as its sorted key/value pairs; a map whose keys are scalars and no
+string writes them as text), and each member's reading of a value whole,
+as the cast's pick does: the round its reading falls in (exact, then
+rounded), a payload variant whose tag the data names (taken whatever it
+holds), the pass (a tuple, then a struct, keeping the data's class, then
+any member keeping it, then the rest; a primitive set by class and then
+bit), the union's order within a pass, and `Choice`: a reading that
+crosses the line between integers and reals gives way to a later one
+keeping every number its kind; an abstract type written as its
+representation is built from the data, never read in its class. Each outcome of a written value records,
+for the writer's own member and for the other, whether its reading
+rounds, leaves the data's class, crosses that line or reads a number as
+no number; a composite's outcomes are its parts' together. So `[(f32,
+u8), (f64, f64)]` is refused (`(f32:0.1, u8:1)` reads back as `(0.1,
+1.0)`, exact where the f32 rounds), as are `[f32, string]` (0.1 reads
+back as `"0.1"`), `[(string, f32), (i64, f64)]` (`("1", 0.1)` as `(1,
+0.1)`), `[(i64, duration), (u8, string)]` (`(1, 3.5s)` as `(1, "3.5")`:
+both readings leave the class and `(u8, string)` comes first) and
+`Map<[decimal, datetime], i64>` (the key `"3"` reads as a datetime);
+`[(f32, i64), (u8, i64)]`, `[string, i64]`, `[(u8, duration), (i64,
+string)]` and `[{a: i64}, {a: i64, b: [i64, null]}]` read back. Where a
+union holds a union, its reading is any of that union's members'. Unlike the other predicates it is judged only of the
 call's settled binding (`site_bounds`): a refusal at the bind would make
 a union target narrow to the one member that passes. It is handed to an
 open cell of its binding as `Concrete` is, so a generic reader's callers

@@ -281,6 +281,28 @@ run!(
     prints("[true, true, true, true, true]")
 );
 
+// A tuple's parts are judged together: the f32 tuple's own reading of
+// 0.1 rounds, the other reads both parts exactly.
+run!(
+    toml_target_f32_tuple_beside_an_exact_reader_refused,
+    r#"{
+    let r: Result<{k: [(f32, u8), (f64, f32)]}, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read(toml::write_str({k: (f32:0.1, u8:1)})$);
+    r
+}"#,
+    refused("'b: TomlData refuses { k: [(f32, u8), (f64, f32)] }")
+);
+
+run!(
+    toml_target_string_tuple_beside_a_number_tuple_refused,
+    r#"{
+    let r: Result<{k: [(string, f32), (i64, f64)]}, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read(toml::write_str({k: ("1", f32:0.1)})$);
+    r
+}"#,
+    refused("'b: TomlData refuses { k: [(i64, f64), (string, f32)] }")
+);
+
 run!(colliding_pair_keys_are_refused, r#"{
     let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
     select toml::write_str({keys: m}) {
