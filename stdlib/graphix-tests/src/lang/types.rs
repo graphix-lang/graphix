@@ -1115,6 +1115,27 @@ run!(
     FuseExpect::None
 );
 
+// A written binding is not generalized: the call's formal is `f`'s own
+// cell, which the literal's element would hold.
+const WRITTEN_SELF_IN_ARRAY_ARG_REJECTS: &str = "{ let f = |x| 0; f <- |x| 0; f([f]) }";
+
+run!(
+    written_self_in_array_arg_rejects,
+    WRITTEN_SELF_IN_ARRAY_ARG_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+const WRITTEN_SELF_NESTED_BESIDE_LET_REJECTS: &str =
+    "{ let a = [1]; let f = |x| 0; f <- |x| 0; f([a, [f]]) }";
+
+run!(
+    written_self_nested_beside_let_rejects,
+    WRITTEN_SELF_NESTED_BESIDE_LET_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
 // A literal over values another literal shares (each `let` holds its
 // literal's type) binds its element cell as before.
 const SHARED_LITERAL_CHAIN: &str = r#"

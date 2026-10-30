@@ -72,8 +72,9 @@ pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
 }
 
 /// Bind the cell `slot` holds, a literal's own element cell, to `t`
-/// without an occurs walk of `t`'s whole depth: nothing else reaches the
-/// cell. False when it is not such a cell.
+/// without an occurs walk of `t`'s whole depth, when `t` cannot reach the
+/// cell: nothing else holds `slot`, or `t` reaches no open cell
+/// ([`TVar::bind_unshared`]). False, binding nothing, otherwise.
 pub(super) fn bind_element(slot: &Arc<Type>, t: &Type) -> bool {
     !matches!(t, Type::Bottom) && TVar::bind_unshared(slot, t)
 }

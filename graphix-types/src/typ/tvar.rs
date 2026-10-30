@@ -32,10 +32,12 @@ use triomphe::Arc;
 
 image_id!(TVarId);
 
-/// Advanced by every change to a bound cell's binding, constraints or
-/// lower bounds: only such a change can make a type that reached no open
-/// cell reach one, so a cell's [`TCell::ground`] holds while the epoch
-/// that proved it stands.
+/// Advanced by every change to a bound cell that can make it reach a cell
+/// it did not (a binding replaced, a constraint or lower bound added, an
+/// unbind): only such a change can make a type that reached no open cell
+/// reach one, so a cell's [`TCell::ground`] holds while the epoch that
+/// proved it stands. A normal form's write-back reaches only its source's
+/// cells and leaves it.
 static GROUND_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 fn ground_epoch() -> u64 {
@@ -47,11 +49,19 @@ fn bound_cell_changes() {
     GROUND_EPOCH.fetch_add(1, atomic::Ordering::SeqCst);
 }
 
+type CellRef = Arc<RwLock<TCell>>;
+
 /// Whether no open cell is reachable from `t` through the bindings,
 /// constraints and lower bounds [`would_cycle_inner`] walks: then `t`
 /// reaches no open cell's address. A cell proved ground at `epoch` is not
-/// walked again.
-fn reaches_no_open_cell(t: &Type, epoch: u64, seen: &mut AddrSet) -> bool {
+/// walked again; each bound cell walked is pushed to `walked`, and when
+/// the answer is true every one of them reaches no open cell either.
+fn reaches_no_open_cell(
+    t: &Type,
+    epoch: u64,
+    seen: &mut AddrSet,
+    walked: &mut Vec<CellRef>,
+) -> bool {
     ensure_sufficient(|| {
         if let Some(node) = node_addr(t)
             && !seen.insert(node)
@@ -59,7 +69,9 @@ fn reaches_no_open_cell(t: &Type, epoch: u64, seen: &mut AddrSet) -> bool {
             return true;
         }
         match t {
-            Type::Ref(r) => r.params.iter().all(|p| reaches_no_open_cell(p, epoch, seen)),
+            Type::Ref(r) => {
+                r.params.iter().all(|p| reaches_no_open_cell(p, epoch, seen, walked))
+            }
             Type::TVar(tv) => {
                 let cell = tv.cell();
                 if !seen.insert(cell.data_ptr().addr()) {
@@ -73,20 +85,33 @@ fn reaches_no_open_cell(t: &Type, epoch: u64, seen: &mut AddrSet) -> bool {
                         Some(b) => (b.clone(), c.constraints.clone(), c.lower.clone()),
                     }
                 };
-                reaches_no_open_cell(&binding, epoch, seen)
+                walked.push(cell);
+                reaches_no_open_cell(&binding, epoch, seen, walked)
                     && cons
                         .iter()
                         .chain(below.iter())
-                        .all(|c| reaches_no_open_cell(c, epoch, seen))
+                        .all(|c| reaches_no_open_cell(c, epoch, seen, walked))
             }
             t => t
-                .try_for_each_child(&mut |c| match reaches_no_open_cell(c, epoch, seen) {
+                .try_for_each_child(&mut |c| match reaches_no_open_cell(
+                    c, epoch, seen, walked,
+                ) {
                     true => ControlFlow::Continue(()),
                     false => ControlFlow::Break(()),
                 })
                 .is_continue(),
         }
     })
+}
+
+/// Mark each of `cells`, if bound, as reaching no open cell at `epoch`.
+fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
+    for cell in cells.drain(..) {
+        let mut c = cell.write();
+        if c.binding.is_some() {
+            c.ground = c.ground.max(epoch);
+        }
+    }
 }
 
 pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
@@ -589,8 +614,8 @@ pub struct TCell {
     pub(crate) level: Level,
     /// The compile task that created the cell ([`written`]).
     pub(crate) task: TaskId,
-    /// The [`GROUND_EPOCH`] at which the cell was bound to a type
-    /// reaching no open cell; 0, never.
+    /// The latest [`GROUND_EPOCH`] at which the cell, bound, was proved to
+    /// reach no open cell; 0, never.
     pub(crate) ground: u64,
 }
 
@@ -1100,16 +1125,14 @@ impl TVar {
         }
         let epoch = ground_epoch();
         let shared = Arc::count(slot) > 1;
-        if shared && !reaches_no_open_cell(t, epoch, &mut LPooled::take()) {
+        let mut walked: LPooled<Vec<CellRef>> = LPooled::take();
+        if shared && !reaches_no_open_cell(t, epoch, &mut LPooled::take(), &mut walked) {
             return false;
         }
         tv.bind(t.clone());
         if shared {
-            let cell = tv.cell();
-            let mut c = cell.write();
-            if c.binding.is_some() {
-                c.ground = epoch;
-            }
+            walked.push(tv.cell());
+            mark_ground(&mut walked, epoch);
         }
         true
     }

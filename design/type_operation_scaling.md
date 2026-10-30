@@ -60,10 +60,16 @@ structure is returned SHARED, never copied.
   holds it, or, when something does (a call pre-unifies its formal
   with the argument's type before checking it; a `let` holds its
   value's type), when the union reaches no open cell
-  (`reaches_no_open_cell`). A cell bound that way remembers it
-  (`TCell::ground`) at the `GROUND_EPOCH` that proved it; every change
-  to a bound cell's binding, constraints or lower bounds advances the
-  epoch, so a chain of lets over literals checks in linear time.
+  (`reaches_no_open_cell`). That walk marks the cell it binds and
+  every bound cell it walked (`TCell::ground`) with the `GROUND_EPOCH`
+  that proved them, and a later walk stops at a cell marked with the
+  current epoch, so a chain of lets over literals checks in linear
+  time. The epoch advances on every change that can make a type reach
+  a cell it did not (a bound cell's binding replaced, a constraint or
+  lower bound added to one, an unbind); a normal form's write-back
+  reaches only its source's cells and does not advance it. It is one
+  counter for the process: a change in another context costs the next
+  walk a re-walk of what it reaches, once.
 
 **`flatten_set` worklist.** The accumulator is merge-saturated by
 invariant, so only the incoming (or just-merged) element can enable a

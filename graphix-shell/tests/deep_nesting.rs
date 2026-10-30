@@ -599,6 +599,26 @@ fn wrapped_let_chains_check_in_linear_time() {
     }
 }
 
+/// A chain of array lets read by many literals after a generic call
+/// (whose check changes a bound cell, so what was proved before it is
+/// proved again) checks in time linear in the chain and the reads: the
+/// first read walks the chain once, the others stop at its head.
+#[test]
+fn a_let_chain_read_after_a_call_checks_in_linear_time() {
+    const LETS: usize = 20_000;
+    const READS: usize = 4_000;
+    let mut s = String::from("let x0 = 1;\n");
+    for i in 1..=LETS {
+        s.push_str(&format!("let x{i} = [x{p}, x{p}];\n", p = i - 1));
+    }
+    s.push_str("let z = array::push([1], 2);\n");
+    for j in 1..=READS {
+        s.push_str(&format!("let y{j} = [x{LETS}];\n"));
+    }
+    s.push_str("1");
+    checks_within(&s, std::time::Duration::from_secs(15))
+}
+
 #[test]
 fn a_long_seq_of_calls_checks_in_time() {
     const STEPS: usize = 4000;

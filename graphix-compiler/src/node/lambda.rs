@@ -1049,6 +1049,30 @@ impl Typing {
         };
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
+            // CR claude for claude: [bug/medium] A lambda literal held in a
+            // struct, tuple or array and passed a value holding itself passes
+            // --check, then its run-time bind is refused here and the call never
+            // produces: `{ let s = {f: |x| 0}; s.f(s) }` prints "binding the callee
+            // failed: a run-time bind at s.f(s) did not type: an instance at fn(x:
+            // { f: fn(x: _) -> i64 }) -> i64 of a definition typed fn(x: _) ->
+            // i64" (main 24ae12e91 and cr30-u1). The same for `s.f([s])`,
+            // `s.f({a: s})`, `let s = (|x| 0, 1); s.0([s])`, `let s = [|x| 0];
+            // s[0]$([s])` and `s.f(s.f)`; `s.f(1)`, `s.f(|y| 2)`, `s.f(t)` over
+            // another struct and `let f = |x| 0; let s = {f}; s.f([s])` run, and
+            // s.f(s) runs and prints 0 under GRAPHIX_NO_SUBST=1, so the check is
+            // right to accept it. Reading `s` does not copy the literal's
+            // signature (a let-bound lambda's read does), so the call's argument
+            // type holds the definition's own parameter cell, and the call
+            // site's terminal settle (`FnType::settle_terminal` from
+            // `PendingSettle::drain`; GRAPHIX_DBG_BIND=1 shows SETTLE-BOTTOM of
+            // that cell, GRAPHIX_DBG_BIND_BT the stack) binds it to ⊥: it exempts
+            // the enclosing definitions' signatures (`sigs`), not the callee's.
+            // The definition's signature becomes fn(x: ⊥) -> i64, which
+            // `instance_sig` cannot hold the instance to. Leave a cell a
+            // definition's signature owns out of every site's terminal settle,
+            // or copy a lambda literal's signature where its value is read.
+            // probes: ~/tmp/cr29/scratch/review3/u1/s01-s05.gx, t03.gx, n07.gx,
+            // n15.gx (self-arg-instance-01)
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),
