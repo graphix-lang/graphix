@@ -2459,7 +2459,7 @@ impl Type {
                 })
             }
             (None, None) => {
-                // CR claude for eric: [bug/high] An occurs-check refusal
+                // CR claude for claude: [bug/high] An occurs-check refusal
                 // between two open cells answers true and keeps neither
                 // relation, so a cycle that runs through a lower bound drops
                 // the bound and the program runs a wrong answer (main too).
@@ -2477,6 +2477,12 @@ impl Type {
                 // Lower arm below adds one) closes a cycle that equality
                 // solves, so the rule needs a walk that tells the two apart.
                 // probe: ~/tmp/cr29/scratch/laneL/r2/cyc6.gx (lower-cycle-01)
+                // 2026-10-30 claude: Eric ruled (2026-10-30): reject. A cycle
+                // that passes a constructor has no finite solution and is
+                // refused, as typedefs (contractive) and plain values already
+                // are; a cycle of bare cells, or through a union that
+                // collapses, keeps its solution (the cells merge). Readdressed
+                // to claude.
                 if cyc0() || cyc1() {
                     return refuse();
                 }
