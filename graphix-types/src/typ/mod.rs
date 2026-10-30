@@ -100,6 +100,7 @@ impl NodePairs {
 
     /// The key of the node pair `t0`, `t1`, when both are shared
     /// composites and the walk has grown past `EAGER`.
+    #[inline]
     pub(super) fn key(&mut self, t0: &Type, t1: &Type) -> Option<(usize, usize)> {
         if self.seen < Self::EAGER {
             self.seen += 1;

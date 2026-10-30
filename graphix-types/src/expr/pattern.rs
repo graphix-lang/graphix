@@ -606,19 +606,18 @@ impl Undecided {
     /// Refused unless every value of the other member passes the arm's
     /// test once the check has decided what it will
     /// ([`settled_identical`]) or an earlier arm, covering `covered`,
-    /// takes every value of the other member. `inputs` are the cells the
-    /// enclosing definitions' callers can hand a value of
-    /// ([`crate::typ::FnType::input_cells`]), `None` outside any
-    /// definition; no other cell of theirs holds a value. It reads the
-    /// cells and decides none.
+    /// takes every value of the other member. `input` says whether a
+    /// caller of an enclosing definition can hand an unbound cell a value
+    /// ([`crate::typ::FnType::input_cells`]), every cell outside any
+    /// definition; no other cell of theirs holds one. It reads the cells
+    /// and decides none.
     pub fn judge(
         &self,
         env: &Env,
         covered: &[Type],
-        inputs: Option<&AHashMap<usize, TVar>>,
+        input: &dyn Fn(&TVar) -> bool,
     ) -> Result<()> {
-        let input = |tv: &TVar| inputs.is_none_or(|i| i.contains_key(&tv.cell_addr()));
-        if settled_identical(&self.first, &self.other, &input)
+        if settled_identical(&self.first, &self.other, input)
             || self.taken(env, covered)?
         {
             return Ok(());

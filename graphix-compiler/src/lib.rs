@@ -72,7 +72,7 @@ use poolshark::{
 use smallvec::SmallVec;
 use std::{
     any::Any,
-    cell::Cell,
+    cell::{Cell, OnceCell},
     collections::{VecDeque, hash_map::Entry},
     fmt::Debug,
     mem,
@@ -2625,15 +2625,22 @@ impl PendingSettle {
         }
         for s in frame.iter() {
             if let PendingSettle::OneMember { pairs, covered, sigs, spec } = s {
-                let inputs = (!sigs.is_empty()).then(|| {
-                    let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
-                    for sig in sigs.iter() {
-                        sig.input_cells(env, &mut cells)
-                    }
-                    cells
-                });
+                let inputs: OnceCell<LPooled<AHashMap<usize, typ::TVar>>> =
+                    OnceCell::new();
+                let input = |tv: &typ::TVar| {
+                    sigs.is_empty()
+                        || inputs
+                            .get_or_init(|| {
+                                let mut cells = LPooled::take();
+                                for sig in sigs.iter() {
+                                    sig.input_cells(env, &mut cells)
+                                }
+                                cells
+                            })
+                            .contains_key(&tv.cell_addr())
+                };
                 for pair in pairs {
-                    if let Err(e) = pair.judge(env, covered, inputs.as_deref()) {
+                    if let Err(e) = pair.judge(env, covered, &input) {
                         on_err(spec, e)?
                     }
                 }
