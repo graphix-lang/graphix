@@ -3539,6 +3539,18 @@ impl<R: Rt> CallSite<R> {
         // rec_partly_shed_depth_reached_again. Probe at load 14: fixed fib(14) 118-126 ms
         // per 100 cycles, alternating 141-166. Docs: CLAUDE.md activation state,
         // design/recursive_activations.md. Needs a soak.
+        // 2026-10-29 claude: cr29 fix wave 2, G1 (RV4 finding 1): a select reborn under a
+        // birth view set selected to None without deselecting, so the activation a
+        // re-reach or a seq run reborns short of a kept chain's end dropped the arm
+        // holding the rest uncounted (the edge stayed Kept::Nothing, no bit in the
+        // select's kept mask) and exit_kept never saw it again. Select::update now keeps
+        // that arm as held and deselects it, as a shrink, unless the chain takes it
+        // again; a held arm holding a stateful recursive callee now deletes it as any
+        // shrink does. Pin: lang::functions::rec_partly_reached_chain_is_shed (interp and
+        // par): linear 200 then 5, 6, 5, 6.., a 5/6 swing, and a seqq step's runs at 5,
+        // exact live activations after 1, 50 and 150 exits, and fib(12) whole after 150;
+        // without the fix every shape keeps everything (201 or 202 live, fib 333 and
+        // 466). Needs a soak.
         if super::in_deselected_arm() && self.is_recursive_edge() {
             if self.callee_is_pure(ctx) {
                 if let Kept::Nothing = self.kept {

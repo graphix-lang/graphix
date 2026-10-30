@@ -1245,11 +1245,19 @@ fn fib(n: i64) -> i64 {
     if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
 }
 
-/// What a node-walked run of the recursion `def` over the arguments `ts`,
-/// one a cycle, a 0 a cycle in which the recursion does not run, left: its
-/// values, the activations live once it settled, and the run-time binds
-/// and rebuild batches its cycles made.
-async fn run_rec(def: &str, ts: &[i64], mode: Mode) -> Result<(Vec<i64>, u64, u64)> {
+/// The recursion called on `t` directly.
+const DIRECT: &str = "f(t)";
+
+/// What a node-walked run of the recursion `def`, called by `call` over
+/// the arguments `t`, one a cycle, a 0 a cycle in which the recursion does
+/// not run, left: its values, the activations live once it settled, and
+/// the run-time binds and rebuild batches its cycles made.
+async fn run_rec(
+    def: &str,
+    call: &str,
+    ts: &[i64],
+    mode: Mode,
+) -> Result<(Vec<i64>, u64, u64)> {
     use graphix_package_core::testing::{
         compile_result, fixture_runtime, result_source, updates_until_quiet,
     };
@@ -1258,7 +1266,7 @@ async fn run_rec(def: &str, ts: &[i64], mode: Mode) -> Result<(Vec<i64>, u64, u6
     for (i, t) in ts.iter().enumerate() {
         write!(code, "{}{t}", if i == 0 { "" } else { ", " })?;
     }
-    write!(code, "]), |n| n > 0);\n {def};\n f(t)\n}}")?;
+    write!(code, "]), |n| n > 0);\n {def};\n {call}\n}}")?;
     let (ctx, mut rx) = fixture_runtime(
         [("/test.gx", result_source(&code))],
         &crate::TEST_REGISTER,
@@ -1288,9 +1296,9 @@ async fn rec_pure_depth_swing_binds_once(mode: Mode) -> Result<()> {
         [(LINEAR, linear as fn(i64) -> i64, 10, 5), (FIB, fib, 10, 9)]
     {
         let swing: Vec<i64> = (0..250).map(|i| [deep, shallow][i % 2]).collect();
-        let (values, _, swing_binds) = run_rec(def, &swing, mode).await?;
+        let (values, _, swing_binds) = run_rec(def, DIRECT, &swing, mode).await?;
         assert_eq!(values, swing.iter().map(|n| eval(*n)).collect::<Vec<_>>());
-        let (_, _, fixed_binds) = run_rec(def, &[deep; 250], mode).await?;
+        let (_, _, fixed_binds) = run_rec(def, DIRECT, &[deep; 250], mode).await?;
         assert!(
             swing_binds <= fixed_binds + 5,
             "{def}: {swing_binds} binds swinging against {fixed_binds} held deep"
@@ -1334,11 +1342,11 @@ async fn rec_transient_depth_is_shed(mode: Mode) -> Result<()> {
         for exits in [1, 50, 99, 100, 150] {
             let mut ts = vec![deep];
             ts.extend(std::iter::repeat_n([shallow, 0], exits as usize + 1).flatten());
-            let (values, live, _) = run_rec(def, &ts, mode).await?;
+            let (values, live, _) = run_rec(def, DIRECT, &ts, mode).await?;
             let runs = ts.iter().filter(|n| **n > 0);
             assert_eq!(values, runs.map(|n| eval(*n)).collect::<Vec<_>>());
             let (_, base, _) =
-                run_rec(def, &vec![shallow; exits as usize + 2], mode).await?;
+                run_rec(def, DIRECT, &vec![shallow; exits as usize + 2], mode).await?;
             assert_eq!(live, base + kept(exits), "{def}: {exits} exits");
         }
     }
@@ -1357,10 +1365,57 @@ async fn rec_partly_shed_depth_reached_again(mode: Mode) -> Result<()> {
         ts.extend(std::iter::repeat_n(shallow, 51));
         ts.extend([deep, again]);
         ts.extend(std::iter::repeat_n(last, 101));
-        let (values, live, _) = run_rec(def, &ts, mode).await?;
+        let (values, live, _) = run_rec(def, DIRECT, &ts, mode).await?;
         assert_eq!(values, ts.iter().map(|n| eval(*n)).collect::<Vec<_>>());
-        let (_, base, _) = run_rec(def, &vec![last; ts.len()], mode).await?;
+        let (_, base, _) = run_rec(def, DIRECT, &vec![last; ts.len()], mode).await?;
         assert_eq!(live, base, "{def}");
+    }
+    Ok(())
+}
+
+/// A kept chain a later run reaches only part of the way is shed below
+/// what it reaches: the activation reborn short of the chain's end leaves
+/// the arm that holds the rest as a shrink does, and each exit after sheds
+/// it. Linear 200 then 5, 6, 5 and 6 from then on, 200 then 5 and 6
+/// swinging, and 200 then 5 called from a seq step, each of whose runs
+/// rebirths the recursion, keep 194, 194 and 195 levels at one site, shed
+/// 1% an exit; fib(12) then the same shapes over 4 and 5 is shed whole
+/// after 150 exits.
+async fn rec_partly_reached_chain_is_shed(mode: Mode) -> Result<()> {
+    const IN_SEQ: &str = "seqq let n = t { f(n) }";
+    let reborn_short = |d: i64, s: i64, exits: usize| {
+        let mut ts = vec![d, s, s + 1, s];
+        ts.extend(std::iter::repeat_n(s + 1, exits));
+        ts
+    };
+    let swing = |d: i64, s: i64, exits: usize| {
+        let mut ts = vec![d, s, s + 1];
+        ts.extend(std::iter::repeat_n([s, s + 1], exits).flatten());
+        ts
+    };
+    let seq_runs = |d: i64, s: i64, exits: usize| {
+        let mut ts = vec![d];
+        ts.extend(std::iter::repeat_n(s, exits + 1));
+        ts
+    };
+    let shapes: [(&str, &dyn Fn(i64, i64, usize) -> Vec<i64>); 3] =
+        [(DIRECT, &reborn_short), (DIRECT, &swing), (IN_SEQ, &seq_runs)];
+    for (call, shape) in shapes {
+        for (def, eval, deep, shallow, all_exits) in [
+            (LINEAR, linear as fn(i64) -> i64, 200, 5, &[1, 50, 150][..]),
+            (FIB, fib, 12, 4, &[150]),
+        ] {
+            let last = *shape(deep, shallow, 1).last().unwrap();
+            let (_, base, _) = run_rec(def, call, &[last; 4], mode).await?;
+            let levels = (deep - last) as u64;
+            for exits in all_exits {
+                let ts = shape(deep, shallow, *exits);
+                let (values, live, _) = run_rec(def, call, &ts, mode).await?;
+                assert_eq!(values, ts.iter().map(|n| eval(*n)).collect::<Vec<_>>());
+                let kept = levels - levels * (*exits as u64).min(100) / 100;
+                assert_eq!(live, base + kept, "{def} by {call}: {ts:?}");
+            }
+        }
     }
     Ok(())
 }
@@ -1399,6 +1454,16 @@ async fn rec_partly_shed_depth_reached_again_interp() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn rec_partly_shed_depth_reached_again_par() -> Result<()> {
     rec_partly_shed_depth_reached_again(Mode::Par).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_partly_reached_chain_is_shed_interp() -> Result<()> {
+    rec_partly_reached_chain_is_shed(Mode::Interp).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_partly_reached_chain_is_shed_par() -> Result<()> {
+    rec_partly_reached_chain_is_shed(Mode::Par).await
 }
 
 // Pure non-tail recursion re-fired with changing args recomputes:

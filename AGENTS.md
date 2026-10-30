@@ -919,8 +919,9 @@ node graph IS the IR — there is no parallel typed IR
   asleep and reborn as a fresh bind when re-reached; each exit of the
   recursion past the kept edge (its select's chain runs and takes another
   arm) deletes the deepest 1% of the levels it kept, all of them at the
-  hundredth (`callsite::Kept`). No depth limit; evaluation is
-  atomic within a cycle; containment stops the runtime for good, busy or
+  hundredth (`callsite::Kept`); a reborn select leaves the arm it held as
+  a deselect does unless its chain takes it again. No depth limit;
+  evaluation is atomic within a cycle; containment stops the runtime for good, busy or
   idle, never to resume (`Control::stop`, its cause read back by
   `Control::stopped_by`): the interrupt (`GXHandle::interrupt`, Ctrl-C),
   the stack budget (`GRAPHIX_STACK_BUDGET`) and the activation budget:

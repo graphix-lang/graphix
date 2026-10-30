@@ -1594,14 +1594,19 @@ impl<R: Rt> Update<R> for Select<R> {
         } = arm_facts.as_mut().expect("arm facts built above");
         let ArmDiscriminants { shallow, scrutinee } = &**discriminants;
         let woke = slept.take();
-        if woke && ctx.event.born() {
-            *selected = None;
-            entered.fill(false);
-            missed.fill(false);
-            if let Some(runs) = guards.as_mut() {
-                runs.fill(GuardRun::Unborn);
+        // A reborn select starts with no arm; the arm it held is left as a
+        // deselect leaves one unless the chain takes it again.
+        let held = match woke && ctx.event.born() {
+            false => None,
+            true => {
+                entered.fill(false);
+                missed.fill(false);
+                if let Some(runs) = guards.as_mut() {
+                    runs.fill(GuardRun::Unborn);
+                }
+                selected.take()
             }
-        }
+        };
         // The guarded arms' production tags. Only guards the chain
         // consults contribute fires or bottomness.
         let mut guard_tags: SmallVec<[(usize, Tag); 4]> = SmallVec::new();
@@ -1683,7 +1688,7 @@ impl<R: Rt> Update<R> for Select<R> {
             if arg_prod.triggers() || woke {
                 exit_kept(ctx, kept, arms, None)
             }
-            if let Some(j) = selected.take() {
+            if let Some(j) = selected.take().or(held) {
                 deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
             }
             return resident.set_bottom(arg_prod.triggers());
@@ -1753,7 +1758,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 if woke {
                     slept.set();
                 }
-                if let Some(j) = selected.take() {
+                if let Some(j) = selected.take().or(held) {
                     deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
                 }
                 return resident.set_bottom(planes.anyfire);
@@ -1778,7 +1783,7 @@ impl<R: Rt> Update<R> for Select<R> {
                         ctx.event.init()
                     );
                 }
-                if let Some(j) = selected.replace(i) {
+                if let Some(j) = selected.replace(i).or(held.filter(|j| *j != i)) {
                     deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
                 }
                 // A bind is a facet of its scrutinee's delivery: a stale
@@ -1820,7 +1825,7 @@ impl<R: Rt> Update<R> for Select<R> {
                         "{spec}: no arm matches {v}"
                     ));
                 }
-                if let Some(j) = selected.take() {
+                if let Some(j) = selected.take().or(held) {
                     deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
                 }
                 return resident.set_bottom(false);

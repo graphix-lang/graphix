@@ -173,21 +173,28 @@ exit past a kept edge is an update of the select whose arm holds it in
 which the chain runs (the scrutinee or a consulted guard fired, or the
 select woke) and takes another arm, or the scrutinee is bottom
 (`select.rs::exit_kept`); the update that deselects the arm is the shrink,
-not an exit. At its first exit the site measures what it keeps in levels
-(its callee and the deepest chain of recursive edges below it,
-`kept_levels`); at its k-th it deletes every callee more than `levels -
+not an exit. A select reborn (the activation holding it reborn by a
+re-reach or a seq run) leaves the arm it held as a deselect does unless
+its chain takes that arm again (`held` in `Select::update`), so the
+activation a run reborns short of a kept chain's end keeps the rest and
+sheds it at its own exits. At its first exit the site measures what it
+keeps in levels (its callee and the deepest chain of recursive edges
+below it, `kept_levels`); at its k-th it deletes every callee more than `levels -
 levels * k / 100` levels down (`cut_below`), deepest first, and at the
 hundredth the callee itself (`CallSite::shed`). A linear recursion's
 levels are its activations; a tree's level holds every activation at
 that depth. A run that reaches the edge again rebirths what is left and
-restarts the count; a depth that swings every cycle sees no exit and is
-never rebuilt. A recursion that never runs again keeps what it kept,
-asleep, until its caller deletes it. Pins:
+restarts the count; a depth that swings every cycle sees no exit at the
+edge it swings across and is never rebuilt, while what lies below its
+deeper end is shed by the activation there. A recursion that never runs
+again keeps what it kept, asleep, until its caller deletes it. Pins:
 `lang::functions::rec_pure_depth_swing_answers_each_cycle` (10/5 for
 250 cycles), `rec_reborn_depth_reads_its_capture`,
 `rec_pure_depth_swing_binds_once` (a swinging linear recursion and fib
 bind what a fixed depth does), `rec_transient_depth_is_shed` (the live
-activations after 1, 50, 99, 100 and 150 exits, linear and fib).
+activations after 1, 50, 99, 100 and 150 exits, linear and fib),
+`rec_partly_reached_chain_is_shed` (a chain re-reached part of the way,
+directly, swinging and from a seq step's runs).
 
 Rejected: retaining shrunk activations (the initial call; revisited
 for the semantics reason above). Rejected: an iterative slot-vector
