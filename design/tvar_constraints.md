@@ -247,7 +247,15 @@ An image carries each cell's level and each definition's depth.
   callers' to pick.
 - The check decides every cell it creates: the drain runs the site
   settles, then the operator operand and `let`-over-⊥ settles, then the
-  rules judged over them (`PendingSettle`). Elaboration never settles
+  rules judged over them (`PendingSettle`), and last the completions a
+  partial struct pattern took for one member while cells not decided
+  yet told them apart (`PendingSettle::OneMember`): refused unless they
+  are one type now (`setops::settled_identical`) or an earlier arm's
+  cover holds the other member. What holds no value, ⊥ or a top-level
+  cell still open (nothing decides it), is apart from no type: its
+  run-time test passes any value. Any other open cell is itself (a
+  definition's, which its calls bind). It reads the cells and decides
+  none, so it comes after every rule that may. Elaboration never settles
   a cell an earlier compile task created (`tvar::earlier_task`): what
   the check left open, it decided open. An open quantifier of such a
   function type (a generic function value in `m: Array<fn<'a: Number>

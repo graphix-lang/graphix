@@ -8,7 +8,7 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, View, bailat,
     env::Env,
-    expr::{At, Expr, ExprId, ExprKind, Pattern, union_members},
+    expr::{At, Expr, ExprId, ExprKind, Pattern, Undecided, union_members},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     image::{
@@ -27,7 +27,7 @@ use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
-use std::sync::OnceLock;
+use std::{mem, sync::OnceLock};
 use triomphe::Arc;
 
 /// Where an error in a pattern is placed: the pattern's text when it was
@@ -42,6 +42,25 @@ fn pattern_site(pat: &Pattern, body: &Expr) -> Expr {
         _ => body.clone(),
     }
 }
+
+/// Leave the completions an arm after `reach`'s arms took for one member
+/// to the check's end, which refuses them decided apart.
+fn defer_one_member<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    pairs: Vec<Undecided>,
+    reach: &Reach,
+    site: &Expr,
+) {
+    if !pairs.is_empty() {
+        let covered = reach.covered.to_vec();
+        let spec = Arc::new(site.clone());
+        super::defer_judgment(
+            ctx,
+            crate::PendingSettle::OneMember { pairs, covered, spec },
+        )
+    }
+}
+
 #[derive(Debug)]
 pub struct Select<R: Rt> {
     /// The selected arm. Semantic state: survives sleep.
@@ -131,7 +150,7 @@ impl GuardRun {
 
     /// The chain reaches the guard: the view it runs under.
     fn reached(&mut self) -> View {
-        match std::mem::replace(self, GuardRun::Awake) {
+        match mem::replace(self, GuardRun::Awake) {
             GuardRun::Unborn | GuardRun::Awake => View::Cycle,
             GuardRun::Unreached => View::Step,
             GuardRun::Asleep => View::Wake,
@@ -1771,7 +1790,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 // constants stand, as a kernel's do. A pure arm, not slept
                 // when deselected since nothing in it runs, is slept now so
                 // its nodes recompute from what stands, as a slept arm's do.
-                let view = match std::mem::replace(&mut entered[i], true) {
+                let view = match mem::replace(&mut entered[i], true) {
                     true => {
                         if !sleep_on_deselect[i] {
                             arms[i].1.sleep(ctx);
@@ -1792,7 +1811,7 @@ impl<R: Rt> Update<R> for Select<R> {
             // No arm matches: the select has no value.
             ChainOut::Taken(None) => {
                 // exhaustiveness makes this a checker bug: say so, once
-                if !std::mem::replace(logged_no_match, true) {
+                if !mem::replace(logged_no_match, true) {
                     crate::node::error::report_coverage_hole(&format_args!(
                         "{spec}: no arm matches {v}"
                     ));
@@ -2035,16 +2054,25 @@ impl<R: Rt> Select<R> {
         // before coverage or dispatch reads it. One the scrutinee leaves
         // ambiguous is completed again against what reaches its arm.
         let mut deferred: SmallVec<[bool; 16]> = smallvec![false; self.arms.len()];
+        // an arm completed here that took members told apart only by cells
+        // not decided yet for one: its inferred predicate and those pairs
+        let mut undecided_arms: Vec<(usize, Type, Vec<Undecided>)> = Vec::new();
         if let ExprKind::Select(se) = &self.spec.kind {
             let scrut = self.arg.node.typ().clone();
-            for (((pat, _), (spec_pat, _)), d) in
-                self.arms.iter_mut().zip(se.arms.iter()).zip(deferred.iter_mut())
+            for (i, (((pat, _), (spec_pat, _)), d)) in self
+                .arms
+                .iter_mut()
+                .zip(se.arms.iter())
+                .zip(deferred.iter_mut())
+                .enumerate()
             {
                 if !pat.explicit_type_predicate {
+                    let mut undecided = Vec::new();
                     match spec_pat.structure_predicate.complete_type_predicate(
                         &ctx.env,
                         &pat.type_predicate,
                         &scrut,
+                        &mut undecided,
                     ) {
                         Err(_) => *d = true,
                         // a partial struct, here or nested, over a scrutinee
@@ -2066,7 +2094,10 @@ impl<R: Rt> Select<R> {
                         Ok(None) => (),
                         Ok(Some(t)) => {
                             pat.structure_predicate.realign(&ctx.env, &t)?;
-                            pat.type_predicate = t;
+                            let inferred = mem::replace(&mut pat.type_predicate, t);
+                            if checking && !undecided.is_empty() {
+                                undecided_arms.push((i, inferred, undecided))
+                            }
                         }
                     }
                 }
@@ -2091,14 +2122,41 @@ impl<R: Rt> Select<R> {
             if deferred[i]
                 && let Some((spec_pat, _)) = spec_pats.get(i)
             {
+                let mut undecided = Vec::new();
                 let t = spec_pat
                     .structure_predicate
-                    .complete_type_predicate(&ctx.env, &pat.type_predicate, &reach.atype)
+                    .complete_type_predicate(
+                        &ctx.env,
+                        &pat.type_predicate,
+                        &reach.atype,
+                        &mut undecided,
+                    )
                     .at(&site)?;
                 if let Some(t) = t {
                     pat.structure_predicate.realign(&ctx.env, &t)?;
                     pat.type_predicate = t;
+                    if checking {
+                        defer_one_member(ctx, undecided, &reach, &site)
+                    }
                 }
+            } else if let Some(k) = undecided_arms.iter().position(|(j, ..)| *j == i)
+                && let Some((spec_pat, _)) = spec_pats.get(i)
+            {
+                // judged over what reaches the arm, as a deferred arm's
+                // completion is: a member an earlier arm took does not count
+                let (_, inferred, whole) = undecided_arms.swap_remove(k);
+                let mut reaching = Vec::new();
+                let undecided =
+                    match spec_pat.structure_predicate.complete_type_predicate(
+                        &ctx.env,
+                        &inferred,
+                        &reach.atype,
+                        &mut reaching,
+                    ) {
+                        Ok(_) => reaching,
+                        Err(_) => whole,
+                    };
+                defer_one_member(ctx, undecided, &reach, &site)
             }
             // The arm's binds alias against what reaches it. The
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the

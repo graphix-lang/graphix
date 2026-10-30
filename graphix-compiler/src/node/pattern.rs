@@ -1008,7 +1008,15 @@ impl StructPatternNode {
         {
             let env = &ctx.env;
             let shape = spec.infer_type_predicate(env, &cx.scope.lexical)?;
-            let shape = match spec.complete_type_predicate(env, &shape, type_predicate)? {
+            // the written type is the run-time test: the completion shapes
+            // only the binds
+            let undecided = &mut Vec::new();
+            let shape = match spec.complete_type_predicate(
+                env,
+                &shape,
+                type_predicate,
+                undecided,
+            )? {
                 Some(t) => t,
                 None => shape,
             };

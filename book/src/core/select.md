@@ -406,6 +406,24 @@ S as {x, ..} if (x < 10) || (x > 50) => `VWall
 Any type in scope (or an inline structural type,
 `{x: i64, y: i64} as {x, ..}`) works as the annotation.
 
+Two members whose left-out fields differ only in types the program has
+not decided yet, where the pattern is checked, look alike, and the
+pattern takes them for one member. Once the whole program (or REPL
+input) is checked, the pattern is refused the same way if they turned
+out different:
+
+```graphix,ignore
+let x = never();
+let y = never();
+let v = select b { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+select v { {a, ..} => "[a]" }   // refused: x <- 1 and y <- "w" come later
+```
+
+A function's parameters count as different (its calls may bind them
+apart), while a type that holds no value, such as the element type of
+an empty `[]` nothing decides, differs from none. Naming every field,
+`{a, c: _}`, matches both members as they are.
+
 ### Variant Patterns
 
 Variant patterns match variants. Consider,

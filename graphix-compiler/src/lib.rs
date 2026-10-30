@@ -2477,6 +2477,11 @@ pub(crate) enum PendingSettle {
     /// members with one runtime form, open cells read as any type they
     /// may yet bind.
     Told { test: Type, rest: Type, spec: Arc<Expr> },
+    /// The completions a partial struct pattern took for one member,
+    /// after arms covering `covered`: refused where the check decided them
+    /// apart. Judged after every other rule: it reads the cells as they
+    /// end up.
+    OneMember { pairs: Vec<expr::Undecided>, covered: Vec<Type>, spec: Arc<Expr> },
 }
 
 /// What a [`PendingSettle::Discernible`] judges.
@@ -2609,6 +2614,15 @@ impl PendingSettle {
             };
             if let (Err(e), spec) = res {
                 on_err(spec, e)?
+            }
+        }
+        for s in frame.iter() {
+            if let PendingSettle::OneMember { pairs, covered, spec } = s {
+                for pair in pairs {
+                    if let Err(e) = pair.judge(env, covered) {
+                        on_err(spec, e)?
+                    }
+                }
             }
         }
         Ok(())

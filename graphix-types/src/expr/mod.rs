@@ -14,7 +14,7 @@ use netidx_core::{pack::PackError, path::Path};
 use netidx_derive::Pack;
 use netidx_value::{ValArray, Value};
 pub use pattern::union_members;
-pub use pattern::{Pattern, StructurePattern};
+pub use pattern::{Pattern, StructurePattern, Undecided};
 use poolshark::local::LPooled;
 pub use resolver::{
     BufferOverrides, FilesResolver, LayoutProbe, MODULE_LAYOUTS, ModuleResolver, Probe,

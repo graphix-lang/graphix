@@ -3,7 +3,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Bound, ContainsFlags, FnType, NodePairs, RefHist, RefPair, TVar, Type, TypeRef,
-        contains::on_copies,
+        contains::on_copies, tvar::Level,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -70,16 +70,41 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
 /// binding, and inside a function type the cells pair consistently
 /// (`fn('a) -> 'a` is `fn('b) -> 'b`, not `fn('a) -> 'b`).
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::new(false).same(t0, t1)
+    Identity::<false>::new(false).same(t0, t1)
 }
 
 /// [`union_identical`] with every unbound cell by identity, inside a
 /// function type too: one signature's variables are its own.
-pub(super) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::new(true).same(t0, t1)
+pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
+    Identity::<false>::new(true).same(t0, t1)
 }
 
-struct Identity {
+/// [`union_identical`] once the check has decided what it will: what
+/// holds no value, ⊥ or a top-level cell nothing decided, is apart from
+/// no type (its run-time test passes any value); any other unbound cell
+/// is a definition's, which its calls bind, so it is one type only with
+/// itself.
+// CR claude for eric: [bug/low] A later REPL input can bind a top-level cell an
+// earlier input left open, so the earlier input's judgment (open beside open) no
+// longer holds, and the coverage hole the fix of partial-hole-01 closes in a script
+// stays open there: inputs `let b = true`, `let e1 = []`, `let e2 = []`, `let v =
+// select b { true => {a: [1], c: e1}, false => {a: ["s"], c: e2} }`, `let r = select
+// v { {a, ..} => "[a]" }`, then `e1 <- [1]`, `e2 <- ["w"]`, `r`, `b <- false` print
+// "[1]", then "no arm matches: a coverage hole in the check" (main 5f4b4677f and
+// cr31-P alike; GRAPHIX_ABORT_ON_NO_MATCH=1 dumps core). A `never()` let is safe:
+// its input's check settles it to ⊥ and a later write is refused. Either the check's
+// end settles every top-level cell it leaves open (an empty literal's element to ⊥,
+// as a `let` over ⊥ is), which refuses `e1 <- [1]` in a later input, or a later
+// input's write to an earlier input's cell is held to a copy, as a generalized
+// binding's is. probe: ~/tmp/cr29/scratch/laneP/repl3.txt piped into `graphix
+// --no-cache` (partial-hole-repl-01)
+pub(crate) fn settled_identical(t0: &Type, t1: &Type) -> bool {
+    Identity::<true>::new(false).same(t0, t1)
+}
+
+/// `SETTLED`: what holds no value is one with any type
+/// ([`settled_identical`]).
+struct Identity<const SETTLED: bool> {
     strict: bool,
     /// Inside a function type: the cells paired so far, by address.
     pairs: Option<SmallVec<[(usize, usize); 4]>>,
@@ -90,7 +115,7 @@ struct Identity {
     found_in_fn: NodePairs,
 }
 
-impl Identity {
+impl<const SETTLED: bool> Identity<SETTLED> {
     fn new(strict: bool) -> Self {
         Self {
             strict,
@@ -127,7 +152,7 @@ impl Identity {
     }
 
     fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
-        if a.same_cell(b) {
+        if a.same_cell(b) || self.undecided(a) || self.undecided(b) {
             return true;
         }
         let (x, y) = (a.cell_addr(), b.cell_addr());
@@ -142,16 +167,32 @@ impl Identity {
         }
     }
 
+    /// Whether the unbound cell `a` is one with any type: `SETTLED` and
+    /// top-level.
+    fn undecided(&self, a: &TVar) -> bool {
+        SETTLED && a.level() == Level::TOP
+    }
+
+    /// The unbound cell `a` beside `t`, a type or a bound cell: one type
+    /// only when `SETTLED`, where `a` or `t` holds no value.
+    fn open(&self, a: &TVar, t: &Type) -> bool {
+        SETTLED
+            && (a.level() == Level::TOP
+                || t.with_deref(|t| matches!(t, Some(Type::Bottom))))
+    }
+
     fn same_inner(&mut self, t0: &Type, t1: &Type) -> bool {
         match (t0, t1) {
             (Type::TVar(a), Type::TVar(b)) => match (a.binding(), b.binding()) {
                 (Some(x), Some(y)) => a.same_cell(b) || self.same(&x, &y),
                 (None, None) => self.cells(a, b),
-                _ => false,
+                (None, Some(t)) => self.open(a, &t),
+                (Some(t), None) => self.open(b, &t),
             },
-            (Type::TVar(a), t) | (t, Type::TVar(a)) => {
-                a.binding().is_some_and(|x| self.same(&x, t))
-            }
+            (Type::TVar(a), t) | (t, Type::TVar(a)) => match a.binding() {
+                Some(x) => self.same(&x, t),
+                None => self.open(a, t),
+            },
             (Type::Bottom, Type::Bottom)
             | (Type::Any, Type::Any)
             | (Type::Hole, Type::Hole)
@@ -219,6 +260,7 @@ impl Identity {
                 }
                 r
             }
+            (Type::Bottom, _) | (_, Type::Bottom) => SETTLED,
             _ => false,
         }
     }

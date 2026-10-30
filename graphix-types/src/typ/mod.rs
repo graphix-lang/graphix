@@ -50,6 +50,7 @@ pub(crate) mod regular;
 mod textdata;
 pub use textdata::Format;
 mod setops;
+pub(crate) use setops::{settled_identical, strictly_identical};
 #[doc(hidden)]
 pub mod settle;
 pub(crate) mod tval;

@@ -1279,7 +1279,15 @@ cycle, across workers; the compiler never pins threads.
   a scrutinee its shape covers (a declared variable held rigid: every
   member of its bound); set coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
-  same scrutinee ref claims nothing on re-entry. Refutability is judged
+  same scrutinee ref claims nothing on re-entry. A partial struct
+  pattern completes against the one member it can match
+  (`StructurePattern::complete_type_predicate`); members told apart only
+  by cells not decided yet complete alike and count as one, and the
+  check's end refuses such a pair decided apart, unless an earlier arm
+  takes the other member (⊥ and a top-level cell still open are apart
+  from nothing, a definition's open cell is itself:
+  `PendingSettle::OneMember`, judged last, reading the cells).
+  Refutability is judged
   against a type (`StructPatternNode::covers`): a constructor pattern
   covers only a position whose type is that constructor, so under a
   written type (a type test, a `let`, an abstract payload) one at a union

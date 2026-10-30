@@ -387,6 +387,12 @@ across a bottom cycle).
 - A select over a declared variable covers its bound's members: under
   `'a: [{a: i64, b: string}, i64]`, `{a, ..} => a` covers the struct only,
   and an `i64 as n` arm (or a catch-all) must follow.
+- A partial struct pattern over members whose left-out fields differ
+  only in types decided later (a `never()` let written after the select,
+  a function's parameters) takes them for one member, and is refused once
+  the program is checked if they differ: `{a, ..}` over `{a: [1], c: x}`
+  and `{a: ["s"], c: y}` with `x <- 1; y <- "w"` later. Name every field
+  (`{a, c: _}`) or annotate the member.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   Everything else is told apart: a string from a bare variant, an array
