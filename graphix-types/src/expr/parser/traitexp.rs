@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     expr::{
-        Attr, Comments, Doc, Eol, Expr, ExprKind, ImplExpr, ImplHead, Name,
+        Attr, Comment, Comments, Doc, Eol, Expr, ExprKind, ImplExpr, ImplHead, Name,
         StructurePattern, TraitExpr, TraitMethod,
     },
     typ::{FnArgKind, TVar, Type},
@@ -49,7 +49,7 @@ where
         position(),
     )
         .then(|(mut comments, doc, mut attrs, name, typ, default, end): (
-            LPooled<Vec<ArcStr>>,
+            LPooled<Vec<Comment>>,
             Doc,
             LPooled<Vec<Attr>>,
             Name,

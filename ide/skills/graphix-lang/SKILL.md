@@ -140,7 +140,8 @@ constant argument to `exit` runs at init — always gate it).
   list's last item or at the end of a file. A type definition's struct
   fields and union members take them the same way (in a union only a
   variant or a named type); a comment anywhere else in a type is a parse
-  error. One between an operator and its operand, or after an opening
+  error. A blank line between two lines of one comment block stays (one
+  for a run of them). One between an operator and its operand, or after an opening
   bracket on its line, is a parse error. `///` doc comments only in
   `.gxi`.
 

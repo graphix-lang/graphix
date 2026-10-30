@@ -9,8 +9,8 @@ use super::{
 };
 use crate::{
     expr::{
-        Comments, Eol, ItemComments, ModPath, Name, TypeDefBody, TypeDefExpr, TypeNote,
-        TypeNotes, WrittenAt, WrittenPath, get_origin, noted_items,
+        Comment, Comments, Eol, ItemComments, ModPath, Name, TypeDefBody, TypeDefExpr,
+        TypeNote, TypeNotes, WrittenAt, WrittenPath, get_origin, noted_items,
     },
     typ::{
         Bound, FnArgKind, FnArgType, FnType, TVar, Type, TypeRef, check_bounds_acyclic,
@@ -342,9 +342,9 @@ const MEMBER_COMMENT: &str =
 /// above it, ending its line and, as the last, below it, and the notes of
 /// the lists inside it.
 struct ListItem<T> {
-    above: LPooled<Vec<ArcStr>>,
+    above: LPooled<Vec<Comment>>,
     eol: Option<ArcStr>,
-    below: LPooled<Vec<ArcStr>>,
+    below: LPooled<Vec<Comment>>,
     item: T,
     notes: LPooled<Vec<TypeNote>>,
 }

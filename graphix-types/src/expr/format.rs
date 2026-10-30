@@ -1400,7 +1400,7 @@ mod tests {
     // parser refuses
     #[test]
     fn the_guard_reads_attribute_arguments() {
-        use crate::expr::{Attr, Decorations};
+        use crate::expr::{Attr, Comment, Decorations};
         use SourceKind::Program;
         use arcstr::literal;
         let src = "#[a(b)]\nlet x = 1";
@@ -1411,7 +1411,7 @@ mod tests {
         let mut d = (**e.dec.as_ref().unwrap()).clone();
         let mut arg = d.attrs[0].args[0].clone();
         arg.dec = Some(Arc::new(Decorations {
-            comments: Arc::from_iter([literal!(" lost")]),
+            comments: Arc::from_iter([Comment::line(literal!(" lost"))]),
             ..Decorations::default()
         }));
         d.attrs =
@@ -1442,6 +1442,72 @@ mod tests {
         stable(
             Interface,
             "trait T {\n  val m: fn(self) -> i64 = |s| {\n    // why\n    use a::b;\n    b(s)\n  }\n}",
+        );
+    }
+
+    // a blank line between two comment lines stays, one for a run of
+    // them, at every comment site; one before a block's first line or after
+    // its last is not the block's
+    #[test]
+    fn a_blank_line_inside_a_comment_block_stays() {
+        use SourceKind::*;
+        for (kind, src) in [
+            (Program, "// a\n\n// b\nlet x = 1;\n\nx\n"),
+            (Program, "{\n    // a\n\n    // b\n    let x = 1;\n    x\n}\n"),
+            (Program, "select x {\n    // a\n\n    // b\n    1 => 2,\n    _ => 3\n}\n"),
+            (Program, "{\n    // a\n\n    // b\n    a: 1,\n    b: 2\n}\n"),
+            (Program, "{\n    a;\n    b\n    // a\n\n    // b\n}\n"),
+            (Program, "let a = 1;\nlet b = 2;\n// a\n\n// b\n"),
+            (
+                Program,
+                "trait T {\n    // a\n\n    // b\n    val f: fn(self) -> i64\n    // c\n\n    // d\n};\n\n1\n",
+            ),
+            (
+                Program,
+                "type T = Abstract<i64>;\n\nimpl Cast for T {\n    // a\n\n    // b\n};\n\n0\n",
+            ),
+            (
+                Program,
+                "impl T for i64 {\n    let f = |x| x\n    // a\n\n    // b\n};\n\n1\n",
+            ),
+            (
+                Program,
+                "type Config = {\n    // a\n\n    // b\n    host: string,\n    port: i64\n};\n\n0\n",
+            ),
+            (
+                Program,
+                "type Msg = [\n    `Start,\n    `Stop\n    // a\n\n    // b\n];\n\n0\n",
+            ),
+            (Interface, "// a\n\n// b\nval x: i64\n"),
+            (Interface, "val x: i64\n// a\n\n// b\n"),
+            (
+                Interface,
+                "trait T {\n    // a\n\n    // b\n    /// d\n    val m: fn(self) -> i64\n}\n",
+            ),
+            (
+                Program,
+                "|\n    // a\n\n    // b\n    x: i64, // eol\n    y: i64\n    // c\n\n    // d\n| x + y\n",
+            ),
+            (
+                Program,
+                "f(\n    // a\n\n    // b\n    #width: 4,\n    #height\n    // c\n\n    // d\n)\n",
+            ),
+            (
+                Program,
+                "use {\n    // a\n\n    // b\n    array::{\n        len,\n        // c\n\n        // d\n        map\n        // e\n\n        // f\n    },\n    str::len as length\n    // g\n\n    // h\n};\n\n0\n",
+            ),
+        ] {
+            formats_to(kind, src, src)
+        }
+        formats_to(
+            Program,
+            "// a\n\n\n  \n// b\nlet x = 1;\nx",
+            "// a\n\n// b\nlet x = 1;\n\nx\n",
+        );
+        formats_to(
+            Program,
+            "{\n    a;\n\n    // a\n\n    b\n}",
+            "{\n    a;\n    // a\n    b\n}\n",
         );
     }
 

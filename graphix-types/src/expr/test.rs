@@ -15,7 +15,7 @@ use netidx_value::Typ;
 use prop::option;
 use proptest::{collection, prelude::*, sample};
 use rust_decimal::Decimal;
-use std::{iter, time::Duration};
+use std::{iter, ops::Range, time::Duration};
 
 const SLEN: usize = 16;
 
@@ -132,7 +132,7 @@ fn stripped(e: &Expr, above: bool) -> Expr {
 #[derive(Debug, Clone)]
 struct Trailers {
     eols: Vec<Option<ArcStr>>,
-    below: Vec<ArcStr>,
+    below: Vec<Comment>,
 }
 
 fn trailers() -> impl Strategy<Value = Trailers> {
@@ -141,7 +141,7 @@ fn trailers() -> impl Strategy<Value = Trailers> {
             prop_oneof![4 => Just(None), 1 => comment().prop_map(Some)],
             1..10,
         ),
-        prop_oneof![4 => Just(vec![]), 1 => collection::vec(comment(), 1..3)],
+        prop_oneof![4 => Just(vec![]), 1 => comment_lines(1..4)],
     )
         .prop_map(|(eols, below)| Trailers { eols, below })
 }
@@ -271,9 +271,20 @@ fn comment() -> impl Strategy<Value = ArcStr> {
     "[ a-zA-Z0-9_,.!?*-]{0,24}".prop_map(ArcStr::from)
 }
 
+/// A list of `//` lines, a blank line between some, never before the
+/// first.
+fn comment_lines(n: Range<usize>) -> impl Strategy<Value = Vec<Comment>> {
+    collection::vec((any::<bool>(), comment()), n).prop_map(|lines| {
+        let lines = lines.into_iter().enumerate();
+        lines
+            .map(|(i, (spaced, text))| Comment { spaced: spaced && i > 0, text })
+            .collect()
+    })
+}
+
 /// The `//` lines above an interface item or a trait method.
 fn comments() -> impl Strategy<Value = Comments> {
-    collection::vec(comment(), 0..3).prop_map(|c| Comments::of(c.into_iter()))
+    comment_lines(0..4).prop_map(|c| Comments::of(c.into_iter()))
 }
 
 /// The `//` comment lines and `#[..]` attributes an expression can carry.
@@ -282,8 +293,8 @@ fn comments() -> impl Strategy<Value = Comments> {
 /// Mostly none: one decoration anywhere below a node makes it unprintable
 /// flat, so a tree must often have none for the flat layouts to run.
 fn decorations() -> impl Strategy<Value = Option<Arc<Decorations>>> {
-    let some = (collection::vec(comment(), 0..3), collection::vec(attr(), 0..2))
-        .prop_map(|(comments, attrs)| {
+    let some = (comment_lines(0..4), collection::vec(attr(), 0..2)).prop_map(
+        |(comments, attrs)| {
             if comments.is_empty() && attrs.is_empty() {
                 None
             } else {
@@ -293,7 +304,8 @@ fn decorations() -> impl Strategy<Value = Option<Arc<Decorations>>> {
                     ..Decorations::default()
                 }))
             }
-        });
+        },
+    );
     prop_oneof![4 => Just(None), 1 => some]
 }
 

@@ -92,8 +92,10 @@ with the impl, not a re-export. `pub use` parses and refuses
 not move twice when re-exports arrive.
 
 The parser retains comments on use-tree entries in `UseComments`, outside
-syntax equality and hashing. Each comment records its prefix depth and
-whether it stands above an entry, ends its line, or sits below a group.
+syntax equality and hashing. Each comment records its prefix depth,
+whether it stands above an entry, ends its line, or sits below a group,
+and its line (`Comment`, which says whether a blank line stands above it
+in its block).
 A comment on a single path follows its imported name; a group comment
 follows its prefix. `UseItem::sorted` moves this metadata to the first
 canonical leaf of that prefix. If grouping joins several ending comments

@@ -495,7 +495,11 @@ name and a group's follow its prefix. Ending comments merged at one
 prefix become leading lines (`design/module_system.md`). A type
 definition's comments ride on it, keyed by where each field or member
 was written (`TypeNotes`, which packs to nothing, printed through
-`typ::Noted`), and the guard reads them in canonical order.
+`typ::Noted`), and the guard reads them in canonical order. Every
+comment list, all of the above and `Decorations`, holds `Comment`s: a
+line, and whether a blank line stands between it and the line before
+(`Comment::spaced`), so a run of blank lines inside a block is one and
+one before a block's first line or after its last is not the block's.
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
 program-visible values (a cast error, a null error), so comments print
@@ -1519,7 +1523,9 @@ cycle, across workers; the compiler never pins threads.
   (not a type argument, a payload or a function type); a union member
   takes one only as a variant or a named type, which print as written,
   and the lines below the last go under the last of those; anywhere
-  else in a type a comment is refused (`expr/parser/typexp.rs`). Parse errors report the furthest point
+  else in a type a comment is refused (`expr/parser/typexp.rs`). A blank
+  line between two lines of one comment block stays, one for a run of
+  them. Parse errors report the furthest point
   reached with the source line and a caret, and a refusal its reason.
 - **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
   comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is

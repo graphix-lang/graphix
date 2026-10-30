@@ -332,7 +332,7 @@ pub fn unpack_index(mut bytes: &'static [u8]) -> Result<Vec<(Path, VfsEntry)>> {
 mod test {
     use super::*;
     use crate::{
-        expr::{Source, parser},
+        expr::{Comment, Source, parser},
         typ::{TVar, Type},
     };
 
@@ -451,7 +451,7 @@ mod test {
         let ori = Origin {
             parent: None,
             source: Source::Vfs(ArcStr::from("/dec")),
-            text: ArcStr::from("#[native]\n// note\n42"),
+            text: ArcStr::from("#[native]\n// note\n\n// apart\n42"),
         };
         let exprs = parser::parse(ori).expect("parse");
         let packed = pack_module(&exprs).expect("pack");
@@ -464,7 +464,11 @@ mod test {
         let dec = unpacked[0].dec.as_ref().expect("dec dropped on round-trip");
         assert_eq!(dec.attrs.len(), 1, "attribute lost");
         assert_eq!(&dec.attrs[0].name, "native");
-        assert_eq!(&dec.comments[..], &[arcstr::literal!(" note")], "comment lost");
+        let lines = [
+            Comment { spaced: false, text: arcstr::literal!(" note") },
+            Comment { spaced: true, text: arcstr::literal!(" apart") },
+        ];
+        assert_eq!(&dec.comments[..], &lines, "comment lost");
     }
 
     #[test]

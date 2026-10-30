@@ -1,12 +1,12 @@
 use crate::{
     Restore,
     expr::{
-        ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, CatchRole, Comments, Decorations,
-        Doc, Expr, ExprKind, ImplExpr, ImplHead, ItemComments, LambdaBody, LambdaExpr,
-        ModuleKind, Sandbox, SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem, SigKind,
-        StrForm, StructExpr, StructWithExpr, StructurePattern, TraitExpr, TraitMethod,
-        TypeDefBody, TypeDefExpr, UseCommentKind, UseItem, format::FormatConfig, parser,
-        pattern::printed_fields,
+        ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, CatchRole, Comment, Comments,
+        Decorations, Doc, Expr, ExprKind, ImplExpr, ImplHead, ItemComments, LambdaBody,
+        LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem,
+        SigKind, StrForm, StructExpr, StructWithExpr, StructurePattern, TraitExpr,
+        TraitMethod, TypeDefBody, TypeDefExpr, UseCommentKind, UseItem,
+        format::FormatConfig, parser, pattern::printed_fields,
     },
     print_as_written,
     stack::ensure_sufficient,
@@ -266,7 +266,7 @@ fn pretty_separated<T>(
     sep: &str,
     mut item: impl FnMut(&mut PrettyBuf, &T) -> fmt::Result,
     eol: impl Fn(&T) -> Option<&ArcStr>,
-    below: &[ArcStr],
+    below: &[Comment],
 ) -> fmt::Result {
     for (i, it) in items.iter().enumerate() {
         item(buf, it)?;
@@ -290,7 +290,7 @@ pub(crate) fn pretty_file_items<T>(
     items: &[T],
     item: impl Fn(&mut PrettyBuf, &T) -> fmt::Result,
     eol: impl Fn(&T) -> Option<&ArcStr>,
-    below: &[ArcStr],
+    below: &[Comment],
 ) -> fmt::Result {
     let mut prev_spans_lines = None;
     let spaced = |buf: &mut PrettyBuf, it: &T| {
@@ -555,7 +555,7 @@ pub(crate) fn write_leading(
     dec: &Option<Arc<Decorations>>,
 ) -> fmt::Result {
     if let Some(dec) = dec {
-        write_comments(f, &dec.comments)?;
+        write_comments(f, dec.comments.iter())?;
         for a in dec.attrs.iter() {
             writeln!(f, "{a}")?;
         }
@@ -565,12 +565,18 @@ pub(crate) fn write_leading(
 
 /// Comments as written, which only the formatter prints: canonical text
 /// is a function of the syntax alone, and a comment is not syntax.
-pub(crate) fn write_comments(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
+pub(crate) fn write_comments<'a>(
+    f: &mut impl fmt::Write,
+    lines: impl IntoIterator<Item = &'a Comment>,
+) -> fmt::Result {
     if !print_as_written() {
         return Ok(());
     }
     for c in lines {
-        writeln!(f, "//{c}")?;
+        if c.spaced {
+            f.write_char('\n')?
+        }
+        writeln!(f, "//{}", c.text)?;
     }
     Ok(())
 }
@@ -601,7 +607,7 @@ fn write_doc_flat(
 }
 
 /// `write_comments` in a flat form.
-fn write_comments_flat(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
+fn write_comments_flat(f: &mut impl fmt::Write, lines: &[Comment]) -> fmt::Result {
     if shows_comments(lines) {
         writeln!(f)?;
     }
@@ -610,7 +616,7 @@ fn write_comments_flat(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result
 
 /// Whether `lines` of comments print: only as written, since printed
 /// text reaches values a program sees.
-fn shows_comments(lines: &[ArcStr]) -> bool {
+fn shows_comments(lines: &[Comment]) -> bool {
     print_as_written() && !lines.is_empty()
 }
 
@@ -639,13 +645,13 @@ pub(crate) fn eol_of(e: &Expr) -> Option<&ArcStr> {
 }
 
 /// The lines below `e`, the last item of a list.
-pub(crate) fn below_of(e: &Expr) -> &[ArcStr] {
+pub(crate) fn below_of(e: &Expr) -> &[Comment] {
     e.dec.as_ref().map(|d| &d.below[..]).unwrap_or(&[])
 }
 
 /// Whether a list item's comments after it print: `eol`, the one ending
 /// its line, and `below`, the lines below the last.
-fn shows_trailing(eol: Option<&ArcStr>, below: &[ArcStr]) -> bool {
+fn shows_trailing(eol: Option<&ArcStr>, below: &[Comment]) -> bool {
     print_as_written() && (eol.is_some() || !below.is_empty())
 }
 
@@ -668,7 +674,7 @@ pub(crate) fn item_sep(
 pub(crate) fn item_end(
     buf: &mut PrettyBuf,
     eol: Option<&ArcStr>,
-    below: &[ArcStr],
+    below: &[Comment],
 ) -> fmt::Result {
     if !shows_trailing(eol, below) {
         return Ok(());
@@ -857,8 +863,11 @@ impl PrettyBuf {
 }
 
 impl fmt::Write for PrettyBuf {
+    /// A newline takes no indent, so a blank line stays empty.
     fn write_char(&mut self, c: char) -> fmt::Result {
-        self.push_indent();
+        if c != '\n' {
+            self.push_indent();
+        }
         self.buf.write_char(c)
     }
 
@@ -2374,10 +2383,10 @@ struct UseNames<'a> {
 }
 
 impl<'a> UseNames<'a> {
-    fn comments(&self, kind: UseCommentKind) -> impl Iterator<Item = &'a ArcStr> {
+    fn comments(&self, kind: UseCommentKind) -> impl Iterator<Item = &'a Comment> {
         let depth = self.depth as u32;
         self.items.iter().flat_map(|i| i.comments.lines()).filter_map(move |c| {
-            (print_as_written() && c.depth == depth && c.kind == kind).then_some(&c.text)
+            (print_as_written() && c.depth == depth && c.kind == kind).then_some(&c.line)
         })
     }
 
@@ -2474,9 +2483,7 @@ impl<'a> UseNames<'a> {
         buf.nested::<fmt::Result, _>(|buf| {
             let n = self.entries().count();
             for (i, e) in self.entries().enumerate() {
-                for c in e.comments(UseCommentKind::Above) {
-                    writeln!(buf, "//{c}")?;
-                }
+                write_comments(buf, e.comments(UseCommentKind::Above))?;
                 let start = buf.mark();
                 e.write_entry(buf)?;
                 if buf.width_since(start) >= buf.limit || use_decorated(e.items) {
@@ -2488,12 +2495,10 @@ impl<'a> UseNames<'a> {
                 item_sep(
                     buf,
                     if i + 1 < n { "," } else { "" },
-                    e.comments(UseCommentKind::Eol).next(),
+                    e.comments(UseCommentKind::Eol).next().map(|c| &c.text),
                 )?;
             }
-            for c in self.comments(UseCommentKind::Below) {
-                writeln!(buf, "//{c}")?;
-            }
+            write_comments(buf, self.comments(UseCommentKind::Below))?;
             Ok(())
         })?;
         writeln!(buf, "}}")

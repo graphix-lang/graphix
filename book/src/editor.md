@@ -270,8 +270,8 @@ string (`"…"`, `r"…"`, `"""…"""`), your comments and attributes. It
 normalizes the rest: adjacent `use` statements are merged into one sorted
 tree per root, `i64`/`f64` literals lose a redundant type prefix,
 primitive types come first in a union, a blank line separates every
-top-level item that spans more than one line, and lines are fitted to the
-width. Before anything is written the formatted text is parsed again and
+top-level item that spans more than one line, a run of blank lines inside
+a comment block becomes one, and lines are fitted to the width. Before anything is written the formatted text is parsed again and
 compared with your program; if the two differ in any way the file is left
 untouched and the difference is reported, so a formatter bug can never
 change what your code means.

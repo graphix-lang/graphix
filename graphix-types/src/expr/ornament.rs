@@ -1,8 +1,8 @@
 use crate::{
     expr::{
-        Attr, Decorations, Doc, Expr, ExprKind, ModuleKind, SeqTrigger, Sig, SigKind,
-        StrForm, StructurePattern, TraitExpr, TypeDefBody, TypeDefExpr, UseComment,
-        UseItem,
+        Attr, Comment, Decorations, Doc, Expr, ExprKind, ModuleKind, SeqTrigger, Sig,
+        SigKind, StrForm, StructurePattern, TraitExpr, TypeDefBody, TypeDefExpr,
+        UseComment, UseItem,
     },
     stack::ensure_sufficient,
 };
@@ -18,7 +18,7 @@ use poolshark::local::LPooled;
 pub(crate) enum Ornament<'a> {
     UseComments(&'a [UseComment]),
     Decorations(&'a Decorations),
-    Comments(&'a [ArcStr]),
+    Comments(&'a [Comment]),
     Eol(Option<&'a ArcStr>),
     Doc(&'a Doc),
     Attrs(&'a [Attr]),

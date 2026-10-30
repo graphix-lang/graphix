@@ -110,6 +110,11 @@ select point.x {
 }
 ```
 
+A blank line between two comment lines stays part of the comment block,
+as one blank line however many were written. One between a comment and
+what it describes, or between an item and the comments below it, is not
+kept.
+
 A type definition's struct fields and union members take comments the
 same way, through the fields and members of the types inside them too.
 In a union only a variant or a named type takes one: the other members

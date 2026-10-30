@@ -6,8 +6,8 @@ use super::{
     typ, typedef, typname,
 };
 use crate::expr::{
-    BindSig, Comments, Eol, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox, Sig,
-    SigItem, SigKind, UseComment, UseCommentKind, UseComments, UseItem, WrittenPath,
+    BindSig, Comment, Comments, Eol, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox,
+    Sig, SigItem, SigKind, UseComment, UseCommentKind, UseComments, UseItem, WrittenPath,
     get_origin, parser::spaces1,
 };
 use arcstr::ArcStr;
@@ -213,7 +213,7 @@ struct UsePath {
 struct UsePaths(LPooled<Vec<UsePath>>);
 
 impl UsePaths {
-    fn comment(&mut self, kind: UseCommentKind, text: ArcStr) {
+    fn comment(&mut self, kind: UseCommentKind, line: Comment) {
         let single = self.0.len() == 1;
         if let Some(first) = self.0.first_mut() {
             let depth = if single && kind != UseCommentKind::Below {
@@ -221,14 +221,14 @@ impl UsePaths {
             } else {
                 0
             };
-            first.comments.push(UseComment { depth, kind, text });
+            first.comments.push(UseComment { depth, kind, line });
         }
     }
 }
 
 impl Commentable for UsePaths {
     fn take_eol(&mut self, eol: ArcStr) {
-        self.comment(UseCommentKind::Eol, eol);
+        self.comment(UseCommentKind::Eol, Comment::line(eol));
     }
 }
 

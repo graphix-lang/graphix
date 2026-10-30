@@ -1,9 +1,9 @@
 use crate::{
     expr::{
-        Attr, BindExpr, CatchExpr, CatchRole, Comments, Decorations, Doc, Eol, Expr,
-        ExprKind, ModPath, Name, Origin, OriginScope, ParserContext, Pattern, SelectExpr,
-        SeqExpr, SeqKind, SeqTrigger, Sig, SigItem, StrForm, StructExpr, StructWithExpr,
-        TraitMethod, TryWithExpr, WrittenAt, ornament::holds_comment,
+        Attr, BindExpr, CatchExpr, CatchRole, Comment, Comments, Decorations, Doc, Eol,
+        Expr, ExprKind, ModPath, Name, Origin, OriginScope, ParserContext, Pattern,
+        SelectExpr, SeqExpr, SeqKind, SeqTrigger, Sig, SigItem, StrForm, StructExpr,
+        StructWithExpr, TraitMethod, TryWithExpr, WrittenAt, ornament::holds_comment,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -255,7 +255,7 @@ where
     many(none_of(['\r', '\n']))
 }
 
-// CR claude for claude: [style/low] A blank line between two `//` lines is
+// XCR claude for claude: [style/low] A blank line between two `//` lines is
 // not kept: `comment_line` skips it with the whitespace after its line, so
 // `graphix fmt` closes up every comment block alike: above an expression,
 // below a list's last item, above a lambda formal, below a trait's methods
@@ -268,10 +268,24 @@ where
 // change over every comment list. (comment-blank-lines-01)
 // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 quick picks):
 // keep the blank line, as one change over every comment list.
+// 2026-10-30 claude: Every comment list now holds expr::Comment (a line and
+// whether a blank line stands above it, spaced): Decorations comments and
+// below, every Comments (trait methods, impl and lambda below, sig items,
+// formals, TypeNotes), and UseComment.line. comment_line reports a blank after
+// its line and CommentLines sets spaced on the next, so a run of blanks is one
+// and a blank before the first line or after the last is still not the list's.
+// write_comments prints one empty line before a spaced line; the guard compares
+// spaced through Ornament. REGISTRATION_FORMAT 102; packed ASTs refuse by
+// LAYOUT. Pins: format::tests::a_blank_line_inside_a_comment_block_stays (fails
+// on main 3c784b3db: the blank closes up) and
+// parser::test::a_blank_line_between_comment_lines_rides_the_next (both fail
+// with spaces_blank forced false); serialize roundtrip_preserves_dec packs a
+// spaced line.
 
-// One own-line `//` comment line, text kept verbatim. `///` is left for
-// `doc_comment`; `docs` says whether one is legal here.
-fn comment_line<I>(docs: bool) -> impl Parser<I, Output = ArcStr>
+// One own-line `//` comment line, text kept verbatim, and whether a blank
+// line follows it. `///` is left for `doc_comment`; `docs` says whether one
+// is legal here.
+fn comment_line<I>(docs: bool) -> impl Parser<I, Output = (ArcStr, bool)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -304,17 +318,52 @@ where
             })
             .with(line_text()),
     )
-    .skip(spaces())
-    .map(|s| ArcStr::from(s.as_str()))
+    .and(spaces_blank())
+    .map(|(s, blank)| (ArcStr::from(s.as_str()), blank))
 }
 
-fn leading_comments<I>(docs: bool) -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
+/// Whitespace, and whether it holds a blank line.
+fn spaces_blank<I>() -> impl Parser<I, Output = bool>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    spaces().with(many(comment_line(docs)))
+    #[derive(Default)]
+    struct Newlines(usize);
+    impl Extend<char> for Newlines {
+        fn extend<T: IntoIterator<Item = char>>(&mut self, chars: T) {
+            self.0 += chars.into_iter().filter(|c| *c == '\n').count()
+        }
+    }
+    many::<Newlines, _, _>(space()).map(|n| n.0 > 1).expected("whitespaces")
+}
+
+/// A list's own-line comments as [`comment_line`] reads them: a line is
+/// spaced when a blank line follows the one before it, so a blank before
+/// the first or after the last is not the list's.
+#[derive(Default)]
+struct CommentLines {
+    lines: LPooled<Vec<Comment>>,
+    blank: bool,
+}
+
+impl Extend<(ArcStr, bool)> for CommentLines {
+    fn extend<T: IntoIterator<Item = (ArcStr, bool)>>(&mut self, read: T) {
+        for (text, blank) in read {
+            self.lines.push(Comment { spaced: self.blank, text });
+            self.blank = blank;
+        }
+    }
+}
+
+fn leading_comments<I>(docs: bool) -> impl Parser<I, Output = LPooled<Vec<Comment>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    spaces().with(many::<CommentLines, _, _>(comment_line(docs))).map(|l| l.lines)
 }
 
 // `#[name]` or `#[name(arg, ...)]`; the args are full expressions, which
@@ -357,7 +406,7 @@ where
     I::Range: Range,
 {
     enum Dec {
-        Comment(ArcStr),
+        Comment((ArcStr, bool)),
         Attr(Attr),
     }
     spaces()
@@ -366,21 +415,21 @@ where
             attribute().skip(spaces()).map(Dec::Attr),
         ))))
         .map(|mut items: LPooled<Vec<Dec>>| {
-            let mut comments: LPooled<Vec<ArcStr>> = LPooled::take();
+            let mut comments = CommentLines::default();
             let mut attrs: LPooled<Vec<Attr>> = LPooled::take();
             for d in items.drain(..) {
                 match d {
-                    Dec::Comment(c) => comments.push(c),
+                    Dec::Comment(c) => comments.extend([c]),
                     Dec::Attr(a) => attrs.push(a),
                 }
             }
-            (comments, attrs)
+            (comments.lines, attrs)
         })
 }
 
 /// The comments and attributes `leading_decorations` captured, in
 /// source order within each list.
-type Leading = (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>);
+type Leading = (LPooled<Vec<Comment>>, LPooled<Vec<Attr>>);
 
 /// Give `e` the decorations captured directly above it, ahead of any it
 /// captured for itself. What sits above a select arm's pattern, an impl
@@ -729,13 +778,14 @@ where
 
 /// The own-line comments after a list's last item, above what closes it;
 /// `docs` where a `///` line is an item's doc, which none follows.
-fn below_comments<I>(docs: bool) -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
+fn below_comments<I>(docs: bool) -> impl Parser<I, Output = LPooled<Vec<Comment>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    many(attempt(spaces().with(comment_line(docs))))
+    many::<CommentLines, _, _>(attempt(spaces().with(comment_line(docs))))
+        .map(|l| l.lines)
 }
 
 /// A list item that takes the comment ending its line, after its
@@ -780,7 +830,7 @@ impl Commentable for TraitMethod {
 }
 
 /// Give `e` the comment ending its line and the lines below it.
-pub(super) fn trail(e: &mut Expr, eol: Option<ArcStr>, below: &[ArcStr]) {
+pub(super) fn trail(e: &mut Expr, eol: Option<ArcStr>, below: &[Comment]) {
     if eol.is_none() && below.is_empty() {
         return;
     }
@@ -798,7 +848,7 @@ pub(super) fn trail(e: &mut Expr, eol: Option<ArcStr>, below: &[ArcStr]) {
 /// above it.
 enum Slot<O> {
     Item(O),
-    End(LPooled<Vec<ArcStr>>),
+    End(LPooled<Vec<Comment>>),
 }
 
 /// A list [`commented`] read: each slot with where it starts, `None` for
@@ -806,7 +856,7 @@ enum Slot<O> {
 /// own-line comments below the last item, which the list's kind places.
 struct Listed<O> {
     slots: LPooled<Vec<(SourcePosition, Option<O>)>>,
-    below: LPooled<Vec<ArcStr>>,
+    below: LPooled<Vec<Comment>>,
 }
 
 /// `p` separated by `sep` (a `;` or `,`, see [`separator`]) up to `term`,
@@ -863,7 +913,7 @@ where
 struct ListRest<O> {
     rest: LPooled<Vec<(Option<ArcStr>, (SourcePosition, Slot<O>))>>,
     eol: Option<ArcStr>,
-    below: LPooled<Vec<ArcStr>>,
+    below: LPooled<Vec<Comment>>,
 }
 
 fn list_rest<I, O, SP>(

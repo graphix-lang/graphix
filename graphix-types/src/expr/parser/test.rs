@@ -187,7 +187,7 @@ fn no_space_before_a_body_or_operand() {
 fn comment_above_expr_captured() {
     let e = parse_one("// hello\n42").unwrap();
     let dec = e.dec.as_ref().expect("comment should attach to the expr below");
-    assert_eq!(&dec.comments[..], &[literal!(" hello")]);
+    assert_eq!(texts(&dec.comments), [literal!(" hello")]);
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn comment_block_round_trips() {
         let e = parse_one("// first\n// second\n42").unwrap();
         let e2 = parse_one(&e.to_string()).unwrap();
         let c = e2.dec.as_ref().expect("comments lost on round-trip");
-        assert_eq!(&c.comments[..], &[literal!(" first"), literal!(" second")]);
+        assert_eq!(texts(&c.comments), [literal!(" first"), literal!(" second")]);
     })
 }
 
@@ -208,8 +208,8 @@ fn comment_above_block_item() {
         ExprKind::Block { exprs } => {
             let last = exprs.last().unwrap();
             assert_eq!(
-                &last.dec.as_ref().expect("comment lost").comments[..],
-                &[literal!(" note")],
+                texts(&last.dec.as_ref().expect("comment lost").comments),
+                [literal!(" note")],
             );
         }
         other => panic!("expected a do block, got {other:?}"),
@@ -232,12 +232,38 @@ fn comments_below_a_block_ride_its_last_statement() {
         let e = parse_one(src).unwrap();
         let ExprKind::Block { exprs } = &e.kind else { panic!("{src}: not a block") };
         let last = exprs.last().unwrap();
-        assert_eq!(&dec_of(last).below[..], [literal!(" below")], "{src}");
+        assert_eq!(texts(&dec_of(last).below), [literal!(" below")], "{src}");
     }
 }
 
+/// The text of each line of a comment list.
+fn texts(lines: &[Comment]) -> Vec<ArcStr> {
+    lines.iter().map(|c| c.text.clone()).collect()
+}
+
+/// Each line of a comment list, and whether a blank line stands above it.
+fn spacing(lines: &[Comment]) -> Vec<(bool, ArcStr)> {
+    lines.iter().map(|c| (c.spaced, c.text.clone())).collect()
+}
+
+// a run of blank lines between two comment lines rides the second as one;
+// one before the first or after the last is not the list's
+#[test]
+fn a_blank_line_between_comment_lines_rides_the_next() {
+    let want = [(false, literal!(" a")), (true, literal!(" b")), (false, literal!(" c"))];
+    for src in ["\n// a\n\n  \n\n// b\n// c\n\n42", "// a\r\n\r\n// b\r\n// c\r\n42"] {
+        assert_eq!(spacing(&dec_of(&parse_one(src).unwrap()).comments), want, "{src:?}");
+    }
+    let e = parse_one("{ x; y\n\n// a\n\n// b\n// c\n\n}").unwrap();
+    let ExprKind::Block { exprs } = &e.kind else { panic!("not a block") };
+    assert_eq!(spacing(&dec_of(&exprs[1]).below), want);
+    let e = parse_one("impl Show for Counter {\n// a\n\n// b\n// c\n}").unwrap();
+    let ExprKind::Impl(i) = &e.kind else { panic!("not an impl") };
+    assert_eq!(spacing(i.below.lines()), want);
+}
+
 fn comments_of(e: &Expr) -> Vec<ArcStr> {
-    e.dec.as_ref().map(|d| d.comments.to_vec()).unwrap_or_default()
+    e.dec.as_ref().map(|d| texts(&d.comments)).unwrap_or_default()
 }
 
 fn arm_comments(e: &Expr) -> Vec<Vec<ArcStr>> {
@@ -290,7 +316,7 @@ fn comments_below_the_last_arm_ride_its_body() {
     for src in ["select x { _ => 1\n// below\n}", "select x { _ => 1,\n// below\n}"] {
         let e = parse_one(src).unwrap();
         let ExprKind::Select(sel) = &e.kind else { panic!("{src}: not a select") };
-        assert_eq!(&dec_of(&sel.arms[0].1).below[..], [literal!(" below")], "{src}");
+        assert_eq!(texts(&dec_of(&sel.arms[0].1).below), [literal!(" below")], "{src}");
     }
 }
 
@@ -325,13 +351,13 @@ fn a_comment_below_the_last_impl_method_rides_it_or_the_impl() {
         let e = parse_one(src).unwrap();
         let ExprKind::Impl(i) = &e.kind else { panic!("{src}: not an impl") };
         assert_eq!(i.methods.len(), 1, "{src}");
-        assert_eq!(&dec_of(&i.methods[0]).below[..], [literal!(" below")], "{src}");
+        assert_eq!(texts(&dec_of(&i.methods[0]).below), [literal!(" below")], "{src}");
     }
     // with no method, the impl keeps it
     let e = parse_one("impl Show for Counter {\n// nothing\n}").unwrap();
     let ExprKind::Impl(i) = &e.kind else { panic!("not an impl") };
     assert!(i.methods.is_empty());
-    assert_eq!(i.below.lines(), [literal!(" nothing")]);
+    assert_eq!(texts(i.below.lines()), [literal!(" nothing")]);
 }
 
 #[test]
@@ -471,7 +497,7 @@ fn attr_round_trips() {
 fn comment_and_attr_interleave() {
     let e = parse_one("// note\n#[native]\n42").unwrap();
     let dec = e.dec.as_ref().expect("decorations lost");
-    assert_eq!(&dec.comments[..], &[literal!(" note")]);
+    assert_eq!(texts(&dec.comments), [literal!(" note")]);
     assert_eq!(dec.attrs.len(), 1);
     assert_eq!(&dec.attrs[0].name, &literal!("native"));
 }
@@ -2277,7 +2303,7 @@ fn a_seq_statement_carries_what_stands_above_it() {
     let ExprKind::Seq(s) = &e.kind else { panic!("{e:?}") };
     let body = &s.body;
     let dec = body[0].dec.as_ref().expect("until lost its decorations");
-    assert_eq!(&dec.comments[..], &[literal!(" wait")]);
+    assert_eq!(texts(&dec.comments), [literal!(" wait")]);
     assert_eq!(&dec.attrs[0].name, "native");
     assert!(matches!(body[0].kind, ExprKind::Until(_)));
     assert!(body[0].end.get().is_some());
@@ -2314,7 +2340,7 @@ fn comments_above_trait_methods_are_kept() {
         parse_one("trait T {\n  // a plain comment\n  val show: fn(self) -> string\n}")
             .unwrap();
     let ExprKind::Trait(t) = &e.kind else { panic!("{e:?}") };
-    assert_eq!(t.methods[0].comments.lines(), &[literal!(" a plain comment")]);
+    assert_eq!(texts(t.methods[0].comments.lines()), [literal!(" a plain comment")]);
     // a doc comment belongs in an interface
     let msg = parse_program("trait T {\n  /// a doc\n  val show: fn(self) -> string\n}");
     assert!(msg.contains("`///` is a doc comment"), "{msg}");
@@ -2322,9 +2348,9 @@ fn comments_above_trait_methods_are_kept() {
         "// above\n/// the doc\nval x: i64;\ntrait T {\n  // c\n  /// d\n  val m: fn(self) -> i64\n}",
     ))
     .unwrap();
-    assert_eq!(sig.items[0].comments.lines(), &[literal!(" above")]);
+    assert_eq!(texts(sig.items[0].comments.lines()), [literal!(" above")]);
     let SigKind::Trait(t) = &sig.items[1].kind else { panic!() };
-    assert_eq!(t.methods[0].comments.lines(), &[literal!(" c")]);
+    assert_eq!(texts(t.methods[0].comments.lines()), [literal!(" c")]);
     assert_eq!(t.methods[0].doc.0.as_deref(), Some(" d"));
 }
 
@@ -2778,7 +2804,7 @@ fn a_comment_starting_a_line_stands_below() {
     let e = parse_one("{ a; impl T for i64\n// below\n}").unwrap();
     let ExprKind::Block { exprs } = &e.kind else { panic!("not a block") };
     let last = dec_of(exprs.last().unwrap());
-    assert_eq!((last.eol, &last.below[..]), (None, &[literal!(" below")][..]));
+    assert_eq!((last.eol, texts(&last.below)), (None, vec![literal!(" below")]));
 }
 
 #[test]
@@ -2990,8 +3016,8 @@ fn type_definitions_keep_comments_on_fields_and_members() {
     let mut notes = vec![];
     td.notes.each_in(body, &mut |n| {
         notes.push(n.map(|n| {
-            let (above, eol) = (n.comments.above.lines(), n.comments.eol.text());
-            format!("{above:?} {eol:?} {:?}", n.below.lines())
+            let (above, eol) = (texts(n.comments.above.lines()), n.comments.eol.text());
+            format!("{above:?} {eol:?} {:?}", texts(n.below.lines()))
         }))
     });
     // canonical order: the fields by name, mode's members after mode, a

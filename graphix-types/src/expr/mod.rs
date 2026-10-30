@@ -193,16 +193,32 @@ impl<T: netidx_core::pack::Pack> netidx_core::pack::Pack for Aside<T> {
     }
 }
 
+/// One own-line `//` comment of a list, its text verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct Comment {
+    /// A blank line stands between this line and the one before it in its
+    /// list; never set on a list's first line.
+    pub spaced: bool,
+    pub text: ArcStr,
+}
+
+impl Comment {
+    pub fn line(text: ArcStr) -> Self {
+        Self { spaced: false, text }
+    }
+}
+
 /// The `//` lines above an interface item or a trait method, or below the
 /// last of a list of them.
-pub type Comments = Aside<Option<Arc<[ArcStr]>>>;
+pub type Comments = Aside<Option<Arc<[Comment]>>>;
 
 impl Comments {
-    pub fn of(lines: impl ExactSizeIterator<Item = ArcStr>) -> Self {
+    pub fn of(lines: impl ExactSizeIterator<Item = Comment>) -> Self {
         Self((lines.len() > 0).then(|| Arc::from_iter(lines)))
     }
 
-    pub fn lines(&self) -> &[ArcStr] {
+    pub fn lines(&self) -> &[Comment] {
         self.0.as_deref().unwrap_or(&[])
     }
 }
@@ -235,13 +251,13 @@ pub struct ItemComments {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Decorations {
-    pub comments: Arc<[ArcStr]>,
+    pub comments: Arc<[Comment]>,
     pub attrs: Arc<[Attr]>,
     /// The comment after the item and its separator, on the same line.
     pub eol: Option<ArcStr>,
     /// The own-line comments below the last item of a list, above what
     /// closes it.
-    pub below: Arc<[ArcStr]>,
+    pub below: Arc<[Comment]>,
 }
 
 impl Default for Decorations {
@@ -362,7 +378,7 @@ pub enum UseCommentKind {
 pub struct UseComment {
     pub depth: u32,
     pub kind: UseCommentKind,
-    pub text: ArcStr,
+    pub line: Comment,
 }
 
 pub type UseComments = Aside<Option<Arc<[UseComment]>>>;
