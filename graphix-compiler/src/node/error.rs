@@ -428,12 +428,27 @@ impl<R: Rt> Update<R> for Catch<R> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
-        let _ = self.handler.update(ctx);
+        let taken = match self.receipts.take(ctx, &self.own_handler) {
+            Receipt::Passed(standing) => {
+                let prior = ctx.event.variables.put(self.bind_id, standing);
+                let _ = self.handler.update(ctx);
+                ctx.event.variables.put_back(self.bind_id, prior);
+                None
+            }
+            Receipt::Nothing => {
+                let _ = self.handler.update(ctx);
+                None
+            }
+            Receipt::Taken(v) => {
+                let _ = self.handler.update(ctx);
+                Some(v)
+            }
+        };
         let capture = self
             .action
             .as_ref()
             .and_then(|a| a.capture().filter(|_| a.pending.is_none()));
-        if let Some(v) = self.receipts.take(ctx, &self.own_handler) {
+        if let Some(v) = taken {
             if let Some(cap) = capture {
                 ctx.rt.set_var(cap, v);
             }
@@ -1590,38 +1605,49 @@ struct Receipts {
     last_cycle: Option<u64>,
 }
 
+/// What a catch makes of the delivery to its variable this cycle.
+enum Receipt {
+    Nothing,
+    /// The error of a raise not given up.
+    Taken(Value),
+    /// A delivery no raise left to take (its raise was given up), as the
+    /// handler sees it: standing, not fired.
+    Passed(TagValue),
+}
+
 impl Receipts {
-    /// This cycle's error, when one of `handler`'s raises arrived and was
-    /// not given up.
-    fn take<R: Rt>(
-        &mut self,
-        ctx: &ExecCtx<'_, R>,
-        handler: &ErrorHandler,
-    ) -> Option<Value> {
+    /// This cycle's delivery of `handler`'s raises.
+    fn take<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>, handler: &ErrorHandler) -> Receipt {
         let (bind_id, _) = handler.id();
         let cycle = ctx.rt.cycle();
         if std::mem::take(&mut self.gave_up) {
             self.landed_asleep(ctx, handler, &bind_id);
         }
         // a catch updated twice in one cycle would read its delivery twice
-        let v = match read_var(ctx, &bind_id) {
+        let tv = match read_var(ctx, &bind_id) {
             Some(VarRead::Delivered(tv))
-                if self.last_cycle != Some(cycle)
-                    && tv.tag().is_fired()
-                    && self.arrived < handler.raised() =>
+                if self.last_cycle != Some(cycle) && tv.tag().is_fired() =>
             {
-                tv.value_cloned()
+                tv
             }
-            _ => return None,
+            _ => return Receipt::Nothing,
         };
+        let passed = || {
+            let mut standing = tv.clone();
+            standing.retag(tv.tag().quiet());
+            Receipt::Passed(standing)
+        };
+        if self.arrived >= handler.raised() {
+            return passed();
+        }
         self.last_cycle = Some(cycle);
         self.arrived += 1;
         if self.arrived <= self.acked {
-            return None;
+            return passed();
         }
         self.acked += 1;
         handler.handled(cycle);
-        Some(v)
+        Receipt::Taken(tv.value_cloned())
     }
 
     /// At the wake, count as arrived the given-up deliveries that landed
@@ -1699,6 +1725,23 @@ impl Receipts {
     // over, in every mode. Pin:
     // lang::errors::a_catch_asleep_with_raises_in_flight_lets_its_step_pass (times out
     // without the wake count). design/catch.md says so.
+    // 2026-10-29 claude: Review R1 (cr29, 2026-10-29): the stall is fixed, but given-up
+    // raises whose deliveries are still queued at the wake reach the user handler while
+    // Receipts pass them over, so the handler and Receipts disagree, against the ruling
+    // (b) and design/catch.md. Probe ~/tmp/cr29/scratch/review/r1/ce3.gx (raises A-E at
+    // t=1, arm asleep only at t=2): heard C(1) at t=3, D at t=4, E at t=5, the same
+    // with --no-fusion and GRAPHIX_PAR=force.
+    // 2026-10-29 claude: The handler now hears exactly what Receipts::take takes: take
+    // returns a Receipt (Nothing, Taken(v), Passed(standing)), and Catch::update takes
+    // first and updates its handler after, with a passed-over delivery (a given-up
+    // raise's, a wake's catch-up fire included, or a fire no raise is owed) overlaid on
+    // the event as standing, not fired, so no node under the handler fires on it. Pin:
+    // lang::errors::a_handler_never_hears_a_raise_given_up (ce3's case with a later
+    // raise: hears 1 and 6, value 16; fails in all four modes without the overlay);
+    // a_catch_asleep_with_raises_in_flight_lets_its_step_pass unchanged (6). ce3.gx now
+    // prints only heard A(1) at t=1 and ends done=12 under the default, --no-fusion and
+    // GRAPHIX_PAR=force. design/catch.md says so. A handler that samples e on another
+    // event still reads the variable's latest value, a given-up error's included.
     fn give_up(&mut self, handler: &ErrorHandler, cycle: u64) {
         self.gave_up = true;
         while self.acked < handler.raised() {
@@ -1748,7 +1791,9 @@ impl ErrorRelay {
 
     /// The error the function raised this cycle, which also goes on.
     pub fn update<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) -> Option<Value> {
-        let e = self.receipts.take(ctx, &self.handler)?;
+        let Receipt::Taken(e) = self.receipts.take(ctx, &self.handler) else {
+            return None;
+        };
         match self.handler.parent().handler() {
             Some(parent) => {
                 parent.raise(ctx.rt.cycle());

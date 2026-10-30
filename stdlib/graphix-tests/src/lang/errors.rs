@@ -1175,6 +1175,36 @@ run!(
     is(Value::I64(6))
 );
 
+// The handler hears exactly the raises its catch takes: 1 to 5 are raised
+// at t=1 and land one a cycle, 1 at once, and it is heard; 2 to 5 are given
+// up when the arm sleeps at t=2, one lands while it sleeps and the rest
+// after its wake, and none is heard; 6, raised at t=8, is. `heard` holds
+// the payloads heard, a digit each.
+run!(
+    a_handler_never_hears_a_raise_given_up,
+    r#"{
+        let t = 0;
+        let heard = 0;
+        t <- select t { t if t < 14 => t + 1, _ => never() };
+        let g = |k: i64| -> i64 select t {
+            t if t != 2 => {
+                catch(e) heard <- e ~ heard * 10 + select e.0.error { `R(k) => k };
+                let a = select t { 1 => error(`R(t))?, 8 => error(`R(t - 2))?, _ => 0 };
+                let b = select t { 1 => error(`R(2 * t))?, _ => 0 };
+                let c = select t { 1 => error(`R(3 * t))?, _ => 0 };
+                let d = select t { 1 => error(`R(4 * t))?, _ => 0 };
+                let f = select t { 1 => error(`R(5 * t))?, _ => 0 };
+                select t { 12 => t, _ => never() }
+            },
+            _ => never()
+        };
+        let done = 0;
+        let s = seq { let v = g(0); done <- v };
+        select done { 12 => heard, _ => never() }
+    }"#,
+    is(Value::I64(16))
+);
+
 // A write a declaration would admit names the type to declare as one the
 // program can write: a constructed value's open parameter shows as what
 // its payload put below it.
