@@ -4697,6 +4697,29 @@ run!(generic_tuple_part_telling_quantifier_from_keep_refused, r#"{
   f((`Keep(1), 2))
 }"#, refused("isn't known here and may share `Keep("); FuseExpect::None);
 
+// A quantifier's type bound holds every value it may take, and a `Keep(&i64)
+// passes the arm's tag test: its payload would reach `r` typed as 'c.
+run!(generic_select_telling_quantifier_bound_refused, r#"{
+  let f = 'b: `Keep(&i64) |z: 'b, y: 'c, x: ['b, `Keep('c)]| -> ['c, null]
+    select x { `Keep(r) => r, _ => null };
+  let r: &i64 = &5;
+  let s = "hello";
+  let v: `Keep(&i64) = `Keep(r);
+  let xv: [`Keep(&i64), `Keep(&string)] = v;
+  let out: [&string, null] = f(v, &s, xv);
+  out
+}"#, refused("isn't known here and may share `Keep("); FuseExpect::None);
+
+// A bound the arm's test tells apart reaches the next arm.
+run!(generic_select_telling_quantifier_bound_told, r#"{
+  let f = 'b: `Keep(&i64) |x: ['b, `Keep(string)]| -> i64
+    select x { `Keep(s) => str::len(s), _ => -1 };
+  let v: `Keep(&i64) = `Keep(&5);
+  (f(v), f(`Keep("abc")))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:-1, i64:3]")
+}; FuseExpect::Jit);
+
 // Over a written element type the slice arms' own cells are still theirs.
 run!(generic_annotated_slice_arms_check, r#"{
   let first = |a: Array<'a>| select a { [h, ..] => h, [] => never() };

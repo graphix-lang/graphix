@@ -1105,8 +1105,9 @@ cycle, across workers; the compiler never pins threads.
   Told`): beside a member whose form another type may share it is refused
   ("annotate it"), a `NoError` cell sharing no error's form. A cell of
   the arm's own test, bound or open (a bind, a slice's rest: a part it
-  binds, not one it tests), collides with nothing; an open one of what
-  else reaches the arm does, even where the arm's capture shares it
+  binds, not one it tests), collides with nothing, except against a type
+  bound of what else reaches the arm; an open one of what else reaches
+  the arm does, even where the arm's capture shares it
   (`Type::rep_collision_tested`). Each element of a slice pattern is a
   test of its own among the whole element type, whatever the rest covers
   (`StructPatternNode::element_tests`). A

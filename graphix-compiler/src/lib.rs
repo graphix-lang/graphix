@@ -2699,6 +2699,16 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     // one (StructPatternNode::element_tests), and rep_collision_tested passes over a
     // test cell bound as well as open, so [h, ..] over Array<['b, `Keep('b)]> checks
     // again (refused since this fix, accepted on main). The pins named above still hold.
+    // 2026-10-29 claude: cr29 fix G6 (RV1 finding 1): the arm-side walk still waived the
+    // test's own open cells where it judged a rest cell by its type bounds, so 'b:
+    // `Keep(&i64) |z: 'b, y: 'c, x: ['b, `Keep('c)]| select x { `Keep(r) => r, _ => null
+    // } checked and read a &i64 as &string (RV1 p46; main refused it). open_collision
+    // now judges each type bound of a rest cell with the test's open cells read as any
+    // type, on a memo of its own. Pins:
+    // lang::select::generic_select_telling_quantifier_bound_refused fails without it;
+    // generic_select_telling_quantifier_bound_told holds a bound the test tells apart.
+    // CLAUDE.md and design/distinct_composite_forms.md carry the exception.
+    // keep-slice-told-01 is fix agent F6's.
     let Some(why) = test.rep_collision_tested(env, rest) else { return Ok(()) };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
     format_with_flags(PrintFlag::DerefTVars, || {

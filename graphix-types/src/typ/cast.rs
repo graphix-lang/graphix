@@ -1875,7 +1875,9 @@ pub enum Open {
 /// type it may yet bind, collides with the other: it may share the
 /// other's form, or, `ordered`, be another numeric type. A bound that is
 /// a type holds every value of the cell, so a cell with such bounds
-/// collides only where each of them does.
+/// collides only where each of them does. Under `tested`, `a`'s cells
+/// collide with nothing ([`rep_collision`]), except against a type bound
+/// of `b`'s cell: a value of the bound passes the test whole.
 fn open_collision(
     env: &Env,
     seen: &mut RepSeen,
@@ -1906,7 +1908,15 @@ fn open_collision(
         }
         let mut why = None;
         for b in typed.iter() {
-            why = Some(rep_collision(env, seen, tested, Open::Unknown, ordered, t, b)?);
+            let found = match tested {
+                // `seen` clears pairs by what the walk found under `tested`
+                true => {
+                    let fresh = &mut RepSeen::default();
+                    rep_collision(env, fresh, false, Open::Unknown, ordered, t, b)
+                }
+                false => rep_collision(env, seen, false, Open::Unknown, ordered, t, b),
+            };
+            why = Some(found?);
         }
         match why? {
             Indiscernible::Numbers(_) => Some(Indiscernible::OpenNumber(t.clone())),

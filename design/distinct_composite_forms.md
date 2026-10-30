@@ -151,10 +151,13 @@ error's form, so a select over `Result<'a, E>` stays legal. The arm's own
 test is judged from the arm's side (`Type::rep_collision_tested`): a
 cell of the test's, bound or open, is a part the arm binds and does not
 test (a bind, a slice's rest), so it collides with nothing and the walk
-looks on; an open cell of what else reaches the arm may be any type, even
-where the arm's capture shares it, so `` |x: ['b, `Keep('b)]| select x {
-`Keep(r) => r, r => r } `` is refused as its `` `Keep(i64) `` spelling is.
-A slice pattern's predicate is a Set whose rest cell holds the whole
+looks on, except against a type bound of what else reaches the arm: a
+value of the bound passes the test whole, so the test's cell is judged as
+any type there (`` 'b: `Keep(&i64) `` refuses `` `Keep(r) `` over `` ['b,
+`Keep('c)] ``); an open cell of what else reaches the arm may be any type,
+even where the arm's capture shares it, so `` |x: ['b, `Keep('b)]| select
+x { `Keep(r) => r, r => r } `` is refused as its `` `Keep(i64) `` spelling
+is. A slice pattern's predicate is a Set whose rest cell holds the whole
 element type, so as a type it covers every array and subtracts everything
 from what reaches the arm; its test is its elements', each of which sees
 any member of the element type. So each element that is not a bind is
