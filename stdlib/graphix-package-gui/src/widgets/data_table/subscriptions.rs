@@ -19,7 +19,6 @@ use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use futures::channel::mpsc;
 use graphix_compiler::BindId;
-use graphix_package_core::ExactNum;
 use graphix_rt::{CallableId, GXExt, GXHandle};
 use log::warn;
 use netidx::{
@@ -29,6 +28,7 @@ use netidx::{
     subscriber::{Dval, Event, SubId, UpdatesFlags},
 };
 use netidx_derive::FromValue;
+use netidx_value::Num;
 use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
@@ -379,29 +379,29 @@ fn deliver_to_grid<X: GXExt>(
 }
 
 /// A row's sort key in one column: numbers before text, numbers
-/// exactly ([`ExactNum`]), a duration or a datetime as its nanoseconds,
+/// exactly ([`Num`]), a duration or a datetime as its nanoseconds,
 /// text by its bytes.
 #[derive(PartialEq)]
 enum SortKey {
-    Num(ExactNum),
+    Num(Num),
     Text(ArcStr),
 }
 
 impl SortKey {
     fn of_value(v: &Value) -> Self {
         match v {
-            Value::Duration(v) => Self::Num(ExactNum::Int(v.as_nanos() as i128)),
-            Value::DateTime(v) => Self::Num(ExactNum::Int(
+            Value::Duration(v) => Self::Num(Num::Int(v.as_nanos() as i128)),
+            Value::DateTime(v) => Self::Num(Num::Int(
                 v.timestamp() as i128 * 1_000_000_000
                     + v.timestamp_subsec_nanos() as i128,
             )),
             Value::String(s) => {
-                match ExactNum::parse(s).or_else(|| numeric_key(s).map(ExactNum::Float)) {
+                match Num::parse(s).or_else(|| numeric_key(s).map(Num::Float)) {
                     Some(n) => Self::Num(n),
                     None => Self::Text(s.clone()),
                 }
             }
-            v => match ExactNum::of(v) {
+            v => match Num::of(v) {
                 Some(n) => Self::Num(n),
                 None => Self::Text(format_value(v)),
             },

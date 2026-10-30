@@ -25,9 +25,8 @@ use graphix_compiler::{
 use graphix_rt::GXRt;
 use netidx::{path::Path, publisher::Typ, subscriber::Value};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
-use netidx_value::FromValue;
+use netidx_value::{FromValue, Num};
 use poolshark::local::LPooled;
-use rust_decimal::{Decimal, prelude::ToPrimitive};
 use smallvec::SmallVec;
 use std::{
     any::Any,
@@ -1637,163 +1636,21 @@ pub fn fast_eval_typed<R: Rt>(
     coretraits::with_display_hooks(ctx, |env| f(env, typ, &args))
 }
 
-/// A number ordered exactly against any other, whatever their kinds:
-/// an integer, a decimal or a float, a NaN below every number.
-#[derive(Debug, Clone, Copy)]
-pub enum ExactNum {
-    Int(i128),
-    Dec(Decimal),
-    Float(f64),
-}
-
-impl ExactNum {
-    /// `v` as a number when it is one.
-    pub fn of(v: &Value) -> Option<Self> {
-        Some(match v {
-            Value::I8(n) => Self::Int(*n as i128),
-            Value::I16(n) => Self::Int(*n as i128),
-            Value::I32(n) | Value::Z32(n) => Self::Int(*n as i128),
-            Value::I64(n) | Value::Z64(n) => Self::Int(*n as i128),
-            Value::U8(n) => Self::Int(*n as i128),
-            Value::U16(n) => Self::Int(*n as i128),
-            Value::U32(n) | Value::V32(n) => Self::Int(*n as i128),
-            Value::U64(n) | Value::V64(n) => Self::Int(*n as i128),
-            Value::Decimal(d) => Self::Dec(**d),
-            Value::F32(f) => Self::Float(*f as f64),
-            Value::F64(f) => Self::Float(*f),
-            _ => return None,
-        })
-    }
-
-    /// The integer or decimal `s` writes, exactly.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.parse::<i128>() {
-            Ok(n) => Some(Self::Int(n)),
-            Err(_) => s.parse::<Decimal>().ok().map(Self::Dec),
-        }
-    }
-}
-
-impl Ord for ExactNum {
-    fn cmp(&self, other: &Self) -> Ordering {
-        use ExactNum::*;
-        match (self, other) {
-            (Int(a), Int(b)) => a.cmp(b),
-            (Dec(a), Dec(b)) => a.cmp(b),
-            (Float(a), Float(b)) => float_cmp(*a, *b),
-            (Int(i), Dec(d)) => int_dec_cmp(*i, d),
-            (Dec(d), Int(i)) => int_dec_cmp(*i, d).reverse(),
-            (Int(i), Float(f)) => int_float_cmp(*i, *f),
-            (Float(f), Int(i)) => int_float_cmp(*i, *f).reverse(),
-            (Dec(d), Float(f)) => dec_float_cmp(d, *f),
-            (Float(f), Dec(d)) => dec_float_cmp(d, *f).reverse(),
-        }
-    }
-}
-
-impl PartialOrd for ExactNum {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for ExactNum {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl Eq for ExactNum {}
-
-/// Floats in the order `Value` keeps: NaN equal to NaN and below every
-/// number.
-fn float_cmp(a: f64, b: f64) -> Ordering {
-    match (a.is_nan(), b.is_nan()) {
-        (true, true) => Ordering::Equal,
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-        (false, false) => a.partial_cmp(&b).expect("no NaN"),
-    }
-}
-
-/// A decimal's whole part, which always fits an i128.
-fn dec_whole(d: &Decimal) -> i128 {
-    d.trunc().to_i128().expect("a decimal's whole part fits an i128")
-}
-
-fn int_dec_cmp(i: i128, d: &Decimal) -> Ordering {
-    i.cmp(&dec_whole(d)).then_with(|| Decimal::ZERO.cmp(&d.fract()))
-}
-
-fn int_float_cmp(i: i128, f: f64) -> Ordering {
-    if f.is_nan() || f < i128::MIN as f64 {
-        Ordering::Greater
-    } else if f >= i128::MAX as f64 {
-        Ordering::Less
-    } else {
-        let whole = f.trunc();
-        i.cmp(&(whole as i128)).then_with(|| 0f64.total_cmp(&(f - whole)))
-    }
-}
-
-fn dec_float_cmp(d: &Decimal, f: f64) -> Ordering {
-    // 2^96: no decimal reaches it
-    const PAST_EVERY_DECIMAL: f64 = 79228162514264337593543950336.0;
-    if f.is_nan() || f <= -PAST_EVERY_DECIMAL {
-        Ordering::Greater
-    } else if f >= PAST_EVERY_DECIMAL {
-        Ordering::Less
-    } else {
-        let whole = f.trunc();
-        dec_whole(d).cmp(&(whole as i128)).then_with(|| fract_cmp(d.fract(), f - whole))
-    }
-}
-
-/// Two fractions, each under 1 in magnitude, compared exactly: `d` is
-/// `n / 10^s` and `f` is `m / 2^e`, so `d` against `f` is `n * 2^e`
-/// against `m * 5^s * 2^s`.
-fn fract_cmp(d: Decimal, f: f64) -> Ordering {
-    let sign = d.cmp(&Decimal::ZERO).cmp(&f.partial_cmp(&0.0).expect("no NaN"));
-    if sign != Ordering::Equal || d.is_zero() {
-        return sign;
-    }
-    let bits = f.abs().to_bits();
-    let (biased, fraction) = ((bits >> 52) as u32, bits & ((1 << 52) - 1));
-    let (m, e) = match biased {
-        0 => (fraction, 1074),
-        b => (fraction | 1 << 52, 1075 - b),
-    };
-    let (n, s) = (d.mantissa().unsigned_abs(), d.scale());
-    let rhs = m as u128 * 5u128.pow(s);
-    let magnitude =
-        if e >= s { shl_cmp(n, e - s, rhs) } else { shl_cmp(rhs, s - e, n).reverse() };
-    if d.is_sign_negative() { magnitude.reverse() } else { magnitude }
-}
-
-/// `a * 2^k` against `b`.
-fn shl_cmp(a: u128, k: u32, b: u128) -> Ordering {
-    if a != 0 && (k >= 128 || a.leading_zeros() < k) {
-        Ordering::Greater
-    } else {
-        a.checked_shl(k).unwrap_or(0).cmp(&b)
-    }
-}
-
 /// A value as `#numeric` compares it: a number, or a string writing an
-/// integer or a decimal, exactly ([`ExactNum`]); any other value cast to
+/// integer or a decimal, exactly ([`Num`]); any other value cast to
 /// f64 where it casts, and in `Value`'s order where it does not.
 enum NumKey {
-    Num(ExactNum),
+    Num(Num),
     Other(Value),
 }
 
 impl NumKey {
     fn of(v: &Value) -> Self {
         match v {
-            v if let Some(n) = ExactNum::of(v) => Self::Num(n),
-            Value::String(s) if let Some(n) = ExactNum::parse(s.trim()) => Self::Num(n),
+            v if let Some(n) = Num::of(v) => Self::Num(n),
+            Value::String(s) if let Some(n) = Num::parse(s.trim()) => Self::Num(n),
             v => match v.clone().cast(Typ::F64) {
-                Some(Value::F64(f)) => Self::Num(ExactNum::Float(f)),
+                Some(Value::F64(f)) => Self::Num(Num::Float(f)),
                 _ => Self::Other(v.clone()),
             },
         }
@@ -4548,57 +4405,6 @@ mod reaped_test {
             );
             await_reaps().await;
         });
-    }
-}
-
-#[cfg(test)]
-mod exact_num_test {
-    use super::{ExactNum, ExactNum::*};
-    use rust_decimal::Decimal;
-
-    fn dec(s: &str) -> ExactNum {
-        Dec(s.parse::<Decimal>().unwrap())
-    }
-
-    #[test]
-    fn mixed_numbers_order_exactly() {
-        // ascending, each strictly below the next
-        let ascending = [
-            Float(f64::NAN),
-            Float(f64::NEG_INFINITY),
-            Float(-1e30),
-            dec("-79228162514264337593543950335"),
-            Int(-3),
-            Float(-0.1),
-            dec("-0.1000000000000000055511151231"),
-            dec("-0.1"),
-            Int(0),
-            Float(5e-324),
-            dec("0.0000000000000000000000000001"),
-            dec("0.1"),
-            dec("0.10000000000000000001"),
-            dec("0.1000000000000000055511151231"),
-            Float(0.1),
-            dec("0.1000000000000000055511151232"),
-            dec("0.5000000000000000000000000001"),
-            Int(9007199254740993),
-            dec("9007199254740993.25"),
-            Float(9007199254740994.0),
-            dec("79228162514264337593543950335"),
-            Float(1e30),
-            Int(i128::MAX),
-            Float(f64::INFINITY),
-        ];
-        for (i, a) in ascending.iter().enumerate() {
-            for (j, b) in ascending.iter().enumerate() {
-                assert_eq!(a.cmp(b), i.cmp(&j), "{a:?} against {b:?}");
-            }
-        }
-        assert_eq!(Int(1), dec("1.000"));
-        assert_eq!(Int(1), Float(1.0));
-        assert_eq!(dec("0.5"), Float(0.5));
-        assert_eq!(dec("-0.5"), Float(-0.5));
-        assert_eq!(Float(f64::NAN), Float(f64::NAN));
     }
 }
 

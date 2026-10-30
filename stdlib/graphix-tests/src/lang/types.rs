@@ -4641,3 +4641,17 @@ run!(
     prints("[[f64:0.5, i64:1, f64:2.5, i64:3], false, true]");
     FuseExpect::None
 );
+
+// A float against a decimal is compared as the binary fraction it is:
+// f64 0.1 is 0.1000000000000000055511151231257827..., above the decimal
+// that rounds to it, and both sorts agree.
+run!(
+    any_float_and_decimal_order_exactly,
+    r#"{
+  let a: Any = f64:0.1;
+  let b: Any = decimal:0.1000000000000000055511151231;
+  (a < b, a > b, array::sort([a, b]), array::sort(#numeric: true, [a, b]))
+}"#,
+    prints("[false, true, [decimal:0.1000000000000000055511151231, f64:0.1], [decimal:0.1000000000000000055511151231, f64:0.1]]");
+    FuseExpect::None
+);
