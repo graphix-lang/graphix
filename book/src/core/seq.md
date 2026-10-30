@@ -443,7 +443,9 @@ seqq request; abort(skip); flush(cancel_all) { ... }
 ```
 
 `flush` follows `abort` when both are present, and only `seqq` accepts
-it. The flush source stays active between runs, so it empties queued
+it. It drops every request queued before it, those still waiting for
+their captures (see [Captured inputs](#captured-inputs)) included. The
+flush source stays active between runs, so it empties queued
 requests even during the handoff between short runs. A request already
 dispatched for the next run is no longer queued. A request that arrives
 with the flush or after it is kept. Only the abort of the running
