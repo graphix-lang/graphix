@@ -969,29 +969,40 @@ fn positional_arity(t: &Type) -> Option<usize> {
     })
 }
 
-/// Whether `expected` is, or returns, a `filter_map` callback's result,
-/// `` [`Keep('b), null] ``, and `actual` holds, or returns, a value that
-/// is neither: one kept bare.
-fn kept_bare(expected: &Type, actual: &Type) -> bool {
-    fn result(t: &Type) -> Type {
-        t.with_deref(|d| match d {
-            Some(Type::Fn(ft)) => ft.rtype.clone(),
-            _ => t.clone(),
-        })
+/// `t` with its bindings and named types followed to its head.
+fn named_head(env: &Env, t: &Type) -> Type {
+    let mut t = t.with_deref(|d| d.cloned()).unwrap_or_else(|| t.clone());
+    while let Some((_, x)) = t.lookup_ref_probe(env) {
+        t = x.with_deref(|d| d.cloned()).unwrap_or(x);
     }
-    fn members(t: &Type) -> SmallVec<[Type; 4]> {
-        t.with_deref(|d| match d {
-            Some(Type::Set(ms)) => ms.iter().flat_map(members).collect(),
-            Some(d) => smallvec::smallvec![d.clone()],
-            None => smallvec::smallvec![t.clone()],
-        })
-    }
+    t
+}
+
+/// Whether `expected` is, or returns, `` [`Keep(T), null] `` and `actual`
+/// holds, or returns, a value that is neither: one kept bare.
+fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
+    let members = |t: &Type| {
+        let mut found: SmallVec<[Type; 4]> = SmallVec::new();
+        let mut todo: SmallVec<[Type; 4]> = SmallVec::new();
+        let head = named_head(env, t);
+        todo.push(match &head {
+            Type::Fn(ft) => named_head(env, &ft.rtype),
+            _ => head,
+        });
+        while let Some(t) = todo.pop() {
+            match &t {
+                Type::Set(ms) => todo.extend(ms.iter().map(|m| named_head(env, m))),
+                _ => found.push(t),
+            }
+        }
+        found
+    };
     let keep = |t: &Type| matches!(t, Type::Variant(tag, ts, _) if &**tag == "Keep" && ts.len() == 1);
     let null = |t: &Type| matches!(t, Type::Primitive(p) if *p == Typ::Null);
-    let (expected, actual) = (members(&result(expected)), members(&result(actual)));
+    let expected = members(expected);
     expected.iter().any(keep)
         && expected.iter().all(|m| keep(m) || null(m))
-        && actual.iter().any(|m| !keep(m) && !null(m))
+        && members(actual).iter().any(|m| !keep(m) && !null(m))
 }
 
 /// Two types identical up to `Fn` equality whose cells can be welded.
@@ -1010,6 +1021,8 @@ pub struct TypeMismatch {
     /// A name the two sides write at one place for two definitions, and
     /// where each is written: taken while the definitions are in scope.
     apart: Option<(ModPath, SourcePosition, SourcePosition)>,
+    /// [`kept_bare`], taken while the named types are in scope.
+    kept_bare: bool,
 }
 
 impl std::fmt::Display for TypeMismatch {
@@ -1033,11 +1046,8 @@ impl std::fmt::Display for TypeMismatch {
                 format_compact!("{}", Brief(&self.actual)),
             );
             write!(f, "type mismatch {expected} does not contain {actual}")?;
-            if kept_bare(&self.expected, &self.actual) {
-                write!(
-                    f,
-                    ": a filter_map callback keeps a value v by returning `Keep(v)"
-                )?;
+            if self.kept_bare {
+                write!(f, ": a [`Keep(T), null] keeps v as `Keep(v)")?;
             }
             // sides that print alike name two definitions of one name
             if expected == actual
@@ -1367,6 +1377,7 @@ impl Type {
             expected: self.clone(),
             actual: t.clone(),
             apart: same_name_apart(self, t),
+            kept_bare: kept_bare(env, self, t),
         })
     }
 

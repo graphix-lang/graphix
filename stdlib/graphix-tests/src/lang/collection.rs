@@ -752,7 +752,7 @@ run!(
 // is itself a `Keep`.
 run!(
     filter_map_generic_bare_value_refused,
-    refused("a filter_map callback keeps a value v by returning `Keep(v)"),
+    refused("a [`Keep(T), null] keeps v as `Keep(v)"),
     "/test.gx" => r#"
         let f = |a: Array<'x>| -> Array<'x> array::filter_map(a, |x| x);
         let result = f([`Keep(1), `Keep(2)])
@@ -762,9 +762,31 @@ run!(
 
 run!(
     filter_map_bare_value_refused,
-    refused("a filter_map callback keeps a value v by returning `Keep(v)"),
+    refused("a [`Keep(T), null] keeps v as `Keep(v)"),
     "/test.gx" => r#"
         let result = array::filter_map([1, 2, 3], |x| select x > 1 { true => x, false => null })
+    "#;
+    FuseExpect::None
+);
+
+// The hint names the type, wherever a bare value meets one, a typedef'd
+// one included.
+run!(
+    keep_hint_at_any_keep_type,
+    refused("does not contain i64: a [`Keep(T), null] keeps v as `Keep(v)"),
+    "/test.gx" => r#"
+        let result: [`Keep(i64), null] = 3
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    keep_hint_at_typedef_keep_type,
+    refused("does not contain i64: a [`Keep(T), null] keeps v as `Keep(v)"),
+    "/test.gx" => r#"
+        type Opt<'a> = [`Keep('a), null];
+        let cb = |x: i64| -> Opt<i64> x;
+        let result = cb(1)
     "#;
     FuseExpect::None
 );
