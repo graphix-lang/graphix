@@ -43,9 +43,11 @@ so a target holds no union two of whose members one JSON value could be
 written by: the read could hand back the other one. `[u8, i64]` (two
 integers), `[string, datetime]` (a datetime is written as a string),
 `` [string, `A] `` (a variant with no payload is written as its tag),
-`[decimal, f64]`, `[f32, i64]` and `[duration, i64]` (a whole `f32` or
-`duration` is written as a float such as `2.0`, which the integer member
-reads), `[Array<string>, Array<i64>]` (both write `[]`) and a struct
+`[decimal, f64]`, `[duration, i64]` (a whole `duration` is written as a
+float such as `2.0`, which the integer member reads), `[f32, i64]` (an
+`f32` with a fraction is written as its shortest text, such as `0.1`,
+which the `f32` holds only rounded, so the integer member reads it,
+dropping the fraction), `[Array<string>, Array<i64>]` (both write `[]`) and a struct
 beside a map of strings (an object reads as both) are refused.
 Members JSON writes apart are fine: `[i64, f64]` (an integer and a number
 with a fraction), `` [`A(i64), `B(string)] ``, `[{a: i64}, {b: i64}]`,

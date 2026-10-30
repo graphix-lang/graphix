@@ -109,9 +109,14 @@ reads back as it (`Type::cast_member`). An array the source type says is
 one (`Type::cast_from`, which both engines' casts call) reads as an
 array member it inhabits before any of that. Every way, a member that holds
 the value exactly comes before one that would drop part of it (a
-fraction, a sub-second part, a rounding: `holds_exactly`), and no
-integer holds a float's text, so a whole float's print (`"3.0"`) reads
-back as the float.
+fraction, a sub-second part, a rounding: `holds_exactly`), and among
+those an integer reading of a float or a decimal, as a value or as its
+text, gives way to a later reading that keeps every float and decimal
+real (`Choice`; counted at the leaves, `RealReads`, so a union of
+composites is judged by every leaf): `cast<[i64, decimal]>(3.0)` and
+`cast<[i64, decimal]>("3.0")` are both the decimal, a whole float's
+print reads back as the float, and where no member is real the integer
+holds it (`cast<[i64, datetime]>("3.0")` is 3).
 `cast<string>` of a bare variant is its tag; no other marked
 value has a primitive form, and the primitive `array` holds arrays only
 (`contains`, `is_a`, `setops`). A list casts to an array element by

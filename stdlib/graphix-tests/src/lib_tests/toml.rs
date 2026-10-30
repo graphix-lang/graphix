@@ -253,9 +253,9 @@ run!(
     prints("[true, true, true, true, true, true]")
 );
 
-// A whole f32 is written as a float, which a union reads into an
-// integer member as its own class: a target holding one beside an
-// integer is refused (x-rerun-5-04).
+// An f32 with a fraction is written as its shortest text, which the f32
+// holds only rounded, so a union reads it into an integer member, the
+// fraction dropped: a target holding one beside an integer is refused.
 run!(
     toml_target_f32_beside_an_integer_refused,
     r#"{

@@ -317,7 +317,11 @@ expression to match its type (more on select later). A cast keeps a
 value's kind: a number converts to another number (an integer type only
 when it holds the value exactly), and a union target takes a member of
 the value's own kind first, so `cast<[i8, Array<f64>]>([1, 2])` is
-`[1., 2.]`. Across kinds a cast only parses a string (`cast<i64>("42")`,
+`[1., 2.]`. A float or a decimal, or its text, goes to an integer member
+only where no `f32`, `f64` or `decimal` member holds it exactly:
+`cast<[i64, decimal]>(3.0)` and `cast<[i64, decimal]>("3.0")` are both
+the decimal 3, while `cast<[i64, datetime]>("3.0")` is the integer 3.
+Across kinds a cast only parses a string (`cast<i64>("42")`,
 `cast<bool>("true")`), prints a number, bool, datetime or duration
 plainly (`cast<string>(42)` is `"42"`, and a whole float keeps its
 point: `cast<string>(3.0)` is `"3.0"`), converts between a number and

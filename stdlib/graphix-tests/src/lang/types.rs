@@ -653,41 +653,91 @@ run!(
     prints("[f64:3.5, i64:3, decimal:3.1, u8:3]")
 );
 
-// No integer holds a float's text exactly, so a whole float's print reads
-// back as a float wherever a float member takes it; an integer's text still
-// takes the narrowest integer, and an integer target alone drops the point.
-const CAST_FLOAT_TEXT_READS_AS_A_FLOAT: &str = r#"
+// An integer member holds a float or a decimal, as a value or as its text,
+// only where no real member holds it exactly, so a whole float and its print
+// read alike; an integer's text still takes the narrowest integer, and an
+// integer target alone drops the point.
+const CAST_FLOAT_VALUE_AND_TEXT_READ_ALIKE: &str = r#"
 {
+  let x = 3.0;
+  let d = cast<decimal>(3)$;
   let p: Result<[i64, f64], `ParseError(string)> = str::parse("3.0");
   (
+    cast<[i64, decimal]>(x)$,
+    cast<[i64, decimal]>("[x]")$,
+    cast<[u8, f32]>(x)$,
+    cast<[u8, f32]>("[x]")$,
     cast<[i64, f64]>("3.0")$,
-    cast<[u8, f32]>("2.0")$,
+    p$,
+    cast<[u8, f64]>("1e2")$,
+    cast<[i64, f64]>(d)$,
     cast<[i64, u8]>("3")$,
     cast<i64>("3.0")$,
-    p$
+    cast<i64>(3.5)$
   )
 }
 "#;
 
 run!(
-    cast_float_text_reads_as_a_float,
-    CAST_FLOAT_TEXT_READS_AS_A_FLOAT,
-    prints("[f64:3., f32:2., u8:3, i64:3, f64:3.]")
+    cast_float_value_and_text_read_alike,
+    CAST_FLOAT_VALUE_AND_TEXT_READ_ALIKE,
+    prints(
+        "[decimal:3., decimal:3.0, f32:3., f32:3., f64:3., f64:3., f64:100., f64:3., u8:3, i64:3, i64:3]"
+    )
 );
 
-// Data composites are judged by every leaf (a union of tuples has no kernel
-// ABI form, so the cast node-walks).
+// Where no member is real an integer holds a whole float, value or text
+// alike; a fraction it holds in neither form.
+const CAST_WHOLE_FLOAT_WITHOUT_A_REAL_MEMBER: &str = r#"
+(
+  cast<[i64, datetime]>("3.0")$,
+  cast<[i64, datetime]>(3.0)$,
+  cast<[i64, duration]>("3.0")$,
+  cast<[i64, duration]>(3.0)$,
+  cast<[i64, duration]>("3.5")$,
+  cast<[i64, duration]>(3.5)$
+)
+"#;
+
+run!(
+    cast_whole_float_without_a_real_member,
+    CAST_WHOLE_FLOAT_WITHOUT_A_REAL_MEMBER,
+    prints("[i64:3, i64:3, i64:3, i64:3, duration:3.5s, duration:3.5s]")
+);
+
+// The rule holds at every leaf: an element union reads a float as the
+// scalar union does, through a cast and through `str::parse` alike, and a
+// named real member is a real member.
+const CAST_FLOAT_ELEMENTS_READ_AS_THE_SCALAR: &str = r#"
+{
+  type F = f32;
+  let p: Result<Array<[u8, f32]>, `ParseError(string)> = str::parse(r"[3.0, 4.5]");
+  (p$, cast<Array<[u8, f32]>>([3.0, 4.5])$, cast<[i64, F]>(3.0)$, cast<[i64, F]>("3.0")$)
+}
+"#;
+
+run!(
+    cast_float_elements_read_as_the_scalar,
+    CAST_FLOAT_ELEMENTS_READ_AS_THE_SCALAR,
+    prints("[[f32:3., f32:4.5], [f32:3., f32:4.5], f32:3., f32:3.]")
+);
+
+// Data composites are judged by every leaf, and a reading that keeps every
+// float real comes before one that reads a float as an integer (a union of
+// tuples has no kernel ABI form, so the cast node-walks).
 const CAST_UNION_PREFERS_EXACT_COMPOSITE: &str = r#"
 (
   cast<[(i64, i64), (f64, f64)]>([f64:1.5, f64:2.5])$,
-  cast<[(i64, i64), (f64, f64)]>([f64:1., f64:2.])$
+  cast<[(i64, i64), (f64, f64)]>([f64:1., f64:2.])$,
+  cast<[(i64, i64), (f32, f32)]>([f64:1., f64:2.])$,
+  cast<[(i64, i64), (f32, f32)]>([i64:1, i64:2])$
 )
 "#;
 
 run!(
     cast_union_prefers_exact_composite,
     CAST_UNION_PREFERS_EXACT_COMPOSITE,
-    prints("[[f64:1.5, f64:2.5], [i64:1, i64:2]]");
+    prints("[[f64:1.5, f64:2.5], [f64:1., f64:2.], [f32:1., f32:2.], [i64:1, i64:2]]");
     FuseExpect::None
 );
 

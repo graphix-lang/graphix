@@ -662,12 +662,13 @@ on a cycle through cells and unions alone are one type, merged
 A cast to an integer type, a type-directed read's included, holds the
 value exactly or is an `InvalidCast` (a float drops its fraction; a
 union target takes the first member in canonical order, narrowest
-integer first, that holds it). A cast leaves a value's runtime class
+integer first, that holds it, but an integer holds a float or a decimal,
+value or text, only where no real member does). A cast leaves a value's runtime class
 only to parse a string into a scalar (never a collection), to print a number, bool, datetime or duration
 plainly (`"42"`; a whole float, and a duration's seconds, keep the
 point, `"3.0"`, as every plain print does: `typ::PlainScalar`), between a number and a datetime (Unix seconds) or a
 duration (seconds), from a bool to a number (1 or 0), or to read an array of numbers as bytes; a list reads as the array of its elements and a map as the array of its `(key, value)` pairs, and an array of pairs reads as a map; a union target tries the members of the value's own
-class first (`typ/cast.rs::convert`, `in_own_class`: a container's class is its elements' too, and unmarked array data is a list's), an array the source type says is one (`cast_from`) an array member it inhabits, then unmarked array data a tagged variant, a tuple of its length, then a struct before an array, a tuple or struct only where its elements stay in their classes, and every way a member that holds the value exactly before one that would drop part of it (`holds_exactly`: `cast<[i64, f64]>("3.5")` is 3.5; no integer holds a float's text, so `"3.0"` is 3.0). The JIT inlines
+class first (`typ/cast.rs::convert`, `in_own_class`: a container's class is its elements' too, and unmarked array data is a list's), an array the source type says is one (`cast_from`) an array member it inhabits, then unmarked array data a tagged variant, a tuple of its length, then a struct before an array, a tuple or struct only where its elements stay in their classes, and every way a member that holds the value exactly before one that would drop part of it (`holds_exactly`: `cast<[i64, f64]>("3.5")` is 3.5), and of those one keeping every float and decimal real before one reading one as an integer (`Choice`, counted at the leaves, `RealReads`: `cast<[i64, decimal]>(3.0)` and `("3.0")` are decimal, `cast<[(i64, i64), (f32, f32)]>([1.0, 2.0])` the f32 tuple; with no real member `cast<[i64, datetime]>("3.0")` is 3). The JIT inlines
 only the casts that always fit (`lowering::inline_cast`). A struct cast
 reads a field the data omits as null wherever the field's type
 admits null (`typ/cast.rs`), and a string parses as an RFC3339
@@ -772,7 +773,8 @@ with no `Cast` impl, `json::read`'s and `toml::read`'s target is also
 `'b: JsonData`/`TomlData` (`typ::textdata`: no union in it holds two
 members one of which may read a value the other writes: a union reads
 a number into its own class first, so an integer member takes the whole
-float an f32 or a JSON duration writes), judged of the
+float a JSON duration writes and, dropping the fraction, an f32's text
+no member holds exactly), judged of the
 call's settled binding (`site_bounds`; refused at the bind, a union
 target would narrow to one member), a writer declares its value `'a: Data` (no
 reference, function or such abstract type; open is fine), an async

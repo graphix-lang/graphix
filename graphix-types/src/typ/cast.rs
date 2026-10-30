@@ -145,7 +145,7 @@ struct CastCx {
     /// held so the members stay its: a union tries several members over
     /// one value, so without it a failing read is exponential in the
     /// data's depth.
-    read: LPooled<AHashMap<(usize, usize, bool), (Type, Cast)>>,
+    read: LPooled<AHashMap<(usize, usize, bool), (Type, Cast, RealReads)>>,
     /// Whether the walk is inside a union's reading.
     in_union: bool,
     /// How many values on the path are built by the walk, not held by
@@ -162,8 +162,85 @@ struct CastCx {
     /// Only a conversion that loses nothing counts: a union tries its
     /// members so first.
     exact: bool,
+    /// How the reading so far took the floats and decimals it met.
+    reals: RealReads,
     input: CastInput,
     check_keys: bool,
+}
+
+/// How a reading took the floats and decimals it met, values or text that
+/// reads as one: how many it read as an integer, and how many as neither
+/// an integer nor a real.
+#[derive(Debug, Clone, Copy, Default)]
+struct RealReads {
+    as_integer: usize,
+    as_other: usize,
+}
+
+impl RealReads {
+    /// Count a value read as `c`, `real` saying whether the value is a
+    /// float or a decimal or text reading as one.
+    fn read(&mut self, c: &Value, real: impl FnOnce() -> bool) {
+        let t = Typ::get(c);
+        if !t.is_real() && real() {
+            match t.is_integer() {
+                true => self.as_integer += 1,
+                false => self.as_other += 1,
+            }
+        }
+    }
+
+    fn add(&mut self, d: RealReads) {
+        self.as_integer += d.as_integer;
+        self.as_other += d.as_other;
+    }
+
+    fn since(self, base: RealReads) -> RealReads {
+        RealReads {
+            as_integer: self.as_integer - base.as_integer,
+            as_other: self.as_other - base.as_other,
+        }
+    }
+}
+
+/// A union's reading of a value among those its members offer, in its
+/// order: the first, except that in an exact round one reading a float or
+/// a decimal as an integer gives way to a later one keeping every float
+/// and decimal real.
+struct Choice {
+    exact: bool,
+    got: Option<(Value, RealReads)>,
+}
+
+impl Choice {
+    fn new(cx: &CastCx) -> Self {
+        Choice { exact: cx.exact, got: None }
+    }
+
+    fn offer(&mut self, c: Value, d: RealReads) {
+        let replaces = match &self.got {
+            None => true,
+            Some((_, g)) => {
+                self.exact && g.as_integer > 0 && d.as_integer == 0 && d.as_other == 0
+            }
+        };
+        if replaces {
+            self.got = Some((c, d))
+        }
+    }
+
+    /// Whether no later reading would replace the one held.
+    fn settled(&self) -> bool {
+        self.got.as_ref().is_some_and(|(_, g)| !self.exact || g.as_integer == 0)
+    }
+
+    /// The reading chosen, its count added to `cx`'s.
+    fn take(self, cx: &mut CastCx) -> Option<Value> {
+        self.got.map(|(c, d)| {
+            cx.reals.add(d);
+            c
+        })
+    }
 }
 
 impl CastCx {
@@ -179,9 +256,26 @@ impl CastCx {
             at: 0,
             depth: 0,
             exact: false,
+            reals: RealReads::default(),
             input,
             check_keys,
         }
+    }
+
+    /// `t`'s reading of `v` and how it took the reals it met, the count
+    /// left as it was: a union adds only its chosen reading's.
+    fn trial(
+        &mut self,
+        env: &Env,
+        t: &Type,
+        src: Option<&Type>,
+        v: &Value,
+    ) -> (Cast, RealReads) {
+        let base = self.reals;
+        let r = t.cast_int(env, self, src, v);
+        let d = self.reals.since(base);
+        self.reals = base;
+        (r, d)
     }
 
     /// The expansion of the reference `t`, made once a cast.
@@ -800,14 +894,30 @@ impl Type {
                 }
                 let own = own_class(v);
                 let mut members = (*s & own).iter().chain((*s & !own).iter());
-                let exact = members
-                    .clone()
-                    .find_map(|t| convert(v.clone(), t).filter(|c| holds_exactly(v, c)));
-                match exact.or_else(|| match cx.exact {
-                    true => None,
-                    false => members.find_map(|t| convert(v.clone(), t)),
-                }) {
-                    Some(v) => Ok(Some(v)),
+                let mut exact = members.clone().filter_map(|t| {
+                    convert(v.clone(), t).filter(|c| holds_exactly(v, c))
+                });
+                let mut real = None;
+                let mut reads_real = || *real.get_or_insert_with(|| reads_as_real(v));
+                let read = match exact.next() {
+                    Some(c)
+                        if Typ::get(&c).is_integer()
+                            && s.intersects(Typ::real())
+                            && reads_real() =>
+                    {
+                        exact.find(|c| Typ::get(c).is_real()).or(Some(c))
+                    }
+                    Some(c) => Some(c),
+                    None if cx.exact => None,
+                    None => members.find_map(|t| convert(v.clone(), t)),
+                };
+                match read {
+                    Some(c) => {
+                        if cx.in_union {
+                            cx.reals.read(&c, reads_real)
+                        }
+                        Ok(Some(c))
+                    }
                     None => Err(self.cast_fail("no primitive conversion", v)),
                 }
             }
@@ -1156,16 +1266,21 @@ impl Type {
             // member of its own runtime class it converts to; else the
             // first member it converts to across classes. Each way, a member
             // that holds the value exactly comes before one that would lose
-            // part of it (a fraction, a sub-second part, a rounding).
+            // part of it (a fraction, a sub-second part, a rounding), and of
+            // those, one keeping its floats and decimals real before one
+            // reading one as an integer (`Choice`).
             Type::Set(ts) => {
                 let outer = cx.exact;
                 let key = (cx.in_union && cx.built == 0)
                     .then(|| (ts.as_ptr().addr(), (v as *const Value).addr(), outer));
                 if let Some(k) = &key
-                    && let Some((_, r)) = cx.read.get(k)
+                    && let Some((_, r, d)) = cx.read.get(k)
                 {
-                    return r.clone();
+                    let (r, d) = (r.clone(), *d);
+                    cx.reals.add(d);
+                    return r;
                 }
+                let base = cx.reals;
                 let (in_union, cuts) = (mem::replace(&mut cx.in_union, true), cx.cuts);
                 let array = rep::array_elems(v).is_some()
                     && (cx.input == CastInput::Marked
@@ -1185,7 +1300,7 @@ impl Type {
                 if let Some(k) = key
                     && cx.cuts == cuts
                 {
-                    cx.read.insert(k, (self.clone(), r.clone()));
+                    cx.read.insert(k, (self.clone(), r.clone(), cx.reals.since(base)));
                 }
                 r
             }
@@ -1197,7 +1312,7 @@ impl Type {
     /// a member whose tag it carries, else, for unmarked data, a tuple of
     /// its length and then a struct, else one the value inhabits, else the
     /// first member of its own runtime class it converts to, else the first
-    /// it converts to at all.
+    /// it converts to at all; each way as a [`Choice`] takes it.
     fn cast_member(
         &self,
         env: &Env,
@@ -1208,48 +1323,51 @@ impl Type {
         array: bool,
     ) -> Cast {
         if array {
+            let mut choice = Choice::new(cx);
             let arrays = ts.iter().filter(|t| match rep_head(env, t).as_deref() {
                 Some(Type::Array(_)) => true,
                 Some(Type::Primitive(p)) => p.contains(Typ::Array),
                 _ => false,
             });
-            let mut converted = None;
             for t in arrays {
-                match t.cast_int(env, cx, src, v) {
-                    Ok(None) => return Ok(None),
-                    Ok(Some(v))
-                        if cx.input == CastInput::Marked && converted.is_none() =>
-                    {
-                        converted = Some(v)
+                match cx.trial(env, t, src, v) {
+                    (Ok(None), d) => {
+                        cx.reals.add(d);
+                        return Ok(None);
+                    }
+                    (Ok(Some(c)), d) if cx.input == CastInput::Marked => {
+                        choice.offer(c, d)
                     }
                     _ => (),
                 }
             }
-            if converted.is_some() {
-                return Ok(converted);
+            if let Some(c) = choice.take(cx) {
+                return Ok(Some(c));
             }
         }
+        let mut choice = Choice::new(cx);
         // a member whose tag the value carries is its reading, whatever a
         // tagless reading of an earlier member says
         let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
         if tagged.peek().is_some() {
-            let mut read = Err(None);
+            let mut refused = None;
             for t in tagged {
-                match t.cast_int(env, cx, src, v) {
-                    Ok(None) => return Ok(None),
-                    Ok(Some(c)) if read.is_err() => read = Ok(c),
-                    Ok(Some(_)) => (),
-                    Err(e) if read.is_err() => read = Err(Some(e)),
-                    Err(_) => (),
+                match cx.trial(env, t, src, v) {
+                    (Ok(None), d) => {
+                        cx.reals.add(d);
+                        return Ok(None);
+                    }
+                    (Ok(Some(c)), d) => choice.offer(c, d),
+                    (Err(e), _) => refused = Some(e),
                 }
             }
-            return match read {
-                Ok(c) => Ok(Some(c)),
-                Err(e) => Err(e.expect("a tagged member was tried")),
+            return match choice.take(cx) {
+                Some(c) => Ok(Some(c)),
+                None => Err(refused.expect("a tagged member was tried")),
             };
         }
         // a writer wrote the tuple or the struct the data reads back as
-        let mut ranked: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
+        let mut tried: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
         if let Value::Array(a) = v
             && rep::kind(v).is_none()
         {
@@ -1268,9 +1386,17 @@ impl Type {
             };
             for r in 0..2 {
                 for (i, t) in ts.iter().enumerate().filter(|(_, t)| rank(t) == Some(r)) {
-                    match t.cast_int(env, cx, src, v) {
-                        Ok(c) => return Ok(c),
-                        Err(_) => ranked[i] = true,
+                    tried[i] = true;
+                    match cx.trial(env, t, src, v) {
+                        (Ok(None), d) => {
+                            cx.reals.add(d);
+                            return Ok(None);
+                        }
+                        (Ok(Some(c)), d) => choice.offer(c, d),
+                        (Err(_), _) => (),
+                    }
+                    if choice.settled() {
+                        return Ok(choice.take(cx));
                     }
                 }
             }
@@ -1288,21 +1414,26 @@ impl Type {
         // (real-member-order-01)
         let own: LPooled<Vec<bool>> =
             ts.iter().map(|t| in_own_class(env, t, v)).collect();
-        let mut converted = None;
         for pass in [true, false] {
-            let members = ts.iter().zip(own.iter()).zip(ranked.iter());
+            let members = ts.iter().zip(own.iter()).zip(tried.iter());
             for ((t, _), _) in members.filter(|((_, o), r)| **o == pass && !**r) {
-                match t.cast_int(env, cx, src, v) {
-                    Ok(None) => return Ok(None),
-                    Ok(Some(c)) if converted.is_none() => converted = Some(c),
-                    Ok(Some(_)) | Err(_) => (),
+                match cx.trial(env, t, src, v) {
+                    (Ok(None), d) => {
+                        cx.reals.add(d);
+                        return Ok(None);
+                    }
+                    (Ok(Some(c)), d) => choice.offer(c, d),
+                    (Err(_), _) => (),
                 }
             }
-            if let Some(c) = converted {
-                return Ok(Some(c));
+            if choice.settled() {
+                return Ok(choice.take(cx));
             }
         }
-        Err(self.cast_fail("no member admits it", v))
+        match choice.take(cx) {
+            Some(c) => Ok(Some(c)),
+            None => Err(self.cast_fail("no member admits it", v)),
+        }
     }
 
     /// Cast `v` of unknown static type to this type; a failure is the
@@ -2814,7 +2945,7 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
     of_int(n, t)
 }
 
-// CR claude for claude: [design/medium] D11's round trip made a float's or decimal's TEXT
+// XCR claude for claude: [design/medium] D11's round trip made a float's or decimal's TEXT
 // held by no integer member, but a float VALUE is still held by one, so a value and its
 // print now read differently: with x = 3.0, cast<[i64, decimal]>(x) is i64 3 and
 // cast<[i64, decimal]>("[x]") is decimal 3.0 (main gave i64 3 for both); [u8, f32]
@@ -2830,25 +2961,38 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 quick picks): option (b),
 // the same exactness for values: no integer member holds a float value when a real member
 // of the target holds it, so a value and its text read alike.
-// 2026-10-31 claude: Eric ruled (round 5 D2, the open questions of holds-exactly-open-01
-// on cr31-B): 1 keep exactness before kind; 2 a decimal made from a whole float keeps
-// scale 1; 3 the members that keep the value's class come first, across the rounds; 4
-// numeric text is ordered by the class of the value it parses as; 5 keep the
-// canonical-order tie-break; 6 confirmed, an integer stays an integer when union members
-// are named; 7 a bool is held exactly by a number of 1 or 0 (cast<[f32, u8]>(true) is u8
-// 1). JSON/TOML no longer follow the cast's pick: D6 refuses untagged unions there.
+// 2026-10-30 claude: Built Eric's option (b): an integer member holds a float or a
+// decimal, value or text, only where no real member holds it exactly. holds_exactly holds
+// a float's text by an integer again; a union's pick among its exact readings (Choice)
+// takes the first unless it reads a real as an integer and a later reading keeps every
+// real real; a primitive set picks the same way among its bits; RealReads counts at the
+// leaves (through the union memo) so a union of composites is judged per leaf. Probes
+// now: value_vs_text decimal/decimal and f32/f32; cast_cross [i64, datetime] and [i64,
+// duration] "3.0" are i64 3, "1e2" f64 100; parse_vs_cast arrays [f32:3.0, f32:4.5].
+// Pins, all failing on main's rule: lang::types::{cast_float_value_and_text_read_alike,
+// cast_whole_float_without_a_real_member, cast_float_elements_read_as_the_scalar,
+// cast_union_prefers_exact_composite},
+// lib_tests::json::json_whole_floats_read_back_beside_an_integer_tuple.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
-/// held exactly by 3.5 and not by 3, and a float's or a decimal's text
-/// (`"3.0"`, as a whole float prints) by no integer.
+/// held exactly by 3.5 and not by 3.
 fn holds_exactly(v: &Value, c: &Value) -> bool {
     match v {
         Value::String(s) => match s.trim().parse::<Value>() {
             Ok(Value::String(_)) | Err(_) => true,
-            Ok(p) if Typ::get(&p).is_real() && Typ::get(c).is_integer() => false,
             Ok(p) => holds_exactly(&p, c),
         },
         v => convert(c.clone(), Typ::get(v)).as_ref() == Some(v),
+    }
+}
+
+/// Whether `v` is a float or a decimal, or text that parses as one.
+fn reads_as_real(v: &Value) -> bool {
+    match v {
+        Value::String(s) => {
+            s.trim().parse::<Value>().is_ok_and(|p| Typ::get(&p).is_real())
+        }
+        v => Typ::get(v).is_real(),
     }
 }
 

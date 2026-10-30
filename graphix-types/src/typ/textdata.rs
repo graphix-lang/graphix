@@ -2,7 +2,7 @@
 //! TOML value could be written by. A reader picks one member of a union
 //! for a value; where two could have written it, a value written as one
 //! may read back as the other (`[u8, i64]`, `[string, datetime]` in JSON,
-//! `[f32, i64]` over a whole float, `[Array<string>, Array<i64>]` over
+//! `[f32, i64]` over an f32's fraction, `[Array<string>, Array<i64>]` over
 //! `[]`).
 
 use crate::{
@@ -34,9 +34,10 @@ enum Shape {
     Int,
     /// A float an f64 member reads back as itself.
     F64,
-    /// A float an integer member takes when it is whole and no f64 member
-    /// is there to take it (an f32; a duration, which JSON writes as its
-    /// seconds): a union reads a number into its own class first.
+    /// A float an integer member may take: a duration, which JSON writes as
+    /// its seconds, whole where no real member holds it, and an f32, whose
+    /// shortest text (`0.1`) the f32 itself holds only rounded, so the
+    /// integer takes it with the fraction dropped.
     Float,
     /// Any number, integral or not (a decimal written exactly).
     Number,

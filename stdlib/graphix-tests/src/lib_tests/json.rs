@@ -544,6 +544,22 @@ run!(
     prints("[true, true, true]")
 );
 
+// An array of whole floats reads back as itself beside a tuple of
+// integers its length: the tuple would read each float as an integer.
+run!(
+    json_whole_floats_read_back_beside_an_integer_tuple,
+    r#"{
+    type U = [(i64, i64), Array<f64>];
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let a: U = [1.0, 2.0];
+    let t: U = (1, 2);
+    let ra: Result<U, E> = json::read(json::write_str(a)$);
+    let rt: Result<U, E> = json::read(json::write_str(t)$);
+    (ra$ == a, rt$ == t)
+}"#,
+    prints("[true, true]")
+);
+
 run!(colliding_pair_keys_are_refused, r#"{
     let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
     select json::write_str({keys: m}) {

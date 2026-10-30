@@ -716,8 +716,9 @@ written as one could read back as the other. Each member is read as the
 data it writes (ints and f64 apart; JSON writes a datetime and a
 variant's tag as strings, a duration as a float and a decimal as an exact
 number; TOML has no null and a native datetime; a union reads a number
-into its own class first, so an integer member takes a whole float that
-an f32 or a JSON duration wrote, and only an f64 member keeps it), composites as arrays (an
+into its own class first, so an integer member takes a whole float a
+JSON duration wrote, which no real member holds, and, dropping the
+fraction, an f32's shortest text, which no member holds exactly), composites as arrays (an
 object reads as its sorted key/value pairs, a struct takes exactly its
 fields less the nullable ones, any-length arrays share the empty array),
 and two members overlap where some finite value is written by one and
