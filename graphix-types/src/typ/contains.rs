@@ -3085,17 +3085,13 @@ impl Type {
         matches!(self, Self::Ref(tr) if env.trait_of_ref(tr).is_some())
     }
 
-    /// The one structural bound of an open cell (`'a: {a: i64, b: string}`):
-    /// every value the cell may hold is a value of it.
+    /// The one typed bound of an open cell (`'a: {a: i64, b: string}`,
+    /// `'a: [i64, {a: i64}]`): every value the cell may hold is a value
+    /// of it.
     pub fn open_bound(&self, env: &Env) -> Option<Self> {
         let Self::TVar(tv) = self else { return None };
-        let mut shapes = tv
-            .open_cell()?
-            .cell_constraints()
-            .into_iter()
-            .filter(|c| !c.is_predicate() && !c.is_trait_ref(env));
-        match (shapes.next(), shapes.next()) {
-            (Some(c), None) => Some(c),
+        match &tv.open_cell()?.typed_bounds(env)[..] {
+            [b] => Some(b.clone()),
             _ => None,
         }
     }

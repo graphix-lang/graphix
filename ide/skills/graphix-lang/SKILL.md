@@ -376,6 +376,9 @@ across a bottom cycle).
 - A written type test narrows its binds to the values reaching it:
   `Number as n` over `[i64, string]` gives `n: i64`; `Array<Number> as ns`
   over `Array<[i64, string]>` gives `ns: Array<i64>`.
+- A select over a declared variable covers its bound's members: under
+  `'a: [{a: i64, b: string}, i64]`, `{a, ..} => a` covers the struct only,
+  and an `i64 as n` arm (or a catch-all) must follow.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   Everything else is told apart: a string from a bare variant, an array

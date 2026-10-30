@@ -995,6 +995,21 @@ pub(super) fn emit_select_arms<R: Rt>(
     let sdisc = scrut.disc();
     let miss_bl = cx.b.create_block();
     let n = sel.arms.len();
+    // an arm no value of this scrutinee passes is never taken, and its
+    // pattern need not fit the scrutinee's layout: an instance's scrutinee
+    // may be one member of a declared variable's bound
+    let live: SmallVec<[bool; 8]> = sel
+        .arms
+        .iter()
+        .map(|(pat, _)| {
+            resolve_node_typ(cx.ctx, &pat.type_predicate)
+                .could_pass(cx.ctx.type_env, scrut_typ)
+                .unwrap_or(true)
+        })
+        .collect();
+    let Some(last) = live.iter().rposition(|l| *l) else {
+        bail!("emit_clif: no select arm can match {scrut_typ}")
+    };
     // Prologue guard values dominate the arm chain. Bind masks carry
     // reach and matching; only consulted guards contribute to `acc`.
     let mut guard_vals: SmallVec<[Option<GuardPlanes>; 8]> = smallvec::smallvec![None; n];
@@ -1012,6 +1027,9 @@ pub(super) fn emit_select_arms<R: Rt>(
     cx.b.def_var(open, reaches_first);
     for (i, (pat, body)) in sel.arms.iter().enumerate().take(impure.map_or(0, |l| l + 1))
     {
+        if !live[i] {
+            continue;
+        }
         let reached = cx.b.use_var(open);
         let Some(g) = &pat.guard else {
             // an unguarded arm claims by its condition; its binds are the
@@ -1088,7 +1106,10 @@ pub(super) fn emit_select_arms<R: Rt>(
     cx.b.seal_block(chain_bl);
     let mut undet_bl: Option<Block> = None;
     for (i, (pat, body)) in sel.arms.iter().enumerate() {
-        let is_last = i == n - 1;
+        if !live[i] {
+            continue;
+        }
+        let is_last = i == last;
         let has_guard = pat.guard.is_some();
         // The final-arm miss trap is sound only when a miss is
         // impossible; typecheck forbids a guarded final arm.
@@ -2212,6 +2233,15 @@ type AltMatch = (Option<ClifValue>, SmallVec<[SelectArmBind; 8]>);
 /// Alternative `k`'s [`AltMatch`]: it tests against its own member of
 /// the arm's inferred Set (`alt_types`); a non-Set predicate applies
 /// whole.
+// CR claude for claude: [perf/low] An or-alternative no value of an instance's
+// scrutinee passes is emitted against the scrutinee's layout, and the region
+// de-fuses: `'a: [(i64, string), (i64, f64, bool)] |x: 'a| -> i64 select x { (a, _) |
+// (a, _, _) => a }` gives "tuple pattern over non-tuple scrutinee (i64, f64, bool)"
+// in each instance (GXDBG_INSTANCE_FUSION=1), though the answer is right.
+// emit_select_arms skips a whole arm no value passes (`Type::could_pass`); the
+// or-chain needs the same for an alternative: an AltMatch that binds nothing, and
+// a done block whose layout comes from the live alternatives.
+// (or-alt-instance-defuse-01)
 fn emit_alt_match(
     cx: &mut BodyCx,
     alts: &[StructPatternNode],

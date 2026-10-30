@@ -581,6 +581,10 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 struct Reach {
     /// What still reaches the next arm.
     atype: Type,
+    /// Whose members the slice ladders and the literal pool count: an
+    /// open cell's one typed bound, whose values it holds, else the
+    /// scrutinee.
+    members_of: Type,
     ladders: SmallVec<[Ladder; 4]>,
     pool: LiteralPool,
     bools: (bool, bool),
@@ -623,17 +627,11 @@ impl Reach {
             let _ = itype.contains(env, scrut);
         }
         let atype = scrut.normalize();
-        // an open cell's slices count against its typed bound
-        let bounds = match &atype {
-            Type::TVar(tv) => tv.open_cell().map(|c| c.typed_bounds(env)),
-            _ => None,
-        };
-        let ladders = match bounds.as_deref() {
-            Some([b]) => Ladder::of(env, b)?,
-            _ => Ladder::of(env, &atype)?,
-        };
+        let members_of = atype.open_bound(env).unwrap_or_else(|| atype.clone());
+        let ladders = Ladder::of(env, &members_of)?;
         Ok(Self {
             atype,
+            members_of,
             ladders,
             pool: LiteralPool::default(),
             bools: (false, false),
@@ -663,7 +661,7 @@ impl Reach {
         checking: bool,
     ) -> Result<()> {
         let empty = Type::Primitive(BitFlags::empty());
-        // CR claude for claude: [readability/low] A structure arm with no type test
+        // XCR claude for claude: [readability/low] A structure arm with no type test
         // over a union holding an open member (`(s, n)` over [(string, i64), 'a]) is
         // counted as covering the whole scrutinee, so a following `_ => 0` is refused
         // here as "unreachable arm". That arm is reachable, since 'a may be anything.
@@ -684,6 +682,13 @@ impl Reach {
         // arm at _ => 0. Not attempted again in this batch; the earlier note's
         // diagnosis stands (the first arm's narrowing binds the open member before
         // coverage runs).
+        // 2026-10-29 claude: Fixed by bounded-cover-01's change:
+        // PatternNode::matches_every holds a declared variable rigid, so (s, n) over
+        // [(string, i64), 'a] no longer reads as a wildcard and the refusal is the
+        // arm's untold test at (s, n) ('may share (string, i64)'s runtime form:
+        // annotate it'); {a} => a, _ => 0 over [{a: i64}, 'b] likewise. Pin:
+        // lang::select::structure_arm_over_a_declared_member_is_untold_not_a_wildcard
+        // (all four modes), which fails ('unreachable arm') without it.
         if checking && (self.wildcard || self.atype == empty) {
             bailat!(
                 site,
@@ -788,7 +793,7 @@ impl Reach {
                 }
             }
             let explicit = pat.explicit_type_predicate.then_some(&pat.type_predicate);
-            match self.pool.claim(env, scrut, sp, explicit)? {
+            match self.pool.claim(env, &self.members_of, sp, explicit)? {
                 Claim::Dead if checking => dead(
                     "every combination of heads it matches is covered by earlier arms",
                 )?,

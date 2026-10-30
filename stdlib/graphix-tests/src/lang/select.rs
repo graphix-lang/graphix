@@ -5195,3 +5195,144 @@ run!(
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::String(arcstr::literal!("y"))])
 );
+
+// A declared variable bounded by a union holds a value of any member: an arm
+// covers it only where it covers every member, and the arms' run-time tests
+// tell the members apart.
+run!(
+    partial_struct_pattern_over_a_union_bounded_variable_covers_one_member,
+    r#"{
+        let g = 'a: [{a: i64, b: string}, i64] |x: 'a| -> i64 select x { {a, ..} => a };
+        (g({a: 1, b: "x"}), g(5))
+    }"#,
+    refused("missing match cases");
+    FuseExpect::None
+);
+
+run!(
+    partial_struct_pattern_over_a_union_of_structs_bounded_variable,
+    r#"{
+        let g = 'a: [{a: i64, b: string}, {c: f64}] |x: 'a| -> i64 select x { {a, ..} => a };
+        (g({a: 1, b: "x"}), g({c: 1.0}))
+    }"#,
+    refused("missing match cases");
+    FuseExpect::None
+);
+
+run!(
+    struct_pattern_over_a_union_bounded_variable_covers_one_member,
+    r#"{
+        let g = 'a: [{a: i64, b: string}, i64] |x: 'a| -> i64 select x { {a, b} => a };
+        (g({a: 1, b: "x"}), g(5))
+    }"#,
+    refused("missing match cases");
+    FuseExpect::None
+);
+
+run!(
+    tuple_pattern_over_a_union_bounded_variable_covers_one_member,
+    r#"{
+        let g = 'a: [(i64, string), i64] |x: 'a| -> i64 select x { (a, b) => a };
+        (g((1, "x")), g(5))
+    }"#,
+    refused("missing match cases");
+    FuseExpect::None
+);
+
+run!(
+    struct_pattern_over_a_union_bounded_variable_of_two_structs,
+    r#"{
+        let g = 'a: [{a: i64, b: string}, {a: i64, c: f64}] |x: 'a| -> i64 select x { {a, b} => a };
+        (g({a: 1, b: "x"}), g({a: 5, c: 1.0}))
+    }"#,
+    refused("missing match cases");
+    FuseExpect::None
+);
+
+run!(
+    struct_patterns_tell_a_union_bound_members_apart,
+    r#"{
+        let g = 'a: [{a: i64, b: string}, {a: i64, c: f64}] |x: 'a| -> i64 select x {
+            {a, b} => a,
+            {a, c} => a + 10
+        };
+        let h = 'a: [{a: i64, b: string}, {c: f64}] |x: 'a| -> i64 select x {
+            {a, ..} => a,
+            {c} => 0
+        };
+        (g({a: 1, b: "x"}), g({a: 5, c: 1.0}), h({a: 2, b: "y"}), h({c: 1.0}))
+    }"#,
+    prints("[i64:1, i64:15, i64:2, i64:0]")
+);
+
+run!(
+    partial_struct_pattern_then_the_rest_of_a_union_bound,
+    r#"{
+        let g = 'a: [{a: i64, b: string}, i64] |x: 'a| -> i64 select x {
+            s@ {a, ..} => a,
+            n => 0
+        };
+        let h = 'a: [{a: i64, b: string}, i64] |x: 'a| -> i64 select x {
+            {a, ..} => a,
+            i64 as n => n
+        };
+        (g({a: 1, b: "x"}), g(5), h({a: 2, b: "y"}), h(7))
+    }"#,
+    prints("[i64:1, i64:0, i64:2, i64:7]")
+);
+
+// Over a declared variable the literal pool counts its bound's members.
+run!(
+    literal_pool_over_a_bounded_variable_counts_its_bound,
+    r#"{
+        let g = 'a: (bool, i64) |x: 'a| -> i64 select x { (true, n) => n, (false, n) => 0 - n };
+        let h = 'a: [(bool, i64), i64] |x: 'a| -> i64 select x {
+            (true, n) => n,
+            (false, n) => 0 - n,
+            i64 as n => n * 10
+        };
+        (g((true, 3)), g((false, 4)), h((true, 3)), h((false, 4)), h(5))
+    }"#,
+    prints("[i64:3, i64:-4, i64:3, i64:-4, i64:50]")
+);
+
+run!(
+    literal_pool_over_a_bounded_variable_misses_a_head,
+    r#"{
+        let g = 'a: [(bool, i64), i64] |x: 'a| -> i64 select x { (true, n) => n, i64 as n => n };
+        (g((true, 3)), g(5))
+    }"#,
+    refused("missing match cases");
+    FuseExpect::None
+);
+
+// An instance's scrutinee is its own member of the bound: an arm whose test
+// is another member of the same shape matches none of its values.
+run!(
+    type_tests_tell_apart_union_bound_members_of_one_shape,
+    r#"{
+        let g = 'a: [{a: i64, b: string}, {a: i64, b: f64}] |x: 'a| -> string select x {
+            {a: i64, b: string} as {a, b} => b,
+            {a: i64, b: f64} as {a, b} => "f[b]"
+        };
+        let h = 'a: [(i64, string), (i64, f64)] |x: 'a| -> string select x {
+            (i64, string) as (a, b) => b,
+            (i64, f64) as (a, b) => "f[b]"
+        };
+        (g({a: 1, b: "x"}), g({a: 2, b: 2.5}), h((1, "y")), h((2, 3.5)))
+    }"#,
+    prints(r#"["x", "f2.5", "y", "f3.5"]"#)
+);
+
+// A structure arm over a union holding a declared variable does not cover
+// the variable, which may be any type: the arm after it is reachable, and
+// the refusal is the arm's untold test.
+run!(
+    structure_arm_over_a_declared_member_is_untold_not_a_wildcard,
+    r#"{
+        let g = |x: [(string, i64), 'a]| select x { (s, n) => n + str::len(s), _ => 0 };
+        g(`A(41))
+    }"#,
+    refused("may share (string, i64)'s runtime form");
+    FuseExpect::None
+);

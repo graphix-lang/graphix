@@ -408,6 +408,23 @@ impl Type {
         self.could_match_int(env, &mut MatchHist::new(), t)
     }
 
+    /// Whether a value of `t` may pass the run-time test (`is_a`) of the
+    /// predicate `self`, where a ⊥ part, a cell nothing decided, passes
+    /// any value.
+    pub fn could_pass(&self, env: &Env, t: &Self) -> Result<bool> {
+        fn bottom_as_any(t: &Type) -> Option<Type> {
+            ensure_sufficient(|| match t {
+                Type::Bottom => Some(Type::Any),
+                Type::TVar(tv) => tv.binding().map(|b| bottom_as_any(&b).unwrap_or(b)),
+                t => t.cow_children(&mut bottom_as_any),
+            })
+        }
+        match bottom_as_any(self) {
+            Some(p) => p.could_match(env, t),
+            None => self.could_match(env, t),
+        }
+    }
+
     pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<()> {
         let (mut pairs, mut hist) = (SigPairs::default(), RefHist::new());
         self.sig_matches_int(env, impl_type, &mut pairs, &mut hist)?;

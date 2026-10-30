@@ -1237,12 +1237,13 @@ cycle, across workers; the compiler never pins threads.
   (payload irrefutable) and or-patterns of them pool per position
   inside composite patterns, keyed by path (a partial struct pattern
   against the one member holding its fields, the rest any value; an open
-  scrutinee's one structural bound stands for its members), and an arm under a type
+  scrutinee's members are its structural bound's), and an arm under a type
   test pools only a member the test holds; a group whose combinations of
   heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
   positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over
-  a scrutinee its shape covers; set coverage distributes over product
+  a scrutinee its shape covers (a declared variable held rigid: every
+  member of its bound); set coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
   same scrutinee ref claims nothing on re-entry. Refutability is judged
   against a type (`StructPatternNode::covers`): a constructor pattern

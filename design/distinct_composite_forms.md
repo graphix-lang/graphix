@@ -119,7 +119,9 @@ element, and an untyped array to a list likewise.
 
 **Types.** `rep_collision` (`typ/cast.rs`) compares kinds first, then arity,
 names, tag and parts, and `rep_overlaps` decides the heads its arms do not; `MemberFacts` keys the shallow discriminant by
-kind. What still shares a form: two references (under a select arm; `==`
+kind, which an arm takes only where one scrutinee member has its kind and the
+arm's predicate can match that member (an instance's scrutinee is its own
+member of a declared variable's bound). What still shares a form: two references (under a select arm; `==`
 compares them by what they name), two function types, a Rust-backed
 abstract at two instantiations. `Discernible` therefore refuses only
 function unions and the open cells beside them. The must-reject family 10

@@ -1537,9 +1537,9 @@ impl Type {
     /// the other members of `scrutinee`. `None` keeps the full walk
     /// (members not enumerable, two share a shape, a union below the top
     /// whose members share one, which a nested structure test cannot tell
-    /// apart, or no payload). Sound only for inferred predicates, which
-    /// typecheck unified against their member; explicit `x as T` stays
-    /// strict.
+    /// apart, or no payload, or the one member of a shape is one `self`
+    /// cannot match). Sound only for inferred predicates, which typecheck
+    /// unified against their member; explicit `x as T` stays strict.
     pub fn shallow_discriminant(&self, env: &Env, scrutinee: &Type) -> Option<Type> {
         ShallowScrutinee::new(scrutinee.clone()).discriminant(env, self)
     }
@@ -1550,7 +1550,7 @@ impl Type {
 pub struct ShallowScrutinee {
     typ: Type,
     members: OnceLock<Option<SmallVec<[Type; 8]>>>,
-    facts: OnceLock<Option<Box<[MemberFacts]>>>,
+    facts: OnceLock<Option<Box<[(Type, MemberFacts)]>>>,
 }
 
 impl ShallowScrutinee {
@@ -1568,7 +1568,7 @@ impl ShallowScrutinee {
             .as_deref()
     }
 
-    fn facts(&self, env: &Env) -> Option<&[MemberFacts]> {
+    fn facts(&self, env: &Env) -> Option<&[(Type, MemberFacts)]> {
         self.facts
             .get_or_init(|| {
                 let mut scrut: LPooled<Vec<Type>> = LPooled::take();
@@ -1589,7 +1589,7 @@ impl ShallowScrutinee {
                 if scrut.iter().any(|m| below(m)) {
                     return None;
                 }
-                Some(scrut.iter().map(member_facts).collect())
+                Some(scrut.iter().map(|m| (m.clone(), member_facts(m))).collect())
             })
             .as_deref()
     }
@@ -1609,19 +1609,25 @@ impl ShallowScrutinee {
                 out.push(p.clone());
                 continue;
             }
-            if let Some(pa) = &pf.arr {
-                let n = sfacts
-                    .iter()
-                    .filter(|mf| mf.arr.as_ref().is_some_and(|ma| arr_overlap(pa, ma)))
-                    .count();
-                if n != 1 {
-                    return None;
+            // the shape decides `p` only where one member has it and `p` can
+            // match that member (an instance's scrutinee may be another
+            // member of `p`'s shape)
+            let sole = |shaped: &dyn Fn(&MemberFacts) -> bool| {
+                let mut it = sfacts.iter().filter(|(_, mf)| shaped(mf));
+                match (it.next(), it.next()) {
+                    (Some((m, _)), None) => p.could_pass(env, m).unwrap_or(false),
+                    _ => false,
                 }
-            }
-            if pf.map && sfacts.iter().filter(|mf| mf.map).count() != 1 {
+            };
+            if let Some(pa) = &pf.arr
+                && !sole(&|mf| mf.arr.as_ref().is_some_and(|ma| arr_overlap(pa, ma)))
+            {
                 return None;
             }
-            if pf.error && sfacts.iter().filter(|mf| mf.error).count() != 1 {
+            if pf.map && !sole(&|mf| mf.map) {
+                return None;
+            }
+            if pf.error && !sole(&|mf| mf.error) {
                 return None;
             }
             out.push(shallowify(p));
