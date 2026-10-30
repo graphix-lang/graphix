@@ -1130,10 +1130,15 @@ fn mark_recursion<R: Rt>(
         );
         edge.site.set_recursive_edge(recursive);
     }
+    // a blocker reads its callees' self-calls (`lowering::site_memory`),
+    // so every instance's is marked before any blocker is judged
+    for (instance, g) in graph.instances.iter() {
+        let self_bind = self_info.get(instance).copied().flatten();
+        g.set_self_call(self_bind.map(|bind| SelfCall { bind, tail_loop: false }));
+    }
     for (instance, g) in graph.instances.iter() {
         let component = components.get(instance).map(|(_, c)| c).unwrap_or_default();
         let self_bind = self_info.get(instance).copied().flatten();
-        g.set_self_call(self_bind.map(|bind| SelfCall { bind, tail_loop: false }));
         let tail_calls = TailSelfCalls::collect(g.body(), *instance);
         let tail = component.size == 1
             && !tail_calls.sites.is_empty()
@@ -1173,6 +1178,19 @@ fn mark_recursion<R: Rt>(
             if summary == RecursionKind::TailCalls
                 && let Some(b) = blocker
             {
+                // CR claude for claude: [bug/low] The reason a refused
+                // `#[tail_recursive]` names is that of the first instance this
+                // loop judges, in `graph.instances`' hash order, so it varies
+                // from run to run when two instances of one definition are
+                // blocked for different reasons: `loop(|x| { println("p"); x },
+                // 3, 0)` beside `loop(sum, 3, 0)`, over `let rec loop = |f: fn(x:
+                // i64) -> i64, n: i64, acc: i64| -> i64 select n { 0 => acc, _ =>
+                // loop(f, n - 1, acc + f(n)) }` and a non-tail `sum`, named
+                // `f(n)`'s Io in 4 of 8 runs (`GRAPHIX_PAR=force graphix
+                // --no-cache --no-fusion`) and per-call memory in the others. The
+                // verdict holds; keep the reason by a fixed order (a named site
+                // before `Memory`, then its position) instead of `get_or_insert`.
+                // (tail-reason-01)
                 d.no_loop.lock().get_or_insert(b);
             }
         }

@@ -401,6 +401,46 @@ const TAIL_RECURSIVE_MUTUAL_INSTANCE: &str = r#"
 
 run!(tail_recursive_mutual_instance, TAIL_RECURSIVE_MUTUAL_INSTANCE, refused("every recursive call must be in tail position"); FuseExpect::None; build_only);
 
+// A callee whose own recursion is not a tail call holds per-call memory,
+// whichever of the two instances the analysis judges first.
+const TAIL_RECURSIVE_NON_TAIL_CALLEE: &str = r#"
+{
+  let rec sum = |x: i64| -> i64 select x { 0 => 0, _ => x + sum(x - 1) };
+  #[tail_recursive]
+  let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, acc + sum(n)) };
+  loop(3, 0)
+}
+"#;
+
+run!(tail_recursive_non_tail_callee, TAIL_RECURSIVE_NON_TAIL_CALLEE, refused("no loop is built: the body holds per-call memory"); FuseExpect::None; build_only);
+
+// So does a recursive closure the body defines, in each instance.
+const TAIL_RECURSIVE_INNER_REC: &str = r#"
+{
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64 select n {
+    0 => acc,
+    _ => loop(f, { let rec g = |x: i64| { let t = select x { 0 => n, _ => g(x - 1) }; t }; g(3) } - 1, acc + f(n))
+  };
+  (loop(|x| x, 3, 0), loop(|x| x * 2, 3, 0))
+}
+"#;
+
+run!(tail_recursive_inner_rec, TAIL_RECURSIVE_INNER_REC, refused("no loop is built: the body holds per-call memory"); FuseExpect::None; build_only);
+
+// Without the assertion the same loop runs in every mode.
+const INNER_REC_UNASSERTED: &str = r#"
+{
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64 select n {
+    0 => acc,
+    _ => loop(f, { let rec g = |x: i64| { let t = select x { 0 => n, _ => g(x - 1) }; t }; g(3) } - 1, acc + f(n))
+  };
+  (loop(|x| x, 3, 0), loop(|x| x * 2, 3, 0))
+}
+"#;
+
+run!(inner_rec_unasserted, INNER_REC_UNASSERTED, prints("[i64:6, i64:12]"));
+
 // A lambda literal called in place is an instance like any other: its
 // async body makes the enclosing function async.
 const SYNC_ON_ASYNC_LITERAL_CALL: &str = r#"
