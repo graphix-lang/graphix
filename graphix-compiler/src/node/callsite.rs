@@ -1499,7 +1499,7 @@ enum Kept {
     /// No exit has passed it since the shrink.
     Asleep,
     /// `levels` deep at the first exit past it; `exits` exits have shed
-    /// the deepest `levels * exits / 100` of them.
+    /// the deepest `shed_levels(levels, exits)` of them.
     Shedding { levels: u32, exits: u8 },
 }
 
@@ -1528,6 +1528,14 @@ fn kept_levels<R: Rt>(f: &mut dyn Apply<R>) -> u32 {
         })
     });
     below + 1
+}
+
+/// How many of `levels` kept levels `exits` exits have shed, deepest
+/// first: a level an exit at least, 1% of them an exit where that is more,
+/// so all of them by the hundredth exit and `exits` never passes 100.
+fn shed_levels(levels: u32, exits: u8) -> u32 {
+    let paced = u64::from(levels) * u64::from(exits) / 100;
+    paced.max(u64::from(exits)).min(u64::from(levels)) as u32
 }
 
 /// Delete every callee more than `keep` levels below `f`, `f` itself the
@@ -3574,9 +3582,9 @@ impl<R: Rt> CallSite<R> {
     }
 
     /// An exit of the recursion past this edge's kept callee: the
-    /// deepest `levels * exits / 100` of the `levels` it held at the first
-    /// exit are deleted, the callee itself at the hundredth exit. Whether
-    /// anything stays kept.
+    /// deepest `shed_levels(levels, exits)` of the `levels` it held at the
+    /// first exit are deleted, the callee itself once that is all of them.
+    /// Whether anything stays kept.
     fn shed(&mut self, ctx: &mut ExecCtx<'_, R>) -> bool {
         let (levels, exits) = match (self.kept, self.callee.apply_mut()) {
             (Kept::Nothing, _) => return false,
@@ -3587,8 +3595,7 @@ impl<R: Rt> CallSite<R> {
             (Kept::Asleep, Some(f)) => (kept_levels(f), 1),
             (Kept::Shedding { levels, exits }, Some(_)) => (levels, exits + 1),
         };
-        let shed = |exits: u8| (u64::from(levels) * u64::from(exits) / 100) as u32;
-        let keep = levels - shed(exits);
+        let keep = levels - shed_levels(levels, exits);
         if keep == 0 {
             if let Some(mut f) = self.callee.take_apply() {
                 f.delete(ctx)
@@ -3596,9 +3603,7 @@ impl<R: Rt> CallSite<R> {
             self.kept = Kept::Nothing;
             return false;
         }
-        if shed(exits) > shed(exits - 1)
-            && let Some(f) = self.callee.apply_mut()
-        {
+        if let Some(f) = self.callee.apply_mut() {
             cut_below(ctx, f, keep)
         }
         self.kept = Kept::Shedding { levels, exits };

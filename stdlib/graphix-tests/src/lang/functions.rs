@@ -1307,9 +1307,15 @@ async fn rec_pure_depth_swing_binds_once(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+/// The levels of `levels` a site kept that are left after `exits` exits:
+/// each exit sheds the deepest level at least, and 1% of them where that is
+/// more.
+fn kept_after(levels: u64, exits: u64) -> u64 {
+    levels - (levels * exits / 100).max(exits).min(levels)
+}
+
 /// The activations kept after `exits` exits under a site that kept a fib(m)
-/// tree, `levels(m)` deep: `levels * exits / 100` of its deepest levels are
-/// shed, all of them at the hundredth.
+/// tree, `levels(m)` deep, its levels shed as [`kept_after`] says.
 fn fib_kept(m: i64, exits: u64) -> u64 {
     fn levels(m: i64) -> u64 {
         if m < 2 { 1 } else { 1 + levels(m - 1) }
@@ -1321,25 +1327,31 @@ fn fib_kept(m: i64, exits: u64) -> u64 {
             _ => 1 + cells(m - 1, depth - 1) + cells(m - 2, depth - 1),
         }
     }
-    let levels = levels(m);
-    cells(m, levels - levels * exits.min(100) / 100)
+    cells(m, kept_after(levels(m), exits))
 }
 
 /// A transient deep recursion is shed after it: each exit through a
-/// shallow depth deletes the deepest 1% of the levels a site kept, all of
-/// them after 100 exits; a cycle the recursion does not run is no exit. Linear 200 then 5 keeps 195 levels at one site;
-/// fib(12) then fib(4) keeps two subtrees at each of fib(4)'s leaves,
-/// fib(8) and fib(7) under a leaf of 1, fib(7) and fib(6) under one of 0.
+/// shallow depth deletes the deepest level a site kept, or 1% of them where
+/// that is more, all of them after 100 exits; a cycle the recursion does
+/// not run is no exit. Linear 200 then 5 keeps 195 levels at one site, 50
+/// then 5 keeps 45, one shed an exit; fib(12) then fib(4) keeps two
+/// subtrees at each of fib(4)'s leaves, fib(8) and fib(7) under a leaf of
+/// 1, fib(7) and fib(6) under one of 0.
 async fn rec_transient_depth_is_shed(mode: Mode) -> Result<()> {
-    let linear_kept = |exits: u64| 195 - 195 * exits.min(100) / 100;
+    let long = |exits: u64| kept_after(195, exits);
+    let short = |exits: u64| kept_after(45, exits);
     let fib_leaves = |exits: u64| {
         3 * (fib_kept(8, exits) + fib_kept(7, exits))
             + 2 * (fib_kept(7, exits) + fib_kept(6, exits))
     };
-    let cases: [(&str, i64, i64, &dyn Fn(u64) -> u64, fn(i64) -> i64); 2] =
-        [(LINEAR, 200, 5, &linear_kept, linear), (FIB, 12, 4, &fib_leaves, fib)];
-    for (def, deep, shallow, kept, eval) in cases {
-        for exits in [1, 50, 99, 100, 150] {
+    const PAST_100: &[u64] = &[1, 50, 99, 100, 150];
+    let cases: [(&str, i64, i64, &[u64], &dyn Fn(u64) -> u64, fn(i64) -> i64); 3] = [
+        (LINEAR, 200, 5, PAST_100, &long, linear),
+        (LINEAR, 50, 5, &[1, 2, 20, 44, 45], &short, linear),
+        (FIB, 12, 4, PAST_100, &fib_leaves, fib),
+    ];
+    for (def, deep, shallow, all_exits, kept, eval) in cases {
+        for &exits in all_exits {
             let mut ts = vec![deep];
             ts.extend(std::iter::repeat_n([shallow, 0], exits as usize + 1).flatten());
             let (values, live, _) = run_rec(def, DIRECT, &ts, mode).await?;
@@ -1412,7 +1424,7 @@ async fn rec_partly_reached_chain_is_shed(mode: Mode) -> Result<()> {
                 let ts = shape(deep, shallow, *exits);
                 let (values, live, _) = run_rec(def, call, &ts, mode).await?;
                 assert_eq!(values, ts.iter().map(|n| eval(*n)).collect::<Vec<_>>());
-                let kept = levels - levels * (*exits as u64).min(100) / 100;
+                let kept = kept_after(levels, *exits as u64);
                 assert_eq!(live, base + kept, "{def} by {call}: {ts:?}");
             }
         }

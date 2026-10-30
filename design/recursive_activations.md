@@ -180,8 +180,10 @@ activation a run reborns short of a kept chain's end keeps the rest and
 sheds it at its own exits. At its first exit the site measures what it
 keeps in levels (its callee and the deepest chain of recursive edges
 below it, `kept_levels`); at its k-th it deletes every callee more than `levels -
-levels * k / 100` levels down (`cut_below`), deepest first, and at the
-hundredth the callee itself (`CallSite::shed`). A linear recursion's
+max(k, levels * k / 100)` levels down (`shed_levels`, `cut_below`),
+deepest first, and the callee itself once that leaves none: at the
+`levels`-th exit when it kept fewer than 100 levels, at the hundredth
+otherwise (`CallSite::shed`). A linear recursion's
 levels are its activations; a tree's level holds every activation at
 that depth. A run that reaches the edge again rebirths what is left and
 restarts the count; a depth that swings every cycle sees no exit at the
@@ -192,7 +194,8 @@ again keeps what it kept, asleep, until its caller deletes it. Pins:
 250 cycles), `rec_reborn_depth_reads_its_capture`,
 `rec_pure_depth_swing_binds_once` (a swinging linear recursion and fib
 bind what a fixed depth does), `rec_transient_depth_is_shed` (the live
-activations after 1, 50, 99, 100 and 150 exits, linear and fib),
+activations after 1, 50, 99, 100 and 150 exits, linear and fib, and a
+45-level chain losing a level an exit),
 `rec_partly_reached_chain_is_shed` (a chain re-reached part of the way,
 directly, swinging and from a seq step's runs).
 
