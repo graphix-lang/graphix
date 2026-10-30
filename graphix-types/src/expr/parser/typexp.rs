@@ -12,7 +12,9 @@ use crate::{
         Comments, Eol, ItemComments, ModPath, Name, TypeDefBody, TypeDefExpr, TypeNote,
         TypeNotes, WrittenAt, WrittenPath, get_origin, noted_items,
     },
-    typ::{Bound, FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
+    typ::{
+        Bound, FnArgKind, FnArgType, FnType, TVar, Type, TypeRef, check_bounds_acyclic,
+    },
 };
 use arcstr::{ArcStr, literal};
 use combine::{
@@ -279,11 +281,16 @@ where
                 explicit_throws,
                 ..Default::default()
             };
+            let refuse = |e: anyhow::Error, why| {
+                super::grow::note_reason(end, None, format_compact!("{e}"));
+                because(why).left()
+            };
+            if let Err(e) = check_bounds_acyclic(&constraints) {
+                return refuse(e, "a quantifier whose bound reaches it");
+            }
             let ft = ft.declaring(&constraints);
             if let Err(e) = ft.check_quantifiers_held() {
-                super::grow::note_reason(end, None, format_compact!("{e}"));
-                return because("a declared quantifier the signature does not hold")
-                    .left();
+                return refuse(e, "a declared quantifier the signature does not hold");
             }
             value(ft).right()
         })

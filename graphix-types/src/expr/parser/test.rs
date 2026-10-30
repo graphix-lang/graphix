@@ -2500,6 +2500,77 @@ fn a_fn_type_holds_each_quantifier_it_declares() {
     }
 }
 
+/// A bound that reaches its own variable is refused where it is written:
+/// directly, under a constructor or through another variable's bound. A
+/// bound naming another variable, or a nested fn type's own, is not.
+#[test]
+fn a_bound_reaching_its_own_variable_is_refused() {
+    const NAMES: &str = "'a's bound names 'a: a bound may not reach its own variable";
+    const THROUGH: &str = "'a's bound reaches 'a through 'b";
+    for (src, why) in [
+        ("type F = fn<'a: 'a>(x: 'a) -> 'a", NAMES),
+        ("type F = fn<'a: Array<'a>>(x: 'a) -> 'a", NAMES),
+        ("type F = fn<'a: [i64, Array<'a>]>(x: 'a) -> 'a", NAMES),
+        ("type F = fn<'a: Number + fn(x: 'a) -> i64>(x: 'a) -> i64", NAMES),
+        ("type F = fn(x: i64) -> fn<'a: 'a>(a: _) -> _ throws 'a", NAMES),
+        ("type F = fn<'a: 'b, 'b: 'a>(x: 'a, y: 'b) -> 'a", THROUGH),
+        ("type F = fn<'a: Array<'b>, 'b: [i64, ('a, 'b)]>(x: 'a) -> i64", THROUGH),
+        ("let f: fn<'a: (i64, 'a)>(x: 'a) -> i64 = g", NAMES),
+    ] {
+        let msg = format!("{:#}", parse_one(src).unwrap_err());
+        assert!(msg.contains(why), "{src}: {msg}");
+        assert!(msg.contains("`type T = [i64, Array<T>]`, `'a: T`"), "{src}: {msg}");
+    }
+    for src in [
+        "trait A { val a: fn(self) -> fn<'a: 'a>(a: _) -> _ throws 'a }",
+        "val f: fn(a: `A(fn<'a: Array<'a>>(a: _) -> _ throws 'a)) -> _",
+    ] {
+        let msg = format!("{:#}", parse_sig(Origin::unspecified(src)).unwrap_err());
+        assert!(msg.contains(NAMES), "{src}: {msg}");
+    }
+    for src in [
+        "type F = fn<'a: Array<'b>, 'b: Array<'c>, 'c: Int>(x: 'a) -> i64",
+        "type F = fn<'a: fn<'a: Int>(x: 'a) -> 'a>(x: 'a) -> i64",
+        "type F = fn<'a: [Any, 'a]>(x: 'a) -> 'a",
+    ] {
+        parse_one(src).unwrap_or_else(|e| panic!("{src}: {e:#}"));
+    }
+}
+
+/// A variable bounded by two others keeps both bounds, in print and in
+/// comparison, though equality is blind to an open variable's name.
+#[test]
+fn a_bound_naming_two_variables_keeps_both() {
+    for src in [
+        "type F = fn<'a: 'b + 'c>(x: 'a, y: 'b, z: 'c) -> i64",
+        "type F = fn<'a: Array<'b> + Array<'c>>(x: 'a, y: 'b, z: 'c) -> i64",
+    ] {
+        assert_eq!(parse_one(src).unwrap().to_string(), src);
+    }
+    let both = parse_type("fn<'a: 'b + 'c>(x: 'a, y: 'b, z: 'c) -> i64").unwrap();
+    let one = parse_type("fn<'a: 'b>(x: 'a, y: 'b, z: 'c) -> i64").unwrap();
+    assert_ne!(both, one);
+}
+
+/// A refusal reads as its reason: the token after the refused fn type is
+/// not reported as unexpected.
+#[test]
+fn a_refused_fn_type_reads_as_its_reason() {
+    let msg = parse_program("type F = fn<'a: Number>(x: i64) -> i64;\n0");
+    assert!(!msg.contains("Unexpected"), "{msg}");
+    assert!(
+        msg.contains(
+            "'a is declared but the signature does not hold it: write it on a \
+             parameter, the return type, the throws or the bound of a quantifier \
+             the signature holds, or remove it"
+        ),
+        "{msg}"
+    );
+    let msg = parse_program("type F = fn<'a: 'a>(x: 'a) -> 'a;\n0");
+    assert!(!msg.contains("Unexpected"), "{msg}");
+    assert!(msg.contains("'a's bound names 'a"), "{msg}");
+}
+
 #[test]
 fn an_impl_records_where_each_trait_segment_was_written() {
     let e = parse_one("impl super::m::Show for i64").unwrap();

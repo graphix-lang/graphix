@@ -2043,12 +2043,15 @@ where
             .map(|(r, _)| r)
             .map_err(|mut e| {
                 grow::note_error_pos(e.position);
-                // a whitespace token is never what went wrong
-                let blank = |err: &easy::Error<char, &str>| {
-                    matches!(err, easy::Error::Unexpected(easy::Info::Token(c)) if c.is_whitespace())
+                // a whitespace token is never what went wrong, and a
+                // refusal's reason says what did
+                let explained = grow::reason_explains(e.position);
+                let noise = |err: &easy::Error<char, &str>| {
+                    matches!(err, easy::Error::Unexpected(easy::Info::Token(c))
+                        if explained || c.is_whitespace())
                 };
-                if e.errors.iter().any(|err| !blank(err)) {
-                    e.errors.retain(|err| !blank(err));
+                if e.errors.iter().any(|err| !noise(err)) {
+                    e.errors.retain(|err| !noise(err));
                 }
                 e
             })

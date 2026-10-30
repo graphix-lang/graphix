@@ -29,7 +29,7 @@ use crate::{
     reference::{Captures, Lives},
     stack::ensure_sufficient,
     typ::{
-        FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type,
+        FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type, check_bounds_acyclic,
         tvar::{AtLevel, InTask, Level, RigidGate, TaskId},
     },
     wrap,
@@ -1952,6 +1952,7 @@ impl Lambda {
                 Ok((tv, tc))
             })
             .collect::<Result<_>>()?;
+        check_bounds_acyclic(&constraints)?;
         constraints.extend(trait_quantifiers.drain(..));
         let body = DefBody::of(&l.body);
         let builtin = match &l.body {

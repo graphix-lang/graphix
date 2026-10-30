@@ -333,7 +333,7 @@ mod test {
     use super::*;
     use crate::{
         expr::{Source, parser},
-        typ::Type,
+        typ::{TVar, Type},
     };
 
     /// `src` parsed, and its package round trip.
@@ -380,11 +380,15 @@ mod test {
         }
     }
 
-    /// A quantifier its own constraint names packs without recursing
-    /// forever.
+    /// A cell met inside its own contents has no syntax: the codec refuses
+    /// it, where it would write a bound that reads back without itself.
     #[test]
-    fn a_self_constrained_quantifier_packs() {
-        rt("let f: fn<'a: [i64, Array<'a>]>(x: 'a) -> 'a = g");
+    fn a_cell_holding_itself_does_not_pack() {
+        let tv = TVar::empty_named(arcstr::literal!("a"));
+        tv.add_cell_constraint(Type::Array(Arc::new(Type::TVar(tv.clone()))));
+        let t = Type::TVar(tv.clone());
+        assert!(matches!(t.encode(&mut BytesMut::new()), Err(PackError::InvalidFormat)));
+        tv.cell().write().constraints.clear();
     }
 
     /// A blob from another build of the AST types is refused, whatever

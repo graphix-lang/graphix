@@ -1367,6 +1367,48 @@ run!(
     refused("does not contain");
     FuseExpect::None
 );
+// A bound that reaches its own variable is refused where it is written,
+// in a definition, a written fn type and an impl head alike: a call could
+// be checked against it without end. A recursive bound is a recursive type.
+run!(
+    a_quantifier_bounded_by_itself_is_refused,
+    "{ let f = 'a: 'a |x: 'a| -> 'a x; f(1) }",
+    refused("'a's bound names 'a: a bound may not reach its own variable");
+    FuseExpect::None
+);
+run!(
+    a_quantifier_bounded_under_a_constructor_is_refused,
+    "{ let f = 'a: [i64, Array<'a>] |x: 'a| -> 'a x; f([]) }",
+    refused("'a's bound names 'a: a bound may not reach its own variable");
+    FuseExpect::None
+);
+run!(
+    quantifiers_bounding_each_other_are_refused,
+    "{ let f = 'a: 'b, 'b: 'a |x: 'a, y: 'b| -> 'a x; f(1, 2) }",
+    refused("'a's bound reaches 'a through 'b");
+    FuseExpect::None
+);
+run!(
+    a_written_fn_type_bounded_by_itself_is_refused,
+    "{ let g: fn<'a: Array<'a>>(x: 'a) -> 'a = |x| x; g([]) }",
+    refused("'a's bound names 'a: a bound may not reach its own variable");
+    FuseExpect::None
+);
+run!(
+    an_impl_bounded_by_itself_is_refused,
+    refused("'a's bound names 'a: a bound may not reach its own variable"),
+    "/test.gx" => r#"
+        trait Sh { val sh: fn(self) -> string };
+        impl<'a: 'a> Sh for Array<'a> { let sh = |x| "arr" };
+        let result = Sh::sh([1])
+    "#
+    ; FuseExpect::None
+);
+run!(
+    a_recursive_bound_is_a_recursive_type,
+    "{ type N = [i64, Array<N>]; let f = 'a: N |x: 'a| -> 'a x; (f([]), f([1, [2]])) }",
+    prints("[[], [i64:1, [i64:2]]]")
+);
 run!(
     body_annotation_takes_the_definitions_variable,
     "{ let g = 'e: Number |x: 'e| -> 'e { let v: 'e = x; v }; g(2) }",
@@ -4073,13 +4115,12 @@ run!(forward_alias_refused_before_use, r#"{
     x
 }"#, refused("refers back to itself"); FuseExpect::None);
 
-// A bound naming its own quantifier is checked without looping (its
-// normalized copy holds the same cells), and an argument it would make
-// take itself (`'a: fn(x: 'a)`) is refused: no finite type holds it.
+// A bound naming its own quantifier inside a function type is refused
+// where it is declared.
 run!(self_naming_bound_refused, r#"{
     let f = 'a: fn(x: 'a) -> [string, 'b] |g: 'a| 0;
     f(|x| 0)
-}"#, refused("does not contain fn(x:"); FuseExpect::None);
+}"#, refused("'a's bound names 'a"); FuseExpect::None);
 
 // `_` in a typedef's parameter gets the same hint as in Array<_>.
 run!(

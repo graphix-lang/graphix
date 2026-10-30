@@ -18,6 +18,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
+use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_derive::Pack;
@@ -376,10 +377,57 @@ impl Drop for Walking {
     }
 }
 
+/// Refuse a bound that reaches its own variable: directly (`'a: 'a`), under
+/// a constructor (`'a: Array<'a>`) or through another declared variable's
+/// bound (`'a: 'b, 'b: 'a`). A recursive bound is a recursive type.
+pub fn check_bounds_acyclic(constraints: &[(TVar, Type)]) -> Result<()> {
+    if constraints.is_empty() {
+        return Ok(());
+    }
+    let declared = |n: &ArcStr| constraints.iter().any(|(tv, _)| tv.name == *n);
+    // (variable, a declared variable one of its bounds names)
+    let mut edges: LPooled<Vec<(ArcStr, ArcStr)>> = LPooled::take();
+    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    for (tv, tc) in constraints {
+        tc.collect_tvars(&mut named);
+        edges.extend(
+            named.drain().filter(|(n, _)| declared(n)).map(|(n, _)| (tv.name.clone(), n)),
+        );
+    }
+    fn named_by<'a>(
+        edges: &'a [(ArcStr, ArcStr)],
+        from: &'a ArcStr,
+    ) -> impl Iterator<Item = ArcStr> + 'a {
+        edges.iter().filter(move |(f, _)| f == from).map(|(_, to)| to.clone())
+    }
+    let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    // (variable reached, the variable q's own bound named on the way)
+    let mut todo: LPooled<Vec<(ArcStr, ArcStr)>> = LPooled::take();
+    for (q, _) in constraints {
+        let q = &q.name;
+        seen.clear();
+        todo.extend(named_by(&edges, q).map(|n| (n.clone(), n)));
+        while let Some((n, via)) = todo.pop() {
+            if n == *q {
+                let path = match via == *q {
+                    true => format_compact!("'{q}'s bound names '{q}"),
+                    false => format_compact!("'{q}'s bound reaches '{q} through '{via}"),
+                };
+                bail!(
+                    "{path}: a bound may not reach its own variable; a recursive \
+                     bound is a recursive type (`type T = [i64, Array<T>]`, `'{q}: T`)"
+                )
+            }
+            if seen.insert(n.clone()) {
+                todo.extend(named_by(&edges, &n).map(|m| (m, via.clone())));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Seed each conjunct on its quantifier's cell in `known`, aliasing the
-/// conjunct's own variables onto the quantifiers first. A conjunct may
-/// name its own quantifier (`'a: [i64, Array<'a>]`), so the cell holds a
-/// type holding the cell: a walk over cell constraints guards the cycle.
+/// conjunct's own variables onto the quantifiers first.
 pub fn seed_conjuncts<'a>(
     known: &mut AHashMap<ArcStr, TVar>,
     constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
@@ -388,6 +436,20 @@ pub fn seed_conjuncts<'a>(
         tc.alias_tvars(known);
         known[&tv.name].add_cell_constraint(tc);
     }
+}
+
+/// The variables `t` names, in order, a signature's conjuncts included.
+fn var_names(t: &Type) -> LPooled<Vec<ArcStr>> {
+    fn walk(t: &Type, out: &mut Vec<ArcStr>) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => out.push(tv.name.clone()),
+            Type::Fn(ft) => ft.for_each_part(&mut |t, _| walk(t, out)),
+            t => t.for_each_child(&mut |c| walk(c, out)),
+        })
+    }
+    let mut out: LPooled<Vec<ArcStr>> = LPooled::take();
+    walk(t, &mut out);
+    out
 }
 
 impl FnType {
@@ -438,8 +500,18 @@ impl FnType {
                 }
             }
         }
-        view.sort_by(|(a, x), (b, y)| a.name.cmp(&b.name).then_with(|| x.cmp(y)));
-        view.dedup_by(|(a, x), (b, y)| a.name == b.name && x == y);
+        // equality is blind to an open variable's name: `'a: 'b + 'c` holds two
+        view.sort_by(|(a, x), (b, y)| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| x.cmp(y))
+                .then_with(|| var_names(x).as_slice().cmp(var_names(y).as_slice()))
+        });
+        view.dedup_by(|(a, x), (b, y)| {
+            a.name == b.name
+                && x == y
+                && var_names(x).as_slice() == var_names(y).as_slice()
+        });
         view
     }
 
@@ -879,7 +951,8 @@ impl FnType {
             None => Ok(()),
             Some(q) => bail!(
                 "'{q} is declared but the signature does not hold it: write it on \
-                 a parameter, the return type or the throws, or remove it"
+                 a parameter, the return type, the throws or the bound of a \
+                 quantifier the signature holds, or remove it"
             ),
         }
     }

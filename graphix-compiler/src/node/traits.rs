@@ -29,7 +29,10 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, seed_conjuncts},
+    typ::{
+        CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, check_bounds_acyclic,
+        seed_conjuncts,
+    },
     wrap,
 };
 use ahash::{AHashMap, AHashSet};
@@ -650,6 +653,7 @@ pub(crate) fn impl_head(
             }
         }
     }
+    check_bounds_acyclic(&head.constraints)?;
     target.alias_tvars(&mut known);
     seed_conjuncts(
         &mut known,

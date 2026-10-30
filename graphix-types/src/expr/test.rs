@@ -2,7 +2,10 @@ use super::*;
 use crate::{
     expr::parser::parse_one,
     format_with_flags,
-    typ::{Bound, FnArgKind, FnArgType, FnType, Mutability, TVar, Type, TypeRef},
+    typ::{
+        Bound, FnArgKind, FnArgType, FnType, Mutability, TVar, Type, TypeRef,
+        check_bounds_acyclic,
+    },
 };
 use bytes::Bytes;
 use chrono::prelude::*;
@@ -675,16 +678,18 @@ fn typexp() -> impl Strategy<Value = Type> {
                     ft.for_each_type(&mut |t| t.normalize().collect_tvars(&mut held));
                     let mut held: Vec<ArcStr> = held.into_keys().collect();
                     held.sort();
-                    let constraints: Vec<(TVar, Type)> = match held.len() {
-                        0 => vec![],
-                        n => constraints
-                            .into_iter()
-                            .map(|(i, t)| {
-                                (TVar::empty_named(held[i.index(n)].clone()), t)
-                            })
-                            .collect(),
-                    };
-                    let ft = ft.declaring(&constraints);
+                    let mut declared: Vec<(TVar, Type)> = vec![];
+                    if !held.is_empty() {
+                        for (i, t) in constraints {
+                            let name = held[i.index(held.len())].clone();
+                            declared.push((TVar::empty_named(name), t));
+                            // nor a bound that reaches its own variable
+                            if check_bounds_acyclic(&declared).is_err() {
+                                declared.pop();
+                            }
+                        }
+                    }
+                    let ft = ft.declaring(&declared);
                     Type::Fn(Arc::new(ft))
                 })
         ]

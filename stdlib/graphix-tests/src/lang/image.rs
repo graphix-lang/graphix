@@ -1105,24 +1105,6 @@ async fn nested_imaged_body_reads_are_registered() -> Result<()> {
     Ok(())
 }
 
-/// A definition whose type holds two variables each constrained by the
-/// type enters that definition three times while it decodes, with
-/// progress between: a valid image, restored whole.
-#[tokio::test]
-async fn a_definition_entered_three_times_restores() -> Result<()> {
-    const P: &str = r#"
-let g = |y: i64| -> i64 {
-  let f = 'a: [i64, ('a, 'b)], 'b: [i64, ('a, 'b)] |x: [i64, ('a, 'b)]| -> i64 1;
-  f(y) + y
-};
-(g(3), g(10))
-"#;
-    let ((_, cold), (_, warm)) = cold_and_warm(P).await?;
-    assert_eq!(format!("{}", cold.last().expect("cold produced")), "[i64:4, i64:11]");
-    assert_eq!(cold, warm);
-    Ok(())
-}
-
 /// The program image `program` writes, compiled with fusion on.
 async fn fused_program_image(program: &str) -> Result<Bytes> {
     let (tx, _rx) = mpsc::channel(10);

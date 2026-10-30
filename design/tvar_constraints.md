@@ -77,6 +77,18 @@ u8:1)` returns at most `('x, u8)`; `(i64, [u8, null]) ⊇` it holds).
   `fn<..>`, `Lambda::compile` for a definition), since no call could
   choose it. Pins: `lang::types::a_quantifier_only_the_body_reads_is_refused`
   and its neighbours, `parser::test::a_fn_type_holds_each_quantifier_it_declares`.
+  A bound may not reach its own quantifier, directly (`'a: 'a`), under a
+  constructor (`'a: Array<'a>`) or through another quantifier's bound
+  (`'a: 'b, 'b: 'a`): `check_bounds_acyclic` refuses it in the parser
+  for a written `fn<..>`, in `Lambda::compile` and in `traits::impl_head`,
+  before any cell holds it: checking a call against such a bound binds
+  the variable to a type holding itself, a check without end. A
+  recursive bound is a recursive type (`type T = [i64, Array<T>]`, `'a:
+  T`). So no cell the parser builds holds itself, and the syntax codec
+  refuses one that does rather than write it without its bound. Pins:
+  `lang::types::a_quantifier_bounded_by_itself_is_refused` and its
+  neighbours, `parser::test::a_bound_reaching_its_own_variable_is_refused`,
+  `serialize::test::a_cell_holding_itself_does_not_pack`.
 - A definition's gate keeps what its body bound: the signature is the
   scheme, relations between its positions included (`|x| [x, x]` is
   `fn(x: 'a) -> Array<'a>`), so a call's types follow from the signature

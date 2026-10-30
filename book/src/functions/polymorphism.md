@@ -111,11 +111,27 @@ refused,
 
 ```graphix
 〉let h = 'a: Number |x: i64| -> i64 { let v: 'a = 1; x }
-error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type or the throws, or remove it
+error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type, the throws or the bound of a quantifier the signature holds, or remove it
 ```
 
 A written function type follows the same rule: `fn<'a: Number>(x: i64)
 -> i64` is refused too.
+
+A bound may not reach its own variable, directly (`'a: 'a`), inside
+another type (`'a: Array<'a>`) or through the bound of another variable
+(`'a: 'b, 'b: 'a`); a definition, a written function type and an impl
+head are refused where they declare one. A recursive bound is written as
+a recursive type, which the variable is then bounded by,
+
+```graphix
+〉let n = 'a: [i64, Array<'a>] |x: 'a| -> 'a x
+error: ... 'a's bound names 'a: a bound may not reach its own variable; a recursive bound is a recursive type (`type T = [i64, Array<T>]`, `'a: T`)
+〉type Nested = [i64, Array<Nested>]
+〉let n = 'a: Nested |x: 'a| -> 'a x
+〉n([1, [2, [3]]])
+-: Array<[i64, Array<[i64, Array<i64>]>]>
+[1, [2, [3]]]
+```
 
 A third bound, `Discernible`, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type

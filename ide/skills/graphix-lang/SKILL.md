@@ -278,7 +278,10 @@ A declared type variable must appear in the signature: on a parameter,
 the return type, the throws, or in the bound of another declared
 variable that does. `'a: Number |x: i64| -> i64 { let v: 'a = 1; x }`
 is refused (no call could choose `'a`), and so is a written
-`fn<'a: Number>(x: i64) -> i64`.
+`fn<'a: Number>(x: i64) -> i64`. A bound may not name its own variable,
+directly or through another's bound (`'a: [i64, Array<'a>]`, `'a: 'b,
+'b: 'a`): bound it by a recursive type, `type T = [i64, Array<T>]` and
+`'a: T`.
 
 Calls resolve statically where the compiler can trace the function. A
 function-variable write fires its call's current result even when it

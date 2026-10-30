@@ -778,7 +778,11 @@ node graph IS the IR — there is no parallel typed IR
   `lambda::instance_sig`); a quantifier
   a definition or a written `fn<..>` declares must be held by its
   signature (a parameter, the return, the throws, a held quantifier's
-  bound), else it is refused (`FnType::check_quantifiers_held`); a def's declared tvars are
+  bound), else it is refused (`FnType::check_quantifiers_held`), and a
+  quantifier's bound (a definition's, a written `fn<..>`'s, an impl
+  head's) may not reach it, directly, under a constructor or through
+  another's bound (`'a: 'a`, `'a: Array<'a>`, `'a: 'b, 'b: 'a`;
+  `check_bounds_acyclic`): a recursive bound is a recursive type; a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥ and no
   two unify (`contains.rs` Distinct), so a function type without
   `throws` (which throws nothing) refuses one that throws `'e`, while a call instantiates them

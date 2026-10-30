@@ -164,6 +164,11 @@ where
     StreamErrorFor::<I>::message_static_message(reason)
 }
 
+/// Whether a recorded reason explains a failure at `pos`.
+pub(super) fn reason_explains(pos: SourcePosition) -> bool {
+    REASON.with(|r| r.borrow().as_ref().is_some_and(|r| r.explains(pos)))
+}
+
 /// Record where the parse failed.
 pub(super) fn note_error_pos(pos: SourcePosition) {
     ERROR_POS.with(|p| p.set(Some(pos)))

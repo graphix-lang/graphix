@@ -2856,11 +2856,10 @@ thread_local! {
     static WRITING: RefCell<SmallVec<[usize; 8]>> = RefCell::new(SmallVec::new());
 }
 
-/// What the syntax codec writes of `tv`'s cell: its bound and constraints,
-/// or nothing inside that cell's own contents, where a quantifier that
-/// its constraint names (`'a: [i64, Array<'a>]`) is the name alone and the
-/// typechecker re-aliases it.
-fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> R {
+/// What the syntax codec writes of `tv`'s cell, its bound and constraints;
+/// `None` for a cell met inside its own contents, which has no syntax: the
+/// parser refuses a bound that reaches its own variable.
+fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> Option<R> {
     struct Writing;
     impl Drop for Writing {
         fn drop(&mut self) {
@@ -2870,12 +2869,12 @@ fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> R
     let cell = tv.read().cell.clone();
     let key = cell.data_ptr().addr();
     if WRITING.with_borrow(|w| w.contains(&key)) {
-        return f(None, &[]);
+        return None;
     }
     WRITING.with_borrow_mut(|w| w.push(key));
     let _writing = Writing;
     let cell = cell.read();
-    f(cell.binding.as_ref(), &cell.constraints)
+    Some(f(cell.binding.as_ref(), &cell.constraints))
 }
 
 /// Under an image session the wrapper and its cell are shared objects
@@ -2895,6 +2894,7 @@ impl Pack for TVar {
                             n + t.encoded_len()
                         })
             })
+            .unwrap_or(0)
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -2913,6 +2913,7 @@ impl Pack for TVar {
             pack::encode_varint(constraints.len() as u64, buf);
             constraints.iter().try_for_each(|t| t.encode(buf))
         })
+        .unwrap_or(Err(PackError::InvalidFormat))
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
