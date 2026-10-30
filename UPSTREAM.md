@@ -68,18 +68,23 @@ the state of a fix, and Graphix's side.
 - **Bug.** `Xlsx::read_shared_strings` reserves its strings vector to the
   `sst` element's `uniqueCount` attribute, unchecked, when the workbook
   opens. A 1 KB xlsx declaring `uniqueCount="100000000000"` asks for
-  2.4 TB, and the failed allocation aborts the process.
-- **Repro.** `stdlib/graphix-package-xls/src/lib.rs` test
-  `xlsx_refuses_an_overstated_string_count` builds such a file.
+  2.4 TB, and the failed allocation aborts the process. It also builds a
+  string for every `si` element it meets, so a few MB of `<si/>` (5 bytes
+  each, deflated about 1000:1) grow the vector to tens of GB.
+- **Repro.** `stdlib/graphix-package-xls/src/lib.rs` tests
+  `xlsx_refuses_an_overstated_string_count` and
+  `xlsx_refuses_more_strings_than_the_cell_bound` build such files.
 - **Upstream fix.** Cap the reservation (by the part's size, or a fixed
-  bound), or treat the count as a hint only.
+  bound), or treat the count as a hint only; and a limit on the strings
+  an open builds.
 - **Graphix's side.** Worked around (a crafted file aborts the runtime):
   `check_shared_strings` streams every zip entry calamine would take for
-  `xl/sharedStrings.xml` before it opens and refuses a count past the
-  `si` elements the sst element holds (those calamine reads), and a part
-  holding more than `MAX_CELLS` strings, which calamine would build
-  before any cell bound applies; it mirrors how calamine finds the part
-  and reads the attribute. Not reported.
+  `xl/sharedStrings.xml` before it opens, counts every `si` element after
+  the `sst` element's start (calamine builds a string for each one its
+  loop meets, nested or past an `</sst>` inside a string, before any cell
+  bound applies), and refuses more of them than `MAX_CELLS`, a count
+  declared or not, and a declared count past them; it mirrors how
+  calamine finds the part and reads the attribute. Not reported.
 
 ## handlebars-rust 6.4: template depth recurses without a bound
 

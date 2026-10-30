@@ -278,12 +278,15 @@ fn sst_unique_count(e: &BytesStart) -> Option<u64> {
 }
 
 /// calamine's xlsx open reserves room for as many shared strings as the
-/// `sst` element declares, and builds every string it holds, before any cell
-/// bound applies; an allocation that cannot be met aborts the process.
-/// Refuse a count past the `si` elements the sst element holds, and a part
-/// holding more than `MAX_CELLS` strings; a zip without the part passes.
+/// `sst` element declares, and builds a string for each `si` element it
+/// meets, before any cell bound applies; an allocation that cannot be met
+/// aborts the process. It meets them nested in a string or another element
+/// and past an end of the sst element inside a string, so every `si`
+/// element after the sst element's start counts, up to where the reader
+/// fails: refuse more of them than `MAX_CELLS`, and a count past them. A
+/// zip without the part passes.
 fn check_shared_strings<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(), String> {
-    for i in 0..zip.len() {
+    'parts: for i in 0..zip.len() {
         let Ok(part) = zip.by_index(i) else { continue };
         if !is_zip_path(part.name(), "xl/sharedStrings.xml") {
             continue;
@@ -298,37 +301,31 @@ fn check_shared_strings<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(),
                 Ok(Event::Start(e)) if e.local_name().as_ref() == b"sst" => {
                     break sst_unique_count(&e);
                 }
-                Ok(Event::Eof) | Err(_) => break None,
+                Ok(Event::Eof) | Err(_) => continue 'parts,
                 Ok(_) => buf.clear(),
             }
         };
-        let Some(declared) = declared else { continue };
-        // the sst element's own si children, which calamine reads, until
-        // its end, where calamine stops
-        let (mut held, mut depth): (u64, usize) = (0, 0);
+        let mut held: u64 = 0;
         loop {
             buf.clear();
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => {
-                    if depth == 0 && e.local_name().as_ref() == b"si" {
-                        held += 1;
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"si" => {
+                    held += 1;
+                    if held > MAX_CELLS as u64 {
+                        return Err(format!(
+                            "the shared strings part holds over {MAX_CELLS} strings"
+                        ));
                     }
-                    depth += 1;
                 }
-                Ok(Event::End(_)) if depth == 0 => break,
-                Ok(Event::End(_)) => depth -= 1,
                 Ok(Event::Eof) | Err(_) => break,
                 Ok(_) => (),
             }
         }
-        if declared > held {
+        if let Some(declared) = declared
+            && declared > held
+        {
             return Err(format!(
                 "the shared strings part declares {declared} strings and holds {held}"
-            ));
-        }
-        if held > MAX_CELLS as u64 {
-            return Err(format!(
-                "the shared strings part holds {held} strings, over {MAX_CELLS}"
             ));
         }
     }
@@ -390,6 +387,29 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     // reservation did). Pin: test::xlsx_counts_only_the_strings_calamine_reads (1000
     // declared, one string, 999 <si/> after </sst>, or 998 nested in one: both passed
     // the old count). The MAX_CELLS cap is unpinned (16M strings). UPSTREAM.md updated.
+    // 2026-10-29 claude: Review (2026-10-29, cr29 R2): check_shared_strings skipped any
+    // part whose sst has no parseable uniqueCount (let Some(declared) = declared else {
+    // continue }), so the MAX_CELLS cap did not apply there while calamine still builds
+    // every si: ~/tmp/cr29/scratch/review/r2/none20m.xlsx (147 KB, 20M <si/>, no
+    // uniqueCount, from mkxlsx.py) reads and needs over 300 MB; a few MB would grow a
+    // Vec of ~24 GB. The MAX_CELLS cap was unpinned. Also found while fixing: the
+    // depth-0 count stopped short of calamine, which builds a string for each si its
+    // loop meets, nested in an si or in another element, and past an </sst> inside an si
+    // (probe: a sheet cell indexing past the depth-0 count reads); with uniqueCount="1"
+    // each shape passed the old check and calamine built 16.7M strings.
+    // 2026-10-29 claude: check_shared_strings counts every si element after the sst
+    // element's start, at any depth and to where the reader fails (an upper bound of the
+    // strings calamine builds: its loop meets si nested in an si or another element and
+    // past an </sst> inside an si), whether or not a count is declared or parses; it
+    // refuses more than MAX_CELLS of them as it counts, and a declared count past them.
+    // Pin: test::xlsx_refuses_more_strings_than_the_cell_bound (MAX_CELLS+1 strings with
+    // no count, an unparseable count, and uniqueCount=1 nested in an si, wrapped in
+    // another element, or after an </sst> inside an si); each of its five cases fails on
+    // the old check (four read the sheet after calamine built 16.7M strings, the fifth
+    // fails only after building them). test::xlsx_counts_only_the_strings_calamine_reads
+    // is gone: its premise was wrong (calamine reads 999 strings from its nested case),
+    // and si past the true </sst> now count, which lets a declared count reserve at most
+    // the si elements the part holds, under the cap. UPSTREAM.md updated.
     open_workbook_auto_from_rs(rs).map_err(|e| errf!("XlsErr", "{e}"))
 }
 
@@ -594,15 +614,15 @@ mod test {
     /// An xlsx workbook of one sheet `S` whose A1 is the shared string
     /// `hi`, at `path` in a table that declares `unique` strings.
     fn xlsx(path: &str, unique: &str) -> Bytes {
-        xlsx_padded(path, unique, "", "")
+        xlsx_padded(path, Some(unique), "")
     }
 
-    /// [`xlsx`] with `pad` spaces after the table's one string.
-    /// One string, `hi`, with `inside` after it in the sst element and
-    /// `after` past its end.
-    fn xlsx_padded(path: &str, unique: &str, inside: &str, after: &str) -> Bytes {
+    /// [`xlsx`] whose table declares `unique` strings, or no count, and
+    /// holds `inside` after its one string.
+    fn xlsx_padded(path: &str, unique: Option<&str>, inside: &str) -> Bytes {
+        let unique = unique.map_or(String::new(), |u| format!(r#" uniqueCount="{u}""#));
         let sst = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="{unique}"><si><t>hi</t></si>{inside}</sst>{after}"#
+            r#"<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1"{unique}><si><t>hi</t></si>{inside}</sst>"#
         );
         zip_of(&[
             (
@@ -690,9 +710,8 @@ mod test {
         let v = parse_sheet(
             Cursor::new(xlsx_padded(
                 "xl/sharedStrings.xml",
-                "1000",
+                Some("1000"),
                 &" ".repeat(4096),
-                "",
             )),
             "S",
         );
@@ -700,22 +719,29 @@ mod test {
         assert!(format!("{e}").contains("declares 1000 strings and holds 1"), "{e}");
     }
 
-    /// calamine reads the strings of the sst element only: string elements
-    /// past its end, or nested in one, are none of them.
+    /// More strings than `MAX_CELLS` are refused whether the table declares
+    /// a count or not, and wherever they sit: calamine builds one for each
+    /// string element it meets, nested in a string or another element, and
+    /// past an end of the sst element inside a string.
     #[test]
-    fn xlsx_counts_only_the_strings_calamine_reads() {
-        // each holds 1000 si elements where the old count looked, two at most
-        // where calamine does
-        let nested = format!("<si>{}</si>", "<si/>".repeat(998));
-        for (inside, after) in
-            [(String::new(), "<si/>".repeat(999)), (nested, String::new())]
-        {
-            let v = parse_sheet(
-                Cursor::new(xlsx_padded("xl/sharedStrings.xml", "1000", &inside, &after)),
-                "S",
+    fn xlsx_refuses_more_strings_than_the_cell_bound() {
+        let many = "<si/>".repeat(MAX_CELLS);
+        for (unique, inside) in [
+            (None, many.clone()),
+            (Some("many"), many.clone()),
+            (Some("1"), format!("<si>{many}</si>")),
+            (Some("1"), format!("<x>{many}</x>")),
+            (Some("1"), format!("<si></sst></si>{many}")),
+        ] {
+            let case = format!("{unique:?} {}..", &inside[..15]);
+            let bytes = xlsx_padded("xl/sharedStrings.xml", unique, &inside);
+            let v = parse_sheets(Cursor::new(bytes));
+            let Value::Error(e) = v else { panic!("{case}: expected XlsErr, got {v}") };
+            let e = format!("{e}");
+            assert!(
+                e.contains(&format!("holds over {MAX_CELLS} strings")),
+                "{case}: {e}"
             );
-            let Value::Error(e) = v else { panic!("expected XlsErr, got {v}") };
-            assert!(format!("{e}").contains("declares 1000 strings and holds"), "{e}");
         }
     }
 
