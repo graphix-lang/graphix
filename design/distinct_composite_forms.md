@@ -116,7 +116,13 @@ real (`Choice`; counted at the leaves, `RealReads`, so a union of
 composites is judged by every leaf): `cast<[i64, decimal]>(3.0)` and
 `cast<[i64, decimal]>("3.0")` are both the decimal, a whole float's
 print reads back as the float, and where no member is real the integer
-holds it (`cast<[i64, datetime]>("3.0")` is 3).
+holds it (`cast<[i64, datetime]>("3.0")` is 3). A union tries its members
+three times (`Holds`): every leaf held exactly, then held exactly or
+rounded to a real member's precision (`holds_rounded`: an f64 into an
+f32, a decimal or a long integer into an f64, never an infinity a finite
+value overflows to), then any conversion, so `cast<[i64, f32]>(0.1)` is
+the f32 and `cast<[(i64, i64), (f32, f32)]>([0.5, 0.1])` the f32 tuple; a
+primitive set walks the same three among its bits.
 `cast<string>` of a bare variant is its tag; no other marked
 value has a primitive form, and the primitive `array` holds arrays only
 (`contains`, `is_a`, `setops`). A list casts to an array element by

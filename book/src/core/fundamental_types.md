@@ -321,6 +321,9 @@ the value's own kind first, so `cast<[i8, Array<f64>]>([1, 2])` is
 only where no `f32`, `f64` or `decimal` member holds it exactly:
 `cast<[i64, decimal]>(3.0)` and `cast<[i64, decimal]>("3.0")` are both
 the decimal 3, while `cast<[i64, datetime]>("3.0")` is the integer 3.
+Where no member holds a number exactly, one that holds it rounded to its
+precision comes before one that would drop part of it:
+`cast<[i64, f32]>(0.1)` is the `f32` 0.1, not the integer 0.
 Across kinds a cast only parses a string (`cast<i64>("42")`,
 `cast<bool>("true")`), prints a number, bool, datetime or duration
 plainly (`cast<string>(42)` is `"42"`, and a whole float keeps its

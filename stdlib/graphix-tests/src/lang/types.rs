@@ -741,6 +741,40 @@ run!(
     FuseExpect::None
 );
 
+// Where no member holds a number exactly, a real member that holds it
+// rounded to its precision comes before one that would drop part of it, as
+// a value, as text, at every element and leaf by leaf in a union of tuples;
+// an integer a real member rounds is held so too. An integer member that
+// holds a float exactly still comes first, and an infinity a finite value
+// overflows to is no rounding.
+const CAST_ROUNDING_BEFORE_A_DROPPED_PART: &str = r#"
+{
+  let d = cast<decimal>("0.1000000000000000000001")$;
+  let p: Result<Array<[i64, f32]>, `ParseError(string)> = str::parse(r"[0.1, 2.0]");
+  (
+    cast<[i64, f32]>(0.1)$,
+    cast<[i64, f32]>("0.1")$,
+    cast<[i64, f64]>(d)$,
+    p$,
+    cast<Array<[i64, f32]>>([0.1, 2.0])$,
+    cast<[(i64, i64), (f32, f32)]>([0.5, 0.1])$,
+    cast<[f32, u8]>(16777217)$,
+    cast<[f32, u8]>("16777217")$,
+    cast<[i64, f32]>(1234567900.0)$,
+    cast<[i64, f32]>(1e39)$,
+    cast<f32>(0.1)$
+  )
+}
+"#;
+
+run!(
+    cast_rounding_before_a_dropped_part,
+    CAST_ROUNDING_BEFORE_A_DROPPED_PART,
+    prints(
+        "[f32:0.1, f32:0.1, f64:0.1, [f32:0.1, f32:2.], [f32:0.1, f32:2.], [f32:0.5, f32:0.1], f32:16777216., f32:16777216., i64:1234567900, f32:inf, f32:0.1]"
+    )
+);
+
 // Unmarked data reads back as the member that reads it exactly: a tuple of
 // its length, then a struct, before an array, so what pack and json write
 // of a tuple or a struct reads back as it.

@@ -141,11 +141,11 @@ struct CastCx {
     /// with the params held so the allocation stays theirs.
     expanded: LPooled<AHashMap<(usize, usize), (Arc<[Type]>, Type)>>,
     /// Each union's reading of a value inside another union's, by the
-    /// union's members, the value's address and `exact`, with the union
+    /// union's members, the value's address and `holds`, with the union
     /// held so the members stay its: a union tries several members over
     /// one value, so without it a failing read is exponential in the
     /// data's depth.
-    read: LPooled<AHashMap<(usize, usize, bool), (Type, Cast, RealReads)>>,
+    read: LPooled<AHashMap<(usize, usize, Holds), (Type, Cast, RealReads)>>,
     /// Whether the walk is inside a union's reading.
     in_union: bool,
     /// How many values on the path are built by the walk, not held by
@@ -159,13 +159,23 @@ struct CastCx {
     /// The address of the value being cast and how many values deep it is.
     at: usize,
     depth: usize,
-    /// Only a conversion that loses nothing counts: a union tries its
-    /// members so first.
-    exact: bool,
+    /// How much of a value a conversion may lose: a union tries its
+    /// members at each in turn, the least first.
+    holds: Holds,
     /// How the reading so far took the floats and decimals it met.
     reals: RealReads,
     input: CastInput,
     check_keys: bool,
+}
+
+/// How much of a value a reading keeps, the most first: all of it, all of
+/// it rounded to a real member's precision (an f64 into an f32, a decimal
+/// or a long integer into an f64), or less (a fraction an integer drops).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Holds {
+    Exactly,
+    Rounded,
+    Partly,
 }
 
 /// How a reading took the floats and decimals it met, values or text that
@@ -204,24 +214,24 @@ impl RealReads {
 }
 
 /// A union's reading of a value among those its members offer, in its
-/// order: the first, except that in an exact round one reading a float or
-/// a decimal as an integer gives way to a later one keeping every float
-/// and decimal real.
+/// order: the first, except that in a round that drops no part one reading
+/// a float or a decimal as an integer gives way to a later one keeping
+/// every float and decimal real.
 struct Choice {
-    exact: bool,
+    whole: bool,
     got: Option<(Value, RealReads)>,
 }
 
 impl Choice {
     fn new(cx: &CastCx) -> Self {
-        Choice { exact: cx.exact, got: None }
+        Choice { whole: cx.holds < Holds::Partly, got: None }
     }
 
     fn offer(&mut self, c: Value, d: RealReads) {
         let replaces = match &self.got {
             None => true,
             Some((_, g)) => {
-                self.exact && g.as_integer > 0 && d.as_integer == 0 && d.as_other == 0
+                self.whole && g.as_integer > 0 && d.as_integer == 0 && d.as_other == 0
             }
         };
         if replaces {
@@ -231,7 +241,7 @@ impl Choice {
 
     /// Whether no later reading would replace the one held.
     fn settled(&self) -> bool {
-        self.got.as_ref().is_some_and(|(_, g)| !self.exact || g.as_integer == 0)
+        self.got.as_ref().is_some_and(|(_, g)| !self.whole || g.as_integer == 0)
     }
 
     /// The reading chosen, its count added to `cx`'s.
@@ -255,7 +265,7 @@ impl CastCx {
             cuts: 0,
             at: 0,
             depth: 0,
-            exact: false,
+            holds: Holds::Partly,
             reals: RealReads::default(),
             input,
             check_keys,
@@ -908,8 +918,14 @@ impl Type {
                         exact.find(|c| Typ::get(c).is_real()).or(Some(c))
                     }
                     Some(c) => Some(c),
-                    None if cx.exact => None,
-                    None => members.find_map(|t| convert(v.clone(), t)),
+                    None if cx.holds == Holds::Exactly => None,
+                    None => match members.clone().filter(|t| t.is_real()).find_map(|t| {
+                        convert(v.clone(), t).filter(|c| holds_rounded(v, c))
+                    }) {
+                        Some(c) => Some(c),
+                        None if cx.holds == Holds::Rounded => None,
+                        None => members.find_map(|t| convert(v.clone(), t)),
+                    },
                 };
                 match read {
                     Some(c) => {
@@ -1265,12 +1281,13 @@ impl Type {
             // A member the value already inhabits wins; else the first
             // member of its own runtime class it converts to; else the
             // first member it converts to across classes. Each way, a member
-            // that holds the value exactly comes before one that would lose
-            // part of it (a fraction, a sub-second part, a rounding), and of
-            // those, one keeping its floats and decimals real before one
-            // reading one as an integer (`Choice`).
+            // that holds the value exactly comes before one that holds it
+            // rounded to a real's precision, and that before one that would
+            // drop part of it (a fraction, a sub-second part) (`Holds`); short
+            // of a dropped part, one keeping its floats and decimals real
+            // before one reading one as an integer (`Choice`).
             Type::Set(ts) => {
-                let outer = cx.exact;
+                let outer = cx.holds;
                 let key = (cx.in_union && cx.built == 0)
                     .then(|| (ts.as_ptr().addr(), (v as *const Value).addr(), outer));
                 if let Some(k) = &key
@@ -1285,12 +1302,14 @@ impl Type {
                 let array = rep::array_elems(v).is_some()
                     && (cx.input == CastInput::Marked
                         || matches!(src_head(cx, src, env, v), Some(Type::Array(_))));
-                let rounds: &[bool] = if outer { &[true] } else { &[true, false] };
                 let mut r = Err(None);
-                for exact in rounds {
-                    cx.exact = *exact;
+                for holds in [Holds::Exactly, Holds::Rounded, Holds::Partly] {
+                    if holds > outer {
+                        break;
+                    }
+                    cx.holds = holds;
                     r = self.cast_member(env, cx, src, v, ts, array).map_err(Some);
-                    cx.exact = outer;
+                    cx.holds = outer;
                     if r.is_ok() {
                         break;
                     }
@@ -2973,6 +2992,16 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // cast_whole_float_without_a_real_member, cast_float_elements_read_as_the_scalar,
 // cast_union_prefers_exact_composite},
 // lib_tests::json::json_whole_floats_read_back_beside_an_integer_tuple.
+// 2026-10-30 claude: Eric ruled (2026-10-30, round 4 follow-up): "Yes, we should allow
+// rounding to match." Where no member holds a number exactly, a real member that holds it
+// rounded to its precision (an f64 into an f32, a decimal or a long integer into an f64)
+// comes before one that would drop part of it, as a value and as text, at every element
+// and leaf by leaf in a union of tuples or structs; an exact integer member still comes
+// first (cast<[i64, f32]>(1234567900.0) is i64). Built as Holds (Exactly, Rounded,
+// Partly), the rounds a union walks, with holds_rounded (no infinity a finite value
+// overflows to). An integer a real member rounds, cast<[f32, u8]>(16777217) and its text,
+// is f32 16777216, as on main. Pin: lang::types::cast_rounding_before_a_dropped_part
+// (fails on 16f7ced15).
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.
@@ -2984,6 +3013,22 @@ fn holds_exactly(v: &Value, c: &Value) -> bool {
         },
         v => convert(c.clone(), Typ::get(v)).as_ref() == Some(v),
     }
+}
+
+/// Whether the real `c`, `v` converted, holds `v` rounded to its
+/// precision: any real but an infinity a finite value overflowed to.
+fn holds_rounded(v: &Value, c: &Value) -> bool {
+    let infinite = |v: &Value| match v {
+        Value::F32(f) => f.is_infinite(),
+        Value::F64(f) => f.is_infinite(),
+        _ => false,
+    };
+    Typ::get(c).is_real()
+        && (!infinite(c)
+            || match v {
+                Value::String(s) => s.trim().parse::<Value>().is_ok_and(|p| infinite(&p)),
+                v => infinite(v),
+            })
 }
 
 /// Whether `v` is a float or a decimal, or text that parses as one.

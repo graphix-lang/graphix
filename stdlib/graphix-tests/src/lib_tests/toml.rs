@@ -253,9 +253,9 @@ run!(
     prints("[true, true, true, true, true, true]")
 );
 
-// An f32 with a fraction is written as its shortest text, which the f32
-// holds only rounded, so a union reads it into an integer member, the
-// fraction dropped: a target holding one beside an integer is refused.
+// A large whole f32 is written as its shortest text (1234567936 as
+// 1234568000.0), which an integer member holds exactly and the f32 only
+// rounded: a target holding one beside such an integer is refused.
 run!(
     toml_target_f32_beside_an_integer_refused,
     r#"{
