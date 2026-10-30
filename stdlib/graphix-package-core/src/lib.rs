@@ -496,6 +496,26 @@ pub use memo::FastMemo;
 // lib_tests::json::mixed_class_map_keys_use_pairs ([string, i64] mixed and alone, [bool, string]);
 // json_keys_writing_alike_are_not_merged (was ..._refused: JSON now writes both as pairs, TOML still refuses at its root);
 // string_data_map_keys_read_back's [`A, string] refusal now comes from the pairs check. Book json and toml pages updated.
+// 2026-10-29 claude: Review (2026-10-29, cr29 R2): map_shape only separates strings from everything else. Map<[duration, i64], i64>
+// {duration:2.s => 1, 3 => 2} writes {"3":2,"2":1} and reads back {2 => 1, 3 => 2} (== false), and {duration:2.s => 1} alone fails
+// the same way (~/tmp/cr29/scratch/review/r2/mapkeys.gx); as a plain value [duration, i64] holding 2s writes 2.0 and reads back i64
+// 2 (numval.gx), yet 'b: JsonData accepts the type: textdata.rs gives duration Shape::Float and i64 Shape::Int, but a union reads a
+// whole float into an integer member (its own class) first. The same holds for [f32, i64] in JSON and TOML (f32:2.0 reads back as
+// i64 2) and [duration, u8] (~/tmp/cr29/scratch/laneTA/f32val.gx).
+// 2026-10-29 claude: JsonData/TomlData now refuse a union holding an integer beside a member written as a float that is not an f64
+// (an f32; a duration, in JSON): textdata.rs splits Shape::Float into F64 (an f64 member keeps the float) and Float (an integer
+// member takes it whole, since a union reads a number into its own class first), and Float overlaps Int. So [duration, i64],
+// Map<[duration, i64], _> and [f32, i64] (JSON and TOML) are refused at the read; [i64, f64], [f64, u8] and [duration, bool] still
+// read back. A duration cannot be written to TOML, so TOML keeps [duration, i64]. The refusal now says what overlaps ('what its
+// member a or b writes as JSON data may read back as the other'). map_shape is unchanged: every key union JsonData accepts writes
+// object keys a read takes back. Pins: lib_tests::json::{json_target_float_beside_an_integer_refused,
+// json_map_key_float_beside_an_integer_refused, json_target_f32_beside_an_integer_refused,
+// json_float_members_written_apart_read_back}, lib_tests::toml::toml_target_f32_beside_an_integer_refused,
+// typ::textdata::test::unions_whose_members_write_alike; the four refusal programs ran and read the integer on the pre-fix binary.
+// The abstract-member kin is a new CR (textdata-abstract-01).
+// 2026-10-29 claude: Correction to the note above: the object-key claim holds for primitive and variant key members only; an
+// abstract key member written as its representation still reads back as a primitive member ([S, i64] with S = Abstract<string>:
+// {S("1") => 1} writes {"1":1} and reads {1 => 1}), which is textdata-abstract-01.
 pub fn map_key(k: &Value) -> Result<ArcStr> {
     Ok(match graphix_compiler::abstract_value::to_data(k)? {
         Value::String(s) => s,

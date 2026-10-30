@@ -2,7 +2,8 @@
 //! TOML value could be written by. A reader picks one member of a union
 //! for a value; where two could have written it, a value written as one
 //! may read back as the other (`[u8, i64]`, `[string, datetime]` in JSON,
-//! `[Array<string>, Array<i64>]` over `[]`).
+//! `[f32, i64]` over a whole float, `[Array<string>, Array<i64>]` over
+//! `[]`).
 
 use crate::{
     env::Env,
@@ -31,6 +32,11 @@ enum Shape {
     Null,
     Bool,
     Int,
+    /// A float an f64 member reads back as itself.
+    F64,
+    /// A float an integer member takes when it is whole and no f64 member
+    /// is there to take it (an f32; a duration, which JSON writes as its
+    /// seconds): a union reads a number into its own class first.
     Float,
     /// Any number, integral or not (a decimal written exactly).
     Number,
@@ -71,7 +77,8 @@ impl<'a> Shapes<'a> {
         match p {
             Typ::Null if json => Shape::Null,
             Typ::Bool => Shape::Bool,
-            Typ::F32 | Typ::F64 => Shape::Float,
+            Typ::F64 => Shape::F64,
+            Typ::F32 => Shape::Float,
             Typ::Duration if json => Shape::Float,
             Typ::Decimal if json => Shape::Number,
             Typ::String => Shape::Str,
@@ -176,6 +183,17 @@ impl<'a> Shapes<'a> {
                 let (k, v) = (self.node(key), self.node(value));
                 self.push(Shape::Pairs(k, v), t)
             }
+            // CR claude for claude: [bug/medium] An abstract type written as its
+            // representation takes that representation's shape here, but a union's
+            // reader tries it only after every member of the value's own class and never
+            // keeps the data as it is, so any primitive member that converts the written
+            // data wins. With type N = Abstract<i64> and type S = Abstract<string> (each
+            // with impl Cast), [N, f64] writes N(2) as 2 and json::read gives back f64
+            // 2.0; [S, bool] reads S("true") back as true; [S, i64] reads S("1") back as
+            // 1, a map key alike ({"1":1}). JsonData accepts all three. Either model such
+            // a member as overlapping every member the reader converts its data into, or
+            // have the union reader try it in its representation's class. probes:
+            // ~/tmp/cr29/scratch/laneTA/idnum.gx, idkey.gx (textdata-abstract-01)
             Type::Abstract { id, params } if self.env.written_as_representation(*id) => {
                 match self.env.abstract_reps.get(id) {
                     Some(r) => {
@@ -214,8 +232,8 @@ impl<'a> Shapes<'a> {
             (_, Union(ms)) => ms.iter().any(|m| self.overlap(a, *m, seen)),
             (None | Unknown, _) | (_, None | Unknown) => false,
             (Null, Null) | (Bool, Bool) | (Str, Str) | (DateTime, DateTime) => true,
-            (Int | Float | Number, Number) | (Number, Int | Float) => true,
-            (Int, Int) | (Float, Float) => true,
+            (Int | Float | F64 | Number, Number) | (Number, Int | Float | F64) => true,
+            (Int | Float, Int | Float) | (F64, F64 | Float) | (Float, F64) => true,
             (Str, Lit(_)) | (Lit(_), Str) => true,
             (Lit(x), Lit(y)) => x == y,
             (Seq(_), Seq(_) | Pairs(..)) | (Pairs(..), Seq(_) | Pairs(..)) => true,
@@ -345,12 +363,20 @@ mod test {
         let toml = |t| ambiguous(t, Format::Toml);
         assert!(json("[u8, i64]"));
         assert!(!json("[i64, f64]"));
+        assert!(!json("[f64, u8]"));
+        assert!(json("[f32, i64]"));
+        assert!(toml("[f32, i64]"));
+        assert!(json("[duration, i64]"));
+        assert!(!toml("[duration, i64]"));
+        assert!(json("Map<[duration, i64], i64>"));
+        assert!(!json("[duration, bool]"));
         assert!(!json("[i64, null]"));
         assert!(json("[string, datetime]"));
         assert!(!toml("[string, datetime]"));
         assert!(!json("[decimal, string]"));
         assert!(json("[decimal, f64]"));
         assert!(json("[duration, f64]"));
+        assert!(json("[duration, f32]"));
         assert!(json("[Array<string>, Array<i64>]"));
         assert!(!json("[`A(i64), `B(string), `C]"));
         assert!(json("[`A, string]"));

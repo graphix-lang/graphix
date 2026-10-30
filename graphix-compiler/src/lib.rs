@@ -2632,9 +2632,8 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                     if let Some((a, b)) = t.text_ambiguity(env, format) {
                         format_with_flags(PrintFlag::DerefTVars, || {
                             bail!(
-                                "'{}: {c} refuses {t}: its members {a} and {b} can be \
-                                 written as the same {name} data, so a read cannot tell \
-                                 which was written",
+                                "'{}: {c} refuses {t}: what its member {a} or {b} writes \
+                                 as {name} data may read back as the other",
                                 tv.name
                             )
                         })?

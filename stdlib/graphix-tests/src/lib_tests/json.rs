@@ -488,6 +488,62 @@ run!(
     prints("[true, true, true, true, true]")
 );
 
+// A whole f32 or duration is written as a float, which a union reads
+// into an integer member as its own class (x-rerun-5-04): a target, or a
+// map key, holding either beside an integer is refused.
+run!(
+    json_target_float_beside_an_integer_refused,
+    r#"{
+    let d: [duration, i64] = duration:2.s;
+    let r: Result<[duration, i64], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(d)$);
+    r
+}"#,
+    refused(
+        "'b: JsonData refuses [i64, duration]: what its member i64 or duration writes \
+         as JSON data may read back as the other"
+    )
+);
+
+run!(
+    json_map_key_float_beside_an_integer_refused,
+    r#"{
+    let m: Map<[duration, i64], i64> = {duration:2.s => 1, 3 => 2};
+    let r: Result<Map<[duration, i64], i64>, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(m)$);
+    r
+}"#,
+    refused("'b: JsonData refuses Map<[i64, duration], i64>")
+);
+
+run!(
+    json_target_f32_beside_an_integer_refused,
+    r#"{
+    let v: [f32, i64] = f32:2.0;
+    let r: Result<[f32, i64], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [i64, f32]")
+);
+
+// An f64 member keeps a whole float beside an integer, and a duration
+// key beside a bool reads back.
+run!(
+    json_float_members_written_apart_read_back,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let a: [f64, u8] = f64:2.0;
+    let b: [f64, u8] = u8:2;
+    let c: Map<[duration, bool], i64> = {duration:2.s => 1, true => 2};
+    let ra: Result<[f64, u8], E> = json::read(json::write_str(a)$);
+    let rb: Result<[f64, u8], E> = json::read(json::write_str(b)$);
+    let rc: Result<Map<[duration, bool], i64>, E> = json::read(json::write_str(c)$);
+    (ra$ == a, rb$ == b, rc$ == c)
+}"#,
+    prints("[true, true, true]")
+);
+
 run!(colliding_pair_keys_are_refused, r#"{
     let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
     select json::write_str({keys: m}) {

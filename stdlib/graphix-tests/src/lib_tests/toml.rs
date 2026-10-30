@@ -2,7 +2,7 @@ use anyhow::Result;
 use arcstr::literal;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, prints},
+    testing::{FuseExpect, prints, refused},
 };
 use netidx::subscriber::Value;
 
@@ -251,6 +251,19 @@ run!(
 }
 "#,
     prints("[true, true, true, true, true, true]")
+);
+
+// A whole f32 is written as a float, which a union reads into an
+// integer member as its own class: a target holding one beside an
+// integer is refused (x-rerun-5-04).
+run!(
+    toml_target_f32_beside_an_integer_refused,
+    r#"{
+    let r: Result<{k: [f32, i64]}, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read(toml::write_str({k: f32:2.0})$);
+    r
+}"#,
+    refused("'b: TomlData refuses { k: [i64, f32] }")
 );
 
 run!(colliding_pair_keys_are_refused, r#"{
