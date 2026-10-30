@@ -3729,6 +3729,31 @@ run!(
     FuseExpect::None
 );
 
+// A NoError payload's bound reaches a binding that holds an error beside it.
+run!(
+    no_error_payload_bound_reaches_a_binding,
+    r#"{
+    type B<'p: NoError> = Abstract<'p>;
+    let b = B(["a"]);
+    let w: [Array<'e>, Error<`X>] = b.0;
+    select w { error as _ => 0, [x, ..] => x + 1, _ => 0 }
+}"#,
+    refused("cannot compute string + i64");
+    FuseExpect::None
+);
+
+run!(
+    no_error_payload_bound_fits_a_binding,
+    r#"{
+    type B<'p: NoError> = Abstract<'p>;
+    let b = B([4]);
+    let w: [Array<'e>, Error<`X>] = b.0;
+    select w { error as _ => 0, [x, ..] => x + 1, _ => 0 }
+}"#,
+    is(Value::I64(5));
+    FuseExpect::Jit
+);
+
 // A `$` over an element a payload bounds, before anything decides it.
 run!(
     payload_bounded_operand_is_not_decided,
