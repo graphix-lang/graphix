@@ -324,7 +324,7 @@ pub fn analyze<R: Rt>(root: &Node<R>, ctx: &CompileCtx<R>) -> Result<TailLoops> 
 /// Refuse each passed `#[tail_recursive]` whose loop fusion did not
 /// build: only a fused kernel runs a tail recursion as a loop.
 pub fn check_tail_loops<R: Rt>(due: TailLoops, ctx: &CompileCtx<R>) -> Result<()> {
-    // CR claude for eric: [bug/low] The loop-built check is per definition: it
+    // CR claude for claude: [bug/low] The loop-built check is per definition: it
     // asks whether any instance of the asserted definition built a loop, so an
     // instance that runs in the node-walk passes whenever another instance
     // fuses. `#[tail_recursive] let rec loop = |f: fn(x: i64) -> i64, n, acc|
@@ -339,6 +339,8 @@ pub fn check_tail_loops<R: Rt>(due: TailLoops, ctx: &CompileCtx<R>) -> Result<()
     // assertion promises a loop for each call it covers), or (2) keep the
     // per-definition check and say so in the book. I recommend (1). probes:
     // ~/tmp/cr29/scratch/review4/u2/g1.gx, g1h.gx (tail-loop-per-def-01)
+    // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 D3): option
+    // (1), every instance the assertion covers must build its loop.
     match due.0.iter().find(|a| !ctx.fusion.has_tail_loop(a.id)) {
         None => Ok(()),
         Some(a) => Err(anyhow!(

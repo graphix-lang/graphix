@@ -2814,7 +2814,7 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
     of_int(n, t)
 }
 
-// CR claude for eric: [design/medium] D11's round trip made a float's or decimal's TEXT
+// CR claude for claude: [design/medium] D11's round trip made a float's or decimal's TEXT
 // held by no integer member, but a float VALUE is still held by one, so a value and its
 // print now read differently: with x = 3.0, cast<[i64, decimal]>(x) is i64 3 and
 // cast<[i64, decimal]>("[x]") is decimal 3.0 (main gave i64 3 for both); [u8, f32]
@@ -2827,6 +2827,9 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // one rule for text and value, and the composite path agrees with the scalar one. Probes:
 // ~/tmp/cr29/scratch/review2/RV3/{value_vs_text,cast_cross,parse_vs_cast}.gx
 // (holds-exactly-class-01)
+// 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 quick picks): option (b),
+// the same exactness for values: no integer member holds a float value when a real member
+// of the target holds it, so a value and its text read alike.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3, and a float's or a decimal's text

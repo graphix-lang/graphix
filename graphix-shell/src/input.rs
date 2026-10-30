@@ -105,7 +105,7 @@ impl InputReader {
                 self.next_line(env).await.map(Read::Signal)
             }
             // left by Ctrl-C, which the shell hears as SIGINT
-            // CR claude for eric: [design/medium] At a terminal a value display
+            // CR claude for claude: [design/medium] At a terminal a value display
             // gives the prompt back only at Ctrl-C, and Ctrl-C now resets the
             // session (D7), so a REPL keeps no binding across anything it shows:
             // `let x = 41`, `x + 1`, Ctrl-C, then `x` is undefined; before D7 the
@@ -115,6 +115,10 @@ impl InputReader {
             // let another key (Enter or Esc) leave a text display without
             // stopping anything; a piped REPL is unaffected. probe:
             // ~/tmp/cr29/scratch/review2/RV6/repl_tty_value.py (repl-value-reset-01)
+            // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 quick
+            // picks): Ctrl-C gives the prompt back and keeps the session, as before
+            // round 3 D7; the interrupt (stop the runtime and replace it with a
+            // fresh one) moves to another key, Ctrl-Alt-I.
             Output::EmptyScript | Output::Text(_) => std::future::pending().await,
             Output::None => self.next_line(env).await.map(Read::Signal),
         }

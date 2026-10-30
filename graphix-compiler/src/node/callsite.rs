@@ -1117,7 +1117,7 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// CR claude for eric: [bug/medium] An argument whose type holds a cell its uses decide
+// CR claude for claude: [bug/medium] An argument whose type holds a cell its uses decide
 // (a read target such as str::parse's or sys::net::subscribe's, an unwritten `let x =
 // never()`, an empty `[]`'s element) is not widened over: its cell is decided by
 // whichever argument the loop meets first, so "the widest argument, whatever the
@@ -1131,6 +1131,11 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // (round 4: renaming f's type variables flips acceptance, and a parse result held in
 // a `let` is refused where main runs it). The rule is cr-discuss round 4 D1; the
 // rounds' probes are under ~/tmp/cr29/scratch/review{3,4,5,6}/u3/ (widen-open-01)
+// 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 D1): option (c). Each
+// argument adds a lower bound to the variable (the TCell::lower mechanism an
+// abstract's payload uses) and the statement's settle sets the variable to the join of
+// its lower bounds, so the order cannot matter by construction. A design doc and a
+// prototype first; branch cr30-u3 stays for reference.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument, whatever the order. An argument that does not
 /// fit is probed once against its formal with those variables open; it
@@ -1899,7 +1904,7 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // CR claude for eric: [risk/medium] An omitted labeled default only narrows: it is
+    // CR claude for claude: [risk/medium] An omitted labeled default only narrows: it is
     // checked after Widening::settle has set the call's widenable variables, so a
     // default wider than the arguments is refused when omitted and accepted when
     // written. Over `let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y`, `f(#x: [1,
@@ -1921,6 +1926,10 @@ impl<R: Rt> CallSite<R> {
     // as stated (d1_written checks, d1_omit is refused), but the open-argument pair is
     // refused in both spellings: its written form checks only under the branch's
     // widening of open arguments, which is cr-discuss round 4 D1.
+    // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 D1): option (c) for
+    // arguments, so this CR's recommendation holds: an omitted default widens as a
+    // written one does, as one more lower bound under D1's mechanism. Built with
+    // widen-open-01.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

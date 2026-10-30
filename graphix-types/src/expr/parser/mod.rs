@@ -255,7 +255,7 @@ where
     many(none_of(['\r', '\n']))
 }
 
-// CR claude for eric: [style/low] A blank line between two `//` lines is
+// CR claude for claude: [style/low] A blank line between two `//` lines is
 // not kept: `comment_line` skips it with the whitespace after its line, so
 // `graphix fmt` closes up every comment block alike: above an expression,
 // below a list's last item, above a lambda formal, below a trait's methods
@@ -266,6 +266,8 @@ where
 // formatter's ornaments and the Pack form. Ruling wanted: does the formatter
 // keep a blank line inside a comment block? Recommendation: keep it, as one
 // change over every comment list. (comment-blank-lines-01)
+// 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 quick picks):
+// keep the blank line, as one change over every comment list.
 
 // One own-line `//` comment line, text kept verbatim. `///` is left for
 // `doc_comment`; `docs` says whether one is legal here.
