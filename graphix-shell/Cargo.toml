@@ -76,6 +76,7 @@ memmap2 = "0.9"
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 clap = { workspace = true }
+crossterm = { workspace = true }
 derive_builder = { workspace = true }
 enumflags2 = { workspace = true }
 flexi_logger = { workspace = true }

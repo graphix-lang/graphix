@@ -61,6 +61,7 @@ use std::{
     fmt,
     future::Future,
     marker::PhantomData,
+    ops::ControlFlow,
     pin::{Pin, pin},
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -648,7 +649,7 @@ enum StopState {
 }
 
 /// What a program can ask of the running display, shared through
-/// libstate: the stop signal Ctrl-C fires (`tui::exit`), and the
+/// libstate: the stop signal (`tui::exit`, the stop keys), and the
 /// suspend channel (`tui::suspend`). The receiver is parked here until
 /// a display takes it, and handed back when that display ends.
 struct TuiControlInner {
@@ -910,13 +911,19 @@ impl<X: GXExt> Tui<X> {
     }
 }
 
-fn is_ctrl_c(e: &Event) -> bool {
-    e.as_key_press_event()
-        .map(|e| match e.code {
-            KeyCode::Char('c') if e.modifiers == KeyModifiers::CONTROL.into() => true,
-            _ => false,
-        })
-        .unwrap_or(false)
+/// The keys that stop the display instead of reaching the program:
+/// Ctrl-C leaves it, Ctrl-\ interrupts the runtime. A terminal sends
+/// Ctrl-\ as its control code, which reads as Ctrl-4.
+fn stop_key(e: &Event) -> Option<Ended> {
+    let e = e.as_key_press_event()?;
+    if e.modifiers != KeyModifiers::CONTROL {
+        return None;
+    }
+    match e.code {
+        KeyCode::Char('c') => Some(Ended::Left),
+        KeyCode::Char('\\' | '4') => Some(Ended::Interrupted),
+        _ => None,
+    }
 }
 
 fn get_id(env: &Env, name: &ModPath) -> Result<BindId> {
@@ -986,11 +993,11 @@ impl<X: GXExt> Screen<X> {
         self.gx.set(self.size, size)
     }
 
-    /// A terminal event, through `tui::event` and the widgets; false for
-    /// Ctrl-C, which stops the display instead.
-    pub(crate) async fn event(&mut self, e: &Event) -> Result<bool> {
-        if is_ctrl_c(e) {
-            return Ok(false);
+    /// A terminal event, through `tui::event` and the widgets; a stop
+    /// key stops the display instead.
+    pub(crate) async fn event(&mut self, e: &Event) -> Result<ControlFlow<Ended>> {
+        if let Some(stop) = stop_key(e) {
+            return Ok(ControlFlow::Break(stop));
         }
         if let Event::Resize(width, height) = e {
             self.resize(SizeV::new(*width, *height))?
@@ -998,7 +1005,7 @@ impl<X: GXExt> Screen<X> {
         let v = event_to_value(e);
         self.gx.set(self.event, v.clone())?;
         self.root.handle_event(v).await?;
-        Ok(true)
+        Ok(ControlFlow::Continue(()))
     }
 
     pub(crate) fn draw(&mut self, frame: &mut Frame) -> Result<()> {
@@ -1103,24 +1110,26 @@ impl Term {
         }
     }
 
-    /// Run `work` to its end while reading the terminal, so a Ctrl-C is
-    /// read even while the work waits on a busy runtime; `None` when one
-    /// was, and the work is dropped. Other events wait in `pending`.
+    /// Run `work` to its end while reading the terminal, so a stop key is
+    /// read even while the work waits on a busy runtime; when one was,
+    /// the work is dropped. Other events wait in `pending`.
     async fn reading<T>(
         &mut self,
         work: impl Future<Output = T>,
         liveness: &mut Interval,
         pending: &mut VecDeque<Event>,
-    ) -> Result<Option<T>> {
-        let Term::Live(live) = self else { return Ok(Some(work.await)) };
+    ) -> Result<ControlFlow<Ended, T>> {
+        let Term::Live(live) = self else { return Ok(ControlFlow::Continue(work.await)) };
         let mut work = pin!(work);
         loop {
             select! {
-                r = &mut work => break Ok(Some(r)),
+                r = &mut work => break Ok(ControlFlow::Continue(r)),
                 _ = liveness.tick() => terminal_connected()?,
                 e = live.events.select_next_some() => match e {
-                    Ok(e) if is_ctrl_c(&e) => break Ok(None),
-                    Ok(e) => pending.push_back(e),
+                    Ok(e) => match stop_key(&e) {
+                        Some(stop) => break Ok(ControlFlow::Break(stop)),
+                        None => pending.push_back(e),
+                    },
                     Err(e) => bail!("reading the terminal: {e}"),
                 },
             }
@@ -1212,9 +1221,10 @@ async fn display<X: GXExt>(
         if let Some(e) = pending.pop_front() {
             dirty |= matches!(e, Event::Resize(..));
             match term.reading(screen.event(&e), &mut liveness, &mut pending).await? {
-                Some(Ok(true)) => (),
-                Some(Ok(false)) | None => control.finish(Ok(Ended::Interrupted)),
-                Some(Err(e)) => error!("error handling event {e:?}"),
+                ControlFlow::Continue(Ok(ControlFlow::Continue(()))) => (),
+                ControlFlow::Continue(Ok(ControlFlow::Break(stop)))
+                | ControlFlow::Break(stop) => control.finish(Ok(stop)),
+                ControlFlow::Continue(Err(e)) => error!("error handling event {e:?}"),
             }
             continue;
         }
@@ -1232,9 +1242,9 @@ async fn display<X: GXExt>(
                         set_mouse(*v)
                     }
                     match term.reading(screen.update(id, v), &mut liveness, &mut pending).await? {
-                        Some(Ok(())) => (),
-                        Some(Err(e)) => error!("error handling update {e:?}"),
-                        None => control.finish(Ok(Ended::Interrupted)),
+                        ControlFlow::Continue(Ok(())) => (),
+                        ControlFlow::Continue(Err(e)) => error!("error handling update {e:?}"),
+                        ControlFlow::Break(stop) => control.finish(Ok(stop)),
                     }
                 },
             },

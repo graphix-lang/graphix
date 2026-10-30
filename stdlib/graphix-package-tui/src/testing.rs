@@ -11,6 +11,7 @@
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::Event;
+use graphix_package::Ended;
 use graphix_package_core::testing::{self, Fixture, PackageRef, TestState};
 use graphix_rt::{GXEvent, NoExt};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
@@ -42,8 +43,8 @@ const DEFAULT_VIEWPORT: (u16, u16) = (40, 10);
 pub struct TuiTestHarness {
     f: Fixture,
     screen: Screen<NoExt>,
-    /// Ctrl-C was dispatched: the display would have stopped.
-    stopped: bool,
+    /// A stop key was dispatched: the display would have stopped, why.
+    stopped: Option<Ended>,
     terminal: Terminal<TestBackend>,
 }
 
@@ -83,7 +84,7 @@ impl TuiTestHarness {
             .context("compile widget tree")?;
         let backend = TestBackend::new(width, height);
         let terminal = Terminal::new(backend).context("build TestBackend terminal")?;
-        Ok(Self { f, screen, stopped: false, terminal })
+        Ok(Self { f, screen, stopped: None, terminal })
     }
 
     /// Deliver reactive updates into the widget tree until the runtime is
@@ -185,20 +186,21 @@ impl TuiTestHarness {
     }
 
     /// The display's path: `tui::size` on a resize, `tui::event`, the
-    /// widgets; a Ctrl-C stops it.
+    /// widgets; a stop key stops it.
     async fn deliver(&mut self, e: &Event) -> Result<()> {
-        if !self.stopped {
+        if self.stopped.is_none() {
             if let Event::Resize(width, height) = *e {
                 self.terminal.backend_mut().resize(width, height);
                 self.terminal.resize(Rect::new(0, 0, width, height))?;
             }
-            self.stopped = !self.screen.event(e).await.context("widget handle_event")?;
+            let read = self.screen.event(e).await.context("widget handle_event")?;
+            self.stopped = read.break_value();
         }
         Ok(())
     }
 
-    /// Whether a Ctrl-C was dispatched, which stops a display.
-    pub fn stopped(&self) -> bool {
+    /// Why a stop key dispatched stopped the display, if one was.
+    pub fn stopped(&self) -> Option<Ended> {
         self.stopped
     }
 

@@ -28,9 +28,11 @@ use netidx::publisher::Value;
 use poolshark::{global::GPooled, local::LPooled};
 use reedline::Signal;
 use std::{
+    future::Future,
     io::{self, IsTerminal, Write},
     marker::PhantomData,
     ops::ControlFlow,
+    pin::pin,
     time::Duration,
 };
 use tokio::{
@@ -221,26 +223,108 @@ impl<X: GXExt> Output<X> {
 /// read that never returns does not hold the exit.
 pub const TEARDOWN_BOUND: Duration = Duration::from_secs(5);
 
-/// The status a shell reports for SIGINT.
+/// The status a script ends with at either key: what a shell reports for
+/// SIGINT.
 const INTERRUPTED: i32 = 128 + 2;
 
-/// A runtime the shell runs and what the shell holds of it, its Ctrl-C
-/// task among them: a REPL's Ctrl-C replaces it with a fresh one. Its end
-/// stops the runtime and the Ctrl-C task, whichever way the run ends: the
-/// Ctrl-C task holds a handle, so the runtime would outlive the run.
-/// `abort()` breaks a cycle still spinning before stopping the runtime;
-/// the tokio runtime's drop would block on it.
+/// The key that interrupts the runtime.
+#[cfg(unix)]
+const INTERRUPT_KEY: &str = "ctrl-\\";
+#[cfg(windows)]
+const INTERRUPT_KEY: &str = "ctrl-break";
+
+/// A key the user pressed to stop something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Key {
+    /// Ctrl-C: a REPL leaves the value display and gives the prompt
+    /// back, keeping the session.
+    Leave,
+    /// The interrupt, Ctrl-\ (Ctrl-Break on Windows): a REPL replaces
+    /// the runtime with a fresh one.
+    Interrupt,
+}
+
+/// The keys a terminal in its usual mode sends as signals: Ctrl-C as
+/// SIGINT and the interrupt as SIGQUIT, or on Windows as Ctrl-Break. A
+/// raw reader (the line editor, a TUI) reads them as keys instead.
+struct KeySignals {
+    #[cfg(unix)]
+    leave: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    leave: tokio::signal::windows::CtrlC,
+    #[cfg(windows)]
+    interrupt: tokio::signal::windows::CtrlBreak,
+}
+
+impl KeySignals {
+    fn new() -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Ok(Self {
+                leave: signal(SignalKind::interrupt())?,
+                interrupt: signal(SignalKind::quit())?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows::{ctrl_break, ctrl_c};
+            Ok(Self { leave: ctrl_c()?, interrupt: ctrl_break()? })
+        }
+    }
+
+    async fn recv(&mut self) -> Option<Key> {
+        tokio::select! {
+            k = self.leave.recv() => k.map(|()| Key::Leave),
+            k = self.interrupt.recv() => k.map(|()| Key::Interrupt),
+        }
+    }
+}
+
+/// Run `work`, which may wait on a busy runtime, telling each Ctrl-C
+/// meanwhile that it stops nothing. The interrupt, if it came, is the
+/// answer once the work is done, which its stopped runtime makes soon.
+async fn busy(
+    work: impl Future<Output = ()>,
+    keys: &mut mpsc::UnboundedReceiver<Key>,
+) -> Option<Key> {
+    let mut work = pin!(work);
+    loop {
+        select! {
+            () = &mut work => break None,
+            key = keys.recv() => match key {
+                Some(Key::Leave) => eprintln!(
+                    "ctrl-c stops nothing while the runtime is busy; \
+                     {INTERRUPT_KEY} interrupts it and resets the session"
+                ),
+                key => {
+                    (&mut work).await;
+                    break key;
+                }
+            },
+        }
+    }
+}
+
+/// A runtime the shell runs and what the shell holds of it, the task
+/// that hears its keys among them: a REPL's interrupt replaces it with a
+/// fresh one. Its end stops the runtime and the key task, whichever way
+/// the run ends: the key task holds a handle, so the runtime would
+/// outlive the run. `abort()` breaks a cycle still spinning before
+/// stopping the runtime; the tokio runtime's drop would block on it.
 struct Session<X: GXExt> {
     gx: GXHandle<X>,
     from_gx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
     /// Where `sys::exit` asks the shell to end; `None` once it asked or
     /// the runtime stopped.
     exit: Option<oneshot::Receiver<i32>>,
-    sigint: tokio::task::JoinHandle<()>,
+    keys: tokio::task::JoinHandle<()>,
 }
 
 impl<X: GXExt> Session<X> {
-    /// Whether a Ctrl-C stopped the runtime.
+    /// Whether the interrupt stopped the runtime.
     fn interrupted(&self) -> bool {
         self.gx.control().stopped_by() == Some(StopCause::Interrupt)
     }
@@ -254,7 +338,7 @@ impl<X: GXExt> Session<X> {
     /// abandoned with the runtime.
     async fn finish(&mut self, output: &mut Output<X>) {
         self.gx.abort();
-        self.sigint.abort();
+        self.keys.abort();
         output.clear().await;
         let deadline = tokio::time::Instant::now() + TEARDOWN_BOUND;
         let _ = tokio::time::timeout_at(deadline, self.gx.ended()).await;
@@ -265,7 +349,7 @@ impl<X: GXExt> Session<X> {
 impl<X: GXExt> Drop for Session<X> {
     fn drop(&mut self) {
         self.gx.abort();
-        self.sigint.abort();
+        self.keys.abort();
     }
 }
 
@@ -319,12 +403,13 @@ impl Terminated {
 pub enum Mode {
     /// Read input line by line from the user and compile/execute it.
     /// provide completion and print the value of the last expression
-    /// as it executes. Ctrl-C, idle or busy, replaces the runtime with a
-    /// fresh one and Ctrl-D exits the shell.
+    /// as it executes. Ctrl-C gives the prompt back and keeps the
+    /// session; the interrupt, Ctrl-\ (Ctrl-Break on Windows), idle or
+    /// busy, replaces the runtime with a fresh one; Ctrl-D exits the shell.
     Repl,
     /// Load compile and execute a file. Print the value
-    /// of the last expression in the file to stdout. Ctrl-C stops the
-    /// program and exits the shell with status 130.
+    /// of the last expression in the file to stdout. Ctrl-C or the
+    /// interrupt stops the program and exits the shell with status 130.
     Script(Load),
     /// Check that the specified file compiles but do not run it
     Check(Load),
@@ -341,7 +426,7 @@ impl Mode {
 
 /// The embedder's context-setup hook — runs against each freshly
 /// created [`ExecState`] before anything compiles: the first runtime's
-/// and each one a REPL's Ctrl-C starts. The place to seed package
+/// and each one a REPL's interrupt starts. The place to seed package
 /// libstate entries (the CLI seeds sys::net's `NetConfig` and
 /// `NetTimeouts` here); embedders can do whatever they need.
 pub type SetupContext<X> = Box<dyn FnMut(&mut ExecState<GXRt<X>>) + Send + 'static>;
@@ -738,8 +823,8 @@ impl<X: GXExt> Shell<X> {
         if self.cache == CacheMode::Warm {
             return self.warm().await.map(|()| None);
         }
-        let (sigint_tx, mut sigint) = mpsc::unbounded_channel();
-        let mut session = self.start(&sigint_tx).await?;
+        let (keys_tx, mut keys) = mpsc::unbounded_channel();
+        let mut session = self.start(&keys_tx).await?;
         let script = self.mode.file_mode();
         let mut input = InputReader::new();
         let mut output = if script { Output::EmptyScript } else { Output::None };
@@ -752,182 +837,203 @@ impl<X: GXExt> Shell<X> {
         };
         let mut newenv = None;
         let mut exprs = vec![];
-        // a program whose first cycle does not end holds the env load, so a
-        // termination signal must be heard there too
-        let loaded = tokio::select! {
-            env = self.load_env(&session.gx, &mut newenv, &mut output, &mut exprs, &run_on_main) => Ok(env),
-            code = terminated.recv() => Err(code),
-            _ = sigint.recv() => Err(Some(INTERRUPTED)),
-        };
-        let mut env = match loaded {
-            Ok(Ok(env)) => env,
-            Ok(Err(_)) if session.interrupted() => {
+        let mut greeted = script;
+        // the interrupt stopped the session's runtime: start a fresh one
+        let mut interrupted = false;
+        let exit = 'session: loop {
+            if interrupted {
                 session.finish(&mut output).await;
-                return Ok(Some(INTERRUPTED));
+                exprs.clear();
+                session = self.start(&keys_tx).await?;
             }
-            Ok(Err(e)) => {
-                session.finish(&mut output).await;
-                return Err(e);
-            }
-            Err(code) => {
-                session.finish(&mut output).await;
-                return Ok(code);
-            }
-        };
-        if !script {
-            println!("Welcome to the graphix shell");
-            println!(
-                "Press ctrl-c to reset the session, ctrl-d to exit, and tab for help"
-            )
-        }
-        let exit = 'repl: loop {
-            let mut ctrl_c = false;
-            select! {
-                code = exit_requested(&mut session.exit) => if let Some(code) = code {
-                    // the runtime answers once the cycle that asked has sent
-                    // its batch: show it, and every batch before it
-                    match output
-                        .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
-                        .await
-                    {
-                        ControlFlow::Break(r) => break 'repl r,
-                        ControlFlow::Continue(()) => break 'repl Ok(Some(code)),
-                    }
-                },
-                batch = session.from_gx.recv() => match batch {
-                    None if session.interrupted() => ctrl_c = true,
-                    None => break 'repl Err(session.gx.stopped("graphix runtime is dead")),
-                    Some(mut batch) => {
-                        let shown =
-                            output.process_batch(&mut env, &mut newenv, &mut batch).await;
-                        if let ControlFlow::Break(r) = shown {
-                            break 'repl r
-                        }
-                    }
-                },
-                code = terminated.recv() => break 'repl Ok(code),
-                _ = sigint.recv() => ctrl_c = true,
-                input = input.read_line(&mut output, &mut newenv, script) => {
-                    match input {
-                        // with no display up the error is the input's own
-                        Err(e) if script || matches!(output, Output::None) => break Err(e),
-                        Err(e) => {
-                            eprintln!("error: {e:?}");
-                            // A display that failed is still the output.
-                            output.clear().await;
-                        }
-                        // a program that ended its display ended successfully
-                        Ok(Read::Ended) if script => break Ok(None),
-                        Ok(Read::Ended) => output.clear().await,
-                        Ok(Read::Signal(Signal::CtrlC)) => ctrl_c = true,
-                        // piped input ended: what its lines started runs
-                        // first, a program that never idles for at most the
-                        // teardown's bound, and may end the shell with its
-                        // own status
-                        Ok(Read::Signal(Signal::CtrlD)) if !io::stdin().is_terminal() => {
-                            let _ = tokio::time::timeout(TEARDOWN_BOUND, session.gx.wait_idle()).await;
-                            let shown = output
-                                .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
-                                .await;
-                            match (shown, session.exit.as_mut().map(|rx| rx.try_recv())) {
-                                (ControlFlow::Break(r), _) => break 'repl r,
-                                (ControlFlow::Continue(()), Some(Ok(code))) => {
-                                    break 'repl Ok(Some(code))
-                                }
-                                (ControlFlow::Continue(()), _) => break 'repl Ok(None),
-                            }
-                        }
-                        Ok(Read::Signal(Signal::CtrlD | Signal::ExternalBreak(_))) => {
-                            break Ok(None)
-                        }
-                        Ok(Read::Signal(Signal::Success(line))) => {
-                            match session.gx.compile(ArcStr::from(line)).await {
-                                Err(e) => eprintln!("error: {e:?}"),
-                                Ok(res) => {
-                                    env = res.env;
-                                    newenv = Some(env.clone());
-                                    exprs.extend(res.exprs);
-                                    if exprs.last().map(|e| e.output).unwrap_or(false) {
-                                        let e = exprs.pop().unwrap();
-                                        let typ = e.typ
-                                            .with_deref(|t| t.cloned())
-                                            .unwrap_or_else(|| e.typ.clone());
-                                        format_with_flags(
-                                            PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
-                                            || println!("-: {}", typ)
-                                        );
-                                        output.clear().await;
-                                        let o = Output::from_expr(
-                                            &session.gx, &env, e, &run_on_main,
-                                            &self.packages,
-                                        ).await;
-                                        output = o.unwrap_or_else(|e| {
-                                            eprintln!("error: {e:?}");
-                                            Output::None
-                                        });
-                                    } else {
-                                        output.clear().await;
-                                        Output::chosen(&session.gx, &self.packages, None).await;
-                                    }
-                                }
-                            }
-                        }
-                        Ok(_) => ()
-                    }
-                },
-            }
-            if !ctrl_c {
-                continue;
-            }
-            if script {
-                break Ok(Some(INTERRUPTED));
-            }
-            session.finish(&mut output).await;
-            // CR claude for claude: [risk/low] A reset's load_env does not listen on
-            // sigint: a second Ctrl-C that interrupts the new runtime before its first
-            // request is served makes load_env fail, and Err(e) => break Err(e) ends the
-            // REPL with an error. Not reproduced
-            // (~/tmp/cr29/scratch/review2/RV6/repl_double_sigint.py: every run rc=0; a
-            // second SIGINT during finish/start is lost, one during the init compile
-            // resets again). Retry the reset while load_env fails and the session was
-            // interrupted. (repl-double-reset-01)
-            exprs.clear();
-            session = self.start(&sigint_tx).await?;
-            env = match self
-                .load_env(&session.gx, &mut newenv, &mut output, &mut exprs, &run_on_main)
-                .await
-            {
-                Ok(env) => env,
-                Err(e) => break Err(e),
+            // a program whose first cycle does not end holds the env load, so a
+            // termination signal must be heard there too
+            let loaded = tokio::select! {
+                env = self.load_env(&session.gx, &mut newenv, &mut output, &mut exprs, &run_on_main) => Ok(env),
+                code = terminated.recv() => Err(code),
+                _ = keys.recv(), if script => Err(Some(INTERRUPTED)),
             };
-            // a Ctrl-C pressed while the session was reset is that reset's
-            while sigint.try_recv().is_ok() {}
-            eprintln!("interrupted: the session was reset");
+            let mut env = match loaded {
+                Ok(Ok(env)) => env,
+                Ok(Err(e)) if !session.interrupted() => break Err(e),
+                Ok(Err(_)) if script => break Ok(Some(INTERRUPTED)),
+                // interrupted again before the fresh runtime served the load
+                // XCR claude for claude: [risk/low] A reset's load_env does not listen on
+                // sigint: a second Ctrl-C that interrupts the new runtime before its first
+                // request is served makes load_env fail, and Err(e) => break Err(e) ends the
+                // REPL with an error. Not reproduced
+                // (~/tmp/cr29/scratch/review2/RV6/repl_double_sigint.py: every run rc=0; a
+                // second SIGINT during finish/start is lost, one during the init compile
+                // resets again). Retry the reset while load_env fails and the session was
+                // interrupted. (repl-double-reset-01)
+                // 2026-10-30 claude: The reset is now the session loop's restart in
+                // Shell::run: a load the interrupt failed by stopping the fresh runtime
+                // starts again (a REPL's first load too), and the key task's signal listener
+                // is made before the runtime is built, so an interrupt during a start is
+                // heard by that start. Pin: graphix-shell/tests/repl_interrupt.rs
+                // interrupts_during_a_reset_leave_a_working_repl (20 SIGQUITs 50 ms apart,
+                // then a line must run): fails 3 of 3 with the restart arm replaced by break
+                // Err(e), as the old reset did.
+                Ok(Err(_)) => {
+                    interrupted = true;
+                    continue;
+                }
+                Err(code) => break Ok(code),
+            };
+            if !std::mem::replace(&mut greeted, true) {
+                println!("Welcome to the graphix shell");
+                println!(
+                    "Press ctrl-c to get the prompt back, {INTERRUPT_KEY} to reset the \
+                     session, ctrl-d to exit, and tab for help"
+                )
+            }
+            if std::mem::take(&mut interrupted) {
+                // a key pressed while the runtime was replaced is that replacement's
+                while keys.try_recv().is_ok() {}
+                eprintln!("interrupted: the session was reset");
+            }
+            loop {
+                let mut key = None;
+                select! {
+                    code = exit_requested(&mut session.exit) => if let Some(code) = code {
+                        // the runtime answers once the cycle that asked has sent
+                        // its batch: show it, and every batch before it
+                        match output
+                            .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
+                            .await
+                        {
+                            ControlFlow::Break(r) => break 'session r,
+                            ControlFlow::Continue(()) => break 'session Ok(Some(code)),
+                        }
+                    },
+                    batch = session.from_gx.recv() => match batch {
+                        None if session.interrupted() => key = Some(Key::Interrupt),
+                        None => break 'session Err(session.gx.stopped("graphix runtime is dead")),
+                        Some(mut batch) => {
+                            let shown =
+                                output.process_batch(&mut env, &mut newenv, &mut batch).await;
+                            if let ControlFlow::Break(r) = shown {
+                                break 'session r
+                            }
+                        }
+                    },
+                    code = terminated.recv() => break 'session Ok(code),
+                    k = keys.recv() => key = k,
+                    input = input.read_line(&mut output, &mut newenv, script) => {
+                        match input {
+                            // with no display up the error is the input's own
+                            Err(e) if script || matches!(output, Output::None) => break 'session Err(e),
+                            Err(e) => {
+                                eprintln!("error: {e:?}");
+                                // A display that failed is still the output.
+                                output.clear().await;
+                            }
+                            // a program that ended its display ended successfully
+                            Ok(Read::Ended) if script => break 'session Ok(None),
+                            Ok(Read::Ended) => output.clear().await,
+                            Ok(Read::Key(k)) => key = Some(k),
+                            // piped input ended: what its lines started runs
+                            // first, a program that never idles for at most the
+                            // teardown's bound, and may end the shell with its
+                            // own status
+                            Ok(Read::Signal(Signal::CtrlD)) if !io::stdin().is_terminal() => {
+                                let _ = tokio::time::timeout(TEARDOWN_BOUND, session.gx.wait_idle()).await;
+                                let shown = output
+                                    .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
+                                    .await;
+                                match (shown, session.exit.as_mut().map(|rx| rx.try_recv())) {
+                                    (ControlFlow::Break(r), _) => break 'session r,
+                                    (ControlFlow::Continue(()), Some(Ok(code))) => {
+                                        break 'session Ok(Some(code))
+                                    }
+                                    (ControlFlow::Continue(()), _) => break 'session Ok(None),
+                                }
+                            }
+                            Ok(Read::Signal(Signal::CtrlD | Signal::ExternalBreak(_))) => {
+                                break 'session Ok(None)
+                            }
+                            Ok(Read::Signal(Signal::Success(line))) => {
+                                let shown = async {
+                                    match session.gx.compile(ArcStr::from(line)).await {
+                                        Err(e) => eprintln!("error: {e:?}"),
+                                        Ok(res) => {
+                                            env = res.env;
+                                            newenv = Some(env.clone());
+                                            exprs.extend(res.exprs);
+                                            if exprs.last().map(|e| e.output).unwrap_or(false) {
+                                                let e = exprs.pop().unwrap();
+                                                let typ = e.typ
+                                                    .with_deref(|t| t.cloned())
+                                                    .unwrap_or_else(|| e.typ.clone());
+                                                format_with_flags(
+                                                    PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
+                                                    || println!("-: {}", typ)
+                                                );
+                                                output.clear().await;
+                                                let o = Output::from_expr(
+                                                    &session.gx, &env, e, &run_on_main,
+                                                    &self.packages,
+                                                ).await;
+                                                output = o.unwrap_or_else(|e| {
+                                                    eprintln!("error: {e:?}");
+                                                    Output::None
+                                                });
+                                            } else {
+                                                output.clear().await;
+                                                Output::chosen(&session.gx, &self.packages, None).await;
+                                            }
+                                        }
+                                    }
+                                };
+                                key = busy(shown, &mut keys).await;
+                            }
+                            // the line editor's Ctrl-C abandoned the line
+                            Ok(Read::Signal(_)) => (),
+                        }
+                    },
+                }
+                match key {
+                    None => (),
+                    Some(_) if script => break 'session Ok(Some(INTERRUPTED)),
+                    Some(Key::Leave) => output.clear().await,
+                    Some(Key::Interrupt) => {
+                        interrupted = true;
+                        continue 'session;
+                    }
+                }
+            }
         };
         session.finish(&mut output).await;
         exit
     }
 
-    /// Start a runtime and its Ctrl-C task, which stops the runtime and
-    /// tells `sigint`.
-    async fn start(&mut self, sigint: &mpsc::UnboundedSender<()>) -> Result<Session<X>> {
+    /// Start a runtime and the task that hears the keys the terminal sends
+    /// as signals: it stops the runtime at the interrupt, and at Ctrl-C in
+    /// a script, and tells `keys`.
+    async fn start(&mut self, keys: &mpsc::UnboundedSender<Key>) -> Result<Session<X>> {
+        // heard from before the runtime starts: a process that does not
+        // catch the interrupt's SIGQUIT dies of it
+        let mut signals = KeySignals::new()?;
         let (tx, from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
         let exit = self.exit.take().expect("init installs the exit request");
+        let script = self.mode.file_mode();
         // Armed before the first cycle: a program may wedge inside
         // `load_env`, before the input loop exists.
-        let sigint = {
-            let (gx, sigint) = (gx.clone(), sigint.clone());
+        let keys = {
+            let (gx, keys) = (gx.clone(), keys.clone());
             tokio::spawn(async move {
-                while tokio::signal::ctrl_c().await.is_ok() {
-                    gx.interrupt();
-                    if sigint.send(()).is_err() {
+                while let Some(key) = signals.recv().await {
+                    if script || key == Key::Interrupt {
+                        gx.interrupt();
+                    }
+                    if keys.send(key).is_err() {
                         break;
                     }
                 }
             })
         };
-        Ok(Session { gx, from_gx, exit: Some(exit), sigint })
+        Ok(Session { gx, from_gx, exit: Some(exit), keys })
     }
 }
 

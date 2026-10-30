@@ -3280,6 +3280,7 @@ dependencies = [
  "bytes",
  "clap",
  "compact_str",
+ "crossterm",
  "derive_builder",
  "dirs",
  "enumflags2",

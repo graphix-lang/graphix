@@ -933,14 +933,18 @@ node graph IS the IR — there is no parallel typed IR
   a deselect does unless its chain takes it again. No depth limit;
   evaluation is atomic within a cycle; containment stops the runtime for good, busy or
   idle, never to resume (`Control::stop`, its cause read back by
-  `Control::stopped_by`): the interrupt (`GXHandle::interrupt`, Ctrl-C),
+  `Control::stopped_by`): the interrupt (`GXHandle::interrupt`, `Ctrl-\`),
   the stack budget (`GRAPHIX_STACK_BUDGET`) and the activation budget:
   live activations (calls, slots, kernel blocks) bound per runtime,
   unlimited by default, set by an embedder
   (`Control::set_activation_budget`) or `GRAPHIX_ACTIVATION_BUDGET`. A
   stopped runtime's handle fails every call; an embedder mints a new
-  runtime, the shell's script exits 130 at Ctrl-C and its REPL's Ctrl-C,
-  idle or busy, replaces the runtime with a fresh one (Ctrl-D exits). Kernel
+  runtime, the shell's script exits 130 at Ctrl-C or `Ctrl-\` and its
+  REPL's `Ctrl-\` (SIGQUIT; Ctrl-Break on Windows), idle or busy, replaces
+  the runtime with a fresh one; the REPL's Ctrl-C stops nothing, leaving
+  the display with the session kept, and the shell reads no key while a
+  display shows or an input runs (the terminal signals them; Ctrl-D
+  exits). Kernel
   interior memory (`design/kernel_instance_state.md`) gives one compiled
   body the interp's per-slot/per-activation multiplicity for exactly the
   state that decides firing; only a site's first-ever dispatch, and a

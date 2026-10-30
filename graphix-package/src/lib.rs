@@ -135,8 +135,11 @@ pub trait CustomDisplay<X: GXExt>: Any {
 /// Why a custom display ended without failing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
-    /// The user interrupted it (Ctrl-C): a script exits as interrupted, a
-    /// REPL resets its session.
+    /// The user left it (Ctrl-C): a REPL gives its prompt back and keeps
+    /// its session, a script exits as interrupted.
+    Left,
+    /// The user interrupted the runtime (Ctrl-\): a REPL replaces it with
+    /// a fresh one, a script exits as interrupted.
     Interrupted,
     /// The program asked to end (`tui::exit`), or its last window closed:
     /// a script exits successfully.

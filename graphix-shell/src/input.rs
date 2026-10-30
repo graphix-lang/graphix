@@ -1,32 +1,71 @@
-use super::{Env, Output, completion::BComplete};
+use super::{Env, Key, Output, completion::BComplete};
 use anyhow::{Error, Result, bail};
+use crossterm::event::Event;
 use futures::{StreamExt, channel::mpsc};
 use graphix_package::Ended;
 use graphix_rt::GXExt;
 use reedline::{
-    DefaultPrompt, DefaultPromptSegment, Emacs, IdeMenu, KeyCode, KeyModifiers,
-    MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
-    default_emacs_keybindings,
+    DefaultPrompt, DefaultPromptSegment, EditMode, Emacs, IdeMenu, KeyCode, KeyModifiers,
+    MenuBuilder, PromptEditMode, Reedline, ReedlineEvent, ReedlineMenu, ReedlineRawEvent,
+    Signal, default_emacs_keybindings,
 };
-use std::io::IsTerminal;
+use std::{
+    io::IsTerminal,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{sync::oneshot, task};
 
-/// What the shell reads next: a line editor signal, or the display that
-/// showed the output ended because the program asked it to.
+/// What the shell reads next: a line editor signal, a key that leaves
+/// the display or interrupts the runtime, or the display that showed the
+/// output ended because the program asked it to.
 pub(super) enum Read {
     Signal(Signal),
+    Key(Key),
     Ended,
 }
 
+/// Emacs editing, with the interrupt key, Ctrl-\ (Ctrl-4 as a terminal
+/// reports its control code), abandoning the line as Ctrl-C does and
+/// raising `interrupt`, which tells the two apart.
+struct EditKeys {
+    emacs: Emacs,
+    interrupt: Arc<AtomicBool>,
+}
+
+impl EditMode for EditKeys {
+    fn parse_event(&mut self, event: ReedlineRawEvent) -> ReedlineEvent {
+        let event = Event::from(event);
+        if let Event::Key(k) = &event
+            && k.modifiers == KeyModifiers::CONTROL
+            && let KeyCode::Char('\\' | '4') = k.code
+        {
+            self.interrupt.store(true, Ordering::Relaxed);
+            return ReedlineEvent::CtrlC;
+        }
+        match ReedlineRawEvent::try_from(event) {
+            Ok(event) => self.emacs.parse_event(event),
+            Err(()) => ReedlineEvent::None,
+        }
+    }
+
+    fn edit_mode(&self) -> PromptEditMode {
+        self.emacs.edit_mode()
+    }
+}
+
+type Lines = mpsc::UnboundedReceiver<(oneshot::Sender<Option<Env>>, Result<Read>)>;
+
 pub(super) struct InputReader {
     go: Option<oneshot::Sender<Option<Env>>>,
-    recv: mpsc::UnboundedReceiver<(oneshot::Sender<Option<Env>>, Result<Signal>)>,
+    recv: Lines,
 }
 
 impl InputReader {
-    pub(super) fn run(
-        mut c_rx: oneshot::Receiver<Option<Env>>,
-    ) -> mpsc::UnboundedReceiver<(oneshot::Sender<Option<Env>>, Result<Signal>)> {
+    pub(super) fn run(mut c_rx: oneshot::Receiver<Option<Env>>) -> Lines {
         let (tx, rx) = mpsc::unbounded();
         task::spawn(async move {
             let mut keybinds = default_emacs_keybindings();
@@ -39,11 +78,16 @@ impl InputReader {
                 ]),
             );
             let menu = IdeMenu::default().with_name("completion");
+            let interrupt = Arc::new(AtomicBool::new(false));
             // a stdin that is no terminal is read line by line
             let mut line_editor = std::io::stdin().is_terminal().then(|| {
+                let keys = EditKeys {
+                    emacs: Emacs::new(keybinds),
+                    interrupt: interrupt.clone(),
+                };
                 Reedline::create()
                     .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
-                    .with_edit_mode(Box::new(Emacs::new(keybinds)))
+                    .with_edit_mode(Box::new(keys))
             });
 
             let prompt = DefaultPrompt {
@@ -60,7 +104,13 @@ impl InputReader {
                     }
                 }
                 let r = task::block_in_place(|| match &mut line_editor {
-                    Some(ed) => ed.read_line(&prompt).map_err(Error::from),
+                    Some(ed) => {
+                        // takes the wake a TUI display's crossterm event
+                        // stream can leave, which fails the line editor's
+                        // first read (UPSTREAM.md)
+                        let _ = crossterm::event::poll(Duration::ZERO);
+                        ed.read_line(&prompt).map_err(Error::from)
+                    }
                     None => {
                         let mut line = String::new();
                         match std::io::stdin().read_line(&mut line) {
@@ -69,6 +119,12 @@ impl InputReader {
                             Err(e) => Err(e.into()),
                         }
                     }
+                });
+                let r = r.map(|sig| match sig {
+                    Signal::CtrlC if interrupt.swap(false, Ordering::Relaxed) => {
+                        Read::Key(Key::Interrupt)
+                    }
+                    sig => Read::Signal(sig),
                 });
                 let (o_tx, o_rx) = oneshot::channel();
                 c_rx = o_rx;
@@ -94,7 +150,8 @@ impl InputReader {
     ) -> Result<Read> {
         match output {
             Output::Custom(cdc) => match (&mut cdc.stop).await {
-                Ok(Ok(Ended::Interrupted)) => Ok(Read::Signal(Signal::CtrlC)),
+                Ok(Ok(Ended::Left)) => Ok(Read::Key(Key::Leave)),
+                Ok(Ok(Ended::Interrupted)) => Ok(Read::Key(Key::Interrupt)),
                 Ok(Ok(Ended::Requested)) => Ok(Read::Ended),
                 Ok(Err(e)) => Err(e.context("the display failed")),
                 Err(_) => bail!("the display died"),
@@ -102,10 +159,10 @@ impl InputReader {
             // a REPL's piped lines go on being read while a value shows, a
             // new one replacing it
             Output::Text(_) if !script && !std::io::stdin().is_terminal() => {
-                self.next_line(env).await.map(Read::Signal)
+                self.next_line(env).await
             }
-            // left by Ctrl-C, which the shell hears as SIGINT
-            // CR claude for claude: [design/medium] At a terminal a value display
+            // left by Ctrl-C, which the terminal sends the shell as SIGINT
+            // XCR claude for claude: [design/medium] At a terminal a value display
             // gives the prompt back only at Ctrl-C, and Ctrl-C now resets the
             // session (D7), so a REPL keeps no binding across anything it shows:
             // `let x = 41`, `x + 1`, Ctrl-C, then `x` is undefined; before D7 the
@@ -123,22 +180,45 @@ impl InputReader {
             // key is Ctrl-\ (SIGQUIT, delivered by the terminal like Ctrl-C), not
             // Ctrl-Alt-I: the shell does not read the keyboard during a display or
             // an evaluation.
+            // 2026-10-30 claude: Built per the rulings. Ctrl-C never stops the
+            // runtime: at a value display, where the terminal sends it as SIGINT, it
+            // leaves the display with every binding kept; at the prompt it is
+            // reedline's own Ctrl-C (abandons the line); while an input waits on a
+            // busy runtime it stops nothing and prints a hint naming Ctrl-\ (lib.rs
+            // busy). Ctrl-\ is the interrupt, uniform: SIGQUIT at a display or while
+            // busy (the session's key task stops the runtime), a key at the prompt
+            // (input.rs EditKeys: reedline's Ctrl-C plus a flag), Ended::Interrupted
+            // from a TUI, whose Ctrl-C is the new Ended::Left; Ctrl-Break on Windows
+            // (uncompiled there). A script ends with 130 at either key. Pins, all
+            // failing on 5f4b4677f: graphix-shell/tests/repl_interrupt.rs
+            // ctrl_c_at_a_terminal_display_keeps_the_session,
+            // ctrl_c_at_a_terminal_prompt_keeps_the_session,
+            // ctrl_c_at_an_idle_prompt_keeps_the_session,
+            // ctrl_c_while_busy_names_the_interrupt,
+            // ctrl_backslash_at_a_terminal_prompt_resets_the_session,
+            // ctrl_backslash_at_a_terminal_display_resets_the_session,
+            // interrupt_at_an_idle_prompt_resets_the_session,
+            // interrupt_frees_a_wedged_repl, tui_display_keys; interrupt_wedge.rs
+            // quit_frees_first_cycle_wedge_jit and quit_frees_later_cycle_wedge_jit;
+            // tui render_test the_program_sees_size_and_events and terminal_test
+            // ctrl_backslash_is_read_while_work_waits (fail with the Ctrl-\ key
+            // unmatched).
             Output::EmptyScript | Output::Text(_) => std::future::pending().await,
-            Output::None => self.next_line(env).await.map(Read::Signal),
+            Output::None => self.next_line(env).await,
         }
     }
 
     /// The next line the reader takes, started over `env` if none is
     /// being read.
-    async fn next_line(&mut self, env: &mut Option<Env>) -> Result<Signal> {
+    async fn next_line(&mut self, env: &mut Option<Env>) -> Result<Read> {
         if let Some(tx) = self.go.take() {
             let _ = tx.send(env.take());
         }
         match self.recv.next().await {
             None => bail!("input stream ended"),
-            Some((go, sig)) => {
+            Some((go, read)) => {
                 self.go = Some(go);
-                sig
+                read
             }
         }
     }

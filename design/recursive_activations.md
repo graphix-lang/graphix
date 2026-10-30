@@ -311,7 +311,7 @@ recursion). Rejected: the entry-only interim (`ensure_sufficient`
 around `FusedKernel::update`, a fresh segment per invocation) — it bounds
 depth at ~segment/frame, a large fixed number rather than memory, and
 fails silently (a segfault) past it. Containment otherwise is
-`atomic_recursion.md`'s: the interrupt, the budget, Ctrl-C.
+`atomic_recursion.md`'s: the interrupt (`Ctrl-\`), the budget.
 
 ## 5. The cost of an activation
 

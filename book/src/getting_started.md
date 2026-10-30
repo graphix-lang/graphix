@@ -24,7 +24,7 @@ You'll see a prompt that looks like this:
 
 ```
 Welcome to the graphix shell
-Press ctrl-c to reset the session, ctrl-d to exit, and tab for help
+Press ctrl-c to get the prompt back, ctrl-\ to reset the session, ctrl-d to exit, and tab for help
 〉
 ```
 
@@ -53,12 +53,14 @@ The `-: i64` line tells you the result is a 64-bit integer, and `4` is
 the value. You may be wondering why you don't get the 〉 prompt after
 running this expression. This is because, being a dataflow language,
 expressions are pipelines that can output more than one value, they
-will run until you stop them by hitting ctrl-c. Do this now to get the
-prompt back. Ctrl-c stops the whole session: the shell starts a fresh
-one, so the bindings you made before it are gone.
+will show their values until you hit ctrl-c. Do this now to get the
+prompt back. What you defined stays: ctrl-c only stops showing the
+value.
 
-Since ctrl-c is used to stop the session, if you want to exit the REPL
-press ctrl-d.
+To stop everything, press `ctrl-\` (ctrl-break on Windows): it stops the
+runtime, even one stuck in a computation that never ends, and starts a
+fresh session, so the bindings you made before it are gone. To exit the
+REPL press ctrl-d.
 
 Try a more complex expression:
 

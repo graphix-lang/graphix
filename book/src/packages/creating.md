@@ -317,14 +317,17 @@ closures in `defpackage!`:
   channel (`graphix_package::Stop`), which the display keeps for as long as it
   lives. It carries `Result<graphix_package::Ended>`: send
   `Ok(Ended::Requested)` when the program is done (the user closed the
-  window, the script called your exit builtin), `Ok(Ended::Interrupted)`
-  when the user interrupted it (Ctrl-C), and `Err(e)` when the display
-  cannot go on (the terminal went away). Dropping it unsent means the display
-  died. The shell calls `clear()` before dropping the display, and the
-  runtime may already be stopped then, so `clear()` must not wait on it; a
-  script then exits, with the error if there was one, or with status 130
-  when interrupted, and the REPL returns to its prompt, in a fresh session
-  when interrupted.
+  window, the script called your exit builtin), `Ok(Ended::Left)` when the
+  user left it (Ctrl-C, read as a key by a display that holds the terminal
+  raw), `Ok(Ended::Interrupted)` when the user interrupted the runtime
+  (`Ctrl-\`), and `Err(e)` when the display cannot go on (the terminal went
+  away). Dropping it unsent means the display died. A display that leaves
+  the terminal in its usual mode sends neither key: the terminal sends them
+  to the shell as signals. The shell calls `clear()` before dropping the
+  display, and the runtime may already be stopped then, so `clear()` must
+  not wait on it; a script then exits, with the error if there was one, or
+  with status 130 at either key, and the REPL returns to its prompt, the
+  session kept when left and fresh when interrupted.
   It also receives `run_on_main`, for a display that needs the main thread.
 
 Here is a minimal example that prints every update to stderr:

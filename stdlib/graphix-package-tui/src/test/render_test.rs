@@ -4,7 +4,8 @@
 use super::ch;
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
-use crossterm::event::{Event, KeyCode, KeyEvent};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use graphix_package::Ended;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 
 fn null() -> ValArray {
@@ -280,32 +281,37 @@ let result = select screen { 0 => text(&"zero"), _ => text(&"one") }
     h.assert_lines(&["one"])
 }
 
-/// The program sees the display's size and every event, and Ctrl-C
-/// stops the display instead of reaching it.
+/// The program sees the display's size and every event, and a stop key
+/// stops the display instead of reaching it: Ctrl-C leaves it, Ctrl-\
+/// (Ctrl-4 as a terminal reports its control code) interrupts.
 #[tokio::test]
 async fn the_program_sees_size_and_events() -> Result<()> {
-    let mut h = TuiTestHarness::with_viewport(
-        r#"
+    for (key, stop) in
+        [('c', Ended::Left), ('\\', Ended::Interrupted), ('4', Ended::Interrupted)]
+    {
+        let mut h = TuiTestHarness::with_viewport(
+            r#"
 use tui::text::text;
 let n = 0;
 n <- tui::event ~ n + 1;
 let result = text(&"[tui::size.width]x[tui::size.height] [n]")
 "#,
-        12,
-        1,
-    )
-    .await?;
-    h.drain().await?;
-    h.assert_lines(&["12x1 0"])?;
-    h.dispatch_events([ch('a'), ch('b')]).await?;
-    h.assert_lines(&["12x1 2"])?;
-    h.dispatch_event(Event::Key(KeyEvent::new(
-        KeyCode::Char('c'),
-        crossterm::event::KeyModifiers::CONTROL,
-    )))
-    .await?;
-    h.assert_lines(&["12x1 2"])?;
-    assert!(h.stopped());
+            12,
+            1,
+        )
+        .await?;
+        h.drain().await?;
+        h.assert_lines(&["12x1 0"])?;
+        h.dispatch_events([ch('a'), ch('b')]).await?;
+        h.assert_lines(&["12x1 2"])?;
+        h.dispatch_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(key),
+            KeyModifiers::CONTROL,
+        )))
+        .await?;
+        h.assert_lines(&["12x1 2"])?;
+        assert_eq!(h.stopped(), Some(stop), "{key:?}");
+    }
     Ok(())
 }
 

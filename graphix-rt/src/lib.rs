@@ -619,8 +619,8 @@ impl<X: GXExt> GXHandle<X> {
     /// to go on starts a new runtime. This is the only containment for a
     /// program that spins forever inside one cycle, which the language
     /// permits. Nothing arms it but a human or an embedder: the shell
-    /// arms it on Ctrl-C, and an embedder that wants a watchdog builds
-    /// one:
+    /// arms it on Ctrl-\ (and a script's Ctrl-C), and an embedder that
+    /// wants a watchdog builds one:
     ///
     /// ```ignore
     /// let gx = handle.clone();

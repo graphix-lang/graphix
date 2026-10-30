@@ -168,42 +168,68 @@ async fn aborting_panics_give_back_the_terminal() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A stop key typed on the terminal is read while the work waits, the
+/// keys before it kept: Ctrl-C leaves the display, Ctrl-\'s control
+/// code interrupts.
 #[cfg(unix)]
-#[tokio::test]
-async fn ctrl_c_is_read_while_work_waits() -> anyhow::Result<()> {
-    if let Some(output) =
-        in_child("ctrl_c_is_read_while_work_waits", Some(b"x\x03"), || {
-            std::thread::scope(|s| {
-                s.spawn(|| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()?;
-                    rt.block_on(async {
-                        let mut term = crate::Term::Live(crate::Live::take(false)?);
-                        let mut liveness =
-                            tokio::time::interval(std::time::Duration::from_secs(1));
-                        let mut pending = std::collections::VecDeque::new();
-                        let done = term
-                            .reading(
-                                std::future::pending::<()>(),
-                                &mut liveness,
-                                &mut pending,
-                            )
-                            .await?;
-                        assert!(done.is_none());
-                        assert_eq!(pending.len(), 1, "{pending:?}");
-                        Ok(())
-                    })
+async fn stop_key_is_read_while_work_waits(
+    name: &str,
+    typed: &[u8],
+    stop: graphix_package::Ended,
+) -> anyhow::Result<()> {
+    if let Some(output) = in_child(name, Some(typed), || {
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let rt =
+                    tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+                rt.block_on(async {
+                    let mut term = crate::Term::Live(crate::Live::take(false)?);
+                    let mut liveness =
+                        tokio::time::interval(std::time::Duration::from_secs(1));
+                    let mut pending = std::collections::VecDeque::new();
+                    let done = term
+                        .reading(
+                            std::future::pending::<()>(),
+                            &mut liveness,
+                            &mut pending,
+                        )
+                        .await?;
+                    assert_eq!(done, std::ops::ControlFlow::Break(stop));
+                    assert_eq!(pending.len(), 1, "{pending:?}");
+                    Ok(())
                 })
-                .join()
-                .unwrap()
             })
+            .join()
+            .unwrap()
         })
-        .await?
+    })
+    .await?
     {
         assert!(output.status.success(), "{output:?}");
     }
     Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ctrl_c_is_read_while_work_waits() -> anyhow::Result<()> {
+    stop_key_is_read_while_work_waits(
+        "ctrl_c_is_read_while_work_waits",
+        b"x\x03",
+        graphix_package::Ended::Left,
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ctrl_backslash_is_read_while_work_waits() -> anyhow::Result<()> {
+    stop_key_is_read_while_work_waits(
+        "ctrl_backslash_is_read_while_work_waits",
+        b"x\x1c",
+        graphix_package::Ended::Interrupted,
+    )
+    .await
 }
 
 /// Stderr is never held: what is written to it while the display runs

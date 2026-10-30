@@ -50,7 +50,7 @@ bytes or with a `K`, `M` or `G` suffix, as in `64M`), and with an
 activation budget, the live activations (calls, collection slots)
 a runtime may hold (`Control::set_activation_budget`, or
 `GRAPHIX_ACTIVATION_BUDGET`); unlimited by default. A program that
-exceeds a budget is stopped the way Ctrl-C stops it.
+exceeds a budget is stopped the way the interrupt key, `Ctrl-\`, stops it.
 
 If you rely on a function running as a constant-space loop, assert it:
 

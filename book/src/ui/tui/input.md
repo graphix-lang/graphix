@@ -79,8 +79,11 @@ The `modifiers` array contains all modifiers held during the key event.
 
 ## Ending the Program
 
-A TUI program runs until Ctrl-C, or until it calls `tui::exit`, which
-ends it the same way: the terminal is restored and the runtime stops.
+A TUI program runs until Ctrl-C (or the interrupt, `Ctrl-\`), or until it
+calls `tui::exit`, which ends it the same way: the terminal is restored
+and the runtime stops. Neither key reaches the program. Shown in the
+REPL, Ctrl-C leaves the display with the session kept, and `Ctrl-\` also
+replaces the runtime with a fresh one.
 Fire it from the key that quits, sampled with the event:
 
 ```graphix,ignore

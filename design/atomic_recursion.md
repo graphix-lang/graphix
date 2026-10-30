@@ -97,11 +97,17 @@ semantics:
   cycle left half-delivered to be made whole again, so the stopped
   runtime is dropped and a new one minted.
 
-The shell arms Ctrl-C before the first cycle (a top-level infinite loop
-wedges inside `load_env`, before the input loop exists). A script's
-Ctrl-C ends the run, after the bounded teardown, with status 130; the
-REPL's Ctrl-C, idle or busy, replaces the runtime with a fresh empty one
-and says so, and Ctrl-D exits. The shell `abort()`s on the way out;
+The shell arms its keys before the first cycle (a top-level infinite
+loop wedges inside `load_env`, before the input loop exists). The
+interrupt is `Ctrl-\` (SIGQUIT; Ctrl-Break on Windows): a script ends at it
+or at Ctrl-C, after the bounded teardown, with status 130; the REPL's
+interrupt, idle or busy, replaces the runtime with a fresh empty one and
+says so, an interrupt during that start starting again. The REPL's Ctrl-C
+stops nothing: it leaves the value display (or the line) and keeps the
+session, and while an input waits on a busy runtime it names the
+interrupt. The shell reads no key while a display shows or an input runs:
+the terminal sends both keys as signals then, and at its prompt the line
+editor, as a TUI display does, reads them as keys. Ctrl-D exits. The shell `abort()`s on the way out;
 without the stop the tokio runtime's shutdown waits forever on the
 `block_in_place` section the cycle runs in, and only SIGKILL could end
 the process. An embedder watchdog is buildable today (arm `interrupt()`

@@ -2,8 +2,9 @@
 //! spin forever inside one cycle, and the interrupt
 //! (`GXHandle::interrupt`) is what stops it. These tests spawn the real
 //! binary on wedging programs, in both engines, and assert one SIGINT
-//! (and SIGTERM, which asks the process to end) ends the run with the
-//! status a shell reports for the signal.
+//! ends the run with the status a shell reports for it, as does the
+//! interrupt key's SIGQUIT, and SIGTERM, which asks the process to end,
+//! with its own.
 #![cfg(unix)]
 
 use parking_lot::Mutex;
@@ -74,13 +75,14 @@ fn spawn(path: &std::path::Path, out: fs::File, no_fusion: bool) -> Child {
 
 /// Run `program` until `wedged_after`, or until it has grown past
 /// [`GROWN`], check it is alive and printing nothing more, then send `sig`
-/// once and require the run to end with `128 + sig`.
+/// once and require the run to end with `code`.
 fn signal_frees_process(
     program: &str,
     no_fusion: bool,
     label: &str,
     wedged_after: Duration,
     sig: libc::c_int,
+    code: i32,
 ) {
     let _serial = no_fusion.then(|| NODE_WALK.lock());
     let dir =
@@ -132,7 +134,7 @@ fn signal_frees_process(
     // an interrupted program did not succeed: `graphix x.gx && next` stops
     assert_eq!(
         status.code(),
-        Some(128 + sig),
+        Some(code),
         "{label}: signal {sig} ended the shell with {status}"
     );
 }
@@ -145,6 +147,7 @@ fn interrupt_frees_first_cycle_wedge_jit() {
         "first-cycle/jit",
         Duration::from_secs(6),
         libc::SIGINT,
+        130,
     );
 }
 
@@ -156,6 +159,7 @@ fn interrupt_frees_first_cycle_wedge_interp() {
         "first-cycle/interp",
         Duration::from_secs(6),
         libc::SIGINT,
+        130,
     );
 }
 
@@ -167,6 +171,7 @@ fn interrupt_frees_later_cycle_wedge_jit() {
         "later-cycle/jit",
         Duration::from_secs(2),
         libc::SIGINT,
+        130,
     );
 }
 
@@ -178,6 +183,7 @@ fn interrupt_frees_later_cycle_wedge_interp() {
         "later-cycle/interp",
         Duration::from_secs(2),
         libc::SIGINT,
+        130,
     );
 }
 
@@ -189,6 +195,7 @@ fn terminate_frees_first_cycle_wedge_jit() {
         "first-cycle-term/jit",
         Duration::from_secs(6),
         libc::SIGTERM,
+        143,
     );
 }
 
@@ -200,6 +207,7 @@ fn terminate_frees_first_cycle_wedge_interp() {
         "first-cycle-term/interp",
         Duration::from_secs(6),
         libc::SIGTERM,
+        143,
     );
 }
 
@@ -211,5 +219,31 @@ fn terminate_frees_later_cycle_wedge_interp() {
         "later-cycle-term/interp",
         Duration::from_secs(2),
         libc::SIGTERM,
+        143,
+    );
+}
+
+/// The interrupt key's SIGQUIT ends a script as Ctrl-C does.
+#[test]
+fn quit_frees_first_cycle_wedge_jit() {
+    signal_frees_process(
+        FIRST_CYCLE_WEDGE,
+        false,
+        "first-cycle-quit/jit",
+        Duration::from_secs(6),
+        libc::SIGQUIT,
+        130,
+    );
+}
+
+#[test]
+fn quit_frees_later_cycle_wedge_jit() {
+    signal_frees_process(
+        LATER_CYCLE_WEDGE,
+        false,
+        "later-cycle-quit/jit",
+        Duration::from_secs(2),
+        libc::SIGQUIT,
+        130,
     );
 }
