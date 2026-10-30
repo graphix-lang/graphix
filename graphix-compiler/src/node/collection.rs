@@ -928,6 +928,12 @@ impl<R: Rt> MapQBase<R> {
             // filter_map_keeps_keep_values_whole now #[native] with FuseExpect::Jit
             // (fails in jit and jit_par when the loop pushes results unwrapped, as do
             // filter_map_keep_fuses and map_filter_map).
+            // 2026-10-29 claude: cr29 fix G6 (RV1 finding 4): the fuzz generator's
+            // filter_map callbacks now take the loop paths this fix changed:
+            // always-keep, always-drop (|x| null), `Keep(null) over a nullable target
+            // and a nested `Keep (kept whole, then unwrapped by a map); gen-check's
+            // per-feature rows filter-map, keep-null and keep-nested count them (seed
+            // 11, 4000 programs: all compile).
             MapOp::FilterMap => {
                 slots.iter().filter_map(|s| kept(s.value())).cloned().collect()
             }

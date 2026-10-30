@@ -278,32 +278,73 @@ fn map_parts(
     })
 }
 
-/// A `filter_map` callback's body keeping an `e`: `` `Keep(..) `` of
-/// one under a generated condition, else null.
-fn keep_body(ctx: &GenCtx, rng: &mut Rng, e: &GenType, d: usize) -> String {
-    let keep = gen_typed(ctx, rng, e, d.min(2));
-    let cond = gen_typed(ctx, rng, &GenType::Bool, d.min(1));
-    format!("select {cond} {{ true => `Keep({keep}), false => null }}")
+/// A `filter_map` callback's body keeping an `e`, `nested` as
+/// `` `Keep(`Keep(..)) ``: one under a generated condition, else null
+/// (or, `e` nullable, `` `Keep(null) ``); one always; or none.
+fn keep_body(ctx: &GenCtx, rng: &mut Rng, e: &GenType, nested: bool, d: usize) -> String {
+    let kept = |rng: &mut Rng| {
+        let v = gen_typed(ctx, rng, e, d.min(2));
+        match nested {
+            true => format!("`Keep(`Keep({v}))"),
+            false => format!("`Keep({v})"),
+        }
+    };
+    match rng.below(8) {
+        0 | 1 => kept(rng),
+        2 => "null".to_string(),
+        _ => {
+            let keep = kept(rng);
+            let cond = gen_typed(ctx, rng, &GenType::Bool, d.min(1));
+            let other = match e {
+                GenType::Nullable(_) if !nested && chance(rng, 0.5) => "`Keep(null)",
+                _ => "null",
+            };
+            format!("select {cond} {{ true => {keep}, false => {other} }}")
+        }
+    }
 }
 
-/// A `filter_map` over a source `coll(..)` to the scalar `e`: the
+/// Whether `filter_map_parts` keeps an `e`: a scalar or a nullable one.
+fn keeps(e: &GenType) -> bool {
+    match e {
+        GenType::Nullable(e) => e.is_scalar(),
+        e => e.is_scalar(),
+    }
+}
+
+/// A `filter_map` over a source `coll(..)` to `e` ([`keeps`]): the
 /// callback keeps an `e` or drops its element, half the time under a
-/// return written `` [`Keep(e), null] ``.
+/// return written `` [`Keep(e), null] ``. `nested`, it keeps each as
+/// `` `Keep(e) ``, which [`unwrap_kept`] takes off.
 fn filter_map_parts(
     ctx: &GenCtx,
     rng: &mut Rng,
     e: &GenType,
     coll: fn(Box<GenType>) -> GenType,
+    nested: bool,
     d: usize,
 ) -> HofParts {
     let d_ty = map_source_elem(rng, e);
     callback_parts(ctx, rng, &coll(Box::new(d_ty.clone())), &d_ty, d, |inner, rng| {
-        let body = keep_body(inner, rng, e, d);
+        let body = keep_body(inner, rng, e, nested, d);
+        let t = match nested {
+            true => format!("`Keep({})", e.render()),
+            false => e.render(),
+        };
         match chance(rng, 0.5) {
-            true => format!("-> [`Keep({}), null] {body}", e.render()),
+            true => format!("-> [`Keep({t}), null] {body}"),
             false => body,
         }
     })
+}
+
+/// `fm`, a `filter_map` over `coll` (`array` or `list`), with each kept
+/// `` `Keep(v) `` taken apart when `nested`.
+fn unwrap_kept(coll: &str, fm: String, nested: bool) -> String {
+    match nested {
+        true => format!("{coll}::map({fm}, |w| select w {{ `Keep(v) => v }})"),
+        false => fm,
+    }
 }
 
 /// A fold callback's scope: `ctx` with an accumulator of `acc_ty` and a
@@ -394,11 +435,13 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 );
                 Some(format!("array::flat_map({src}, |{binder}| {body})"))
             }
-            // filter_map keeps the payloads its callback does not null
-            3 if e.is_scalar() => {
+            // filter_map keeps what its callback returns as `Keep(v)
+            3 if keeps(e) => {
+                let nested = rng.below(4) == 0;
                 let HofParts { src, binder, body } =
-                    filter_map_parts(ctx, rng, e, GenType::Array, d);
-                Some(format!("array::filter_map({src}, |{binder}| {body})"))
+                    filter_map_parts(ctx, rng, e, GenType::Array, nested, d);
+                let fm = format!("array::filter_map({src}, |{binder}| {body})");
+                Some(unwrap_kept("array", fm, nested))
             }
             _ => {
                 // occasionally an over-limit count (> MAX_ARRAY_INIT_LEN):
@@ -436,12 +479,14 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 let HofParts { src, binder, body } = filter_parts(ctx, rng, ty, e, d);
                 Some(format!("list::filter({src}, |{binder}| {body})"))
             }
-            // filter_map keeps the payloads its callback does not null;
+            // filter_map keeps what its callback returns as `Keep(v);
             // flat_map splices the list its callback returns
-            _ if e.is_scalar() && rng.below(2) == 0 => {
+            _ if keeps(e) && rng.below(2) == 0 => {
+                let nested = rng.below(4) == 0;
                 let HofParts { src, binder, body } =
-                    filter_map_parts(ctx, rng, e, GenType::List, d);
-                Some(format!("list::filter_map({src}, |{binder}| {body})"))
+                    filter_map_parts(ctx, rng, e, GenType::List, nested, d);
+                let fm = format!("list::filter_map({src}, |{binder}| {body})");
+                Some(unwrap_kept("list", fm, nested))
             }
             _ => {
                 let d_ty = map_source_elem(rng, e);
@@ -864,7 +909,7 @@ fn try_map_builtin(
                 4 => {
                     let mut inner = ctx.clone();
                     let binder = callback_binder(&mut inner, rng, &kv, &[]);
-                    let body = keep_body(&inner, rng, &kv, d);
+                    let body = keep_body(&inner, rng, &kv, false, d);
                     Some(format!("map::filter_map({m}, |{binder}| {body})"))
                 }
                 // both over the same small key pool, so their keys overlap
