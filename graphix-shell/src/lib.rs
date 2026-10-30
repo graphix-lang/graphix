@@ -740,10 +740,16 @@ impl<X: GXExt> Shell<X> {
         }
         let (sigint_tx, mut sigint) = mpsc::unbounded_channel();
         let mut session = self.start(&sigint_tx).await?;
-        let mut terminated = Terminated::new()?;
         let script = self.mode.file_mode();
         let mut input = InputReader::new();
         let mut output = if script { Output::EmptyScript } else { Output::None };
+        let mut terminated = match Terminated::new() {
+            Ok(terminated) => terminated,
+            Err(e) => {
+                session.finish(&mut output).await;
+                return Err(e);
+            }
+        };
         let mut newenv = None;
         let mut exprs = vec![];
         // a program whose first cycle does not end holds the env load, so a
