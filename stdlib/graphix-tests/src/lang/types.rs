@@ -1523,6 +1523,33 @@ run!(
        let p = mk(\"s\", 1); p.0(2) }",
     refused("Array<'a: unbound> does not contain"); FuseExpect::None
 );
+// A type written in a default names the variables of the definitions
+// around the defaulted one, a lambda's signature as a `let`'s annotation,
+// at the definition's check and at each instance's bind.
+run!(
+    default_lambda_names_the_factorys_variable,
+    "{ let mk = |z: 'a| -> 'a { let g = |#d: fn(q: i64) -> 'a = |q: i64| -> 'a z, y: i64| d(y); \
+       g(1) }; \
+       let mk2 = |z: 'a| -> 'a { let g = |#d: fn(q: i64) -> 'a = |#e: 'a = z, q: i64| e, y: i64| \
+       d(y); g(1) }; \
+       let mk3 = |z: 'a| -> 'a { let g = |#d: 'a = { let v: 'a = z; v }, y: i64| d; g(1) }; \
+       (mk(1), mk(\"s\"), mk2(2), mk2(\"t\"), mk3(3), mk3(\"u\")) }",
+    prints(r#"[i64:1, "s", i64:2, "t", i64:3, "u"]"#)
+);
+run!(
+    default_lambda_names_the_factorys_variable_outside_it,
+    "{ let mk = |z: 'a| { let g = |#d: fn(q: i64) -> 'a = |#e: 'a = z, q: i64| e, y: i64| d(y); \
+       g }; \
+       let f = mk(1); let h = mk(\"s\"); (f(2), h(3)) }",
+    prints(r#"[i64:1, "s"]"#); FuseExpect::None
+);
+run!(
+    default_lambda_names_the_factorys_variable_at_the_instance,
+    "{ let mk = |z: 'a| { let g = |#d: fn(q: i64) -> 'a = |#e: 'a = z, q: i64| e, y: i64| d(y); \
+       g }; \
+       let f = mk(1); let r: string = f(2); r }",
+    refused("string does not contain i64"); FuseExpect::None
+);
 
 const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
 {

@@ -3624,6 +3624,51 @@ run!(rank2_quantifier_of_a_parameter_copied_at_each_call, r#"{
   (use_it(apply), nested(apply))
 }"#, prints(r#"[[i64:1, "s"], [i64:1, "s"]]"#); FuseExpect::Jit);
 
+// While a call checks its argument against a rank-2 formal, the formal's
+// quantifier is one type: a definition inside the argument that holds it
+// does not generalize it, so a reference to that definition does not copy it.
+run!(rank2_quantifier_a_closure_holds_stays_the_formals, r#"{
+  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> 'b| (f(1)(0), f("s")(0));
+  app(|x| { let g = |y: i64| x; g })
+}"#, prints(r#"[i64:1, "s"]"#); FuseExpect::None);
+
+run!(rank2_quantifier_a_closure_holds_is_not_a_closed_type, r#"{
+  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> string| f(1)(0);
+  app(|x| { let g = |y: i64| x; g })
+}"#, refused("fn(y: i64) -> string does not contain fn(x: "); FuseExpect::None);
+
+// A labeled default that reads a rank-2 formal's quantifier fits its
+// parameter for every type the quantifier stands for, as one of an
+// enclosing definition's declared variable does.
+run!(
+    default_of_a_rank2_quantifier_types_its_parameter,
+    r#"{
+  let app = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+  let esc = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> 'b| (f(1)(0), f("s")(0));
+  (
+    app(|x| { let g = |#d = x, y: i64| d; g(1) }),
+    app('q: Any |x: 'q| -> 'q { let g = |#d = x, y: i64| d; g(1) }),
+    esc('q: Any |x: 'q| { let g = |#d = x, y: i64| d; g })
+  )
+}"#,
+    prints(r#"[[i64:1, "s"], [i64:1, "s"], [i64:1, "s"]]"#)
+);
+
+run!(default_of_a_rank2_quantifier_is_not_a_closed_type, r#"{
+  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> string| f(1)(0);
+  app(|x| { let g = |#d = x, y: i64| d; g })
+}"#, refused("fn(y: i64) -> string does not contain fn(x: "); FuseExpect::None);
+
+run!(default_of_a_declared_rank2_quantifier_is_not_a_closed_type, r#"{
+  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> string| f(1)(0);
+  app('q: Any |x: 'q| { let g = |#d = x, y: i64| d; g })
+}"#, refused("fn(y: i64) -> string does not contain fn<'q: Any>(x: "); FuseExpect::None);
+
+run!(default_of_a_rank2_quantifier_fits_its_own_parameter, r#"{
+  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> string| f(1)(0);
+  app(|x| { let g = |#d: 'q = x, y: i64| d; g })
+}"#, refused("'q: unbound does not contain"); FuseExpect::None);
+
 run!(same_function_write_fires_without_reset, r#"{
     let step = 0;
     step <- select step { s if s < 7 => s + 1, _ => never() };

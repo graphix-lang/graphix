@@ -173,7 +173,11 @@ the definition gates:
   definition whose gate has not run (a submodule the interface declares
   first calls into its parent) is called at its declared scheme. A
   reference to a generalized binding copies the same cells, generic
-  (`Fresh::Scheme`), so the call instantiates them.
+  (`Fresh::Scheme`), so the call instantiates them. No copy but
+  `Fresh::Copy` takes a rank-2 formal's quantifier while a gate holds it
+  (`TVar::is_quantifier_rigid`): under the check of a call's argument it
+  is one type, so a definition in the argument that holds it (`|x| { let
+  g = |y: i64| x; g }`) is monomorphic in it.
 
 A binding something writes is not generalized (the value restriction,
 `CompileCtx::mark_connect_target`): every function its value holds, a
@@ -339,7 +343,22 @@ Singleton`; `apply(|x| x + 1)` and `apply(|x: i64| ..)` are refused,
 since they hold only where `'b` is `i64`. A call of `apply` copies `'b` generic
 (`FnType::generic_inner_quantifiers`): the argument's cells the check
 aliases to it stay its own scheme's, which each call of `f` copies,
-and the passing site's settle leaves it.
+and the passing site's settle leaves it. While the argument checks, `'b`
+is closed to what the argument defines, as an enclosing definition's
+declared variable is: a reference to a definition holding it does not
+copy it, and a labeled default reading it fits its parameter whole
+(`check_defaults`), so `app(|x| { let g = |#d = x, y: i64| d; g })`
+against `fn<'b>(x: 'b) -> fn(y: i64) -> string` is refused at the check
+rather than at the bind.
+
+A type written in a body names the variables of the definitions around
+it (`lambda::body_annotation`); a labeled default is written in its
+definition's signature, so its types name the variables of the
+definitions around that one (`LambdaDef::in_signature`). An instance's
+body compiles under its definition's signature as the instance holds it
+(`lambda::instance_sig`: each variable copied under its name and bound to
+the instance's type), so a default compiled at an instance's bind, which
+no table row types, reads `'a` as the instance's type.
 
 A signature finds its quantifiers by name (`FnType::quantifiers`). A
 parameter the body unifies with a declared quantifier (`x` in `'a:

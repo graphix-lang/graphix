@@ -44,7 +44,16 @@ g(1) }` is fine, as are `#d: Array<'a> = [z]` and an unannotated `#d = z`,
 which takes the type `'a`. Such a default must fit its parameter whatever
 `'a` is, so `|z: 'b, w: 'a| { let g = |#d: Array<'a> = [z], y: i64| d; g }`
 is refused. A closure returned this way keeps its default per call of the
-factory: `mk(1)` and `mk("s")` each omit `#d` at their own type.
+factory: `mk(1)` and `mk("s")` each omit `#d` at their own type. A type
+written inside the default names the enclosing function's variables too,
+as one written in its body does: `|#d: fn(q: i64) -> 'a = |q: i64| -> 'a
+z, y: i64|` is a function returning the factory's `'a`.
+
+The same holds inside a function passed for a polymorphic parameter
+(`f: fn<'b: Any>(x: 'b) -> ..`): there `'b` is closed, so `app(|x| { let g =
+|#d = x, y: i64| d; g })` gives `g` the type `fn(?#d: 'b, y: i64) -> 'b`,
+which a parameter typed `fn<'b: Any>(x: 'b) -> fn(y: i64) -> string`
+refuses.
 
 The compiler implements subtyping for functions with optional arguments. For
 example if you write a function that takes a function with a labeled argument

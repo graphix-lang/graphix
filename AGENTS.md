@@ -956,7 +956,10 @@ node graph IS the IR — there is no parallel typed IR
   annotation, `never<T>`, a nested lambda's signature) names one
   variable per name, and a name a definition around it declares, and
   the written place does not declare itself, is that definition's
-  variable (`lambda::body_annotation`, `enclosing_tvars`); a quantifier
+  variable (`lambda::body_annotation`, `enclosing_tvars`; a labeled
+  default's, the definitions' around its own, `LambdaDef::in_signature`;
+  in an instance, the instance's types under the definition's names,
+  `lambda::instance_sig`); a quantifier
   a definition or a written `fn<..>` declares must be held by its
   signature (a parameter, the return, the throws, a held quantifier's
   bound), else it is refused (`FnType::check_quantifiers_held`); a def's declared tvars are
@@ -978,7 +981,8 @@ node graph IS the IR — there is no parallel typed IR
   hides, which the default narrows. A default whose type holds an enclosing
   definition's open cell requires a closed parameter type (annotate the
   factory's parameter or the defaulted parameter); an enclosing definition's
-  declared variable is closed: such a default fits its parameter whole, for
+  declared variable is closed, as is a rank-2 formal's quantifier while a
+  call checks its argument: such a default fits its parameter whole, for
   every instance of the variable (an unannotated parameter takes its type),
   and a site outside that definition judges it over a copy of the scheme
   (`callsite::Judge`). A call's type variable that only
@@ -995,7 +999,9 @@ node graph IS the IR — there is no parallel typed IR
   declare `Number + Singleton`; `FnType::contains_int`, judged
   coinductively where bounds name each other), except a lambda's written
   type over its own checked one, which adopts its bounds
-  (`ContainsFlags::Adopt`); a call copies `'b`
+  (`ContainsFlags::Adopt`); while a call checks its argument against the
+  formal, `'b` is one type, which no definition in the argument
+  generalizes or copies (`TVar::freshen`); a call copies `'b`
   generic, the formal passed on is any instance of itself in an
   instance's elaboration as in the definition's check
   (`CellFact::FormalQuantifier`), as is a quantifier an earlier compile

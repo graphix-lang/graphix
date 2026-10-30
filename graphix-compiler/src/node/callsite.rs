@@ -248,7 +248,9 @@ fn checked_default<R: Rt>(
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
-        let mut node = compile(ctx, flags, expr.clone(), &local_scope, top_id)?;
+        let mut node = f.in_signature(ctx, |ctx| {
+            compile(ctx, flags, expr.clone(), &local_scope, top_id)
+        })?;
         let res = node.typecheck0(ctx);
         Ok::<_, anyhow::Error>((node, res))
     })?;

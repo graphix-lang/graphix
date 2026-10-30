@@ -295,7 +295,9 @@ closed defaulted parameter type. Annotate the factory's parameter
 (`|z: i64|`) or the defaulted one (`|#d: i64 = z, x|`); `|z| { let g =
 |#d = z, x| (d, x); g }` and `#d: Array<'q> = [z]` are refused. A
 variable the factory declares is closed: `|z: 'a| { let g = |#d: 'a = z,
-y: i64| d; g(1) }` checks, and `#d = z` there takes `'a`.
+y: i64| d; g(1) }` checks, and `#d = z` there takes `'a`; a type written
+inside the default (`= |q: i64| -> 'a z`) names it too. So is a polymorphic
+parameter's `'b` inside the function passed for it.
 
 A function is more than a computation: each call is a live piece of
 graph that stays. It can hold state (`let x = ..; x <- ..`), run seqs

@@ -183,8 +183,9 @@ them:
 - a default is checked at the definition against its parameter's type
   (or a declared variable's constraints, `lambda.rs::check_defaults`; a
   variable nested in the type is any instance of it there, and a default
-  holding an enclosing definition's declared variable fits its parameter
-  whole) and again at each site that omits it, where it may narrow that
+  holding an enclosing definition's declared variable, or a rank-2
+  formal's quantifier under the check of a call's argument, fits its
+  parameter whole) and again at each site that omits it, where it may narrow that
   site's cells, never an enclosing definition's scheme
   (`callsite::Judge`);
 - `F ⊇ G` for function types (`fntyp.rs::align`): the same number of

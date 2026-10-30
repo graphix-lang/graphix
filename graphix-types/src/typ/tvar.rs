@@ -1584,6 +1584,13 @@ impl TVar {
         }
         let f = match how {
             Fresh::Copy => self.fresh_copy(),
+            // a rank-2 formal's quantifier a gate holds is one type for the
+            // check under it, which no definition inside generalizes
+            Fresh::Instantiate(_) | Fresh::Scheme(_) | Fresh::Generic
+                if self.is_quantifier_rigid() =>
+            {
+                return self.clone();
+            }
             Fresh::Instantiate(open) if self.level().copied_by(open) => {
                 TVar::empty_named(self.name.clone())
             }

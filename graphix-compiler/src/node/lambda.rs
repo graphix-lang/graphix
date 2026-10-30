@@ -507,6 +507,25 @@ pub struct InstanceTypes {
     tables: Tables,
     known: Known,
     open: IntSet<LambdaId>,
+    sig: Arc<FnType>,
+}
+
+/// The definition's signature `def` as the instance at `instance` holds
+/// it: each open cell copied under its name into `known` and bound to the
+/// instance's type. `None` when the instance's signature does not hold
+/// the definition's.
+fn instance_sig<R: Rt>(
+    ctx: &CompileCtx<R>,
+    def: &FnType,
+    instance: &FnType,
+    known: &mut AHashMap<usize, TVar>,
+) -> Option<Arc<FnType>> {
+    // every open cell of the signature is the instance's own copy, a cell
+    // no closed gate owns (a rank-2 formal's copy) included, so the check
+    // binds nothing another instance reads
+    let def = def.instantiate_owned(known);
+    instance.check_contains(&ctx.env, &def).ok()?;
+    Some(Arc::new(def))
 }
 
 impl InstanceTypes {
@@ -520,12 +539,8 @@ impl InstanceTypes {
     ) -> Option<Self> {
         let open = ctx.rec_defs.clone();
         let mut known = AHashMap::default();
-        // every open cell of the signature is the instance's own copy, a
-        // cell no closed gate owns (a rank-2 formal's copy) included, so
-        // the check below binds nothing another instance reads
-        let def = def.instantiate_owned(&mut known);
-        instance.check_contains(&ctx.env, &def).ok()?;
-        Some(Self { tables, known: SArc::new(Mutex::new(known)), open })
+        let sig = instance_sig(ctx, def, instance, &mut known)?;
+        Some(Self { tables, known: SArc::new(Mutex::new(known)), open, sig })
     }
 
     /// A row read from this definition's check, renamed through the
@@ -824,6 +839,29 @@ impl<R: Rt> LambdaDef<R> {
             DefOrigin::Source { body: DefBody::BuiltIn(name), .. } => Some(name),
             _ => None,
         }
+    }
+
+    /// `f` compiling an expression the signature holds, a labeled
+    /// default: a type it writes names the variables of the definitions
+    /// around this one, as the signature does.
+    pub(crate) fn in_signature<T>(
+        &self,
+        ctx: &mut CompileCtx<R>,
+        f: impl FnOnce(&mut CompileCtx<R>) -> T,
+    ) -> T {
+        let declared = match &self.origin {
+            DefOrigin::Source { enclosing, .. } => enclosing.clone(),
+            DefOrigin::Runtime => Arc::from_iter([]),
+        };
+        let outer = ctx.body.replace(BodyCompile {
+            share: BodyShare::default(),
+            checking: false,
+            types: None,
+            declared,
+        });
+        let r = f(ctx);
+        ctx.body = outer;
+        r
     }
 }
 
@@ -1283,12 +1321,29 @@ impl<R: Rt> GXLambda<R> {
             elab_audit::leave(ctx.def_gate_depth, "instance-signature", &body, &res);
             res?
         };
+        // what a type the body writes names: the instance's variables,
+        // under the definition's names
+        let sig = match (&types, &typing) {
+            (Some(types), _) => types.sig.clone(),
+            (None, Typing::Substituted(_, def)) => {
+                instance_sig(ctx, def, &typ, &mut AHashMap::default())
+                    .unwrap_or_else(|| typ.clone())
+            }
+            (None, _) => typ.clone(),
+        };
         let build = |ctx: &mut CompileCtx<R>, _: &[StructPatternNode]| {
-            let outer =
-                ctx.body.as_mut().map(|b| mem::replace(&mut b.types, types.clone()));
+            let outer = ctx.body.as_mut().map(|b| {
+                let declared = b.declared.iter().cloned().chain([sig]).collect();
+                (
+                    mem::replace(&mut b.types, types.clone()),
+                    mem::replace(&mut b.declared, declared),
+                )
+            });
             let body = compile(ctx, flags, body, scope, tid);
-            if let Some(outer) = outer {
-                ctx.body.as_mut().expect("compiling body").types = outer;
+            if let Some((types, declared)) = outer {
+                let b = ctx.body.as_mut().expect("compiling body");
+                b.types = types;
+                b.declared = declared;
             }
             body
         };
@@ -1682,11 +1737,6 @@ pub(crate) fn make_init<R: Rt>(
                 let outer = ctx.body.replace(compiling);
                 let instance =
                     instantiate(ctx, mode, &def_typ, &table, |ctx, typ, typing| {
-                        if let Some(b) = ctx.body.as_mut() {
-                            b.declared = Arc::from_iter(
-                                enclosing.iter().cloned().chain([typ.clone()]),
-                            );
-                        }
                         let argspec = def_argspec.clone();
                         GXLambda::new(
                             ctx,
@@ -2235,7 +2285,9 @@ fn check_defaults<R: Rt>(
     for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
         let Some(expr) = arg.kind.default() else { continue };
         let mut node = ctx.with_restored(def.env.clone(), |ctx| {
-            compile(ctx, flags, expr.clone(), scope, ExprId::new())
+            def.in_signature(ctx, |ctx| {
+                compile(ctx, flags, expr.clone(), scope, ExprId::new())
+            })
         })?;
         let res = node.typecheck0(ctx).and_then(|()| {
             let typ = node.typ().clone();
@@ -2268,6 +2320,21 @@ fn check_defaults<R: Rt>(
             // one_for_another fail without the whole-parameter check (the first then checks
             // and its bind refuses); outside_the_factory and types_an_escaping_parameter
             // fail without the site copy. Needs a soak (typemorph).
+            // 2026-10-29 claude: Follow-up (cr29 fix wave 2, G5; RV5 findings 1 and 3,
+            // both also on main): a rank-2 formal's quantifier under the check of a
+            // call's argument counts as closed here too, and no copy but Fresh::Copy
+            // takes a quantifier a gate holds (TVar::freshen), so a default or a closure
+            // over it is refused by the check where the bind refused it; a default
+            // compiles under the signatures around its definition
+            // (LambdaDef::in_signature), and an instance's body names the instance's
+            // types under the definition's names (lambda::instance_sig), so a lambda's
+            // signature written in a default names the factory's 'a at the check and at
+            // the bind. Pins:
+            // lang::functions::{rank2_quantifier_a_closure_holds_is_not_a_closed_type,
+            // default_of_a_rank2_quantifier_is_not_a_closed_type,
+            // default_of_a_declared_rank2_quantifier_is_not_a_closed_type,
+            // default_of_a_rank2_quantifier_fits_its_own_parameter} and
+            // lang::types::default_lambda_names_the_factorys_variable{,_outside_it,_at_the_instance}.
             if at.typ.has_unbound()
                 && holds_unbound(&typ, &|tv| !tv.is_rigid() && enclosing(tv))
             {
@@ -2276,10 +2343,13 @@ fn check_defaults<R: Rt>(
                      parameter or give the defaulted parameter a closed type"
                 );
             }
-            let declared = holds_unbound(&typ, &|tv| tv.is_rigid() && enclosing(tv));
+            let declared = holds_unbound(&typ, &|tv| {
+                tv.is_rigid() && (enclosing(tv) || tv.is_quantifier_rigid())
+            });
             match &at.typ {
-                // no call instantiates an enclosing definition's variable:
-                // the default fits for every instance of it, or not at all
+                // no call instantiates an enclosing definition's variable or
+                // a rank-2 formal's quantifier the default sits under: the
+                // default fits for every instance of it, or not at all
                 _ if declared => at.typ.check_contains(&ctx.env, &typ),
                 // each conjunct narrows the default's open cells, which
                 // may be the environment's, rather than deciding them
