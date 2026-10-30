@@ -1275,6 +1275,17 @@ impl Type {
                 }
             }
         }
+        // CR claude for claude: [bug/low] A union cast tries members in the order the
+        // union holds them, and Real = [Float, decimal] holds the primitive decimal
+        // before the named Float, so cast<Number>("3.0") and cast<Real>("3.0") are
+        // decimal while cast<[f32, f64, decimal]>("3.0") is f32,
+        // str::parse<Number>("3.0") is f64, and cast<Real>(u8:3) is decimal where the
+        // flat spelling gives f32. CLAUDE.md: a union target takes the first member in
+        // canonical order, narrowest first, and a transparent typedef is its expansion.
+        // Order the members by the expansion's primitive order, or try first the member
+        // the parsed literal inhabits (which also makes cast agree with str::parse).
+        // Probes: ~/tmp/cr29/scratch/review2/RV3/{real_order,parse_vs_cast2}.gx
+        // (real-member-order-01)
         let own: LPooled<Vec<bool>> =
             ts.iter().map(|t| in_own_class(env, t, v)).collect();
         let mut converted = None;
@@ -2803,29 +2814,23 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
     of_int(n, t)
 }
 
+// CR claude for eric: [design/medium] D11's round trip made a float's or decimal's TEXT
+// held by no integer member, but a float VALUE is still held by one, so a value and its
+// print now read differently: with x = 3.0, cast<[i64, decimal]>(x) is i64 3 and
+// cast<[i64, decimal]>("[x]") is decimal 3.0 (main gave i64 3 for both); [u8, f32]
+// likewise. Text also crosses classes now: cast<[i64, datetime]>("3.0") is a datetime,
+// cast<[i64, duration]>("3.0") is 3.s, cast<[u8, f64]>("1e2") is f64 100.0 (main: u8
+// 100). Inside a composite the value path still wins: str::parse<Array<[u8, f32]>>("[3.0,
+// 4.5]") is [u8:3, f32:4.5]. Rule needed: (a) text carries its class and a value loses it
+// where the target lacks it (as now), or (b) the same exactness for values: no integer
+// member holds a float value when a real member of the target holds it. Recommend (b):
+// one rule for text and value, and the composite path agrees with the scalar one. Probes:
+// ~/tmp/cr29/scratch/review2/RV3/{value_vs_text,cast_cross,parse_vs_cast}.gx
+// (holds-exactly-class-01)
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3, and a float's or a decimal's text
 /// (`"3.0"`, as a whole float prints) by no integer.
-// XCR claude for claude: [bug/low] A whole float prints without its fraction, so a print and
-// parse round trip through a union changes its class: `let x: [i64, f64] = 3.0;
-// cast<[i64, f64]>("[x]")` is i64:3, since the union takes the narrowest integer that
-// holds "3". Should a float's plain print keep its ".0", or is this round trip not
-// promised? probe: ~/tmp/xcr-review-2026-10-28/new/rt.gx (print-roundtrip-01)
-// 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D11): (a) a whole float
-// keeps its point in plain prints (3.0), as json, toml and the formatter already print
-// it.
-// 2026-10-29 claude: A whole finite f64/f32 prints with its point in every plain print
-// (typ::PlainScalar: the typed printer, interpolation in both engines, println, the REPL,
-// cast<string>, a duration's seconds); and holds_exactly holds a float's or decimal's text
-// by no integer, since the print alone did not fix the round trip (the union took i64 for
-// "3.0" too); the printed-data reader's large-integer arm no longer swallows the integer
-// part of "100000000000000000000.0". Pins: lang::printing::{whole_float_keeps_its_point,
-// fused_whole_float_keeps_its_point, printers_keep_a_whole_floats_point},
-// lang::types::cast_float_text_reads_as_a_float,
-// expr::parser::test::printed_scalars_stay_in_data_reader,
-// lib_tests::str_tests::parse_printed_primitive_composites; each fails with its part of the
-// fix undone (node-walk printer, JIT push helpers, holds_exactly, the reader arm).
 fn holds_exactly(v: &Value, c: &Value) -> bool {
     match v {
         Value::String(s) => match s.trim().parse::<Value>() {

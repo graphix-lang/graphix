@@ -883,6 +883,14 @@ impl<X: GXExt> Shell<X> {
                 break Ok(Some(INTERRUPTED));
             }
             session.finish(&mut output).await;
+            // CR claude for claude: [risk/low] A reset's load_env does not listen on
+            // sigint: a second Ctrl-C that interrupts the new runtime before its first
+            // request is served makes load_env fail, and Err(e) => break Err(e) ends the
+            // REPL with an error. Not reproduced
+            // (~/tmp/cr29/scratch/review2/RV6/repl_double_sigint.py: every run rc=0; a
+            // second SIGINT during finish/start is lost, one during the init compile
+            // resets again). Retry the reset while load_env fails and the session was
+            // interrupted. (repl-double-reset-01)
             exprs.clear();
             session = self.start(&sigint_tx).await?;
             env = match self

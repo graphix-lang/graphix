@@ -1832,6 +1832,16 @@ impl<R: Rt> Connect<R> {
     }
 }
 
+// CR claude for claude: [bug/medium] A declared quantifier escapes through a captured
+// write: `let y = never(); let f = 'a: Concrete |x: 'a| -> 'a { y <- x; x }; f("hello");
+// let k: i64 = y` passes the check and the build refuses it ("instance at fn(x: string)
+// -> string of a definition typed fn<'a>(x: 'a: i64)"); through a collection the build
+// accepts it too and the run-time bind fails. On main as well. The body check holds 'a
+// rigid, so the write should be refused there: an outer binding cannot take a type only
+// one instance decides. The only way found for an open declared quantifier to be not
+// generic, the condition under which FnType::has_earlier_quantifier's fresh-copy
+// comparison would be unsound. Probes: ~/tmp/cr29/scratch/review2/RV7/{e2,e3}.gx
+// (quantifier-escape-01)
 impl<R: Rt> Update<R> for Connect<R> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.node)

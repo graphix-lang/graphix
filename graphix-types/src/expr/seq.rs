@@ -450,39 +450,6 @@ fn desugar_plain(
     Ok(block(pos, exprs.drain(..)))
 }
 
-// XCR claude for claude: [bug/medium] A seqq flush empties the queue but not the requests
-// still waiting for an absent capture (those `BinOp::BankedSample` banks until the
-// capture arrives). In the probe, requests `A and `B arrive while `ready` is absent,
-// the flush fires before `ready` does, and both still run once it arrives (prints "a 7"
-// and "b 7"). "flush(e) also empties the queue" should drop them: the flush must reach
-// the banked requests too. probe: ~/tmp/xcr-review-2026-10-28/1/p/flushwait.gx
-// (seqq-flush-wait-01)
-// 2026-10-29 claude: A flush now drops the requests still waiting for a capture as well
-// as the queued ones. Every seqq with a flush counts its requests, and the queue is
-// flushed by number (#flush_before: the flush sampling the count, the same cycle; a
-// flush reading the run's request keeps its cycle-late path), and core queue keeps a
-// floor: a value arriving later numbered below the latest flush_before is dropped, since
-// the BankedSample pays requests in order. Pin:
-// lang::seq_abort::seqq_flush_drops_a_request_waiting_for_a_capture (gives [17, 27, 87]
-// without the floor, [87] with it). CLAUDE.md and queue's doc updated.
-// 2026-10-29 claude: Review R2 (cr29, 2026-10-29): the floor breaks when the seqq is born
-// again (a seqq in a seq step: every run is a rebirth). Queue::reborn kept pushed and
-// floor while the BankedSample's bank is cleared and the prelude's requests counter
-// starts again at 0, so request numbers and arrival numbers drift apart. Probes
-// ~/tmp/cr29/scratch/review/r2/fw_nested.gx (run 1 banks, flushes, is aborted; run 2's
-// request, made after the flush, is dropped: prints nothing, where fw_noflush.gx and
-// fw_flush_empty.gx print r 27) and fw_reset.gx (run 2's waiting request survives the
-// flush: r 17 then r 27, the original bug again).
-// 2026-10-29 claude: Fixed for a rebirth: Queue::reborn (graphix-package-core) resets
-// pushed and floor with the queue, in step with the prelude's requests counter and the
-// BankedSample's bank, which a rebirth starts again; a seqq in a seq step is born again
-// at each run through CallSite::update_call's reborn (a block step takes no FreshFrame;
-// that is for a call step), so this is the path runs take under D4. Pins:
-// lang::seq_abort::seqq_flush_in_a_step_drops_nothing_of_the_next_run (R2's fw_nested.gx:
-// [27]; [] without the reset) and seqq_flush_in_a_step_drops_a_waiting_request_of_its_run
-// (fw_reset.gx: [17, 37]; [17, 27] without it), all four modes. fw_reset_ctl, fw_noflush
-// and fw_flush_empty print r 37, r 27, r 27 as before. queue's .gxi doc says a queue born
-// again numbers from 0.
 /// The prelude that makes a seq's `abort(..)` and `flush(..)` one event
 /// bound to `aborted`, and a `seqq`'s queue. The queue takes the flush
 /// event in the cycle it fires, so a request that arrives with it stays,
@@ -2001,67 +1968,6 @@ fn inline_lambda(mut e: &Expr) -> bool {
 /// nullary call is issued on the entry clock as any other.
 fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Expr {
     let pc = issue.pc;
-    // XCR claude for claude: [bug/medium] [bug/medium] A nullary call is lowered as a
-    // level read at entry, so the step completes on the callee's cell as it stands,
-    // against seq_blocks.md §5 (a lambda instance's cell standing from the previous run
-    // is no completion). A `|| timer(..) ~ runs` callee gives 1, 1, 1 over three runs
-    // where `|u| ..` gives 1, 2, 3. `|| read_all(path)` returns the first run's file
-    // forever. The same `load()` placed after another step never completes at all,
-    // because its callee is born with `path` standing. Choose: issue it on the entry
-    // clock with the guard on the call (`select any(pc, once(pc)) ~! pc { _ =>
-    // guard(f()) }`), accepting the `|v| k` stall for a body over standing levels; or
-    // document the level reading and its failure modes in §5 and §6.3. probe:
-    // design/review-2026-10-26/repro/t-seq-nullary-call-level.gx (t-seq-03)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q15, A nullary
-    // call in a step): yes, issue it on entry clock, just like a no argument function
-    // call in a normal language. (the recommendation: issue it on the entry clock.)
-    // 2026-10-27 claude: Built as ruled: issue_call no longer lowers a nullary call as
-    // a level read (entry_fire); it is issued on the entry clock as any call is,
-    // through the same entry snapshot (of pc alone). The probe's stale case now gives
-    // 1, 2, 3 (was 1, 1, 1). Pin: lang::seq_calls::a_nullary_call_answers_each_run. One
-    // consequence for Eric: a nullary callee whose body reads only standing values, the
-    // probe's || read_all(path), answers the first run and stalls on later ones, as |u|
-    // read_all(path) does (the |v| k rule: nothing fires the read again). Making a
-    // nullary call re-run its body like a call in an ordinary language would need its
-    // body born again at each issue.
-    // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D4): (b), rebirth
-    // the callee: a call a seq step issues runs its callee's body fresh each run as the
-    // step's own nodes are (constants fire, builtins reborn, select entry history
-    // reset, nested calls included), every call, not only nullary; state inside the
-    // callee starts fresh, captured state outside is untouched; calls outside seq are
-    // unchanged; needs a soak.
-    // 2026-10-29 claude: Built as ruled (D4): a call a step issues is a fresh frame at
-    // every run. SeqGuard's first update in a run (the issue) opens wake::FreshFrame:
-    // every standing input of the call (arguments, function values, live reads, its
-    // callee's captures, nested callees') is delivered fired for that update, and a
-    // catch-up scope that owes everything standing delivers the inputs of a callee
-    // bound as it runs. The step's View::Step rebirths the slept callee body as before
-    // (builtins reborn, lets re-initialized, selects' entry history reset); what is
-    // bound inside it (a catch binder, a nested seq's pc) still reads stale.
-    // CachedArgsAsync::reborn drops its last answer, so a previous run's reply never
-    // answers the issue. The probe's read_all(path), load() and load1(n) now answer 1,
-    // 2, 3. Pins that fail without it:
-    // lang::seq_calls::a_callee_reads_its_world_fresh_each_run (load() answers nothing
-    // without the frame; nested(n) answers 1, 1, 1 without the async reborn),
-    // a_callees_own_state_starts_fresh_each_run ([1010, 2111, 3212] without),
-    // lang::seq::reentry_fired_only (its |v| k case answers [7] without);
-    // a_call_outside_a_seq_resumes pins that a call outside a seq resumes. Needs a
-    // soak.
-    // 2026-10-29 claude: (cr29 fix G4, RV4 findings 2 and 4) A bound callee whose
-    // function value is bottom at the issue makes up the birth it missed when the
-    // function returns: CallSite's Absent records the view it was due and whether it
-    // sat in an issued call's fresh frame (callsite.rs::Unborn), and that dispatch runs
-    // under that view, inside a FreshFrame of its own over the callee's inputs and its
-    // arguments (Absent::dispatch); a call inside the callee that meets a bottom
-    // function at its birth is born the same way. RV4's p1_absent_fn now gives 1 2 3
-    // (was 1 1 1) and p1c_absent_state (n, 1) at each run (was (n, n)). Pins:
-    // lang::seq_calls::a_callee_bottom_at_the_issue_is_born_when_it_returns (each of
-    // its three calls fails with the change off: g(n) and h(n) give [11, 22, 33],
-    // load() gives [11, 21, 31]);
-    // lang::seq_calls::a_callee_answers_a_captured_event_as_it_stands pins the ruled
-    // answer of a captured event ([1050, 2150, 3150]; main's binary stalls after the
-    // second run). Docs: book seq.md (also: a nullary call is issued, not read as a
-    // level), design/seq_blocks.md, CLAUDE.md, the skill. Needs a soak.
     let pos = spec.pos;
     let input = format_compact!("#seqargs{}", spec.id.inner());
     let issued = format_compact!("#seqissued{}", spec.id.inner());

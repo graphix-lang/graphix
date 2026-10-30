@@ -463,59 +463,6 @@ pub use memo::FastMemo;
 /// RFC3339, a duration in seconds, any other value in its naked form. A
 /// reader's cast reads back these scalar object keys. [`shape`] writes
 /// a map holding any other key as an array of pairs.
-// XCR claude for claude: [bug/medium] The doc says a reader's cast reads this text back,
-// but it does not for a bare variant or a composite key. Map<`A, i64> writes
-// {"\"A\"":2} (the data string printed with its quotes) and Map<(i64, i64), i64> writes
-// {"[1, 2]":3`}; json::read into the same types gives InvalidCast for both, so the json
-// and toml writers' output does not read back into its type. Write a string-data key
-// bare, and decide whether composite keys parse on read (as str::parse does) or are
-// refused by the writers. probe:
-// design/review-2026-10-26/repro/x-rerun-5-json-map-keys.gx (x-rerun-5-04)
-// 2026-10-26 claude: The string-data half is done (t-rep-02, x-kind-markers-01): a
-// bare-variant key is written as its tag and reads back, pinned by
-// lib_tests::json::string_data_map_keys_read_back. The composite-key decision still
-// stands.
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q41, Map keys that
-// are not strings or scalars, in json and toml): yes, the pairs array (the
-// recommendation: the pairs array.)
-// 2026-10-27 codex: Implemented q41 with a shared pairs shape for composite, bytes and
-// null keys. JSON and TOML check the serialized key data for collisions before writing
-// each pair, including collisions between bytes and integer arrays. Pins
-// lib_tests::{json,toml}::{composite_map_keys_use_pairs,colliding_pair_keys_are_refused,colliding_bytes_and_array_keys_are_refused};
-// all 16 collision cases failed with the collision guards disabled and pass with them
-// restored in the focused cr_rework harness. The harness passed 44 tests. Full
-// library-suite results will be reported separately. Book, interfaces and language
-// skill describe the pairs representation and TOML restrictions.
-// 2026-10-28 claude: Review (2026-10-28): composite, null and bytes keys round-trip as pairs; a key union of string and another
-// scalar does not: Map<[string, i64], i64> {1 => 1, "a" => 2} writes {"1":1,"a":2} and reads back {"1" => 1, "a" => 2} (== is
-// false); [bool, string] keys alike. map_shape writes an object because every key is scalar, and JsonData models a map only as pairs
-// (textdata.rs Type::Map -> Shape::Pairs), missing the string-key collision. probe ~/tmp/xcr-review-2026-10-28/5/b/p5.gx
-// 2026-10-29 claude: map_shape writes an object only when the keys are of one class: all strings, or none a string under a key type
-// that may hold none (Any counts as may); strings beside another class, or a [string, ..] key type over non-string keys, take pairs,
-// since an object's keys read back as strings. {1 => 1, "a" => 2} over Map<[string, i64], i64> now round-trips. Pins:
-// lib_tests::json::mixed_class_map_keys_use_pairs ([string, i64] mixed and alone, [bool, string]);
-// json_keys_writing_alike_are_not_merged (was ..._refused: JSON now writes both as pairs, TOML still refuses at its root);
-// string_data_map_keys_read_back's [`A, string] refusal now comes from the pairs check. Book json and toml pages updated.
-// 2026-10-29 claude: Review (2026-10-29, cr29 R2): map_shape only separates strings from everything else. Map<[duration, i64], i64>
-// {duration:2.s => 1, 3 => 2} writes {"3":2,"2":1} and reads back {2 => 1, 3 => 2} (== false), and {duration:2.s => 1} alone fails
-// the same way (~/tmp/cr29/scratch/review/r2/mapkeys.gx); as a plain value [duration, i64] holding 2s writes 2.0 and reads back i64
-// 2 (numval.gx), yet 'b: JsonData accepts the type: textdata.rs gives duration Shape::Float and i64 Shape::Int, but a union reads a
-// whole float into an integer member (its own class) first. The same holds for [f32, i64] in JSON and TOML (f32:2.0 reads back as
-// i64 2) and [duration, u8] (~/tmp/cr29/scratch/laneTA/f32val.gx).
-// 2026-10-29 claude: JsonData/TomlData now refuse a union holding an integer beside a member written as a float that is not an f64
-// (an f32; a duration, in JSON): textdata.rs splits Shape::Float into F64 (an f64 member keeps the float) and Float (an integer
-// member takes it whole, since a union reads a number into its own class first), and Float overlaps Int. So [duration, i64],
-// Map<[duration, i64], _> and [f32, i64] (JSON and TOML) are refused at the read; [i64, f64], [f64, u8] and [duration, bool] still
-// read back. A duration cannot be written to TOML, so TOML keeps [duration, i64]. The refusal now says what overlaps ('what its
-// member a or b writes as JSON data may read back as the other'). map_shape is unchanged: every key union JsonData accepts writes
-// object keys a read takes back. Pins: lib_tests::json::{json_target_float_beside_an_integer_refused,
-// json_map_key_float_beside_an_integer_refused, json_target_f32_beside_an_integer_refused,
-// json_float_members_written_apart_read_back}, lib_tests::toml::toml_target_f32_beside_an_integer_refused,
-// typ::textdata::test::unions_whose_members_write_alike; the four refusal programs ran and read the integer on the pre-fix binary.
-// The abstract-member kin is a new CR (textdata-abstract-01).
-// 2026-10-29 claude: Correction to the note above: the object-key claim holds for primitive and variant key members only; an
-// abstract key member written as its representation still reads back as a primitive member ([S, i64] with S = Abstract<string>:
-// {S("1") => 1} writes {"1":1} and reads {1 => 1}), which is textdata-abstract-01.
 pub fn map_key(k: &Value) -> Result<ArcStr> {
     Ok(match graphix_compiler::abstract_value::to_data(k)? {
         Value::String(s) => s,

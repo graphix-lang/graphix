@@ -401,31 +401,6 @@ where
     }
 }
 
-// XCR claude for claude: [doc-drift/low] Does the comment rule's "every list" cover types and
-// patterns? A comment at the end of a struct type field's line, a union member's or a
-// tuple pattern element's is a parse error (`type P = { x: i64, // the x` then `y: i64
-// };`), while the rule lists "a statement, an arm, a field, an element, an argument".
-// If the ruling meant these too, type and pattern lists need Decorations like
-// expressions; if not, the book and CLAUDE.md should say the list items are
-// expressions'. probes: ~/tmp/xcr-review-2026-10-28/1/p/c_structtype.gx,
-// c_uniontype.gx, c_selectpat.gx (type-list-comments-01)
-// 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D10): (b) a typedef's
-// struct fields and union members take comments as an expression list's items do (above an
-// item, ending an item's line after its separator, below the last item); patterns, tuple
-// types, variant payloads and fn types stay without.
-// 2026-10-29 claude: Built per D10: a type definition's struct fields and union members take
-// comments above, ending the line and below the last, through the fields and members their
-// types reach (TypeNotes on TypeDefExpr, keyed by where each was written, packing to
-// nothing; printed through typ::Noted; the formatter's guard reads them in canonical order;
-// holds_comment sees them). A union member takes one only as a variant or a named type, the
-// members that print as written. A comment anywhere else in a type (an annotation, a type
-// argument, a payload, a fn type) is refused with a reason; patterns stay without, as ruled.
-// Pins, each failing with the change undone:
-// format::tests::comments_on_type_fields_and_members,
-// parser::test::{type_definitions_keep_comments_on_fields_and_members,
-// a_comment_elsewhere_in_a_type_is_refused,
-// no_comment_stands_inside_a_splice_or_an_attribute}, and expr::test::expr_pp_round_trip,
-// whose generator now hangs notes on typedef bodies.
 /// `{ name: T, .. }`, each field's type read by `field`; in a type
 /// definition (`noted`) each field takes comments as a list's item does.
 fn structtyp<I, P, PF>(field: PF, noted: bool) -> impl Parser<I, Output = Noted>
@@ -521,6 +496,15 @@ where
         .then(move |(listed, end)| parsed(union_members(listed, end, noted)))
 }
 
+// CR claude for claude: [bug/low] The lines below a union's last item go to the last item
+// that records a position, and a nested union's members record none, so `type T = [`A,
+// [`B, `C] // below ]`, a comment under the outer list's last item, is refused as
+// "comments below a nested union's last member have no place in the union that holds it".
+// Attach them to the member with the largest written position after flatten_set, or
+// refuse with the real reason. Also struct_fields and union_members report a refusal at
+// the closing bracket, not at the comment (ann_union.gx: line 4 col 2 for a comment on
+// line 2). Probes: ~/tmp/cr29/scratch/review2/RV3/d10/{nested_below,ann_union}.gx
+// (type-notes-refusal-01)
 fn union_members(
     listed: Listed<ListItem<Type>>,
     end: SourcePosition,

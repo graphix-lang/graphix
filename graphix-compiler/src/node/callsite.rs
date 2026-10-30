@@ -3485,80 +3485,18 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
+    // CR claude for claude: [bug/medium] A fused recursion called from a seq step holds
+    // more live activations at each run, on main too:
+    // ~/tmp/cr29/scratch/laneG/p9_nospike31.gx (31 runs at depth 5) needs an activation
+    // budget between 1000 and 1100 fused and under 1000 with --no-fusion; p9_nospike.gx
+    // (151 runs) aborts at 1500 fused. The node-walk sheds what a run leaves (D5,
+    // exit_kept); whatever holds the kernel path's activations is not shed.
+    // (fused-seq-rec-leak-01)
     pub(crate) fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         // A recursive edge deselected by a shrink deletes its callee, so
         // re-reaching this depth binds a fresh activation, or keeps a pure
         // one asleep (`Kept`).
-        // XCR claude for claude: [perf/medium] Deleting the callee here (shrink = delete)
-        // makes a recursion whose depth swings rebuild every activation between the two
-        // depths every cycle, as fresh run-time binds that cost ~15x an update.
-        // Node-walked fib(14 - i % 2) costs 860 ms per 100 cycles against 80 for
-        // fib(14). A stateful linear recursion alternating 200/100 deep costs 230
-        // against 23 even with fusion on. This is the per-cycle cost of x-fix-nodes-03
-        // and c-collection-03. Decide between a cheaper fresh activation and keeping a
-        // stateless callee's instance here, re-dispatched under View::Birth via
-        // Apply::reborn, which cannot be told from a fresh bind. probe:
-        // design/review-2026-10-26/repro/x-perf-runtime-depth-churn.sh
-        // (x-perf-runtime-03)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q68,
-        // Activation memory and depth churn):
-        // 2026-10-27 claude: Lever 3 built as ruled (D1, amortized): a recursive edge's
-        // sleep in a deselected arm keeps a pure callee (definition facts sync and
-        // stateless) asleep and sets CallSite::rebirth; re-reaching the depth calls
-        // Apply::reborn and dispatches it as a fresh bind (View::Birth, arguments read
-        // as new). A site deletes at every hundredth shrink in a row (KEPT_SHRINKS). The
-        // probe now costs 115 ms per 100 cycles alternating 14/13 against 84 fixed (was
-        // 860). A stateful callee still deletes (rec_shrink_deletes_unreached_depths
-        // unchanged). Pins: lang::functions::rec_pure_depth_swing_answers_each_cycle,
-        // rec_reborn_depth_reads_its_capture. Docs: CLAUDE.md activation state,
-        // design/recursive_activations.md. Open for Eric: a depth left for good stays
-        // allocated, asleep, until its site shrinks again; a time-driven cleanup would
-        // need a per-runtime queue of kept activations. Needs a soak.
-        // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat,
-        // 2026-10-27, D1): "lets try lever 1 and 3. for 3 I propose we do something like
-        // delete only 1% of the cells we could delete for a shorter activation, which
-        // saves a lot of work, but eventually cleans up after a transient large
-        // activation."
-        // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D5): "we should
-        // delete 1% of the cells we could delete on every activation where cells <
-        // capacity, so 100 activations later we should have deleted all eligible cells.
-        // 2. we should collect cells every recursion exit. 3. [a pin of the gain] sounds
-        // good. NB: unused cells are birthed again when the recursion reaches them again"
-        // (they are: Apply::reborn, every argument read as new).
-        // 2026-10-29 claude: Built as ruled: KEPT_SHRINKS and the per-shrink count are
-        // gone; every shrink keeps a pure callee (CallSite::kept, enum Kept). An exit
-        // past a kept edge is an update of the select whose arm holds it in which the
-        // chain runs (scrutinee or consulted guard fired, or the select woke) and takes
-        // another arm, or the scrutinee is bottom (select.rs::exit_kept); the deselecting
-        // update is the shrink, not an exit, and a quiet walk of the select is none
-        // (ticking there trips GRAPHIX_PRUNE=audit). At the first exit the edge measures
-        // what it keeps in levels (kept_levels: the callee and its deepest chain of
-        // recursive edges); at the k-th it deletes every callee more than levels -
-        // levels*k/100 levels down (cut_below, deepest first), at the 100th the callee
-        // itself (CallSite::shed). Judged: floor pacing, so a surplus under 100 levels
-        // frees a level every 100/levels exits rather than one per exit; in a tree a
-        // level holds every activation at that depth. A re-reach rebirths what is left
-        // and restarts the count. Pins: lang::functions::rec_pure_depth_swing_binds_once
-        // (linear 10/5 and fib 10/9 bind what a fixed depth does; 1891 binds against 31
-        // with keeping disabled), rec_transient_depth_is_shed (exact live activations
-        // after 1, 50, 99, 100, 150 exits, linear 200/5 and fib 12/4; interp, par and
-        // unpruned; keeps all 195 levels without exit shedding),
-        // rec_partly_shed_depth_reached_again. Probe at load 14: fixed fib(14) 118-126 ms
-        // per 100 cycles, alternating 141-166. Docs: CLAUDE.md activation state,
-        // design/recursive_activations.md. Needs a soak.
-        // 2026-10-29 claude: cr29 fix wave 2, G1 (RV4 finding 1): a select reborn under a
-        // birth view set selected to None without deselecting, so the activation a
-        // re-reach or a seq run reborns short of a kept chain's end dropped the arm
-        // holding the rest uncounted (the edge stayed Kept::Nothing, no bit in the
-        // select's kept mask) and exit_kept never saw it again. Select::update now keeps
-        // that arm as held and deselects it, as a shrink, unless the chain takes it
-        // again; a held arm holding a stateful recursive callee now deletes it as any
-        // shrink does. Pin: lang::functions::rec_partly_reached_chain_is_shed (interp and
-        // par): linear 200 then 5, 6, 5, 6.., a 5/6 swing, and a seqq step's runs at 5,
-        // exact live activations after 1, 50 and 150 exits, and fib(12) whole after 150;
-        // without the fix every shape keeps everything (201 or 202 live, fib 333 and
-        // 466). Needs a soak.
         if super::in_deselected_arm() && self.is_recursive_edge() {
             if self.callee_is_pure(ctx) {
                 if let Kept::Nothing = self.kept {

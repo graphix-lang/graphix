@@ -2660,55 +2660,6 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
 /// Whether a select arm testing for `test` tells it from `rest`, what
 /// else reaches the arm, open cells read as any type they may yet bind.
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
-    // XCR claude for claude: [bug/high] This exemption waives every cell the test merely
-    // mentions, not only a slice pattern's element cells. So `|y: 'b, x: ['b,
-    // `Keep('b)]| select x { `Keep(r) => r, r => r }` passes, although an instance may
-    // bind 'b to a `Keep variant. `g(`Keep(6), `Keep(5))` then returns 5 typed
-    // `Keep(i64), and a later select over it matches no arm. With `Keep(i64) as the
-    // test, the same select is refused ("may share `Keep(i64)'s runtime form"). Fix:
-    // exempt only cells the pattern itself introduces, never a cell that `rest` also
-    // holds, such as the definition's quantifier. The core Map Collection impl's
-    // filter_map select is the same shape and will need the keep-marker fix. probe:
-    // design/review-2026-10-26/repro/x-engine-collections-own-cell-told.gx
-    // (x-engine-collections-02)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q30, The `Keep
-    // marker is in-band):
-    // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat, 2026-10-27,
-    // D5): "I like B, lets try it": the marker becomes a form no value can take, a
-    // Rust-registered abstract like the kind markers, built by a core function keep(v),
-    // which callbacks write instead of `Keep(v).
-    // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D1): W, always
-    // wrap. A filter_map callback returns [`Keep('b), null]: null drops the element,
-    // `Keep(v) keeps v (null included); there is no bare 'b member, so the unwrap
-    // strips exactly the one layer the type has. This replaces round 2's B (an abstract
-    // keep(v) marker), which alone was not sound. x-engine-collections-02's exemption
-    // is fixed on its own either way.
-    // 2026-10-29 claude: told() no longer exempts a pair after the fact. The collision
-    // walk takes the arm's side (Type::rep_collision_tested): an open cell of the
-    // test's is a part the arm binds and does not test, so it collides with nothing and
-    // the walk keeps looking; an open cell of the rest's collides even where the arm's
-    // capture shares it. The rule this CR suggests (never a cell rest also holds)
-    // refused lang::select::generic_slice_arms_check, since an unannotated scrutinee's
-    // type is the slice predicate itself. Pins:
-    // lang::select::generic_select_telling_quantifier_from_keep_refused (this probe)
-    // and generic_tuple_part_telling_quantifier_from_keep_refused ((`Keep(r), _) over
-    // ('b, i64)) fail without it; generic_slice_arms_check and
-    // generic_annotated_slice_arms_check hold the slice arms. A slice arm's element
-    // test over Array<['b, `Keep('b)]> is still accepted: keep-slice-told-01.
-    // 2026-10-29 claude: keep-slice-told-01 is fixed: slice elements are judged one by
-    // one (StructPatternNode::element_tests), and rep_collision_tested passes over a
-    // test cell bound as well as open, so [h, ..] over Array<['b, `Keep('b)]> checks
-    // again (refused since this fix, accepted on main). The pins named above still hold.
-    // 2026-10-29 claude: cr29 fix G6 (RV1 finding 1): the arm-side walk still waived the
-    // test's own open cells where it judged a rest cell by its type bounds, so 'b:
-    // `Keep(&i64) |z: 'b, y: 'c, x: ['b, `Keep('c)]| select x { `Keep(r) => r, _ => null
-    // } checked and read a &i64 as &string (RV1 p46; main refused it). open_collision
-    // now judges each type bound of a rest cell with the test's open cells read as any
-    // type, on a memo of its own. Pins:
-    // lang::select::generic_select_telling_quantifier_bound_refused fails without it;
-    // generic_select_telling_quantifier_bound_told holds a bound the test tells apart.
-    // CLAUDE.md and design/distinct_composite_forms.md carry the exception.
-    // keep-slice-told-01 is fix agent F6's.
     let Some(why) = test.rep_collision_tested(env, rest) else { return Ok(()) };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
     format_with_flags(PrintFlag::DerefTVars, || {

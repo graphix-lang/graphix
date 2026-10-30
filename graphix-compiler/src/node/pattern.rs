@@ -1677,62 +1677,6 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| self.covers_inner(env, typ, inferred))
     }
 
-    // XCR claude for claude: [bug/medium] A partial struct pattern does not cover a rigid
-    // declared variable bounded by a struct: `'a: {a: i64, b: string} |x: 'a| -> i64
-    // select x { {a, ..} => a }` is refused "missing match cases: no arm covers 'a:
-    // unbound within { a: i64, b: string }", though every value of 'a is a value of its
-    // bound. covers_inner's `expand(env, typ)` finds no shape in the unbound cell; a cell
-    // whose constraints give it one shape should be judged against that shape, and
-    // child_types should type the binds from it. probe:
-    // ~/tmp/xcr-review-2026-10-28/3/bc/s5.gx, s6.gx (bounded-cover-01)
-    // 2026-10-29 claude: The fix is in completion, not coverage: a partial struct pattern
-    // completes against the one member holding its fields, and an open scrutinee had no
-    // members (union_members skips an unbound cell), so the arm kept its partial shape {
-    // a: _ } as its type and run-time test. StructurePattern::unique_completion now
-    // completes against an open scrutinee's one structural bound (Type::open_bound: its
-    // one constraint that is neither a predicate nor a trait), whose values the cell
-    // holds; the arm then covers the variable and tests the bound's struct at run time.
-    // (Patching coverage alone made the check pass and the run hit 'no arm matches'.)
-    // Pin: lang::select::partial_struct_pattern_over_a_struct_bounded_variable (both
-    // probes). CLAUDE.md's coverage rule says so.
-    // 2026-10-29 claude: Review R1 (cr29, 2026-10-29): the fix does not hold. Completing
-    // against Type::open_bound makes a partial struct pattern cover the whole variable
-    // even when the bound is a union: 'a: [{a: i64, b: string}, i64] with select x { {a,
-    // ..} => a } is accepted and g(5) hits 'no arm matches i64:5: a coverage hole in the
-    // check' (bcold2.gx); over 'a: [{a: i64, b: string}, {c: f64}] the JIT panics 'could
-    // not link emitted code: compile: Verifier errors' (bcold6.gx); s@ {a, ..} => a, n =>
-    // 0 is refused as 'unreachable arm' (bcx4.gx). Older holes over a union-bounded rigid
-    // variable, on the 10-28 binary too: {a, b} => a (bcold3.gx) and (a, b) => a
-    // (bcold4.gx) are accepted and fail at run time, and {a, b} => a over [{a: i64, b:
-    // string}, {a: i64, c: f64}] answers (1, 5), binding b to a float typed string
-    // (bcold5.gx). Probes: ~/tmp/cr29/scratch/review/r1/.
-    // 2026-10-29 claude: Fixed where the review's cases arise, the wildcard judgment:
-    // PatternNode::matches_every probed containment without RigidCheck, so a declared
-    // variable read as bindable to the arm's predicate and an irrefutable structure arm
-    // over a union-bounded 'a was a wildcard (bcold2-6 accepted, bcx4 'unreachable arm').
-    // It now holds the variable rigid: the arm covers 'a only where its predicate holds
-    // the bound, so a union bound needs each member covered. The literal pool now counts
-    // the bound's members as the slice ladders did (Reach::members_of; Type::open_bound
-    // reads typed_bounds). Two run-time holes behind it: ShallowScrutinee::discriminant
-    // gave an arm a shape test over an instance's scrutinee member of that shape the arm
-    // cannot pass (explicit {a: i64, b: string} took {a: 2, b: 2.5}, both engines), now
-    // only where the arm can pass it (Type::could_pass: is_a's view, a ⊥ part passes
-    // anything); and emit_select_arms emitted an arm no value of the instance's scrutinee
-    // passes against that scrutinee's layout (a wrong field read, or the Verifier panic),
-    // now skipped. Pins, all four modes, lang::select:
-    // partial_struct_pattern_over_a_union_bounded_variable_covers_one_member,
-    // partial_struct_pattern_over_a_union_of_structs_bounded_variable,
-    // struct_pattern_over_a_union_bounded_variable_covers_one_member,
-    // tuple_pattern_over_a_union_bounded_variable_covers_one_member,
-    // struct_pattern_over_a_union_bounded_variable_of_two_structs,
-    // partial_struct_pattern_then_the_rest_of_a_union_bound and
-    // struct_patterns_tell_a_union_bound_members_apart fail without the matches_every
-    // change; literal_pool_over_a_bounded_variable_counts_its_bound without the pool
-    // change; type_tests_tell_apart_union_bound_members_of_one_shape without the
-    // discriminant change; struct_patterns_tell_a_union_bound_members_apart::jit/jit_par
-    // (Verifier panic) without the emit change.
-    // literal_pool_over_a_bounded_variable_misses_a_head guards the pool change. One
-    // de-fuse left: or-alt-instance-defuse-01.
     fn covers_inner(&self, env: &Env, typ: &Type, inferred: bool) -> bool {
         if let Self::Bind(_) | Self::Ignore = self {
             return true;

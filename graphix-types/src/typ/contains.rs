@@ -2100,42 +2100,6 @@ impl Type {
             // A set with a bare unbound tvar member binds the tvar to
             // the residue (the rhs members no concrete lhs member
             // covers) in one act; per-member it would capture greedily.
-            // XCR claude for claude: [bug/medium] filter_map's ['b, null, `Keep('b)]
-            // refuses a callback returning [i64, `Keep(null)]. Both placement orders
-            // here bind the bare 'b from one member and then refuse the other:
-            // `Keep(null) fixes 'b to null and i64 no longer fits, or the reverse.
-            // Nothing widens 'b to [i64, null], although 'b sits only in covariant
-            // positions. So `select x { i64 as v => v + 1, null as _ => `Keep(null) }`
-            // is refused, even with an explicit return annotation, while the all-`Keep
-            // spelling of the same callback runs. Either let a bare cell that shares a
-            // constructor sibling take the union of what both need, or document that
-            // keeping a null forces `Keep on every kept value. probe:
-            // design/review-2026-10-26/repro/gx-stdlib-keep-null-mixed.gx Also reported
-            // as (x-engine-collections-03). (gx-stdlib-01)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q30, The
-            // `Keep marker is in-band):
-            // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat,
-            // 2026-10-27, D5): "I like B, lets try it": the marker becomes a form no
-            // value can take, a Rust-registered abstract like the kind markers, built
-            // by a core function keep(v), which callbacks write instead of `Keep(v).
-            // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D1): W,
-            // always wrap. A filter_map callback returns [`Keep('b), null]: null drops
-            // the element, `Keep(v) keeps v (null included); there is no bare 'b
-            // member, so the unwrap strips exactly the one layer the type has. This
-            // replaces round 2's B (an abstract keep(v) marker), which alone was not
-            // sound. x-engine-collections-02's exemption is fixed on its own either
-            // way.
-            // 2026-10-29 claude: Under W the question disappears: the callback type has
-            // no bare 'b beside `Keep('b), so every kept value is written `Keep(v) and
-            // 'b takes the union of what is kept (`Keep(v + 1) and `Keep(null) give 'b
-            // = [i64, null]). The mixed bare spelling is refused with the hint to write
-            // `Keep(v). The bare-cell placement below stays: it serves any union with a
-            // bare cell beside a constructor of it (['b, Array<'b>], faf1ea32b), not
-            // filter_map alone.
-            // 2026-10-29 claude: Resolved by the signature (D1 W). Pins:
-            // lang::collection::filter_map_keeps_null_beside_values (keeps null beside
-            // values over an array and Collection::filter_map over a map) and
-            // filter_map_bare_value_refused (fails if the bare member comes back).
             (t0 @ Self::Set(s0), Self::Set(s1)) if s0.iter().any(is_unbound_tvar) => {
                 if !commit || !shares_bare_cell(s0) {
                     return Self::place_members(flags, env, hist, t0, s0, s1);

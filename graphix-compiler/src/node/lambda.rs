@@ -653,31 +653,6 @@ pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) {
     t.alias_tvars(&mut known);
 }
 
-// XCR claude for claude: [bug/medium] A quantifier a definition declares but only its
-// body writes is not the definition's variable: the gate (`DefGate::open`) and this
-// walk take only the signature's variables, so `'a: Number |x| -> i64 { let v: 'a =
-// x; 0 }` checks, and `f("s")` over it runs, where a declared variable should be
-// rigid in the body and `x: string` refused against `Number`. The declaration is
-// silently dropped. Found root-causing oct28d's check-vs-build findings; no finding
-// hits it alone. probe: ~/tmp/triage-oct28d/elab/ (body-quantifier-01)
-// 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D2): (b), refuse it
-// at the definition: a quantifier the signature does not hold (no parameter, return,
-// throws or held quantifier's bound reaches it) is an error, "'a is declared but the
-// signature does not hold it".
-// 2026-10-29 claude: Built: FnType::check_quantifiers_held (graphix-types
-// typ/fntyp.rs) closes the signature's variables over the bounds of the ones it
-// holds and refuses a declared quantifier outside them; Lambda::compile calls it on
-// every definition's signature, and the parser's fntype on every written fn<..> type
-// (formals, lets, typedefs, interface vals, trait methods). No stdlib, example, book
-// or netidx-admin declaration needed changing; the expr round-trip generator now
-// declares only variables its positions hold. Pins that fail without it:
-// lang::types::{a_quantifier_only_the_body_reads_is_refused,
-// a_quantifier_only_a_body_annotation_names_is_refused,
-// an_unused_quantifier_is_refused,
-// a_nested_definitions_unheld_quantifier_is_refused,
-// a_written_fn_types_unheld_quantifier_is_refused}; without the bound closure,
-// a_quantifier_held_through_bounds_checks and _keeps_its_bound and
-// parser::test::a_fn_type_holds_each_quantifier_it_declares fail.
 /// The variables the definitions around the body being compiled declare,
 /// by name, the innermost's where two share one.
 fn enclosing_tvars<R: Rt>(ctx: &CompileCtx<R>, known: &mut AHashMap<ArcStr, TVar>) {
@@ -2127,6 +2102,12 @@ struct DefGate<R: Rt> {
 }
 
 impl<R: Rt> DefGate<R> {
+    // CR claude for claude: [bug/low] A module using its parent's annotated array of
+    // generic functions through a callback is refused with "the check decides a type the
+    // code around the module left open: annotate `fs`", though fs is annotated: the
+    // foreign write is this gate's mark_formal_quantifier on the parent's cell (not
+    // contains), which the module's foreign-write rule counts as a decision. Probe:
+    // ~/tmp/cr29/scratch/review2/RV7/mod1/ (gate-foreign-mark-01)
     fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>) -> Self {
         let at = AtLevel::enter(def.level);
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
@@ -2295,47 +2276,6 @@ fn check_defaults<R: Rt>(
             let depth = def.level.depth();
             let enclosing =
                 |tv: &TVar| matches!(tv.level(), Level::Def { depth: d, .. } if d < depth);
-            // XCR claude for claude: [bug/low] This refuses a default of the factory's own
-            // declared variable, with advice the author has already followed: `|z: 'a| ->
-            // 'a { let g = |#d: 'a = z, y: i64| d; g(1) }` is "default reads an enclosing
-            // open type: annotate the factory's parameter or give the defaulted parameter a
-            // closed type", though both are annotated 'a. Should an enclosing definition's
-            // declared variable count as closed here, since each instance of the factory
-            // fixes it? If not, the message should name the variable and say a type
-            // variable is not a closed type. probe: ~/tmp/xcr-review-2026-10-28/new/dflt.gx
-            // (default-tvar-01)
-            // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D9): count a
-            // rigid declared variable of an enclosing definition as closed for the default
-            // rule (option a).
-            // 2026-10-29 claude: check_defaults skips a rigid enclosing cell in the
-            // open-type refusal; a default holding one fits its parameter whole (an
-            // unannotated parameter takes the variable), and a site's check-time judgment
-            // (callsite::Judge::Check) takes a copy of an enclosing definition's scheme
-            // instead of deciding it, so an escaped closure omitting the default at mk(1)
-            // and mk("s") no longer writes mk's 'a. Pins in lang::types:
-            // default_of_the_factorys_declared_variable{,_at_a_string},
-            // default_of_an_array_of_the_factorys_declared_variable,
-            // default_of_a_declared_variable_{outside_the_factory,types_its_parameter,types_an_escaping_parameter,is_the_instances},
-            // default_of_one_declared_variable_for_another: all 8 fail in every mode
-            // without the rigid skip; is_the_instances, types_an_escaping_parameter and
-            // one_for_another fail without the whole-parameter check (the first then checks
-            // and its bind refuses); outside_the_factory and types_an_escaping_parameter
-            // fail without the site copy. Needs a soak (typemorph).
-            // 2026-10-29 claude: Follow-up (cr29 fix wave 2, G5; RV5 findings 1 and 3,
-            // both also on main): a rank-2 formal's quantifier under the check of a
-            // call's argument counts as closed here too, and no copy but Fresh::Copy
-            // takes a quantifier a gate holds (TVar::freshen), so a default or a closure
-            // over it is refused by the check where the bind refused it; a default
-            // compiles under the signatures around its definition
-            // (LambdaDef::in_signature), and an instance's body names the instance's
-            // types under the definition's names (lambda::instance_sig), so a lambda's
-            // signature written in a default names the factory's 'a at the check and at
-            // the bind. Pins:
-            // lang::functions::{rank2_quantifier_a_closure_holds_is_not_a_closed_type,
-            // default_of_a_rank2_quantifier_is_not_a_closed_type,
-            // default_of_a_declared_rank2_quantifier_is_not_a_closed_type,
-            // default_of_a_rank2_quantifier_fits_its_own_parameter} and
-            // lang::types::default_lambda_names_the_factorys_variable{,_outside_it,_at_the_instance}.
             if at.typ.has_unbound()
                 && holds_unbound(&typ, &|tv| !tv.is_rigid() && enclosing(tv))
             {

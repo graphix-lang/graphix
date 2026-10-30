@@ -881,59 +881,6 @@ impl<R: Rt> MapQBase<R> {
         let mut elems: LPooled<Vec<Value>> = match self.op {
             MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
             MapOp::Filter => return source.kept(self.flavor, slots.iter().map(taken)),
-            // XCR claude for claude: [bug/high] The `Keep marker is in-band for 'b:
-            // nothing stops 'b from holding a `Keep variant, so a generic callback that
-            // returns its own 'b-typed `Keep(1) is unwrapped here. The result then
-            // holds values outside its static type. `let f = |a: Array<'x>| ->
-            // Array<'x> array::filter_map(a, |x| x)` called on [`Keep(1), `Keep(2)]
-            // returns [1, 2] typed Array<`Keep(i64)>, the check accepts it, and an
-            // exhaustive `select h { `Keep(n) => n }` then hits a coverage hole. Both
-            // engines agree. This is the null collision gx-stdlib-06 fixed, moved to
-            // `Keep. Fix options: the checker refuses a 'b that may hold `Keep (a bound
-            // settled at each call), or the marker becomes a form no value can take (a
-            // Rust-registered abstract like the kind markers). probe:
-            // design/review-2026-10-26/repro/c-collection-keep-unsound.gx Also reported
-            // as (x-engine-collections-01). (c-collection-01)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q30, The
-            // `Keep marker is in-band):
-            // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat,
-            // 2026-10-27, D5): "I like B, lets try it": the marker becomes a form no
-            // value can take, a Rust-registered abstract like the kind markers, built
-            // by a core function keep(v), which callbacks write instead of `Keep(v).
-            // 2026-10-29 claude: Eric ruled (2026-10-29, cr-discuss round 3 D1): W,
-            // always wrap. A filter_map callback returns [`Keep('b), null]: null drops
-            // the element, `Keep(v) keeps v (null included); there is no bare 'b
-            // member, so the unwrap strips exactly the one layer the type has. This
-            // replaces round 2's B (an abstract keep(v) marker), which alone was not
-            // sound. x-engine-collections-02's exemption is fixed on its own either
-            // way.
-            // 2026-10-29 claude: W built: filter_map's callback returns [`Keep('b),
-            // null] over array, list, map, core's filter_map_pairs and the Collection
-            // trait; kept() strips the one `Keep layer and nothing else, and the JIT
-            // push helpers share it. A bare return is refused, the message saying to
-            // return `Keep(v). Pins:
-            // lang::collection::filter_map_generic_bare_value_refused (this CR's probe;
-            // accepted and unwrapped to [1, 2] without the signature change, shown by
-            // reverting it), filter_map_bare_value_refused (same),
-            // filter_map_keeps_keep_values_whole (`Keep values kept whole over array,
-            // list, map and Collection::filter_map).
-            // 2026-10-29 claude: Fused loop (cr29 1b): emit_filter_map_kind takes any
-            // callback whose frozen return is a two-word Value or null and always
-            // pushes the kept element through the helpers that share kept(); the
-            // Keep-free route to the map loop and the keeps flag are gone, so a typedef
-            // of the marker, an always-keep and an always-drop callback fuse alike.
-            // Pins: lang::collection::filter_map_keep_unwraps_fused (#[native] over
-            // array, list and map, Keep(null), strings, tuples, a typedef'd Keep,
-            // always-null callbacks; the always-null rows fail to fuse without it),
-            // filter_map_keeps_keep_values_whole now #[native] with FuseExpect::Jit
-            // (fails in jit and jit_par when the loop pushes results unwrapped, as do
-            // filter_map_keep_fuses and map_filter_map).
-            // 2026-10-29 claude: cr29 fix G6 (RV1 finding 4): the fuzz generator's
-            // filter_map callbacks now take the loop paths this fix changed:
-            // always-keep, always-drop (|x| null), `Keep(null) over a nullable target
-            // and a nested `Keep (kept whole, then unwrapped by a map); gen-check's
-            // per-feature rows filter-map, keep-null and keep-nested count them (seed
-            // 11, 4000 programs: all compile).
             MapOp::FilterMap => {
                 slots.iter().filter_map(|s| kept(s.value())).cloned().collect()
             }

@@ -902,6 +902,11 @@ impl FnType {
         any
     }
 
+    // CR claude for claude: [perf/low] FnType::contains_int on a type with declared
+    // quantifiers walks the signature twice more (this, on self and on t) beside its own
+    // walk, and in a later compile task copies self (fresh_quantified) at every
+    // comparison. GUI-example --check instructions did not move (94.6e9), so it is cost,
+    // not a regression; one walk could answer both sides. (earlier-quantifier-cost-01)
     /// A quantifier an earlier compile task left open: the check decided
     /// it open, so a later task compares the type as any instance of
     /// itself and never writes the cell (`tvar::earlier_task`).

@@ -661,34 +661,6 @@ impl Reach {
         checking: bool,
     ) -> Result<()> {
         let empty = Type::Primitive(BitFlags::empty());
-        // XCR claude for claude: [readability/low] A structure arm with no type test
-        // over a union holding an open member (`(s, n)` over [(string, i64), 'a]) is
-        // counted as covering the whole scrutinee, so a following `_ => 0` is refused
-        // here as "unreachable arm". That arm is reachable, since 'a may be anything.
-        // Removing it, as the message invites, gives the real refusal ("this pattern
-        // tests for (string, i64) among 'a ... annotate it"). Do not let matches_every
-        // or the cover count a structure pattern as covering an open member, so the
-        // settle's refusal is the one reported. probe:
-        // design/review-2026-10-19/repro/x-rerun-6-unreachable-arm-open-member.gx
-        // (x-rerun-6-04)
-        // 2026-10-20 claude: Tried twice (2026-10-20): matches_every refusing wildcard
-        // status while a member is undecided, and Reach::cover keeping undecided
-        // members out of the diff. Neither changes the probe: by the time coverage
-        // runs, the first arm narrowing has bound the open member to its tuple, so the
-        // union is one member and the arm covers it. The fix belongs where the arm
-        // narrows (it must leave an open member open for the settle to judge), which
-        // is typing work.
-        // 2026-10-26 claude: Still reproduces (2026-10-26, lane2 build): unreachable
-        // arm at _ => 0. Not attempted again in this batch; the earlier note's
-        // diagnosis stands (the first arm's narrowing binds the open member before
-        // coverage runs).
-        // 2026-10-29 claude: Fixed by bounded-cover-01's change:
-        // PatternNode::matches_every holds a declared variable rigid, so (s, n) over
-        // [(string, i64), 'a] no longer reads as a wildcard and the refusal is the
-        // arm's untold test at (s, n) ('may share (string, i64)'s runtime form:
-        // annotate it'); {a} => a, _ => 0 over [{a: i64}, 'b] likewise. Pin:
-        // lang::select::structure_arm_over_a_declared_member_is_untold_not_a_wildcard
-        // (all four modes), which fails ('unreachable arm') without it.
         if checking && (self.wildcard || self.atype == empty) {
             bailat!(
                 site,
@@ -2153,39 +2125,6 @@ impl<R: Rt> Select<R> {
                 }))
                 .at(&site);
             }
-            // XCR claude for claude: [bug/medium] A slice arm's element test is not told
-            // apart from an open element type. `let f = |x: Array<['b, `Keep('b)]>| ->
-            // ['b, null] select x { [`Keep(r), ..] => r, _ => null }` checks, and over
-            // `xs: Array<[`Keep(i64), `Keep(`Keep(i64))]> = [`Keep(1)]` f(xs) returns 1
-            // typed [`Keep(i64), null], so `select v { `Keep(n) => n, null as _ => 0 }`
-            // then matches no arm (both engines). The tuple spelling, `(`Keep(r), _)`
-            // over ('b, i64), is refused since (x-engine-collections-02), so this arm
-            // makes no Told judgment here, or one that finds nothing: not located.
-            // (keep-slice-told-01)
-            // 2026-10-29 claude: Located: the arm's own judgment found nothing, since a
-            // slice predicate's rest cell holds the whole element type, so
-            // reaching.diff(pred) subtracted everything (rest = []), at the top and
-            // inside a tuple or variant (same_resolved). Fixed: each element of a slice
-            // under an inferred predicate is judged as a test of its own.
-            // StructPatternNode::element_tests walks the arm's structure with its
-            // narrowed predicate and what reaches it (through tuples, variants,
-            // structs, or-patterns and nested slices) and gives each slice element that
-            // is not a bind or _ with the element type of what reaches the slice;
-            // select.rs Told-judges each among that type less itself, as it does the
-            // arm. And Type::rep_collision_tested now passes over a cell of the test's
-            // whether bound or open: 336d891's open-only rule refused [h, ..] and [h,
-            // 1] over Array<['b, `Keep('b)]>, which main accepted. Pins (lang::select):
-            // slice_rest_element_, slice_suffix_element_, list_element_,
-            // nested_slice_element_, tuple_slice_element_ and
-            // variant_slice_element_telling_quantifier_from_keep_refused and
-            // unannotated_slice_element_telling_rest_from_keep_refused fail without
-            // element_tests; generic_slice_binds_beside_keep_check fails without the
-            // bound-cell rule; slice_element_telling_quantifier_from_keep_refused (no
-            // rest) was refused before too. Consequence: an unannotated parameter's
-            // slice that tests an element of a shared form (|a| select a { [(x, y), ..]
-            // => x, _ => 0 }) is now refused, annotate it, as its rest is the
-            // definition's open cell; main accepted it. The written-type spelling is
-            // keep-written-told-01.
             if checking {
                 let mut tests: SmallVec<[(Type, Type); 4]> =
                     smallvec![(pat.type_predicate.clone(), reaching.clone())];
