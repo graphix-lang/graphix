@@ -211,7 +211,7 @@ pub enum NoLoop {
     /// A variadic or opaque formal, which a loop cannot rebind.
     Formals,
     /// Per-call memory: a collection operation, a non-tail self-call, a
-    /// callee holding one.
+    /// cycle through another function, a callee holding one.
     Memory,
     /// An Io call that does not fire with the formals.
     Io(crate::expr::Expr),

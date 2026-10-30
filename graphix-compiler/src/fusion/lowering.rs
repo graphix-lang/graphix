@@ -1626,10 +1626,11 @@ pub(crate) fn tail_loop_blocker<R: Rt>(
 /// The per-call-site memory a body holds that a native tail loop's
 /// passes would share where the node-walk's activations each hold their
 /// own: a collection loop's words, a non-tail self-call's block root, a
-/// handler-ful `?` that does not fire with the body's `formals` (an
-/// activation raises it at its birth, a pass never does), a callee whose
-/// body holds any; `None` when it holds none. Such a body recurses
-/// natively.
+/// call back into an instance on the `visiting` path (a cycle through
+/// another function), a handler-ful `?` that does not fire with the
+/// body's `formals` (an activation raises it at its birth, a pass never
+/// does), a callee whose body holds any; `None` when it holds none. Such
+/// a body recurses natively.
 fn site_memory<R: Rt>(
     body: &Node<R>,
     self_bind: Option<BindId>,
@@ -1664,20 +1665,32 @@ fn site_memory<R: Rt>(
             NodeView::CallSite(cs) if is_self(cs) => {
                 (!tail_calls.contains(&n.spec().id)).then_some(NoLoop::Memory)
             }
-            NodeView::CallSite(cs) => match cs.resolved_apply() {
-                // a cycle through another function roots blocks too
-                Some(ApplyView::Lambda(g)) if visiting.contains(&g.instance_id()) => {
-                    Some(NoLoop::Memory)
+            NodeView::CallSite(cs) => {
+                let callee = match cs.resolved_apply() {
+                    Some(ApplyView::Lambda(g)) => Some(g),
+                    _ => None,
+                };
+                let target = callee
+                    .map(|g| g.instance_id())
+                    .or(cs.static_target().map(|t| t.instance));
+                match callee {
+                    _ if target.is_some_and(|t| visiting.contains(&t)) => {
+                        Some(NoLoop::Memory)
+                    }
+                    Some(g) => {
+                        visiting.push(g.instance_id());
+                        let held = site_memory(
+                            g.body(),
+                            g.self_bind(),
+                            &g.formal_ids(),
+                            visiting,
+                        );
+                        visiting.pop();
+                        held
+                    }
+                    None => None,
                 }
-                Some(ApplyView::Lambda(g)) => {
-                    visiting.push(g.instance_id());
-                    let held =
-                        site_memory(g.body(), g.self_bind(), &g.formal_ids(), visiting);
-                    visiting.pop();
-                    held
-                }
-                _ => None,
-            },
+            }
             _ => None,
         }
     });

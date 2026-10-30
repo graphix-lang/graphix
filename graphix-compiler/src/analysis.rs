@@ -505,8 +505,8 @@ fn no_loop_message(why: Option<&NoLoop>) -> CompactString {
         ),
         Some(NoLoop::Memory) | None => format_compact!(
             "{HEAD}: the body holds per-call memory (a collection operation, a \
-             non-tail self-call, or a callee holding one), which every call keeps \
-             in its own activation"
+             non-tail self-call, a cycle through another function, or a callee \
+             holding one), which every call keeps in its own activation"
         ),
     }
 }

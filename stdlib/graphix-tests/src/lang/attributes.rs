@@ -466,6 +466,59 @@ const TAIL_RECURSIVE_TWO_SITES: &str = r#"
 
 run!(tail_recursive_two_sites, TAIL_RECURSIVE_TWO_SITES, refused("no loop is built: `f(n)` (line 5, column 55) performs Io"); FuseExpect::None; build_only);
 
+// A callee whose recursion runs through another function holds per-call
+// memory too.
+const TAIL_RECURSIVE_CYCLE_CALLEE: &str = r#"
+{
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let rec h = |x: i64| -> i64 select x { 0 => 0, _ => { let k = |y: i64| -> i64 h(y - 1) + 1; k(x) } };
+  (loop(h, 3, 0), loop(|x| x, 3, 0))
+}
+"#;
+
+run!(tail_recursive_cycle_callee, TAIL_RECURSIVE_CYCLE_CALLEE, refused("no loop is built: the body holds per-call memory"); FuseExpect::None; build_only);
+
+const CYCLE_CALLEE_UNASSERTED: &str = r#"
+{
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let rec h = |x: i64| -> i64 select x { 0 => 0, _ => { let k = |y: i64| -> i64 h(y - 1) + 1; k(x) } };
+  (loop(h, 3, 0), loop(|x| x, 3, 0))
+}
+"#;
+
+run!(cycle_callee_unasserted, CYCLE_CALLEE_UNASSERTED, prints("[i64:6, i64:6]"));
+
+// A callee that defines a closure and recurses by tail calls to itself
+// holds none, and the loop over it is native.
+const TAIL_RECURSIVE_TAIL_CALLEE_CLOSURE: &str = r#"
+{
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let rec h = |x: i64, a: i64| -> i64 select x { 0 => a, _ => { let k = |y: i64| -> i64 y + 2; h(x - 1, k(a)) } };
+  #[native] loop(|x| h(x, 0), 3, 0)
+}
+"#;
+
+run!(tail_recursive_tail_callee_closure, TAIL_RECURSIVE_TAIL_CALLEE_CLOSURE, is(Value::I64(12)); FuseExpect::Jit);
+
+// Nor does a callee that calls another instance of the loop: two
+// instances of one definition on a call path are not a cycle.
+const TAIL_RECURSIVE_OTHER_INSTANCE: &str = r#"
+{
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let h = |x: i64| -> i64 loop(|y| y * 2, x, 0);
+  #[native] loop(h, 3, 0)
+}
+"#;
+
+run!(tail_recursive_other_instance, TAIL_RECURSIVE_OTHER_INSTANCE, is(Value::I64(20)); FuseExpect::Jit);
+
 // A lambda literal called in place is an instance like any other: its
 // async body makes the enclosing function async.
 const SYNC_ON_ASYNC_LITERAL_CALL: &str = r#"
