@@ -321,7 +321,7 @@ impl StructurePattern {
             if !t.could_match(env, m)? {
                 continue;
             }
-            // CR claude for eric: [bug/high] `*f == t` holds two completions that
+            // CR claude for claude: [bug/high] `*f == t` holds two completions that
             // differ only in undecided cells to be one member, so a partial struct
             // pattern is checked as covering both while a later statement decides the
             // cells apart, and the select matches no arm at run time: `let x = never();
@@ -337,6 +337,13 @@ impl StructurePattern {
             // items: []} | {loading: false, items: data}` under bool-literal arms is
             // refused "missing match cases"). The rule is cr-discuss round 4 D2. probe:
             // ~/tmp/cr29/scratch/review3/u4/r2b.gx (partial-hole-01)
+            // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 D2): option
+            // (a). Keep main's completion and narrowing exactly and add only a late
+            // check: record the pairs of completions == took as equal while they
+            // differed in undecided cells, and refuse once the program or input is
+            // checked if they ended up decided apart ("matches more than one member once
+            // its cells are decided: annotate"). The check decides no cell.
+            // typeflip_000003's over-refusal stays as today.
             match &found {
                 None => found = Some(t),
                 Some(f) if *f == t => (),

@@ -119,6 +119,10 @@ impl InputReader {
             // picks): Ctrl-C gives the prompt back and keeps the session, as before
             // round 3 D7; the interrupt (stop the runtime and replace it with a
             // fresh one) moves to another key, Ctrl-Alt-I.
+            // 2026-10-30 claude: Eric ruled (2026-10-30, follow-up): the interrupt
+            // key is Ctrl-\ (SIGQUIT, delivered by the terminal like Ctrl-C), not
+            // Ctrl-Alt-I: the shell does not read the keyboard during a display or
+            // an evaluation.
             Output::EmptyScript | Output::Text(_) => std::future::pending().await,
             Output::None => self.next_line(env).await.map(Read::Signal),
         }
