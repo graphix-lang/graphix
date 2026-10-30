@@ -231,15 +231,23 @@ async fn seq_network(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// An idle wait armed again keeps its output until it fires: ready's 1
+// re-arms it for an hour, and probe, a cycle after the re-arm, reads the 1
+// before it ends the wait.
 async fn live_timer_keeps_value(mode: Mode) -> Result<()> {
     let code = r#"{
-        let tick = count(sys::time::timer(duration:100.ms, 2)?);
-        let ready = sys::time::after_idle(duration:30.ms, tick);
-        let probe = sys::time::after_idle(duration:10.ms, tick);
+        let tick = 1;
+        let wait = duration:30.ms;
+        let ready = sys::time::after_idle(wait, tick);
+        tick <- select ready { 1 => ready + 1, _ => never() };
+        wait <- select ready { 1 => ready ~ duration:1.h, _ => never() };
+        let probe = never();
+        probe <- select tick { 2 => tick, _ => never() };
+        wait <- probe ~ duration:10.ms;
         probe ~ ready
     }"#;
     let (values, _) = run_delta(code, mode).await?;
-    assert_eq!(as_i64s(&values), [1, 1]);
+    assert_eq!(as_i64s(&values), [1]);
     Ok(())
 }
 
