@@ -465,6 +465,24 @@ fn desugar_plain(
 // the BankedSample pays requests in order. Pin:
 // lang::seq_abort::seqq_flush_drops_a_request_waiting_for_a_capture (gives [17, 27, 87]
 // without the floor, [87] with it). CLAUDE.md and queue's doc updated.
+// 2026-10-29 claude: Review R2 (cr29, 2026-10-29): the floor breaks when the seqq is born
+// again (a seqq in a seq step: every run is a rebirth). Queue::reborn kept pushed and
+// floor while the BankedSample's bank is cleared and the prelude's requests counter
+// starts again at 0, so request numbers and arrival numbers drift apart. Probes
+// ~/tmp/cr29/scratch/review/r2/fw_nested.gx (run 1 banks, flushes, is aborted; run 2's
+// request, made after the flush, is dropped: prints nothing, where fw_noflush.gx and
+// fw_flush_empty.gx print r 27) and fw_reset.gx (run 2's waiting request survives the
+// flush: r 17 then r 27, the original bug again).
+// 2026-10-29 claude: Fixed for a rebirth: Queue::reborn (graphix-package-core) resets
+// pushed and floor with the queue, in step with the prelude's requests counter and the
+// BankedSample's bank, which a rebirth starts again; a seqq in a seq step is born again
+// at each run through CallSite::update_call's reborn (a block step takes no FreshFrame;
+// that is for a call step), so this is the path runs take under D4. Pins:
+// lang::seq_abort::seqq_flush_in_a_step_drops_nothing_of_the_next_run (R2's fw_nested.gx:
+// [27]; [] without the reset) and seqq_flush_in_a_step_drops_a_waiting_request_of_its_run
+// (fw_reset.gx: [17, 37]; [17, 27] without it), all four modes. fw_reset_ctl, fw_noflush
+// and fw_flush_empty print r 37, r 27, r 27 as before. queue's .gxi doc says a queue born
+// again numbers from 0.
 /// The prelude that makes a seq's `abort(..)` and `flush(..)` one event
 /// bound to `aborted`, and a `seqq`'s queue. The queue takes the flush
 /// event in the cycle it fires, so a request that arrives with it stays,

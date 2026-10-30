@@ -3150,6 +3150,8 @@ impl<R: Rt> Apply<R> for Queue {
     fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         self.queue.clear();
         self.triggered = 0;
+        self.pushed = 0;
+        self.floor = 0;
         self.out = TagValue::phantom();
     }
 }

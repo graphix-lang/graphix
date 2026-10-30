@@ -211,6 +211,49 @@ async fn seqq_flush_drops_a_request_waiting_for_a_capture(mode: Mode) -> Result<
     Ok(())
 }
 
+// A seqq in a seq step is born again at each run, its flush with it. Run 1
+// requests 1, flushes it while it waits for `ready` and is aborted; run 2's
+// request 2, made after that flush, runs.
+async fn seqq_flush_in_a_step_drops_nothing_of_the_next_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { s if s < 30 => s + 1, _ => never() };
+        let go = select step { 1 => 1, 10 => 2, _ => never() };
+        let cancel = select step { 6 => true, _ => never() };
+        let req = select step { 2 => 1, 12 => 2, _ => never() };
+        let ready = never<i64>();
+        ready <- select step { 8 => 7, _ => never() };
+        let fl = select step { 4 => true, _ => never() };
+        seq go; abort(cancel) {
+            seqq req; flush(fl) { req * 10 + ready }
+        }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [27]);
+    Ok(())
+}
+
+// Run 1 serves request 1; in run 2, request 2 waits for `ready` and the
+// flush drops it, and request 3, made after the flush, runs.
+async fn seqq_flush_in_a_step_drops_a_waiting_request_of_its_run(
+    mode: Mode,
+) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { s if s < 30 => s + 1, _ => never() };
+        let go = select step { 1 => 1, 8 => 2, _ => never() };
+        let req = select step { 2 => 1, 9 => 2, 20 => 3, _ => never() };
+        let ready = select step { s if s < 5 => 7, s if s > 15 => 7, _ => never() };
+        let fl = select step { 11 => true, _ => never() };
+        seq go {
+            seqq req; flush(fl) { req * 10 + ready }
+        }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [17, 37]);
+    Ok(())
+}
+
 // A machine whose arm sleeps mid-run is idle when the arm wakes.
 async fn sleep_resets_the_machine(mode: Mode) -> Result<()> {
     for kw in ["seq", "seqq"] {
@@ -341,6 +384,8 @@ modes!(seqq_abort_starts_the_next);
 modes!(seqq_flush_empties_the_queue);
 modes!(seqq_flush_keeps_a_request_arriving_with_it);
 modes!(seqq_flush_drops_a_request_waiting_for_a_capture);
+modes!(seqq_flush_in_a_step_drops_nothing_of_the_next_run);
+modes!(seqq_flush_in_a_step_drops_a_waiting_request_of_its_run);
 modes!(sleep_resets_the_machine);
 modes!(nested_machine_restarts);
 modes!(nested_abort_reads_live);
