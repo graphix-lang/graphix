@@ -324,6 +324,21 @@ pub fn analyze<R: Rt>(root: &Node<R>, ctx: &CompileCtx<R>) -> Result<TailLoops> 
 /// Refuse each passed `#[tail_recursive]` whose loop fusion did not
 /// build: only a fused kernel runs a tail recursion as a loop.
 pub fn check_tail_loops<R: Rt>(due: TailLoops, ctx: &CompileCtx<R>) -> Result<()> {
+    // CR claude for eric: [bug/low] The loop-built check is per definition: it
+    // asks whether any instance of the asserted definition built a loop, so an
+    // instance that runs in the node-walk passes whenever another instance
+    // fuses. `#[tail_recursive] let rec loop = |f: fn(x: i64) -> i64, n, acc|
+    // ..` called as `loop(h, 3, 0)` with `h = |x| x + *rv` (it reads a
+    // reference, so it does not fuse) beside `loop(|x| x, 3, 0)` is accepted and
+    // prints (9, 6); with only `loop(h, 3, 0)` it is refused "the body did not
+    // fuse" (main 24ae12e91). Whether a program is refused depends on which other
+    // calls it makes. design/recursive_activations.md describes the
+    // per-definition check as built ("a kernel of the definition"), while
+    // book/src/functions/recursion.md says the body must compile to native code.
+    // Options: (1) every instance the assertion covers must build its loop (the
+    // assertion promises a loop for each call it covers), or (2) keep the
+    // per-definition check and say so in the book. I recommend (1). probes:
+    // ~/tmp/cr29/scratch/review4/u2/g1.gx, g1h.gx (tail-loop-per-def-01)
     match due.0.iter().find(|a| !ctx.fusion.has_tail_loop(a.id)) {
         None => Ok(()),
         Some(a) => Err(anyhow!(

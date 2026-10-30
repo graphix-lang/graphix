@@ -1073,6 +1073,10 @@ impl Typing {
             // or copy a lambda literal's signature where its value is read.
             // probes: ~/tmp/cr29/scratch/review3/u1/s01-s05.gx, t03.gx, n07.gx,
             // n15.gx (self-arg-instance-01)
+            // 2026-10-30 claude: Reading the field into a let first fails the same
+            // way: `{ let s = {f: |x| 0}; let g = s.f; g(s) }` passes --check and
+            // its run-time bind is refused (main 24ae12e91 and cr30-u1; review
+            // probe ~/tmp/cr29/scratch/review4/u1/c02.gx).
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),

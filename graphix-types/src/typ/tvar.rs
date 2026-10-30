@@ -104,8 +104,12 @@ fn reaches_no_open_cell(
     })
 }
 
-/// Mark each of `cells`, if bound, as reaching no open cell at `epoch`.
+/// Mark each of `cells`, if bound, as reaching no open cell at `epoch`,
+/// unless the epoch moved since the walk that proved them read it.
 fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
+    if ground_epoch() != epoch {
+        return;
+    }
     for cell in cells.drain(..) {
         let mut c = cell.write();
         if c.binding.is_some() {

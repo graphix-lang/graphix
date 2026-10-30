@@ -491,6 +491,19 @@ const CYCLE_CALLEE_UNASSERTED: &str = r#"
 
 run!(cycle_callee_unasserted, CYCLE_CALLEE_UNASSERTED, prints("[i64:6, i64:6]"));
 
+// So does one whose cycle through another function is all tail calls.
+const TAIL_RECURSIVE_TAIL_CYCLE_CALLEE: &str = r#"
+{
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let rec h = |x: i64| -> i64 select x { 0 => 0, _ => { let k = |y: i64| -> i64 h(y - 1); k(x) } };
+  (loop(h, 3, 0), loop(|x| x, 3, 0))
+}
+"#;
+
+run!(tail_recursive_tail_cycle_callee, TAIL_RECURSIVE_TAIL_CYCLE_CALLEE, refused("no loop is built: the body holds per-call memory"); FuseExpect::None; build_only);
+
 // A callee that defines a closure and recurses by tail calls to itself
 // holds none, and the loop over it is native.
 const TAIL_RECURSIVE_TAIL_CALLEE_CLOSURE: &str = r#"

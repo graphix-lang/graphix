@@ -64,7 +64,12 @@ structure is returned SHARED, never copied.
   every bound cell it walked (`TCell::ground`) with the `GROUND_EPOCH`
   that proved them, and a later walk stops at a cell marked with the
   current epoch, so a chain of lets over literals checks in linear
-  time. The epoch advances on every change that can make a type reach
+  time. A change to a bound cell between the lets (the check of a
+  generic call makes one) costs each later literal over the chain one
+  walk of what it reaches: a chain with such a call after every let
+  checks in time quadratic in its depth (5,000 levels: about 3x the
+  instructions of a walk-free check), accepted since only a type that
+  deep pays it. The epoch advances on every change that can make a type reach
   a cell it did not (a bound cell's binding replaced, a constraint or
   lower bound added to one, an unbind); a normal form's write-back
   reaches only its source's cells and does not advance it. It is one
