@@ -460,7 +460,7 @@ only to parse a string into a scalar (never a collection), to print a number, bo
 plainly (`"42"`; a whole float, and a duration's seconds, keep the
 point, `"3.0"`, as every plain print does: `typ::PlainScalar`), between a number and a datetime (Unix seconds) or a
 duration (seconds), from a bool to a number (1 or 0), or to read an array of numbers as bytes; a list reads as the array of its elements and a map as the array of its `(key, value)` pairs, and an array of pairs reads as a map; a union target tries the members of the value's own
-class first (`typ/cast.rs::convert`, `in_own_class`: a container's class is its elements' too, and unmarked array data is a list's), an array the source type says is one (`cast_from`) an array member it inhabits, then unmarked array data a tagged variant, a tuple of its length, then a struct before an array, a tuple or struct only where its elements stay in their classes, and every way a member that holds the value exactly, then a real member that holds it rounded to its precision, before one that would drop part of it (`Holds`, `holds_exactly`, `holds_rounded`: `cast<[i64, f64]>("3.5")` is 3.5, `cast<[i64, f32]>(0.1)` and `("0.1")` f32 0.1, `cast<[f32, u8]>(16777217)` f32 16777216; an infinity a finite value overflows to is no rounding), and short of a dropped part one keeping every float and decimal real before one reading one as an integer (`Choice`, counted at the leaves, `RealReads`: `cast<[i64, decimal]>(3.0)` and `("3.0")` are decimal, `cast<[(i64, i64), (f32, f32)]>([1.0, 2.0])` the f32 tuple; with no real member `cast<[i64, datetime]>("3.0")` is 3). The JIT inlines
+class first (`typ/cast.rs::convert`, `in_own_class`: a container's class is its elements' too, and unmarked array data is a list's), an array the source type says is one (`cast_from`) an array member it inhabits, then unmarked array data a tagged variant, a tuple of its length, then a struct before an array, a tuple or struct only where its elements stay in their classes, and every way a member that holds the value exactly, then a real member that holds it rounded to its precision, before one that would drop part of it (`Holds`, `holds_exactly`, `holds_rounded`: `cast<[i64, f64]>("3.5")` is 3.5, `cast<[i64, f32]>(0.1)` and `("0.1")` f32 0.1, `cast<[f32, u8]>(16777217)` f32 16777216; an infinity a finite value overflows to is no rounding), and short of a dropped part one keeping every number an integer or a real as it was before one reading one across (`Choice`, counted at the leaves, `NumReads`: `cast<[i64, decimal]>(3.0)` and `("3.0")` are decimal, `cast<[(i64, i64), (f32, f32)]>([1.0, 2.0])` the f32 tuple, and with `type B = u8`, `cast<[f64, B]>(2)` is u8 2, as the flat `[f64, u8]` reads it; with no real member `cast<[i64, datetime]>("3.0")` is 3). The JIT inlines
 only the casts that always fit (`lowering::inline_cast`). A struct cast
 reads a field the data omits as null wherever the field's type
 admits null (`typ/cast.rs`), and a string parses as an RFC3339
@@ -565,8 +565,9 @@ with no `Cast` impl, `json::read`'s and `toml::read`'s target is also
 `'b: JsonData`/`TomlData` (`typ::textdata`: no union in it holds two
 members one of which may read a value the other writes: a union reads
 a number into its own class first, so an integer member takes the whole
-float a JSON duration writes, and a large whole f32's shortest text,
-which only rounds back to the f32 (1234567936 writes 1234568000.0)), judged of the
+float a JSON duration writes, and one wider than 16 bits a large whole
+f32's shortest text, which only rounds back to the f32 (1234567936 writes
+1234568000.0); `[f32, u16]` reads back), judged of the
 call's settled binding (`site_bounds`; refused at the bind, a union
 target would narrow to one member), a writer declares its value `'a: Data` (no
 reference, function or such abstract type; open is fine), an async

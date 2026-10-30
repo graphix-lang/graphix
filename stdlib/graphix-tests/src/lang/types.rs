@@ -775,6 +775,35 @@ run!(
     )
 );
 
+// A number keeps its kind where a member of its kind holds it exactly: an
+// integer, value or text, goes to a real member only where no integer
+// member holds it, however the union names or orders its members, at every
+// leaf, as a float goes to an integer member only where no real one holds it
+// (a union of tuples has no kernel ABI form, so the casts node-walk).
+const CAST_A_NUMBER_KEEPS_ITS_KIND: &str = r#"
+{
+  type B = u8;
+  (
+    cast<[f64, B]>(2)$,
+    cast<[f64, B]>("2")$,
+    cast<[f64, B]>(2.0)$,
+    cast<[f64, B]>(300)$,
+    cast<[(B, i64), (f32, i64)]>([2, 5])$,
+    cast<[(B, i64), (f32, i64)]>([2.0, 5])$,
+    cast<[Array<f64>, Array<B>]>([2, 3])$
+  )
+}
+"#;
+
+run!(
+    cast_a_number_keeps_its_kind,
+    CAST_A_NUMBER_KEEPS_ITS_KIND,
+    prints(
+        "[u8:2, u8:2, f64:2., f64:300., [u8:2, i64:5], [f32:2., i64:5], [u8:2, u8:3]]"
+    );
+    FuseExpect::None
+);
+
 // Unmarked data reads back as the member that reads it exactly: a tuple of
 // its length, then a struct, before an array, so what pack and json write
 // of a tuple or a struct reads back as it.

@@ -865,7 +865,9 @@ float or decimal, value or text, goes to an integer member only where no
 `f32`/`f64`/`decimal` member holds it exactly: `cast<[i64, decimal]>(3.0)`
 is the decimal, `cast<[i64, datetime]>("3.0")` the integer. Short of an
 exact member, a real one that rounds it beats one that drops a part:
-`cast<[i64, f32]>(0.1)` is f32 0.1.
+`cast<[i64, f32]>(0.1)` is f32 0.1. An integer likewise goes to a real
+member only where no integer member holds it, however the union names
+its members.
 Printed composites escape brackets in strings and retain numeric type prefixes
 except for i64/f64. Bytes print as `bytes:` literals. Only `str::parse` also
 reads printed UTC datetimes, every printed duration unit and bare

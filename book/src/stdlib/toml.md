@@ -11,7 +11,8 @@ table.
 
 A `toml::read` target holds no union two of whose members one TOML value
 could be written by, as with [json](json.md#unions-in-the-target):
-`[u8, i64]`, `[f32, i64]` and `[Array<string>, Array<i64>]` are refused.
+`[u8, i64]`, `[f32, i64]` and `[Array<string>, Array<i64>]` are refused;
+`[f32, u16]` reads.
 TOML cannot write a `duration`, so `[duration, i64]` reads. TOML has a
 datetime of its own, so `[string, datetime]` reads apart here.
 

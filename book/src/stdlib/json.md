@@ -50,7 +50,9 @@ large whole `f32` is written as its shortest text, `1234567936` as
 rounded), `[Array<string>, Array<i64>]` (both write `[]`) and a struct
 beside a map of strings (an object reads as both) are refused.
 Members JSON writes apart are fine: `[i64, f64]` (an integer and a number
-with a fraction), `` [`A(i64), `B(string)] ``, `[{a: i64}, {b: i64}]`,
+with a fraction), `[f32, u16]` (an integer no wider than 16 bits holds
+no `f32` text the `f32` does not hold too, and a real member takes it
+first), `` [`A(i64), `B(string)] ``, `[{a: i64}, {b: i64}]`,
 `[T, null]`. Pack and db keep the member, so their reads take these
 unions.
 

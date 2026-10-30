@@ -527,6 +527,47 @@ run!(
     refused("'b: JsonData refuses [i64, f32]")
 );
 
+// An f32 beside an integer no wider than 16 bits reads back as written: a
+// whole f32 that integer could hold is written exactly and stays real, a
+// fraction rounds back to the f32, and the integer's text stays an
+// integer; so too in a tuple, and an integer beside an f64 under a name.
+run!(
+    json_f32_beside_a_narrow_integer_reads_back,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type U = [f32, u8];
+    type S = [f32, i16];
+    type B = u8;
+    type N = [f64, B];
+    type T = [(f32, i64), (u8, i64)];
+    let u = |v: U| -> bool {
+        let r: Result<U, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let s = |v: S| -> bool {
+        let r: Result<S, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let n = |v: N| -> bool {
+        let r: Result<N, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let t = |v: T| -> bool {
+        let r: Result<T, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    (
+        [u(f32:0.1), u(f32:2.0), u(f32:1e10), u(u8:2), u(u8:255)],
+        [s(f32:-3.0), s(i16:-3), s(f32:300.5), s(i16:32767)],
+        [n(u8:2), n(f64:2.0), n(f64:0.1)],
+        [t((u8:2, 5)), t((f32:2.0, 5)), t((f32:0.1, 5))]
+    )
+}"#,
+    prints(
+        "[[true, true, true, true, true], [true, true, true, true], [true, true, true], [true, true, true]]"
+    )
+);
+
 // An f64 member keeps a whole float beside an integer, and a duration
 // key beside a bool reads back.
 run!(

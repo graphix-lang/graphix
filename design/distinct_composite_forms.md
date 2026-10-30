@@ -112,7 +112,7 @@ the value exactly comes before one that would drop part of it (a
 fraction, a sub-second part, a rounding: `holds_exactly`), and among
 those an integer reading of a float or a decimal, as a value or as its
 text, gives way to a later reading that keeps every float and decimal
-real (`Choice`; counted at the leaves, `RealReads`, so a union of
+real (`Choice`; counted at the leaves, `NumReads`, so a union of
 composites is judged by every leaf): `cast<[i64, decimal]>(3.0)` and
 `cast<[i64, decimal]>("3.0")` are both the decimal, a whole float's
 print reads back as the float, and where no member is real the integer
@@ -123,6 +123,11 @@ f32, a decimal or a long integer into an f64, never an infinity a finite
 value overflows to), then any conversion, so `cast<[i64, f32]>(0.1)` is
 the f32 and `cast<[(i64, i64), (f32, f32)]>([0.5, 0.1])` the f32 tuple; a
 primitive set walks the same three among its bits.
+The kind is kept both ways: an integer, value or text, goes to a real
+member only where no integer member holds it exactly, which a primitive
+set's canonical order (integers first) gives and `Choice` gives a union
+that names or orders its members otherwise (`cast<[f64, B]>(2)` is the
+`u8` 2 with `type B = u8`).
 `cast<string>` of a bare variant is its tag; no other marked
 value has a primitive form, and the primitive `array` holds arrays only
 (`contains`, `is_a`, `setops`). A list casts to an array element by

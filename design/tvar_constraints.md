@@ -717,8 +717,9 @@ data it writes (ints and f64 apart; JSON writes a datetime and a
 variant's tag as strings, a duration as a float and a decimal as an exact
 number; TOML has no null and a native datetime; a union reads a number
 into its own class first, so an integer member takes a whole float a
-JSON duration wrote, which no real member holds, and a large whole f32's
-shortest text, which it holds exactly and the f32 only rounded), composites as arrays (an
+JSON duration wrote, which no real member holds, and one wider than 16
+bits a large whole f32's shortest text, which it holds exactly and the
+f32 only rounded), composites as arrays (an
 object reads as its sorted key/value pairs, a struct takes exactly its
 fields less the nullable ones, any-length arrays share the empty array),
 and two members overlap where some finite value is written by one and

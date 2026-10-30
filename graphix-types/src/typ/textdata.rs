@@ -31,13 +31,19 @@ enum Shape {
     Unknown,
     Null,
     Bool,
-    Int,
+    /// An integer, `wide` where its range passes 2^24: it may hold exactly
+    /// the shortest text of a large whole f32.
+    Int {
+        wide: bool,
+    },
     /// A float an f64 member reads back as itself.
     F64,
-    /// A float an integer member may take: a duration, which JSON writes as
-    /// its seconds, whole where no real member holds it, and an f32, whose
-    /// shortest text, large and whole (`1234568000.0` for 1234567936), the
-    /// integer holds exactly and the f32 only rounded.
+    /// A float a real member reads back, and a wide integer member a large
+    /// whole one, whose shortest text (`1234568000.0` for 1234567936) it
+    /// holds exactly and the f32 only rounded.
+    F32,
+    /// A duration, which JSON writes as its seconds: an integer member
+    /// takes it whole, where no real member holds it.
     Float,
     /// Any number, integral or not (a decimal written exactly).
     Number,
@@ -79,7 +85,7 @@ impl<'a> Shapes<'a> {
             Typ::Null if json => Shape::Null,
             Typ::Bool => Shape::Bool,
             Typ::F64 => Shape::F64,
-            Typ::F32 => Shape::Float,
+            Typ::F32 => Shape::F32,
             Typ::Duration if json => Shape::Float,
             Typ::Decimal if json => Shape::Number,
             Typ::String => Shape::Str,
@@ -87,7 +93,8 @@ impl<'a> Shapes<'a> {
             Typ::DateTime => Shape::DateTime,
             Typ::Null | Typ::Duration | Typ::Decimal | Typ::Error => Shape::None,
             Typ::Bytes | Typ::Array | Typ::Map | Typ::Abstract => Shape::Unknown,
-            _ => Shape::Int,
+            Typ::U8 | Typ::I8 | Typ::U16 | Typ::I16 => Shape::Int { wide: false },
+            _ => Shape::Int { wide: true },
         }
     }
 
@@ -124,8 +131,8 @@ impl<'a> Shapes<'a> {
                     let p = p.iter().next().expect("one");
                     match p {
                         Typ::Bytes => {
-                            let int =
-                                self.push(Shape::Int, &Type::Primitive(Typ::U8.into()));
+                            let u8 = Type::Primitive(Typ::U8.into());
+                            let int = self.push(Shape::Int { wide: false }, &u8);
                             self.push(Shape::Seq(int), t)
                         }
                         p => {
@@ -241,8 +248,11 @@ impl<'a> Shapes<'a> {
             (_, Union(ms)) => ms.iter().any(|m| self.overlap(a, *m, seen)),
             (None | Unknown, _) | (_, None | Unknown) => false,
             (Null, Null) | (Bool, Bool) | (Str, Str) | (DateTime, DateTime) => true,
-            (Int | Float | F64 | Number, Number) | (Number, Int | Float | F64) => true,
-            (Int | Float, Int | Float) | (F64, F64 | Float) | (Float, F64) => true,
+            (Int { .. } | Float | F32 | F64 | Number, Number) => true,
+            (Number, Int { .. } | Float | F32 | F64) => true,
+            (Int { .. } | Float, Int { .. } | Float) => true,
+            (F64 | F32, F64 | F32 | Float) | (Float, F64 | F32) => true,
+            (F32, Int { wide: true }) | (Int { wide: true }, F32) => true,
             (Str, Lit(_)) | (Lit(_), Str) => true,
             (Lit(x), Lit(y)) => x == y,
             (Seq(_), Seq(_) | Pairs(..)) | (Pairs(..), Seq(_) | Pairs(..)) => true,
@@ -375,6 +385,14 @@ mod test {
         assert!(!json("[f64, u8]"));
         assert!(json("[f32, i64]"));
         assert!(toml("[f32, i64]"));
+        assert!(json("[f32, i32]"));
+        assert!(!json("[f32, u8]"));
+        assert!(!json("[f32, i16]"));
+        assert!(!toml("[f32, u16]"));
+        assert!(!json("[(f32, i64), (u8, i64)]"));
+        assert!(json("[(f32, i64), (u32, i64)]"));
+        assert!(json("[duration, u8]"));
+        assert!(json("[f32, f64]"));
         assert!(json("[duration, i64]"));
         assert!(!toml("[duration, i64]"));
         assert!(json("Map<[duration, i64], i64>"));

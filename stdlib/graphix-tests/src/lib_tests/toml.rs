@@ -266,6 +266,21 @@ run!(
     refused("'b: TomlData refuses { k: [i64, f32] }")
 );
 
+// An f32 beside an integer no wider than 16 bits reads back as written.
+run!(
+    toml_f32_beside_a_narrow_integer_reads_back,
+    r#"{
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    type D = {k: [f32, u16]};
+    let t = |v: D| -> bool {
+        let r: Result<D, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    [t({k: f32:0.1}), t({k: f32:2.0}), t({k: u16:3}), t({k: u16:65535}), t({k: f32:1e10})]
+}"#,
+    prints("[true, true, true, true, true]")
+);
+
 run!(colliding_pair_keys_are_refused, r#"{
     let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
     select toml::write_str({keys: m}) {

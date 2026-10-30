@@ -145,7 +145,7 @@ struct CastCx {
     /// held so the members stay its: a union tries several members over
     /// one value, so without it a failing read is exponential in the
     /// data's depth.
-    read: LPooled<AHashMap<(usize, usize, Holds), (Type, Cast, RealReads)>>,
+    read: LPooled<AHashMap<(usize, usize, Holds), (Type, Cast, NumReads)>>,
     /// Whether the walk is inside a union's reading.
     in_union: bool,
     /// How many values on the path are built by the walk, not held by
@@ -162,8 +162,8 @@ struct CastCx {
     /// How much of a value a conversion may lose: a union tries its
     /// members at each in turn, the least first.
     holds: Holds,
-    /// How the reading so far took the floats and decimals it met.
-    reals: RealReads,
+    /// How the reading so far took the numbers it met.
+    nums: NumReads,
     input: CastInput,
     check_keys: bool,
 }
@@ -178,48 +178,69 @@ enum Holds {
     Partly,
 }
 
-/// How a reading took the floats and decimals it met, values or text that
-/// reads as one: how many it read as an integer, and how many as neither
-/// an integer nor a real.
+/// Which side of the line between integers and reals a number is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumKind {
+    Integer,
+    Real,
+}
+
+impl NumKind {
+    fn of(t: Typ) -> Option<NumKind> {
+        match (t.is_integer(), t.is_real()) {
+            (true, _) => Some(NumKind::Integer),
+            (_, true) => Some(NumKind::Real),
+            _ => None,
+        }
+    }
+}
+
+/// How a reading took the numbers it met, values or text that reads as
+/// one: how many it read across the line between integers and reals, and
+/// how many as no number.
 #[derive(Debug, Clone, Copy, Default)]
-struct RealReads {
-    as_integer: usize,
+struct NumReads {
+    crossed: usize,
     as_other: usize,
 }
 
-impl RealReads {
-    /// Count a value read as `c`, `real` saying whether the value is a
-    /// float or a decimal or text reading as one.
-    fn read(&mut self, c: &Value, real: impl FnOnce() -> bool) {
-        let t = Typ::get(c);
-        if !t.is_real() && real() {
-            match t.is_integer() {
-                true => self.as_integer += 1,
-                false => self.as_other += 1,
-            }
+impl NumReads {
+    /// Count a value of the kind `kind` says read as `c`.
+    fn read(&mut self, c: &Value, kind: impl FnOnce() -> Option<NumKind>) {
+        let to = NumKind::of(Typ::get(c));
+        match (kind(), to) {
+            (None, _) => (),
+            (Some(k), Some(to)) if k == to => (),
+            (Some(_), Some(_)) => self.crossed += 1,
+            (Some(_), None) => self.as_other += 1,
         }
     }
 
-    fn add(&mut self, d: RealReads) {
-        self.as_integer += d.as_integer;
+    fn add(&mut self, d: NumReads) {
+        self.crossed += d.crossed;
         self.as_other += d.as_other;
     }
 
-    fn since(self, base: RealReads) -> RealReads {
-        RealReads {
-            as_integer: self.as_integer - base.as_integer,
+    fn since(self, base: NumReads) -> NumReads {
+        NumReads {
+            crossed: self.crossed - base.crossed,
             as_other: self.as_other - base.as_other,
         }
+    }
+
+    /// Whether every number kept its kind.
+    fn kept(self) -> bool {
+        self.crossed == 0 && self.as_other == 0
     }
 }
 
 /// A union's reading of a value among those its members offer, in its
 /// order: the first, except that in a round that drops no part one reading
-/// a float or a decimal as an integer gives way to a later one keeping
-/// every float and decimal real.
+/// a number across the line between integers and reals gives way to a
+/// later one keeping every number its kind.
 struct Choice {
     whole: bool,
-    got: Option<(Value, RealReads)>,
+    got: Option<(Value, NumReads)>,
 }
 
 impl Choice {
@@ -227,12 +248,10 @@ impl Choice {
         Choice { whole: cx.holds < Holds::Partly, got: None }
     }
 
-    fn offer(&mut self, c: Value, d: RealReads) {
+    fn offer(&mut self, c: Value, d: NumReads) {
         let replaces = match &self.got {
             None => true,
-            Some((_, g)) => {
-                self.whole && g.as_integer > 0 && d.as_integer == 0 && d.as_other == 0
-            }
+            Some((_, g)) => self.whole && g.crossed > 0 && d.kept(),
         };
         if replaces {
             self.got = Some((c, d))
@@ -241,13 +260,13 @@ impl Choice {
 
     /// Whether no later reading would replace the one held.
     fn settled(&self) -> bool {
-        self.got.as_ref().is_some_and(|(_, g)| !self.whole || g.as_integer == 0)
+        self.got.as_ref().is_some_and(|(_, g)| !self.whole || g.crossed == 0)
     }
 
     /// The reading chosen, its count added to `cx`'s.
     fn take(self, cx: &mut CastCx) -> Option<Value> {
         self.got.map(|(c, d)| {
-            cx.reals.add(d);
+            cx.nums.add(d);
             c
         })
     }
@@ -266,13 +285,13 @@ impl CastCx {
             at: 0,
             depth: 0,
             holds: Holds::Partly,
-            reals: RealReads::default(),
+            nums: NumReads::default(),
             input,
             check_keys,
         }
     }
 
-    /// `t`'s reading of `v` and how it took the reals it met, the count
+    /// `t`'s reading of `v` and how it took the numbers it met, the count
     /// left as it was: a union adds only its chosen reading's.
     fn trial(
         &mut self,
@@ -280,11 +299,11 @@ impl CastCx {
         t: &Type,
         src: Option<&Type>,
         v: &Value,
-    ) -> (Cast, RealReads) {
-        let base = self.reals;
+    ) -> (Cast, NumReads) {
+        let base = self.nums;
         let r = t.cast_int(env, self, src, v);
-        let d = self.reals.since(base);
-        self.reals = base;
+        let d = self.nums.since(base);
+        self.nums = base;
         (r, d)
     }
 
@@ -907,13 +926,13 @@ impl Type {
                 let mut exact = members.clone().filter_map(|t| {
                     convert(v.clone(), t).filter(|c| holds_exactly(v, c))
                 });
-                let mut real = None;
-                let mut reads_real = || *real.get_or_insert_with(|| reads_as_real(v));
+                let mut known = None;
+                let mut kind = || *known.get_or_insert_with(|| number_kind(v));
                 let read = match exact.next() {
                     Some(c)
                         if Typ::get(&c).is_integer()
                             && s.intersects(Typ::real())
-                            && reads_real() =>
+                            && kind() == Some(NumKind::Real) =>
                     {
                         exact.find(|c| Typ::get(c).is_real()).or(Some(c))
                     }
@@ -930,7 +949,7 @@ impl Type {
                 match read {
                     Some(c) => {
                         if cx.in_union {
-                            cx.reals.read(&c, reads_real)
+                            cx.nums.read(&c, kind)
                         }
                         Ok(Some(c))
                     }
@@ -1284,8 +1303,8 @@ impl Type {
             // that holds the value exactly comes before one that holds it
             // rounded to a real's precision, and that before one that would
             // drop part of it (a fraction, a sub-second part) (`Holds`); short
-            // of a dropped part, one keeping its floats and decimals real
-            // before one reading one as an integer (`Choice`).
+            // of a dropped part, one keeping every number an integer or a
+            // real as it was before one reading one across (`Choice`).
             Type::Set(ts) => {
                 let outer = cx.holds;
                 let key = (cx.in_union && cx.built == 0)
@@ -1294,10 +1313,10 @@ impl Type {
                     && let Some((_, r, d)) = cx.read.get(k)
                 {
                     let (r, d) = (r.clone(), *d);
-                    cx.reals.add(d);
+                    cx.nums.add(d);
                     return r;
                 }
-                let base = cx.reals;
+                let base = cx.nums;
                 let (in_union, cuts) = (mem::replace(&mut cx.in_union, true), cx.cuts);
                 let array = rep::array_elems(v).is_some()
                     && (cx.input == CastInput::Marked
@@ -1319,7 +1338,7 @@ impl Type {
                 if let Some(k) = key
                     && cx.cuts == cuts
                 {
-                    cx.read.insert(k, (self.clone(), r.clone(), cx.reals.since(base)));
+                    cx.read.insert(k, (self.clone(), r.clone(), cx.nums.since(base)));
                 }
                 r
             }
@@ -1351,7 +1370,7 @@ impl Type {
             for t in arrays {
                 match cx.trial(env, t, src, v) {
                     (Ok(None), d) => {
-                        cx.reals.add(d);
+                        cx.nums.add(d);
                         return Ok(None);
                     }
                     (Ok(Some(c)), d) if cx.input == CastInput::Marked => {
@@ -1373,7 +1392,7 @@ impl Type {
             for t in tagged {
                 match cx.trial(env, t, src, v) {
                     (Ok(None), d) => {
-                        cx.reals.add(d);
+                        cx.nums.add(d);
                         return Ok(None);
                     }
                     (Ok(Some(c)), d) => choice.offer(c, d),
@@ -1408,7 +1427,7 @@ impl Type {
                     tried[i] = true;
                     match cx.trial(env, t, src, v) {
                         (Ok(None), d) => {
-                            cx.reals.add(d);
+                            cx.nums.add(d);
                             return Ok(None);
                         }
                         (Ok(Some(c)), d) => choice.offer(c, d),
@@ -1438,7 +1457,7 @@ impl Type {
             for ((t, _), _) in members.filter(|((_, o), r)| **o == pass && !**r) {
                 match cx.trial(env, t, src, v) {
                     (Ok(None), d) => {
-                        cx.reals.add(d);
+                        cx.nums.add(d);
                         return Ok(None);
                     }
                     (Ok(Some(c)), d) => choice.offer(c, d),
@@ -3002,6 +3021,20 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // overflows to). An integer a real member rounds, cast<[f32, u8]>(16777217) and its text,
 // is f32 16777216, as on main. Pin: lang::types::cast_rounding_before_a_dropped_part
 // (fails on 16f7ced15).
+// 2026-10-30 claude: Judged with the follow-up, as the same rule read the other way: an
+// integer, value or text, goes to a real member only where no integer member holds it
+// exactly. A flat primitive union already read so (integers first in canonical order); a
+// union naming or ordering its members otherwise did not (type B = u8: cast<[f64, B]>(2)
+// was f64 2.0 on main, and json::read of a written u8 2 into the JsonData-admitted [f64,
+// B] gave f64 2.0). The leaf count is NumReads (numbers read across the integer/real line,
+// numbers read as no number) and Choice passes over any crossing reading. With both kinds
+// kept, JsonData/TomlData admit an f32 beside an integer no wider than 16 bits (textdata
+// Shape::Int { wide }, Shape::F32); [f32, i32] and wider stay refused (1234567936 writes
+// 1234568000.0, which the integer holds exactly). Pins:
+// lang::types::cast_a_number_keeps_its_kind,
+// lib_tests::json::json_f32_beside_a_narrow_integer_reads_back,
+// lib_tests::toml::toml_f32_beside_a_narrow_integer_reads_back (all fail on 322a66957 or
+// 16f7ced15's cast.rs).
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.
@@ -3031,13 +3064,11 @@ fn holds_rounded(v: &Value, c: &Value) -> bool {
             })
 }
 
-/// Whether `v` is a float or a decimal, or text that parses as one.
-fn reads_as_real(v: &Value) -> bool {
+/// Which kind of number `v` is, or the text `v` parses as.
+fn number_kind(v: &Value) -> Option<NumKind> {
     match v {
-        Value::String(s) => {
-            s.trim().parse::<Value>().is_ok_and(|p| Typ::get(&p).is_real())
-        }
-        v => Typ::get(v).is_real(),
+        Value::String(s) => NumKind::of(Typ::get(&s.trim().parse::<Value>().ok()?)),
+        v => NumKind::of(Typ::get(v)),
     }
 }
 
