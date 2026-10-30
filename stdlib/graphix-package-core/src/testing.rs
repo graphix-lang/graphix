@@ -769,6 +769,10 @@ pub async fn eval_modes(
     Ok(first.expect("Mode::ALL is not empty"))
 }
 
+/// How long a fixture may run before it counts as a hang: a guard against
+/// a test that never ends, never what one asserts.
+pub const HANG_GUARD: Duration = Duration::from_secs(600);
+
 /// How long [`collect`] reads a program's result.
 #[derive(Debug, Clone, Copy)]
 pub enum Collect {

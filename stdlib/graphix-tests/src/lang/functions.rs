@@ -1259,9 +1259,10 @@ async fn run_rec(
     mode: Mode,
 ) -> Result<(Vec<i64>, u64, u64)> {
     use graphix_package_core::testing::{
-        compile_result, fixture_runtime, result_source, updates_until_quiet,
+        Collect, HANG_GUARD, compile_result, fixture_runtime, result_source,
+        updates_until,
     };
-    use std::{fmt::Write, time::Duration};
+    use std::fmt::Write;
     let mut code = String::from("{\n let t = filter(array::iter([");
     for (i, t) in ts.iter().enumerate() {
         write!(code, "{}{t}", if i == 0 { "" } else { ", " })?;
@@ -1277,10 +1278,10 @@ async fn run_rec(
     let control = ctx.rt.control();
     let rebuilds = control.rebuilds();
     let res = compile_result(&ctx).await?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    let quiet = Duration::from_millis(700);
+    let deadline = tokio::time::Instant::now() + HANG_GUARD;
     let values =
-        updates_until_quiet(&ctx.rt, &mut rx, res.exprs[0].id, quiet, deadline).await?;
+        updates_until(&ctx.rt, &mut rx, res.exprs[0].id, Collect::Settled, deadline)
+            .await?;
     let counts = (control.live_activations(), control.rebuilds() - rebuilds);
     ctx.shutdown().await;
     Ok((as_i64s(&values), counts.0, counts.1))

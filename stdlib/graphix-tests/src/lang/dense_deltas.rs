@@ -6,8 +6,8 @@ use anyhow::Result;
 use graphix_package_core::{
     PrintSink,
     testing::{
-        Collect, FuseExpect, Mode, TestState, as_i64s, check_fixture, compile_result,
-        fixture_runtime, result_source, updates_until, verdicts_agree,
+        Collect, FuseExpect, HANG_GUARD, Mode, TestState, as_i64s, check_fixture,
+        compile_result, fixture_runtime, result_source, updates_until, verdicts_agree,
     },
 };
 use netidx::publisher::Value;
@@ -33,10 +33,6 @@ pub(super) struct Delta {
     /// The regions the build fused.
     pub regions: usize,
 }
-
-/// How long a run may take before it counts as a hang: a guard, never
-/// what a fixture asserts.
-const HANG_GUARD: Duration = Duration::from_secs(600);
 
 /// [`run_delta`]'s window: 700ms with no event ends a program that has
 /// a standing source.
