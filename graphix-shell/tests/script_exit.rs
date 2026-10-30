@@ -3,7 +3,7 @@
 //! a cold cache as on a warm one. A runtime that stops reports why.
 
 mod common;
-use common::{CACHE_LOG, Ran, graphix, program_image};
+use common::{CACHE_LOG, Ran, graphix, program_image, repl};
 
 /// Run `program` five times over one cache: the first run cold, writing
 /// the program's entry, the rest restoring it.
@@ -62,40 +62,22 @@ fn an_abstract_value_reads_before_any_is_minted() {
 }
 
 /// A REPL whose stdin is a pipe goes on reading lines while a value
-/// shows, so a later line runs and EOF ends the shell.
+/// shows, so later lines run and EOF ends the shell. A line's value from
+/// the cycle that follows its compile is printed before the next line
+/// replaces it, though the shell reads the next line while it shows one.
 #[test]
 fn piped_lines_are_all_read() {
-    use std::{io::Write, process::Stdio, time::Duration};
+    const LINES: i64 = 200;
     let dir = tempfile::tempdir().expect("tempdir");
-    let run = |input: &'static str| {
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_graphix"))
-            .arg("--no-netidx")
-            .arg("--no-cache")
-            .env("XDG_CACHE_HOME", dir.path().join("cache"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn graphix");
-        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                let out = child.wait_with_output().unwrap();
-                break (status, String::from_utf8_lossy(&out.stdout).into_owned());
-            }
-            if std::time::Instant::now() > deadline {
-                let _ = child.kill();
-                panic!("the shell did not end on {input:?}");
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    };
-    let (status, out) = run("1 + 1\nsys::exit(3)\n");
-    assert_eq!(status.code(), Some(3), "{out}");
-    assert!(out.contains('2'), "{out}");
-    let (status, out) = run("1 + 1\n");
-    assert_eq!(status.code(), Some(0), "{out}");
+    let mut input: String = (1..=LINES).map(|i| format!("{i} + 0\n")).collect();
+    input.push_str("sys::exit(3)\n");
+    let ran = repl(dir.path(), &["--no-cache"], &input);
+    assert_eq!(ran.status.code(), Some(3), "{}\n{}", ran.stdout, ran.stderr);
+    let shown: Vec<i64> = ran.stdout.lines().filter_map(|l| l.parse().ok()).collect();
+    assert_eq!(shown, (1..=LINES).collect::<Vec<_>>(), "{}", ran.stdout);
+    let ran = repl(dir.path(), &["--no-cache"], "1 + 1\n");
+    assert_eq!(ran.status.code(), Some(0), "{}\n{}", ran.stdout, ran.stderr);
+    assert!(ran.stdout.lines().any(|l| l == "2"), "{}", ran.stdout);
 }
 
 /// The run warns of an unused import as the check does, so under

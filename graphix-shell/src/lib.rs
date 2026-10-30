@@ -284,25 +284,22 @@ impl KeySignals {
 }
 
 /// Run `work`, which may wait on a busy runtime, telling each Ctrl-C
-/// meanwhile that it stops nothing. The interrupt, if it came, is the
-/// answer once the work is done, which its stopped runtime makes soon.
-async fn busy(
-    work: impl Future<Output = ()>,
+/// meanwhile that it stops nothing: the work's result, and the interrupt
+/// if it came, once the work is done, which its stopped runtime makes soon.
+async fn busy<T>(
+    work: impl Future<Output = T>,
     keys: &mut mpsc::UnboundedReceiver<Key>,
-) -> Option<Key> {
+) -> (T, Option<Key>) {
     let mut work = pin!(work);
     loop {
         select! {
-            () = &mut work => break None,
+            r = &mut work => break (r, None),
             key = keys.recv() => match key {
                 Some(Key::Leave) => eprintln!(
                     "ctrl-c stops nothing while the runtime is busy; \
                      {INTERRUPT_KEY} interrupts it and resets the session"
                 ),
-                key => {
-                    (&mut work).await;
-                    break key;
-                }
+                key => break ((&mut work).await, key),
             },
         }
     }
@@ -938,6 +935,12 @@ impl<X: GXExt> Shell<X> {
                             }
                             Ok(Read::Signal(Signal::Success(line))) => {
                                 let shown = async {
+                                    // what shows is shown as it stands, its
+                                    // first cycle's values at least, before
+                                    // the line replaces it
+                                    output
+                                        .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
+                                        .await?;
                                     match session.gx.compile(ArcStr::from(line)).await {
                                         // the reset says why
                                         Err(_) if session.interrupted() => (),
@@ -970,8 +973,13 @@ impl<X: GXExt> Shell<X> {
                                             }
                                         }
                                     }
+                                    ControlFlow::Continue(())
                                 };
-                                key = busy(shown, &mut keys).await;
+                                let (shown, k) = busy(shown, &mut keys).await;
+                                if let ControlFlow::Break(r) = shown {
+                                    break 'session r
+                                }
+                                key = k;
                             }
                             // the line editor's Ctrl-C abandoned the line
                             Ok(Read::Signal(_)) => (),

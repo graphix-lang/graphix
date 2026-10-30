@@ -34,10 +34,11 @@ In REPL mode:
   the terminal receives them too: `Ctrl+C` stops such a child even
   though the shell keeps the session
 - `Ctrl+D` exits the shell
-- with input piped in (`graphix < lines.gx`), the end of the input ends
-  the shell once what its lines started has run (at most five seconds for
-  a program that never goes idle), with the status a `sys::exit` among
-  them asked for
+- with input piped in (`graphix < lines.gx`), each line replaces the
+  output before it once what that output had produced is printed, and the
+  end of the input ends the shell once what its lines started has run (at
+  most five seconds for a program that never goes idle), with the status a
+  `sys::exit` among them asked for
 
 REPL mode is designed for interactive exploration. It doesn't enable warnings by default to keep the experience lightweight.
 

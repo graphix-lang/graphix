@@ -4,7 +4,7 @@
 
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     thread,
@@ -31,24 +31,47 @@ pub struct Ran {
 pub fn graphix(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -> Ran {
     let path = dir.join("main.gx");
     fs::write(&path, program).expect("write the program");
+    let child = command(dir)
+        .args(args)
+        .arg(&path)
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("run graphix");
+    finish(dir, child)
+}
+
+/// Run the REPL with `args`, its stdin a pipe that holds `input` and then
+/// ends; the rest as [`graphix`] runs a script.
+pub fn repl(dir: &Path, args: &[&str], input: &str) -> Ran {
+    let mut child =
+        command(dir).args(args).stdin(Stdio::piped()).spawn().expect("run graphix");
+    let mut stdin = child.stdin.take().expect("the REPL's stdin");
+    stdin.write_all(input.as_bytes()).expect("write the REPL's input");
+    drop(stdin);
+    finish(dir, child)
+}
+
+/// `graphix` with no netidx, its log in `dir/log` (emptied first) and
+/// its image cache in `dir/cache`, its output piped.
+fn command(dir: &Path) -> Command {
     let logs = dir.join("log");
     let _ = fs::remove_dir_all(&logs);
     fs::create_dir_all(&logs).expect("create the log dir");
-    let child = Command::new(env!("CARGO_BIN_EXE_graphix"))
-        .arg("--no-netidx")
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphix"));
+    cmd.arg("--no-netidx")
         .arg("--log-dir")
         .arg(&logs)
-        .args(args)
-        .arg(&path)
         .env("XDG_CACHE_HOME", dir.join("cache"))
-        .envs(env.iter().copied())
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("run graphix");
+        .stderr(Stdio::piped());
+    cmd
+}
+
+/// The run of `child`, started by [`command`] over `dir`, once it exits.
+fn finish(dir: &Path, child: Child) -> Ran {
     let out = within_deadline(child);
-    let log = fs::read_dir(&logs)
+    let log = fs::read_dir(dir.join("log"))
         .expect("read the log dir")
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
