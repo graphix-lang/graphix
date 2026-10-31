@@ -333,6 +333,18 @@ run!(
     prints("[true, true, true, true]")
 );
 
+run!(
+    toml_applied_recursive_typedef_reads_back,
+    r#"{
+    type R<'a> = [`Nil, `Cons('a, R<'a>)];
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    let v: R<i64> = `Cons(1, `Cons(2, `Nil));
+    let r: Result<{k: R<i64>}, E> = toml::read(toml::write_str({k: v})$);
+    (r$.k == v, r$.k)
+}"#,
+    prints("[true, [\"Cons\", i64:1, [\"Cons\", i64:2, \"Nil\"]]]")
+);
+
 run!(colliding_pair_keys_are_refused, r#"{
     let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
     select toml::write_str({keys: m}) {

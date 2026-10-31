@@ -2281,6 +2281,13 @@ fn size_of(t: &Type) -> usize {
 /// from `A<i64>`), one that grows at every level never stops.
 const MAX_GROWTH: usize = 4;
 
+/// Whether an application of `def` with parameters of `size` grows at
+/// every level: `path`, the applications it is inside, holds
+/// [`MAX_GROWTH`] of `def` with smaller parameters.
+pub(super) fn grows_on<D: PartialEq>(path: &[(D, usize)], def: &D, size: usize) -> bool {
+    path.iter().filter(|(d, s)| d == def && *s < size).count() >= MAX_GROWTH
+}
+
 /// `body` inside the application `at`: `again` when the walk expanded it
 /// already, `grows` when the path holds [`MAX_GROWTH`] applications of
 /// its definition with smaller parameters, as one whose parameters grow
@@ -2298,7 +2305,7 @@ fn walk<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static, R>
     if !seen.seen.insert(k) {
         return again;
     }
-    if seen.path.iter().filter(|(d, s)| *d == def && *s < size).count() >= MAX_GROWTH {
+    if grows_on(&seen.path, &def, size) {
         return grows();
     }
     seen.path.push((def, size));
@@ -3146,6 +3153,23 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // Open: whether a bool should round into a real and only partly into an integer
 // (cast<[f32, u8]>(true) is f32:1.0 here, u8:1 on main) is a cast question beside
 // holds-exactly-open-01.
+// 2026-10-30 claude: Round 4 (review7 B r3): textdata's Shapes::node keyed its typedef
+// memo on its arguments' node ids, which a primitive argument pushes fresh at every
+// expansion, so json::read or toml::read into a recursive typedef applied to arguments
+// (R<u64> over type R<'a> = [`Nil, `Cons('a, R<'a>)]) expanded without end and grew memory
+// until killed (main too, since 2bcdcec09). The memo is now keyed by the arguments' types,
+// so a typedef expands once per list of arguments, and one whose arguments grow at every
+// level (type N<'a> = [`Nil, `Cons('a, N<Array<'a>>)], reachable through a written 'a:
+// JsonData alone) is refused by the representation walks' growth rule (cast::grows_on),
+// with its own message (TextAmbiguity::Grows). Pins, each killed at a 3-4G cap without the
+// fix: textdata's an_applied_typedef_expands_once_per_arguments,
+// lib_tests::json::{json_applied_recursive_typedef_reads_back,
+// json_data_refuses_a_typedef_growing_its_parameters} (the latter only without the growth
+// rule), lib_tests::toml::toml_applied_recursive_typedef_reads_back.
+// admitted_unions_read_back now also reads back the typedef cases of textdata's unit tests
+// (named(..)), and the count pin covers recursive groups
+// (a_check_evaluates_each_pair_a_few_times). typ::regular::key had the same memo; fixed in
+// the next commit.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.
@@ -3375,34 +3399,15 @@ impl Type {
 pub(crate) mod tests {
     use crate::{
         env::Env,
-        expr::{ModPath, TypeDefBody, parser::parse_type},
+        expr::{ModPath, parser::parse_type},
         typ::Type,
     };
     use netidx_value::Value;
     use std::time::{Duration, Instant};
-    use triomphe::Arc;
 
     /// An env holding the typedefs `defs` at the root, and `t` there.
     pub(crate) fn typed(defs: &[(&str, &str)], t: &str) -> (Env, Type) {
-        let mut env = Env::default();
-        for (name, body) in defs {
-            env.deftype(
-                &ModPath::root(),
-                name,
-                Arc::from_iter([]),
-                &TypeDefBody::Alias(parse_type(body).unwrap()),
-                true,
-                None,
-                Default::default(),
-                Default::default(),
-                Arc::new(Default::default()),
-            )
-            .unwrap();
-        }
-        env.seed_typedef_refs();
-        let t = parse_type(t).unwrap().scope_refs(&ModPath::root());
-        t.seed_refs(&env);
-        (env, t)
+        Env::typed_at_root(defs, t).unwrap()
     }
 
     // A select's shallow test over `type T0 = [null, (T1, T1)]`, .. walks

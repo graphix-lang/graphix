@@ -48,7 +48,7 @@ mod print;
 pub use print::{Brief, Noted};
 pub(crate) mod regular;
 mod textdata;
-pub use textdata::Format;
+pub use textdata::{Format, TextAmbiguity};
 mod setops;
 pub(crate) use setops::{settled_identical, strictly_identical};
 #[doc(hidden)]

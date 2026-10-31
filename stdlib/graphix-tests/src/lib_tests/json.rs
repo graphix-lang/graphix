@@ -765,6 +765,35 @@ run!(
     prints("[true, true, true, true]")
 );
 
+// A typedef applied to arguments expands once for each list of them, so
+// the check of a recursion that passes its parameter on ends.
+run!(
+    json_applied_recursive_typedef_reads_back,
+    r#"{
+    type R<'a> = [`Nil, `Cons('a, R<'a>)];
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let v: R<u64> = `Cons(u64:1, `Cons(u64:2, `Nil));
+    let r: Result<R<u64>, E> = json::read(json::write_str(v)$);
+    (r$ == v, r$)
+}"#,
+    prints("[true, [\"Cons\", u64:1, [\"Cons\", u64:2, \"Nil\"]]]")
+);
+
+// One that grows its parameters at every level never ends.
+run!(
+    json_data_refuses_a_typedef_growing_its_parameters,
+    r#"{
+    type N<'a> = [`Nil, `Cons('a, N<Array<'a>>)];
+    let f = 'a: JsonData |x: 'a| -> 'a x;
+    let v: N<i64> = `Nil;
+    f(v)
+}"#,
+    refused(
+        "'a: JsonData refuses [`Cons(i64, N<Array<i64>>), `Nil]: N grows its \
+         parameters as it recurses"
+    )
+);
+
 // A map's keys are written as their text, which reads back by the key
 // union's order: a decimal's "3" as the datetime 3 seconds past the epoch.
 run!(

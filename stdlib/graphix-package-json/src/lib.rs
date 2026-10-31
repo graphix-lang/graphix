@@ -402,17 +402,52 @@ mod test {
     /// its parts', evenly spaced through it.
     const CAP: usize = 2000;
 
-    /// Every type textdata's unit tests judge, `json("..")` or `toml("..")`.
-    fn unions() -> Vec<&'static str> {
+    /// A type and the typedefs it names, each `(name, body)`.
+    type Case = (Vec<(&'static str, &'static str)>, &'static str);
+
+    /// Every type textdata's unit tests judge: `json("..")`, `toml("..")`
+    /// and `named(&[("Name", "body"), ..], "..", ..)`, its typedefs
+    /// written in the call.
+    fn cases() -> Vec<Case> {
         let mut found = vec![];
         for call in ["json(\"", "toml(\""] {
             let mut rest = TEXTDATA;
             while let Some(i) = rest.find(call) {
                 rest = &rest[i + call.len()..];
                 let end = rest.find("\")").expect("a closed call");
-                found.push(&rest[..end]);
+                found.push((vec![], &rest[..end]));
                 rest = &rest[end..];
             }
+        }
+        // the literal `rest` starts in, past its opening quote
+        let literal = |rest: &mut &'static str| {
+            let end = rest.find('"').expect("a closed string");
+            let s = &rest[..end];
+            *rest = &rest[end + 1..];
+            s
+        };
+        let mut rest = TEXTDATA;
+        while let Some(i) = rest.find("named(") {
+            rest = rest[i + "named(".len()..].trim_start();
+            let Some(r) = rest.strip_prefix("&[") else { continue };
+            rest = r;
+            let mut defs = vec![];
+            loop {
+                let at = rest.find(['"', ']']).expect("a closed list");
+                let closed = rest.as_bytes()[at] == b']';
+                rest = &rest[at + 1..];
+                if closed {
+                    break;
+                }
+                defs.push(literal(&mut rest));
+            }
+            assert!(
+                !defs.is_empty() && defs.len() % 2 == 0,
+                "textdata.rs: write a named call's typedefs in the call"
+            );
+            rest = &rest[rest.find('"').expect("a type") + 1..];
+            let t = literal(&mut rest);
+            found.push((defs.chunks(2).map(|d| (d[0], d[1])).collect(), t));
         }
         found.sort();
         found.dedup();
@@ -434,7 +469,7 @@ mod test {
     }
 
     impl Witnesses {
-        fn new(t: &Type) -> Self {
+        fn new(env: Env, t: &Type) -> Self {
             let mut texts: Vec<ArcStr> = [
                 "",
                 "x",
@@ -453,8 +488,8 @@ mod test {
             .into_iter()
             .map(ArcStr::from)
             .collect();
-            names(t, &mut texts);
-            Self { env: Env::default(), texts }
+            names(&env, t, &mut vec![], &mut texts);
+            Self { env, texts }
         }
 
         fn of(&self, t: &Type, depth: usize) -> Vec<Value> {
@@ -604,25 +639,34 @@ mod test {
         }
     }
 
-    /// The tags and field names in `t`.
-    fn names(t: &Type, out: &mut Vec<ArcStr>) {
-        match t {
+    /// The tags and field names in `t`, through each reference not in
+    /// `seen`.
+    fn names(env: &Env, t: &Type, seen: &mut Vec<Type>, out: &mut Vec<ArcStr>) {
+        let parts: Vec<&Type> = match t {
             Type::Variant(tag, ps, _) => {
                 out.push(tag.clone());
-                ps.iter().for_each(|p| names(p, out))
+                ps.iter().collect()
             }
-            Type::Struct(fs) => fs.iter().for_each(|(n, t, _)| {
-                out.push(n.clone());
-                names(t, out)
-            }),
-            Type::Set(ts) | Type::Tuple(ts) => ts.iter().for_each(|t| names(t, out)),
-            Type::Array(e) | Type::List(e) => names(e, out),
-            Type::Map { key, value } => {
-                names(key, out);
-                names(value, out)
+            Type::Struct(fs) => fs
+                .iter()
+                .map(|(n, t, _)| {
+                    out.push(n.clone());
+                    t
+                })
+                .collect(),
+            Type::Set(ts) | Type::Tuple(ts) => ts.iter().collect(),
+            Type::Array(e) | Type::List(e) => vec![&**e],
+            Type::Map { key, value } => vec![&**key, &**value],
+            Type::Ref(_) if !seen.contains(t) => {
+                seen.push(t.clone());
+                if let Ok(body) = t.lookup_ref(env) {
+                    names(env, &body, seen, out)
+                }
+                vec![]
             }
-            _ => (),
-        }
+            _ => vec![],
+        };
+        parts.into_iter().for_each(|p| names(env, p, seen, out))
     }
 
     /// The elements of a sequence's witnesses: none, each alone, and each
@@ -661,21 +705,22 @@ mod test {
 
     // textdata mirrors the union reader's pick (`cast_member`); this
     // checks the two agree with the real writer and the real reader: of
-    // every union textdata's unit tests name that JsonData admits, every
+    // every type textdata's unit tests name that JsonData admits, every
     // witness written as JSON reads back as itself.
     #[test]
     fn admitted_unions_read_back() {
-        let (mut admitted, mut checked) = (0, 0);
+        let (mut admitted, mut named, mut checked) = (0, 0, 0);
         let mut failed = vec![];
-        let tested = unions();
-        assert!(tested.len() > 80, "found {} unions in textdata.rs", tested.len());
-        for src in tested {
-            let t = parse_type(src).expect("a type");
-            let w = Witnesses::new(&t);
+        let tested = cases();
+        assert!(tested.len() > 80, "found {} types in textdata.rs", tested.len());
+        for (defs, src) in tested {
+            let (env, t) = Env::typed_at_root(&defs, src).expect("a type");
+            let w = Witnesses::new(env, &t);
             if t.text_ambiguity(&w.env, Format::Json).is_some() {
                 continue;
             }
             admitted += 1;
+            named += !defs.is_empty() as usize;
             let err = Type::Error(Arc::new(Type::Primitive(Typ::String.into())));
             let result = Type::Set(Arc::from_iter([t.clone(), err]));
             let target = CastTarget::of_result(&w.env, Some(&result));
@@ -696,7 +741,10 @@ mod test {
                 }
             }
         }
-        assert!(admitted > 30 && checked > 5000, "{admitted} unions, {checked} values");
+        assert!(
+            admitted > 30 && named > 5 && checked > 5000,
+            "{admitted} types ({named} over typedefs), {checked} values"
+        );
         assert!(failed.is_empty(), "{}", failed.join("\n"));
     }
 }

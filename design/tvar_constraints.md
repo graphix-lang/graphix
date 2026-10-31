@@ -756,11 +756,20 @@ fixpoint over the pairs the walk meets (`Fixpoint`: each starts with
 none; a pass computes each pair once, and passes repeat until one
 changes nothing): `[TA, TB]` over ``type TA = [i64, `Cons(f32, TA)]``
 and ``type TB = [f64, `Cons(f64, TB)]`` is refused. A check evaluates
-each pair once a pass, and takes one pass where nothing recurses.
+each pair once a pass, and takes one pass where nothing recurses. A
+typedef is expanded once for each list of arguments it is applied to
+(`Shapes::refs`, keyed by the arguments' types), so `R<i64>` over
+``type R<'a> = [`Nil, `Cons('a, R<'a>)]`` is one cycle; one whose
+arguments grow at every level (``type N<'a> = [`Nil, `Cons('a,
+N<Array<'a>>)]``) has no finite shape and is refused, by the growth rule
+of the representation walks (`cast::grows_on`). Two members that write one
+value are refused even where reading it as either gives the same value:
+`[R<i64>, R<bool>]`, both of which write `` `Nil ``.
 `graphix-package-json`'s `admitted_unions_read_back` writes witnesses of
-every union textdata's unit tests admit and reads them back with the
-real reader, so a change to the cast's pick that textdata does not
-follow fails there. Unlike the other predicates it is judged only of the
+every type textdata's unit tests admit, those over typedefs included
+(`named(..)`, its references unrolled three levels deep), and reads them
+back with the real reader, so a change to the cast's pick that textdata
+does not follow fails there. Unlike the other predicates it is judged only of the
 call's settled binding (`site_bounds`): a refusal at the bind would make
 a union target narrow to the one member that passes. It is handed to an
 open cell of its binding as `Concrete` is, so a generic reader's callers

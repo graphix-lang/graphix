@@ -2368,6 +2368,37 @@ impl Env {
             }
         }
     }
+
+    /// An env holding the typedefs `defs` at the root, each named `Name`
+    /// or `Name<'a, ..>`, and `t` there, every reference seeded. For tests.
+    #[doc(hidden)]
+    pub fn typed_at_root(defs: &[(&str, &str)], t: &str) -> Result<(Env, Type)> {
+        use crate::expr::parser::parse_type;
+        let root = ModPath::root();
+        let mut env = Env::default();
+        for (name, body) in defs {
+            let (name, params) = name.split_once('<').unwrap_or((name, ""));
+            let params = params.trim_end_matches('>').split(',').map(str::trim);
+            let params = Arc::from_iter(params.filter(|p| !p.is_empty()).map(|p| {
+                (TVar::empty_named(ArcStr::from(p.trim_start_matches('\''))), None)
+            }));
+            env.deftype(
+                &root,
+                name,
+                params,
+                &TypeDefBody::Alias(parse_type(body)?),
+                true,
+                None,
+                Default::default(),
+                Default::default(),
+                Arc::new(Default::default()),
+            )?;
+        }
+        env.seed_typedef_refs();
+        let t = parse_type(t)?.scope_refs(&root);
+        t.seed_refs(&env);
+        Ok((env, t))
+    }
 }
 
 #[cfg(test)]

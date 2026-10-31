@@ -14,17 +14,33 @@
 //! member's reading of a composite whole: `[(f32, u8), (f64, f64)]`
 //! reads `(f32:0.1, u8:1)` back as `(0.1, 1.0)`, exact where the f32's
 //! own reading rounds; `[(string, f32), (i64, f64)]` reads `("1",
-//! f32:0.1)` back as `(1, 0.1)`.
+//! f32:0.1)` back as `(1, 0.1)`. A union two of whose members write
+//! one value is refused even where reading it as either gives the same
+//! value (`` `Nil `` in `[R<i64>, R<bool>]`), and a typedef whose
+//! parameters grow as it recurses is refused: its shapes never end.
 
 use crate::{
     env::Env,
-    typ::{Typ, Type},
+    expr::ModPath,
+    typ::{Typ, Type, cast::grows_on, params_size},
 };
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use smallvec::SmallVec;
 use std::cell::RefCell;
+use triomphe::Arc;
+
+/// Why a type's text form may not read back what it wrote
+/// ([`Type::text_ambiguity`]).
+#[derive(Debug, Clone)]
+pub enum TextAmbiguity {
+    /// Two members of a union: a value one writes may read back as the
+    /// other.
+    Members(Type, Type),
+    /// A typedef whose parameters grow as it recurses.
+    Grows(ModPath),
+}
 
 /// The format a type is read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -478,9 +494,13 @@ struct Shapes<'a> {
     env: &'a Env,
     format: Format,
     nodes: Vec<(Shape, Type)>,
-    /// Each reference expanded, by its definition and its arguments'
-    /// nodes, so a recursive type is a cycle.
-    refs: AHashMap<(usize, SmallVec<[usize; 4]>), usize>,
+    /// Each reference expanded, by its definition and its arguments, so a
+    /// recursive type is a cycle.
+    refs: AHashMap<(usize, Arc<[Type]>), usize>,
+    /// The definitions being expanded, each with its arguments' size.
+    path: Vec<(usize, usize)>,
+    /// A definition met growing its arguments as it recurses.
+    grows: Option<ModPath>,
     /// [`Shapes::class_of`] by reader, writer and key.
     classes: RefCell<AHashMap<(usize, usize, bool), (bool, bool)>>,
     fix: RefCell<Fixpoint>,
@@ -493,6 +513,8 @@ impl<'a> Shapes<'a> {
             format,
             nodes: Vec::new(),
             refs: AHashMap::default(),
+            path: Vec::new(),
+            grows: None,
             classes: RefCell::default(),
             fix: RefCell::default(),
         };
@@ -501,7 +523,10 @@ impl<'a> Shapes<'a> {
     }
 
     /// [`Type::text_ambiguity`] of the type the shapes were built from.
-    fn ambiguity(&self) -> Option<(Type, Type)> {
+    fn ambiguity(&self) -> Option<TextAmbiguity> {
+        if let Some(name) = &self.grows {
+            return Some(TextAmbiguity::Grows(name.clone()));
+        }
         let unions = (0..self.nodes.len()).map(|n| (n, false));
         let mut keys: SmallVec<[(usize, bool); 4]> = SmallVec::new();
         for (s, _) in self.nodes.iter() {
@@ -525,7 +550,7 @@ impl<'a> Shapes<'a> {
                         }
                     };
                     if hit {
-                        return Some((
+                        return Some(TextAmbiguity::Members(
                             self.nodes[*a].1.clone(),
                             self.nodes[*b].1.clone(),
                         ));
@@ -567,24 +592,26 @@ impl<'a> Shapes<'a> {
                 None => self.push(Shape::Unknown, t),
             },
             Type::Ref(tr) => {
-                let expanded = tr.resolved().and_then(|r| {
-                    let known = r.bindings(&tr.params)?;
-                    Some((r.def_key(), r.typ.replace_tvars(&known)))
-                });
-                let Some((def, body)) = expanded else {
-                    return match t.lookup_ref(self.env) {
-                        Ok(body) => self.node(&body),
-                        Err(_) => self.push(Shape::Unknown, t),
-                    };
+                let Some(def) = tr.resolve_peek(self.env) else {
+                    return self.push(Shape::Unknown, t);
                 };
-                let args: SmallVec<[usize; 4]> =
-                    tr.params.iter().map(|p| self.node(p)).collect();
-                if let Some(id) = self.refs.get(&(def, args.clone())) {
+                let Some(known) = def.bindings(&tr.params) else {
+                    return self.push(Shape::Unknown, t);
+                };
+                let key = (def.def_key(), tr.params.clone());
+                if let Some(id) = self.refs.get(&key) {
                     return *id;
                 }
                 let id = self.push(Shape::Unknown, t);
-                self.refs.insert((def, args), id);
-                let body = self.node(&body);
+                let size = params_size(&tr.params);
+                if grows_on(&self.path, &key.0, size) {
+                    self.grows.get_or_insert_with(|| tr.name.clone());
+                    return id;
+                }
+                self.path.push((key.0, size));
+                self.refs.insert(key, id);
+                let body = self.node(&def.typ.replace_tvars(&known));
+                self.path.pop();
                 self.nodes[id].0 = Shape::Union(SmallVec::from_iter([body]), false);
                 id
             }
@@ -1253,10 +1280,10 @@ impl<'a> Shapes<'a> {
 }
 
 impl Type {
-    /// Two members of a union in this type such that a value of `format`
-    /// one writes may read back as the other; `None` when every union reads
-    /// back what each member writes.
-    pub fn text_ambiguity(&self, env: &Env, format: Format) -> Option<(Type, Type)> {
+    /// Why a value of this type written as `format` data may read back as
+    /// another value; `None` when every union reads back what each member
+    /// writes.
+    pub fn text_ambiguity(&self, env: &Env, format: Format) -> Option<TextAmbiguity> {
         Shapes::new(env, format, self).ambiguity()
     }
 }
@@ -1271,18 +1298,92 @@ mod test {
         parse_type(t).unwrap().text_ambiguity(&env, format).is_some()
     }
 
+    /// [`ambiguous`] over the typedefs `defs`; graphix-package-json's
+    /// cross-check reads these calls from this file.
+    fn named(defs: &[(&str, &str)], t: &str, format: Format) -> bool {
+        let (env, t) = typed(defs, t);
+        t.text_ambiguity(&env, format).is_some()
+    }
+
     #[test]
     fn a_recursive_pair_claims_what_its_values_reach() {
-        let rec = |defs: &[(&str, &str)], format| {
-            let (env, t) = typed(defs, "[TA, TB]");
-            t.text_ambiguity(&env, format).is_some()
-        };
-        let cons = [("TA", "[i64, `Cons(f32, TA)]"), ("TB", "[f64, `Cons(f64, TB)]")];
-        assert!(rec(&cons, Format::Json));
-        assert!(rec(&cons, Format::Toml));
-        let pairs = [("TA", "[`NA, (f32, TA)]"), ("TB", "[`NB, (f64, TB)]")];
-        assert!(!rec(&pairs, Format::Json));
-        assert!(!rec(&pairs, Format::Toml));
+        assert!(!named(
+            &[("TA", "[{a: [u64, null]}, (TB, duration)]"), ("TB", "[`Nil, (TB, TA)]")],
+            "[TA, TB]",
+            Format::Json
+        ));
+        assert!(!named(
+            &[("TA", "[u64, {a: i32, b: TA}]"), ("TB", "[`B(TB, i8), List<TB>]")],
+            "[TA, TB]",
+            Format::Json
+        ));
+        assert!(!named(
+            &[
+                ("TA", "[`A(TB, TA), Map<i64, TB>]"),
+                ("TB", "[{a: TA, x: [TA, null]}, {x: decimal}]")
+            ],
+            "[TA, TB]",
+            Format::Json
+        ));
+        assert!(!named(
+            &[("TA", "[{a: string, x: [(f64, TB), null]}, i64]"), ("TB", "Map<f64, TA>")],
+            "[TA, TB]",
+            Format::Json
+        ));
+        for f in [Format::Json, Format::Toml] {
+            assert!(named(
+                &[("TA", "[i64, `Cons(f32, TA)]"), ("TB", "[f64, `Cons(f64, TB)]")],
+                "[TA, TB]",
+                f
+            ));
+            assert!(!named(
+                &[("TA", "[`NA, (f32, TA)]"), ("TB", "[`NB, (f64, TB)]")],
+                "[TA, TB]",
+                f
+            ));
+        }
+    }
+
+    // A typedef expands once for each list of arguments it is applied to,
+    // so a recursion that passes its parameters on is a cycle; one that
+    // grows them at every level never ends, and is refused.
+    #[test]
+    fn an_applied_typedef_expands_once_per_arguments() {
+        for f in [Format::Json, Format::Toml] {
+            assert!(!named(&[("R<'a>", "[`Nil, `Cons('a, R<'a>)]")], "{k: R<i64>}", f));
+            assert!(!named(
+                &[("R<'a>", "[`Nil, `Cons('a, R<'a>)]"), ("I", "i64")],
+                "{k: R<I>}",
+                f
+            ));
+            assert!(!named(
+                &[("P<'a, 'b>", "[`N, `C('a, P<'b, 'a>)]")],
+                "{k: P<i64, string>}",
+                f
+            ));
+            assert!(named(
+                &[("R<'a>", "[`Nil, `Cons('a, R<'a>)]")],
+                "{k: [R<i64>, R<string>]}",
+                f
+            ));
+        }
+        assert!(!named(
+            &[("A<'a>", "['a, `Next(A<Array<i64>>)]")],
+            "A<i64>",
+            Format::Json
+        ));
+        let defs = [
+            ("R<'a>", "[`Nil, `Cons('a, R<'a>)]"),
+            ("P<'a, 'b>", "[`N, `C('a, P<'b, 'a>)]"),
+        ];
+        let (env, t) = typed(&defs, "[R<u64>, P<i64, f32>]");
+        let s = Shapes::new(&env, Format::Json, &t);
+        assert!(s.nodes.len() < 40, "{} nodes", s.nodes.len());
+        let (env, t) = typed(&[("N<'a>", "[`Nil, `Cons('a, N<Array<'a>>)]")], "N<i64>");
+        assert!(matches!(
+            t.text_ambiguity(&env, Format::Json),
+            Some(TextAmbiguity::Grows(n)) if n.to_string() == "N"
+        ));
     }
 
     // A bool rounds into a real member, and a tuple or a struct is in the
@@ -1291,14 +1392,15 @@ mod test {
     #[test]
     fn a_bool_rounds_into_a_real_and_a_part_is_apart() {
         let json = |t| ambiguous(t, Format::Json);
-        let named = |defs: &[(&str, &str)], t| {
-            let (env, t) = typed(defs, t);
-            t.text_ambiguity(&env, Format::Json).is_some()
-        };
-        assert!(named(&[("A", "Array<f64>"), ("P", "[bool, (f32, bool)]")], "[A, P]"));
+        assert!(named(
+            &[("A", "Array<f64>"), ("P", "[bool, (f32, bool)]")],
+            "[A, P]",
+            Format::Json
+        ));
         assert!(named(
             &[("TA", "[f64, Array<TA>]"), ("TB", "[bool, (f32, TB)]")],
-            "[TA, TB]"
+            "[TA, TB]",
+            Format::Json
         ));
         assert!(!json("[Array<f64>, (f32, bool)]"));
         assert!(json("[(Array<string>, i64), ((u8, u8), u8)]"));
@@ -1323,32 +1425,87 @@ mod test {
         typed(&defs, &format!("L{depth}"))
     }
 
-    // Each pair a check meets is evaluated once per pass, and a type with
-    // no recursion takes one pass, so a check costs at most two
-    // evaluations (a value and a key) per pair of nodes, however the
-    // unions nest. The wall limit is only a hang guard; the count is the pin.
+    // A check meets at most two pairs (a value and a key) per pair of
+    // nodes, however the unions nest, and evaluates each once a pass: a
+    // type with no recursion takes one pass, a recursive group a few. The
+    // wall limit is only a hang guard; the counts are the pin.
     #[test]
-    fn a_check_evaluates_each_pair_once() {
+    fn a_check_evaluates_each_pair_a_few_times() {
+        type Shape = (&'static str, fn() -> (Env, Type), bool, usize);
+        let shapes: [Shape; 7] = [
+            ("L10 x2", || levels(10, 2), false, 1),
+            ("L14 x2", || levels(14, 2), false, 1),
+            ("L6 x4", || levels(6, 4), false, 1),
+            ("L8 x4", || levels(8, 4), false, 1),
+            ("mutual 32", || mutual(32), true, 3),
+            ("ring 32", || ring(32), false, 1),
+            ("tree 32", || tree(32), false, 1),
+        ];
         let (tx, rx) = std::sync::mpsc::channel();
-        let shapes = [(10, 2), (14, 2), (6, 4), (8, 4)];
         std::thread::spawn(move || {
-            for (depth, width) in shapes {
-                let (env, t) = levels(depth, width);
+            for (_, make, _, _) in shapes {
+                let (env, t) = make();
                 let s = Shapes::new(&env, Format::Json, &t);
                 let ambiguous = s.ambiguity().is_some();
-                let evaluated = s.fix.borrow().evaluated;
-                tx.send((depth, width, ambiguous, evaluated, s.nodes.len())).unwrap();
+                let f = s.fix.borrow();
+                tx.send((ambiguous, f.evaluated, f.pairs.len(), s.nodes.len())).unwrap();
             }
         });
-        for _ in shapes {
-            let (depth, width, ambiguous, evaluated, nodes) =
+        for (name, _, refused, passes) in shapes {
+            let (ambiguous, evaluated, pairs, nodes) =
                 rx.recv_timeout(std::time::Duration::from_secs(300)).expect("hung");
-            assert!(!ambiguous, "L{depth} x{width}");
+            assert_eq!(ambiguous, refused, "{name}");
+            assert!(pairs <= 2 * nodes * nodes, "{name}: {pairs} pairs of {nodes} nodes");
             assert!(
-                evaluated <= 2 * nodes * nodes,
-                "L{depth} x{width}: {evaluated} evaluations over {nodes} nodes"
+                evaluated <= passes * pairs,
+                "{name}: {evaluated} evaluations of {pairs}"
             );
         }
+    }
+
+    /// The typedefs `defs`, each `(name, body)`, and `t` over them.
+    fn generated(defs: Vec<(String, String)>, t: &str) -> (Env, Type) {
+        let defs: Vec<(&str, &str)> =
+            defs.iter().map(|(n, b)| (n.as_str(), b.as_str())).collect();
+        typed(&defs, t)
+    }
+
+    /// `n` typedefs, each a union over the next two, wrapping round: a
+    /// recursive group whose members a check refuses.
+    fn mutual(n: usize) -> (Env, Type) {
+        let defs = (0..n).map(|i| {
+            let (a, b) = ((i + 1) % n, (i + 2) % n);
+            let body = format!("[`N{i}, `A{i}(M{a}, f64), (M{b}, string), Array<M{a}>]");
+            (format!("M{i}"), body)
+        });
+        generated(defs.collect(), "M0")
+    }
+
+    /// `n` typedefs in a ring, each a struct, a tuple and an array: a
+    /// recursive group whose members a check admits, every pair judged.
+    fn ring(n: usize) -> (Env, Type) {
+        let defs = (0..n).map(|i| {
+            let j = (i + 1) % n;
+            let body =
+                format!("[{{f{i}: T{j}, g: [T0, null]}}, (T{j}, bool), Array<string>]");
+            (format!("T{i}"), body)
+        });
+        generated(defs.collect(), "T0")
+    }
+
+    /// `n` struct kinds, each holding the union of them all.
+    fn tree(n: usize) -> (Env, Type) {
+        let mut defs: Vec<(String, String)> = (0..n)
+            .map(|i| {
+                (
+                    format!("S{i}"),
+                    format!("{{k{i}: string, kids: Array<U>, opt: [U, null]}}"),
+                )
+            })
+            .collect();
+        let ms: Vec<String> = (0..n).map(|i| format!("S{i}")).collect();
+        defs.push(("U".into(), format!("[{}, (U, U, bool)]", ms.join(", "))));
+        generated(defs, "U")
     }
 
     #[test]

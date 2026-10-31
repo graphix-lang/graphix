@@ -566,7 +566,9 @@ with no `Cast` impl, `json::read`'s and `toml::read`'s target is also
 whose written value may read back as another, judged by the cast's pick
 (payload tag, round, class, the union's order, `Choice`) over classes of
 values, a composite whole, members that recurse at every level (a least
-fixpoint) and a map key from its text: `[f32, string]`,
+fixpoint; a typedef expands once per list of arguments, and one growing
+its parameters as it recurses is refused) and a map key from its text:
+`[f32, string]`,
 `[(f32, u8), (f64, f64)]`, `[(string, f32), (i64, f64)]`,
 `Map<[decimal, datetime], i64>` are refused, `[f32, u16]` and
 `[string, i64]` read back), judged of the

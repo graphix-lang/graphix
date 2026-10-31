@@ -63,7 +63,12 @@ string)]` reads `(1, 3.5s)` back as `(u8:1, "3.5")`, since both read the
 recurse are read at every level: with ``type TA = [i64, `Cons(f32, TA)]``
 and ``type TB = [f64, `Cons(f64, TB)]``, `[TA, TB]` is refused, since
 `` `Cons(f32:0.1, 3) `` is written as `["Cons",0.1,3]`, which reads back
-as TB's `` `Cons(0.1, 3.0) ``. A map's keys are
+as TB's `` `Cons(0.1, 3.0) ``. A union two of whose members write the same
+value is refused even where it would read back the same:
+``type R<'a> = [`Nil, `Cons('a, R<'a>)]`` makes `[R<i64>, R<bool>]`
+refused, since both write `` `Nil `` as `"Nil"`; `R<i64>` alone is fine. A
+typedef whose parameters grow as it recurses, such as ``type N<'a> =
+[`Nil, `Cons('a, N<Array<'a>>)]``, is refused as a target. A map's keys are
 written as their text where none can be a string, so
 `Map<[decimal, datetime], i64>` is refused: the key `"3"` reads back as a
 datetime. An abstract type the reader builds from its representation's

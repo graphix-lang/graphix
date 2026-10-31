@@ -2667,14 +2667,27 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                         Bound::JsonData => (typ::Format::Json, "JSON"),
                         _ => (typ::Format::Toml, "TOML"),
                     };
-                    if let Some((a, b)) = t.text_ambiguity(env, format) {
-                        format_with_flags(PrintFlag::DerefTVars, || {
-                            bail!(
-                                "'{}: {c} refuses {t}: what its member {a} or {b} writes \
-                                 as {name} data may read back as the other",
-                                tv.name
-                            )
-                        })?
+                    match t.text_ambiguity(env, format) {
+                        None => (),
+                        Some(typ::TextAmbiguity::Members(a, b)) => {
+                            format_with_flags(PrintFlag::DerefTVars, || {
+                                bail!(
+                                    "'{}: {c} refuses {t}: what its member {a} or {b} \
+                                     writes as {name} data may read back as the other",
+                                    tv.name
+                                )
+                            })?
+                        }
+                        Some(typ::TextAmbiguity::Grows(def)) => {
+                            format_with_flags(PrintFlag::DerefTVars, || {
+                                bail!(
+                                    "'{}: {c} refuses {t}: {def} grows its parameters as \
+                                     it recurses, so whether what it writes as {name} data \
+                                     reads back can't be decided",
+                                    tv.name
+                                )
+                            })?
+                        }
                     }
                 }
                 Type::Bound(Bound::OneNumber) => {
