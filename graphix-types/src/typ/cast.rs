@@ -3246,6 +3246,17 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // against 16.5 s). Pin: textdata's a_check_evaluates_each_pair_a_few_times now bounds
 // mutual 32 and fact 50/200 at twice their pairs (the old solver: mutual 32 108,420
 // evaluations of 36,864 pairs, fact 50 62,996 of 1,796).
+// 2026-10-31 claude: Round 7, third commit: a pair whose computation read no pair short of
+// final but itself is now final when that computation ends (unless another computation of
+// it is running), and only pairs not yet final keep their readers, in a side map; with the
+// u64 keys a class pair costs 16 bytes (3cb1fc3d2: 32) and an outcome pair 48 (64), and a
+// node's reach span serves both ways unless an abstract that writes nothing known lies on
+// it. Peaks against 3cb1fc3d2 (debug, the review's cost files): chainlit_2000 951 MB /
+// 1737 MB, chaintag_2000 713 / 1045, mutual_512 2042 MB 5.7 s / 2624 MB 14.1 s, tree_512
+// 252 / 315, fact_1600 42 MB 0.43 s / 68 MB 7.3 s (these replace the second commit's
+// figures). Pin: textdata's a_pair_reading_only_final_pairs_is_final_at_once (fails with
+// the finalization off). The OVER sweep of this round found one refusal no witness
+// settles, a limit of judging members in pairs: textdata-pairwise-01.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.

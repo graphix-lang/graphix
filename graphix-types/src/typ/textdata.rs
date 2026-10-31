@@ -621,13 +621,13 @@ impl Lattice for (bool, bool) {
 }
 
 /// A pair's value so far, whether it was computed from the values it read
-/// as they stand, whether it is final, and the pairs that read it while
-/// it was not.
+/// as they stand, whether it is final, and how many of its computations
+/// are running.
 struct Fix<V> {
     value: V,
     stable: bool,
     done: bool,
-    readers: SmallVec<[Pair; 1]>,
+    running: u32,
 }
 
 /// A function of pairs computed as the least fixpoint over the pairs a
@@ -637,26 +637,36 @@ struct Fix<V> {
 /// grows (each is joined with the last) and a pair is computed again only
 /// when one it read grew, so this ends, each pair computed once and again
 /// per growth of a pair it reads; the function is monotone, so no value
-/// passes the least fixpoint. Every pair a check meets stays: a group of
-/// `n` unions recursive in each other holds about `n^2` of them.
+/// passes the least fixpoint. A pair whose computation read no pair short
+/// of final but itself is final once that computation ends, unless another
+/// of its computations is still running. Every pair a check meets stays:
+/// a group of `n` unions recursive in each other holds about `n^2` of them.
 struct Fixpoint<V> {
     pairs: AHashMap<Pair, Fix<V>>,
-    /// The pairs being computed, innermost last.
-    computing: Vec<Pair>,
+    /// The pairs that read each pair not yet final.
+    readers: AHashMap<Pair, SmallVec<[Pair; 1]>>,
+    /// The pairs being computed, innermost last, each with whether it read
+    /// a pair short of final other than itself.
+    computing: Vec<(Pair, bool)>,
     /// The pairs the running [`Self::least`] met.
     met: Vec<Pair>,
     #[cfg(test)]
     evaluated: usize,
+    #[cfg(test)]
+    most_readers: usize,
 }
 
 impl<V> Default for Fixpoint<V> {
     fn default() -> Self {
         Fixpoint {
             pairs: AHashMap::default(),
+            readers: AHashMap::default(),
             computing: Vec::new(),
             met: Vec::new(),
             #[cfg(test)]
             evaluated: 0,
+            #[cfg(test)]
+            most_readers: 0,
         }
     }
 }
@@ -666,11 +676,10 @@ impl<V: Lattice> Fixpoint<V> {
     fn least(cell: &RefCell<Self>, k: Pair, f: &dyn Fn(Pair) -> V) -> V {
         Self::solve(cell, k, f);
         let mut s = cell.borrow_mut();
-        let Fixpoint { pairs, met, .. } = &mut *s;
+        let Fixpoint { pairs, readers, met, .. } = &mut *s;
+        readers.clear();
         for p in met.drain(..) {
-            let e = pairs.get_mut(&p).expect("met");
-            e.done = true;
-            e.readers = SmallVec::new();
+            pairs.get_mut(&p).expect("met").done = true
         }
         pairs[&k].value
     }
@@ -680,15 +689,23 @@ impl<V: Lattice> Fixpoint<V> {
     fn get(cell: &RefCell<Self>, k: Pair, f: &dyn Fn(Pair) -> V) -> V {
         Self::solve(cell, k, f);
         let mut s = cell.borrow_mut();
-        let r = s.computing.last().copied();
-        let e = s.pairs.get_mut(&k).expect("solved");
+        let Fixpoint { pairs, readers, computing, .. } = &mut *s;
+        let e = &pairs[&k];
+        let value = e.value;
         if !e.done
-            && let Some(r) = r
-            && e.readers.last() != Some(&r)
+            && let Some((r, open)) = computing.last_mut()
         {
-            e.readers.push(r)
+            *open |= *r != k;
+            let rs = readers.entry(k).or_default();
+            if rs.last() != Some(r) {
+                rs.push(*r)
+            }
         }
-        e.value
+        #[cfg(test)]
+        {
+            s.most_readers = s.most_readers.max(s.readers.len());
+        }
+        value
     }
 
     fn solve(cell: &RefCell<Self>, k: Pair, f: &dyn Fn(Pair) -> V) {
@@ -696,42 +713,50 @@ impl<V: Lattice> Fixpoint<V> {
             let mut s = cell.borrow_mut();
             match s.pairs.get_mut(&k) {
                 Some(e) if e.done || e.stable => return,
-                Some(e) => e.stable = true,
+                Some(e) => {
+                    e.stable = true;
+                    e.running += 1
+                }
                 None => {
-                    let e = Fix {
-                        value: V::BOTTOM,
-                        stable: true,
-                        done: false,
-                        readers: SmallVec::new(),
-                    };
+                    let e =
+                        Fix { value: V::BOTTOM, stable: true, done: false, running: 1 };
                     s.pairs.insert(k, e);
                     s.met.push(k);
                 }
             }
-            s.computing.push(k);
+            s.computing.push((k, false));
             #[cfg(test)]
             {
                 s.evaluated += 1;
             }
         }
         let r = crate::stack::ensure_sufficient(|| f(k));
-        let readers = {
+        let (readers, open) = {
             let mut s = cell.borrow_mut();
-            s.computing.pop();
+            let (_, open) = s.computing.pop().expect("computing");
             let e = s.pairs.get_mut(&k).expect("solved");
+            e.running -= 1;
             let v = e.value.join(r);
-            if v == e.value {
-                return;
-            }
-            e.value = v;
-            let readers = std::mem::take(&mut e.readers);
+            let readers = match v == e.value {
+                true => SmallVec::new(),
+                false => {
+                    e.value = v;
+                    s.readers.remove(&k).unwrap_or_default()
+                }
+            };
             for p in readers.iter() {
                 s.pairs.get_mut(p).expect("a reader").stable = false
             }
-            readers
+            (readers, open)
         };
         for p in readers {
             Self::solve(cell, p, f)
+        }
+        let mut s = cell.borrow_mut();
+        let e = s.pairs.get_mut(&k).expect("solved");
+        if !open && e.running == 0 {
+            e.done = true;
+            s.readers.remove(&k);
         }
     }
 }
@@ -1061,6 +1086,7 @@ impl<'a> Shapes<'a> {
         }
         let mut seen: LPooled<AHashSet<(usize, bool)>> = LPooled::take();
         let mut next: LPooled<Vec<(usize, bool)>> = LPooled::take();
+        let mut differs = false;
         let start = r.found.len();
         next.push((n, false));
         while let Some((m, crossed)) = next.pop() {
@@ -1074,14 +1100,24 @@ impl<'a> Shapes<'a> {
             r.found.push((m, crossed));
             match &self.nodes[m].0 {
                 Shape::Union(ms, _) => next.extend(ms.iter().map(|m| (*m, crossed))),
-                Shape::Foreign { rep, writes, .. } if *writes || way == Way::Reads => {
-                    next.push((*rep, true))
+                Shape::Foreign { rep, writes, .. } => {
+                    differs |= !writes;
+                    if *writes || way == Way::Reads {
+                        next.push((*rep, true))
+                    }
                 }
                 _ => (),
             }
         }
         let span = (start, r.found.len());
         r.spans.insert((n, way), span);
+        if !differs {
+            let other = match way {
+                Way::Writes => Way::Reads,
+                Way::Reads => Way::Writes,
+            };
+            r.spans.insert((n, other), span);
+        }
         span
     }
 
@@ -1638,6 +1674,17 @@ impl<'a> Shapes<'a> {
         })
     }
 
+    // CR claude for claude: [bug/low] takes judges a writer and a reader alone, but a reading
+    // that is not kept (a number read as no number) wins only as the union's first offer: a
+    // third member whose crossing reading comes first leaves the writer's kept reading to
+    // replace it. [N, datetime, Shape] in TOML (type N = Abstract<i64> with impl Cast {},
+    // type Shape = [{w: f64}, f64]) is refused for datetime reading N's integers as Unix
+    // seconds, but Shape's f64 offers first, crossing, for every integer a datetime can read,
+    // so N's reading replaces it; main admits it and it reads back
+    // (~/tmp/cr29/scratch/laneB/r8/sharp/s62_toml_81_x.gx). Judging it needs each third
+    // member's offer per written value, which Outs, gathered over every value a node writes,
+    // does not keep, and Leaf::reads_in to leave out the integers past a datetime's range.
+    // (textdata-pairwise-01)
     /// Whether a value the member `w` of a union writes (as an object's key
     /// where `key`) may read back as its member `r`, `w_first` where `w`
     /// comes first in the union.
@@ -1952,6 +1999,22 @@ mod test {
                 evaluated <= passes * pairs,
                 "{name}: {evaluated} evaluations of {pairs}"
             );
+        }
+    }
+
+    // A pair whose computation read only final pairs is final when it
+    // ends, so a type with no recursion keeps no pair's readers, and only
+    // a recursive group keeps them until its check ends.
+    #[test]
+    fn a_pair_reading_only_final_pairs_is_final_at_once() {
+        for (make, recursive) in
+            [(levels(10, 2), false), (levels(6, 4), false), (mutual(8), true)]
+        {
+            let (env, t) = make;
+            let s = Shapes::new(&env, Format::Json, &t);
+            s.ambiguity();
+            let kept = s.fix.borrow().most_readers + s.classes.borrow().most_readers;
+            assert_eq!(kept > 0, recursive, "{kept} pairs kept their readers");
         }
     }
 

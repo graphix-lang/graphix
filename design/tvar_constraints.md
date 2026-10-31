@@ -726,9 +726,13 @@ data's class, then any member keeping it, then the rest), the union's
 order within a pass, where a member the value read back already is (the
 i64, f64, decimal, string, bool or null the reader makes, or TOML's
 datetime; an array of such) takes it at once (`cast_member`'s
-`Ok(None)`), and `Choice`: a reading that crosses the line between integers and
-reals gives way to a later one keeping every number its kind. A
-primitive set reads a value as one member (`Shapes::pick`, used for its
+`Ok(None)`), and `Choice`: a reading that crosses the line between
+integers and reals gives way to a later one keeping every number its
+kind. Each pair of members is judged alone, so a third member whose
+crossing reading comes first, leaving a reading of a number as no number
+to be replaced by a kept one, is not seen: `[N, datetime, Shape]` in
+TOML (`N` an abstract integer, ``Shape = [{w: f64}, f64]``) is refused
+though it reads back (textdata-pairwise-01). A primitive set reads a value as one member (`Shapes::pick`, used for its
 own members and as a member of a union): the one the value read back
 already is, else the first that holds it exactly by class and then bit
 (real text an integer holds going to the first later real that holds it
@@ -784,7 +788,9 @@ each other at its top levels, so a pair's outcomes are the least
 fixpoint over the pairs the walk meets (`Fixpoint`, a top-down solver:
 each starts with none and is computed when first met, reading a pair
 still being computed as it stands, and a pair whose value grows has the
-pairs that read it computed again): `[TA, TB]` over ``type TA = [i64,
+pairs that read it computed again; a pair whose computation read no pair
+short of final but itself is final when it ends, and only pairs not
+final keep their readers): `[TA, TB]` over ``type TA = [i64,
 `Cons(f32, TA)]`` and ``type TB = [f64, `Cons(f64, TB)]`` is refused. Whether a value is
 in a member's class is a least fixpoint the same way, over its finite
 values: with ``type R = [Array<R>, i64]``, every value of `R` is in its
@@ -795,7 +801,7 @@ pair of nodes holding no node is answered directly and kept nowhere, and
 every other pair the check meets stays until it ends: a chain of `n`
 nested unions keeps about `n^2`, and so does a group of `n` unions
 recursive in each other (`n = 512` of the generator in textdata's
-`mutual`: about 2.8 GB and 7 s debug, against main's 38 MB). Such sizes
+`mutual`: about 2 GB and 6 s debug, against main's 38 MB). Such sizes
 are not written by hand. What
 a node stands for through unions and abstracts written as their
 representation (whether it may hold a string, write a tag, a key's
