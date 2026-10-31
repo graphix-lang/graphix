@@ -674,6 +674,12 @@ Interfaces: `foo.gxi` beside `foo.gx` (directories: `mod.gx`/`mod.gxi`);
 docs; types and mods from the gxi are in scope in the impl. A hidden
 type must be `Abstract<..>` or Rust-backed.
 
+A gxi's `mod x;` compiles after the module's body, in gxi order, so the
+body cannot use it. A submodule the body uses is declared `mod x;` at
+the top of the body and NOT in the gxi; the other submodules still
+reach it as `super::x`. Declared in both, it hides the body's items from
+every submodule the gxi lists after it (`y not defined`).
+
 Traits: `trait Show { val show: fn(self) -> string; val twice: fn(self)
 -> string = |s| "[show(s)] [show(s)]" }`, `impl Show for Counter { let
 show = |c| .. }`, `impl<'a: Show> Show for Array<'a> { .. }`, bounds
