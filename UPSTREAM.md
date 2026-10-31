@@ -86,28 +86,37 @@ the state of a fix, and Graphix's side.
   declared or not, and a declared count past them; it mirrors how
   calamine finds the part and reads the attribute. Not reported.
 
-## crossterm 0.29: a dropped EventStream can leave a wake that fails the next poll
+## crossterm 0.29: an EventStream's shutdown is one wake any poller may take
 
-- **Bug.** `EventStream`'s drop wakes the global event reader's waker so
-  that its background thread, blocked in a poll, sees the shutdown. When
-  no poll is in flight (the stream was never polled, or its last poll
-  found an event ready) nothing takes the wake, and the next
-  `poll_internal` anywhere in the process returns at once as if it timed
-  out. `cursor::position()` then fails with "The cursor position could
-  not be read within a normal duration", and reedline's `read_line`,
-  which reads the cursor first, fails with it.
-- **Repro.** In a PTY: create an `EventStream`, drop it unpolled, then
-  `cursor::position()` fails after microseconds, not the 2 s timeout;
-  after a `crossterm::event::poll(Duration::ZERO)` it waits the timeout.
-  In the REPL at a terminal, a TUI display that ends at once
-  (`{ tui::exit(null); tui::text::text(&"bye") }`) ended the shell with
-  that error within two tries.
-- **Upstream fix.** The drop taking back a wake no thread took, or the
-  reader ignoring a wake that comes with no task in flight.
-- **Graphix's side.** Worked around (the REPL ended with an error after a
-  TUI display): the shell's line reader polls once with a zero timeout
-  before each `read_line` (`graphix-shell/src/input.rs`), which takes a
-  stale wake and leaves real input queued for the line editor. Pin:
+- **Bug.** A polled `EventStream` sends its background thread a task, and
+  the thread waits in `poll_internal(None)`, holding the global event
+  reader's lock for as long as no event comes. The stream's drop stops the
+  thread only by waking the reader's one shared waker, and whichever poll
+  runs next takes that wake. When it is another poll (the line editor's,
+  or any `event::poll`), the dropped stream's thread, if it had not yet
+  reached its poll, then holds the lock forever: the next
+  `EventStream::new()` blocks on the lock for good, and
+  `cursor::position()` fails after 2 s with "The cursor position could
+  not be read within a normal duration" (the thread swallows the answer
+  into its skipped events). When no poll is in flight at the drop, the
+  wake stays pending and the next `poll_internal` anywhere returns at
+  once, as if it timed out, failing `cursor::position()` at once.
+- **Repro.** In a PTY: create an `EventStream`, start a 2 s
+  `event::poll` on another thread, poll the stream once, drop it; the
+  poll returns at once, and a second `EventStream::new()` never returns.
+  In the REPL at a terminal, TUI displays that end at once
+  (`{ tui::exit(null); tui::text::text(&"bye") }`) hung the shell at a
+  later display's start, one run in ten under load.
+- **Upstream fix.** The stream's own thread should be stopped by
+  something only it takes, and should not hold the reader's lock across
+  an unbounded poll.
+- **Graphix's side.** Worked around (the REPL hung): no `EventStream`.
+  The TUI display reads events on a thread of its own that polls with a
+  50 ms bound and is stopped and waited for when the display gives the
+  terminal back (`stdlib/graphix-package-tui/src/lib.rs` `Events`); the
+  workspace builds crossterm without `event-stream`. Pins:
+  `stdlib/graphix-package-tui/src/test/terminal_test.rs`
+  `a_display_ending_beside_another_reader_leaves_the_terminal`,
   `graphix-shell/tests/repl_interrupt.rs`
   `tui_displays_ending_at_once_give_the_prompt_back`. Not reported.
 

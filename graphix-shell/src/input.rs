@@ -15,7 +15,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 use tokio::{sync::oneshot, task};
 
@@ -104,13 +103,7 @@ impl InputReader {
                     }
                 }
                 let r = task::block_in_place(|| match &mut line_editor {
-                    Some(ed) => {
-                        // takes the wake a TUI display's crossterm event
-                        // stream can leave, which fails the line editor's
-                        // first read (UPSTREAM.md)
-                        let _ = crossterm::event::poll(Duration::ZERO);
-                        ed.read_line(&prompt).map_err(Error::from)
-                    }
+                    Some(ed) => ed.read_line(&prompt).map_err(Error::from),
                     None => {
                         let mut line = String::new();
                         match std::io::stdin().read_line(&mut line) {

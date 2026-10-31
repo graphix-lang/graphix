@@ -12,12 +12,12 @@ use crossterm::{
     ExecutableCommand,
     event::{
         DisableBracketedPaste, DisableFocusChange, DisableMouseCapture,
-        EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event, EventStream,
-        KeyCode, KeyModifiers,
+        EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event, KeyCode,
+        KeyModifiers,
     },
     terminal::{self, EnterAlternateScreen},
 };
-use futures::{SinkExt, StreamExt, channel::mpsc, stream::Fuse};
+use futures::{SinkExt, StreamExt, channel::mpsc};
 use gauge::GaugeW;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue,
@@ -60,10 +60,15 @@ use std::{
     collections::VecDeque,
     fmt,
     future::Future,
+    io,
     marker::PhantomData,
     ops::ControlFlow,
     pin::{Pin, pin},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
+    },
+    thread,
     time::Duration,
 };
 use text::TextW;
@@ -935,10 +940,10 @@ fn get_id(env: &Env, name: &ModPath) -> Result<BindId> {
 }
 
 fn set_mouse(enable: bool) {
-    set_mouse_to(&mut std::io::stdout(), enable)
+    set_mouse_to(&mut io::stdout(), enable)
 }
 
-fn set_mouse_to(stdout: &mut impl std::io::Write, enable: bool) {
+fn set_mouse_to(stdout: &mut impl io::Write, enable: bool) {
     if enable {
         if let Err(e) = stdout.execute(EnableMouseCapture) {
             error!("could not enable mouse capture {e:?}")
@@ -1013,7 +1018,7 @@ impl<X: GXExt> Screen<X> {
     }
 }
 
-fn take_terminal_modes(out: &mut impl std::io::Write) -> Result<()> {
+fn take_terminal_modes(out: &mut impl io::Write) -> Result<()> {
     out.execute(EnterAlternateScreen)?
         .execute(EnableBracketedPaste)?
         .execute(EnableFocusChange)?;
@@ -1022,7 +1027,7 @@ fn take_terminal_modes(out: &mut impl std::io::Write) -> Result<()> {
 
 /// Give the terminal back: what `Live` took, whatever was enabled.
 fn give_back_terminal() {
-    let mut out = std::io::stdout();
+    let mut out = io::stdout();
     let _ = out.execute(DisableBracketedPaste);
     set_mouse(false);
     let _ = out.execute(DisableFocusChange);
@@ -1043,11 +1048,72 @@ impl Drop for GiveBack {
     }
 }
 
+/// The terminal's events while a display holds it, read on a thread of
+/// their own. Every poll of crossterm's event reader is bounded, so the
+/// thread sees its stop within `POLL`, and dropping this waits for it: no
+/// reader of the display's is left to take what the next reader of the
+/// terminal (the line editor) is owed. Never crossterm's `EventStream`
+/// (UPSTREAM.md).
+struct Events {
+    rx: mpsc::UnboundedReceiver<io::Result<Event>>,
+    stop: Arc<AtomicBool>,
+    stopped: std_mpsc::Receiver<()>,
+}
+
+impl Events {
+    /// How long one poll holds crossterm's event reader.
+    const POLL: Duration = Duration::from_millis(50);
+    /// How long a drop waits for the thread, which only a terminal crossterm
+    /// cannot read (one that went away) keeps longer than `POLL`.
+    const STOP_WAIT: Duration = Duration::from_secs(1);
+
+    fn start() -> Result<Self> {
+        let (tx, rx) = mpsc::unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (done, stopped) = std_mpsc::channel::<()>();
+        let stopping = stop.clone();
+        thread::Builder::new()
+            .name("tui-events".into())
+            .spawn(move || {
+                let _done = done;
+                while !stopping.load(Ordering::Acquire) {
+                    let event = match crossterm::event::poll(Self::POLL) {
+                        Ok(false) => continue,
+                        // an event found after the stop is the next reader's
+                        Ok(true) if stopping.load(Ordering::Acquire) => break,
+                        Ok(true) => crossterm::event::read(),
+                        Err(e) => Err(e),
+                    };
+                    let failed = event.is_err();
+                    if tx.unbounded_send(event).is_err() || failed {
+                        break;
+                    }
+                }
+            })
+            .context("start the terminal's event reader")?;
+        Ok(Self { rx, stop, stopped })
+    }
+
+    async fn next(&mut self) -> io::Result<Event> {
+        match self.rx.next().await {
+            Some(event) => event,
+            None => Err(io::Error::other("the terminal's event reader stopped")),
+        }
+    }
+}
+
+impl Drop for Events {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.stopped.recv_timeout(Self::STOP_WAIT);
+    }
+}
+
 /// The terminal while the display holds it: raw mode, the alternate
 /// screen, bracketed paste and its events. Dropping it gives all of that
 /// back, the event reader first.
 struct Live {
-    events: Fuse<EventStream>,
+    events: Events,
     terminal: DefaultTerminal,
     _give_back: GiveBack,
 }
@@ -1069,15 +1135,15 @@ impl Live {
         let give_back = GiveBack;
         TERMINAL_INTERRUPTED.store(false, Ordering::Release);
         TERMINAL_ACTIVE.store(true, Ordering::Release);
-        let mut out = std::io::stdout();
+        let mut out = io::stdout();
         take_terminal_modes(&mut out)?;
         if mouse {
             set_mouse(true)
         }
         let terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(
-            std::io::stdout(),
+            io::stdout(),
         ))?;
-        Ok(Self { events: EventStream::new().fuse(), terminal, _give_back: give_back })
+        Ok(Self { events: Events::start()?, terminal, _give_back: give_back })
     }
 
     fn recover(&mut self, mouse: bool) -> Result<bool> {
@@ -1085,7 +1151,7 @@ impl Live {
             return Ok(false);
         }
         terminal::enable_raw_mode().context("recover raw mode")?;
-        take_terminal_modes(&mut std::io::stdout())?;
+        take_terminal_modes(&mut io::stdout())?;
         set_mouse(mouse);
         self.terminal.resize(self.terminal.size()?.into())?;
         Ok(true)
@@ -1100,9 +1166,9 @@ enum Term {
 
 impl Term {
     /// The next terminal event, or `None` when a suspension ends.
-    async fn next(&mut self) -> Option<std::io::Result<Event>> {
+    async fn next(&mut self) -> Option<io::Result<Event>> {
         match self {
-            Term::Live(live) => Some(live.events.select_next_some().await),
+            Term::Live(live) => Some(live.events.next().await),
             Term::Suspended(rx) => {
                 let _ = rx.await;
                 None
@@ -1125,7 +1191,7 @@ impl Term {
             select! {
                 r = &mut work => break Ok(ControlFlow::Continue(r)),
                 _ = liveness.tick() => terminal_connected()?,
-                e = live.events.select_next_some() => match e {
+                e = live.events.next() => match e {
                     Ok(e) => match stop_key(&e) {
                         Some(stop) => break Ok(ControlFlow::Break(stop)),
                         None => pending.push_back(e),

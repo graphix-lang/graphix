@@ -1518,7 +1518,10 @@ test is a result.
   wait-status ones have `cmd.exe` twins.
 - `tui`: a display holds no descriptor: what is written to stdout or
   stderr while it runs goes where the stream points, over the display on
-  a terminal.
+  a terminal. It reads the terminal's events on a thread of its own whose
+  every crossterm poll is bounded, and gives the terminal back only once
+  that thread has stopped (`Events`); never crossterm's `EventStream`
+  (UPSTREAM.md), whose feature the workspace leaves off.
 - GUI (iced): uses the iced sub-crates directly; `GuiTestHarness::dt()`
   downcasts; updates walk every window’s widget tree, including newly
   compiled children (`design/gui_updates.md`); tests fire callbacks via `gx.call(callable_id, args)`;

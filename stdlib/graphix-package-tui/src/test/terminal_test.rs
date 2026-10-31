@@ -278,3 +278,37 @@ async fn stderr_is_written_through_while_displaying() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// A display that ends while another reader of the terminal polls it (the
+/// line editor) leaves no reader of its own behind: the next display
+/// takes the terminal.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_display_ending_beside_another_reader_leaves_the_terminal() -> anyhow::Result<()>
+{
+    use anyhow::Context;
+    use futures::FutureExt;
+    use std::{sync::mpsc, thread, time::Duration};
+    const NAME: &str = "a_display_ending_beside_another_reader_leaves_the_terminal";
+    if let Some(output) = in_child(NAME, Some(b""), || {
+        let mut term = crate::Term::Live(crate::Live::take(false)?);
+        let other = thread::spawn(|| crossterm::event::poll(Duration::from_secs(2)));
+        thread::sleep(Duration::from_millis(200));
+        assert!(term.next().now_or_never().is_none());
+        thread::sleep(Duration::from_millis(200));
+        drop(term);
+        other.join().expect("the other reader")?;
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(crate::Live::take(false).map(drop));
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .context("the next display never took the terminal")??;
+        Ok(())
+    })
+    .await?
+    {
+        assert!(output.status.success(), "{output:?}");
+    }
+    Ok(())
+}

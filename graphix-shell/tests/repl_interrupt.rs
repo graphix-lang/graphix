@@ -547,7 +547,8 @@ fn tui_display_keys() {
 }
 
 /// A TUI display that ends as it starts gives the prompt back, however
-/// often: the line editor's first read after it does not fail.
+/// often: no reader of a display outlives it to fail the line editor's
+/// first read or hold up the next display's start.
 #[test]
 fn tui_displays_ending_at_once_give_the_prompt_back() {
     let tty = Tty::start();
