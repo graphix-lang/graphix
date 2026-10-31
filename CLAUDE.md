@@ -233,10 +233,12 @@ entry that reads, else compiles; an entry that fails to read leaves the
 session untouched, and whatever was compiled is written, except a
 program that asked for fusion where the JIT does not build. `--no-cache`
 disables the cache, `--warm` writes and exits (failing when it cannot);
-on Unix the cache base, graphix/registration directories, build directory
-and entry must belong to the effective user and forbid group/other
-writes. The cache base may be a symlink chain owned by that user to a
-trusted directory; it is checked before creating anything beneath it.
+on Unix the graphix/registration directories, build directory and entry
+must belong to the effective user and forbid group/other writes, and the
+cache base must belong to that user and forbid other writes (group write,
+a user private group's umask, is fine: each entry is checked when
+opened). The cache base may be a symlink chain owned by that user to such
+a directory; it is checked before creating anything beneath it.
 Managed directories and entries refuse symlinks; new directories and
 files use 0700 and 0600. A run's first refusal prints one stderr line
 (`cache::report`). The collector skips untrusted paths;

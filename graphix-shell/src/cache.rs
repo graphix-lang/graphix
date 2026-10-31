@@ -81,7 +81,31 @@ fn check_private(metadata: &fs::Metadata) -> Result<()> {
     Ok(())
 }
 
-fn cache_directory(path: &FsPath, create: bool, links_left: u8) -> Result<()> {
+/// A cache directory: the base the platform names, which may be reached
+/// through the user's links and shared by group write (a user private
+/// group's umask), or one beneath it the cache makes. A base's group
+/// cannot plant an entry: each is checked when opened.
+#[derive(Clone, Copy)]
+enum Dir {
+    Base { links_left: u8 },
+    Own,
+}
+
+fn check_dir(metadata: &fs::Metadata, dir: Dir) -> Result<()> {
+    match dir {
+        Dir::Own => check_private(metadata),
+        Dir::Base { .. } => {
+            check_owner(metadata)?;
+            #[cfg(unix)]
+            if metadata.mode() & 0o002 != 0 {
+                return Err(Untrusted("cache base must not be writable by others").into());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn cache_directory(path: &FsPath, create: bool, dir: Dir) -> Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(e) if create && e.kind() == ErrorKind::NotFound => {
@@ -97,7 +121,10 @@ fn cache_directory(path: &FsPath, create: bool, links_left: u8) -> Result<()> {
                 .with_context(|| format_compact!("cache directory {}", path.display()));
         }
     };
-    if metadata.is_symlink() && links_left > 0 {
+    if let Dir::Base { links_left } = dir
+        && links_left > 0
+        && metadata.is_symlink()
+    {
         check_owner(&metadata)
             .with_context(|| format_compact!("cache link {}", path.display()))?;
         let target = fs::read_link(path)?;
@@ -105,13 +132,13 @@ fn cache_directory(path: &FsPath, create: bool, links_left: u8) -> Result<()> {
             true => target,
             false => path.parent().unwrap_or(FsPath::new(".")).join(target),
         };
-        return cache_directory(&target, false, links_left - 1);
+        return cache_directory(&target, false, Dir::Base { links_left: links_left - 1 });
     }
     if !metadata.is_dir() {
         return Err(anyhow::Error::from(Untrusted("cache path is not a directory")))
             .with_context(|| format_compact!("{}", path.display()));
     }
-    check_private(&metadata)
+    check_dir(&metadata, dir)
         .with_context(|| format_compact!("cache directory {}", path.display()))
 }
 
@@ -373,9 +400,9 @@ impl RegistrationCache {
     fn directories(&self, create: bool) -> Result<()> {
         let graphix = self.root.parent().ok_or_else(|| anyhow!("cache has no parent"))?;
         let base = graphix.parent().ok_or_else(|| anyhow!("cache has no base"))?;
-        cache_directory(base, create, 40)?;
+        cache_directory(base, create, Dir::Base { links_left: 40 })?;
         for dir in [graphix, &self.root, &self.dir()] {
-            cache_directory(dir, create, 0)?;
+            cache_directory(dir, create, Dir::Own)?;
         }
         Ok(())
     }
@@ -534,7 +561,7 @@ impl RegistrationCache {
         let mut entries: LPooled<Vec<(Duration, u64, PathBuf)>> = LPooled::take();
         for build in fs::read_dir(&self.root).into_iter().flatten().flatten() {
             let build = build.path();
-            if cache_directory(&build, false, 0).is_err() {
+            if cache_directory(&build, false, Dir::Own).is_err() {
                 continue;
             }
             for f in fs::read_dir(&build).into_iter().flatten().flatten() {
@@ -563,7 +590,7 @@ impl RegistrationCache {
         let own = self.dir();
         for build in fs::read_dir(&self.root).into_iter().flatten().flatten() {
             let path = build.path();
-            if path != own && cache_directory(&path, false, 0).is_ok() {
+            if path != own && cache_directory(&path, false, Dir::Own).is_ok() {
                 let _ = fs::remove_dir(path);
             }
         }
@@ -624,7 +651,7 @@ mod tests {
             fs::create_dir(&target).unwrap();
             symlink(&target, &base).unwrap();
             let cache = cache(&base);
-            for bits in [0o720, 0o702, 0o777] {
+            for bits in [0o702, 0o777] {
                 mode(&target, bits);
                 assert!(cache.load(Entry::Registration).is_none());
                 assert!(cache.store_registration(b"entry").is_err());
@@ -632,7 +659,7 @@ mod tests {
             }
             mode(&target, 0o700);
             cache.store_registration(b"entry").unwrap();
-            for bits in [0o720, 0o702, 0o777] {
+            for bits in [0o702, 0o777] {
                 mode(&target, bits);
                 assert!(cache.load(Entry::Registration).is_none());
                 assert!(cache.store_registration(b"replacement").is_err());
@@ -642,6 +669,32 @@ mod tests {
             if fs::metadata("/").unwrap().uid() != unsafe { libc::geteuid() } {
                 assert!(cache.load(Entry::Registration).is_none());
                 assert!(cache.store_registration(b"entry").is_err());
+            }
+        }
+
+        #[test]
+        fn group_writable_cache_base_is_used() {
+            for link in [false, true] {
+                let tmp = tempfile::tempdir().unwrap();
+                let target = tmp.path().join("real-cache");
+                fs::create_dir(&target).unwrap();
+                mode(&target, 0o770);
+                let base = match link {
+                    false => target.clone(),
+                    true => {
+                        let base = tmp.path().join("cache");
+                        symlink(&target, &base).unwrap();
+                        base
+                    }
+                };
+                let cache = cache(&base);
+                cache.store_registration(b"entry").unwrap();
+                let (_, bytes) = cache.load(Entry::Registration).unwrap();
+                assert_eq!(bytes.as_ref(), b"entry");
+                for dir in [&target.join("graphix"), &cache.root, &cache.dir()] {
+                    let bits = fs::metadata(dir).unwrap().mode() & 0o777;
+                    assert_eq!(bits & 0o077, 0, "{} mode {bits:o}", dir.display());
+                }
             }
         }
 
@@ -705,8 +758,15 @@ mod tests {
             let base = tmp.path().join("cache");
             let cache = cache(&base);
             cache.store_registration(b"entry").unwrap();
-            for dir in [&base, &base.join("graphix"), &cache.root, &cache.dir()] {
-                for bits in [0o720, 0o702, 0o777] {
+            let base_bits: &[u32] = &[0o702, 0o777];
+            let own_bits: &[u32] = &[0o720, 0o702, 0o777];
+            for (dir, bits) in [
+                (&base, base_bits),
+                (&base.join("graphix"), own_bits),
+                (&cache.root, own_bits),
+                (&cache.dir(), own_bits),
+            ] {
+                for &bits in bits {
                     mode(dir, bits);
                     assert!(
                         cache.load(Entry::Registration).is_none(),

@@ -71,10 +71,14 @@ touches its entry; a write collects, across build ids, the entries
 unused for 30 days and the least recently used past 512 MiB.
 
 **Trust.** On Unix, loading and writing check the cache base and each
-managed directory, refusing foreign ownership and group/other write
-permissions. The cache base may follow up to 40 symlinks: every link
-must belong to the effective user, and the final target must be a
-trusted directory. Relative targets resolve against their link's parent.
+managed directory, refusing foreign ownership, other write permission on
+the base and group/other write permission on a managed directory. The
+base may be group-writable (a user private group's umask): its group can
+remove the managed directory, a cold start, but nothing it puts in its
+place is trusted, since a managed directory and every entry must be the
+user's and are checked, the entry on the opened file. The cache base may
+follow up to 40 symlinks: every link must belong to the effective user,
+and the final target must be a trusted base. Relative targets resolve against their link's parent.
 Trust is checked before creating managed subdirectories. Managed
 directories refuse symlinks, including during collection. Entries are regular
 files owned by the effective user without group/other write permission. The reader opens without following

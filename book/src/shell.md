@@ -526,11 +526,12 @@ graphix --no-cache ./myprogram.gx
 graphix --warm ./myprogram.gx
 ```
 
-On Unix, the cache directories and entries must belong to the effective
-user and must not be writable by group or others. Your cache base
-(`$XDG_CACHE_HOME`, or `~/.cache`) may be a symlink if you own every
-link and its target directory meets those ownership and permission
-requirements. The shell refuses symlinks for its managed subdirectories
+On Unix, the cache's own directories and entries must belong to the
+effective user and must not be writable by group or others. Your cache
+base (`$XDG_CACHE_HOME`, or `~/.cache`) must belong to you and must not be
+writable by others; it may be writable by your group, as a user private
+group's umask leaves it. It may be a symlink if you own every link and
+its target directory meets those requirements. The shell refuses symlinks for its managed subdirectories
 and image files. It creates new directories with mode 0700 and entries
 with mode 0600. An untrusted cache is a miss and the program compiles
 normally; the first refusal prints one line on stderr saying why, and
