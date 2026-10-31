@@ -33,6 +33,19 @@ usage() {
 
 ncpu() { getconf _NPROCESSORS_ONLN; }
 
+# A box in the rustc-dist build farm runs profile `soak` while a campaign
+# holds its cores and `default` once none does.
+farm_profile() {
+    local rd
+    rd=$(command -v rustc-dist || echo "$HOME/.cargo/bin/rustc-dist")
+    [[ -x $rd ]] || return 0
+    if "$rd" profile "$1" >/dev/null; then
+        echo "farm profile: $1"
+    else
+        echo "farm profile: rustc-dist profile $1 FAILED" >&2
+    fi
+}
+
 campaign_dir() {
     local campaign=$1
     [[ $campaign =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
@@ -286,6 +299,7 @@ start() {
     wait_for_start "$dir"
     verify_campaign "$dir"
     trap - ERR INT TERM
+    farm_profile soak
     status "$campaign"
 }
 
@@ -302,6 +316,7 @@ stop() {
     stop_campaign "$dir"
     sleep 1
     left=$(( $(campaign_procs "$dir" | wc -l) + $(launcher_groups "$campaign" | wc -l) ))
+    (( left > 0 )) || farm_profile default
     echo "stopped $campaign: $left survivors"
     (( left == 0 ))
 }

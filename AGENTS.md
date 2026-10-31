@@ -182,6 +182,30 @@ String type hierarchy, first fit wins: short mutable → `CompactString`;
 unbounded mutable → `LPooled<String>`; immutable or shared → `ArcStr`;
 plain `String` only at a foreign API boundary.
 
+## rustc-dist: cargo builds go through it
+
+On a box whose `~/.cargo/config.toml` sets `rustc-wrapper = "rustc-dist"`
+(washu-chan does), every cargo build runs rustc through rustc-dist, by
+default. A daemon on each box (a systemd user service) gives each rustc a
+slot on the right cores, the jobs most work waits on first, and sends jobs to
+the other boxes in the farm (washu-chan, ryouko, aieka; netidx path `/build`)
+when they'd finish sooner there. The server runs them in a bwrap sandbox. It
+compiles everything; it is not a cache. Source and design:
+`~/proj/rustc-dist` (`README.md`, `DESIGN.md`).
+
+What that means for you:
+
+- Build and test times include the farm, and this box's CPU use isn't the
+  build's total work. To time or profile rustc on this box alone, or to rule
+  rustc-dist out of a strange build failure, run with `RUSTC_DIST=off`. A job
+  that fails remotely reruns locally on its own.
+- Keep `jobs` at 128 or below: cargo holds about 4 open files per job, and
+  the usual limit is 1024. `incremental = false` is set so workspace crates
+  can go remote.
+- `rustc-dist status` shows the queue, core classes, other boxes and job
+  history; logs are in `journalctl --user -u rustc-dist`. Don't stop or
+  restart the daemon without asking: other boxes' builds run through it.
+
 # CLAUDE.md
 
 Guidance for Claude Code in this repository. This file holds RULES ONLY:
@@ -1248,6 +1272,9 @@ cycle, across workers; the compiler never pins threads.
   `Excluded` markers (`oracle_tier`) never record a divergence.
   Soaks run under `nice -n 19` from a campaign-private copy of the
   binary with output outside the repo; `graphix-fuzz/fleet.sh` deploys.
+  A box in the rustc-dist build farm runs its farm profile `soak` while a
+  campaign runs there and `default` after a stop leaves no survivor
+  (`soak.sh`'s `farm_profile`).
   A stack-budget abort is a `Timeout` outcome (containment). Construction
   timeouts agree only with construction timeouts; beside a runtime timeout
   the construction side is retried at the slow budget and the pair cannot

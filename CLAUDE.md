@@ -1064,6 +1064,9 @@ cycle, across workers; the compiler never pins threads.
   `Excluded` markers (`oracle_tier`) never record a divergence.
   Soaks run under `nice -n 19` from a campaign-private copy of the
   binary with output outside the repo; `graphix-fuzz/fleet.sh` deploys.
+  A box in the rustc-dist build farm runs its farm profile `soak` while a
+  campaign runs there and `default` after a stop leaves no survivor
+  (`soak.sh`'s `farm_profile`).
   A stack-budget abort is a `Timeout` outcome (containment). Construction
   timeouts agree only with construction timeouts; beside a runtime timeout
   the construction side is retried at the slow budget and the pair cannot
