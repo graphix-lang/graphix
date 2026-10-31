@@ -1064,6 +1064,15 @@ impl<'a> Shapes<'a> {
             // lib_tests::json::{json_target_abstract_reading_as_its_representation_beside_a_tag_refused,
             // json_target_abstract_reading_as_its_representation_beside_a_decimal_refused};
             // json_target_abstract_beside_a_decimal_refused (impl Cast {}) stays refused.
+            // 2026-10-31 claude: Round 8 (review7 B r5): the writer's map_shape took an abstract key
+            // type as one that never writes a string, while textdata took one whose representation holds
+            // a string (or whose implementation writes to_value) as writing its keys as pairs: Map<Id,
+            // string> over type Id = Abstract<[i64, string]> was admitted and wrote {Id(3) => "a"} as
+            // {"3":"a"}, read back as Id("3") (main too). The writer now asks Type::may_write_string,
+            // textdata's rule, so such a map is written as pairs. Pins (fail at af00eb549):
+            // lib_tests::json::{json_abstract_key_that_may_write_a_string_reads_back,
+            // json_abstract_key_writer_follows_recursive_representations},
+            // lib_tests::toml::toml_abstract_key_that_may_write_a_string_reads_back.
             // CR claude for eric: [design/low] textdata trusts an abstract type whose Cast
             // implementation writes to_value (Shape::Unknown shares a form with nothing),
             // whatever its from_value does, while one that writes only from_value is judged
