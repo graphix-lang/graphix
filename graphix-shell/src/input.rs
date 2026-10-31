@@ -155,47 +155,6 @@ impl InputReader {
                 self.next_line(env).await
             }
             // left by Ctrl-C, which the terminal sends the shell as SIGINT
-            // XCR claude for claude: [design/medium] At a terminal a value display
-            // gives the prompt back only at Ctrl-C, and Ctrl-C now resets the
-            // session (D7), so a REPL keeps no binding across anything it shows:
-            // `let x = 41`, `x + 1`, Ctrl-C, then `x` is undefined; before D7 the
-            // same Ctrl-C left the display and kept `x`. This follows the ruling
-            // ("ctrl-c to clear the rt, ctrl-d to exit"), which may not have
-            // counted Ctrl-C's second job. If it did not: keep Ctrl-C uniform and
-            // let another key (Enter or Esc) leave a text display without
-            // stopping anything; a piped REPL is unaffected. probe:
-            // ~/tmp/cr29/scratch/review2/RV6/repl_tty_value.py (repl-value-reset-01)
-            // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 quick
-            // picks): Ctrl-C gives the prompt back and keeps the session, as before
-            // round 3 D7; the interrupt (stop the runtime and replace it with a
-            // fresh one) moves to another key, Ctrl-Alt-I.
-            // 2026-10-30 claude: Eric ruled (2026-10-30, follow-up): the interrupt
-            // key is Ctrl-\ (SIGQUIT, delivered by the terminal like Ctrl-C), not
-            // Ctrl-Alt-I: the shell does not read the keyboard during a display or
-            // an evaluation.
-            // 2026-10-30 claude: Built per the rulings. Ctrl-C never stops the
-            // runtime: at a value display, where the terminal sends it as SIGINT, it
-            // leaves the display with every binding kept; at the prompt it is
-            // reedline's own Ctrl-C (abandons the line); while an input waits on a
-            // busy runtime it stops nothing and prints a hint naming Ctrl-\ (lib.rs
-            // busy). Ctrl-\ is the interrupt, uniform: SIGQUIT at a display or while
-            // busy (the session's key task stops the runtime), a key at the prompt
-            // (input.rs EditKeys: reedline's Ctrl-C plus a flag), Ended::Interrupted
-            // from a TUI, whose Ctrl-C is the new Ended::Left; Ctrl-Break on Windows
-            // (uncompiled there). A script ends with 130 at either key. Pins, all
-            // failing on 5f4b4677f: graphix-shell/tests/repl_interrupt.rs
-            // ctrl_c_at_a_terminal_display_keeps_the_session,
-            // ctrl_c_at_a_terminal_prompt_keeps_the_session,
-            // ctrl_c_at_an_idle_prompt_keeps_the_session,
-            // ctrl_c_while_busy_names_the_interrupt,
-            // ctrl_backslash_at_a_terminal_prompt_resets_the_session,
-            // ctrl_backslash_at_a_terminal_display_resets_the_session,
-            // interrupt_at_an_idle_prompt_resets_the_session,
-            // interrupt_frees_a_wedged_repl, tui_display_keys; interrupt_wedge.rs
-            // quit_frees_first_cycle_wedge_jit and quit_frees_later_cycle_wedge_jit;
-            // tui render_test the_program_sees_size_and_events and terminal_test
-            // ctrl_backslash_is_read_while_work_waits (fail with the Ctrl-\ key
-            // unmatched).
             Output::EmptyScript | Output::Text(_) => std::future::pending().await,
             Output::None => self.next_line(env).await,
         }

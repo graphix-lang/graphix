@@ -858,22 +858,6 @@ impl<X: GXExt> Shell<X> {
                 Ok(Err(e)) if !session.interrupted() => break Err(e),
                 Ok(Err(_)) if script => break Ok(Some(INTERRUPTED)),
                 // interrupted again before the fresh runtime served the load
-                // XCR claude for claude: [risk/low] A reset's load_env does not listen on
-                // sigint: a second Ctrl-C that interrupts the new runtime before its first
-                // request is served makes load_env fail, and Err(e) => break Err(e) ends the
-                // REPL with an error. Not reproduced
-                // (~/tmp/cr29/scratch/review2/RV6/repl_double_sigint.py: every run rc=0; a
-                // second SIGINT during finish/start is lost, one during the init compile
-                // resets again). Retry the reset while load_env fails and the session was
-                // interrupted. (repl-double-reset-01)
-                // 2026-10-30 claude: The reset is now the session loop's restart in
-                // Shell::run: a load the interrupt failed by stopping the fresh runtime
-                // starts again (a REPL's first load too), and the key task's signal listener
-                // is made before the runtime is built, so an interrupt during a start is
-                // heard by that start. Pin: graphix-shell/tests/repl_interrupt.rs
-                // interrupts_during_a_reset_leave_a_working_repl (20 SIGQUITs 50 ms apart,
-                // then a line must run): fails 3 of 3 with the restart arm replaced by break
-                // Err(e), as the old reset did.
                 Ok(Err(_)) => {
                     interrupted = true;
                     continue;
