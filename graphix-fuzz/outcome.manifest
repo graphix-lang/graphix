@@ -35,7 +35,7 @@ trace	bottom-scrutinee-jun2026/01_bottom_scrutinee_falls_through.gx
 trace	bottom-scrutinee-jun2026/02_inline_bottom_scrutinee.gx
 trace	bottom-typed-arm-elided-sep2026/00_bottom_typed_call_arm.gx
 trace	bottom-typed-arm-elided-sep2026/01_recursive_bottom_arm_runaway.gx
-reject	N: src is Array<Array<iN>> and cannot hold Array<[iN, Array<Array<iN>>]>; declare src: [Array<[iN, Array<Array<iN>>]>, Array<'_N>] where it is bound (line N, column N)	bound-cell-cycle-accepts-aug2026/00_connect_self_nesting.gx
+reject	N: src is Array<Array<iN>> and cannot hold Array<[iN, Array<Array<iN>>]>; declare src: [Array<[iN, Array<Array<iN>>]>, Array<Array<iN>>] where it is bound (line N, column N)	bound-cell-cycle-accepts-aug2026/00_connect_self_nesting.gx
 trace	builtin-taint-gate-jul2026/00_once_tainted_not_counted.gx
 trace	byref-wake-view-sep2026/00_fused_arm.gx
 trace	byref-wake-view-sep2026/01_impure_arm.gx
