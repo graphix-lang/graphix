@@ -334,6 +334,30 @@ run!(
     prints("[true, true, true, true]")
 );
 
+// A union member whose own members write values of two classes is tried
+// by the class of each value it writes.
+run!(
+    toml_union_typedef_members_of_two_classes_read_back,
+    r#"{
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    type Shape = [{w: f64, h: f64}, f64];
+    type Ev = [`Click(i64), string];
+    type D = {s: [Shape, string], e: [Ev, i64]};
+    let t = |v: D| -> bool {
+        let r: Result<D, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    [
+        t({s: {w: 1.0, h: 2.0}, e: `Click(1)}),
+        t({s: 1.5, e: "1"}),
+        t({s: "1.5", e: 1}),
+        t({s: "x", e: "x"})
+    ]
+}"#,
+    prints("[true, true, true, true]");
+    FuseExpect::None
+);
+
 run!(
     toml_recursive_members_read_back,
     r#"{

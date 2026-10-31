@@ -876,6 +876,49 @@ run!(
     refused("'b: JsonData refuses Map<[i64, Id], i64>")
 );
 
+// An abstract type whose `Cast` implementation writes `from_value` may read
+// any value it is tried on: tried before a bare variant, it reads the
+// variant's tag. A payload variant's tag is tried first, so one beside it
+// reads back.
+run!(
+    json_target_abstract_reading_by_from_value_beside_a_tag_refused,
+    r#"{
+    type Id = Abstract<i64>;
+    impl Cast for Id {
+        let from_value = |v| select cast<i64>(v) {
+            error as _ => select cast<string>(v) { error as e => e, s => Id(str::len(s)) },
+            i => Id(i)
+        }
+    };
+    let v: [Id, `A] = `A;
+    let r: Result<[Id, `A], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [Id, `A]")
+);
+
+run!(
+    json_abstract_reading_by_from_value_beside_a_payload_variant_reads_back,
+    r#"{
+    type Id = Abstract<i64>;
+    impl Cast for Id {
+        let from_value = |v| select cast<i64>(v) {
+            error as _ => select cast<string>(v) { error as e => e, s => Id(str::len(s)) },
+            i => Id(i)
+        }
+    };
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let rt = |v: [Id, `B(string)]| -> bool {
+        let r: Result<[Id, `B(string)], E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    [rt(Id(3)), rt(`B("x")), rt(`B("12"))]
+}"#,
+    prints("[true, true, true]");
+    FuseExpect::None
+);
+
 run!(
     json_abstract_number_beside_a_float_reads_back,
     r#"{
@@ -994,6 +1037,57 @@ run!(
     r
 }"#,
     refused("'b: JsonData refuses [Num, Txt]: what its member string or `None")
+);
+
+// A union member whose own members write values of two classes is tried
+// by the class of each value it writes: a struct or a variant it holds is
+// outside the class, the f64 or the string beside it inside.
+run!(
+    json_union_typedef_members_of_two_classes_read_back,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type Shape = [{w: f64, h: f64}, f64];
+    type Ev = [`Click(i64), string];
+    type D = [duration, string];
+    let a = |v: [Shape, string]| -> bool {
+        let r: Result<[Shape, string], E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let b = |v: [Ev, i64]| -> bool {
+        let r: Result<[Ev, i64], E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let c = |v: [D, bool]| -> bool {
+        let r: Result<[D, bool], E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    (
+        [a({w: 1.0, h: 2.0}), a(1.5), a(3.0), a("1.5"), a("x")],
+        [b(`Click(1)), b("1"), b("x"), b(1)],
+        [c(duration:3.s), c("true"), c("x"), c(true)]
+    )
+}"#,
+    prints(
+        "[[true, true, true, true, true], [true, true, true, true], [true, true, true, true]]"
+    )
+);
+
+// A recursive member's values are all in the class of its own reader, so
+// a tuple beside it keeps to its own values.
+run!(
+    json_recursive_member_beside_a_tuple_reads_back,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type B = [(string, string), null];
+    type R = [Array<R>, i64];
+    let rt = |v: [B, R]| -> bool {
+        let r: Result<[B, R], E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    [rt(("a", "b")), rt(("1", "2")), rt(null), rt([1, 2]), rt([[1], 2]), rt(5), rt([])]
+}"#,
+    prints("[true, true, true, true, true, true, true]");
+    FuseExpect::None
 );
 
 // An f64 member keeps a whole float beside an integer, and a duration

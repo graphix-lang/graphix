@@ -454,8 +454,10 @@ enum Shape {
     /// `prim` where the members are a primitive set's, tried in bit order.
     Union(SmallVec<[usize; 4]>, bool),
     /// An abstract type written as its representation, which a reader
-    /// builds from the data and so never reads in the data's class.
-    Foreign(usize),
+    /// builds from the data and so never reads in the data's class; `true`
+    /// where its `Cast` implementation writes `from_value`, which may read
+    /// any value it is tried on.
+    Foreign(usize, bool),
 }
 
 type Side<'s> = &'s dyn Fn(&Shapes, usize) -> Outs;
@@ -463,32 +465,122 @@ type Side<'s> = &'s dyn Fn(&Shapes, usize) -> Outs;
 /// A writer, whether it writes an object's key, and a reader.
 type Pair = (usize, bool, usize);
 
-/// A pair's outcomes so far, the pass that last computed them, whether
-/// that pass is still computing them, and whether they are final.
+/// What a [`Fixpoint`] solves for: it starts at `BOTTOM` and only grows.
+trait Lattice: Copy + Eq {
+    const BOTTOM: Self;
+    fn join(self, o: Self) -> Self;
+}
+
+impl Lattice for Outs {
+    const BOTTOM: Outs = Outs::NONE;
+
+    fn join(self, o: Outs) -> Outs {
+        self.or(o)
+    }
+}
+
+impl Lattice for (bool, bool) {
+    const BOTTOM: (bool, bool) = (false, false);
+
+    fn join(self, o: (bool, bool)) -> (bool, bool) {
+        (self.0 || o.0, self.1 || o.1)
+    }
+}
+
+/// A pair's value so far, the pass that last computed it, whether that
+/// pass is still computing it, and whether it is final.
 #[derive(Clone, Copy)]
-struct Fix {
-    outs: Outs,
+struct Fix<V> {
+    value: V,
     pass: u32,
     open: bool,
     done: bool,
 }
 
-/// [`Shapes::outs`] as the least fixpoint over the pairs a walk meets.
-/// Every pair starts at `Outs::NONE`; a pass computes each pair it meets
-/// once and reads a pair it is still computing as it stood, and passes
-/// repeat until one changes nothing or reads no pair it was computing.
-/// A pair's outcomes only grow (`outs` joins them), so the passes end;
-/// every operation on outcomes maps each outcome or pair of outcomes to
-/// outcomes, so none passes the least fixpoint.
-#[derive(Default)]
-struct Fixpoint {
-    pairs: AHashMap<Pair, Fix>,
+/// A function of pairs computed as the least fixpoint over the pairs a
+/// walk meets. Every pair starts at `BOTTOM`; a pass computes each pair it
+/// meets once and reads a pair it is still computing as it stood, and
+/// passes repeat until one changes nothing or reads no pair it was
+/// computing. A pair's value only grows (each is joined with the last),
+/// so the passes end; the function is monotone, so none passes the least
+/// fixpoint. Every pair a check meets stays: a chain of `n` unions nested
+/// in each other holds about `n^2` of them.
+struct Fixpoint<K, V> {
+    pairs: AHashMap<K, Fix<V>>,
     pass: u32,
     reread: bool,
     changed: bool,
-    computed: Vec<Pair>,
+    computed: Vec<K>,
     #[cfg(test)]
     evaluated: usize,
+}
+
+impl<K, V> Default for Fixpoint<K, V> {
+    fn default() -> Self {
+        Fixpoint {
+            pairs: AHashMap::default(),
+            pass: 0,
+            reread: false,
+            changed: false,
+            computed: Vec::new(),
+            #[cfg(test)]
+            evaluated: 0,
+        }
+    }
+}
+
+impl<K: Copy + Eq + std::hash::Hash, V: Lattice> Fixpoint<K, V> {
+    /// `k`'s value, every pair it reaches final.
+    fn least(cell: &RefCell<Self>, k: K, f: &dyn Fn(K) -> V) -> V {
+        loop {
+            {
+                let mut s = cell.borrow_mut();
+                s.pass += 1;
+                s.reread = false;
+                s.changed = false;
+                s.computed.clear();
+            }
+            let r = Self::get(cell, k, f);
+            let mut s = cell.borrow_mut();
+            if !(s.reread && s.changed) {
+                let Fixpoint { pairs, computed, .. } = &mut *s;
+                for p in computed.drain(..) {
+                    pairs.get_mut(&p).expect("computed").done = true
+                }
+                return r;
+            }
+        }
+    }
+
+    /// `k`'s value as this pass of [`Self::least`] has it.
+    fn get(cell: &RefCell<Self>, k: K, f: &dyn Fn(K) -> V) -> V {
+        let prev = {
+            let mut s = cell.borrow_mut();
+            let pass = s.pass;
+            let prev = match s.pairs.get(&k).copied() {
+                Some(e) if e.done => return e.value,
+                Some(e) if e.pass == pass => {
+                    s.reread |= e.open;
+                    return e.value;
+                }
+                Some(e) => e.value,
+                None => V::BOTTOM,
+            };
+            s.pairs.insert(k, Fix { value: prev, pass, open: true, done: false });
+            s.computed.push(k);
+            #[cfg(test)]
+            {
+                s.evaluated += 1;
+            }
+            prev
+        };
+        let r = prev.join(crate::stack::ensure_sufficient(|| f(k)));
+        let mut s = cell.borrow_mut();
+        s.changed |= r != prev;
+        let pass = s.pass;
+        s.pairs.insert(k, Fix { value: r, pass, open: false, done: false });
+        r
+    }
 }
 
 /// [`Shapes::reach`] of each node asked, as a span of `found`.
@@ -512,8 +604,8 @@ struct Shapes<'a> {
     /// A definition met growing its arguments as it recurses.
     grows: Option<ModPath>,
     /// [`Shapes::class_of`] by reader, writer and key.
-    classes: RefCell<AHashMap<(usize, usize, bool), (bool, bool)>>,
-    fix: RefCell<Fixpoint>,
+    classes: RefCell<Fixpoint<(usize, usize, bool), (bool, bool)>>,
+    fix: RefCell<Fixpoint<Pair, Outs>>,
     reach: RefCell<Reach>,
 }
 
@@ -730,15 +822,43 @@ impl<'a> Shapes<'a> {
             // json_target_key_abstract_holding_itself_refused,
             // json_target_abstracts_holding_each_other_refused} (each overflows the stack
             // on 1ab657e8c).
+            // 2026-10-31 claude: Round 6 (review7 B r4): an abstract written as its
+            // representation whose Cast implementation writes from_value was modelled as
+            // reading data as its representation, but the cast calls from_value, which
+            // may read anything: with a from_value reading a string s as Id(str::len(s)),
+            // [Id, `A] read `A back as Id(1) (main too). Shape::Foreign now carries
+            // whether from_value is written (Env::read_as_representation); such a reader
+            // reads every value it is tried on, outside the class. An impl writing both
+            // methods is still Shape::Unknown, trusted: textdata-cast-trust-01 asks Eric
+            // which rule holds. Pins:
+            // lib_tests::json::json_target_abstract_reading_by_from_value_beside_a_tag_refused
+            // (admitted without the change),
+            // json_abstract_reading_by_from_value_beside_a_payload_variant_reads_back.
             Type::Abstract { id, params } if self.env.written_as_representation(*id) => {
                 match self.env.abstract_reps.get(id) {
                     Some(r) => {
                         let rep = self.node(&r.instantiate_with(params));
-                        self.push(Shape::Foreign(rep), t)
+                        let reads = !self.env.read_as_representation(*id);
+                        self.push(Shape::Foreign(rep, reads), t)
                     }
                     None => self.push(Shape::Unknown, t),
                 }
             }
+            // CR claude for eric: [design/low] textdata trusts an abstract type whose Cast
+            // implementation writes to_value (Shape::Unknown shares a form with nothing),
+            // whatever its from_value does, while one that writes only from_value is judged
+            // to read every value it is tried on (Shape::Foreign(_, true)). With a
+            // from_value that reads a string s as Id(str::len(s)), [Id, `A] is refused when
+            // the impl leaves to_value out and admitted when it writes one, and in both the
+            // cast reads `A back as Id(1). Rule needed: (a) a written from_value reads any
+            // value wherever it stands, so the second is refused too; or (b) what a written
+            // method reads is the impl's duty, as from_value(to_value(x)) == x is
+            // (design/abstract_cast.md), so neither is judged and Shape::Foreign's flag
+            // goes. Recommend (a): JsonData then holds whatever the impl writes; a
+            // from_value is tried after every member keeping the data's class, so only
+            // members outside it are refused beside one. Probes:
+            // ~/tmp/cr29/scratch/laneB/r7/fv.txt, fv1 and fv3 (run with hand.py there)
+            // (textdata-cast-trust-01)
             Type::Abstract { .. } => self.push(Shape::Unknown, t),
         })
     }
@@ -779,7 +899,7 @@ impl<'a> Shapes<'a> {
             r.found.push((m, crossed));
             match &self.nodes[m].0 {
                 Shape::Union(ms, _) => next.extend(ms.iter().map(|m| (*m, crossed))),
-                Shape::Foreign(x) => next.push((*x, true)),
+                Shape::Foreign(x, _) => next.push((*x, true)),
                 _ => (),
             }
         }
@@ -846,7 +966,9 @@ impl<'a> Shapes<'a> {
             return (false, true);
         }
         self.reach(k).fold((false, false), |(o, p), (m, _)| match &self.nodes[m].0 {
-            Shape::Union(..) | Shape::Foreign(_) | Shape::None | Shape::Unknown => (o, p),
+            Shape::Union(..) | Shape::Foreign(..) | Shape::None | Shape::Unknown => {
+                (o, p)
+            }
             Shape::Scalar(Leaf::Null, _) => (o, true),
             Shape::Scalar(..) | Shape::Lit(_) => (true, p),
             _ => (o, true),
@@ -877,6 +999,7 @@ impl<'a> Shapes<'a> {
                     o
                 }
                 Shape::Lit(t) if t == n => Outs::one(FOREIGN << 4),
+                Shape::Foreign(_, true) => Outs::one(FOREIGN << 4),
                 _ => Outs::NONE,
             };
             if crossed { o.with(FOREIGN << 4) } else { o }
@@ -897,6 +1020,9 @@ impl<'a> Shapes<'a> {
                 Shape::Fixed(ts, _) if ts.len() == 2 => {
                     first(self, ts[0]).and(second(self, ts[1])).with(apart)
                 }
+                Shape::Foreign(_, true) if !writer => {
+                    first(self, m).and(second(self, m)).with(apart)
+                }
                 _ => Outs::NONE,
             };
             if crossed { o.with(apart) } else { o }
@@ -907,15 +1033,31 @@ impl<'a> Shapes<'a> {
     /// in the reader `r`'s class and whether it may be out of it
     /// (`in_own_class`, which decides a union member's pass): a union's
     /// class is its members', a composite's all of its parts', an empty
-    /// array is in any array's; a pair met again claims both.
+    /// array is in any array's; a recursive type's, its finite values'.
     fn class_of(&self, r: usize, w: usize, key: bool) -> (bool, bool) {
-        if let Some(c) = self.classes.borrow().get(&(r, w, key)) {
-            return *c;
+        if self.leaf(r) && self.leaf(w) {
+            return self.class_of_int(r, w, key);
         }
-        self.classes.borrow_mut().insert((r, w, key), (true, true));
-        let c = crate::stack::ensure_sufficient(|| self.class_of_int(r, w, key));
-        self.classes.borrow_mut().insert((r, w, key), c);
-        c
+        let f = |(r, w, key)| self.class_of_int(r, w, key);
+        Fixpoint::least(&self.classes, (r, w, key), &f)
+    }
+
+    /// [`Self::class_of`] as this pass of its [`Fixpoint`] has it.
+    fn class_in(&self, r: usize, w: usize, key: bool) -> (bool, bool) {
+        if self.leaf(r) && self.leaf(w) {
+            return self.class_of_int(r, w, key);
+        }
+        let f = |(r, w, key)| self.class_of_int(r, w, key);
+        Fixpoint::get(&self.classes, (r, w, key), &f)
+    }
+
+    /// Whether `n` refers to no other node: a pair of such nodes is
+    /// computed directly and kept in no memo.
+    fn leaf(&self, n: usize) -> bool {
+        matches!(
+            self.nodes[n].0,
+            Shape::Scalar(..) | Shape::Lit(_) | Shape::None | Shape::Unknown
+        )
     }
 
     /// [`Self::class_of`] where `r` is a part of a composite or a member of
@@ -924,7 +1066,7 @@ impl<'a> Shapes<'a> {
     /// pick looks inside one it tries itself.
     fn part_class(&self, r: usize, w: usize, key: bool) -> (bool, bool) {
         match self.apart(r) {
-            0 => self.class_of(r, w, key),
+            0 => self.class_in(r, w, key),
             _ => (false, true),
         }
     }
@@ -953,19 +1095,21 @@ impl<'a> Shapes<'a> {
         };
         match (&self.nodes[w].0, &self.nodes[r].0) {
             (Union(ms, _), _) => ms.iter().fold((false, false), |(o, f), m| {
-                let (o1, f1) = self.class_of(r, *m, key);
+                let (o1, f1) = self.class_in(r, *m, key);
                 (o || o1, f || f1)
             }),
-            (Foreign(w), _) => self.class_of(r, *w, key),
+            (Foreign(w, _), _) => self.class_in(r, *w, key),
             (_, Union(ms, _)) => ms.iter().fold((false, true), |(o, f), m| {
                 let (o1, f1) = match ms.len() {
-                    1 => self.class_of(*m, w, key),
+                    1 => self.class_in(*m, w, key),
                     _ => self.part_class(*m, w, key),
                 };
                 (o || o1, f && f1)
             }),
             (None | Unknown, _) | (_, Unknown) => (true, true),
-            (_, None | Foreign(_) | Lit(_) | Pairs(..) | Fixed(_, true)) => (false, true),
+            (_, None | Foreign(..) | Lit(_) | Pairs(..) | Fixed(_, true)) => {
+                (false, true)
+            }
             (Scalar(x, _), Scalar(y, _)) => {
                 let c = x.data_class(key) == y.class();
                 (c, !c)
@@ -999,55 +1143,20 @@ impl<'a> Shapes<'a> {
     /// How a value `a` writes (as an object's key where `key`) is read by
     /// `a`'s own member and by `b`, every pair it reaches final.
     fn least_outs(&self, a: usize, key: bool, b: usize) -> Outs {
-        loop {
-            {
-                let mut f = self.fix.borrow_mut();
-                f.pass += 1;
-                f.reread = false;
-                f.changed = false;
-                f.computed.clear();
-            }
-            let r = self.outs(a, key, b);
-            let mut f = self.fix.borrow_mut();
-            if !(f.reread && f.changed) {
-                let Fixpoint { pairs, computed, .. } = &mut *f;
-                for p in computed.drain(..) {
-                    pairs.get_mut(&p).expect("computed").done = true
-                }
-                return r;
-            }
+        if self.leaf(a) && self.leaf(b) {
+            return self.outs_int(a, key, b);
         }
+        let f = |(a, key, b)| self.outs_int(a, key, b);
+        Fixpoint::least(&self.fix, (a, key, b), &f)
     }
 
-    /// [`Self::least_outs`] as this pass of [`Fixpoint`] has it.
+    /// [`Self::least_outs`] as this pass of its [`Fixpoint`] has it.
     fn outs(&self, a: usize, key: bool, b: usize) -> Outs {
-        let p = (a, key, b);
-        let prev = {
-            let mut f = self.fix.borrow_mut();
-            let pass = f.pass;
-            let prev = match f.pairs.get(&p).copied() {
-                Some(e) if e.done => return e.outs,
-                Some(e) if e.pass == pass => {
-                    f.reread |= e.open;
-                    return e.outs;
-                }
-                Some(e) => e.outs,
-                None => Outs::NONE,
-            };
-            f.pairs.insert(p, Fix { outs: prev, pass, open: true, done: false });
-            f.computed.push(p);
-            #[cfg(test)]
-            {
-                f.evaluated += 1;
-            }
-            prev
-        };
-        let r = prev.or(crate::stack::ensure_sufficient(|| self.outs_int(a, key, b)));
-        let mut f = self.fix.borrow_mut();
-        f.changed |= r != prev;
-        let pass = f.pass;
-        f.pairs.insert(p, Fix { outs: r, pass, open: false, done: false });
-        r
+        if self.leaf(a) && self.leaf(b) {
+            return self.outs_int(a, key, b);
+        }
+        let f = |(a, key, b)| self.outs_int(a, key, b);
+        Fixpoint::get(&self.fix, (a, key, b), &f)
     }
 
     fn outs_int(&self, a: usize, key: bool, b: usize) -> Outs {
@@ -1063,18 +1172,30 @@ impl<'a> Shapes<'a> {
             }
             o
         };
+        // a value is in its member's class as the node writing it is, past
+        // every union and abstract
         match (&self.nodes[a].0, &self.nodes[b].0) {
-            (Union(ms, _), _) => Outs::any(ms.iter().map(|m| {
-                let (own, foreign) = self.class_of(a, *m, key);
-                self.outs(*m, key, b).classed(0, own, foreign)
-            })),
-            (_, Union(ms, _)) => {
+            (Union(..), _) => Outs::any(
+                self.reach(a)
+                    .filter(|(m, _)| !matches!(self.nodes[*m].0, Union(..) | Foreign(..)))
+                    .map(|(m, _)| {
+                        let (own, foreign) = self.class_of(a, m, key);
+                        self.outs(m, key, b).classed(0, own, foreign)
+                    }),
+            ),
+            (Foreign(x, _), _) => self.outs(*x, key, b).with(FOREIGN),
+            (_, Union(..)) => {
                 let (own, foreign) = self.class_of(b, a, key);
-                Outs::any(ms.iter().map(|m| self.outs(a, key, *m)))
+                let read = self.reach(b).filter(|(m, crossed)| {
+                    !crossed && !matches!(self.nodes[*m].0, Union(..))
+                });
+                Outs::any(read.map(|(m, _)| self.outs(a, key, m)))
                     .classed(4, own, foreign)
             }
-            (Foreign(x), _) => self.outs(*x, key, b).with(FOREIGN),
-            (_, Foreign(y)) => self.outs(a, key, *y).with(FOREIGN << 4),
+            (_, Foreign(_, true)) => Outs::any(
+                self.outs(a, key, a).iter().map(|o| Outs::one(o & 15 | FOREIGN << 4)),
+            ),
+            (_, Foreign(y, false)) => self.outs(a, key, *y).with(FOREIGN << 4),
             (None | Unknown, _) | (_, None | Unknown) => Outs::NONE,
             // one primitive reads one value one way
             (Scalar(x, _), Scalar(y, _)) if x == y => {
@@ -1378,6 +1499,11 @@ mod test {
             "[TA, TB]",
             Format::Json
         ));
+        assert!(!named(
+            &[("B", "[(string, string), null]"), ("R", "[Array<R>, i64]")],
+            "[B, R]",
+            Format::Json
+        ));
         for f in [Format::Json, Format::Toml] {
             assert!(named(
                 &[("TA", "[i64, `Cons(f32, TA)]"), ("TB", "[f64, `Cons(f64, TB)]")],
@@ -1570,6 +1696,25 @@ mod test {
         assert!(named(&[("Num", "[i64, f64]")], "[Num, f32]", Format::Json));
         assert!(named(&[("Num", "[u8, f64]")], "[Num, i64]", Format::Json));
         assert!(named(&[("Txt", "[datetime, bool]")], "[Txt, string]", Format::Json));
+        for f in [Format::Json, Format::Toml] {
+            assert!(!named(
+                &[("Shape", "[{w: f64, h: f64}, f64]")],
+                "{k: [Shape, string]}",
+                f
+            ));
+            assert!(!named(&[("Ev", "[`Click(i64), string]")], "{k: [Ev, i64]}", f));
+        }
+        assert!(!named(&[("Ev", "[`Click(i64), string]")], "[Ev, bool]", Format::Json));
+        assert!(!named(&[("Ev", "[`Click(i64), string]")], "[Ev, f64]", Format::Json));
+        assert!(!named(&[("D", "[duration, string]")], "[D, bool]", Format::Json));
+        assert!(!named(&[("W", "[string, (i64, i64)]")], "[W, bool]", Format::Json));
+        assert!(!named(&[("V", "[Map<string, f64>, f64]")], "[V, string]", Format::Json));
+        assert!(!named(
+            &[("Shape", "[{w: f64, h: f64}, f64]")],
+            "{a: [Shape, string], b: Array<[Shape, null]>}",
+            Format::Json
+        ));
+        assert!(named(&[("D", "[duration, string]")], "[D, f64]", Format::Json));
     }
 
     // One primitive reads one value one way: where both members hold an

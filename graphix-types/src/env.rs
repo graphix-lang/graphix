@@ -1437,10 +1437,20 @@ impl Env {
     /// Whether the abstract type `id` is written as its representation:
     /// its `Cast` implementation leaves `to_value` out.
     pub fn written_as_representation(&self, id: AbstractId) -> bool {
+        self.cast_leaves_out(id, "to_value")
+    }
+
+    /// Whether the abstract type `id` is read as its representation: its
+    /// `Cast` implementation leaves `from_value` out.
+    pub fn read_as_representation(&self, id: AbstractId) -> bool {
+        self.cast_leaves_out(id, "from_value")
+    }
+
+    fn cast_leaves_out(&self, id: AbstractId, method: &str) -> bool {
         self.impls_of(CoreTrait::Cast.id()).is_some_and(|l| {
             l.iter().any(|im| {
                 self.head_abstract(&im.target) == Some(id)
-                    && !im.methods.contains_key("to_value")
+                    && !im.methods.contains_key(method)
             })
         })
     }

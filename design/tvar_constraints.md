@@ -752,15 +752,25 @@ A = Array<f64>` and `type P = [bool, (f32, bool)]` (`(f32:0.1, true)` as
 string)]` and `[{a: i64}, {a: i64, b: [i64, null]}]` read back. Where a
 union holds a union, its reading is any of that union's members', and
 the outer pick tries it with the members keeping the data's class where
-any of its members keeps it, else after them (`in_own_class`): with
-`type Num = [i64, f64]`, `[Num, string]` reads back. A
+any of its members keeps it, else after them (`in_own_class`), judged
+for each value by the node that writes it (past every union and
+abstract): with `type Num = [i64, f64]`, `[Num, string]` reads back, as
+does `[Shape, string]` with `type Shape = [{w: f64, h: f64}, f64]`,
+whose struct is outside the class and whose f64 inside. An abstract
+type whose `Cast` implementation writes `from_value` may read any value
+it is tried on: ``[Id, `A]`` is refused. A
 written value is finite but passes through members that recurse into
 each other at its top levels, so a pair's outcomes are the least
 fixpoint over the pairs the walk meets (`Fixpoint`: each starts with
 none; a pass computes each pair once, and passes repeat until one
 changes nothing): `[TA, TB]` over ``type TA = [i64, `Cons(f32, TA)]``
-and ``type TB = [f64, `Cons(f64, TB)]`` is refused. A check evaluates
-each pair once a pass, and takes one pass where nothing recurses. What
+and ``type TB = [f64, `Cons(f64, TB)]`` is refused. Whether a value is
+in a member's class is a least fixpoint the same way, over its finite
+values: with ``type R = [Array<R>, i64]``, every value of `R` is in its
+class. A check evaluates each pair once a pass, and takes one pass
+where nothing recurses; a pair of nodes holding no node is answered
+directly and kept nowhere, and every other pair the check meets stays
+until it ends (a chain of `n` nested unions keeps about `n^2`). What
 a node stands for through unions and abstracts written as their
 representation (whether it may hold a string, write a tag, a key's
 forms, a field name, an entry) is a fold over the nodes it reaches that

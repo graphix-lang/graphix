@@ -3196,6 +3196,28 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // instrumented; bound 8 a node), a_union_member_is_tried_by_its_class and
 // one_primitive_reads_a_value_one_way; json_target_union_typedef_beside_a_tag_refused pins
 // that [Num, Txt] over Txt = [string, `None] stays refused.
+// 2026-10-31 claude: Round 6 (review7 B r4, the review of round 5, which was brief r4B4's
+// first pass): (1) A union member whose own members write values of two classes was
+// refused where main admits and it reads back: [Shape, string] over type Shape = [{w: f64,
+// h: f64}, f64], [Ev, i64] and [Ev, bool] over type Ev = [`Click(i64), string], [D, bool]
+// over type D = [duration, string]. Shapes::outs classed every value of such a member by
+// class_of over the member whole, which a struct beside an f64 makes both in and out of
+// the class. A writer union is now judged node by node (Shapes::reach, past every union
+// and abstract), each value by the node that writes it; a reader union reads node by node
+// too. (2) class_of stored (true, true) for a pair met again and kept what it computed
+// through that as final; it is now a least fixpoint through the same Fixpoint as outs,
+// made generic over its value (Lattice): [B, R] over type B = [(string, string), null],
+// type R = [Array<R>, i64] reads back. (3) A pair of nodes that refer to no other node is
+// computed directly and kept in no memo: a 1000-tag enum as a map key took 428 MB, now 34
+// MB; a chain of n nested union typedefs still keeps about n^2 class pairs (1000 levels:
+// 549 MB, main 36 MB), noted at Fixpoint. Pins, each failing without its change:
+// textdata's a_union_member_is_tried_by_its_class and
+// a_recursive_pair_claims_what_its_values_reach,
+// lib_tests::json::{json_union_typedef_members_of_two_classes_read_back,
+// json_recursive_member_beside_a_tuple_reads_back},
+// lib_tests::toml::toml_union_typedef_members_of_two_classes_read_back. The review's
+// sweeps, rerun: 0 holes, and every refusal main does not make fails to read back on the
+// oracle (~/tmp/cr29/scratch/laneB/r7/overm*.txt).
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.

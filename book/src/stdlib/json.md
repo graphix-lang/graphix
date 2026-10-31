@@ -46,7 +46,9 @@ exactly before one that rounds it, then a member keeping the data's kind
 (a number, a string) before one reading it as another kind, then the
 union's order. A member that is itself a union, such as `Num` in `[Num,
 string]` with `type Num = [i64, f64]`, keeps the kind where any of its
-members does, so `[Num, string]` reads back.
+members does, so `[Num, string]` reads back, and so does `[Shape,
+string]` with `type Shape = [{w: f64, h: f64}, f64]`: each value
+`Shape` writes is judged by its member that writes it.
 `[u8, i64]` (two integers), `[string, datetime]` (a datetime is written
 as a string), `` [string, `A] `` (a variant with no payload is written as
 its tag), `[decimal, f64]`, `[duration, i64]` (a whole `duration` is
@@ -76,7 +78,9 @@ written as their text where none can be a string, so
 datetime. An abstract type the reader builds from its representation's
 data comes after every member that reads the data as it is: beside
 `bool`, `type S = Abstract<string>` (with `impl Cast for S {}`) is
-refused, since `S("true")` reads back as `true`.
+refused, since `S("true")` reads back as `true`. One whose `impl Cast`
+writes `from_value` may read any value it is tried on, so it is refused
+beside a member tried after it, such as a variant with no payload.
 Members JSON writes apart are fine: `[i64, f64]` (an integer and a number
 with a fraction), `[f32, u16]` (an integer no wider than 16 bits holds
 no `f32` text the `f32` does not hold too, and a real member takes it
