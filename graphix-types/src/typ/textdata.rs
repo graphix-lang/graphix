@@ -7,11 +7,14 @@
 //! class before the others (`in_own_class`, a primitive set in bit
 //! order); then the union's order, where a reading that crosses the line
 //! between integers and reals gives way to a later one keeping every
-//! number its kind (`Choice`). Values are judged by
-//! class ([`Token`]), and a member's reading of a composite whole:
-//! `[(f32, u8), (f64, f64)]` reads `(f32:0.1, u8:1)` back as `(0.1, 1.0)`,
-//! exact where the f32's own reading rounds; `[(string, f32), (i64, f64)]`
-//! reads `("1", f32:0.1)` back as `(1, 0.1)`.
+//! number its kind (`Choice`). A tuple or a struct is in the data's class
+//! only where the pick tries it as a member, never as a part of a
+//! composite or a member of a union nested in a member (`in_own_class`
+//! holds no unmarked one). Values are judged by class ([`Token`]), and a
+//! member's reading of a composite whole: `[(f32, u8), (f64, f64)]`
+//! reads `(f32:0.1, u8:1)` back as `(0.1, 1.0)`, exact where the f32's
+//! own reading rounds; `[(string, f32), (i64, f64)]` reads `("1",
+//! f32:0.1)` back as `(1, 0.1)`.
 
 use crate::{
     env::Env,
@@ -237,7 +240,9 @@ impl Leaf {
         }
     }
 
-    /// Each way it may read a value of `t` exactly or rounded.
+    /// Each way it may read a value of `t` exactly or rounded (a bool into
+    /// a real, as `holds_rounded` has it); a reading that drops part of a
+    /// value never beats the writer's own, which is one of these.
     fn reads(self, t: Token) -> impl Iterator<Item = u8> {
         let foreign = if self.class() == t.class() { 0 } else { FOREIGN };
         self.reads_in(t).iter().map(move |r| r | foreign)
@@ -267,6 +272,7 @@ impl Leaf {
                 _ if num.is_some() => &[OTHER],
                 _ => NO,
             },
+            Leaf::F32 | Leaf::F64 | Leaf::Decimal if t == Token::Bool => &[ROUNDS],
             _ if t == Token::DateTime => YES,
             Leaf::Int(ty) => {
                 let wide = !matches!(ty, Typ::U8 | Typ::I8 | Typ::U16 | Typ::I16);
@@ -804,7 +810,7 @@ impl<'a> Shapes<'a> {
 
     /// How a two-element array is written by `t` (`writer`) or read by it,
     /// `first` and `second` judging each element against the node of `t`
-    /// that writes or reads it.
+    /// that writes or reads it; `t` is a part of a composite.
     fn entry(&self, t: usize, writer: bool, first: Side, second: Side) -> Outs {
         match &self.nodes[t].0 {
             Shape::Union(ms, _) => {
@@ -819,7 +825,8 @@ impl<'a> Shapes<'a> {
                 first(self, *e).and(second(self, *e)).with(bits)
             }
             Shape::Fixed(ts, _) if ts.len() == 2 => {
-                first(self, ts[0]).and(second(self, ts[1]))
+                let apart = if writer { FOREIGN } else { FOREIGN << 4 };
+                first(self, ts[0]).and(second(self, ts[1])).with(apart)
             }
             _ => Outs::NONE,
         }
@@ -840,11 +847,36 @@ impl<'a> Shapes<'a> {
         c
     }
 
+    /// [`Self::class_of`] where `r` is a part of a composite or a member of
+    /// a union: a tuple or a struct there is never in the data's class
+    /// (`in_own_class` holds only marked ones of data); only the union's
+    /// pick looks inside one it tries itself.
+    fn part_class(&self, r: usize, w: usize, key: bool) -> (bool, bool) {
+        match self.apart(r) {
+            0 => self.class_of(r, w, key),
+            _ => (false, true),
+        }
+    }
+
+    /// `FOREIGN` where `n` is a tuple or a struct.
+    fn apart(&self, n: usize) -> u8 {
+        match self.nodes[self.head(n)].0 {
+            Shape::Fixed(_, false) | Shape::Struct(_) => FOREIGN,
+            _ => 0,
+        }
+    }
+
+    /// [`Self::outs`] where `a` and `b` are parts of a composite
+    /// ([`Self::part_class`]).
+    fn part(&self, a: usize, key: bool, b: usize) -> Outs {
+        self.outs(a, key, b).with(self.apart(a) | self.apart(b) << 4)
+    }
+
     fn class_of_int(&self, r: usize, w: usize, key: bool) -> (bool, bool) {
         use Shape::*;
         let parts = |ps: &mut dyn Iterator<Item = (usize, usize)>| {
             ps.fold((true, false), |(o, f), (r, w)| {
-                let (o1, f1) = self.class_of(r, w, key);
+                let (o1, f1) = self.part_class(r, w, key);
                 (o && o1, f || f1)
             })
         };
@@ -855,7 +887,10 @@ impl<'a> Shapes<'a> {
             }),
             (Foreign(w), _) => self.class_of(r, *w, key),
             (_, Union(ms, _)) => ms.iter().fold((false, true), |(o, f), m| {
-                let (o1, f1) = self.class_of(*m, w, key);
+                let (o1, f1) = match ms.len() {
+                    1 => self.class_of(*m, w, key),
+                    _ => self.part_class(*m, w, key),
+                };
                 (o || o1, f && f1)
             }),
             (None | Unknown, _) | (_, Unknown) => (true, true),
@@ -869,7 +904,7 @@ impl<'a> Shapes<'a> {
                 (c, !c)
             }
             (Scalar(..) | Lit(_), _) | (_, Scalar(..)) => (false, true),
-            (Seq(e, _), Seq(f, own)) => (*own, !own || self.class_of(*f, *e, key).1),
+            (Seq(e, _), Seq(f, own)) => (*own, !own || self.part_class(*f, *e, key).1),
             (Fixed(ts, _), Seq(f, true)) => parts(&mut ts.iter().map(|t| (*f, *t))),
             (Seq(e, _), Fixed(us, false)) => parts(&mut us.iter().map(|u| (*u, *e))),
             (Fixed(ts, _), Fixed(us, false)) if ts.len() == us.len() => {
@@ -985,35 +1020,35 @@ impl<'a> Shapes<'a> {
             (Lit(t), Lit(u)) if t == u => Outs::one(FOREIGN | FOREIGN << 4),
             _ if key => Outs::NONE,
             (Seq(e, oa), Seq(f, ob)) => {
-                self.outs(*e, false, *f).star().with(own(*oa, *ob))
+                self.part(*e, false, *f).star().with(own(*oa, *ob))
             }
             (Seq(e, oa), Fixed(ts, _)) => {
-                Outs::all(ts.iter().map(|t| self.outs(*e, false, *t)))
+                Outs::all(ts.iter().map(|t| self.part(*e, false, *t)))
                     .with(own(*oa, true))
             }
             (Fixed(ts, _), Seq(f, ob)) => {
-                Outs::all(ts.iter().map(|t| self.outs(*t, false, *f)))
+                Outs::all(ts.iter().map(|t| self.part(*t, false, *f)))
                     .with(own(true, *ob))
             }
             (Fixed(ts, _), Fixed(us, _)) if ts.len() == us.len() => {
-                Outs::all(ts.iter().zip(us.iter()).map(|(t, u)| self.outs(*t, false, *u)))
+                Outs::all(ts.iter().zip(us.iter()).map(|(t, u)| self.part(*t, false, *u)))
             }
             (Pairs(k, v), _) => self.map_read(*k, *v, b),
             (Struct(fs), _) => self.struct_read(fs, b),
             (Seq(e, oa), Pairs(j, u)) => {
-                let k: Side = &|s, x| s.outs(x, false, *j);
-                let v: Side = &|s, y| s.outs(y, false, *u);
+                let k: Side = &|s, x| s.part(x, false, *j);
+                let v: Side = &|s, y| s.part(y, false, *u);
                 self.entry(*e, true, k, v).star().with(own(*oa, false))
             }
             (Fixed(ts, _), Pairs(j, u)) => {
-                let k: Side = &|s, x| s.outs(x, false, *j);
-                let v: Side = &|s, y| s.outs(y, false, *u);
+                let k: Side = &|s, x| s.part(x, false, *j);
+                let v: Side = &|s, y| s.part(y, false, *u);
                 Outs::all(ts.iter().map(|t| self.entry(*t, true, k, v)))
                     .with(own(true, false))
             }
             (Seq(e, oa), Struct(gs)) => Outs::all(gs.iter().map(|(n, g, og)| {
                 let k: Side = &|s, x| s.name_written(x, n);
-                let v: Side = &|s, y| s.outs(y, false, *g);
+                let v: Side = &|s, y| s.part(y, false, *g);
                 let m = self.entry(*e, true, k, v);
                 if *og { m.or(Outs::one(0)) } else { m }
             }))
@@ -1026,7 +1061,7 @@ impl<'a> Shapes<'a> {
                 Outs::all(ts.iter().map(|t| {
                     Outs::any(gs.iter().map(|(n, g, _)| {
                         let k: Side = &|s, x| s.name_written(x, n);
-                        let v: Side = &|s, y| s.outs(y, false, *g);
+                        let v: Side = &|s, y| s.part(y, false, *g);
                         self.entry(*t, true, k, v)
                     }))
                 }))
@@ -1040,8 +1075,8 @@ impl<'a> Shapes<'a> {
         let (text, data) = self.key_forms(k);
         let forms = [text.then_some(true), data.then_some(false)];
         Outs::any(forms.into_iter().flatten().map(|key| {
-            let kw: Side = &|s, x| s.outs(k, key, x);
-            let vw: Side = &|s, y| s.outs(v, false, y);
+            let kw: Side = &|s, x| s.part(k, key, x);
+            let vw: Side = &|s, y| s.part(v, false, y);
             match &self.nodes[b].0 {
                 Shape::Pairs(j, u) => {
                     let e = self.outs(k, key, *j).and(self.outs(v, false, *u));
@@ -1055,7 +1090,7 @@ impl<'a> Shapes<'a> {
                         .with(own(false, true))
                 }
                 Shape::Struct(gs) => Outs::all(gs.iter().map(|(n, g, og)| {
-                    let m = self.name_written(k, n).and(self.outs(v, false, *g));
+                    let m = self.name_written(k, n).and(self.part(v, false, *g));
                     if *og { m.or(Outs::one(0)) } else { m }
                 }))
                 .with(own(false, true)),
@@ -1081,7 +1116,7 @@ impl<'a> Shapes<'a> {
                 for (n, f, of) in fs.iter() {
                     match field(gs, n) {
                         Some((g, og)) => {
-                            r = r.and(left_out(self.outs(*f, false, g), *of && og))
+                            r = r.and(left_out(self.part(*f, false, g), *of && og))
                         }
                         None if toml && *of => (),
                         None => return Outs::NONE,
@@ -1090,20 +1125,20 @@ impl<'a> Shapes<'a> {
                 r
             }
             Shape::Pairs(j, u) => Outs::all(fs.iter().map(|(n, f, o)| {
-                let m = self.name_read(*j, n).and(self.outs(*f, false, *u));
+                let m = self.name_read(*j, n).and(self.part(*f, false, *u));
                 left_out(m, *o)
             }))
             .with(own(true, false)),
             Shape::Seq(g, ob) => Outs::all(fs.iter().map(|(n, f, o)| {
                 let k: Side = &|s, x| s.name_read(x, n);
-                let v: Side = &|s, y| s.outs(*f, false, y);
+                let v: Side = &|s, y| s.part(*f, false, y);
                 left_out(self.entry(*g, false, k, v), *o)
             }))
             .with(own(true, *ob)),
             Shape::Fixed(us, _) if us.len() == fs.len() => {
                 Outs::all(us.iter().zip(fs.iter()).map(|(t, (n, f, _))| {
                     let k: Side = &|s, x| s.name_read(x, n);
-                    let v: Side = &|s, y| s.outs(*f, false, y);
+                    let v: Side = &|s, y| s.part(*f, false, y);
                     self.entry(*t, false, k, v)
                 }))
             }
@@ -1113,7 +1148,7 @@ impl<'a> Shapes<'a> {
                 Outs::all(us.iter().map(|t| {
                     Outs::any(fs.iter().map(|(n, f, _)| {
                         let k: Side = &|s, x| s.name_read(x, n);
-                        let v: Side = &|s, y| s.outs(*f, false, y);
+                        let v: Side = &|s, y| s.part(*f, false, y);
                         self.entry(*t, false, k, v)
                     }))
                 }))
@@ -1248,6 +1283,27 @@ mod test {
         let pairs = [("TA", "[`NA, (f32, TA)]"), ("TB", "[`NB, (f64, TB)]")];
         assert!(!rec(&pairs, Format::Json));
         assert!(!rec(&pairs, Format::Toml));
+    }
+
+    // A bool rounds into a real member, and a tuple or a struct is in the
+    // data's class only where the union's pick tries it itself, never as a
+    // part or a member of a union inside a member.
+    #[test]
+    fn a_bool_rounds_into_a_real_and_a_part_is_apart() {
+        let json = |t| ambiguous(t, Format::Json);
+        let named = |defs: &[(&str, &str)], t| {
+            let (env, t) = typed(defs, t);
+            t.text_ambiguity(&env, Format::Json).is_some()
+        };
+        assert!(named(&[("A", "Array<f64>"), ("P", "[bool, (f32, bool)]")], "[A, P]"));
+        assert!(named(
+            &[("TA", "[f64, Array<TA>]"), ("TB", "[bool, (f32, TB)]")],
+            "[TA, TB]"
+        ));
+        assert!(!json("[Array<f64>, (f32, bool)]"));
+        assert!(json("[(Array<string>, i64), ((u8, u8), u8)]"));
+        assert!(!json("[((u8, u8), u8), (string, string)]"));
+        assert!(!json("[f64, bool]"));
     }
 
     /// `L0 = [i64, null]`, each `L(k+1)` a union of `width` members over

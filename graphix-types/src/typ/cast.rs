@@ -261,6 +261,14 @@ impl NumReads {
 // members are named (type B = u8; cast<[f64, B]>(2) is u8 2), a lane judgment (13b0e1a9a)
 // not yet ruled. Probes: ~/tmp/cr29/scratch/review7/B/r1/{order2,tdef}.gx,
 // ~/tmp/cr29/scratch/laneB/r3/{strhole,strhole2,f32str}.gx (holds-exactly-open-01)
+// 2026-10-30 claude: One more for this list, found in round 3: a bool converts to a number
+// (1 or 0), but holds_exactly never holds it (no number converts back to a bool), so
+// holds_rounded makes a bool's reading into a real Rounded and into an integer Partly:
+// cast<[f32, u8]>(true) is f32:1.0 on this lane where main gives u8:1, and a bool reads
+// into an f64 member in the same round as an f64 rounding into an f32 member. Options: a
+// bool held exactly by a number of 1 or 0 (cast<[f32, u8]>(true) is u8:1 again, and
+// textdata's leaves read Bool exactly), or keep it. textdata follows the cast as it is
+// (holds-exactly-class-01's round 3 note). Probe: ~/tmp/cr29/scratch/laneB/r4/hole3.gx
 /// A union's reading of a value among those its members offer, in its
 /// order: the first, except that in a round that drops no part one reading
 /// a number across the line between integers and reals gives way to a
@@ -3121,6 +3129,23 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // walk; 191 now, bound 2n^2). graphix-package-json's admitted_unions_read_back checks
 // textdata against the real writer and cast over the unit tests' unions (fails when the
 // cast's rounds or Choice change).
+// 2026-10-30 claude: Round 3, second commit: a sweep of recursive unions against the cast
+// (~/tmp/cr29/scratch/laneB/r4/rec.py) found two holes the round-2 model had without
+// recursion, on main too. (1) The cast reads a bool into a real member as 1 or 0 in the
+// Rounded round (holds_rounded) and textdata's real leaves read no bool: type A =
+// Array<f64>; type P = [bool, (f32, bool)]; [A, P] read (f32:0.1, true) back as [0.1,
+// 1.0]. Leaf::reads_in now has F32/F64/Decimal reading Bool rounded. (2) in_own_class
+// holds no unmarked tuple or struct, so one is in the data's class only where the union's
+// pick tries it as a member (the rank), never as a part of a composite or a member of a
+// union nested in a member; textdata counted it by its parts everywhere: [(Array<string>,
+// i64), ((u8, u8), u8)] read ((1, 2), 3) back as (["1", "2"], 3). Shapes::part and
+// part_class mark such a tuple or struct outside the class. Pins:
+// lib_tests::json::{json_target_bool_read_as_a_real_refused,
+// json_target_nested_tuple_outside_the_class_refused} (both admitted by 6e2c8147f),
+// textdata's a_bool_rounds_into_a_real_and_a_part_is_apart (fails without either change).
+// Open: whether a bool should round into a real and only partly into an integer
+// (cast<[f32, u8]>(true) is f32:1.0 here, u8:1 on main) is a cast question beside
+// holds-exactly-open-01.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.

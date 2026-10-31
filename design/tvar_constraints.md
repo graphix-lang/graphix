@@ -726,9 +726,13 @@ data's class, then any member keeping it, then the rest; a primitive set
 by class and then bit), the union's order within a pass, and `Choice`: a reading that
 crosses the line between integers and reals gives way to a later one
 keeping every number its kind; a union is in the data's class where any
-member is, whichever member reads it, a composite where all its parts
-are; an abstract type written as its representation is built from the
-data, never read in its class. Each outcome of a written value records,
+member is, whichever member reads it, an array where all its elements
+are, a tuple or a struct only where the pick tries it as a member, by
+its parts, and never as a part of a composite or a member of a union
+nested in a member (`in_own_class` holds no unmarked one); an abstract
+type written as its representation is built from the data, never read
+in its class; a bool reads into a real member as 1 or 0, rounded
+(`holds_rounded`). Each outcome of a written value records,
 for the writer's own member and for the other, whether its reading
 rounds, leaves the data's class, crosses that line or reads a number as
 no number; a composite's outcomes are its parts' together. So `[(f32,
@@ -737,7 +741,12 @@ u8), (f64, f64)]` is refused (`(f32:0.1, u8:1)` reads back as `(0.1,
 back as `"0.1"`), `[(string, f32), (i64, f64)]` (`("1", 0.1)` as `(1,
 0.1)`), `[(i64, duration), (u8, string)]` (`(1, 3.5s)` as `(1, "3.5")`:
 both readings leave the class and `(u8, string)` comes first) and
-`Map<[decimal, datetime], i64>` (the key `"3"` reads as a datetime);
+`Map<[decimal, datetime], i64>` (the key `"3"` reads as a datetime),
+`[(Array<string>, i64), ((u8, u8), u8)]` (`((1, 2), 3)` as `(["1",
+"2"], 3)`: the nested tuple is outside the class, so both members are
+tried after any keeping it, in the union's order) and `[A, P]` over `type
+A = Array<f64>` and `type P = [bool, (f32, bool)]` (`(f32:0.1, true)` as
+`[0.1, 1.0]`);
 `[(f32, i64), (u8, i64)]`, `[string, i64]`, `[(u8, duration), (i64,
 string)]` and `[{a: i64}, {a: i64, b: [i64, null]}]` read back. Where a
 union holds a union, its reading is any of that union's members'. A

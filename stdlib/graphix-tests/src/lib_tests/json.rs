@@ -716,6 +716,37 @@ run!(
     refused("'b: JsonData refuses [TA, TB]")
 );
 
+// A bool rounds into a real member: P's (f32:0.1, true) writes
+// [0.1,true], which A reads as [0.1, 1.0] in the round where P's f32
+// rounds too, and A comes first. A tuple read as a part is never in the
+// data's class, so ((1, 2), 3) is tried after the first member too, which
+// reads it back as (["1", "2"], 3).
+run!(
+    json_target_bool_read_as_a_real_refused,
+    r#"{
+    type A = Array<f64>;
+    type P = [bool, (f32, bool)];
+    let p: P = (f32:0.1, true);
+    let v: [A, P] = p;
+    let r: Result<[A, P], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [A, P]")
+);
+
+run!(
+    json_target_nested_tuple_outside_the_class_refused,
+    r#"{
+    type T = [(Array<string>, i64), ((u8, u8), u8)];
+    let v: T = ((u8:1, u8:2), u8:3);
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [(Array<string>, i64), ((u8, u8), u8)]")
+);
+
 // Recursive members whose tags tell their values apart read back.
 run!(
     json_recursive_members_read_back,
