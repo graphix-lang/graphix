@@ -44,7 +44,9 @@ reads back as another. The reader picks a member as a cast does: a
 variant whose tag the data names first, then one that holds the value
 exactly before one that rounds it, then a member keeping the data's kind
 (a number, a string) before one reading it as another kind, then the
-union's order.
+union's order. A member that is itself a union, such as `Num` in `[Num,
+string]` with `type Num = [i64, f64]`, keeps the kind where any of its
+members does, so `[Num, string]` reads back.
 `[u8, i64]` (two integers), `[string, datetime]` (a datetime is written
 as a string), `` [string, `A] `` (a variant with no payload is written as
 its tag), `[decimal, f64]`, `[duration, i64]` (a whole `duration` is

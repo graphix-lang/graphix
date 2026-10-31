@@ -735,7 +735,8 @@ in its class; a bool reads into a real member as 1 or 0, rounded
 (`holds_rounded`). Each outcome of a written value records,
 for the writer's own member and for the other, whether its reading
 rounds, leaves the data's class, crosses that line or reads a number as
-no number; a composite's outcomes are its parts' together. So `[(f32,
+no number; a composite's outcomes are its parts' together, and where
+both members hold one primitive at a position its two readings are one. So `[(f32,
 u8), (f64, f64)]` is refused (`(f32:0.1, u8:1)` reads back as `(0.1,
 1.0)`, exact where the f32 rounds), as are `[f32, string]` (0.1 reads
 back as `"0.1"`), `[(string, f32), (i64, f64)]` (`("1", 0.1)` as `(1,
@@ -749,14 +750,23 @@ A = Array<f64>` and `type P = [bool, (f32, bool)]` (`(f32:0.1, true)` as
 `[0.1, 1.0]`);
 `[(f32, i64), (u8, i64)]`, `[string, i64]`, `[(u8, duration), (i64,
 string)]` and `[{a: i64}, {a: i64, b: [i64, null]}]` read back. Where a
-union holds a union, its reading is any of that union's members'. A
+union holds a union, its reading is any of that union's members', and
+the outer pick tries it with the members keeping the data's class where
+any of its members keeps it, else after them (`in_own_class`): with
+`type Num = [i64, f64]`, `[Num, string]` reads back. A
 written value is finite but passes through members that recurse into
 each other at its top levels, so a pair's outcomes are the least
 fixpoint over the pairs the walk meets (`Fixpoint`: each starts with
 none; a pass computes each pair once, and passes repeat until one
 changes nothing): `[TA, TB]` over ``type TA = [i64, `Cons(f32, TA)]``
 and ``type TB = [f64, `Cons(f64, TB)]`` is refused. A check evaluates
-each pair once a pass, and takes one pass where nothing recurses. A
+each pair once a pass, and takes one pass where nothing recurses. What
+a node stands for through unions and abstracts written as their
+representation (whether it may hold a string, write a tag, a key's
+forms, a field name, an entry) is a fold over the nodes it reaches that
+way, each met once (`Shapes::reach`, memoized per node): an abstract
+holding itself (``type N = Abstract<[N, `L(i64)]>``) ends the walk, and
+a key type whose unions share members costs a few steps a node. A
 typedef is expanded once for each list of arguments it is applied to
 (`Shapes::refs`, keyed by the arguments' types), so `R<i64>` over
 ``type R<'a> = [`Nil, `Cons('a, R<'a>)]`` is one cycle; one whose

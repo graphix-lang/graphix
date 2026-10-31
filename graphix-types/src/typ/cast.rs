@@ -3170,6 +3170,32 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // (named(..)), and the count pin covers recursive groups
 // (a_check_evaluates_each_pair_a_few_times). typ::regular::key had the same memo; fixed in
 // the next commit.
+// 2026-10-30 claude: Round 5 (review7 B r3 v2): (1) textdata's walks over a node's members
+// (writes_text, writes_tag, holds_string, key_forms, name_written, name_read, entry and
+// the key unions) recursed through unions and abstracts with no cycle guard and no memo:
+// an abstract holding itself (type N = Abstract<[N, `L(i64)]>) overflowed the stack in
+// --check, and a map key whose unions share members (U_i = [U_{i-1}, V_{i-1}], V_i =
+// [U_{i-1}, `T_i]) walked every path (48.8 s at n=36). Each is now a fold over
+// Shapes::reach (the nodes a node stands for through unions and abstracts, each met once,
+// a cycle adding nothing, memoized per node). (2) A member that is itself a union had no
+// pass (Shapes::pass gave None), so takes refused it beside any member that reads its
+// values: [Num, string] over type Num = [i64, f64] and {a: [Opt, string], b: Array<[Opt,
+// bool]>} over Opt = [i64, null] were refused where main admits and they read back. It now
+// takes a scalar's pass from its class bit (in_own_class: a union is in the class where
+// any member is). (3) Found by the sweep: two members holding one primitive at a position
+// read a value one way, but the leaf outcomes paired every reading of one with every
+// reading of the other, so type A = (i32, f32) and type B = (datetime, f32) made [A, B]
+// refused (the writer's f32 rounding where the other's read exactly), main admits it and
+// it reads back; outs_int now pairs a primitive's readings with themselves. Pins (each
+// fails on 1ab657e8c): lib_tests::json::{json_target_abstract_holding_itself_refused,
+// json_target_key_abstract_holding_itself_refused,
+// json_target_abstracts_holding_each_other_refused} (stack overflow),
+// json_union_typedef_members_read_back, json_typedef_tuples_sharing_an_f32_read_back,
+// lib_tests::toml::toml_union_typedef_members_read_back, textdata's
+// a_walk_meets_each_node_once (2,885,914,760 steps over 167 nodes on the old walks,
+// instrumented; bound 8 a node), a_union_member_is_tried_by_its_class and
+// one_primitive_reads_a_value_one_way; json_target_union_typedef_beside_a_tag_refused pins
+// that [Num, Txt] over Txt = [string, `None] stays refused.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.

@@ -24,9 +24,10 @@ use crate::{
     expr::ModPath,
     typ::{Typ, Type, cast::grows_on, params_size},
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use triomphe::Arc;
@@ -490,6 +491,15 @@ struct Fixpoint {
     evaluated: usize,
 }
 
+/// [`Shapes::reach`] of each node asked, as a span of `found`.
+#[derive(Default)]
+struct Reach {
+    spans: AHashMap<usize, (usize, usize)>,
+    found: Vec<(usize, bool)>,
+    #[cfg(test)]
+    walked: usize,
+}
+
 struct Shapes<'a> {
     env: &'a Env,
     format: Format,
@@ -504,6 +514,7 @@ struct Shapes<'a> {
     /// [`Shapes::class_of`] by reader, writer and key.
     classes: RefCell<AHashMap<(usize, usize, bool), (bool, bool)>>,
     fix: RefCell<Fixpoint>,
+    reach: RefCell<Reach>,
 }
 
 impl<'a> Shapes<'a> {
@@ -517,6 +528,7 @@ impl<'a> Shapes<'a> {
             grows: None,
             classes: RefCell::default(),
             fix: RefCell::default(),
+            reach: RefCell::default(),
         };
         shapes.node(t);
         shapes
@@ -527,16 +539,21 @@ impl<'a> Shapes<'a> {
         if let Some(name) = &self.grows {
             return Some(TextAmbiguity::Grows(name.clone()));
         }
-        let unions = (0..self.nodes.len()).map(|n| (n, false));
-        let mut keys: SmallVec<[(usize, bool); 4]> = SmallVec::new();
+        let mut keys: LPooled<Vec<usize>> = LPooled::take();
         for (s, _) in self.nodes.iter() {
             if let Shape::Pairs(k, _) = s
                 && self.key_forms(*k).0
             {
-                self.key_unions(*k, &mut keys)
+                let unions = self.reach(*k).map(|(m, _)| m);
+                keys.extend(
+                    unions.filter(|m| matches!(self.nodes[*m].0, Shape::Union(..))),
+                )
             }
         }
-        for (u, key) in unions.chain(keys) {
+        keys.sort_unstable();
+        keys.dedup();
+        let unions = (0..self.nodes.len()).map(|n| (n, false));
+        for (u, key) in unions.chain(keys.iter().map(|k| (*k, true))) {
             let Shape::Union(ms, prim) = &self.nodes[u].0 else { continue };
             for (i, a) in ms.iter().enumerate() {
                 for b in ms[i + 1..].iter() {
@@ -703,6 +720,16 @@ impl<'a> Shapes<'a> {
             // lib_tests::json::{json_target_abstract_string_beside_a_bool_refused,
             // json_target_abstract_key_beside_an_integer_refused,
             // json_abstract_number_beside_a_float_reads_back}.
+            // 2026-10-30 claude: Round 5: an abstract written as its representation that
+            // holds itself (type N = Abstract<[N, `L(i64)]>), or two that hold each
+            // other, made a cycle of Shape::Foreign nodes, which textdata's member walks
+            // followed without end (a stack overflow in --check, json::read into N, [N,
+            // `B(string)] or Map<N, i64>). The walks now fold over Shapes::reach, each
+            // node met once. Verdicts are main's: refused, since N(N(x)) writes what N(x)
+            // does. Pins: lib_tests::json::{json_target_abstract_holding_itself_refused,
+            // json_target_key_abstract_holding_itself_refused,
+            // json_target_abstracts_holding_each_other_refused} (each overflows the stack
+            // on 1ab657e8c).
             Type::Abstract { id, params } if self.env.written_as_representation(*id) => {
                 match self.env.abstract_reps.get(id) {
                     Some(r) => {
@@ -716,18 +743,49 @@ impl<'a> Shapes<'a> {
         })
     }
 
-    /// The unions a map key `k` is read through from its text.
-    fn key_unions(&self, k: usize, out: &mut SmallVec<[(usize, bool); 4]>) {
-        match &self.nodes[k].0 {
-            Shape::Union(ms, _) => {
-                if !out.contains(&(k, true)) {
-                    out.push((k, true));
-                    ms.iter().for_each(|m| self.key_unions(*m, out))
-                }
+    /// The nodes `n` stands for past unions and abstracts written as their
+    /// representation, `n` among them, each with whether the way to it
+    /// crosses such an abstract. A walk over a node's members folds over
+    /// these, so it meets each node once however many ways lead to it, and
+    /// a cycle among them adds nothing (the least fixpoint).
+    fn reach(&self, n: usize) -> impl Iterator<Item = (usize, bool)> + '_ {
+        let (start, end) = self.reach_span(n);
+        (start..end).map(move |i| {
+            #[cfg(test)]
+            {
+                self.reach.borrow_mut().walked += 1;
             }
-            Shape::Foreign(k) => self.key_unions(*k, out),
-            _ => (),
+            self.reach.borrow().found[i]
+        })
+    }
+
+    fn reach_span(&self, n: usize) -> (usize, usize) {
+        let mut r = self.reach.borrow_mut();
+        if let Some(span) = r.spans.get(&n) {
+            return *span;
         }
+        let mut seen: LPooled<AHashSet<(usize, bool)>> = LPooled::take();
+        let mut next: LPooled<Vec<(usize, bool)>> = LPooled::take();
+        let start = r.found.len();
+        next.push((n, false));
+        while let Some((m, crossed)) = next.pop() {
+            if !seen.insert((m, crossed)) {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                r.walked += 1;
+            }
+            r.found.push((m, crossed));
+            match &self.nodes[m].0 {
+                Shape::Union(ms, _) => next.extend(ms.iter().map(|m| (*m, crossed))),
+                Shape::Foreign(x) => next.push((*x, true)),
+                _ => (),
+            }
+        }
+        let span = (start, r.found.len());
+        r.spans.insert(n, span);
+        span
     }
 
     /// The node `n` stands for, past a reference's one-member union.
@@ -754,36 +812,29 @@ impl<'a> Shapes<'a> {
 
     /// Whether `x` may write the string `tag`.
     fn writes_text(&self, x: usize, tag: &ArcStr) -> bool {
-        match &self.nodes[x].0 {
-            Shape::Union(ms, _) => ms.iter().any(|m| self.writes_text(*m, tag)),
-            Shape::Foreign(x) => self.writes_text(*x, tag),
+        self.reach(x).any(|(m, _)| match &self.nodes[m].0 {
             Shape::Scalar(Leaf::Str, _) => true,
             Shape::Lit(t) => t == tag,
             _ => false,
-        }
+        })
     }
 
     /// Whether `w` may write an array of `len` values led by the string
     /// `tag`, which a union holding the variant it tags reads as that
     /// variant or not at all.
     fn writes_tag(&self, w: usize, tag: &ArcStr, len: usize) -> bool {
-        match &self.nodes[w].0 {
-            Shape::Union(ms, _) => ms.iter().any(|m| self.writes_tag(*m, tag, len)),
-            Shape::Foreign(w) => self.writes_tag(*w, tag, len),
+        self.reach(w).any(|(m, _)| match &self.nodes[m].0 {
             Shape::Seq(e, _) => self.writes_text(*e, tag),
             Shape::Fixed(ts, _) => ts.len() == len && self.writes_text(ts[0], tag),
             _ => false,
-        }
+        })
     }
 
     /// Whether `k` may hold a string.
     fn holds_string(&self, k: usize) -> bool {
-        match &self.nodes[k].0 {
-            Shape::Union(ms, _) => ms.iter().any(|m| self.holds_string(*m)),
-            Shape::Foreign(k) => self.holds_string(*k),
-            Shape::Scalar(Leaf::Str, _) | Shape::Unknown => true,
-            _ => false,
-        }
+        self.reach(k).any(|(m, _)| {
+            matches!(self.nodes[m].0, Shape::Scalar(Leaf::Str, _) | Shape::Unknown)
+        })
     }
 
     /// Whether a map with keys `k` may be written as an object, its keys'
@@ -794,69 +845,62 @@ impl<'a> Shapes<'a> {
         if self.holds_string(k) {
             return (false, true);
         }
-        match &self.nodes[k].0 {
-            Shape::Union(ms, _) => ms.iter().fold((false, false), |(o, p), m| {
-                let (o1, p1) = self.key_forms(*m);
-                (o || o1, p || p1)
-            }),
-            Shape::Foreign(k) => self.key_forms(*k),
-            Shape::Scalar(Leaf::Null, _) => (false, true),
-            Shape::Scalar(..) | Shape::Lit(_) => (true, false),
-            Shape::None | Shape::Unknown => (false, false),
-            _ => (false, true),
-        }
+        self.reach(k).fold((false, false), |(o, p), (m, _)| match &self.nodes[m].0 {
+            Shape::Union(..) | Shape::Foreign(_) | Shape::None | Shape::Unknown => (o, p),
+            Shape::Scalar(Leaf::Null, _) => (o, true),
+            Shape::Scalar(..) | Shape::Lit(_) => (true, p),
+            _ => (o, true),
+        })
     }
 
     /// How `x` writes a struct's field name `n`, read as that name.
     fn name_written(&self, x: usize, n: &ArcStr) -> Outs {
-        match &self.nodes[x].0 {
-            Shape::Union(ms, _) => Outs::any(ms.iter().map(|m| self.name_written(*m, n))),
-            Shape::Foreign(x) => self.name_written(*x, n).with(FOREIGN),
-            Shape::Scalar(Leaf::Str, _) => Outs::one(0),
-            Shape::Lit(t) if t == n => Outs::one(FOREIGN),
-            _ => Outs::NONE,
-        }
+        Outs::any(self.reach(x).map(|(m, crossed)| {
+            let o = match &self.nodes[m].0 {
+                Shape::Scalar(Leaf::Str, _) => Outs::one(0),
+                Shape::Lit(t) if t == n => Outs::one(FOREIGN),
+                _ => Outs::NONE,
+            };
+            if crossed { o.with(FOREIGN) } else { o }
+        }))
     }
 
     /// How `x` reads a struct's field name `n`.
     fn name_read(&self, x: usize, n: &ArcStr) -> Outs {
-        match &self.nodes[x].0 {
-            Shape::Union(ms, _) => Outs::any(ms.iter().map(|m| self.name_read(*m, n))),
-            Shape::Foreign(x) => self.name_read(*x, n).with(FOREIGN << 4),
-            Shape::Scalar(l, _) => {
-                let mut o = Outs::NONE;
-                for r in l.reads(Token::Text) {
-                    o.insert(r << 4)
+        Outs::any(self.reach(x).map(|(m, crossed)| {
+            let o = match &self.nodes[m].0 {
+                Shape::Scalar(l, _) => {
+                    let mut o = Outs::NONE;
+                    for r in l.reads(Token::Text) {
+                        o.insert(r << 4)
+                    }
+                    o
                 }
-                o
-            }
-            Shape::Lit(t) if t == n => Outs::one(FOREIGN << 4),
-            _ => Outs::NONE,
-        }
+                Shape::Lit(t) if t == n => Outs::one(FOREIGN << 4),
+                _ => Outs::NONE,
+            };
+            if crossed { o.with(FOREIGN << 4) } else { o }
+        }))
     }
 
     /// How a two-element array is written by `t` (`writer`) or read by it,
     /// `first` and `second` judging each element against the node of `t`
     /// that writes or reads it; `t` is a part of a composite.
     fn entry(&self, t: usize, writer: bool, first: Side, second: Side) -> Outs {
-        match &self.nodes[t].0 {
-            Shape::Union(ms, _) => {
-                Outs::any(ms.iter().map(|m| self.entry(*m, writer, first, second)))
-            }
-            Shape::Foreign(x) => {
-                let bits = if writer { own(false, true) } else { own(true, false) };
-                self.entry(*x, writer, first, second).with(bits)
-            }
-            Shape::Seq(e, o) => {
-                let bits = if writer { own(*o, true) } else { own(true, *o) };
-                first(self, *e).and(second(self, *e)).with(bits)
-            }
-            Shape::Fixed(ts, _) if ts.len() == 2 => {
-                let apart = if writer { FOREIGN } else { FOREIGN << 4 };
-                first(self, ts[0]).and(second(self, ts[1])).with(apart)
-            }
-            _ => Outs::NONE,
-        }
+        let apart = if writer { FOREIGN } else { FOREIGN << 4 };
+        Outs::any(self.reach(t).map(|(m, crossed)| {
+            let o = match &self.nodes[m].0 {
+                Shape::Seq(e, o) => {
+                    let bits = if writer { own(*o, true) } else { own(true, *o) };
+                    first(self, *e).and(second(self, *e)).with(bits)
+                }
+                Shape::Fixed(ts, _) if ts.len() == 2 => {
+                    first(self, ts[0]).and(second(self, ts[1])).with(apart)
+                }
+                _ => Outs::NONE,
+            };
+            if crossed { o.with(apart) } else { o }
+        }))
     }
 
     /// Whether a value `w` writes (as an object's key where `key`) may be
@@ -1008,11 +1052,11 @@ impl<'a> Shapes<'a> {
 
     fn outs_int(&self, a: usize, key: bool, b: usize) -> Outs {
         use Shape::*;
-        let leaf = |x: Leaf, read: &dyn Fn(Token) -> SmallVec<[u8; 2]>| {
+        let leaf = |x: Leaf, read: &dyn Fn(Token, u8) -> SmallVec<[u8; 2]>| {
             let mut o = Outs::NONE;
             for t in x.writes().iter().flat_map(|t| t.written(key)) {
                 for ra in x.reads(t) {
-                    for rb in read(t) {
+                    for rb in read(t, ra) {
                         o.insert(ra | rb << 4)
                     }
                 }
@@ -1032,8 +1076,12 @@ impl<'a> Shapes<'a> {
             (Foreign(x), _) => self.outs(*x, key, b).with(FOREIGN),
             (_, Foreign(y)) => self.outs(a, key, *y).with(FOREIGN << 4),
             (None | Unknown, _) | (_, None | Unknown) => Outs::NONE,
-            (Scalar(x, _), Scalar(y, _)) => leaf(*x, &|t| y.reads(t).collect()),
-            (Scalar(x, _), Lit(_)) => leaf(*x, &|t| match t {
+            // one primitive reads one value one way
+            (Scalar(x, _), Scalar(y, _)) if x == y => {
+                leaf(*x, &|_, ra| SmallVec::from_slice(&[ra]))
+            }
+            (Scalar(x, _), Scalar(y, _)) => leaf(*x, &|t, _| y.reads(t).collect()),
+            (Scalar(x, _), Lit(_)) => leaf(*x, &|t, _| match t {
                 Token::TagText => SmallVec::from_slice(&[FOREIGN]),
                 _ => SmallVec::new(),
             }),
@@ -1186,15 +1234,15 @@ impl<'a> Shapes<'a> {
 
     /// The pass of a union's pick that tries the member `n` reading a value
     /// with `bits` (`cast_member`): a tuple, then a struct, keeping the
-    /// data's class, then any member keeping it, then the rest; `None` for
-    /// a union, whose members decide.
+    /// data's class, then any other member keeping it (a union where one of
+    /// its members does, `in_own_class`), then the rest.
     fn pass(&self, n: usize, bits: u8) -> Option<u8> {
         let inside = bits & FOREIGN == 0;
         Some(match &self.nodes[self.head(n)].0 {
-            Shape::Union(..) | Shape::None | Shape::Unknown => return None,
+            Shape::None | Shape::Unknown => return None,
             Shape::Fixed(_, false) if inside => 0,
             Shape::Struct(_) if inside => 1,
-            Shape::Scalar(..) | Shape::Seq(..) if inside => 2,
+            Shape::Scalar(..) | Shape::Seq(..) | Shape::Union(..) if inside => 2,
             _ => 3,
         })
     }
@@ -1461,6 +1509,96 @@ mod test {
                 "{name}: {evaluated} evaluations of {pairs}"
             );
         }
+    }
+
+    /// `U0 = [i64, bool]`, ``V0 = [`T0, datetime]``, each `U(i)` the union of
+    /// `U(i-1)` and `V(i-1)` and each `V(i)` of `U(i-1)` and `` `T(i) ``,
+    /// and a map keyed by `U(n)`: the ways from the key to its members grow
+    /// as the Fibonacci numbers do.
+    fn dag(n: usize) -> (Env, Type) {
+        let mut defs = vec![
+            ("U0".to_string(), "[i64, bool]".to_string()),
+            ("V0".to_string(), "[`T0, datetime]".to_string()),
+        ];
+        for i in 1..=n {
+            defs.push((format!("U{i}"), format!("[U{}, V{}]", i - 1, i - 1)));
+            defs.push((format!("V{i}"), format!("[U{}, `T{i}]", i - 1)));
+        }
+        generated(defs, &format!("Map<U{n}, i64>"))
+    }
+
+    // A walk over a node's members meets each node it reaches once,
+    // however many ways lead there: the key's few walks cost a few steps a
+    // node (its unions share members, so the check refuses it). The wall
+    // limit is only a hang guard; the count is the pin.
+    #[test]
+    fn a_walk_meets_each_node_once() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (env, t) = dag(32);
+            let s = Shapes::new(&env, Format::Json, &t);
+            let ambiguous = s.ambiguity().is_some();
+            tx.send((ambiguous, s.reach.borrow().walked, s.nodes.len())).unwrap()
+        });
+        let (ambiguous, walked, nodes) =
+            rx.recv_timeout(std::time::Duration::from_secs(300)).expect("hung");
+        assert!(ambiguous);
+        assert!(walked <= 8 * nodes, "{walked} steps over {nodes} nodes");
+    }
+
+    // A union member of a union is tried in the pass of the members keeping
+    // the data's class where any of its members keeps it, else after them,
+    // in the union's order, as a scalar is.
+    #[test]
+    fn a_union_member_is_tried_by_its_class() {
+        for f in [Format::Json, Format::Toml] {
+            assert!(!named(&[("Num", "[i64, f64]")], "{k: [Num, string]}", f));
+            assert!(!named(&[("Num", "[i64, f64]")], "{k: [Num, bool]}", f));
+            assert!(!named(&[("Txt", "[string, bool]")], "{k: [Txt, i64]}", f));
+        }
+        assert!(!named(
+            &[("Opt", "[i64, null]")],
+            "{a: [Opt, string], b: Array<[Opt, bool]>}",
+            Format::Json
+        ));
+        assert!(!named(&[("Opt", "[i64, null]")], "[Opt, Array<Opt>]", Format::Json));
+        assert!(named(
+            &[("Num", "[i64, f64]"), ("Txt", "[string, `None]")],
+            "[Num, Txt]",
+            Format::Json
+        ));
+        assert!(named(&[("Num", "[i64, f64]")], "[Num, f32]", Format::Json));
+        assert!(named(&[("Num", "[u8, f64]")], "[Num, i64]", Format::Json));
+        assert!(named(&[("Txt", "[datetime, bool]")], "[Txt, string]", Format::Json));
+    }
+
+    // One primitive reads one value one way: where both members hold an
+    // f32 at a position, the writer's own f32 rounds the value exactly
+    // when the other's does. TOML's native datetime an integer reads.
+    #[test]
+    fn one_primitive_reads_a_value_one_way() {
+        for f in [Format::Json, Format::Toml] {
+            assert!(!named(
+                &[("A", "(i32, f32)"), ("B", "(datetime, f32)")],
+                "{k: [A, B]}",
+                f
+            ));
+        }
+        assert!(!named(
+            &[("R<'a>", "[`Nil('a), `X('a, f32)]")],
+            "{k: [R<i32>, R<datetime>]}",
+            Format::Json
+        ));
+        assert!(named(
+            &[("R<'a>", "[`Nil('a), `X('a, f32)]")],
+            "{k: [R<i32>, R<datetime>]}",
+            Format::Toml
+        ));
+        assert!(named(
+            &[("A", "(i64, f32)"), ("B", "(i64, f64)")],
+            "[A, B]",
+            Format::Json
+        ));
     }
 
     /// The typedefs `defs`, each `(name, body)`, and `t` over them.

@@ -316,6 +316,24 @@ run!(
     refused("'b: TomlData refuses { k: [TA, TB] }")
 );
 
+// A union member of a union is tried where any of its members keeps the
+// data's class, as a scalar is.
+run!(
+    toml_union_typedef_members_read_back,
+    r#"{
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    type Num = [i64, f64];
+    type Txt = [string, bool];
+    type D = {k: [Num, string], t: [Txt, i64]};
+    let t = |v: D| -> bool {
+        let r: Result<D, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    [t({k: 3, t: 4}), t({k: 3.0, t: "4"}), t({k: "3", t: true}), t({k: "x", t: "true"})]
+}"#,
+    prints("[true, true, true, true]")
+);
+
 run!(
     toml_recursive_members_read_back,
     r#"{

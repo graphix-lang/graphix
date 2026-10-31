@@ -892,6 +892,110 @@ run!(
     FuseExpect::None
 );
 
+// An abstract type whose representation holds itself writes N(N(x)) as
+// N(x) does, so a target holding it is refused, as a map keyed by one is,
+// and two abstracts holding each other.
+run!(
+    json_target_abstract_holding_itself_refused,
+    r#"{
+    type N = Abstract<[N, `L(i64)]>;
+    impl Cast for N {};
+    let v: N = N(N(`L(3)));
+    let r: Result<N, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses N: what its member N or `L(i64)")
+);
+
+run!(
+    json_target_key_abstract_holding_itself_refused,
+    r#"{
+    type N = Abstract<[N, i64]>;
+    impl Cast for N {};
+    let m: Map<N, i64> = {N(N(5)) => 1};
+    let r: Result<Map<N, i64>, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(m)$);
+    r
+}"#,
+    refused("'b: JsonData refuses Map<N, i64>: what its member i64 or N")
+);
+
+run!(
+    json_target_abstracts_holding_each_other_refused,
+    r#"{
+    type N = Abstract<[M, `L(i64)]>;
+    type M = Abstract<[N, `K(string)]>;
+    impl Cast for N {};
+    impl Cast for M {};
+    let v: [N, `B(string)] = N(M(N(`L(1))));
+    let r: Result<[N, `B(string)], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [N, `B(string)]: what its member N or `K(string)")
+);
+
+// A union member of a union is tried where any of its members keeps the
+// data's class, as a scalar is: numbers read back beside a string, a
+// nullable beside a string or a bool. A text union beside it still holds
+// a tag the string member reads.
+run!(
+    json_union_typedef_members_read_back,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type Num = [i64, f64];
+    type Opt = [i64, null];
+    type T = [Num, string];
+    type S = {a: [Opt, string], b: Array<[Opt, bool]>};
+    let t = |v: T| -> bool {
+        let r: Result<T, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let s = |v: S| -> bool {
+        let r: Result<S, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    (
+        [t(3), t(3.0), t(0.5), t("3"), t("x")],
+        [s({a: 3, b: [null, true]}), s({a: "3", b: [4, false]}), s({a: null, b: []})]
+    )
+}"#,
+    prints("[[true, true, true, true, true], [true, true, true]]")
+);
+
+// One primitive reads one value one way: two members holding an f32 at
+// one position read a large whole f32 alike, so neither takes the other's.
+run!(
+    json_typedef_tuples_sharing_an_f32_read_back,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type A = (i32, f32);
+    type B = (datetime, f32);
+    let rt = |v: [A, B]| -> bool {
+        let r: Result<[A, B], E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let d = datetime:"1970-01-01T00:00:03Z";
+    [rt((i32:5, f32:1234567936.0)), rt((i32:5, f32:0.1)), rt((d, f32:1234567936.0)), rt((d, f32:0.1))]
+}"#,
+    prints("[true, true, true, true]");
+    FuseExpect::None
+);
+
+run!(
+    json_target_union_typedef_beside_a_tag_refused,
+    r#"{
+    type Num = [i64, f64];
+    type Txt = [string, `None];
+    let v: [Num, Txt] = `None;
+    let r: Result<[Num, Txt], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [Num, Txt]: what its member string or `None")
+);
+
 // An f64 member keeps a whole float beside an integer, and a duration
 // key beside a bool reads back.
 run!(
