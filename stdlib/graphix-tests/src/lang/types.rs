@@ -3730,8 +3730,8 @@ run!(
 );
 
 /// A select over a payload bounded by `first`'s and `then`'s, both over
-/// `x`, decided after: both values of `b.0`, then both of the arm's `h`.
-fn select_over_two_payload_bounds(first: &str, then: &str, pat: &str) -> String {
+/// `x`, decided after: both values of `b.0`, then both of `arm`'s.
+fn select_over_two_payload_bounds(first: &str, then: &str, arm: &str) -> String {
     format!(
         r#"{{
     type B<'p> = Abstract<'p>;
@@ -3740,7 +3740,7 @@ fn select_over_two_payload_bounds(first: &str, then: &str, pat: &str) -> String 
     let x = never();
     let b = {first};
     b <- {then};
-    let v = select b.0 {{ {pat} => h, _ => never() }};
+    let v = select b.0 {{ {arm}, _ => never() }};
     x <- t ~ 1;
     let vs = [];
     vs <- array::window(#n: 2, v ~ vs, v);
@@ -3757,49 +3757,49 @@ const ARRAY_THEN_ELEMENT: &str = "[[[[i64:1]], [i64:1]], [[i64:1], i64:1]]";
 // both, so the arm's element holds an array and its element.
 run!(
     select_element_of_two_payload_bounds,
-    select_over_two_payload_bounds("B([[x]])", "B([x])", "[h, ..]"),
+    select_over_two_payload_bounds("B([[x]])", "B([x])", "[h, ..] => h"),
     prints(ARRAY_THEN_ELEMENT)
 );
 
 run!(
     select_element_of_two_payload_bounds_list,
-    select_over_two_payload_bounds("B([[<x>]])", "B([x])", "[h, ..]"),
+    select_over_two_payload_bounds("B([[<x>]])", "B([x])", "[h, ..] => h"),
     prints(ARRAY_THEN_ELEMENT)
 );
 
 run!(
     select_element_of_two_payload_bounds_tuple,
-    select_over_two_payload_bounds("B([(x, x)])", "B([x])", "[h, ..]"),
+    select_over_two_payload_bounds("B([(x, x)])", "B([x])", "[h, ..] => h"),
     prints("[[[[i64:1, i64:1]], [i64:1]], [[i64:1, i64:1], i64:1]]")
 );
 
 run!(
     select_element_of_two_payload_bounds_struct,
-    select_over_two_payload_bounds("B([{a: x}])", "B([x])", "[h, ..]"),
+    select_over_two_payload_bounds("B([{a: x}])", "B([x])", "[h, ..] => h"),
     prints(r#"[[[[["a", i64:1]]], [i64:1]], [[["a", i64:1]], i64:1]]"#)
 );
 
 run!(
     select_element_of_two_payload_bounds_variant,
-    select_over_two_payload_bounds("B([`V(x)])", "B([x])", "[h, ..]"),
+    select_over_two_payload_bounds("B([`V(x)])", "B([x])", "[h, ..] => h"),
     prints(r#"[[[["V", i64:1]], [i64:1]], [["V", i64:1], i64:1]]"#)
 );
 
 run!(
     select_element_of_two_payload_bounds_in_a_list,
-    select_over_two_payload_bounds("B([<[x]>])", "B([<x>])", "[<h, ..>]"),
+    select_over_two_payload_bounds("B([<[x]>])", "B([<x>])", "[<h, ..>] => h"),
     prints(ARRAY_THEN_ELEMENT)
 );
 
 run!(
     select_rest_of_two_payload_bounds,
-    select_over_two_payload_bounds("B([[x], [x]])", "B([x, x])", "[g, h..]"),
+    select_over_two_payload_bounds("B([[x], [x]])", "B([x, x])", "[g, h..] => h"),
     prints("[[[[i64:1], [i64:1]], [i64:1, i64:1]], [[[i64:1]], [i64:1]]]")
 );
 
 run!(
     select_element_of_two_payload_bounds_by_a_definition,
-    select_over_two_payload_bounds("mk([[x]])", "mk([x])", "[h, ..]"),
+    select_over_two_payload_bounds("mk([[x]])", "mk([x])", "[h, ..] => h"),
     prints(ARRAY_THEN_ELEMENT)
 );
 
@@ -3849,6 +3849,103 @@ run!(
     (b.0, v)
 }"#,
     prints(r#"[["s", "s"], i64:1]"#)
+);
+
+// A type test over the element: `[i64, Array<i64>]` holds `x` and
+// `Array<x>` together only as `x := i64`, which the open bound takes
+// after the other.
+const TYPE_TEST_OVER_THE_ELEMENT: &str =
+    "[h, ..] => select h { i64 as n => n + 100, Array<i64> as a => array::len(a) }";
+
+run!(
+    select_type_test_over_two_payload_bounds,
+    select_over_two_payload_bounds("B([[x]])", "B([x])", TYPE_TEST_OVER_THE_ELEMENT),
+    prints("[[[[i64:1]], [i64:1]], [i64:1, i64:101]]")
+);
+
+run!(
+    select_type_test_over_two_payload_bounds_by_a_definition,
+    select_over_two_payload_bounds("mk([[x]])", "mk([x])", TYPE_TEST_OVER_THE_ELEMENT),
+    prints("[[[[i64:1]], [i64:1]], [i64:1, i64:101]]")
+);
+
+/// A select over a payload built as `first` and then `then`, with arms
+/// at two depths: what each value of `b.0` selects.
+fn arms_at_two_depths(first: &str, then: &str) -> String {
+    format!(
+        r#"{{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = {first};
+    b <- t ~ {then};
+    let v = select b.0 {{ [[h, ..], ..] => `A(h), [h, ..] => `B(h), _ => `C }};
+    let vs = [];
+    vs <- array::window(#n: 2, v ~ vs, v);
+    select array::len(vs) {{ 2 => vs, _ => never() }}
+}}"#
+    )
+}
+
+// Arms at two depths decide the payload's type from their patterns, as
+// they decide an inferred plain scrutinee's (`|x| select x { .. }`
+// called with `[["a"]]` and `["b"]` is refused too): a type their binds
+// cannot hold beside what was built. The annotation decides it instead.
+run!(
+    select_arms_at_two_depths_over_two_payloads,
+    arms_at_two_depths(r#"B([["a"]])"#, r#"B(["b"])"#),
+    refused(
+        "the arms decide this scrutinee's type from their patterns, and their binds \
+         cannot hold what was built into it, [Array<string>, Array<Array<string>>]: \
+         annotate that type where it is built"
+    );
+    FuseExpect::None
+);
+
+run!(
+    select_arms_at_two_depths_over_an_annotated_payload,
+    arms_at_two_depths(
+        r#"{ let b: B<[Array<Array<string>>, Array<string>]> = B([["a"]]); b }"#,
+        r#"B(["b"])"#
+    ),
+    prints(r#"[["A", "a"], ["B", "b"]]"#)
+);
+
+// One payload: the first arm can match none of it once its type is
+// written, and the arms cannot decide it either.
+run!(
+    select_arms_at_two_depths_over_one_payload,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let b = B(["b"]);
+    select b.0 { [[h, ..], ..] => `A(h), [h, ..] => `B(h), _ => `C }
+}"#,
+    refused(
+        "the arms decide this scrutinee's type from their patterns, and their binds \
+         cannot hold what was built into it, Array<string>: annotate that type where \
+         it is built"
+    );
+    FuseExpect::None
+);
+
+// An open bound below a union whose binding holds every bound binds to
+// it whole: `y` is the arm's element set, which the other bound makes an
+// array, so a later write of a string is refused.
+run!(
+    payload_cell_bound_to_an_element_set,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let y = never();
+    let b = B([[x]]);
+    b <- B([y]);
+    let v = select b.0 { [h, ..] => h, _ => never() };
+    x <- t ~ 1;
+    y <- t ~ "s";
+    v
+}"#,
+    refused("y is [Array<i64>, Array<i64>], inferred from an earlier use, and cannot hold string");
+    FuseExpect::None
 );
 
 // A NoError payload's bound reaches a binding that holds an error beside it.

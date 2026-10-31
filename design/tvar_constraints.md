@@ -55,29 +55,46 @@ what such a cell binds to: every bind of the cell commits `t ⊇ l` for
 each bound under `ContainsFlags::Lower` (`commit_cell_bounds`), so `'p`
 above `Array<i64>` and `Array<string>` bound to `Array<'a>` puts `'a`
 above both, whatever their order, and `⊥` holds no bound but `⊥`. The
-bounds commit together on copies first (`commit_lower`), so bounds a
-probe admits apart but no binding holds together (`(i64, string)` above
-`('x, 'x)`) refuse the bind and bind none of their cells: a refusal
-another walk ignores (a select's settle against its arms) leaves
-nothing behind. An open cell of a bound below a union binds to the
-union where that holds every bound, else the union's open member takes
-it as a bare cell would (`ContainsFlags::IntoMember`): a slice's
+bounds commit together, as their union, on copies first
+(`commit_lower`): a union takes a bound that is an open cell after the
+others, from the members they left, as a union holding a union does
+(`[i64, Array<i64>]` above `'x` and `Array<'x>` makes `'x` `i64`), and
+bounds a probe admits apart but no binding holds together (`(i64,
+string)` above `('x, 'x)`) refuse the bind and bind none of their cells:
+a refusal another walk ignores (a select's settle against its arms)
+leaves nothing behind. An open cell of a bound below a union binds to
+the union where that holds every bound, else the union's open member
+takes it as a bare cell would (`ContainsFlags::IntoMember`): a slice's
 element set `['h, 'r]` that must hold `'x` and `Array<'x>` puts `'h`
 above both, where `'x := ['h, 'r]` would hold itself under a
 constructor.
 Neither choice is complete without an upper bound on `'x`: the
 member loses the union's decided members (`[i64, 'a]` above `'x`, then
 `'a := string`, would refuse `'x <- 1`), and the binding makes `'x` one
-type with the union's open cells, so `select b.0 { [1, h, ..] => h, [h,
-..] => h }` over a payload above `'x` and `Array<'x>` binds `'x` to the
-first arm's element set and is refused where the second arm's `h` would
-hold `Array<'x>`, a type holding itself. Each conjunct must contain a
-lower bound when it is added; a merge joins both cells' lists after
-each side's conjuncts admit the other's (a rigid cell admits none but
-itself); a copy, an image and a level claim carry the list. The witness
+type with the union's open cells (`[h, ..]` over a payload above
+`Array<Array<'x>>` and `Array<'y>` binds `'y` to the element set, which
+the other bound makes an array, and refuses a later `y <- "s"`). Each
+conjunct must contain a lower bound when it is added; a merge joins
+both cells' lists after each side's conjuncts admit the other's (a
+rigid cell admits none but itself); a copy, an image and a level claim
+carry the list. The witness
 of a cell with lower bounds is their union, so every settle binds it
 there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
 included; a probe of a trait bound reads it so, and a commit settles it.
+
+A select's arms decide a payload's open parameter as they decide an
+inferred scrutinee: the settle binds the cell to their patterns
+(`Reach::new`), the bounds commit into the patterns' cells, and each
+arm's narrowing writes its structure into the cells of the others'.
+Arms at two depths or lengths over a payload built at two shapes
+(`[[h, ..], ..]` beside `[h, ..]` over `B([["a"]])` and `B(["b"])`;
+`[h, k]` beside `[h]`; `` [`V(a), ..] `` beside `[h, ..]`) decide a
+type their binds cannot hold beside what was built, as a `let x =
+never()` they select cannot then take a value of both shapes. Where the
+bounds hold an open cell, a literal arm beside them (`[1, h, ..]` beside
+`[h, ..]` over `B([[x], [x]])` and `B([x, x])`) is refused too, though
+such a let takes the value. The refusal names what was built, which
+annotated decides the cell instead (`Reach::untyped_binds`).
 
 A conjunct is an upper bound, so a type wider than the cell's witness
 holds the cell without the cell becoming it: `t ⊇ 'a` that the

@@ -618,6 +618,9 @@ struct Reach {
     wildcard: bool,
     guarded_slice: bool,
     refutable_slice: bool,
+    /// What was built into a scrutinee cell the arms decided, the union
+    /// of its lower bounds, printed before the arms bound its cells.
+    built: Option<ArcStr>,
 }
 
 impl Reach {
@@ -647,7 +650,21 @@ impl Reach {
             _ => false,
         };
         let informative = itype != Type::Primitive(BitFlags::empty());
+        let mut built = None;
         if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
+            if let Type::TVar(tv) = scrut
+                && let Some(cell) = tv.open_cell()
+            {
+                let lower = cell.cell_lower();
+                let lower: LPooled<Vec<&Type>> = lower.iter().collect();
+                if !lower.is_empty()
+                    && let Ok(t) = Type::union(env, &lower)
+                {
+                    built = Some(format_with_flags(PrintFlag::DerefTVars, || {
+                        ArcStr::from(format_compact!("{t}").as_str())
+                    }));
+                }
+            }
             let _ = itype.contains(env, scrut);
         }
         let atype = scrut.normalize();
@@ -663,7 +680,21 @@ impl Reach {
             wildcard: false,
             guarded_slice: false,
             refutable_slice: false,
+            built,
         })
+    }
+
+    /// A refusal of an arm's binds over a scrutinee the arms decided,
+    /// told as the annotation that fixes it.
+    fn untyped_binds(&self, e: anyhow::Error) -> anyhow::Error {
+        match &self.built {
+            None => e,
+            Some(built) => anyhow!(
+                "the arms decide this scrutinee's type from their patterns, and their \
+                 binds cannot hold what was built into it, {built}: annotate that type \
+                 where it is built"
+            ),
+        }
     }
 
     /// Take away what `t` covers from what reaches the arms after.
@@ -2197,6 +2228,7 @@ impl<R: Rt> Select<R> {
             let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
             pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
+                .map_err(|e| reach.untyped_binds(e))
                 .at(&site)?;
             // a runtime test can't tell apart two types with one runtime form
             if checking

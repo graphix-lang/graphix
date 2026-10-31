@@ -662,23 +662,35 @@ fn holds_lower(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    holds_each(&tv.cell_lower(), flags, env, hist, t)
+    for l in tv.cell_lower().iter() {
+        if !t.contains_int(flags, env, hist, l)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
-/// Whether `t` contains each of `ls` under `flags`.
-fn holds_each(
+/// Whether `t` contains the union of `ls` under `flags`: a union `t`
+/// takes a bound that is an open cell after the others, from the members
+/// they left, so `[i64, Array<i64>]` above `'x` and `Array<'x>` makes
+/// `'x` `i64`.
+fn holds_union(
     ls: &[Type],
     flags: BitFlags<ContainsFlags>,
     env: &Env,
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    for l in ls {
-        if !t.contains_int(flags, env, hist, l)? {
-            return Ok(false);
-        }
+    match ls {
+        [] => Ok(true),
+        [l] => t.contains_int(flags, env, hist, l),
+        ls => t.contains_int(
+            flags,
+            env,
+            hist,
+            &Type::Set(Arc::from_iter(ls.iter().cloned())),
+        ),
     }
-    Ok(true)
 }
 
 /// Commit `t ⊇ l` for each lower bound `l` of a cell bound to `t`, on
@@ -701,7 +713,7 @@ fn commit_lower(
         let ls = Type::Tuple(Arc::from_iter(lower.iter().cloned()));
         let holds = |flags| {
             on_copies([t, &ls], |[t, ls], trial| match &ls {
-                Type::Tuple(ls) => holds_each(ls, flags, env, trial, &t),
+                Type::Tuple(ls) => holds_union(ls, flags, env, trial, &t),
                 _ => Ok(false),
             })
         };
@@ -712,7 +724,7 @@ fn commit_lower(
             }
         }
     }
-    holds_each(&lower, flags, env, hist, t)
+    holds_union(&lower, flags, env, hist, t)
 }
 
 /// The flags `t ⊇ l` runs with for a lower bound `l` of a cell bound to
