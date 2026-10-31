@@ -175,6 +175,17 @@ struct Sig<'a> {
     kids: SmallVec<[usize; 4]>,
 }
 
+// CR claude for claude: [bug/medium] A parameter that is no regular tree never ends here: a
+// typedef whose arguments grow as it recurses (type N<'a> = [`Nil, `Cons('a,
+// N<Array<'a>>)]) expands N<i64>, N<Array<i64>>, ... without end, so comparing two values of
+// type B<'x> = Abstract<i64> at B<N<i64>> passes --check and hangs the runtime (main grows
+// memory until killed, 3.6 s at 4G; here it loops). The checker refuses a growing type as a
+// compared type or a map key (Indiscernible::Grows) but never looks inside an abstract's
+// parameters. Fix: cut the expansion where cast::grows_on says it grows and key that
+// application by its definition's name over its arguments' nodes, which is a function of
+// the type and never equates two different ones (a refusal at the check would have to
+// cover every operation that keys params: ==, ordering, map keys, dedup, a select's tag
+// test). probe: ~/tmp/cr29/scratch/laneB/r5/reg2.gx (regular-grows-01)
 /// The key of `roots` read as regular trees: equal exactly when each
 /// root is the same regular tree as its counterpart.
 pub(crate) fn key(roots: &[Type]) -> Arc<[u8]> {
