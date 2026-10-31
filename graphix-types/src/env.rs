@@ -2371,7 +2371,7 @@ impl Env {
 
     /// An env holding the typedefs `defs` at the root, each named `Name`
     /// or `Name<'a, ..>`, and `t` there, every reference seeded. For tests.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn typed_at_root(defs: &[(&str, &str)], t: &str) -> Result<(Env, Type)> {
         use crate::expr::parser::parse_type;
         let root = ModPath::root();

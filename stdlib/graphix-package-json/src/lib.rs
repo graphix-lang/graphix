@@ -676,16 +676,24 @@ mod test {
         std::iter::once(vec![]).chain(es.into_iter().map(|e| vec![e])).chain(pairs)
     }
 
-    /// `build` of at most [`CAP`] combinations of one value of each part.
+    /// `build` of at most [`CAP`] combinations of one value of each part,
+    /// spaced through the product by a stride coprime to every part's
+    /// length, so no part's values stand still.
     fn product(
         parts: Vec<Vec<Value>>,
         build: impl Fn(Vec<Value>) -> Value,
     ) -> Vec<Value> {
+        fn gcd(a: usize, b: usize) -> usize {
+            if b == 0 { a } else { gcd(b, a % b) }
+        }
         if parts.iter().any(|p| p.is_empty()) {
             return vec![];
         }
         let total = parts.iter().fold(1usize, |n, p| n.saturating_mul(p.len()));
-        let step = total.div_ceil(CAP);
+        let mut step = total.div_ceil(CAP);
+        while parts.iter().any(|p| gcd(step, p.len()) != 1) {
+            step += 1
+        }
         (0..total)
             .step_by(step)
             .map(|mut i| {
