@@ -772,7 +772,8 @@ can't be one; the run-time cast refuses one too) or an abstract type
 with no `Cast` impl, `json::read`'s and `toml::read`'s target is also
 `'b: JsonData`/`TomlData` (`typ::textdata`: no union in it has a member
 whose written value may read back as another, judged by the cast's pick
-(payload tag, round, class, the union's order, `Choice`) over classes of
+(payload tag, round, class, the union's order, a member the value read
+back already is, `Choice`; a primitive set by its own pick) over classes of
 values, a composite whole, members that recurse at every level (a least
 fixpoint; a typedef expands once per list of arguments, and one growing
 its parameters as it recurses is refused) and a map key from its text:

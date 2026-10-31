@@ -3218,6 +3218,23 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // lib_tests::toml::toml_union_typedef_members_of_two_classes_read_back. The review's
 // sweeps, rerun: 0 holes, and every refusal main does not make fails to read back on the
 // oracle (~/tmp/cr29/scratch/laneB/r7/overm*.txt).
+// 2026-10-31 claude: Round 7 (review7 B r4 r2, brief r4B5): a primitive set beside another
+// member was given every reading of every one of its members, and a member the value read
+// back already is (cast_member's Ok(None)) was not seen to take it at once: with type
+// Amount = [f64, string], [Amount, i64] and [Amount, u32] were refused, as was [Label,
+// f64] over type Label = [string, i64] (main admits them and they read back). textdata now
+// reads a primitive set by its pick (Shapes::pick, which prim_takes uses too): the member
+// the value read back already is, else the first that holds it exactly by class and bit,
+// else the first real that rounds it, a member that may miss some value of a class passing
+// it on. Each reading carries a level (held, built, a number as no number, crossed) and a
+// held member takes the value within its pass whatever the union's order; u32 and i32 no
+// longer write an integer past an f64's precision. [Id, Val] over Id = Abstract<i64> and
+// Val = [f64, string] stays refused (a real hole at 2^53+1). Pins: textdata's
+// a_primitive_set_reads_by_its_pick (fails with the held rule, the pick or the 32-bit
+// writes reverted, each alone),
+// lib_tests::json::json_primitive_set_beside_a_member_reads_back and
+// lib_tests::toml::toml_primitive_set_beside_a_member_reads_back (both refused at
+// 3cb1fc3d2), json_target_abstract_beside_a_primitive_set_refused. Needs a soak.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.

@@ -919,6 +919,65 @@ run!(
     FuseExpect::None
 );
 
+// An abstract whose Cast implementation writes to_value and leaves
+// from_value out writes what to_value makes and reads as its
+// representation, after every member keeping the data's class.
+run!(
+    json_target_abstract_reading_as_its_representation_beside_a_tag_refused,
+    r#"{
+    type S = Abstract<string>;
+    impl Cast for S { let to_value = |x| x.0 };
+    let v: [S, `A] = `A;
+    let r: Result<[S, `A], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [S, `A]")
+);
+
+run!(
+    json_target_abstract_reading_as_its_representation_beside_a_decimal_refused,
+    r#"{
+    type N = Abstract<i64>;
+    impl Cast for N { let to_value = |x| x.0 };
+    let v: [N, decimal] = cast<decimal>(3)$;
+    let r: Result<[N, decimal], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [decimal, N]")
+);
+
+run!(
+    json_target_abstract_beside_a_decimal_refused,
+    r#"{
+    type N = Abstract<i64>;
+    impl Cast for N {};
+    let v: [N, decimal] = cast<decimal>(3)$;
+    let r: Result<[N, decimal], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [decimal, N]")
+);
+
+// An abstract number beside a set of a real and a string: the set reads
+// an integer past an f64's precision as its text before the abstract is
+// tried.
+run!(
+    json_target_abstract_beside_a_primitive_set_refused,
+    r#"{
+    type Id = Abstract<i64>;
+    impl Cast for Id {};
+    type Val = [f64, string];
+    let v: [Id, Val] = Id(9007199254740993);
+    let r: Result<[Id, Val], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [Id, Val]")
+);
+
 run!(
     json_abstract_number_beside_a_float_reads_back,
     r#"{
@@ -1037,6 +1096,58 @@ run!(
     r
 }"#,
     refused("'b: JsonData refuses [Num, Txt]: what its member string or `None")
+);
+
+// A primitive set reads a value as one member, the first holding it
+// exactly by class and then bit, and a member the value read back already
+// is takes it whatever the union's order: an integer beside a set of a
+// real and a string, a real beside a set of a string and an integer.
+run!(
+    json_primitive_set_beside_a_member_reads_back,
+    r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type Amount = [f64, string];
+    type Qty = i64;
+    type Count = u32;
+    type Label = [string, i64];
+    type Score = f64;
+    type A = Array<{amount: [Amount, Qty]}>;
+    type C = {total: [Amount, Count]};
+    type L = [Label, Score];
+    let a = |v: A| -> bool {
+        let r: Result<A, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let c = |v: C| -> bool {
+        let r: Result<C, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let l = |v: L| -> bool {
+        let r: Result<L, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    (
+        [
+            a([{amount: 3}]),
+            a([{amount: 9007199254740993}]),
+            a([{amount: 2.5}]),
+            a([{amount: "TBD"}]),
+            a([{amount: "3"}])
+        ],
+        [
+            c({total: u32:0}),
+            c({total: u32:4294967295}),
+            c({total: 4294967296.0}),
+            c({total: "3"}),
+            c({total: ""})
+        ],
+        [l(3.0), l(0.5), l(1e300), l("x"), l("3.0"), l(3), l(9007199254740993)]
+    )
+}"#,
+    prints(
+        "[[true, true, true, true, true], [true, true, true, true, true], \
+         [true, true, true, true, true, true, true]]"
+    )
 );
 
 // A union member whose own members write values of two classes is tried

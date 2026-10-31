@@ -334,6 +334,32 @@ run!(
     prints("[true, true, true, true]")
 );
 
+// A primitive set reads a value as one member, and a member the value
+// read back already is takes it whatever the union's order.
+run!(
+    toml_primitive_set_beside_a_member_reads_back,
+    r#"{
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    type Amount = [f64, string];
+    type Count = u32;
+    type Label = [string, i64];
+    type Score = f64;
+    type D = {c: [Amount, Count], l: [Label, Score]};
+    let t = |v: D| -> bool {
+        let r: Result<D, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    [
+        t({c: u32:0, l: 3.0}),
+        t({c: u32:4294967295, l: 0.5}),
+        t({c: 4294967296.0, l: "x"}),
+        t({c: "3", l: "3.0"}),
+        t({c: "", l: 3})
+    ]
+}"#,
+    prints("[true, true, true, true, true]")
+);
+
 // A union member whose own members write values of two classes is tried
 // by the class of each value it writes.
 run!(

@@ -722,10 +722,22 @@ string writes them as text), and each member's reading of a value whole,
 as the cast's pick does: a payload variant whose tag the data names
 first (taken whatever its reading rounds), the round its reading falls
 in (exact, then rounded), the pass (a tuple, then a struct, keeping the
-data's class, then any member keeping it, then the rest; a primitive set
-by class and then bit), the union's order within a pass, and `Choice`: a reading that
-crosses the line between integers and reals gives way to a later one
-keeping every number its kind; a union is in the data's class where any
+data's class, then any member keeping it, then the rest), the union's
+order within a pass, where a member the value read back already is (the
+i64, f64, decimal, string, bool or null the reader makes, or TOML's
+datetime; an array of such) takes it at once (`cast_member`'s
+`Ok(None)`), and `Choice`: a reading that crosses the line between integers and
+reals gives way to a later one keeping every number its kind. A
+primitive set reads a value as one member (`Shapes::pick`, used for its
+own members and as a member of a union): the one the value read back
+already is, else the first that holds it exactly by class and then bit
+(real text an integer holds going to the first later real that holds it
+too), else the first real that rounds it, a member that may miss some
+value of a class (an f32 a large f64, a u8 a negative integer) letting
+the next one read that value; so with `type Amount = [f64, string]`,
+`[Amount, i64]` reads back (an integer is the i64's at once, and the
+set reads one as an f64, never as its text), as does `[Label, f64]`
+with `type Label = [string, i64]`. A union is in the data's class where any
 member is, whichever member reads it, an array where all its elements
 are, a tuple or a struct only where the pick tries it as a member, by
 its parts, and never as a part of a composite or a member of a union
@@ -734,8 +746,11 @@ type written as its representation is built from the data, never read
 in its class; a bool reads into a real member as 1 or 0, rounded
 (`holds_rounded`). Each outcome of a written value records,
 for the writer's own member and for the other, whether its reading
-rounds, leaves the data's class, crosses that line or reads a number as
-no number; a composite's outcomes are its parts' together, and where
+rounds and whether it leaves the data's class, and its level, the
+highest of its parts': the value as it is, built, a number read as no
+number, a number read across that line; a composite's outcomes are its
+parts' together (a tuple, a struct, a variant, a map, a list, bytes, a
+tag and an abstract are built whatever their parts), and where
 both members hold one primitive at a position its two readings are one. So `[(f32,
 u8), (f64, f64)]` is refused (`(f32:0.1, u8:1)` reads back as `(0.1,
 1.0)`, exact where the f32 rounds), as are `[f32, string]` (0.1 reads
@@ -750,15 +765,20 @@ A = Array<f64>` and `type P = [bool, (f32, bool)]` (`(f32:0.1, true)` as
 `[0.1, 1.0]`);
 `[(f32, i64), (u8, i64)]`, `[string, i64]`, `[(u8, duration), (i64,
 string)]` and `[{a: i64}, {a: i64, b: [i64, null]}]` read back. Where a
-union holds a union, its reading is any of that union's members', and
-the outer pick tries it with the members keeping the data's class where
-any of its members keeps it, else after them (`in_own_class`), judged
+union holds a union other than a primitive set, its reading is any of
+that union's members', and the outer pick tries it with the members
+keeping the data's class where any of its members keeps it, else after them (`in_own_class`), judged
 for each value by the node that writes it (past every union and
 abstract): with `type Num = [i64, f64]`, `[Num, string]` reads back, as
 does `[Shape, string]` with `type Shape = [{w: f64, h: f64}, f64]`,
 whose struct is outside the class and whose f64 inside. An abstract
-type whose `Cast` implementation writes `from_value` may read any value
-it is tried on: ``[Id, `A]`` is refused. A
+type whose `Cast` implementation leaves out `to_value` writes as its
+representation; one that leaves out `from_value` reads as it, and one
+that writes `from_value` may read any value it is tried on: ``[Id,
+`A]`` is refused, as is ``[S, `A]`` where `S = Abstract<string>`'s
+implementation writes only `to_value` (what it writes is unknown here,
+but it reads `"A"` as `S("A")`); one writing both methods is trusted
+(textdata-cast-trust-01). A
 written value is finite but passes through members that recurse into
 each other at its top levels, so a pair's outcomes are the least
 fixpoint over the pairs the walk meets (`Fixpoint`: each starts with

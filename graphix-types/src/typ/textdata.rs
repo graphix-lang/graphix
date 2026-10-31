@@ -138,6 +138,21 @@ impl Token {
         }
         r
     }
+
+    /// The primitive the format's reader makes of it. An integer past
+    /// i64's range reads as a u64; taking it as an i64 only refuses more
+    /// (a u64 member is not seen to hold it, an i64 member is).
+    fn read_back(self) -> Typ {
+        match self {
+            Token::Null => Typ::Null,
+            Token::Bool => Typ::Bool,
+            Token::Num(Num::Dec) => Typ::Decimal,
+            Token::Num(n) if n.real() => Typ::F64,
+            Token::Num(_) => Typ::I64,
+            Token::DateTime => Typ::DateTime,
+            _ => Typ::String,
+        }
+    }
 }
 
 const INTS: [Token; 4] = [
@@ -183,14 +198,26 @@ const TEXTS: [Token; 15] = {
 };
 
 /// How a member reads a value, the low nibble of an outcome for the
-/// writer's own member and the high one for the other: only rounded (a
-/// later round), outside the value's class (a later pass), with a number
-/// read across the line between integers and reals, with a number read as
-/// no number (`NumReads`).
+/// writer's own member and the high one for the other: two flags, only
+/// rounded (a later round) and outside the value's class (a later pass),
+/// and a level, the highest of its parts': the value as it is
+/// (`cast_member`'s `Ok(None)`), built, with a number read as no number,
+/// with a number read across the line between integers and reals
+/// (`NumReads`).
 const ROUNDS: u8 = 1;
 const FOREIGN: u8 = 2;
-const CROSSED: u8 = 4;
+const LEVEL: u8 = 12;
+const HELD: u8 = 0;
+const BUILT: u8 = 4;
 const OTHER: u8 = 8;
+const CROSSED: u8 = 12;
+
+/// The outcome of two parts read together: each side's flags of either,
+/// and the higher level.
+fn join(x: u8, y: u8) -> u8 {
+    let side = |x: u8, y: u8| (x | y) & (ROUNDS | FOREIGN) | (x & LEVEL).max(y & LEVEL);
+    side(x & 15, y & 15) | side(x >> 4, y >> 4) << 4
+}
 
 /// Both sides' bits for whether each reading keeps the data's class.
 fn own(a: bool, b: bool) -> u8 {
@@ -241,6 +268,20 @@ impl Leaf {
         }
     }
 
+    fn typ(self) -> Typ {
+        match self {
+            Leaf::Null => Typ::Null,
+            Leaf::Bool => Typ::Bool,
+            Leaf::Int(t) => t,
+            Leaf::F32 => Typ::F32,
+            Leaf::F64 => Typ::F64,
+            Leaf::Decimal => Typ::Decimal,
+            Leaf::Duration => Typ::Duration,
+            Leaf::Str => Typ::String,
+            Leaf::DateText | Leaf::DateTime => Typ::DateTime,
+        }
+    }
+
     /// The values it writes.
     fn writes(self) -> &'static [Token] {
         match self {
@@ -248,6 +289,7 @@ impl Leaf {
             Leaf::Bool => &[Token::Bool],
             Leaf::Int(Typ::I8) => &INTS[..1],
             Leaf::Int(Typ::U8 | Typ::U16 | Typ::I16) => &INTS[..2],
+            Leaf::Int(Typ::U32 | Typ::V32 | Typ::I32 | Typ::Z32) => &INTS[..3],
             Leaf::Int(_) => &INTS,
             Leaf::F32 | Leaf::F64 | Leaf::Duration => &FLOATS,
             Leaf::Decimal => &NUMS,
@@ -262,7 +304,59 @@ impl Leaf {
     /// value never beats the writer's own, which is one of these.
     fn reads(self, t: Token) -> impl Iterator<Item = u8> {
         let foreign = if self.class() == t.class() { 0 } else { FOREIGN };
-        self.reads_in(t).iter().map(move |r| r | foreign)
+        let level = if self.typ() == t.read_back() { HELD } else { BUILT };
+        self.reads_in(t).iter().map(move |r| join(r | foreign, level))
+    }
+
+    /// Whether it reads every value `w` (a tag where `None`) writes of `t`,
+    /// one of the ways [`Self::reads`] gives, none overflowing it.
+    fn total(self, w: Option<Leaf>, t: Token) -> bool {
+        let int_range = |t: Typ| match t {
+            Typ::U8 => (0, u8::MAX as i128),
+            Typ::I8 => (i8::MIN as i128, i8::MAX as i128),
+            Typ::U16 => (0, u16::MAX as i128),
+            Typ::I16 => (i16::MIN as i128, i16::MAX as i128),
+            Typ::U32 | Typ::V32 => (0, u32::MAX as i128),
+            Typ::I32 | Typ::Z32 => (i32::MIN as i128, i32::MAX as i128),
+            Typ::U64 | Typ::V64 => (0, u64::MAX as i128),
+            _ => (i64::MIN as i128, i64::MAX as i128),
+        };
+        let reads = !self.reads_in(t).is_empty();
+        match (self, w) {
+            (r, Some(w)) if r == w => true,
+            (Leaf::Str, _) => reads,
+            (Leaf::Null | Leaf::Bool | Leaf::DateText | Leaf::DateTime, _) => {
+                reads && !matches!(t, Token::Num(_) | Token::NumText(_))
+            }
+            (Leaf::Int(r), Some(Leaf::Int(w))) => {
+                let ((rl, rh), (wl, wh)) = (int_range(r), int_range(w));
+                rl <= wl && wh <= rh
+            }
+            (
+                Leaf::F64,
+                Some(
+                    Leaf::Int(_)
+                    | Leaf::F32
+                    | Leaf::F64
+                    | Leaf::Decimal
+                    | Leaf::Duration
+                    | Leaf::Bool
+                    | Leaf::DateTime,
+                ),
+            )
+            | (
+                Leaf::F32,
+                Some(
+                    Leaf::Int(_)
+                    | Leaf::F32
+                    | Leaf::Decimal
+                    | Leaf::Bool
+                    | Leaf::DateTime,
+                ),
+            )
+            | (Leaf::Decimal, Some(Leaf::Int(_) | Leaf::Decimal | Leaf::Bool)) => reads,
+            _ => false,
+        }
     }
 
     fn reads_in(self, t: Token) -> &'static [u8] {
@@ -370,13 +464,14 @@ impl Outs {
         let mut r = Outs::NONE;
         for x in self.iter() {
             for y in o.iter() {
-                r.insert(x | y)
+                r.insert(join(x, y))
             }
         }
         r
     }
 
-    /// Any number of parts, each read one of the ways of `self`.
+    /// Any number of parts, each read one of the ways of `self`; none is
+    /// an array held as it is.
     fn star(self) -> Outs {
         let mut r = Outs::one(0);
         loop {
@@ -404,10 +499,11 @@ impl Outs {
         r
     }
 
+    /// Each outcome read together with a part read as `bits` says.
     fn with(self, bits: u8) -> Outs {
         let mut r = Outs::NONE;
         for x in self.iter() {
-            r.insert(x | bits)
+            r.insert(join(x, bits))
         }
         r
     }
@@ -433,16 +529,15 @@ impl Outs {
 enum Shape {
     /// Nothing the format can write (a function, an error, TOML's null).
     None,
-    /// Not known here (an open cell, `Any`, an abstract written by its
-    /// `Cast` implementation): shares a form with nothing.
+    /// Not known here (an open cell, `Any`, an abstract whose `Cast`
+    /// implementation writes both methods): shares a form with nothing.
     Unknown,
     /// A primitive, and its bit.
     Scalar(Leaf, Typ),
     /// A bare variant, written as its tag.
     Lit(ArcStr),
-    /// An array of any length of the element; `own` where its reader keeps
-    /// an array's class (bytes do not).
-    Seq(usize, bool),
+    /// Any number of the element, written as an array.
+    Seq(usize, SeqKind),
     /// A tuple, or, `tagged`, a variant's tag (a `Lit`) and its payload.
     Fixed(SmallVec<[usize; 4]>, bool),
     /// A map, written as an object where its keys are scalars, else as an
@@ -453,11 +548,36 @@ enum Shape {
     Struct(SmallVec<[(ArcStr, usize, bool); 4]>),
     /// `prim` where the members are a primitive set's, tried in bit order.
     Union(SmallVec<[usize; 4]>, bool),
-    /// An abstract type written as its representation, which a reader
-    /// builds from the data and so never reads in the data's class; `true`
-    /// where its `Cast` implementation writes `from_value`, which may read
-    /// any value it is tried on.
-    Foreign(usize, bool),
+    /// An abstract type whose `Cast` implementation leaves a method out,
+    /// and its representation: written as it where `to_value` is left out
+    /// (else as nothing known here), read as it where `from_value` is (else
+    /// by `from_value`, which may read any value it is tried on). A reader
+    /// builds it from the data, never in the data's class.
+    Foreign { rep: usize, writes: bool, reads_rep: bool },
+}
+
+/// What reads an array of data: an array, held as it is where every
+/// element is; a list, built; bytes, built and outside an array's class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeqKind {
+    Array,
+    List,
+    Bytes,
+}
+
+impl SeqKind {
+    /// Whether its reader keeps an array's class.
+    fn own(self) -> bool {
+        self != SeqKind::Bytes
+    }
+}
+
+/// Which of a node's sides a walk over it follows: what it writes, or what
+/// reads into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Way {
+    Writes,
+    Reads,
 }
 
 type Side<'s> = &'s dyn Fn(&Shapes, usize) -> Outs;
@@ -583,10 +703,10 @@ impl<K: Copy + Eq + std::hash::Hash, V: Lattice> Fixpoint<K, V> {
     }
 }
 
-/// [`Shapes::reach`] of each node asked, as a span of `found`.
+/// [`Shapes::reach`] of each node and way asked, as a span of `found`.
 #[derive(Default)]
 struct Reach {
-    spans: AHashMap<usize, (usize, usize)>,
+    spans: AHashMap<(usize, Way), (usize, usize)>,
     found: Vec<(usize, bool)>,
     #[cfg(test)]
     walked: usize,
@@ -636,7 +756,7 @@ impl<'a> Shapes<'a> {
             if let Shape::Pairs(k, _) = s
                 && self.key_forms(*k).0
             {
-                let unions = self.reach(*k).map(|(m, _)| m);
+                let unions = self.reach(*k, Way::Writes).map(|(m, _)| m);
                 keys.extend(
                     unions.filter(|m| matches!(self.nodes[*m].0, Shape::Union(..))),
                 )
@@ -651,7 +771,8 @@ impl<'a> Shapes<'a> {
                 for b in ms[i + 1..].iter() {
                     let hit = match prim {
                         true => {
-                            self.prim_takes(*a, *b, key) || self.prim_takes(*b, *a, key)
+                            self.prim_takes(ms, *a, *b, key)
+                                || self.prim_takes(ms, *b, *a, key)
                         }
                         false => {
                             self.takes(*a, *b, key, true)
@@ -732,7 +853,7 @@ impl<'a> Shapes<'a> {
                             let u8 = Type::Primitive(Typ::U8.into());
                             let int = self
                                 .push(Shape::Scalar(Leaf::Int(Typ::U8), Typ::U8), &u8);
-                            self.push(Shape::Seq(int, false), t)
+                            self.push(Shape::Seq(int, SeqKind::Bytes), t)
                         }
                         p => {
                             let s = self.prim(p);
@@ -756,9 +877,13 @@ impl<'a> Shapes<'a> {
             Type::Any | Type::App(..) | Type::Hole | Type::Bound(_) => {
                 self.push(Shape::Unknown, t)
             }
-            Type::Array(e) | Type::List(e) => {
+            Type::Array(e) => {
                 let e = self.node(e);
-                self.push(Shape::Seq(e, true), t)
+                self.push(Shape::Seq(e, SeqKind::Array), t)
+            }
+            Type::List(e) => {
+                let e = self.node(e);
+                self.push(Shape::Seq(e, SeqKind::List), t)
             }
             Type::Tuple(ts) => {
                 let ts = ts.iter().map(|t| self.node(t)).collect();
@@ -834,16 +959,16 @@ impl<'a> Shapes<'a> {
             // lib_tests::json::json_target_abstract_reading_by_from_value_beside_a_tag_refused
             // (admitted without the change),
             // json_abstract_reading_by_from_value_beside_a_payload_variant_reads_back.
-            Type::Abstract { id, params } if self.env.written_as_representation(*id) => {
-                match self.env.abstract_reps.get(id) {
-                    Some(r) => {
-                        let rep = self.node(&r.instantiate_with(params));
-                        let reads = !self.env.read_as_representation(*id);
-                        self.push(Shape::Foreign(rep, reads), t)
-                    }
-                    None => self.push(Shape::Unknown, t),
-                }
-            }
+            // 2026-10-31 claude: Round 7 (brief r4B5): an abstract whose Cast implementation
+            // writes to_value and leaves from_value out was Shape::Unknown, reading nothing,
+            // while the cast reads it as its representation: [S, `A] read "A" back as S("A")
+            // and [N, decimal] read 3 back as N(3) (main too). Shape::Foreign now keeps the
+            // two sides apart (writes: to_value left out; reads_rep: from_value left out), so
+            // such an abstract writes nothing known here and reads as its representation. Pins
+            // (admitted at 3cb1fc3d2):
+            // lib_tests::json::{json_target_abstract_reading_as_its_representation_beside_a_tag_refused,
+            // json_target_abstract_reading_as_its_representation_beside_a_decimal_refused};
+            // json_target_abstract_beside_a_decimal_refused (impl Cast {}) stays refused.
             // CR claude for eric: [design/low] textdata trusts an abstract type whose Cast
             // implementation writes to_value (Shape::Unknown shares a form with nothing),
             // whatever its from_value does, while one that writes only from_value is judged
@@ -859,17 +984,34 @@ impl<'a> Shapes<'a> {
             // members outside it are refused beside one. Probes:
             // ~/tmp/cr29/scratch/laneB/r7/fv.txt, fv1 and fv3 (run with hand.py there)
             // (textdata-cast-trust-01)
-            Type::Abstract { .. } => self.push(Shape::Unknown, t),
+            // 2026-10-31 claude: The to_value-only case is now judged: an implementation
+            // that writes to_value and leaves from_value out reads as its representation
+            // (Shape::Foreign { writes: false, reads_rep: true }), so [S, `A] over type S =
+            // Abstract<string> is refused (textdata-abstract-01's round 7 note). This CR's
+            // question is now only about an implementation that writes both methods, still
+            // Shape::Unknown.
+            Type::Abstract { id, params } => {
+                let writes = self.env.written_as_representation(*id);
+                let reads_rep = self.env.read_as_representation(*id);
+                match self.env.abstract_reps.get(id) {
+                    Some(r) if writes || reads_rep => {
+                        let rep = self.node(&r.instantiate_with(params));
+                        self.push(Shape::Foreign { rep, writes, reads_rep }, t)
+                    }
+                    _ => self.push(Shape::Unknown, t),
+                }
+            }
         })
     }
 
-    /// The nodes `n` stands for past unions and abstracts written as their
-    /// representation, `n` among them, each with whether the way to it
-    /// crosses such an abstract. A walk over a node's members folds over
-    /// these, so it meets each node once however many ways lead to it, and
-    /// a cycle among them adds nothing (the least fixpoint).
-    fn reach(&self, n: usize) -> impl Iterator<Item = (usize, bool)> + '_ {
-        let (start, end) = self.reach_span(n);
+    /// The nodes `n` stands for past unions and the representations of
+    /// abstracts that `way` meets as their representation, `n` among them,
+    /// each with whether the way to it crosses such an abstract. A walk
+    /// over a node's members folds over these, so it meets each node once
+    /// however many ways lead to it, and a cycle among them adds nothing
+    /// (the least fixpoint).
+    fn reach(&self, n: usize, way: Way) -> impl Iterator<Item = (usize, bool)> + '_ {
+        let (start, end) = self.reach_span(n, way);
         (start..end).map(move |i| {
             #[cfg(test)]
             {
@@ -879,9 +1021,9 @@ impl<'a> Shapes<'a> {
         })
     }
 
-    fn reach_span(&self, n: usize) -> (usize, usize) {
+    fn reach_span(&self, n: usize, way: Way) -> (usize, usize) {
         let mut r = self.reach.borrow_mut();
-        if let Some(span) = r.spans.get(&n) {
+        if let Some(span) = r.spans.get(&(n, way)) {
             return *span;
         }
         let mut seen: LPooled<AHashSet<(usize, bool)>> = LPooled::take();
@@ -899,12 +1041,14 @@ impl<'a> Shapes<'a> {
             r.found.push((m, crossed));
             match &self.nodes[m].0 {
                 Shape::Union(ms, _) => next.extend(ms.iter().map(|m| (*m, crossed))),
-                Shape::Foreign(x, _) => next.push((*x, true)),
+                Shape::Foreign { rep, writes, .. } if *writes || way == Way::Reads => {
+                    next.push((*rep, true))
+                }
                 _ => (),
             }
         }
         let span = (start, r.found.len());
-        r.spans.insert(n, span);
+        r.spans.insert((n, way), span);
         span
     }
 
@@ -932,7 +1076,7 @@ impl<'a> Shapes<'a> {
 
     /// Whether `x` may write the string `tag`.
     fn writes_text(&self, x: usize, tag: &ArcStr) -> bool {
-        self.reach(x).any(|(m, _)| match &self.nodes[m].0 {
+        self.reach(x, Way::Writes).any(|(m, _)| match &self.nodes[m].0 {
             Shape::Scalar(Leaf::Str, _) => true,
             Shape::Lit(t) => t == tag,
             _ => false,
@@ -943,17 +1087,22 @@ impl<'a> Shapes<'a> {
     /// `tag`, which a union holding the variant it tags reads as that
     /// variant or not at all.
     fn writes_tag(&self, w: usize, tag: &ArcStr, len: usize) -> bool {
-        self.reach(w).any(|(m, _)| match &self.nodes[m].0 {
+        self.reach(w, Way::Writes).any(|(m, _)| match &self.nodes[m].0 {
             Shape::Seq(e, _) => self.writes_text(*e, tag),
             Shape::Fixed(ts, _) => ts.len() == len && self.writes_text(ts[0], tag),
             _ => false,
         })
     }
 
-    /// Whether `k` may hold a string.
+    /// Whether `k` may write a string.
     fn holds_string(&self, k: usize) -> bool {
-        self.reach(k).any(|(m, _)| {
-            matches!(self.nodes[m].0, Shape::Scalar(Leaf::Str, _) | Shape::Unknown)
+        self.reach(k, Way::Writes).any(|(m, _)| {
+            matches!(
+                self.nodes[m].0,
+                Shape::Scalar(Leaf::Str, _)
+                    | Shape::Unknown
+                    | Shape::Foreign { writes: false, .. }
+            )
         })
     }
 
@@ -965,31 +1114,34 @@ impl<'a> Shapes<'a> {
         if self.holds_string(k) {
             return (false, true);
         }
-        self.reach(k).fold((false, false), |(o, p), (m, _)| match &self.nodes[m].0 {
-            Shape::Union(..) | Shape::Foreign(..) | Shape::None | Shape::Unknown => {
-                (o, p)
+        self.reach(k, Way::Writes).fold((false, false), |(o, p), (m, _)| {
+            match &self.nodes[m].0 {
+                Shape::Union(..)
+                | Shape::Foreign { .. }
+                | Shape::None
+                | Shape::Unknown => (o, p),
+                Shape::Scalar(Leaf::Null, _) => (o, true),
+                Shape::Scalar(..) | Shape::Lit(_) => (true, p),
+                _ => (o, true),
             }
-            Shape::Scalar(Leaf::Null, _) => (o, true),
-            Shape::Scalar(..) | Shape::Lit(_) => (true, p),
-            _ => (o, true),
         })
     }
 
     /// How `x` writes a struct's field name `n`, read as that name.
     fn name_written(&self, x: usize, n: &ArcStr) -> Outs {
-        Outs::any(self.reach(x).map(|(m, crossed)| {
+        Outs::any(self.reach(x, Way::Writes).map(|(m, crossed)| {
             let o = match &self.nodes[m].0 {
-                Shape::Scalar(Leaf::Str, _) => Outs::one(0),
-                Shape::Lit(t) if t == n => Outs::one(FOREIGN),
+                Shape::Scalar(Leaf::Str, _) => Outs::one(HELD),
+                Shape::Lit(t) if t == n => Outs::one(FOREIGN | BUILT),
                 _ => Outs::NONE,
             };
-            if crossed { o.with(FOREIGN) } else { o }
+            if crossed { o.with(FOREIGN | BUILT) } else { o }
         }))
     }
 
     /// How `x` reads a struct's field name `n`.
     fn name_read(&self, x: usize, n: &ArcStr) -> Outs {
-        Outs::any(self.reach(x).map(|(m, crossed)| {
+        Outs::any(self.reach(x, Way::Reads).map(|(m, crossed)| {
             let o = match &self.nodes[m].0 {
                 Shape::Scalar(l, _) => {
                     let mut o = Outs::NONE;
@@ -998,11 +1150,13 @@ impl<'a> Shapes<'a> {
                     }
                     o
                 }
-                Shape::Lit(t) if t == n => Outs::one(FOREIGN << 4),
-                Shape::Foreign(_, true) => Outs::one(FOREIGN << 4),
+                Shape::Lit(t) if t == n => Outs::one((FOREIGN | BUILT) << 4),
+                Shape::Foreign { reads_rep: false, .. } => {
+                    Outs::one((FOREIGN | BUILT) << 4)
+                }
                 _ => Outs::NONE,
             };
-            if crossed { o.with(FOREIGN << 4) } else { o }
+            if crossed { o.with((FOREIGN | BUILT) << 4) } else { o }
         }))
     }
 
@@ -1010,22 +1164,23 @@ impl<'a> Shapes<'a> {
     /// `first` and `second` judging each element against the node of `t`
     /// that writes or reads it; `t` is a part of a composite.
     fn entry(&self, t: usize, writer: bool, first: Side, second: Side) -> Outs {
-        let apart = if writer { FOREIGN } else { FOREIGN << 4 };
-        Outs::any(self.reach(t).map(|(m, crossed)| {
+        let side = |bits: u8| if writer { bits } else { bits << 4 };
+        let way = if writer { Way::Writes } else { Way::Reads };
+        Outs::any(self.reach(t, way).map(|(m, crossed)| {
             let o = match &self.nodes[m].0 {
-                Shape::Seq(e, o) => {
-                    let bits = if writer { own(*o, true) } else { own(true, *o) };
+                Shape::Seq(e, k) => {
+                    let bits = side((!k.own() as u8) * FOREIGN | self.builds(m));
                     first(self, *e).and(second(self, *e)).with(bits)
                 }
-                Shape::Fixed(ts, _) if ts.len() == 2 => {
-                    first(self, ts[0]).and(second(self, ts[1])).with(apart)
-                }
-                Shape::Foreign(_, true) if !writer => {
-                    first(self, m).and(second(self, m)).with(apart)
+                Shape::Fixed(ts, _) if ts.len() == 2 => first(self, ts[0])
+                    .and(second(self, ts[1]))
+                    .with(side(FOREIGN | BUILT)),
+                Shape::Foreign { reads_rep: false, .. } if !writer => {
+                    first(self, m).and(second(self, m)).with(side(FOREIGN | BUILT))
                 }
                 _ => Outs::NONE,
             };
-            if crossed { o.with(apart) } else { o }
+            if crossed { o.with(side(FOREIGN | BUILT)) } else { o }
         }))
     }
 
@@ -1098,7 +1253,7 @@ impl<'a> Shapes<'a> {
                 let (o1, f1) = self.class_in(r, *m, key);
                 (o || o1, f || f1)
             }),
-            (Foreign(w, _), _) => self.class_in(r, *w, key),
+            (Foreign { rep, writes: true, .. }, _) => self.class_in(r, *rep, key),
             (_, Union(ms, _)) => ms.iter().fold((false, true), |(o, f), m| {
                 let (o1, f1) = match ms.len() {
                     1 => self.class_in(*m, w, key),
@@ -1106,8 +1261,8 @@ impl<'a> Shapes<'a> {
                 };
                 (o || o1, f && f1)
             }),
-            (None | Unknown, _) | (_, Unknown) => (true, true),
-            (_, None | Foreign(..) | Lit(_) | Pairs(..) | Fixed(_, true)) => {
+            (None | Unknown | Foreign { .. }, _) | (_, Unknown) => (true, true),
+            (_, None | Foreign { .. } | Lit(_) | Pairs(..) | Fixed(_, true)) => {
                 (false, true)
             }
             (Scalar(x, _), Scalar(y, _)) => {
@@ -1119,8 +1274,12 @@ impl<'a> Shapes<'a> {
                 (c, !c)
             }
             (Scalar(..) | Lit(_), _) | (_, Scalar(..)) => (false, true),
-            (Seq(e, _), Seq(f, own)) => (*own, !own || self.part_class(*f, *e, key).1),
-            (Fixed(ts, _), Seq(f, true)) => parts(&mut ts.iter().map(|t| (*f, *t))),
+            (Seq(e, _), Seq(f, k)) => {
+                (k.own(), !k.own() || self.part_class(*f, *e, key).1)
+            }
+            (Fixed(ts, _), Seq(f, k)) if k.own() => {
+                parts(&mut ts.iter().map(|t| (*f, *t)))
+            }
             (Seq(e, _), Fixed(us, false)) => parts(&mut us.iter().map(|u| (*u, *e))),
             (Fixed(ts, _), Fixed(us, false)) if ts.len() == us.len() => {
                 parts(&mut us.iter().copied().zip(ts.iter().copied()))
@@ -1161,80 +1320,144 @@ impl<'a> Shapes<'a> {
 
     fn outs_int(&self, a: usize, key: bool, b: usize) -> Outs {
         use Shape::*;
-        let leaf = |x: Leaf, read: &dyn Fn(Token, u8) -> SmallVec<[u8; 2]>| {
-            let mut o = Outs::NONE;
-            for t in x.writes().iter().flat_map(|t| t.written(key)) {
-                for ra in x.reads(t) {
-                    for rb in read(t, ra) {
-                        o.insert(ra | rb << 4)
-                    }
-                }
-            }
-            o
-        };
         // a value is in its member's class as the node writing it is, past
         // every union and abstract
         match (&self.nodes[a].0, &self.nodes[b].0) {
             (Union(..), _) => Outs::any(
-                self.reach(a)
-                    .filter(|(m, _)| !matches!(self.nodes[*m].0, Union(..) | Foreign(..)))
-                    .map(|(m, _)| {
+                self.reach(a, Way::Writes)
+                    .filter(|(m, _)| {
+                        !matches!(self.nodes[*m].0, Union(..) | Foreign { .. })
+                    })
+                    .map(|(m, crossed)| {
                         let (own, foreign) = self.class_of(a, m, key);
-                        self.outs(m, key, b).classed(0, own, foreign)
+                        let o = self.outs(m, key, b).classed(0, own, foreign);
+                        if crossed { o.with(BUILT) } else { o }
                     }),
             ),
-            (Foreign(x, _), _) => self.outs(*x, key, b).with(FOREIGN),
-            (_, Union(..)) => {
-                let (own, foreign) = self.class_of(b, a, key);
-                let read = self.reach(b).filter(|(m, crossed)| {
-                    !crossed && !matches!(self.nodes[*m].0, Union(..))
-                });
-                Outs::any(read.map(|(m, _)| self.outs(a, key, m)))
-                    .classed(4, own, foreign)
+            (Foreign { rep, writes: true, .. }, _) => {
+                self.outs(*rep, key, b).with(FOREIGN | BUILT)
             }
-            (_, Foreign(_, true)) => Outs::any(
-                self.outs(a, key, a).iter().map(|o| Outs::one(o & 15 | FOREIGN << 4)),
-            ),
-            (_, Foreign(y, false)) => self.outs(a, key, *y).with(FOREIGN << 4),
+            (Foreign { .. }, _) => Outs::NONE,
+            (_, Union(..)) => self.union_read(a, key, b),
+            (_, Foreign { reads_rep: false, .. }) => {
+                let read = |o: u8| Outs::one(o & 15 | (FOREIGN | BUILT) << 4);
+                Outs::any(self.outs(a, key, a).iter().map(read))
+            }
+            (_, Foreign { rep, .. }) => {
+                self.outs(a, key, *rep).with((FOREIGN | BUILT) << 4)
+            }
             (None | Unknown, _) | (_, None | Unknown) => Outs::NONE,
-            // one primitive reads one value one way
-            (Scalar(x, _), Scalar(y, _)) if x == y => {
-                leaf(*x, &|_, ra| SmallVec::from_slice(&[ra]))
+            _ => self.direct(a, key, b).with(self.builds(a) | self.builds(b) << 4),
+        }
+    }
+
+    /// The level a reading by `n` has whatever its parts: built, but for
+    /// an array (held where every element is) and a primitive.
+    fn builds(&self, n: usize) -> u8 {
+        match &self.nodes[n].0 {
+            Shape::Seq(_, SeqKind::Array) | Shape::Scalar(..) => HELD,
+            _ => BUILT,
+        }
+    }
+
+    /// The values the primitive or tag `w` writes (as an object's key where
+    /// `key`), each with each way `w` reads it back.
+    fn written(&self, w: usize, key: bool) -> SmallVec<[(Token, u8); 8]> {
+        match &self.nodes[w].0 {
+            Shape::Scalar(x, _) => x
+                .writes()
+                .iter()
+                .flat_map(|t| t.written(key))
+                .flat_map(|t| x.reads(t).map(move |ra| (t, ra)))
+                .collect(),
+            Shape::Lit(_) => SmallVec::from_slice(&[(Token::TagText, FOREIGN | BUILT)]),
+            _ => SmallVec::new(),
+        }
+    }
+
+    /// Each way the primitive or tag `r` reads a value of `t` that the
+    /// primitive or tag `w` writes and reads back `ra`: one primitive
+    /// reads one value one way.
+    fn token_read(&self, r: usize, w: usize, t: Token, ra: u8) -> SmallVec<[u8; 2]> {
+        match (&self.nodes[w].0, &self.nodes[r].0) {
+            (Shape::Scalar(x, _), Shape::Scalar(y, _)) if x == y => {
+                SmallVec::from_slice(&[ra])
             }
-            (Scalar(x, _), Scalar(y, _)) => leaf(*x, &|t, _| y.reads(t).collect()),
-            (Scalar(x, _), Lit(_)) => leaf(*x, &|t, _| match t {
-                Token::TagText => SmallVec::from_slice(&[FOREIGN]),
-                _ => SmallVec::new(),
-            }),
-            (Lit(_), Scalar(y, _)) => {
+            (_, Shape::Scalar(y, _)) => y.reads(t).collect(),
+            (Shape::Lit(u), Shape::Lit(v)) if u != v => SmallVec::new(),
+            (_, Shape::Lit(_)) if t == Token::TagText => {
+                SmallVec::from_slice(&[FOREIGN | BUILT])
+            }
+            _ => SmallVec::new(),
+        }
+    }
+
+    /// How the union `b` reads what `a` writes: as each node it stands for
+    /// reads it, a primitive set by its pick ([`Self::pick`]).
+    fn union_read(&self, a: usize, key: bool, b: usize) -> Outs {
+        let (own, foreign) = self.class_of(b, a, key);
+        let w = match &self.nodes[a].0 {
+            Shape::Scalar(x, _) => Some(Some(*x)),
+            Shape::Lit(_) => Some(None),
+            _ => None,
+        };
+        let mut picked: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut o = Outs::NONE;
+        if let Some(w) = w {
+            for (m, crossed) in self.reach(b, Way::Reads) {
+                if let (false, Shape::Union(ms, true)) = (crossed, &self.nodes[m].0) {
+                    picked.extend(ms.iter().copied());
+                    for (t, ra) in self.written(a, key) {
+                        for (_, rb) in self.pick(ms, w, t, ra) {
+                            o.insert(ra | rb << 4)
+                        }
+                    }
+                }
+            }
+        }
+        let read = self.reach(b, Way::Reads).filter(|(m, crossed)| {
+            !crossed
+                && !matches!(self.nodes[*m].0, Shape::Union(..))
+                && !picked.contains(m)
+        });
+        o.or(Outs::any(read.map(|(m, _)| self.outs(a, key, m)))).classed(4, own, foreign)
+    }
+
+    /// How a value `a` writes is read by `b`, neither a union nor an
+    /// abstract, its levels as their parts' alone.
+    fn direct(&self, a: usize, key: bool, b: usize) -> Outs {
+        use Shape::*;
+        match (&self.nodes[a].0, &self.nodes[b].0) {
+            (Scalar(..) | Lit(_), Scalar(..) | Lit(_)) => {
                 let mut o = Outs::NONE;
-                for rb in y.reads(Token::TagText) {
-                    o.insert(FOREIGN | rb << 4)
+                for (t, ra) in self.written(a, key) {
+                    for rb in self.token_read(b, a, t, ra) {
+                        o.insert(ra | rb << 4)
+                    }
                 }
                 o
             }
-            (Lit(t), Lit(u)) if t == u => Outs::one(FOREIGN | FOREIGN << 4),
             _ if key => Outs::NONE,
-            (Seq(e, oa), Seq(f, ob)) => {
-                self.part(*e, false, *f).star().with(own(*oa, *ob))
+            (Seq(e, ka), Seq(f, kb)) => {
+                self.part(*e, false, *f).star().with(own(ka.own(), kb.own()))
             }
-            (Seq(e, oa), Fixed(ts, _)) => {
+            (Seq(e, ka), Fixed(ts, _)) => {
                 Outs::all(ts.iter().map(|t| self.part(*e, false, *t)))
-                    .with(own(*oa, true))
+                    .with(own(ka.own(), true))
             }
-            (Fixed(ts, _), Seq(f, ob)) => {
+            (Fixed(ts, _), Seq(f, kb)) => {
                 Outs::all(ts.iter().map(|t| self.part(*t, false, *f)))
-                    .with(own(true, *ob))
+                    .with(own(true, kb.own()))
             }
             (Fixed(ts, _), Fixed(us, _)) if ts.len() == us.len() => {
                 Outs::all(ts.iter().zip(us.iter()).map(|(t, u)| self.part(*t, false, *u)))
             }
             (Pairs(k, v), _) => self.map_read(*k, *v, b),
             (Struct(fs), _) => self.struct_read(fs, b),
-            (Seq(e, oa), Pairs(j, u)) => {
+            (Seq(e, ka), Pairs(j, u)) => {
                 let k: Side = &|s, x| s.part(x, false, *j);
                 let v: Side = &|s, y| s.part(y, false, *u);
-                self.entry(*e, true, k, v).star().with(own(*oa, false))
+                self.entry(*e, true, k, v).star().with(own(ka.own(), false))
             }
             (Fixed(ts, _), Pairs(j, u)) => {
                 let k: Side = &|s, x| s.part(x, false, *j);
@@ -1242,13 +1465,13 @@ impl<'a> Shapes<'a> {
                 Outs::all(ts.iter().map(|t| self.entry(*t, true, k, v)))
                     .with(own(true, false))
             }
-            (Seq(e, oa), Struct(gs)) => Outs::all(gs.iter().map(|(n, g, og)| {
+            (Seq(e, ka), Struct(gs)) => Outs::all(gs.iter().map(|(n, g, og)| {
                 let k: Side = &|s, x| s.name_written(x, n);
                 let v: Side = &|s, y| s.part(y, false, *g);
                 let m = self.entry(*e, true, k, v);
-                if *og { m.or(Outs::one(0)) } else { m }
+                if *og { m.or(Outs::one(HELD)) } else { m }
             }))
-            .with(own(*oa, true)),
+            .with(own(ka.own(), true)),
             (Fixed(ts, _), Struct(gs)) => {
                 let required = gs.iter().filter(|(_, _, o)| !o).count();
                 if ts.len() < required || ts.len() > gs.len() {
@@ -1278,8 +1501,8 @@ impl<'a> Shapes<'a> {
                     let e = self.outs(k, key, *j).and(self.outs(v, false, *u));
                     e.star().with(own(false, false))
                 }
-                Shape::Seq(f, ob) => {
-                    self.entry(*f, false, kw, vw).star().with(own(false, *ob))
+                Shape::Seq(f, kb) => {
+                    self.entry(*f, false, kw, vw).star().with(own(false, kb.own()))
                 }
                 Shape::Fixed(us, _) => {
                     Outs::all(us.iter().map(|t| self.entry(*t, false, kw, vw)))
@@ -1287,7 +1510,7 @@ impl<'a> Shapes<'a> {
                 }
                 Shape::Struct(gs) => Outs::all(gs.iter().map(|(n, g, og)| {
                     let m = self.name_written(k, n).and(self.part(v, false, *g));
-                    if *og { m.or(Outs::one(0)) } else { m }
+                    if *og { m.or(Outs::one(HELD)) } else { m }
                 }))
                 .with(own(false, true)),
                 _ => Outs::NONE,
@@ -1299,7 +1522,8 @@ impl<'a> Shapes<'a> {
     /// by `b`. JSON writes every field, TOML leaves a null one out.
     fn struct_read(&self, fs: &[(ArcStr, usize, bool)], b: usize) -> Outs {
         let toml = self.format == Format::Toml;
-        let left_out = |m: Outs, o: bool| if toml && o { m.or(Outs::one(0)) } else { m };
+        let left_out =
+            |m: Outs, o: bool| if toml && o { m.or(Outs::one(HELD)) } else { m };
         let field = |gs: &[(ArcStr, usize, bool)], n: &ArcStr| {
             gs.iter().find(|(m, _, _)| m == n).map(|(_, g, o)| (*g, *o))
         };
@@ -1325,12 +1549,12 @@ impl<'a> Shapes<'a> {
                 left_out(m, *o)
             }))
             .with(own(true, false)),
-            Shape::Seq(g, ob) => Outs::all(fs.iter().map(|(n, f, o)| {
+            Shape::Seq(g, kb) => Outs::all(fs.iter().map(|(n, f, o)| {
                 let k: Side = &|s, x| s.name_read(x, n);
                 let v: Side = &|s, y| s.part(*f, false, y);
                 left_out(self.entry(*g, false, k, v), *o)
             }))
-            .with(own(true, *ob)),
+            .with(own(true, kb.own())),
             Shape::Fixed(us, _) if us.len() == fs.len() => {
                 Outs::all(us.iter().zip(fs.iter()).map(|(t, (n, f, _))| {
                     let k: Side = &|s, x| s.name_read(x, n);
@@ -1387,64 +1611,108 @@ impl<'a> Shapes<'a> {
             if (a ^ b) & ROUNDS != 0 {
                 return a & ROUNDS != 0;
             }
-            let kept = |x: u8| x & (CROSSED | OTHER) == 0;
-            let w_first = match (tw.is_some(), self.pass(w, a), self.pass(r, b)) {
-                (true, _, _) => Some(w_first),
-                (false, Some(x), Some(y)) if x != y => Some(x < y),
-                (false, Some(_), Some(_)) => Some(w_first),
-                _ => None,
+            let crossed = |x: u8| x & LEVEL == CROSSED;
+            let kept = |x: u8| x & LEVEL <= BUILT;
+            let (first, same) = match (tw.is_some(), self.pass(w, a), self.pass(r, b)) {
+                (true, _, _) => (Some(w_first), true),
+                (false, Some(x), Some(y)) if x != y => (Some(x < y), false),
+                (false, Some(_), Some(_)) => (Some(w_first), true),
+                _ => (None, false),
             };
-            match w_first {
-                Some(true) => a & CROSSED != 0 && kept(b),
-                _ => !(b & CROSSED != 0 && kept(a)),
+            // a member the value already is takes it at once within its pass
+            let held = |x: u8| same && x & LEVEL == HELD;
+            match first {
+                Some(true) => !held(a) && (held(b) || crossed(a) && kept(b)),
+                _ => held(b) || !held(a) && !(crossed(b) && kept(a)),
             }
         })
     }
 
-    /// [`Self::takes`] for members of one primitive set, which reads a
-    /// value as its first member that holds it exactly, by class and then
-    /// bit, real text an integer holds going to a real that holds it too,
-    /// else as its first real that rounds it.
-    fn prim_takes(&self, w: usize, r: usize, key: bool) -> bool {
-        let (Shape::Scalar(x, xt), Shape::Scalar(y, yt)) =
-            (&self.nodes[w].0, &self.nodes[r].0)
-        else {
-            return false;
-        };
-        let pass = |t: Token, ty: Typ| -> u8 {
-            match t {
-                Token::Num(n) if n.real() => match (ty.is_real(), ty.is_number()) {
-                    (true, _) => 0,
-                    (_, true) => 1,
-                    _ => 2,
-                },
-                Token::Num(_) => !ty.is_number() as u8,
-                Token::Null => (ty != Typ::Null) as u8,
-                Token::Bool => (ty != Typ::Bool) as u8,
-                Token::DateTime => (ty != Typ::DateTime) as u8,
-                _ => (ty != Typ::String) as u8,
-            }
-        };
-        x.writes().iter().flat_map(|t| t.written(key)).any(|t| {
-            x.reads(t).any(|ra| {
-                y.reads(t).any(|rb| {
-                    let (wr, rr) = (ra & ROUNDS != 0, rb & ROUNDS != 0);
-                    if wr != rr {
-                        return wr;
-                    }
-                    if !wr
-                        && let Token::NumText(n) = t
-                        && n.real()
-                        && (xt.is_integer() && yt.is_real()
-                            || xt.is_real() && yt.is_integer())
-                    {
-                        return yt.is_real();
-                    }
-                    let rank = |ty: Typ| (if wr { 0 } else { pass(t, ty) }, ty as u64);
-                    rank(*yt) < rank(*xt)
-                })
+    /// [`Self::takes`] for the members `w` and `r` of the primitive set
+    /// `ms`: a value `w` writes reads back as `r` where the set's pick may
+    /// take `r`.
+    fn prim_takes(&self, ms: &[usize], w: usize, r: usize, key: bool) -> bool {
+        let Shape::Scalar(x, _) = self.nodes[w].0 else { return false };
+        self.written(w, key)
+            .into_iter()
+            .any(|(t, ra)| self.pick(ms, Some(x), t, ra).iter().any(|(m, _)| *m == r))
+    }
+
+    /// The primitive set `ms`'s reading of a value of `t` that `w` (a tag
+    /// where `None`) writes and reads back `ra` (`cast_inner`'s
+    /// `Type::Primitive` arm), each way it may go, with the member taking
+    /// it: the member the value read back already is; else the first that
+    /// holds it exactly, by class and then bit, real text an integer holds
+    /// going to the first later real that holds it too; else the first real
+    /// that rounds it. A member that may miss some value of `t` lets the
+    /// next one read it; `w`'s own member reads it `ra`.
+    fn pick(
+        &self,
+        ms: &[usize],
+        w: Option<Leaf>,
+        t: Token,
+        ra: u8,
+    ) -> SmallVec<[(usize, u8); 4]> {
+        let mut order: SmallVec<[(usize, Leaf, Typ); 8]> = ms
+            .iter()
+            .filter_map(|m| match &self.nodes[*m].0 {
+                Shape::Scalar(l, ty) => Some((*m, *l, *ty)),
+                _ => None,
             })
-        })
+            .collect();
+        let ways = |l: Leaf| -> SmallVec<[u8; 2]> {
+            let ws: SmallVec<[u8; 2]> = match Some(l) == w {
+                true => SmallVec::from_slice(&[ra]),
+                false => l.reads(t).collect(),
+            };
+            ws.into_iter().map(|o| o & !FOREIGN).collect()
+        };
+        let total = |l: Leaf| Some(l) == w || l.total(w, t);
+        let exactly = |l: Leaf| {
+            let ws = ways(l);
+            total(l) && !ws.is_empty() && ws.iter().all(|o| o & ROUNDS == 0)
+        };
+        let mut r = SmallVec::new();
+        let v = t.read_back();
+        if let Some((m, l, _)) = order.iter().find(|(_, _, ty)| *ty == v) {
+            r.extend(ways(*l).into_iter().map(|o| (*m, o)));
+            return r;
+        }
+        let own = |ty: Typ| if v.is_number() { ty.is_number() } else { ty == v };
+        order.sort_by_key(|(_, _, ty)| {
+            (!(v.is_real() && ty.is_real()), !own(*ty), *ty as u64)
+        });
+        let real_text = matches!(t, Token::NumText(n) if n.real());
+        let mut reals_only = false;
+        for (i, (m, l, ty)) in order.iter().enumerate() {
+            if reals_only && !ty.is_real() {
+                continue;
+            }
+            let exact = ways(*l).into_iter().filter(|o| o & ROUNDS == 0);
+            if real_text && ty.is_integer() {
+                let later =
+                    order[i + 1..].iter().any(|(_, l, ty)| ty.is_real() && exactly(*l));
+                if !later {
+                    r.extend(exact.map(|o| (*m, o)))
+                }
+                reals_only |= exactly(*l);
+                continue;
+            }
+            r.extend(exact.map(|o| (*m, o)));
+            if exactly(*l) {
+                return r;
+            }
+        }
+        if reals_only {
+            return r;
+        }
+        for (m, l, _) in order.iter().filter(|(_, _, ty)| ty.is_real()) {
+            r.extend(ways(*l).into_iter().filter(|o| o & ROUNDS != 0).map(|o| (*m, o)));
+            if total(*l) {
+                break;
+            }
+        }
+        r
     }
 }
 
@@ -1742,6 +2010,41 @@ mod test {
         assert!(named(
             &[("A", "(i64, f32)"), ("B", "(i64, f64)")],
             "[A, B]",
+            Format::Json
+        ));
+    }
+
+    // A primitive set reads a value as one member, the first holding it
+    // exactly by class and then bit, and a member the value read back
+    // already is takes it within its pass, whatever the union's order.
+    #[test]
+    fn a_primitive_set_reads_by_its_pick() {
+        assert!(!named(
+            &[("Amount", "[f64, string]"), ("Qty", "i64")],
+            "Array<{amount: [Amount, Qty]}>",
+            Format::Json
+        ));
+        assert!(!named(
+            &[("Amount", "[f64, string]"), ("Age", "i64")],
+            "Array<{amount: [Amount, Age]}>",
+            Format::Json
+        ));
+        for f in [Format::Json, Format::Toml] {
+            assert!(!named(
+                &[("Amount", "[f64, string]"), ("Count", "u32")],
+                "{total: [Amount, Count]}",
+                f
+            ));
+            assert!(!named(
+                &[("Label", "[string, i64]"), ("Score", "f64")],
+                "{v: [Label, Score]}",
+                f
+            ));
+        }
+        assert!(named(&[("V", "[f32, string]"), ("W", "i64")], "[V, W]", Format::Json));
+        assert!(named(
+            &[("V", "[datetime, string]"), ("W", "i64")],
+            "[V, W]",
             Format::Json
         ));
     }
