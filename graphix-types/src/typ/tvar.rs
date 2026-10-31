@@ -3018,10 +3018,7 @@ impl Type {
                 t => t.cow_children(&mut |c| go(c, name, walking)),
             })
         }
-        match go(self, name, &mut LPooled::take()) {
-            Some(t) => t.normalize(),
-            None => self.clone(),
-        }
+        go(self, name, &mut LPooled::take()).unwrap_or_else(|| self.clone()).normalize()
     }
 
     /// A copy of self with every TVar named in `known` replaced by the
@@ -3203,6 +3200,9 @@ mod tests {
         assert_eq!(written.to_string(), "(Array<'x>, [i64, Array<i64>], _)");
         let a = Type::TVar(TVar::empty_named(literal!("a")));
         assert_eq!(a.written_form(&mut |_| None).to_string(), "'a");
+        let i64_null = Type::Primitive(netidx_value::Typ::I64 | netidx_value::Typ::Null);
+        let both = Type::Set(Arc::from_iter([i64, i64_null]));
+        assert_eq!(both.written_form(&mut |_| None).to_string(), "[i64, null]");
     }
 
     /// A copy's nested fn type collects the lambdas checked against the
