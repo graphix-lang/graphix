@@ -17,6 +17,7 @@ use graphix_package::Ended;
 use graphix_package_core::testing::{self, Fixture, PackageRef, TestState};
 use graphix_rt::{GXEvent, NoExt};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+pub use ratatui::style::Color;
 use ratatui::{
     Terminal,
     backend::{Backend, TestBackend},

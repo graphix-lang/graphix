@@ -1,4 +1,4 @@
-use super::{input_handler, Tui};
+use super::{input_handler, Style, Tui};
 
 /// One form field: its label and its initial text.
 type Field = { label: string, value: string };
@@ -18,8 +18,11 @@ type Form = {
 /// `#on_cancel` with the key when one is given; other keys edit the
 /// focused field.
 /// `#help` renders above the fields; `#hint` is the bottom title
-/// (defaults to the key legend). A new `fields` delivery re-seeds the
-/// editors. The focused editor is edited through a place reference,
+/// (defaults to the key legend). `#style` fills the form's box,
+/// `#title_style` styles its title, `#hint_style` the help, the labels
+/// and the legend (dark gray by default), and `#field_style` fills
+/// each field's row. A new `fields` delivery re-seeds the editors.
+/// The focused editor is edited through a place reference,
 /// `line_edit::handle(&mut vals[i], e)`. Render `view` inside an
 /// `input_handler(#handle: &form.handle, …)` on an overlay layer.
 val form: fn(
@@ -28,5 +31,9 @@ val form: fn(
   ?#hint: [string, null],
   #on_submit: fn(values: Array<string>) -> null,
   ?#on_cancel: [fn(e: Any) -> null, null],
+  ?#title_style: Style,
+  ?#hint_style: Style,
+  ?#field_style: Style,
+  ?#style: Style,
   fields: Array<Field>
 ) -> Form;

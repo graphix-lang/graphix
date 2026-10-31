@@ -12,9 +12,12 @@ let form = |
   #hint: [string, null] = null,
   #on_submit: fn(values: Array<string>) -> null,
   #on_cancel: [fn(e: Any) -> null, null] = null,
+  #title_style: Style = style(),
+  #hint_style: Style = style(#fg: `DarkGray),
+  #field_style: Style = style(),
+  #style: Style = style(),
   fields: Array<Field>
 | -> Form {
-  let dim = style(#fg: `DarkGray);
   let n = array::len(fields);
   let vals: Array<line_edit::State> = array::map(fields, |f: Field| line_edit::state(f.value));
   let focus = 0;
@@ -46,13 +49,13 @@ let form = |
   let rows = array::map(array::enumerate(vals), |(j, st): (i64, line_edit::State)| {
     let label = (fields[j]$).label;
     child(#constraint: `Length(1), layout(#direction: &`Horizontal, &[
-      child(#constraint: `Length(width), text(&[line(#style: dim, "[label]:")])),
-      child(#constraint: `Min(1), text(&[line_edit::view(#focused: j == focus, &st)]))
+      child(#constraint: `Length(width), text(&[line(#style: hint_style, "[label]:")])),
+      child(#constraint: `Min(1), text(#style: &field_style, &[line_edit::view(#focused: j == focus, &st)]))
     ]))
   });
   let help_rows = select help {
     null as _ => [],
-    h => [child(#constraint: `Length(2), paragraph(#style: &dim, &h))]
+    h => [child(#constraint: `Length(2), paragraph(#style: &hint_style, &h))]
   };
   let legend = select hint {
     null as _ => " Tab next field · Enter submit · Esc cancel ",
@@ -60,8 +63,9 @@ let form = |
   };
   let view = block(
     #border: &`All,
-    #title: &line(title),
-    #title_bottom: &line(#style: dim, legend),
+    #style: &style,
+    #title: &line(#style: title_style, title),
+    #title_bottom: &line(#style: hint_style, legend),
     &layout(#direction: &`Vertical, &array::concat(help_rows, rows))
   );
   { view, handle }

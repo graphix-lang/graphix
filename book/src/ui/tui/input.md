@@ -213,7 +213,9 @@ paste, Backspace, Delete, Left, Right, Home, End) and answers `Stop` or
 `tui::form::form` is a modal form of several line editors: Tab and Down
 move to the next field, BackTab and Up to the previous, Enter calls
 `#on_submit` with every field's text, Esc calls `#on_cancel`. Render its
-`view` in an `input_handler` running its `handle`, on an overlay layer:
+`view` in an `input_handler` running its `handle`, on an overlay layer.
+`#style` fills its box, and `#title_style`, `#hint_style` (help, labels,
+legend) and `#field_style` (each field's row) style the rest:
 
 ```graphix
 {{#include ../../examples/tui/input_form.gx}}
