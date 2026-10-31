@@ -4047,6 +4047,187 @@ run!(
     FuseExpect::None
 );
 
+/// A select over a payload built as `[x]`, then `between`, then a write
+/// of `write`, which reads the payload through another binding.
+fn select_before_a_write_reading_its_payload(between: &str, write: &str) -> String {
+    format!(
+        r#"{{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b = B([x]);
+    let v = select b.0 {{ [h, ..] => h, _ => never() }};
+    {between}
+    b <- {write};
+    x <- t ~ 1;
+    v
+}}"#
+    )
+}
+
+const READS_ITS_PAYLOAD: &str =
+    "no finite type holds both: declare a named recursive type for b where it is bound";
+
+run!(
+    select_before_a_write_reading_its_payload_through_a_function,
+    select_before_a_write_reading_its_payload("let g = |u| u ~ b.0;", "B([g(t)])"),
+    refused(READS_ITS_PAYLOAD);
+    FuseExpect::None
+);
+
+run!(
+    select_before_a_write_reading_its_payload_in_a_lambda,
+    select_before_a_write_reading_its_payload("", "B([(|u| u ~ b.0)(t)])"),
+    refused(READS_ITS_PAYLOAD);
+    FuseExpect::None
+);
+
+run!(
+    select_before_a_write_reading_its_payload_through_a_reference,
+    select_before_a_write_reading_its_payload("let r = &b;", "B([t ~ (*r).0])"),
+    refused(READS_ITS_PAYLOAD);
+    FuseExpect::None
+);
+
+run!(
+    select_before_a_write_reading_its_payload_through_a_write,
+    select_before_a_write_reading_its_payload("let c = never(); c <- b.0;", "B([t ~ c])"),
+    refused(READS_ITS_PAYLOAD);
+    FuseExpect::None
+);
+
+run!(
+    select_before_a_write_of_the_selected_element,
+    select_before_a_write_reading_its_payload("", "B([[t ~ v]])"),
+    refused(READS_ITS_PAYLOAD);
+    FuseExpect::None
+);
+
+// What was built holds no variable: the element the select gives is the
+// payload's own.
+run!(
+    select_before_a_write_of_the_selected_element_built_known,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = B([1]);
+    let v = select b.0 { [h, ..] => h, _ => never() };
+    b <- B([[t ~ v]]);
+    v
+}"#,
+    refused(READS_ITS_PAYLOAD);
+    FuseExpect::None
+);
+
+// The payload's recursive type the hint asks for holds both.
+run!(
+    select_before_a_write_of_the_selected_element_recursive,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    type P = [i64, Array<P>];
+    let t = sys::time::timer(duration:10.ms, false);
+    let b: B<Array<P>> = B([1]);
+    let v = select b.0 { [h, ..] => h, _ => never() };
+    b <- B([[t ~ v]]);
+    let vs = [];
+    vs <- array::window(#n: 2, v ~ vs, v);
+    select array::len(vs) { 2 => vs, _ => never() }
+}"#,
+    prints("[i64:1, [i64:1]]")
+);
+
+// A later statement writes what is built from the payload: the program
+// after the write decides its hint too.
+run!(
+    select_before_a_deeper_write_of_a_variable_the_payload_writes,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b = B([x]);
+    let v = select b.0 { [h, ..] => h, _ => never() };
+    b <- B([[x]]);
+    x <- t ~ v;
+    v
+}"#,
+    refused(READS_ITS_PAYLOAD);
+    FuseExpect::None
+);
+
+// A write holding its target's type under a constructor: a union of the
+// two holds what is written only where it does not read the target.
+run!(
+    write_nesting_its_target,
+    r#"{
+    let src = [[i64:0]];
+    src <- [i64:0, src];
+    src
+}"#,
+    refused(
+        "src is Array<Array<i64>> and cannot hold Array<[i64, Array<Array<i64>>]>; no \
+         finite type holds both: declare a named recursive type for src where it is \
+         bound (line 2, column 9)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    write_nesting_another_binding,
+    r#"{
+    let a = [[i64:0]];
+    let src = [[i64:0]];
+    src <- [i64:0, a];
+    src
+}"#,
+    refused(
+        "src is Array<Array<i64>> and cannot hold Array<[i64, Array<Array<i64>>]>; \
+         declare src: [Array<[i64, Array<Array<i64>>]>, Array<Array<i64>>] where it is \
+         bound (line 3, column 9)"
+    );
+    FuseExpect::None
+);
+
+// Two payloads of one abstract type: the declaration that holds both
+// unions the parameter, through which the payload is read.
+run!(
+    payload_write_declares_the_parameters_union,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b = B([[x]]);
+    let c = B([x]);
+    let w = select c.0 { [h, ..] => h + 1, _ => never() };
+    b <- t ~ c;
+    x <- t ~ 1;
+    w
+}"#,
+    refused(
+        "b is B<Array<Array<i64>>> and cannot hold B<Array<i64>>; declare b: \
+         B<[Array<i64>, Array<Array<i64>>]> where it is bound (line 5, column 9)"
+    );
+    FuseExpect::None
+);
+
+// A cell the checker made up has no name a program writes: the hint
+// names no type.
+run!(
+    write_hint_with_no_written_form,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let f = 'a: [i64, Array<'b>] |x: B<'a>, y: B<'b>| -> B<'a> x;
+    let g = B(never());
+    let h = B(never());
+    let r = f(g, h);
+    g <- h;
+    h <- B(t ~ 1);
+    r.0
+}"#,
+    refused("; declare g with a type holding both where it is bound (line 5, column 9)");
+    FuseExpect::None
+);
+
 // An open bound below a union whose binding holds every bound binds to
 // it whole: `y` is the arm's element set, which the other bound makes an
 // array, so a later write of a string is refused. The set's two cells,

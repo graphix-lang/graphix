@@ -923,11 +923,12 @@ impl TVar {
     }
 
     /// An open cell nothing names as a program writes it: the variable
-    /// it wrote, else `_`.
-    pub fn written_open(&self) -> Type {
+    /// it wrote; a cell the checker made up has no name a program can
+    /// write.
+    pub fn written_open(&self) -> Option<Type> {
         match self.generated() {
-            true => Type::Bottom,
-            false => Type::TVar(TVar::empty_named(self.name.clone())),
+            true => None,
+            false => Some(Type::TVar(TVar::empty_named(self.name.clone()))),
         }
     }
 }
@@ -2984,30 +2985,43 @@ impl Type {
     /// This type as a program can write it: a cell `name` names is the
     /// type it gives, a bound cell its binding, an open cell the union of
     /// its lower bounds, and any other open cell [`TVar::written_open`].
-    pub fn written_form(&self, name: &mut impl FnMut(&TVar) -> Option<Type>) -> Type {
+    /// `None` where a cell has no such form, or holds itself.
+    pub fn written_form(
+        &self,
+        name: &mut impl FnMut(&TVar) -> Option<Type>,
+    ) -> Option<Type> {
         fn go(
             t: &Type,
             name: &mut impl FnMut(&TVar) -> Option<Type>,
             walking: &mut AHashSet<usize>,
+            unwritable: &mut bool,
         ) -> Option<Type> {
             ensure_sufficient(|| match t {
                 Type::TVar(tv) => Some(match name(tv) {
                     Some(t) => t,
-                    None if !walking.insert(tv.cell_addr()) => Type::Bottom,
+                    None if !walking.insert(tv.cell_addr()) => {
+                        *unwritable = true;
+                        Type::Bottom
+                    }
                     None => {
                         let r = match tv.binding() {
-                            Some(b) => go(&b, name, walking).unwrap_or(b),
+                            Some(b) => go(&b, name, walking, unwritable).unwrap_or(b),
                             None => {
                                 let lower: SmallVec<[Type; 4]> = tv
                                     .cell_lower()
                                     .iter()
                                     .map(|l| {
-                                        go(l, name, walking).unwrap_or_else(|| l.clone())
+                                        go(l, name, walking, unwritable)
+                                            .unwrap_or_else(|| l.clone())
                                     })
                                     .collect();
-                                match lower.is_empty() {
-                                    true => tv.written_open(),
-                                    false => Type::Set(Arc::from_iter(lower)),
+                                match (lower.is_empty(), tv.written_open()) {
+                                    (false, _) => Type::Set(Arc::from_iter(lower)),
+                                    (true, Some(t)) => t,
+                                    (true, None) => {
+                                        *unwritable = true;
+                                        Type::Bottom
+                                    }
                                 }
                             }
                         };
@@ -3015,10 +3029,13 @@ impl Type {
                         r
                     }
                 }),
-                t => t.cow_children(&mut |c| go(c, name, walking)),
+                t => t.cow_children(&mut |c| go(c, name, walking, unwritable)),
             })
         }
-        go(self, name, &mut LPooled::take()).unwrap_or_else(|| self.clone()).normalize()
+        let mut unwritable = false;
+        let t = go(self, name, &mut LPooled::take(), &mut unwritable)
+            .unwrap_or_else(|| self.clone());
+        (!unwritable).then(|| t.normalize())
     }
 
     /// A copy of self with every TVar named in `known` replaced by the
@@ -3179,7 +3196,7 @@ mod tests {
 
     /// A type as a program writes it: a bound cell its binding, an open one
     /// the union of its lower bounds, a named one its name, one the program
-    /// wrote its variable, any other `_`.
+    /// wrote its variable; one the checker made up has no written form.
     #[test]
     fn written_form_writes_each_cell() {
         let i64 = Type::Primitive(netidx_value::Typ::I64.into());
@@ -3196,13 +3213,18 @@ mod tests {
             [&bound, &below, &open].map(|tv| Type::TVar(tv.clone())),
         ));
         let x = Type::TVar(TVar::empty_named(literal!("x")));
-        let written = t.written_form(&mut |tv| tv.same_cell(&named).then(|| x.clone()));
-        assert_eq!(written.to_string(), "(Array<'x>, [i64, Array<i64>], _)");
+        let mut name = |tv: &TVar| tv.same_cell(&named).then(|| x.clone());
+        assert_eq!(t.written_form(&mut name), None);
+        let t = Type::Tuple(Arc::from_iter(
+            [&bound, &below].map(|tv| Type::TVar(tv.clone())),
+        ));
+        let written = t.written_form(&mut name).unwrap();
+        assert_eq!(written.to_string(), "(Array<'x>, [i64, Array<i64>])");
         let a = Type::TVar(TVar::empty_named(literal!("a")));
-        assert_eq!(a.written_form(&mut |_| None).to_string(), "'a");
+        assert_eq!(a.written_form(&mut |_| None).unwrap().to_string(), "'a");
         let i64_null = Type::Primitive(netidx_value::Typ::I64 | netidx_value::Typ::Null);
         let both = Type::Set(Arc::from_iter([i64, i64_null]));
-        assert_eq!(both.written_form(&mut |_| None).to_string(), "[i64, null]");
+        assert_eq!(both.written_form(&mut |_| None).unwrap().to_string(), "[i64, null]");
     }
 
     /// A copy's nested fn type collects the lambdas checked against the

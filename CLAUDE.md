@@ -480,7 +480,10 @@ under it a union's members that name one cell or print alike (two cells
 bound to one type) print once. A hint's declaration writes a type as a
 program can (`Type::written_form`): an open cell as `'x` for the binding
 `x` it waits for (`node::Holders`), else as the variable a program wrote,
-else `_`.
+else none, and the hint names no type. A refused write's hint that turns
+on whether the written value reads its target is decided by the blocks
+it leaves (`node::WriteRefusal`, `node::flows::may_read`, by name), the
+recursive type until one has (`design/tvar_constraints.md`).
 
 **Two-phase typecheck knot.** While an instance body typechecks, its
 def is in `ctx.resolving_lambdas` (a stack per def); a site reaching the

@@ -625,9 +625,10 @@ struct Reach {
 
 /// The union of the lower bounds of a scrutinee cell the arms decide, as
 /// written before the arms bound its cells: each cell open then is a
-/// placeholder named as the cell beside it.
+/// placeholder named as the cell beside it. `None` where it has no
+/// written form.
 struct Built {
-    typ: Type,
+    typ: Option<Type>,
     cells: SmallVec<[(ArcStr, TVar); 2]>,
 }
 
@@ -711,20 +712,29 @@ impl Reach {
             return e;
         }
         let mut holders = Holders::new(env, None);
-        let known: AHashMap<ArcStr, Type> = built
+        let known: Option<AHashMap<ArcStr, Type>> = built
             .cells
             .iter()
             .map(|(n, tv)| {
-                (n.clone(), holders.name_cell(tv).unwrap_or_else(|| tv.written_open()))
+                Some((n.clone(), holders.name_cell(tv).or_else(|| tv.written_open())?))
             })
             .collect();
-        let typ = built.typ.replace_tvars(&known);
-        let meanings = holders.meanings(at);
-        anyhow!(
-            "the arms decide this scrutinee's type from their patterns, and their \
-             binds cannot hold what was built into it, {typ}: annotate that type \
-             where it is built{meanings}"
-        )
+        match (&built.typ, known) {
+            (Some(typ), Some(known)) => {
+                let typ = typ.replace_tvars(&known);
+                let meanings = holders.meanings(at);
+                anyhow!(
+                    "the arms decide this scrutinee's type from their patterns, and their \
+                     binds cannot hold what was built into it, {typ}: annotate that type \
+                     where it is built{meanings}"
+                )
+            }
+            _ => anyhow!(
+                "the arms decide this scrutinee's type from their patterns, and their \
+                 binds cannot hold what was built into it: annotate its type where it is \
+                 built"
+            ),
+        }
     }
 
     /// Take away what `t` covers from what reaches the arms after.

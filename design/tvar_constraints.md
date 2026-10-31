@@ -79,13 +79,23 @@ The bounds a select commits are those built before it: `[h, ..]` over
 hold `x` under itself and is refused, though the payload's union
 declared where `b` is bound (`B<[Array<'x>, Array<Array<'x>>]>`, `'x`
 written as `x`'s type) holds both. The refusal names that declaration
-where a bound cell of the held type keeps lower bounds and what is
-written there neither reads the target nor waits for a cell other than
-a built value's binding (`Type::decided_part`, `write_mismatch`); a
-write reading the payload through another binding (`let e = select b.0
-{ [h, ..] => h, .. }` then `B([[t ~ e]])`, with `x` built in) is named
-so too, and the declaration it names then refuses it for a recursive
-type. An annotated element union binds the same way with no select:
+where a bound cell of the held type keeps lower bounds, what is written
+there waits for or holds a value of no cell but a built value's binding
+(`Type::decided_part`, `write_mismatch`), and what is written may not
+read the target. Whether it may is the program's: each block the
+refusal leaves (`node::WriteRefusal`) follows, by name, what the written
+value reads to the bindings and writes that give each name its value, a
+function's body, a parameter's arguments (anything, for a function
+handed on as a value or a handler's binding) and a dereference's
+referents (`node::flows::may_read`); the outermost block decides, and
+the recursive type is named until one has. A flow through a function an
+earlier compile defined (a REPL input's) is not seen. Reading the payload through
+a helper, a lambda, a reference, another binding or a later write of
+what was built (`x <- t ~ v`, `v` selected from it) is a cycle, named
+so. A write whose type holds the target's, or the target's part at its
+place, under a constructor (`src <- [0, src]`, `Type::nests`) is told
+the same way: a union of the two holds it only where it does not read
+the target. An annotated element union binds the same way with no select:
 `B<Array<[i64, Array<i64>]>>` built from `[x]` makes `x` the whole
 union and refuses `B([[x]])`, which `x := i64` would hold. A module
 whose check commits bounds into a cell the code around it left open
@@ -115,8 +125,12 @@ such a let takes the value. The refusal names what was built, which
 annotated decides the cell instead (`Reach::untyped_binds`): a cell open
 when the arms decide is written as the type of the binding it stands
 for (`[Array<'x>, Array<Array<'x>>]`, `'x` the type of `x`), else as
-the variable a program wrote, else `_` (`node::Holders`,
-`Type::written_form`). Only a containment refusal of the binds (a
+the variable a program wrote (`node::Holders`, `Type::written_form`); a
+cell with neither has no written form, and the hint then names no type.
+Two payloads of one Graphix-minted abstract type are declared as the
+union of the parameter (`B<[P1, P2]>`), read through one application,
+unless that is the held type already (a parameter decided apart). Only
+a containment refusal of the binds (a
 `TypeMismatch` or an `InfiniteType`) is told so; any other passes
 through.
 

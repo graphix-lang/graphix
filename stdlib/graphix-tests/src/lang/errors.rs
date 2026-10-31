@@ -1207,7 +1207,7 @@ run!(
 
 // A write a declaration would admit names the type to declare as one the
 // program can write: a constructed value's open parameter shows as what
-// its payload put below it.
+// its payload put below it, and two payloads as the parameter's union.
 run!(
     a_write_hint_names_a_writable_type,
     r#"{
@@ -1216,7 +1216,17 @@ run!(
     b <- Box("s");
     0
 }"#,
-    refused(
-        "b is Box<i64> and cannot hold Box<string>; declare b: [Box<i64>, Box<string>]"
-    )
+    refused("b is Box<i64> and cannot hold Box<string>; declare b: Box<[i64, string]>")
+);
+
+run!(
+    a_write_hint_names_a_writable_type_declared,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let b: Box<[i64, string]> = Box(1);
+    b <- t ~ Box("s");
+    select b.0 { string as s => s, _ => never() }
+}"#,
+    prints(r#""s""#)
 );

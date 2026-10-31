@@ -1536,6 +1536,65 @@ impl Type {
         go(self, t, &mut LPooled::take())
     }
 
+    /// Whether a part of `self` under a constructor is `t`, or holds `t`'s
+    /// part at its place in `t`: a value of `t`, or of its part, written
+    /// inside one of `self`. An open cell stands for its lower bounds.
+    pub fn nests(&self, t: &Self) -> bool {
+        fn addr(t: &Type) -> Option<usize> {
+            match t {
+                Type::TVar(tv) => Some(tv.cell_addr()),
+                t => node_addr(t),
+            }
+        }
+        fn each(tv: &TVar, f: &mut impl FnMut(&Type) -> bool) -> bool {
+            match tv.binding() {
+                Some(b) => f(&b),
+                None => tv.cell_lower().iter().any(f),
+            }
+        }
+        fn under(s: &Type, t: &Type, inside: bool, seen: &mut AHashSet<usize>) -> bool {
+            ensure_sufficient(|| {
+                if addr(s).is_some_and(|a| !seen.insert(a)) {
+                    return false;
+                }
+                match s {
+                    Type::TVar(tv) => each(tv, &mut |s| {
+                        (inside && union_identical(s, t)) || under(s, t, inside, seen)
+                    }),
+                    Type::Set(ms) => ms.iter().any(|m| {
+                        (inside && union_identical(m, t)) || under(m, t, inside, seen)
+                    }),
+                    s => {
+                        let mut found = false;
+                        s.for_each_child(&mut |c| {
+                            found =
+                                found || union_identical(c, t) || under(c, t, true, seen)
+                        });
+                        found
+                    }
+                }
+            })
+        }
+        fn paired(w: &Type, h: &Type, seen: &mut AHashSet<(usize, usize)>) -> bool {
+            ensure_sufficient(|| {
+                if let (Some(a), Some(b)) = (addr(w), addr(h))
+                    && !seen.insert((a, b))
+                {
+                    return false;
+                }
+                match (w, h) {
+                    (Type::TVar(tv), h) => each(tv, &mut |w| paired(w, h, seen)),
+                    (w, Type::TVar(tv)) => each(tv, &mut |h| paired(w, h, seen)),
+                    (w, h) => {
+                        under(w, h, false, &mut LPooled::take())
+                            || any_part_pair(h, w, &mut |h, w| paired(w, h, seen))
+                    }
+                }
+            })
+        }
+        paired(self, t, &mut LPooled::take())
+    }
+
     /// A bound cell of `self` that holds lower bounds, a type a use
     /// decided after values were built into it, whose place in `t` does
     /// not reach the cell: the cell, and that part of `t`. The union of
@@ -2781,6 +2840,31 @@ impl Type {
                 // variable built in (let e = select b.0 {..}; b <- B([[t ~
                 // e]])) gets the payload hint, which declared then refuses for
                 // the recursive type.
+                // 2026-10-31 claude: Round 4, second pass (review7 L4): the
+                // known miss in the note above was wider than one shape and is
+                // closed. A write whose hint turns on whether what is written
+                // reads its target (the decided payload union, or a write
+                // nesting the target's type) is now node::WriteRefusal: each
+                // block the refusal leaves decides over its statements
+                // (node::flows::may_read: by name, through bindings and writes,
+                // a function's body, call arguments into parameters, anything
+                // into the parameters of a function handed on as a value or a
+                // handler's binding, and dereferences), the outermost last, and
+                // until one has the recursive hint stands. Reading the payload
+                // through a helper, an inline lambda, a reference, another
+                // binding's write, the selected element, or a later write of
+                // what was built (x <- t ~ v) now gets the recursive hint, as
+                // it did before round 4; a write nesting its target's type and
+                // reading it (src <- [0, src]) too. decided_decl also refuses a
+                // lowered cell another binding holds. Pins
+                // lang::types::select_before_a_write_reading_its_payload_(through_a_function,
+                // in_a_lambda, through_a_reference, through_a_write),
+                // select_before_a_write_of_the_selected_element(_built_known,
+                // _recursive),
+                // select_before_a_deeper_write_of_a_variable_the_payload_writes,
+                // write_nesting_its_target, write_nesting_another_binding; each
+                // fails with the analysis or its guard disabled. Messages only;
+                // no verdict changed.
                 let (down, up) = match lower(t1.is_rigid()) {
                     true => (Toward::Below, Toward::Above),
                     false => (Toward::Any, Toward::Any),

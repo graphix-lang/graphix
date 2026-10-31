@@ -53,6 +53,7 @@ pub(crate) mod compiler;
 pub mod coretraits;
 pub(crate) mod data;
 pub(crate) mod error;
+pub(crate) mod flows;
 pub(crate) mod fork_control;
 pub mod genn;
 pub mod lambda;
@@ -1327,8 +1328,24 @@ pub(crate) fn typecheck_in_order<R: Rt>(
 /// before it: a body reaches its siblings only through their
 /// interfaces (an impl a sibling's body adds undeclared is hidden from
 /// it, `Env::hidden_impls`), so no module's check reads another's. The
-/// tasks join in order; the first error in order is the block's.
+/// tasks join in order; the first error in order is the block's. A
+/// refused write whose hint the program around it decides is decided
+/// over these statements ([`WriteRefusal`]).
 pub(crate) fn typecheck0_statements<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    nodes: &mut [Node<R>],
+    catches: &[usize],
+    module: bool,
+) -> Result<()> {
+    check_statements(ctx, nodes, catches, module).map_err(|mut e| {
+        if let Some(w) = e.downcast_mut::<WriteRefusal>() {
+            w.decide(nodes.iter().map(|n| n.spec()))
+        }
+        e
+    })
+}
+
+fn check_statements<R: Rt>(
     ctx: &mut CompileCtx<R>,
     nodes: &mut [Node<R>],
     catches: &[usize],
@@ -2024,15 +2041,16 @@ impl<'a> Holders<'a> {
 
 /// `held` with `cell`, which a use decided, as the union of what was
 /// built into it and `part`, written where it is: what a declaration
-/// holding both writes. `None` where that union waits for a cell no
-/// binding the built values hold stands for, as it does where what is
-/// written holds the decided type itself.
+/// holding both writes, `Some(None)` where it has no written form. `None`
+/// where that union waits for, or holds a value of, a cell of a binding
+/// other than the built values', as it does where what is written holds
+/// the decided type itself.
 fn decided_decl(
     held: &Type,
     cell: &TVar,
     part: Type,
     holders: &mut Holders,
-) -> Option<Type> {
+) -> Option<Option<Type>> {
     let mut built = cell.cell_lower();
     let mut in_built: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     for t in built.iter() {
@@ -2047,17 +2065,19 @@ fn decided_decl(
     built.push(part);
     let mut foreign = false;
     let built = Type::Set(Arc::from_iter(built)).written_form(&mut |tv| {
-        if !Holders::waits(tv) {
+        let lowered = tv.open_cell().is_some_and(|c| !c.cell_lower().is_empty());
+        if !lowered && !Holders::waits(tv) {
             return None;
         }
         match holders.holder(tv, built_by) {
-            Some(b) if built_by(b) => Some(holders.name(b)),
+            Some(b) if built_by(b) && !lowered => Some(holders.name(b)),
+            Some(b) if built_by(b) => None,
             Some(_) => {
                 foreign = true;
                 None
             }
             None => {
-                foreign |= tv.open_cell().is_some();
+                foreign |= !lowered && tv.open_cell().is_some();
                 None
             }
         }
@@ -2066,29 +2086,91 @@ fn decided_decl(
         return None;
     }
     let addr = cell.stands_for();
-    Some(held.written_form(&mut |tv| match tv.stands_for() == addr {
-        true => Some(built.clone()),
-        false => holders.name_open(tv),
+    Some(built.and_then(|built| {
+        held.written_form(&mut |tv| match tv.stands_for() == addr {
+            true => Some(built.clone()),
+            false => holders.name_open(tv),
+        })
     }))
 }
 
+/// The union of two applications of one Graphix-minted abstract type
+/// as the application of each parameter's union: a construction's payload
+/// decides its parameters, and the payload is read through one
+/// application.
+fn params_union(env: &env::Env, held: &Type, written: &Type) -> Option<Type> {
+    match (held, written) {
+        (
+            Type::Abstract { id: i0, params: p0 },
+            Type::Abstract { id: i1, params: p1 },
+        ) if i0 == i1 && p0.len() == p1.len() && env.abstract_minted(*i0) => {
+            Some(Type::Abstract {
+                id: *i0,
+                params: Arc::from_iter(
+                    p0.iter()
+                        .zip(p1.iter())
+                        .map(|(a, b)| Type::Set(Arc::from_iter([a.clone(), b.clone()]))),
+                ),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A refused `<-` whose hint turns on whether what is written may read
+/// its target, which only the program around it tells: each block the
+/// refusal leaves decides over its statements ([`flows::may_read`]), the
+/// outermost last. Until one has, what is written may read it.
+pub(crate) struct WriteRefusal {
+    target: CompactString,
+    value: Arc<Expr>,
+    reads: bool,
+    /// The refusal where what is written may read the target.
+    reading: CompactString,
+    /// The refusal where it does not.
+    apart: CompactString,
+}
+
+impl WriteRefusal {
+    fn decide<'a>(&mut self, stmts: impl IntoIterator<Item = &'a Expr>) {
+        self.reads = flows::may_read(stmts, &self.value, &self.target)
+    }
+}
+
+impl std::fmt::Display for WriteRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.reads {
+            true => &self.reading,
+            false => &self.apart,
+        })
+    }
+}
+
+impl std::fmt::Debug for WriteRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::error::Error for WriteRefusal {}
+
 /// A written `<-` whose value `bind` cannot hold: the target, its type,
-/// and the declaration that would hold both. `reads_target`: what is
-/// written reads `bind`.
+/// and the declaration that would hold both. `value` is what is written,
+/// `reads_target` whether it reads `bind` itself. Where a finite type
+/// holds both only if what is written does not read the target, which
+/// may come through other bindings, the program around the write decides
+/// ([`WriteRefusal`]).
 fn write_mismatch(
     env: &env::Env,
     bind: &env::Bind,
     written: &Type,
+    value: &Arc<Expr>,
     reads_target: bool,
     at: &Arc<Origin>,
 ) -> anyhow::Error {
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
     let (held, written) = (deref(&bind.typ), deref(written));
     let infinite = held.meets_itself(&written);
-    let decided = match infinite && !reads_target {
-        true => held.decided_part(&written),
-        false => None,
-    };
     let inferred = match &bind.typ {
         Type::TVar(tv) if tv.bottom_fed() => ", inferred from an earlier use,",
         _ => "",
@@ -2120,43 +2202,99 @@ fn write_mismatch(
         true => format_compact!(""),
         false => format_compact!(" {}", bind.ori),
     };
+    let refusal = |declare: &str, meanings: &str| {
+        format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+            format_compact!(
+                "{name} is {held}{inferred} and cannot hold {}; {declare} \
+                 (line {line}, column {col}{file}){meanings}",
+                lower_shown(&written)
+            )
+        })
+    };
+    let recursive = || {
+        refusal(
+            &format_compact!(
+                "no finite type holds both: declare a named recursive type for {name} \
+                 where it is bound"
+            ),
+            "",
+        )
+    };
     let mut holders = Holders::new(env, Some(bind.id));
-    let decided = decided.and_then(|(cell, part)| {
-        let decl = decided_decl(&held, &cell, part, &mut holders);
-        if decl.is_none() {
-            holders.named.clear()
-        }
-        decl
-    });
-    let declare = match (&bind.binder, decided) {
-        (_, Some(decl)) => format_compact!(
-            "a use before this write decided {name}'s type from what was built \
-             into it then: declare {name}: {decl} where it is bound"
-        ),
-        (_, None) if infinite => format_compact!(
-            "no finite type holds both: declare a named recursive type for {name} \
-             where it is bound"
-        ),
-        (binder, None) => {
-            let both = Type::Set(Arc::from_iter([held.clone(), written.clone()]))
-                .written_form(&mut |tv| holders.name_open(tv));
-            match binder {
+    let finite = match infinite {
+        true => held
+            .decided_part(&written)
+            .and_then(|(cell, part)| decided_decl(&held, &cell, part, &mut holders))
+            .map(|decl| {
+                let decl = match decl {
+                    Some(decl) => format_compact!("declare {name}: {decl}"),
+                    None => {
+                        holders.named.clear();
+                        format_compact!("declare {name} with a type holding both")
+                    }
+                };
+                format_compact!(
+                    "a use before this write decided {name}'s type from what was built \
+                     into it then: {decl} where it is bound"
+                )
+            }),
+        false => {
+            let write = |t: &Type, holders: &mut Holders| {
+                t.written_form(&mut |tv| holders.name_open(tv))
+            };
+            // a parameter decided apart is held by no union of parameters
+            let both = match params_union(env, &held, &written)
+                .and_then(|t| write(&t, &mut holders))
+            {
+                Some(t) if held.written_form(&mut |_| None).is_none_or(|h| h != t) => {
+                    Some(t)
+                }
+                _ => {
+                    holders.named.clear();
+                    let both = Type::Set(Arc::from_iter([held.clone(), written.clone()]));
+                    write(&both, &mut holders)
+                }
+            };
+            if both.is_none() {
+                holders.named.clear()
+            }
+            Some(match (&bind.binder, both) {
                 // a name a destructuring let binds is declared by the
                 // pattern's type
-                Some(env::Binder::LetPattern) => format_compact!(
+                (Some(env::Binder::LetPattern), Some(both)) => format_compact!(
                     "annotate the let's pattern type with {name}'s position as {both}"
                 ),
-                _ => format_compact!("declare {name}: {both} where it is bound"),
-            }
+                (Some(env::Binder::LetPattern), None) => format_compact!(
+                    "annotate the let's pattern type with a type holding both at \
+                     {name}'s position"
+                ),
+                (_, Some(both)) => {
+                    format_compact!("declare {name}: {both} where it is bound")
+                }
+                (_, None) => format_compact!(
+                    "declare {name} with a type holding both where it is bound"
+                ),
+            })
         }
     };
-    let meanings = holders.meanings(at);
-    let written = lower_shown(&written);
-    format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-        anyhow!(
-            "{name} is {held}{inferred} and cannot hold {written}; {declare} \
-             (line {line}, column {col}{file}){meanings}"
-        )
+    let reading = recursive();
+    let Some(finite) = finite else { return anyhow!("{reading}") };
+    let apart = refusal(&finite, &holders.meanings(at));
+    // a finite type holds both only where what is written holds no value
+    // of the target
+    if !infinite && !written.nests(&held) {
+        return anyhow!("{apart}");
+    }
+    if reads_target {
+        return anyhow!("{reading}");
+    }
+    let target = bind.name.clone();
+    anyhow::Error::new(WriteRefusal {
+        target,
+        value: value.clone(),
+        reads: true,
+        reading,
+        apart,
     })
 }
 
@@ -3129,11 +3267,21 @@ impl<R: Rt> Connect<R> {
                     ),
                     // a write a lowering built has no declaration to point at
                     Some(_) if !crate::is_lowered(&bind.name) => {
+                        let ExprKind::Connect { value, .. } = &self.spec.kind else {
+                            return e;
+                        };
                         let mut refs = Refs::without_callees();
                         self.node.refs(&mut refs);
                         let mut reads = false;
                         refs.with_refs(|id| reads |= id == self.id);
-                        write_mismatch(&ctx.env, bind, written, reads, &self.spec.ori)
+                        write_mismatch(
+                            &ctx.env,
+                            bind,
+                            written,
+                            value,
+                            reads,
+                            &self.spec.ori,
+                        )
                     }
                     _ => e,
                 }
