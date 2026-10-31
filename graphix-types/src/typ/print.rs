@@ -5,13 +5,14 @@ use crate::{
         print::{PrettyBuf, PrettyDisplay, item_end, item_sep, write_comments},
     },
     print_as_written,
-    typ::{Bound, Mutability, Type, TypeRef},
+    typ::{Bound, Mutability, Type, TypeRef, setops::union_identical},
 };
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::fmt::{self, Write};
 
@@ -313,12 +314,45 @@ impl Type {
                 )?;
                 write!(f, " }}")
             }
+            Self::Set(s) if PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) => {
+                write_deref_set(f, s)
+            }
             Self::Set(s) => {
                 write!(f, "[")?;
                 write_list(f, set_members(s).into_iter().map(SetMember))?;
                 write!(f, "]")
             }
             Self::Primitive(s) => write_primitives(f, *s, true),
+        }
+    }
+}
+
+/// A set whose cells print as what they hold: a member identical to an
+/// earlier one (two names of one cell), or printing as it does where
+/// either holds a cell (two cells bound to one type), prints once, and a
+/// lone member prints bare.
+fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
+    let mut text: LPooled<String> = LPooled::take();
+    let mut kept: SmallVec<[(&Type, usize, usize); 16]> = SmallVec::new();
+    for t in set_members(s) {
+        let start = text.len();
+        write!(text, "{}", SetMember(t))?;
+        let printed = &text[start..];
+        let again = kept.iter().any(|(k, a, b)| {
+            union_identical(k, t)
+                || (&text[*a..*b] == printed && !(k.tvar_free() && t.tvar_free()))
+        });
+        match again {
+            true => text.truncate(start),
+            false => kept.push((t, start, text.len())),
+        }
+    }
+    match &kept[..] {
+        [(t, _, _)] => write!(f, "{t}"),
+        kept => {
+            write!(f, "[")?;
+            write_list(f, kept.iter().map(|(_, a, b)| &text[*a..*b]))?;
+            write!(f, "]")
         }
     }
 }

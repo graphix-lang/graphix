@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{Error, Result, anyhow, bail};
+use anyhow::{Error, Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::format_compact;
@@ -921,6 +921,15 @@ impl TVar {
     fn generated(&self) -> bool {
         self.name.strip_prefix('_').is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
     }
+
+    /// An open cell nothing names as a program writes it: the variable
+    /// it wrote, else `_`.
+    pub fn written_open(&self) -> Type {
+        match self.generated() {
+            true => Type::Bottom,
+            false => Type::TVar(TVar::empty_named(self.name.clone())),
+        }
+    }
 }
 
 impl fmt::Display for TVar {
@@ -1261,7 +1270,7 @@ impl TVar {
     pub fn refusal_over(slot: &Type, t: &Type, e: Error) -> Error {
         let Type::TVar(tv) = slot else { return e };
         match cycle_toward(tv.cell_addr(), t, Toward::Any) {
-            Some(Cycle::Constructor) => anyhow!("{}", super::contains::INFINITE_TYPE_MSG),
+            Some(Cycle::Constructor) => Error::new(super::contains::InfiniteType),
             Some(Cycle::Bare) | None => e,
         }
     }
@@ -1785,6 +1794,19 @@ impl TVar {
     /// True iff both vars share one binding cell (aliases of each other).
     pub fn same_cell(&self, other: &Self) -> bool {
         self.cell_addr() == other.cell_addr()
+    }
+
+    /// The cell this var stands for: its own, or the end of the forward
+    /// links merges left ([`Self::open_cell`], bound or not).
+    pub fn stands_for(&self) -> usize {
+        let mut tv = self.clone();
+        loop {
+            let next = match &tv.cell().read().binding {
+                Some(Type::TVar(next)) => next.clone(),
+                _ => return tv.cell_addr(),
+            };
+            tv = next;
+        }
     }
 
     /// Identity of the shared binding cell, for set membership tests.
@@ -2959,6 +2981,49 @@ impl Type {
         })
     }
 
+    /// This type as a program can write it: a cell `name` names is the
+    /// type it gives, a bound cell its binding, an open cell the union of
+    /// its lower bounds, and any other open cell [`TVar::written_open`].
+    pub fn written_form(&self, name: &mut impl FnMut(&TVar) -> Option<Type>) -> Type {
+        fn go(
+            t: &Type,
+            name: &mut impl FnMut(&TVar) -> Option<Type>,
+            walking: &mut AHashSet<usize>,
+        ) -> Option<Type> {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => Some(match name(tv) {
+                    Some(t) => t,
+                    None if !walking.insert(tv.cell_addr()) => Type::Bottom,
+                    None => {
+                        let r = match tv.binding() {
+                            Some(b) => go(&b, name, walking).unwrap_or(b),
+                            None => {
+                                let lower: SmallVec<[Type; 4]> = tv
+                                    .cell_lower()
+                                    .iter()
+                                    .map(|l| {
+                                        go(l, name, walking).unwrap_or_else(|| l.clone())
+                                    })
+                                    .collect();
+                                match lower.is_empty() {
+                                    true => tv.written_open(),
+                                    false => Type::Set(Arc::from_iter(lower)),
+                                }
+                            }
+                        };
+                        walking.remove(&tv.cell_addr());
+                        r
+                    }
+                }),
+                t => t.cow_children(&mut |c| go(c, name, walking)),
+            })
+        }
+        match go(self, name, &mut LPooled::take()) {
+            Some(t) => t.normalize(),
+            None => self.clone(),
+        }
+    }
+
     /// A copy of self with every TVar named in `known` replaced by the
     /// corresponding type; any other TVar is freshened as
     /// [`Self::reset_tvars`] does, its conjuncts and binding rewritten
@@ -3083,6 +3148,61 @@ mod tests {
         let Type::TVar(copy) = &copy else { panic!() };
         assert!(!copy.same_cell(&tv));
         assert_eq!(copy.cell().read().facts, all);
+    }
+
+    /// A union's cells print as what they hold, so two cells bound to one
+    /// type, or two names of one cell, print once.
+    #[test]
+    fn cells_bound_alike_print_once() {
+        let i64 = Type::Primitive(netidx_value::Typ::I64.into());
+        let string = Type::Primitive(netidx_value::Typ::String.into());
+        let (a, b) =
+            (TVar::empty_named(literal!("_1")), TVar::empty_named(literal!("_2")));
+        a.bind(Type::Array(Arc::new(i64.clone())));
+        b.bind(Type::Array(Arc::new(i64.clone())));
+        let (c, d) =
+            (TVar::empty_named(literal!("_3")), TVar::empty_named(literal!("_4")));
+        d.alias(&c);
+        let shown = |members: Vec<Type>| {
+            crate::format_with_flags(PrintFlag::DerefTVars, || {
+                Type::Set(Arc::from_iter(members)).to_string()
+            })
+        };
+        assert_eq!(
+            shown(vec![Type::TVar(a.clone()), Type::TVar(b.clone())]),
+            "Array<i64>"
+        );
+        assert_eq!(
+            shown(vec![Type::TVar(a), string.clone(), Type::TVar(b)]),
+            "[Array<i64>, string]"
+        );
+        assert_eq!(shown(vec![Type::TVar(c), Type::TVar(d)]), "'_3: unbound");
+        assert_eq!(shown(vec![i64, string]), "[i64, string]");
+    }
+
+    /// A type as a program writes it: a bound cell its binding, an open one
+    /// the union of its lower bounds, a named one its name, one the program
+    /// wrote its variable, any other `_`.
+    #[test]
+    fn written_form_writes_each_cell() {
+        let i64 = Type::Primitive(netidx_value::Typ::I64.into());
+        let (bound, below, named, open) = (
+            TVar::empty_named(literal!("_1")),
+            TVar::empty_named(literal!("_2")),
+            TVar::empty_named(literal!("_3")),
+            TVar::empty_named(literal!("_4")),
+        );
+        bound.bind(Type::Array(Arc::new(Type::TVar(named.clone()))));
+        below.add_lower(i64.clone());
+        below.add_lower(Type::Array(Arc::new(i64.clone())));
+        let t = Type::Tuple(Arc::from_iter(
+            [&bound, &below, &open].map(|tv| Type::TVar(tv.clone())),
+        ));
+        let x = Type::TVar(TVar::empty_named(literal!("x")));
+        let written = t.written_form(&mut |tv| tv.same_cell(&named).then(|| x.clone()));
+        assert_eq!(written.to_string(), "(Array<'x>, [i64, Array<i64>], _)");
+        let a = Type::TVar(TVar::empty_named(literal!("a")));
+        assert_eq!(a.written_form(&mut |_| None).to_string(), "'a");
     }
 
     /// A copy's nested fn type collects the lambdas checked against the

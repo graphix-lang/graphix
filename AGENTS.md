@@ -659,7 +659,12 @@ knows the source, the cast yields its `InvalidCast` error; a reference
 prints as `&ref`; under `Any` a reference test is refused, since
 references to different types share the form (`Type::ref_over_any`);
 nothing orders references or hashes them by value (`Ordered`).
-Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`.
+Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`;
+under it a union's members that name one cell or print alike (two cells
+bound to one type) print once. A hint's declaration writes a type as a
+program can (`Type::written_form`): an open cell as `'x` for the binding
+`x` it waits for (`node::Holders`), else as the variable a program wrote,
+else `_`.
 
 **Two-phase typecheck knot.** While an instance body typechecks, its
 def is in `ctx.resolving_lambdas` (a stack per def); a site reaching the

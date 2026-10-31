@@ -73,7 +73,25 @@ member loses the union's decided members (`[i64, 'a]` above `'x`, then
 `'a := string`, would refuse `'x <- 1`), and the binding makes `'x` one
 type with the union's open cells (`[h, ..]` over a payload above
 `Array<Array<'x>>` and `Array<'y>` binds `'y` to the element set, which
-the other bound makes an array, and refuses a later `y <- "s"`). Each
+the other bound makes an array, and refuses a later `y <- "s"`).
+The bounds a select commits are those built before it: `[h, ..]` over
+`B([x])` makes `x` the element set, so a later `b <- B([[x]])` would
+hold `x` under itself and is refused, though the payload's union
+declared where `b` is bound (`B<[Array<'x>, Array<Array<'x>>]>`, `'x`
+written as `x`'s type) holds both. The refusal names that declaration
+where a bound cell of the held type keeps lower bounds and what is
+written there neither reads the target nor waits for a cell other than
+a built value's binding (`Type::decided_part`, `write_mismatch`); a
+write reading the payload through another binding (`let e = select b.0
+{ [h, ..] => h, .. }` then `B([[t ~ e]])`, with `x` built in) is named
+so too, and the declaration it names then refuses it for a recursive
+type. An annotated element union binds the same way with no select:
+`B<Array<[i64, Array<i64>]>>` built from `[x]` makes `x` the whole
+union and refuses `B([[x]])`, which `x := i64` would hold. A module
+whose check commits bounds into a cell the code around it left open
+decides that cell, which it may not (`tvar::decided`): a module's
+select over `B([x])`, `x` an outer `let x = never()`, is refused for
+an annotation of `x`. Each
 conjunct must contain a lower bound when it is added; a merge joins
 both cells' lists after each side's conjuncts admit the other's (a
 rigid cell admits none but itself); a copy, an image and a level claim
@@ -94,7 +112,13 @@ never()` they select cannot then take a value of both shapes. Where the
 bounds hold an open cell, a literal arm beside them (`[1, h, ..]` beside
 `[h, ..]` over `B([[x], [x]])` and `B([x, x])`) is refused too, though
 such a let takes the value. The refusal names what was built, which
-annotated decides the cell instead (`Reach::untyped_binds`).
+annotated decides the cell instead (`Reach::untyped_binds`): a cell open
+when the arms decide is written as the type of the binding it stands
+for (`[Array<'x>, Array<Array<'x>>]`, `'x` the type of `x`), else as
+the variable a program wrote, else `_` (`node::Holders`,
+`Type::written_form`). Only a containment refusal of the binds (a
+`TypeMismatch` or an `InfiniteType`) is told so; any other passes
+through.
 
 A conjunct is an upper bound, so a type wider than the cell's witness
 holds the cell without the cell becoming it: `t ⊇ 'a` that the

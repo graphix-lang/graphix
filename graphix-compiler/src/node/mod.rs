@@ -1892,8 +1892,6 @@ impl<R: Rt> Update<R> for Connect<R> {
     }
 }
 
-/// A written `<-` whose value `bind` cannot hold: the target, its type,
-/// and the declaration that would hold both.
 /// `t` with each open cell that has lower bounds as their union: the type
 /// a value written there has, which a declaration can name.
 fn lower_shown(t: &Type) -> Type {
@@ -1913,12 +1911,184 @@ fn lower_shown(t: &Type) -> Type {
     }
 }
 
-fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow::Error {
+/// The bindings a hint names for the cells a type it writes waits for,
+/// by the cell each stands for. A select arm's binds and a lowering's are
+/// not named: what a hint asks to annotate is built before the arms, and
+/// a lowering's name cannot be written.
+pub(crate) struct Holders<'a> {
+    by_cell: LPooled<AHashMap<usize, SmallVec<[&'a env::Bind; 2]>>>,
+    named: SmallVec<[(TVar, &'a env::Bind); 2]>,
+}
+
+impl<'a> Holders<'a> {
+    /// Each binding's cell but `except`'s, and the cells of a union its
+    /// cell is bound to (`x` is `['h, 'r]`: its type waits for theirs).
+    pub(crate) fn new(env: &'a env::Env, except: Option<BindId>) -> Self {
+        let mut by_cell: LPooled<AHashMap<usize, SmallVec<[&'a env::Bind; 2]>>> =
+            LPooled::take();
+        for (_, b) in env.by_id.iter() {
+            let Type::TVar(tv) = &b.typ else { continue };
+            if crate::is_lowered(&b.name)
+                || matches!(b.binder, Some(env::Binder::SelectPattern(_)))
+                || Some(b.id) == except
+            {
+                continue;
+            }
+            by_cell.entry(tv.stands_for()).or_default().push(b);
+            if let Some(Type::Set(ref ms)) = Type::TVar(tv.clone()).deref_cloned() {
+                for m in ms.iter() {
+                    if let Type::TVar(m) = m {
+                        by_cell.entry(m.stands_for()).or_default().push(b)
+                    }
+                }
+            }
+        }
+        Self { by_cell, named: SmallVec::new() }
+    }
+
+    /// Whether a hint names `tv`: a cell no value was written to whose
+    /// type still waits for a cell.
+    fn waits(tv: &TVar) -> bool {
+        !tv.open_cell().is_some_and(|c| !c.cell_lower().is_empty())
+            && Type::TVar(tv.clone()).has_unbound()
+    }
+
+    /// The binding written first among those `prefer` admits whose type
+    /// is the cell `tv` stands for, else among them all.
+    fn holder(
+        &self,
+        tv: &TVar,
+        prefer: impl Fn(&env::Bind) -> bool,
+    ) -> Option<&'a env::Bind> {
+        let holders = self.by_cell.get(&tv.stands_for())?;
+        let first = |bs: &mut dyn Iterator<Item = &&'a env::Bind>| {
+            bs.min_by_key(|b| (b.pos.line, b.pos.column)).copied()
+        };
+        first(&mut holders.iter().filter(|b| prefer(b)))
+            .or_else(|| first(&mut holders.iter()))
+    }
+
+    /// `'x` for the binding `x`.
+    fn name(&mut self, b: &'a env::Bind) -> Type {
+        if let Some((name, _)) = self.named.iter().find(|(_, n)| std::ptr::eq(*n, b)) {
+            return Type::TVar(name.clone());
+        }
+        let mut name = ArcStr::from(b.name.as_str());
+        let mut i = 1;
+        while self.named.iter().any(|(n, _)| n.name == name) {
+            i += 1;
+            name = ArcStr::from(format_compact!("{}{i}", b.name).as_str());
+        }
+        let name = TVar::empty_named(name);
+        self.named.push((name.clone(), b));
+        Type::TVar(name)
+    }
+
+    /// The cell `tv` stands for named after its binding.
+    pub(crate) fn name_cell(&mut self, tv: &TVar) -> Option<Type> {
+        self.holder(tv, |_| true).map(|b| self.name(b))
+    }
+
+    /// [`Self::name_cell`] where a hint names the cell.
+    pub(crate) fn name_open(&mut self, tv: &TVar) -> Option<Type> {
+        match Self::waits(tv) {
+            true => self.name_cell(tv),
+            false => None,
+        }
+    }
+
+    /// What each name stands for: `, writing for 'x the type of `x`
+    /// (line 3, column 5)`.
+    pub(crate) fn meanings(&self, at: &Origin) -> CompactString {
+        let mut out = CompactString::new("");
+        for (i, (name, b)) in self.named.iter().enumerate() {
+            let sep = match i {
+                0 => ", writing for ",
+                _ => " and for ",
+            };
+            let file = match *b.ori == *at {
+                true => format_compact!(""),
+                false => format_compact!(" {}", b.ori),
+            };
+            out.push_str(&format_compact!(
+                "{sep}'{} the type of `{}` (line {}, column {}{file})",
+                name.name,
+                b.name,
+                b.pos.line,
+                b.pos.column
+            ));
+        }
+        out
+    }
+}
+
+/// `held` with `cell`, which a use decided, as the union of what was
+/// built into it and `part`, written where it is: what a declaration
+/// holding both writes. `None` where that union waits for a cell no
+/// binding the built values hold stands for, as it does where what is
+/// written holds the decided type itself.
+fn decided_decl(
+    held: &Type,
+    cell: &TVar,
+    part: Type,
+    holders: &mut Holders,
+) -> Option<Type> {
+    let mut built = cell.cell_lower();
+    let mut in_built: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    for t in built.iter() {
+        t.collect_tvars(&mut in_built)
+    }
+    let in_built: LPooled<AHashSet<usize>> =
+        in_built.values().map(|tv| tv.stands_for()).collect();
+    let built_by = |b: &env::Bind| match &b.typ {
+        Type::TVar(tv) => in_built.contains(&tv.stands_for()),
+        _ => false,
+    };
+    built.push(part);
+    let mut foreign = false;
+    let built = Type::Set(Arc::from_iter(built)).written_form(&mut |tv| {
+        if !Holders::waits(tv) {
+            return None;
+        }
+        match holders.holder(tv, built_by) {
+            Some(b) if built_by(b) => Some(holders.name(b)),
+            Some(_) => {
+                foreign = true;
+                None
+            }
+            None => {
+                foreign |= tv.open_cell().is_some();
+                None
+            }
+        }
+    });
+    if foreign {
+        return None;
+    }
+    let addr = cell.stands_for();
+    Some(held.written_form(&mut |tv| match tv.stands_for() == addr {
+        true => Some(built.clone()),
+        false => holders.name_open(tv),
+    }))
+}
+
+/// A written `<-` whose value `bind` cannot hold: the target, its type,
+/// and the declaration that would hold both. `reads_target`: what is
+/// written reads `bind`.
+fn write_mismatch(
+    env: &env::Env,
+    bind: &env::Bind,
+    written: &Type,
+    reads_target: bool,
+    at: &Arc<Origin>,
+) -> anyhow::Error {
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
     let (held, written) = (deref(&bind.typ), deref(written));
     let infinite = held.meets_itself(&written);
-    let written = lower_shown(&written);
-    let both = Type::Set(Arc::from_iter([held.clone(), written.clone()])).normalize();
+    let decided = match infinite && !reads_target {
+        true => held.decided_part(&written),
+        false => None,
+    };
     let inferred = match &bind.typ {
         Type::TVar(tv) if tv.bottom_fed() => ", inferred from an earlier use,",
         _ => "",
@@ -1943,28 +2113,49 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
     {
         return format_with_flags(
             PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
-            || anyhow!("{name} is {held} and cannot hold {written}"),
+            || anyhow!("{name} is {held} and cannot hold {}", lower_shown(&written)),
         );
     }
     let file = match bind.ori == *at {
         true => format_compact!(""),
         false => format_compact!(" {}", bind.ori),
     };
-    // a name a destructuring let binds is declared by the pattern's type
-    let declare = match bind.binder {
-        _ if infinite => format_compact!(
+    let mut holders = Holders::new(env, Some(bind.id));
+    let decided = decided.and_then(|(cell, part)| {
+        let decl = decided_decl(&held, &cell, part, &mut holders);
+        if decl.is_none() {
+            holders.named.clear()
+        }
+        decl
+    });
+    let declare = match (&bind.binder, decided) {
+        (_, Some(decl)) => format_compact!(
+            "a use before this write decided {name}'s type from what was built \
+             into it then: declare {name}: {decl} where it is bound"
+        ),
+        (_, None) if infinite => format_compact!(
             "no finite type holds both: declare a named recursive type for {name} \
              where it is bound"
         ),
-        Some(env::Binder::LetPattern) => format_compact!(
-            "annotate the let's pattern type with {name}'s position as {both}"
-        ),
-        _ => format_compact!("declare {name}: {both} where it is bound"),
+        (binder, None) => {
+            let both = Type::Set(Arc::from_iter([held.clone(), written.clone()]))
+                .written_form(&mut |tv| holders.name_open(tv));
+            match binder {
+                // a name a destructuring let binds is declared by the
+                // pattern's type
+                Some(env::Binder::LetPattern) => format_compact!(
+                    "annotate the let's pattern type with {name}'s position as {both}"
+                ),
+                _ => format_compact!("declare {name}: {both} where it is bound"),
+            }
+        }
     };
+    let meanings = holders.meanings(at);
+    let written = lower_shown(&written);
     format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
         anyhow!(
             "{name} is {held}{inferred} and cannot hold {written}; {declare} \
-             (line {line}, column {col}{file})"
+             (line {line}, column {col}{file}){meanings}"
         )
     })
 }
@@ -2938,7 +3129,11 @@ impl<R: Rt> Connect<R> {
                     ),
                     // a write a lowering built has no declaration to point at
                     Some(_) if !crate::is_lowered(&bind.name) => {
-                        write_mismatch(bind, written, &self.spec.ori)
+                        let mut refs = Refs::without_callees();
+                        self.node.refs(&mut refs);
+                        let mut reads = false;
+                        refs.with_refs(|id| reads |= id == self.id);
+                        write_mismatch(&ctx.env, bind, written, reads, &self.spec.ori)
                     }
                     _ => e,
                 }

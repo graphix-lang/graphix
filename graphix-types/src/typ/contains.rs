@@ -60,11 +60,22 @@ pub enum ContainsFlags {
     IntoMember,
 }
 
-/// The infinite-type rejection wording, shared by
-/// [`TVar::settle_or_bottom`] and [`Type::contains_mismatch`].
-pub(crate) const INFINITE_TYPE_MSG: &str = "cannot infer a finite type here: unification requires a type that \
-     contains itself (e.g. a function that returns itself); declare a \
-     named recursive type and annotate the binding";
+/// The infinite-type refusal: what a unification asked for holds
+/// itself, so no finite type does.
+#[derive(Debug)]
+pub struct InfiniteType;
+
+impl std::fmt::Display for InfiniteType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "cannot infer a finite type here: unification requires a type that \
+             contains itself (e.g. a function that returns itself); declare a \
+             named recursive type and annotate the binding",
+        )
+    }
+}
+
+impl std::error::Error for InfiniteType {}
 
 /// A question a walk may meet again inside its own answer.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1118,7 +1129,7 @@ pub struct TypeMismatch {
 impl std::fmt::Display for TypeMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.infinite {
-            return write!(f, "{INFINITE_TYPE_MSG}");
+            return write!(f, "{InfiniteType}");
         }
         format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
             if let Some((passed, takes)) =
@@ -1418,6 +1429,45 @@ fn growth_error(name: &ModPath) -> anyhow::Error {
     )
 }
 
+/// Whether `f` holds of a pair of parts `s` and `t` place alike: a
+/// function's result and arguments, each member of a union beside the
+/// other side, the parts of one constructor on both sides.
+fn any_part_pair(s: &Type, t: &Type, f: &mut impl FnMut(&Type, &Type) -> bool) -> bool {
+    fn zip(a: &[Type], b: &[Type], f: &mut impl FnMut(&Type, &Type) -> bool) -> bool {
+        a.len() == b.len() && a.iter().zip(b.iter()).any(|(a, b)| f(a, b))
+    }
+    match (s, t) {
+        (Type::Fn(f0), Type::Fn(f1)) => {
+            f(&f0.rtype, &f1.rtype)
+                || (f0.args.len() == f1.args.len()
+                    && f0.args.iter().zip(f1.args.iter()).any(|(a, b)| f(&a.typ, &b.typ)))
+        }
+        (Type::Set(ms), t) => ms.iter().any(|m| f(m, t)),
+        (s, Type::Set(ms)) => ms.iter().any(|m| f(s, m)),
+        (Type::Array(a), Type::Array(b))
+        | (Type::List(a), Type::List(b))
+        | (Type::Error(a), Type::Error(b))
+        | (Type::ByRef(_, a), Type::ByRef(_, b)) => f(a, b),
+        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+            f(k0, k1) || f(v0, v1)
+        }
+        (Type::Tuple(a), Type::Tuple(b)) => zip(a, b, f),
+        (Type::Variant(n0, a, _), Type::Variant(n1, b, _)) if n0 == n1 => zip(a, b, f),
+        (Type::Abstract { id: i0, params: a }, Type::Abstract { id: i1, params: b })
+            if i0 == i1 =>
+        {
+            zip(a, b, f)
+        }
+        (Type::Ref(r0), Type::Ref(r1)) if r0.same_definition(r1) => {
+            zip(&r0.params, &r1.params, f)
+        }
+        (Type::Struct(a), Type::Struct(b)) => a.iter().any(|(n, x, _)| {
+            b.iter().find(|(m, _, _)| m == n).is_some_and(|(_, y, _)| f(x, y))
+        }),
+        _ => false,
+    }
+}
+
 /// The deref/expansion steps [`Type::set_covers_by_distribution`] takes
 /// to reach a head constructor before giving up on a chain of aliases.
 const HEAD_CHAIN_LIMIT: usize = 64;
@@ -1464,10 +1514,6 @@ impl Type {
                 {
                     return false;
                 }
-                let zip = |a: &[Type], b: &[Type], seen: &mut AHashSet<_>| {
-                    a.len() == b.len()
-                        && a.iter().zip(b.iter()).any(|(a, b)| go(a, b, seen))
-                };
                 // an open cell stands for its lower bounds too
                 match (s, t) {
                     (Type::TVar(tv), t) => match tv.binding() {
@@ -1483,46 +1529,50 @@ impl Type {
                         Some(b) => go(s, &b, seen),
                         None => tv.cell_lower().iter().any(|l| go(s, l, seen)),
                     },
-                    (Type::Fn(f0), Type::Fn(f1)) => {
-                        go(&f0.rtype, &f1.rtype, seen)
-                            || (f0.args.len() == f1.args.len()
-                                && f0
-                                    .args
-                                    .iter()
-                                    .zip(f1.args.iter())
-                                    .any(|(a, b)| go(&a.typ, &b.typ, seen)))
-                    }
-                    (Type::Set(ms), t) => ms.iter().any(|m| go(m, t, seen)),
-                    (s, Type::Set(ms)) => ms.iter().any(|m| go(s, m, seen)),
-                    (Type::Array(a), Type::Array(b))
-                    | (Type::List(a), Type::List(b))
-                    | (Type::Error(a), Type::Error(b))
-                    | (Type::ByRef(_, a), Type::ByRef(_, b)) => go(a, b, seen),
-                    (
-                        Type::Map { key: k0, value: v0 },
-                        Type::Map { key: k1, value: v1 },
-                    ) => go(k0, k1, seen) || go(v0, v1, seen),
-                    (Type::Tuple(a), Type::Tuple(b)) => zip(a, b, seen),
-                    (Type::Variant(n0, a, _), Type::Variant(n1, b, _)) if n0 == n1 => {
-                        zip(a, b, seen)
-                    }
-                    (
-                        Type::Abstract { id: i0, params: a },
-                        Type::Abstract { id: i1, params: b },
-                    ) if i0 == i1 => zip(a, b, seen),
-                    (Type::Ref(r0), Type::Ref(r1)) if r0.same_definition(r1) => {
-                        zip(&r0.params, &r1.params, seen)
-                    }
-                    (Type::Struct(a), Type::Struct(b)) => a.iter().any(|(n, x, _)| {
-                        b.iter()
-                            .find(|(m, _, _)| m == n)
-                            .is_some_and(|(_, y, _)| go(x, y, seen))
-                    }),
-                    _ => false,
+                    (s, t) => any_part_pair(s, t, &mut |a, b| go(a, b, seen)),
                 }
             })
         }
         go(self, t, &mut LPooled::take())
+    }
+
+    /// A bound cell of `self` that holds lower bounds, a type a use
+    /// decided after values were built into it, whose place in `t` does
+    /// not reach the cell: the cell, and that part of `t`. The union of
+    /// the bounds and the part holds both, where the decided type cannot.
+    pub fn decided_part(&self, t: &Self) -> Option<(TVar, Type)> {
+        fn go(
+            s: &Type,
+            t: &Type,
+            seen: &mut AHashSet<(usize, usize)>,
+            found: &mut Option<(TVar, Type)>,
+        ) -> bool {
+            ensure_sufficient(|| {
+                if let (Some(a), Some(b)) = (node_addr(s), node_addr(t))
+                    && !seen.insert((a, b))
+                {
+                    return false;
+                }
+                match (s, t) {
+                    (Type::TVar(tv), t) => match tv.binding() {
+                        Some(_) if !tv.cell_lower().is_empty() && !tv.would_cycle(t) => {
+                            *found = Some((tv.clone(), t.clone()));
+                            true
+                        }
+                        Some(b) => go(&b, t, seen, found),
+                        None => false,
+                    },
+                    (s, Type::TVar(tv)) => match tv.binding() {
+                        Some(b) => go(s, &b, seen, found),
+                        None => false,
+                    },
+                    (s, t) => any_part_pair(s, t, &mut |a, b| go(a, b, seen, found)),
+                }
+            })
+        }
+        let mut found = None;
+        go(self, t, &mut LPooled::take(), &mut found);
+        found
     }
 
     fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
@@ -1533,7 +1583,7 @@ impl Type {
             || open_cell_reaches(self, t)
             || open_cell_reaches(t, self)
         {
-            return anyhow::anyhow!("{INFINITE_TYPE_MSG}");
+            return anyhow::Error::new(InfiniteType);
         }
         if let Some(e) = self.discernible_refusal(env, t) {
             return e;
@@ -2712,6 +2762,25 @@ impl Type {
                 // merge_under_a_constructor(_in_a_call) cover the Singleton
                 // merge's guard in TVar::alias (the second runs a wrong answer
                 // on main). Needs a soak.
+                // 2026-10-31 claude: Round 4 (r4L4, messages only): a write
+                // refused for an infinite type whose held type has a cell a use
+                // decided after values were built into it (bound, with lower
+                // bounds), where what is written neither reads the target nor
+                // waits for a cell other than a built value's binding, now
+                // names the payload union instead of a recursive type
+                // (Type::decided_part, decided_decl and write_mismatch in
+                // node/mod.rs): [h, ..] over B([x]) ahead of b <- B([[x]]) says
+                // declare b: B<[Array<'x>, Array<Array<'x>>]>, writing for 'x
+                // the type of x. The lower-cycle-01 pins keep the recursive
+                // hint. Pins
+                // lang::types::select_before_a_deeper_write(_declared,
+                // _in_a_definition) and
+                // select_before_a_write_of_its_own_payload(_through_a_let),
+                // each guard failing without it. Known miss: a genuine cycle
+                // read through another binding of the decided payload with a
+                // variable built in (let e = select b.0 {..}; b <- B([[t ~
+                // e]])) gets the payload hint, which declared then refuses for
+                // the recursive type.
                 let (down, up) = match lower(t1.is_rigid()) {
                     true => (Toward::Below, Toward::Above),
                     false => (Toward::Any, Toward::Any),

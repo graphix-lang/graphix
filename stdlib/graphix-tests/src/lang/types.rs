@@ -3927,9 +3927,130 @@ run!(
     FuseExpect::None
 );
 
+// What was built holds a cell its variable's later write decides: the
+// annotation names the variable, whose type is written there.
+run!(
+    select_arms_at_two_depths_over_a_variables_payloads,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b = B([[x]]);
+    b <- B([x]);
+    let v = select b.0 { [[h, ..], ..] => `A(h), [h, ..] => `B(h), _ => `C };
+    x <- t ~ 1;
+    v
+}"#,
+    refused(
+        "the arms decide this scrutinee's type from their patterns, and their binds \
+         cannot hold what was built into it, [Array<'x>, Array<Array<'x>>]: annotate \
+         that type where it is built, writing for 'x the type of `x` (line 4, column 9)"
+    );
+    FuseExpect::None
+);
+
+/// A select over a payload built as `[x]` ahead of a write of `[[x]]`,
+/// `b` declared as `decl`: each value of `v`.
+fn select_before_a_deeper_write(decl: &str) -> String {
+    format!(
+        r#"{{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b{decl} = B([x]);
+    let v = select b.0 {{ [h, ..] => h, _ => never() }};
+    b <- B([[x]]);
+    x <- t ~ 1;
+    let vs = [];
+    vs <- array::window(#n: 2, v ~ vs, v);
+    select array::len(vs) {{ 2 => vs, _ => never() }}
+}}"#
+    )
+}
+
+// The select decides the payload from `[x]` alone, so the write of
+// `[[x]]` after it is refused, though no finite type is wanting: the
+// payload's union, declared, holds both.
+run!(
+    select_before_a_deeper_write,
+    select_before_a_deeper_write(""),
+    refused(
+        "a use before this write decided b's type from what was built into it then: \
+         declare b: B<[Array<'x>, Array<Array<'x>>]> where it is bound (line 5, column \
+         9), writing for 'x the type of `x` (line 4, column 9)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    select_before_a_deeper_write_declared,
+    select_before_a_deeper_write(": B<[Array<i64>, Array<Array<i64>>]>"),
+    prints("[i64:1, [i64:1]]")
+);
+
+run!(
+    select_before_a_deeper_write_in_a_definition,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let f = |x| {
+        let b = B([x]);
+        let v = select b.0 { [h, ..] => h, _ => never() };
+        b <- t ~ B([[x]]);
+        v
+    };
+    f(1)
+}"#,
+    refused(
+        "declare b: B<[Array<'x>, Array<Array<'x>>]> where it is bound (line 5, column \
+         13), writing for 'x the type of `x` (line 4, column 14)"
+    );
+    FuseExpect::None
+);
+
+// What is written reads the payload the select decided: no finite type
+// holds it.
+run!(
+    select_before_a_write_of_its_own_payload,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b = B([x]);
+    let v = select b.0 { [h, ..] => h, _ => never() };
+    b <- B([t ~ b.0]);
+    x <- t ~ 1;
+    v
+}"#,
+    holds_itself(
+        "b is B<Array<'",
+        "no finite type holds both: declare a named recursive type for b"
+    );
+    FuseExpect::None
+);
+
+run!(
+    select_before_a_write_of_its_own_payload_through_a_let,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = B([]);
+    let v = select b.0 { [h, ..] => h, _ => never() };
+    let c = B([t ~ b.0]);
+    b <- c;
+    v
+}"#,
+    holds_itself(
+        "b is B<Array<'",
+        "no finite type holds both: declare a named recursive type for b"
+    );
+    FuseExpect::None
+);
+
 // An open bound below a union whose binding holds every bound binds to
 // it whole: `y` is the arm's element set, which the other bound makes an
-// array, so a later write of a string is refused.
+// array, so a later write of a string is refused. The set's two cells,
+// bound to one type, print once.
 run!(
     payload_cell_bound_to_an_element_set,
     r#"{
@@ -3944,7 +4065,31 @@ run!(
     y <- t ~ "s";
     v
 }"#,
-    refused("y is [Array<i64>, Array<i64>], inferred from an earlier use, and cannot hold string");
+    refused(
+        "y is Array<i64>, inferred from an earlier use, and cannot hold string; declare \
+         y: [string, Array<i64>] where it is bound (line 5, column 9)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    payload_cells_bound_to_an_element_set,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let y = never();
+    let b = B([x]);
+    b <- B([y]);
+    let v = select b.0 { [h, ..] => h, _ => never() };
+    x <- t ~ 1;
+    y <- t ~ "s";
+    v
+}"#,
+    refused(
+        "y is i64, inferred from an earlier use, and cannot hold string; declare y: \
+         [i64, string] where it is bound (line 5, column 9)"
+    );
     FuseExpect::None
 );
 

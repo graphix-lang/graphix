@@ -1,5 +1,5 @@
 use super::{
-    Held, WakeBit,
+    Held, Holders, WakeBit,
     compiler::compile,
     pattern::{ArmMatch, PatternNode, SliceKind, StructPatternNode},
     wake::TrackedFires,
@@ -8,16 +8,17 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, View, bailat,
     env::Env,
-    expr::{At, Expr, ExprId, ExprKind, Pattern, Undecided, union_members},
+    expr::{At, Expr, ExprId, ExprKind, Origin, Pattern, Undecided, union_members},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     image::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{AbstractId, ShallowScrutinee, Type},
+    typ::{AbstractId, InfiniteType, ShallowScrutinee, TVar, Type, TypeMismatch},
     wrap,
 };
+use ahash::AHashMap;
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use compact_str::format_compact;
@@ -618,9 +619,16 @@ struct Reach {
     wildcard: bool,
     guarded_slice: bool,
     refutable_slice: bool,
-    /// What was built into a scrutinee cell the arms decided, the union
-    /// of its lower bounds, printed before the arms bound its cells.
-    built: Option<ArcStr>,
+    /// What was built into a scrutinee cell the arms decided.
+    built: Option<Built>,
+}
+
+/// The union of the lower bounds of a scrutinee cell the arms decide, as
+/// written before the arms bound its cells: each cell open then is a
+/// placeholder named as the cell beside it.
+struct Built {
+    typ: Type,
+    cells: SmallVec<[(ArcStr, TVar); 2]>,
 }
 
 impl Reach {
@@ -656,13 +664,22 @@ impl Reach {
                 && let Some(cell) = tv.open_cell()
             {
                 let lower = cell.cell_lower();
-                let lower: LPooled<Vec<&Type>> = lower.iter().collect();
-                if !lower.is_empty()
-                    && let Ok(t) = Type::union(env, &lower)
-                {
-                    built = Some(format_with_flags(PrintFlag::DerefTVars, || {
-                        ArcStr::from(format_compact!("{t}").as_str())
-                    }));
+                if !lower.is_empty() {
+                    let mut cells: SmallVec<[(ArcStr, TVar); 2]> = SmallVec::new();
+                    let typ = Type::Set(Arc::from_iter(lower)).written_form(&mut |tv| {
+                        if tv.is_bound() || !tv.cell_lower().is_empty() {
+                            return None;
+                        }
+                        let name = match cells.iter().find(|(_, c)| c.same_cell(tv)) {
+                            Some((n, _)) => n.clone(),
+                            None => {
+                                cells.push((tv.name.clone(), tv.clone()));
+                                tv.name.clone()
+                            }
+                        };
+                        Some(Type::TVar(TVar::empty_named(name)))
+                    });
+                    built = Some(Built { typ, cells });
                 }
             }
             let _ = itype.contains(env, scrut);
@@ -686,15 +703,28 @@ impl Reach {
 
     /// A refusal of an arm's binds over a scrutinee the arms decided,
     /// told as the annotation that fixes it.
-    fn untyped_binds(&self, e: anyhow::Error) -> anyhow::Error {
-        match &self.built {
-            None => e,
-            Some(built) => anyhow!(
-                "the arms decide this scrutinee's type from their patterns, and their \
-                 binds cannot hold what was built into it, {built}: annotate that type \
-                 where it is built"
-            ),
+    fn untyped_binds(&self, env: &Env, at: &Origin, e: anyhow::Error) -> anyhow::Error {
+        let Some(built) = &self.built else { return e };
+        if e.downcast_ref::<TypeMismatch>().is_none()
+            && e.downcast_ref::<InfiniteType>().is_none()
+        {
+            return e;
         }
+        let mut holders = Holders::new(env, None);
+        let known: AHashMap<ArcStr, Type> = built
+            .cells
+            .iter()
+            .map(|(n, tv)| {
+                (n.clone(), holders.name_cell(tv).unwrap_or_else(|| tv.written_open()))
+            })
+            .collect();
+        let typ = built.typ.replace_tvars(&known);
+        let meanings = holders.meanings(at);
+        anyhow!(
+            "the arms decide this scrutinee's type from their patterns, and their \
+             binds cannot hold what was built into it, {typ}: annotate that type \
+             where it is built{meanings}"
+        )
     }
 
     /// Take away what `t` covers from what reaches the arms after.
@@ -2228,7 +2258,7 @@ impl<R: Rt> Select<R> {
             let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
             pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
-                .map_err(|e| reach.untyped_binds(e))
+                .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
                 .at(&site)?;
             // a runtime test can't tell apart two types with one runtime form
             if checking

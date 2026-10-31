@@ -87,8 +87,10 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    over `B(["a"])` makes `'p` an `Array<'a>` with `'a` at least
    `string`, and `[h, ..]` over `B([[x]])` written with `B([x])` gives
    `h` both, `[x, Array<x>]`; select arms at two depths over a payload
-   built at two shapes decide a type their binds cannot hold and are
-   refused for the annotation (`design/tvar_constraints.md`). A
+   built at two shapes decide a type their binds cannot hold, and a
+   select over `B([x])` ahead of a write of `B([[x]])` decides one the
+   write cannot reach: both are refused for the annotation of the
+   payload's union (`design/tvar_constraints.md`). A
    definition that
    constructs (`|x| Box(x)`) keeps the bound in its signature, so each
    call's context decides its own, unless its body binds the parameter:

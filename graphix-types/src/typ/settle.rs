@@ -9,7 +9,7 @@ use crate::{
     format_with_flags,
     typ::{
         Bound, FnType, Mutability, TVar, Type,
-        contains::{ContainsHist, INFINITE_TYPE_MSG},
+        contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
         tvar::{CellFact, Fresh, would_cycle_inner},
     },
@@ -214,7 +214,7 @@ impl TVar {
             if graphix_dbg_bind() {
                 eprintln!("SETTLE-INFINITE '{}({:x})", self.name, self.cell_addr());
             }
-            bail!("{INFINITE_TYPE_MSG}")
+            bail!(InfiniteType)
         }
         if graphix_dbg_bind() {
             eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
