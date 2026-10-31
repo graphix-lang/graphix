@@ -783,6 +783,15 @@ e ~ `Stop }`. The `e ~` is not optional: a handler whose result is a
 constant answers the first event and then never again (the `|v| k` rule),
 and the keys after it are lost.
 
+A guard over state other than the key is safe only when the handler sees
+every key. An inner handler under one that stops some keys keeps its
+last key standing, so a flip of the guarded level re-runs the select on
+that stale key, and an arm entered for the first time samples it as
+fired: `` `Tab if !in_tool => { front <- k ~ .. } `` switched tabs when
+an outer Esc closed the tool, though Tab had been pressed inside it.
+Sample the level with the key instead: `front <- select k ~ (in_tool,
+front) { (true, _) => never(), .. }`.
+
 Widget modules (each module's function has its name unless noted): gui —
 `window` (a function in `gui`) text button text_input checkbox toggler
 radio slider vertical_slider progress_bar pick_list combo_box column row
