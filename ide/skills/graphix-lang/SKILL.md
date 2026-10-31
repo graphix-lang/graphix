@@ -674,11 +674,14 @@ Interfaces: `foo.gxi` beside `foo.gx` (directories: `mod.gx`/`mod.gxi`);
 docs; types and mods from the gxi are in scope in the impl. A hidden
 type must be `Abstract<..>` or Rust-backed.
 
-A gxi's `mod x;` compiles after the module's body, in gxi order, so the
-body cannot use it. A submodule the body uses is declared `mod x;` at
-the top of the body and NOT in the gxi; the other submodules still
-reach it as `super::x`. Declared in both, it hides the body's items from
-every submodule the gxi lists after it (`y not defined`).
+A gxi `mod` or `use` the body does not repeat is spliced into the body
+right after the body's copy of the gxi item listed just before it (at
+the top when it is the gxi's first; a gxi-only type, or a trait with no
+default body, always goes to the top). So the body can use a gxi-only
+submodule the gxi lists before the `val` that uses it, and the body must
+declare what the gxi lists in the gxi's order: out of order, a spliced
+submodule lands ahead of a binding the gxi lists before it and fails
+with `y not defined` in that submodule (CR iface-splice-01).
 
 Traits: `trait Show { val show: fn(self) -> string; val twice: fn(self)
 -> string = |s| "[show(s)] [show(s)]" }`, `impl Show for Counter { let

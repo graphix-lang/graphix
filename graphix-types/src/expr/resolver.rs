@@ -603,6 +603,20 @@ fn needs_no_value(kind: &SigKind) -> bool {
     }
 }
 
+// CR claude for eric: [bug/medium] An interface-only declaration is spliced right after
+// the body's copy of the ONE interface item listed before it, so when the body orders
+// its declarations differently from its .gxi, the spliced item lands ahead of interface
+// items listed before it and cannot see them (iface-splice-01). Repro, with a/l.gx
+// reading `use super::y; let z = y` and main.gx `mod a; println(a::l::z)`: a/mod.gxi
+// `val y: i64; val w: i64; mod l;` over a/mod.gx `let w = 2; let y = 1` fails compiling
+// a::l with `y not defined`, because `mod l` is keyed after `w` and the body binds `w`
+// before `y`; swap the two lets and it prints 1. A module the body declares itself
+// trips it the same way: mod.gxi `val y: i64; mod t; mod l;` over mod.gx
+// `mod t; let y = t::x + 1` (t.gx `let x = 41`). Found porting the netidx admin TUI's
+// theme, where the error named a sibling module's import, nowhere near the cause. The
+// doc below promises relative order. Two fixes: splice each item after the last body
+// declaration of EVERY interface item before it, or refuse a body out of its
+// interface's order with an error naming both items. Which one is a language rule.
 /// `exprs` with the modules, types, traits and uses only `sig` declares
 /// spliced in, keeping their relative location and order.
 pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
