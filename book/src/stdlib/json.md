@@ -136,7 +136,8 @@ A map whose keys all write as strings, numbers, booleans, datetimes, durations
 or bare variant tags is an object, unless it holds strings beside keys of
 another kind, or its key type may hold a string while its keys are not
 strings: an object's keys read back as strings, so `{1 => 10, "1" => 20}`
-could not. If any key has another form, or the keys mix strings with another
+could not. An abstract key type may hold a string where its representation
+may, or where its `Cast` implementation writes `to_value`. If any key has another form, or the keys mix strings with another
 kind, the whole map is an array of `[key, value]` pairs. The key keeps its data structure, so a typed
 read can reconstruct tuple, struct, array, list and payload-variant keys, as
 well as null and bytes keys. For example, `{(1, 2) => 3}` writes as

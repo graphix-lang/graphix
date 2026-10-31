@@ -21,8 +21,8 @@
 
 use crate::{
     env::Env,
-    expr::ModPath,
-    typ::{Typ, Type, cast::grows_on, params_size},
+    expr::{ModPath, union_members},
+    typ::{AbstractId, Typ, Type, cast::grows_on, params_size},
 };
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
@@ -113,9 +113,9 @@ impl Token {
     }
 
     /// The token as it is written, or as an object's key: its text, a
-    /// whole number's with or without its point. A null key writes its map
-    /// as pairs.
-    fn written(self, key: bool) -> SmallVec<[Token; 2]> {
+    /// whole number's also without its point where `bare` (a duration's
+    /// seconds). A null key writes its map as pairs.
+    fn written(self, key: bool, bare: bool) -> SmallVec<[Token; 2]> {
         use Num::*;
         let whole = |n| match n {
             WholeS => Some(IntS),
@@ -132,7 +132,7 @@ impl Token {
             (true, Token::DateTime) => r.push(Token::DateText),
             (true, Token::Num(n)) => {
                 r.push(Token::NumText(n));
-                r.extend(whole(n).map(Token::NumText));
+                r.extend(whole(n).filter(|_| bare).map(Token::NumText));
             }
             (true, t) => r.push(t),
         }
@@ -1048,6 +1048,21 @@ impl<'a> Shapes<'a> {
             // Abstract<string> is refused (textdata-abstract-01's round 7 note). This CR's
             // question is now only about an implementation that writes both methods, still
             // Shape::Unknown.
+            // 2026-10-31 claude: Correction to the note above (review7 B r5): the question
+            // also covers the write side of every implementation that writes to_value,
+            // from_value written or not. Such an implementation writes Shape::Foreign {
+            // writes: false, .. }, which writes nothing known here and so is trusted, and
+            // (b) does not cover it: the implementation may keep from_value(to_value(x)) ==
+            // x while another member of the union takes what to_value writes. With type Id
+            // = Abstract<i64> and to_value = |x| x.0 (from_value left out),
+            // Map<[Id, i64], string> is admitted and reads Id(3) back as 3; with to_value =
+            // |x| cast<string>(x.0)$, [Id, string] reads Id(3) back as "3" (JSON and TOML;
+            // main admits both; ~/tmp/cr29/scratch/laneB/r9/ak_json.txt, ak_toml.txt,
+            // ~/tmp/cr29/scratch/review7/B/r5/hand/h1.gx, h1t.gx). Its read side is judged
+            // unless from_value is written. The write side's options: to_value may write
+            // any value, so such an abstract is refused beside every member that reads
+            // data; or it writes what its method's body returns, judged as that type's
+            // data; or it stays trusted, as now.
             Type::Abstract { id, params } => {
                 let writes = self.env.written_as_representation(*id);
                 let reads_rep = self.env.read_as_representation(*id);
@@ -1163,7 +1178,8 @@ impl<'a> Shapes<'a> {
         })
     }
 
-    /// Whether `k` may write a string.
+    /// Whether `k` may write a string: [`Type::may_write_string`] over the
+    /// arena, a node not known here among those that may.
     fn holds_string(&self, k: usize) -> bool {
         self.reach(k, Way::Writes).any(|(m, _)| {
             matches!(
@@ -1177,7 +1193,7 @@ impl<'a> Shapes<'a> {
 
     /// Whether a map with keys `k` may be written as an object, its keys'
     /// texts, and as an array of pairs, its keys' data (`map_shape`): a key
-    /// type that may hold a string writes the strings' object as their
+    /// type that may write a string writes the strings' object as their
     /// pairs, a null or composite key writes pairs.
     fn key_forms(&self, k: usize) -> (bool, bool) {
         if self.holds_string(k) {
@@ -1449,7 +1465,7 @@ impl<'a> Shapes<'a> {
             Shape::Scalar(x, _) => x
                 .writes()
                 .iter()
-                .flat_map(|t| t.written(key))
+                .flat_map(|t| t.written(key, *x == Leaf::Duration))
                 .flat_map(|t| x.reads(t).map(move |ra| (t, ra)))
                 .collect(),
             Shape::Lit(_) => SmallVec::from_slice(&[(Token::TagText, FOREIGN | BUILT)]),
@@ -1815,6 +1831,55 @@ impl Type {
     /// writes.
     pub fn text_ambiguity(&self, env: &Env, format: Format) -> Option<TextAmbiguity> {
         Shapes::new(env, format, self).ambiguity()
+    }
+
+    /// Whether a value of this type may be written as a string where it is
+    /// data (`abstract_value::to_data`): a member that is a string, `Any`
+    /// or any abstract value, an abstract type whose `Cast` implementation
+    /// writes `to_value` (or that has none), or one written as its
+    /// representation that may be; one whose arguments grow as it recurses
+    /// may be. A text writer writes a map keyed by such a type as pairs
+    /// where no key is a string, since an object's keys read back as
+    /// strings.
+    pub fn may_write_string(&self, env: &Env) -> bool {
+        fn go(
+            env: &Env,
+            t: &Type,
+            path: &mut Vec<(AbstractId, usize)>,
+            seen: &mut AHashSet<Type>,
+        ) -> bool {
+            let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
+            if union_members(env, t, &mut ms).is_err() {
+                return true;
+            }
+            ms.iter().any(|m| match m {
+                Type::Primitive(p) => p.intersects(Typ::String | Typ::Abstract),
+                Type::Any => true,
+                Type::Abstract { id, params } => {
+                    let rep = match env.abstract_reps.get(id) {
+                        Some(r) if env.written_as_representation(*id) => {
+                            r.instantiate_with(params)
+                        }
+                        _ => return true,
+                    };
+                    if !seen.insert(m.clone()) {
+                        return false;
+                    }
+                    let size = params_size(params);
+                    if grows_on(path, id, size) {
+                        return true;
+                    }
+                    path.push((*id, size));
+                    let r = crate::stack::ensure_sufficient(|| go(env, &rep, path, seen));
+                    path.pop();
+                    r
+                }
+                _ => false,
+            })
+        }
+        let mut path: LPooled<Vec<(AbstractId, usize)>> = LPooled::take();
+        let mut seen: LPooled<AHashSet<Type>> = LPooled::take();
+        go(env, self, &mut path, &mut seen)
     }
 }
 
@@ -2341,6 +2406,9 @@ mod test {
         assert!(json("Map<[decimal, datetime], i64>"));
         assert!(!json("[decimal, datetime]"));
         assert!(!json("Map<[duration, datetime], i64>"));
+        assert!(!json("Map<[f64, datetime], i64>"));
+        assert!(!json("Map<[f64, bool, datetime], i64>"));
+        assert!(!toml("Map<[f64, datetime], i64>"));
         assert!(!json("Map<[`A, i64], i64>"));
         assert!(!json("Map<[i64, bool], i64>"));
         assert!(!json("Map<[i64, datetime], i64>"));

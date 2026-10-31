@@ -253,6 +253,46 @@ run!(
     prints("[true, true, true, true, true, true]")
 );
 
+// A map keyed by an abstract type that may write a string writes its keys
+// as pairs where none is a string: as a table's key Id(3) would read back
+// as Id("3").
+run!(
+    toml_abstract_key_that_may_write_a_string_reads_back,
+    r#"{
+    type Id = Abstract<[i64, string]>;
+    impl Cast for Id {};
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    type D = {k: Map<Id, string>};
+    let t = |v: D| -> bool {
+        let r: Result<D, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    [t({k: {Id(3) => "a"}}), t({k: {Id("x") => "b"}}), t({k: {Id(3) => "a", Id("x") => "b"}})]
+}"#,
+    prints("[true, true, true]")
+);
+
+// A float key's text keeps its point, so a whole one reads back as the
+// float beside a datetime, which reads the same digits as seconds.
+run!(
+    toml_float_key_beside_a_datetime_reads_back,
+    r#"{
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    type D = {k: Map<[f64, datetime], i64>};
+    let t = |v: D| -> bool {
+        let r: Result<D, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    [
+        t({k: {3.0 => 1}}),
+        t({k: {1e20 => 1}}),
+        t({k: {0.5 => 1}}),
+        t({k: {18014398509481984.0 => 1, datetime:"1970-01-01T00:00:03Z" => 2}})
+    ]
+}"#,
+    prints("[true, true, true, true]")
+);
+
 // A large whole f32 is written as its shortest text (1234567936 as
 // 1234568000.0), which an integer member holds exactly and the f32 only
 // rounded: a target holding one beside such an integer is refused.

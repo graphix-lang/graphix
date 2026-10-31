@@ -516,6 +516,27 @@ run!(
     refused("'b: JsonData refuses Map<[i64, duration], i64>")
 );
 
+// A float key's text keeps its point, so a whole one reads back as the
+// float beside a datetime, which reads the same digits as seconds.
+run!(
+    json_float_key_beside_a_datetime_reads_back,
+    r#"{
+    type T = Map<[f64, datetime], i64>;
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let rt = |v: T| -> bool {
+        let r: Result<T, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    [
+        rt({3.0 => 1}),
+        rt({1e20 => 1}),
+        rt({0.5 => 1}),
+        rt({18014398509481984.0 => 1, datetime:"1970-01-01T00:00:03Z" => 2})
+    ]
+}"#,
+    prints("[true, true, true, true]")
+);
+
 run!(
     json_target_f32_beside_an_integer_refused,
     r#"{
@@ -874,6 +895,60 @@ run!(
     r
 }"#,
     refused("'b: JsonData refuses Map<[i64, Id], i64>")
+);
+
+// A map keyed by an abstract type that may write a string writes its keys
+// as pairs where none is a string: as an object's key Id(3) would read back
+// as Id("3").
+run!(
+    json_abstract_key_that_may_write_a_string_reads_back,
+    r#"{
+    type Id = Abstract<[i64, string]>;
+    impl Cast for Id {};
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let m = |v: Map<Id, string>| -> bool {
+        let r: Result<Map<Id, string>, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let a = |v: Array<{users: Map<Id, string>}>| -> bool {
+        let r: Result<Array<{users: Map<Id, string>}>, E> =
+            json::read(json::write_str(v)$);
+        r$ == v
+    };
+    [
+        m({Id(3) => "a"}),
+        m({Id("x") => "b"}),
+        m({Id(3) => "a", Id("x") => "b"}),
+        a([{users: {Id(3) => "a"}}])
+    ]
+}"#,
+    prints("[true, true, true, true]")
+);
+
+// The writer follows an abstract key type's representation through
+// recursion: N's never holds a string, B's does, and G's arguments grow as
+// it recurses, so it may.
+run!(
+    json_abstract_key_writer_follows_recursive_representations,
+    r#"{
+    type N = Abstract<[N, i64]>;
+    impl Cast for N {};
+    type A = Abstract<[B, i64]>;
+    type B = Abstract<[A, string]>;
+    impl Cast for A {};
+    impl Cast for B {};
+    type G<'a> = Abstract<['a, G<Array<'a>>]>;
+    impl<'a> Cast for G<'a> {};
+    let n: Map<N, i64> = {N(N(5)) => 1};
+    let a: Map<A, i64> = {A(5) => 1};
+    let g: Map<G<i64>, i64> = {G(5) => 1};
+    [
+        json::write_str(n)$ == "{\"5\":1}",
+        json::write_str(a)$ == r"[[5,1]]",
+        json::write_str(g)$ == r"[[5,1]]"
+    ]
+}"#,
+    prints("[true, true, true]")
 );
 
 // An abstract type whose `Cast` implementation writes `from_value` may read

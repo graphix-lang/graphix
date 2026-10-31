@@ -718,7 +718,10 @@ tag's, other text), as the format writes them (JSON writes a datetime
 and a variant's tag as strings, a duration as its seconds, a decimal as
 an exact number; TOML has no null and a native datetime; an object
 reads as its sorted key/value pairs; a map whose keys are scalars and no
-string writes them as text), and each member's reading of a value whole,
+string writes them as text, a float's with its point and a duration's
+whole seconds without, unless its key type may write a string
+(`Type::may_write_string`, which the writer follows)), and each
+member's reading of a value whole,
 as the cast's pick does: a payload variant whose tag the data names
 first (taken whatever its reading rounds), the round its reading falls
 in (exact, then rounded), the pass (a tuple, then a struct, keeping the
@@ -781,7 +784,8 @@ representation; one that leaves out `from_value` reads as it, and one
 that writes `from_value` may read any value it is tried on: ``[Id,
 `A]`` is refused, as is ``[S, `A]`` where `S = Abstract<string>`'s
 implementation writes only `to_value` (what it writes is unknown here,
-but it reads `"A"` as `S("A")`); one writing both methods is trusted
+but it reads `"A"` as `S("A")`); what a written `to_value` writes is
+trusted, as is what `from_value` reads where both are written
 (textdata-cast-trust-01). A
 written value is finite but passes through members that recurse into
 each other at its top levels, so a pair's outcomes are the least

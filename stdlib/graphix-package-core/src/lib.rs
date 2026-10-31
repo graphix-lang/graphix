@@ -636,11 +636,11 @@ fn map_shape<'a>(
             || rep::variant(k).is_some_and(|(_, payload)| payload.is_empty())
     };
     // an object's keys read back as strings, so strings beside keys of
-    // another class, or a key type that may hold both, take pairs
+    // another class, or a key type that may write both, take pairs
     let strings =
         pairs.iter().filter(|(k, _, _, _)| matches!(k, Value::String(_))).count();
     let one_class = strings == pairs.len()
-        || (strings == 0 && !key_type.is_some_and(|t| holds_string(env, t)));
+        || (strings == 0 && !key_type.is_some_and(|t| t.may_write_string(env)));
     if one_class && pairs.iter().all(|(k, _, _, _)| scalar(k)) {
         Ok(Shape::Object(
             pairs
@@ -652,19 +652,6 @@ fn map_shape<'a>(
     } else {
         Ok(Shape::Pairs(pairs))
     }
-}
-
-/// Whether a value of `t` may be a string.
-fn holds_string(env: &Env, t: &Type) -> bool {
-    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-    if graphix_compiler::expr::union_members(env, t, &mut members).is_err() {
-        return true;
-    }
-    members.iter().any(|m| match m {
-        Type::Primitive(p) => p.contains(Typ::String),
-        Type::Any => true,
-        _ => false,
-    })
 }
 
 /// `v`'s shape by its kind marker, or as data where it has none.

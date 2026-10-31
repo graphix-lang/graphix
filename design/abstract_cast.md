@@ -90,7 +90,12 @@ writer reaches it", and "fn(..) is not data".
     abstract position written as its representation
     (`Env::written_as_representation`), they use the representation's
     type, so a struct stays an object. A written `to_value` returns
-    `Any`, so its result is written by its shape.
+    `Any`, so its result is written by its shape. A map keyed by an
+    abstract type whose keys write no string is written as pairs where
+    the key type may write one (`Type::may_write_string`: its
+    representation may, or its implementation writes `to_value`), since
+    an object's keys read back as strings; textdata's `key_forms`
+    judges the same forms.
 - **Async builtins.**
   - `EvalCachedAsync::DATA_ARGS` lists the arguments that leave as data;
     they are converted before `prepare_args` with their tuples, structs,
