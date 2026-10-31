@@ -781,16 +781,22 @@ but it reads `"A"` as `S("A")`); one writing both methods is trusted
 (textdata-cast-trust-01). A
 written value is finite but passes through members that recurse into
 each other at its top levels, so a pair's outcomes are the least
-fixpoint over the pairs the walk meets (`Fixpoint`: each starts with
-none; a pass computes each pair once, and passes repeat until one
-changes nothing): `[TA, TB]` over ``type TA = [i64, `Cons(f32, TA)]``
-and ``type TB = [f64, `Cons(f64, TB)]`` is refused. Whether a value is
+fixpoint over the pairs the walk meets (`Fixpoint`, a top-down solver:
+each starts with none and is computed when first met, reading a pair
+still being computed as it stands, and a pair whose value grows has the
+pairs that read it computed again): `[TA, TB]` over ``type TA = [i64,
+`Cons(f32, TA)]`` and ``type TB = [f64, `Cons(f64, TB)]`` is refused. Whether a value is
 in a member's class is a least fixpoint the same way, over its finite
 values: with ``type R = [Array<R>, i64]``, every value of `R` is in its
-class. A check evaluates each pair once a pass, and takes one pass
-where nothing recurses; a pair of nodes holding no node is answered
-directly and kept nowhere, and every other pair the check meets stays
-until it ends (a chain of `n` nested unions keeps about `n^2`). What
+class. A check computes each pair once, and again only when a pair it
+read grew, so where nothing recurses once, and a chain of typedefs whose
+facts cross back one link at a time costs a few evaluations a pair; a
+pair of nodes holding no node is answered directly and kept nowhere, and
+every other pair the check meets stays until it ends: a chain of `n`
+nested unions keeps about `n^2`, and so does a group of `n` unions
+recursive in each other (`n = 512` of the generator in textdata's
+`mutual`: about 2.8 GB and 7 s debug, against main's 38 MB). Such sizes
+are not written by hand. What
 a node stands for through unions and abstracts written as their
 representation (whether it may hold a string, write a tag, a key's
 forms, a field name, an entry) is a fold over the nodes it reaches that

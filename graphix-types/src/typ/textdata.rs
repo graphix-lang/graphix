@@ -582,8 +582,21 @@ enum Way {
 
 type Side<'s> = &'s dyn Fn(&Shapes, usize) -> Outs;
 
-/// A writer, whether it writes an object's key, and a reader.
-type Pair = (usize, bool, usize);
+/// Two nodes and whether the first writes an object's key, a
+/// [`Fixpoint`]'s key: a writer and a reader, or a reader and a writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Pair(u64);
+
+impl Pair {
+    fn new(a: usize, key: bool, b: usize) -> Pair {
+        debug_assert!(a < 1 << 31 && b < 1 << 32);
+        Pair((a as u64) << 33 | (key as u64) << 32 | b as u64)
+    }
+
+    fn parts(self) -> (usize, bool, usize) {
+        ((self.0 >> 33) as usize, self.0 >> 32 & 1 == 1, self.0 as u32 as usize)
+    }
+}
 
 /// What a [`Fixpoint`] solves for: it starts at `BOTTOM` and only grows.
 trait Lattice: Copy + Eq {
@@ -607,99 +620,119 @@ impl Lattice for (bool, bool) {
     }
 }
 
-/// A pair's value so far, the pass that last computed it, whether that
-/// pass is still computing it, and whether it is final.
-#[derive(Clone, Copy)]
+/// A pair's value so far, whether it was computed from the values it read
+/// as they stand, whether it is final, and the pairs that read it while
+/// it was not.
 struct Fix<V> {
     value: V,
-    pass: u32,
-    open: bool,
+    stable: bool,
     done: bool,
+    readers: SmallVec<[Pair; 1]>,
 }
 
 /// A function of pairs computed as the least fixpoint over the pairs a
-/// walk meets. Every pair starts at `BOTTOM`; a pass computes each pair it
-/// meets once and reads a pair it is still computing as it stood, and
-/// passes repeat until one changes nothing or reads no pair it was
-/// computing. A pair's value only grows (each is joined with the last),
-/// so the passes end; the function is monotone, so none passes the least
-/// fixpoint. Every pair a check meets stays: a chain of `n` unions nested
-/// in each other holds about `n^2` of them.
-struct Fixpoint<K, V> {
-    pairs: AHashMap<K, Fix<V>>,
-    pass: u32,
-    reread: bool,
-    changed: bool,
-    computed: Vec<K>,
+/// walk meets, by a top-down solver: a pair is computed when first met,
+/// reading a pair it is still computing as it stands, and when a pair's
+/// value grows the pairs that read it are computed again. A value only
+/// grows (each is joined with the last) and a pair is computed again only
+/// when one it read grew, so this ends, each pair computed once and again
+/// per growth of a pair it reads; the function is monotone, so no value
+/// passes the least fixpoint. Every pair a check meets stays: a group of
+/// `n` unions recursive in each other holds about `n^2` of them.
+struct Fixpoint<V> {
+    pairs: AHashMap<Pair, Fix<V>>,
+    /// The pairs being computed, innermost last.
+    computing: Vec<Pair>,
+    /// The pairs the running [`Self::least`] met.
+    met: Vec<Pair>,
     #[cfg(test)]
     evaluated: usize,
 }
 
-impl<K, V> Default for Fixpoint<K, V> {
+impl<V> Default for Fixpoint<V> {
     fn default() -> Self {
         Fixpoint {
             pairs: AHashMap::default(),
-            pass: 0,
-            reread: false,
-            changed: false,
-            computed: Vec::new(),
+            computing: Vec::new(),
+            met: Vec::new(),
             #[cfg(test)]
             evaluated: 0,
         }
     }
 }
 
-impl<K: Copy + Eq + std::hash::Hash, V: Lattice> Fixpoint<K, V> {
+impl<V: Lattice> Fixpoint<V> {
     /// `k`'s value, every pair it reaches final.
-    fn least(cell: &RefCell<Self>, k: K, f: &dyn Fn(K) -> V) -> V {
-        loop {
-            {
-                let mut s = cell.borrow_mut();
-                s.pass += 1;
-                s.reread = false;
-                s.changed = false;
-                s.computed.clear();
-            }
-            let r = Self::get(cell, k, f);
-            let mut s = cell.borrow_mut();
-            if !(s.reread && s.changed) {
-                let Fixpoint { pairs, computed, .. } = &mut *s;
-                for p in computed.drain(..) {
-                    pairs.get_mut(&p).expect("computed").done = true
-                }
-                return r;
-            }
+    fn least(cell: &RefCell<Self>, k: Pair, f: &dyn Fn(Pair) -> V) -> V {
+        Self::solve(cell, k, f);
+        let mut s = cell.borrow_mut();
+        let Fixpoint { pairs, met, .. } = &mut *s;
+        for p in met.drain(..) {
+            let e = pairs.get_mut(&p).expect("met");
+            e.done = true;
+            e.readers = SmallVec::new();
         }
+        pairs[&k].value
     }
 
-    /// `k`'s value as this pass of [`Self::least`] has it.
-    fn get(cell: &RefCell<Self>, k: K, f: &dyn Fn(K) -> V) -> V {
-        let prev = {
+    /// `k`'s value as the running [`Self::least`] has it, read by the pair
+    /// being computed.
+    fn get(cell: &RefCell<Self>, k: Pair, f: &dyn Fn(Pair) -> V) -> V {
+        Self::solve(cell, k, f);
+        let mut s = cell.borrow_mut();
+        let r = s.computing.last().copied();
+        let e = s.pairs.get_mut(&k).expect("solved");
+        if !e.done
+            && let Some(r) = r
+            && e.readers.last() != Some(&r)
+        {
+            e.readers.push(r)
+        }
+        e.value
+    }
+
+    fn solve(cell: &RefCell<Self>, k: Pair, f: &dyn Fn(Pair) -> V) {
+        {
             let mut s = cell.borrow_mut();
-            let pass = s.pass;
-            let prev = match s.pairs.get(&k).copied() {
-                Some(e) if e.done => return e.value,
-                Some(e) if e.pass == pass => {
-                    s.reread |= e.open;
-                    return e.value;
+            match s.pairs.get_mut(&k) {
+                Some(e) if e.done || e.stable => return,
+                Some(e) => e.stable = true,
+                None => {
+                    let e = Fix {
+                        value: V::BOTTOM,
+                        stable: true,
+                        done: false,
+                        readers: SmallVec::new(),
+                    };
+                    s.pairs.insert(k, e);
+                    s.met.push(k);
                 }
-                Some(e) => e.value,
-                None => V::BOTTOM,
-            };
-            s.pairs.insert(k, Fix { value: prev, pass, open: true, done: false });
-            s.computed.push(k);
+            }
+            s.computing.push(k);
             #[cfg(test)]
             {
                 s.evaluated += 1;
             }
-            prev
+        }
+        let r = crate::stack::ensure_sufficient(|| f(k));
+        let readers = {
+            let mut s = cell.borrow_mut();
+            s.computing.pop();
+            let e = s.pairs.get_mut(&k).expect("solved");
+            let v = e.value.join(r);
+            if v == e.value {
+                return;
+            }
+            e.value = v;
+            let readers = std::mem::take(&mut e.readers);
+            for p in readers.iter() {
+                s.pairs.get_mut(p).expect("a reader").stable = false
+            }
+            readers
         };
-        let r = prev.join(crate::stack::ensure_sufficient(|| f(k)));
-        let mut s = cell.borrow_mut();
-        s.changed |= r != prev;
-        let pass = s.pass;
-        s.pairs.insert(k, Fix { value: r, pass, open: false, done: false });
-        r
+        for p in readers {
+            Self::solve(cell, p, f)
+        }
     }
 }
 
@@ -724,8 +757,8 @@ struct Shapes<'a> {
     /// A definition met growing its arguments as it recurses.
     grows: Option<ModPath>,
     /// [`Shapes::class_of`] by reader, writer and key.
-    classes: RefCell<Fixpoint<(usize, usize, bool), (bool, bool)>>,
-    fix: RefCell<Fixpoint<Pair, Outs>>,
+    classes: RefCell<Fixpoint<(bool, bool)>>,
+    fix: RefCell<Fixpoint<Outs>>,
     reach: RefCell<Reach>,
 }
 
@@ -1193,17 +1226,23 @@ impl<'a> Shapes<'a> {
         if self.leaf(r) && self.leaf(w) {
             return self.class_of_int(r, w, key);
         }
-        let f = |(r, w, key)| self.class_of_int(r, w, key);
-        Fixpoint::least(&self.classes, (r, w, key), &f)
+        let f = |p: Pair| {
+            let (r, key, w) = p.parts();
+            self.class_of_int(r, w, key)
+        };
+        Fixpoint::least(&self.classes, Pair::new(r, key, w), &f)
     }
 
-    /// [`Self::class_of`] as this pass of its [`Fixpoint`] has it.
+    /// [`Self::class_of`] as the running solve of its [`Fixpoint`] has it.
     fn class_in(&self, r: usize, w: usize, key: bool) -> (bool, bool) {
         if self.leaf(r) && self.leaf(w) {
             return self.class_of_int(r, w, key);
         }
-        let f = |(r, w, key)| self.class_of_int(r, w, key);
-        Fixpoint::get(&self.classes, (r, w, key), &f)
+        let f = |p: Pair| {
+            let (r, key, w) = p.parts();
+            self.class_of_int(r, w, key)
+        };
+        Fixpoint::get(&self.classes, Pair::new(r, key, w), &f)
     }
 
     /// Whether `n` refers to no other node: a pair of such nodes is
@@ -1305,17 +1344,24 @@ impl<'a> Shapes<'a> {
         if self.leaf(a) && self.leaf(b) {
             return self.outs_int(a, key, b);
         }
-        let f = |(a, key, b)| self.outs_int(a, key, b);
-        Fixpoint::least(&self.fix, (a, key, b), &f)
+        let f = |p: Pair| {
+            let (a, key, b) = p.parts();
+            self.outs_int(a, key, b)
+        };
+        Fixpoint::least(&self.fix, Pair::new(a, key, b), &f)
     }
 
-    /// [`Self::least_outs`] as this pass of its [`Fixpoint`] has it.
+    /// [`Self::least_outs`] as the running solve of its [`Fixpoint`] has
+    /// it.
     fn outs(&self, a: usize, key: bool, b: usize) -> Outs {
         if self.leaf(a) && self.leaf(b) {
             return self.outs_int(a, key, b);
         }
-        let f = |(a, key, b)| self.outs_int(a, key, b);
-        Fixpoint::get(&self.fix, (a, key, b), &f)
+        let f = |p: Pair| {
+            let (a, key, b) = p.parts();
+            self.outs_int(a, key, b)
+        };
+        Fixpoint::get(&self.fix, Pair::new(a, key, b), &f)
     }
 
     fn outs_int(&self, a: usize, key: bool, b: usize) -> Outs {
@@ -1868,20 +1914,24 @@ mod test {
     }
 
     // A check meets at most two pairs (a value and a key) per pair of
-    // nodes, however the unions nest, and evaluates each once a pass: a
-    // type with no recursion takes one pass, a recursive group a few. The
-    // wall limit is only a hang guard; the counts are the pin.
+    // nodes, however the unions nest, and evaluates each once, and again
+    // only when a pair it read grew: a type with no recursion once each, a
+    // recursive group or a chain whose facts cross back link by link under
+    // twice each. The wall limit is only a hang guard; the counts are the
+    // pin.
     #[test]
     fn a_check_evaluates_each_pair_a_few_times() {
         type Shape = (&'static str, fn() -> (Env, Type), bool, usize);
-        let shapes: [Shape; 7] = [
+        let shapes: [Shape; 9] = [
             ("L10 x2", || levels(10, 2), false, 1),
             ("L14 x2", || levels(14, 2), false, 1),
             ("L6 x4", || levels(6, 4), false, 1),
             ("L8 x4", || levels(8, 4), false, 1),
-            ("mutual 32", || mutual(32), true, 3),
+            ("mutual 32", || mutual(32), true, 2),
             ("ring 32", || ring(32), false, 1),
             ("tree 32", || tree(32), false, 1),
+            ("fact 50", || fact(50), false, 2),
+            ("fact 200", || fact(200), false, 2),
         ];
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -2077,6 +2127,30 @@ mod test {
             (format!("T{i}"), body)
         });
         generated(defs.collect(), "T0")
+    }
+
+    /// Two chains of `n` typedefs linked both ways through tuples, a
+    /// primitive at one end of each: what the far end writes is known only
+    /// once a fact has crossed every link back.
+    fn fact(n: usize) -> (Env, Type) {
+        let mut defs = vec![];
+        for (p, base, end) in [("A", "i64", "`EA"), ("B", "f64", "`EB")] {
+            for i in 0..=n {
+                let mut ms = vec![];
+                if i == 0 {
+                    ms.push(base.to_string())
+                }
+                if i < n {
+                    ms.push(format!("(`F, {p}{})", i + 1))
+                }
+                if i > 0 {
+                    ms.push(format!("(`G, {p}{})", i - 1));
+                    ms.push(end.to_string())
+                }
+                defs.push((format!("{p}{i}"), format!("[{}]", ms.join(", "))))
+            }
+        }
+        generated(defs, "[A0, B0]")
     }
 
     /// `n` struct kinds, each holding the union of them all.

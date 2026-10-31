@@ -3235,6 +3235,17 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // lib_tests::json::json_primitive_set_beside_a_member_reads_back and
 // lib_tests::toml::toml_primitive_set_beside_a_member_reads_back (both refused at
 // 3cb1fc3d2), json_target_abstract_beside_a_primitive_set_refused. Needs a soak.
+// 2026-10-31 claude: Round 7, second commit (brief r4B5 item 3): Fixpoint restarted each
+// pass from the root, so a chain of typedefs whose facts cross one back link a pass took
+// O(n) passes over O(n) pairs (fact_1600 of the review's gencost.py: 10.2 s debug, main
+// 0.4 s quick). It is now a top-down solver: a pair is computed when first met and again
+// only when a pair it read grew (its readers are kept in its entry until the check's least
+// fixpoint ends), so fact_n costs about 1.3 evaluations a pair (fact_1600 0.55 s). Pair
+// keys are packed into a u64, so a group of n mutually recursive unions keeps its n^2
+// pairs in about the old memory (mutual_512 2.8 GB, 3cb1fc3d2 2.6 GB, main 38 MB; 6.7 s
+// against 16.5 s). Pin: textdata's a_check_evaluates_each_pair_a_few_times now bounds
+// mutual 32 and fact 50/200 at twice their pairs (the old solver: mutual 32 108,420
+// evaluations of 36,864 pairs, fact 50 62,996 of 1,796).
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.
