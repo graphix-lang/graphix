@@ -419,13 +419,23 @@ parameter take every edge. Where two cells meet (`contains_tvars`):
   binding, where a union collapses (`'r ⊇ [T, 'r]` binds `'r := T`;
   pins `lang::types::rec_block_*_collapses`).
 - A path through cells and unions alone otherwise (`'p` above `'q`
-  above `'p`): the relation is accepted and neither cell records it; a
-  commit marks both `CellFact::CycleRefused`, and one still open at the
-  terminal settle is refused as the infinite type (pin
-  `lang::types::payload_cycle_of_cells`).
+  above `'p`): every cell on it is one type (`merge_bare_cycle`, the
+  paths' vars from `tvar::bare_path`; every path, so a cycle through
+  three cells merges all three). The open cells merge, each first
+  dropping its bounds that are cells of the cycle: a union lower bound
+  holding one keeps its other members, as `'r ⊇ [T, 'r]` collapses, and
+  a conjunct union holding one always holds. Each bound cell on it is
+  the merged cell (`'r = [T, 'r]` gives `'r ⊇ T`). Two declared
+  variables of the definition under check are not one type, so such a
+  relation is refused. A later write to any of the cells widens them
+  all: `x = B(1); y = B(t ~ x.0); x <- y; y <- B(t ~ "a")` makes `x.0`
+  `[i64, string]` (pins `lang::types::payload_cycle_of_cells`,
+  `bare_cycle_*`).
 
 The merges' own guards (`TVar::alias`, `alias_cells`, `copy`) skip a
-merge that would close a cycle and mark the cells the same way. Most
+merge that would close a cycle and mark both cells
+`CellFact::CycleRefused`; one still open at the terminal settle is
+refused as the infinite type. Most
 relations that reach them were checked here first; a `Singleton`
 bound's merge of a union's open members was not, and the mark leaves
 such a program refused later, at the settle or by the bound (pins

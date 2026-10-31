@@ -157,6 +157,83 @@ impl Toward {
             Self::Above => Self::Below,
         }
     }
+
+    /// The edges a walk this way takes from `cell`.
+    fn edges(self, cell: &TCell) -> SmallVec<[Type; 4]> {
+        let (up, down) = match self {
+            Self::Any => (true, true),
+            Self::Above => (true, false),
+            Self::Below => (false, true),
+        };
+        let mut edges: SmallVec<[Type; 4]> = cell.binding.iter().cloned().collect();
+        if up {
+            edges.extend(cell.constraints.iter().cloned());
+        }
+        if down {
+            edges.extend(cell.lower.iter().cloned());
+        }
+        edges
+    }
+}
+
+/// The vars on the paths [`Cycle::Bare`] names from `t` to the cell at
+/// `addr`, by the edges `toward` takes: each var `t` holds or reaches
+/// through cells and unions alone whose cell reaches that cell so.
+pub(super) fn bare_path(addr: usize, t: &Type, toward: Toward) -> LPooled<Vec<TVar>> {
+    let mut walk = BarePath { addr, reaches: LPooled::take(), on: LPooled::take() };
+    walk.go(t, toward);
+    walk.on
+}
+
+struct BarePath {
+    addr: usize,
+    /// Per node or cell and direction, whether it reaches the cell; false
+    /// while it is walked.
+    reaches: LPooled<AHashMap<(usize, u8), bool>>,
+    on: LPooled<Vec<TVar>>,
+}
+
+impl BarePath {
+    fn go(&mut self, t: &Type, toward: Toward) -> bool {
+        ensure_sufficient(|| {
+            let key = match t {
+                Type::TVar(tv) if tv.cell_addr() == self.addr => return true,
+                Type::TVar(tv) => Some(tv.cell_addr()),
+                t => node_addr(t),
+            };
+            if let Some(key) = key {
+                match self.reaches.entry((key, toward as u8)) {
+                    Entry::Occupied(e) => return *e.get(),
+                    Entry::Vacant(e) => {
+                        e.insert(false);
+                    }
+                }
+            }
+            let reaches = match t {
+                Type::Set(ms) => ms.iter().fold(false, |r, m| self.go(m, toward) | r),
+                Type::Ref(r) => {
+                    let def = r.resolved();
+                    r.params.iter().enumerate().fold(false, |reaches, (i, p)| {
+                        let guarded = def.as_ref().is_some_and(|d| d.param_guarded(i));
+                        (!guarded && self.go(p, Toward::Any)) | reaches
+                    })
+                }
+                Type::TVar(tv) => {
+                    let edges = toward.edges(&tv.cell().read());
+                    let reaches = edges.iter().fold(false, |r, e| self.go(e, toward) | r);
+                    if reaches {
+                        self.on.push(tv.clone());
+                    }
+                    reaches
+                }
+                _ => false,
+            };
+            if reaches && let Some(key) = key {
+                self.reaches.insert((key, toward as u8), true);
+            }
+            reaches
+        })
+    }
 }
 
 /// How `t` reaches the cell at `addr` by the edges `toward` takes, a
@@ -244,24 +321,8 @@ impl CycleWalk {
                     if !self.visit(cell_addr, toward, under) {
                         return ControlFlow::Continue(());
                     }
-                    let (binding, cons, below) = {
-                        let cell = cell.read();
-                        let (up, down) = match toward {
-                            Toward::Any => (true, true),
-                            Toward::Above => (true, false),
-                            Toward::Below => (false, true),
-                        };
-                        (
-                            cell.binding.clone(),
-                            up.then(|| cell.constraints.clone()).unwrap_or_default(),
-                            down.then(|| cell.lower.clone()).unwrap_or_default(),
-                        )
-                    };
-                    binding
-                        .iter()
-                        .chain(cons.iter())
-                        .chain(below.iter())
-                        .try_for_each(|c| self.go(c, toward, under))
+                    let edges = toward.edges(&cell.read());
+                    edges.iter().try_for_each(|c| self.go(c, toward, under))
                 }
                 Type::Fn(ft) => {
                     for a in ft.args.iter() {
@@ -1356,6 +1417,50 @@ impl TVar {
                 bound_cell_changes();
             }
             c.lower.push(t)
+        }
+    }
+
+    /// Drop each bound of the open cell that is a cell of `on`, each such
+    /// member of a union lower bound, and each conjunct union holding one:
+    /// merged with those cells, the cell is each of them, so `'r ⊇ [T,
+    /// 'r]` holds by `T` and `'r ⊆ [T, 'r]` always.
+    pub(super) fn drop_bounds_on(&self, on: &AddrSet) {
+        let is_on = |t: &Type| match t {
+            Type::TVar(v) => {
+                on.contains(&v.cell_addr())
+                    || v.open_cell().is_some_and(|o| on.contains(&o.cell_addr()))
+            }
+            _ => false,
+        };
+        let holds_on = |t: &Type| matches!(t, Type::Set(ms) if ms.iter().any(is_on));
+        let cell = self.cell();
+        let (lower, cons) = {
+            let c = cell.read();
+            (c.lower.clone(), c.constraints.clone())
+        };
+        if !lower.iter().chain(cons.iter()).any(|t| is_on(t) || holds_on(t)) {
+            return;
+        }
+        let lower = lower
+            .into_iter()
+            .filter_map(|l| match &l {
+                l if is_on(l) => None,
+                Type::Set(ms) if ms.iter().any(is_on) => {
+                    let mut rest: SmallVec<[Type; 4]> =
+                        ms.iter().filter(|m| !is_on(m)).cloned().collect();
+                    match rest.len() {
+                        0 | 1 => rest.pop(),
+                        _ => Some(Type::Set(Arc::from_iter(rest.drain(..)))),
+                    }
+                }
+                _ => Some(l),
+            })
+            .collect();
+        let cons = cons.into_iter().filter(|c| !is_on(c) && !holds_on(c)).collect();
+        let mut c = cell.write();
+        if decided(&c) {
+            c.lower = lower;
+            c.constraints = cons;
         }
     }
 

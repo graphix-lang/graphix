@@ -11,7 +11,8 @@ use crate::{
         node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{
-            CellFact, Cycle, Fresh, RigidGate, Toward, cycle_toward, would_cycle_inner,
+            CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cycle_toward,
+            would_cycle_inner,
         },
     },
 };
@@ -900,6 +901,95 @@ pub(super) fn on_copies<const N: usize, R>(
         });
     }
     f(copies, &mut ContainsHist::trial())
+}
+
+/// A cell, a type that may reach it and the edges the walk takes.
+type Reach<'a> = (&'a TVar, &'a Type, Toward);
+
+/// The cells on a cycle through cells and unions alone, each type's bare
+/// paths to its cell and the cell, are one type: the open ones merge, each
+/// first dropping its bounds that are cells of the cycle, and each bound
+/// one is the merged cell. Two declared vars of the def under check are
+/// not one type.
+fn merge_bare_cycle(
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    paths: &[Reach],
+) -> Result<bool> {
+    let commit = flags.contains(ContainsFlags::Commit);
+    let mut on: LPooled<Vec<TVar>> = LPooled::take();
+    for (to, from, toward) in paths {
+        let mut path = bare_path(to.cell_addr(), from, *toward);
+        if !path.is_empty() {
+            on.extend(path.drain(..));
+            on.push((*to).clone());
+        }
+    }
+    let mut cells: LPooled<AddrSet> = LPooled::take();
+    let mut open: LPooled<Vec<TVar>> = LPooled::take();
+    let mut bound: LPooled<Vec<TVar>> = LPooled::take();
+    for tv in on.iter() {
+        cells.insert(tv.cell_addr());
+        match tv.open_cell() {
+            Some(o) if !open.iter().any(|m| m.same_cell(&o)) => {
+                cells.insert(o.cell_addr());
+                open.push(o)
+            }
+            Some(_) => (),
+            None if matches!(tv.binding(), Some(Type::TVar(_)))
+                || bound.iter().any(|b| b.same_cell(tv)) => {}
+            None => bound.push(tv.clone()),
+        }
+    }
+    if graphix_dbg_bind() {
+        eprintln!("BARE-CYCLE {} open, {} bound", open.len(), bound.len());
+    }
+    let mut rigid = open.iter().filter(|o| o.is_rigid());
+    let survivor = match (rigid.next(), rigid.next()) {
+        (Some(_), Some(_)) => return Ok(false),
+        (Some(r), None) => r.clone(),
+        (None, _) => match open.first() {
+            Some(o) => o.clone(),
+            None => return Ok(true),
+        },
+    };
+    if commit {
+        for o in open.iter() {
+            o.drop_bounds_on(&cells);
+        }
+    }
+    for o in open.iter() {
+        if o.same_cell(&survivor) {
+            continue;
+        }
+        let (ts, to) = (Type::TVar(survivor.clone()), Type::TVar(o.clone()));
+        if !quantifier_admits(env, &survivor, o)
+            || !quantifier_admits(env, o, &survivor)
+            || !admits_lower(flags, env, hist, (&ts, &survivor), o)?
+            || !admits_lower(flags, env, hist, (&to, o), &survivor)?
+        {
+            return Ok(false);
+        }
+        if commit {
+            OpenPair::of(&survivor, o).apply(&survivor, o);
+        }
+    }
+    if commit {
+        // the merged cell holds a bound cell's binding from below, where
+        // `'r ⊇ [T, 'r]` takes `T` beside the bounds it has
+        let merged = Type::TVar(survivor);
+        let below = (flags | ContainsFlags::Lower) & !ContainsFlags::Contra;
+        for b in bound.iter() {
+            let b = Type::TVar(b.clone());
+            if !merged.contains_int(below, env, hist, &b)?
+                || !b.contains_int(flags, env, hist, &merged)?
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// How two distinct open cells unify.
@@ -2610,8 +2700,8 @@ impl Type {
     /// binding reaches it is the μ-shape through a binding (a copy would
     /// bind the infinite type, so the binding is walked, where `'r ⊇ [T,
     /// 'r]` collapses); any other cycle under a constructor is refused,
-    /// and one through cells and unions alone is accepted, unrecorded
-    /// ([`Cycle::Bare`]).
+    /// and the cells on one through cells and unions alone merge
+    /// ([`merge_bare_cycle`]).
     fn contains_tvars(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -2629,10 +2719,9 @@ impl Type {
                 && !t0.is_rigid()
                 && !t1_rigid
         };
-        // A cycle under a constructor has no finite solution. A bare one
-        // answers true and keeps neither relation; a commit records it on
-        // both cells.
-        let refuse = |cycle: Cycle, hist: &mut ContainsHist| {
+        // A cycle under a constructor has no finite solution; the cells on
+        // a bare one are one type.
+        let refuse = |cycle: Cycle, paths: &[Reach], hist: &mut ContainsHist| {
             if graphix_dbg_cycle_bt() {
                 eprintln!(
                     "CYCLE-REFUSED-PAIR {cycle:?} ({addr0:x},{addr1:x})\n{}",
@@ -2644,7 +2733,7 @@ impl Type {
                     hist.cycled = true;
                     Ok(false)
                 }
-                // CR claude for claude: [bug/high] A cycle through cells
+                // XCR claude for claude: [bug/high] A cycle through cells
                 // alone answers true and keeps neither relation, so the
                 // cells stay apart and a later write decides one of them
                 // alone: `type B<'p> = Abstract<'p>; let x = B(1); let y =
@@ -2660,13 +2749,23 @@ impl Type {
                 // between them. No fixture before
                 // `lang::types::payload_cycle_of_cells` reached this arm.
                 // probe: ~/tmp/cr29/scratch/laneL/r3/bare4.gx (bare-cycle-01)
-                Cycle::Bare => {
-                    if commit {
-                        t0.mark_cycle_refused();
-                        t1.mark_cycle_refused();
-                    }
-                    Ok(true)
-                }
+                // 2026-10-31 claude: Fixed: contains::merge_bare_cycle makes
+                // every cell on the bare paths one type (tvar::bare_path finds
+                // them, every path, so a three-cell cycle merges all three);
+                // each open cell first drops its bounds that are cells of the
+                // cycle (TVar::drop_bounds_on: a union lower bound keeps its
+                // other members, a conjunct union holding one is dropped), the
+                // open cells merge, a bound cell on the path holds the merged
+                // cell from below, and two declared vars on one cycle are
+                // refused. bare4 is now refused at x.0 + 1 ('cannot compute
+                // [i64, string] + i64'), as main refuses the cycle-free x =
+                // B(1); x <- B(t ~ "a"). Pins that fail without it:
+                // lang::types::bare_cycle_{written,holds_every_write,written_before_it_closes,of_three_cells,of_three_cells_written_last,through_two_abstracts,through_a_function,through_an_identity,in_a_definition,through_a_union,through_a_typedef_parameter,written_through_a_reference}
+                // (all four modes) and
+                // typ::contains::tests::bare_cycle_through_{a_bound_cell_merges,a_declared_var_merges_into_it}.
+                // No program in book/src/examples or graphix-fuzz/findings
+                // reaches the arm.
+                Cycle::Bare => merge_bare_cycle(flags, env, hist, paths),
             }
         };
         match (t0.binding(), t1.binding()) {
@@ -2682,7 +2781,7 @@ impl Type {
                 }
                 let up = if lower(false) { Toward::Above } else { Toward::Any };
                 if let Some(cycle) = cycle_toward(addr1, tt0, up) {
-                    return refuse(cycle, hist);
+                    return refuse(cycle, &[(t1, tt0, up)], hist);
                 }
                 // A rigid receiver must not bind; re-verdict against
                 // the binding.
@@ -2723,7 +2822,7 @@ impl Type {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
                 if let Some(cycle) = cycle_toward(addr0, tt1, Toward::Any) {
-                    return refuse(cycle, hist);
+                    return refuse(cycle, &[(t0, tt1, Toward::Any)], hist);
                 }
                 if (rigid || commit) && t1.is_rigid() {
                     return b0.contains_int(flags, env, hist, tt1);
@@ -2767,7 +2866,7 @@ impl Type {
                 if let Some(cycle) =
                     cycle_toward(addr0, tt1, down).max(cycle_toward(addr1, tt0, up))
                 {
-                    return refuse(cycle, hist);
+                    return refuse(cycle, &[(t0, tt1, down), (t1, tt0, up)], hist);
                 }
                 if !quantifier_admits(env, t0, t1) || !quantifier_admits(env, t1, t0) {
                     return Ok(false);
@@ -3480,6 +3579,46 @@ mod tests {
         assert_ne!(crate::typ::norm_key(&shared), crate::typ::norm_key(&writable));
         assert_ne!(probe_key(&shared), probe_key(&writable));
         assert_ne!(node_addr(&shared), node_addr(&writable));
+    }
+
+    fn var(name: &'static str) -> TVar {
+        TVar::empty_named(ArcStr::from(name))
+    }
+
+    fn prim(t: Typ) -> Type {
+        Type::Primitive(t.into())
+    }
+
+    /// `p ⊇ q`, `q` above `w`, `w` bound to `[p, null]`: the three cells
+    /// are one type, above both `i64` and `null`.
+    #[test]
+    fn bare_cycle_through_a_bound_cell_merges() {
+        let env = Env::default();
+        let (p, q, w) = (var("p"), var("q"), var("w"));
+        p.add_lower(prim(Typ::I64));
+        w.bind(Type::Set(Arc::from_iter([Type::TVar(p.clone()), prim(Typ::Null)])));
+        q.add_lower(Type::TVar(w.clone()));
+        Type::TVar(p.clone()).check_contains(&env, &Type::TVar(q.clone())).unwrap();
+        assert!(p.same_cell(&q));
+        assert!(p.cell_lower().iter().all(|l| !p.would_cycle(l)));
+        p.settle(&env).unwrap();
+        let both = Type::Primitive(Typ::I64 | Typ::Null);
+        let settled = p.binding().unwrap();
+        assert!(both.contains(&env, &settled).unwrap(), "{settled}");
+        assert!(settled.contains(&env, &both).unwrap(), "{settled}");
+    }
+
+    /// A declared var on a cycle of open cells is every one of them.
+    #[test]
+    fn bare_cycle_through_a_declared_var_merges_into_it() {
+        let env = Env::default();
+        let (a, p, q) = (var("a"), var("p"), var("q"));
+        let _gate = a.open_rigid();
+        p.add_lower(Type::TVar(a.clone()));
+        q.add_lower(Type::TVar(p.clone()));
+        Type::TVar(a.clone()).check_contains(&env, &Type::TVar(q.clone())).unwrap();
+        assert!(a.same_cell(&p) && a.same_cell(&q));
+        assert!(a.is_rigid() && !a.is_bound());
     }
 
     #[test]

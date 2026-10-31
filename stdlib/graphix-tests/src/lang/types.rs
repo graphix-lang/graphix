@@ -4535,6 +4535,289 @@ const PAYLOAD_CYCLE_OF_CELLS: &str = r#"
 
 run!(payload_cycle_of_cells, PAYLOAD_CYCLE_OF_CELLS, is(Value::I64(2)));
 
+// The cells on a cycle through cells alone are one type: a write to one
+// widens every one of them.
+const BARE_CYCLE_WRITTEN: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = B(1);
+    let y = B(t ~ x.0);
+    x <- y;
+    y <- B(t ~ "a");
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_written,
+    BARE_CYCLE_WRITTEN,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_HOLDS_EVERY_WRITE: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = B(1);
+    let y = B(t ~ x.0);
+    x <- y;
+    y <- B(t ~ "a");
+    let v = x.0;
+    let seen = [];
+    seen <- array::window(#n: 3, v ~ seen, v);
+    select array::len(seen) { 3 => seen, _ => never() }
+}
+"#;
+
+run!(
+    bare_cycle_holds_every_write,
+    BARE_CYCLE_HOLDS_EVERY_WRITE,
+    prints(r#"[i64:1, i64:1, "a"]"#)
+);
+
+const BARE_CYCLE_WRITTEN_BEFORE_IT_CLOSES: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = B(1);
+    let y = B(t ~ x.0);
+    y <- B(t ~ "a");
+    x <- y;
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_written_before_it_closes,
+    BARE_CYCLE_WRITTEN_BEFORE_IT_CLOSES,
+    refused("cannot compute [string, i64] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_OF_THREE_CELLS: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = B(1);
+    let y = B(t ~ x.0);
+    let z = B(t ~ y.0);
+    x <- z;
+    y <- B(t ~ "a");
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_of_three_cells,
+    BARE_CYCLE_OF_THREE_CELLS,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_OF_THREE_CELLS_WRITTEN_LAST: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = B(1);
+    let y = B(t ~ x.0);
+    let z = B(t ~ y.0);
+    x <- z;
+    z <- B(t ~ "a");
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_of_three_cells_written_last,
+    BARE_CYCLE_OF_THREE_CELLS_WRITTEN_LAST,
+    refused("cannot compute [string, i64] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_THROUGH_TWO_ABSTRACTS: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    type C<'q> = Abstract<'q>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = B(1);
+    let z = C(t ~ x.0);
+    let y = B(t ~ z.0);
+    x <- y;
+    z <- C(t ~ "a");
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_through_two_abstracts,
+    BARE_CYCLE_THROUGH_TWO_ABSTRACTS,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_THROUGH_A_FUNCTION: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let f = |v| B(t ~ v);
+    let x = B(1);
+    let y = f(x.0);
+    x <- y;
+    y <- B(t ~ "a");
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_through_a_function,
+    BARE_CYCLE_THROUGH_A_FUNCTION,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_THROUGH_AN_IDENTITY: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let id = |v| v;
+    let x = B(1);
+    let y = B(id(t ~ x.0));
+    x <- y;
+    y <- B(t ~ "a");
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_through_an_identity,
+    BARE_CYCLE_THROUGH_AN_IDENTITY,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_IN_A_DEFINITION: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let g = |a, s| {
+        let t = sys::time::timer(duration:10.ms, false);
+        let x = B(a);
+        let y = B(t ~ x.0);
+        x <- y;
+        y <- B(t ~ s);
+        x.0
+    };
+    g(1, "a") + 1
+}
+"#;
+
+run!(
+    bare_cycle_in_a_definition,
+    BARE_CYCLE_IN_A_DEFINITION,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_THROUGH_A_UNION: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let c = false;
+    let x = B(1);
+    let u = select c { true => t ~ x.0, false => t ~ null };
+    let y = B(u);
+    x <- y;
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_through_a_union,
+    BARE_CYCLE_THROUGH_A_UNION,
+    refused("cannot compute [i64, null] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_THROUGH_A_TYPEDEF_PARAMETER: &str = r#"
+{
+    type Opt<'a> = ['a, null];
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let f = |v: 'a, n: bool| -> Opt<'a> select n { true => v, false => null };
+    let x = B(1);
+    let y = B(f(t ~ x.0, false));
+    x <- y;
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_through_a_typedef_parameter,
+    BARE_CYCLE_THROUGH_A_TYPEDEF_PARAMETER,
+    refused("cannot compute [i64, null] + i64");
+    FuseExpect::None
+);
+
+const BARE_CYCLE_WRITTEN_THROUGH_A_REFERENCE: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = B(1);
+    let y = B(t ~ x.0);
+    let r = &mut y;
+    x <- y;
+    *r <- B(t ~ "a");
+    x.0 + 1
+}
+"#;
+
+run!(
+    bare_cycle_written_through_a_reference,
+    BARE_CYCLE_WRITTEN_THROUGH_A_REFERENCE,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+// A list or a tuple literal's type is its elements' types, with no cell
+// bounded below between them, so the same program closes no cycle and the
+// write is refused where it is made.
+const LIST_CYCLE_WRITTEN: &str = r#"
+{
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = [<1>];
+    let y = [<t ~ list::head(x)$>];
+    x <- y;
+    y <- [<t ~ "a">];
+    list::head(x)$ + 1
+}
+"#;
+
+run!(
+    list_cycle_written,
+    LIST_CYCLE_WRITTEN,
+    refused("y is List<i64> and cannot hold List<string>");
+    FuseExpect::None
+);
+
+const TUPLE_CYCLE_WRITTEN: &str = r#"
+{
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = (1, 0);
+    let y = (t ~ x.0, 0);
+    x <- y;
+    y <- (t ~ "a", 0);
+    x.0 + 1
+}
+"#;
+
+run!(
+    tuple_cycle_written,
+    TUPLE_CYCLE_WRITTEN,
+    refused("y is (i64, i64) and cannot hold (string, i64)");
+    FuseExpect::None
+);
+
 // A typedef that names one of its parameters' typedefs twice holds the
 // parameter under that typedef's constructor at the second name too.
 const PAYLOAD_CYCLE_THROUGH_A_TYPEDEF_NAMED_TWICE: &str = r#"
