@@ -20,6 +20,10 @@ the graphix process crashes; a child spawned with `kill_on_drop:
 false` is detached and may outlive the graphix process on every
 platform.
 
+A child shares the shell's terminal, so the keys the terminal turns into
+signals reach it too: `Ctrl+C` (SIGINT) and `Ctrl+\` (SIGQUIT) at the
+shell stop it, even where the shell itself keeps the session.
+
 There is no separate status-probe function: `wait` is the reactive
 status source. To track running state, give it an initial value:
 

@@ -955,6 +955,8 @@ impl<X: GXExt> Shell<X> {
                             Ok(Read::Signal(Signal::Success(line))) => {
                                 let shown = async {
                                     match session.gx.compile(ArcStr::from(line)).await {
+                                        // the reset says why
+                                        Err(_) if session.interrupted() => (),
                                         Err(e) => eprintln!("error: {e:?}"),
                                         Ok(res) => {
                                             env = res.env;

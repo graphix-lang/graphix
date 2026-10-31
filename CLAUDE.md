@@ -763,9 +763,9 @@ node graph IS the IR — there is no parallel typed IR
   runtime, the shell's script exits 130 at Ctrl-C or `Ctrl-\` and its
   REPL's `Ctrl-\` (SIGQUIT; Ctrl-Break on Windows), idle or busy, replaces
   the runtime with a fresh one; the REPL's Ctrl-C stops nothing, leaving
-  the display with the session kept, and the shell reads no key while a
-  display shows or an input runs (the terminal signals them; Ctrl-D
-  exits). Kernel
+  the display with the session kept. While a text display shows or an
+  input runs the terminal sends both keys as signals; a TUI display reads
+  them as keys. Ctrl-D exits. Kernel
   interior memory (`design/kernel_instance_state.md`) gives one compiled
   body the interp's per-slot/per-activation multiplicity for exactly the
   state that decides firing; only a site's first-ever dispatch, and a

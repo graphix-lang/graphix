@@ -29,6 +29,10 @@ In REPL mode:
   is running or not, it stops the runtime, even one stuck in a cycle that
   never ends, forgets every binding, starts a fresh one and says
   `interrupted: the session was reset`
+- the terminal sends both keys to every process it runs in the
+  foreground, so a child a program spawned (`sys::process`) that shares
+  the terminal receives them too: `Ctrl+C` stops such a child even
+  though the shell keeps the session
 - `Ctrl+D` exits the shell
 - with input piped in (`graphix < lines.gx`), the end of the input ends
   the shell once what its lines started has run (at most five seconds for
