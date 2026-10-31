@@ -1938,7 +1938,9 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
             }
         })
     }
-    if matches!(held, Type::TVar(_)) || holds_fn(&held) || holds_fn(&written) {
+    if !infinite
+        && (matches!(held, Type::TVar(_)) || holds_fn(&held) || holds_fn(&written))
+    {
         return format_with_flags(
             PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
             || anyhow!("{name} is {held} and cannot hold {written}"),

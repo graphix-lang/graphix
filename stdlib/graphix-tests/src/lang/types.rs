@@ -4202,6 +4202,79 @@ run!(
     FuseExpect::None
 );
 
+// A cycle only the instance closes: the argument it refuses has no
+// finite type.
+const PAYLOAD_CYCLE_AN_INSTANCE_CLOSES: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let pair = |a, b: B<'q>| { let c = B([t ~ b.0]); a <- c; a };
+    let x = B([]);
+    let r = pair(x, x);
+    select r.0 { [h, ..] => h + 1, _ => 0 }
+}
+"#;
+
+run!(
+    payload_cycle_an_instance_closes,
+    PAYLOAD_CYCLE_AN_INSTANCE_CLOSES,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+// A cycle through a function's argument has no finite type either.
+const PAYLOAD_CYCLE_THROUGH_AN_ARGUMENT: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = B(|x| 1);
+    let f = |x| { x <- t ~ b.0; 2 };
+    b <- B(f);
+    0
+}
+"#;
+
+run!(
+    payload_cycle_through_an_argument,
+    PAYLOAD_CYCLE_THROUGH_AN_ARGUMENT,
+    holds_itself(
+        "and cannot hold B<fn(x: fn(x: '",
+        "no finite type holds both: declare a named recursive type for b"
+    );
+    FuseExpect::None
+);
+
+/// A REPL input writing a payload that holds the binding's own element:
+/// the binding stands above `Array<'e>`, an open cell, so no finite type
+/// holds both.
+#[tokio::test(flavor = "current_thread")]
+async fn repl_payload_cycle_hints_a_recursive_type() -> anyhow::Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    use tokio::sync::mpsc;
+    let (tx, _rx) = mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let mut inputs = vec![];
+    for input in [
+        "type B<'p> = Abstract<'p>",
+        "let t = sys::time::timer(duration:10.ms, false)",
+        "let b = B([])",
+    ] {
+        inputs.push(ctx.rt.compile(ArcStr::from(input)).await?);
+    }
+    match ctx.rt.compile(ArcStr::from("b <- B([t ~ b.0])")).await {
+        Ok(_) => anyhow::bail!("the write was accepted"),
+        Err(e) => {
+            let e = format!("{e:#}");
+            assert!(
+                e.contains("no finite type holds both: declare a named recursive"),
+                "{e}"
+            );
+            Ok(())
+        }
+    }
+}
+
 /// A union of a bare variable and a constructor of it places every
 /// member: when the constructor's first fit would strand one, the
 /// deepest member fit decides the variable.

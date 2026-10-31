@@ -116,6 +116,9 @@ pub(super) struct ContainsHist {
     /// A definition whose parameters grew past [`MAX_GROWTH`] under a
     /// probe: the reason a refusal gives when the verdict needed it.
     grew: Option<ModPath>,
+    /// A cycle under a constructor refused a pair of cells: the reason a
+    /// refusal gives ([`TypeMismatch`]).
+    cycled: bool,
     /// [`Self::closed`]'s verdicts by node and cell identity, each node
     /// pinned so its address is not recycled under its key.
     closed: Lazy<AddrMap<bool>>,
@@ -163,6 +166,7 @@ impl ContainsHist {
             epoch: 0,
             unfolding: Lazy::new(),
             grew: None,
+            cycled: false,
             closed: Lazy::new(),
             closed_pins: Lazy::new(),
             gated: 0,
@@ -1094,10 +1098,16 @@ pub struct TypeMismatch {
     apart: Option<(ModPath, SourcePosition, SourcePosition)>,
     /// [`kept_bare`], taken while the named types are in scope.
     kept_bare: bool,
+    /// A cycle under a constructor refused a pair of cells on the way: no
+    /// finite type holds both.
+    infinite: bool,
 }
 
 impl std::fmt::Display for TypeMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.infinite {
+            return write!(f, "{INFINITE_TYPE_MSG}");
+        }
         format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
             if let Some((passed, takes)) =
                 positional_arity(&self.expected).zip(positional_arity(&self.actual))
@@ -1410,7 +1420,13 @@ impl Type {
         match (ok, hist.grew) {
             (true, _) => Ok(()),
             (false, Some(name)) => Err(growth_error(&name)),
-            (false, None) => Err(self.contains_mismatch(env, t)),
+            (false, None) => {
+                let mut e = self.contains_mismatch(env, t);
+                if let Some(m) = e.downcast_mut::<TypeMismatch>() {
+                    m.infinite = hist.cycled;
+                }
+                Err(e)
+            }
         }
     }
 
@@ -1440,16 +1456,30 @@ impl Type {
                     a.len() == b.len()
                         && a.iter().zip(b.iter()).any(|(a, b)| go(a, b, seen))
                 };
+                // an open cell stands for its lower bounds too
                 match (s, t) {
                     (Type::TVar(tv), t) => match tv.binding() {
                         Some(b) => go(&b, t, seen),
                         None => {
-                            !matches!(t, Type::TVar(u) if u.same_cell(tv))
+                            (!matches!(t, Type::TVar(u) if u.same_cell(tv))
                                 && cycle_toward(tv.cell_addr(), t, Toward::Any)
-                                    == Some(Cycle::Constructor)
+                                    == Some(Cycle::Constructor))
+                                || tv.cell_lower().iter().any(|l| go(l, t, seen))
                         }
                     },
-                    (s, Type::TVar(tv)) => tv.binding().is_some_and(|b| go(s, &b, seen)),
+                    (s, Type::TVar(tv)) => match tv.binding() {
+                        Some(b) => go(s, &b, seen),
+                        None => tv.cell_lower().iter().any(|l| go(s, l, seen)),
+                    },
+                    (Type::Fn(f0), Type::Fn(f1)) => {
+                        go(&f0.rtype, &f1.rtype, seen)
+                            || (f0.args.len() == f1.args.len()
+                                && f0
+                                    .args
+                                    .iter()
+                                    .zip(f1.args.iter())
+                                    .any(|(a, b)| go(&a.typ, &b.typ, seen)))
+                    }
                     (Type::Set(ms), t) => ms.iter().any(|m| go(m, t, seen)),
                     (s, Type::Set(ms)) => ms.iter().any(|m| go(s, m, seen)),
                     (Type::Array(a), Type::Array(b))
@@ -1507,6 +1537,7 @@ impl Type {
             actual: t.clone(),
             apart: same_name_apart(self, t),
             kept_bare: kept_bare(env, self, t),
+            infinite: false,
         })
     }
 
@@ -2480,7 +2511,7 @@ impl Type {
         // A cycle under a constructor has no finite solution. A bare one
         // answers true and keeps neither relation; a commit records it on
         // both cells.
-        let refuse = |cycle: Cycle| {
+        let refuse = |cycle: Cycle, hist: &mut ContainsHist| {
             if graphix_dbg_cycle_bt() {
                 eprintln!(
                     "CYCLE-REFUSED-PAIR {cycle:?} ({addr0:x},{addr1:x})\n{}",
@@ -2488,7 +2519,10 @@ impl Type {
                 );
             }
             match cycle {
-                Cycle::Constructor => Ok(false),
+                Cycle::Constructor => {
+                    hist.cycled = true;
+                    Ok(false)
+                }
                 // CR claude for claude: [bug/high] A cycle through cells
                 // alone answers true and keeps neither relation, so the
                 // cells stay apart and a later write decides one of them
@@ -2527,7 +2561,7 @@ impl Type {
                 }
                 let up = if lower(false) { Toward::Above } else { Toward::Any };
                 if let Some(cycle) = cycle_toward(addr1, tt0, up) {
-                    return refuse(cycle);
+                    return refuse(cycle, hist);
                 }
                 // A rigid receiver must not bind; re-verdict against
                 // the binding.
@@ -2568,7 +2602,7 @@ impl Type {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
                 if let Some(cycle) = cycle_toward(addr0, tt1, Toward::Any) {
-                    return refuse(cycle);
+                    return refuse(cycle, hist);
                 }
                 if (rigid || commit) && t1.is_rigid() {
                     return b0.contains_int(flags, env, hist, tt1);
@@ -2673,7 +2707,7 @@ impl Type {
                 if let Some(cycle) =
                     cycle_toward(addr0, tt1, down).max(cycle_toward(addr1, tt0, up))
                 {
-                    return refuse(cycle);
+                    return refuse(cycle, hist);
                 }
                 if !quantifier_admits(env, t0, t1) || !quantifier_admits(env, t1, t0) {
                     return Ok(false);

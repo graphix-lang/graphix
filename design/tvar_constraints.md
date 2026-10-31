@@ -353,7 +353,15 @@ parameter take every edge. Where two cells meet (`contains_tvars`):
   refused as `b <- [t ~ b]` is (pins `lang::types::payload_cycle_*`,
   `array_cycle*`). A write so refused says no finite type holds both
   and to declare a named recursive type (`type X = Array<X>`), never a
-  union of the two (`Type::meets_itself`).
+  union of the two (`Type::meets_itself`, which reads an open cell as
+  its lower bounds too and pairs functions' arguments and results);
+  any other refusal such a cycle decided says `cannot infer a finite type here`
+  (`TypeMismatch::infinite`), as an argument a cycle only the instance
+  closes refuses does (pin `payload_cycle_an_instance_closes`). The
+  hint reads the types alone: where the held side is closed (`let l =
+  `Nil; l <- `Cons(1, t ~ l)`, or a REPL input's `b = B([1])`, whose
+  `'p` settled to `Array<i64>` before `b <- B([t ~ b.0])`), nothing
+  meets itself and the write names the union.
 - An open cell meeting a bound cell whose binding reaches it walks the
   binding, where a union collapses (`'r ⊇ [T, 'r]` binds `'r := T`;
   pins `lang::types::rec_block_*_collapses`).
