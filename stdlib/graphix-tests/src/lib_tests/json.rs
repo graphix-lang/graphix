@@ -897,9 +897,9 @@ run!(
     refused("'b: JsonData refuses Map<[i64, Id], i64>")
 );
 
-// A map keyed by an abstract type that may write a string writes its keys
-// as pairs where none is a string: as an object's key Id(3) would read back
-// as Id("3").
+// A map keyed by a type that may read a key's text as a string writes its
+// keys as pairs where any is not a string: as an object's key Id(3) would
+// read back as Id("3").
 run!(
     json_abstract_key_that_may_write_a_string_reads_back,
     r#"{
@@ -923,6 +923,102 @@ run!(
     ]
 }"#,
     prints("[true, true, true, true]")
+);
+
+// An abstract key type read as its representation reads a key's text as
+// its representation does, whatever its `to_value` writes: Id's keys make
+// an object. One whose `from_value` is written may read the text as a
+// string, so its keys make pairs.
+run!(
+    json_abstract_key_read_as_its_representation_writes_an_object,
+    r##"{
+    type Id = Abstract<i64>;
+    impl Cast for Id { let to_value = |x| x.0 };
+    type Fv = Abstract<i64>;
+    impl Cast for Fv {
+        let to_value = |x| x.0;
+        let from_value = |v: Any| -> Result<Fv, `InvalidCast(string)> select cast<i64>(v) {
+            error as _ => error(`InvalidCast("fv")),
+            n => Fv(n)
+        }
+    };
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let id: Map<Id, string> = {Id(3) => "a", Id(4) => "b"};
+    let fv: Map<Fv, string> = {Fv(3) => "a"};
+    let (wi, wf) = (json::write_str(id)$, json::write_str(fv)$);
+    let ri: Result<Map<Id, string>, E> = json::read(wi);
+    let rf: Result<Map<Fv, string>, E> = json::read(wf);
+    [wi == r#"{"3":"a","4":"b"}"#, ri$ == id, wf == r#"[[3,"a"]]"#, rf$ == fv]
+}"##,
+    prints("[true, true, true, true]")
+);
+
+// The primitive `array` writes an array of any data, which a tuple, a
+// payload variant and bytes read: beside any of them it is refused.
+run!(
+    json_target_primitive_array_beside_a_tuple_refused,
+    r#"{
+    type T = [array, (i64, i64)];
+    let v: T = (1, 2);
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [array, (i64, i64)]")
+);
+
+run!(
+    json_target_primitive_array_beside_a_payload_variant_refused,
+    r#"{
+    type T = [array, `A(i64)];
+    let v: T = `A(2);
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [array, `A(i64)]")
+);
+
+run!(
+    json_target_primitive_array_beside_bytes_refused,
+    r#"{
+    type T = [array, bytes];
+    let v: T = bytes:AQI=;
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [array, bytes]")
+);
+
+// A key's text is never read as an array, so the primitive `array` in a key
+// type leaves its other members' texts judged.
+run!(
+    json_target_primitive_array_key_beside_a_datetime_refused,
+    r#"{
+    type Aa = datetime;
+    type Zz = f64;
+    type T = Map<[array, Aa, Zz], i64>;
+    let v: T = {3.0 => 1};
+    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses Map<[array, Aa, Zz], i64>")
+);
+
+run!(
+    json_primitive_array_beside_scalars_reads_back,
+    r#"{
+    type T = [array, i64, string, null];
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let t = |v: T| -> bool {
+        let r: Result<T, E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    [t([1, "a"]), t([3.0, null, [2]]), t(3), t("a"), t(null)]
+}"#,
+    prints("[true, true, true, true, true]")
 );
 
 // The writer follows an abstract key type's representation through

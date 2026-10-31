@@ -856,7 +856,10 @@ admits null. Excess decimal fractional precision rounds to the nearest
 representable decimal in JSON reads, string casts and `str::parse`.
 JSON/TOML maps with scalar keys write as objects/tables; a
 map with a composite, bytes or null key writes as an array of `[key, value]`
-pairs. TOML still refuses null keys and requires a table at the document root.
+pairs, as does one whose key type may read a key's text as a string (a
+`string` or `Any` member, an abstract whose representation has one or
+whose `Cast` writes `from_value`) while a key is not a string. TOML
+still refuses null keys and requires a table at the document root.
 
 A whole float prints with its point (`3.0`) in interpolation, `println` and
 `cast<string>`, so the text reads back as a float (`cast<[i64, f64]>("3.0")`

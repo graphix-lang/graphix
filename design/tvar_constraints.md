@@ -716,12 +716,17 @@ which types hold it, a whole float, a fraction an f32 holds or rounds, a
 decimal no float holds, the text of each, a bool's, a datetime's, a
 tag's, other text), as the format writes them (JSON writes a datetime
 and a variant's tag as strings, a duration as its seconds, a decimal as
-an exact number; TOML has no null and a native datetime; an object
-reads as its sorted key/value pairs; a map whose keys are scalars and no
-string writes them as text, a float's with its point and a duration's
-whole seconds without, unless its key type may write a string
-(`Type::may_write_string`, which the writer follows), and a key's union
-is judged as data only where its map may write pairs, `Shapes::data`), and
+an exact number; TOML has no null and a native datetime, and writes a
+duration or a decimal only as a table's key; an object reads as its
+sorted key/value pairs; a map whose keys are scalars and no string
+writes them as text, a float's with its point and a duration's whole
+seconds without, unless its key type may read a text as a string
+(`Type::may_read_text_as_string`, which the writer asks too: a string,
+`Any`, an abstract read by its `from_value`, or one read as its
+representation that may), and a key's union is judged as data only
+where its map may write pairs, `Shapes::data`; the primitive `array` is
+an array of any data, each element a value the reader makes, held as
+made), and
 each member's reading of a value whole,
 as the cast's pick does: a payload variant whose tag the data names
 first (taken whatever its reading rounds), the round its reading falls
@@ -751,8 +756,9 @@ are, a tuple or a struct only where the pick tries it as a member, by
 its parts, and never as a part of a composite or a member of a union
 nested in a member (`in_own_class` holds no unmarked one); an abstract
 type written as its representation is built from the data, never read
-in its class; a bool reads into a real member as 1 or 0, rounded
-(`holds_rounded`). Each outcome of a written value records,
+in its class; a bool reads into a float member as 1 or 0, rounded
+(`holds_rounded`), and a decimal reads neither a bool nor TOML's
+datetime. Each outcome of a written value records,
 for the writer's own member and for the other, whether its reading
 rounds and whether it leaves the data's class, and its level, the
 highest of its parts': the value as it is, built, a number read as no
@@ -809,8 +815,8 @@ recursive in each other (`n = 512` of the generator in textdata's
 `mutual`: about 2 GB and 6 s debug, against main's 38 MB). Such sizes
 are not written by hand. What
 a node stands for through unions and abstracts written as their
-representation (whether it may hold a string, write a tag, a key's
-forms, a field name, an entry) is a fold over the nodes it reaches that
+representation (whether it may write a tag, a key's forms, a field
+name, an entry) is a fold over the nodes it reaches that
 way, each met once (`Shapes::reach`, memoized per node): an abstract
 holding itself (``type N = Abstract<[N, `L(i64)]>``) ends the walk, and
 a key type whose unions share members costs a few steps a node. A

@@ -21,7 +21,7 @@
 
 use crate::{
     env::Env,
-    expr::{ModPath, union_members},
+    expr::ModPath,
     typ::{AbstractId, Typ, Type, cast::grows_on, params_size},
 };
 use ahash::{AHashMap, AHashSet};
@@ -300,8 +300,9 @@ impl Leaf {
     }
 
     /// Each way it may read a value of `t` exactly or rounded (a bool into
-    /// a real, as `holds_rounded` has it); a reading that drops part of a
-    /// value never beats the writer's own, which is one of these.
+    /// a float, as `holds_rounded` has it; a decimal reads no bool and no
+    /// datetime); a reading that drops part of a value never beats the
+    /// writer's own, which is one of these.
     fn reads(self, t: Token) -> impl Iterator<Item = u8> {
         let foreign = if self.class() == t.class() { 0 } else { FOREIGN };
         let level = if self.typ() == t.read_back() { HELD } else { BUILT };
@@ -354,7 +355,7 @@ impl Leaf {
                     | Leaf::DateTime,
                 ),
             )
-            | (Leaf::Decimal, Some(Leaf::Int(_) | Leaf::Decimal | Leaf::Bool)) => reads,
+            | (Leaf::Decimal, Some(Leaf::Int(_) | Leaf::Decimal)) => reads,
             _ => false,
         }
     }
@@ -383,7 +384,8 @@ impl Leaf {
                 _ if num.is_some() => &[OTHER],
                 _ => NO,
             },
-            Leaf::F32 | Leaf::F64 | Leaf::Decimal if t == Token::Bool => &[ROUNDS],
+            Leaf::F32 | Leaf::F64 if t == Token::Bool => &[ROUNDS],
+            Leaf::Decimal if matches!(t, Token::Bool | Token::DateTime) => NO,
             _ if t == Token::DateTime => YES,
             Leaf::Int(ty) => {
                 let wide = !matches!(ty, Typ::U8 | Typ::I8 | Typ::U16 | Typ::I16);
@@ -783,6 +785,8 @@ struct Shapes<'a> {
     path: Vec<(usize, usize)>,
     /// A definition met growing its arguments as it recurses.
     grows: Option<ModPath>,
+    /// The primitive `array`'s node, once met.
+    array: Option<usize>,
     /// [`Shapes::class_of`] by reader, writer and key.
     classes: RefCell<Fixpoint<(bool, bool)>>,
     fix: RefCell<Fixpoint<Outs>>,
@@ -799,6 +803,7 @@ impl<'a> Shapes<'a> {
             refs: AHashMap::default(),
             path: Vec::new(),
             grows: None,
+            array: None,
             classes: RefCell::default(),
             fix: RefCell::default(),
             reach: RefCell::default(),
@@ -827,11 +832,12 @@ impl<'a> Shapes<'a> {
         keys.sort_unstable();
         keys.dedup();
         let unions = data.iter().map(|n| (*n, false));
+        let scalar = |n: usize| matches!(self.nodes[n].0, Shape::Scalar(..));
         for (u, key) in unions.chain(keys.iter().map(|k| (*k, true))) {
             let Shape::Union(ms, prim) = &self.nodes[u].0 else { continue };
             for (i, a) in ms.iter().enumerate() {
                 for b in ms[i + 1..].iter() {
-                    let hit = match prim {
+                    let hit = match *prim && scalar(*a) && scalar(*b) {
                         true => {
                             self.prim_takes(ms, *a, *b, key)
                                 || self.prim_takes(ms, *b, *a, key)
@@ -898,12 +904,12 @@ impl<'a> Shapes<'a> {
             Typ::Bool => Leaf::Bool,
             Typ::F64 => Leaf::F64,
             Typ::F32 => Leaf::F32,
-            Typ::Duration if json => Leaf::Duration,
-            Typ::Decimal if json => Leaf::Decimal,
+            Typ::Duration => Leaf::Duration,
+            Typ::Decimal => Leaf::Decimal,
             Typ::String => Leaf::Str,
             Typ::DateTime if json => Leaf::DateText,
             Typ::DateTime => Leaf::DateTime,
-            Typ::Null | Typ::Duration | Typ::Decimal | Typ::Error => return Shape::None,
+            Typ::Null | Typ::Error => return Shape::None,
             Typ::Bytes | Typ::Array | Typ::Map | Typ::Abstract => return Shape::Unknown,
             p => Leaf::Int(p),
         };
@@ -950,6 +956,7 @@ impl<'a> Shapes<'a> {
                                 .push(Shape::Scalar(Leaf::Int(Typ::U8), Typ::U8), &u8);
                             self.push(Shape::Seq(int, SeqKind::Bytes), t)
                         }
+                        Typ::Array => self.array(t),
                         p => {
                             let s = self.prim(p);
                             self.push(s, t)
@@ -1073,6 +1080,19 @@ impl<'a> Shapes<'a> {
             // lib_tests::json::{json_abstract_key_that_may_write_a_string_reads_back,
             // json_abstract_key_writer_follows_recursive_representations},
             // lib_tests::toml::toml_abstract_key_that_may_write_a_string_reads_back.
+            // 2026-10-31 claude: Round 9 (brief r4B6): round 8's writer rule (Type::may_write_string: an
+            // abstract whose impl writes to_value may write a string) wrote Map<Id, string> over type Id
+            // = Abstract<i64>, impl Cast { to_value = |x| x.0 }, as pairs, which TOML refuses at a
+            // document's root where main writes 3 = "a"
+            // (~/tmp/cr29/scratch/review7/B/r5/r2/hand/wr1_toml.gx, wr3_toml.gx), and JSON as pairs
+            // where main wrote an object. An object's keys reach the reader as text, so the rule now
+            // asks the reader: Type::may_read_text_as_string, asked by the writer's map_shape and
+            // textdata's key_forms alike, so the two agree by construction. Id reads a key's text as its
+            // representation i64, so the map is an object again. Pins (fail at e94d78407):
+            // lib_tests::toml::toml_abstract_key_read_as_its_representation_writes_a_table,
+            // lib_tests::json::json_abstract_key_read_as_its_representation_writes_an_object; round 8's
+            // pins (json_abstract_key_that_may_write_a_string_reads_back, toml_ alike,
+            // json_abstract_key_writer_follows_recursive_representations) still pass.
             // CR claude for eric: [design/low] textdata trusts an abstract type whose Cast
             // implementation writes to_value (Shape::Unknown shares a form with nothing),
             // whatever its from_value does, while one that writes only from_value is judged
@@ -1109,6 +1129,21 @@ impl<'a> Shapes<'a> {
             // any value, so such an abstract is refused beside every member that reads
             // data; or it writes what its method's body returns, judged as that type's
             // data; or it stays trusted, as now.
+            // 2026-10-31 claude: Round 9 (brief r4B6): a map's key forms now follow the
+            // read side, Type::may_read_text_as_string, which the writer's map_shape and
+            // textdata's key_forms both ask: an abstract read as its representation
+            // (from_value left out) reads a key's text as the representation does, whatever
+            // to_value writes, and one whose from_value is written is taken, as this CR's
+            // conservative answer, to read it as a string. A case the ruling decides: type
+            // Id = Abstract<i64> whose impl writes to_value = |x| x.0 and a from_value
+            // reading cast<i64>(v): Map<Id, string> is now written as pairs, which TOML
+            // refuses at a document's root ("unsupported array type") where main writes 3 =
+            // "a" and reads it back (~/tmp/cr29/scratch/review7/B/r5/r2/hand/wr2_toml.gx);
+            // JSON writes [[3,"a"]] and reads it back
+            // (lib_tests::json::json_abstract_key_read_as_its_representation_writes_an_object).
+            // Under (b) such a from_value is trusted to read a key's text and the map is a
+            // table again. With from_value left out (wr1_toml.gx) the map is a table and
+            // reads back.
             Type::Abstract { id, params } => {
                 let writes = self.env.written_as_representation(*id);
                 let reads_rep = self.env.read_as_representation(*id);
@@ -1121,6 +1156,28 @@ impl<'a> Shapes<'a> {
                 }
             }
         })
+    }
+
+    /// The primitive `array`: an array of any data, each element one of
+    /// the values the format's reader makes (null, a bool, an integer, a
+    /// float, a string, TOML's datetime, an array of such), which it holds
+    /// as made.
+    fn array(&mut self, t: &Type) -> usize {
+        if let Some(a) = self.array {
+            return a;
+        }
+        let a = self.push(Shape::Unknown, t);
+        self.array = Some(a);
+        let made = Typ::Bool | Typ::I64 | Typ::F64 | Typ::String;
+        let made = match self.format {
+            Format::Json => made | Typ::Null,
+            Format::Toml => made | Typ::DateTime,
+        };
+        let scalars = self.node(&Type::Primitive(made));
+        let any =
+            self.push(Shape::Union(SmallVec::from_iter([scalars, a]), false), &Type::Any);
+        self.nodes[a].0 = Shape::Seq(any, SeqKind::Array);
+        a
     }
 
     /// The nodes `n` stands for past unions and the representations of
@@ -1224,25 +1281,13 @@ impl<'a> Shapes<'a> {
         })
     }
 
-    /// Whether `k` may write a string: [`Type::may_write_string`] over the
-    /// arena, a node not known here among those that may.
-    fn holds_string(&self, k: usize) -> bool {
-        self.reach(k, Way::Writes).any(|(m, _)| {
-            matches!(
-                self.nodes[m].0,
-                Shape::Scalar(Leaf::Str, _)
-                    | Shape::Unknown
-                    | Shape::Foreign { writes: false, .. }
-            )
-        })
-    }
-
     /// Whether a map with keys `k` may be written as an object, its keys'
     /// texts, and as an array of pairs, its keys' data (`map_shape`): a key
-    /// type that may write a string writes the strings' object as their
-    /// pairs, a null or composite key writes pairs.
+    /// type that may read a text as a string writes an object only of
+    /// strings, which reads as their pairs; a null or composite key writes
+    /// pairs.
     fn key_forms(&self, k: usize) -> (bool, bool) {
-        if self.holds_string(k) {
+        if self.nodes[k].1.may_read_text_as_string(self.env) {
             return (false, true);
         }
         self.reach(k, Way::Writes).fold((false, false), |(o, p), (m, _)| {
@@ -1505,10 +1550,14 @@ impl<'a> Shapes<'a> {
     }
 
     /// The values the primitive or tag `w` writes (as an object's key where
-    /// `key`), each with each way `w` reads it back.
+    /// `key`), each with each way `w` reads it back. TOML writes a duration
+    /// or a decimal only as a table's key.
     fn written(&self, w: usize, key: bool) -> SmallVec<[(Token, u8); 8]> {
+        let toml_key_only = |x: &Leaf| {
+            self.format == Format::Toml && matches!(x, Leaf::Duration | Leaf::Decimal)
+        };
         match &self.nodes[w].0 {
-            Shape::Scalar(x, _) => x
+            Shape::Scalar(x, _) if key || !toml_key_only(x) => x
                 .writes()
                 .iter()
                 .flat_map(|t| t.written(key, *x == Leaf::Duration))
@@ -1879,36 +1928,39 @@ impl Type {
         Shapes::new(env, format, self).ambiguity()
     }
 
-    /// Whether a value of this type may be written as a string where it is
-    /// data (`abstract_value::to_data`): a member that is a string, `Any`
-    /// or any abstract value, an abstract type whose `Cast` implementation
-    /// writes `to_value` (or that has none), or one written as its
-    /// representation that may be; one whose arguments grow as it recurses
-    /// may be. A text writer writes a map keyed by such a type as pairs
-    /// where no key is a string, since an object's keys read back as
-    /// strings.
-    pub fn may_write_string(&self, env: &Env) -> bool {
+    /// Whether a reader of this type may take a text it is handed, an
+    /// object's key, as a string: a member that is a string or `Any`, one
+    /// not known here (an open variable), an abstract type read by its
+    /// `Cast` implementation's `from_value` (or that has none), or one read
+    /// as its representation that may; one whose arguments grow as it
+    /// recurses may. What a `to_value` writes does not matter: the
+    /// representation reads it. A text writer writes a map keyed by such a
+    /// type as pairs where any key is not a string, an object's keys being
+    /// text, and textdata judges the forms it writes by this
+    /// (`Shapes::key_forms`).
+    pub fn may_read_text_as_string(&self, env: &Env) -> bool {
         fn go(
             env: &Env,
             t: &Type,
             path: &mut Vec<(AbstractId, usize)>,
             seen: &mut AHashSet<Type>,
         ) -> bool {
-            let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
-            if union_members(env, t, &mut ms).is_err() {
-                return true;
-            }
-            ms.iter().any(|m| match m {
-                Type::Primitive(p) => p.intersects(Typ::String | Typ::Abstract),
-                Type::Any => true,
+            crate::stack::ensure_sufficient(|| match t {
+                Type::TVar(tv) => tv.binding().is_none_or(|b| go(env, &b, path, seen)),
+                Type::Ref(_) => {
+                    t.lookup_ref(env).map_or(true, |b| go(env, &b, path, seen))
+                }
+                Type::Set(ms) => ms.iter().any(|m| go(env, m, path, seen)),
+                Type::Primitive(p) => p.contains(Typ::String),
+                Type::Any | Type::App(..) | Type::Hole | Type::Bound(_) => true,
                 Type::Abstract { id, params } => {
                     let rep = match env.abstract_reps.get(id) {
-                        Some(r) if env.written_as_representation(*id) => {
+                        Some(r) if env.read_as_representation(*id) => {
                             r.instantiate_with(params)
                         }
                         _ => return true,
                     };
-                    if !seen.insert(m.clone()) {
+                    if !seen.insert(t.clone()) {
                         return false;
                     }
                     let size = params_size(params);
@@ -1916,7 +1968,7 @@ impl Type {
                         return true;
                     }
                     path.push((*id, size));
-                    let r = crate::stack::ensure_sufficient(|| go(env, &rep, path, seen));
+                    let r = go(env, &rep, path, seen);
                     path.pop();
                     r
                 }
@@ -2462,5 +2514,39 @@ mod test {
         assert!(!json("Map<[i64, string], i64>"));
         assert!(json("Map<[`A, string], i64>"));
         assert!(!toml("Map<[i64, datetime], i64>"));
+        assert!(toml("Map<[duration, i64], i64>"));
+        assert!(toml("Map<[duration, f32], i64>"));
+        assert!(toml("Map<[datetime, decimal], i64>"));
+        assert!(!toml("Map<duration, i64>"));
+        assert!(!toml("Map<decimal, i64>"));
+        assert!(!toml("[duration, i64]"));
+    }
+
+    // The primitive `array` writes an array of any data, held as the
+    // reader makes it: a member that reads arrays is refused beside it, a
+    // scalar is not, and a key's text is never one.
+    #[test]
+    fn the_primitive_array_is_an_array_of_any_data() {
+        let json = |t| ambiguous(t, Format::Json);
+        let toml = |t| ambiguous(t, Format::Toml);
+        assert!(json("[array, (i64, i64)]"));
+        assert!(toml("[array, (i64, i64)]"));
+        assert!(json("[array, `A(i64)]"));
+        assert!(json("[array, bytes]"));
+        assert!(json("[array, {a: i64}]"));
+        assert!(json("[array, Map<string, i64>]"));
+        assert!(!json("[array, i64, string, null]"));
+        assert!(!toml("[array, i64, string, datetime]"));
+        assert!(!json("Map<array, i64>"));
+        assert!(named(
+            &[("Aa", "datetime"), ("Zz", "f64")],
+            "Map<[array, Aa, Zz], i64>",
+            Format::Json
+        ));
+        assert!(!named(
+            &[("Aa", "f64"), ("Zz", "datetime")],
+            "Map<[array, Aa, Zz], i64>",
+            Format::Json
+        ));
     }
 }

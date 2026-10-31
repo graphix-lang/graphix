@@ -253,9 +253,9 @@ run!(
     prints("[true, true, true, true, true, true]")
 );
 
-// A map keyed by an abstract type that may write a string writes its keys
-// as pairs where none is a string: as a table's key Id(3) would read back
-// as Id("3").
+// A map keyed by a type that may read a key's text as a string writes its
+// keys as pairs where any is not a string: as a table's key Id(3) would
+// read back as Id("3").
 run!(
     toml_abstract_key_that_may_write_a_string_reads_back,
     r#"{
@@ -270,6 +270,104 @@ run!(
     [t({k: {Id(3) => "a"}}), t({k: {Id("x") => "b"}}), t({k: {Id(3) => "a", Id("x") => "b"}})]
 }"#,
     prints("[true, true, true]")
+);
+
+// An abstract key type read as its representation reads a key's text as
+// its representation does, whatever its `to_value` writes, so its keys
+// make a table, a document's root among them.
+run!(
+    toml_abstract_key_read_as_its_representation_writes_a_table,
+    r#"{
+    type Id = Abstract<i64>;
+    impl Cast for Id { let to_value = |x| x.0 };
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    let v: Map<Id, string> = {Id(3) => "a", Id(4) => "b"};
+    let w = select toml::write_str(v) { error as e => "[e]", w => w };
+    let r: Result<Map<Id, string>, E> = toml::read(w);
+    [w == "3 = \"a\"\n4 = \"b\"\n", select r { error as _ => false, b => b == v }]
+}"#,
+    prints("[true, true]")
+);
+
+// TOML writes neither a duration nor a decimal as a value, but writes
+// either as a table's key: a duration's whole seconds without a point, a
+// decimal's text.
+run!(
+    toml_duration_and_decimal_keys_read_back,
+    r#"{
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    type D = {k: Map<duration, i64>};
+    type N = {k: Map<decimal, i64>};
+    let d = |v: D| -> bool {
+        let r: Result<D, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    let n = |v: N| -> bool {
+        let r: Result<N, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    [
+        d({k: {duration:3.s => 1, duration:3.5s => 2}}),
+        n({k: {cast<decimal>(3)$ => 1, cast<decimal>(3.5)$ => 2}})
+    ]
+}"#,
+    prints("[true, true]")
+);
+
+// A decimal reads no TOML datetime, so beside an abstract datetime, tried
+// after every member keeping the data's class, it takes none of its values.
+run!(
+    toml_decimal_beside_an_abstract_datetime_reads_back,
+    r#"{
+    type Idt = Abstract<datetime>;
+    impl Cast for Idt {};
+    type Dec = decimal;
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    type D = {k: [Dec, Idt]};
+    let t = |v: D| -> bool {
+        let r: Result<D, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    [t({k: Idt(datetime:"1970-01-01T00:00:03Z")}), t({k: Idt(datetime:"2020-01-01T00:00:00Z")})]
+}"#,
+    prints("[true, true]")
+);
+
+run!(
+    toml_target_duration_key_beside_an_integer_refused,
+    r#"{
+    type D = {k: Map<[duration, i64], string>};
+    let v: D = {k: {duration:3.s => "a"}};
+    let r: Result<D, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read(toml::write_str(v)$);
+    r
+}"#,
+    refused("'b: TomlData refuses { k: Map<[i64, duration], string> }")
+);
+
+run!(
+    toml_target_decimal_key_beside_a_datetime_refused,
+    r#"{
+    type D = {k: Map<[datetime, decimal], i64>};
+    let v: D = {k: {cast<decimal>(3)$ => 1}};
+    let r: Result<D, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read(toml::write_str(v)$);
+    r
+}"#,
+    refused("'b: TomlData refuses { k: Map<[datetime, decimal], i64> }")
+);
+
+// The primitive `array` writes an array of any data, which a tuple reads.
+run!(
+    toml_target_primitive_array_beside_a_tuple_refused,
+    r#"{
+    type D = {k: [array, (i64, i64)]};
+    let v: D = {k: (1, 2)};
+    let r: Result<D, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read(toml::write_str(v)$);
+    r
+}"#,
+    refused("'b: TomlData refuses { k: [array, (i64, i64)] }")
 );
 
 // A float key's text keeps its point, so a whole one reads back as the

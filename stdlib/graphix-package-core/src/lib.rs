@@ -635,12 +635,13 @@ fn map_shape<'a>(
         ) || Typ::number().contains(Typ::get(k))
             || rep::variant(k).is_some_and(|(_, payload)| payload.is_empty())
     };
-    // an object's keys read back as strings, so strings beside keys of
-    // another class, or a key type that may write both, take pairs
+    // an object's keys read back as text, so strings beside keys of
+    // another class, or other keys of a type that may read a text as a
+    // string, take pairs
     let strings =
         pairs.iter().filter(|(k, _, _, _)| matches!(k, Value::String(_))).count();
     let one_class = strings == pairs.len()
-        || (strings == 0 && !key_type.is_some_and(|t| t.may_write_string(env)));
+        || (strings == 0 && !key_type.is_some_and(|t| t.may_read_text_as_string(env)));
     if one_class && pairs.iter().all(|(k, _, _, _)| scalar(k)) {
         Ok(Shape::Object(
             pairs
