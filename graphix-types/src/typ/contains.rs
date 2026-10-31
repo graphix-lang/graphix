@@ -2733,38 +2733,6 @@ impl Type {
                     hist.cycled = true;
                     Ok(false)
                 }
-                // XCR claude for claude: [bug/high] A cycle through cells
-                // alone answers true and keeps neither relation, so the
-                // cells stay apart and a later write decides one of them
-                // alone: `type B<'p> = Abstract<'p>; let x = B(1); let y =
-                // B(t ~ x.0); x <- y; y <- B(t ~ "a"); println(x.0 + 1)`
-                // checks ('p0 binds i64, 'p1 settles to [i64, string]) and
-                // runs `"a" + 1`: it prints 2, 2, then 1 (an arith error
-                // under --no-fusion), on main too. Eric's ruling on
-                // (lower-cycle-01) says the cells of a bare cycle merge:
-                // every cell on the path is one type, so the fix merges them
-                // all and drops the merged cell's bounds that are itself (a
-                // union holding it collapses, as `'r ⊇ [T, 'r]` does).
-                // Merging t0 and t1 alone leaves a cycle through any cells
-                // between them. No fixture before
-                // `lang::types::payload_cycle_of_cells` reached this arm.
-                // probe: ~/tmp/cr29/scratch/laneL/r3/bare4.gx (bare-cycle-01)
-                // 2026-10-31 claude: Fixed: contains::merge_bare_cycle makes
-                // every cell on the bare paths one type (tvar::bare_path finds
-                // them, every path, so a three-cell cycle merges all three);
-                // each open cell first drops its bounds that are cells of the
-                // cycle (TVar::drop_bounds_on: a union lower bound keeps its
-                // other members, a conjunct union holding one is dropped), the
-                // open cells merge, a bound cell on the path holds the merged
-                // cell from below, and two declared vars on one cycle are
-                // refused. bare4 is now refused at x.0 + 1 ('cannot compute
-                // [i64, string] + i64'), as main refuses the cycle-free x =
-                // B(1); x <- B(t ~ "a"). Pins that fail without it:
-                // lang::types::bare_cycle_{written,holds_every_write,written_before_it_closes,of_three_cells,of_three_cells_written_last,through_two_abstracts,through_a_function,through_an_identity,in_a_definition,through_a_union,through_a_typedef_parameter,written_through_a_reference}
-                // (all four modes) and
-                // typ::contains::tests::bare_cycle_through_{a_bound_cell_merges,a_declared_var_merges_into_it}.
-                // No program in book/src/examples or graphix-fuzz/findings
-                // reaches the arm.
                 Cycle::Bare => merge_bare_cycle(flags, env, hist, paths),
             }
         };
