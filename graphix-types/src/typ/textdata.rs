@@ -1144,6 +1144,17 @@ impl<'a> Shapes<'a> {
             // Under (b) such a from_value is trusted to read a key's text and the map is a
             // table again. With from_value left out (wr1_toml.gx) the map is a table and
             // reads back.
+            // 2026-10-31 claude: Round 6 review (review7 B r6): more of the write-side class
+            // the correction note above names. type Ito = Abstract<i64> with to_value = |x| x.0
+            // and from_value left out: Map<[Ito, u8], i64>, Map<[Ito, datetime], i64> and
+            // Map<[Ito, duration], i64> are admitted in JSON and TOML and read the key Ito(3)
+            // back as u8:3, as datetime 1970-01-01T00:00:03Z and as 3.s; main admits all three
+            // and misreads them alike. The map's key forms are judged right (Ito reads a key's
+            // text as its representation does); what to_value writes is trusted. Probes:
+            // ~/tmp/cr29/scratch/review7/B/r6/rt/ito_u8_json.gx, ito_u8_toml.gx,
+            // ito_dt_json.gx, ito_dt_toml.gx, ito_dur_json.gx, ito_dur_toml.gx; results
+            // ~/tmp/cr29/scratch/review7/B/r6/ito.txt. The ruling's write-side options decide
+            // them.
             Type::Abstract { id, params } => {
                 let writes = self.env.written_as_representation(*id);
                 let reads_rep = self.env.read_as_representation(*id);
@@ -1937,47 +1948,77 @@ impl Type {
     /// representation reads it. A text writer writes a map keyed by such a
     /// type as pairs where any key is not a string, an object's keys being
     /// text, and textdata judges the forms it writes by this
-    /// (`Shapes::key_forms`).
+    /// (`Shapes::key_forms`). The walk expands each named type once per
+    /// list of arguments and each abstract once, however many ways lead
+    /// there.
     pub fn may_read_text_as_string(&self, env: &Env) -> bool {
-        fn go(
-            env: &Env,
-            t: &Type,
-            path: &mut Vec<(AbstractId, usize)>,
-            seen: &mut AHashSet<Type>,
-        ) -> bool {
-            crate::stack::ensure_sufficient(|| match t {
-                Type::TVar(tv) => tv.binding().is_none_or(|b| go(env, &b, path, seen)),
-                Type::Ref(_) => {
-                    t.lookup_ref(env).map_or(true, |b| go(env, &b, path, seen))
-                }
-                Type::Set(ms) => ms.iter().any(|m| go(env, m, path, seen)),
-                Type::Primitive(p) => p.contains(Typ::String),
-                Type::Any | Type::App(..) | Type::Hole | Type::Bound(_) => true,
-                Type::Abstract { id, params } => {
-                    let rep = match env.abstract_reps.get(id) {
-                        Some(r) if env.read_as_representation(*id) => {
-                            r.instantiate_with(params)
-                        }
-                        _ => return true,
-                    };
-                    if !seen.insert(t.clone()) {
-                        return false;
-                    }
-                    let size = params_size(params);
-                    if grows_on(path, id, size) {
-                        return true;
-                    }
-                    path.push((*id, size));
-                    let r = go(env, &rep, path, seen);
-                    path.pop();
-                    r
-                }
-                _ => false,
-            })
+        TextAsString::new(env).reads(self)
+    }
+}
+
+/// The walk of [`Type::may_read_text_as_string`]. A type met again
+/// answers no: the walk answers yes as soon as any member does, so a
+/// type is met again only where its first visit said no or is under way.
+struct TextAsString<'a> {
+    env: &'a Env,
+    path: LPooled<Vec<(AbstractId, usize)>>,
+    abstracts: LPooled<AHashSet<Type>>,
+    refs: LPooled<AHashSet<(usize, Arc<[Type]>)>>,
+    #[cfg(test)]
+    steps: usize,
+}
+
+impl<'a> TextAsString<'a> {
+    fn new(env: &'a Env) -> Self {
+        TextAsString {
+            env,
+            path: LPooled::take(),
+            abstracts: LPooled::take(),
+            refs: LPooled::take(),
+            #[cfg(test)]
+            steps: 0,
         }
-        let mut path: LPooled<Vec<(AbstractId, usize)>> = LPooled::take();
-        let mut seen: LPooled<AHashSet<Type>> = LPooled::take();
-        go(env, self, &mut path, &mut seen)
+    }
+
+    fn reads(&mut self, t: &Type) -> bool {
+        #[cfg(test)]
+        {
+            self.steps += 1;
+        }
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => tv.binding().is_none_or(|b| self.reads(&b)),
+            Type::Ref(tr) => {
+                let Some(def) = tr.resolve_peek(self.env) else { return true };
+                let Some(known) = def.bindings(&tr.params) else { return true };
+                if !self.refs.insert((def.def_key(), tr.params.clone())) {
+                    return false;
+                }
+                self.reads(&def.typ.replace_tvars(&known))
+            }
+            Type::Set(ms) => ms.iter().any(|m| self.reads(m)),
+            Type::Primitive(p) => p.contains(Typ::String),
+            Type::Any | Type::App(..) | Type::Hole | Type::Bound(_) => true,
+            Type::Abstract { id, params } => {
+                let rep = match self.env.abstract_reps.get(id) {
+                    Some(r) if self.env.read_as_representation(*id) => {
+                        r.instantiate_with(params)
+                    }
+                    _ => return true,
+                };
+                if !self.abstracts.insert(t.clone()) {
+                    return false;
+                }
+                let size = params_size(params);
+                if grows_on(&self.path, id, size) {
+                    return true;
+                }
+                self.path.push((*id, size));
+                let r = self.reads(&rep);
+                self.path.pop();
+                r
+            }
+            _ => false,
+        })
     }
 }
 
@@ -2214,6 +2255,27 @@ mod test {
             rx.recv_timeout(std::time::Duration::from_secs(300)).expect("hung");
         assert!(ambiguous);
         assert!(walked <= 8 * nodes, "{walked} steps over {nodes} nodes");
+    }
+
+    // Whether a key type reads a text as a string, which the check and
+    // the writer ask of every map, expands each named type once however
+    // many ways lead there. The wall limit is only a hang guard; the
+    // count is the pin.
+    #[test]
+    fn reading_a_key_as_text_meets_each_type_once() {
+        const N: usize = 32;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (env, t) = dag(N);
+            let Type::Map { key, .. } = &t else { panic!("{t} is not a map") };
+            let mut w = TextAsString::new(&env);
+            tx.send((w.reads(key), w.steps)).unwrap()
+        });
+        let (reads, steps) =
+            rx.recv_timeout(std::time::Duration::from_secs(300)).expect("hung");
+        assert!(!reads);
+        let defs = 2 * (N + 1);
+        assert!(steps <= 4 * defs, "{steps} steps over {defs} typedefs");
     }
 
     // A union member of a union is tried in the pass of the members keeping

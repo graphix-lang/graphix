@@ -2902,14 +2902,6 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
     })
 }
 
-/// `v` as the primitive `t`, exactly or not at all. A number, a bool (1 or
-/// 0), a datetime (Unix seconds) and a duration (seconds) convert to a
-/// number, a number
-/// to a datetime or a duration (an integer target holds it exactly, a
-/// fraction is dropped), a string to what it parses as, a number, bool,
-/// datetime or duration to its plain printed form, a decimal to the float
-/// nearest it, and an array of numbers to bytes. Nothing converts to null
-/// or to an error.
 /// Whether unmarked struct data, `[name, value]` pairs, reads into the
 /// fields `fs` with each value in its own class.
 fn fields_in_own_class(
@@ -2929,6 +2921,14 @@ fn fields_in_own_class(
     })
 }
 
+/// `v` as the primitive `t`, exactly or not at all. A number converts to
+/// a number, and a bool (1 or 0), a datetime (Unix seconds) and a
+/// duration (seconds) to an integer or a float, never a decimal; a number
+/// to a datetime or a duration (an integer target holds it exactly, a
+/// fraction is dropped), a string to what it parses as, a number, bool,
+/// datetime or duration to its plain printed form, a decimal to the float
+/// nearest it, and an array of numbers to bytes. Nothing converts to null
+/// or to an error.
 fn convert(v: Value, t: Typ) -> Option<Value> {
     match (&v, t) {
         (_, Typ::Null | Typ::Error) => None,

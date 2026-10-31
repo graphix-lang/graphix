@@ -92,6 +92,8 @@ back as `S("A")`. The primitive `array` holds an array of any data, so it
 is refused beside a member that reads an array: `[array, (i64, i64)]`
 reads `[1, 2]` back as `(1, 2)`, and `` [array, `A(i64)] `` reads `["A",
 2]` back as `` `A(2) ``; `[array, i64, string, null]` reads back.
+Beside an `Array<..>` it is refused as any two members that write one
+value are, `[Array<i64>, Array<string>]` among them: both write `[]`.
 Members JSON writes apart are fine: `[i64, f64]` (an integer and a number
 with a fraction), `[f32, u16]` (an integer no wider than 16 bits holds
 no `f32` text the `f32` does not hold too, and a real member takes it
@@ -140,7 +142,8 @@ or bare variant tags is an object, unless it holds strings beside keys of
 another kind, or its key type may read a key's text as a string while its
 keys are not all strings: an object's keys read back as text, so `{1 =>
 10, "1" => 20}` could not. A key type may read a text as a string where it
-holds `string` or `Any`; an abstract key type does where its
+holds `string`, `Any` or a type not known where the map is written (an
+open type variable); an abstract key type does where its
 representation does, when its `Cast` implementation leaves `from_value`
 out (what its `to_value` writes does not matter), and may where
 `from_value` is written. If any key has another form, or the keys mix

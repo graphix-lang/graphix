@@ -819,7 +819,10 @@ representation (whether it may write a tag, a key's forms, a field
 name, an entry) is a fold over the nodes it reaches that
 way, each met once (`Shapes::reach`, memoized per node): an abstract
 holding itself (``type N = Abstract<[N, `L(i64)]>``) ends the walk, and
-a key type whose unions share members costs a few steps a node. A
+a key type whose unions share members costs a few steps a node. Whether
+a key type may read a text as a string, which a key's forms also ask, is
+a walk that expands each named type once per list of arguments and each
+abstract once (`TextAsString`), so it costs the same. A
 typedef is expanded once for each list of arguments it is applied to
 (`Shapes::refs`, keyed by the arguments' types), so `R<i64>` over
 ``type R<'a> = [`Nil, `Cons('a, R<'a>)]`` is one cycle; one whose
