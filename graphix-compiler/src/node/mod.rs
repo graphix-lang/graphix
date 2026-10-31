@@ -1915,7 +1915,9 @@ fn lower_shown(t: &Type) -> Type {
 
 fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow::Error {
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
-    let (held, written) = (deref(&bind.typ), lower_shown(&deref(written)));
+    let (held, written) = (deref(&bind.typ), deref(written));
+    let infinite = held.meets_itself(&written);
+    let written = lower_shown(&written);
     let both = Type::Set(Arc::from_iter([held.clone(), written.clone()])).normalize();
     let inferred = match &bind.typ {
         Type::TVar(tv) if tv.bottom_fed() => ", inferred from an earlier use,",
@@ -1948,6 +1950,10 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
     };
     // a name a destructuring let binds is declared by the pattern's type
     let declare = match bind.binder {
+        _ if infinite => format_compact!(
+            "no finite type holds both: declare a named recursive type for {name} \
+             where it is bound"
+        ),
         Some(env::Binder::LetPattern) => format_compact!(
             "annotate the let's pattern type with {name}'s position as {both}"
         ),

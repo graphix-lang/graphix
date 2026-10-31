@@ -3984,6 +3984,102 @@ const PAYLOAD_CYCLE_OF_CELLS: &str = r#"
 
 run!(payload_cycle_of_cells, PAYLOAD_CYCLE_OF_CELLS, is(Value::I64(2)));
 
+// A typedef that names one of its parameters' typedefs twice holds the
+// parameter under that typedef's constructor at the second name too.
+const PAYLOAD_CYCLE_THROUGH_A_TYPEDEF_NAMED_TWICE: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    type Q<'b> = Array<'b>;
+    type P<'a> = [Q<i64>, Q<'a>];
+    let mk = |x: 'a| -> [P<'a>, null] [x];
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = B(1);
+    b <- B(mk(t ~ b.0));
+    b
+}
+"#;
+
+run!(
+    payload_cycle_through_a_typedef_named_twice,
+    PAYLOAD_CYCLE_THROUGH_A_TYPEDEF_NAMED_TWICE,
+    holds_itself(
+        "b is B<i64> and cannot hold B<[null, P<'",
+        "no finite type holds both: declare a named recursive type for b"
+    );
+    FuseExpect::None
+);
+
+// A cell above an array of another cell and above that cell is no cycle:
+// a lower bound closes one only down from the cell below or up from the
+// cell above.
+const LOWER_BOUNDS_BESIDE_AN_ARRAY_OF_THEMSELVES: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b = B([x]);
+    b <- B([[x]]);
+    let v = array::map(b.0, |e| select e {
+        i64 as n => n + 1,
+        Array<i64> as a => array::len(a) * 100
+    });
+    x <- t ~ 1;
+    let seen = [];
+    seen <- array::window(#n: 2, v ~ seen, v);
+    select array::len(seen) { 2 => seen, _ => never() }
+}
+"#;
+
+run!(
+    lower_bounds_beside_an_array_of_themselves,
+    LOWER_BOUNDS_BESIDE_AN_ARRAY_OF_THEMSELVES,
+    prints("[[i64:2], [i64:100]]")
+);
+
+// A select's two arms meeting under arithmetic merge a cell with one
+// above an array of it.
+const MERGE_UNDER_A_CONSTRUCTOR: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let c = true;
+    let y = never();
+    let b = B([y]);
+    let u = select c { true => b.0, false => y };
+    let r = u + u;
+    y <- t ~ 1;
+    r
+}
+"#;
+
+run!(
+    merge_under_a_constructor,
+    MERGE_UNDER_A_CONSTRUCTOR,
+    refused("unsatisfiable constraints on '");
+    FuseExpect::None
+);
+
+const MERGE_UNDER_A_CONSTRUCTOR_IN_A_CALL: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let c = true;
+    let y = never();
+    let b = B([y]);
+    let g = |a, z| { let u = select c { true => a, false => z }; u + u };
+    let r = g(b.0, y);
+    y <- t ~ 1;
+    r
+}
+"#;
+
+run!(
+    merge_under_a_constructor_in_a_call,
+    MERGE_UNDER_A_CONSTRUCTOR_IN_A_CALL,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
 /// A union of a bare variable and a constructor of it places every
 /// member: when the constructor's first fit would strand one, the
 /// deepest member fit decides the variable.

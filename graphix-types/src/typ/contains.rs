@@ -10,7 +10,9 @@ use crate::{
         Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
         node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
-        tvar::{CellFact, Cycle, Fresh, RigidGate, cycle_through, would_cycle_inner},
+        tvar::{
+            CellFact, Cycle, Fresh, RigidGate, Toward, cycle_toward, would_cycle_inner,
+        },
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -1373,6 +1375,64 @@ impl Type {
         }
     }
 
+    /// Whether an open cell of `self` meets, at its place in `t`, a part
+    /// holding the cell under a constructor: `self` cannot hold `t` as no
+    /// finite type holds itself, and no union of the two would.
+    pub fn meets_itself(&self, t: &Self) -> bool {
+        fn go(s: &Type, t: &Type, seen: &mut AHashSet<(usize, usize)>) -> bool {
+            ensure_sufficient(|| {
+                if let (Some(a), Some(b)) = (node_addr(s), node_addr(t))
+                    && !seen.insert((a, b))
+                {
+                    return false;
+                }
+                let zip = |a: &[Type], b: &[Type], seen: &mut AHashSet<_>| {
+                    a.len() == b.len()
+                        && a.iter().zip(b.iter()).any(|(a, b)| go(a, b, seen))
+                };
+                match (s, t) {
+                    (Type::TVar(tv), t) => match tv.binding() {
+                        Some(b) => go(&b, t, seen),
+                        None => {
+                            !matches!(t, Type::TVar(u) if u.same_cell(tv))
+                                && cycle_toward(tv.cell_addr(), t, Toward::Any)
+                                    == Some(Cycle::Constructor)
+                        }
+                    },
+                    (s, Type::TVar(tv)) => tv.binding().is_some_and(|b| go(s, &b, seen)),
+                    (Type::Set(ms), t) => ms.iter().any(|m| go(m, t, seen)),
+                    (s, Type::Set(ms)) => ms.iter().any(|m| go(s, m, seen)),
+                    (Type::Array(a), Type::Array(b))
+                    | (Type::List(a), Type::List(b))
+                    | (Type::Error(a), Type::Error(b))
+                    | (Type::ByRef(_, a), Type::ByRef(_, b)) => go(a, b, seen),
+                    (
+                        Type::Map { key: k0, value: v0 },
+                        Type::Map { key: k1, value: v1 },
+                    ) => go(k0, k1, seen) || go(v0, v1, seen),
+                    (Type::Tuple(a), Type::Tuple(b)) => zip(a, b, seen),
+                    (Type::Variant(n0, a, _), Type::Variant(n1, b, _)) if n0 == n1 => {
+                        zip(a, b, seen)
+                    }
+                    (
+                        Type::Abstract { id: i0, params: a },
+                        Type::Abstract { id: i1, params: b },
+                    ) if i0 == i1 => zip(a, b, seen),
+                    (Type::Ref(r0), Type::Ref(r1)) if r0.same_definition(r1) => {
+                        zip(&r0.params, &r1.params, seen)
+                    }
+                    (Type::Struct(a), Type::Struct(b)) => a.iter().any(|(n, x, _)| {
+                        b.iter()
+                            .find(|(m, _, _)| m == n)
+                            .is_some_and(|(_, y, _)| go(x, y, seen))
+                    }),
+                    _ => false,
+                }
+            })
+        }
+        go(self, t, &mut LPooled::take())
+    }
+
     fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
         // A refused open cell on either side is the infinite type,
         // surfacing at a consumer; report it as the settle path does.
@@ -2336,11 +2396,13 @@ impl Type {
     }
 
     /// Two distinct cells. Occurs checks run only where a cell would
-    /// bind or alias: an open cell meeting a bound cell whose binding
-    /// reaches it is the μ-shape through a binding (a copy would bind
-    /// the infinite type, so the binding is walked, where `'r ⊇ [T,
+    /// bind, alias or take a lower bound, the last along the relation's
+    /// direction ([`Toward`]): an open cell meeting a bound cell whose
+    /// binding reaches it is the μ-shape through a binding (a copy would
+    /// bind the infinite type, so the binding is walked, where `'r ⊇ [T,
     /// 'r]` collapses); any other cycle under a constructor is refused,
-    /// and one through cells and unions alone holds ([`Cycle::Bare`]).
+    /// and one through cells and unions alone is accepted, unrecorded
+    /// ([`Cycle::Bare`]).
     fn contains_tvars(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -2351,8 +2413,13 @@ impl Type {
         let commit = flags.contains(ContainsFlags::Commit);
         let rigid = flags.contains(ContainsFlags::RigidCheck);
         let (addr0, addr1) = (t0.cell_addr(), t1.cell_addr());
-        let cyc0 = || cycle_through(addr0, tt1);
-        let cyc1 = || cycle_through(addr1, tt0);
+        // `t0` takes `t1` as a lower bound, rather than a merge or a bind
+        let lower = |t1_rigid: bool| {
+            flags.contains(ContainsFlags::Lower)
+                && !flags.contains(ContainsFlags::Contra)
+                && !t0.is_rigid()
+                && !t1_rigid
+        };
         // A cycle under a constructor has no finite solution. A bare one
         // answers true and keeps neither relation; a commit records it on
         // both cells.
@@ -2401,7 +2468,8 @@ impl Type {
                 if would_cycle_inner(addr0, tt1) {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
-                if let Some(cycle) = cyc1() {
+                let up = if lower(false) { Toward::Above } else { Toward::Any };
+                if let Some(cycle) = cycle_toward(addr1, tt0, up) {
                     return refuse(cycle);
                 }
                 // A rigid receiver must not bind; re-verdict against
@@ -2409,10 +2477,7 @@ impl Type {
                 if (rigid || commit) && t0.is_rigid() {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
-                if flags.contains(ContainsFlags::Lower)
-                    && !flags.contains(ContainsFlags::Contra)
-                    && !t0.is_rigid()
-                {
+                if lower(false) {
                     if !conjuncts_admit(t0, flags, env, hist, &b1)? {
                         return Ok(false);
                     }
@@ -2445,7 +2510,7 @@ impl Type {
                 if would_cycle_inner(addr1, tt0) {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
-                if let Some(cycle) = cyc0() {
+                if let Some(cycle) = cycle_toward(addr0, tt1, Toward::Any) {
                     return refuse(cycle);
                 }
                 if (rigid || commit) && t1.is_rigid() {
@@ -2526,7 +2591,31 @@ impl Type {
                 // one writes B({v: 1}) into a B<i64>); array_cycle(_known,
                 // _through_a_let) and payload_cycle_of_cells unchanged; the
                 // mu-shape pins rec_block_*_collapses pass. Needs a soak.
-                if let Some(cycle) = cyc0().max(cyc1()) {
+                // 2026-10-30 claude: Round 2 (review7 L2): a lower bound's
+                // occurs check follows its direction (tvar::cycle_toward,
+                // Toward): t0 above t1 closes a cycle only down from t1
+                // (binding, lower bounds) or up from t0 (binding, conjuncts),
+                // so a cell above both Array<x> and x is no cycle (pin
+                // lang::types::lower_bounds_beside_an_array_of_themselves,
+                // refused by the first fix, accepted on main).
+                // ResolvedRef::param_guarded memoizes each (typedef, parameter)
+                // answer instead of answering false at a second visit, so P<'a>
+                // = [Q<i64>, Q<'a>] guards 'a (pin
+                // payload_cycle_through_a_typedef_named_twice, accepted on main
+                // and by the first fix: B(1) then [1], the engines
+                // disagreeing). A write refused for an infinite type says to
+                // declare a named recursive type, not the union
+                // (Type::meets_itself). Pins
+                // merge_under_a_constructor(_in_a_call) cover the Singleton
+                // merge's guard in TVar::alias (the second runs a wrong answer
+                // on main). Needs a soak.
+                let (down, up) = match lower(t1.is_rigid()) {
+                    true => (Toward::Below, Toward::Above),
+                    false => (Toward::Any, Toward::Any),
+                };
+                if let Some(cycle) =
+                    cycle_toward(addr0, tt1, down).max(cycle_toward(addr1, tt0, up))
+                {
                     return refuse(cycle);
                 }
                 if !quantifier_admits(env, t0, t1) || !quantifier_admits(env, t1, t0) {
@@ -2534,11 +2623,7 @@ impl Type {
                 }
                 // an open cell below is bounded by what bounds `t0`, as a
                 // merge would have it; a declared one is merged
-                if flags.contains(ContainsFlags::Lower)
-                    && !flags.contains(ContainsFlags::Contra)
-                    && !t0.is_rigid()
-                    && !t1.is_rigid()
-                {
+                if lower(t1.is_rigid()) {
                     if commit {
                         for c in t0.cell_constraints() {
                             t1.add_cell_constraint(c)

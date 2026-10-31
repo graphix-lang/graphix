@@ -5,7 +5,10 @@ use crate::{
     expr::{ModPath, TypeDefBody},
     image,
     stack::ensure_sufficient,
-    typ::{Bound, PRINT_FLAGS, PrintFlag, Type, node_addr, setops::union_identical},
+    typ::{
+        Bound, Mutability, PRINT_FLAGS, PrintFlag, Type, node_addr,
+        setops::union_identical,
+    },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Error, Result, anyhow, bail};
@@ -119,10 +122,10 @@ fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
 }
 
 pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
-    CycleWalk::new(addr, false).go(t, false).is_break()
+    CycleWalk::new(addr, false).go(t, Toward::Any, false).is_break()
 }
 
-/// How a type reaches a cell along the edges [`would_cycle_inner`] walks.
+/// How a type reaches a cell ([`cycle_toward`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Cycle {
     /// Through cells and unions alone: the cells are one type.
@@ -133,90 +136,149 @@ pub(super) enum Cycle {
     Constructor,
 }
 
-/// How `t` reaches the cell at `addr`, a constructor path over a bare
-/// one; `None` where [`would_cycle_inner`] is false.
-pub(super) fn cycle_through(addr: usize, t: &Type) -> Option<Cycle> {
+/// The edges a walk takes from a cell, by the relation it checks. A
+/// bind or a merge makes the cells one type, so it takes every edge. A
+/// lower bound `t0 ⊇ t1` closes a cycle only down from `t1` (its binding
+/// and lower bounds) or up from `t0` (its binding and conjuncts): a
+/// contravariant part turns the walk round, and a part of unknown or no
+/// variance (invariant, a typedef's parameter) takes every edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Toward {
+    Any,
+    Below,
+    Above,
+}
+
+impl Toward {
+    fn flip(self) -> Self {
+        match self {
+            Self::Any => Self::Any,
+            Self::Below => Self::Above,
+            Self::Above => Self::Below,
+        }
+    }
+}
+
+/// How `t` reaches the cell at `addr` by the edges `toward` takes, a
+/// constructor path over a bare one.
+pub(super) fn cycle_toward(addr: usize, t: &Type, toward: Toward) -> Option<Cycle> {
     if !would_cycle_inner(addr, t) {
         return None;
     }
-    Some(match CycleWalk::new(addr, true).go(t, false) {
-        ControlFlow::Break(()) => Cycle::Constructor,
-        ControlFlow::Continue(()) => Cycle::Bare,
-    })
+    let mut walk = CycleWalk::new(addr, true);
+    match walk.go(t, toward, false) {
+        ControlFlow::Break(()) => Some(Cycle::Constructor),
+        ControlFlow::Continue(()) => walk.bare.then_some(Cycle::Bare),
+    }
+}
+
+enum Visits {
+    /// Each node and cell once.
+    Once(LPooled<AddrSet>),
+    /// Each node and cell once per direction and per being under a
+    /// constructor: a visit in one state may reach the cell only in
+    /// another.
+    PerState(LPooled<AHashSet<(usize, u8)>>),
 }
 
 /// A walk from a type to the cell at `addr` through bindings, conjuncts
-/// and lower bounds. It breaks at the first path or, tracking, at the
-/// first path under a constructor.
+/// and lower bounds. Untracked, it breaks at the first path; tracking,
+/// at the first path under a constructor, and it records a bare one.
 struct CycleWalk {
     addr: usize,
-    /// Visited nodes and cells.
-    seen: LPooled<AddrSet>,
-    /// Tracking, the visits under a constructor: another state of the
-    /// walk than a visit of the same node that is not.
-    seen_under: Option<LPooled<AddrSet>>,
+    visits: Visits,
+    bare: bool,
 }
 
 impl CycleWalk {
     fn new(addr: usize, track: bool) -> Self {
-        Self { addr, seen: LPooled::take(), seen_under: track.then(LPooled::take) }
+        let visits = match track {
+            false => Visits::Once(LPooled::take()),
+            true => Visits::PerState(LPooled::take()),
+        };
+        Self { addr, visits, bare: false }
     }
 
-    fn visit(&mut self, key: usize, under: bool) -> bool {
-        match &mut self.seen_under {
-            Some(seen) if under => seen.insert(key),
-            _ => self.seen.insert(key),
+    fn tracking(&self) -> bool {
+        matches!(self.visits, Visits::PerState(_))
+    }
+
+    fn visit(&mut self, key: usize, toward: Toward, under: bool) -> bool {
+        match &mut self.visits {
+            Visits::Once(seen) => seen.insert(key),
+            Visits::PerState(seen) => seen.insert((key, toward as u8 * 2 + under as u8)),
         }
     }
 
-    fn go(&mut self, t: &Type, under: bool) -> ControlFlow<()> {
+    fn go(&mut self, t: &Type, toward: Toward, under: bool) -> ControlFlow<()> {
         ensure_sufficient(|| {
             if let Some(node) = node_addr(t)
-                && !self.visit(node, under)
+                && !self.visit(node, toward, under)
             {
                 return ControlFlow::Continue(());
             }
+            // tracking, a constructor's parts are under it
+            let parts_under = self.tracking();
             match t {
-                Type::Set(ms) => ms.iter().try_for_each(|m| self.go(m, under)),
+                Type::Set(ms) => ms.iter().try_for_each(|m| self.go(m, toward, under)),
                 // a typedef body's free tvars are its params, so the params
                 // reach every cell its expansion does
                 Type::Ref(r) => {
-                    let def = self.seen_under.as_ref().and_then(|_| r.resolved());
+                    let def = parts_under.then(|| r.resolved()).flatten();
                     r.params.iter().enumerate().try_for_each(|(i, p)| {
-                        let guarded = def.as_ref().is_some_and(|d| d.param_guarded(i));
-                        self.go(p, under || guarded)
+                        let guarded =
+                            under || def.as_ref().is_some_and(|d| d.param_guarded(i));
+                        self.go(p, Toward::Any, guarded)
                     })
                 }
                 Type::TVar(tv) => {
                     let cell = tv.cell();
                     let cell_addr = cell.data_ptr().addr();
                     if cell_addr == self.addr {
-                        return match under || self.seen_under.is_none() {
-                            true => ControlFlow::Break(()),
-                            false => ControlFlow::Continue(()),
-                        };
+                        if under || !parts_under {
+                            return ControlFlow::Break(());
+                        }
+                        self.bare = true;
+                        return ControlFlow::Continue(());
                     }
-                    if !self.visit(cell_addr, under) {
+                    if !self.visit(cell_addr, toward, under) {
                         return ControlFlow::Continue(());
                     }
                     let (binding, cons, below) = {
                         let cell = cell.read();
+                        let (up, down) = match toward {
+                            Toward::Any => (true, true),
+                            Toward::Above => (true, false),
+                            Toward::Below => (false, true),
+                        };
                         (
                             cell.binding.clone(),
-                            cell.constraints.clone(),
-                            cell.lower.clone(),
+                            up.then(|| cell.constraints.clone()).unwrap_or_default(),
+                            down.then(|| cell.lower.clone()).unwrap_or_default(),
                         )
                     };
                     binding
                         .iter()
                         .chain(cons.iter())
                         .chain(below.iter())
-                        .try_for_each(|c| self.go(c, under))
+                        .try_for_each(|c| self.go(c, toward, under))
                 }
-                t => {
-                    let under = self.seen_under.is_some();
-                    t.try_for_each_child(&mut |c| self.go(c, under))
+                Type::Fn(ft) => {
+                    for a in ft.args.iter() {
+                        self.go(&a.typ, toward.flip(), parts_under)?;
+                    }
+                    if let Some(v) = &ft.vargs {
+                        self.go(v, toward.flip(), parts_under)?;
+                    }
+                    self.go(&ft.rtype, toward, parts_under)?;
+                    self.go(&ft.throws, toward, parts_under)
                 }
+                Type::Abstract { .. }
+                | Type::App(..)
+                | Type::ByRef(Mutability::Mut, _) => {
+                    t.try_for_each_child(&mut |c| self.go(c, Toward::Any, parts_under))
+                }
+                t => t.try_for_each_child(&mut |c| self.go(c, toward, parts_under)),
             }
         })
     }
@@ -1198,7 +1260,7 @@ impl TVar {
     /// infinite type when `t` reaches the var's cell under a constructor.
     pub fn refusal_over(slot: &Type, t: &Type, e: Error) -> Error {
         let Type::TVar(tv) = slot else { return e };
-        match cycle_through(tv.cell_addr(), t) {
+        match cycle_toward(tv.cell_addr(), t, Toward::Any) {
             Some(Cycle::Constructor) => anyhow!("{}", super::contains::INFINITE_TYPE_MSG),
             Some(Cycle::Bare) | None => e,
         }

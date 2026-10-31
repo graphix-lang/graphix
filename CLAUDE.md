@@ -444,7 +444,8 @@ self-reference sits under a constructor (`type T = [i64, T]` is refused
 at `Env::deftype`), which is what makes the coinductive ref-pair memos
 sound. An inferred type is finite the same way: a relation that would
 put a cell under a constructor of itself is refused (`b <- B([t ~
-b.0])`), one through cells and unions alone holds (`tvar::cycle_through`,
+b.0])`); a lower bound's check follows its direction, and a cycle
+through cells and unions alone is accepted (`tvar::cycle_toward`,
 `design/tvar_constraints.md`).
 A cast to an integer type, a type-directed read's included, holds the
 value exactly or is an `InvalidCast` (a float drops its fraction; a

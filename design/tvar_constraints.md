@@ -316,30 +316,42 @@ An image carries each cell's level and each definition's depth.
 Before a cell binds, takes a lower bound or merges with another, the
 check walks from the other side to it through bindings, conjuncts and
 lower bounds (`tvar::would_cycle_inner`); where the walk reaches it,
-`tvar::cycle_through` says how. Where two cells meet
-(`contains_tvars`):
+`tvar::cycle_toward` says how. A bind or a merge makes the two sides one
+type, so its walk takes every edge. A lower bound `t0 ⊇ t1` closes a
+cycle only down from `t1` (its binding, its lower bounds, and the
+covariant parts of what they hold) or up from `t0` (its binding and
+conjuncts): `'p` above both `Array<'x>` and `'x` is `[Array<'x>, 'x]`, no
+cycle (pin `lang::types::lower_bounds_beside_an_array_of_themselves`).
+A contravariant part turns the walk round; an invariant part (an
+abstract's parameter, `&mut`, a constructor application) and a typedef's
+parameter take every edge. Where two cells meet (`contains_tvars`):
 
 - A path through a constructor's part (an element, a field, a payload,
   a function's argument or result, a referent, an abstract's
-  parameter, a typedef parameter its body holds under a constructor):
-  the cell would hold itself, which no finite type does, as no
-  non-contractive typedef does. The relation is refused. `b <- B([t ~
-  b.0])` over `B([])` (`type B<'p> = Abstract<'p>`) asks `'p ⊇ 'q`
-  with `'q` above `Array<'p>`, and is refused as `b <- [t ~ b]` is
-  (pins `lang::types::payload_cycle_*`, `array_cycle*`).
+  parameter, a typedef parameter its body holds under a constructor,
+  through every typedef it names): the cell would hold itself, which no
+  finite type does, as no non-contractive typedef does. The relation is
+  refused. `b <- B([t ~ b.0])` over `B([])` (`type B<'p> =
+  Abstract<'p>`) asks `'p ⊇ 'q` with `'q` above `Array<'p>`, and is
+  refused as `b <- [t ~ b]` is (pins `lang::types::payload_cycle_*`,
+  `array_cycle*`). A write so refused says no finite type holds both
+  and to declare a named recursive type (`type X = Array<X>`), never a
+  union of the two (`Type::meets_itself`).
 - An open cell meeting a bound cell whose binding reaches it walks the
   binding, where a union collapses (`'r ⊇ [T, 'r]` binds `'r := T`;
   pins `lang::types::rec_block_*_collapses`).
 - A path through cells and unions alone otherwise (`'p` above `'q`
-  above `'p`): the relation holds and neither cell records it; a commit
-  marks both `CellFact::CycleRefused`, and one still open at the
+  above `'p`): the relation is accepted and neither cell records it; a
+  commit marks both `CellFact::CycleRefused`, and one still open at the
   terminal settle is refused as the infinite type (pin
   `lang::types::payload_cycle_of_cells`).
 
 The merges' own guards (`TVar::alias`, `alias_cells`, `copy`) skip a
-merge that would close a cycle and mark the cells the same way: the
-relations that reach them were checked here first, and a written
-type's names or a union's open members cannot be refused there.
+merge that would close a cycle and mark the cells the same way. Most
+relations that reach them were checked here first; a `Singleton`
+bound's merge of a union's open members was not, and the mark leaves
+such a program refused later, at the settle or by the bound (pins
+`lang::types::merge_under_a_constructor*`).
 
 ### `Concrete`: a conjunct that is a predicate
 
