@@ -303,6 +303,36 @@ run!(
     refused("'b: TomlData refuses { k: [(i64, f64), (string, f32)] }")
 );
 
+run!(
+    toml_target_recursive_members_refused,
+    r#"{
+    type TA = [i64, `Cons(f32, TA)];
+    type TB = [f64, `Cons(f64, TB)];
+    let v: [TA, TB] = `Cons(f32:0.1, 3);
+    let r: Result<{k: [TA, TB]}, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read(toml::write_str({k: v})$);
+    r
+}"#,
+    refused("'b: TomlData refuses { k: [TA, TB] }")
+);
+
+run!(
+    toml_recursive_members_read_back,
+    r#"{
+    type TA = [`NA, (f32, TA)];
+    type TB = [`NB, (f64, TB)];
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    let rt = |v: [TA, TB]| -> bool {
+        let r: Result<{k: [TA, TB]}, E> = toml::read(toml::write_str({k: v})$);
+        r$.k == v
+    };
+    let a: TA = (f32:0.1, (f32:2.5, `NA));
+    let b: TB = (0.1, (3.0, `NB));
+    [rt(a), rt(b), rt(`NA), rt(`NB)]
+}"#,
+    prints("[true, true, true, true]")
+);
+
 run!(colliding_pair_keys_are_refused, r#"{
     let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
     select toml::write_str({keys: m}) {

@@ -1,12 +1,13 @@
 //! Which unions a text format cannot read back: two members such that a
 //! JSON or TOML value one writes may read back as the other. A reader
-//! picks one member of a union for a value as `cast.rs` does: the round
-//! its reading falls in first (exact, then rounded to a real's precision,
-//! `Holds`), a payload variant whose tag the data names before anything,
-//! the members keeping the data's class before the others (`in_own_class`,
-//! a primitive set in bit order), then the union's order, where a reading
-//! that crosses the line between integers and reals gives way to a later
-//! one keeping every number its kind (`Choice`). Values are judged by
+//! picks one member of a union for a value as `cast.rs` does: a payload
+//! variant whose tag the data names first, whatever its reading rounds;
+//! then the round its reading falls in (exact, then rounded to a real's
+//! precision, `Holds`); then the pass, the members keeping the data's
+//! class before the others (`in_own_class`, a primitive set in bit
+//! order); then the union's order, where a reading that crosses the line
+//! between integers and reals gives way to a later one keeping every
+//! number its kind (`Choice`). Values are judged by
 //! class ([`Token`]), and a member's reading of a composite whole:
 //! `[(f32, u8), (f64, f64)]` reads `(f32:0.1, u8:1)` back as `(0.1, 1.0)`,
 //! exact where the f32's own reading rounds; `[(string, f32), (i64, f64)]`
@@ -16,7 +17,7 @@ use crate::{
     env::Env,
     typ::{Typ, Type},
 };
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use smallvec::SmallVec;
@@ -434,8 +435,38 @@ enum Shape {
     Foreign(usize),
 }
 
-type Seen = AHashSet<(usize, bool, usize)>;
-type Side<'s> = &'s dyn Fn(&Shapes, usize, &mut Seen) -> Outs;
+type Side<'s> = &'s dyn Fn(&Shapes, usize) -> Outs;
+
+/// A writer, whether it writes an object's key, and a reader.
+type Pair = (usize, bool, usize);
+
+/// A pair's outcomes so far, the pass that last computed them, whether
+/// that pass is still computing them, and whether they are final.
+#[derive(Clone, Copy)]
+struct Fix {
+    outs: Outs,
+    pass: u32,
+    open: bool,
+    done: bool,
+}
+
+/// [`Shapes::outs`] as the least fixpoint over the pairs a walk meets.
+/// Every pair starts at `Outs::NONE`; a pass computes each pair it meets
+/// once and reads a pair it is still computing as it stood, and passes
+/// repeat until one changes nothing or reads no pair it was computing.
+/// A pair's outcomes only grow (`outs` joins them), so the passes end;
+/// every operation on outcomes maps each outcome or pair of outcomes to
+/// outcomes, so none passes the least fixpoint.
+#[derive(Default)]
+struct Fixpoint {
+    pairs: AHashMap<Pair, Fix>,
+    pass: u32,
+    reread: bool,
+    changed: bool,
+    computed: Vec<Pair>,
+    #[cfg(test)]
+    evaluated: usize,
+}
 
 struct Shapes<'a> {
     env: &'a Env,
@@ -446,9 +477,59 @@ struct Shapes<'a> {
     refs: AHashMap<(usize, SmallVec<[usize; 4]>), usize>,
     /// [`Shapes::class_of`] by reader, writer and key.
     classes: RefCell<AHashMap<(usize, usize, bool), (bool, bool)>>,
+    fix: RefCell<Fixpoint>,
 }
 
 impl<'a> Shapes<'a> {
+    fn new(env: &'a Env, format: Format, t: &Type) -> Self {
+        let mut shapes = Shapes {
+            env,
+            format,
+            nodes: Vec::new(),
+            refs: AHashMap::default(),
+            classes: RefCell::default(),
+            fix: RefCell::default(),
+        };
+        shapes.node(t);
+        shapes
+    }
+
+    /// [`Type::text_ambiguity`] of the type the shapes were built from.
+    fn ambiguity(&self) -> Option<(Type, Type)> {
+        let unions = (0..self.nodes.len()).map(|n| (n, false));
+        let mut keys: SmallVec<[(usize, bool); 4]> = SmallVec::new();
+        for (s, _) in self.nodes.iter() {
+            if let Shape::Pairs(k, _) = s
+                && self.key_forms(*k).0
+            {
+                self.key_unions(*k, &mut keys)
+            }
+        }
+        for (u, key) in unions.chain(keys) {
+            let Shape::Union(ms, prim) = &self.nodes[u].0 else { continue };
+            for (i, a) in ms.iter().enumerate() {
+                for b in ms[i + 1..].iter() {
+                    let hit = match prim {
+                        true => {
+                            self.prim_takes(*a, *b, key) || self.prim_takes(*b, *a, key)
+                        }
+                        false => {
+                            self.takes(*a, *b, key, true)
+                                || self.takes(*b, *a, key, false)
+                        }
+                    };
+                    if hit {
+                        return Some((
+                            self.nodes[*a].1.clone(),
+                            self.nodes[*b].1.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn push(&mut self, s: Shape, t: &Type) -> usize {
         self.nodes.push((s, t.clone()));
         self.nodes.len() - 1
@@ -724,28 +805,21 @@ impl<'a> Shapes<'a> {
     /// How a two-element array is written by `t` (`writer`) or read by it,
     /// `first` and `second` judging each element against the node of `t`
     /// that writes or reads it.
-    fn entry(
-        &self,
-        t: usize,
-        writer: bool,
-        first: Side,
-        second: Side,
-        seen: &mut Seen,
-    ) -> Outs {
+    fn entry(&self, t: usize, writer: bool, first: Side, second: Side) -> Outs {
         match &self.nodes[t].0 {
             Shape::Union(ms, _) => {
-                Outs::any(ms.iter().map(|m| self.entry(*m, writer, first, second, seen)))
+                Outs::any(ms.iter().map(|m| self.entry(*m, writer, first, second)))
             }
             Shape::Foreign(x) => {
                 let bits = if writer { own(false, true) } else { own(true, false) };
-                self.entry(*x, writer, first, second, seen).with(bits)
+                self.entry(*x, writer, first, second).with(bits)
             }
             Shape::Seq(e, o) => {
                 let bits = if writer { own(*o, true) } else { own(true, *o) };
-                first(self, *e, seen).and(second(self, *e, seen)).with(bits)
+                first(self, *e).and(second(self, *e)).with(bits)
             }
             Shape::Fixed(ts, _) if ts.len() == 2 => {
-                first(self, ts[0], seen).and(second(self, ts[1], seen))
+                first(self, ts[0]).and(second(self, ts[1]))
             }
             _ => Outs::NONE,
         }
@@ -817,18 +891,60 @@ impl<'a> Shapes<'a> {
     }
 
     /// How a value `a` writes (as an object's key where `key`) is read by
-    /// `a`'s own member and by `b`. A pair met again along one walk claims
-    /// nothing: a written value is finite.
-    fn outs(&self, a: usize, key: bool, b: usize, seen: &mut Seen) -> Outs {
-        if !seen.insert((a, key, b)) {
-            return Outs::NONE;
+    /// `a`'s own member and by `b`, every pair it reaches final.
+    fn least_outs(&self, a: usize, key: bool, b: usize) -> Outs {
+        loop {
+            {
+                let mut f = self.fix.borrow_mut();
+                f.pass += 1;
+                f.reread = false;
+                f.changed = false;
+                f.computed.clear();
+            }
+            let r = self.outs(a, key, b);
+            let mut f = self.fix.borrow_mut();
+            if !(f.reread && f.changed) {
+                let Fixpoint { pairs, computed, .. } = &mut *f;
+                for p in computed.drain(..) {
+                    pairs.get_mut(&p).expect("computed").done = true
+                }
+                return r;
+            }
         }
-        let r = crate::stack::ensure_sufficient(|| self.outs_int(a, key, b, seen));
-        seen.remove(&(a, key, b));
+    }
+
+    /// [`Self::least_outs`] as this pass of [`Fixpoint`] has it.
+    fn outs(&self, a: usize, key: bool, b: usize) -> Outs {
+        let p = (a, key, b);
+        let prev = {
+            let mut f = self.fix.borrow_mut();
+            let pass = f.pass;
+            let prev = match f.pairs.get(&p).copied() {
+                Some(e) if e.done => return e.outs,
+                Some(e) if e.pass == pass => {
+                    f.reread |= e.open;
+                    return e.outs;
+                }
+                Some(e) => e.outs,
+                None => Outs::NONE,
+            };
+            f.pairs.insert(p, Fix { outs: prev, pass, open: true, done: false });
+            f.computed.push(p);
+            #[cfg(test)]
+            {
+                f.evaluated += 1;
+            }
+            prev
+        };
+        let r = prev.or(crate::stack::ensure_sufficient(|| self.outs_int(a, key, b)));
+        let mut f = self.fix.borrow_mut();
+        f.changed |= r != prev;
+        let pass = f.pass;
+        f.pairs.insert(p, Fix { outs: r, pass, open: false, done: false });
         r
     }
 
-    fn outs_int(&self, a: usize, key: bool, b: usize, seen: &mut Seen) -> Outs {
+    fn outs_int(&self, a: usize, key: bool, b: usize) -> Outs {
         use Shape::*;
         let leaf = |x: Leaf, read: &dyn Fn(Token) -> SmallVec<[u8; 2]>| {
             let mut o = Outs::NONE;
@@ -844,15 +960,15 @@ impl<'a> Shapes<'a> {
         match (&self.nodes[a].0, &self.nodes[b].0) {
             (Union(ms, _), _) => Outs::any(ms.iter().map(|m| {
                 let (own, foreign) = self.class_of(a, *m, key);
-                self.outs(*m, key, b, seen).classed(0, own, foreign)
+                self.outs(*m, key, b).classed(0, own, foreign)
             })),
             (_, Union(ms, _)) => {
                 let (own, foreign) = self.class_of(b, a, key);
-                Outs::any(ms.iter().map(|m| self.outs(a, key, *m, seen)))
+                Outs::any(ms.iter().map(|m| self.outs(a, key, *m)))
                     .classed(4, own, foreign)
             }
-            (Foreign(x), _) => self.outs(*x, key, b, seen).with(FOREIGN),
-            (_, Foreign(y)) => self.outs(a, key, *y, seen).with(FOREIGN << 4),
+            (Foreign(x), _) => self.outs(*x, key, b).with(FOREIGN),
+            (_, Foreign(y)) => self.outs(a, key, *y).with(FOREIGN << 4),
             (None | Unknown, _) | (_, None | Unknown) => Outs::NONE,
             (Scalar(x, _), Scalar(y, _)) => leaf(*x, &|t| y.reads(t).collect()),
             (Scalar(x, _), Lit(_)) => leaf(*x, &|t| match t {
@@ -869,36 +985,36 @@ impl<'a> Shapes<'a> {
             (Lit(t), Lit(u)) if t == u => Outs::one(FOREIGN | FOREIGN << 4),
             _ if key => Outs::NONE,
             (Seq(e, oa), Seq(f, ob)) => {
-                self.outs(*e, false, *f, seen).star().with(own(*oa, *ob))
+                self.outs(*e, false, *f).star().with(own(*oa, *ob))
             }
             (Seq(e, oa), Fixed(ts, _)) => {
-                Outs::all(ts.iter().map(|t| self.outs(*e, false, *t, seen)))
+                Outs::all(ts.iter().map(|t| self.outs(*e, false, *t)))
                     .with(own(*oa, true))
             }
             (Fixed(ts, _), Seq(f, ob)) => {
-                Outs::all(ts.iter().map(|t| self.outs(*t, false, *f, seen)))
+                Outs::all(ts.iter().map(|t| self.outs(*t, false, *f)))
                     .with(own(true, *ob))
             }
-            (Fixed(ts, _), Fixed(us, _)) if ts.len() == us.len() => Outs::all(
-                ts.iter().zip(us.iter()).map(|(t, u)| self.outs(*t, false, *u, seen)),
-            ),
-            (Pairs(k, v), _) => self.map_read(*k, *v, b, seen),
-            (Struct(fs), _) => self.struct_read(fs, b, seen),
+            (Fixed(ts, _), Fixed(us, _)) if ts.len() == us.len() => {
+                Outs::all(ts.iter().zip(us.iter()).map(|(t, u)| self.outs(*t, false, *u)))
+            }
+            (Pairs(k, v), _) => self.map_read(*k, *v, b),
+            (Struct(fs), _) => self.struct_read(fs, b),
             (Seq(e, oa), Pairs(j, u)) => {
-                let k: Side = &|s, x, seen| s.outs(x, false, *j, seen);
-                let v: Side = &|s, y, seen| s.outs(y, false, *u, seen);
-                self.entry(*e, true, k, v, seen).star().with(own(*oa, false))
+                let k: Side = &|s, x| s.outs(x, false, *j);
+                let v: Side = &|s, y| s.outs(y, false, *u);
+                self.entry(*e, true, k, v).star().with(own(*oa, false))
             }
             (Fixed(ts, _), Pairs(j, u)) => {
-                let k: Side = &|s, x, seen| s.outs(x, false, *j, seen);
-                let v: Side = &|s, y, seen| s.outs(y, false, *u, seen);
-                Outs::all(ts.iter().map(|t| self.entry(*t, true, k, v, seen)))
+                let k: Side = &|s, x| s.outs(x, false, *j);
+                let v: Side = &|s, y| s.outs(y, false, *u);
+                Outs::all(ts.iter().map(|t| self.entry(*t, true, k, v)))
                     .with(own(true, false))
             }
             (Seq(e, oa), Struct(gs)) => Outs::all(gs.iter().map(|(n, g, og)| {
-                let k: Side = &|s, x, _| s.name_written(x, n);
-                let v: Side = &|s, y, seen| s.outs(y, false, *g, seen);
-                let m = self.entry(*e, true, k, v, seen);
+                let k: Side = &|s, x| s.name_written(x, n);
+                let v: Side = &|s, y| s.outs(y, false, *g);
+                let m = self.entry(*e, true, k, v);
                 if *og { m.or(Outs::one(0)) } else { m }
             }))
             .with(own(*oa, true)),
@@ -909,9 +1025,9 @@ impl<'a> Shapes<'a> {
                 }
                 Outs::all(ts.iter().map(|t| {
                     Outs::any(gs.iter().map(|(n, g, _)| {
-                        let k: Side = &|s, x, _| s.name_written(x, n);
-                        let v: Side = &|s, y, seen| s.outs(y, false, *g, seen);
-                        self.entry(*t, true, k, v, seen)
+                        let k: Side = &|s, x| s.name_written(x, n);
+                        let v: Side = &|s, y| s.outs(y, false, *g);
+                        self.entry(*t, true, k, v)
                     }))
                 }))
             }
@@ -920,27 +1036,26 @@ impl<'a> Shapes<'a> {
     }
 
     /// How a map's entries are read by its own member and by `b`.
-    fn map_read(&self, k: usize, v: usize, b: usize, seen: &mut Seen) -> Outs {
+    fn map_read(&self, k: usize, v: usize, b: usize) -> Outs {
         let (text, data) = self.key_forms(k);
         let forms = [text.then_some(true), data.then_some(false)];
         Outs::any(forms.into_iter().flatten().map(|key| {
-            let kw: Side = &|s, x, seen| s.outs(k, key, x, seen);
-            let vw: Side = &|s, y, seen| s.outs(v, false, y, seen);
+            let kw: Side = &|s, x| s.outs(k, key, x);
+            let vw: Side = &|s, y| s.outs(v, false, y);
             match &self.nodes[b].0 {
                 Shape::Pairs(j, u) => {
-                    let e =
-                        self.outs(k, key, *j, seen).and(self.outs(v, false, *u, seen));
+                    let e = self.outs(k, key, *j).and(self.outs(v, false, *u));
                     e.star().with(own(false, false))
                 }
                 Shape::Seq(f, ob) => {
-                    self.entry(*f, false, kw, vw, seen).star().with(own(false, *ob))
+                    self.entry(*f, false, kw, vw).star().with(own(false, *ob))
                 }
                 Shape::Fixed(us, _) => {
-                    Outs::all(us.iter().map(|t| self.entry(*t, false, kw, vw, seen)))
+                    Outs::all(us.iter().map(|t| self.entry(*t, false, kw, vw)))
                         .with(own(false, true))
                 }
                 Shape::Struct(gs) => Outs::all(gs.iter().map(|(n, g, og)| {
-                    let m = self.name_written(k, n).and(self.outs(v, false, *g, seen));
+                    let m = self.name_written(k, n).and(self.outs(v, false, *g));
                     if *og { m.or(Outs::one(0)) } else { m }
                 }))
                 .with(own(false, true)),
@@ -951,12 +1066,7 @@ impl<'a> Shapes<'a> {
 
     /// How a struct's pairs, sorted by name, are read by its own member and
     /// by `b`. JSON writes every field, TOML leaves a null one out.
-    fn struct_read(
-        &self,
-        fs: &[(ArcStr, usize, bool)],
-        b: usize,
-        seen: &mut Seen,
-    ) -> Outs {
+    fn struct_read(&self, fs: &[(ArcStr, usize, bool)], b: usize) -> Outs {
         let toml = self.format == Format::Toml;
         let left_out = |m: Outs, o: bool| if toml && o { m.or(Outs::one(0)) } else { m };
         let field = |gs: &[(ArcStr, usize, bool)], n: &ArcStr| {
@@ -971,7 +1081,7 @@ impl<'a> Shapes<'a> {
                 for (n, f, of) in fs.iter() {
                     match field(gs, n) {
                         Some((g, og)) => {
-                            r = r.and(left_out(self.outs(*f, false, g, seen), *of && og))
+                            r = r.and(left_out(self.outs(*f, false, g), *of && og))
                         }
                         None if toml && *of => (),
                         None => return Outs::NONE,
@@ -980,21 +1090,21 @@ impl<'a> Shapes<'a> {
                 r
             }
             Shape::Pairs(j, u) => Outs::all(fs.iter().map(|(n, f, o)| {
-                let m = self.name_read(*j, n).and(self.outs(*f, false, *u, seen));
+                let m = self.name_read(*j, n).and(self.outs(*f, false, *u));
                 left_out(m, *o)
             }))
             .with(own(true, false)),
             Shape::Seq(g, ob) => Outs::all(fs.iter().map(|(n, f, o)| {
-                let k: Side = &|s, x, _| s.name_read(x, n);
-                let v: Side = &|s, y, seen| s.outs(*f, false, y, seen);
-                left_out(self.entry(*g, false, k, v, seen), *o)
+                let k: Side = &|s, x| s.name_read(x, n);
+                let v: Side = &|s, y| s.outs(*f, false, y);
+                left_out(self.entry(*g, false, k, v), *o)
             }))
             .with(own(true, *ob)),
             Shape::Fixed(us, _) if us.len() == fs.len() => {
                 Outs::all(us.iter().zip(fs.iter()).map(|(t, (n, f, _))| {
-                    let k: Side = &|s, x, _| s.name_read(x, n);
-                    let v: Side = &|s, y, seen| s.outs(*f, false, y, seen);
-                    self.entry(*t, false, k, v, seen)
+                    let k: Side = &|s, x| s.name_read(x, n);
+                    let v: Side = &|s, y| s.outs(*f, false, y);
+                    self.entry(*t, false, k, v)
                 }))
             }
             Shape::Fixed(us, _)
@@ -1002,9 +1112,9 @@ impl<'a> Shapes<'a> {
             {
                 Outs::all(us.iter().map(|t| {
                     Outs::any(fs.iter().map(|(n, f, _)| {
-                        let k: Side = &|s, x, _| s.name_read(x, n);
-                        let v: Side = &|s, y, seen| s.outs(*f, false, y, seen);
-                        self.entry(*t, false, k, v, seen)
+                        let k: Side = &|s, x| s.name_read(x, n);
+                        let v: Side = &|s, y| s.outs(*f, false, y);
+                        self.entry(*t, false, k, v)
                     }))
                 }))
             }
@@ -1030,14 +1140,7 @@ impl<'a> Shapes<'a> {
     /// Whether a value the member `w` of a union writes (as an object's key
     /// where `key`) may read back as its member `r`, `w_first` where `w`
     /// comes first in the union.
-    fn takes(
-        &self,
-        w: usize,
-        r: usize,
-        key: bool,
-        w_first: bool,
-        seen: &mut Seen,
-    ) -> bool {
+    fn takes(&self, w: usize, r: usize, key: bool, w_first: bool) -> bool {
         let (tw, tr) = (self.tagged(w), self.tagged(r));
         if let Some((tag, len)) = tr
             && tw != tr
@@ -1048,7 +1151,7 @@ impl<'a> Shapes<'a> {
         if tw.is_some() && tw != tr {
             return false;
         }
-        self.outs(w, key, r, seen).iter().any(|o| {
+        self.least_outs(w, key, r).iter().any(|o| {
             let (a, b) = (o & 15, o >> 4);
             if (a ^ b) & ROUNDS != 0 {
                 return a & ROUNDS != 0;
@@ -1119,59 +1222,77 @@ impl Type {
     /// one writes may read back as the other; `None` when every union reads
     /// back what each member writes.
     pub fn text_ambiguity(&self, env: &Env, format: Format) -> Option<(Type, Type)> {
-        let mut shapes = Shapes {
-            env,
-            format,
-            nodes: Vec::new(),
-            refs: AHashMap::default(),
-            classes: RefCell::default(),
-        };
-        shapes.node(self);
-        let mut seen = Seen::default();
-        let unions = (0..shapes.nodes.len()).map(|n| (n, false));
-        let mut keys: SmallVec<[(usize, bool); 4]> = SmallVec::new();
-        for (s, _) in shapes.nodes.iter() {
-            if let Shape::Pairs(k, _) = s
-                && shapes.key_forms(*k).0
-            {
-                shapes.key_unions(*k, &mut keys)
-            }
-        }
-        for (u, key) in unions.chain(keys) {
-            let Shape::Union(ms, prim) = &shapes.nodes[u].0 else { continue };
-            for (i, a) in ms.iter().enumerate() {
-                for b in ms[i + 1..].iter() {
-                    let hit = match prim {
-                        true => {
-                            shapes.prim_takes(*a, *b, key)
-                                || shapes.prim_takes(*b, *a, key)
-                        }
-                        false => {
-                            shapes.takes(*a, *b, key, true, &mut seen)
-                                || shapes.takes(*b, *a, key, false, &mut seen)
-                        }
-                    };
-                    if hit {
-                        return Some((
-                            shapes.nodes[*a].1.clone(),
-                            shapes.nodes[*b].1.clone(),
-                        ));
-                    }
-                }
-            }
-        }
-        None
+        Shapes::new(env, format, self).ambiguity()
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::expr::parser::parse_type;
+    use crate::{expr::parser::parse_type, typ::cast::tests::typed};
 
     fn ambiguous(t: &str, format: Format) -> bool {
         let env = Env::default();
         parse_type(t).unwrap().text_ambiguity(&env, format).is_some()
+    }
+
+    #[test]
+    fn a_recursive_pair_claims_what_its_values_reach() {
+        let rec = |defs: &[(&str, &str)], format| {
+            let (env, t) = typed(defs, "[TA, TB]");
+            t.text_ambiguity(&env, format).is_some()
+        };
+        let cons = [("TA", "[i64, `Cons(f32, TA)]"), ("TB", "[f64, `Cons(f64, TB)]")];
+        assert!(rec(&cons, Format::Json));
+        assert!(rec(&cons, Format::Toml));
+        let pairs = [("TA", "[`NA, (f32, TA)]"), ("TB", "[`NB, (f64, TB)]")];
+        assert!(!rec(&pairs, Format::Json));
+        assert!(!rec(&pairs, Format::Toml));
+    }
+
+    /// `L0 = [i64, null]`, each `L(k+1)` a union of `width` members over
+    /// `Lk`, the outermost `L(depth)` the type.
+    fn levels(depth: usize, width: usize) -> (Env, Type) {
+        let tails = [", string)", ", bool, string)", ", null, string)"];
+        let mut defs = vec![("L0".to_string(), "[i64, null]".to_string())];
+        for k in 1..=depth {
+            let below = format!("L{}", k - 1);
+            let members = std::iter::once(format!("Array<{below}>"))
+                .chain(tails[..width - 1].iter().map(|t| format!("({below}{t}")));
+            let body = format!("[{}]", members.collect::<Vec<_>>().join(", "));
+            defs.push((format!("L{k}"), body));
+        }
+        let defs: Vec<(&str, &str)> =
+            defs.iter().map(|(n, b)| (n.as_str(), b.as_str())).collect();
+        typed(&defs, &format!("L{depth}"))
+    }
+
+    // Each pair a check meets is evaluated once per pass, and a type with
+    // no recursion takes one pass, so a check costs at most two
+    // evaluations (a value and a key) per pair of nodes, however the
+    // unions nest. The wall limit is only a hang guard; the count is the pin.
+    #[test]
+    fn a_check_evaluates_each_pair_once() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let shapes = [(10, 2), (14, 2), (6, 4), (8, 4)];
+        std::thread::spawn(move || {
+            for (depth, width) in shapes {
+                let (env, t) = levels(depth, width);
+                let s = Shapes::new(&env, Format::Json, &t);
+                let ambiguous = s.ambiguity().is_some();
+                let evaluated = s.fix.borrow().evaluated;
+                tx.send((depth, width, ambiguous, evaluated, s.nodes.len())).unwrap();
+            }
+        });
+        for _ in shapes {
+            let (depth, width, ambiguous, evaluated, nodes) =
+                rx.recv_timeout(std::time::Duration::from_secs(300)).expect("hung");
+            assert!(!ambiguous, "L{depth} x{width}");
+            assert!(
+                evaluated <= 2 * nodes * nodes,
+                "L{depth} x{width}: {evaluated} evaluations over {nodes} nodes"
+            );
+        }
     }
 
     #[test]

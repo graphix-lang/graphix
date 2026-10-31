@@ -3104,6 +3104,23 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // any member is, as in_own_class does, so [(i64, f64), (u8, [i64, string])] is refused
 // (the cast tries (u8, [i64, string]) first and reads (3, 3.5) back as (u8:3, "3.5")).
 // Pin: lib_tests::json::json_target_union_part_in_the_class_refused.
+// 2026-10-30 claude: Round 3 (review7 B r2): textdata's walk is now a least fixpoint
+// (Shapes::least_outs over a Fixpoint memo, one entry per writer/key/reader pair a
+// text_ambiguity call meets; each pair starts with no outcome, passes repeat until one
+// changes nothing or rereads no pair it was computing). A pair met again along a walk
+// claimed nothing, which Outs::all spread to the whole product, so members that recurse
+// into each other were admitted: [TA, TB] over TA = [i64, `Cons(f32, TA)], TB = [f64,
+// `Cons(f64, TB)] read `Cons(f32:0.1, 3) back as TB's (main too). The memo also ends the
+// exponential check: L_k = [Array<L_{k-1}>, (L_{k-1}, string)] took 0.94/12.3/193 s at k =
+// 10/12/14 (debug); now 0.15-0.17 s debug, against main's quick 0.12-0.13 s. Pins:
+// lib_tests::json::json_target_recursive_members_refused and
+// lib_tests::toml::toml_target_recursive_members_refused (fail in all four modes on the
+// old walk), json_recursive_members_read_back and toml_recursive_members_read_back,
+// textdata's a_recursive_pair_claims_what_its_values_reach and
+// a_check_evaluates_each_pair_once (11,417,790 evaluations over 54 nodes at L10 on the old
+// walk; 191 now, bound 2n^2). graphix-package-json's admitted_unions_read_back checks
+// textdata against the real writer and cast over the unit tests' unions (fails when the
+// cast's rounds or Choice change).
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3.
@@ -3330,7 +3347,7 @@ impl Type {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::{
         env::Env,
         expr::{ModPath, TypeDefBody, parser::parse_type},
@@ -3341,7 +3358,7 @@ mod tests {
     use triomphe::Arc;
 
     /// An env holding the typedefs `defs` at the root, and `t` there.
-    fn typed(defs: &[(&str, &str)], t: &str) -> (Env, Type) {
+    pub(crate) fn typed(defs: &[(&str, &str)], t: &str) -> (Env, Type) {
         let mut env = Env::default();
         for (name, body) in defs {
             env.deftype(

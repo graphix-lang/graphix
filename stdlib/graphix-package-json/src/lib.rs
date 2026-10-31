@@ -385,3 +385,318 @@ graphix_derive::defpackage! {
         JsonWriteBytes,
     ],
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use graphix_compiler::{expr::parser::parse_type, list, rep, typ::Format};
+    use netidx_value::Typ;
+    use std::time::Duration;
+    use triomphe::Arc;
+
+    /// The source of `typ::textdata`, whose unit tests name the unions
+    /// this test reads back.
+    const TEXTDATA: &str = include_str!("../../../graphix-types/src/typ/textdata.rs");
+
+    /// The most values a composite's witnesses take from the product of
+    /// its parts', evenly spaced through it.
+    const CAP: usize = 2000;
+
+    /// Every type textdata's unit tests judge, `json("..")` or `toml("..")`.
+    fn unions() -> Vec<&'static str> {
+        let mut found = vec![];
+        for call in ["json(\"", "toml(\""] {
+            let mut rest = TEXTDATA;
+            while let Some(i) = rest.find(call) {
+                rest = &rest[i + call.len()..];
+                let end = rest.find("\")").expect("a closed call");
+                found.push(&rest[..end]);
+                rest = &rest[end..];
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// The values of a type a JSON reader may confuse, by the classes
+    /// textdata judges: each integer type's values among the edges
+    /// (every integer type holds it, an f32 holds it, an f32 or an f64
+    /// only rounds it, its type's extremes); floats whole and fractional
+    /// at the same edges; decimals with and without a scale; durations
+    /// whole and fractional; datetimes; strings that read as each class,
+    /// as every tag and field name in the type, or as nothing. A
+    /// composite takes the product of its parts' (at most [`CAP`]); an
+    /// array and a map are empty, of one element or entry, and of two.
+    struct Witnesses {
+        env: Env,
+        texts: Vec<ArcStr>,
+    }
+
+    impl Witnesses {
+        fn new(t: &Type) -> Self {
+            let mut texts: Vec<ArcStr> = [
+                "",
+                "x",
+                "1",
+                "-5",
+                "0.1",
+                "3.0",
+                "3.5",
+                "1e20",
+                "16777217",
+                "true",
+                "null",
+                "2020-01-01T00:00:00+00:00",
+                "1970-01-01T00:00:03Z",
+            ]
+            .into_iter()
+            .map(ArcStr::from)
+            .collect();
+            names(t, &mut texts);
+            Self { env: Env::default(), texts }
+        }
+
+        fn of(&self, t: &Type, depth: usize) -> Vec<Value> {
+            match t {
+                Type::Primitive(p) => p.iter().flat_map(|p| self.prim(p)).collect(),
+                Type::Set(ms) => ms.iter().flat_map(|m| self.of(m, depth)).collect(),
+                Type::TVar(tv) => tv.binding().map_or(vec![], |b| self.of(&b, depth)),
+                Type::Ref(_) if depth == 0 => vec![],
+                Type::Ref(_) => {
+                    t.lookup_ref(&self.env).map_or(vec![], |b| self.of(&b, depth - 1))
+                }
+                Type::Array(e) => {
+                    seqs(self.of(e, depth)).map(|vs| Value::Array(vs.into())).collect()
+                }
+                Type::List(e) => seqs(self.of(e, depth)).map(list::from_iter).collect(),
+                Type::Tuple(ts) => {
+                    product(ts.iter().map(|t| self.of(t, depth)).collect(), rep::tuple)
+                }
+                Type::Struct(fs) => {
+                    let parts = fs.iter().map(|(_, t, _)| self.of(t, depth)).collect();
+                    product(parts, |vs| {
+                        rep::structure(fs.iter().map(|(n, _, _)| n.clone()).zip(vs))
+                    })
+                }
+                Type::Variant(tag, ps, _) => {
+                    let parts = ps.iter().map(|t| self.of(t, depth)).collect();
+                    product(parts, |vs| rep::make_variant(tag.clone(), vs))
+                }
+                Type::Map { key, value } => {
+                    let (ks, vs) = (self.of(key, depth), self.of(value, depth));
+                    let entry = |vs: Vec<Value>| match &vs[..] {
+                        [k, v] => (k.clone(), v.clone()),
+                        _ => unreachable!("a key and a value"),
+                    };
+                    let mut maps = vec![Value::Map(netidx_value::Map::new())];
+                    maps.extend(product(vec![ks.clone(), vs.clone()], |e| {
+                        Value::Map(netidx_value::Map::from_iter([entry(e)]))
+                    }));
+                    if let Some(v) = vs.first() {
+                        maps.extend(ks.windows(2).map(|k| {
+                            let es = k.iter().map(|k| (k.clone(), v.clone()));
+                            Value::Map(netidx_value::Map::from_iter(es))
+                        }))
+                    }
+                    maps
+                }
+                _ => vec![],
+            }
+        }
+
+        fn prim(&self, p: Typ) -> Vec<Value> {
+            const INTS: [i128; 19] = [
+                0,
+                1,
+                100,
+                -100,
+                200,
+                1000,
+                -1000,
+                60000,
+                70000,
+                -70000,
+                16777217,
+                -16777217,
+                i32::MAX as i128,
+                i32::MIN as i128,
+                u32::MAX as i128,
+                9007199254740993,
+                i64::MAX as i128,
+                i64::MIN as i128,
+                u64::MAX as i128,
+            ];
+            const F64S: [f64; 14] = [
+                0.0,
+                0.5,
+                -2.5,
+                0.1,
+                3.0,
+                255.0,
+                16777216.0,
+                16777217.0,
+                1234567936.0,
+                9007199254740992.0,
+                1e20,
+                0.30000000000000004,
+                1.5e300,
+                3.4028234663852886e38,
+            ];
+            const F32S: [f32; 11] = [
+                0.0,
+                0.5,
+                -2.5,
+                0.1,
+                3.0,
+                255.0,
+                16777216.0,
+                1234567936.0,
+                1e20,
+                3.4028235e38,
+                1e-7,
+            ];
+            let int =
+                |f: fn(i128) -> Option<Value>| INTS.iter().filter_map(move |i| f(*i));
+            let datetime = |s: &'static str| {
+                Type::Primitive(Typ::DateTime.into())
+                    .cast_value(&self.env, Value::from(s))
+            };
+            match p {
+                Typ::Null => vec![Value::Null],
+                Typ::Bool => vec![Value::Bool(true), Value::Bool(false)],
+                Typ::I8 => int(|i| Some(Value::I8(i.try_into().ok()?))).collect(),
+                Typ::U8 => int(|i| Some(Value::U8(i.try_into().ok()?))).collect(),
+                Typ::I16 => int(|i| Some(Value::I16(i.try_into().ok()?))).collect(),
+                Typ::U16 => int(|i| Some(Value::U16(i.try_into().ok()?))).collect(),
+                Typ::I32 => int(|i| Some(Value::I32(i.try_into().ok()?))).collect(),
+                Typ::Z32 => int(|i| Some(Value::Z32(i.try_into().ok()?))).collect(),
+                Typ::U32 => int(|i| Some(Value::U32(i.try_into().ok()?))).collect(),
+                Typ::V32 => int(|i| Some(Value::V32(i.try_into().ok()?))).collect(),
+                Typ::I64 => int(|i| Some(Value::I64(i.try_into().ok()?))).collect(),
+                Typ::Z64 => int(|i| Some(Value::Z64(i.try_into().ok()?))).collect(),
+                Typ::U64 => int(|i| Some(Value::U64(i.try_into().ok()?))).collect(),
+                Typ::V64 => int(|i| Some(Value::V64(i.try_into().ok()?))).collect(),
+                Typ::F32 => F32S.iter().map(|f| Value::F32(*f)).collect(),
+                Typ::F64 => F64S.iter().map(|f| Value::F64(*f)).collect(),
+                Typ::Decimal => {
+                    ["3", "1.5", "1.10", "0.1", "12345678901234567890.123456789"]
+                        .iter()
+                        .map(|d| Value::Decimal(Arc::new(d.parse().expect("a decimal"))))
+                        .collect()
+                }
+                Typ::Duration => [3.0, 3.5, 0.1, 0.0]
+                    .iter()
+                    .map(|s| Value::Duration(Arc::new(Duration::from_secs_f64(*s))))
+                    .collect(),
+                Typ::DateTime => {
+                    vec![
+                        datetime("2020-01-01T00:00:00Z"),
+                        datetime("1970-01-01T00:00:03Z"),
+                    ]
+                }
+                Typ::String => self.texts.iter().cloned().map(Value::String).collect(),
+                Typ::Bytes => {
+                    vec![Value::Bytes(PBytes::new(Bytes::from_static(&[1, 2])))]
+                }
+                _ => vec![],
+            }
+        }
+    }
+
+    /// The tags and field names in `t`.
+    fn names(t: &Type, out: &mut Vec<ArcStr>) {
+        match t {
+            Type::Variant(tag, ps, _) => {
+                out.push(tag.clone());
+                ps.iter().for_each(|p| names(p, out))
+            }
+            Type::Struct(fs) => fs.iter().for_each(|(n, t, _)| {
+                out.push(n.clone());
+                names(t, out)
+            }),
+            Type::Set(ts) | Type::Tuple(ts) => ts.iter().for_each(|t| names(t, out)),
+            Type::Array(e) | Type::List(e) => names(e, out),
+            Type::Map { key, value } => {
+                names(key, out);
+                names(value, out)
+            }
+            _ => (),
+        }
+    }
+
+    /// The elements of a sequence's witnesses: none, each alone, and each
+    /// beside the next.
+    fn seqs(es: Vec<Value>) -> impl Iterator<Item = Vec<Value>> {
+        let pairs: Vec<Vec<Value>> = es.windows(2).map(|w| w.to_vec()).collect();
+        std::iter::once(vec![]).chain(es.into_iter().map(|e| vec![e])).chain(pairs)
+    }
+
+    /// `build` of at most [`CAP`] combinations of one value of each part.
+    fn product(
+        parts: Vec<Vec<Value>>,
+        build: impl Fn(Vec<Value>) -> Value,
+    ) -> Vec<Value> {
+        if parts.iter().any(|p| p.is_empty()) {
+            return vec![];
+        }
+        let total = parts.iter().fold(1usize, |n, p| n.saturating_mul(p.len()));
+        let step = total.div_ceil(CAP);
+        (0..total)
+            .step_by(step)
+            .map(|mut i| {
+                build(
+                    parts
+                        .iter()
+                        .map(|p| {
+                            let v = p[i % p.len()].clone();
+                            i /= p.len();
+                            v
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    // textdata mirrors the union reader's pick (`cast_member`); this
+    // checks the two agree with the real writer and the real reader: of
+    // every union textdata's unit tests name that JsonData admits, every
+    // witness written as JSON reads back as itself.
+    #[test]
+    fn admitted_unions_read_back() {
+        let (mut admitted, mut checked) = (0, 0);
+        let mut failed = vec![];
+        let tested = unions();
+        assert!(tested.len() > 80, "found {} unions in textdata.rs", tested.len());
+        for src in tested {
+            let t = parse_type(src).expect("a type");
+            let w = Witnesses::new(&t);
+            if t.text_ambiguity(&w.env, Format::Json).is_some() {
+                continue;
+            }
+            admitted += 1;
+            let err = Type::Error(Arc::new(Type::Primitive(Typ::String.into())));
+            let result = Type::Set(Arc::from_iter([t.clone(), err]));
+            let target = CastTarget::of_result(&w.env, Some(&result));
+            let exact = target.holds_exact_number(&w.env);
+            for v in w.of(&t, 3) {
+                let Ok(text) =
+                    serde_json::to_string(&JsonView::new(&w.env, Some(&t), &v))
+                else {
+                    continue;
+                };
+                checked += 1;
+                let read = JsonValue { exact }
+                    .read(serde_json::Deserializer::from_str(&text))
+                    .expect("the writer's JSON");
+                let back = Json::read(&target, &w.env, read);
+                if back != v {
+                    failed.push(format!("{src}: {v} wrote {text}, read back {back}"));
+                }
+            }
+        }
+        assert!(admitted > 30 && checked > 5000, "{admitted} unions, {checked} values");
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+}

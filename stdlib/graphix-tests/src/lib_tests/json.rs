@@ -700,6 +700,40 @@ run!(
     refused("'b: JsonData refuses [(u8, [i64, string]), (i64, f64)]")
 );
 
+// Members that recurse into each other judge every level of a written
+// value: `Cons(f32:0.1, 3) writes ["Cons",0.1,3], which TB reads exactly
+// as `Cons(0.1, 3.0) where TA only rounds the f32.
+run!(
+    json_target_recursive_members_refused,
+    r#"{
+    type TA = [i64, `Cons(f32, TA)];
+    type TB = [f64, `Cons(f64, TB)];
+    let v: [TA, TB] = `Cons(f32:0.1, 3);
+    let r: Result<[TA, TB], [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(json::write_str(v)$);
+    r
+}"#,
+    refused("'b: JsonData refuses [TA, TB]")
+);
+
+// Recursive members whose tags tell their values apart read back.
+run!(
+    json_recursive_members_read_back,
+    r#"{
+    type TA = [`NA, (f32, TA)];
+    type TB = [`NB, (f64, TB)];
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let rt = |v: [TA, TB]| -> bool {
+        let r: Result<[TA, TB], E> = json::read(json::write_str(v)$);
+        r$ == v
+    };
+    let a: TA = (f32:0.1, (f32:2.5, `NA));
+    let b: TB = (0.1, (3.0, `NB));
+    [rt(a), rt(b), rt(`NA), rt(`NB)]
+}"#,
+    prints("[true, true, true, true]")
+);
+
 // A map's keys are written as their text, which reads back by the key
 // union's order: a decimal's "3" as the datetime 3 seconds past the epoch.
 run!(

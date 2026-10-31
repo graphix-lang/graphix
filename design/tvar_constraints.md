@@ -719,11 +719,11 @@ and a variant's tag as strings, a duration as its seconds, a decimal as
 an exact number; TOML has no null and a native datetime; an object
 reads as its sorted key/value pairs; a map whose keys are scalars and no
 string writes them as text), and each member's reading of a value whole,
-as the cast's pick does: the round its reading falls in (exact, then
-rounded), a payload variant whose tag the data names (taken whatever it
-holds), the pass (a tuple, then a struct, keeping the data's class, then
-any member keeping it, then the rest; a primitive set by class and then
-bit), the union's order within a pass, and `Choice`: a reading that
+as the cast's pick does: a payload variant whose tag the data names
+first (taken whatever its reading rounds), the round its reading falls
+in (exact, then rounded), the pass (a tuple, then a struct, keeping the
+data's class, then any member keeping it, then the rest; a primitive set
+by class and then bit), the union's order within a pass, and `Choice`: a reading that
 crosses the line between integers and reals gives way to a later one
 keeping every number its kind; a union is in the data's class where any
 member is, whichever member reads it, a composite where all its parts
@@ -740,7 +740,18 @@ both readings leave the class and `(u8, string)` comes first) and
 `Map<[decimal, datetime], i64>` (the key `"3"` reads as a datetime);
 `[(f32, i64), (u8, i64)]`, `[string, i64]`, `[(u8, duration), (i64,
 string)]` and `[{a: i64}, {a: i64, b: [i64, null]}]` read back. Where a
-union holds a union, its reading is any of that union's members'. Unlike the other predicates it is judged only of the
+union holds a union, its reading is any of that union's members'. A
+written value is finite but passes through members that recurse into
+each other at its top levels, so a pair's outcomes are the least
+fixpoint over the pairs the walk meets (`Fixpoint`: each starts with
+none; a pass computes each pair once, and passes repeat until one
+changes nothing): `[TA, TB]` over ``type TA = [i64, `Cons(f32, TA)]``
+and ``type TB = [f64, `Cons(f64, TB)]`` is refused. A check evaluates
+each pair once a pass, and takes one pass where nothing recurses.
+`graphix-package-json`'s `admitted_unions_read_back` writes witnesses of
+every union textdata's unit tests admit and reads them back with the
+real reader, so a change to the cast's pick that textdata does not
+follow fails there. Unlike the other predicates it is judged only of the
 call's settled binding (`site_bounds`): a refusal at the bind would make
 a union target narrow to the one member that passes. It is handed to an
 open cell of its binding as `Concrete` is, so a generic reader's callers

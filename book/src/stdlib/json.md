@@ -40,10 +40,11 @@ let maybe: [string, null] = json::read(data)?;
 
 JSON keeps no record of which member of a union a value was written as,
 so a target holds no union one of whose members writes a value that
-reads back as another. The reader picks a member as a cast does: one
-that holds the value exactly before one that rounds it, a variant whose
-tag the data names, then a member keeping the data's kind (a number, a
-string) before one reading it as another kind, then the union's order.
+reads back as another. The reader picks a member as a cast does: a
+variant whose tag the data names first, then one that holds the value
+exactly before one that rounds it, then a member keeping the data's kind
+(a number, a string) before one reading it as another kind, then the
+union's order.
 `[u8, i64]` (two integers), `[string, datetime]` (a datetime is written
 as a string), `` [string, `A] `` (a variant with no payload is written as
 its tag), `[decimal, f64]`, `[duration, i64]` (a whole `duration` is
@@ -58,7 +59,11 @@ writes `(f32:0.1, u8:1)` as `[0.1,1]`, which the `(f64, f64)` member
 reads exactly and the first member only rounded; `[(string, f32), (i64,
 f64)]` reads `("1", f32:0.1)` back as `(1, 0.1)`; `[(i64, duration), (u8,
 string)]` reads `(1, 3.5s)` back as `(u8:1, "3.5")`, since both read the
-`3.5` as another kind and `(u8, string)` comes first. A map's keys are
+`3.5` as another kind and `(u8, string)` comes first. Members that
+recurse are read at every level: with ``type TA = [i64, `Cons(f32, TA)]``
+and ``type TB = [f64, `Cons(f64, TB)]``, `[TA, TB]` is refused, since
+`` `Cons(f32:0.1, 3) `` is written as `["Cons",0.1,3]`, which reads back
+as TB's `` `Cons(0.1, 3.0) ``. A map's keys are
 written as their text where none can be a string, so
 `Map<[decimal, datetime], i64>` is refused: the key `"3"` reads back as a
 datetime. An abstract type the reader builds from its representation's
