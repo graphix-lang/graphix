@@ -255,7 +255,6 @@ where
     many(none_of(['\r', '\n']))
 }
 
-
 // One own-line `//` comment line, text kept verbatim, and whether a blank
 // line follows it. `///` is left for `doc_comment`; `docs` says whether one
 // is legal here.
