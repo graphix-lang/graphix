@@ -88,10 +88,11 @@ another binding or a later write of what was built (`x <- t ~ v`, `v`
 selected from it) is a cycle. So the refusal says both, the declaration
 first, then that a value reading the target needs a named recursive
 type; a write whose own references name its target is told the
-recursive type alone. A write whose type holds the target's, or the
-target's part at its place, under a constructor (`src <- [0, src]`,
-`Type::nests`) is told the same way, and one whose type does not hold
-the target's is told their union alone. An annotated element union
+recursive type alone. Any other refused write is told the union of
+the two types alone, except one whose own references name its target
+and whose type holds the target's, or the target's part at its place,
+under a constructor (`src <- [0, src]`, `Type::nests`): it is told the
+recursive type alone. An annotated element union
 binds the same way with no select:
 `B<Array<[i64, Array<i64>]>>` built from `[x]` makes `x` the whole
 union and refuses `B([[x]])`, which `x := i64` would hold. A module

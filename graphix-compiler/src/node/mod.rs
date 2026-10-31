@@ -2216,15 +2216,19 @@ fn write_mismatch(
     };
     // a finite type holds both only where what is written holds no value
     // of the target
-    let apart = !infinite && !written.nests(&held);
+    let may_hold_target = infinite || written.nests(&held);
     match finite {
-        Some(finite) if apart => anyhow!("{}", refusal(&finite, &holders.meanings(at))),
-        Some(finite) if !reads_target => anyhow!(
+        Some(_) if may_hold_target && reads_target => {
+            anyhow!("{}", refusal(&recursive, ""))
+        }
+        // a use decided the target's type, and what is written may read it
+        Some(finite) if infinite => anyhow!(
             "{}. If what is written reads {name} (through a function, a reference or \
              another binding), {recursive}",
             refusal(&finite, &holders.meanings(at))
         ),
-        _ => anyhow!("{}", refusal(&recursive, "")),
+        Some(finite) => anyhow!("{}", refusal(&finite, &holders.meanings(at))),
+        None => anyhow!("{}", refusal(&recursive, "")),
     }
 }
 

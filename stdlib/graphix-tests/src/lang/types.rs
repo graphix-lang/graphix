@@ -4188,9 +4188,7 @@ run!(
     refused(
         "src is Array<Array<i64>> and cannot hold Array<[i64, Array<Array<i64>>]>; \
          declare src: [Array<[i64, Array<Array<i64>>]>, Array<Array<i64>>] where it is \
-         bound (line 3, column 9). If what is written reads src (through a function, a \
-         reference or another binding), no finite type holds both: declare a named \
-         recursive type for src where it is bound"
+         bound (line 3, column 9)"
     );
     FuseExpect::None
 );

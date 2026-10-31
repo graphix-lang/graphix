@@ -664,12 +664,11 @@ under it a union's members that name one cell or print alike (two cells
 bound to one type) print once. A hint's declaration writes a type as a
 program can (`Type::written_form`): an open cell as `'x` for the binding
 `x` it waits for (`node::Holders`), else as the variable a program wrote,
-else none, and the hint names no type. A refused write that a finite
-type holds only if the written value does not read its target is told
-both: that type, then a named recursive type for a value that reads
-the target; one whose own references name the target is told the
-recursive type alone (`node::write_mismatch`,
-`design/tvar_constraints.md`).
+else none, and the hint names no type. A refused write into a payload
+an earlier use decided is told both: the payload union, then a named
+recursive type for a value that reads the target; one whose own
+references name the target is told the recursive type alone
+(`node::write_mismatch`, `design/tvar_constraints.md`).
 
 **Two-phase typecheck knot.** While an instance body typechecks, its
 def is in `ctx.resolving_lambdas` (a stack per def); a site reaching the
