@@ -79,23 +79,20 @@ The bounds a select commits are those built before it: `[h, ..]` over
 hold `x` under itself and is refused, though the payload's union
 declared where `b` is bound (`B<[Array<'x>, Array<Array<'x>>]>`, `'x`
 written as `x`'s type) holds both. The refusal names that declaration
-where a bound cell of the held type keeps lower bounds, what is written
-there waits for or holds a value of no cell but a built value's binding
-(`Type::decided_part`, `write_mismatch`), and what is written may not
-read the target. Whether it may is the program's: each block the
-refusal leaves (`node::WriteRefusal`) follows, by name, what the written
-value reads to the bindings and writes that give each name its value, a
-function's body, a parameter's arguments (anything, for a function
-handed on as a value or a handler's binding) and a dereference's
-referents (`node::flows::may_read`); the outermost block decides, and
-the recursive type is named until one has. A flow through a function an
-earlier compile defined (a REPL input's) is not seen. Reading the payload through
-a helper, a lambda, a reference, another binding or a later write of
-what was built (`x <- t ~ v`, `v` selected from it) is a cycle, named
-so. A write whose type holds the target's, or the target's part at its
-place, under a constructor (`src <- [0, src]`, `Type::nests`) is told
-the same way: a union of the two holds it only where it does not read
-the target. An annotated element union binds the same way with no select:
+where a bound cell of the held type keeps lower bounds and what is
+written there waits for or holds a value of no cell but a built value's
+binding (`Type::decided_part`, `write_mismatch`). It holds both only
+where what is written does not read the target, which the types do not
+tell: reading the payload through a helper, a lambda, a reference,
+another binding or a later write of what was built (`x <- t ~ v`, `v`
+selected from it) is a cycle. So the refusal says both, the declaration
+first, then that a value reading the target needs a named recursive
+type; a write whose own references name its target is told the
+recursive type alone. A write whose type holds the target's, or the
+target's part at its place, under a constructor (`src <- [0, src]`,
+`Type::nests`) is told the same way, and one whose type does not hold
+the target's is told their union alone. An annotated element union
+binds the same way with no select:
 `B<Array<[i64, Array<i64>]>>` built from `[x]` makes `x` the whole
 union and refuses `B([[x]])`, which `x := i64` would hold. A module
 whose check commits bounds into a cell the code around it left open

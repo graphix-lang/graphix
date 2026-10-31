@@ -2865,6 +2865,24 @@ impl Type {
                 // write_nesting_its_target, write_nesting_another_binding; each
                 // fails with the analysis or its guard disabled. Messages only;
                 // no verdict changed.
+                // 2026-10-31 claude: Round 5 (r4L5): node::flows and node::WriteRefusal are
+                // gone; nothing reads the program around a refused write to pick its hint.
+                // write_mismatch keeps the direct check (the connect's own refs): a write
+                // naming its target gets the recursive hint alone, a write whose type does
+                // not hold the target's under a constructor (Type::nests) the union alone,
+                // and every other write one message, the finite declaration first, then 'If
+                // what is written reads b (through a function, a reference or another
+                // binding), no finite type holds both: declare a named recursive type for b
+                // where it is bound'. decided_decl's lowered-cell guard stays, so c4
+                // (select_before_a_write_of_the_selected_element_built_known) keeps the
+                // recursive hint alone. Pins (lang::types)
+                // select_before_a_write_reading_its_payload_(through_a_function, in_a_lambda,
+                // through_a_reference, through_a_write),
+                // select_before_a_write_of_the_selected_element,
+                // select_before_a_deeper_write(_in_a_definition,
+                // _of_a_variable_the_payload_writes) and write_nesting_another_binding pin
+                // the combined message and fail on d2f1fc451; _built_known pins its full
+                // recursive message. Messages only; no verdict changed.
                 let (down, up) = match lower(t1.is_rigid()) {
                     true => (Toward::Below, Toward::Above),
                     false => (Toward::Any, Toward::Any),

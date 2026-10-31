@@ -3968,17 +3968,22 @@ fn select_before_a_deeper_write(decl: &str) -> String {
     )
 }
 
+/// The hint for a write of `[[x]]` to `b`, bound on line 5, over a
+/// payload a select decided from `[x]`, `x` bound on line 4: the payload's
+/// union, and a recursive type where what is written reads `b`.
+const DEEPER_WRITE_HINT: &str = "a use before this write decided b's type from what was \
+     built into it then: declare b: B<[Array<'x>, Array<Array<'x>>]> where it is bound \
+     (line 5, column 9), writing for 'x the type of `x` (line 4, column 9). If what is \
+     written reads b (through a function, a reference or another binding), no finite \
+     type holds both: declare a named recursive type for b where it is bound";
+
 // The select decides the payload from `[x]` alone, so the write of
 // `[[x]]` after it is refused, though no finite type is wanting: the
 // payload's union, declared, holds both.
 run!(
     select_before_a_deeper_write,
     select_before_a_deeper_write(""),
-    refused(
-        "a use before this write decided b's type from what was built into it then: \
-         declare b: B<[Array<'x>, Array<Array<'x>>]> where it is bound (line 5, column \
-         9), writing for 'x the type of `x` (line 4, column 9)"
-    );
+    refused(DEEPER_WRITE_HINT);
     FuseExpect::None
 );
 
@@ -4003,7 +4008,9 @@ run!(
 }"#,
     refused(
         "declare b: B<[Array<'x>, Array<Array<'x>>]> where it is bound (line 5, column \
-         13), writing for 'x the type of `x` (line 4, column 14)"
+         13), writing for 'x the type of `x` (line 4, column 14). If what is written \
+         reads b (through a function, a reference or another binding), no finite type \
+         holds both: declare a named recursive type for b where it is bound"
     );
     FuseExpect::None
 );
@@ -4065,41 +4072,38 @@ fn select_before_a_write_reading_its_payload(between: &str, write: &str) -> Stri
     )
 }
 
-const READS_ITS_PAYLOAD: &str =
-    "no finite type holds both: declare a named recursive type for b where it is bound";
-
 run!(
     select_before_a_write_reading_its_payload_through_a_function,
     select_before_a_write_reading_its_payload("let g = |u| u ~ b.0;", "B([g(t)])"),
-    refused(READS_ITS_PAYLOAD);
+    refused(DEEPER_WRITE_HINT);
     FuseExpect::None
 );
 
 run!(
     select_before_a_write_reading_its_payload_in_a_lambda,
     select_before_a_write_reading_its_payload("", "B([(|u| u ~ b.0)(t)])"),
-    refused(READS_ITS_PAYLOAD);
+    refused(DEEPER_WRITE_HINT);
     FuseExpect::None
 );
 
 run!(
     select_before_a_write_reading_its_payload_through_a_reference,
     select_before_a_write_reading_its_payload("let r = &b;", "B([t ~ (*r).0])"),
-    refused(READS_ITS_PAYLOAD);
+    refused(DEEPER_WRITE_HINT);
     FuseExpect::None
 );
 
 run!(
     select_before_a_write_reading_its_payload_through_a_write,
     select_before_a_write_reading_its_payload("let c = never(); c <- b.0;", "B([t ~ c])"),
-    refused(READS_ITS_PAYLOAD);
+    refused(DEEPER_WRITE_HINT);
     FuseExpect::None
 );
 
 run!(
     select_before_a_write_of_the_selected_element,
     select_before_a_write_reading_its_payload("", "B([[t ~ v]])"),
-    refused(READS_ITS_PAYLOAD);
+    refused(DEEPER_WRITE_HINT);
     FuseExpect::None
 );
 
@@ -4115,7 +4119,10 @@ run!(
     b <- B([[t ~ v]]);
     v
 }"#,
-    refused(READS_ITS_PAYLOAD);
+    refused(
+        "b is B<Array<i64>> and cannot hold B<Array<Array<i64>>>; no finite type holds \
+         both: declare a named recursive type for b where it is bound (line 4, column 9)"
+    );
     FuseExpect::None
 );
 
@@ -4136,8 +4143,7 @@ run!(
     prints("[i64:1, [i64:1]]")
 );
 
-// A later statement writes what is built from the payload: the program
-// after the write decides its hint too.
+// A later statement writes what is built from the payload.
 run!(
     select_before_a_deeper_write_of_a_variable_the_payload_writes,
     r#"{
@@ -4150,7 +4156,7 @@ run!(
     x <- t ~ v;
     v
 }"#,
-    refused(READS_ITS_PAYLOAD);
+    refused(DEEPER_WRITE_HINT);
     FuseExpect::None
 );
 
@@ -4182,7 +4188,9 @@ run!(
     refused(
         "src is Array<Array<i64>> and cannot hold Array<[i64, Array<Array<i64>>]>; \
          declare src: [Array<[i64, Array<Array<i64>>]>, Array<Array<i64>>] where it is \
-         bound (line 3, column 9)"
+         bound (line 3, column 9). If what is written reads src (through a function, a \
+         reference or another binding), no finite type holds both: declare a named \
+         recursive type for src where it is bound"
     );
     FuseExpect::None
 );

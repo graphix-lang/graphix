@@ -53,7 +53,6 @@ pub(crate) mod compiler;
 pub mod coretraits;
 pub(crate) mod data;
 pub(crate) mod error;
-pub(crate) mod flows;
 pub(crate) mod fork_control;
 pub mod genn;
 pub mod lambda;
@@ -1328,24 +1327,8 @@ pub(crate) fn typecheck_in_order<R: Rt>(
 /// before it: a body reaches its siblings only through their
 /// interfaces (an impl a sibling's body adds undeclared is hidden from
 /// it, `Env::hidden_impls`), so no module's check reads another's. The
-/// tasks join in order; the first error in order is the block's. A
-/// refused write whose hint the program around it decides is decided
-/// over these statements ([`WriteRefusal`]).
+/// tasks join in order; the first error in order is the block's.
 pub(crate) fn typecheck0_statements<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    nodes: &mut [Node<R>],
-    catches: &[usize],
-    module: bool,
-) -> Result<()> {
-    check_statements(ctx, nodes, catches, module).map_err(|mut e| {
-        if let Some(w) = e.downcast_mut::<WriteRefusal>() {
-            w.decide(nodes.iter().map(|n| n.spec()))
-        }
-        e
-    })
-}
-
-fn check_statements<R: Rt>(
     ctx: &mut CompileCtx<R>,
     nodes: &mut [Node<R>],
     catches: &[usize],
@@ -2117,54 +2100,13 @@ fn params_union(env: &env::Env, held: &Type, written: &Type) -> Option<Type> {
     }
 }
 
-/// A refused `<-` whose hint turns on whether what is written may read
-/// its target, which only the program around it tells: each block the
-/// refusal leaves decides over its statements ([`flows::may_read`]), the
-/// outermost last. Until one has, what is written may read it.
-pub(crate) struct WriteRefusal {
-    target: CompactString,
-    value: Arc<Expr>,
-    reads: bool,
-    /// The refusal where what is written may read the target.
-    reading: CompactString,
-    /// The refusal where it does not.
-    apart: CompactString,
-}
-
-impl WriteRefusal {
-    fn decide<'a>(&mut self, stmts: impl IntoIterator<Item = &'a Expr>) {
-        self.reads = flows::may_read(stmts, &self.value, &self.target)
-    }
-}
-
-impl std::fmt::Display for WriteRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self.reads {
-            true => &self.reading,
-            false => &self.apart,
-        })
-    }
-}
-
-impl std::fmt::Debug for WriteRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self, f)
-    }
-}
-
-impl std::error::Error for WriteRefusal {}
-
 /// A written `<-` whose value `bind` cannot hold: the target, its type,
-/// and the declaration that would hold both. `value` is what is written,
-/// `reads_target` whether it reads `bind` itself. Where a finite type
-/// holds both only if what is written does not read the target, which
-/// may come through other bindings, the program around the write decides
-/// ([`WriteRefusal`]).
+/// and the declaration that would hold both. `reads_target`: what is
+/// written reads `bind`.
 fn write_mismatch(
     env: &env::Env,
     bind: &env::Bind,
     written: &Type,
-    value: &Arc<Expr>,
     reads_target: bool,
     at: &Arc<Origin>,
 ) -> anyhow::Error {
@@ -2211,15 +2153,10 @@ fn write_mismatch(
             )
         })
     };
-    let recursive = || {
-        refusal(
-            &format_compact!(
-                "no finite type holds both: declare a named recursive type for {name} \
-                 where it is bound"
-            ),
-            "",
-        )
-    };
+    let recursive = format_compact!(
+        "no finite type holds both: declare a named recursive type for {name} where it \
+         is bound"
+    );
     let mut holders = Holders::new(env, Some(bind.id));
     let finite = match infinite {
         true => held
@@ -2277,25 +2214,18 @@ fn write_mismatch(
             })
         }
     };
-    let reading = recursive();
-    let Some(finite) = finite else { return anyhow!("{reading}") };
-    let apart = refusal(&finite, &holders.meanings(at));
     // a finite type holds both only where what is written holds no value
     // of the target
-    if !infinite && !written.nests(&held) {
-        return anyhow!("{apart}");
+    let apart = !infinite && !written.nests(&held);
+    match finite {
+        Some(finite) if apart => anyhow!("{}", refusal(&finite, &holders.meanings(at))),
+        Some(finite) if !reads_target => anyhow!(
+            "{}. If what is written reads {name} (through a function, a reference or \
+             another binding), {recursive}",
+            refusal(&finite, &holders.meanings(at))
+        ),
+        _ => anyhow!("{}", refusal(&recursive, "")),
     }
-    if reads_target {
-        return anyhow!("{reading}");
-    }
-    let target = bind.name.clone();
-    anyhow::Error::new(WriteRefusal {
-        target,
-        value: value.clone(),
-        reads: true,
-        reading,
-        apart,
-    })
 }
 
 /// Where a write through a reference lands: a bound variable, or a
@@ -3267,21 +3197,11 @@ impl<R: Rt> Connect<R> {
                     ),
                     // a write a lowering built has no declaration to point at
                     Some(_) if !crate::is_lowered(&bind.name) => {
-                        let ExprKind::Connect { value, .. } = &self.spec.kind else {
-                            return e;
-                        };
                         let mut refs = Refs::without_callees();
                         self.node.refs(&mut refs);
                         let mut reads = false;
                         refs.with_refs(|id| reads |= id == self.id);
-                        write_mismatch(
-                            &ctx.env,
-                            bind,
-                            written,
-                            value,
-                            reads,
-                            &self.spec.ori,
-                        )
+                        write_mismatch(&ctx.env, bind, written, reads, &self.spec.ori)
                     }
                     _ => e,
                 }
