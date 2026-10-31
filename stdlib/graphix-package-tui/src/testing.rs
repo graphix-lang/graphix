@@ -5,12 +5,14 @@
 //! Compiles graphix code that produces a `Tui` value, builds the widget
 //! tree the same way the runtime does, and drives it through a
 //! `ratatui::Terminal<TestBackend>`. Events are crossterm `Event`s
-//! dispatched into the widget's `handle_event`, the live runtime's path.
+//! dispatched into the widget's `handle_event`, the live runtime's path;
+//! the types that build them are re-exported here, so a user of the
+//! harness needs no crossterm of its own.
 //! External packages register themselves via
 //! [`TuiTestHarness::with_register`].
 
 use anyhow::{Context, Result, bail};
-use crossterm::event::Event;
+pub use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use graphix_package::Ended;
 use graphix_package_core::testing::{self, Fixture, PackageRef, TestState};
 use graphix_rt::{GXEvent, NoExt};
