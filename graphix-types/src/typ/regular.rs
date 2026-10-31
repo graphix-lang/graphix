@@ -24,8 +24,8 @@ enum Node {
 #[derive(Default)]
 struct Graph {
     nodes: Vec<Node>,
-    /// Each reference by its definition and its arguments' nodes.
-    refs: AHashMap<(usize, SmallVec<[usize; 4]>), usize>,
+    /// Each reference by its definition and its arguments.
+    refs: AHashMap<(usize, Arc<[Type]>), usize>,
 }
 
 fn label(tag: u8, rest: &[u8]) -> LPooled<Vec<u8>> {
@@ -53,9 +53,7 @@ impl Graph {
     /// The expansion of a resolved reference, else `None`.
     fn expand(t: &Type) -> Option<(usize, Type)> {
         let Type::Ref(tr) = t else { return None };
-        let r = tr.resolved()?;
-        let known = r.bindings(&tr.params)?;
-        Some((r.def_key(), r.typ.replace_tvars(&known)))
+        Some((tr.def_key()?, tr.expand_cell()?))
     }
 
     fn node(&mut self, t: &Type) -> usize {
@@ -70,13 +68,12 @@ impl Graph {
                     self.ordered(b'r', name.as_bytes(), &tr.params)
                 }
                 Some((def, body)) => {
-                    let args: SmallVec<[usize; 4]> =
-                        tr.params.iter().map(|p| self.node(p)).collect();
-                    if let Some(id) = self.refs.get(&(def, args.clone())) {
+                    let key = (def, tr.params.clone());
+                    if let Some(id) = self.refs.get(&key) {
                         return *id;
                     }
                     let id = self.push(Node::Forward(None));
-                    self.refs.insert((def, args), id);
+                    self.refs.insert(key, id);
                     let body = self.node(&body);
                     self.nodes[id] = Node::Forward(Some(body));
                     id
@@ -264,4 +261,23 @@ pub(crate) fn key(roots: &[Type]) -> Arc<[u8]> {
         }
     }
     Arc::from(out)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::env::Env;
+
+    // A typedef applied to arguments is one node for each list of them,
+    // so a recursion that passes its parameter on is a cycle.
+    #[test]
+    fn an_applied_recursive_typedef_is_a_cycle() {
+        let defs =
+            [("R<'a>", "[`Nil, `Cons('a, R<'a>)]"), ("S", "[`Nil, `Cons(u64, S)]")];
+        let typed = |t| Env::typed_at_root(&defs, t).unwrap();
+        let ((_r_env, r), (_s_env, s)) = (typed("R<u64>"), typed("S"));
+        let (_i_env, i) = typed("R<i64>");
+        assert_eq!(key(&[r.clone()]), key(&[s]));
+        assert_ne!(key(&[r]), key(&[i]));
+    }
 }

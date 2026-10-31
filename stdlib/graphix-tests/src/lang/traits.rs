@@ -2744,6 +2744,23 @@ run!(
     prints("[true, true, true, true, i64:1, \"constructed\"]")
 );
 
+// A parameter applying a recursive typedef to arguments compares as the
+// regular tree it names.
+run!(
+    abstract_applied_recursive_parameters_compare,
+    r#"{
+    type B<'x> = Abstract<i64>;
+    type R<'a> = [`Nil, `Cons('a, R<'a>)];
+    let a: B<R<u64>> = B(1);
+    let b: B<R<u64>> = B(1);
+    let c: B<R<i64>> = B(1);
+    let m = {a => "a", b => "b"};
+    let n: Map<[B<R<u64>>, B<R<i64>>], string> = {a => "a", c => "c"};
+    (a == b, map::len(m), map::len(n))
+}"#,
+    prints("[true, i64:1, i64:2]")
+);
+
 // A recursive alias compares as the regular tree it names, however many
 // times a form unfolds it.
 run!(
