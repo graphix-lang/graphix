@@ -3729,6 +3729,128 @@ run!(
     FuseExpect::None
 );
 
+/// A select over a payload bounded by `first`'s and `then`'s, both over
+/// `x`, decided after: both values of `b.0`, then both of the arm's `h`.
+fn select_over_two_payload_bounds(first: &str, then: &str, pat: &str) -> String {
+    format!(
+        r#"{{
+    type B<'p> = Abstract<'p>;
+    let mk = |a| B(a);
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b = {first};
+    b <- {then};
+    let v = select b.0 {{ {pat} => h, _ => never() }};
+    x <- t ~ 1;
+    let vs = [];
+    vs <- array::window(#n: 2, v ~ vs, v);
+    let bs = [];
+    bs <- array::window(#n: 2, b ~ bs, b.0);
+    select array::len(bs) {{ 2 => (bs, vs), _ => never() }}
+}}"#
+    )
+}
+
+const ARRAY_THEN_ELEMENT: &str = "[[[[i64:1]], [i64:1]], [[i64:1], i64:1]]";
+
+// An element bound beside an array of it: the union's open member takes
+// both, so the arm's element holds an array and its element.
+run!(
+    select_element_of_two_payload_bounds,
+    select_over_two_payload_bounds("B([[x]])", "B([x])", "[h, ..]"),
+    prints(ARRAY_THEN_ELEMENT)
+);
+
+run!(
+    select_element_of_two_payload_bounds_list,
+    select_over_two_payload_bounds("B([[<x>]])", "B([x])", "[h, ..]"),
+    prints(ARRAY_THEN_ELEMENT)
+);
+
+run!(
+    select_element_of_two_payload_bounds_tuple,
+    select_over_two_payload_bounds("B([(x, x)])", "B([x])", "[h, ..]"),
+    prints("[[[[i64:1, i64:1]], [i64:1]], [[i64:1, i64:1], i64:1]]")
+);
+
+run!(
+    select_element_of_two_payload_bounds_struct,
+    select_over_two_payload_bounds("B([{a: x}])", "B([x])", "[h, ..]"),
+    prints(r#"[[[[["a", i64:1]]], [i64:1]], [[["a", i64:1]], i64:1]]"#)
+);
+
+run!(
+    select_element_of_two_payload_bounds_variant,
+    select_over_two_payload_bounds("B([`V(x)])", "B([x])", "[h, ..]"),
+    prints(r#"[[[["V", i64:1]], [i64:1]], [["V", i64:1], i64:1]]"#)
+);
+
+run!(
+    select_element_of_two_payload_bounds_in_a_list,
+    select_over_two_payload_bounds("B([<[x]>])", "B([<x>])", "[<h, ..>]"),
+    prints(ARRAY_THEN_ELEMENT)
+);
+
+run!(
+    select_rest_of_two_payload_bounds,
+    select_over_two_payload_bounds("B([[x], [x]])", "B([x, x])", "[g, h..]"),
+    prints("[[[[i64:1], [i64:1]], [i64:1, i64:1]], [[[i64:1]], [i64:1]]]")
+);
+
+run!(
+    select_element_of_two_payload_bounds_by_a_definition,
+    select_over_two_payload_bounds("mk([[x]])", "mk([x])", "[h, ..]"),
+    prints(ARRAY_THEN_ELEMENT)
+);
+
+run!(
+    select_element_of_two_payload_bounds_takes_no_arithmetic,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b = B([[x]]);
+    b <- B([x]);
+    let v = select b.0 { [h, ..] => h, _ => never() };
+    x <- t ~ 1;
+    v + 1
+}"#,
+    refused("cannot compute [i64, Array<i64>] + i64");
+    FuseExpect::None
+);
+
+// A bound's cell below a union with a decided member is bound to the
+// union where that holds every bound: `x` may hold either member.
+run!(
+    payload_cell_below_a_union_takes_it_whole,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let f = |b: B<Array<[i64, 'a]>>, y: 'a| b;
+    let x = never();
+    let c = f(B([x]), "s");
+    x <- t ~ 1;
+    c.0
+}"#,
+    prints("[i64:1]")
+);
+
+// Bounds a probe admits apart but no binding holds together refuse the
+// select's binding whole: `x` is left to its write.
+run!(
+    payload_bounds_refused_together_bind_nothing,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b = B((x, x));
+    let v = select b.0 { (1, "a") => 0, _ => 1 };
+    x <- t ~ "s";
+    (b.0, v)
+}"#,
+    prints(r#"[["s", "s"], i64:1]"#)
+);
+
 // A NoError payload's bound reaches a binding that holds an error beside it.
 run!(
     no_error_payload_bound_reaches_a_binding,

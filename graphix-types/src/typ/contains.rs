@@ -53,6 +53,11 @@ pub enum ContainsFlags {
     /// `t`'s part as a lower bound instead of binding to it: a constructed
     /// value's payload bounds its parameters, the context decides them.
     Lower,
+    /// Under `Lower`, an open cell of the bound below a union holding an
+    /// open cell is taken by that member, as a bare cell would take it,
+    /// rather than bound to the whole union: where no binding holds every
+    /// bound of a cell ([`commit_lower`]).
+    IntoMember,
 }
 
 /// The infinite-type rejection wording, shared by
@@ -366,7 +371,7 @@ fn nesting(t: &Type) -> usize {
 /// a rigid cell rigid wherever the decision will, so a member it admits
 /// does not fail on that cell.
 fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
-    let lower = flags & ContainsFlags::Lower;
+    let lower = flags & (ContainsFlags::Lower | ContainsFlags::IntoMember);
     match flags.intersects(ContainsFlags::Commit | ContainsFlags::RigidCheck) {
         true => lower | ContainsFlags::RigidCheck,
         false => lower,
@@ -454,7 +459,7 @@ fn commit_cell_bounds(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    if !holds_lower(tv, below(flags) | ContainsFlags::Commit, env, hist, t)? {
+    if !commit_lower(tv, flags, env, hist, t)? {
         return Ok(false);
     }
     for c in tv.cell_constraints().iter() {
@@ -653,12 +658,57 @@ fn holds_lower(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    for l in tv.cell_lower().iter() {
+    holds_each(&tv.cell_lower(), flags, env, hist, t)
+}
+
+/// Whether `t` contains each of `ls` under `flags`.
+fn holds_each(
+    ls: &[Type],
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<bool> {
+    for l in ls {
         if !t.contains_int(flags, env, hist, l)? {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// Commit `t ⊇ l` for each lower bound `l` of a cell bound to `t`, on
+/// copies first, so bounds a probe admits apart but no commit holds
+/// together (`(i64, string)` above `('x, 'x)`) refuse the bind and bind
+/// no cell. An open cell of a bound below a union is bound to the union
+/// where that holds every bound, else taken by the union's open member
+/// ([`ContainsFlags::IntoMember`]): `['h, 'r]` above `'x` and
+/// `Array<'x>`.
+fn commit_lower(
+    tv: &TVar,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<bool> {
+    let lower = tv.cell_lower();
+    let mut flags = below(flags) | ContainsFlags::Commit;
+    if !lower.is_empty() && !flags.contains(ContainsFlags::IntoMember) {
+        let ls = Type::Tuple(Arc::from_iter(lower.iter().cloned()));
+        let holds = |flags| {
+            on_copies([t, &ls], |[t, ls], trial| match &ls {
+                Type::Tuple(ls) => holds_each(ls, flags, env, trial, &t),
+                _ => Ok(false),
+            })
+        };
+        if !holds(flags)? {
+            flags |= ContainsFlags::IntoMember;
+            if !holds(flags)? {
+                return Ok(false);
+            }
+        }
+    }
+    holds_each(&lower, flags, env, hist, t)
 }
 
 /// The flags `t ⊇ l` runs with for a lower bound `l` of a cell bound to
@@ -1866,8 +1916,7 @@ impl Type {
                         return Ok(false);
                     }
                     if commit {
-                        let flags = below(flags) | ContainsFlags::Commit;
-                        if !holds_lower(t0, flags, env, hist, &Self::Bottom)? {
+                        if !commit_lower(t0, flags, env, hist, &Self::Bottom)? {
                             return Ok(false);
                         }
                         t0.bind_bottom_required();
@@ -2098,6 +2147,14 @@ impl Type {
             (t0, Self::TVar(t1)) if t1.is_bound() || !t1.would_cycle(t0) => {
                 if let Some(t1) = t1.binding() {
                     return t0.contains_int(flags, env, hist, &t1);
+                }
+                if flags.contains(ContainsFlags::Lower | ContainsFlags::IntoMember)
+                    && !flags.contains(ContainsFlags::Contra)
+                    && !t1.is_rigid()
+                    && let Self::Set(s) = t0
+                    && let Some(m) = s.iter().find(|m| is_unbound_tvar(m))
+                {
+                    return m.contains_int(flags, env, hist, t);
                 }
                 // t0 contains an arbitrary 'a only when it contains one
                 // of the cell's conjuncts ('a ⊆ C ⊆ t0) or, a union, one

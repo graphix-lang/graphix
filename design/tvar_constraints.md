@@ -54,7 +54,24 @@ becomes the bound instead of the binding), and so do the open parts of
 what such a cell binds to: every bind of the cell commits `t ⊇ l` for
 each bound under `ContainsFlags::Lower` (`commit_cell_bounds`), so `'p`
 above `Array<i64>` and `Array<string>` bound to `Array<'a>` puts `'a`
-above both, whatever their order, and `⊥` holds no bound but `⊥`. Each conjunct must contain a
+above both, whatever their order, and `⊥` holds no bound but `⊥`. The
+bounds commit together on copies first (`commit_lower`), so bounds a
+probe admits apart but no binding holds together (`(i64, string)` above
+`('x, 'x)`) refuse the bind and bind none of their cells: a refusal
+another walk ignores (a select's settle against its arms) leaves
+nothing behind. An open cell of a bound below a union binds to the
+union where that holds every bound, else the union's open member takes
+it as a bare cell would (`ContainsFlags::IntoMember`): a slice's
+element set `['h, 'r]` that must hold `'x` and `Array<'x>` puts `'h`
+above both, where `'x := ['h, 'r]` would hold itself under a
+constructor.
+Neither choice is complete without an upper bound on `'x`: the
+member loses the union's decided members (`[i64, 'a]` above `'x`, then
+`'a := string`, would refuse `'x <- 1`), and the binding makes `'x` one
+type with the union's open cells, so `select b.0 { [1, h, ..] => h, [h,
+..] => h }` over a payload above `'x` and `Array<'x>` binds `'x` to the
+first arm's element set and is refused where the second arm's `h` would
+hold `Array<'x>`, a type holding itself. Each conjunct must contain a
 lower bound when it is added; a merge joins both cells' lists after
 each side's conjuncts admit the other's (a rigid cell admits none but
 itself); a copy, an image and a level claim carry the list. The witness

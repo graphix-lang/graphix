@@ -85,7 +85,9 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    one nothing decided to the payload's type. A use that binds `'p` to a
    type with open parts passes the bound on to them: `array::len(b.0)`
    over `B(["a"])` makes `'p` an `Array<'a>` with `'a` at least
-   `string`. A definition that
+   `string`, and `[h, ..]` over `B([[x]])` written with `B([x])` gives
+   `h` both, `[x, Array<x>]` (`design/tvar_constraints.md`). A
+   definition that
    constructs (`|x| Box(x)`) keeps the bound in its signature, so each
    call's context decides its own, unless its body binds the parameter:
    then the argument is held to that binding, and the call's context
