@@ -293,6 +293,42 @@ run!(
     prints("[true, true, true, true]")
 );
 
+// An integer reads a TOML datetime as its seconds, so an abstract datetime
+// beside it is refused as data, but a table's keys are text, which the
+// integer reads only as an integer.
+run!(
+    toml_target_abstract_datetime_beside_an_integer_refused,
+    r#"{
+    type Id = Abstract<datetime>;
+    impl Cast for Id {};
+    let v: {k: [Id, i64]} = {k: Id(datetime:"1970-01-01T00:00:03Z")};
+    let r: Result<{k: [Id, i64]}, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read(toml::write_str(v)$);
+    r
+}"#,
+    refused("'b: TomlData refuses { k: [i64, Id] }")
+);
+
+run!(
+    toml_abstract_datetime_key_beside_an_integer_reads_back,
+    r#"{
+    type Id = Abstract<datetime>;
+    impl Cast for Id {};
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    type D = {k: Map<[Id, i64], string>};
+    let t = |v: D| -> bool {
+        let r: Result<D, E> = toml::read(toml::write_str(v)$);
+        r$ == v
+    };
+    [
+        t({k: {Id(datetime:"1970-01-01T00:00:03Z") => "a"}}),
+        t({k: {3 => "a"}}),
+        t({k: {Id(datetime:"2020-01-01T00:00:00Z") => "a", 1577836800 => "b"}})
+    ]
+}"#,
+    prints("[true, true, true]")
+);
+
 // A large whole f32 is written as its shortest text (1234567936 as
 // 1234568000.0), which an integer member holds exactly and the f32 only
 // rounded: a target holding one beside such an integer is refused.

@@ -774,6 +774,8 @@ struct Shapes<'a> {
     env: &'a Env,
     format: Format,
     nodes: Vec<(Shape, Type)>,
+    /// The node of the type the shapes were built from.
+    root: usize,
     /// Each reference expanded, by its definition and its arguments, so a
     /// recursive type is a cycle.
     refs: AHashMap<(usize, Arc<[Type]>), usize>,
@@ -793,6 +795,7 @@ impl<'a> Shapes<'a> {
             env,
             format,
             nodes: Vec::new(),
+            root: 0,
             refs: AHashMap::default(),
             path: Vec::new(),
             grows: None,
@@ -800,7 +803,7 @@ impl<'a> Shapes<'a> {
             fix: RefCell::default(),
             reach: RefCell::default(),
         };
-        shapes.node(t);
+        shapes.root = shapes.node(t);
         shapes
     }
 
@@ -809,9 +812,10 @@ impl<'a> Shapes<'a> {
         if let Some(name) = &self.grows {
             return Some(TextAmbiguity::Grows(name.clone()));
         }
+        let data = self.data();
         let mut keys: LPooled<Vec<usize>> = LPooled::take();
-        for (s, _) in self.nodes.iter() {
-            if let Shape::Pairs(k, _) = s
+        for n in data.iter() {
+            if let Shape::Pairs(k, _) = &self.nodes[*n].0
                 && self.key_forms(*k).0
             {
                 let unions = self.reach(*k, Way::Writes).map(|(m, _)| m);
@@ -822,7 +826,7 @@ impl<'a> Shapes<'a> {
         }
         keys.sort_unstable();
         keys.dedup();
-        let unions = (0..self.nodes.len()).map(|n| (n, false));
+        let unions = data.iter().map(|n| (*n, false));
         for (u, key) in unions.chain(keys.iter().map(|k| (*k, true))) {
             let Shape::Union(ms, prim) = &self.nodes[u].0 else { continue };
             for (i, a) in ms.iter().enumerate() {
@@ -847,6 +851,39 @@ impl<'a> Shapes<'a> {
             }
         }
         None
+    }
+
+    /// The nodes the root may write as data: a map's keys only where it
+    /// may write its pairs ([`Self::key_forms`]), an object's keys being
+    /// text.
+    fn data(&self) -> LPooled<Vec<usize>> {
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut next: LPooled<Vec<usize>> = LPooled::take();
+        let mut found: LPooled<Vec<usize>> = LPooled::take();
+        next.push(self.root);
+        while let Some(n) = next.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            found.push(n);
+            match &self.nodes[n].0 {
+                Shape::Union(ms, _) | Shape::Fixed(ms, _) => {
+                    next.extend(ms.iter().copied())
+                }
+                Shape::Seq(e, _) => next.push(*e),
+                Shape::Pairs(k, v) => {
+                    next.push(*v);
+                    if self.key_forms(*k).1 {
+                        next.push(*k)
+                    }
+                }
+                Shape::Struct(fs) => next.extend(fs.iter().map(|(_, f, _)| *f)),
+                Shape::Foreign { rep, .. } => next.push(*rep),
+                Shape::None | Shape::Unknown | Shape::Scalar(..) | Shape::Lit(_) => (),
+            }
+        }
+        found.sort_unstable();
+        found
     }
 
     fn push(&mut self, s: Shape, t: &Type) -> usize {

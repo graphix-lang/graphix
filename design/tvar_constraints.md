@@ -720,8 +720,9 @@ an exact number; TOML has no null and a native datetime; an object
 reads as its sorted key/value pairs; a map whose keys are scalars and no
 string writes them as text, a float's with its point and a duration's
 whole seconds without, unless its key type may write a string
-(`Type::may_write_string`, which the writer follows)), and each
-member's reading of a value whole,
+(`Type::may_write_string`, which the writer follows), and a key's union
+is judged as data only where its map may write pairs, `Shapes::data`), and
+each member's reading of a value whole,
 as the cast's pick does: a payload variant whose tag the data names
 first (taken whatever its reading rounds), the round its reading falls
 in (exact, then rounded), the pass (a tuple, then a struct, keeping the
