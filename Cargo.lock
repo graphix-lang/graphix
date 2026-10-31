@@ -4928,7 +4928,7 @@ dependencies = [
  "indexmap",
  "nohash",
  "parking_lot 0.12.5",
- "pin-utils",
+ "pin-project-lite",
  "poolshark",
  "rand 0.10.3",
  "rust_decimal",
