@@ -362,69 +362,6 @@ impl StructurePattern {
                     continue;
                 }
             };
-            // XCR claude for claude: [bug/high] `*f == t` holds two completions that
-            // differ only in undecided cells to be one member, so a partial struct
-            // pattern is checked as covering both while a later statement decides the
-            // cells apart, and the select matches no arm at run time: `let x = never();
-            // let y = never(); let v = select b { true => {a: [1], c: x}, false => {a:
-            // ["s"], c: y} }; let r = select v { {a, ..} => "[a]" }; x <- 1; y <- "w"`
-            // prints [1], then "no arm matches: a coverage hole in the check" once b
-            // turns false (main df6600e9b; GRAPHIX_ABORT_ON_NO_MATCH=1 dumps core). The
-            // same in a block, a lambda or an arm. The fuzzer finds the reverse too, a
-            // valid partial pattern refused as matching two members
-            // (fuzz/pending-triage/oct29a/ryouko/typeflip_000003.gx). Four review rounds
-            // on branch cr30-u4 judged such pairs at the statement's settle; each round
-            // opened a new over-refusal or order split (round 4: `{loading: true,
-            // items: []} | {loading: false, items: data}` under bool-literal arms is
-            // refused "missing match cases"). The rule is cr-discuss round 4 D2. probe:
-            // ~/tmp/cr29/scratch/review3/u4/r2b.gx (partial-hole-01)
-            // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 D2): option
-            // (a). Keep main's completion and narrowing exactly and add only a late
-            // check: record the pairs of completions == took as equal while they
-            // differed in undecided cells, and refuse once the program or input is
-            // checked if they ended up decided apart ("matches more than one member once
-            // its cells are decided: annotate"). The check decides no cell.
-            // typeflip_000003's over-refusal stays as today.
-            // 2026-10-30 claude: Built as cr-discuss round 4 D2 (a): main's completion
-            // and narrowing unchanged; unique_completion records each pair == took as
-            // equal while not strictly identical (expr::Undecided), the select defers
-            // them per arm to the check's end (PendingSettle::OneMember, judged last,
-            // reading the cells), refused unless the completions are one type then
-            // (setops::settled_identical: a bound cell is its binding, ⊥ and a top-level
-            // cell nothing decided are apart from no type, a definition's open cell is
-            // itself) or an earlier arm covers the other member. Pins (lang::select)
-            // that fail on main 5f4b4677f (it accepts them and leaves the hole):
-            // partial_struct_cells_decided_apart_are_two_members, _in_either_order,
-            // _in_a_lambda, _after_a_lambda, _in_an_arm, _under_a_tuple, _nested,
-            // partial_struct_parameter_cells_are_two_members,
-            // partial_struct_function_cells_decided_apart_are_two_members,
-            // partial_struct_after_a_type_test_taking_the_first_member; accepted as on
-            // main: partial_struct_cells_decided_alike_are_one_member,
-            // partial_struct_cells_nothing_decides_are_one_member,
-            // partial_struct_empty_beside_a_decided_cell_is_one_member,
-            // partial_struct_after_a_type_test_taking_a_decided_member,
-            // literal_arms_over_members_told_apart_by_an_empty_array; typeflip_000003's
-            // over-refusal stays (partial_struct_beside_a_bound_cell_is_two_members). A
-            // later REPL input can still decide an earlier input's open top-level cells:
-            // partial-hole-repl-01.
-            // 2026-10-30 claude: Round 2 (review7 of cr31-P): the late judgment is
-            // directional (setops::settled_identical): every value of the other member
-            // must pass the arm's test, the first completion, in every instance. A
-            // definition's open cell holds no value unless a caller can hand it one
-            // (FnType::input_cells over the enclosing signatures, which Gate::close adds
-            // to PendingSettle::OneMember: a parameter, or the result under a &mut, a
-            // nominal type, a constructor application or a returned function's
-            // parameter), and as the test it passes only its own values. Accepted again
-            // as on main (round 1 refused them):
-            // partial_struct_empty_cells_a_definition_returns_are_one_member (fails with
-            // round 1's rule). Refused, holes on main:
-            // partial_struct_empty_cells_a_definition_hands_out_writable_are_two_members,
-            // partial_struct_empty_cells_a_definition_hands_to_a_caller_function_are_two_members,
-            // partial_struct_empty_test_cell_a_definition_returns_beside_a_parameter_is_two_members
-            // (this one also fails under a symmetric rule). A slice element decided
-            // apart after the select is refused as its decided-before twin is:
-            // partial_struct_slice_elements_decided_apart_are_two_members,
-            // _before_are_two_members.
             match &found {
                 None => found = Some(t),
                 Some(f) if *f == t => {
@@ -603,10 +540,9 @@ pub struct Undecided {
 }
 
 impl Undecided {
-    /// Refused unless every value of the other member passes the arm's
-    /// test once the check has decided what it will
-    /// ([`settled_identical`]) or an earlier arm, covering `covered`,
-    /// takes every value of the other member. `input` says whether a
+    /// Refused unless the two completions are one type once the check has
+    /// decided what it will ([`settled_identical`]) or an earlier arm,
+    /// covering `covered`, takes every value of the other member. `input` says whether a
     /// caller of an enclosing definition can hand an unbound cell a value
     /// ([`crate::typ::FnType::input_cells`]), every cell outside any
     /// definition; no other cell of theirs holds one. It reads the cells

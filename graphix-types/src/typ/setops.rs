@@ -84,13 +84,12 @@ fn every_input(_: &TVar) -> bool {
     true
 }
 
-/// [`union_identical`] of an arm's run-time test `test` and another
-/// member's completion `other` once the check has decided what it will:
-/// whether every value of `other` passes `test` in every instance. An
-/// unbound cell of `test` passes any value only at top level, where
-/// nothing decides it later; ⊥ passes any. An unbound cell of `other`
-/// holds no value at top level, nor where `input` says no caller can hand
-/// it one; ⊥ holds none.
+/// [`union_identical`] of an arm's completion `test` and another member's
+/// completion `other` once the check has decided what it will, but for
+/// the cells that hold no value, which are any type: ⊥ on either side, an
+/// unbound top-level cell (nothing decides it later) on either side, and
+/// an unbound cell of `other` where `input` says no caller can hand it
+/// one. Any other unbound cell is only itself.
 // CR claude for eric: [bug/low] A later REPL input can bind a top-level cell an
 // earlier input left open, so the earlier input's judgment (open beside open) no
 // longer holds, and the coverage hole the fix of partial-hole-01 closes in a script
@@ -113,8 +112,8 @@ pub(crate) fn settled_identical(
     Identity::<_, true>::new(false, input).same(test, other)
 }
 
-/// Identity of `t0` and `t1`; `SETTLED`, of a test `t0` and the type
-/// `t1` of the values it must pass ([`settled_identical`]).
+/// Identity of `t0` and `t1`; `SETTLED`, as [`settled_identical`] judges
+/// an arm's completion `t0` and another member's `t1`.
 struct Identity<I, const SETTLED: bool> {
     strict: bool,
     /// `SETTLED`: whether a caller can hand an unbound cell a value.

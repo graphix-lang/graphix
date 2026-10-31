@@ -2045,6 +2045,17 @@ impl<R: Rt> Select<R> {
         Ok(())
     }
 
+    // CR claude for claude: [bug/medium] A scrutinee member that is an open cell decided
+    // after the select counts as covered by a struct arm: `let z = never(); let v =
+    // select b { true => {a: [1], c: 1}, false => z }` read by `{a, ..} => "[a]"` (the
+    // full `{a, c}` alike) with `z <- {a: ["s"], c: "w"}` after it passes the check,
+    // prints `[1]`, then "no arm matches: a coverage hole in the check" once `b` is false
+    // (main 3c784b3db and cr31-P alike; GRAPHIX_ABORT_ON_NO_MATCH=1 dumps core). The
+    // class of partial-hole-01 by another road: nothing judges the open member once it
+    // is decided. Under Eric's D2 ruling (cr-discuss round 4, option a: a late check),
+    // defer the open member beside the arms' cover to the check's end and refuse it
+    // decided outside that cover. Found by the round-2 review of partial-hole-01.
+    // probes: ~/tmp/cr29/scratch/review7/P/r2/p/om1.gx, om3.gx (open-member-cover-01)
     // CR claude for claude: [bug/medium] A pattern over a variant whose payload is a
     // union of structs told apart only by cells decided after the select covers only
     // the payload's first member: `let v = select b { true => `P({a: [1], c: x}), false
