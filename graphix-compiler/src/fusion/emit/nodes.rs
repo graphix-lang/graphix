@@ -1257,14 +1257,16 @@ pub(crate) fn emit_construct_node<R: Rt>(
 }
 
 /// `x.0` on a Graphix-minted abstract value: a taint-guarded read of the
-/// payload at the representation's shape `rep` that borrows the source
-/// and returns an owned clone.
+/// payload, of type `rep`, at the shape `rep` freezes to, that borrows the
+/// source and returns an owned clone.
 pub(crate) fn emit_abstract_ref_node<R: Rt>(
     cx: &mut BodyCx,
     source: &Node<R>,
     rep: &Type,
 ) -> Result<CompiledExpr> {
-    let rep = resolve_node_typ(cx.ctx, rep);
+    let rep = freeze_node_typ(cx.ctx, rep).ok_or_else(|| {
+        anyhow!("emit_clif: abstract payload type {rep} doesn't freeze")
+    })?;
     let helper = abstract_read_helper(&rep)?;
     let src = node_composite_source(source);
     let cv = source.emit_clif(cx)?;
@@ -1294,7 +1296,8 @@ pub(crate) enum FieldOf {
     Struct,
 }
 
-/// `t.<idx>` and `s.field`: a field read of a tuple or a struct.
+/// `t.<idx>` and `s.field`: a field read of a tuple or a struct, at the
+/// shape the field's type `elem_typ` freezes to.
 pub(crate) fn emit_field_ref_node<R: Rt>(
     cx: &mut BodyCx,
     source: &Node<R>,
@@ -1316,8 +1319,8 @@ pub(crate) fn emit_field_ref_node<R: Rt>(
     {
         return emit_ref_node(cx, source.spec(), field, elem_typ);
     }
-    // an element type may be a Ref to an abstract type name
-    let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
+    let elem_typ = freeze_node_typ(cx.ctx, elem_typ)
+        .ok_or_else(|| anyhow!("emit_clif: field type {elem_typ} doesn't freeze"))?;
     let arr = emit_accessor_source_node(cx, source, kind)?;
     let idx_const = cx.b.ins().iconst(types::I64, (base + idx) as i64);
     let result = emit_taint_guarded_read(cx, arr.disc, &elem_typ, |cx| {

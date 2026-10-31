@@ -2066,6 +2066,61 @@ run!(kernel_built_abstract_eq, KERNEL_BUILT_ABSTRACT_EQ, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[false, true, false]")
 });
 
+// A payload or field read emits the form its type freezes to, the form
+// its readers take it in. The select's patterns bind the open cell to a
+// union of two arrays that resolve alike, which freezes to the array: a
+// bottom source's placeholder is an empty array, never a null.
+run!(abstract_payload_select_over_bottom, r#"{
+  type B<'p> = Abstract<'p>;
+  let x = never();
+  let b = B([x]);
+  let v = select b.0 { [1, ..] => 0, [h, ..] => 1, _ => 2 };
+  x <- 1;
+  v
+}"#, is(Value::I64(0)); FuseExpect::Jit);
+
+run!(abstract_payload_rest_over_bottom, r#"{
+  type B<'p> = Abstract<'p>;
+  let x = never();
+  let b = B([x, 5]);
+  let v = select b.0 { [1, rest..] => array::len(rest) + 10, [h, rest..] => h, _ => 2 };
+  x <- 1;
+  v
+}"#, is(Value::I64(11)); FuseExpect::Jit);
+
+run!(abstract_payload_decided_before_select, r#"{
+  type B<'p> = Abstract<'p>;
+  let x = never();
+  x <- 1;
+  let b = B([x]);
+  select b.0 { [1, ..] => 0, [h, ..] => 1, _ => 2 }
+}"#, is(Value::I64(0)); FuseExpect::Jit);
+
+run!(abstract_payload_select_in_a_loop, r#"{
+  type B<'p> = Abstract<'p>;
+  let x = never();
+  let f = |i| { let b = B([x, i]); select b.0 { [1, ..] => i, [h, ..] => h, _ => 2 } };
+  let v = array::map([1, 2, 3], |i| f(i));
+  x <- 1;
+  v
+}"#, prints("[i64:1, i64:2, i64:3]"); FuseExpect::Jit);
+
+run!(tuple_field_select_over_bottom, r#"{
+  let y = never();
+  let p = (y, 2);
+  let v = select p.0 { [1, ..] => 0, [h, ..] => h + 10, _ => 2 };
+  y <- [3];
+  v
+}"#, is(Value::I64(13)); FuseExpect::Jit);
+
+run!(struct_field_select_over_bottom, r#"{
+  let y = never();
+  let s = {a: y, b: 2};
+  let v = select s.a { [1, ..] => 0, [h, ..] => h + 10, _ => 2 };
+  y <- [4];
+  v
+}"#, is(Value::I64(14)); FuseExpect::Jit);
+
 // A type test over an option tests the value's own type: "is a string"
 // over `[Array<i64>, null]` is never "is not null".
 const OPTION_TYPE_TEST_TESTS_THE_TYPE: &str = r#"

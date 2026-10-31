@@ -215,6 +215,16 @@ each was obvious in hindsight and invisible in advance.
    (`Env::seed_typedef_refs` runs in both modes;
    `lang::fusion_parity` pins identical refusals node-walked and fused).
 
+9. **A production is the form its type freezes to.** Every reader
+   classifies a node's value by its frozen type (`BodyCx::node_kind`),
+   so a node picks its helper and its bottom placeholder by the same
+   frozen type, never by the type with its names merely expanded: a
+   union of members that resolve alike (`[Array<i64>, Array<i64>]`, what
+   a select's patterns bind an open cell to) is a Value unfrozen and the
+   array frozen, and a reader that drops a null placeholder as an array
+   aborts. A type that does not freeze de-fuses the region. Pins:
+   `lang::fusion::*_select_over_bottom`.
+
 ## What was ruled out
 
 - **A central region planner** (the classic path): it lost the whole
