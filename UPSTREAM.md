@@ -256,7 +256,13 @@ the state of a fix, and Graphix's side.
   one wants again still hangs: `sort_by_change_resorts_offscreen_rows`
   (rows scrolled away by a direction flip, then sorted by their other
   column) failed 1 of 10 suite runs under load. `sys::net` gives each
-  reader a channel of its own and reads no tag. Not reported.
+  reader a channel of its own and reads no tag.
+- **Fixed in netidx c0c47111** (the upstream fix above, with tests
+  `a_dval_replacing_one_dropped_mid_subscribe_gets_its_updates` and
+  `a_dval_beside_a_live_val_gets_its_updates`): the data table suite
+  passed 70 of 70 runs on it where it failed 6 of 115 before. The alias
+  case stands. The data table's reconcile keeps its live subscriptions
+  anyway (no resubscribe for a changed role).
 
 ## netidx-value (ours): integer FromValue converts with `as`
 
