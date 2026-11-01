@@ -310,6 +310,14 @@ impl NumReads {
 // the flat spellings read. Pin: lang::types::cast_union_order_past_nested_members (fails
 // in every mode with members_by_class not looking into members). The earlier note's 'a
 // primitive set alike' held for a flat set only.
+// 2026-11-01 claude: Round 6 fix 3 (review B-r3-2, medium cost): the
+// class-of-the-parsed-text rule (4) parsed every text cast into a union as a literal
+// before any member, and again in holds_exactly, holds_rounded and the number kind
+// (json::read of 300k "A" into Array<[`A, null]> 147.7 G instructions, main 4.7 G). A text
+// now parses once per value (CastCx::scalar) and only where a member may read a number,
+// bool, datetime or duration (takes_scalar); no reading changes. Pin:
+// typ::cast::tests::a_union_parses_its_text_once_and_only_for_a_scalar_member (commit
+// 4915c4c73).
 /// A union's reading of a value among those its members offer, in its
 /// order: the first, except that in a round that drops no part one reading
 /// a number across the line between integers and reals gives way to a
