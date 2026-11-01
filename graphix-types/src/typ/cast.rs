@@ -1470,8 +1470,9 @@ impl Type {
         let by_class = |classes, out: &mut SmallVec<_>| {
             let mut named: LPooled<Vec<RefKey>> = LPooled::take();
             for t in ts.iter() {
-                members_by_class(env, Cow::Borrowed(t), classes, out, &mut named, 0)
+                members_by_class(env, Cow::Borrowed(t), out, &mut named, 0)
             }
+            merge_primitives(classes, out)
         };
         by_class([own, BitFlags::empty()], &mut members);
         // text parses only where a member may read the scalar it parses as
@@ -1525,7 +1526,7 @@ impl Type {
             }
             _ => None,
         };
-        // CR claude for claude: [bug/low] A union cast tries members in the order the
+        // XCR claude for claude: [bug/low] A union cast tries members in the order the
         // union holds them, and Real = [Float, decimal] holds the primitive decimal
         // before the named Float, so cast<Number>("3.0") and cast<Real>("3.0") are
         // decimal while cast<[f32, f64, decimal]>("3.0") is f32,
@@ -1554,6 +1555,18 @@ impl Type {
         // primitive set spanning classes (members_by_class) but keeps a member naming
         // one class whole, so the named order still decides here. Probe:
         // ~/ptmp/cr29/scratch/r6-B/realord.gx.
+        // 2026-11-01 claude: Fixed by the expansion's primitive order (D2 ruling 5, the
+        // canonical tie-break): members_by_class looks through a name or variable
+        // naming a primitive set to the set, and merge_primitives makes every primitive
+        // member, written or named, one set where the first stood, split by class as
+        // before, so Real and Number read as [f32, f64, decimal] written flat does:
+        // cast<Number>("3.0") and cast<Real>("3.0") are f32 3.0, cast<Number>("0.1") is
+        // f64 0.1, cast<Real>(u8:3) is f32, cast<[F, U]>(true) is u8 1. Visible change:
+        // cast<Number>("3.1") was decimal 3.1 and is f64 3.1 (cast_union_prefers_exact
+        // updated; flat [f32, f64, decimal] gave f64 on the base too).
+        // str::parse<Number>("3.0") is still f64: it reads the text as an f64 literal,
+        // which Number holds as it is (unchanged). Pin
+        // lang::types::cast_union_primitives_by_name fails without it.
         let mut groups: [SmallVec<[&Type; 4]>; 5] = Default::default();
         for t in ts() {
             let g = match rank(t) {
@@ -2986,14 +2999,12 @@ fn own_class(v: &Value) -> BitFlags<Typ> {
 }
 
 /// Push the members of the union member `t` a union tries one at a time:
-/// a name or a variable naming a union is that union's members, and a
-/// primitive set its parts in each of `classes` and the rest, so a union
-/// reads each part with the members of its class. A name met again adds
-/// nothing: `named` holds those met.
+/// a name or a variable naming a union is that union's members, and one
+/// naming a primitive set that set ([`merge_primitives`] splits them by
+/// class). A name met again adds nothing: `named` holds those met.
 fn members_by_class<'a>(
     env: &Env,
     t: Cow<'a, Type>,
-    classes: [BitFlags<Typ>; 2],
     out: &mut SmallVec<[Cow<'a, Type>; 8]>,
     named: &mut LPooled<Vec<RefKey>>,
     depth: usize,
@@ -3014,25 +3025,50 @@ fn members_by_class<'a>(
         Cow::Owned(t) => rep_head(env, t).map(|h| Cow::Owned(h.into_owned())),
     };
     ensure_sufficient(|| match &head {
-        Some(Cow::Borrowed(Type::Set(ms))) => ms.iter().for_each(|m| {
-            members_by_class(env, Cow::Borrowed(m), classes, out, named, depth + 1)
-        }),
+        Some(Cow::Borrowed(Type::Set(ms))) => ms
+            .iter()
+            .for_each(|m| members_by_class(env, Cow::Borrowed(m), out, named, depth + 1)),
         Some(Cow::Owned(Type::Set(ms))) => ms.iter().for_each(|m| {
-            members_by_class(env, Cow::Owned(m.clone()), classes, out, named, depth + 1)
+            members_by_class(env, Cow::Owned(m.clone()), out, named, depth + 1)
         }),
         Some(h) if let Type::Primitive(p) = &**h => {
-            let [own, parsed] = classes;
-            let parts = [*p & own, *p & parsed, *p & !own & !parsed];
-            match parts.iter().filter(|p| !p.is_empty()).count() {
-                0 | 1 => out.push(t),
-                _ => parts
-                    .into_iter()
-                    .filter(|p| !p.is_empty())
-                    .for_each(|p| out.push(Cow::Owned(Type::Primitive(p)))),
-            }
+            out.push(Cow::Owned(Type::Primitive(*p)))
         }
         _ => out.push(t),
     })
+}
+
+/// The primitives of `members`, written or named, as one set split by
+/// `classes` and the rest, where the first of them stood: a union reads
+/// its primitives in their canonical order however it names them, and
+/// each class's with the members of that class.
+fn merge_primitives<'a>(
+    [own, parsed]: [BitFlags<Typ>; 2],
+    members: &mut SmallVec<[Cow<'a, Type>; 8]>,
+) {
+    let mut prims = BitFlags::empty();
+    let mut first = None;
+    let mut i = 0;
+    members.retain(|t| {
+        let keep = match &**t {
+            Type::Primitive(p) => {
+                prims |= *p;
+                first.get_or_insert(i);
+                false
+            }
+            _ => true,
+        };
+        if keep {
+            i += 1;
+        }
+        keep
+    });
+    if let Some(at) = first {
+        let parts = [prims & own, prims & parsed, prims & !own & !parsed];
+        for (k, p) in parts.into_iter().filter(|p| !p.is_empty()).enumerate() {
+            members.insert(at + k, Cow::Owned(Type::Primitive(p)))
+        }
+    }
 }
 
 /// Whether the union member `t`, past [`members_by_class`], may read the
@@ -3588,15 +3624,7 @@ pub(crate) mod tests {
         let mut out = smallvec::SmallVec::new();
         let mut named = poolshark::local::LPooled::take();
         for m in ms.iter() {
-            let classes = [enumflags2::BitFlags::empty(); 2];
-            super::members_by_class(
-                &env,
-                Cow::Borrowed(m),
-                classes,
-                &mut out,
-                &mut named,
-                0,
-            )
+            super::members_by_class(&env, Cow::Borrowed(m), &mut out, &mut named, 0)
         }
         let leaves: Vec<String> = out.iter().map(|m| m.to_string()).collect();
         assert_eq!(leaves, ["`A", "`B", "`A", "`C"]);

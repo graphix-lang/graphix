@@ -650,7 +650,7 @@ const CAST_UNION_PREFERS_EXACT: &str = r#"
 run!(
     cast_union_prefers_exact,
     CAST_UNION_PREFERS_EXACT,
-    prints("[f64:3.5, i64:3, decimal:3.1, u8:3]")
+    prints("[f64:3.5, i64:3, f64:3.1, u8:3]")
 );
 
 // An integer member holds a float or a decimal, as a value or as its text,
@@ -903,6 +903,37 @@ run!(
     CAST_UNION_ORDER_PAST_NESTED_MEMBERS,
     prints(
         "[f32:0.1, f32:0.1, i64:3, f32:3.5, i64:3, i64:3, u8:1, [f32:0.1], f32:0.1, i64:3]"
+    );
+    FuseExpect::None
+);
+
+// A union reads its primitives in canonical order however it names them:
+// a name for a primitive set is the set, so `Real` and `Number` read as
+// their primitives written flat do.
+const CAST_UNION_PRIMITIVES_BY_NAME: &str = r#"
+{
+  type F = f32;
+  type U = u8;
+  let s: Any = "3.0";
+  (
+    cast<Number>(s)$,
+    cast<Real>(s)$,
+    cast<[f32, f64, decimal]>(s)$,
+    cast<Number>("0.1")$,
+    cast<[f32, f64, decimal]>("0.1")$,
+    cast<Real>(u8:3)$,
+    cast<[f32, f64, decimal]>(u8:3)$,
+    cast<[F, U]>(true)$,
+    cast<[f32, u8]>(true)$
+  )
+}
+"#;
+
+run!(
+    cast_union_primitives_by_name,
+    CAST_UNION_PRIMITIVES_BY_NAME,
+    prints(
+        "[f32:3., f32:3., f32:3., f64:0.1, f64:0.1, f32:3., f32:3., u8:1, u8:1]"
     );
     FuseExpect::None
 );
