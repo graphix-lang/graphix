@@ -2780,6 +2780,26 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                             false => bail!("'{}: {c} refuses {what}: {why}", tv.name),
                         }
                     }
+                    let written = tv
+                        .cell_constraints()
+                        .iter()
+                        .any(|c| matches!(c, Type::Bound(Bound::Data)));
+                    if *b == Bound::TomlData
+                        && written
+                        && let Some(m) = t.toml_root_pairs(env)
+                    {
+                        let t = t.resolve_tvars();
+                        let why = format_compact!(
+                            "a TOML document is a table, and {}, a map whose key type \
+                             is not string, is written as the array of its [key, value] \
+                             pairs: put it in a struct's field",
+                            m.resolve_tvars()
+                        );
+                        match tv.name.starts_with('_') {
+                            true => bail!("{c} refuses {t}: {why}"),
+                            false => bail!("'{}: {c} refuses {t}: {why}", tv.name),
+                        }
+                    }
                 }
                 Type::Bound(Bound::OneNumber) => {
                     if t.one_number_open() {

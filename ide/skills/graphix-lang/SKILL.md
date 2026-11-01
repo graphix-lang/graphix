@@ -856,7 +856,8 @@ admits null. Excess decimal fractional precision rounds to the nearest
 representable decimal in JSON reads, string casts and `str::parse`.
 JSON/TOML write a map as an object/table only when its key type is
 `string`; any other key type writes an array of `[key, value]` pairs. TOML
-requires a table at the document root and has no null: a null struct
+requires a table at the document root, so `toml::write_str` refuses such a
+map as the document (wrap it in a struct field), and has no null: a null struct
 field is left out, a null anywhere else is refused when written. An
 abstract value is written as an object its type's name keys
 (`{"Port":80}`), and read only so; the abstract values inside that data

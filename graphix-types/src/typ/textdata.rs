@@ -18,7 +18,7 @@ use crate::{
     expr::ModPath,
     typ::{AbstractId, Typ, Type, cast::grows_on, params_size},
 };
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -46,6 +46,19 @@ pub enum TextRefusal {
 enum Named {
     Def(usize),
     Abstract(AbstractId),
+}
+
+/// A [`Walk::same`] comparison: the pairs it is inside, the names each
+/// side expanded on the way with their arguments' size, and each pair it
+/// found apart, or alike without leaning on a pair it was inside
+/// (`leaned`).
+#[derive(Default)]
+struct Same {
+    path: LPooled<Vec<(Type, Type)>>,
+    left: LPooled<Vec<(usize, usize)>>,
+    right: LPooled<Vec<(usize, usize)>>,
+    known: LPooled<AHashMap<(Type, Type), bool>>,
+    leaned: bool,
 }
 
 struct Walk<'a> {
@@ -446,6 +459,101 @@ impl<'a> Walk<'a> {
         }
     }
 
+    /// Whether `a` and `b` are one type, their names and variables
+    /// expanded: unions alike as sets of members, and a pair met again
+    /// inside itself alike.
+    fn same(&self, cx: &mut Same, a: &Type, b: &Type) -> bool {
+        if a == b {
+            return true;
+        }
+        let key = (a.clone(), b.clone());
+        if let Some(r) = cx.known.get(&key) {
+            return *r;
+        }
+        if cx.path.contains(&key) {
+            cx.leaned = true;
+            return true;
+        }
+        let leaned = std::mem::replace(&mut cx.leaned, false);
+        cx.path.push(key.clone());
+        let r = crate::stack::ensure_sufficient(|| self.same_inner(cx, a, b));
+        cx.path.pop();
+        if !r || !cx.leaned {
+            cx.known.insert(key, r);
+        }
+        cx.leaned |= leaned;
+        r
+    }
+
+    fn same_inner(&self, cx: &mut Same, a: &Type, b: &Type) -> bool {
+        let union = |t: &Type| match t {
+            Type::Set(_) => true,
+            Type::Primitive(p) => p.len() != 1,
+            _ => false,
+        };
+        let all = |cx: &mut Same, xs: &[Type], ys: &[Type]| {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| self.same(cx, x, y))
+        };
+        match (a, b) {
+            (Type::TVar(tv), b) if let Some(a) = tv.binding() => self.same(cx, &a, b),
+            (a, Type::TVar(tv)) if let Some(b) = tv.binding() => self.same(cx, a, &b),
+            (Type::Ref(tr), b) => {
+                let Some((def, body)) = self.expand(a) else { return false };
+                let size = params_size(&tr.params);
+                if grows_on(&cx.left, &def, size) {
+                    return false;
+                }
+                cx.left.push((def, size));
+                let r = self.same(cx, &body, b);
+                cx.left.pop();
+                r
+            }
+            (a, Type::Ref(tr)) => {
+                let Some((def, body)) = self.expand(b) else { return false };
+                let size = params_size(&tr.params);
+                if grows_on(&cx.right, &def, size) {
+                    return false;
+                }
+                cx.right.push((def, size));
+                let r = self.same(cx, a, &body);
+                cx.right.pop();
+                r
+            }
+            (a, b) if union(a) || union(b) => {
+                let (mut xs, mut ys) = (SmallVec::new(), SmallVec::new());
+                self.members(a, &mut xs, &mut vec![]);
+                self.members(b, &mut ys, &mut vec![]);
+                let covers = |cx: &mut Same, xs: &[(Type, Type)], ys: &[(Type, Type)]| {
+                    xs.iter().all(|(x, _)| ys.iter().any(|(y, _)| self.same(cx, x, y)))
+                };
+                covers(cx, &xs, &ys) && covers(cx, &ys, &xs)
+            }
+            (Type::Array(x), Type::Array(y))
+            | (Type::List(x), Type::List(y))
+            | (Type::Error(x), Type::Error(y)) => self.same(cx, x, y),
+            (Type::ByRef(m, x), Type::ByRef(n, y)) => m == n && self.same(cx, x, y),
+            (Type::Tuple(xs), Type::Tuple(ys)) => all(cx, xs, ys),
+            (Type::Variant(s, xs, _), Type::Variant(t, ys, _)) => {
+                s == t && all(cx, xs, ys)
+            }
+            (Type::Struct(xs), Type::Struct(ys)) => {
+                xs.len() == ys.len()
+                    && xs
+                        .iter()
+                        .zip(ys.iter())
+                        .all(|((n, x, _), (m, y, _))| n == m && self.same(cx, x, y))
+            }
+            (Type::Map { key: k, value: v }, Type::Map { key: l, value: w }) => {
+                self.same(cx, k, l) && self.same(cx, v, w)
+            }
+            (
+                Type::Abstract { id: i, params: p },
+                Type::Abstract { id: j, params: q },
+            ) => i == j && all(cx, p, q),
+            _ => false,
+        }
+    }
+
     fn union(&mut self, t: &Type) -> Result<(), TextRefusal> {
         let mut members: SmallVec<[(Type, Type); 8]> = SmallVec::new();
         self.members(t, &mut members, &mut vec![]);
@@ -465,7 +573,7 @@ impl<'a> Walk<'a> {
                 continue;
             };
             match tags.iter().find(|(t, _, _)| *t == tag) {
-                Some((_, a, a_written)) if *a != head => {
+                Some((_, a, a_written)) if !self.same(&mut Same::default(), a, head) => {
                     let (a, b) = ((*a_written).clone(), written.clone());
                     return Err(TextRefusal::SharedTag { union: t.clone(), tag, a, b });
                 }
@@ -486,6 +594,24 @@ impl Type {
         let mut walk =
             Walk { env, read_by: None, seen: LPooled::take(), path: LPooled::take() };
         walk.walk(self).err()
+    }
+
+    /// The map at this type's root, past names, variables and a union's
+    /// members, that a TOML writer writes as the array of its `[key,
+    /// value]` pairs (its key type is known and is not `string`), which a
+    /// TOML document, a table, cannot be.
+    pub fn toml_root_pairs(&self, env: &Env) -> Option<Type> {
+        let walk =
+            Walk { env, read_by: None, seen: LPooled::take(), path: LPooled::take() };
+        let mut members: SmallVec<[(Type, Type); 8]> = SmallVec::new();
+        walk.members(self, &mut members, &mut vec![]);
+        members.into_iter().find_map(|(head, written)| match &head {
+            Type::Map { key, .. } => match walk.head(key)? {
+                Type::Primitive(p) if p == Typ::String => None,
+                _ => Some(written),
+            },
+            _ => None,
+        })
     }
 }
 
@@ -550,6 +676,41 @@ mod test {
             &[("P<'a, 'b>", "[`N, `C('a, P<'b, 'a>)]")],
             "{k: P<i64, string>}"
         ));
+    }
+
+    // Members under one tag that are one type, written through names or
+    // not, are one member.
+    #[test]
+    fn one_type_under_one_tag_through_names() {
+        let k = [("K", "string"), ("AK", "[`A(K), `B]")];
+        assert!(!named(&k, "Array<[`A(K), `A(string), `B]>"));
+        assert!(!named(&k, "Array<[AK, `A(string)]>"));
+        assert!(!named(&k, "[`A([K, null]), `A([string, null])]"));
+        assert!(!named(&k, "[`A({a: K, b: i64}), `A({a: string, b: i64})]"));
+        assert!(named(&k, "[`A(K), `A(i64)]"));
+        assert!(named(&[("K", "[string, null]")], "[`A(K), `A(string)]"));
+        let r = [
+            ("R", "[`Nil, `Cons(i64, R)]"),
+            ("S", "[`Nil, `Cons(i64, S)]"),
+            ("T", "[`Nil, `Cons(string, T)]"),
+        ];
+        assert!(!named(&r, "[`A(R), `A(S)]"));
+        assert!(named(&r, "[`A(R), `A(T)]"));
+    }
+
+    // A map at a TOML document's root is a table only under string keys.
+    #[test]
+    fn a_map_written_as_pairs_is_no_document() {
+        let pairs = |defs: &[(&str, &str)], t: &str| {
+            let (env, t) = typed(defs, t);
+            t.toml_root_pairs(&env).map(|m| m.to_string())
+        };
+        assert_eq!(pairs(&[], "Map<i64, string>").as_deref(), Some("Map<i64, string>"));
+        assert_eq!(pairs(&[], "[Map<[`A, `B], i64>, null]").is_some(), true);
+        assert_eq!(pairs(&[("M", "Map<i64, i64>")], "M").as_deref(), Some("M"));
+        assert_eq!(pairs(&[("K", "string")], "Map<K, i64>"), None);
+        assert_eq!(pairs(&[], "Map<string, i64>"), None);
+        assert_eq!(pairs(&[], "{m: Map<i64, i64>}"), None);
     }
 
     // A union's members past the unions its names hold expand each name

@@ -262,15 +262,15 @@ async fn an_empty_innermost_container_counts() -> Result<()> {
 }
 
 // Two map keys are never merged into one: a key type other than string
-// writes pairs, which a TOML document cannot hold at its top, and two
-// keys that write as one value (under `Any`) are refused.
+// writes pairs (in TOML inside a table), and two keys that write as one
+// value (under `Any`) are refused.
 run!(json_keys_writing_alike_are_not_merged, r#"{
     let m: Map<Any, i64> = {1 => 10, "1" => 20};
     let n: Map<Any, i64> = {`A => 1, "A" => 2};
-    "[json::write_str(m)] [toml::write_str(m)] [json::write_str(n)]"
+    "[json::write_str(m)] [toml::write_str({m})] [json::write_str(n)]"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s))
-        if s.contains(r#"[[1,10],["1",20]]"#) && s.contains("TomlErr")
+        if s.contains(r#"[[1,10],["1",20]]"#) && s.contains(r#"m = [[1, 10], ["1", 20]]"#)
             && s.contains("two keys write as the same JSON data"))
 }; FuseExpect::Jit);
 
@@ -755,6 +755,34 @@ run!(
     json::write_str(v)
 }"#,
     refused("'a: JsonData refuses [A, `A]: A and `A in [A, `A] share the tag A")
+);
+
+// A variant written through a name is the variant: two spellings of one
+// type under one tag are one member, and it reads back.
+run!(
+    json_one_variant_through_a_name_reads_back,
+    r#"{
+    type K = string;
+    type AK = [`A(K), `B];
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let x: Array<[`A(K), `A(string), `B]> = [`A("x"), `B];
+    let y: Array<[AK, `A(string)]> = [`A("y"), `B];
+    let (jx, jy) = (json::write_str(x)$, json::write_str(y)$);
+    let rx: Result<Array<[`A(K), `A(string), `B]>, E> = json::read(jx);
+    let ry: Result<Array<[AK, `A(string)]>, E> = json::read(jy);
+    (jx, jy, rx$ == x, ry$ == y)
+}"#,
+    prints(r#"["[[\"A\",\"x\"],\"B\"]", "[[\"A\",\"y\"],\"B\"]", true, true]"#)
+);
+
+run!(
+    json_one_tag_over_two_types_through_a_name_refused,
+    r#"{
+    type K = i64;
+    let x: Array<[`A(K), `A(string)]> = [`A(1)];
+    json::write_str(x)
+}"#,
+    refused("share the tag A")
 );
 
 run!(

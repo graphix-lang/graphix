@@ -723,7 +723,9 @@ and `[T, null]` for a `T` that is no union hold, `[i64, string]`, `[Port,
 u8]`, `` [Transparent<P>, `A] `` and `` [`A(i64), `A(string)] `` do not
 (the type system merges the last into `` `A([i64, string]) ``, whose
 payload is refused), and members under one tag are refused unless they
-are one type. Inside the data an abstract type's `from_value` reads (its
+are one type, compared with their names and variables expanded (`` [`A(K),
+`A(string)] `` over `type K = string` is one member; `Walk::same`, a
+recursive pair met inside itself alike). Inside the data an abstract type's `from_value` reads (its
 representation, where its implementation leaves `to_value` out), a cast
 of data reads, and every abstract value there is written bare, so no
 abstract type carries a tag: `[Port, Ito]` and `` [S, `A] `` are refused
@@ -746,7 +748,12 @@ arguments grow at every level (``type N<'a> = [`Nil, `Cons('a,
 N<Array<'a>>)]``) is refused by the growth rule of the representation
 walks (`cast::grows_on`). A map's form is its key type's alone: an object
 under `string`, its pairs under any other, so its key union is judged as
-any other.
+any other. A TOML document is a table: where the bound is a writer's
+(`'a: Data + TomlData`), a map at the type's root, past names and a
+union's members, whose key type is known and is not `string` is refused,
+since it writes its pairs (`Type::toml_root_pairs`); toml's writer refuses
+a map written as pairs at the root by its value where the type says
+nothing (`Any`). A reader takes such a map from a table's entries.
 
 The rule asks nothing of the cast's pick, which may read data as any
 member: what a union reads back is decided by the tag alone.

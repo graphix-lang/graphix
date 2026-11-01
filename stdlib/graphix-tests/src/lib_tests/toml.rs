@@ -146,6 +146,45 @@ run!(
     }
 );
 
+// A map whose key type is not string writes as its pairs, which a
+// document, a table, cannot be: refused by its type where the check knows
+// it, and when written where only the value does.
+run!(
+    toml_document_written_as_pairs_refused,
+    r#"{
+    let m: Map<i64, string> = {1 => "a"};
+    toml::write_str(m)
+}"#,
+    refused(
+        "'a: TomlData refuses Map<i64, string>: a TOML document is a table, and \
+         Map<i64, string>, a map whose key type is not string, is written as the array \
+         of its [key, value] pairs"
+    )
+);
+
+run!(
+    toml_untyped_document_written_as_pairs_refused,
+    r#"{
+    let m: Any = {1 => "a"};
+    let v: Map<i64, string> = {1 => "a"};
+    (toml::write_str(m), toml::write_str({v})$)
+}"#,
+    prints(
+        r#"[error:["TomlErr", "a TOML document is a table, and a map whose key type is not string is written as the array of its [key, value] pairs: put it in a struct's field"], "v = [[1, \"a\"]]\n"]"#
+    )
+);
+
+// A map's pairs read back as a table's entries.
+run!(
+    toml_document_map_read_by_its_key_type,
+    r#"{
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    let r: Result<Map<i64, string>, E> = toml::read("1 = \"a\"");
+    r$
+}"#,
+    prints(r#"{i64:1 => "a"}"#)
+);
+
 // An omitted field reads as null only where its type admits null: a
 // required string or array field left out is refused, never "null" or
 // [null].

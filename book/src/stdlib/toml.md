@@ -25,8 +25,10 @@ its own.
 
 A map is a table when its key type is `string` and an array of `[key,
 value]` pairs under any other, which must be inside a document field
-because TOML requires a table at the root. Bytes write as an array of byte
-integers.
+because TOML requires a table at the root: `toml::write_str` of a
+`Map<i64, string>` is refused by its type, and of such a map under `Any`
+when written. `toml::read` reads such a map from a document's entries.
+Bytes write as an array of byte integers.
 
 ```graphix
 {{#include ../../../stdlib/graphix-package-toml/src/graphix/mod.gxi}}
