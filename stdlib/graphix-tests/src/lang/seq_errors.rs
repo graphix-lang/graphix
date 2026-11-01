@@ -25,9 +25,10 @@ async fn continuations(mode: Mode) -> Result<()> {
             ("{ bad(1); n <- n + 1 }", 1),
             ("{ n <- n + 1; bad(1) }", 1),
         ] {
+            // the result stands 30 cycles after the first error, and a
+            // later write or error moves it again
             let code = format!(
                 r#"{{
-                    {CLOCK}
                     let n = 0;
                     let errors = 0;
                     let bad = |v| {{ error(`Oops)?; v }};
@@ -38,8 +39,13 @@ async fn continuations(mode: Mode) -> Result<()> {
                     }};
                     catch(e) errors <- e ~ errors + 1;
                     {form} {{ {body} }};
-                    sys::time::after_idle(duration:20.ms,
-                        select step {{ 60 => (n, errors), _ => never() }})
+                    let after = 0;
+                    after <- select (errors, after) {{
+                        (0, _) => never(),
+                        (_, a) if a < 30 => a + 1,
+                        _ => never()
+                    }};
+                    select after {{ 30 => (n, errors), _ => never() }}
                 }}"#
             );
             let (values, _) = run_delta(&code, mode).await?;
