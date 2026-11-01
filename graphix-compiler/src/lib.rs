@@ -74,7 +74,7 @@ use std::{
     any::Any,
     cell::{Cell, OnceCell},
     collections::{VecDeque, hash_map::Entry},
-    fmt::Debug,
+    fmt::{Debug, Write as _},
     mem,
     sync::{
         self, LazyLock,
@@ -2648,6 +2648,27 @@ impl PendingSettle {
     }
 }
 
+/// The members of the union `union` a refusal names: those but the open
+/// cells a program did not name, or "another" where there are none.
+fn known_members(union: &Type) -> CompactString {
+    let mut out = CompactString::default();
+    let members = match union {
+        Type::Set(ms) => &ms[..],
+        t => std::slice::from_ref(t),
+    };
+    for m in members {
+        if !matches!(m, Type::TVar(tv) if tv.binding().is_none() && tv.name.starts_with('_'))
+        {
+            let sep = if out.is_empty() { "" } else { ", " };
+            let _ = write!(out, "{sep}{m}");
+        }
+    }
+    if out.is_empty() {
+        out.push_str("another")
+    }
+    out
+}
+
 /// The bounds a call's settled cells must meet beyond their check: a
 /// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
 /// map read from data).
@@ -2669,48 +2690,94 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                     };
                     if let Some(why) = t.text_refusal(env) {
                         let r = |t: &Type| t.resolve_tvars();
-                        let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.binding().is_none());
-                        let why = match why {
-                            typ::TextRefusal::Untagged { union, member }
-                                if open(&member) =>
+                        let what = || format_compact!("{}", r(&t));
+                        let (what, why) = match &why {
+                            typ::TextRefusal::Untagged { union, member, .. }
+                                if let Type::TVar(cell) = member
+                                    && cell.binding().is_none() =>
                             {
-                                format_compact!(
-                                    "a member of {} is not known yet, and beside another \
-                                     member it would need a tag: annotate it",
-                                    r(&union)
-                                )
+                                match cell.name.starts_with('_') {
+                                    true => (
+                                        format_compact!(
+                                            "a type not known yet beside {}",
+                                            known_members(&r(union))
+                                        ),
+                                        format_compact!(
+                                            "beside another member a member needs a tag \
+                                             (a variant's, or an abstract type's name): \
+                                             annotate the value's type"
+                                        ),
+                                    ),
+                                    false => (
+                                        what(),
+                                        format_compact!(
+                                            "'{} may be any type, and beside another \
+                                             member in {} it would need a tag (a \
+                                             variant's, or an abstract type's name)",
+                                            cell.name,
+                                            r(union)
+                                        ),
+                                    ),
+                                }
                             }
-                            typ::TextRefusal::Untagged { union, member } => {
+                            typ::TextRefusal::Untagged {
+                                union,
+                                member,
+                                read_by: None,
+                            } => (
+                                what(),
                                 format_compact!(
-                                    "{} in {} has no tag (a variant's, or an abstract type's \
-                                 name), so what another member writes as {name} data may \
-                                 read back as it",
-                                    r(&member),
-                                    r(&union)
-                                )
-                            }
-                            typ::TextRefusal::SharedTag { union, tag, a, b } => {
-                                format_compact!(
-                                    "{} and {} in {} share the tag {tag}, so what one writes \
-                                 as {name} data may read back as the other",
-                                    r(&a),
-                                    r(&b),
-                                    r(&union)
-                                )
-                            }
-                            typ::TextRefusal::Transparent(t) => format_compact!(
-                                "{} holds a type that is not abstract, which {name} \
-                                 writes bare already",
-                                r(&t)
+                                    "{} in {} has no tag (a variant's, or an abstract \
+                                     type's name), so what another member writes as \
+                                     {name} data may read back as it",
+                                    r(member),
+                                    r(union)
+                                ),
                             ),
-                            typ::TextRefusal::Grows(def) => format_compact!(
-                                "{def} grows its parameters as it recurses, so whether \
-                                 what it writes as {name} data reads back can't be decided"
+                            typ::TextRefusal::Untagged {
+                                union,
+                                member,
+                                read_by: Some(a),
+                            } => (
+                                what(),
+                                format_compact!(
+                                    "{} in {} has no tag: in the data {a}'s from_value \
+                                     reads, abstract values are written bare, so what \
+                                     another member writes there may read back as it",
+                                    r(member),
+                                    r(union)
+                                ),
+                            ),
+                            typ::TextRefusal::SharedTag { union, tag, a, b } => (
+                                what(),
+                                format_compact!(
+                                    "{} and {} in {} share the tag {tag}, so what one \
+                                     writes as {name} data may read back as the other",
+                                    r(a),
+                                    r(b),
+                                    r(union)
+                                ),
+                            ),
+                            typ::TextRefusal::Transparent(t) => (
+                                what(),
+                                format_compact!(
+                                    "{} holds a type that is not abstract, which {name} \
+                                     writes bare already",
+                                    r(t)
+                                ),
+                            ),
+                            typ::TextRefusal::Grows(def) => (
+                                what(),
+                                format_compact!(
+                                    "{def} grows its parameters as it recurses, so \
+                                     whether what it writes as {name} data reads back \
+                                     can't be decided"
+                                ),
                             ),
                         };
                         match tv.name.starts_with('_') {
-                            true => bail!("{c} refuses {}: {why}", r(&t)),
-                            false => bail!("'{}: {c} refuses {}: {why}", tv.name, r(&t)),
+                            true => bail!("{c} refuses {what}: {why}"),
+                            false => bail!("'{}: {c} refuses {what}: {why}", tv.name),
                         }
                     }
                 }

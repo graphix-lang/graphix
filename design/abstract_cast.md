@@ -105,7 +105,9 @@ writer reaches it", and "fn(..) is not data".
     such an object only (`CastInput::Text`, `Type::cast_abstract`),
     and `Transparent<T>`'s data bare, so a union of variants and
     abstract types reads back by the tag alone (`'a: JsonData`,
-    `design/tvar_constraints.md`). Everywhere else `Transparent<T>` is
+    `design/tvar_constraints.md`); inside a `from_value`'s data an
+    abstract type carries no tag, so a union there holds abstract types
+    only alone beside `null`. Everywhere else `Transparent<T>` is
     its representation.
 - **Async builtins.**
   - `EvalCachedAsync::DATA_ARGS` lists the arguments that leave as data;

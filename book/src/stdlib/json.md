@@ -63,6 +63,12 @@ where `T`'s `Cast` implementation writes `from_value`, which casts it as
 data, the abstract values in it are written bare (`{"Tags":["a","b"]}`
 for a `Tags` holding `Tag("a")` and `Tag("b")`); where the reader reads
 the representation they are wrapped too (`{"Svc":{"port":{"Port":80}}}`).
+Bare, an abstract value carries no tag, so in the data a `from_value`
+reads an abstract type stands in a union only beside `null`, and there a
+value that writes `null` reads back as the null: `Array<[Port, Ito]>` and
+`` Array<[S, `A]> `` are refused inside such data, where `Port(1)` and
+`Ito(1)` both write `1`. Where the implementation also writes `to_value`,
+what the data holds is the implementation's to keep apart.
 
 `Transparent<T>` (in core) writes an abstract value bare, its data alone,
 and reads it back through `T`'s `Cast`. It carries no tag, so in a union

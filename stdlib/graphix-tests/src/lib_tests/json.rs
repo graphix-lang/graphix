@@ -830,6 +830,153 @@ let back: Result<Doc, E> = json::read(j);
 (j, back$ == d)
 "#), prints(r#"["{\"pt\":{\"Pt\":{\"x\":{\"Port\":82}}},\"svc\":{\"Svc\":{\"port\":80}},\"tags\":{\"Tags\":[\"a\",\"b\"]},\"tsvc\":{\"port\":81},\"tt\":83}", true]"#); FuseExpect::Jit);
 
+/// Abstract types a `from_value` reads inside its data, where they are
+/// written bare and carry no tag.
+const FROM_VALUE_DATA: &str = r#"
+type Port = Abstract<i64>;
+impl Cast for Port {};
+type Ito = Abstract<i64>;
+impl Cast for Ito {};
+type S = Abstract<string>;
+impl Cast for S {};
+type N = Abstract<[i64, null]>;
+impl Cast for N {};
+"#;
+
+pub(crate) fn with_from_value_data(body: &str) -> String {
+    format!("{{{FROM_VALUE_DATA}{body}}}")
+}
+
+// Inside the data a from_value reads, abstract values are written bare, so
+// two abstract types, or one beside a variant, are told apart by nothing;
+// the check refuses them there, directly, through Transparent and through
+// an abstract read as its representation.
+run!(
+    json_from_value_data_two_abstracts_refused,
+    &with_from_value_data(
+        r#"
+type Bx = Abstract<Array<[Port, Ito]>>;
+impl Cast for Bx {
+    let from_value = |v| select cast<Array<[Port, Ito]>>(v) { error as e => e, r => Bx(r) }
+};
+json::write_str(Bx([Port(1), Ito(2)]))
+"#
+    ),
+    refused(
+        "'a: JsonData refuses Bx: Ito in [Ito, Port] has no tag: in the data Bx's from_value reads, abstract values are written bare"
+    )
+);
+
+run!(
+    json_from_value_data_abstract_beside_a_tag_refused,
+    &with_from_value_data(
+        r#"
+type E = [`JsonErr(string), `InvalidCast(string)];
+type Bx = Abstract<{s: Array<[S, `A]>}>;
+impl Cast for Bx {
+    let from_value = |v| select cast<{s: Array<[S, `A]>}>(v) { error as e => e, r => Bx(r) }
+};
+let r: Result<Bx, E> = json::read("""{"Bx":{"s":["A"]}}""");
+r
+"#
+    ),
+    refused(
+        "'b: JsonData refuses Bx: S in [S, `A] has no tag: in the data Bx's from_value reads"
+    )
+);
+
+run!(
+    json_from_value_data_through_transparent_refused,
+    &with_from_value_data(
+        r#"
+type Bx = Abstract<Array<[Port, Ito]>>;
+impl Cast for Bx {
+    let from_value = |v| select cast<Array<[Port, Ito]>>(v) { error as e => e, r => Bx(r) }
+};
+let v: Transparent<Bx> = Transparent(Bx([Port(1)]));
+json::write_str(v)
+"#
+    ),
+    refused("in the data Bx's from_value reads")
+);
+
+run!(
+    json_from_value_data_inside_a_representation_refused,
+    &with_from_value_data(
+        r#"
+type Bx = Abstract<Array<[Port, Ito]>>;
+impl Cast for Bx {
+    let from_value = |v| select cast<Array<[Port, Ito]>>(v) { error as e => e, r => Bx(r) }
+};
+type Out = Abstract<{b: Bx}>;
+impl Cast for Out {};
+json::write_str(Out({b: Bx([Port(1)])}))
+"#
+    ),
+    refused("in the data Bx's from_value reads")
+);
+
+// A named type the text admits is judged again inside a from_value's data.
+run!(
+    json_from_value_data_judges_a_named_type_again,
+    &with_from_value_data(
+        r#"
+type R = Array<[Port, Ito]>;
+type Bx = Abstract<R>;
+impl Cast for Bx {
+    let from_value = |v| select cast<R>(v) { error as e => e, r => Bx(r) }
+};
+let d: {a: R, b: Bx} = {a: [Port(1)], b: Bx([Ito(2)])};
+json::write_str(d)
+"#
+    ),
+    refused("in the data Bx's from_value reads")
+);
+
+// The same types read back in the text, where each abstract value is
+// wrapped, and in a from_value's data tags and one member beside null
+// read back; there a member that writes null reads back as the outer
+// null, as under Transparent.
+run!(json_from_value_data_tags_read_back, &with_from_value_data(r#"
+type E = [`JsonErr(string), `InvalidCast(string)];
+type Rep = {t: Array<[`A, `B(i64), null]>, p: [Port, null], n: [N, null]};
+type Bx = Abstract<Rep>;
+impl Cast for Bx {
+    let from_value = |v| select cast<Rep>(v) { error as e => e, r => Bx(r) }
+};
+let a: Array<[Port, Ito, S, `A]> = [Port(1), Ito(2), S("A"), `A];
+let ra: Result<Array<[Port, Ito, S, `A]>, E> = json::read(json::write_str(a)$);
+let b = Bx({t: [`A, `B(1), null], p: Port(3), n: N(null)});
+let rb: Result<Bx, E> = json::read(json::write_str(b)$);
+(ra$ == a, json::write_str(b)$, rb$ == Bx({t: [`A, `B(1), null], p: Port(3), n: null}))
+"#), prints(r#"[true, "{\"Bx\":{\"n\":null,\"p\":3,\"t\":[\"A\",[\"B\",1],null]}}", true]"#); FuseExpect::Jit);
+
+// A member not known yet beside a tag is refused without the cell's
+// generated name; a definition's declared variable is named.
+run!(
+    json_open_member_refusal_names_no_cell,
+    r#"{
+    let w = |x| json::write_str([x, `A]);
+    w(`B)
+}"#,
+    |v: Result<&Value>| matches!(v, Err(e) if {
+        let m = format!("{e:#}");
+        m.contains("JsonData refuses a type not known yet beside `A: beside another member a member needs a tag")
+            && !m.contains("'_")
+    })
+);
+
+run!(
+    json_declared_variable_beside_a_tag_refused,
+    r#"{
+    let w = 'a: JsonData |x: 'a| json::write_str([x, `A]);
+    w(`B)
+}"#,
+    refused(
+        "'a may be any type, and beside another member in ['a, `A] it would need a tag"
+    )
+);
+
 // A refusal at a generic definition's call names the type it refuses, not
 // the definition's variable.
 run!(

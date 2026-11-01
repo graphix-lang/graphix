@@ -451,9 +451,9 @@ b.0])`); a lower bound's check follows its direction, and the cells
 on a cycle through cells and unions alone are one type, merged
 (`tvar::cycle_toward`, `contains::merge_bare_cycle`,
 `design/tvar_constraints.md`).
-A cast to an integer type, a type-directed read's included, holds the
-value exactly or is an `InvalidCast` (a float drops its fraction; a
-decimal made of a whole float keeps its point, `float_decimal`). A cast leaves a value's runtime class
+A cast to an integer type, a type-directed read's included, is an
+`InvalidCast` where the value does not fit (a float drops its fraction);
+a whole float cast to `decimal` keeps its point (`float_decimal`). A cast leaves a value's runtime class
 only to parse a string into a scalar (never a collection), to print a number, bool, datetime or duration
 plainly (`"42"`; a whole float, and a duration's seconds, keep the
 point, `"3.0"`, as every plain print does: `typ::PlainScalar`), between a number and a datetime (Unix seconds) or a
@@ -573,7 +573,8 @@ with no `Cast` impl, `json::read`'s and `toml::read`'s target is also
 `'b: JsonData`/`TomlData`, and so are the json and toml writers' values
 (`Type::text_refusal`: every union in the type is one member beside
 null, or members each carrying a tag, a variant's or an abstract type's
-name, no two the same, an error no member; `Transparent<T>` carries none
+name (none inside the data a `from_value` reads, where abstract values are
+bare), no two the same, an error no member; `Transparent<T>` carries none
 and is refused over a `T` known not to be abstract, never over a
 definition's own open variable; a typedef growing its parameters
 as it recurses is refused), judged of the

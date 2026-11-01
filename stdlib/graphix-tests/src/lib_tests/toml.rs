@@ -344,6 +344,43 @@ run!(toml_null_outside_a_field_refused_when_written, r#"{
      select toml::write_str({z}) { error as e => "[e]", s => s })
 }"#, prints(r#"["error:`TomlErr(\"cannot represent null in TOML\")", "error:`TomlErr(\"cannot represent null in TOML\")"]"#); FuseExpect::Jit);
 
+// Inside the data a from_value reads abstract values are bare in TOML as
+// in JSON: two abstract types or one beside a variant are refused there,
+// and tags read back.
+run!(
+    toml_from_value_data_untagged_abstracts_refused,
+    &crate::lib_tests::json::with_from_value_data(
+        r#"
+type E = [`TomlErr(string), `InvalidCast(string)];
+type Rep = {p: Array<[Port, Ito]>, s: Array<[S, `A]>};
+type Bx = Abstract<Rep>;
+impl Cast for Bx {
+    let from_value = |v| select cast<Rep>(v) { error as e => e, r => Bx(r) }
+};
+let r: Result<{f: Bx}, E> = toml::read("""[f.Bx]
+p = [1, 2]
+s = ["A"]
+""");
+r
+"#
+    ),
+    refused(
+        "'b: TomlData refuses { f: Bx }: Ito in [Ito, Port] has no tag: in the data Bx's from_value reads"
+    )
+);
+
+run!(toml_from_value_data_tags_read_back, &crate::lib_tests::json::with_from_value_data(r#"
+type E = [`TomlErr(string), `InvalidCast(string)];
+type Rep = {t: Array<[`A, `B(i64)]>, p: [Port, null]};
+type Bx = Abstract<Rep>;
+impl Cast for Bx {
+    let from_value = |v| select cast<Rep>(v) { error as e => e, r => Bx(r) }
+};
+let b = {f: Bx({t: [`A, `B(1)], p: Port(3)})};
+let rb: Result<{f: Bx}, E> = toml::read(toml::write_str(b)$);
+(toml::write_str(b)$, rb$ == b)
+"#), prints(r#"["[f.Bx]\np = 3\nt = [\"A\", [\"B\", 1]]\n", true]"#); FuseExpect::Jit);
+
 // TOML writes the data inside an abstract value as JSON does, for its
 // reader: bare abstract values where from_value reads it, wrapped ones
 // where the representation is read.

@@ -7,8 +7,11 @@
 //! `[i64, string]`, `[Port, u8]`, `` [Transparent<Port>, `A] ``, an open
 //! member beside another. A `Transparent<T>`, written bare, has no tag, and
 //! is refused over a type `T` known not to be abstract, where it would
-//! change nothing; over an open variable it is not judged. A typedef whose
-//! parameters grow as it recurses is refused: its expansions never end.
+//! change nothing; over an open variable it is not judged. Inside the data
+//! an abstract type's `from_value` reads, a cast of data, every abstract
+//! value is written bare, so no abstract type carries a tag there. A
+//! typedef whose parameters grow as it recurses is refused: its expansions
+//! never end.
 
 use crate::{
     env::Env,
@@ -25,8 +28,10 @@ use triomphe::Arc;
 /// ([`Type::text_refusal`]).
 #[derive(Debug, Clone)]
 pub enum TextRefusal {
-    /// A member with no tag in a union holding another member but `null`.
-    Untagged { union: Type, member: Type },
+    /// A member with no tag in a union holding another member but `null`;
+    /// `read_by` names the abstract type whose `from_value` reads the data
+    /// the union is in, where abstract values carry no tag.
+    Untagged { union: Type, member: Type, read_by: Option<ArcStr> },
     /// Two members of a union under one tag.
     SharedTag { union: Type, tag: ArcStr, a: Type, b: Type },
     /// `Transparent` over a type that is not abstract.
@@ -45,32 +50,40 @@ enum Named {
 
 struct Walk<'a> {
     env: &'a Env,
-    /// Each named type expanded, by what it names and its arguments.
-    seen: LPooled<AHashSet<(Named, Arc<[Type]>)>>,
+    /// The abstract type whose `from_value` reads the data the walk is in;
+    /// `None` in the text itself.
+    read_by: Option<ArcStr>,
+    /// Each named type expanded, by what it names, whether it is in data
+    /// a `from_value` reads, and its arguments.
+    seen: LPooled<AHashSet<(Named, bool, Arc<[Type]>)>>,
     /// The named types the walk is inside, each with its arguments' size.
     path: LPooled<Vec<(Named, usize)>>,
 }
 
 impl<'a> Walk<'a> {
     /// The walk of `body`, the expansion of the named type `named` at
-    /// `params`, unless the walk expanded it already.
+    /// `params`, in the data `read_by`'s `from_value` reads, unless the
+    /// walk expanded it there already.
     fn named(
         &mut self,
         named: Named,
+        read_by: Option<ArcStr>,
         name: impl FnOnce() -> ModPath,
         params: &Arc<[Type]>,
         body: Type,
     ) -> Result<(), TextRefusal> {
-        if !self.seen.insert((named, params.clone())) {
+        if !self.seen.insert((named, read_by.is_some(), params.clone())) {
             return Ok(());
         }
         let size = params_size(params);
         if grows_on(&self.path, &named, size) {
             return Err(TextRefusal::Grows(name()));
         }
+        let outer = std::mem::replace(&mut self.read_by, read_by);
         self.path.push((named, size));
         let r = self.walk(&body);
         self.path.pop();
+        self.read_by = outer;
         r
     }
 
@@ -104,7 +117,14 @@ impl<'a> Walk<'a> {
             },
             Type::Ref(tr) => match self.expand(t) {
                 Some((def, body)) => {
-                    self.named(Named::Def(def), || tr.name.clone(), &tr.params, body)
+                    let read_by = self.read_by.clone();
+                    self.named(
+                        Named::Def(def),
+                        read_by,
+                        || tr.name.clone(),
+                        &tr.params,
+                        body,
+                    )
                 }
                 None => Ok(()),
             },
@@ -240,6 +260,25 @@ impl<'a> Walk<'a> {
     // lib_tests::json::json_abstract_data_holding_abstracts_reads_back,
     // lib_tests::toml::toml_abstract_data_holding_abstracts_reads_back (both fail with the
     // inside always Form::Text).
+    // 2026-11-01 claude: Round 6 review (B-r2-1 medium, B-r2-2 high): the writer writes the data
+    // a written from_value reads with its abstract values bare (core::Form::Data), but the walk
+    // judged that data by the text's rule, an abstract type tagged by its name, so Array<[Port,
+    // Ito]> and [S, `A] inside such data were admitted and read Port(1) back as Ito(1) and `A as
+    // S("A"), silently (main refused them; the lane before ee09cb8c1 failed loudly). The walk
+    // now carries the abstract type whose from_value reads the part it is in (Walk::read_by),
+    // where no abstract type has a tag, and keys the named types it has walked by it, so a type
+    // the text admits is judged again inside such data. Pins, each failing without the change:
+    // lib_tests::json::{json_from_value_data_two_abstracts_refused,
+    // json_from_value_data_abstract_beside_a_tag_refused,
+    // json_from_value_data_through_transparent_refused,
+    // json_from_value_data_inside_a_representation_refused,
+    // json_from_value_data_judges_a_named_type_again (the last fails with the seen set not keyed
+    // by it)}, lib_tests::toml::toml_from_value_data_untagged_abstracts_refused;
+    // json_from_value_data_tags_read_back and toml_from_value_data_tags_read_back pin what still
+    // reads back there. An implementation writing both methods is still trusted
+    // (design/abstract_cast.md). Probes:
+    // ~/ptmp/cr29/scratch/review-r6/B-r2-1/finding/fv_region.gx,
+    // ~/ptmp/cr29/scratch/review-r6/B-r2-2/fv_union_abs.gx, fv_union_abs2.gx.
     // XCR claude for claude: [design/low] textdata trusts an abstract type whose Cast
     // implementation writes to_value (Shape::Unknown shares a form with nothing),
     // whatever its from_value does, while one that writes only from_value is judged
@@ -327,7 +366,8 @@ impl<'a> Walk<'a> {
     // back (~/ptmp/cr29/scratch/r6-B/forms_nontransparent.gx) and the refused writers
     // are admitted (untagged_writer.gx, shared_tag.gx).
     /// An abstract type: its representation where its `Cast`
-    /// implementation reads or writes it as that, a `Transparent`'s
+    /// implementation reads or writes it as that, in the data its
+    /// `from_value` reads where it writes one; a `Transparent`'s
     /// parameter, which must be an abstract type.
     fn abstract_type(
         &mut self,
@@ -337,23 +377,29 @@ impl<'a> Walk<'a> {
     ) -> Result<(), TextRefusal> {
         let Some(rep) = self.env.abstract_reps.get(&id) else { return Ok(()) };
         let body = rep.instantiate_with(params);
-        if id == AbstractId::transparent() {
+        let read_by = if id == AbstractId::transparent() {
             match self.head(&body) {
-                None | Some(Type::Abstract { .. }) => (),
+                None | Some(Type::Abstract { .. }) => self.read_by.clone(),
                 Some(_) => return Err(TextRefusal::Transparent(t.clone())),
             }
-        } else if !self.env.written_as_representation(id)
-            && !self.env.read_as_representation(id)
-        {
-            return Ok(());
-        }
+        } else {
+            match (
+                self.env.written_as_representation(id),
+                self.env.read_as_representation(id),
+            ) {
+                (false, false) => return Ok(()),
+                (_, true) => self.read_by.clone(),
+                (true, false) => Some(rep.name.clone()),
+            }
+        };
         let name = || ModPath::from([rep.name.as_str()]);
-        self.named(Named::Abstract(id), name, params, body)
+        self.named(Named::Abstract(id), read_by, name, params, body)
     }
 
     /// The members of the union `t` past every union and name in them,
     /// each its constructor beside the type written; an open variable is
     /// its own constructor. An error is no member: no data reads into one.
+    /// `seen` holds the names expanded, each once.
     fn members(
         &self,
         t: &Type,
@@ -375,7 +421,6 @@ impl<'a> Walk<'a> {
                 Some(h @ (Type::Set(_) | Type::Primitive(_))) => {
                     seen.push(t.clone());
                     self.members(&h, out, seen);
-                    seen.pop();
                 }
                 Some(h) => out.push((h, t.clone())),
                 None => out.push((t.clone(), t.clone())),
@@ -385,11 +430,13 @@ impl<'a> Walk<'a> {
     }
 
     /// The tag a member writes under: a variant's, or an abstract type's
-    /// name; `None` for a member with none.
+    /// name in the text; `None` for a member with none.
     fn tag(&self, head: &Type) -> Option<ArcStr> {
         match head {
             Type::Variant(tag, _, _) => Some(tag.clone()),
-            Type::Abstract { id, .. } if *id != AbstractId::transparent() => {
+            Type::Abstract { id, .. }
+                if self.read_by.is_none() && *id != AbstractId::transparent() =>
+            {
                 match self.env.abstract_reps.get(id) {
                     Some(r) => Some(r.name.clone()),
                     None => id.name(),
@@ -408,8 +455,12 @@ impl<'a> Walk<'a> {
         for (head, written) in members.iter() {
             let Some(tag) = self.tag(head) else {
                 if members.iter().any(|(h, _)| h != head) {
-                    let member = head.clone();
-                    return Err(TextRefusal::Untagged { union: t.clone(), member });
+                    let (member, read_by) = (head.clone(), self.read_by.clone());
+                    return Err(TextRefusal::Untagged {
+                        union: t.clone(),
+                        member,
+                        read_by,
+                    });
                 }
                 continue;
             };
@@ -432,7 +483,8 @@ impl Type {
     /// over a type that is not abstract, a typedef growing its
     /// parameters; `None` when they read back every value of it.
     pub fn text_refusal(&self, env: &Env) -> Option<TextRefusal> {
-        let mut walk = Walk { env, seen: LPooled::take(), path: LPooled::take() };
+        let mut walk =
+            Walk { env, read_by: None, seen: LPooled::take(), path: LPooled::take() };
         walk.walk(self).err()
     }
 }
@@ -498,6 +550,26 @@ mod test {
             &[("P<'a, 'b>", "[`N, `C('a, P<'b, 'a>)]")],
             "{k: P<i64, string>}"
         ));
+    }
+
+    // A union's members past the unions its names hold expand each name
+    // once, however many paths reach it.
+    #[test]
+    fn union_members_expand_each_name_once() {
+        let defs = crate::typ::cast::tests::union_dag(20);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "[L20, `D]");
+        let walk = Walk {
+            env: &env,
+            read_by: None,
+            seen: LPooled::take(),
+            path: LPooled::take(),
+        };
+        let mut out = SmallVec::new();
+        walk.members(&t, &mut out, &mut vec![]);
+        let leaves: Vec<String> = out.iter().map(|(h, _)| h.to_string()).collect();
+        assert_eq!(leaves, ["`A", "`B", "`A", "`C", "`D"]);
+        assert!(t.text_refusal(&env).is_none());
     }
 
     // A typedef expands once for each list of arguments it is applied to,

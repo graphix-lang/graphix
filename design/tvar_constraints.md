@@ -723,7 +723,14 @@ and `[T, null]` for a `T` that is no union hold, `[i64, string]`, `[Port,
 u8]`, `` [Transparent<P>, `A] `` and `` [`A(i64), `A(string)] `` do not
 (the type system merges the last into `` `A([i64, string]) ``, whose
 payload is refused), and members under one tag are refused unless they
-are one type. The
+are one type. Inside the data an abstract type's `from_value` reads (its
+representation, where its implementation leaves `to_value` out), a cast
+of data reads, and every abstract value there is written bare, so no
+abstract type carries a tag: `[Port, Ito]` and `` [S, `A] `` are refused
+there, `[N, null]` is one member beside null (and an `N` that writes null
+reads back as the null, as under `Transparent`). The walk carries the
+abstract type whose `from_value` reads the part it is in, and walks a
+named type again inside such data. The
 union's members are its members past every union and name (a typedef
 whose body is a union, a primitive set), each judged by its constructor.
 Over a type known not to be abstract `Transparent` is refused: it would
@@ -732,7 +739,9 @@ and where a call binds that variable to a type that is not abstract it
 writes that type's data bare, as it would without `Transparent`. The walk reaches every part of the type: elements, fields,
 payloads, a map's key and value, an abstract type's representation where
 its `Cast` implementation leaves a method out (and `Transparent`'s
-parameter), each named type once per list of arguments; a typedef whose
+parameter), each named type once per list of arguments, in the text and
+in a `from_value`'s data; a union's members expand each name once,
+however many paths reach it; a typedef whose
 arguments grow at every level (``type N<'a> = [`Nil, `Cons('a,
 N<Array<'a>>)]``) is refused by the growth rule of the representation
 walks (`cast::grows_on`). A map's form is its key type's alone: an object

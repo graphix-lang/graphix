@@ -7,7 +7,9 @@
 /// The target reads back what `write_str` writes of it (`JsonData`):
 /// every union in it tells its members apart by a tag, a variant's or an
 /// abstract type's name, or is one member and null. `[i64, string]`,
-/// `[Port, u8]` and `` [Transparent<Port>, `A] `` are refused.
+/// `[Port, u8]` and `` [Transparent<Port>, `A] `` are refused. Inside the
+/// data an abstract type's `from_value` reads, abstract values are bare
+/// and carry no tag.
 val read: fn<'b: Concrete + JsonData>(input: [string, bytes]) -> Result<'b, [`JsonErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a JSON string, as its type says: a struct is an
@@ -18,8 +20,8 @@ val read: fn<'b: Concrete + JsonData>(input: [string, bytes]) -> Result<'b, [`Js
 /// its type's name keys (`{"Port": 80}`), its data inside, or under
 /// `Transparent` its data alone. The abstract values inside that data are
 /// bare where the type's `from_value` reads it, else wrapped too. A `T`
-/// written bare that writes null
-/// reads back from `[Transparent<T>, null]` as the outer null. The value's
+/// written bare that writes null reads back from `[T, null]` as the outer
+/// null, under `Transparent` or in a `from_value`'s data. The value's
 /// type must be one `read` reads back (`JsonData`).
 val write_str: fn<'a: Data + JsonData>(?#pretty: bool, value: 'a) -> Result<string, `JsonErr(string)>;
 

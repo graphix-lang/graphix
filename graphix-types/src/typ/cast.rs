@@ -1507,8 +1507,10 @@ impl Type {
         };
         let as_parsed = parsed.as_ref().map_or(BitFlags::empty(), own_class) & !own;
         let mut members: SmallVec<[Cow<Type>; 8]> = SmallVec::new();
+        let mut named: LPooled<Vec<RefKey>> = LPooled::take();
         for t in ts.iter() {
-            members_by_class(env, Cow::Borrowed(t), [own, as_parsed], &mut members, 0)
+            let classes = [own, as_parsed];
+            members_by_class(env, Cow::Borrowed(t), classes, &mut members, &mut named, 0)
         }
         let ts = || members.iter().map(|t| &**t);
         if array {
@@ -2996,16 +2998,26 @@ fn own_class(v: &Value) -> BitFlags<Typ> {
 /// Push the members of the union member `t` a union tries one at a time:
 /// a name or a variable naming a union is that union's members, and a
 /// primitive set its parts in each of `classes` and the rest, so a union
-/// reads each part with the members of its class.
+/// reads each part with the members of its class. A name met again adds
+/// nothing: `named` holds those met.
 fn members_by_class<'a>(
     env: &Env,
     t: Cow<'a, Type>,
     classes: [BitFlags<Typ>; 2],
     out: &mut SmallVec<[Cow<'a, Type>; 8]>,
+    named: &mut LPooled<Vec<RefKey>>,
     depth: usize,
 ) {
     if depth > MAX_UNION_NESTING {
         return out.push(t);
+    }
+    if let Type::Ref(tr) = &*t
+        && let Some(k) = ref_key(tr)
+    {
+        if named.contains(&k) {
+            return;
+        }
+        named.push(k);
     }
     let head = match &t {
         Cow::Borrowed(t) => rep_head(env, t),
@@ -3013,10 +3025,10 @@ fn members_by_class<'a>(
     };
     ensure_sufficient(|| match &head {
         Some(Cow::Borrowed(Type::Set(ms))) => ms.iter().for_each(|m| {
-            members_by_class(env, Cow::Borrowed(m), classes, out, depth + 1)
+            members_by_class(env, Cow::Borrowed(m), classes, out, named, depth + 1)
         }),
         Some(Cow::Owned(Type::Set(ms))) => ms.iter().for_each(|m| {
-            members_by_class(env, Cow::Owned(m.clone()), classes, out, depth + 1)
+            members_by_class(env, Cow::Owned(m.clone()), classes, out, named, depth + 1)
         }),
         Some(h) if let Type::Primitive(p) = &**h => {
             let [own, parsed] = classes;
@@ -3138,6 +3150,15 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
     }
 }
 
+// CR claude for claude: [bug/low] A float whose shortest form has 17 significant
+// digits loses digits on its way to a decimal: Value::cast(Typ::Decimal) rounds
+// 0.30000000000000004 to 0.3. JSON reads a number in a decimal position as the f64
+// wherever the f64 prints back as the text (graphix-package-json's number and
+// reads_back), so an Array<decimal> holding decimal:0.30000000000000004 writes that
+// text and reads back as 0.3 (main too); 16-digit decimals read back. Convert a float
+// through its shortest text, as f32_as_written does, or have json keep the decimal
+// for a decimal position. Probe: ~/ptmp/cr29/scratch/review-r6/B-r2-1/probes/dec16.gx
+// (prints decimal:0.3 for the fourth element) (float-decimal-digits-01)
 /// The float `v` as a decimal; a whole one keeps a point (scale 1) where
 /// the decimal can hold it, so it prints as the float does (`3.0`).
 fn float_decimal(v: &Value) -> Option<Value> {
@@ -3718,7 +3739,10 @@ pub(crate) mod tests {
         typ::Type,
     };
     use netidx_value::Value;
-    use std::time::{Duration, Instant};
+    use std::{
+        borrow::Cow,
+        time::{Duration, Instant},
+    };
 
     /// An env holding the typedefs `defs` at the root, and `t` there.
     pub(crate) fn typed(defs: &[(&str, &str)], t: &str) -> (Env, Type) {
@@ -3745,6 +3769,47 @@ pub(crate) mod tests {
         let started = Instant::now();
         pred.shallow_discriminant(&env, &scrutinee);
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    /// `type L1 = [`A, `B]; type M1 = [`A, `C]` and, to `n`, `type Li =
+    /// [Li-1, Mi-1]; type Mi = [Mi-1, Li-1]`: each name holds the next two.
+    pub(crate) fn union_dag(n: usize) -> Vec<(String, String)> {
+        let mut defs =
+            vec![("L1".into(), "[`A, `B]".into()), ("M1".into(), "[`A, `C]".into())];
+        for i in 2..=n {
+            defs.push((format!("L{i}"), format!("[L{}, M{}]", i - 1, i - 1)));
+            defs.push((format!("M{i}"), format!("[M{}, L{}]", i - 1, i - 1)));
+        }
+        defs
+    }
+
+    // A union's members past the unions its names hold expand each name
+    // once, however many paths reach it.
+    #[test]
+    fn union_members_expand_each_name_once() {
+        let defs = union_dag(20);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "L20");
+        let head = super::rep_head(&env, &t).map(|h| h.into_owned());
+        let Some(Type::Set(ms)) = &head else { panic!("L20 is a union") };
+        let mut out = smallvec::SmallVec::new();
+        let mut named = poolshark::local::LPooled::take();
+        for m in ms.iter() {
+            let classes = [enumflags2::BitFlags::empty(); 2];
+            super::members_by_class(
+                &env,
+                Cow::Borrowed(m),
+                classes,
+                &mut out,
+                &mut named,
+                0,
+            )
+        }
+        let leaves: Vec<String> = out.iter().map(|m| m.to_string()).collect();
+        assert_eq!(leaves, ["`A", "`B", "`A", "`C"]);
+        let v = Value::String(arcstr::literal!("C"));
+        let flat = parse_type("[`A, `B, `C]").unwrap();
+        assert_eq!(t.cast_value(&env, v.clone()), flat.cast_value(&env, v));
     }
 
     // A failing union read costs what the data's size does: each union

@@ -861,7 +861,8 @@ field is left out, a null anywhere else is refused when written. An
 abstract value is written as an object its type's name keys
 (`{"Port":80}`), and read only so; the abstract values inside that data
 are bare where the type's `from_value` reads it (a cast of data), else
-wrapped too. `Transparent(p)` (core's `Transparent<T>`) writes `p`'s
+wrapped too; bare, they carry no tag, so a union in a `from_value`'s data
+holds an abstract type only beside null. `Transparent(p)` (core's `Transparent<T>`) writes `p`'s
 data bare. `hbs::render`'s data writes abstract values bare and a map
 whose keys are scalars as an object. Every union a json/toml read or
 write holds is one member beside null, or variants and abstract types

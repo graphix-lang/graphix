@@ -2051,6 +2051,15 @@ impl Type {
         Ok(parts.known <= 1)
     }
 
+    // CR claude for claude: [perf/low] may_be_error expands every name each time a path
+    // reaches it, so a DAG of named unions costs 2^depth: with type L1 = [`A, `B], M1 =
+    // [`A, `C] and Li = [Li-1, Mi-1], Mi = [Mi-1, Li-1], checking `let v: Result<L20, E>
+    // = never()` (Result's 'r: NoError) takes ~9.8 G instructions where `let v: L20`
+    // takes 1.6 G, and each level about doubles it (main the same). Expand each name
+    // once per walk (a seen set of RefKeys), as cast's members_by_class and textdata's
+    // members do; select's flatten_union_members keeps only a path, the same shape.
+    // Probes: ~/ptmp/cr29/scratch/r6-B/r7/dag_res16.gx, dag_res20.gx, dag_plain20.gx
+    // (perf stat -e instructions:u graphix --no-cache --check) (no-error-dag-01)
     /// Whether a value of `self` may be an error as the type stands: a
     /// member is an `Error`, holds the primitive `error` or is `Any`.
     /// `NoError ⊇ self` is its negation; an open member may be anything
