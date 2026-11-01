@@ -282,7 +282,16 @@ is refused (no call could choose `'a`), and so is a written
 `fn<'a: Number>(x: i64) -> i64`. A bound may not name its own variable,
 directly or through another's bound (`'a: [i64, Array<'a>]`, `'a: 'b,
 'b: 'a`): bound it by a recursive type, `type T = [i64, Array<T>]` and
-`'a: T`.
+`'a: T`. Each call picks a declared variable anew, so a value of it
+may not reach a binding outside the function: `'a: Concrete |x: 'a| -> 'a
+{ y <- x; x }` is refused. Give `y` a type that holds every `'a` (the
+bound, or `Any`), or declare no `'a`: `|x: 'a| -> 'a { y <- x; x }` is
+then one type, the first call's.
+
+A `let` nothing writes that holds lambdas in a struct, tuple, array or
+other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`
+serves `s.f(1)` and `s.f("a")`, and an annotation of one use (`let t:
+{f: fn(x: i64) -> i64} = s`) decides nothing of the others.
 
 Calls resolve statically where the compiler can trace the function. A
 function-variable write fires its call's current result even when it

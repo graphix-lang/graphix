@@ -3447,6 +3447,33 @@ run!(
     refused("'a escapes the definition");
     FuseExpect::None
 );
+// A variable the signature only names is no quantifier: a write of it
+// outside the definition makes the definition monomorphic in it, so a
+// second type is refused at its call.
+run!(
+    written_variable_written_outside_is_monomorphic,
+    r#"{
+    let y = never();
+    let last = never();
+    let h = |x: 'a| -> 'a { y <- x; x };
+    let note = |x: 'b, z: 'b| -> 'b { last <- z; x };
+    let v = h(1);
+    let k: i64 = y;
+    (v, k, note(2, 3), last)
+}"#,
+    prints("[i64:1, i64:1, i64:2, i64:3]");
+    FuseExpect::None
+);
+run!(
+    written_variable_written_outside_takes_one_type,
+    r#"{
+    let y = never();
+    let h = |x: 'a| -> 'a { y <- x; x };
+    (h(1), h("s"), y)
+}"#,
+    refused("'a: i64 does not contain string");
+    FuseExpect::None
+);
 run!(
     declared_variable_stays_inside,
     r#"{
@@ -5387,6 +5414,48 @@ run!(
     FuseExpect::None
 );
 
+// A binding holding a lambda in a struct, its update, a tuple or an array
+// is a scheme of it, as a let of the lambda is: each read copies the
+// signature, so an annotation, a typed formal, a call handed the holder or
+// a bound settled to ⊥ decides nothing of the definition, and every call
+// is typed at its own types.
+run!(
+    holder_reads_copy_its_signatures,
+    r#"{
+  let s = {f: |x| x == x};
+  let g = {f: 'a: Concrete |x: 'a| -> 'a x};
+  let t = (|x| x, 0);
+  let fs = [|x| x];
+  let w = {s with f: |y| y == y};
+  let h = |p| 0;
+  let k = |p: (fn(x: i64) -> i64, i64)| p.0(p.1);
+  let a: {f: fn(x: i64) -> i64} = g;
+  let b: Array<fn(x: i64) -> i64> = fs;
+  let c: {f: fn(x: string) -> bool} = w;
+  (s.f(s.f), s.f(s), h(s), s.f(1), g.f("g"), a.f(1), t.0("t"), k(t),
+   fs[0]$("f"), b[0]$(2), w.f(w), w.f(3), c.f("c"))
+}"#,
+    prints(r#"[true, true, i64:0, true, "g", i64:1, "t", i64:0, "f", i64:2, true, true, true]"#);
+    FuseExpect::None
+);
+
+/// A holder an earlier input made stays a scheme: a later input's
+/// annotation of it decides nothing for the earlier input's calls.
+#[tokio::test(flavor = "current_thread")]
+async fn holder_of_an_earlier_input_stays_generic() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let _s = ctx.rt.compile(ArcStr::from("let s = {f: |x| x}")).await?;
+    let _n = ctx.rt.compile(ArcStr::from("let n = s.f(1)")).await?;
+    let t = "let t: {f: fn(x: string) -> string} = s";
+    let _t = ctx.rt.compile(ArcStr::from(t)).await?;
+    let _m = ctx.rt.compile(ArcStr::from("let m = s.f(2)")).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
 // A formal union of two variables is decided by the positions that hold
 // each alone, in an instance's signature as in a written function type.
 run!(
@@ -5409,6 +5478,23 @@ run!(
   g("t", 1, "s")
 }"#,
     prints(r#"[[i64:1], ["s"]]"#);
+    FuseExpect::Jit
+);
+
+// The result decides them as well as a parameter does: an instance's
+// signature holds each member only after every other position is held.
+run!(
+    formal_union_of_two_variables_decided_by_the_result,
+    r#"{
+  let f = |x: ['a, 'b]| -> (Array<'a>, Array<'b>) ([], []);
+  let g = |x: ['a, 'b]| -> Array<'a> [];
+  let u = never();
+  let r = (f(u), g(u));
+  u <- "t";
+  u <- 1;
+  r
+}"#,
+    prints("[[[], []], []]");
     FuseExpect::Jit
 );
 

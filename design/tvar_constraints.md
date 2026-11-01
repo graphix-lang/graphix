@@ -285,6 +285,25 @@ of it with every variable rigid (`Connect::typecheck0_with`), and a
 `&mut` of it is refused, since a reference cannot hold the variables
 rigid.
 
+A `let` nothing writes whose value holds a lambda literal or a
+generalized binding's value in a data literal (a struct, its update, a
+tuple, a variant, an array, a list, a map: `bind::holds_function`,
+decided as the let compiles, before any definition in it is checked) is
+generalized as a let of a lambda is
+(`Env::poly_binds`): its type holds the closed definitions' signatures,
+which a read copies, generic (`Type::scheme_read`, `Fresh::Scheme`), as
+a reference to a generalized lambda copies its own. So an annotation of
+the holder (`let t: {f: fn(x: i64) -> i64} = s`), a typed formal it is
+passed to, or a site's settle of a bounded cell it reaches (`s.f(s)` over
+`{f: |x| x == x}`) decides only that read's copy, and the definition's
+scheme stays what its own check made it, which every instance is held to.
+A read in a struct, tuple or variant part of such a holder's own value
+(`let x1 = (x0, x0)`) takes the type uncopied (`Signature::InHolder`):
+the holder's reads copy it, and a chain of holders stays a DAG. A lambda
+a let holds through a block or a select is not generalized (must_reject
+family 1), though a call through it instantiates it (CR
+holder-block-select-01). Pin `lang::types::holder_reads_copy_its_signatures`.
+
 An image carries each cell's level and each definition's depth.
 
 ### Settling
@@ -326,12 +345,6 @@ An image carries each cell's level and each definition's depth.
   reaches when the settle runs, not when the gate closed: an impl
   head's `'k` reaches a method's scheme only once the impl relates
   them, after the method's gate closed (`PendingSettle::Site::sigs`).
-  It also leaves a generic cell nothing bounds: a closed definition's
-  signature, which a value of the definition held in a struct, tuple or
-  array carries into a call's types uncopied (`s.f(s)`), and which ⊥
-  would narrow for every other call (pin
-  `lang::types::holder_of_a_lambda_passed_to_it`); a bounded one is
-  settled, so an unread `Concrete` one is refused as before.
   It also leaves every quantifier of a function type its signature
   holds (`FnType::inner_quantifiers`): a rank-2 formal's `'b` is its
   callers' to pick.
@@ -551,6 +564,13 @@ decides nothing of the parent's
 (`lang::modules::module_calls_outer_rank2_elements`). An interface
 `val`'s and a definition's own quantifiers are their scheme's, which
 each use copies, and carry no mark.
+
+`instance_sig` holds an instance's signature to a copy of the
+definition's by `FnType` containment, which decides a parameter or a
+result typed by a union of two open cells (`x: ['a, 'b]`) only after
+every other position (`fntyp::holds_open_union`): the positions that hold
+each member alone decide it, a parameter's or the result's, and the union
+then holds what they left (pins `lang::types::formal_union_of_two_variables_*`).
 
 A type written in a body names the variables of the definitions around
 it (`lambda::body_annotation`); a labeled default is written in its

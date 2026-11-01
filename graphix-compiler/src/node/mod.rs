@@ -1886,6 +1886,19 @@ impl<R: Rt> Connect<R> {
 // } sharing y's cell) fail without it; declared_variable_stays_inside (a nested function
 // writing the definition's own let, an undeclared |x| writing the outer y) holds.
 // must_reject.md family 2 names the rule (its mutation is open).
+// 2026-11-01 claude: Review (r6 B2) found the check refused undeclared written variables
+// too (|x: 'a| -> 'a { y <- x; x }), which main types soundly: the outer cell lowers 'a,
+// the definition is not generalized over it and a second type is refused at its call.
+// DefGate now records the quantifiers the definition declares alone
+// (FnType::quantifiers), which a call copies whatever their level, and
+// check_declared_kept refuses only those; the refusal now says what holds every 'a (the
+// bound of 'a, or Any) or to declare none. Pins
+// lang::types::written_variable_written_outside_is_monomorphic (q1/u1/u3 shapes,
+// accepted and run as on main) and written_variable_written_outside_takes_one_type
+// (refused at the call) fail on the previous fix; the declared_variable_* pins hold.
+// declared_variable_escapes_through_a_reference covers the message only: main refuses
+// the same program at let y = never() ('the type _N must be fully known here'), the
+// other three escape pins show holes main lets through.
 impl<R: Rt> Update<R> for Connect<R> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.node)

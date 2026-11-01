@@ -227,7 +227,7 @@ impl<R: Rt> Bind<R> {
         };
         let mut deferred = None;
         let mut narrowed = None;
-        let (node, pattern, typ) = if *rec {
+        let (mut node, pattern, typ) = if *rec {
             if pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
             }
@@ -347,6 +347,19 @@ impl<R: Rt> Bind<R> {
                 if let Some(b) = ctx.env.by_id.get(&id) {
                     b.typ.claim_free(current_level())
                 }
+            }
+        }
+        // a name holding a function, which nothing writes, is a scheme of the
+        // definitions it holds: each read copies their signatures
+        if holds_function(&ctx.env, &node) {
+            let mut holder = false;
+            pattern.ids(&mut |id| {
+                if !ctx.connect_targets.contains(&id) {
+                    holder |= ctx.env.poly_binds.insert(id);
+                }
+            });
+            if holder && b.typ.is_none() {
+                share_in_holder(&mut node);
             }
         }
         if !matches!(pat, expr::StructurePattern::Bind(_)) {
@@ -805,6 +818,9 @@ pub(crate) enum Signature {
     /// `typecheck0` binds it to the decided signature, so nothing that
     /// reaches it first unifies into the definition's cells.
     Pending,
+    /// [`Self::Pending`] in a part of a holder's own value, which takes the
+    /// binding's type uncopied: the holder's reads copy it.
+    InHolder,
     Decided,
 }
 
@@ -813,6 +829,20 @@ fn instance(ft: &FnType, open: &nohash::IntSet<crate::LambdaId>) -> FnType {
     let fresh = ft.scheme(open);
     fresh.alias_tvars(&mut LPooled::take());
     fresh
+}
+
+/// A signature the open gates are still checking: a rec knot's, whose
+/// references share its cells.
+fn rec_knot<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> bool {
+    !ctx.rec_defs.is_empty()
+        && ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id))
+}
+
+/// A read of a binding whose type holds `ft` shares its cells: a rec knot's
+/// signature, or one an active instance resolves.
+fn shares<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> bool {
+    rec_knot(ctx, ft)
+        || ft.lambda_ids.own().is_some_and(|id| ctx.resolving_innermost(id).is_some())
 }
 
 /// `let g = f` with `f` generalized and no annotation: `g` shares `f`'s
@@ -1011,9 +1041,7 @@ impl Ref {
     /// innermost active instance (a bare value reference has no
     /// arguments to key an instance identity on), else fresh cells.
     fn decide<R: Rt>(&self, ctx: &CompileCtx<R>, ft: Arc<FnType>) -> Arc<FnType> {
-        let rec_knot = !ctx.rec_defs.is_empty()
-            && ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
-        if rec_knot || ctx.def_gate_params.contains_key(&self.id) {
+        if rec_knot(ctx, &ft) || ctx.def_gate_params.contains_key(&self.id) {
             return ft;
         }
         match ft.lambda_ids.own().and_then(|id| ctx.resolving_innermost(id)) {
@@ -1125,17 +1153,20 @@ impl<R: Rt> Update<R> for Ref {
     }
 
     /// A value occurrence of a generalized binding (`Env::poly_binds`)
-    /// mints fresh cells for its signature, like a call. Exempt: a
-    /// self-reference inside the definition's gate, a fn-typed
-    /// parameter during its gate, and a reference to the instance
-    /// being elaborated, which must share the definition's cells.
+    /// mints fresh cells for its signature, like a call, and for each
+    /// closed definition's signature a holder's type holds
+    /// ([`Type::scheme_read`]). Exempt: a self-reference inside the
+    /// definition's gate, a fn-typed parameter during its gate, and a
+    /// reference to the instance being elaborated, which must share the
+    /// definition's cells.
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         let poly = ctx.env.poly_binds.contains(&self.id);
         let def = match self.signature {
             Signature::Decided => return Ok(()),
             Signature::Binding if !poly => return Ok(()),
             Signature::Binding => self.typ.clone(),
-            Signature::Pending => match ctx.env.by_id.get(&self.id) {
+            Signature::Pending | Signature::InHolder => match ctx.env.by_id.get(&self.id)
+            {
                 None => bail!("BUG missing bind {:?}", self.id),
                 Some(b) => b.typ.clone(),
             },
@@ -1146,11 +1177,17 @@ impl<R: Rt> Update<R> for Ref {
         });
         let signature = match (ft, self.signature) {
             (Some(ft), _) => Type::Fn(self.decide(ctx, ft)),
-            (None, Signature::Pending) => def,
+            (None, Signature::Pending) => {
+                def.scheme_read(&ctx.rec_defs, &|ft| shares(ctx, ft)).unwrap_or(def)
+            }
+            (None, Signature::InHolder) => def,
             (None, _) => return Ok(()),
         };
         let held = mem::replace(&mut self.typ, signature);
-        if mem::replace(&mut self.signature, Signature::Decided) == Signature::Pending {
+        if matches!(
+            mem::replace(&mut self.signature, Signature::Decided),
+            Signature::Pending | Signature::InHolder
+        ) {
             held.check_contains(&ctx.env, &self.typ).map_err(|e| e.at(&*self.spec))?;
         }
         Ok(())
@@ -1239,6 +1276,75 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
     match ungrouped(node) {
         NodeView::Lambda(l) => Some(l),
         _ => None,
+    }
+}
+
+// CR claude for eric: [bug/medium] A lambda a let holds through a block or a select
+// is a binding no rule generalizes (must_reject family 1 wraps a lambda in a block
+// for exactly that), yet a call through it instantiates the definition's scheme as
+// any call does, while a value use binds the scheme's own cells; a call checked
+// before the value use then has an instance the build refuses. `let f = { let t =
+// null; |x| x }; println(f("s")); let g: fn(x: i64) -> i64 = f; println(g(1))` passes
+// --check and its run refuses f("s")'s bind ("an instance at fn(x: string) -> string
+// of a definition typed fn(x: i64) -> i64"); `let s = select c { true => {f: |x| x},
+// false => {f: |x| x} }` with `s.f(1)` before `let t: {f: fn(x: string) -> string} =
+// s` alike; GRAPHIX_NO_SUBST runs both (main a084f9887 the same). Generalizing these
+// lets too (holds_function through a block's value and a select's arms; built and
+// measured this round) breaks family 1's rule (typemorph: 4 mono-reuse LEAKs in 300),
+// so it needs a ruling: (a) generalize every let nothing writes whose value can hold
+// a lambda, and rewrite family 1's mutation (a written let, `f <- f`, keeps it
+// monomorphic); (b) keep such a let monomorphic and make a call through it share
+// the binding's cells as a value use does (`CallSite::typecheck0` would stop
+// instantiating a callee no generalized binding names). Recommend (a): one rule for
+// every let, written ones excepted. probes: ~/ptmp/cr29/scratch/r6-B/w4/blk1.gx,
+// c4.gx (holder-block-select-01)
+/// Whether the value `node` builds holds a lambda literal or a generalized
+/// binding's value in a data literal (a struct, its update, a tuple, a
+/// variant, an array, a list or a map): a type that holds the definitions'
+/// signatures only once they are checked.
+fn holds_function<R: Rt>(env: &Env, node: &Node<R>) -> bool {
+    fn part<R: Rt>(env: &Env, node: &Node<R>) -> bool {
+        match node.view() {
+            NodeView::Lambda(_) => true,
+            NodeView::Ref(r) => env.poly_binds.contains(&r.id),
+            _ => holds_function(env, node),
+        }
+    }
+    match node.view() {
+        NodeView::ExplicitParens(p) => holds_function(env, &p.n),
+        NodeView::Struct(_)
+        | NodeView::StructWith(_)
+        | NodeView::Tuple(_)
+        | NodeView::Variant(_)
+        | NodeView::Array(_)
+        | NodeView::ListLit(_)
+        | NodeView::Map(_) => {
+            let mut any = false;
+            node.for_each_child(&mut |c| any = any || part(env, c));
+            any
+        }
+        _ => false,
+    }
+}
+
+/// Each reference in a part of `node`, a holder's value built of structs,
+/// tuples and variants (which hold their parts' types as they are, relating
+/// none to another), takes its binding's type uncopied: the holder's reads
+/// copy it.
+fn share_in_holder<R: Rt>(node: &mut Node<R>) {
+    match node.view() {
+        NodeView::Ref(_) => {
+            if let Some(r) = node.downcast_mut::<Ref>()
+                && r.signature == Signature::Pending
+            {
+                r.signature = Signature::InHolder
+            }
+        }
+        NodeView::ExplicitParens(_)
+        | NodeView::Struct(_)
+        | NodeView::Tuple(_)
+        | NodeView::Variant(_) => node.for_each_child_mut(&mut |c| share_in_holder(c)),
+        _ => (),
     }
 }
 

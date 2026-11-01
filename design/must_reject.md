@@ -93,7 +93,9 @@ one to a concrete type (`x == 1`) or to ⊥ (`let b: _ = x`). Rule: a
 def's declared variables are rigid in its body check: none binds to a
 concrete type or to ⊥, no two unify and none escapes into a cell outside
 the definition (a write to an outer binding, through a reference or a
-function sharing its type: `DefGate::check_named_kept`). Skip: a variable with a constraint the concrete type satisfies
+function sharing its type: `DefGate::check_declared_kept`; a variable the
+signature names undeclared is lowered with the outer cell instead, and the
+definition is monomorphic in it). Skip: a variable with a constraint the concrete type satisfies
 only through the constraint (`'a: Number` against `1` is still refused,
 but keep the first cut to unconstrained variables). Built: a first
 statement comparing a parameter `x: 'a` with a literal or, alternately,
@@ -239,7 +241,12 @@ Right site: the write, or a statement between that uses `r`. (b) The
 map shows `x` a concrete primitive: the let is annotated `&mut Any`.
 Rule: `&mut T ⊇ &mut U` only when `T = U` (`contains.rs`). Right site:
 the let. Built (`ref-write`, `ref-widen`); the generator's `&mut`
-writes are the sites (`generate/funcs.rs`).
+writes are the sites (`generate/funcs.rs`). (c) `&mut e` of a value (not
+a binding) in a definition's body, annotated at a type that does not hold
+`e`'s (`let r: &mut string = &mut [x]`). Rule: the value bounds the
+reference's fresh cell from below (`check_contains_lower`), so the
+annotation must hold it, in a body as at the top level. Right site: the
+let. Open.
 
 **10. One runtime form.** Site: a select over a scrutinee `s` the map
 types a concrete `T`. Mutation: `select <&s or &u> { &T as r => select
@@ -267,6 +274,15 @@ the one whose `mkb`/`unb` the body reaches, or with several the one
 whose `mkb` the let calls; a value with a leaf its uses typed is
 skipped, since a let annotation decides a parameter left open. Right
 site: the let. Built (`abstract-param`).
+
+**12. Written quantified function types.** Site: a binding whose
+annotation writes a quantified function type in a part (`let fs:
+Array<fn<'b: Number + Singleton>(x: 'b) -> 'b> = [|x| x * x]`).
+Mutation: the element replaced by a function of one type (`|x: i64|
+x`). Rule: a written `fn<..>` type's quantifiers are rigid wherever the
+type stands, from where it is written (`Type::alias_tvars`,
+`CellFact::FormalQuantifier`), whichever use of the binding comes first.
+Right site: the let. Open.
 
 ## Labeled and optional arguments across the fuzzer
 

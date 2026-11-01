@@ -77,6 +77,18 @@ impl Graph {
                 Some(b) => self.node(&b),
                 None => self.leaf(b'v', &[]),
             },
+            // CR claude for claude: [bug/low] A reference that does not expand here is
+            // keyed by its written name, and a nested reference in an inline written
+            // type argument reaches the key unresolved: with `type R<'a> = [`Nil,
+            // `Cons('a, R<'a>)]; type B<'x> = Abstract<i64>`, `B<R<i64>>` and
+            // `B<[`Nil, `Cons(i64, R<i64>)]>` are equal types whose values compare
+            // unequal (`c == e` false), where the same argument through an alias `type
+            // E = [`Nil, `Cons(i64, R<i64>)]` compares equal; a map keyed by such
+            // values takes two entries for one key. Main a084f9887 hangs on these
+            // programs (regular-grows-01), so nothing saw it before. Resolve the nested
+            // reference where the written argument is seeded, or key an unexpanded
+            // reference by the definition it names. probes:
+            // ~/ptmp/cr29/scratch/review-r6/B2-r1-1/rg8.gx, rg9.gx (regular-inline-ref-01)
             Type::Ref(tr) => match Self::expand(t) {
                 None => {
                     let name = format_compact!("{}", tr.name);

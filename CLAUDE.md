@@ -600,9 +600,7 @@ call's result and throws do not hold, and no argument the call passes or
 omits can carry a value of (no function, no open part), settles to ⊥
 whatever its bounds (`CallSite::settle_unread`): `publish`'s handler is
 `[fn(v: 'a) -> _, null] = null` under `'a: Concrete`. A definition's call sites settle with
-the enclosing statement, the signature's cells exempt, and no site binds
-a generic cell nothing bounds (a closed definition's own, which a value
-held in a struct carries uncopied).
+the enclosing statement, the signature's cells exempt.
 
 **Queued calls** (`design/queue_fn.md`): `queuefn` uses a counting
 semaphore, initially one permit, and banks unused post-birth trigger
@@ -831,7 +829,15 @@ node graph IS the IR — there is no parallel typed IR
   value restriction, `CompileCtx::monomorphic`), except one an earlier compile
   generalized (a REPL input): it stays generic, a later write is held to
   a copy of its type with the variables rigid, and a later `&mut` of it
-  is refused (`Env::poly_binds`); a type written in a body (a `let`
+  is refused (`Env::poly_binds`); a `let` nothing writes whose value
+  holds a lambda or a generalized binding's value in a data literal (a
+  struct, its update, a tuple, a variant, an array, a list, a map:
+  `bind::holds_function`) is generalized too: each read copies the
+  closed definitions' signatures its type holds (`Type::scheme_read`), so
+  an annotation, a typed formal or a site's settle decides only that
+  read's copy, never the definition; a read inside such a holder's own
+  value takes the type uncopied (`Signature::InHolder`); a type written
+  in a body (a `let`
   annotation, `never<T>`, a nested lambda's signature) names one
   variable per name, and a name a definition around it declares, and
   the written place does not declare itself, is that definition's
@@ -848,7 +854,9 @@ node graph IS the IR — there is no parallel typed IR
   `check_bounds_acyclic`): a recursive bound is a recursive type; a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥, no
   two unify (`contains.rs` Distinct) and none escapes into a cell outside
-  the definition (`DefGate::check_named_kept`), so a function type without
+  the definition (`DefGate::check_declared_kept`; a variable the signature
+  only names, undeclared, is lowered with that cell, and the definition is
+  monomorphic in it), so a function type without
   `throws` (which throws nothing) refuses one that throws `'e`, while a call instantiates them
   freely; a call copies only what the callee's definition owns once
   its gate is closed (or not yet open): a cell shared with the

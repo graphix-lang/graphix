@@ -1257,30 +1257,40 @@ impl FnType {
         if !ok || pairs.iter().any(|(s, t)| s.has_default() && !t.has_default()) {
             return Ok(false);
         }
+        let vargs = match (&t.vargs, &self.vargs) {
+            (Some(tv), Some(sv)) => Some((tv, sv)),
+            (None, None) => None,
+            (_, _) => return Ok(false),
+        };
         let args = flags ^ ContainsFlags::Contra;
+        // each position as (container, contained, flags), in order, the
+        // bounds between the result and the throws
+        let mut positions: SmallVec<[Option<(&Type, &Type, _)>; 8]> =
+            pairs.iter().map(|(s, t)| Some((&t.typ, &s.typ, args))).collect();
+        positions.extend(vargs.map(|(tv, sv)| Some((tv, sv, args))));
+        positions.push(Some((&self.rtype, &t.rtype, flags)));
+        positions.push(None);
+        positions.push(Some((&self.throws, &t.throws, flags)));
         // a union of open cells is decided by the positions that decide
         // its members alone, wherever they are written
-        let later: SmallVec<[bool; 8]> = pairs
-            .iter()
-            .map(|(s, t)| holds_open_union(&s.typ) || holds_open_union(&t.typ))
-            .collect();
+        let later = |p: &Option<(&Type, &Type, _)>| {
+            p.is_some_and(|(c, t, _)| holds_open_union(c) || holds_open_union(t))
+        };
         for round in [false, true] {
-            for ((s, t), _) in
-                pairs.iter().zip(later.iter()).filter(|(_, l)| **l == round)
-            {
-                if !t.typ.contains_int(args, env, hist, &s.typ)? {
+            for p in positions.iter().filter(|p| later(p) == round) {
+                let holds = match p {
+                    Some((c, t, flags)) => c.contains_int(*flags, env, hist, t)?,
+                    None => {
+                        self.bounds_hold(flags, env, hist)?
+                            && t.bounds_hold(flags, env, hist)?
+                    }
+                };
+                if !holds {
                     return Ok(false);
                 }
             }
         }
-        Ok(match (&t.vargs, &self.vargs) {
-            (Some(tv), Some(sv)) => tv.contains_int(args, env, hist, sv)?,
-            (None, None) => true,
-            (_, _) => false,
-        } && self.rtype.contains_int(flags, env, hist, &t.rtype)?
-            && self.bounds_hold(flags, env, hist)?
-            && t.bounds_hold(flags, env, hist)?
-            && self.throws.contains_int(flags, env, hist, &t.throws)?)
+        Ok(true)
     }
 
     /// Rigid gates on the quantifiers no call has picked: each holds what
@@ -2104,4 +2114,87 @@ fn holds_open_union(t: &Type) -> bool {
         })
     }
     go(t, &mut LPooled::take())
+}
+
+impl Type {
+    /// A read's copy of the signatures this type holds of definitions whose
+    /// gates are closed (a lambda held in a struct, tuple or array): each such
+    /// function type copied as a read of a generalized binding copies its
+    /// scheme ([`FnType::scheme`]), through one cell map, all but those `keep`
+    /// shares. `None` when it holds none.
+    #[doc(hidden)]
+    pub fn scheme_read(
+        &self,
+        open: &IntSet<LambdaId>,
+        keep: &dyn Fn(&FnType) -> bool,
+    ) -> Option<Type> {
+        struct Walk<'a> {
+            open: &'a IntSet<LambdaId>,
+            keep: &'a dyn Fn(&FnType) -> bool,
+            known: LPooled<AHashMap<usize, TVar>>,
+            memo: LPooled<AHashMap<usize, Option<Type>>>,
+        }
+        impl Walk<'_> {
+            fn go(&mut self, t: &Type) -> Option<Type> {
+                crate::stack::ensure_sufficient(|| match t {
+                    Type::TVar(tv) => {
+                        let b = tv.binding()?;
+                        let addr = tv.cell_addr();
+                        if let Some(r) = self.memo.get(&addr) {
+                            return r.clone();
+                        }
+                        self.memo.insert(addr, None);
+                        let r = self.go(&b).map(|r| tv.forwarded_as(r));
+                        self.memo.insert(addr, r.clone());
+                        r
+                    }
+                    Type::Fn(ft) => {
+                        if (self.keep)(ft) || !copied_beneath(t, self.open) {
+                            return None;
+                        }
+                        let fresh =
+                            ft.reset_tvars_int(&mut self.known, Fresh::Scheme(self.open));
+                        fresh.alias_tvars(&mut LPooled::take());
+                        Some(Type::Fn(Arc::new(fresh)))
+                    }
+                    t => match super::node_addr(t) {
+                        Some(n) => {
+                            if let Some(r) = self.memo.get(&n) {
+                                return r.clone();
+                            }
+                            let r = t.cow_children(&mut |c| self.go(c));
+                            self.memo.insert(n, r.clone());
+                            r
+                        }
+                        None => t.cow_children(&mut |c| self.go(c)),
+                    },
+                })
+            }
+        }
+        Walk { open, keep, known: LPooled::take(), memo: LPooled::take() }.go(self)
+    }
+}
+
+/// Whether `t` reaches an open cell a scheme's copy under the open gates
+/// `open` copies.
+fn copied_beneath(t: &Type, open: &IntSet<LambdaId>) -> bool {
+    fn go(t: &Type, open: &IntSet<LambdaId>, seen: &mut AHashSet<usize>) -> bool {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                seen.insert(tv.cell_addr())
+                    && match tv.binding() {
+                        Some(b) => go(&b, open, seen),
+                        None => !tv.is_quantifier_rigid() && tv.level().copied_by(open),
+                    }
+            }
+            t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
+            t => t
+                .try_for_each_child(&mut |c| match go(c, open, seen) {
+                    true => ControlFlow::Break(()),
+                    false => ControlFlow::Continue(()),
+                })
+                .is_break(),
+        })
+    }
+    go(t, open, &mut LPooled::take())
 }

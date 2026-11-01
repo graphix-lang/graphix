@@ -609,6 +609,9 @@ fn quantified_formal(
     env: &Env,
     typ: &Type,
 ) -> Option<(Type, LPooled<Vec<RigidGate>>, Quantified)> {
+    if !typ.holds_quantified_fn(env) {
+        return None;
+    }
     let mut quantified = Quantified::new();
     let formal = rank2_parts(env, typ, &mut Expanding::default(), &mut quantified);
     if quantified.is_empty() {
@@ -627,14 +630,21 @@ fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> 
 }
 
 /// A walk's typedef expansions: those in progress, each one it met in
-/// progress and so did not expand again, and each parameterless one, or
-/// shared node, whose walk held nothing, with the ones in progress it met
-/// there.
+/// progress and so did not expand again, and each parameterless one whose
+/// expansion held nothing, with the ones in progress it met there; each
+/// shared node of the walked type outside every expansion, and each
+/// application whose walk met none in progress, by its definition and its
+/// parameters' identities (the parameters held, so the identities stay
+/// theirs), with what its walk built and whether it met a quantifier; and
+/// the quantified function types met so far.
 #[derive(Default)]
 struct Expanding {
     stack: SmallVec<[usize; 4]>,
     met: SmallVec<[usize; 4]>,
     clean: AHashMap<usize, SmallVec<[usize; 2]>>,
+    nodes: AHashMap<usize, (Option<Type>, bool)>,
+    apps: AHashMap<(usize, SmallVec<[usize; 2]>), (Option<Type>, bool, TArc<[Type]>)>,
+    found: usize,
 }
 
 impl Expanding {
@@ -659,21 +669,11 @@ impl Expanding {
             Some(_) | None => false,
         }
     }
-
-    /// Record that `key`'s walk, which began when `met` held `since`
-    /// entries, held nothing.
-    fn record_clean(&mut self, key: usize, since: usize) {
-        let mut seen: SmallVec<[usize; 2]> =
-            self.met[since..].iter().copied().filter(|k| *k != key).collect();
-        seen.sort_unstable();
-        seen.dedup();
-        self.clean.insert(key, seen);
-    }
 }
 
 /// Push to `out` the quantifiers of each function type at a data position
-/// of `t`; `t` rebuilt with every binding and typedef on the way to one
-/// expanded, `None` where it is unchanged. A typedef already being
+/// of `t`, each once; `t` rebuilt with every binding and typedef on the way
+/// to one expanded, `None` where it is unchanged. A typedef already being
 /// expanded is not expanded again.
 fn rank2_parts(
     env: &Env,
@@ -684,55 +684,81 @@ fn rank2_parts(
     #[cfg(test)]
     RANK2_STEPS.with(|n| n.set(n.get() + 1));
     ensure_sufficient(|| {
-        let before = out.len();
-        let expanded = |r: Option<Type>, whole: Type, out: &Quantified| {
-            (out.len() > before).then(|| r.unwrap_or(whole))
-        };
-        match t {
+        // a node many paths share is walked once; one an expansion built
+        // lives only while it is walked, so it has no identity
+        let node = t.shared_identity().filter(|_| expanding.stack.is_empty());
+        if let Some((r, found)) = node.and_then(|n| expanding.nodes.get(&n)) {
+            expanding.found += usize::from(*found);
+            return r.clone();
+        }
+        let before = expanding.found;
+        let found = |expanding: &Expanding| expanding.found > before;
+        let r = match t {
             Type::Fn(ft) => {
-                ft.each_quantifier(|name, tv| out.push((name.clone(), tv.clone())));
+                ft.each_quantifier(|name, tv| {
+                    if !out.iter().any(|(_, q)| q.cell_addr() == tv.cell_addr()) {
+                        out.push((name.clone(), tv.clone()))
+                    }
+                });
+                expanding.found += usize::from(!ft.quantifiers.is_empty());
                 None
             }
-            Type::TVar(tv) => {
-                let b = tv.binding()?;
+            Type::TVar(tv) => tv.binding().and_then(|b| {
                 let r = rank2_parts(env, &b, expanding, out);
-                expanded(r, b, out)
-            }
+                found(expanding).then(|| r.unwrap_or(b))
+            }),
             Type::Ref(tr) => {
                 let bare = tr.params.is_empty();
-                let (key, whole) = expanding.expand(env, t)?;
-                if bare && expanding.known_clean(key) {
-                    return None;
+                match expanding.expand(env, t) {
+                    None => None,
+                    Some((key, _)) if bare && expanding.known_clean(key) => None,
+                    Some((key, whole)) => {
+                        let app = tr
+                            .params
+                            .iter()
+                            .map(|p| p.shared_identity())
+                            .collect::<Option<SmallVec<[usize; 2]>>>()
+                            .map(|ps| (key, ps));
+                        if let Some((r, hit, _)) =
+                            app.as_ref().and_then(|a| expanding.apps.get(a))
+                        {
+                            expanding.found += usize::from(*hit);
+                            return r.clone();
+                        }
+                        let met = expanding.met.len();
+                        expanding.stack.push(key);
+                        let r = rank2_parts(env, &whole, expanding, out);
+                        expanding.stack.pop();
+                        if bare && !found(expanding) {
+                            let mut seen: SmallVec<[usize; 2]> = expanding.met[met..]
+                                .iter()
+                                .copied()
+                                .filter(|k| *k != key)
+                                .collect();
+                            seen.sort_unstable();
+                            seen.dedup();
+                            expanding.clean.insert(key, seen);
+                        }
+                        let r = found(expanding).then(|| r.unwrap_or(whole));
+                        if let Some(app) = app
+                            && expanding.met.len() == met
+                        {
+                            let held = tr.params.clone();
+                            expanding
+                                .apps
+                                .insert(app, (r.clone(), found(expanding), held));
+                        }
+                        r
+                    }
                 }
-                let met = expanding.met.len();
-                expanding.stack.push(key);
-                let r = rank2_parts(env, &whole, expanding, out);
-                expanding.stack.pop();
-                if bare && out.len() == before {
-                    expanding.record_clean(key, met);
-                }
-                expanded(r, whole, out)
             }
             Type::Abstract { .. } => None,
-            t => {
-                // a node many paths share is walked once; one an expansion
-                // built lives only while it is walked, so it has no identity
-                let node = t.shared_identity().filter(|_| expanding.stack.is_empty());
-                if let Some(node) = node
-                    && expanding.known_clean(node)
-                {
-                    return None;
-                }
-                let met = expanding.met.len();
-                let r = t.cow_children(&mut |c| rank2_parts(env, c, expanding, out));
-                if let Some(node) = node
-                    && out.len() == before
-                {
-                    expanding.record_clean(node, met);
-                }
-                r
-            }
+            t => t.cow_children(&mut |c| rank2_parts(env, c, expanding, out)),
+        };
+        if let Some(n) = node {
+            expanding.nodes.insert(n, (r.clone(), found(expanding)));
         }
+        r
     })
 }
 
@@ -849,6 +875,19 @@ fn typecheck_arg<R: Rt>(
                 ArgFit::Misfit
             })
         }
+        // CR claude for claude: [perf/low] A formal holding a quantified function
+        // type through a chain of parametric typedefs is still checked in time
+        // exponential in the chain's depth, though rank2_parts walks it once:
+        // `type P0<'a> = ('a, i64); type P1<'a> = (P0<'a>, P0<'a>); ..; let x:
+        // P20<fn<'b: Number + Singleton>(x: 'b) -> 'b> = never(); let f = |a: 'a, b:
+        // 'a| a; f(x, x)` takes 55G instructions to --check (debug; 9G at 16; main
+        // a084f9887 297G and 23G). callgrind puts it in pre_unify_arg and
+        // check_contains_rigid below: their containment expands each application
+        // anew (ContainsHist::expand_ref, lookup_ref_by, replace_tvars), and an
+        // expansion's applications are new nodes, so the ref-pair memo never meets
+        // one twice. Memoize a containment of two applications by definition and
+        // parameter identity, as Expanding::apps does here. probe:
+        // ~/ptmp/cr29/scratch/r6-B/w4/ptq-16.gx, ptq-20.gx (dag-check-02)
         Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
@@ -975,19 +1014,31 @@ fn escapes_through(quantified: &[(ArcStr, usize)], env: &Type) -> Result<()> {
     }
 }
 
-/// Every cell under `t`, following bindings.
+/// Every cell under `t`, following bindings, each once: a cell `seen`
+/// holds is not visited, nor a shared node walked already.
 fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar)) {
-    ensure_sufficient(|| match t {
-        Type::TVar(tv) => {
-            if seen.insert(tv.cell_addr()) {
-                f(tv);
-                if let Some(b) = tv.binding() {
-                    reaches_cell(&b, seen, f)
+    fn go(
+        t: &Type,
+        seen: &mut AHashSet<usize>,
+        nodes: &mut AHashSet<usize>,
+        f: &mut impl FnMut(&TVar),
+    ) {
+        #[cfg(test)]
+        RANK2_STEPS.with(|n| n.set(n.get() + 1));
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if seen.insert(tv.cell_addr()) {
+                    f(tv);
+                    if let Some(b) = tv.binding() {
+                        go(&b, seen, nodes, f)
+                    }
                 }
             }
-        }
-        t => t.for_each_child(&mut |c| reaches_cell(c, seen, f)),
-    })
+            t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
+            t => t.for_each_child(&mut |c| go(c, seen, nodes, f)),
+        })
+    }
+    go(t, seen, &mut LPooled::take(), f)
 }
 
 /// The first of the `quantified` cells (name, cell address) that a
@@ -1088,6 +1139,29 @@ fn data_positions(
 // before any argument is checked, so it never meets the argument's type. Pin
 // graphix-compiler node::callsite::test::rank2_parts_walks_a_shared_node_once (a
 // 16-deep shared tuple walked in at most 34 steps) fails without it.
+// 2026-11-01 claude: Review (r6 B2) found two shapes still exponential: a chain of
+// parametric typedefs (type P1<'a> = (P0<'a>, P0<'a>); ..; f(x, x) with x: P20<i64>,
+// 37G) and a let DAG whose leaf holds a quantified function (101G at N=20), the memo
+// keeping only clean nodes outside expansions. Now quantified_formal first asks whether
+// the formal holds a quantified function at all (Type::holds_quantified_fn, the holds
+// walk, which decides a typedef application once per shape of its parameters), and
+// rank2_parts keeps each shared node's result outside expansions, found or not
+// (Expanding::nodes), with a count of the quantified functions met in place of the
+// length of out, which takes each quantifier once. Lane debug --check: ptdefs-20 2.09G,
+// r2leaf-20 3.77G, fnleaf-18 2.06G (main 37G, 101G, 1.8G). Pins
+// node::callsite::test::rank2_parts_walks_a_quantified_dag_once and
+// quantified_formal_skips_a_formal_holding_none (step counts) fail without it, as does
+// rank2_parts_walks_a_shared_node_once.
+// 2026-11-01 claude: Further: the call's escape checks (polymorphic_in and
+// escapes_through, through reaches_cell) walked the argument per path, which kept
+// r2leaf exponential past N=20 (18G at 22); reaches_cell now walks a shared node once
+// (pin node::callsite::test::reaches_cell_walks_a_shared_node_once; r2leaf-26 2.2G).
+// rank2_parts also keeps each typedef application whose walk met none in progress, by
+// definition and parameter identity (Expanding::apps; pin
+// rank2_parts_walks_an_application_once: P16<fn<'b: Number>(..)>), and a parameterless
+// chain over a quantified function (type T1 = (T0, T0)) is linear (tq-20 2.3G). Left:
+// the same chain applied to a quantified function is still exponential in the
+// containment that follows (CR dag-check-02).
 /// Whether `t` holds a type variable under an abstract type, a type
 /// application or a writable reference, outside any function type: such a position
 /// fixes the variable exactly, so its argument is checked first and the
@@ -4400,6 +4474,13 @@ pub(crate) fn lambda_literal<R: Rt>(node: &Node<R>) -> Option<&Lambda> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::{
+        SourcePosition,
+        expr::{
+            ModPath,
+            parser::{parse_one, parse_type},
+        },
+    };
     use netidx_value::Typ;
 
     // A type whose nodes many paths share is walked once per node, not once
@@ -4415,5 +4496,90 @@ mod test {
         let r = rank2_parts(&Env::default(), &t, &mut Expanding::default(), &mut out);
         assert!(r.is_none() && out.is_empty());
         assert!(RANK2_STEPS.with(|n| n.get()) <= 2 * 17);
+    }
+
+    // So is one each of whose paths ends in a quantified function: `let x0 =
+    // (g, 1)` with `g: fn<'b: Number>(..)`, its quantifier taken once.
+    #[test]
+    fn rank2_parts_walks_a_quantified_dag_once() {
+        let g = parse_type("fn<'b: Number>(x: 'b) -> 'b").unwrap();
+        let mut t = Type::Tuple(TArc::from_iter([g, Type::Primitive(Typ::I64.into())]));
+        for _ in 0..16 {
+            t = Type::Tuple(TArc::from_iter([t.clone(), t.clone()]));
+        }
+        RANK2_STEPS.with(|n| n.set(0));
+        let mut out = Quantified::new();
+        let r = rank2_parts(&Env::default(), &t, &mut Expanding::default(), &mut out);
+        assert!(r.is_none() && out.len() == 1);
+        assert!(RANK2_STEPS.with(|n| n.get()) <= 2 * 17 + 3);
+    }
+
+    // A call's escape checks walk the argument's shared nodes once:
+    // `carried_out` over a 24-deep shared tuple holding a cell.
+    #[test]
+    fn reaches_cell_walks_a_shared_node_once() {
+        let mut t = Type::Tuple(TArc::from_iter([
+            Type::empty_tvar(),
+            Type::Primitive(Typ::I64.into()),
+        ]));
+        for _ in 0..24 {
+            t = Type::Tuple(TArc::from_iter([t.clone(), t.clone()]));
+        }
+        RANK2_STEPS.with(|n| n.set(0));
+        assert!(carried_out(&[], &t).is_none());
+        assert!(RANK2_STEPS.with(|n| n.get()) <= 2 * (2 * 25 + 2));
+    }
+
+    // A formal holding no quantified function is not walked, a chain of
+    // parametric typedefs whose expansions no walk can share included:
+    // `type P1<'a> = (P0<'a>, P0<'a>); ..` and `let x: P16<i64>`.
+    fn typedef_chain() -> Env {
+        let mut env = Env::default();
+        let mut defs = vec![String::from("type P0<'a> = ('a, i64)")];
+        for i in 1..=16 {
+            defs.push(format!("type P{i}<'a> = (P{}<'a>, P{}<'a>)", i - 1, i - 1));
+        }
+        for d in defs.iter() {
+            let e = parse_one(d).unwrap();
+            let ExprKind::TypeDef(td) = &e.kind else { panic!("not a typedef: {d}") };
+            let (params, body) = Type::reset_typedef_tvars(&td.params, &td.body);
+            let at = SourcePosition::default();
+            env.deftype(
+                &ModPath::root(),
+                &td.name.name,
+                params,
+                &body,
+                true,
+                None,
+                at,
+                at,
+                e.ori.clone(),
+            )
+            .unwrap();
+        }
+        env
+    }
+
+    #[test]
+    fn quantified_formal_skips_a_formal_holding_none() {
+        let env = typedef_chain();
+        let t = parse_type("P16<i64>").unwrap();
+        assert!(t.lookup_ref_probe(&env).is_some());
+        RANK2_STEPS.with(|n| n.set(0));
+        assert!(quantified_formal(&env, &t).is_none());
+        assert_eq!(RANK2_STEPS.with(|n| n.get()), 0);
+    }
+
+    // One that holds one walks each application of a typedef to the same
+    // parameters once: `P16<fn<'b: Number>(x: 'b) -> 'b>`.
+    #[test]
+    fn rank2_parts_walks_an_application_once() {
+        let env = typedef_chain();
+        let t = parse_type("P16<fn<'b: Number>(x: 'b) -> 'b>").unwrap();
+        RANK2_STEPS.with(|n| n.set(0));
+        let (_, _, quantified) =
+            quantified_formal(&env, &t).expect("a quantified formal");
+        assert_eq!(quantified.len(), 1);
+        assert!(RANK2_STEPS.with(|n| n.get()) <= 6 * 17);
     }
 }

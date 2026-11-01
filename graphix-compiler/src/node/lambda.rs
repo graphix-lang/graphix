@@ -527,6 +527,14 @@ pub struct InstanceTypes {
 // and formal_union_of_two_variables_written (let g: fn(x: [i64, string], y: i64, z:
 // string) -> .. = f, refused on the base) fail without it; both pass under
 // GRAPHIX_NO_SUBST=1.
+// 2026-11-01 claude: Review (r6 B2) found the order covered only the parameters: a union
+// decided by the result (|x: ['a, 'b]| -> (Array<'a>, Array<'b>) at [string, i64])
+// passed the check and the build refused it (fuzzer DIVERGENCE, u2b.gx).
+// FnType::contains_gated now orders every position by the rule, parameters, variadic,
+// result and throws: a position holding a union of two open cells is checked after all
+// the others, the bounds staying where they were among the rest (no union: the order is
+// as before). Pin lang::types::formal_union_of_two_variables_decided_by_the_result (u2b
+// and u2 in one program; main's build refuses it) fails without it.
 /// The definition's signature `def` as the instance at `instance` holds
 /// it: each open cell copied under its name into `known` and bound to the
 /// instance's type. `None` when the instance's signature does not hold
@@ -1234,6 +1242,34 @@ impl Typing {
             // s.f({a: s}), s.f(s.f), g(s) with g = s.f, t.0([t]), a[0]$([a])) fails
             // without it (the run-time bind refused) and passes under
             // GRAPHIX_NO_SUBST=1.
+            // 2026-11-01 claude: Review (r6 B2) found the settle exemption covered
+            // only unbounded cells, and the cause, a read of a holder sharing the
+            // definition's own cells, still stood: a bounded cell settled to ⊥
+            // (s.f(s), s.f(s.f), h(s) over {f: |x| x == x}), an annotation or a
+            // typed formal bound the scheme (let t: {f: fn(x: i64) -> i64} = s;
+            // arrays and tuples alike), a later REPL input too. Now a let nothing
+            // writes whose value holds a lambda or a generalized binding's value,
+            // through data literals, a block's value or a select's arms
+            // (bind::holds_function), is generalized (Env::poly_binds): each read
+            // takes a fresh placeholder at compile and, in typecheck0, a copy of
+            // every closed definition's signature its type holds
+            // (Type::scheme_read, Fresh::Scheme), so nothing outside the definition
+            // writes its scheme; a read inside such a holder's own value shares the
+            // type (Signature::InHolder), which keeps a chain of holders a DAG
+            // (polyleaf/polysel/fnleaf chains at N=18-20 check in 2.0-3.8G
+            // instructions, as main). Pins
+            // lang::types::holder_reads_copy_its_signatures (every reviewer shape
+            // in one program; main refuses it at the check) and
+            // holder_of_an_earlier_input_stays_generic (the REPL shape) fail
+            // without it; holder_of_a_lambda_passed_to_it holds. Probes
+            // ~/ptmp/cr29/scratch/r6-B/w4/.
+            // 2026-11-01 claude: The earlier fix's settle exemption
+            // (settle_terminal leaving an unbounded generic cell) is removed: with
+            // holder reads copying, no site reaches a definition's own cell through
+            // a holder, and every pin above, lang::types, lang::functions and
+            // lang::byref pass without it; a literal passed straight to a call
+            // (h({f: |x| 0}).f(1)) is decided by that call, as a callback literal
+            // is (probes d2-d4.gx run alike).
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),
@@ -2297,9 +2333,9 @@ struct DefGate<R: Rt> {
     args: LPooled<Vec<Node<R>>>,
     scope: Scope,
     rigid: LPooled<Vec<RigidGate>>,
-    /// Each variable the signature names, at the depth it had at the
+    /// Each quantifier the definition declares, at the depth it had at the
     /// gate's opening.
-    named: LPooled<Vec<(TVar, u32)>>,
+    declared: LPooled<Vec<(TVar, u32)>>,
 }
 
 impl<R: Rt> DefGate<R> {
@@ -2371,7 +2407,13 @@ impl<R: Rt> DefGate<R> {
             .map(|tv| tv.open_rigid())
             .chain(quantifiers.values().map(|tv| tv.open_quantifier_rigid()))
             .collect();
-        let named = named.values().map(|tv| (tv.clone(), tv.level().depth())).collect();
+        let declared = def
+            .typ
+            .quantifiers
+            .iter()
+            .filter_map(|q| named.get(q))
+            .map(|tv| (tv.clone(), tv.level().depth()))
+            .collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
         ctx.pending_settles.push(crate::SettleFrame::default());
@@ -2384,21 +2426,23 @@ impl<R: Rt> DefGate<R> {
             args,
             scope,
             rigid,
-            named,
+            declared,
         }
     }
 
-    /// A variable the signature names stays its own: the body binds no
-    /// cell outside the definition to a type holding it (which would
-    /// lower the variable to that cell's depth), since each call picks
-    /// it anew.
-    fn check_named_kept(&self) -> Result<()> {
-        for (tv, depth) in self.named.iter() {
+    /// A quantifier the definition declares stays its own: the body binds
+    /// no cell outside the definition to a type holding it (which would
+    /// lower it to that cell's depth), since each call picks it anew. A
+    /// variable the signature only names is lowered with that cell, and
+    /// the definition is monomorphic in it.
+    fn check_declared_kept(&self) -> Result<()> {
+        for (tv, depth) in self.declared.iter() {
             if tv.level().depth() < *depth {
                 bail!(
-                    "'{} escapes the definition: something outside it would hold a \
-                     value of that type, which each call picks anew; annotate what \
-                     outside the definition the body writes or calls",
+                    "'{0} escapes the definition: the body hands a value of type '{0} \
+                     to something outside it, which would have to hold every '{0} a \
+                     call picks; give that a type holding them all (the bound of '{0}, \
+                     or Any), or declare no '{0}",
                     tv.name
                 )
             }
@@ -2502,6 +2546,16 @@ fn capture_names<R: Rt>(
 /// variable fits its parameter whole: a call instantiates no variable of
 /// the definitions around it, and an omitting site outside them sees
 /// their schemes (`callsite::Judge`).
+// CR claude for claude: [bug/low] A recursive typedef a labeled default's block declares
+// outlives its definition: the default's check node, whose TypeDef node owns the
+// definition, is discarded here, while the parameter's type, which the default decided,
+// still names it. `{ let f = |#d = { type L<'a> = [`Nil, `Cons('a, L<'a>)]; let l:
+// L<i64> = `Cons(1, `Nil); l }, x: i64| (d, x); println(f(1)); 0 }` logs "type `L`
+// outlived its definition" (ERROR, graphix_types::typ) in every engine and session under
+// graphix-fuzz run; the values agree and the shell, which shows only the failure target,
+// prints nothing. Own the definitions the default's type names past the check, as
+// DefTable::typedefs owns a body's. probes: ~/ptmp/cr29/scratch/review-r6/B2-r1-1/d1j.gx,
+// d1.gx, d8.gx (default-typedef-outlived-01)
 fn check_defaults<R: Rt>(
     ctx: &mut CompileCtx<R>,
     def: &LambdaDef<R>,
@@ -2695,7 +2749,7 @@ impl<R: Rt> Update<R> for Lambda {
         });
         let res = res
             .and_then(|()| check_defaults(ctx, def, &gate.scope, &mut captures))
-            .and_then(|()| gate.check_named_kept().at(spec));
+            .and_then(|()| gate.check_declared_kept().at(spec));
         if res.is_ok() && (table.is_some() || !captures.is_empty()) {
             let mut table = table.unwrap_or_else(|| DefTable {
                 facts: *def.facts.lock(),

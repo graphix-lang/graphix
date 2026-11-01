@@ -709,6 +709,17 @@ impl Type {
         })
     }
 
+    /// Whether a value of this type can hold, outside an abstract type, a
+    /// function type that declares quantifiers of its own (`fn<'b: C>`).
+    #[doc(hidden)]
+    pub fn holds_quantified_fn(&self, env: &Env) -> bool {
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::Fn(ft) => Some(!ft.quantifiers.is_empty()),
+            Type::Abstract { .. } => Some(false),
+            _ => None,
+        })
+    }
+
     /// Whether a value of this type can hold a reference, a function or
     /// `Any` anywhere: what a builtin given one may reach through.
     #[doc(hidden)]

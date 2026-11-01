@@ -558,7 +558,8 @@ pub struct Env {
     /// trait's name).
     pub impls: TrackedMap<TraitId, Arc<Vec<Arc<ImplDef>>>>,
     /// Generalized bindings (let-bound lambdas, interface `val`s, trait
-    /// dispatchers) whose signature a value occurrence instantiates
+    /// dispatchers, and the lets nothing writes that hold a lambda in a
+    /// data literal) whose signatures a value occurrence instantiates
     /// afresh. A lambda parameter is never here. Global.
     pub poly_binds: TrackedSet<BindId>,
     /// Registered package names, usable as module path roots from
