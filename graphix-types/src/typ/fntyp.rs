@@ -2158,50 +2158,80 @@ impl Type {
         open: &IntSet<LambdaId>,
         keep: &dyn Fn(&FnType) -> bool,
     ) -> Option<Type> {
-        struct Walk<'a> {
-            open: &'a IntSet<LambdaId>,
-            keep: &'a dyn Fn(&FnType) -> bool,
-            known: LPooled<AHashMap<usize, TVar>>,
-            memo: LPooled<AHashMap<usize, Option<Type>>>,
-        }
-        impl Walk<'_> {
-            fn go(&mut self, t: &Type) -> Option<Type> {
-                crate::stack::ensure_sufficient(|| match t {
-                    Type::TVar(tv) => {
-                        let b = tv.binding()?;
-                        let addr = tv.cell_addr();
-                        if let Some(r) = self.memo.get(&addr) {
-                            return r.clone();
-                        }
-                        self.memo.insert(addr, None);
-                        let r = self.go(&b).map(|r| tv.forwarded_as(r));
-                        self.memo.insert(addr, r.clone());
-                        r
-                    }
-                    Type::Fn(ft) => {
-                        if (self.keep)(ft) || !copied_beneath(t, self.open) {
-                            return None;
-                        }
-                        let fresh =
-                            ft.reset_tvars_int(&mut self.known, Fresh::Scheme(self.open));
-                        fresh.alias_tvars(&mut LPooled::take());
-                        Some(Type::Fn(Arc::new(fresh)))
-                    }
-                    t => match super::node_addr(t) {
-                        Some(n) => {
-                            if let Some(r) = self.memo.get(&n) {
-                                return r.clone();
-                            }
-                            let r = t.cow_children(&mut |c| self.go(c));
-                            self.memo.insert(n, r.clone());
-                            r
-                        }
-                        None => t.cow_children(&mut |c| self.go(c)),
-                    },
-                })
+        ReadCopies::default().read(self, open, keep)
+    }
+}
+
+/// The copies reads take ([`Type::scheme_read`]) through one cell map:
+/// reads through one `ReadCopies` take one copy of what they share, and a
+/// type a read made is its own copy to a later read.
+#[derive(Debug, Default)]
+#[doc(hidden)]
+pub struct ReadCopies {
+    known: LPooled<AHashMap<usize, TVar>>,
+    /// By node, a var by its cell, beside the node, which this keeps
+    /// alive: its copy, `None` where the node is its own.
+    memo: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
+}
+
+impl ReadCopies {
+    /// `t` as a read through these copies takes it ([`Type::scheme_read`]).
+    #[doc(hidden)]
+    pub fn read(
+        &mut self,
+        t: &Type,
+        open: &IntSet<LambdaId>,
+        keep: &dyn Fn(&FnType) -> bool,
+    ) -> Option<Type> {
+        ReadWalk { open, keep, copies: self }.go(t)
+    }
+}
+
+struct ReadWalk<'a> {
+    open: &'a IntSet<LambdaId>,
+    keep: &'a dyn Fn(&FnType) -> bool,
+    copies: &'a mut ReadCopies,
+}
+
+impl ReadWalk<'_> {
+    fn go(&mut self, t: &Type) -> Option<Type> {
+        crate::stack::ensure_sufficient(|| {
+            let addr = match t {
+                Type::TVar(tv) => Some(tv.cell_addr()),
+                t => super::node_addr(t),
+            };
+            if let Some(a) = addr
+                && let Some((_, r)) = self.copies.memo.get(&a)
+            {
+                return r.clone();
             }
-        }
-        Walk { open, keep, known: LPooled::take(), memo: LPooled::take() }.go(self)
+            let r = match t {
+                Type::TVar(tv) => {
+                    let b = tv.binding()?;
+                    self.copies.memo.insert(tv.cell_addr(), (t.clone(), None));
+                    self.go(&b).map(|r| tv.forwarded_as(r))
+                }
+                Type::Fn(ft) if (self.keep)(ft) || !copied_beneath(t, self.open) => None,
+                Type::Fn(ft) => {
+                    let fresh = ft.reset_tvars_int(
+                        &mut self.copies.known,
+                        Fresh::Scheme(self.open),
+                    );
+                    fresh.alias_tvars(&mut LPooled::take());
+                    Some(Type::Fn(Arc::new(fresh)))
+                }
+                t => t.cow_children(&mut |c| self.go(c)),
+            };
+            if let Some(a) = addr {
+                self.copies.memo.insert(a, (t.clone(), r.clone()));
+            }
+            if let Some(c) = &r
+                && let Some(a) = super::node_addr(c)
+            {
+                self.copies.memo.insert(a, (c.clone(), None));
+            }
+            r
+        })
     }
 }
 

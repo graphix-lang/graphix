@@ -965,6 +965,26 @@ run!(
     "#
 );
 
+// A module with no interface writing a name its parent destructured from a
+// holder decides that holder value's copy, never the definition the
+// parent's other reads instantiate.
+run!(
+    module_writes_an_outer_holder_name,
+    prints(r#"["x", i64:1, i64:0]"#),
+    "/test.gx" => r#"
+        let s = {f: |x| x};
+        let v = s.f("x");
+        let (a, b) = (s, 0);
+        mod m;
+        let result = (v, m::n, b)
+    "#,
+    "/test/m.gx" => r#"
+        use super::a;
+        a <- never<{f: fn(x: i64) -> i64}>();
+        let n = a.f(1)
+    "#
+);
+
 // A module that only reads a binding the code around it settled is not
 // deciding it, though the binding is not in normal form.
 run!(

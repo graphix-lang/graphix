@@ -52,7 +52,7 @@ use crate::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{Bound, FnType, Indiscernible, Open, Type},
+    typ::{Bound, FnType, Indiscernible, Open, ReadCopies, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -1501,6 +1501,9 @@ pub struct CompileCtx<R: Rt> {
     /// innermost last: a site its own omitted default's elaboration
     /// reaches stays dynamic.
     pub(crate) defaults_in_check: SmallVec<[(LambdaId, ArcStr); 4]>,
+    /// The copies the reads in the holder's value being checked share
+    /// (`node::bind::ValueReads`).
+    pub(crate) holder_reads: Option<ReadCopies>,
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
@@ -1686,6 +1689,7 @@ impl<R: Rt> CompileCtx<R> {
             def_gate_depth: self.def_gate_depth,
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             defaults_in_check: self.defaults_in_check.clone(),
+            holder_reads: None,
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             body: self.body.clone(),
             pending_settles: vec![SettleFrame::default()],
@@ -1736,6 +1740,7 @@ impl<R: Rt> CompileCtx<R> {
             def_gate_depth: _,
             resolving_lambdas: _,
             defaults_in_check: _,
+            holder_reads: _,
             fn_forward_resolutions,
             body: _,
             pending_settles,
@@ -2065,6 +2070,7 @@ impl<R: Rt> ExecState<R> {
                 def_gate_depth: 0,
                 resolving_lambdas: Mutex::new(Resolving::default()),
                 defaults_in_check: SmallVec::new(),
+                holder_reads: None,
                 fn_forward_resolutions: TrackedMap::default(),
                 body: None,
                 pending_settles: vec![SettleFrame::default()],
@@ -2439,6 +2445,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             && self.block_typedefs.is_empty()
             && self.resolving_lambdas.lock().0.is_none()
             && self.defaults_in_check.is_empty()
+            && self.holder_reads.is_none()
             && self.body.is_none()
     }
 
@@ -2454,6 +2461,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         self.block_typedefs.clear();
         *self.resolving_lambdas.lock() = Resolving::default();
         self.defaults_in_check.clear();
+        self.holder_reads = None;
         self.body = None;
     }
     env_restore_methods!();
@@ -3773,6 +3781,7 @@ impl Saved {
             def_gate_depth: _,
             resolving_lambdas: _,
             defaults_in_check: _,
+            holder_reads: _,
             fn_forward_resolutions,
             body: _,
             pending_settles: _,

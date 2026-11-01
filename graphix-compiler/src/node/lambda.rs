@@ -1322,6 +1322,52 @@ impl Typing {
             // lang::types::holder_chain_through_collections_stays_a_dag (type node
             // count; 9722 nodes without it at 10 links, bound 176) fails without
             // it. Probes ~/ptmp/cr29/scratch/r6-B/w5/.
+            // 2026-11-01 claude: Review (r6 B2, round 3) found holder chains still
+            // exponential where a link reads the last through a call's argument, a
+            // block, a select arm or a struct update (callpair at 18 links 99G
+            // instructions, main 2.4G), and the earlier notes overclaimed: 'keeps a
+            // chain of holders a DAG' held only for reads in data parts, and 'a
+            // with-update chain does not type' was wrong (it types and grew). Now
+            // every read of a generalized binding in a holder's value, wherever it
+            // stands there (a lambda body it holds and a nested holder's value
+            // included), copies through one ReadCopies (CompileCtx::holder_reads
+            // under bind::ValueReads::Shared): two reads of one binding take one
+            // copy and a read of a type an earlier read made keeps it, so a link
+            // holds one copy of the last; Signature::InHolder, the uncopied share
+            // of the definitions' own cells, is gone. The value is typed as if it
+            // read each binding once (pin
+            // lang::types::holder_value_reads_a_binding_once: {a: s, b: k(s)} with
+            // k typed i64 makes t.a.f i64; the lane before this accepted
+            // t.a.f("x"), main refuses it). An annotated let, or one binding a
+            // written name, still copies at each read (ValueReads::Own). Lane debug
+            // --check at 14/16/18 links, before -> after (main 1.6-3.3G
+            // throughout): callmix 4.6/13.8/49.6G -> 1.6/2.8/2.2G; callpair
+            // 12.5/42.2/99.2G -> 2.1/2.2/2.6G; blockmix 3.9/7.5/27.9G ->
+            // 2.8/1.4/2.1G; selmix 3.5/6.4/15.8G -> 2.3/2.3/2.0G; withone
+            // 3.0/5.7/10.7G -> 1.8/1.5/1.6G; withpair 3.6/8.1/16.3G ->
+            // 1.3/1.9/1.9G; a lambda-body link {a: x, g: || x} 5.5/9.0/31.3G ->
+            // 1.8/1.6/1.7G. Pin lang::types::holder_chain_stays_a_dag (renamed from
+            // holder_chain_through_collections_stays_a_dag, every shape: distinct
+            // type nodes and one type for two parts reading the last link) fails
+            // without it (blocks 5139 nodes; calls and call pairs two types).
+            // guicheck main 91.579G, lane before 91.406G, after 91.152G. Probes
+            // ~/ptmp/cr29/scratch/r6-B/fix3/gen.
+            // 2026-11-01 claude: Review (r6 B2, round 3, low): a let forwarding a
+            // holder to a pattern that writes one of its names (let (a, b) = h; a
+            // <- ..) read h once for both names, so the written name's writer
+            // decided what the generalized one held and statement order decided
+            // acceptance (m/f1 refused, f2 accepted; fb1/fb2 in a body). Now such a
+            // let gives each name a copy of its own part (Bind::apart, in
+            // complete_shape and complete_partial, a partial struct pattern
+            // included). Pins
+            // lang::types::holder_forwarded_beside_a_written_name{,_in_a_body}
+            // (both orders, tuple and partial struct patterns) fail without it. The
+            // shared copy also fixes md1 (a module with no interface writing a
+            // parent's destructured holder name decided the definition: check
+            // passed, s.f("x")'s run-time bind refused; pin
+            // lang::modules::module_writes_an_outer_holder_name); what remains
+            // there, order-dependent acceptance through the module's writer, is CR
+            // module-holder-write-01.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),

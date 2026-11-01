@@ -58,7 +58,9 @@ pub use tval::member_of;
 #[doc(hidden)]
 pub mod tvar;
 
-pub use fntyp::{FnArgKind, FnArgType, FnType, check_bounds_acyclic, seed_conjuncts};
+pub use fntyp::{
+    FnArgKind, FnArgType, FnType, ReadCopies, check_bounds_acyclic, seed_conjuncts,
+};
 pub use tval::{Naked, NakedPrefix, PlainScalar, TVal};
 pub use tvar::TVar;
 

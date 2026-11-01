@@ -297,21 +297,32 @@ the holder (`let t: {f: fn(x: i64) -> i64} = s`), a typed formal it is
 passed to, or a site's settle of a bounded cell it reaches (`s.f(s)` over
 `{f: |x| x == x}`) decides only that read's copy, and the definition's
 scheme stays what its own check made it, which every instance is held to.
-A read in a part of such a holder's own value (`let x1 = (x0, [x0])`)
-takes the type uncopied (`Signature::InHolder`): the holder's reads copy
-it, and a chain of holders stays a DAG (pin
-`lang::types::holder_chain_through_collections_stays_a_dag`). The parts
-of a struct, a tuple or a variant relate nothing, and the union of an
-array's, a list's or a map's elements binds the cells of function members
-alone, never of a holder's data; a with-update's fields, which its source
-holds to its own field types, and a map's keys, which take `Ordered`,
-are read as copies. So is every read in the value of a pattern that also
-binds a written name, which is not generalized: its uses would decide
-what the holder's other reads share (pin
-`holder_destructured_beside_a_written_name`). Two lambda literals one
-array or list holds meet as its elements (`[|x| x, |y| y]` is one
-function type), and a `seqq` reads a holder once per request, every step
-of the run sharing that read's copy. A lambda a let holds through a
+Every read in such a holder's own value, wherever it stands there (`let
+x1 = {a: x0, b: id(x0), g: || x0}`: a call's argument, a block, a select
+arm, a struct update, a lambda body, a nested holder's value), copies
+through one cell map (`CompileCtx::holder_reads`, a `ReadCopies`, under
+`bind::ValueReads::Shared`): two reads of one binding take one copy, and
+a read of a type an earlier read made takes it as it is. The value is
+typed as if it read each binding once, so what one part decides of a
+copy (a call's typed formal) holds for every part (pin
+`holder_value_reads_a_binding_once`), and a link of a chain
+of holders holds one copy of the last: its type grows by a few nodes a
+link, where a copy at each read would double it (pin
+`lang::types::holder_chain_stays_a_dag`, which counts nodes and asserts
+that two parts reading the last link are one type). An annotated `let`,
+or one whose pattern binds a written name, takes a copy at each read
+in its value (`ValueReads::Own`): what the annotation or the written
+name's uses decide would otherwise hold for what the holder's other reads
+share (pin `holder_destructured_beside_a_written_name`). A `let`
+forwarding a generalized binding to a pattern that binds a written name
+(`let (a, b) = h; a <- ..`) gives each name a copy of its own part
+(`Bind::apart`, pin `holder_forwarded_beside_a_written_name`). A
+module with no interface that writes such a name is not known as a
+writer when the parent's `let` compiles, so its write decides the copy
+the parent's other names share (CR module-holder-write-01). Two lambda
+literals one array or list holds meet as its elements (`[|x| x, |y| y]`
+is one function type), and a `seqq` reads a holder once per request,
+every step of the run sharing that read's copy. A lambda a let holds through a
 block or a select is not generalized (must_reject family 1), though a
 call through it instantiates it (CR holder-block-select-01). Pin
 `lang::types::holder_reads_copy_its_signatures`.

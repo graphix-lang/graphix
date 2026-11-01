@@ -5476,6 +5476,65 @@ run!(
     prints(r#"["x", i64:1, "b", true, i64:0, f64:1.5, i64:1, i64:0, i64:2]"#);
     FuseExpect::None
 );
+// A holder's value reads each binding once: what a call in one part decides
+// of the copy holds for the others.
+run!(
+    holder_value_reads_a_binding_once,
+    r#"{
+  let k = |p: {f: fn(x: i64) -> i64}| 0;
+  let s = {f: |x| x};
+  let t = {a: s, b: k(s)};
+  (t.a.f("x"), s.f(true))
+}"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+// A let forwarding a holder's scheme to a pattern that writes one of its
+// names gives each name a copy of its own: the written name's writer decides
+// nothing of the others, whichever comes first.
+run!(
+    holder_forwarded_beside_a_written_name,
+    r#"{
+  let s = {f: |x| x};
+  let h = (s, s);
+  let (a, b) = h;
+  a <- never<{f: fn(x: i64) -> i64}>();
+  let w = b.f("w");
+  let (c, d) = h;
+  let u = d.f("u");
+  c <- never<{f: fn(x: i64) -> i64}>();
+  let k = {p: s, q: s, n: 0};
+  let {p, q, ..} = k;
+  p <- never<{f: fn(x: i64) -> i64}>();
+  let r = q.f("r");
+  let {p: e, q: g, ..} = k;
+  let v = g.f("v");
+  e <- never<{f: fn(x: i64) -> i64}>();
+  (w, u, r, v, a.f(1), c.f(2), p.f(3), e.f(4))
+}"#,
+    prints(r#"["w", "u", "r", "v", i64:1, i64:2, i64:3, i64:4]"#);
+    FuseExpect::None
+);
+run!(
+    holder_forwarded_beside_a_written_name_in_a_body,
+    r#"{
+  let g = |z| {
+    let s = {f: |x| x};
+    let h = (s, s);
+    let (a, b) = h;
+    a <- never<{f: fn(x: i64) -> i64}>();
+    let w = b.f(z);
+    let (c, d) = h;
+    let u = d.f(z);
+    c <- never<{f: fn(x: i64) -> i64}>();
+    (w, u, a.f(1), c.f(2))
+  };
+  (g("q"), g(true))
+}"#,
+    prints(r#"[["q", "q", i64:1, i64:2], [true, true, i64:1, i64:2]]"#);
+    FuseExpect::None
+);
 run!(
     holder_destructured_beside_a_written_name_in_a_body,
     r#"{
@@ -5491,23 +5550,26 @@ run!(
     FuseExpect::None
 );
 
+/// Where the node `t` lives, a var by its cell.
+fn type_node(t: &graphix_compiler::typ::Type) -> Option<usize> {
+    use graphix_compiler::typ::Type;
+    match t {
+        Type::Tuple(a) | Type::Set(a) | Type::Variant(_, a, _) => Some(a.as_ptr().addr()),
+        Type::Struct(a) => Some(a.as_ptr().addr()),
+        Type::Array(a) | Type::List(a) => Some(triomphe::Arc::as_ptr(a).addr()),
+        Type::Map { key, .. } => Some(triomphe::Arc::as_ptr(key).addr()),
+        Type::Fn(f) => Some(triomphe::Arc::as_ptr(f).addr()),
+        Type::TVar(tv) => Some(tv.cell_addr()),
+        _ => None,
+    }
+}
+
 /// The nodes `t` holds, a node many paths share counted once.
 fn distinct_type_nodes(t: &graphix_compiler::typ::Type) -> usize {
     use graphix_compiler::typ::Type;
     use std::collections::HashSet;
     fn go(t: &Type, seen: &mut HashSet<usize>) {
-        let at = match t {
-            Type::Tuple(a) | Type::Set(a) | Type::Variant(_, a, _) => {
-                Some(a.as_ptr().addr())
-            }
-            Type::Struct(a) => Some(a.as_ptr().addr()),
-            Type::Array(a) | Type::List(a) => Some(triomphe::Arc::as_ptr(a).addr()),
-            Type::Map { key, .. } => Some(triomphe::Arc::as_ptr(key).addr()),
-            Type::Fn(f) => Some(triomphe::Arc::as_ptr(f).addr()),
-            Type::TVar(tv) => Some(tv.cell_addr()),
-            _ => None,
-        };
-        if at.is_some_and(|a| !seen.insert(a)) {
+        if type_node(t).is_some_and(|a| !seen.insert(a)) {
             return;
         }
         match t {
@@ -5524,23 +5586,51 @@ fn distinct_type_nodes(t: &graphix_compiler::typ::Type) -> usize {
     seen.len()
 }
 
-/// A chain of holders, each holding the last twice in arrays, lists or a
-/// map's values, holds one copy of its last link's type: the chain's type
-/// grows by a few nodes a link, where a copy at each read would double it.
+/// The node `t`'s field or element `name` is, past the vars bound to it.
+fn part_node(t: &graphix_compiler::typ::Type, name: &str) -> Option<usize> {
+    use graphix_compiler::typ::Type;
+    fn bound(t: &Type) -> Type {
+        match t {
+            Type::TVar(tv) => tv.binding().map_or_else(|| t.clone(), |b| bound(&b)),
+            t => t.clone(),
+        }
+    }
+    let part = match &bound(t) {
+        Type::Struct(fs) => fs.iter().find(|(n, _, _)| n.as_str() == name)?.1.clone(),
+        Type::Tuple(ts) => ts.get(name.parse::<usize>().ok()?)?.clone(),
+        _ => return None,
+    };
+    type_node(&bound(&part))
+}
+
+/// A chain of holders, each reading the last twice (in arrays, lists, a
+/// map's values, a call's argument, a block, a select's arm, a lambda's body
+/// or a struct update), holds one copy of its last link's type: the chain's type grows by
+/// a few nodes a link, where a copy at each read would double it, and two
+/// parts a link reads the last through are one type.
 #[tokio::test(flavor = "current_thread")]
-async fn holder_chain_through_collections_stays_a_dag() -> Result<()> {
+async fn holder_chain_stays_a_dag() -> Result<()> {
     use arcstr::ArcStr;
     use graphix_compiler::{Scope, expr::ModPath};
     use graphix_package_core::testing::init;
     const LINKS: usize = 10;
-    for (shape, link) in [
-        ("arrays", "([x], [x, y])"),
-        ("lists", "{a: [<x>], b: [<x, y>]}"),
-        ("maps", "`M({\"k\" => x}, {\"j\" => x})"),
+    const PAIRS: &str = "let id = |v| v;\nlet y = (|z| z, 2);\nlet x = (|x| x, 1);\n";
+    const RECORD: &str = "let x = {n: 0, f: |x| x};\n";
+    for (shape, prelude, link, one) in [
+        ("arrays", PAIRS, "([x], [x, y])", None),
+        ("lists", PAIRS, "{a: [<x>], b: [<x, y>]}", None),
+        ("maps", PAIRS, "`M({\"k\" => x}, {\"j\" => x})", None),
+        ("calls", PAIRS, "{a: x, b: id(x)}", Some(["a", "b"])),
+        ("call pairs", PAIRS, "(id(x), id(x), |w| w)", Some(["0", "1"])),
+        ("blocks", PAIRS, "{a: x, b: {let t = x; t}}", Some(["a", "b"])),
+        ("selects", PAIRS, "{a: x, b: select 1 { _ => x }}", None),
+        ("lambdas", PAIRS, "{a: x, g: || x}", None),
+        ("updates", RECORD, "{n: 1, a: x, b: {x with n: 2}}", None),
+        ("update pairs", RECORD, "{n: 1, a: {x with n: 1}, b: {x with n: 2}}", None),
     ] {
         let (tx, _rx) = tokio::sync::mpsc::channel(1000);
         let ctx = init(tx, crate::TEST_REGISTER).await?;
-        let mut code = String::from("let y = (|z| z, 2);\nlet x = (|x| x, 1);\n");
+        let mut code = String::from(prelude);
         for _ in 0..LINKS {
             code.push_str("let x = ");
             code.push_str(link);
@@ -5553,6 +5643,10 @@ async fn holder_chain_through_collections_stays_a_dag() -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("x not in scope"))?;
         let nodes = distinct_type_nodes(&x.typ);
         assert!(nodes <= 16 * (LINKS + 1), "{shape}: {nodes} nodes");
+        if let Some([p, q]) = one {
+            let (p_at, q_at) = (part_node(&x.typ, p), part_node(&x.typ, q));
+            assert!(p_at.is_some() && p_at == q_at, "{shape}: {p} and {q} are two types");
+        }
         ctx.shutdown().await;
     }
     Ok(())

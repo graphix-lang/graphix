@@ -26,7 +26,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     typ::{
-        CoreTrait, FnType, Mutability, TVar, Type,
+        CoreTrait, FnType, Mutability, ReadCopies, TVar, Type,
         tvar::{AtLevel, Level, current_level},
     },
     wrap,
@@ -56,6 +56,52 @@ enum Deferred {
     Shape(Type),
 }
 
+/// How the reads of generalized bindings in a `let`'s value copy them.
+#[derive(Debug, Clone, Copy)]
+enum ValueReads {
+    /// As the reads around the `let` do.
+    Inherit,
+    /// A holder's value: its reads, those of the lambdas it holds and of a
+    /// holder's value around it included, share one copy of each binding
+    /// (`CompileCtx::holder_reads`).
+    Shared,
+    /// Each read a copy of its own: what a written name holds is decided by
+    /// its uses, an annotated one's by the annotation.
+    Own,
+}
+
+impl ValueReads {
+    /// Check the value, `f`, under these reads.
+    fn within<R: Rt, T>(
+        self,
+        ctx: &mut CompileCtx<R>,
+        f: impl FnOnce(&mut CompileCtx<R>) -> T,
+    ) -> T {
+        let outer = match self {
+            Self::Inherit => return f(ctx),
+            Self::Shared if ctx.holder_reads.is_some() => return f(ctx),
+            Self::Shared => ctx.holder_reads.replace(ReadCopies::default()),
+            Self::Own => ctx.holder_reads.take(),
+        };
+        let r = f(ctx);
+        ctx.holder_reads = outer;
+        r
+    }
+}
+
+/// A read of a holder whose type is `t`: the copy the holder's value being
+/// checked shares, else a copy of its own.
+fn holder_read<R: Rt>(ctx: &mut CompileCtx<R>, t: &Type) -> Option<Type> {
+    match ctx.holder_reads.take() {
+        Some(mut copies) => {
+            let r = copies.read(t, &ctx.rec_defs, &|ft| shares(ctx, ft));
+            ctx.holder_reads = Some(copies);
+            r
+        }
+        None => t.scheme_read(&ctx.rec_defs, &|ft| shares(ctx, ft)),
+    }
+}
+
 #[derive(Debug)]
 pub struct Bind<R: Rt> {
     slept: WakeBit,
@@ -68,6 +114,7 @@ pub struct Bind<R: Rt> {
     /// The pattern's fit to a value whose type the compile did not know,
     /// judged at the check.
     deferred: Option<Deferred>,
+    reads: ValueReads,
     pub(crate) node: Node<R>,
     ever_published: bool,
     /// The ids a wake re-raised into this cycle's event, absent from it
@@ -114,7 +161,14 @@ pub(crate) fn lower_over_operands<R: Rt>(
                 value: node.spec().clone(),
             })),
         );
-        children.push(Bind::with(Arc::new(bspec), typ, pattern, node, None));
+        children.push(Bind::with(
+            Arc::new(bspec),
+            typ,
+            pattern,
+            node,
+            None,
+            ValueReads::Inherit,
+        ));
     }
     let mut body = compile(ctx, flags, body, &scope, top_id)?;
     body.typecheck0(ctx)?;
@@ -158,6 +212,7 @@ impl<R: Rt> Bind<R> {
         pattern: StructPatternNode,
         node: Node<R>,
         deferred: Option<Deferred>,
+        reads: ValueReads,
     ) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
@@ -166,6 +221,7 @@ impl<R: Rt> Bind<R> {
             typ,
             pattern,
             deferred,
+            reads,
             node,
             ever_published: false,
             reraised: SmallVec::new(),
@@ -227,7 +283,7 @@ impl<R: Rt> Bind<R> {
         };
         let mut deferred = None;
         let mut narrowed = None;
-        let (mut node, pattern, typ) = if *rec {
+        let (node, pattern, typ) = if *rec {
             if pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
             }
@@ -349,20 +405,39 @@ impl<R: Rt> Bind<R> {
                 }
             }
         }
+        // CR claude for claude: [bug/low] A name a module with no interface writes is
+        // not known as written when its parent's `let` compiles (written_lets sees the
+        // block alone), so `let (a, b) = (s, s)` reads `s` once for both names, and the
+        // module's `a <- never<{f: fn(x: i64) -> i64}>()` decides the copy `b` holds
+        // for the parent's reads after `mod m`: `let w = b.f("w"); mod m; let z =
+        // b.f("z")` is refused at b.f("z"), and with both reads before `mod m` it runs
+        // (md2 vs md4; check and build agree; main a084f9887 refuses both at the
+        // write). Before holder values shared one copy, the write decided the
+        // definition itself: md1 passed --check and s.f("x")'s run-time bind was
+        // refused (pin lang::modules::module_writes_an_outer_holder_name). Counting a
+        // name a module may write as written (each read then its own copy), or holding
+        // a module's write to an earlier-generalized binding to a copy with its
+        // variables rigid as a later REPL input's is, would make acceptance
+        // order-free. probes: ~/ptmp/cr29/scratch/r6-B/fix3/md2, md4,
+        // ~/ptmp/cr29/scratch/review-r6/B2-r3-2/md1 (module-holder-write-01)
+
         // a name holding a function, which nothing writes, is a scheme of the
-        // definitions it holds: each read copies their signatures. The value
-        // takes its parts' types uncopied only when every name it binds is
-        // such a scheme: a written name's uses decide what it holds.
+        // definitions it holds: each read copies their signatures. The reads
+        // in its value share one copy of each binding, unless a written name's
+        // uses or an annotation decide what the value holds.
+        let mut holder = false;
         if holds_function(&ctx.env, &node) {
-            let (mut holder, mut written) = (false, false);
-            pattern.ids(&mut |id| match ctx.connect_targets.contains(&id) {
-                true => written = true,
-                false => holder |= ctx.env.poly_binds.insert(id),
+            pattern.ids(&mut |id| {
+                if !ctx.connect_targets.contains(&id) {
+                    holder |= ctx.env.poly_binds.insert(id)
+                }
             });
-            if holder && !written && b.typ.is_none() {
-                share_in_holder(&mut node);
-            }
         }
+        let reads = match (written(ctx, &pattern) || b.typ.is_some(), holder) {
+            (true, _) => ValueReads::Own,
+            (false, true) => ValueReads::Shared,
+            (false, false) => ValueReads::Inherit,
+        };
         if !matches!(pat, expr::StructurePattern::Bind(_)) {
             pattern.ids(&mut |id| ctx.env.mark_let_pattern(id));
         }
@@ -391,7 +466,7 @@ impl<R: Rt> Bind<R> {
                 }
             }
         });
-        Ok(Self::with(spec, typ, pattern, node, deferred))
+        Ok(Self::with(spec, typ, pattern, node, deferred, reads))
     }
 
     /// Fit the pattern to the value's type, which must be known by now.
@@ -420,12 +495,38 @@ impl<R: Rt> Bind<R> {
                 bailat!(spec, "refutable patterns are not allowed in let");
             }
         }
-        for leaf in self.pattern.names_by_member(&ctx.env, &self.typ, &pred).at(spec)? {
+        let apart = self.apart(ctx);
+        self.type_names(ctx, &pred, apart)
+    }
+
+    /// Type each name the pattern binds by its part of each member of the
+    /// value's type `shape` matches, a copy of its own when `apart`.
+    fn type_names(&self, ctx: &CompileCtx<R>, shape: &Type, apart: bool) -> Result<()> {
+        let spec = &self.spec;
+        for leaf in self.pattern.names_by_member(&ctx.env, &self.typ, shape).at(spec)? {
             if let Some(b) = ctx.env.by_id.get(&leaf.id) {
-                b.typ.clone().check_contains(&ctx.env, &leaf.typ).at(spec)?
+                let part = match apart {
+                    true => leaf.typ.scheme_read(&ctx.rec_defs, &|ft| shares(ctx, ft)),
+                    false => None,
+                };
+                b.typ
+                    .clone()
+                    .check_contains(&ctx.env, part.as_ref().unwrap_or(&leaf.typ))
+                    .at(spec)?
             }
         }
         Ok(())
+    }
+
+    /// Whether the binding forwards its value's scheme (`let g = f`).
+    fn forwards(&self, env: &Env) -> bool {
+        matches!(&self.spec.kind, ExprKind::Bind(b) if forwards(env, b, &self.node))
+    }
+
+    /// Whether the names a forwarded scheme binds each take a copy of their
+    /// own: beside a written name, whose uses decide only what it holds.
+    fn apart(&self, ctx: &CompileCtx<R>) -> bool {
+        self.forwards(&ctx.env) && written(ctx, &self.pattern)
     }
 
     /// Complete a pattern that leaves struct fields out against the
@@ -447,7 +548,12 @@ impl<R: Rt> Bind<R> {
                 bailat!(spec, "match error {} can't be matched by {ptyp}", self.typ)
             });
         };
-        if !t.contains(&ctx.env, &self.typ).at(spec)? {
+        let apart = self.apart(ctx);
+        let fits = match apart {
+            true => t.reset_tvars().contains(&ctx.env, &self.typ),
+            false => t.contains(&ctx.env, &self.typ),
+        };
+        if !fits.at(spec)? {
             format_with_flags(PrintFlag::DerefTVars, || {
                 bailat!(spec, "match error {} can't be matched by {t}", self.typ)
             })?
@@ -456,19 +562,16 @@ impl<R: Rt> Bind<R> {
         if !self.pattern.covers(&ctx.env, &self.typ, false) {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
-        Ok(())
+        match apart {
+            true => self.type_names(ctx, &t, true),
+            false => Ok(()),
+        }
     }
 
     /// The binding holds its value's type, unless it forwards it.
     fn check_value(&self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        let forwards = match &self.spec.kind {
-            ExprKind::Bind(b) => forwards(&ctx.env, b, &self.node),
-            _ => false,
-        };
-        if !forwards {
-            let mut written = false;
-            self.pattern.ids(&mut |id| written |= ctx.connect_targets.contains(&id));
-            let value = match written {
+        if !self.forwards(&ctx.env) {
+            let value = match written(ctx, &self.pattern) {
                 true => ctx.monomorphic(self.node.typ()),
                 false => self.node.typ().clone(),
             };
@@ -548,7 +651,7 @@ impl<R: Rt> Bind<R> {
         let node = decode_node(ctx, buf)?;
         let held = Option::<BindId>::decode(buf)?;
         let static_hold = held.map(|id| ctx.hold_static(id, &spec));
-        let mut bind = Self::with(spec, typ, pattern, node, None);
+        let mut bind = Self::with(spec, typ, pattern, node, None, ValueReads::Inherit);
         if let Some(b) = bind.downcast_mut::<Self>() {
             b.static_hold = static_hold;
         }
@@ -766,7 +869,8 @@ impl<R: Rt> Update<R> for Bind<R> {
         {
             crate::defer_unresolved_names(ctx, &self.typ, &self.spec)?;
         }
-        wrap!(self.node, self.node.typecheck0(ctx))?;
+        let node = &mut self.node;
+        self.reads.within(ctx, |ctx| wrap!(node, node.typecheck0(ctx)))?;
         self.check_value(ctx)?;
         self.complete_deferred(ctx)?;
         self.publish(ctx);
@@ -778,7 +882,9 @@ impl<R: Rt> Update<R> for Bind<R> {
         ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        wrap!(self.node, self.node.typecheck0_instance(ctx, types))?;
+        let node = &mut self.node;
+        self.reads
+            .within(ctx, |ctx| wrap!(node, node.typecheck0_instance(ctx, types)))?;
         if !types.settle(self.spec.id, &self.typ) {
             self.check_value(ctx)?;
         }
@@ -819,9 +925,6 @@ pub(crate) enum Signature {
     /// `typecheck0` binds it to the decided signature, so nothing that
     /// reaches it first unifies into the definition's cells.
     Pending,
-    /// [`Self::Pending`] in a part of a holder's own value, which takes the
-    /// binding's type uncopied: the holder's reads copy it.
-    InHolder,
     Decided,
 }
 
@@ -1156,7 +1259,8 @@ impl<R: Rt> Update<R> for Ref {
     /// A value occurrence of a generalized binding (`Env::poly_binds`)
     /// mints fresh cells for its signature, like a call, and for each
     /// closed definition's signature a holder's type holds
-    /// ([`Type::scheme_read`]). Exempt: a self-reference inside the
+    /// ([`Type::scheme_read`]), one copy for every read in a holder's value
+    /// ([`ValueReads::Shared`]). Exempt: a self-reference inside the
     /// definition's gate, a fn-typed parameter during its gate, and a
     /// reference to the instance being elaborated, which must share the
     /// definition's cells.
@@ -1166,8 +1270,7 @@ impl<R: Rt> Update<R> for Ref {
             Signature::Decided => return Ok(()),
             Signature::Binding if !poly => return Ok(()),
             Signature::Binding => self.typ.clone(),
-            Signature::Pending | Signature::InHolder => match ctx.env.by_id.get(&self.id)
-            {
+            Signature::Pending => match ctx.env.by_id.get(&self.id) {
                 None => bail!("BUG missing bind {:?}", self.id),
                 Some(b) => b.typ.clone(),
             },
@@ -1178,16 +1281,13 @@ impl<R: Rt> Update<R> for Ref {
         });
         let signature = match (ft, self.signature) {
             (Some(ft), _) => Type::Fn(self.decide(ctx, ft)),
-            (None, Signature::Pending) => {
-                def.scheme_read(&ctx.rec_defs, &|ft| shares(ctx, ft)).unwrap_or(def)
-            }
-            (None, Signature::InHolder) => def,
+            (None, Signature::Pending) => holder_read(ctx, &def).unwrap_or(def),
             (None, _) => return Ok(()),
         };
         let held = mem::replace(&mut self.typ, signature);
         if matches!(
             mem::replace(&mut self.signature, Signature::Decided),
-            Signature::Pending | Signature::InHolder
+            Signature::Pending
         ) {
             held.check_contains(&ctx.env, &self.typ).map_err(|e| e.at(&*self.spec))?;
         }
@@ -1272,6 +1372,13 @@ enum PlaceSpec {
     Key(Expr),
 }
 
+/// Whether something writes a name `pattern` binds.
+fn written<R: Rt>(ctx: &CompileCtx<R>, pattern: &StructPatternNode) -> bool {
+    let mut written = false;
+    pattern.ids(&mut |id| written |= ctx.connect_targets.contains(&id));
+    written
+}
+
 /// The lambda `node` is, seen through grouping parentheses.
 fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
     match ungrouped(node) {
@@ -1334,36 +1441,6 @@ fn holds_function<R: Rt>(env: &Env, node: &Node<R>) -> bool {
             any
         }
         _ => false,
-    }
-}
-
-/// Each reference in a part of `node`, a holder's value built of data
-/// literals, takes its binding's type uncopied: the holder's reads copy it.
-/// The parts relate only through the union of an array's, a list's or a
-/// map's elements, which binds the cells of function members alone, and a
-/// shared read is of a holder, whose type is data. A with-update relates its
-/// fields to its source's, and a map's keys take a bound: neither shares.
-fn share_in_holder<R: Rt>(node: &mut Node<R>) {
-    match node.view() {
-        NodeView::Ref(_) => {
-            if let Some(r) = node.downcast_mut::<Ref>()
-                && r.signature == Signature::Pending
-            {
-                r.signature = Signature::InHolder
-            }
-        }
-        NodeView::Map(_) => {
-            if let Some(m) = node.downcast_mut::<super::map::Map<R>>() {
-                m.n.iter_mut().skip(1).step_by(2).for_each(share_in_holder)
-            }
-        }
-        NodeView::ExplicitParens(_)
-        | NodeView::Struct(_)
-        | NodeView::Tuple(_)
-        | NodeView::Variant(_)
-        | NodeView::Array(_)
-        | NodeView::ListLit(_) => node.for_each_child_mut(&mut |c| share_in_holder(c)),
-        _ => (),
     }
 }
 

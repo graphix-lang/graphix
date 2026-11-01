@@ -294,6 +294,9 @@ serves `s.f(1)` and `s.f("a")`, and an annotation of one use (`let t:
 {f: fn(x: i64) -> i64} = s`) decides nothing of the others. Two lambdas
 in one array or list are one function type (`[|x| x, |y| y]`), and a
 `seqq` reads `s` once per request, so its steps share one type of it.
+A `let` nothing writes or annotates reads `s` once in its value,
+wherever it reads it: in `let t = {a: s, b: k(s)}`, a `k` taking `{f:
+fn(x: i64) -> i64}` makes `t.a.f` take `i64` too.
 
 Calls resolve statically where the compiler can trace the function. A
 function-variable write fires its call's current result even when it
