@@ -1394,6 +1394,181 @@ run!(
     "#; FuseExpect::Jit
 );
 
+/// A program whose submodule `a` has an interface: the root `/test.gx`,
+/// `/test/a.gxi` and `/test/a.gx`.
+pub(crate) struct WithInterface {
+    pub(crate) root: &'static str,
+    pub(crate) gxi: &'static str,
+    pub(crate) gx: &'static str,
+}
+
+impl WithInterface {
+    /// Each file by its path.
+    pub(crate) fn files(&self) -> [(&'static str, &'static str); 3] {
+        [("/test.gx", self.root), ("/test/a.gxi", self.gxi), ("/test/a.gx", self.gx)]
+    }
+}
+
+// A `<-` to either binding of an interface pair, compiled before the
+// module's check pairs them, reaches every call through the other and
+// through an alias of it: each program answers 101 once it sees the
+// write, 2 where a static call kept the function written over.
+
+/// The body writes its own `f`; the root calls `a::f`.
+pub(crate) const BODY_WRITES_ITS_VAL: WithInterface = WithInterface {
+    root: "mod a; let result = skip(#n: 1, a::f(a::f ~ 1))",
+    gxi: "val f: fn(x: i64) -> i64",
+    gx: "let f = |x: i64| -> i64 x + 1; f <- |x: i64| -> i64 x + 100",
+};
+
+/// The root writes `a::f`; the body calls its own `f`.
+pub(crate) const ROOT_WRITES_A_VAL: WithInterface = WithInterface {
+    root: "mod a; a::f <- |x: i64| -> i64 x + 100; let result = skip(#n: 1, a::r)",
+    gxi: "val f: fn(x: i64) -> i64; val r: i64",
+    gx: "let f = |x: i64| -> i64 x + 1; let r = f(f ~ 1)",
+};
+
+/// The root writes `a::f`; the body calls an alias of its own `f`.
+pub(crate) const ROOT_WRITES_AN_ALIASED_VAL: WithInterface = WithInterface {
+    root: "mod a; a::f <- |x: i64| -> i64 x + 100; let result = skip(#n: 1, a::r)",
+    gxi: "val f: fn(x: i64) -> i64; val r: i64",
+    gx: "let f = |x: i64| -> i64 x + 1; let h = f; let r = h(h ~ 1)",
+};
+
+/// The body writes its own `f`; a module loaded after the write calls
+/// `super::a::f`.
+pub(crate) const BODY_WRITE_BEFORE_A_LOAD: WithInterface = WithInterface {
+    root: r#"
+        mod a;
+        let src = skip(#n: 1, a::f ~ "let v = super::a::f(1)");
+        let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src };
+        let result = d::v
+    "#,
+    gxi: "val f: fn(x: i64) -> i64",
+    gx: "let f = |x: i64| -> i64 x + 1; f <- |x: i64| -> i64 x + 100",
+};
+
+/// The root writes a dynamic module's `f`, compiled before the load; the
+/// loaded body calls its own `f`.
+pub(crate) const ROOT_WRITE_BEFORE_A_LOAD: &str = r#"
+    let src = "let f = |x: i64| -> i64 x + 1; let v = f(f ~ 1)";
+    let s = mod d dynamic {
+        sandbox unrestricted;
+        sig { val f: fn(x: i64) -> i64; val v: i64 };
+        source src
+    };
+    d::f <- once(d::v) ~ |x: i64| -> i64 x + 100;
+    let result = skip(#n: 1, d::v)
+"#;
+
+run!(
+    a_body_write_reaches_a_call_through_its_interface,
+    is(Value::I64(101)),
+    "/test.gx" => BODY_WRITES_ITS_VAL.root,
+    "/test/a.gxi" => BODY_WRITES_ITS_VAL.gxi,
+    "/test/a.gx" => BODY_WRITES_ITS_VAL.gx; FuseExpect::None
+);
+
+run!(
+    a_write_through_an_interface_reaches_the_bodys_call,
+    is(Value::I64(101)),
+    "/test.gx" => ROOT_WRITES_A_VAL.root,
+    "/test/a.gxi" => ROOT_WRITES_A_VAL.gxi,
+    "/test/a.gx" => ROOT_WRITES_A_VAL.gx; FuseExpect::None
+);
+
+run!(
+    a_write_through_an_interface_reaches_the_bodys_alias,
+    is(Value::I64(101)),
+    "/test.gx" => ROOT_WRITES_AN_ALIASED_VAL.root,
+    "/test/a.gxi" => ROOT_WRITES_AN_ALIASED_VAL.gxi,
+    "/test/a.gx" => ROOT_WRITES_AN_ALIASED_VAL.gx; FuseExpect::None
+);
+
+run!(
+    a_body_write_reaches_a_later_load_through_its_interface,
+    is(Value::I64(101)),
+    "/test.gx" => BODY_WRITE_BEFORE_A_LOAD.root,
+    "/test/a.gxi" => BODY_WRITE_BEFORE_A_LOAD.gxi,
+    "/test/a.gx" => BODY_WRITE_BEFORE_A_LOAD.gx; FuseExpect::None
+);
+
+run!(
+    a_write_through_an_interface_reaches_a_later_load,
+    is(Value::I64(101)),
+    "/test.gx" => ROOT_WRITE_BEFORE_A_LOAD; FuseExpect::None
+);
+
+// A write's typing is the binding's it names: a generic `val` stays
+// generic outside and in the body whichever binding is written, and a
+// write to the implementation is held to its generality.
+run!(
+    a_body_write_keeps_a_generic_interface_generic,
+    is(Value::String("1 s".into())),
+    "/test.gx" => r#"
+        mod a;
+        let x = a::f(1);
+        let y = a::f("s");
+        let result = "[x] [y]"
+    "#,
+    "/test/a.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/a.gx" => "let f = |x| x; f <- |x| x"; FuseExpect::Jit
+);
+
+run!(
+    a_write_through_a_generic_interface_keeps_the_body_generic,
+    is(Value::String("1 s".into())),
+    "/test.gx" => r#"
+        mod a;
+        a::f <- |x| x;
+        let result = "[a::r.0] [a::r.1]"
+    "#,
+    "/test/a.gxi" => "val f: fn(x: 'a) -> 'a; val r: (i64, string)",
+    "/test/a.gx" => r#"let f = |x| x; let r = (f(1), f("s"))"#; FuseExpect::Jit
+);
+
+run!(
+    a_load_cannot_narrow_a_written_generic_interface,
+    load_refused("made generic by an earlier compile"),
+    "/test.gx" => r#"
+        mod a;
+        a::f <- |x| x;
+        let result = select a::s { error as e => e, null as _ => "accepted" }
+    "#,
+    "/test/a.gxi" => r#"
+        val f: fn(x: 'a) -> 'a;
+        val s: [Error<`DynamicLoadError(string)>, null]
+    "#,
+    "/test/a.gx" => r#"
+        let f = |x| x;
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val v: i64 };
+            source "super::f <- |x: i64| -> i64 x + 100; let v = 1"
+        }
+    "#; FuseExpect::Jit
+);
+
+// A reload may write what an instance of the body it replaces still
+// calls statically: that body goes with the reload.
+run!(
+    a_reload_may_write_what_an_old_instance_calls,
+    r#"
+    {
+        let src = "let f = |x: i64| -> i64 x + 1; let g = |x: i64| -> i64 f(x)";
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val f: fn(x: i64) -> i64; val g: fn(x: i64) -> i64 };
+            source src
+        };
+        let r = d::g(d::g ~ 1);
+        src <- once(r) ~ "let f = |x: i64| -> i64 x + 1; f <- |x: i64| -> i64 x + 100; let g = |x: i64| -> i64 f(x)";
+        skip(#n: 1, select s { error as e => e, null as _ => "loaded" })
+    }
+    "#,
+    is(Value::String("loaded".into())); FuseExpect::None
+);
+
 // An interface-only `mod` goes after the body's declarations of every
 // interface item listed before it, in whatever order the body declares
 // them.

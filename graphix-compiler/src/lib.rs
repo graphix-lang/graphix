@@ -1870,6 +1870,16 @@ impl<R: Rt> CompileCtx<R> {
         Ok(())
     }
 
+    /// Where `a` or `b`, one variable, is a `<-` target, a static call
+    /// through neither binds in this batch. Only static resolution: the
+    /// binding a write names alone takes its typing.
+    pub(crate) fn carry_static_mark(&mut self, a: BindId, b: BindId) {
+        if self.connect_targets.contains(&a) || self.connect_targets.contains(&b) {
+            self.batch_connect_targets.insert(a);
+            self.batch_connect_targets.insert(b);
+        }
+    }
+
     /// Hold `id`, a binding the call `call` binds statically.
     pub(crate) fn hold_static(&self, id: BindId, call: &Arc<expr::Expr>) -> StaticHold {
         StaticCallees::hold(&self.static_callees, id, call)
@@ -3619,7 +3629,7 @@ impl StaticCallees {
         AsideHolds { index: index.clone(), holds }
     }
 
-    // CR claude for claude: [bug/medium] A write marked before the join reaches only
+    // XCR claude for claude: [bug/medium] A write marked before the join reaches only
     // the binding it names, so one function still answers two ways: a module body
     // writing its own exported f while an outside static call keeps the old f (y4), the
     // script writing `a::f <- ..` while a's own static call keeps the old f (y5), and a
@@ -3633,6 +3643,29 @@ impl StaticCallees {
     // static-resolution mark across the join (at the body's compile, before its
     // aliases check), and unjoin a reloaded body before the new one joins. probe:
     // ~/ptmp/cr29/scratch/iface-join/iface_mark.sh (y4, y5, y9) (iface-join-mark-01)
+    // 2026-11-01 claude: Round 6 wave 3 lane W (cr37-W): the reviewer's shape without an
+    // early join. The body's check (Module::check_body, and typecheck0_instance) first
+    // runs carry_static_marks: for each implemented val (implemented_vals, the pairing
+    // check_sig_items now uses too) CompileCtx::carry_static_mark puts both bindings in
+    // batch_connect_targets where either is a connect target, so neither binds a static
+    // call in the batch, the body's aliases included, and the next compile prunes both.
+    // Static resolution only: connect_targets, poly_binds and the hold check are
+    // untouched, so every write keeps main's typing (u1 still refused; p2/t1 still
+    // accepted), and the join stays at check_sig, so no unjoin is needed before a reload
+    // (z1 loads; the carry neither walks the join nor checks holds). Pins that fail
+    // without the carry (2 where 101):
+    // lang::modules::{a_body_write_reaches_a_call_through_its_interface,
+    // a_write_through_an_interface_reaches_the_bodys_call,
+    // a_write_through_an_interface_reaches_the_bodys_alias,
+    // a_body_write_reaches_a_later_load_through_its_interface,
+    // a_write_through_an_interface_reaches_a_later_load} and
+    // lang::image::a_restored_interface_pair_calls_what_was_written (cold and warm,
+    // fused and walked). Guards: a_body_write_keeps_a_generic_interface_generic,
+    // a_write_through_a_generic_interface_keeps_the_body_generic,
+    // a_load_cannot_narrow_a_written_generic_interface (u1),
+    // a_reload_may_write_what_an_old_instance_calls (z1). u2/u4 now reach run time: main
+    // refused them only through the stale static call; the typing hole is CR
+    // iface-generic-written-01. probe: ~/ptmp/cr29/scratch/r6-W/w11/probes.sh
     /// `a` and `b` are one variable, a write to either reaching the
     /// other: an interface's binding and the one implementing it.
     pub(crate) fn join(&self, a: BindId, b: BindId) {

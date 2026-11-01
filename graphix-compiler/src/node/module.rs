@@ -428,6 +428,20 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     }
 }
 
+// CR claude for claude: [bug/medium] A generic `val` passes over an implementation
+// with one type: `val f: fn(x: 'a) -> 'a` over `let f = |x| x; f <- |x| x` (a written
+// `let`, so monomorphic) and `val set: fn(g: fn(x: 'a) -> 'a) -> null` over `let set =
+// |g| { f <- g; null }` (g shares f's cell) both match, so a write that narrows f is
+// accepted and a use of `a::f` at another type fails at run time: `a::set(go ~ |x: i64|
+// -> i64 x + 100)` then `a::f(t ~ "s")` (u4), or a nested dynamic module's `super::f <-
+// |x: i64| -> i64 x + 100` (u2), gives "a run-time bind at a::f(t ~ "s") did not type:
+// an instance at fn(x: string) -> string of a definition typed fn(x: i64) -> i64".
+// Main refused both only because a static call through a::f held f
+// (iface-join-mark-01); with that fixed both reach run time. A val declares exactly its
+// implementation's type, so check_val should refuse a declared quantifier the
+// implementation holds as a cell it does not own (p1, `f <- |x| x` under a generic
+// val, which main runs, would be refused: declare it at one type). probe:
+// ~/ptmp/cr29/scratch/r6-W/w11/probes.sh (u2, u4) (iface-generic-written-01)
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared`.
 fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
@@ -644,6 +658,57 @@ fn sig_binds(env: &Env, scope: &Scope) -> Map<CompactString, BindId> {
     env.lexical.binds.get(&scope.lexical).cloned().unwrap_or_default()
 }
 
+/// Each binding of the body that implements an interface `val`: the
+/// index of its `let` in `nodes`, the binding, and the interface's
+/// binding of its name.
+fn implemented_vals<R: Rt>(
+    env: &Env,
+    sig_binds: &Map<CompactString, BindId>,
+    nodes: &[Node<R>],
+) -> LPooled<Vec<(usize, BindId, BindId)>> {
+    let binds = || {
+        nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| Some((i, n.downcast_ref::<Bind<R>>()?)))
+    };
+    // a name a later `let` shadows is not the one the interface exports
+    let mut effective: LPooled<AHashMap<CompactString, BindId>> = LPooled::take();
+    for (_, bind) in binds() {
+        bind.pattern.ids(&mut |id| {
+            if let Some(b) = env.by_id.get(&id) {
+                effective.insert(b.name.clone(), id);
+            }
+        });
+    }
+    let mut vals: LPooled<Vec<(usize, BindId, BindId)>> = LPooled::take();
+    for (i, bind) in binds() {
+        bind.pattern.ids(&mut |id| {
+            let Some(b) = env.by_id.get(&id) else { return };
+            if effective.get(&b.name) == Some(&id)
+                && let Some(outer) = sig_binds.get(&b.name)
+                && env.by_id.contains_key(outer)
+            {
+                vals.push((i, id, *outer))
+            }
+        });
+    }
+    vals
+}
+
+/// [`CompileCtx::carry_static_mark`] over each implemented `val`, before
+/// the body's check resolves anything through either binding: a `<-` is
+/// marked as it compiles, which may be before [`check_sig`] joins them.
+fn carry_static_marks<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    sig_binds: &Map<CompactString, BindId>,
+    nodes: &[Node<R>],
+) {
+    for (_, inner, outer) in implemented_vals(&ctx.env, sig_binds, nodes).drain(..) {
+        ctx.carry_static_mark(inner, outer)
+    }
+}
+
 /// Check the implementation against `sig`, adding the proxies it links;
 /// their references are recorded once every item matched, and a refused
 /// check adds none.
@@ -693,55 +758,35 @@ fn check_sig_items<R: Rt>(
             .placed(&si.ori, si.pos)?;
     }
     let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
-    // a name a later `let` shadows is not the one the interface exports
-    let mut effective: LPooled<AHashMap<CompactString, BindId>> = LPooled::take();
-    for n in nodes {
-        if let Some(bind) = n.downcast_ref::<Bind<R>>() {
-            bind.pattern.ids(&mut |id| {
-                if let Some(b) = ctx.env.by_id.get(&id) {
-                    effective.insert(b.name.clone(), id);
-                }
+    for (i, id, proxy_id) in implemented_vals(&ctx.env, sig_binds, nodes).drain(..) {
+        let n = &nodes[i];
+        let checked = || -> Result<CompactString> {
+            let bind = n.downcast_ref::<Bind<R>>().expect("an implemented val's let");
+            let (Some(inner), Some(proxy_bind)) =
+                (ctx.env.by_id.get(&id), ctx.env.by_id.get(&proxy_id))
+            else {
+                bail!("BUG: an implemented val's binding is gone")
+            };
+            // a single name's type is the whole pattern's
+            let typ = match bind.pattern.single_bind_id() {
+                Some(_) => bind.typ(),
+                None => &inner.typ,
+            };
+            proxy_bind.typ.unbind_tvars();
+            check_val(&ctx.env, &inner.name, &proxy_bind.typ, typ)?;
+            Ok(inner.name.clone())
+        };
+        let name = checked().at(n.spec())?;
+        proxy.push(Proxy { inner: id, outer: proxy_id, private_inner: true });
+        if ctx.env.ide.is_lsp() {
+            ctx.env.push_sig_link(SigImplLink {
+                scope: scope.lexical.clone(),
+                name: name.clone(),
+                sig_id: proxy_id,
+                impl_id: id,
             });
         }
-    }
-    for n in nodes {
-        let mut check_node = || -> Result<()> {
-            if let Some(bind) = n.downcast_ref::<Bind<R>>() {
-                // every name the `let` binds, each with its own binding; a
-                // single name's type is the whole pattern's
-                let single = bind.pattern.single_bind_id();
-                let mut ids: LPooled<Vec<BindId>> = LPooled::take();
-                bind.pattern.ids(&mut |id| ids.push(id));
-                for id in ids.drain(..) {
-                    let Some(inner) = ctx.env.by_id.get(&id) else { continue };
-                    let name = inner.name.clone();
-                    if effective.get(&name) != Some(&id) {
-                        continue;
-                    }
-                    let Some(proxy_id) = sig_binds.get(&name) else { continue };
-                    let Some(proxy_bind) = ctx.env.by_id.get(proxy_id) else { continue };
-                    let typ = if single.is_some() { bind.typ() } else { &inner.typ };
-                    proxy_bind.typ.unbind_tvars();
-                    check_val(&ctx.env, &name, &proxy_bind.typ, typ)?;
-                    proxy.push(Proxy {
-                        inner: id,
-                        outer: *proxy_id,
-                        private_inner: true,
-                    });
-                    if ctx.env.ide.is_lsp() {
-                        ctx.env.push_sig_link(SigImplLink {
-                            scope: scope.lexical.clone(),
-                            name: name.clone(),
-                            sig_id: *proxy_id,
-                            impl_id: id,
-                        });
-                    }
-                    has_bind.insert(name);
-                }
-            }
-            Ok(())
-        };
-        check_node().at(n.spec())?;
+        has_bind.insert(name);
     }
     for si in sig.items.iter() {
         let at = |e: anyhow::Error| e.placed(&si.ori, si.pos);
@@ -1283,6 +1328,7 @@ impl<R: Rt> Module<R> {
         let Self {
             env, nodes, catches, body, top_id, proxy, scope, sig, sig_binds, ..
         } = self;
+        carry_static_marks(ctx, sig_binds, nodes);
         ctx.with_restored_mut(env, |ctx| {
             super::typecheck0_statements(ctx, nodes, catches, false)
         })?;
@@ -1428,6 +1474,7 @@ impl<R: Rt> Update<R> for Module<R> {
         }
         let _task = InTask::enter(self.task);
         let Self { env, nodes, catches, top_id, proxy, scope, sig, sig_binds, .. } = self;
+        carry_static_marks(ctx, sig_binds, nodes);
         ctx.with_restored_mut(env, |ctx| {
             super::typecheck_in_order(ctx, nodes, catches, false, |n, ctx| {
                 n.typecheck0_instance(ctx, types)

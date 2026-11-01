@@ -564,10 +564,17 @@ either reaches the other. The index joins them (`StaticCallees::join`,
 at `check_sig` and at a module's decode; `unjoin` when its body
 retires), so `mark_connect_target` refuses a write to either while a
 call holds either, and marks both as targets, which prunes both from
-`bind_to_lambda`. A write marked before the join (one the body itself
-compiles, or one compiled before the module's check) marks only the
-binding it names, so a static call through the other keeps the old
-definition (CR iface-join-mark-01).
+`bind_to_lambda`. A write compiled before the join (one the body itself
+compiles, or one compiled before the module's check, a root's in the same
+script or one before a dynamic module's load) marks only the binding it
+names, so the body's check, before it reads either binding, carries the
+mark across each implemented `val` (`carry_static_marks`,
+`CompileCtx::carry_static_mark`): where either is a target, neither binds
+a static call in the batch, and the next compile prunes both. The carry
+is static resolution alone: the binding the write names takes its typing
+(the value restriction, a generic binding holding the write to its
+generality), the other keeps its own, and a write after the join marks
+both as above.
 
 A dynamic module's reload compiles while the body it replaces is set
 aside: that body goes with a load that compiles, so its holds are left
@@ -593,5 +600,15 @@ a_reload_may_write_what_the_replaced_body_calls,
 a_write_through_an_interface_reaches_a_later_static_call,
 an_alias_holds_its_callee_while_its_instance_lives}`,
 `lang::modules::{a_write_through_an_interface_is_refused_while_its_body_calls_it,
-a_write_inside_a_module_is_refused_while_its_interface_is_called}`,
-`lang::image::a_restored_static_call_holds_its_callee_while_it_lives`.
+a_write_inside_a_module_is_refused_while_its_interface_is_called,
+a_body_write_reaches_a_call_through_its_interface,
+a_write_through_an_interface_reaches_the_bodys_call,
+a_write_through_an_interface_reaches_the_bodys_alias,
+a_body_write_reaches_a_later_load_through_its_interface,
+a_write_through_an_interface_reaches_a_later_load,
+a_body_write_keeps_a_generic_interface_generic,
+a_write_through_a_generic_interface_keeps_the_body_generic,
+a_load_cannot_narrow_a_written_generic_interface,
+a_reload_may_write_what_an_old_instance_calls}`,
+`lang::image::{a_restored_static_call_holds_its_callee_while_it_lives,
+a_restored_interface_pair_calls_what_was_written}`.

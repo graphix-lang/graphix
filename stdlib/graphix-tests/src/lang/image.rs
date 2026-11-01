@@ -4,7 +4,7 @@
 
 use crate::{TEST_REGISTER, init};
 use anyhow::Result;
-use arcstr::literal;
+use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use graphix_compiler::{
     CFlag, ParMode, PrintFlag,
@@ -115,7 +115,7 @@ async fn eval_on(
     rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
     code: &str,
 ) -> Result<Value> {
-    let compiled = ctx.rt.compile(arcstr::ArcStr::from(code)).await?;
+    let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
     let eid = compiled.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
     tokio::pin!(timeout);
@@ -1031,6 +1031,68 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
     let _program = warm.rt.program().await?.expect("the program restored");
     assert_eq!(cold_values, first_values(&mut warm_rx).await);
     warm.shutdown().await;
+    Ok(())
+}
+
+/// A `<-` to either binding of an interface pair reaches every call
+/// through the other, from the image as cold.
+#[tokio::test]
+async fn a_restored_interface_pair_calls_what_was_written() -> Result<()> {
+    use super::modules::{
+        BODY_WRITE_BEFORE_A_LOAD, BODY_WRITES_ITS_VAL, ROOT_WRITE_BEFORE_A_LOAD,
+        ROOT_WRITES_A_VAL, ROOT_WRITES_AN_ALIASED_VAL,
+    };
+    let program = literal!("mod test; test::result");
+    let fixtures: [&[(&str, &str)]; 5] = [
+        &BODY_WRITES_ITS_VAL.files(),
+        &ROOT_WRITES_A_VAL.files(),
+        &ROOT_WRITES_AN_ALIASED_VAL.files(),
+        &BODY_WRITE_BEFORE_A_LOAD.files(),
+        &[("/test.gx", ROOT_WRITE_BEFORE_A_LOAD)],
+    ];
+    let fused = graphix_compiler::BitFlags::empty();
+    let walked = CFlag::FusionDisabled.into();
+    for (fixture, flags) in fixtures.iter().flat_map(|f| [(f, fused), (f, walked)]) {
+        let root = fixture[0].1;
+        let files = || {
+            let files = fixture.iter().map(|(path, text)| {
+                (
+                    netidx_core::path::Path::from(*path),
+                    VfsEntry::from(ArcStr::from(*text)),
+                )
+            });
+            vec![VfsResolver::new(ahash::AHashMap::from_iter(files))]
+        };
+        let (tx, mut cold_rx) = mpsc::channel(10);
+        let (reg_tx, _reg_rx) = oneshot::channel();
+        let (prog_tx, prog_rx) = oneshot::channel();
+        let cold = TestCtx::start(
+            config(tx, TEST_REGISTER, files(), |_| {})?
+                .flags(flags)
+                .registration(RegistrationImage::save(reg_tx))
+                .program(Load::Text(program.clone()))
+                .program_image(prog_tx),
+        )
+        .await?;
+        let image = prog_rx.await??.image;
+        assert_eq!(first_values(&mut cold_rx).await, [Value::I64(101)], "{root} cold");
+        cold.shutdown().await;
+        let (tx, mut warm_rx) = mpsc::channel(10);
+        let warm = TestCtx::start(
+            config(tx, TEST_REGISTER, files(), |_| {})?
+                .flags(flags)
+                .registration(RegistrationImage::load(image)),
+        )
+        .await?;
+        assert!(
+            warm.rt.env_stats().await?.restored,
+            "{root}: the warm runtime compiled cold"
+        );
+        // the root's owner; dropping it deletes the program
+        let _program = warm.rt.program().await?.expect("the program restored");
+        assert_eq!(first_values(&mut warm_rx).await, [Value::I64(101)], "{root} warm");
+        warm.shutdown().await;
+    }
     Ok(())
 }
 
