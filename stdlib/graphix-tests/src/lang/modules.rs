@@ -1658,6 +1658,43 @@ run!(
     "/test/a.gx" => "let v = 0; let get = |u: null| -> i64 u ~ v"; FuseExpect::Jit
 );
 
+// A write to either binding of an interface pair lands on both as the
+// cycle starts, so a reader of the other in a statement before the
+// module sees it, as a reader of one binding does.
+run!(
+    a_write_through_an_interface_reaches_an_earlier_reader_of_the_body,
+    is(Value::I64(11)),
+    "/test.gx" => r#"
+        let ep = 0;
+        ep <- select ep { n if n < 4 => n + 1, _ => never() };
+        let h: fn(k: i64) -> i64 = never();
+        let r = h(1);
+        mod a;
+        h <- a::g;
+        a::x <- select ep { 2 => 10, _ => never() };
+        let result = select ep { 4 => r, _ => never() }
+    "#,
+    "/test/a.gxi" => "val x: i64; val g: fn(k: i64) -> i64",
+    "/test/a.gx" => "let x = 0; let g = |k: i64| -> i64 x + k"; FuseExpect::Jit
+);
+
+run!(
+    a_body_write_reaches_an_earlier_reader_through_its_interface,
+    is(Value::I64(11)),
+    "/test.gx" => r#"
+        let ep = 0;
+        ep <- select ep { n if n < 4 => n + 1, _ => never() };
+        let h: fn(k: i64) -> i64 = never();
+        let r = h(1);
+        mod a;
+        h <- |k: i64| -> i64 a::x + k;
+        let s = a::set(select ep { 2 => 10, _ => never() });
+        let result = select ep { 4 => r, _ => never() }
+    "#,
+    "/test/a.gxi" => "val x: i64; val set: fn(v: i64) -> i64",
+    "/test/a.gx" => "let x = 0; let set = |v: i64| -> i64 { x <- v; v }"; FuseExpect::Jit
+);
+
 // An interface-only `mod` goes after the body's declarations of every
 // interface item listed before it, in whatever order the body declares
 // them.

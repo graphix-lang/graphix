@@ -2229,6 +2229,12 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         r
     }
 
+    /// Deliver a write to either binding of an interface pair to both, as
+    /// the cycle starts (`node::module::deliver_pair_writes`).
+    pub fn deliver_pair_writes(&mut self) {
+        node::module::deliver_pair_writes(self)
+    }
+
     /// Let go of what the references released since the last cycle kept:
     /// a cell's place, chain link and value, and a binding deleted while a
     /// reference named it.
@@ -3767,6 +3773,30 @@ impl StaticCallees {
         let mut all: SmallVec<[BindId; 8]> = ids.iter().copied().collect();
         held.close_over_joins(&mut all);
         ids.extend(all);
+    }
+
+    /// The interface pairs, `(inner, outer)`, with a side among
+    /// `delivered`.
+    pub(crate) fn pairs_of(
+        &self,
+        delivered: impl Iterator<Item = BindId>,
+        pairs: &mut Vec<(BindId, BindId)>,
+    ) {
+        let held = self.0.lock();
+        if held.joined.is_empty() {
+            return;
+        }
+        for id in delivered {
+            match held.joined.get(&id) {
+                None => (),
+                Some(Side::Inner(outer)) => pairs.push((id, *outer)),
+                Some(Side::Outer(inners)) => {
+                    pairs.extend(inners.iter().map(|inner| (*inner, id)))
+                }
+            }
+        }
+        pairs.sort_unstable();
+        pairs.dedup();
     }
 
     /// Forget `id`, a deleted binding: nothing can write it again.

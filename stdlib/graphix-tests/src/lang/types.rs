@@ -6045,6 +6045,60 @@ async fn a_module_reaches_its_readers_in_other_inputs() -> Result<()> {
     Ok(())
 }
 
+/// A write to either binding of an interface pair reaches a reader of the
+/// other in an input before the module's: `r` reads the body's `x` through
+/// an instance of `g`, `r2` reads `a::x`.
+#[tokio::test(flavor = "current_thread")]
+async fn a_write_through_an_interface_reaches_an_earlier_input() -> Result<()> {
+    use arcstr::{ArcStr, literal};
+    use graphix_compiler::expr::{VfsEntry, VfsResolver};
+    use graphix_package_core::testing::{TestCtx, config};
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let files = vec![VfsResolver::new(ahash::AHashMap::from_iter([
+        (
+            netidx_core::path::Path::from("/a.gxi"),
+            VfsEntry::from(literal!(
+                "val x: i64; val set: fn(v: i64) -> i64; val g: fn(k: i64) -> i64"
+            )),
+        ),
+        (
+            netidx_core::path::Path::from("/a.gx"),
+            VfsEntry::from(literal!(
+                "let x = 0; let set = |v: i64| -> i64 { x <- v; v }; \
+                 let g = |k: i64| -> i64 x + k"
+            )),
+        ),
+    ]))];
+    let ctx = TestCtx::start(config(tx, crate::TEST_REGISTER, files, |_| {})?).await?;
+    let mut held = Vec::new();
+    for i in [
+        "let h: fn(k: i64) -> i64 = never()",
+        "let r = h(1)",
+        "let h2: fn(k: i64) -> i64 = never()",
+        "let r2 = h2(1)",
+        "mod a",
+        "h <- a::g",
+        "h2 <- |k: i64| -> i64 a::x + k",
+    ] {
+        held.push(ctx.rt.compile(ArcStr::from(i)).await?);
+    }
+    for (write, expected) in
+        [(None, "1 1"), (Some("a::x <- 10"), "11 11"), (Some("a::set(20)"), "21 21")]
+    {
+        if let Some(write) = write {
+            held.push(ctx.rt.compile(ArcStr::from(write)).await?);
+        }
+        ctx.rt.wait_settled().await?;
+        let rr = ctx.rt.compile(ArcStr::from("\"[r] [r2]\"")).await?;
+        assert_eq!(
+            value_of(&mut rx, rr.exprs[0].id).await?,
+            Value::String(expected.into())
+        );
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
 /// An alias `let h = f` in a function's body holds `f` while an instance
 /// of the function lives. The definition holds nothing: an instance a
 /// later input builds after a `<-` to `f` calls what was written.

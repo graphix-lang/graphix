@@ -522,6 +522,24 @@ impl<X: GXExt> GX<X> {
         Ok(())
     }
 
+    // CR claude for eric: [bug/medium] A production reaches only readers that run after it
+    // in its cycle, and nothing delivers it to one that ran before, so a reader holding a
+    // function value from later in the program never sees what that function reads move.
+    // A script: `let h: fn(x: i64) -> i64 = never(); let r = h(1); let t = timer(50.ms, 5);
+    // let w = count(t); h <- |x| x + w` never prints r (w is absent when h lands, and each
+    // later w is made after r's statement ran); with the reader after `let w` it prints
+    // 4, 5, 6. REPL inputs alike: input 1 holds `select hs { [f, ..] => f(1), _ => 0 }`, a
+    // later one `let w = count(timer)` and `hs <- [|x| x + w]`, and `out` stays at its first
+    // value while a fresh `k(1)` moves (e5; GRAPHIX_PRUNE=off and audit alike), and a
+    // dynamic module's reload read that way (e4). Here notify_set only schedules roots past
+    // the one running, and `updated` is cleared at the cycle's end; a block runs its
+    // statements in text order. Writes are not affected: they land as the cycle starts
+    // (an interface pair's on both, ExecCtx::deliver_pair_writes). Options: run again, in
+    // the same cycle, a root or statement a production notified after it ran (a fixpoint;
+    // a statement can run twice in a cycle), or deliver the production to it next cycle as
+    // a write (a value a cycle late, and a second fire). Main a084f9887 and base 432e34ac6
+    // alike. probe: ~/ptmp/cr29/scratch/r6-W/r38/{sc/main.gx, e4, e5} (wrepl.sh lane e5
+    // e5/in.txt) (root-order-production-01)
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
@@ -616,6 +634,7 @@ impl<X: GXExt> GX<X> {
                 self.deliver_custom(id, u, Via::Reply);
             }
         }
+        self.ctx.view().deliver_pair_writes();
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
             || !self.ctx.event.custom.lock().is_empty();

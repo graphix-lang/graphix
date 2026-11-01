@@ -1047,6 +1047,28 @@ fn deliver_production<R: Rt>(ctx: &mut ExecCtx<'_, R>, id: BindId, tv: TagValue)
     ctx.event.variables.insert(id, tv);
 }
 
+/// Deliver each write the cycle's start brought to one binding of an
+/// interface pair to the other too, before any node runs, so a reader of
+/// either sees it this cycle wherever it runs. Writes to both in one cycle
+/// are two writes to one variable: the body's lands on both now, the
+/// other's next cycle.
+pub(crate) fn deliver_pair_writes<R: Rt>(ctx: &mut ExecCtx<'_, R>) {
+    let mut pairs: LPooled<Vec<(BindId, BindId)>> = LPooled::take();
+    ctx.static_callees.pairs_of(ctx.event.variables.own_ids(), &mut pairs);
+    for (inner, outer) in pairs.drain(..) {
+        let written = |id| ctx.event.variables.get(&id).cloned();
+        match (written(inner), written(outer)) {
+            (Some(tv), None) => deliver_production(ctx, outer, tv),
+            (None, Some(tv)) => deliver_production(ctx, inner, tv),
+            (Some(tv), Some(next)) => {
+                ctx.rt.set_var(inner, next.value());
+                deliver_production(ctx, outer, tv)
+            }
+            (None, None) => (),
+        }
+    }
+}
+
 impl<R: Rt> Module<R> {
     fn with(
         spec: Arc<Expr>,
@@ -1250,6 +1272,21 @@ impl<R: Rt> Module<R> {
     // produces 110; inner side alone off: 11 1 where 11 11). probe:
     // ~/ptmp/cr29/scratch/r6-W/w11/{repl.sh, sm, sm2} and
     // ~/ptmp/cr29/scratch/r6-W/w3/dyn_reload_reader.sh
+    // 2026-11-01 claude: Review of cr37-W: the relay at the module node still missed a
+    // reader that ran earlier in the cycle, for a write in either direction (es: a
+    // statement before mod a; er, e2, e3: an earlier REPL input). Now
+    // ExecCtx::deliver_pair_writes, which GX::do_cycle calls after the cycle's
+    // deliveries, delivers a write to either binding of a pair to the other before any
+    // node runs (writes to both in one cycle: the body's lands on both now, the other's
+    // next cycle, as the module node did); the module node's pre-body relay is left for
+    // a pair a load joined this cycle. Pins
+    // lang::modules::{a_write_through_an_interface_reaches_an_earlier_reader_of_the_body,
+    // a_body_write_reaches_an_earlier_reader_through_its_interface} and
+    // lang::types::a_write_through_an_interface_reaches_an_earlier_input ('1 11' where
+    // '11 11') fail without it. A production (e4, a reload's new value; e5, any let)
+    // read by a reader that ran earlier in the cycle is the general case, now CR
+    // root-order-production-01; design/module_system.md says so. probe:
+    // ~/ptmp/cr29/scratch/r6-W/r38/{es, er, e4, e5}
     fn compile_source(
         &mut self,
         ctx: &mut ExecCtx<'_, R>,
@@ -1629,17 +1666,14 @@ impl<R: Rt> Update<R> for Module<R> {
         }
         let view = if compiled { View::Birth } else { View::Cycle };
         ctx.under(view, |ctx| {
-            // the interface binding and the implementation's are one
-            // variable: a write to each in one cycle delivers the body's
-            // now and queues the outside's, as a second write is queued
+            // a write the cycle's start did not pair: one to a body this
+            // cycle's load joined
             for Proxy { inner, outer, private_inner } in &self.proxy {
-                if *private_inner && let Some(tv) = ctx.event.variables.get(outer) {
-                    let tv = tv.clone();
-                    if ctx.event.variables.contains_key(inner) && !tv.tag().is_bottom() {
-                        ctx.rt.set_var(*inner, tv.value());
-                        continue;
-                    }
-                    deliver_production(ctx, *inner, tv);
+                if *private_inner
+                    && !ctx.event.variables.contains_key(inner)
+                    && let Some(tv) = ctx.event.variables.get(outer)
+                {
+                    deliver_production(ctx, *inner, tv.clone());
                 }
             }
             self.runs.update(ctx, &mut self.nodes, &self.catches);
