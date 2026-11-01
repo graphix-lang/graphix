@@ -2663,31 +2663,39 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                 }
                 Type::Bound(Bound::Concrete) => discernible(env, &t, &Discerned::Keys)?,
                 Type::Bound(b @ (Bound::JsonData | Bound::TomlData)) => {
-                    let (format, name) = match b {
-                        Bound::JsonData => (typ::Format::Json, "JSON"),
-                        _ => (typ::Format::Toml, "TOML"),
+                    let name = match b {
+                        Bound::JsonData => "JSON",
+                        _ => "TOML",
                     };
-                    match t.text_ambiguity(env, format) {
-                        None => (),
-                        Some(typ::TextAmbiguity::Members(a, b)) => {
-                            format_with_flags(PrintFlag::DerefTVars, || {
-                                bail!(
-                                    "'{}: {c} refuses {t}: what its member {a} or {b} \
-                                     writes as {name} data may read back as the other",
-                                    tv.name
-                                )
-                            })?
-                        }
-                        Some(typ::TextAmbiguity::Grows(def)) => {
-                            format_with_flags(PrintFlag::DerefTVars, || {
-                                bail!(
-                                    "'{}: {c} refuses {t}: {def} grows its parameters as \
-                                     it recurses, so whether what it writes as {name} data \
-                                     reads back can't be decided",
-                                    tv.name
-                                )
-                            })?
-                        }
+                    if let Some(why) = t.text_refusal(env) {
+                        format_with_flags(PrintFlag::DerefTVars, || {
+                            let why = match why {
+                                typ::TextRefusal::Untagged { union, member } => {
+                                    format_compact!(
+                                        "{member} in {union} has no tag (a variant's, or \
+                                         an abstract type's name), so what another member \
+                                         writes as {name} data may read back as it"
+                                    )
+                                }
+                                typ::TextRefusal::SharedTag { union, tag, a, b } => {
+                                    format_compact!(
+                                        "{a} and {b} in {union} share the tag {tag}, so \
+                                         what one writes as {name} data may read back as \
+                                         the other"
+                                    )
+                                }
+                                typ::TextRefusal::Transparent(t) => format_compact!(
+                                    "{t} holds a type that is not abstract, which \
+                                     {name} writes bare already"
+                                ),
+                                typ::TextRefusal::Grows(def) => format_compact!(
+                                    "{def} grows its parameters as it recurses, so \
+                                     whether what it writes as {name} data reads back \
+                                     can't be decided"
+                                ),
+                            };
+                            bail!("'{}: {c} refuses {t}: {why}", tv.name)
+                        })?
                     }
                 }
                 Type::Bound(Bound::OneNumber) => {

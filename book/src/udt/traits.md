@@ -358,10 +358,14 @@ impl Cast for Sorted {
         }
     }
 };
-let s: Result<Sorted, [`JsonErr(string), `InvalidCast(string)]> = json::read("\[2, 1\]")
+let s: Result<Sorted, [`JsonErr(string), `InvalidCast(string)]> =
+    json::read("{\"Sorted\": \[2, 1\]}")
 ```
 
-`s` is the error `can't cast [2, 1] to Sorted: not sorted`.
+`s` is the error `can't cast [2, 1] to Sorted: not sorted`. JSON and TOML
+write an abstract value inside an object its type's name keys
+(`{"Sorted":[1,2]}`), so a union of abstract types and variants reads
+back, and `Transparent<T>` writes one bare ([json](../stdlib/json.md)).
 
 Only the module that defines the type implements `Cast`, where the
 representation is visible, and a method it leaves out is the

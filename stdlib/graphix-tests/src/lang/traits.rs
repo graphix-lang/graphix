@@ -2736,7 +2736,7 @@ run!(
     type N = [I, null];
     let s: Box<I> = cast<Box<I>>(1)$;
     let t: Box<i64> = Box(1);
-    let u: Box<N> = json::read("1")$;
+    let u: Box<N> = json::read("{\"Box\": 1}")$;
     let v: Box<[i64, null]> = Box(1);
     let m = {u => "read", v => "constructed"};
     (s == t, s <= t, s >= t, u == v, map::len(m), m{u}$)

@@ -854,23 +854,34 @@ integer or `decimal` reads a number's text exactly (past `i64` is an
 target reads a field the data omits as null where the field's type
 admits null. Excess decimal fractional precision rounds to the nearest
 representable decimal in JSON reads, string casts and `str::parse`.
-JSON/TOML maps with scalar keys write as objects/tables; a
-map with a composite, bytes or null key writes as an array of `[key, value]`
-pairs, as does one whose key type may read a key's text as a string (a
-`string` or `Any` member, an abstract whose representation has one or
-whose `Cast` writes `from_value`) while a key is not a string. TOML
-still refuses null keys and requires a table at the document root.
+JSON/TOML write a map as an object/table only when its key type is
+`string`; any other key type writes an array of `[key, value]` pairs. TOML
+requires a table at the document root and has no null: a null struct
+field is left out, a null anywhere else is refused when written. An
+abstract value is written as an object its type's name keys
+(`{"Port":80}`), and read only so; `Transparent(p)` (core's
+`Transparent<T>`) writes `p`'s data bare. Every union a json/toml read or
+write holds is one member beside null, or variants and abstract types
+under distinct tags: `[i64, string]`, `[Port, u8]` and `` [string, `A] ``
+are refused (`JsonData`/`TomlData`); tag the members, `` [`N(i64),
+`S(string)] ``.
 
 A whole float prints with its point (`3.0`) in interpolation, `println` and
 `cast<string>`, so the text reads back as a float (`cast<[i64, f64]>("3.0")`
-is 3.0); a scale-zero decimal prints plainly without a trailing point. A
-float or decimal, value or text, goes to an integer member only where no
-`f32`/`f64`/`decimal` member holds it exactly: `cast<[i64, decimal]>(3.0)`
-is the decimal, `cast<[i64, datetime]>("3.0")` the integer. Short of an
-exact member, a real one that rounds it beats one that drops a part:
-`cast<[i64, f32]>(0.1)` is f32 0.1. An integer likewise goes to a real
-member only where no integer member holds it, however the union names
-its members.
+is 3.0); a scale-zero decimal prints plainly without a trailing point,
+and a decimal cast from a whole float keeps its point (`decimal:3.0`). A
+union cast takes a member of the value's own kind first, however much of
+it that keeps: `cast<[f32, string]>(0.1)` is f32, `cast<[i64,
+string]>(3.5)` is 3; text tries the kind it parses as next
+(`cast<[duration, decimal]>("3.0")` is the decimal). Within a kind, an
+exact member beats one that rounds, which beats one that drops a part
+(`cast<[i64, f32]>(0.1)` is f32 0.1), and a float or decimal, value or
+text, goes to an integer member only where no `f32`/`f64`/`decimal`
+member holds it exactly (`cast<[i64, decimal]>(3.0)` is the decimal,
+`cast<[i64, datetime]>("3.0")` the integer). An integer likewise goes to
+a real member only where no integer member holds it, however the union
+names its members; a bool is held exactly by 1 or 0 (`cast<[f32,
+u8]>(true)` is u8 1).
 Printed composites escape brackets in strings and retain numeric type prefixes
 except for i64/f64. Bytes print as `bytes:` literals. Only `str::parse` also
 reads printed UTC datetimes, every printed duration unit and bare

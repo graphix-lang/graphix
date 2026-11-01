@@ -103,31 +103,39 @@ back through its cast (`data_target`).
 first, a marked value's own class being its kind and a data string's
 being `string` (`in_own_class`, `carries_tag` read strictly): data `"A"`
 cast to `` [string, `A] `` stays a string, to `` [`A, `B] `` becomes the
-variant. Unmarked array data reads as a tuple of its length, then a
-struct, before an array, so what a writer emits of a tuple or a struct
-reads back as it (`Type::cast_member`). An array the source type says is
-one (`Type::cast_from`, which both engines' casts call) reads as an
-array member it inhabits before any of that. Every way, a member that holds
-the value exactly comes before one that would drop part of it (a
-fraction, a sub-second part, a rounding: `holds_exactly`), and among
-those an integer reading of a float or a decimal, as a value or as its
-text, gives way to a later reading that keeps every float and decimal
-real (`Choice`; counted at the leaves, `NumReads`, so a union of
-composites is judged by every leaf): `cast<[i64, decimal]>(3.0)` and
-`cast<[i64, decimal]>("3.0")` are both the decimal, a whole float's
-print reads back as the float, and where no member is real the integer
-holds it (`cast<[i64, datetime]>("3.0")` is 3). A union tries its members
-three times (`Holds`): every leaf held exactly, then held exactly or
-rounded to a real member's precision (`holds_rounded`: an f64 into an
+variant. The class comes before exactness: every member of the class is
+tried at every degree of exactness before any other member, so
+`cast<[f32, string]>(0.1)` is the f32 and `cast<[i64, string]>(3.5)` the
+integer 3; text then tries the members of the class of the scalar it
+parses as (`parsed_scalar`: `cast<[duration, decimal]>("3.0")` is the
+decimal, as the value 3.0 is), then the rest. Unmarked array data reads
+as a tuple of its length, then a struct, before the rest of its class,
+so what a writer emits of a tuple or a struct reads back as it
+(`Type::cast_member`). An array the source type says is one
+(`Type::cast_from`, which both engines' casts call) reads as an array
+member it inhabits before any of that. Within each group (`Type::tier`)
+a union tries its members three times (`Holds`): every leaf held exactly
+(`holds_exactly`; a bool is held by the number 1 or 0), then held exactly
+or rounded to a real member's precision (`holds_rounded`: an f64 into an
 f32, a decimal or a long integer into an f64, never an infinity a finite
-value overflows to), then any conversion, so `cast<[i64, f32]>(0.1)` is
-the f32 and `cast<[(i64, i64), (f32, f32)]>([0.5, 0.1])` the f32 tuple; a
-primitive set walks the same three among its bits.
-The kind is kept both ways: an integer, value or text, goes to a real
-member only where no integer member holds it exactly, which a primitive
-set's canonical order (integers first) gives and `Choice` gives a union
-that names or orders its members otherwise (`cast<[f64, B]>(2)` is the
-`u8` 2 with `type B = u8`).
+value overflows to), then any conversion (a fraction or a sub-second
+part dropped), so `cast<[i64, f32]>(0.1)` is the f32 and `cast<[(i64,
+i64), (f32, f32)]>([0.5, 0.1])` the f32 tuple; a primitive set walks the
+same groups and rounds among its bits. Short of a dropped part, an
+integer reading of a float or a decimal, as a value or as its text,
+gives way to a later reading in its round that keeps every float and
+decimal real (`Choice`; counted at the leaves, `NumReads`, so a union of
+composites is judged by every leaf): `cast<[i64, decimal]>(3.0)` and
+`cast<[i64, decimal]>("3.0")` are both the decimal 3.0 (a decimal made
+of a whole float keeps its point, `float_decimal`, so its text reads
+back as a decimal), a whole float's print reads back as the float, and
+where no member is real the integer holds it (`cast<[i64,
+datetime]>("3.0")` is 3). The kind is kept both ways: an integer, value
+or text, goes to a real member only where no integer member holds it
+exactly, which a primitive set's canonical order (integers first) gives
+and `Choice` gives a union that names or orders its members otherwise
+(`cast<[f64, B]>(2)` is the `u8` 2 with `type B = u8`). Where every
+reading crosses, the first member in canonical order wins.
 `cast<string>` of a bare variant is its tag; no other marked
 value has a primitive form, and the primitive `array` holds arrays only
 (`contains`, `is_a`, `setops`). A list casts to an array element by

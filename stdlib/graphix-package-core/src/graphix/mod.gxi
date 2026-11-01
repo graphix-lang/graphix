@@ -69,6 +69,16 @@ trait Cast {
     val from_value: fn(v: Any) -> Result<self, `InvalidCast(string)>
 };
 
+/// An abstract value JSON and TOML write bare. They write an abstract
+/// value inside an object keyed by its type's name (`{"Port": 80}`, `{
+/// Port = 80 }`); `Transparent<Port>` writes Port's data alone (`80`)
+/// and reads it back through Port's `Cast`. `Transparent(p)` wraps a
+/// value and `t.0` unwraps it. Everywhere else (casts, pack, netidx) it
+/// is its representation. JSON and TOML refuse it over a type that is
+/// not abstract, where it would change nothing.
+type Transparent<'a> = Abstract<'a>;
+impl<'a> Cast for Transparent<'a>;
+
 /// A collection: a type constructor whose values can be traversed and
 /// rebuilt — `Array`, `List`, `Map` (over its values), and any type a
 /// program implements it for. `self<'a>` is the constructor applied to

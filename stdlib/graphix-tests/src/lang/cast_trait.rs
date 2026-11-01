@@ -43,17 +43,17 @@ let p: Any = {x: 5};
 }; FuseExpect::Jit);
 
 // json writes `to_value`'s data, and the representation at its own type
-// (a struct is an object); a read makes the values back, and refuses
-// what `from_value` refuses.
+// (a struct is an object), inside an object its type's name keys; a read
+// makes the values back, and refuses what `from_value` refuses.
 run!(json_round_trip_through_cast, &with_sorted(r##"
 let d: Doc = {name: "a", nums: Sorted([1, 2]), at: Pt({x: 1, y: null})};
 let j = json::write_str(d)$;
 let back: Result<Doc, [`JsonErr(string), `InvalidCast(string)]> = json::read(j);
 let bad: Result<Doc, [`JsonErr(string), `InvalidCast(string)]> =
-    json::read(r#"{"name": "b", "nums": [2, 1], "at": {"x": 3}}"#);
+    json::read(r#"{"name": "b", "nums": {"Sorted": [2, 1]}, "at": {"Pt": {"x": 3}}}"#);
 "[j] [back] [bad]"
 "##), |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == r#"{"at":{"x":1,"y":null},"name":"a","nums":[1,2]} {at: Pt({x: 1, y: null}), name: "a", nums: Sorted([1, 2])} error:`InvalidCast("can't cast [2, 1] to Sorted: not sorted")"#)
+    matches!(v, Ok(Value::String(s)) if &**s == r#"{"at":{"Pt":{"x":1,"y":null}},"name":"a","nums":{"Sorted":[1,2]}} {at: Pt({x: 1, y: null}), name: "a", nums: Sorted([1, 2])} error:`InvalidCast("can't cast [2, 1] to Sorted: not sorted")"#)
 }; FuseExpect::Jit);
 
 // pack and toml carry the data too, never the abstract value.
@@ -127,19 +127,20 @@ run!(cast_of_a_reference_in_a_parameter_refused, r#"{
 }"#, refused("can't cast a reference"); FuseExpect::None);
 
 // A `to_value` that writes its own type inside its result is refused,
-// not followed forever: inside a container the writer's depth bound
-// refuses it, and with none between, the bound on abstract values
-// written through.
+// not followed forever: in JSON, which writes each abstract value inside
+// an object, the writer's depth bound refuses it, and in a template's
+// data, written bare, the bound on abstract values written through.
 run!(cast_write_nesting_without_end_refused, r#"{
     type Loop = Abstract<i64>;
     impl Cast for Loop { let to_value = |s: Loop| [s] };
     type Same = Abstract<i64>;
     impl Cast for Same { let to_value = |s: Same| s };
     let nested = select json::write_str(Loop(1)) { error as e => "[e]", s => s };
-    let bare = select json::write_str(Same(1)) { error as e => "[e]", s => s };
-    "[nested] [bare]"
+    let same = select json::write_str(Same(1)) { error as e => "[e]", s => s };
+    let bare = select hbs::render("{{x}}", {x: Same(1)}) { error as e => "[e]", s => s };
+    "[nested] [same] [bare]"
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if s.contains("the value nests 128 containers deep or more")
+    matches!(v, Ok(Value::String(s)) if s.matches("the value nests 128 containers deep or more").count() == 2
         && s.contains("Same is written as data more than 1024 abstract values deep"))
 }; FuseExpect::Jit);
 
@@ -171,13 +172,15 @@ run!(
 run!(
     cast_declared_in_an_interface,
     |v: Result<&Value>| {
-        matches!(v, Ok(Value::String(s)) if &**s == r#"[3] error:`InvalidCast("can't cast [-1] to Pos: negative") Pos([5])"#)
+        matches!(v, Ok(Value::String(s)) if &**s == r#"{"Pos":[3]} error:`InvalidCast("can't cast [-1] to Pos: negative") Pos([5])"#)
     },
     "/test.gx" => r#"
         mod inner;
         let w = json::write_str(inner::mk(3))$;
-        let bad: Result<inner::Pos, [`JsonErr(string), `InvalidCast(string)]> = json::read("\[-1\]");
-        let good: Result<inner::Pos, [`JsonErr(string), `InvalidCast(string)]> = json::read("\[5\]");
+        let bad: Result<inner::Pos, [`JsonErr(string), `InvalidCast(string)]> =
+            json::read("{\"Pos\": \[-1\]}");
+        let good: Result<inner::Pos, [`JsonErr(string), `InvalidCast(string)]> =
+            json::read("{\"Pos\": \[5\]}");
         let result = "[w] [bad] [good]"
     "#,
     "/test/inner.gxi" => r#"
@@ -204,7 +207,7 @@ run!(
 // where its implementation registers, not in the parallel checks.
 run!(
     sibling_cast_declarations_narrow_apart,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "[3] [4] 5"),
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == r#"{"Pos":[3]} {"Pos":[4]} {"T":5}"#),
     "/test.gx" => r#"
         mod a;
         mod b;

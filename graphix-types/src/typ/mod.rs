@@ -48,7 +48,7 @@ mod print;
 pub use print::{Brief, Noted};
 pub(crate) mod regular;
 mod textdata;
-pub use textdata::{Format, TextAmbiguity};
+pub use textdata::TextRefusal;
 mod setops;
 pub(crate) use setops::{settled_identical, strictly_identical};
 #[doc(hidden)]
@@ -491,6 +491,13 @@ impl AbstractId {
     pub(crate) fn named(self, name: &str) -> Self {
         ABSTRACT_NAMES.lock().entry(self).or_insert_with(|| ArcStr::from(name));
         self
+    }
+
+    /// The core type `Transparent<'a>`, which JSON and TOML write bare.
+    pub fn transparent() -> Self {
+        static ID: LazyLock<AbstractId> =
+            LazyLock::new(|| AbstractId::of(&ModPath::from(["core"]), "Transparent"));
+        *ID
     }
 
     /// The type's declared name, if this process has minted the id.
@@ -1152,10 +1159,9 @@ pub enum Bound {
     /// cell, which neither orders nor names what it points to, so values
     /// of the type order, hash and compare by value alone.
     Ordered,
-    /// The conjunct `'a: JsonData`: no union anywhere in whatever binds
-    /// the cell has a member whose JSON value may read back as another
-    /// ([`Type::text_ambiguity`]), so what `json::read` reads is what was
-    /// written; an open cell holds.
+    /// The conjunct `'a: JsonData`: every union in whatever binds the cell
+    /// tells its members apart by a tag ([`Type::text_refusal`]), so what
+    /// `json::read` reads is what was written; an open cell holds.
     JsonData,
     /// `JsonData` for TOML.
     TomlData,

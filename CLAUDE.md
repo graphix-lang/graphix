@@ -455,12 +455,13 @@ A cast to an integer type, a type-directed read's included, holds the
 value exactly or is an `InvalidCast` (a float drops its fraction; a
 union target takes the first member in canonical order, narrowest
 integer first, that holds it, but an integer holds a float or a decimal,
-value or text, only where no real member does). A cast leaves a value's runtime class
+value or text, only where no real member does; a decimal made of a whole
+float keeps its point, `float_decimal`). A cast leaves a value's runtime class
 only to parse a string into a scalar (never a collection), to print a number, bool, datetime or duration
 plainly (`"42"`; a whole float, and a duration's seconds, keep the
 point, `"3.0"`, as every plain print does: `typ::PlainScalar`), between a number and a datetime (Unix seconds) or a
 duration (seconds), from a bool to a number (1 or 0), or to read an array of numbers as bytes; a list reads as the array of its elements and a map as the array of its `(key, value)` pairs, and an array of pairs reads as a map; a union target tries the members of the value's own
-class first (`typ/cast.rs::convert`, `in_own_class`: a container's class is its elements' too, and unmarked array data is a list's), an array the source type says is one (`cast_from`) an array member it inhabits, then unmarked array data a tagged variant, a tuple of its length, then a struct before an array, a tuple or struct only where its elements stay in their classes, and every way a member that holds the value exactly, then a real member that holds it rounded to its precision, before one that would drop part of it (`Holds`, `holds_exactly`, `holds_rounded`: `cast<[i64, f64]>("3.5")` is 3.5, `cast<[i64, f32]>(0.1)` and `("0.1")` f32 0.1, `cast<[f32, u8]>(16777217)` f32 16777216; an infinity a finite value overflows to is no rounding), and short of a dropped part one keeping every number an integer or a real as it was before one reading one across (`Choice`, counted at the leaves, `NumReads`: `cast<[i64, decimal]>(3.0)` and `("3.0")` are decimal, `cast<[(i64, i64), (f32, f32)]>([1.0, 2.0])` the f32 tuple, and with `type B = u8`, `cast<[f64, B]>(2)` is u8 2, as the flat `[f64, u8]` reads it; with no real member `cast<[i64, datetime]>("3.0")` is 3). The JIT inlines
+class first, at every degree of exactness before any other member (`cast<[f32, string]>(0.1)` is f32, `cast<[i64, string]>(3.5)` 3), then for text the members of the class of the scalar it parses as (`parsed_scalar`: `cast<[duration, decimal]>("3.0")` is decimal), then the rest (`typ/cast.rs::convert`, `in_own_class`: a container's class is its elements' too, and unmarked array data is a list's); an array the source type says is one (`cast_from`) an array member it inhabits, then unmarked array data a tagged variant, a tuple of its length, then a struct before an array, a tuple or struct only where its elements stay in their classes; within each group a member that holds the value exactly, then a real member that holds it rounded to its precision, before one that would drop part of it (`Holds`, `Type::tier`, `holds_exactly`, `holds_rounded`: `cast<[i64, f64]>("3.5")` is 3.5, `cast<[i64, f32]>(0.1)` and `("0.1")` f32 0.1, `cast<[f32, u8]>(16777217)` f32 16777216; an infinity a finite value overflows to is no rounding; a bool is held exactly by the number 1 or 0, `cast<[f32, u8]>(true)` is u8 1), and short of a dropped part one keeping every number an integer or a real as it was before one reading one across (`Choice`, counted at the leaves, `NumReads`: `cast<[i64, decimal]>(3.0)` and `("3.0")` are decimal, `cast<[(i64, i64), (f32, f32)]>([1.0, 2.0])` the f32 tuple, and with `type B = u8`, `cast<[f64, B]>(2)` is u8 2, as the flat `[f64, u8]` reads it; with no real member `cast<[i64, datetime]>("3.0")` is 3); the first member in canonical order breaks a tie. The JIT inlines
 only the casts that always fit (`lowering::inline_cast`). A struct cast
 reads a field the data omits as null wherever the field's type
 admits null (`typ/cast.rs`), and a string parses as an RFC3339
@@ -472,7 +473,13 @@ type. An abstract type crosses data only through its core `Cast` impl
 and a method it leaves out is the representation; a type with no impl,
 a Rust-backed one included, is refused by the check as a cast or read
 target (`Concrete`) and as a written value (`'a: Data`), and an abstract
-value decodes only under an image session.
+value decodes only under an image session. JSON and TOML write one as an
+object of one entry keyed by its type's unqualified name, its data
+inside, and read it only so (`core::Abstracts::Wrapped`,
+`CastInput::Text`); core's `Transparent<T>` is written as `T`'s data
+bare, and elsewhere is its representation. They write a map as an
+object (a table) only under the key type `string`, its `[key, value]`
+pairs under any other or none (`core::map_shape`).
 A reference is its own runtime form (`graphix_types::reference`, an
 abstract holding its cell), never a number: a cast whose source can
 hold one is refused (`Type::holds_ref`), and where only an instance
@@ -562,17 +569,12 @@ thread-local `FastMemo`, never in state. A type-directed builtin
 refuses the target where it settles open or holds a reference (data
 can't be one; the run-time cast refuses one too) or an abstract type
 with no `Cast` impl, `json::read`'s and `toml::read`'s target is also
-`'b: JsonData`/`TomlData` (`typ::textdata`: no union in it has a member
-whose written value may read back as another, judged by the cast's pick
-(payload tag, round, class, the union's order, a member the value read
-back already is, `Choice`; a primitive set by its own pick) over classes of
-values, a composite whole, members that recurse at every level (a least
-fixpoint; a typedef expands once per list of arguments, and one growing
-its parameters as it recurses is refused) and a map key from its text:
-`[f32, string]`,
-`[(f32, u8), (f64, f64)]`, `[(string, f32), (i64, f64)]`,
-`Map<[decimal, datetime], i64>` are refused, `[f32, u16]` and
-`[string, i64]` read back), judged of the
+`'b: JsonData`/`TomlData`, and so are the json and toml writers' values
+(`Type::text_refusal`: every union in the type is one member beside
+null, or members each carrying a tag, a variant's or an abstract type's
+name, no two the same, an error no member; `Transparent<T>` carries none
+and is refused over a `T` not abstract; a typedef growing its parameters
+as it recurses is refused), judged of the
 call's settled binding (`site_bounds`; refused at the bind, a union
 target would narrow to one member), a writer declares its value `'a: Data` (no
 reference, function or such abstract type; open is fine), an async

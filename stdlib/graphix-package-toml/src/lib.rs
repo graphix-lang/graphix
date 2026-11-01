@@ -13,8 +13,8 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, Keys, ReadFormat, ReadInput, Shape, TypedRead,
-    f32_as_written, shape,
+    Abstracts, CachedArgsAsync, CachedVals, CastTarget, Keys, ReadFormat, ReadInput,
+    Shape, TypedRead, f32_as_written, shape,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -104,7 +104,7 @@ fn to_toml(
         true => Ok(depth + 1),
         false => Err(format!("the value nests deeper than {MAX_DEPTH} levels")),
     };
-    match shape(env, typ, value).map_err(|e| format!("{e}"))? {
+    match shape(env, typ, value, Abstracts::Wrapped).map_err(|e| format!("{e}"))? {
         Shape::Object(mut entries, keys) => {
             let depth = deeper(depth)?;
             let mut table = toml::map::Map::new();
@@ -223,6 +223,10 @@ impl ReadFormat for Toml {
                 },
             }
         }
+    }
+
+    fn read(target: &CastTarget, env: &Env, v: Value) -> Value {
+        target.read_text(env, &Self::TAG, v, false)
     }
 }
 

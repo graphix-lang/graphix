@@ -682,12 +682,13 @@ run!(
     cast_float_value_and_text_read_alike,
     CAST_FLOAT_VALUE_AND_TEXT_READ_ALIKE,
     prints(
-        "[decimal:3., decimal:3.0, f32:3., f32:3., f64:3., f64:3., f64:100., f64:3., u8:3, i64:3, i64:3]"
+        "[decimal:3.0, decimal:3.0, f32:3., f32:3., f64:3., f64:3., f64:100., f64:3., u8:3, i64:3, i64:3]"
     )
 );
 
 // Where no member is real an integer holds a whole float, value or text
-// alike; a fraction it holds in neither form.
+// alike, and takes a fraction too, dropping it, before a member outside
+// the number's class (a datetime, a duration) that holds it whole.
 const CAST_WHOLE_FLOAT_WITHOUT_A_REAL_MEMBER: &str = r#"
 (
   cast<[i64, datetime]>("3.0")$,
@@ -702,7 +703,7 @@ const CAST_WHOLE_FLOAT_WITHOUT_A_REAL_MEMBER: &str = r#"
 run!(
     cast_whole_float_without_a_real_member,
     CAST_WHOLE_FLOAT_WITHOUT_A_REAL_MEMBER,
-    prints("[i64:3, i64:3, i64:3, i64:3, duration:3.5s, duration:3.5s]")
+    prints("[i64:3, i64:3, i64:3, i64:3, i64:3, i64:3]")
 );
 
 // The rule holds at every leaf: an element union reads a float as the
@@ -804,6 +805,42 @@ run!(
     FuseExpect::None
 );
 
+// The order a union reads a value in: the members of the value's class
+// first, across every round (a float stays a number though a string holds
+// its text exactly), then for text the members of the class of the scalar
+// it parses as, then the rest; a bool is held exactly by the number 1 or
+// 0, so the canonical order picks among the numbers and a string; a
+// decimal made of a whole float keeps its point, so its text reads back
+// as a decimal.
+const CAST_UNION_ORDER: &str = r#"
+{
+  let d = cast<decimal>(3.0)$;
+  let dt = "[d]";
+  (
+    cast<[f32, string]>(0.1)$,
+    cast<[i64, string]>(3.5)$,
+    cast<[duration, decimal]>("3.0")$,
+    cast<[duration, decimal]>(3.0)$,
+    cast<[i64, bool]>("true")$,
+    cast<[f32, u8]>(true)$,
+    cast<[f64, i64]>(false)$,
+    cast<[i64, string]>(true)$,
+    d,
+    dt,
+    cast<[i64, decimal]>(dt)$,
+    cast<decimal>(f32:2.0)$
+  )
+}
+"#;
+
+run!(
+    cast_union_order,
+    CAST_UNION_ORDER,
+    prints(
+        r#"[f32:0.1, i64:3, decimal:3.0, decimal:3.0, true, u8:1, i64:0, i64:1, decimal:3.0, "3.0", decimal:3.0, decimal:2.0]"#
+    )
+);
+
 // Unmarked data reads back as the member that reads it exactly: a tuple of
 // its length, then a struct, before an array, so what pack and json write
 // of a tuple or a struct reads back as it.
@@ -820,10 +857,10 @@ const DATA_READS_BACK_AS_WRITTEN: &str = r#"
 
 run!(data_reads_back_as_written, DATA_READS_BACK_AS_WRITTEN, prints("[true, true]"));
 
-// JSON keeps no kind: a target union two members of which one JSON value
-// could be written by is refused (`JsonData`), since what was written as
-// one could read back as the other. An object reads as its key/value
-// pairs, and a tuple and an array are both arrays.
+// JSON keeps no kind: a target union whose members carry no tag is refused
+// (`JsonData`), since what was written as one could read back as the
+// other. An object reads as its key/value pairs, and a tuple and an array
+// are both arrays.
 run!(
     json_target_union_its_data_cannot_tell_apart_refused,
     r#"{
@@ -843,20 +880,18 @@ run!(
     refused("'b: TomlData refuses [u8, i64]")
 );
 
-// Members JSON writes apart read back as written: a number written as an
-// integer and one written with a fraction, a variant's tag, a struct's
-// fields, null, and a tuple no array of its other member's elements is.
+// Members JSON writes apart read back as written: each a tag, a bare
+// variant's or one with a payload, beside null.
 const JSON_TARGET_MEMBERS_WRITTEN_APART: &str = r#"
 {
-  type V = [i64, f64, `A, `B(string), {n: string}, null];
-  let vs: Array<V> = [1, f64:1.0, `A, `B("x"), {n: "y"}, null];
+  type V = [`I(i64), `F(f64), `A, `B(string), `S({n: string}), `T((string, i64)), null];
+  let vs: Array<V> = [`I(1), `F(f64:1.0), `A, `B("x"), `S({n: "y"}), `T(("k", 1)), null];
   let back: Result<Array<V>, [`InvalidCast(string), `JsonErr(string)]> =
     json::read(json::write_str(vs)$);
-  type T = [(string, i64), Array<string>];
-  let t: T = ("k", 1);
-  let tb: Result<T, [`InvalidCast(string), `JsonErr(string)]> =
-    json::read(json::write_str(t)$);
-  (back$ == vs, tb$ == t)
+  let w: [Array<string>, null] = ["k"];
+  let wb: Result<[Array<string>, null], [`InvalidCast(string), `JsonErr(string)]> =
+    json::read(json::write_str(w)$);
+  (back$ == vs, wb$ == w)
 }
 "#;
 
@@ -6164,7 +6199,7 @@ run!(
     prints(r#"["written", "refused"]"#),
     "/test.gx" => r#"
         let m: Map<[string, `A], i64> = {"A" => 1, `A => 2};
-        let m2: Map<[Array<i64>, (i64, i64)], i64> = {[1, 2] => 1, (1, 2) => 2};
+        let m2: Map<Any, i64> = {[1, 2] => 1, (1, 2) => 2};
         let r1 = select pack::write_bytes(m) { error as _ => "refused", _ => "written" };
         let r2 = select json::write_str(m2) { error as _ => "refused", _ => "written" };
         let result = [r1, r2]

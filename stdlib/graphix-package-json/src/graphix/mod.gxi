@@ -4,18 +4,24 @@
 /// Numbers are read exactly, so an object whose only key is
 /// `$serde_json::private::Number` reads as the number its value spells
 /// (`{"$serde_json::private::Number": "42"}` is 42), not as an object.
-/// The target holds no union two members of which one JSON value could
-/// be written by (`JsonData`): `[u8, i64]`, `[string, datetime]` and
-/// `[Array<string>, Array<i64>]` are refused, since what was written as
-/// one could read back as the other.
+/// The target reads back what `write_str` writes of it (`JsonData`):
+/// every union in it tells its members apart by a tag, a variant's or an
+/// abstract type's name, or is one member and null. `[i64, string]`,
+/// `[Port, u8]` and `` [Transparent<Port>, `A] `` are refused.
 val read: fn<'b: Concrete + JsonData>(input: [string, bytes]) -> Result<'b, [`JsonErr(string), `InvalidCast(string)]>;
 
-/// Serialize a value to a JSON string, as its type says: a struct or a
-/// map with scalar keys is an object; another map is an array of key/value
-/// pairs. An array, tuple or list is an array.
-val write_str: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<string, `JsonErr(string)>;
+/// Serialize a value to a JSON string, as its type says: a struct is an
+/// object, a map an object when its key type is `string` and an array of
+/// `[key, value]` pairs under any other, an array, tuple or list an
+/// array, a bare variant its tag and a variant with a payload an array of
+/// its tag and payload, and an abstract value the object of one entry
+/// its type's name keys (`{"Port": 80}`), its data inside, or under
+/// `Transparent` its data alone. A `T` written bare that writes null
+/// reads back from `[Transparent<T>, null]` as the outer null. The value's
+/// type must be one `read` reads back (`JsonData`).
+val write_str: fn<'a: Data + JsonData>(?#pretty: bool, value: 'a) -> Result<string, `JsonErr(string)>;
 
-/// Serialize a value to JSON bytes.
+/// Serialize a value to JSON bytes, as `write_str` does.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, json::write_bytes(v)?)`.
-val write_bytes: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<bytes, `JsonErr(string)>;
+val write_bytes: fn<'a: Data + JsonData>(?#pretty: bool, value: 'a) -> Result<bytes, `JsonErr(string)>;

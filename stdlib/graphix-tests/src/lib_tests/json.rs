@@ -261,15 +261,17 @@ async fn an_empty_innermost_container_counts() -> Result<()> {
     deepest_written_reads_back("Map<string, i64>", "{}", 1).await
 }
 
-// Two map keys that print alike are never merged into one: a key type
-// holding strings and another class writes pairs, which a TOML document
-// cannot hold at its top.
+// Two map keys are never merged into one: a key type other than string
+// writes pairs, which a TOML document cannot hold at its top, and two
+// keys that write as one value (under `Any`) are refused.
 run!(json_keys_writing_alike_are_not_merged, r#"{
-    let m: Map<[i64, string], i64> = {1 => 10, "1" => 20};
-    "[json::write_str(m)] [toml::write_str(m)]"
+    let m: Map<Any, i64> = {1 => 10, "1" => 20};
+    let n: Map<Any, i64> = {`A => 1, "A" => 2};
+    "[json::write_str(m)] [toml::write_str(m)] [json::write_str(n)]"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s))
-        if s.contains(r#"[[1,10],["1",20]]"#) && s.contains("TomlErr"))
+        if s.contains(r#"[[1,10],["1",20]]"#) && s.contains("TomlErr")
+            && s.contains("two keys write as the same JSON data"))
 }; FuseExpect::Jit);
 
 // An f32 is written as the number the program holds, not its exact f64
@@ -364,11 +366,11 @@ run!(composite_casts_by_form, r#"{
 }; FuseExpect::Jit);
 
 // A writer reads a value's kind markers, never its data form: a union
-// member is the one the value is (a struct beside an array of pairs, a
-// tuple of pairs beside null, an inline struct under a nullable), and a
-// list's elements keep their type (x-kind-markers-01, t-rep-03).
+// member is the one the value is (a struct beside null, a tuple of pairs
+// beside null, an inline struct under a nullable), and a list's elements
+// keep their type (x-kind-markers-01, t-rep-03).
 run!(writers_choose_members_by_kind, r#"{
-    let f: [{a: i64}, Array<(string, i64)>] = {a: 1};
+    let f: [{a: i64}, null] = {a: 1};
     let c: [((string, i64), (string, i64)), null] = (("a", 1), ("b", 2));
     let l: List<Array<(string, i64)>> = [<[("a", 1)]>];
     let o: [{a: Array<(string, i64)>, b: i64}, null] = {a: [("k", 1)], b: 7};
@@ -379,8 +381,8 @@ run!(writers_choose_members_by_kind, r#"{
         == "{\"a\":1} [[\"a\",1],[\"b\",2]] [[[\"a\",1]]] {\"a\":[[\"k\",1]],\"b\":7} [v]\na = 1")
 }; FuseExpect::Jit);
 
-// A datetime or duration map key is written as such a value is, so the
-// map reads back into its type (x-rerun-3-01).
+// A map keyed by datetimes or durations is written as its pairs, each key
+// as such a value is, so it reads back into its type (x-rerun-3-01).
 run!(time_map_keys_read_back, r#"{
     type E = [`JsonErr(string), `InvalidCast(string)];
     let m: Map<datetime, i64> = {datetime:"2020-01-01T00:00:00Z" => 1};
@@ -390,23 +392,24 @@ run!(time_map_keys_read_back, r#"{
     (json::write_str(m)$, m2$ == m, json::write_str(d)$, d2$ == d)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string()
-        == r#"["{\"2020-01-01T00:00:00+00:00\":1}", true, "{\"1.5\":2}", true]"#)
+        == r#"["[[\"2020-01-01T00:00:00+00:00\",1]]", true, "[[1.5,2]]", true]"#)
 }; FuseExpect::Jit);
 
-// A key whose data is a string is written bare: a map keyed by a bare
-// variant or by an abstract string type reads back into its type, and a
-// bare variant beside the string it writes as is refused.
+// A map is an object only under the key type `string`, whatever its keys
+// write as: one keyed by bare variants or by an abstract string type is
+// written as its pairs, and reads back into its type.
 run!(string_data_map_keys_read_back, r#"{
     type E = [`JsonErr(string), `InvalidCast(string)];
     type Id = Abstract<string>;
     impl Cast for Id {};
     let m: Map<[`A, `B], i64> = {`A => 1, `B => 2};
     let i: Map<Id, i64> = {Id("abc") => 3};
-    let both: Map<[`A, string], i64> = {`A => 1, "A" => 2};
+    let s: Map<string, i64> = {"abc" => 3};
     let m2: Result<Map<[`A, `B], i64>, E> = json::read(json::write_str(m)$);
     let i2: Result<Map<Id, i64>, E> = json::read(json::write_str(i)$);
-    (json::write_str(m)$, m2$ == m, json::write_str(i)$, i2$ == i, json::write_str(both))
-}"#, prints(r#"["{\"A\":1,\"B\":2}", true, "{\"abc\":3}", true, error:["JsonErr", "two keys write as the same JSON data"]]"#); FuseExpect::Jit);
+    let s2: Result<Map<string, i64>, E> = json::read(json::write_str(s)$);
+    (json::write_str(m)$, m2$ == m, json::write_str(i)$, i2$ == i, json::write_str(s)$, s2$ == s)
+}"#, prints(r#"["[[\"A\",1],[\"B\",2]]", true, "[[{\"Id\":\"abc\"},3]]", true, "{\"abc\":3}", true]"#); FuseExpect::Jit);
 
 // An integer or decimal target reads a number's text exactly, refusing
 // what does not fit, a float target the float nearest it, and a read with
@@ -469,8 +472,8 @@ run!(
     prints("[true, true, true, true, true, true, true]")
 );
 
-// an object's keys read back as strings: string keys beside keys of
-// another class, or under a key type that may hold both, round-trip as pairs
+// A map's form follows its key type alone: an object under `string`, its
+// pairs under any other, whatever its keys are, and either reads back.
 run!(
     mixed_class_map_keys_use_pairs,
     r#"{
@@ -479,29 +482,34 @@ run!(
         let r: Result<Map<'k, i64>, E> = json::read(json::write_str(m)$);
         select r { error as _ => false, v => v == m }
     };
-    let a: Map<[string, i64], i64> = {1 => 1, "a" => 2};
-    let b: Map<[string, i64], i64> = {1 => 1};
-    let c: Map<[bool, string], i64> = {true => 1, "true" => 2};
-    [round_trip(a), round_trip(b), round_trip(c), round_trip({1 => 2}), round_trip({"x" => 2})]
+    let a: Map<[`S(string), `I(i64)], i64> = {`I(1) => 1, `S("a") => 2};
+    let b: Map<bool, i64> = {true => 1};
+    (
+        [round_trip(a), round_trip(b), round_trip({1 => 2}), round_trip({"x" => 2})],
+        json::write_str(b)$,
+        json::write_str({1 => 2})$,
+        json::write_str({"x" => 2})$
+    )
 }
 "#,
-    prints("[true, true, true, true, true]")
+    prints(r#"[[true, true, true, true], "[[true,1]]", "[[1,2]]", "{\"x\":2}"]"#)
 );
 
-// A whole f32 or duration is written as a float, which a union reads
-// into an integer member as its own class (x-rerun-5-04): a target, or a
-// map key, holding either beside an integer is refused.
+// Every union in a type JSON reads or writes tells its members apart by a
+// tag (x-rerun-5-04): an integer beside a whole f32 or duration, which
+// JSON writes as a float, is refused as a target, a written value and a
+// map key.
 run!(
     json_target_float_beside_an_integer_refused,
     r#"{
-    let d: [duration, i64] = duration:2.s;
     let r: Result<[duration, i64], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(d)$);
+        json::read("2.0");
     r
 }"#,
     refused(
-        "'b: JsonData refuses [i64, duration]: what its member i64 or duration writes \
-         as JSON data may read back as the other"
+        "'b: JsonData refuses [i64, duration]: i64 in [i64, duration] has no tag (a \
+         variant's, or an abstract type's name), so what another member writes as \
+         JSON data may read back as it"
     )
 );
 
@@ -509,281 +517,20 @@ run!(
     json_map_key_float_beside_an_integer_refused,
     r#"{
     let m: Map<[duration, i64], i64> = {duration:2.s => 1, 3 => 2};
-    let r: Result<Map<[duration, i64], i64>, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(m)$);
-    r
+    json::write_str(m)
 }"#,
-    refused("'b: JsonData refuses Map<[i64, duration], i64>")
-);
-
-// A float key's text keeps its point, so a whole one reads back as the
-// float beside a datetime, which reads the same digits as seconds.
-run!(
-    json_float_key_beside_a_datetime_reads_back,
-    r#"{
-    type T = Map<[f64, datetime], i64>;
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    let rt = |v: T| -> bool {
-        let r: Result<T, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    [
-        rt({3.0 => 1}),
-        rt({1e20 => 1}),
-        rt({0.5 => 1}),
-        rt({18014398509481984.0 => 1, datetime:"1970-01-01T00:00:03Z" => 2})
-    ]
-}"#,
-    prints("[true, true, true, true]")
+    refused(
+        "'a: JsonData refuses Map<[i64, duration], i64>: i64 in [i64, duration] has no tag"
+    )
 );
 
 run!(
     json_target_f32_beside_an_integer_refused,
     r#"{
     let v: [f32, i64] = f32:2.0;
-    let r: Result<[f32, i64], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
+    json::write_str(v)
 }"#,
-    refused("'b: JsonData refuses [i64, f32]")
-);
-
-// An f32 beside an integer no wider than 16 bits reads back as written: a
-// whole f32 that integer could hold is written exactly and stays real, a
-// fraction rounds back to the f32, and the integer's text stays an
-// integer; so too in a tuple, and an integer beside an f64 under a name.
-run!(
-    json_f32_beside_a_narrow_integer_reads_back,
-    r#"{
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    type U = [f32, u8];
-    type S = [f32, i16];
-    type B = u8;
-    type N = [f64, B];
-    type T = [(f32, i64), (u8, i64)];
-    let u = |v: U| -> bool {
-        let r: Result<U, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let s = |v: S| -> bool {
-        let r: Result<S, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let n = |v: N| -> bool {
-        let r: Result<N, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let t = |v: T| -> bool {
-        let r: Result<T, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    (
-        [u(f32:0.1), u(f32:2.0), u(f32:1e10), u(u8:2), u(u8:255)],
-        [s(f32:-3.0), s(i16:-3), s(f32:300.5), s(i16:32767)],
-        [n(u8:2), n(f64:2.0), n(f64:0.1)],
-        [t((u8:2, 5)), t((f32:2.0, 5)), t((f32:0.1, 5))]
-    )
-}"#,
-    prints(
-        "[[true, true, true, true, true], [true, true, true, true], [true, true, true], [true, true, true]]"
-    )
-);
-
-// A tuple whose f32s a narrow integer could hold reads back beside a
-// tuple of such integers: an f32 the integer holds is written exactly.
-run!(
-    json_f32_tuple_beside_a_narrow_integer_tuple_reads_back,
-    r#"{
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    type T = [(f32, f32), (u8, u8)];
-    type A = [Array<f32>, (u8, u8)];
-    let t = |v: T| -> bool {
-        let r: Result<T, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let a = |v: A| -> bool {
-        let r: Result<A, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    (
-        [t((f32:2.0, f32:3.0)), t((f32:0.1, f32:3.0)), t((u8:2, u8:3)), t((f32:1e10, f32:0.5))],
-        [a([f32:2.0, f32:3.0]), a([f32:0.1, f32:3.0]), a((u8:2, u8:3))]
-    )
-}"#,
-    prints("[[true, true, true, true], [true, true, true]]")
-);
-
-// A member's reading is judged whole: an f32 its own member rounds loses
-// to a member reading every part exactly, numbers crossed or not.
-run!(
-    json_target_f32_tuple_beside_an_exact_reader_refused,
-    r#"{
-    type T = [(f32, u8), (f64, f64)];
-    let v: T = (f32:0.1, u8:1);
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [(f32, u8), (f64, f64)]")
-);
-
-run!(
-    json_target_f32_tuple_beside_a_wide_integer_refused,
-    r#"{
-    type T = [(f32, u16), (i64, f32)];
-    let v: T = (f32:1234567936.0, u16:1);
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [(i64, f32), (f32, u16)]")
-);
-
-run!(
-    json_target_f32_struct_beside_an_exact_reader_refused,
-    r#"{
-    type T = [{a: f32, b: u8}, {a: f64, b: f32}];
-    let v: T = {a: f32:0.1, b: u8:1};
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [{ a: f32, b: u8 }, { a: f64, b: f32 }]")
-);
-
-// A duration's member reads its seconds as no number, so a member reading
-// every part exactly takes the tuple whatever it crosses.
-run!(
-    json_target_duration_tuple_beside_an_exact_reader_refused,
-    r#"{
-    type T = [(duration, u8), (f64, f64)];
-    let v: T = (duration:3.s, u8:1);
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [(f64, f64), (duration, u8)]")
-);
-
-// A member reading a value outside its class takes it where the writer's
-// own member only rounds it: an f32's 0.1 reads back as the string "0.1",
-// a string's "1" beside an f32's 0.1 as the integer 1.
-run!(
-    json_target_f32_beside_a_string_refused,
-    r#"{
-    let v: [f32, string] = f32:0.1;
-    let r: Result<[f32, string], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [f32, string]")
-);
-
-run!(
-    json_target_string_tuple_beside_a_number_tuple_refused,
-    r#"{
-    type T = [(string, f32), (i64, f64)];
-    let v: T = ("1", f32:0.1);
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [(i64, f64), (string, f32)]")
-);
-
-// Two readings outside the data's class go by the union's order: (1, 3.5)
-// written by (i64, duration) reads back as (u8:1, "3.5"), which comes
-// first.
-run!(
-    json_target_readings_outside_the_class_refused,
-    r#"{
-    type T = [(i64, duration), (u8, string)];
-    let v: T = (1, duration:3.5s);
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [(u8, string), (i64, duration)]")
-);
-
-// A union is in the data's class where any member is, whichever member
-// reads it: (u8, [i64, string]) keeps the class of [3, 3.5] (i64 is a
-// number) and comes first, so (3, 3.5) reads back as (u8:3, "3.5").
-run!(
-    json_target_union_part_in_the_class_refused,
-    r#"{
-    type T = [(i64, f64), (u8, [i64, string])];
-    let v: T = (3, 3.5);
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [(u8, [i64, string]), (i64, f64)]")
-);
-
-// Members that recurse into each other judge every level of a written
-// value: `Cons(f32:0.1, 3) writes ["Cons",0.1,3], which TB reads exactly
-// as `Cons(0.1, 3.0) where TA only rounds the f32.
-run!(
-    json_target_recursive_members_refused,
-    r#"{
-    type TA = [i64, `Cons(f32, TA)];
-    type TB = [f64, `Cons(f64, TB)];
-    let v: [TA, TB] = `Cons(f32:0.1, 3);
-    let r: Result<[TA, TB], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [TA, TB]")
-);
-
-// A bool rounds into a real member: P's (f32:0.1, true) writes
-// [0.1,true], which A reads as [0.1, 1.0] in the round where P's f32
-// rounds too, and A comes first. A tuple read as a part is never in the
-// data's class, so ((1, 2), 3) is tried after the first member too, which
-// reads it back as (["1", "2"], 3).
-run!(
-    json_target_bool_read_as_a_real_refused,
-    r#"{
-    type A = Array<f64>;
-    type P = [bool, (f32, bool)];
-    let p: P = (f32:0.1, true);
-    let v: [A, P] = p;
-    let r: Result<[A, P], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [A, P]")
-);
-
-run!(
-    json_target_nested_tuple_outside_the_class_refused,
-    r#"{
-    type T = [(Array<string>, i64), ((u8, u8), u8)];
-    let v: T = ((u8:1, u8:2), u8:3);
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [(Array<string>, i64), ((u8, u8), u8)]")
-);
-
-// Recursive members whose tags tell their values apart read back.
-run!(
-    json_recursive_members_read_back,
-    r#"{
-    type TA = [`NA, (f32, TA)];
-    type TB = [`NB, (f64, TB)];
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    let rt = |v: [TA, TB]| -> bool {
-        let r: Result<[TA, TB], E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let a: TA = (f32:0.1, (f32:2.5, `NA));
-    let b: TB = (0.1, (3.0, `NB));
-    [rt(a), rt(b), rt(`NA), rt(`NB)]
-}"#,
-    prints("[true, true, true, true]")
+    refused("'a: JsonData refuses [i64, f32]: i64 in [i64, f32] has no tag")
 );
 
 // A typedef applied to arguments expands once for each list of them, so
@@ -815,260 +562,9 @@ run!(
     )
 );
 
-// A map's keys are written as their text, which reads back by the key
-// union's order: a decimal's "3" as the datetime 3 seconds past the epoch.
-run!(
-    json_target_key_text_read_as_another_member_refused,
-    r#"{
-    type M = Map<[decimal, datetime], i64>;
-    let v: M = {cast<decimal>(3)$ => 1};
-    let r: Result<M, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses Map<[datetime, decimal], i64>")
-);
-
-// What the union's pick reads back as written: a struct that takes no
-// field the data lacks comes first, the reader refuses a field it has
-// not; a datetime's text names no variant; a reading outside the class
-// that comes first in the union keeps a tuple.
-run!(
-    json_unions_read_back_by_their_pick,
-    r#"{
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    type S = [{a: i64}, {a: i64, b: [i64, null]}];
-    type V = [`B(u8), (datetime, f32)];
-    type D = [(u8, duration), (i64, string)];
-    type O = [(duration, u8), (string, u8)];
-    let s = |v: S| -> bool {
-        let r: Result<S, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let d = |v: D| -> bool {
-        let r: Result<D, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let vt = |v: V| -> bool {
-        let r: Result<V, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let o = |v: O| -> bool {
-        let r: Result<O, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    (
-        [s({a: 1}), s({a: 1, b: null}), s({a: 1, b: 2})],
-        [vt(`B(u8:2)), vt((datetime:"2020-01-01T00:00:00Z", f32:0.1))],
-        [d((u8:1, duration:3.5s)), d((1, "3.5")), d((300, "a"))],
-        [o((duration:3.5s, u8:1)), o(("3.5", u8:1))]
-    )
-}"#,
-    prints("[[true, true, true], [true, true], [true, true, true], [true, true]]")
-);
-
-// An abstract type written as its representation is built from the data,
-// never read in its class: a bool member that comes first takes S's
-// "true", an integer member Id's "1"; the abstract still takes a number
-// a float member would read across into a real.
-run!(
-    json_target_abstract_string_beside_a_bool_refused,
-    r#"{
-    type S = Abstract<string>;
-    impl Cast for S {};
-    let v: [S, bool] = S("true");
-    let r: Result<[S, bool], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [bool, S]")
-);
-
-run!(
-    json_target_abstract_key_beside_an_integer_refused,
-    r#"{
-    type Id = Abstract<string>;
-    impl Cast for Id {};
-    let m: Map<[Id, i64], i64> = {Id("1") => 1};
-    let r: Result<Map<[Id, i64], i64>, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(m)$);
-    r
-}"#,
-    refused("'b: JsonData refuses Map<[i64, Id], i64>")
-);
-
-// A map keyed by a type that may read a key's text as a string writes its
-// keys as pairs where any is not a string: as an object's key Id(3) would
-// read back as Id("3").
-run!(
-    json_abstract_key_that_may_write_a_string_reads_back,
-    r#"{
-    type Id = Abstract<[i64, string]>;
-    impl Cast for Id {};
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    let m = |v: Map<Id, string>| -> bool {
-        let r: Result<Map<Id, string>, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let a = |v: Array<{users: Map<Id, string>}>| -> bool {
-        let r: Result<Array<{users: Map<Id, string>}>, E> =
-            json::read(json::write_str(v)$);
-        r$ == v
-    };
-    [
-        m({Id(3) => "a"}),
-        m({Id("x") => "b"}),
-        m({Id(3) => "a", Id("x") => "b"}),
-        a([{users: {Id(3) => "a"}}])
-    ]
-}"#,
-    prints("[true, true, true, true]")
-);
-
-// An abstract key type read as its representation reads a key's text as
-// its representation does, whatever its `to_value` writes: Id's keys make
-// an object. One whose `from_value` is written may read the text as a
-// string, so its keys make pairs.
-run!(
-    json_abstract_key_read_as_its_representation_writes_an_object,
-    r##"{
-    type Id = Abstract<i64>;
-    impl Cast for Id { let to_value = |x| x.0 };
-    type Fv = Abstract<i64>;
-    impl Cast for Fv {
-        let to_value = |x| x.0;
-        let from_value = |v: Any| -> Result<Fv, `InvalidCast(string)> select cast<i64>(v) {
-            error as _ => error(`InvalidCast("fv")),
-            n => Fv(n)
-        }
-    };
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    let id: Map<Id, string> = {Id(3) => "a", Id(4) => "b"};
-    let fv: Map<Fv, string> = {Fv(3) => "a"};
-    let (wi, wf) = (json::write_str(id)$, json::write_str(fv)$);
-    let ri: Result<Map<Id, string>, E> = json::read(wi);
-    let rf: Result<Map<Fv, string>, E> = json::read(wf);
-    [wi == r#"{"3":"a","4":"b"}"#, ri$ == id, wf == r#"[[3,"a"]]"#, rf$ == fv]
-}"##,
-    prints("[true, true, true, true]")
-);
-
-// The primitive `array` writes an array of any data, which a tuple, a
-// payload variant and bytes read: beside any of them it is refused.
-run!(
-    json_target_primitive_array_beside_a_tuple_refused,
-    r#"{
-    type T = [array, (i64, i64)];
-    let v: T = (1, 2);
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [array, (i64, i64)]")
-);
-
-run!(
-    json_target_primitive_array_beside_a_payload_variant_refused,
-    r#"{
-    type T = [array, `A(i64)];
-    let v: T = `A(2);
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [array, `A(i64)]")
-);
-
-run!(
-    json_target_primitive_array_beside_bytes_refused,
-    r#"{
-    type T = [array, bytes];
-    let v: T = bytes:AQI=;
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [array, bytes]")
-);
-
-// A key's text is never read as an array, so the primitive `array` in a key
-// type leaves its other members' texts judged.
-run!(
-    json_target_primitive_array_key_beside_a_datetime_refused,
-    r#"{
-    type Aa = datetime;
-    type Zz = f64;
-    type T = Map<[array, Aa, Zz], i64>;
-    let v: T = {3.0 => 1};
-    let r: Result<T, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses Map<[array, Aa, Zz], i64>")
-);
-
-run!(
-    json_primitive_array_beside_scalars_reads_back,
-    r#"{
-    type T = [array, i64, string, null];
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    let t = |v: T| -> bool {
-        let r: Result<T, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    [t([1, "a"]), t([3.0, null, [2]]), t(3), t("a"), t(null)]
-}"#,
-    prints("[true, true, true, true, true]")
-);
-
-// The writer follows an abstract key type's representation through
-// recursion: N's never holds a string, B's does, and G's arguments grow as
-// it recurses, so it may.
-run!(
-    json_abstract_key_writer_follows_recursive_representations,
-    r#"{
-    type N = Abstract<[N, i64]>;
-    impl Cast for N {};
-    type A = Abstract<[B, i64]>;
-    type B = Abstract<[A, string]>;
-    impl Cast for A {};
-    impl Cast for B {};
-    type G<'a> = Abstract<['a, G<Array<'a>>]>;
-    impl<'a> Cast for G<'a> {};
-    let n: Map<N, i64> = {N(N(5)) => 1};
-    let a: Map<A, i64> = {A(5) => 1};
-    let g: Map<G<i64>, i64> = {G(5) => 1};
-    [
-        json::write_str(n)$ == "{\"5\":1}",
-        json::write_str(a)$ == r"[[5,1]]",
-        json::write_str(g)$ == r"[[5,1]]"
-    ]
-}"#,
-    prints("[true, true, true]")
-);
-
-// An abstract type whose `Cast` implementation writes `from_value` may read
-// any value it is tried on: tried before a bare variant, it reads the
-// variant's tag. A payload variant's tag is tried first, so one beside it
-// reads back.
-run!(
-    json_target_abstract_reading_by_from_value_beside_a_tag_refused,
-    r#"{
-    type Id = Abstract<i64>;
-    impl Cast for Id {
-        let from_value = |v| select cast<i64>(v) {
-            error as _ => select cast<string>(v) { error as e => e, s => Id(str::len(s)) },
-            i => Id(i)
-        }
-    };
-    let v: [Id, `A] = `A;
-    let r: Result<[Id, `A], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [Id, `A]")
-);
-
+// An abstract value is written inside an object its type's name keys, so
+// it reads back through its from_value beside a variant, whatever that
+// from_value reads.
 run!(
     json_abstract_reading_by_from_value_beside_a_payload_variant_reads_back,
     r#"{
@@ -1090,323 +586,10 @@ run!(
     FuseExpect::None
 );
 
-// An abstract whose Cast implementation writes to_value and leaves
-// from_value out writes what to_value makes and reads as its
-// representation, after every member keeping the data's class.
-run!(
-    json_target_abstract_reading_as_its_representation_beside_a_tag_refused,
-    r#"{
-    type S = Abstract<string>;
-    impl Cast for S { let to_value = |x| x.0 };
-    let v: [S, `A] = `A;
-    let r: Result<[S, `A], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [S, `A]")
-);
-
-run!(
-    json_target_abstract_reading_as_its_representation_beside_a_decimal_refused,
-    r#"{
-    type N = Abstract<i64>;
-    impl Cast for N { let to_value = |x| x.0 };
-    let v: [N, decimal] = cast<decimal>(3)$;
-    let r: Result<[N, decimal], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [decimal, N]")
-);
-
-run!(
-    json_target_abstract_beside_a_decimal_refused,
-    r#"{
-    type N = Abstract<i64>;
-    impl Cast for N {};
-    let v: [N, decimal] = cast<decimal>(3)$;
-    let r: Result<[N, decimal], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [decimal, N]")
-);
-
-// An abstract number beside a set of a real and a string: the set reads
-// an integer past an f64's precision as its text before the abstract is
-// tried.
-run!(
-    json_target_abstract_beside_a_primitive_set_refused,
-    r#"{
-    type Id = Abstract<i64>;
-    impl Cast for Id {};
-    type Val = [f64, string];
-    let v: [Id, Val] = Id(9007199254740993);
-    let r: Result<[Id, Val], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [Id, Val]")
-);
-
-run!(
-    json_abstract_number_beside_a_float_reads_back,
-    r#"{
-    type N = Abstract<i64>;
-    impl Cast for N {};
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    let rt = |v: [N, f64]| -> bool {
-        let r: Result<[N, f64], E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    [rt(N(2)), rt(f64:2.5), rt(f64:2.0)]
-}"#,
-    prints("[true, true, true]");
-    FuseExpect::None
-);
-
-// An abstract type whose representation holds itself writes N(N(x)) as
-// N(x) does, so a target holding it is refused, as a map keyed by one is,
-// and two abstracts holding each other.
-run!(
-    json_target_abstract_holding_itself_refused,
-    r#"{
-    type N = Abstract<[N, `L(i64)]>;
-    impl Cast for N {};
-    let v: N = N(N(`L(3)));
-    let r: Result<N, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses N: what its member N or `L(i64)")
-);
-
-run!(
-    json_target_key_abstract_holding_itself_refused,
-    r#"{
-    type N = Abstract<[N, i64]>;
-    impl Cast for N {};
-    let m: Map<N, i64> = {N(N(5)) => 1};
-    let r: Result<Map<N, i64>, [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(m)$);
-    r
-}"#,
-    refused("'b: JsonData refuses Map<N, i64>: what its member i64 or N")
-);
-
-run!(
-    json_target_abstracts_holding_each_other_refused,
-    r#"{
-    type N = Abstract<[M, `L(i64)]>;
-    type M = Abstract<[N, `K(string)]>;
-    impl Cast for N {};
-    impl Cast for M {};
-    let v: [N, `B(string)] = N(M(N(`L(1))));
-    let r: Result<[N, `B(string)], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [N, `B(string)]: what its member N or `K(string)")
-);
-
-// A union member of a union is tried where any of its members keeps the
-// data's class, as a scalar is: numbers read back beside a string, a
-// nullable beside a string or a bool. A text union beside it still holds
-// a tag the string member reads.
-run!(
-    json_union_typedef_members_read_back,
-    r#"{
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    type Num = [i64, f64];
-    type Opt = [i64, null];
-    type T = [Num, string];
-    type S = {a: [Opt, string], b: Array<[Opt, bool]>};
-    let t = |v: T| -> bool {
-        let r: Result<T, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let s = |v: S| -> bool {
-        let r: Result<S, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    (
-        [t(3), t(3.0), t(0.5), t("3"), t("x")],
-        [s({a: 3, b: [null, true]}), s({a: "3", b: [4, false]}), s({a: null, b: []})]
-    )
-}"#,
-    prints("[[true, true, true, true, true], [true, true, true]]")
-);
-
-// One primitive reads one value one way: two members holding an f32 at
-// one position read a large whole f32 alike, so neither takes the other's.
-run!(
-    json_typedef_tuples_sharing_an_f32_read_back,
-    r#"{
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    type A = (i32, f32);
-    type B = (datetime, f32);
-    let rt = |v: [A, B]| -> bool {
-        let r: Result<[A, B], E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let d = datetime:"1970-01-01T00:00:03Z";
-    [rt((i32:5, f32:1234567936.0)), rt((i32:5, f32:0.1)), rt((d, f32:1234567936.0)), rt((d, f32:0.1))]
-}"#,
-    prints("[true, true, true, true]");
-    FuseExpect::None
-);
-
-run!(
-    json_target_union_typedef_beside_a_tag_refused,
-    r#"{
-    type Num = [i64, f64];
-    type Txt = [string, `None];
-    let v: [Num, Txt] = `None;
-    let r: Result<[Num, Txt], [`JsonErr(string), `InvalidCast(string)]> =
-        json::read(json::write_str(v)$);
-    r
-}"#,
-    refused("'b: JsonData refuses [Num, Txt]: what its member string or `None")
-);
-
-// A primitive set reads a value as one member, the first holding it
-// exactly by class and then bit, and a member the value read back already
-// is takes it whatever the union's order: an integer beside a set of a
-// real and a string, a real beside a set of a string and an integer.
-run!(
-    json_primitive_set_beside_a_member_reads_back,
-    r#"{
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    type Amount = [f64, string];
-    type Qty = i64;
-    type Count = u32;
-    type Label = [string, i64];
-    type Score = f64;
-    type A = Array<{amount: [Amount, Qty]}>;
-    type C = {total: [Amount, Count]};
-    type L = [Label, Score];
-    let a = |v: A| -> bool {
-        let r: Result<A, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let c = |v: C| -> bool {
-        let r: Result<C, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let l = |v: L| -> bool {
-        let r: Result<L, E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    (
-        [
-            a([{amount: 3}]),
-            a([{amount: 9007199254740993}]),
-            a([{amount: 2.5}]),
-            a([{amount: "TBD"}]),
-            a([{amount: "3"}])
-        ],
-        [
-            c({total: u32:0}),
-            c({total: u32:4294967295}),
-            c({total: 4294967296.0}),
-            c({total: "3"}),
-            c({total: ""})
-        ],
-        [l(3.0), l(0.5), l(1e300), l("x"), l("3.0"), l(3), l(9007199254740993)]
-    )
-}"#,
-    prints(
-        "[[true, true, true, true, true], [true, true, true, true, true], \
-         [true, true, true, true, true, true, true]]"
-    )
-);
-
-// A union member whose own members write values of two classes is tried
-// by the class of each value it writes: a struct or a variant it holds is
-// outside the class, the f64 or the string beside it inside.
-run!(
-    json_union_typedef_members_of_two_classes_read_back,
-    r#"{
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    type Shape = [{w: f64, h: f64}, f64];
-    type Ev = [`Click(i64), string];
-    type D = [duration, string];
-    let a = |v: [Shape, string]| -> bool {
-        let r: Result<[Shape, string], E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let b = |v: [Ev, i64]| -> bool {
-        let r: Result<[Ev, i64], E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    let c = |v: [D, bool]| -> bool {
-        let r: Result<[D, bool], E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    (
-        [a({w: 1.0, h: 2.0}), a(1.5), a(3.0), a("1.5"), a("x")],
-        [b(`Click(1)), b("1"), b("x"), b(1)],
-        [c(duration:3.s), c("true"), c("x"), c(true)]
-    )
-}"#,
-    prints(
-        "[[true, true, true, true, true], [true, true, true, true], [true, true, true, true]]"
-    )
-);
-
-// A recursive member's values are all in the class of its own reader, so
-// a tuple beside it keeps to its own values.
-run!(
-    json_recursive_member_beside_a_tuple_reads_back,
-    r#"{
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    type B = [(string, string), null];
-    type R = [Array<R>, i64];
-    let rt = |v: [B, R]| -> bool {
-        let r: Result<[B, R], E> = json::read(json::write_str(v)$);
-        r$ == v
-    };
-    [rt(("a", "b")), rt(("1", "2")), rt(null), rt([1, 2]), rt([[1], 2]), rt(5), rt([])]
-}"#,
-    prints("[true, true, true, true, true, true, true]");
-    FuseExpect::None
-);
-
-// An f64 member keeps a whole float beside an integer, and a duration
-// key beside a bool reads back.
-run!(
-    json_float_members_written_apart_read_back,
-    r#"{
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    let a: [f64, u8] = f64:2.0;
-    let b: [f64, u8] = u8:2;
-    let c: Map<[duration, bool], i64> = {duration:2.s => 1, true => 2};
-    let ra: Result<[f64, u8], E> = json::read(json::write_str(a)$);
-    let rb: Result<[f64, u8], E> = json::read(json::write_str(b)$);
-    let rc: Result<Map<[duration, bool], i64>, E> = json::read(json::write_str(c)$);
-    (ra$ == a, rb$ == b, rc$ == c)
-}"#,
-    prints("[true, true, true]")
-);
-
-// An array of whole floats reads back as itself beside a tuple of
-// integers its length: the tuple would read each float as an integer.
-run!(
-    json_whole_floats_read_back_beside_an_integer_tuple,
-    r#"{
-    type U = [(i64, i64), Array<f64>];
-    type E = [`JsonErr(string), `InvalidCast(string)];
-    let a: U = [1.0, 2.0];
-    let t: U = (1, 2);
-    let ra: Result<U, E> = json::read(json::write_str(a)$);
-    let rt: Result<U, E> = json::read(json::write_str(t)$);
-    (ra$ == a, rt$ == t)
-}"#,
-    prints("[true, true]")
-);
-
+// Two keys of a map under `Any` that write as one value are refused when
+// written: the reader would merge them.
 run!(colliding_pair_keys_are_refused, r#"{
-    let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
+    let m: Map<Any, i64> = {(1, 2) => 1, [<1, 2>] => 2};
     select json::write_str({keys: m}) {
         error as e => "[e]",
         _ => "written"
@@ -1416,7 +599,7 @@ run!(colliding_pair_keys_are_refused, r#"{
 }; FuseExpect::Jit);
 
 run!(colliding_bytes_and_array_keys_are_refused, r#"{
-    let m: Map<[bytes, Array<i64>], i64> = {bytes:AQI= => 1, [1, 2] => 2};
+    let m: Map<Any, i64> = {bytes:AQI= => 1, [1, 2] => 2};
     select json::write_str({keys: m}) {
         error as e => "[e]",
         _ => "written"
@@ -1434,13 +617,162 @@ run!(decimal_excess_precision_rounds, r#"{
     [a$ == expected, b$ == expected, c$ == expected]
 }"#, prints("[true, true, true]"); FuseExpect::Jit);
 
-// A decimal is written as an exact JSON number, so beside a string it
-// reads back as itself (small-pkgs-08).
+// A decimal is written as an exact JSON number, so it reads back as
+// itself (small-pkgs-08).
 run!(json_decimal_written_as_an_exact_number, r#"{
     type E = [`JsonErr(string), `InvalidCast(string)];
     let d = decimal:12345678901234567890.123456789;
-    let u: [decimal, string] = decimal:1.10;
-    let back: Result<[decimal, string], E> = json::read(json::write_str(u)$);
+    let u: [decimal, null] = decimal:1.10;
+    let back: Result<[decimal, null], E> = json::read(json::write_str(u)$);
     let exact: Result<decimal, E> = json::read(json::write_str(d)$);
     (json::write_str(d)$, json::write_str(u)$, back$ == u, exact$ == d)
 }"#, prints(r#"["12345678901234567890.123456789", "1.10", true, true]"#); FuseExpect::None);
+
+/// The forms JSON and TOML write: abstract values, `Transparent`, a
+/// union of tags, an option, a map keyed by strings and one keyed by an
+/// abstract type.
+const FORMS: &str = r#"
+type Ito = Abstract<i64>;
+impl Cast for Ito {
+    let to_value = |x: Ito| x.0;
+    let from_value = |v| select cast<i64>(v) { error as e => e, n => Ito(n) }
+};
+type Port = Abstract<u16>;
+impl Cast for Port {};
+type Doc = {
+    i: Ito,
+    p: Port,
+    t: Transparent<Port>,
+    o: [Transparent<Port>, null],
+    u: Array<[Ito, Port, `A, `B(i64), null]>,
+    m: Map<string, Ito>,
+    k: Map<Ito, string>
+};
+let d: Doc = {
+    i: Ito(3),
+    p: Port(u16:80),
+    t: Transparent(Port(u16:81)),
+    o: null,
+    u: [Ito(4), Port(u16:82), `A, `B(5), null],
+    m: {"a" => Ito(6)},
+    k: {Ito(7) => "seven"}
+};
+"#;
+
+fn with_forms(body: &str) -> String {
+    format!("{{{FORMS}{body}}}")
+}
+
+// An abstract value is written inside an object its type's name keys, its
+// data inside (its to_value, else its representation at its own type),
+// and `Transparent<T>` writes T's data bare; a union of tags beside null
+// and a map keyed by an abstract type, written as its pairs, read back.
+run!(json_forms_read_back, &with_forms(r#"
+type E = [`JsonErr(string), `InvalidCast(string)];
+let e = {d with o: Transparent(Port(u16:83))};
+let j = json::write_str(d)$;
+let back: Result<Doc, E> = json::read(j);
+let eb: Result<Doc, E> = json::read(json::write_str(e)$);
+(j, back$ == d, eb$ == e)
+"#), prints(r#"["{\"i\":{\"Ito\":3},\"k\":[[{\"Ito\":7},\"seven\"]],\"m\":{\"a\":{\"Ito\":6}},\"o\":null,\"p\":{\"Port\":80},\"t\":81,\"u\":[{\"Ito\":4},{\"Port\":82},\"A\",[\"B\",5],null]}", true, true]"#); FuseExpect::Jit);
+
+// A read takes an abstract value only from the object its type's name
+// keys, and under `Transparent` only its data bare.
+run!(json_abstract_reads_only_its_object, &with_forms(r#"
+type E = [`JsonErr(string), `InvalidCast(string)];
+let bare: Result<Ito, E> = json::read("3");
+let other: Result<Ito, E> = json::read("{\"Port\": 3}");
+let t: Result<Transparent<Ito>, E> = json::read("3");
+let tw: Result<Transparent<Ito>, E> = json::read("{\"Ito\": 3}");
+(bare, other, t$ == Transparent(Ito(3)), tw)
+"#), prints(r#"[error:["InvalidCast", "can't cast 3 to Ito: expected an object whose one key is Ito"], error:["InvalidCast", "can't cast [[\"Port\", 3]] to Ito: expected an object whose one key is Ito"], true, error:["InvalidCast", "can't cast [[\"Ito\", 3]] to Ito: can't cast [[\"Ito\", 3]] to i64: no primitive conversion"]]"#); FuseExpect::Jit);
+
+// A `T` written bare that writes null reads back from `[Transparent<T>,
+// null]` as the option's null.
+run!(json_transparent_null_reads_back_as_the_option, r#"{
+    type Z = Abstract<i64>;
+    impl Cast for Z {
+        let to_value = |z: Z| -> [i64, null] select z.0 { 0 => null, n => n };
+        let from_value = |v| select cast<[i64, null]>(v) {
+            error as e => e,
+            null as _ => Z(0),
+            n => Z(n)
+        }
+    };
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let a: [Transparent<Z>, null] = Transparent(Z(0));
+    let b: [Transparent<Z>, null] = Transparent(Z(5));
+    let ra: Result<[Transparent<Z>, null], E> = json::read(json::write_str(a)$);
+    let rb: Result<[Transparent<Z>, null], E> = json::read(json::write_str(b)$);
+    (json::write_str(a)$, ra$, rb$ == b)
+}"#, prints(r#"["null", null, true]"#); FuseExpect::Jit);
+
+// An abstract type whose representation holds itself is a union of tags,
+// which the check walks once.
+run!(json_abstract_holding_itself_reads_back, r#"{
+    type N = Abstract<[N, `L(i64)]>;
+    impl Cast for N {};
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let v = N(N(`L(1)));
+    let r: Result<N, E> = json::read(json::write_str(v)$);
+    (json::write_str(v)$, r$ == v)
+}"#, prints(r#"["{\"N\":{\"N\":[\"L\",1]}}", true]"#); FuseExpect::Jit);
+
+// A union whose members a tag does not tell apart is refused as a written
+// value too: an abstract type beside a number, `Transparent` beside a tag,
+// two members under one tag, an open member beside another, and
+// `Transparent` over a type that is not abstract.
+run!(
+    json_written_untagged_union_refused,
+    r#"{
+    type Ito = Abstract<i64>;
+    impl Cast for Ito {};
+    let v: [Ito, u8] = u8:3;
+    json::write_str(v)
+}"#,
+    refused("'a: JsonData refuses [u8, Ito]: u8 in [u8, Ito] has no tag")
+);
+
+run!(
+    json_written_transparent_beside_a_tag_refused,
+    r#"{
+    type P = Abstract<i64>;
+    impl Cast for P {};
+    let v: [Transparent<P>, `A] = `A;
+    json::write_str(v)
+}"#,
+    refused(
+        "'a: JsonData refuses [Transparent<P>, `A]: Transparent<P> in [Transparent<P>, `A] has no tag"
+    )
+);
+
+run!(
+    json_members_sharing_a_tag_refused,
+    r#"{
+    type A = Abstract<i64>;
+    impl Cast for A {};
+    let v: [A, `A] = `A;
+    json::write_str(v)
+}"#,
+    refused("'a: JsonData refuses [A, `A]: A and `A in [A, `A] share the tag A")
+);
+
+run!(
+    json_open_member_beside_a_tag_refused,
+    r#"{
+    let f = |b: bool, x| json::write_str(select b { true => `A, false => x });
+    f(true, `B)
+}"#,
+    refused("JsonData refuses")
+);
+
+run!(
+    json_transparent_over_a_type_not_abstract_refused,
+    r#"{
+    let v: Transparent<i64> = Transparent(3);
+    json::write_str(v)
+}"#,
+    refused(
+        "'a: JsonData refuses Transparent<i64>: Transparent<i64> holds a type that is not abstract, which JSON writes bare already"
+    )
+);

@@ -191,13 +191,15 @@ async fn the_deepest_written_table_reads_back() -> Result<()> {
     Ok(())
 }
 
-// A bare variant key is written as its tag, which a read casts back.
+// A map keyed by bare variants is written as its pairs, each key its tag,
+// which a read casts back; a map keyed by strings is a table.
 run!(toml_variant_map_key_reads_back, r#"{
     let m: Map<[`A, `B], i64> = {`A => 1, `B => 2};
     let s = toml::write_str({m})$;
     let r: {m: Map<[`A, `B], i64>} = toml::read(s)?;
-    (s, r.m == m)
-}"#, prints(r#"["[m]\nA = 1\nB = 2\n", true]"#); FuseExpect::Jit);
+    let n: Map<string, i64> = {"A" => 1};
+    (s, r.m == m, toml::write_str({n})$)
+}"#, prints(r#"["m = [[\"A\", 1], [\"B\", 2]]\n", true, "[n]\nA = 1\n"]"#); FuseExpect::Jit);
 
 // An offset date-time reads as its instant, the TOML 1.1 form without
 // seconds and a numeric offset included; a local date-time names no
@@ -205,8 +207,8 @@ run!(toml_variant_map_key_reads_back, r#"{
 run!(
     toml_offset_datetimes_read_as_instants,
     r#"{
-    let r = |s: string| -> [datetime, string] {
-        let d: {t: [datetime, string]} = toml::read(s)$;
+    let r = |s: string| -> Any {
+        let d: {t: Any} = toml::read(s)$;
         d.t
     };
     [
@@ -234,7 +236,8 @@ run!(
             },
             _ => false,
         }
-    }
+    };
+    FuseExpect::None
 );
 
 run!(
@@ -253,183 +256,7 @@ run!(
     prints("[true, true, true, true, true, true]")
 );
 
-// A map keyed by a type that may read a key's text as a string writes its
-// keys as pairs where any is not a string: as a table's key Id(3) would
-// read back as Id("3").
-run!(
-    toml_abstract_key_that_may_write_a_string_reads_back,
-    r#"{
-    type Id = Abstract<[i64, string]>;
-    impl Cast for Id {};
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    type D = {k: Map<Id, string>};
-    let t = |v: D| -> bool {
-        let r: Result<D, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    [t({k: {Id(3) => "a"}}), t({k: {Id("x") => "b"}}), t({k: {Id(3) => "a", Id("x") => "b"}})]
-}"#,
-    prints("[true, true, true]")
-);
-
-// An abstract key type read as its representation reads a key's text as
-// its representation does, whatever its `to_value` writes, so its keys
-// make a table, a document's root among them.
-run!(
-    toml_abstract_key_read_as_its_representation_writes_a_table,
-    r#"{
-    type Id = Abstract<i64>;
-    impl Cast for Id { let to_value = |x| x.0 };
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    let v: Map<Id, string> = {Id(3) => "a", Id(4) => "b"};
-    let w = select toml::write_str(v) { error as e => "[e]", w => w };
-    let r: Result<Map<Id, string>, E> = toml::read(w);
-    [w == "3 = \"a\"\n4 = \"b\"\n", select r { error as _ => false, b => b == v }]
-}"#,
-    prints("[true, true]")
-);
-
-// TOML writes neither a duration nor a decimal as a value, but writes
-// either as a table's key: a duration's whole seconds without a point, a
-// decimal's text.
-run!(
-    toml_duration_and_decimal_keys_read_back,
-    r#"{
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    type D = {k: Map<duration, i64>};
-    type N = {k: Map<decimal, i64>};
-    let d = |v: D| -> bool {
-        let r: Result<D, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    let n = |v: N| -> bool {
-        let r: Result<N, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    [
-        d({k: {duration:3.s => 1, duration:3.5s => 2}}),
-        n({k: {cast<decimal>(3)$ => 1, cast<decimal>(3.5)$ => 2}})
-    ]
-}"#,
-    prints("[true, true]")
-);
-
-// A decimal reads no TOML datetime, so beside an abstract datetime, tried
-// after every member keeping the data's class, it takes none of its values.
-run!(
-    toml_decimal_beside_an_abstract_datetime_reads_back,
-    r#"{
-    type Idt = Abstract<datetime>;
-    impl Cast for Idt {};
-    type Dec = decimal;
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    type D = {k: [Dec, Idt]};
-    let t = |v: D| -> bool {
-        let r: Result<D, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    [t({k: Idt(datetime:"1970-01-01T00:00:03Z")}), t({k: Idt(datetime:"2020-01-01T00:00:00Z")})]
-}"#,
-    prints("[true, true]")
-);
-
-run!(
-    toml_target_duration_key_beside_an_integer_refused,
-    r#"{
-    type D = {k: Map<[duration, i64], string>};
-    let v: D = {k: {duration:3.s => "a"}};
-    let r: Result<D, [`TomlErr(string), `InvalidCast(string)]> =
-        toml::read(toml::write_str(v)$);
-    r
-}"#,
-    refused("'b: TomlData refuses { k: Map<[i64, duration], string> }")
-);
-
-run!(
-    toml_target_decimal_key_beside_a_datetime_refused,
-    r#"{
-    type D = {k: Map<[datetime, decimal], i64>};
-    let v: D = {k: {cast<decimal>(3)$ => 1}};
-    let r: Result<D, [`TomlErr(string), `InvalidCast(string)]> =
-        toml::read(toml::write_str(v)$);
-    r
-}"#,
-    refused("'b: TomlData refuses { k: Map<[datetime, decimal], i64> }")
-);
-
-// The primitive `array` writes an array of any data, which a tuple reads.
-run!(
-    toml_target_primitive_array_beside_a_tuple_refused,
-    r#"{
-    type D = {k: [array, (i64, i64)]};
-    let v: D = {k: (1, 2)};
-    let r: Result<D, [`TomlErr(string), `InvalidCast(string)]> =
-        toml::read(toml::write_str(v)$);
-    r
-}"#,
-    refused("'b: TomlData refuses { k: [array, (i64, i64)] }")
-);
-
-// A float key's text keeps its point, so a whole one reads back as the
-// float beside a datetime, which reads the same digits as seconds.
-run!(
-    toml_float_key_beside_a_datetime_reads_back,
-    r#"{
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    type D = {k: Map<[f64, datetime], i64>};
-    let t = |v: D| -> bool {
-        let r: Result<D, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    [
-        t({k: {3.0 => 1}}),
-        t({k: {1e20 => 1}}),
-        t({k: {0.5 => 1}}),
-        t({k: {18014398509481984.0 => 1, datetime:"1970-01-01T00:00:03Z" => 2}})
-    ]
-}"#,
-    prints("[true, true, true, true]")
-);
-
-// An integer reads a TOML datetime as its seconds, so an abstract datetime
-// beside it is refused as data, but a table's keys are text, which the
-// integer reads only as an integer.
-run!(
-    toml_target_abstract_datetime_beside_an_integer_refused,
-    r#"{
-    type Id = Abstract<datetime>;
-    impl Cast for Id {};
-    let v: {k: [Id, i64]} = {k: Id(datetime:"1970-01-01T00:00:03Z")};
-    let r: Result<{k: [Id, i64]}, [`TomlErr(string), `InvalidCast(string)]> =
-        toml::read(toml::write_str(v)$);
-    r
-}"#,
-    refused("'b: TomlData refuses { k: [i64, Id] }")
-);
-
-run!(
-    toml_abstract_datetime_key_beside_an_integer_reads_back,
-    r#"{
-    type Id = Abstract<datetime>;
-    impl Cast for Id {};
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    type D = {k: Map<[Id, i64], string>};
-    let t = |v: D| -> bool {
-        let r: Result<D, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    [
-        t({k: {Id(datetime:"1970-01-01T00:00:03Z") => "a"}}),
-        t({k: {3 => "a"}}),
-        t({k: {Id(datetime:"2020-01-01T00:00:00Z") => "a", 1577836800 => "b"}})
-    ]
-}"#,
-    prints("[true, true, true]")
-);
-
-// A large whole f32 is written as its shortest text (1234567936 as
-// 1234568000.0), which an integer member holds exactly and the f32 only
-// rounded: a target holding one beside such an integer is refused.
+// An f32 beside an integer is a union with no tags, refused as a target.
 run!(
     toml_target_f32_beside_an_integer_refused,
     r#"{
@@ -437,142 +264,7 @@ run!(
         toml::read(toml::write_str({k: f32:2.0})$);
     r
 }"#,
-    refused("'b: TomlData refuses { k: [i64, f32] }")
-);
-
-// An f32 beside an integer no wider than 16 bits reads back as written.
-run!(
-    toml_f32_beside_a_narrow_integer_reads_back,
-    r#"{
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    type D = {k: [f32, u16]};
-    let t = |v: D| -> bool {
-        let r: Result<D, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    [t({k: f32:0.1}), t({k: f32:2.0}), t({k: u16:3}), t({k: u16:65535}), t({k: f32:1e10})]
-}"#,
-    prints("[true, true, true, true, true]")
-);
-
-// A tuple's parts are judged together: the f32 tuple's own reading of
-// 0.1 rounds, the other reads both parts exactly.
-run!(
-    toml_target_f32_tuple_beside_an_exact_reader_refused,
-    r#"{
-    let r: Result<{k: [(f32, u8), (f64, f32)]}, [`TomlErr(string), `InvalidCast(string)]> =
-        toml::read(toml::write_str({k: (f32:0.1, u8:1)})$);
-    r
-}"#,
-    refused("'b: TomlData refuses { k: [(f32, u8), (f64, f32)] }")
-);
-
-run!(
-    toml_target_string_tuple_beside_a_number_tuple_refused,
-    r#"{
-    let r: Result<{k: [(string, f32), (i64, f64)]}, [`TomlErr(string), `InvalidCast(string)]> =
-        toml::read(toml::write_str({k: ("1", f32:0.1)})$);
-    r
-}"#,
-    refused("'b: TomlData refuses { k: [(i64, f64), (string, f32)] }")
-);
-
-run!(
-    toml_target_recursive_members_refused,
-    r#"{
-    type TA = [i64, `Cons(f32, TA)];
-    type TB = [f64, `Cons(f64, TB)];
-    let v: [TA, TB] = `Cons(f32:0.1, 3);
-    let r: Result<{k: [TA, TB]}, [`TomlErr(string), `InvalidCast(string)]> =
-        toml::read(toml::write_str({k: v})$);
-    r
-}"#,
-    refused("'b: TomlData refuses { k: [TA, TB] }")
-);
-
-// A union member of a union is tried where any of its members keeps the
-// data's class, as a scalar is.
-run!(
-    toml_union_typedef_members_read_back,
-    r#"{
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    type Num = [i64, f64];
-    type Txt = [string, bool];
-    type D = {k: [Num, string], t: [Txt, i64]};
-    let t = |v: D| -> bool {
-        let r: Result<D, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    [t({k: 3, t: 4}), t({k: 3.0, t: "4"}), t({k: "3", t: true}), t({k: "x", t: "true"})]
-}"#,
-    prints("[true, true, true, true]")
-);
-
-// A primitive set reads a value as one member, and a member the value
-// read back already is takes it whatever the union's order.
-run!(
-    toml_primitive_set_beside_a_member_reads_back,
-    r#"{
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    type Amount = [f64, string];
-    type Count = u32;
-    type Label = [string, i64];
-    type Score = f64;
-    type D = {c: [Amount, Count], l: [Label, Score]};
-    let t = |v: D| -> bool {
-        let r: Result<D, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    [
-        t({c: u32:0, l: 3.0}),
-        t({c: u32:4294967295, l: 0.5}),
-        t({c: 4294967296.0, l: "x"}),
-        t({c: "3", l: "3.0"}),
-        t({c: "", l: 3})
-    ]
-}"#,
-    prints("[true, true, true, true, true]")
-);
-
-// A union member whose own members write values of two classes is tried
-// by the class of each value it writes.
-run!(
-    toml_union_typedef_members_of_two_classes_read_back,
-    r#"{
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    type Shape = [{w: f64, h: f64}, f64];
-    type Ev = [`Click(i64), string];
-    type D = {s: [Shape, string], e: [Ev, i64]};
-    let t = |v: D| -> bool {
-        let r: Result<D, E> = toml::read(toml::write_str(v)$);
-        r$ == v
-    };
-    [
-        t({s: {w: 1.0, h: 2.0}, e: `Click(1)}),
-        t({s: 1.5, e: "1"}),
-        t({s: "1.5", e: 1}),
-        t({s: "x", e: "x"})
-    ]
-}"#,
-    prints("[true, true, true, true]");
-    FuseExpect::None
-);
-
-run!(
-    toml_recursive_members_read_back,
-    r#"{
-    type TA = [`NA, (f32, TA)];
-    type TB = [`NB, (f64, TB)];
-    type E = [`TomlErr(string), `InvalidCast(string)];
-    let rt = |v: [TA, TB]| -> bool {
-        let r: Result<{k: [TA, TB]}, E> = toml::read(toml::write_str({k: v})$);
-        r$.k == v
-    };
-    let a: TA = (f32:0.1, (f32:2.5, `NA));
-    let b: TB = (0.1, (3.0, `NB));
-    [rt(a), rt(b), rt(`NA), rt(`NB)]
-}"#,
-    prints("[true, true, true, true]")
+    refused("'b: TomlData refuses { k: [i64, f32] }: i64 in [i64, f32] has no tag")
 );
 
 run!(
@@ -587,8 +279,10 @@ run!(
     prints("[true, [\"Cons\", i64:1, [\"Cons\", i64:2, \"Nil\"]]]")
 );
 
+// Two keys of a map under `Any` that write as one value are refused when
+// written: the reader would merge them.
 run!(colliding_pair_keys_are_refused, r#"{
-    let m: Map<[(i64, i64), List<i64>], i64> = {(1, 2) => 1, [<1, 2>] => 2};
+    let m: Map<Any, i64> = {(1, 2) => 1, [<1, 2>] => 2};
     select toml::write_str({keys: m}) {
         error as e => "[e]",
         _ => "written"
@@ -598,7 +292,7 @@ run!(colliding_pair_keys_are_refused, r#"{
 }; FuseExpect::Jit);
 
 run!(colliding_bytes_and_array_keys_are_refused, r#"{
-    let m: Map<[bytes, Array<i64>], i64> = {bytes:AQI= => 1, [1, 2] => 2};
+    let m: Map<Any, i64> = {bytes:AQI= => 1, [1, 2] => 2};
     select toml::write_str({keys: m}) {
         error as e => "[e]",
         _ => "written"
@@ -606,3 +300,46 @@ run!(colliding_bytes_and_array_keys_are_refused, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.contains("two keys"))
 }; FuseExpect::Jit);
+
+// TOML writes the forms JSON does: an abstract value as a table its
+// type's name keys, `Transparent<T>` as T's data bare, a map keyed by an
+// abstract type as its pairs, and they read back.
+run!(toml_forms_read_back, r#"{
+    type Ito = Abstract<i64>;
+    impl Cast for Ito {
+        let to_value = |x: Ito| x.0;
+        let from_value = |v| select cast<i64>(v) { error as e => e, n => Ito(n) }
+    };
+    type Port = Abstract<u16>;
+    impl Cast for Port {};
+    type Doc = {
+        i: Ito,
+        t: Transparent<Port>,
+        o: [Transparent<Port>, null],
+        u: Array<[Ito, Port, `A, `B(i64)]>,
+        k: Map<Ito, string>
+    };
+    type E = [`TomlErr(string), `InvalidCast(string)];
+    let d: Doc = {
+        i: Ito(3),
+        t: Transparent(Port(u16:81)),
+        o: null,
+        u: [Ito(4), Port(u16:82), `A, `B(5)],
+        k: {Ito(7) => "seven"}
+    };
+    let s = toml::write_str(d)$;
+    let back: Result<Doc, E> = toml::read(s);
+    (s, back$ == d)
+}"#, prints(r#"["k = [[{ Ito = 7 }, \"seven\"]]\nt = 81\nu = [{ Ito = 4 }, { Port = 82 }, \"A\", [\"B\", 5]]\n\n[i]\nIto = 3\n", true]"#); FuseExpect::Jit);
+
+// TOML has no null: an option that is null is written only as a struct's
+// field, which it leaves out; anywhere else, an array's element or an
+// abstract value's data, it is refused when written.
+run!(toml_null_outside_a_field_refused_when_written, r#"{
+    type Z = Abstract<i64>;
+    impl Cast for Z { let to_value = |z: Z| -> [i64, null] null };
+    let a: Array<[i64, null]> = [1, null];
+    let z = Z(0);
+    (select toml::write_str({a}) { error as e => "[e]", s => s },
+     select toml::write_str({z}) { error as e => "[e]", s => s })
+}"#, prints(r#"["error:`TomlErr(\"cannot represent null in TOML\")", "error:`TomlErr(\"cannot represent null in TOML\")"]"#); FuseExpect::Jit);

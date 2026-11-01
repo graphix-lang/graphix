@@ -316,14 +316,20 @@ tick it. Usually the first thing you do with a value of type `Any` is call
 expression to match its type (more on select later). A cast keeps a
 value's kind: a number converts to another number (an integer type only
 when it holds the value exactly), and a union target takes a member of
-the value's own kind first, so `cast<[i8, Array<f64>]>([1, 2])` is
-`[1., 2.]`. A float or a decimal, or its text, goes to an integer member
-only where no `f32`, `f64` or `decimal` member holds it exactly:
-`cast<[i64, decimal]>(3.0)` and `cast<[i64, decimal]>("3.0")` are both
-the decimal 3, while `cast<[i64, datetime]>("3.0")` is the integer 3.
-Where no member holds a number exactly, one that holds it rounded to its
-precision comes before one that would drop part of it:
-`cast<[i64, f32]>(0.1)` is the `f32` 0.1, not the integer 0.
+the value's own kind first, whatever another kind's member would keep, so
+`cast<[i8, Array<f64>]>([1, 2])` is `[1., 2.]`, `cast<[f32, string]>(0.1)`
+is the `f32` 0.1 and `cast<[i64, string]>(3.5)` the integer 3. Text tries
+the members of the kind it parses as next: `cast<[duration, decimal]>("3.0")`
+is the decimal 3.0, as `cast<[duration, decimal]>(3.0)` is. Among the
+members of one kind, one that holds the value exactly comes first, then one
+that holds it rounded to its precision, then one that would drop part of
+it: `cast<[i64, f32]>(0.1)` is the `f32` 0.1, not the integer 0. A float
+or a decimal, or its text, goes to an integer member only where no `f32`,
+`f64` or `decimal` member holds it exactly: `cast<[i64, decimal]>(3.0)`
+and `cast<[i64, decimal]>("3.0")` are both the decimal 3.0 (a decimal made
+of a whole float keeps its point), while `cast<[i64, datetime]>("3.0")` is
+the integer 3. A bool is held exactly by the number 1 or 0:
+`cast<[f32, u8]>(true)` is the `u8` 1.
 Across kinds a cast only parses a string (`cast<i64>("42")`,
 `cast<bool>("true")`), prints a number, bool, datetime or duration
 plainly (`cast<string>(42)` is `"42"`, and a whole float keeps its

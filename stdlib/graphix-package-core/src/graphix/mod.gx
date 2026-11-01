@@ -42,6 +42,8 @@ let filter_map_pairs = |m: Map<'k, 'v>, f: fn(kv: ('k, 'v)) -> [`Keep(('k2, 'v2)
 let filter_pairs = |m: Map<'k, 'v>, f: fn(kv: ('k, 'v)) -> bool throws 'e| -> Map<'k, 'v> throws 'e 'map_filter;
 let fold_pairs = |m: Map<'k, 'v>, init: 'b, f: fn(acc: 'b, kv: ('k, 'v)) -> 'b throws 'e| -> 'b throws 'e 'map_fold;
 
+impl<'a> Cast for Transparent<'a> {};
+
 impl Collection for Array<'_> {
     let fold = |a, init, f| 'array_fold;
     let filter_map = |a, f| 'array_filter_map;

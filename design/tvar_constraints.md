@@ -708,138 +708,46 @@ and `array::dedup` require it; `==`, `!=` and `uniq` require only
 
 ### `JsonData`, `TomlData`: what a text reader can tell apart
 
-`'b: JsonData` (`json::read`'s target) and `'b: TomlData` (`toml::read`'s)
-hold of a type with no union anywhere in it one of whose members writes
-a value of the format that reads back as another (`Type::text_ambiguity`,
-`typ/textdata.rs`). Values are judged by class (`Token`: an integer by
-which types hold it, a whole float, a fraction an f32 holds or rounds, a
-decimal no float holds, the text of each, a bool's, a datetime's, a
-tag's, other text), as the format writes them (JSON writes a datetime
-and a variant's tag as strings, a duration as its seconds, a decimal as
-an exact number; TOML has no null and a native datetime, and writes a
-duration or a decimal only as a table's key; an object reads as its
-sorted key/value pairs; a map whose keys are scalars and no string
-writes them as text, a float's with its point and a duration's whole
-seconds without, unless its key type may read a text as a string
-(`Type::may_read_text_as_string`, which the writer asks too: a string,
-`Any`, an abstract read by its `from_value`, or one read as its
-representation that may), and a key's union is judged as data only
-where its map may write pairs, `Shapes::data`; the primitive `array` is
-an array of any data, each element a value the reader makes, held as
-made), and
-each member's reading of a value whole,
-as the cast's pick does: a payload variant whose tag the data names
-first (taken whatever its reading rounds), the round its reading falls
-in (exact, then rounded), the pass (a tuple, then a struct, keeping the
-data's class, then any member keeping it, then the rest), the union's
-order within a pass, where a member the value read back already is (the
-i64, f64, decimal, string, bool or null the reader makes, or TOML's
-datetime; an array of such) takes it at once (`cast_member`'s
-`Ok(None)`), and `Choice`: a reading that crosses the line between
-integers and reals gives way to a later one keeping every number its
-kind. Each pair of members is judged alone, so a third member whose
-crossing reading comes first, leaving a reading of a number as no number
-to be replaced by a kept one, is not seen: `[N, datetime, Shape]` in
-TOML (`N` an abstract integer, ``Shape = [{w: f64}, f64]``) is refused
-though it reads back (textdata-pairwise-01). A primitive set reads a value as one member (`Shapes::pick`, used for its
-own members and as a member of a union): the one the value read back
-already is, else the first that holds it exactly by class and then bit
-(real text an integer holds going to the first later real that holds it
-too), else the first real that rounds it, a member that may miss some
-value of a class (an f32 a large f64, a u8 a negative integer) letting
-the next one read that value; so with `type Amount = [f64, string]`,
-`[Amount, i64]` reads back (an integer is the i64's at once, and the
-set reads one as an f64, never as its text), as does `[Label, f64]`
-with `type Label = [string, i64]`. A union is in the data's class where any
-member is, whichever member reads it, an array where all its elements
-are, a tuple or a struct only where the pick tries it as a member, by
-its parts, and never as a part of a composite or a member of a union
-nested in a member (`in_own_class` holds no unmarked one); an abstract
-type written as its representation is built from the data, never read
-in its class; a bool reads into a float member as 1 or 0, rounded
-(`holds_rounded`), and a decimal reads neither a bool nor TOML's
-datetime. Each outcome of a written value records,
-for the writer's own member and for the other, whether its reading
-rounds and whether it leaves the data's class, and its level, the
-highest of its parts': the value as it is, built, a number read as no
-number, a number read across that line; a composite's outcomes are its
-parts' together (a tuple, a struct, a variant, a map, a list, bytes, a
-tag and an abstract are built whatever their parts), and where
-both members hold one primitive at a position its two readings are one. So `[(f32,
-u8), (f64, f64)]` is refused (`(f32:0.1, u8:1)` reads back as `(0.1,
-1.0)`, exact where the f32 rounds), as are `[f32, string]` (0.1 reads
-back as `"0.1"`), `[(string, f32), (i64, f64)]` (`("1", 0.1)` as `(1,
-0.1)`), `[(i64, duration), (u8, string)]` (`(1, 3.5s)` as `(1, "3.5")`:
-both readings leave the class and `(u8, string)` comes first) and
-`Map<[decimal, datetime], i64>` (the key `"3"` reads as a datetime),
-`[(Array<string>, i64), ((u8, u8), u8)]` (`((1, 2), 3)` as `(["1",
-"2"], 3)`: the nested tuple is outside the class, so both members are
-tried after any keeping it, in the union's order) and `[A, P]` over `type
-A = Array<f64>` and `type P = [bool, (f32, bool)]` (`(f32:0.1, true)` as
-`[0.1, 1.0]`);
-`[(f32, i64), (u8, i64)]`, `[string, i64]`, `[(u8, duration), (i64,
-string)]` and `[{a: i64}, {a: i64, b: [i64, null]}]` read back. Where a
-union holds a union other than a primitive set, its reading is any of
-that union's members', and the outer pick tries it with the members
-keeping the data's class where any of its members keeps it, else after them (`in_own_class`), judged
-for each value by the node that writes it (past every union and
-abstract): with `type Num = [i64, f64]`, `[Num, string]` reads back, as
-does `[Shape, string]` with `type Shape = [{w: f64, h: f64}, f64]`,
-whose struct is outside the class and whose f64 inside. An abstract
-type whose `Cast` implementation leaves out `to_value` writes as its
-representation; one that leaves out `from_value` reads as it, and one
-that writes `from_value` may read any value it is tried on: ``[Id,
-`A]`` is refused, as is ``[S, `A]`` where `S = Abstract<string>`'s
-implementation writes only `to_value` (what it writes is unknown here,
-but it reads `"A"` as `S("A")`); what a written `to_value` writes is
-trusted, as is what `from_value` reads where both are written
-(textdata-cast-trust-01). A
-written value is finite but passes through members that recurse into
-each other at its top levels, so a pair's outcomes are the least
-fixpoint over the pairs the walk meets (`Fixpoint`, a top-down solver:
-each starts with none and is computed when first met, reading a pair
-still being computed as it stands, and a pair whose value grows has the
-pairs that read it computed again; a pair whose computation read no pair
-short of final but itself is final when it ends, and only pairs not
-final keep their readers): `[TA, TB]` over ``type TA = [i64,
-`Cons(f32, TA)]`` and ``type TB = [f64, `Cons(f64, TB)]`` is refused. Whether a value is
-in a member's class is a least fixpoint the same way, over its finite
-values: with ``type R = [Array<R>, i64]``, every value of `R` is in its
-class. A check computes each pair once, and again only when a pair it
-read grew, so where nothing recurses once, and a chain of typedefs whose
-facts cross back one link at a time costs a few evaluations a pair; a
-pair of nodes holding no node is answered directly and kept nowhere, and
-every other pair the check meets stays until it ends: a chain of `n`
-nested unions keeps about `n^2`, and so does a group of `n` unions
-recursive in each other (`n = 512` of the generator in textdata's
-`mutual`: about 2 GB and 6 s debug, against main's 38 MB). Such sizes
-are not written by hand. What
-a node stands for through unions and abstracts written as their
-representation (whether it may write a tag, a key's forms, a field
-name, an entry) is a fold over the nodes it reaches that
-way, each met once (`Shapes::reach`, memoized per node): an abstract
-holding itself (``type N = Abstract<[N, `L(i64)]>``) ends the walk, and
-a key type whose unions share members costs a few steps a node. Whether
-a key type may read a text as a string, which a key's forms also ask, is
-a walk that expands each named type once per list of arguments and each
-abstract once (`TextAsString`), so it costs the same. A
-typedef is expanded once for each list of arguments it is applied to
-(`Shapes::refs`, keyed by the arguments' types), so `R<i64>` over
-``type R<'a> = [`Nil, `Cons('a, R<'a>)]`` is one cycle; one whose
+`'b: JsonData` (`json::read`'s target, and the json writers' value) and
+`'b: TomlData` (toml's) hold of a type every union in which tells its
+members apart by a tag the data carries (`Type::text_refusal`,
+`typ/textdata.rs`): its members other than `null` each carry one, no two
+the same, or it is one member beside `null`. A variant carries its tag;
+an abstract type its unqualified name, since the formats write its value
+inside an object of one entry keyed by that name (`{"Port":80}`) and read
+it only so. Anything else carries none: a primitive, a struct, a tuple,
+an array, a map, `Any`, an open cell (it may yet be anything), and core's
+`Transparent<T>`, which the formats write as `T`'s data bare. An error is
+no member: no data reads into one. So `` [`A, `B(i64), Port, null] `` and
+`[T, null]` hold, `[i64, string]`, `[Port, u8]`, `` [Transparent<P>, `A]
+`` and `` [`A(i64), `A(string)] `` (one variant with a union payload) do
+not, and members under one tag are refused unless they are one type. The
+union's members are its members past every union and name (a typedef
+whose body is a union, a primitive set), each judged by its constructor.
+Over a type that is not abstract `Transparent` is refused: it would change
+nothing. The walk reaches every part of the type: elements, fields,
+payloads, a map's key and value, an abstract type's representation where
+its `Cast` implementation leaves a method out (and `Transparent`'s
+parameter), each named type once per list of arguments; a typedef whose
 arguments grow at every level (``type N<'a> = [`Nil, `Cons('a,
-N<Array<'a>>)]``) has no finite shape and is refused, by the growth rule
-of the representation walks (`cast::grows_on`). Two members that write one
-value are refused even where reading it as either gives the same value:
-`[R<i64>, R<bool>]`, both of which write `` `Nil ``.
-`graphix-package-json`'s `admitted_unions_read_back` writes witnesses of
-every type textdata's unit tests admit, those over typedefs included
-(`named(..)`, its references unrolled three levels deep), and reads them
-back with the real reader, so a change to the cast's pick that textdata
-does not follow fails there. Unlike the other predicates it is judged only of the
-call's settled binding (`site_bounds`): a refusal at the bind would make
-a union target narrow to the one member that passes. It is handed to an
-open cell of its binding as `Concrete` is, so a generic reader's callers
-are judged at their sites.
+N<Array<'a>>)]``) is refused by the growth rule of the representation
+walks (`cast::grows_on`). A map's form is its key type's alone: an object
+under `string`, its pairs under any other, so its key union is judged as
+any other. `graphix-package-json`'s `admitted_types_read_back` writes
+witnesses of every type textdata's unit tests admit and reads them back
+with the real reader.
+
+The rule asks nothing of the cast's pick, which may read data as any
+member: what a union reads back is decided by the tag alone. It replaces
+a model of the pick member by member (round 5 D6), which had to follow
+every reading a member could make of another's values.
+
+Unlike the other predicates it is judged only of the call's settled
+binding (`site_bounds`): a refusal at the bind would make a union target
+narrow to the one member that passes. It is handed to an open cell of
+its binding as `Concrete` is, so a generic reader's or writer's callers
+are judged at their sites; an open cell beside another member is
+refused at the definition, since what binds it later is judged alone.
 
 An interface must declare what its implementation requires: every
 conjunct of an implementation variable the signature leaves generic

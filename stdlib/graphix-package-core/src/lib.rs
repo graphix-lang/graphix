@@ -164,12 +164,18 @@ impl CastTarget {
         }
     }
 
-    /// [`Self::read`] of data whose decimals stand for floats read exactly
-    /// ([`Type::cast_exact_floats`]).
-    pub fn read_exact_floats(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
+    /// [`Self::read`] of JSON or TOML data (`CastInput::Text`), whose
+    /// decimals stand for floats read exactly where `exact_floats`.
+    pub fn read_text(
+        &self,
+        env: &Env,
+        tag: &ArcStr,
+        v: Value,
+        exact_floats: bool,
+    ) -> Value {
         match (&self.typ, v) {
             (Some(t), v) if !matches!(v, Value::Error(_)) => {
-                self.convert(t, env, v, CastInput::ExactFloats)
+                self.convert(t, env, v, CastInput::Text { exact_floats })
             }
             (_, v) => self.read(env, tag, v),
         }
@@ -458,20 +464,6 @@ pub mod testing;
 pub use handler::{Handler, Inbox, Reply};
 pub use memo::FastMemo;
 
-/// A map key as a text format (JSON, TOML, a template's data) writes it,
-/// by its data (`abstract_value::to_data`): a string bare, a datetime in
-/// RFC3339, a duration in seconds, any other value in its naked form. A
-/// reader's cast reads back these scalar object keys. [`shape`] writes
-/// a map holding any other key as an array of pairs.
-pub fn map_key(k: &Value) -> Result<ArcStr> {
-    Ok(match graphix_compiler::abstract_value::to_data(k)? {
-        Value::String(s) => s,
-        Value::DateTime(dt) => dt.to_rfc3339().into(),
-        Value::Duration(d) => format_compact!("{}", d.as_secs_f64()).as_str().into(),
-        k => format_compact!("{}", graphix_compiler::typ::Naked(&k)).as_str().into(),
-    })
-}
-
 /// How a writer serializes a value: an object's entries or a sequence's
 /// elements, each with the type that directs it, or a leaf.
 pub enum Shape {
@@ -482,11 +474,24 @@ pub enum Shape {
 }
 
 /// Whose keys an object's are: a struct's fields, which a cast reads
-/// back as null when one is left out, or a map's, which are data.
+/// back as null when one is left out, or data (a map's, an abstract
+/// value's name).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keys {
     Fields,
     Data,
+}
+
+/// How a writer writes an abstract value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Abstracts {
+    /// As an object of one entry keyed by its type's name, the data its
+    /// `Cast` implementation writes inside (JSON, TOML), so a reader tells
+    /// it from every other value; a `Transparent` value as its parameter's
+    /// data, under no key.
+    Wrapped,
+    /// As the data its `Cast` implementation writes (a template's data).
+    Bare,
 }
 
 /// The f64 a text writer gives an f32: the one its shortest decimal
@@ -495,52 +500,88 @@ pub fn f32_as_written(n: f32) -> f64 {
     format_compact!("{n}").parse().unwrap_or(n as f64)
 }
 
-/// `v` as a writer writes it, with the type that directs it: an abstract
-/// value is the data its `Cast` implementation makes of it, under its
-/// representation's type when that is the data, else under none. What
-/// `abstract_value::to_data` refuses is refused.
+/// The data the abstract value `v`, `depth` implementations into a
+/// write, is written as, with the type that directs it: its
+/// representation's type when that is the data, else none.
+fn data_of(env: &Env, v: &Value, depth: usize) -> Result<(Option<Type>, Value)> {
+    use graphix_compiler::abstract_value::{Written, written_as};
+    Ok(match written_as(v, depth)? {
+        Written::Representation(g) => (
+            env.abstract_reps.get(&g.id).map(|r| r.instantiate_with(&g.params)),
+            g.payload.clone(),
+        ),
+        Written::Ran(d) => (None, d),
+    })
+}
+
+/// `v` as a writer writes it, with the type that directs it, or under
+/// [`Abstracts::Wrapped`] the name and data of the abstract value it
+/// is. What `abstract_value::to_data` refuses is refused.
 fn written<'a>(
     env: &Env,
     mut t: Option<Type>,
     v: &'a Value,
-) -> Result<(Option<Type>, Cow<'a, Value>)> {
-    use graphix_compiler::abstract_value::{Written, written_as};
+    abstracts: Abstracts,
+) -> Result<(Option<Type>, Cow<'a, Value>, Option<ArcStr>)> {
+    use graphix_compiler::{abstract_value, typ::AbstractId};
     let mut v = Cow::Borrowed(v);
     for depth in 0.. {
-        if !matches!(&*v, Value::Abstract(_)) {
-            break;
-        }
-        v = Cow::Owned(match written_as(&v, depth)? {
-            Written::Representation(g) => {
-                t = env.abstract_reps.get(&g.id).map(|r| r.instantiate_with(&g.params));
-                g.payload.clone()
+        let Value::Abstract(_) = &*v else { break };
+        let bare = match (abstracts, abstract_value::get(&v)) {
+            (Abstracts::Bare, _) => None,
+            (Abstracts::Wrapped, Some(g)) if g.id == AbstractId::transparent() => {
+                Some((g.params.first().cloned(), g.payload.clone()))
             }
-            Written::Ran(d) => {
-                t = None;
-                d
+            (Abstracts::Wrapped, g) => {
+                let name = g.map(|g| g.name.clone());
+                let (t, d) = data_of(env, &v, depth)?;
+                return Ok((t, Cow::Owned(d), name));
             }
-        });
+        };
+        let (dt, d) = match bare {
+            Some((pt, p @ Value::Abstract(_))) => {
+                data_of(env, &p, depth).map(|(t, d)| (t.or(pt), d))?
+            }
+            Some((pt, p)) => (pt, p),
+            None => data_of(env, &v, depth)?,
+        };
+        t = dt;
+        v = Cow::Owned(d);
     }
-    Ok((t, v))
+    Ok((t, v, None))
 }
 
-/// `v`'s shape under `t`, the type its call site gave it: a struct or a
-/// map with scalar keys is an object, another map an array of pairs;
-/// an array, a list, a tuple or a variant's tag and
-/// payload a sequence; a bare variant its tag; a union reads as the
-/// member `v` inhabits. `v` is the program's value: its kind markers
-/// decide members, lists and composites, and an abstract value in it is
-/// the data its `Cast` implementation writes ([`written`]).
+/// `v`'s shape under `t`, the type its call site gave it: a struct is an
+/// object, a map an object when its key type is `string` and an array of
+/// `[key, value]` pairs under any other; an array, a list, a tuple or a
+/// variant's tag and payload a sequence; a bare variant its tag; a union
+/// reads as the member `v` inhabits. `v` is the program's value: its
+/// kind markers decide members, lists and composites, and an abstract
+/// value in it is written as `abstracts` says.
 /// Where the type says nothing (`None`, `Any`, an open variable), an
 /// unmarked non-empty array of `(string, _)` pairs in key order (data a
 /// read left untyped) reads as an object.
-pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Result<Shape> {
-    let (t, v) = written(env, t.and_then(|t| constructor(env, t)), v)?;
+pub fn shape(
+    env: &Env,
+    t: Option<&Type>,
+    v: &Value,
+    abstracts: Abstracts,
+) -> Result<Shape> {
+    let (t, v, name) = written(env, t.and_then(|t| constructor(env, t)), v, abstracts)?;
+    if let Some(name) = name {
+        let mut entry: LPooled<Vec<_>> = LPooled::take();
+        entry.push((name, v.into_owned(), t));
+        return Ok(Shape::Object(entry, Keys::Data));
+    }
+    let t = t.and_then(|t| constructor(env, &t));
     let v = &*v;
     match (t.as_ref(), v) {
-        (Some(Type::Set(ts)), v) => {
-            shape(env, graphix_compiler::typ::member_of(env, ts, v).map(|i| &ts[i]), v)
-        }
+        (Some(Type::Set(ts)), v) => shape(
+            env,
+            graphix_compiler::typ::member_of(env, ts, v).map(|i| &ts[i]),
+            v,
+            abstracts,
+        ),
         (Some(Type::Struct(fs)), v) => match rep::read_struct(v).map(rep::Parts::elems) {
             Some(a) if fs.len() == a.len() => {
                 let mut entries: LPooled<Vec<_>> = LPooled::take();
@@ -616,43 +657,35 @@ fn constructor(env: &Env, t: &Type) -> Option<Type> {
     }
 }
 
+/// A map's shape: an object where its key type is `string`, the array of
+/// its `[key, value]` pairs under any other key type or none.
 fn map_shape<'a>(
     env: &Env,
     key_type: Option<&Type>,
     value_type: Option<&Type>,
     entries: impl Iterator<Item = (&'a Value, &'a Value)>,
 ) -> Result<Shape> {
-    let mut pairs: LPooled<Vec<_>> = entries
-        .map(|(k, v)| {
-            let (kt, k) = written(env, key_type.cloned(), k)?;
-            Ok((k.into_owned(), kt, v.clone(), value_type.cloned()))
-        })
-        .collect::<Result<_>>()?;
-    let scalar = |k: &Value| {
-        matches!(
-            k,
-            Value::String(_) | Value::Bool(_) | Value::DateTime(_) | Value::Duration(_)
-        ) || Typ::number().contains(Typ::get(k))
-            || rep::variant(k).is_some_and(|(_, payload)| payload.is_empty())
-    };
-    // an object's keys read back as text, so strings beside keys of
-    // another class, or other keys of a type that may read a text as a
-    // string, take pairs
-    let strings =
-        pairs.iter().filter(|(k, _, _, _)| matches!(k, Value::String(_))).count();
-    let one_class = strings == pairs.len()
-        || (strings == 0 && !key_type.is_some_and(|t| t.may_read_text_as_string(env)));
-    if one_class && pairs.iter().all(|(k, _, _, _)| scalar(k)) {
-        Ok(Shape::Object(
-            pairs
-                .drain(..)
-                .map(|(k, _, v, vt)| Ok((map_key(&k)?, v, vt)))
+    let text = key_type
+        .and_then(|t| constructor(env, t))
+        .is_some_and(|t| matches!(t, Type::Primitive(p) if p == Typ::String));
+    Ok(match text {
+        true => Shape::Object(
+            entries
+                .map(|(k, v)| match k {
+                    Value::String(k) => Ok((k.clone(), v.clone(), value_type.cloned())),
+                    k => bail!("a map key of type string holds {k}"),
+                })
                 .collect::<Result<_>>()?,
             Keys::Data,
-        ))
-    } else {
-        Ok(Shape::Pairs(pairs))
-    }
+        ),
+        false => Shape::Pairs(
+            entries
+                .map(|(k, v)| {
+                    (k.clone(), key_type.cloned(), v.clone(), value_type.cloned())
+                })
+                .collect(),
+        ),
+    })
 }
 
 /// `v`'s shape by its kind marker, or as data where it has none.

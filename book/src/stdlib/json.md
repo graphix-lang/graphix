@@ -36,70 +36,44 @@ let items: Array<{id: i64, label: string}> = json::read(data)?;
 let maybe: [string, null] = json::read(data)?;
 ```
 
-### Unions in the target
+### Unions and abstract types
 
 JSON keeps no record of which member of a union a value was written as,
-so a target holds no union one of whose members writes a value that
-reads back as another. The reader picks a member as a cast does: a
-variant whose tag the data names first, then one that holds the value
-exactly before one that rounds it, then a member keeping the data's kind
-(a number, a string) before one reading it as another kind, then the
-union's order. A member that is itself a union, such as `Num` in `[Num,
-string]` with `type Num = [i64, f64]`, keeps the kind where any of its
-members does, so `[Num, string]` reads back, and so does `[Shape,
-string]` with `type Shape = [{w: f64, h: f64}, f64]`: each value
-`Shape` writes is judged by its member that writes it. A member the
-value read back already is takes it whatever the union's order, and a
-member that is a union of primitives reads a value as one of them, the
-first that holds it exactly: with `type Amount = [f64, string]`, `[Amount,
-i64]` reads back, since a JSON integer is the `i64`'s, and `Amount` would
-read it as an `f64`, never as its text.
-`[u8, i64]` (two integers), `[string, datetime]` (a datetime is written
-as a string), `` [string, `A] `` (a variant with no payload is written as
-its tag), `[decimal, f64]`, `[duration, i64]` (a whole `duration` is
-written as a float such as `2.0`, which the integer member reads), `[f32,
-i64]` (a large whole `f32` is written as its shortest text, `1234567936`
-as `1234568000.0`, which the integer member holds exactly and the `f32`
-only rounded), `[f32, string]` (`0.1` reads back as the string `"0.1"`,
-which holds it exactly), `[Array<string>, Array<i64>]` (both write `[]`)
-and a struct beside a map of strings (an object reads as both) are
-refused. A tuple or a struct is read whole: `[(f32, u8), (f64, f64)]`
-writes `(f32:0.1, u8:1)` as `[0.1,1]`, which the `(f64, f64)` member
-reads exactly and the first member only rounded; `[(string, f32), (i64,
-f64)]` reads `("1", f32:0.1)` back as `(1, 0.1)`; `[(i64, duration), (u8,
-string)]` reads `(1, 3.5s)` back as `(u8:1, "3.5")`, since both read the
-`3.5` as another kind and `(u8, string)` comes first. Members that
-recurse are read at every level: with ``type TA = [i64, `Cons(f32, TA)]``
-and ``type TB = [f64, `Cons(f64, TB)]``, `[TA, TB]` is refused, since
-`` `Cons(f32:0.1, 3) `` is written as `["Cons",0.1,3]`, which reads back
-as TB's `` `Cons(0.1, 3.0) ``. A union two of whose members write the same
-value is refused even where it would read back the same:
-``type R<'a> = [`Nil, `Cons('a, R<'a>)]`` makes `[R<i64>, R<bool>]`
-refused, since both write `` `Nil `` as `"Nil"`; `R<i64>` alone is fine. A
-typedef whose parameters grow as it recurses, such as ``type N<'a> =
-[`Nil, `Cons('a, N<Array<'a>>)]``, is refused as a target. A map's keys are
-written as their text where its key type reads no text as a string, so
-`Map<[decimal, datetime], i64>` is refused: the key `"3"` reads back as a
-datetime. An abstract type the reader builds from its representation's
-data comes after every member that reads the data as it is: beside
-`bool`, `type S = Abstract<string>` (with `impl Cast for S {}`) is
-refused, since `S("true")` reads back as `true`. One whose `impl Cast`
-writes `from_value` may read any value it is tried on, so it is refused
-beside a member tried after it, such as a variant with no payload. One
-that writes only `to_value` still reads as its representation: with
-`type S = Abstract<string>`, ``[S, `A]`` is refused, since `"A"` reads
-back as `S("A")`. The primitive `array` holds an array of any data, so it
-is refused beside a member that reads an array: `[array, (i64, i64)]`
-reads `[1, 2]` back as `(1, 2)`, and `` [array, `A(i64)] `` reads `["A",
-2]` back as `` `A(2) ``; `[array, i64, string, null]` reads back.
-Beside an `Array<..>` it is refused as any two members that write one
-value are, `[Array<i64>, Array<string>]` among them: both write `[]`.
-Members JSON writes apart are fine: `[i64, f64]` (an integer and a number
-with a fraction), `[f32, u16]` (an integer no wider than 16 bits holds
-no `f32` text the `f32` does not hold too, and a real member takes it
-first), `[string, i64]`, `` [`A(i64), `B(string)] ``, `[{a: i64}, {b:
-i64}]`, `[T, null]`. Pack and db keep the member, so their reads take
-these unions.
+so a reader tells members apart only by a tag the data carries. Every
+union in a type `json::read` reads or `json::write_str` writes is one
+member beside `null`, or its members other than `null` each carry a tag,
+no two the same:
+
+- a variant carries its tag: `` `A `` is written `"A"` and `` `B(1) ``
+  `["B",1]`;
+- an abstract type carries its name: `Port(80)` is written `{"Port":80}`,
+  an object of one entry keyed by the type's unqualified name, holding
+  what its `Cast` implementation writes (its `to_value`, else its
+  representation), and a read takes it only so.
+
+`` [`A, `B(i64), Port, null] `` and `[T, null]`, whatever `T` is, read
+back. `[i64, string]`, `[u8, i64]`, `[Port, u8]`, `` [string, `A] ``,
+`[{a: i64}, {b: i64}]` and a type variable beside another member are
+refused, as a target and as a written value. So is a typedef whose
+parameters grow as it recurses, such as ``type N<'a> = [`Nil, `Cons('a,
+N<Array<'a>>)]``.
+
+`Transparent<T>` (in core) writes an abstract value bare, its data alone,
+and reads it back through `T`'s `Cast`. It carries no tag, so in a union
+it stands only beside `null`; there a `T` that writes `null` reads back as
+the outer null. Over a type that is not abstract it is refused: it would
+change nothing. Everywhere else (casts, pack, netidx) a `Transparent<T>`
+is its representation.
+
+```graphix
+type Port = Abstract<u16>;
+impl Cast for Port {};
+let p = Port(u16:80);
+// {"Port":80}
+json::write_str(p)$;
+// 80
+json::write_str(Transparent(p))$
+```
 
 ### Numbers
 
@@ -137,21 +111,13 @@ json::write_str(pairs)$;
 json::write_str({a: 1, b: 2})$
 ```
 
-A map whose keys all write as strings, numbers, booleans, datetimes, durations
-or bare variant tags is an object, unless it holds strings beside keys of
-another kind, or its key type may read a key's text as a string while its
-keys are not all strings: an object's keys read back as text, so `{1 =>
-10, "1" => 20}` could not. A key type may read a text as a string where it
-holds `string`, `Any` or a type not known where the map is written (an
-open type variable); an abstract key type does where its
-representation does, when its `Cast` implementation leaves `from_value`
-out (what its `to_value` writes does not matter), and may where
-`from_value` is written. If any key has another form, or the keys mix
-strings with another kind, the whole map is an array of `[key, value]`
-pairs. The key keeps its data structure, so a typed
-read can reconstruct tuple, struct, array, list and payload-variant keys, as
-well as null and bytes keys. For example, `{(1, 2) => 3}` writes as
-`[[[1,2],3]]`.
+A map is an object when its key type is `string`. Under any other key
+type, a bare variant's or an abstract type's included, it is an array of
+`[key, value]` pairs, as it is where its type is not known (`Any`): the
+type decides, never the keys. A key keeps its data structure, so a typed
+read can reconstruct tuple, struct, array, list and payload-variant keys,
+as well as null and bytes keys. For example, `{(1, 2) => 3}` writes as
+`[[[1,2],3]]` and `{1 => 2}` as `[[1,2]]`.
 
-A writer refuses a map whose distinct keys serialize as the same data,
-including when the map uses the pairs representation.
+A writer refuses a map whose distinct keys serialize as the same data
+(`` `A `` and `"A"` under `Any`).

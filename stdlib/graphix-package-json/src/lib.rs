@@ -13,8 +13,8 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, CastTarget, ReadFormat, ReadInput, Shape, TypedRead,
-    f32_as_written, shape,
+    Abstracts, CachedArgsAsync, CachedVals, CastTarget, ReadFormat, ReadInput, Shape,
+    TypedRead, f32_as_written, shape,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -183,27 +183,35 @@ impl<'de> Visitor<'de> for JsonValue {
 const MAX_DEPTH: usize = 128;
 
 /// `value` as JSON, written as its type `typ` says (`None` reads the value
-/// alone): a serde view a writer serializes as it walks the value.
+/// alone), each abstract value in it as `abstracts` says: a serde view a
+/// writer serializes as it walks the value.
 pub struct JsonView<'a> {
     env: &'a Env,
     typ: Option<&'a Type>,
     value: &'a Value,
+    abstracts: Abstracts,
     depth: usize,
 }
 
 impl<'a> JsonView<'a> {
-    pub fn new(env: &'a Env, typ: Option<&'a Type>, value: &'a Value) -> Self {
-        Self { env, typ, value, depth: 0 }
+    pub fn new(
+        env: &'a Env,
+        typ: Option<&'a Type>,
+        value: &'a Value,
+        abstracts: Abstracts,
+    ) -> Self {
+        Self { env, typ, value, abstracts, depth: 0 }
     }
 
     fn under(&self, typ: Option<&'a Type>, value: &'a Value, levels: usize) -> Self {
-        Self { env: self.env, typ, value, depth: self.depth + levels }
+        Self { typ, value, depth: self.depth + levels, ..*self }
     }
 }
 
 impl Serialize for JsonView<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let shape = shape(self.env, self.typ, self.value).map_err(S::Error::custom)?;
+        let shape = shape(self.env, self.typ, self.value, self.abstracts)
+            .map_err(S::Error::custom)?;
         let containers = match &shape {
             Shape::Pairs(_) => 2,
             Shape::Object(..) | Shape::Seq(_) | Shape::Leaf(Value::Bytes(_)) => 1,
@@ -325,7 +333,7 @@ impl ReadFormat for Json {
 
     /// Every decimal `parse` makes is a float it read exactly.
     fn read(target: &CastTarget, env: &Env, v: Value) -> Value {
-        target.read_exact_floats(env, &Self::TAG, v)
+        target.read_text(env, &Self::TAG, v, true)
     }
 }
 
@@ -339,7 +347,12 @@ fn encode(
     args: &[Value],
 ) -> Option<Result<LPooled<Vec<u8>>, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let json = JsonView::new(env, ft.args.get(1).map(|a| &a.typ), args.get(1)?);
+    let json = JsonView::new(
+        env,
+        ft.args.get(1).map(|a| &a.typ),
+        args.get(1)?,
+        Abstracts::Wrapped,
+    );
     let mut buf: LPooled<Vec<u8>> = LPooled::take();
     let res = if pretty {
         serde_json::to_writer_pretty(&mut *buf, &json)
@@ -389,12 +402,12 @@ graphix_derive::defpackage! {
 #[cfg(test)]
 mod test {
     use super::*;
-    use graphix_compiler::{expr::parser::parse_type, list, rep, typ::Format};
+    use graphix_compiler::{list, rep};
     use netidx_value::Typ;
     use std::time::Duration;
     use triomphe::Arc;
 
-    /// The source of `typ::textdata`, whose unit tests name the unions
+    /// The source of `typ::textdata`, whose unit tests name the types
     /// this test reads back.
     const TEXTDATA: &str = include_str!("../../../graphix-types/src/typ/textdata.rs");
 
@@ -405,12 +418,12 @@ mod test {
     /// A type and the typedefs it names, each `(name, body)`.
     type Case = (Vec<(&'static str, &'static str)>, &'static str);
 
-    /// Every type textdata's unit tests judge: `json("..")`, `toml("..")`
-    /// and `named(&[("Name", "body"), ..], "..", ..)`, its typedefs
-    /// written in the call.
+    /// Every type textdata's unit tests judge: `refused("..")` and
+    /// `named(&[("Name", "body"), ..], "..")`, its typedefs written in the
+    /// call.
     fn cases() -> Vec<Case> {
         let mut found = vec![];
-        for call in ["json(\"", "toml(\""] {
+        for call in ["refused(\""] {
             let mut rest = TEXTDATA;
             while let Some(i) = rest.find(call) {
                 rest = &rest[i + call.len()..];
@@ -711,20 +724,19 @@ mod test {
             .collect()
     }
 
-    // textdata mirrors the union reader's pick (`cast_member`); this
-    // checks the two agree with the real writer and the real reader: of
-    // every type textdata's unit tests name that JsonData admits, every
-    // witness written as JSON reads back as itself.
+    // Of every type textdata's unit tests name that JsonData admits, every
+    // witness the real writer writes as JSON the real reader reads back as
+    // itself.
     #[test]
-    fn admitted_unions_read_back() {
+    fn admitted_types_read_back() {
         let (mut admitted, mut named, mut checked) = (0, 0, 0);
         let mut failed = vec![];
         let tested = cases();
-        assert!(tested.len() > 80, "found {} types in textdata.rs", tested.len());
+        assert!(tested.len() > 25, "found {} types in textdata.rs", tested.len());
         for (defs, src) in tested {
             let (env, t) = Env::typed_at_root(&defs, src).expect("a type");
             let w = Witnesses::new(env, &t);
-            if t.text_ambiguity(&w.env, Format::Json).is_some() {
+            if t.text_refusal(&w.env).is_some() {
                 continue;
             }
             admitted += 1;
@@ -734,9 +746,12 @@ mod test {
             let target = CastTarget::of_result(&w.env, Some(&result));
             let exact = target.holds_exact_number(&w.env);
             for v in w.of(&t, 3) {
-                let Ok(text) =
-                    serde_json::to_string(&JsonView::new(&w.env, Some(&t), &v))
-                else {
+                let Ok(text) = serde_json::to_string(&JsonView::new(
+                    &w.env,
+                    Some(&t),
+                    &v,
+                    Abstracts::Wrapped,
+                )) else {
                     continue;
                 };
                 checked += 1;
@@ -750,7 +765,7 @@ mod test {
             }
         }
         assert!(
-            admitted > 30 && named > 5 && checked > 5000,
+            admitted > 10 && named > 5 && checked > 1000,
             "{admitted} types ({named} over typedefs), {checked} values"
         );
         assert!(failed.is_empty(), "{}", failed.join("\n"));

@@ -1,16 +1,22 @@
 /// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
-/// The target holds no union two members of which one TOML value could
-/// be written by (`TomlData`), as `json::read`'s.
+/// The target reads back what `write_str` writes of it (`TomlData`), as
+/// `json::read`'s does: every union in it tells its members apart by a
+/// tag, or is one member and null.
 val read: fn<'b: Concrete + TomlData>(input: [string, bytes]) -> Result<'b, [`TomlErr(string), `InvalidCast(string)]>;
 
-/// Serialize a value to a TOML string. Maps with scalar keys are tables;
-/// other maps are arrays of key/value pairs and require a containing table.
-/// Null map keys cannot be represented.
-val write_str: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<string, `TomlErr(string)>;
+/// Serialize a value to a TOML string, as `json::write_str` does: a map
+/// is a table when its key type is `string` and an array of `[key,
+/// value]` pairs, which needs a table around it, under any other; an
+/// abstract value is a table of one entry its type's name keys (`{ Port
+/// = 80 }`), or under `Transparent` its data alone. TOML has no null: a
+/// struct field that is null is left out, and reads back as null; a null
+/// anywhere else is refused when written. The value's type must be one
+/// `read` reads back (`TomlData`).
+val write_str: fn<'a: Data + TomlData>(?#pretty: bool, value: 'a) -> Result<string, `TomlErr(string)>;
 
-/// Serialize a value to TOML bytes.
+/// Serialize a value to TOML bytes, as `write_str` does.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, toml::write_bytes(v)?)`.
-val write_bytes: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<bytes, `TomlErr(string)>;
+val write_bytes: fn<'a: Data + TomlData>(?#pretty: bool, value: 'a) -> Result<bytes, `TomlErr(string)>;

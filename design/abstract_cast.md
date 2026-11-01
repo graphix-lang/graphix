@@ -86,18 +86,21 @@ writer reaches it", and "fn(..) is not data".
     allocating only where something changed. It refuses past 1024
     nested abstract values, so a `to_value` that writes its own type
     is refused rather than followed forever.
-  - json and toml walk the result along the static type. At an
-    abstract position written as its representation
-    (`Env::written_as_representation`), they use the representation's
-    type, so a struct stays an object. A written `to_value` returns
-    `Any`, so its result is written by its shape. An object's keys read
-    back as text, so a map whose keys are not all strings is written as
-    pairs where its key type may read a text as a string
-    (`Type::may_read_text_as_string`): an abstract key type read as its
-    representation (`from_value` left out) may where the representation
-    may, whatever its `to_value` writes, and one whose `from_value` is
-    written may (textdata-cast-trust-01). textdata's `key_forms` asks
-    the same predicate, so writer and check agree on a map's forms.
+  - json and toml walk the value along the static type
+    (`core::shape`). They write an abstract value as an object of one
+    entry keyed by its type's unqualified name, holding its data: the
+    representation at its own type where the impl leaves `to_value`
+    out (`Env::written_as_representation`), so a struct stays an
+    object, else what `to_value` returns, which is `Any` and written by
+    its shape. Core's `Transparent<T>` (`type Transparent<'a> =
+    Abstract<'a>` with `impl Cast {}`) is written as `T`'s data alone,
+    no object around it (`Abstracts::Wrapped`); a template's data
+    (`hbs`) writes every abstract value bare (`Abstracts::Bare`). The
+    reader takes such an object only (`CastInput::Text`,
+    `Type::cast_abstract`), and `Transparent<T>`'s data bare, so a
+    union of variants and abstract types reads back by the tag alone
+    (`'a: JsonData`, `design/tvar_constraints.md`). Everywhere else
+    `Transparent<T>` is its representation.
 - **Async builtins.**
   - `EvalCachedAsync::DATA_ARGS` lists the arguments that leave as data;
     they are converted before `prepare_args` with their tuples, structs,
@@ -126,6 +129,10 @@ writer reaches it", and "fn(..) is not data".
   - every refusal: cast, read, write, function, direct call,
     non-abstract, reference representation, sibling module;
   - the self-nesting write, and an impl declared in an interface.
+- `lib_tests::json::{json_forms_read_back,
+  json_abstract_reads_only_its_object,
+  json_transparent_null_reads_back_as_the_option}` and
+  `lib_tests::toml::toml_forms_read_back`: the text forms.
 - `lib_tests::db::db_abstract_round_trip_through_cast`.
 - `lib_tests::net::net_abstract_through_cast`.
 - `lib_tests::pack::pack_abstract_read_checks_the_payload` and

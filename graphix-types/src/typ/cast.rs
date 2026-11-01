@@ -125,10 +125,16 @@ type RefKey = (usize, Arc<[Type]>);
 /// foreign data bounds neither the walk's stack nor its memory.
 pub const MAX_DATA_DEPTH: usize = 1024;
 
+/// The data a cast reads.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CastInput {
     Data,
-    ExactFloats,
+    /// JSON or TOML: an abstract value is an object of one entry keyed by
+    /// its type's name, except under `Transparent`; with `exact_floats`
+    /// a decimal stands for a float read exactly.
+    Text {
+        exact_floats: bool,
+    },
     Marked,
 }
 
@@ -234,7 +240,7 @@ impl NumReads {
     }
 }
 
-// CR claude for claude: [design/low] What the one exactness rule (holds-exactly-class-01)
+// XCR claude for claude: [design/low] What the one exactness rule (holds-exactly-class-01)
 // leaves open, each a semantics question; JsonData/TomlData refuse the unions these make
 // read back as another member (textdata.rs follows the pick). (1) An exact integer comes
 // before a rounding real: cast<[i64, f32]>(1234567900.0) is i64, so an f32 1234567936's
@@ -275,6 +281,22 @@ impl NumReads {
 // parses as; 5 keep the canonical-order tie-break; 6 confirmed; 7 a bool is held exactly
 // by a number of 1 or 0 (cast<[f32, u8]>(true) is u8 1). JsonData no longer follows the
 // cast's pick: D6 refuses untagged unions in JSON/TOML.
+// 2026-10-31 claude: Built Eric's round 5 D2 rulings: (3) a union tries the members of the
+// value's class at every degree of exactness before any other member (Type::tier,
+// cast_member's groups; a primitive set alike), so cast<[f32, string]>(0.1) is f32 0.1,
+// and cast<[i64, string]>(3.5) and cast<[i64, duration]>(3.5) are i64 3 (main: "3.5" and
+// 3.5s, read as the class-first rule's consequence); (4) text then tries the members of
+// the class of the scalar it parses as (parsed_scalar), so cast<[duration,
+// decimal]>("3.0") is decimal 3.0, cast<[i64, duration]>("3.5") and cast<[i64,
+// datetime]>("3.0") i64 3; (7) a bool is held exactly by the number 1 or 0
+// (holds_exactly), so cast<[f32, u8]>(true) is u8 1, cast<[f64, i64]>(false) i64 0, and by
+// the canonical-order tie-break cast<[i64, string]>(true) is i64 1 and cast<[f32,
+// string]>(true) f32 1.0 (main and the lane base: "true"); (2) a decimal made of a whole
+// float keeps scale 1 (float_decimal), so cast<decimal>(3.0) prints 3.0 and its text reads
+// back as the decimal. 1, 5 and 6 unchanged. Pins: lang::types::{cast_union_order,
+// cast_float_value_and_text_read_alike, cast_whole_float_without_a_real_member}; on the
+// lane base binary every item reads otherwise (~/ptmp/cr29/scratch/r6-B/union_order.gx,
+// whole.gx).
 /// A union's reading of a value among those its members offer, in its
 /// order: the first, except that in a round that drops no part one reading
 /// a number across the line between integers and reals gives way to a
@@ -372,7 +394,9 @@ impl CastCx {
     /// stands for a float.
     fn float_of(&self, v: &Value) -> Option<Value> {
         match v {
-            Value::Decimal(_) if self.input == CastInput::ExactFloats => {
+            Value::Decimal(_)
+                if self.input == (CastInput::Text { exact_floats: true }) =>
+            {
                 convert(v.clone(), Typ::F64)
             }
             _ => None,
@@ -897,39 +921,8 @@ impl Type {
                 Value::Abstract(a) if AbstractTypeRegistry::is_a(a, "lambda") => Ok(None),
                 _ => Err(self.cast_fail("not a function", v)),
             },
-            Type::Abstract { id, params } => {
-                let Some(rep) = env.abstract_reps.get(id) else {
-                    // a Rust-backed abstract is Rust's: only its own values
-                    return match self.is_a(env, v) {
-                        true => Ok(None),
-                        false => Err(self.cast_fail("not this abstract type", v)),
-                    };
-                };
-                let held = abstract_value::get(v).filter(|g| g.id == *id);
-                if held.is_some_and(|g| g.params == *params) {
-                    return Ok(None);
-                }
-                match abstract_value::from_value(self, v) {
-                    None => Err(self.cast_fail("it has no Cast implementation", v)),
-                    Some(CastHook::Ran(None)) => {
-                        Err(self.cast_fail("its Cast implementation produced nothing", v))
-                    }
-                    Some(CastHook::Ran(Some(Value::Error(e)))) => {
-                        Err(self.cast_fail(refusal(&e), v))
-                    }
-                    Some(CastHook::Ran(Some(r))) => Ok(Some(r)),
-                    Some(CastHook::Representation) => {
-                        let data = held.map_or(v, |g| &g.payload);
-                        let payload =
-                            rep.instantiate_with(params).cast_int(env, cx, None, data)?;
-                        Ok(Some(abstract_value::wrap(
-                            *id,
-                            rep.name.clone(),
-                            params.clone(),
-                            payload.unwrap_or_else(|| data.clone()),
-                        )))
-                    }
-                }
+            Type::Abstract { .. } => {
+                self.cast_abstract(env, cx, v, matches!(cx.input, CastInput::Text { .. }))
             }
             Type::ByRef(..) => {
                 Err(self.cast_fail("a reference can't be read from data", v))
@@ -962,41 +955,51 @@ impl Type {
                         self.cast_fail("an abstract value has no primitive form", v)
                     );
                 }
+                // the value's class, then the class of the scalar text parses
+                // as, then the rest; a real value, or text that parses as one,
+                // tries the reals of each first
+                let parsed = parsed_scalar(v);
+                let like = parsed.as_ref().unwrap_or(v);
                 let own = own_class(v);
-                // a real value tries the reals first; real text finds one
-                // past an integer reading
-                let reals = match Typ::get(v).is_real() {
-                    true => *s & Typ::real(),
+                let as_parsed =
+                    parsed.as_ref().map_or(BitFlags::empty(), own_class) & !own;
+                let reals = match Typ::get(like).is_real() {
+                    true => Typ::real(),
                     false => BitFlags::empty(),
                 };
-                let mut members = reals
-                    .iter()
-                    .chain((*s & own & !reals).iter())
-                    .chain((*s & !own).iter());
-                let mut exact = members.clone().filter_map(|t| {
-                    convert(v.clone(), t).filter(|c| holds_exactly(v, c))
-                });
                 let mut known = None;
-                let mut kind = || *known.get_or_insert_with(|| number_kind(v));
-                let read = match exact.next() {
-                    Some(c)
-                        if Typ::get(&c).is_integer()
-                            && matches!(v, Value::String(_))
-                            && s.intersects(Typ::real())
-                            && kind() == Some(NumKind::Real) =>
-                    {
-                        exact.find(|c| Typ::get(c).is_real()).or(Some(c))
-                    }
-                    Some(c) => Some(c),
-                    None if cx.holds == Holds::Exactly => None,
-                    None => match members.clone().filter(|t| t.is_real()).find_map(|t| {
-                        convert(v.clone(), t).filter(|c| holds_rounded(v, c))
-                    }) {
-                        Some(c) => Some(c),
-                        None if cx.holds == Holds::Rounded => None,
-                        None => members.find_map(|t| convert(v.clone(), t)),
-                    },
-                };
+                let kind = || *known.get_or_insert_with(|| number_kind(v));
+                let read =
+                    [own, as_parsed, !own & !as_parsed].into_iter().find_map(|class| {
+                        let tier = *s & class;
+                        let members = (tier & reals).iter().chain((tier & !reals).iter());
+                        let mut exact = members.clone().filter_map(|t| {
+                            convert(v.clone(), t).filter(|c| holds_exactly(v, c))
+                        });
+                        exact
+                            .next()
+                            .or_else(|| {
+                                (cx.holds >= Holds::Rounded)
+                                    .then(|| {
+                                        members.clone().filter(|t| t.is_real()).find_map(
+                                            |t| {
+                                                convert(v.clone(), t)
+                                                    .filter(|c| holds_rounded(v, c))
+                                            },
+                                        )
+                                    })
+                                    .flatten()
+                            })
+                            .or_else(|| {
+                                (cx.holds == Holds::Partly)
+                                    .then(|| {
+                                        members
+                                            .clone()
+                                            .find_map(|t| convert(v.clone(), t))
+                                    })
+                                    .flatten()
+                            })
+                    });
                 match read {
                     Some(c) => {
                         if cx.in_union {
@@ -1348,18 +1351,19 @@ impl Type {
                 cx.hist.remove(&key);
                 r
             }
-            // A member the value already inhabits wins; else the first
-            // member of its own runtime class it converts to; else the
-            // first member it converts to across classes. Each way, a member
-            // that holds the value exactly comes before one that holds it
-            // rounded to a real's precision, and that before one that would
-            // drop part of it (a fraction, a sub-second part) (`Holds`); short
-            // of a dropped part, one keeping every number an integer or a
-            // real as it was before one reading one across (`Choice`).
+            // The members of the value's class come first: one it already
+            // inhabits, a tuple or a struct its unmarked data reads back as,
+            // then the rest of the class; then, for text, the members of the
+            // class of the scalar it parses as; then the rest. Within each, a
+            // member that holds the value exactly comes before one that holds
+            // it rounded to a real's precision, and that before one that
+            // would drop part of it (a fraction, a sub-second part)
+            // (`Holds`); short of a dropped part, one keeping every number an
+            // integer or a real as it was before one reading one across
+            // (`Choice`).
             Type::Set(ts) => {
-                let outer = cx.holds;
                 let key = (cx.in_union && cx.built == 0)
-                    .then(|| (ts.as_ptr().addr(), (v as *const Value).addr(), outer));
+                    .then(|| (ts.as_ptr().addr(), (v as *const Value).addr(), cx.holds));
                 if let Some(k) = &key
                     && let Some((_, r, d)) = cx.read.get(k)
                 {
@@ -1372,20 +1376,8 @@ impl Type {
                 let array = rep::array_elems(v).is_some()
                     && (cx.input == CastInput::Marked
                         || matches!(src_head(cx, src, env, v), Some(Type::Array(_))));
-                let mut r = Err(None);
-                for holds in [Holds::Exactly, Holds::Rounded, Holds::Partly] {
-                    if holds > outer {
-                        break;
-                    }
-                    cx.holds = holds;
-                    r = self.cast_member(env, cx, src, v, ts, array).map_err(Some);
-                    cx.holds = outer;
-                    if r.is_ok() {
-                        break;
-                    }
-                }
+                let r = self.cast_member(env, cx, src, v, ts, array);
                 cx.in_union = in_union;
-                let r = r.map_err(|e| e.expect("a round was tried"));
                 if let Some(k) = key
                     && cx.cuts == cuts
                 {
@@ -1396,12 +1388,81 @@ impl Type {
         }
     }
 
+    /// The abstract type `self`'s reading of `v`. Text (`wrapped`) holds
+    /// it as an object of one entry keyed by the type's name, the data
+    /// inside; `Transparent<T>` holds `T`'s data bare, under no key.
+    fn cast_abstract(
+        &self,
+        env: &Env,
+        cx: &mut CastCx,
+        v: &Value,
+        wrapped: bool,
+    ) -> Cast {
+        let Type::Abstract { id, params } = self else {
+            unreachable!("an abstract type")
+        };
+        let Some(rep) = env.abstract_reps.get(id) else {
+            // a Rust-backed abstract is Rust's: only its own values
+            return match self.is_a(env, v) {
+                true => Ok(None),
+                false => Err(self.cast_fail("not this abstract type", v)),
+            };
+        };
+        let held = abstract_value::get(v).filter(|g| g.id == *id);
+        if held.is_some_and(|g| g.params == *params) {
+            return Ok(None);
+        }
+        let wrap = |payload: Option<Value>, data: &Value| {
+            Ok(Some(abstract_value::wrap(
+                *id,
+                rep.name.clone(),
+                params.clone(),
+                payload.unwrap_or_else(|| data.clone()),
+            )))
+        };
+        let inner = || rep.instantiate_with(params);
+        if wrapped && *id == AbstractId::transparent() {
+            let inner = inner();
+            let payload = match rep_head(env, &inner).as_deref() {
+                Some(t @ Type::Abstract { .. }) => t.cast_abstract(env, cx, v, false)?,
+                _ => inner.cast_int(env, cx, None, v)?,
+            };
+            return wrap(payload, v);
+        }
+        let v = match wrapped {
+            false => v,
+            true => match unwrapped(&rep.name, v) {
+                Some(inside) => inside,
+                None => {
+                    return Err(self.cast_fail(
+                        format!("expected an object whose one key is {}", rep.name),
+                        v,
+                    ));
+                }
+            },
+        };
+        match abstract_value::from_value(self, v) {
+            None => Err(self.cast_fail("it has no Cast implementation", v)),
+            Some(CastHook::Ran(None)) => {
+                Err(self.cast_fail("its Cast implementation produced nothing", v))
+            }
+            Some(CastHook::Ran(Some(Value::Error(e)))) => {
+                Err(self.cast_fail(refusal(&e), v))
+            }
+            Some(CastHook::Ran(Some(r))) => Ok(Some(r)),
+            Some(CastHook::Representation) => {
+                let data = held.map_or(v, |g| &g.payload);
+                wrap(inner().cast_int(env, cx, None, data)?, data)
+            }
+        }
+    }
+
     /// The union `ts`'s reading of `v`, as `cast_int` takes one: when `v`
     /// is statically an array (`array`), an array member it inhabits; else
-    /// a member whose tag it carries, else, for unmarked data, a tuple of
-    /// its length and then a struct, else one the value inhabits, else the
-    /// first member of its own runtime class it converts to, else the first
-    /// it converts to at all; each way as a [`Choice`] takes it.
+    /// a member whose tag it carries; else the members of `v`'s class (for
+    /// unmarked data a tuple of its length and then a struct first), then
+    /// for text the members of the class of the scalar it parses as, then
+    /// the rest, each group as [`Self::tier`] reads it.
     fn cast_member(
         &self,
         env: &Env,
@@ -1412,84 +1473,44 @@ impl Type {
         array: bool,
     ) -> Cast {
         if array {
-            let mut choice = Choice::new(cx);
-            let arrays = ts.iter().filter(|t| match rep_head(env, t).as_deref() {
-                Some(Type::Array(_)) => true,
-                Some(Type::Primitive(p)) => p.contains(Typ::Array),
-                _ => false,
-            });
-            for t in arrays {
-                match cx.trial(env, t, src, v) {
-                    (Ok(None), d) => {
-                        cx.nums.add(d);
-                        return Ok(None);
-                    }
-                    (Ok(Some(c)), d) if cx.input == CastInput::Marked => {
-                        choice.offer(c, d)
-                    }
-                    _ => (),
-                }
-            }
-            if let Some(c) = choice.take(cx) {
-                return Ok(Some(c));
+            let arrays: SmallVec<[&Type; 4]> = ts
+                .iter()
+                .filter(|t| match rep_head(env, t).as_deref() {
+                    Some(Type::Array(_)) => true,
+                    Some(Type::Primitive(p)) => p.contains(Typ::Array),
+                    _ => false,
+                })
+                .collect();
+            let converts = cx.input == CastInput::Marked;
+            if let Ok(r) = self.tier(env, cx, src, v, &[arrays], converts) {
+                return Ok(r);
             }
         }
-        let mut choice = Choice::new(cx);
         // a member whose tag the value carries is its reading, whatever a
         // tagless reading of an earlier member says
-        let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
-        if tagged.peek().is_some() {
-            let mut refused = None;
-            for t in tagged {
-                match cx.trial(env, t, src, v) {
-                    (Ok(None), d) => {
-                        cx.nums.add(d);
-                        return Ok(None);
-                    }
-                    (Ok(Some(c)), d) => choice.offer(c, d),
-                    (Err(e), _) => refused = Some(e),
-                }
-            }
-            return match choice.take(cx) {
-                Some(c) => Ok(Some(c)),
-                None => Err(refused.expect("a tagged member was tried")),
-            };
+        let tagged: SmallVec<[&Type; 4]> =
+            ts.iter().filter(|t| carries_tag(env, t, v)).collect();
+        if !tagged.is_empty() {
+            return self
+                .tier(env, cx, src, v, &[tagged], true)
+                .map_err(|e| e.expect("a tagged member was tried"));
         }
         // a writer wrote the tuple or the struct the data reads back as
-        let mut tried: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
-        if let Value::Array(a) = v
-            && rep::kind(v).is_none()
-        {
-            let rank = |t: &Type| match rep_head(env, t).as_deref() {
-                Some(Type::Tuple(es))
-                    if es.len() == a.len()
-                        && es
-                            .iter()
-                            .zip(a.iter())
-                            .all(|(e, x)| in_own_class(env, e, x)) =>
-                {
-                    Some(0)
-                }
-                Some(Type::Struct(fs)) if fields_in_own_class(env, fs, a) => Some(1),
-                _ => None,
-            };
-            for r in 0..2 {
-                for (i, t) in ts.iter().enumerate().filter(|(_, t)| rank(t) == Some(r)) {
-                    tried[i] = true;
-                    match cx.trial(env, t, src, v) {
-                        (Ok(None), d) => {
-                            cx.nums.add(d);
-                            return Ok(None);
-                        }
-                        (Ok(Some(c)), d) => choice.offer(c, d),
-                        (Err(_), _) => (),
-                    }
-                    if choice.settled() {
-                        return Ok(choice.take(cx));
-                    }
-                }
+        let rank = |t: &Type| match (v, rep_head(env, t).as_deref()) {
+            (Value::Array(a), Some(Type::Tuple(es)))
+                if rep::kind(v).is_none()
+                    && es.len() == a.len()
+                    && es.iter().zip(a.iter()).all(|(e, x)| in_own_class(env, e, x)) =>
+            {
+                Some(0)
             }
-        }
+            (Value::Array(a), Some(Type::Struct(fs)))
+                if rep::kind(v).is_none() && fields_in_own_class(env, fs, a) =>
+            {
+                Some(1)
+            }
+            _ => None,
+        };
         // CR claude for claude: [bug/low] A union cast tries members in the order the
         // union holds them, and Real = [Float, decimal] holds the primitive decimal
         // before the named Float, so cast<Number>("3.0") and cast<Real>("3.0") are
@@ -1501,28 +1522,75 @@ impl Type {
         // the parsed literal inhabits (which also makes cast agree with str::parse).
         // Probes: ~/tmp/cr29/scratch/review2/RV3/{real_order,parse_vs_cast2}.gx
         // (real-member-order-01)
-        let own: LPooled<Vec<bool>> =
-            ts.iter().map(|t| in_own_class(env, t, v)).collect();
-        for pass in [true, false] {
-            let members = ts.iter().zip(own.iter()).zip(tried.iter());
-            for ((t, _), _) in members.filter(|((_, o), r)| **o == pass && !**r) {
-                match cx.trial(env, t, src, v) {
-                    (Ok(None), d) => {
-                        cx.nums.add(d);
-                        return Ok(None);
+        let parsed = parsed_scalar(v);
+        let mut groups: [SmallVec<[&Type; 4]>; 5] = Default::default();
+        for t in ts.iter() {
+            let g = match rank(t) {
+                Some(r) => r,
+                None if in_own_class(env, t, v) => 2,
+                None if parsed.as_ref().is_some_and(|p| in_own_class(env, t, p)) => 3,
+                None => 4,
+            };
+            groups[g].push(t)
+        }
+        let [tuples, structs, own, as_parsed, rest] = groups;
+        for tier in [&[tuples, structs, own][..], &[as_parsed], &[rest]] {
+            if let Ok(r) = self.tier(env, cx, src, v, tier, true) {
+                return Ok(r);
+            }
+        }
+        Err(self.cast_fail("no member admits it", v))
+    }
+
+    /// The reading of `v` by the members `groups` hold, each round up to
+    /// `cx.holds` in turn: a member that holds `v` as it is, else what the
+    /// round's [`Choice`] took, offered each member's conversion (only
+    /// where `converts`) in order, a group at a time, the next group only
+    /// where the choice may still change. `Err` when no round read it,
+    /// with the last refusal when a member was tried.
+    fn tier(
+        &self,
+        env: &Env,
+        cx: &mut CastCx,
+        src: Option<&Type>,
+        v: &Value,
+        groups: &[SmallVec<[&Type; 4]>],
+        converts: bool,
+    ) -> std::result::Result<Option<Value>, Option<CastFail>> {
+        if groups.iter().all(|g| g.is_empty()) {
+            return Err(None);
+        }
+        let outer = cx.holds;
+        let mut refused = None;
+        for holds in [Holds::Exactly, Holds::Rounded, Holds::Partly] {
+            if holds > outer {
+                break;
+            }
+            cx.holds = holds;
+            let mut choice = Choice::new(cx);
+            for group in groups.iter() {
+                for t in group.iter() {
+                    match cx.trial(env, t, src, v) {
+                        (Ok(None), d) => {
+                            cx.holds = outer;
+                            cx.nums.add(d);
+                            return Ok(None);
+                        }
+                        (Ok(Some(c)), d) if converts => choice.offer(c, d),
+                        (Ok(Some(_)), _) => (),
+                        (Err(e), _) => refused = Some(e),
                     }
-                    (Ok(Some(c)), d) => choice.offer(c, d),
-                    (Err(_), _) => (),
+                }
+                if choice.settled() {
+                    break;
                 }
             }
-            if choice.settled() {
-                return Ok(choice.take(cx));
+            cx.holds = outer;
+            if let Some(c) = choice.take(cx) {
+                return Ok(Some(c));
             }
         }
-        match choice.take(cx) {
-            Some(c) => Ok(Some(c)),
-            None => Err(self.cast_fail("no member admits it", v)),
-        }
+        Err(refused)
     }
 
     /// Cast `v` of unknown static type to this type; a failure is the
@@ -1550,14 +1618,6 @@ impl Type {
     /// a union reads an array as an array member it inhabits first.
     pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
         self.cast_with(env, Some(src), v, CastInput::Data, true).unwrap_or_else(|e| e)
-    }
-
-    /// [`Self::cast_value`] of data whose decimals stand for floats read
-    /// exactly (a json number past a float's precision): a decimal stays
-    /// one only where its position holds an integer or a decimal, and is
-    /// elsewhere the f64 its text reads as.
-    pub fn cast_exact_floats(&self, env: &Env, v: Value) -> Value {
-        self.cast_with(env, None, v, CastInput::ExactFloats, true).unwrap_or_else(|e| e)
     }
 
     /// A cast with its input format and static map-key check decision.
@@ -2843,6 +2903,19 @@ fn refusal(e: &Value) -> Cow<'static, str> {
     }
 }
 
+/// The data inside `v`, the object of one entry keyed `name` a text
+/// format writes an abstract value of the type `name` as (read as its
+/// `[key, value]` pairs).
+fn unwrapped<'a>(name: &str, v: &'a Value) -> Option<&'a Value> {
+    match &rep::array_elems(v)?[..] {
+        [entry] => match &rep::array_elems(entry)?[..] {
+            [Value::String(k), inside] if k == name => Some(inside),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Whether `v` is the variant `t` names: one held, or a payload
 /// variant's data, its tag and then its payload (a data string is a
 /// string, never a tag here).
@@ -2933,8 +3006,8 @@ fn fields_in_own_class(
 /// to a datetime or a duration (an integer target holds it exactly, a
 /// fraction is dropped), a string to what it parses as, a number, bool,
 /// datetime or duration to its plain printed form, a decimal to the float
-/// nearest it, and an array of numbers to bytes. Nothing converts to null
-/// or to an error.
+/// nearest it, a float to its decimal (a whole one with a point), and an
+/// array of numbers to bytes. Nothing converts to null or to an error.
 fn convert(v: Value, t: Typ) -> Option<Value> {
     match (&v, t) {
         (_, Typ::Null | Typ::Error) => None,
@@ -2960,9 +3033,25 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
         (Value::Decimal(d), Typ::F32) => {
             format_compact!("{d}").parse().ok().map(Value::F32)
         }
+        (Value::F32(_) | Value::F64(_), Typ::Decimal) => float_decimal(&v),
         (_, t) if t.is_number() && counts(&v) => v.cast(t),
         _ => None,
     }
+}
+
+/// The float `v` as a decimal; a whole one keeps a point (scale 1) where
+/// the decimal can hold it, so it prints as the float does (`3.0`).
+fn float_decimal(v: &Value) -> Option<Value> {
+    let Value::Decimal(d) = v.clone().cast(Typ::Decimal)? else { return None };
+    if d.scale() > 0 {
+        return Some(Value::Decimal(d));
+    }
+    let mut pointed = *d;
+    pointed.rescale(1);
+    Some(Value::Decimal(match pointed.scale() == 1 && pointed == *d {
+        true => Arc::new(pointed),
+        false => d,
+    }))
 }
 
 /// The string `s` read as the primitive `t`.
@@ -3270,16 +3359,27 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // confirmed, an integer stays an integer when union members are named; 7 a bool is held
 // exactly by a number of 1 or 0 (cast<[f32, u8]>(true) is u8 1). JSON/TOML no longer
 // follow the cast's pick: D6 refuses untagged unions there.
+// 2026-10-31 claude: Round 6 (brief r6B): the D2 rulings are built
+// (holds-exactly-open-01's note). JsonData and TomlData no longer follow the cast's pick:
+// D6 replaced textdata's member-by-member model (Shapes, Fixpoint, the leaf readings) with
+// the tag rule, Type::text_refusal, so the textdata pins named above are deleted with it;
+// the cast pins named above stand (cast_union_prefers_exact_composite,
+// cast_rounding_before_a_dropped_part, cast_a_number_keeps_its_kind,
+// cast_float_elements_read_as_the_scalar).
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
-/// held exactly by 3.5 and not by 3.
+/// held exactly by 3.5 and not by 3, and a bool is held by the number 1
+/// or 0.
 fn holds_exactly(v: &Value, c: &Value) -> bool {
-    match v {
-        Value::String(s) => match s.trim().parse::<Value>() {
+    match (v, c) {
+        (Value::String(s), c) => match s.trim().parse::<Value>() {
             Ok(Value::String(_)) | Err(_) => true,
             Ok(p) => holds_exactly(&p, c),
         },
-        v => convert(c.clone(), Typ::get(v)).as_ref() == Some(v),
+        (Value::Bool(b), c) if Typ::get(c).is_number() => {
+            holds_exactly(&Value::U8(*b as u8), c)
+        }
+        (v, c) => convert(c.clone(), Typ::get(v)).as_ref() == Some(v),
     }
 }
 
@@ -3301,9 +3401,17 @@ fn holds_rounded(v: &Value, c: &Value) -> bool {
 
 /// Which kind of number `v` is, or the text `v` parses as.
 fn number_kind(v: &Value) -> Option<NumKind> {
-    match v {
-        Value::String(s) => NumKind::of(Typ::get(&s.trim().parse::<Value>().ok()?)),
-        v => NumKind::of(Typ::get(v)),
+    NumKind::of(Typ::get(parsed_scalar(v).as_ref().unwrap_or(v)))
+}
+
+/// The scalar the text `v` parses as: a number, a bool, a datetime or a
+/// duration; `None` for anything else, and for a value that is no text.
+fn parsed_scalar(v: &Value) -> Option<Value> {
+    let Value::String(s) = v else { return None };
+    match s.trim().parse::<Value>().ok()? {
+        Value::String(_) | Value::Array(_) | Value::Map(_) => None,
+        p if rep::kind(&p).is_some() => None,
+        p => Some(p),
     }
 }
 
