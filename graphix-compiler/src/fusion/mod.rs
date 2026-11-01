@@ -855,18 +855,28 @@ pub(crate) fn for_each_emitted_node<'a, R: Rt>(
     node: &'a Node<R>,
     f: &mut dyn FnMut(&'a Node<R>),
 ) {
-    let mut stack: LPooled<Vec<&'a Node<R>>> = LPooled::take();
-    stack.push(node);
-    while let Some(node) = stack.pop() {
-        let mut inline: LPooled<Vec<&'a Node<R>>> = LPooled::take();
+    for_each_emitted_node_in(node, &mut |n, _| f(n))
+}
+
+/// [`for_each_emitted_node`], each node with the collection callback
+/// instance whose body holds it, `None` for `node`'s own.
+pub(crate) fn for_each_emitted_node_in<'a, R: Rt>(
+    node: &'a Node<R>,
+    f: &mut dyn FnMut(&'a Node<R>, Option<&'a GXLambda<R>>),
+) {
+    let mut stack: LPooled<Vec<(&'a Node<R>, Option<&'a GXLambda<R>>)>> = LPooled::take();
+    stack.push((node, None));
+    while let Some((node, owner)) = stack.pop() {
+        let mut inline: LPooled<Vec<(&'a Node<R>, Option<&'a GXLambda<R>>)>> =
+            LPooled::take();
         for_each_node(node, &mut |node| {
-            f(node);
+            f(node, owner);
             let NodeView::CallSite(callsite) = node.view() else { return };
             let Some(ApplyView::Lambda(lambda)) = callsite.resolved_apply() else {
                 return;
             };
-            if let Some(body) = lambda.inline_callback_body() {
-                inline.push(body);
+            if let Some(callback) = lambda.inline_callback() {
+                inline.push((callback.body(), Some(callback)));
             }
         });
         stack.extend(inline.drain(..));
@@ -968,9 +978,11 @@ pub(crate) struct Discovery<'n, R: Rt> {
 /// that fails to build is not recorded; its call site bails at emission
 /// and the region de-fuses (never a partial kernel). A callee already
 /// in `bodies` is not re-scanned, which closes self- and mutual
-/// recursion. Where `root` is the body of `own`, a self-recursive
-/// instance, the root's self-calls call `own`'s kernel, which runs the
-/// rest of the recursion.
+/// recursion. A self-call in a self-recursive collection callback's
+/// body, which the loop emits inline, calls that callback instance's
+/// kernel; where `root` is the body of `own`, a self-recursive
+/// instance, the root's other self-calls call `own`'s kernel, which
+/// runs the rest of the recursion.
 pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     root: &'n Node<R>,
     own: Option<&'n GXLambda<R>>,
@@ -991,7 +1003,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
         LPooled::take();
     worklist.push((root, None));
     let mut reads = lowering::ReadsMemo::default();
-    // CR claude for claude: [perf/low] Only a region that is a self-recursive
+    // XCR claude for claude: [perf/low] Only a region that is a self-recursive
     // instance's body routes its self-calls to the instance's kernel. A collection
     // handed the function itself (`array::map(xs, tri)`, `array::fold(xs, 0, step)`)
     // inlines its callback instance's body into the collection's region, whose
@@ -1001,13 +1013,26 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     // self-call in an inlined callback body to that instance's kernel needs the
     // callback's instance where `for_each_emitted_node` meets its body. probe:
     // ~/ptmp/cr29/scratch/r6-E/n4/direct.gx (collection-self-callback-01)
+    // 2026-11-01 claude: discover_lambda_calls walks with for_each_emitted_node_in,
+    // which hands each node the collection callback instance whose body holds it
+    // (GXLambda::inline_callback); a self-call in a self-recursive callback's body
+    // calls that instance's kernel (build_lambda_kernel over its own FnType), so
+    // array::map(xs, fib) and array::fold(xs, 0, step) fuse whole. Two instances of
+    // one callback at different kernels in one region still collide and refuse
+    // (Discovery::collided). Pin:
+    // lang::fusion::native_collection_of_a_recursive_function (#[native] over map
+    // and fold, tail-recursive callbacks included; fails jit/jit_par with the owner
+    // arm reverted, 'mutually recursive static call edge'). Not covered: a closure
+    // callback calling the enclosing recursive function from its kernel's body (`let
+    // rec k = |n| .. array::fold([n - 1], 0, |a, x| a + k(x))`) de-fuses the same
+    // way on main and here.
     let own = own.and_then(|g| Some((g, g.self_bind()?, &**g.typ())));
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();
         let mut enqueue: LPooled<Vec<(&'n Node<R>, kernel_abi::KernelKey)>> =
             LPooled::take();
-        for_each_emitted_node(body, &mut |n| {
+        for_each_emitted_node_in(body, &mut |n, callback| {
             if collect_decorated
                 && n.spec().dec.as_ref().is_some_and(|dec| !dec.attrs.is_empty())
             {
@@ -1016,15 +1041,14 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
             let NodeView::CallSite(cs) = n.view() else {
                 return;
             };
-            let (g, site_ftype) = match (cs.resolved_apply(), &own) {
-                (Some(ApplyView::Lambda(g)), _) => match cs.resolved_ftype() {
+            let calls = |bind: BindId| matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == bind);
+            let (g, site_ftype) = match (cs.resolved_apply(), callback, &own) {
+                (Some(ApplyView::Lambda(g)), _, _) => match cs.resolved_ftype() {
                     Some(t) => (g, t),
                     None => return,
                 },
-                (None, Some((g, bind, ftype)))
-                    if target.is_none()
-                        && matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == *bind) =>
-                {
+                (None, Some(g), _) if g.self_bind().is_some_and(calls) => (g, &**g.typ()),
+                (None, _, Some((g, bind, ftype))) if target.is_none() && calls(*bind) => {
                     (*g, *ftype)
                 }
                 _ => return,

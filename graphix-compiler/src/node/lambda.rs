@@ -1031,10 +1031,12 @@ impl<R: Rt> GXLambda<R> {
         &mut self.body
     }
 
-    pub(crate) fn inline_callback_body(&self) -> Option<&Node<R>> {
+    /// The callback instance of a collection-bodied lambda, whose body a
+    /// fused loop emits inline.
+    pub(crate) fn inline_callback(&self) -> Option<&GXLambda<R>> {
         match self.body.view() {
-            NodeView::MapQ(map) => map.callback_body(),
-            NodeView::FoldQ(fold) => fold.callback_body(),
+            NodeView::MapQ(map) => map.callback(),
+            NodeView::FoldQ(fold) => fold.callback(),
             _ => None,
         }
     }

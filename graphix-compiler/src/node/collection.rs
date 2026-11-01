@@ -870,8 +870,8 @@ impl<R: Rt> MapQBase<R> {
         }
     }
 
-    pub(crate) fn callback_body(&self) -> Option<&Node<R>> {
-        callback(&self.prototype).map(GXLambda::body)
+    pub(crate) fn callback(&self) -> Option<&GXLambda<R>> {
+        callback(&self.prototype)
     }
 
     /// The traversal's result once every slot holds a value.
@@ -1513,8 +1513,8 @@ impl<R: Rt> FoldQBase<R> {
         )
     }
 
-    pub(crate) fn callback_body(&self) -> Option<&Node<R>> {
-        callback(&self.prototype).map(GXLambda::body)
+    pub(crate) fn callback(&self) -> Option<&GXLambda<R>> {
+        callback(&self.prototype)
     }
 }
 

@@ -1799,6 +1799,22 @@ run!(nested_variant_patterns, NESTED_VARIANT_PATTERNS, |v: Result<&Value>| match
     _ => false,
 }; FuseExpect::Jit);
 
+// A collection handed a self-recursive function itself fuses whole: the
+// loop runs the callback instance's body inline, and its self-calls call
+// that instance's kernel, a tail recursion's native loop included.
+run!(native_collection_of_a_recursive_function, r#"{
+    #[tail_recursive]
+    let rec tri = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => tri(n - 1, acc + n) };
+    #[tail_recursive]
+    let rec step = |acc: i64, x: i64| -> i64 select x { 0 => acc, _ => step(acc + x, x - 1) };
+    let rec sum = |n: i64| -> i64 select n { 0 => 0, _ => n + sum(n - 1) };
+    let rec fib = |n: i64| -> i64 select n { 0 => 0, 1 => 1, _ => fib(n - 1) + fib(n - 2) };
+    let xs = [1, 2, 3, 10];
+    (#[native] array::map(xs, fib), #[native] array::map(xs, sum),
+        #[native] array::fold(xs, 0, step), #[native] array::fold(xs, 0, tri))
+}"#, prints("[[i64:1, i64:1, i64:2, i64:55], [i64:1, i64:3, i64:6, i64:55], i64:65, i64:55]");
+    FuseExpect::Jit);
+
 // A collection callback that does not fuse whole (a stateful builtin
 // beside the loop) runs its fusing regions natively in every slot: the
 // slots' instances take the kernels the prototype's fusion built. The
