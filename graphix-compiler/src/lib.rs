@@ -316,17 +316,15 @@ pub struct BuiltinBindInfo {
     pub name: ArcStr,
     pub argspec: triomphe::Arc<[expr::Arg]>,
     pub typ: triomphe::Arc<typ::FnType>,
-    /// The binding's lambda definition; labeled defaults compile in its
-    /// env and scope.
+    /// The lambda definition that wrote the entry: its deletion forgets it.
     pub lambda_id: Option<LambdaId>,
 }
 
+/// One source binding's entry: every instance of it describes it alike,
+/// its types told apart only by instance identity.
 impl graphix_types::tracked::SameValue for BuiltinBindInfo {
     fn same_value(&self, other: &Self) -> bool {
-        self.name == other.name
-            && triomphe::Arc::ptr_eq(&self.argspec, &other.argspec)
-            && triomphe::Arc::ptr_eq(&self.typ, &other.typ)
-            && self.lambda_id == other.lambda_id
+        self.name == other.name && triomphe::Arc::ptr_eq(&self.argspec, &other.argspec)
     }
 }
 

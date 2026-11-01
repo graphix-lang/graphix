@@ -3103,6 +3103,21 @@ run!(builtin_variadic_trait, BUILTIN_VARIADIC_TRAIT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
 }; FuseExpect::None);
 
+// A builtin binding in a collection callback: forked slots each compile it,
+// and the binding is entered once.
+const BUILTIN_BOUND_IN_FORKED_SLOTS: &str = r#"
+array::map([1, 2], |x: i64| {
+    let f = |@args: fn(x: i64) -> i64| -> Any 'core_all;
+    let r = f(|y| y, |y| y);
+    x
+})
+"#;
+
+run!(builtin_bound_in_forked_slots, BUILTIN_BOUND_IN_FORKED_SLOTS, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Array(a)) if &a[..] == [Value::I64(1), Value::I64(2)]
+); FuseExpect::None);
+
 const DEFAULT_OF_A_BOUNDED_PARAMETER: &str = r#"
 {
     let scale = |k| {

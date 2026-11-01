@@ -36,6 +36,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use enumflags2::BitFlags;
+use graphix_types::tracked::SameValue;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
@@ -351,17 +352,28 @@ impl<R: Rt> Bind<R> {
         // Keyed by (scope, name), not BindId: sig and impl get different
         // ids for one builtin binding. A later `let` of the name shadows it.
         // every name the pattern rebinds forgets the builtin it named; a
-        // single name over a builtin names that one
+        // single name over a builtin names that one, and an instance of the
+        // binding the table names already writes nothing
+        let mut builtin = match pat {
+            expr::StructurePattern::Bind(_) => builtin_binding(&node, value),
+            _ => None,
+        };
         pat.with_names(&mut |name| {
             let key = (scope.lexical.clone(), CompactString::from(name.as_str()));
-            ctx.builtin_bindings.remove(&key);
+            match builtin.take() {
+                None => {
+                    ctx.builtin_bindings.remove(&key);
+                }
+                Some(info)
+                    if ctx
+                        .builtin_bindings
+                        .get(&key)
+                        .is_some_and(|i| i.same_value(&info)) => {}
+                Some(info) => {
+                    ctx.builtin_bindings.insert(key, info);
+                }
+            }
         });
-        if let expr::StructurePattern::Bind(name) = pat
-            && let Some(info) = builtin_binding(&node, value)
-        {
-            let key = (scope.lexical.clone(), CompactString::from(name.as_str()));
-            ctx.builtin_bindings.insert(key, info);
-        }
         Ok(Self::with(spec, typ, pattern, node, deferred))
     }
 
