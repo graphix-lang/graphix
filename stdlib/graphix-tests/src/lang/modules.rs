@@ -118,7 +118,7 @@ run!(
         _ => never()
     };
     let w = select step { 5 => json::write_str(foo::make(3))$, _ => never() };
-    select w { "30" => "reloaded", _ => never() }
+    select w { "{\"C\":30}" => "reloaded", _ => never() }
 }"#,
     is(Value::String("reloaded".into()));
     FuseExpect::Jit
@@ -172,7 +172,7 @@ run!(
     };
     source <- once(status) ~ "type C = Abstract<i64>; impl Cast for C { let to_value = |c: C| c.0 * 10 }; let make = |x: i64| C(x)";
     let w = select status { error as e => never(dbg(e)), null as _ => json::write_str(foo::make(3))$ };
-    select w { "30" => "reloaded", _ => never() }
+    select w { "{\"C\":30}" => "reloaded", _ => never() }
 }"#,
     is(Value::String("reloaded".into()));
     FuseExpect::Jit
