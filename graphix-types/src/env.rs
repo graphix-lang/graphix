@@ -1844,10 +1844,11 @@ impl Env {
     }
 
     /// [`Self::deftype`] for a typedef a block declares among others: an
-    /// abstract representation that differs from the one registered for
-    /// its type while it names a typedef not declared yet is compared
-    /// once it is, by [`Self::check_abstract_rep`] over the registered
-    /// one this returns.
+    /// abstract type registered already is compared with the registered
+    /// representation once the block's typedefs are declared, by
+    /// [`Self::check_abstract_rep`] over the registered one this returns.
+    /// A comparison here would fill the cells of the names it writes
+    /// while a later typedef of the block may yet shadow one.
     pub fn deftype_in_block(
         &mut self,
         scope: &ModPath,
@@ -1984,16 +1985,25 @@ impl Env {
         // (all 4 modes fail without), and
         // reload_changes_a_representation_through_a_later_typedef (a changed one
         // is still refused).
+        // 2026-11-01 claude: Review found a case the fix missed: a later typedef
+        // of the block that shadows an outer one (`{ type M = i64; let f = |x:
+        // i64| { type N = Abstract<[`C(M), `Nil]>; type M = string; .. }; f(3)
+        // }`): M resolved, to the outer typedef, so the instance compared at
+        // once, and the comparison filled M's cell with it. Now a block's type
+        // statement never compares at its compile: Env::deftype_in_block defers
+        // every re-registration to the TypeDef node's check. Pin
+        // lang::functions::abstract_naming_a_shadowing_typedef_in_a_body (all 4
+        // modes fail without; it covers a static call and collection slots);
+        // corpus
+        // graphix-fuzz/findings/oct30b-oct2026/06_abstract_naming_a_shadowing_typedef_in_a_body.gx
+        // (DIVERGENCE on main and on the reviewed cr33-W).
         let mut deferred = None;
         if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep)
             && let Some(old) = self.abstract_reps.get(id).cloned()
-            && !self.rep_unchanged(&old, &params, rep)
         {
-            let mut unresolved = Vec::new();
-            let _ = rep.unresolved_names(self, &mut unresolved);
-            if defer && !unresolved.is_empty() {
+            if defer {
                 deferred = Some(old);
-            } else {
+            } else if !self.rep_unchanged(&old, &params, rep) {
                 self.undeftype(scope, name);
                 bail!("{}", rep_changed(name, &old.rep))
             }

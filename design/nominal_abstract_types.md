@@ -48,10 +48,11 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    leaves it (`Env::undeftype` drops only the name). A compile compares
    its representation with the registered one once its own definition is
    in scope, where a self-reference resolves, and refuses a different one
-   (a value of the old may be held). One that names a typedef its block
-   declares later is compared at the `type` statement's check, when the
-   block's typedefs are all declared (`Env::deftype_in_block`,
-   `Env::check_abstract_rep`): an instance of a body, and a reload. The type test
+   (a value of the old may be held). A block's `type` statement (an
+   instance of a body, a reload) compares at its check, when the block's
+   typedefs are all declared, a later one shadowing a name the
+   representation writes included (`Env::deftype_in_block`,
+   `Env::check_abstract_rep`). The type test
    `T as t` is visible wherever `T` is — it is
    a tag comparison, which is what lets `select` accept abstract
    predicates and what trait dispatch over a union needs

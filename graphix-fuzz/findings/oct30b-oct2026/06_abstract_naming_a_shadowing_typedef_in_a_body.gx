@@ -1,0 +1,6 @@
+// An abstract type a function body declares, its representation naming a
+// typedef the body declares after it, which shadows the block's: an
+// instance compared its representation before that typedef was declared,
+// with the outer one, so the build refused what the check passed. Found
+// reviewing the oct30b fixes.
+{ type M = i64; let f = |x: i64| { type N = Abstract<[`C(M), `Nil]>; type M = string; select N(`C("[x]")) { N(`C(s)) => s, N(`Nil) => "nil" } }; (f(1), array::map([2, 3], f)) }

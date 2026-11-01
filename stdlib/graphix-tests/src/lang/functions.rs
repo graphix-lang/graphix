@@ -3165,6 +3165,47 @@ run!(
     )
 );
 
+// The representation's `M` is the body's own, which shadows the block's:
+// a static call's instance and each slot of a run-time bind declare N
+// again before that `M`, and take it.
+run!(
+    abstract_naming_a_shadowing_typedef_in_a_body,
+    r#"{
+        type M = i64;
+        let f = |x: i64| {
+            type N = Abstract<[`C(M), `Nil]>;
+            type M = string;
+            select N(`C("[x]")) { N(`C(s)) => s, N(`Nil) => "nil" }
+        };
+        (f(1), array::map([2, 3], f))
+    }"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(t)) => match &t[..] {
+            [Value::String(a), Value::Array(b)] => {
+                &**a == "1"
+                    && matches!(&b[..], [Value::String(x), Value::String(y)]
+                        if &**x == "2" && &**y == "3")
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+);
+
+run!(
+    abstract_naming_a_shadowing_typedef_in_a_body_refuses_the_outer,
+    r#"{
+        type M = i64;
+        let f = |x: i64| {
+            type N = Abstract<[`C(M), `Nil]>;
+            type M = string;
+            select N(`C(x)) { N(`C(s)) => s, N(`Nil) => "nil" }
+        };
+        f(1)
+    }"#,
+    refused("does not contain `C(i64)")
+);
+
 // A generic lambda literal a function body uses at one type: each instance
 // of the body types the literal as the definition's check did, its
 // quantifier decided.
