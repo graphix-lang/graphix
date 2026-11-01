@@ -6125,10 +6125,13 @@ mod tests {
         // no family's mutant was accepted or refused elsewhere
         assert!(rep.rejects.iter().all(|p| p.verdict.is_none()), "{:?}", rep.rejects);
         // a parameter wider than its argument, a binding that a seq step
-        // shadows: every mutant is refused in place
+        // shadows, a widening that splits a writable field's struct: every
+        // mutant is refused in place
         for prog in [
             "{ let f = |a: [string, null]| -> i64 1; f(null) }",
             "{ let a = 0; let s = 0; seq true { let a = 7; s <- a + 1 }; (a, s) }",
+            "{ let a = 1; let w = a; let s = select 1 == 1 { true => {c: w, d: 1}, \
+             false => {c: 2, d: w} }; let r = &mut s.c; let z = w + 2; (z, *r) }",
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(

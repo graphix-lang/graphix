@@ -142,7 +142,11 @@ operator, a comparison opposite a literal, a field read, or an argument
 whose parameter is a concrete primitive; right site the consumer. A
 comparison holds two operands of one type, so any other opposite side
 can take `U` too: one that derives from `v` (`v < v`, a capture of it)
-or an open cell the comparison binds. One hop is built (see Hops).
+or an open cell the comparison binds. One hop is built (see Hops). A
+widened value that makes a union of structs whose members' fields differ
+is refused at a writable reference to such a field (`&mut s.c`: a
+writable field step needs one field type), which the family counts as
+its own refusal.
 
 **5. Variant widening (the common case of 4).** Built: the widened
 scrutinee, directly under a select with no catch-all and no type-test

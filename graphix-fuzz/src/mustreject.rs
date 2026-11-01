@@ -87,6 +87,7 @@ impl Family {
                 "cannot compute",
                 "cannot compare",
                 "expected struct not",
+                "the members' fields differ",
             ],
             Family::VariantWiden => &["missing match cases"],
             Family::Retype => &[
