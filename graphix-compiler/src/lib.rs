@@ -2668,34 +2668,50 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                         _ => "TOML",
                     };
                     if let Some(why) = t.text_refusal(env) {
-                        format_with_flags(PrintFlag::DerefTVars, || {
-                            let why = match why {
-                                typ::TextRefusal::Untagged { union, member } => {
-                                    format_compact!(
-                                        "{member} in {union} has no tag (a variant's, or \
-                                         an abstract type's name), so what another member \
-                                         writes as {name} data may read back as it"
-                                    )
-                                }
-                                typ::TextRefusal::SharedTag { union, tag, a, b } => {
-                                    format_compact!(
-                                        "{a} and {b} in {union} share the tag {tag}, so \
-                                         what one writes as {name} data may read back as \
-                                         the other"
-                                    )
-                                }
-                                typ::TextRefusal::Transparent(t) => format_compact!(
-                                    "{t} holds a type that is not abstract, which \
-                                     {name} writes bare already"
-                                ),
-                                typ::TextRefusal::Grows(def) => format_compact!(
-                                    "{def} grows its parameters as it recurses, so \
-                                     whether what it writes as {name} data reads back \
-                                     can't be decided"
-                                ),
-                            };
-                            bail!("'{}: {c} refuses {t}: {why}", tv.name)
-                        })?
+                        let r = |t: &Type| t.resolve_tvars();
+                        let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.binding().is_none());
+                        let why = match why {
+                            typ::TextRefusal::Untagged { union, member }
+                                if open(&member) =>
+                            {
+                                format_compact!(
+                                    "a member of {} is not known yet, and beside another \
+                                     member it would need a tag: annotate it",
+                                    r(&union)
+                                )
+                            }
+                            typ::TextRefusal::Untagged { union, member } => {
+                                format_compact!(
+                                    "{} in {} has no tag (a variant's, or an abstract type's \
+                                 name), so what another member writes as {name} data may \
+                                 read back as it",
+                                    r(&member),
+                                    r(&union)
+                                )
+                            }
+                            typ::TextRefusal::SharedTag { union, tag, a, b } => {
+                                format_compact!(
+                                    "{} and {} in {} share the tag {tag}, so what one writes \
+                                 as {name} data may read back as the other",
+                                    r(&a),
+                                    r(&b),
+                                    r(&union)
+                                )
+                            }
+                            typ::TextRefusal::Transparent(t) => format_compact!(
+                                "{} holds a type that is not abstract, which {name} \
+                                 writes bare already",
+                                r(&t)
+                            ),
+                            typ::TextRefusal::Grows(def) => format_compact!(
+                                "{def} grows its parameters as it recurses, so whether \
+                                 what it writes as {name} data reads back can't be decided"
+                            ),
+                        };
+                        match tv.name.starts_with('_') {
+                            true => bail!("{c} refuses {}: {why}", r(&t)),
+                            false => bail!("'{}: {c} refuses {}: {why}", tv.name, r(&t)),
+                        }
                     }
                 }
                 Type::Bound(Bound::OneNumber) => {

@@ -343,3 +343,13 @@ run!(toml_null_outside_a_field_refused_when_written, r#"{
     (select toml::write_str({a}) { error as e => "[e]", s => s },
      select toml::write_str({z}) { error as e => "[e]", s => s })
 }"#, prints(r#"["error:`TomlErr(\"cannot represent null in TOML\")", "error:`TomlErr(\"cannot represent null in TOML\")"]"#); FuseExpect::Jit);
+
+// TOML writes the data inside an abstract value as JSON does, for its
+// reader: bare abstract values where from_value reads it, wrapped ones
+// where the representation is read.
+run!(toml_abstract_data_holding_abstracts_reads_back, &crate::lib_tests::json::with_nested_abstracts(r#"
+type E = [`TomlErr(string), `InvalidCast(string)];
+let s = toml::write_str(d)$;
+let back: Result<Doc, E> = toml::read(s);
+(s, back$ == d)
+"#), prints(r#"["tt = 83\n\n[pt.Pt.x]\nPort = 82\n\n[svc.Svc]\nport = 80\n\n[tags]\nTags = [\"a\", \"b\"]\n\n[tsvc]\nport = 81\n", true]"#); FuseExpect::Jit);

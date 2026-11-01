@@ -9,7 +9,7 @@ use graphix_compiler::{
     errf,
     typ::{FnType, NakedPrefix, Type},
 };
-use graphix_package_core::{Abstracts, FastMemo, Shape, shape};
+use graphix_package_core::{FastMemo, Form, Shape, shape};
 use graphix_package_json::JsonView;
 use handlebars::{
     Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext,
@@ -34,7 +34,7 @@ fn register_partials(
     if *partials == Value::Null {
         return Ok(());
     }
-    match shape(env, typ, partials, Abstracts::Bare).map_err(|e| format!("{e}"))? {
+    match shape(env, typ, partials, Form::Template).map_err(|e| format!("{e}"))?.0 {
         Shape::Object(entries, _) => {
             for (name, tmpl, _) in entries.iter() {
                 let Value::String(tmpl) = tmpl else {
@@ -234,7 +234,7 @@ fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
         [Value::Bool(strict), partials, Value::String(template), data] => {
             let data_type = ft.args.get(3).map(|a| &a.typ);
             // handlebars renders from a JSON tree, built here once
-            let view = JsonView::new(env, data_type, data, Abstracts::Bare);
+            let view = JsonView::new(env, data_type, data, Form::Template);
             let json_data = match serde_json::to_value(view) {
                 Ok(j @ handlebars::JsonValue::Object(_)) => j,
                 Ok(_) => {

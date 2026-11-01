@@ -51,19 +51,28 @@ no two the same:
   what its `Cast` implementation writes (its `to_value`, else its
   representation), and a read takes it only so.
 
-`` [`A, `B(i64), Port, null] `` and `[T, null]`, whatever `T` is, read
-back. `[i64, string]`, `[u8, i64]`, `[Port, u8]`, `` [string, `A] ``,
+`` [`A, `B(i64), Port, null] `` and `[T, null]`, for a `T` that is not
+itself a union, read back. `[i64, string]`, `[u8, i64]`, `[Port, u8]`, `` [string, `A] ``,
 `[{a: i64}, {b: i64}]` and a type variable beside another member are
 refused, as a target and as a written value. So is a typedef whose
 parameters grow as it recurses, such as ``type N<'a> = [`Nil, `Cons('a,
 N<Array<'a>>)]``.
 
+The data inside an abstract value's object is written for its reader:
+where `T`'s `Cast` implementation writes `from_value`, which casts it as
+data, the abstract values in it are written bare (`{"Tags":["a","b"]}`
+for a `Tags` holding `Tag("a")` and `Tag("b")`); where the reader reads
+the representation they are wrapped too (`{"Svc":{"port":{"Port":80}}}`).
+
 `Transparent<T>` (in core) writes an abstract value bare, its data alone,
 and reads it back through `T`'s `Cast`. It carries no tag, so in a union
 it stands only beside `null`; there a `T` that writes `null` reads back as
-the outer null. Over a type that is not abstract it is refused: it would
-change nothing. Everywhere else (casts, pack, netidx) a `Transparent<T>`
-is its representation.
+the outer null. Over a type known not to be abstract it is refused: it
+would change nothing (inside a generic definition, over the definition's
+own type variable, it is not judged, and writes a non-abstract value's
+data as it is). `Transparent<Transparent<T>>` writes what
+`Transparent<T>` does. Everywhere else (casts, pack, netidx) a
+`Transparent<T>` is its representation.
 
 ```graphix
 type Port = Abstract<u16>;

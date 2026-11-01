@@ -92,15 +92,21 @@ writer reaches it", and "fn(..) is not data".
     representation at its own type where the impl leaves `to_value`
     out (`Env::written_as_representation`), so a struct stays an
     object, else what `to_value` returns, which is `Any` and written by
-    its shape. Core's `Transparent<T>` (`type Transparent<'a> =
-    Abstract<'a>` with `impl Cast {}`) is written as `T`'s data alone,
-    no object around it (`Abstracts::Wrapped`); a template's data
-    (`hbs`) writes every abstract value bare (`Abstracts::Bare`). The
-    reader takes such an object only (`CastInput::Text`,
-    `Type::cast_abstract`), and `Transparent<T>`'s data bare, so a
-    union of variants and abstract types reads back by the tag alone
-    (`'a: JsonData`, `design/tvar_constraints.md`). Everywhere else
-    `Transparent<T>` is its representation.
+    its shape (`core::Form::Text`). The data inside is written in the
+    form its reader reads: where the impl writes `from_value`, a cast
+    of data reads it, so the abstract values in it are written bare,
+    as `to_data` writes them (`core::Form::Data`); where the reader
+    reads the representation (`Env::read_as_representation`), they
+    are wrapped again. Core's `Transparent<T>` (`type Transparent<'a> =
+    Abstract<'a>` with `impl Cast {}`) is written as what `T` writes,
+    no object around it, so `Transparent<Transparent<T>>` writes what
+    `Transparent<T>` does; a template's data (`hbs`) writes every
+    abstract value bare (`core::Form::Template`). The reader takes
+    such an object only (`CastInput::Text`, `Type::cast_abstract`),
+    and `Transparent<T>`'s data bare, so a union of variants and
+    abstract types reads back by the tag alone (`'a: JsonData`,
+    `design/tvar_constraints.md`). Everywhere else `Transparent<T>` is
+    its representation.
 - **Async builtins.**
   - `EvalCachedAsync::DATA_ARGS` lists the arguments that leave as data;
     they are converted before `prepare_args` with their tuples, structs,

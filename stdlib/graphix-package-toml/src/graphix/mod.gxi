@@ -10,7 +10,8 @@ val read: fn<'b: Concrete + TomlData>(input: [string, bytes]) -> Result<'b, [`To
 /// is a table when its key type is `string` and an array of `[key,
 /// value]` pairs, which needs a table around it, under any other; an
 /// abstract value is a table of one entry its type's name keys (`{ Port
-/// = 80 }`), or under `Transparent` its data alone. TOML has no null: a
+/// = 80 }`), or under `Transparent` its data alone, the data inside as
+/// `json::write_str` writes it. TOML has no null: a
 /// struct field that is null is left out, and reads back as null; a null
 /// anywhere else is refused when written. The value's type must be one
 /// `read` reads back (`TomlData`).

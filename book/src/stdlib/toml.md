@@ -12,8 +12,8 @@ table.
 Every union in a type `toml::read` reads or `toml::write_str` writes is
 one member beside `null`, or members each carrying a tag, as with
 [json](json.md#unions-and-abstract-types). An abstract value is a table of
-one entry its type's name keys (`{ Port = 80 }`), and `Transparent<T>`
-writes it bare.
+one entry its type's name keys (`{ Port = 80 }`), the data inside in
+the form its reader reads, and `Transparent<T>` writes it bare.
 
 TOML has no null. A struct field that is null is left out, and a key the
 document leaves out reads as null where the field's type admits it, so an

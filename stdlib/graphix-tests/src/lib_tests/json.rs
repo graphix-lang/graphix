@@ -776,3 +776,72 @@ run!(
         "'a: JsonData refuses Transparent<i64>: Transparent<i64> holds a type that is not abstract, which JSON writes bare already"
     )
 );
+
+/// Abstract values whose data holds abstract values: through `from_value`
+/// (the identity impl, and one leaving `to_value` out), through the
+/// representation, and `Transparent` around them.
+const NESTED_ABSTRACTS: &str = r#"
+type Tag = Abstract<string>;
+impl Cast for Tag {};
+type Tags = Abstract<Array<Tag>>;
+impl Cast for Tags {
+    let to_value = |t: Tags| t.0;
+    let from_value = |v| select cast<Array<Tag>>(v) { error as e => e, a => Tags(a) }
+};
+type Port = Abstract<u16>;
+impl Cast for Port {};
+type Svc = Abstract<{port: Port}>;
+impl Cast for Svc {
+    let from_value = |v| select cast<{port: Port}>(v) { error as e => e, s => Svc(s) }
+};
+type Pt = Abstract<{x: Port}>;
+impl Cast for Pt {
+    let to_value = |p: Pt| {x: p.0.x}
+};
+type Doc = {
+    tags: Tags,
+    svc: Svc,
+    tsvc: Transparent<Svc>,
+    pt: Pt,
+    tt: Transparent<Transparent<Port>>
+};
+let d: Doc = {
+    tags: Tags([Tag("a"), Tag("b")]),
+    svc: Svc({port: Port(u16:80)}),
+    tsvc: Transparent(Svc({port: Port(u16:81)})),
+    pt: Pt({x: Port(u16:82)}),
+    tt: Transparent(Transparent(Port(u16:83)))
+};
+"#;
+
+pub(crate) fn with_nested_abstracts(body: &str) -> String {
+    format!("{{{NESTED_ABSTRACTS}{body}}}")
+}
+
+// The data inside an abstract value is written as its reader reads it: a
+// written from_value casts it as data, so the abstract values in it are
+// bare, as a cast or pack writes them; read as the representation, they
+// are wrapped. `Transparent` around a `Transparent` writes what the inner
+// one does.
+run!(json_abstract_data_holding_abstracts_reads_back, &with_nested_abstracts(r#"
+type E = [`JsonErr(string), `InvalidCast(string)];
+let j = json::write_str(d)$;
+let back: Result<Doc, E> = json::read(j);
+(j, back$ == d)
+"#), prints(r#"["{\"pt\":{\"Pt\":{\"x\":{\"Port\":82}}},\"svc\":{\"Svc\":{\"port\":80}},\"tags\":{\"Tags\":[\"a\",\"b\"]},\"tsvc\":{\"port\":81},\"tt\":83}", true]"#); FuseExpect::Jit);
+
+// A refusal at a generic definition's call names the type it refuses, not
+// the definition's variable.
+run!(
+    json_generic_writer_refusal_names_the_type,
+    r#"{
+    let w = |x| json::write_str(x);
+    let v: [i64, string] = 3;
+    w(v)
+}"#,
+    |v: Result<&Value>| matches!(v, Err(e) if {
+        let m = format!("{e:#}");
+        m.contains("JsonData refuses [i64, string]: i64 in [i64, string] has no tag")
+            && !m.contains("'_")
+    })
+);

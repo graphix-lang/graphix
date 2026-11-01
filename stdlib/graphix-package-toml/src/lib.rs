@@ -13,8 +13,8 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    Abstracts, CachedArgsAsync, CachedVals, CastTarget, Keys, ReadFormat, ReadInput,
-    Shape, TypedRead, f32_as_written, shape,
+    CachedArgsAsync, CachedVals, CastTarget, Form, Keys, ReadFormat, ReadInput, Shape,
+    TypedRead, f32_as_written, shape,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -91,20 +91,22 @@ fn value_to_toml(
     typ: Option<&Type>,
     value: &Value,
 ) -> Result<toml::Value, String> {
-    to_toml(env, typ, value, 0)
+    to_toml(env, typ, value, Form::Text, 0)
 }
 
 fn to_toml(
     env: &Env,
     typ: Option<&Type>,
     value: &Value,
+    form: Form,
     depth: usize,
 ) -> Result<toml::Value, String> {
     let deeper = |depth: usize| match depth <= MAX_DEPTH {
         true => Ok(depth + 1),
         false => Err(format!("the value nests deeper than {MAX_DEPTH} levels")),
     };
-    match shape(env, typ, value, Abstracts::Wrapped).map_err(|e| format!("{e}"))? {
+    let (shape, form) = shape(env, typ, value, form).map_err(|e| format!("{e}"))?;
+    match shape {
         Shape::Object(mut entries, keys) => {
             let depth = deeper(depth)?;
             let mut table = toml::map::Map::new();
@@ -112,7 +114,7 @@ fn to_toml(
             // cast reads back as null; a map's null value is refused
             let field_null = |v: &Value| keys == Keys::Fields && *v == Value::Null;
             for (k, v, t) in entries.drain(..).filter(|(_, v, _)| !field_null(v)) {
-                let v = to_toml(env, t.as_ref(), &v, depth)?;
+                let v = to_toml(env, t.as_ref(), &v, form, depth)?;
                 // two keys may print alike (`1` and `"1"`): never one for two
                 if table.insert(k.to_string(), v).is_some() {
                     return Err(format!("two keys write as the same TOML key {k}"));
@@ -124,7 +126,7 @@ fn to_toml(
             let depth = deeper(depth)?;
             let mut vals: LPooled<Vec<toml::Value>> = elems
                 .drain(..)
-                .map(|(v, t)| to_toml(env, t.as_ref(), &v, depth))
+                .map(|(v, t)| to_toml(env, t.as_ref(), &v, form, depth))
                 .collect::<Result<_, _>>()?;
             Ok(toml::Value::Array(vals.drain(..).collect()))
         }
@@ -133,7 +135,7 @@ fn to_toml(
             let mut seen: LPooled<AHashSet<LPooled<String>>> = LPooled::take();
             let mut vals: LPooled<Vec<toml::Value>> = LPooled::take();
             for (k, kt, v, vt) in pairs.drain(..) {
-                let k = to_toml(env, kt.as_ref(), &k, depth)?;
+                let k = to_toml(env, kt.as_ref(), &k, form, depth)?;
                 let mut written: LPooled<String> = LPooled::take();
                 k.serialize(toml::ser::ValueSerializer::new(&mut *written))
                     .map_err(|e| e.to_string())?;
@@ -142,7 +144,7 @@ fn to_toml(
                 }
                 vals.push(toml::Value::Array(vec![
                     k,
-                    to_toml(env, vt.as_ref(), &v, depth)?,
+                    to_toml(env, vt.as_ref(), &v, form, depth)?,
                 ]));
             }
             Ok(toml::Value::Array(vals.drain(..).collect()))

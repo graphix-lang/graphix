@@ -718,14 +718,18 @@ inside an object of one entry keyed by that name (`{"Port":80}`) and read
 it only so. Anything else carries none: a primitive, a struct, a tuple,
 an array, a map, `Any`, an open cell (it may yet be anything), and core's
 `Transparent<T>`, which the formats write as `T`'s data bare. An error is
-no member: no data reads into one. So `` [`A, `B(i64), Port, null] `` and
-`[T, null]` hold, `[i64, string]`, `[Port, u8]`, `` [Transparent<P>, `A]
-`` and `` [`A(i64), `A(string)] `` (one variant with a union payload) do
-not, and members under one tag are refused unless they are one type. The
+no member: no data reads into one. So `` [`A, `B(i64), Port, null] ``
+and `[T, null]` for a `T` that is no union hold, `[i64, string]`, `[Port,
+u8]`, `` [Transparent<P>, `A] `` and `` [`A(i64), `A(string)] `` do not
+(the type system merges the last into `` `A([i64, string]) ``, whose
+payload is refused), and members under one tag are refused unless they
+are one type. The
 union's members are its members past every union and name (a typedef
 whose body is a union, a primitive set), each judged by its constructor.
-Over a type that is not abstract `Transparent` is refused: it would change
-nothing. The walk reaches every part of the type: elements, fields,
+Over a type known not to be abstract `Transparent` is refused: it would
+change nothing. Over a definition's own open variable it is not judged,
+and where a call binds that variable to a type that is not abstract it
+writes that type's data bare, as it would without `Transparent`. The walk reaches every part of the type: elements, fields,
 payloads, a map's key and value, an abstract type's representation where
 its `Cast` implementation leaves a method out (and `Transparent`'s
 parameter), each named type once per list of arguments; a typedef whose
@@ -733,14 +737,10 @@ arguments grow at every level (``type N<'a> = [`Nil, `Cons('a,
 N<Array<'a>>)]``) is refused by the growth rule of the representation
 walks (`cast::grows_on`). A map's form is its key type's alone: an object
 under `string`, its pairs under any other, so its key union is judged as
-any other. `graphix-package-json`'s `admitted_types_read_back` writes
-witnesses of every type textdata's unit tests admit and reads them back
-with the real reader.
+any other.
 
 The rule asks nothing of the cast's pick, which may read data as any
-member: what a union reads back is decided by the tag alone. It replaces
-a model of the pick member by member (round 5 D6), which had to follow
-every reading a member could make of another's values.
+member: what a union reads back is decided by the tag alone.
 
 Unlike the other predicates it is judged only of the call's settled
 binding (`site_bounds`): a refusal at the bind would make a union target

@@ -6,9 +6,9 @@
 //! tag, or the union is one member and `null`. Anything else is refused:
 //! `[i64, string]`, `[Port, u8]`, `` [Transparent<Port>, `A] ``, an open
 //! member beside another. A `Transparent<T>`, written bare, has no tag, and
-//! is refused over a type `T` that is not abstract, where it would change
-//! nothing. A typedef whose parameters grow as it recurses is refused: its
-//! expansions never end.
+//! is refused over a type `T` known not to be abstract, where it would
+//! change nothing; over an open variable it is not judged. A typedef whose
+//! parameters grow as it recurses is refused: its expansions never end.
 
 use crate::{
     env::Env,
@@ -229,6 +229,17 @@ impl<'a> Walk<'a> {
     // json_members_sharing_a_tag_refused, json_abstract_holding_itself_reads_back},
     // lib_tests::toml::toml_forms_read_back; the round 2-9 pins named above are deleted with the
     // model they pinned.
+    // 2026-11-01 claude: Review of round 6 (B-r1-1): the data inside an abstract value's object
+    // was written with its abstract values wrapped even where the type's from_value reads it, a
+    // cast of data that takes them bare, so the identity impl (to_value = |t| t.0, from_value =
+    // cast<Rep>) over a representation holding another abstract wrote {"Tags":[{"Tag":"a"}]} and
+    // read nothing back (from_value-only impls and Transparent<P> alike). core::written now
+    // writes that data in the form its reader reads (core::Form::Data where from_value is
+    // written, Form::Text where the representation is read, Env::read_as_representation), and
+    // Transparent<Transparent<P>> writes what Transparent<P> does (the reader follows). Pins:
+    // lib_tests::json::json_abstract_data_holding_abstracts_reads_back,
+    // lib_tests::toml::toml_abstract_data_holding_abstracts_reads_back (both fail with the
+    // inside always Form::Text).
     // XCR claude for claude: [design/low] textdata trusts an abstract type whose Cast
     // implementation writes to_value (Shape::Unknown shares a form with nothing),
     // whatever its from_value does, while one that writes only from_value is judged
@@ -393,8 +404,8 @@ impl<'a> Walk<'a> {
         self.members(t, &mut members, &mut vec![]);
         let null = Type::Primitive(Typ::Null.into());
         members.retain(|(h, _)| *h != null);
-        let mut tags: SmallVec<[(ArcStr, &Type); 8]> = SmallVec::new();
-        for (head, _) in members.iter() {
+        let mut tags: SmallVec<[(ArcStr, &Type, &Type); 8]> = SmallVec::new();
+        for (head, written) in members.iter() {
             let Some(tag) = self.tag(head) else {
                 if members.iter().any(|(h, _)| h != head) {
                     let member = head.clone();
@@ -402,13 +413,13 @@ impl<'a> Walk<'a> {
                 }
                 continue;
             };
-            match tags.iter().find(|(t, _)| *t == tag) {
-                Some((_, a)) if *a != head => {
-                    let (a, b) = ((*a).clone(), head.clone());
+            match tags.iter().find(|(t, _, _)| *t == tag) {
+                Some((_, a, a_written)) if *a != head => {
+                    let (a, b) = ((*a_written).clone(), written.clone());
                     return Err(TextRefusal::SharedTag { union: t.clone(), tag, a, b });
                 }
                 Some(_) => (),
-                None => tags.push((tag, head)),
+                None => tags.push((tag, head, written)),
             }
         }
         members.iter().try_for_each(|(_, written)| self.walk(written))
@@ -436,8 +447,7 @@ mod test {
         parse_type(t).unwrap().text_refusal(&env).is_some()
     }
 
-    /// [`refused`] over the typedefs `defs`; graphix-package-json's
-    /// round trip reads these calls from this file.
+    /// [`refused`] over the typedefs `defs`.
     fn named(defs: &[(&str, &str)], t: &str) -> bool {
         let (env, t) = typed(defs, t);
         t.text_refusal(&env).is_some()

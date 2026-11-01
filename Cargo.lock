@@ -2899,7 +2899,6 @@ dependencies = [
  "graphix-package",
  "graphix-package-core",
  "graphix-rt",
- "graphix-types",
  "netidx",
  "netidx-core",
  "netidx-derive",

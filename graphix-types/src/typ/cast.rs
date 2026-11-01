@@ -297,6 +297,16 @@ impl NumReads {
 // cast_float_value_and_text_read_alike, cast_whole_float_without_a_real_member}; on the
 // lane base binary every item reads otherwise (~/ptmp/cr29/scratch/r6-B/union_order.gx,
 // whole.gx).
+// 2026-11-01 claude: Review of round 6 (B-r1-2): ruling 3 held only where the union was a
+// flat primitive set; a member beside the set (a variant, an array, a named type) made the
+// set's own class walk run inside each of the union's rounds, so cast<[f32, string,
+// `A]>(0.1) was "0.1", cast<[i64, string, F]>(3.5) with type F = f32 "3.5" and cast<[i64,
+// duration, `A]>(3.5) 3.5s. cast_member now reads a union by its members past every union
+// and name in it, a primitive set split into its parts by class (members_by_class), so
+// each part is tried in its class's group: all three are f32 0.1, f32 3.5 and i64 3, as
+// the flat spellings read. Pin: lang::types::cast_union_order_past_nested_members (fails
+// in every mode with members_by_class not looking into members). The earlier note's 'a
+// primitive set alike' held for a flat set only.
 /// A union's reading of a value among those its members offer, in its
 /// order: the first, except that in a round that drops no part one reading
 /// a number across the line between integers and reals gives way to a
@@ -990,6 +1000,19 @@ impl Type {
                                     })
                                     .flatten()
                             })
+                            // CR claude for eric: [design/low] Class first across the
+                            // rounds (D2 ruling 3) lets an infinity a finite value
+                            // overflows to beat an exact member of another class: this
+                            // round takes any conversion, so cast<[f32, string]>(1e300)
+                            // is f32 inf and -1e300 -inf (main: the string), though
+                            // holds_rounded refuses such an infinity as a rounding. The
+                            // whole value is lost, not a fraction. Options: keep it; or
+                            // an infinity reached from a finite value is a last resort,
+                            // tried after every group, so cast<f32>(1e300) and
+                            // cast<[f32, i64]>(1e300) stay inf and [f32, string] reads
+                            // the string. Probes: ~/ptmp/cr29/scratch/r6-B/realord.gx,
+                            // ~/ptmp/cr29/scratch/review-r6/B-r1-1/p07_inf.gx
+                            // (class-first-overflow-01)
                             .or_else(|| {
                                 (cx.holds == Holds::Partly)
                                     .then(|| {
@@ -1390,7 +1413,9 @@ impl Type {
 
     /// The abstract type `self`'s reading of `v`. Text (`wrapped`) holds
     /// it as an object of one entry keyed by the type's name, the data
-    /// inside; `Transparent<T>` holds `T`'s data bare, under no key.
+    /// inside; `Transparent<T>` holds what `T` holds there without the
+    /// object. A written `from_value` reads the data inside as a cast of
+    /// data does, nested abstract values bare, as the writer writes them.
     fn cast_abstract(
         &self,
         env: &Env,
@@ -1424,7 +1449,9 @@ impl Type {
         if wrapped && *id == AbstractId::transparent() {
             let inner = inner();
             let payload = match rep_head(env, &inner).as_deref() {
-                Some(t @ Type::Abstract { .. }) => t.cast_abstract(env, cx, v, false)?,
+                Some(t @ Type::Abstract { id, .. }) => {
+                    t.cast_abstract(env, cx, v, *id == AbstractId::transparent())?
+                }
                 _ => inner.cast_int(env, cx, None, v)?,
             };
             return wrap(payload, v);
@@ -1457,7 +1484,8 @@ impl Type {
         }
     }
 
-    /// The union `ts`'s reading of `v`, as `cast_int` takes one: when `v`
+    /// The union `ts`'s reading of `v`, as `cast_int` takes one, over its
+    /// members past every union in them ([`members_by_class`]): when `v`
     /// is statically an array (`array`), an array member it inhabits; else
     /// a member whose tag it carries; else the members of `v`'s class (for
     /// unmarked data a tuple of its length and then a struct first), then
@@ -1472,9 +1500,19 @@ impl Type {
         ts: &[Type],
         array: bool,
     ) -> Cast {
+        let parsed = parsed_scalar(v);
+        let own = match rep::kind(v) {
+            None => own_class(v),
+            Some(_) => BitFlags::empty(),
+        };
+        let as_parsed = parsed.as_ref().map_or(BitFlags::empty(), own_class) & !own;
+        let mut members: SmallVec<[Cow<Type>; 8]> = SmallVec::new();
+        for t in ts.iter() {
+            members_by_class(env, Cow::Borrowed(t), [own, as_parsed], &mut members, 0)
+        }
+        let ts = || members.iter().map(|t| &**t);
         if array {
-            let arrays: SmallVec<[&Type; 4]> = ts
-                .iter()
+            let arrays: SmallVec<[&Type; 4]> = ts()
                 .filter(|t| match rep_head(env, t).as_deref() {
                     Some(Type::Array(_)) => true,
                     Some(Type::Primitive(p)) => p.contains(Typ::Array),
@@ -1489,7 +1527,7 @@ impl Type {
         // a member whose tag the value carries is its reading, whatever a
         // tagless reading of an earlier member says
         let tagged: SmallVec<[&Type; 4]> =
-            ts.iter().filter(|t| carries_tag(env, t, v)).collect();
+            ts().filter(|t| carries_tag(env, t, v)).collect();
         if !tagged.is_empty() {
             return self
                 .tier(env, cx, src, v, &[tagged], true)
@@ -1532,9 +1570,16 @@ impl Type {
         // order: Real and Number would then read "0.1" as f64 and "3.0" as f32, a
         // visible change for whoever reads text into Number. Not in lane B's brief, so
         // left for a later round.
-        let parsed = parsed_scalar(v);
+        // 2026-11-01 claude: Round 6 review (B-r1-2) found another case of this order:
+        // with type F = f32 and type U = u8, cast<[F, U]>(true) is f32 1.0 while
+        // cast<[f32, u8]>(true) is u8 1 (main gives the same pair): a bool has no
+        // number kind, so Choice prefers neither and the named members' canonical order
+        // (by name) decides. cast_member now looks through a member naming a union or a
+        // primitive set spanning classes (members_by_class) but keeps a member naming
+        // one class whole, so the named order still decides here. Probe:
+        // ~/ptmp/cr29/scratch/r6-B/realord.gx.
         let mut groups: [SmallVec<[&Type; 4]>; 5] = Default::default();
-        for t in ts.iter() {
+        for t in ts() {
             let g = match rank(t) {
                 Some(r) => r,
                 None if in_own_class(env, t, v) => 2,
@@ -2948,6 +2993,50 @@ fn own_class(v: &Value) -> BitFlags<Typ> {
     if t.is_number() { Typ::number() } else { t.into() }
 }
 
+/// Push the members of the union member `t` a union tries one at a time:
+/// a name or a variable naming a union is that union's members, and a
+/// primitive set its parts in each of `classes` and the rest, so a union
+/// reads each part with the members of its class.
+fn members_by_class<'a>(
+    env: &Env,
+    t: Cow<'a, Type>,
+    classes: [BitFlags<Typ>; 2],
+    out: &mut SmallVec<[Cow<'a, Type>; 8]>,
+    depth: usize,
+) {
+    if depth > MAX_UNION_NESTING {
+        return out.push(t);
+    }
+    let head = match &t {
+        Cow::Borrowed(t) => rep_head(env, t),
+        Cow::Owned(t) => rep_head(env, t).map(|h| Cow::Owned(h.into_owned())),
+    };
+    ensure_sufficient(|| match &head {
+        Some(Cow::Borrowed(Type::Set(ms))) => ms.iter().for_each(|m| {
+            members_by_class(env, Cow::Borrowed(m), classes, out, depth + 1)
+        }),
+        Some(Cow::Owned(Type::Set(ms))) => ms.iter().for_each(|m| {
+            members_by_class(env, Cow::Owned(m.clone()), classes, out, depth + 1)
+        }),
+        Some(h) if let Type::Primitive(p) = &**h => {
+            let [own, parsed] = classes;
+            let parts = [*p & own, *p & parsed, *p & !own & !parsed];
+            match parts.iter().filter(|p| !p.is_empty()).count() {
+                0 | 1 => out.push(t),
+                _ => parts
+                    .into_iter()
+                    .filter(|p| !p.is_empty())
+                    .for_each(|p| out.push(Cow::Owned(Type::Primitive(p)))),
+            }
+        }
+        _ => out.push(t),
+    })
+}
+
+/// How many unions deep [`members_by_class`] looks into a union's members;
+/// a deeper one is tried whole.
+const MAX_UNION_NESTING: usize = 64;
+
 /// Whether `t` may read `v` without leaving `v`'s runtime class, which a
 /// union tries before any conversion across classes.
 fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
@@ -3386,6 +3475,14 @@ fn holds_exactly(v: &Value, c: &Value) -> bool {
             Ok(Value::String(_)) | Err(_) => true,
             Ok(p) => holds_exactly(&p, c),
         },
+        // CR claude for eric: [design/low] D2 ruling 7 (a bool is held exactly by the
+        // number 1 or 0) with ruling 5 (the canonical tie-break) reads a bool into a
+        // number before a string: cast<[i64, string]>(true) is i64 1 and cast<[f32,
+        // string]>(true) f32 1.0, where main gives "true" for both, since the string
+        // holds the bool exactly too and a bool's class holds neither member. Pinned as
+        // built in lang::types::cast_union_order (i64:1). Options: keep it; or a bool
+        // tries its text before a number (the string first). Probe:
+        // ~/ptmp/cr29/scratch/r6-B/realord.gx (bool-union-number-01)
         (Value::Bool(b), c) if Typ::get(c).is_number() => {
             holds_exactly(&Value::U8(*b as u8), c)
         }

@@ -74,8 +74,9 @@ trait Cast {
 /// Port = 80 }`); `Transparent<Port>` writes Port's data alone (`80`)
 /// and reads it back through Port's `Cast`. `Transparent(p)` wraps a
 /// value and `t.0` unwraps it. Everywhere else (casts, pack, netidx) it
-/// is its representation. JSON and TOML refuse it over a type that is
-/// not abstract, where it would change nothing.
+/// is its representation. JSON and TOML refuse it over a type known not
+/// to be abstract, where it would change nothing; over a generic
+/// definition's own type variable it is not judged.
 type Transparent<'a> = Abstract<'a>;
 impl<'a> Cast for Transparent<'a>;
 

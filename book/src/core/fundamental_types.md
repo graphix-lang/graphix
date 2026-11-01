@@ -318,7 +318,10 @@ value's kind: a number converts to another number (an integer type only
 when it holds the value exactly), and a union target takes a member of
 the value's own kind first, whatever another kind's member would keep, so
 `cast<[i8, Array<f64>]>([1, 2])` is `[1., 2.]`, `cast<[f32, string]>(0.1)`
-is the `f32` 0.1 and `cast<[i64, string]>(3.5)` the integer 3. Text tries
+is the `f32` 0.1 and `cast<[i64, string]>(3.5)` the integer 3, whatever
+other members stand beside them (`` cast<[i64, string, `A]>(3.5) `` is 3
+too: a union reads by the members of every union and type name in it).
+Text tries
 the members of the kind it parses as next: `cast<[duration, decimal]>("3.0")`
 is the decimal 3.0, as `cast<[duration, decimal]>(3.0)` is. Among the
 members of one kind, one that holds the value exactly comes first, then one

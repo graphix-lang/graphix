@@ -841,6 +841,38 @@ run!(
     )
 );
 
+// A member beside a primitive set changes nothing of that order: a union
+// tries the members of every union and name in it, and each part of a
+// primitive set with the members of its class.
+const CAST_UNION_ORDER_PAST_NESTED_MEMBERS: &str = r#"
+{
+  type F = f32;
+  type P = [f32, string];
+  type N = [i64, string, `B];
+  (
+    cast<[f32, string, `A]>(0.1)$,
+    cast<[f32, string, Array<i64>]>(0.1)$,
+    cast<[i64, string, `A]>(3.5)$,
+    cast<[i64, string, F]>(3.5)$,
+    cast<[i64, duration, `A]>("3.5")$,
+    cast<[i64, duration, `A]>(3.5)$,
+    cast<[f32, u8, `A]>(true)$,
+    cast<Array<[f32, string, `A]>>([0.1])$,
+    cast<[P, `A]>(0.1)$,
+    cast<[N, `A]>(3.5)$
+  )
+}
+"#;
+
+run!(
+    cast_union_order_past_nested_members,
+    CAST_UNION_ORDER_PAST_NESTED_MEMBERS,
+    prints(
+        "[f32:0.1, f32:0.1, i64:3, f32:3.5, i64:3, i64:3, u8:1, [f32:0.1], f32:0.1, i64:3]"
+    );
+    FuseExpect::None
+);
+
 // Unmarked data reads back as the member that reads it exactly: a tuple of
 // its length, then a struct, before an array, so what pack and json write
 // of a tuple or a struct reads back as it.

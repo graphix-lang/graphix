@@ -16,7 +16,9 @@ val read: fn<'b: Concrete + JsonData>(input: [string, bytes]) -> Result<'b, [`Js
 /// array, a bare variant its tag and a variant with a payload an array of
 /// its tag and payload, and an abstract value the object of one entry
 /// its type's name keys (`{"Port": 80}`), its data inside, or under
-/// `Transparent` its data alone. A `T` written bare that writes null
+/// `Transparent` its data alone. The abstract values inside that data are
+/// bare where the type's `from_value` reads it, else wrapped too. A `T`
+/// written bare that writes null
 /// reads back from `[Transparent<T>, null]` as the outer null. The value's
 /// type must be one `read` reads back (`JsonData`).
 val write_str: fn<'a: Data + JsonData>(?#pretty: bool, value: 'a) -> Result<string, `JsonErr(string)>;

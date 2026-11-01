@@ -241,3 +241,16 @@ run!(hbs_partials_reference_refused, r#"{
 run!(hbs_partials_function_refused, r#"
     hbs::render(#partials: {p: |x| x}, "hi {{a}}", {a: 1})
 "#, refused("is not data: data holds no function and no reference"); FuseExpect::None);
+
+// A template's data has no reader: a map whose keys are scalars that
+// print apart is an object keyed by their text, whatever its key type.
+run!(hbs_map_with_scalar_keys_is_an_object, r#"{
+    let m: Map<i64, string> = {1 => "one", 2 => "two"};
+    let t: Map<[`A, `B], i64> = {`A => 1, `B => 2};
+    let r1 = hbs::render("{{#each m}}{{@key}}={{this}};{{/each}}", {m})$;
+    let r2 = hbs::render("{{#each t}}{{@key}}={{this}};{{/each}}", {t})$;
+    let r3 = hbs::render(r"{{m.[1]}}", {m})$;
+    "[r1]|[r2]|[r3]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "1=one;2=two;|A=1;B=2;|one")
+}; FuseExpect::Jit);

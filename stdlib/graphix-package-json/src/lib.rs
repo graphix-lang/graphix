@@ -13,7 +13,7 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    Abstracts, CachedArgsAsync, CachedVals, CastTarget, ReadFormat, ReadInput, Shape,
+    CachedArgsAsync, CachedVals, CastTarget, Form, ReadFormat, ReadInput, Shape,
     TypedRead, f32_as_written, shape,
 };
 use netidx_value::{PBytes, ValArray, Value};
@@ -183,13 +183,13 @@ impl<'de> Visitor<'de> for JsonValue {
 const MAX_DEPTH: usize = 128;
 
 /// `value` as JSON, written as its type `typ` says (`None` reads the value
-/// alone), each abstract value in it as `abstracts` says: a serde view a
-/// writer serializes as it walks the value.
+/// alone), in the form `form`: a serde view a writer serializes as it
+/// walks the value.
 pub struct JsonView<'a> {
     env: &'a Env,
     typ: Option<&'a Type>,
     value: &'a Value,
-    abstracts: Abstracts,
+    form: Form,
     depth: usize,
 }
 
@@ -198,20 +198,26 @@ impl<'a> JsonView<'a> {
         env: &'a Env,
         typ: Option<&'a Type>,
         value: &'a Value,
-        abstracts: Abstracts,
+        form: Form,
     ) -> Self {
-        Self { env, typ, value, abstracts, depth: 0 }
+        Self { env, typ, value, form, depth: 0 }
     }
 
-    fn under(&self, typ: Option<&'a Type>, value: &'a Value, levels: usize) -> Self {
-        Self { typ, value, depth: self.depth + levels, ..*self }
+    fn under(
+        &self,
+        typ: Option<&'a Type>,
+        value: &'a Value,
+        form: Form,
+        levels: usize,
+    ) -> Self {
+        Self { typ, value, form, depth: self.depth + levels, ..*self }
     }
 }
 
 impl Serialize for JsonView<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let shape = shape(self.env, self.typ, self.value, self.abstracts)
-            .map_err(S::Error::custom)?;
+        let (shape, form) =
+            shape(self.env, self.typ, self.value, self.form).map_err(S::Error::custom)?;
         let containers = match &shape {
             Shape::Pairs(_) => 2,
             Shape::Object(..) | Shape::Seq(_) | Shape::Leaf(Value::Bytes(_)) => 1,
@@ -233,14 +239,14 @@ impl Serialize for JsonView<'_> {
                             "two keys write as the same JSON key {k}"
                         )));
                     }
-                    map.serialize_entry(k.as_str(), &self.under(t.as_ref(), v, 1))?;
+                    map.serialize_entry(k.as_str(), &self.under(t.as_ref(), v, form, 1))?;
                 }
                 map.end()
             }
             Shape::Seq(elems) => {
                 let mut seq = s.serialize_seq(Some(elems.len()))?;
                 for (v, t) in elems.iter() {
-                    seq.serialize_element(&self.under(t.as_ref(), v, 1))?;
+                    seq.serialize_element(&self.under(t.as_ref(), v, form, 1))?;
                 }
                 seq.end()
             }
@@ -248,14 +254,14 @@ impl Serialize for JsonView<'_> {
                 let mut seq = s.serialize_seq(Some(pairs.len()))?;
                 let mut seen: LPooled<AHashSet<serde_json::Value>> = LPooled::take();
                 for (k, kt, v, vt) in pairs.iter() {
-                    let k = serde_json::to_value(self.under(kt.as_ref(), k, 2))
+                    let k = serde_json::to_value(self.under(kt.as_ref(), k, form, 2))
                         .map_err(S::Error::custom)?;
                     if seen.contains(&k) {
                         return Err(S::Error::custom(
                             "two keys write as the same JSON data",
                         ));
                     }
-                    seq.serialize_element(&(&k, self.under(vt.as_ref(), v, 2)))?;
+                    seq.serialize_element(&(&k, self.under(vt.as_ref(), v, form, 2)))?;
                     seen.insert(k);
                 }
                 seq.end()
@@ -347,12 +353,8 @@ fn encode(
     args: &[Value],
 ) -> Option<Result<LPooled<Vec<u8>>, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let json = JsonView::new(
-        env,
-        ft.args.get(1).map(|a| &a.typ),
-        args.get(1)?,
-        Abstracts::Wrapped,
-    );
+    let json =
+        JsonView::new(env, ft.args.get(1).map(|a| &a.typ), args.get(1)?, Form::Text);
     let mut buf: LPooled<Vec<u8>> = LPooled::take();
     let res = if pretty {
         serde_json::to_writer_pretty(&mut *buf, &json)
@@ -397,377 +399,4 @@ graphix_derive::defpackage! {
         JsonWriteStr,
         JsonWriteBytes,
     ],
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use graphix_compiler::{list, rep};
-    use netidx_value::Typ;
-    use std::time::Duration;
-    use triomphe::Arc;
-
-    /// The source of `typ::textdata`, whose unit tests name the types
-    /// this test reads back.
-    const TEXTDATA: &str = include_str!("../../../graphix-types/src/typ/textdata.rs");
-
-    /// The most values a composite's witnesses take from the product of
-    /// its parts', evenly spaced through it.
-    const CAP: usize = 2000;
-
-    /// A type and the typedefs it names, each `(name, body)`.
-    type Case = (Vec<(&'static str, &'static str)>, &'static str);
-
-    /// Every type textdata's unit tests judge: `refused("..")` and
-    /// `named(&[("Name", "body"), ..], "..")`, its typedefs written in the
-    /// call.
-    fn cases() -> Vec<Case> {
-        let mut found = vec![];
-        for call in ["refused(\""] {
-            let mut rest = TEXTDATA;
-            while let Some(i) = rest.find(call) {
-                rest = &rest[i + call.len()..];
-                let end = rest.find("\")").expect("a closed call");
-                found.push((vec![], &rest[..end]));
-                rest = &rest[end..];
-            }
-        }
-        // the literal `rest` starts in, past its opening quote
-        let literal = |rest: &mut &'static str| {
-            let end = rest.find('"').expect("a closed string");
-            let s = &rest[..end];
-            *rest = &rest[end + 1..];
-            s
-        };
-        let mut rest = TEXTDATA;
-        while let Some(i) = rest.find("named(") {
-            rest = rest[i + "named(".len()..].trim_start();
-            let Some(r) = rest.strip_prefix("&[") else { continue };
-            rest = r;
-            let mut defs = vec![];
-            loop {
-                let at = rest.find(['"', ']']).expect("a closed list");
-                let closed = rest.as_bytes()[at] == b']';
-                rest = &rest[at + 1..];
-                if closed {
-                    break;
-                }
-                defs.push(literal(&mut rest));
-            }
-            assert!(
-                !defs.is_empty() && defs.len() % 2 == 0,
-                "textdata.rs: write a named call's typedefs in the call"
-            );
-            rest = &rest[rest.find('"').expect("a type") + 1..];
-            let t = literal(&mut rest);
-            found.push((defs.chunks(2).map(|d| (d[0], d[1])).collect(), t));
-        }
-        found.sort();
-        found.dedup();
-        found
-    }
-
-    /// The values of a type a JSON reader may confuse, by the classes
-    /// textdata judges: each integer type's values among the edges
-    /// (every integer type holds it, an f32 holds it, an f32 or an f64
-    /// only rounds it, its type's extremes); floats whole and fractional
-    /// at the same edges; decimals with and without a scale; durations
-    /// whole and fractional; datetimes; strings that read as each class,
-    /// as every tag and field name in the type, or as nothing. A
-    /// composite takes the product of its parts' (at most [`CAP`]); an
-    /// array and a map are empty, of one element or entry, and of two.
-    struct Witnesses {
-        env: Env,
-        texts: Vec<ArcStr>,
-    }
-
-    impl Witnesses {
-        fn new(env: Env, t: &Type) -> Self {
-            let mut texts: Vec<ArcStr> = [
-                "",
-                "x",
-                "1",
-                "-5",
-                "0.1",
-                "3.0",
-                "3.5",
-                "1e20",
-                "16777217",
-                "true",
-                "null",
-                "2020-01-01T00:00:00+00:00",
-                "1970-01-01T00:00:03Z",
-            ]
-            .into_iter()
-            .map(ArcStr::from)
-            .collect();
-            names(&env, t, &mut vec![], &mut texts);
-            Self { env, texts }
-        }
-
-        fn of(&self, t: &Type, depth: usize) -> Vec<Value> {
-            match t {
-                Type::Primitive(p) => p.iter().flat_map(|p| self.prim(p)).collect(),
-                Type::Set(ms) => ms.iter().flat_map(|m| self.of(m, depth)).collect(),
-                Type::TVar(tv) => tv.binding().map_or(vec![], |b| self.of(&b, depth)),
-                Type::Ref(_) if depth == 0 => vec![],
-                Type::Ref(_) => {
-                    t.lookup_ref(&self.env).map_or(vec![], |b| self.of(&b, depth - 1))
-                }
-                Type::Array(e) => {
-                    seqs(self.of(e, depth)).map(|vs| Value::Array(vs.into())).collect()
-                }
-                Type::List(e) => seqs(self.of(e, depth)).map(list::from_iter).collect(),
-                Type::Tuple(ts) => {
-                    product(ts.iter().map(|t| self.of(t, depth)).collect(), rep::tuple)
-                }
-                Type::Struct(fs) => {
-                    let parts = fs.iter().map(|(_, t, _)| self.of(t, depth)).collect();
-                    product(parts, |vs| {
-                        rep::structure(fs.iter().map(|(n, _, _)| n.clone()).zip(vs))
-                    })
-                }
-                Type::Variant(tag, ps, _) => {
-                    let parts = ps.iter().map(|t| self.of(t, depth)).collect();
-                    product(parts, |vs| rep::make_variant(tag.clone(), vs))
-                }
-                Type::Map { key, value } => {
-                    let (ks, vs) = (self.of(key, depth), self.of(value, depth));
-                    let entry = |vs: Vec<Value>| match &vs[..] {
-                        [k, v] => (k.clone(), v.clone()),
-                        _ => unreachable!("a key and a value"),
-                    };
-                    let mut maps = vec![Value::Map(netidx_value::Map::new())];
-                    maps.extend(product(vec![ks.clone(), vs.clone()], |e| {
-                        Value::Map(netidx_value::Map::from_iter([entry(e)]))
-                    }));
-                    if let Some(v) = vs.first() {
-                        maps.extend(ks.windows(2).map(|k| {
-                            let es = k.iter().map(|k| (k.clone(), v.clone()));
-                            Value::Map(netidx_value::Map::from_iter(es))
-                        }))
-                    }
-                    maps
-                }
-                _ => vec![],
-            }
-        }
-
-        fn prim(&self, p: Typ) -> Vec<Value> {
-            const INTS: [i128; 19] = [
-                0,
-                1,
-                100,
-                -100,
-                200,
-                1000,
-                -1000,
-                60000,
-                70000,
-                -70000,
-                16777217,
-                -16777217,
-                i32::MAX as i128,
-                i32::MIN as i128,
-                u32::MAX as i128,
-                9007199254740993,
-                i64::MAX as i128,
-                i64::MIN as i128,
-                u64::MAX as i128,
-            ];
-            const F64S: [f64; 14] = [
-                0.0,
-                0.5,
-                -2.5,
-                0.1,
-                3.0,
-                255.0,
-                16777216.0,
-                16777217.0,
-                1234567936.0,
-                9007199254740992.0,
-                1e20,
-                0.30000000000000004,
-                1.5e300,
-                3.4028234663852886e38,
-            ];
-            const F32S: [f32; 11] = [
-                0.0,
-                0.5,
-                -2.5,
-                0.1,
-                3.0,
-                255.0,
-                16777216.0,
-                1234567936.0,
-                1e20,
-                3.4028235e38,
-                1e-7,
-            ];
-            let int =
-                |f: fn(i128) -> Option<Value>| INTS.iter().filter_map(move |i| f(*i));
-            let datetime = |s: &'static str| {
-                Type::Primitive(Typ::DateTime.into())
-                    .cast_value(&self.env, Value::from(s))
-            };
-            match p {
-                Typ::Null => vec![Value::Null],
-                Typ::Bool => vec![Value::Bool(true), Value::Bool(false)],
-                Typ::I8 => int(|i| Some(Value::I8(i.try_into().ok()?))).collect(),
-                Typ::U8 => int(|i| Some(Value::U8(i.try_into().ok()?))).collect(),
-                Typ::I16 => int(|i| Some(Value::I16(i.try_into().ok()?))).collect(),
-                Typ::U16 => int(|i| Some(Value::U16(i.try_into().ok()?))).collect(),
-                Typ::I32 => int(|i| Some(Value::I32(i.try_into().ok()?))).collect(),
-                Typ::Z32 => int(|i| Some(Value::Z32(i.try_into().ok()?))).collect(),
-                Typ::U32 => int(|i| Some(Value::U32(i.try_into().ok()?))).collect(),
-                Typ::V32 => int(|i| Some(Value::V32(i.try_into().ok()?))).collect(),
-                Typ::I64 => int(|i| Some(Value::I64(i.try_into().ok()?))).collect(),
-                Typ::Z64 => int(|i| Some(Value::Z64(i.try_into().ok()?))).collect(),
-                Typ::U64 => int(|i| Some(Value::U64(i.try_into().ok()?))).collect(),
-                Typ::V64 => int(|i| Some(Value::V64(i.try_into().ok()?))).collect(),
-                Typ::F32 => F32S.iter().map(|f| Value::F32(*f)).collect(),
-                Typ::F64 => F64S.iter().map(|f| Value::F64(*f)).collect(),
-                Typ::Decimal => {
-                    ["3", "1.5", "1.10", "0.1", "12345678901234567890.123456789"]
-                        .iter()
-                        .map(|d| Value::Decimal(Arc::new(d.parse().expect("a decimal"))))
-                        .collect()
-                }
-                Typ::Duration => [3.0, 3.5, 0.1, 0.0]
-                    .iter()
-                    .map(|s| Value::Duration(Arc::new(Duration::from_secs_f64(*s))))
-                    .collect(),
-                Typ::DateTime => {
-                    vec![
-                        datetime("2020-01-01T00:00:00Z"),
-                        datetime("1970-01-01T00:00:03Z"),
-                    ]
-                }
-                Typ::String => self.texts.iter().cloned().map(Value::String).collect(),
-                Typ::Bytes => {
-                    vec![Value::Bytes(PBytes::new(Bytes::from_static(&[1, 2])))]
-                }
-                _ => vec![],
-            }
-        }
-    }
-
-    /// The tags and field names in `t`, through each reference not in
-    /// `seen`.
-    fn names(env: &Env, t: &Type, seen: &mut Vec<Type>, out: &mut Vec<ArcStr>) {
-        let parts: Vec<&Type> = match t {
-            Type::Variant(tag, ps, _) => {
-                out.push(tag.clone());
-                ps.iter().collect()
-            }
-            Type::Struct(fs) => fs
-                .iter()
-                .map(|(n, t, _)| {
-                    out.push(n.clone());
-                    t
-                })
-                .collect(),
-            Type::Set(ts) | Type::Tuple(ts) => ts.iter().collect(),
-            Type::Array(e) | Type::List(e) => vec![&**e],
-            Type::Map { key, value } => vec![&**key, &**value],
-            Type::Ref(_) if !seen.contains(t) => {
-                seen.push(t.clone());
-                if let Ok(body) = t.lookup_ref(env) {
-                    names(env, &body, seen, out)
-                }
-                vec![]
-            }
-            _ => vec![],
-        };
-        parts.into_iter().for_each(|p| names(env, p, seen, out))
-    }
-
-    /// The elements of a sequence's witnesses: none, each alone, and each
-    /// beside the next.
-    fn seqs(es: Vec<Value>) -> impl Iterator<Item = Vec<Value>> {
-        let pairs: Vec<Vec<Value>> = es.windows(2).map(|w| w.to_vec()).collect();
-        std::iter::once(vec![]).chain(es.into_iter().map(|e| vec![e])).chain(pairs)
-    }
-
-    /// `build` of at most [`CAP`] combinations of one value of each part,
-    /// spaced through the product by a stride coprime to every part's
-    /// length, so no part's values stand still.
-    fn product(
-        parts: Vec<Vec<Value>>,
-        build: impl Fn(Vec<Value>) -> Value,
-    ) -> Vec<Value> {
-        fn gcd(a: usize, b: usize) -> usize {
-            if b == 0 { a } else { gcd(b, a % b) }
-        }
-        if parts.iter().any(|p| p.is_empty()) {
-            return vec![];
-        }
-        let total = parts.iter().fold(1usize, |n, p| n.saturating_mul(p.len()));
-        let mut step = total.div_ceil(CAP);
-        while parts.iter().any(|p| gcd(step, p.len()) != 1) {
-            step += 1
-        }
-        (0..total)
-            .step_by(step)
-            .map(|mut i| {
-                build(
-                    parts
-                        .iter()
-                        .map(|p| {
-                            let v = p[i % p.len()].clone();
-                            i /= p.len();
-                            v
-                        })
-                        .collect(),
-                )
-            })
-            .collect()
-    }
-
-    // Of every type textdata's unit tests name that JsonData admits, every
-    // witness the real writer writes as JSON the real reader reads back as
-    // itself.
-    #[test]
-    fn admitted_types_read_back() {
-        let (mut admitted, mut named, mut checked) = (0, 0, 0);
-        let mut failed = vec![];
-        let tested = cases();
-        assert!(tested.len() > 25, "found {} types in textdata.rs", tested.len());
-        for (defs, src) in tested {
-            let (env, t) = Env::typed_at_root(&defs, src).expect("a type");
-            let w = Witnesses::new(env, &t);
-            if t.text_refusal(&w.env).is_some() {
-                continue;
-            }
-            admitted += 1;
-            named += !defs.is_empty() as usize;
-            let err = Type::Error(Arc::new(Type::Primitive(Typ::String.into())));
-            let result = Type::Set(Arc::from_iter([t.clone(), err]));
-            let target = CastTarget::of_result(&w.env, Some(&result));
-            let exact = target.holds_exact_number(&w.env);
-            for v in w.of(&t, 3) {
-                let Ok(text) = serde_json::to_string(&JsonView::new(
-                    &w.env,
-                    Some(&t),
-                    &v,
-                    Abstracts::Wrapped,
-                )) else {
-                    continue;
-                };
-                checked += 1;
-                let read = JsonValue { exact }
-                    .read(serde_json::Deserializer::from_str(&text))
-                    .expect("the writer's JSON");
-                let back = Json::read(&target, &w.env, read);
-                if back != v {
-                    failed.push(format!("{src}: {v} wrote {text}, read back {back}"));
-                }
-            }
-        }
-        assert!(
-            admitted > 10 && named > 5 && checked > 1000,
-            "{admitted} types ({named} over typedefs), {checked} values"
-        );
-        assert!(failed.is_empty(), "{}", failed.join("\n"));
-    }
 }

@@ -11,10 +11,6 @@ readme = "../README.md"
 license = "MIT"
 categories = ["network-programming", "compilers", "gui"]
 
-[features]
-# Env::typed_at_root, for other crates' tests
-testing = []
-
 [dependencies]
 anyhow = { workspace = true }
 arcstr = { workspace = true }
