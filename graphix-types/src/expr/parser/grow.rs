@@ -477,11 +477,14 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
         }
         let mut pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
         let read = REASON.with(|r| {
-            r.borrow().as_ref().filter(|r| r.failed_at == Some(pos)).map(|r| r.pos)
+            r.borrow()
+                .as_ref()
+                .filter(|r| r.failed_at == Some(pos))
+                .map(|r| (r.pos, r.reason.clone()))
         });
-        let (mut msg, mut summary) = if let Some(at) = read {
-            pos = at;
-            let summary = "the parser refused what it read here".to_string();
+        let (mut msg, mut summary) = if let Some((at, reason)) = &read {
+            pos = *at;
+            let summary = reason.to_string();
             let at = format!("Parse error at line: {}, column: {}", pos.line, pos.column);
             (format!("{at}\n{summary}"), summary)
         } else if pos == err_pos {
@@ -499,7 +502,10 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
             msg.push('\n');
             msg.push_str(&snippet);
         }
-        let reason = REASON.with(|r| r.borrow().clone()).filter(|r| r.explains(pos));
+        let reason = match read {
+            Some(_) => None,
+            None => REASON.with(|r| r.borrow().clone()).filter(|r| r.explains(pos)),
+        };
         let note = match reason {
             Some(r) => Some((r.pos, r.reason)),
             None => unclosed_at_end(text, pos)

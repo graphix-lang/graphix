@@ -545,6 +545,16 @@ where
 // and column; before, at the closing bracket). gxfmt over both repos (2810 files): 66
 // skipped as unparseable, the same 66 the base parser refuses, no round-trip or
 // idempotence failure.
+// 2026-11-01 claude: Review E2-r1-2: refuse_read made every type-list refusal lead with a
+// generic 'the parser refused what it read here' and move its reason to a note line, a
+// duplicate field and an empty struct included; now a read refusal's reason is its
+// headline, said once, as every refusal's was. And the earlier note overstated: a comment
+// that has no item, a type comment outside a definition and one beside a member that
+// records no position report at the comment; the merge and misplaced refusals report at
+// the member that holds the comment (merge.gx: the merged member on line 4 for a comment
+// on line 3). Pin parser::test::a_refused_type_list_leads_with_its_reason (five refusals,
+// each its reason right under its position and said once; fails with the generic
+// headline).
 fn union_members(
     listed: Listed<ListItem<Type>>,
     end: SourcePosition,

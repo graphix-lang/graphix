@@ -3067,6 +3067,45 @@ fn a_refused_comment_is_reported_where_it_stands() {
     }
 }
 
+// a type list's refusal leads with its reason, where it was read, and
+// says it once
+#[test]
+fn a_refused_type_list_leads_with_its_reason() {
+    for (src, at, why) in [
+        (
+            "let x: {a: i64, a: string} = never();\n0",
+            "line: 1, column: 27",
+            "struct field names must be unique",
+        ),
+        (
+            "type T = {};\n0",
+            "line: 1, column: 12",
+            "a struct type has at least one field",
+        ),
+        (
+            "type T = [\n  `A,\n  // c\n  `A\n];\n0",
+            "line: 4, column: 3",
+            "a comment in a union describes one of two or more members",
+        ),
+        (
+            "type T = [\n  [`B, `C\n    // below\n  ],\n  `A\n];\n0",
+            "line: 2, column: 8",
+            "comments below a nested union's last member have no place in the \
+             union that holds it",
+        ),
+        (
+            "let x: [\n `A, // c\n `B\n] = `A;\nx",
+            "line: 2, column: 6",
+            "a comment in a type stands only in a type definition, beside a field \
+             or a union member outside any type argument, payload or function type",
+        ),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(&format!("Parse error at {at}\n{why}")), "{src}: {msg}");
+        assert_eq!(msg.matches(why).count(), 1, "{src}: {msg}");
+    }
+}
+
 // a comment stands in a type only beside a type definition's field or
 // variant or named type, which keeps it as written
 #[test]
