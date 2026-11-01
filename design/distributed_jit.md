@@ -40,14 +40,15 @@ trait Apply<R> {
 }
 
 /// Mechanics only, no policy: identity suppression, region inputs →
-/// KernelSig, compile under the jit lock (emit_clif recursion from
-/// `node`), a FusedKernel over the feeders. Ok(None) = didn't compile.
-pub fn try_fuse<R>(node: &Node<R>, ctx: &mut ExecCtx<R>)
-    -> Result<Option<Node<R>>>;
+/// KernelSig, emission (emit_clif recursion from `node`), a FusedKernel
+/// over the feeders. `own` is the self-recursive instance whose body
+/// `node` is; `Refused` names the argument a feeder retry may take.
+fn try_fuse<R>(node: &Node<R>, own: Option<&GXLambda<R>>, ctx: &mut CompileCtx<R>)
+    -> Result<FusionAttempt<R>>;
 ```
 
 Policy lives in each node's `fuse`. A sync-capable node tries
-`try_fuse(self, ctx)` and, on `None`, recurses into its children; an
+`try_fuse` and, on `Refused`, recurses into its children; an
 async node just recurses. Maximality falls out of top-down order, and a
 failed compile falls through to child recursion — finer granularity
 than a central region planner, where a non-emittable root lost the

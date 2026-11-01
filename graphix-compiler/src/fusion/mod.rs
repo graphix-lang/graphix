@@ -1104,7 +1104,7 @@ pub fn fuse<R: Rt>(child: &mut Node<R>, ctx: &mut CompileCtx<R>) -> anyhow::Resu
     if let Some(p) = child.as_prune_mut() {
         return p.fuse_child(ctx);
     }
-    let attempt = try_fuse_attempt(child, None, ctx)?;
+    let attempt = try_fuse(child, None, ctx)?;
     take_attempt(child, attempt, ctx)
 }
 
@@ -1132,7 +1132,7 @@ fn fuse_own_body<R: Rt>(
     let attempt = {
         let body = g.body();
         let root = body.as_prune().map_or(body, |p| p.child());
-        try_fuse_attempt(root, Some(&*g), ctx)?
+        try_fuse(root, Some(&*g), ctx)?
     };
     let body = g.body_mut();
     let root = match body.as_prune().is_some() {
@@ -1326,7 +1326,7 @@ fn fuse_fed<R: Rt>(
 ) -> anyhow::Result<FusionAttempt<R>> {
     // Every fed argument must be an input: an argument the kernel skips
     // would drop its effect.
-    let attempt = match try_fuse_attempt(child, None, ctx)? {
+    let attempt = match try_fuse(child, None, ctx)? {
         FusionAttempt::Fused(mut new) => {
             let k =
                 new.downcast_mut::<FusedKernel<R>>().expect("try_fuse builds a kernel");
@@ -1597,26 +1597,17 @@ pub(crate) enum FusionAttempt<R: Rt> {
     Refused(Option<ExprId>),
 }
 
-/// Try to fuse the whole subtree rooted at `node` into one JIT kernel.
-/// Mechanics only; policy lives in each node's [`Update::fuse`].
+/// Try to fuse the whole subtree rooted at `node` into one JIT kernel,
+/// `own` the self-recursive instance whose body `node` is
+/// ([`discover_lambda_calls`]). Mechanics only; policy lives in each
+/// node's [`Update::fuse`].
 ///
-/// `Ok(Some(replacement))`: a [`FusedKernel`] node the caller swaps in.
-/// `Ok(None)`: the root type has no kernel representation, the subtree
-/// is an identity passthrough, or some node does not emit CLIF.
-/// Discovery rejects known effects; emission validates the remaining shapes.
-pub fn try_fuse<R: Rt>(
-    node: &Node<R>,
-    ctx: &mut CompileCtx<R>,
-) -> anyhow::Result<Option<Node<R>>> {
-    Ok(match try_fuse_attempt(node, None, ctx)? {
-        FusionAttempt::Fused(node) => Some(node),
-        FusionAttempt::Refused(_) => None,
-    })
-}
-
-/// [`try_fuse`]'s attempt, `own` the self-recursive instance whose body
-/// `node` is ([`discover_lambda_calls`]).
-fn try_fuse_attempt<R: Rt>(
+/// `Fused(replacement)`: a [`FusedKernel`] node the caller swaps in.
+/// `Refused`: the root type has no kernel representation, the subtree
+/// is an identity passthrough, or some node does not emit CLIF, with the
+/// argument whose blocker a feeder retry may take, if any. Discovery
+/// rejects known effects; emission validates the remaining shapes.
+fn try_fuse<R: Rt>(
     node: &Node<R>,
     own: Option<&GXLambda<R>>,
     ctx: &mut CompileCtx<R>,
