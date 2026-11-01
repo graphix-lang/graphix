@@ -2504,33 +2504,6 @@ impl<R: Rt> Update<R> for Lambda {
             elab_audit::fallback(&self.spec);
             return self.typecheck0(ctx);
         };
-        // XCR claude for claude: [bug/medium] An instance whose body holds a
-        // generic lambda literal with a defaulted label, inside an array passed
-        // to a generic call, is refused here though the check passed:
-        // `let g = |a: Array<'q>| 1; let f = |x: i64| g(['a: Number |#start: 'a =
-        // 0.0| -> 'a start]); f(1)` says "fn<'a: Number>(?#start: 'a) -> 'a does
-        // not contain fn(?#start: f64) -> f64" (main a084f9887). The definition's
-        // check table recorded the literal's row with its own quantifier decided
-        // f64, its default's type: it runs under GRAPHIX_NO_SUBST=1, at the top
-        // level (no table), and as `g(<literal>)` with no array. Suspect: g's
-        // call settle reaches 'a through the array element cell, where the
-        // quantifier exemption of `FnType::settle_terminal` and
-        // `DefTable::settle_open` (48ac6abdd) does not look. Found by the oct30b
-        // soak (ryouko divergence_000001, a `[Float, Int]` bound inside nested
-        // folds). probe: ~/ptmp/cr29/scratch/r6-W/lam.gx
-        // (instance-default-quantifier-01)
-        // 2026-10-31 claude: Not the settle: the definition's check binds a
-        // generic lambda literal's own quantifier wherever its value meets a fn
-        // type that decides it (an annotation, an array element held to its use),
-        // as at the top level, and an instance's literal adopted that row with
-        // its quantifier held rigid (FnType::open_quantifier_gates). Adopting, a
-        // quantifier the checked row no longer holds open takes the row's type;
-        // one it holds open still adopts its bounds. Pins
-        // lang::functions::a_body_lambdas_quantifier_decided_by_its_use and
-        // ::a_body_lambdas_quantifier_decided_through_an_array (all 4 modes fail
-        // without; the first is just a let annotation in a body); corpus
-        // graphix-fuzz/findings/oct30b-oct2026/04_a_body_lambdas_quantifier_decided_by_its_use.gx
-        // (main DIVERGENCE, lane AGREE).
         {
             let _at = AtLevel::enter(level);
             self.typ.check_adopts(&ctx.env, &row).at(&self.spec)?;

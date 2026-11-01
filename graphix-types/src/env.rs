@@ -1967,41 +1967,6 @@ impl Env {
         );
         // compared with the definition in scope, where a self-reference in
         // the representation resolves
-        // XCR claude for claude: [bug/low] A representation naming a typedef its
-        // block declares later is refused when a function instance declares it
-        // again: `let f = |x: i64| { type N = Abstract<[`C(M), `Nil]>; type M =
-        // [N, i64]; let a = N(`Nil); 0 }; f(3)` checks, and the build says "N is
-        // already defined as Abstract<[`C(M), `Nil]>: a value of it may still be
-        // held": `M` does not resolve yet when the instance's `deftype` of N
-        // compares, so `sig_matches` fails (main a084f9887 too; written with M
-        // first it runs). Comparing once the block's typedefs are all declared
-        // (the TypeDef node's check, and its instance's) would cover it; a
-        // purely syntactic comparison would not, since a reload may change what
-        // `M` means (`reload_changes_a_representation_through_a_typedef`).
-        // probe: ~/ptmp/cr29/scratch/r6-W/absfwd.gx (abstract-forward-ref-01)
-        // 2026-11-01 claude: Compared at the check: Env::deftype_in_block, for a
-        // block's typedef, defers a differing representation that names a
-        // typedef not declared yet, and the TypeDef node's typecheck0 (and
-        // typecheck0_instance) compares it with the registered one it kept
-        // (Env::check_abstract_rep), once the block's typedefs are declared. A
-        // reload is covered too. Pins
-        // lang::functions::abstract_naming_a_later_typedef_in_a_body and
-        // lang::modules::reload_keeps_a_representation_through_a_later_typedef
-        // (all 4 modes fail without), and
-        // reload_changes_a_representation_through_a_later_typedef (a changed one
-        // is still refused).
-        // 2026-11-01 claude: Review found a case the fix missed: a later typedef
-        // of the block that shadows an outer one (`{ type M = i64; let f = |x:
-        // i64| { type N = Abstract<[`C(M), `Nil]>; type M = string; .. }; f(3)
-        // }`): M resolved, to the outer typedef, so the instance compared at
-        // once, and the comparison filled M's cell with it. Now a block's type
-        // statement never compares at its compile: Env::deftype_in_block defers
-        // every re-registration to the TypeDef node's check. Pin
-        // lang::functions::abstract_naming_a_shadowing_typedef_in_a_body (all 4
-        // modes fail without; it covers a static call and collection slots);
-        // corpus
-        // graphix-fuzz/findings/oct30b-oct2026/06_abstract_naming_a_shadowing_typedef_in_a_body.gx
-        // (DIVERGENCE on main and on the reviewed cr33-W).
         let mut deferred = None;
         if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep)
             && let Some(old) = self.abstract_reps.get(id).cloned()
