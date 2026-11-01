@@ -690,7 +690,7 @@ const QOP_NULL_SUCCESS_SURVIVES: &str = r#"
 
 run!(qop_null_success_survives, QOP_NULL_SUCCESS_SURVIVES, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // `?`/`$` sit inside a postfix chain, and chain with each other.
 const QOP_IN_POSTFIX_CHAIN: &str = r#"

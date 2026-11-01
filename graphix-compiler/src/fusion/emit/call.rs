@@ -859,7 +859,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt>(
             | AbiKind::String
             | AbiKind::Variant
             | AbiKind::Nullable
-            | AbiKind::Value,
+            | AbiKind::Value
+            | AbiKind::Null,
         ) => CompiledExpr::new(r0, r1),
         other => {
             return Err(anyhow!(

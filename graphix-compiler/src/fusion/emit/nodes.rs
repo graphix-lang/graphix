@@ -570,7 +570,7 @@ pub(crate) fn emit_cmp_node<R: Rt>(
         return Ok(CompiledExpr::new(disc, value));
     }
     for t in [lhs.typ(), rhs.typ()] {
-        if matches!(cx.node_kind(t), Some(AbiKind::Unit | AbiKind::Null) | None) {
+        if matches!(cx.node_kind(t), Some(AbiKind::Unit) | None) {
             return Err(anyhow!(
                 "emit_clif: operand of type {t} has no comparable runtime form"
             ));
@@ -1190,12 +1190,15 @@ pub(super) fn emit_bottom_of_kind(
             let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT);
             CompiledExpr::new(disc, a)
         }
-        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Unit => {
+        AbiKind::Variant
+        | AbiKind::Nullable
+        | AbiKind::Value
+        | AbiKind::Null
+        | AbiKind::Unit => {
             let disc = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
             let zero = cx.b.ins().iconst(types::I64, 0);
             CompiledExpr::new(disc, zero)
         }
-        other => return Err(anyhow!("emit_clif: no placeholder for shape {other:?}")),
     })
 }
 

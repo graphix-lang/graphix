@@ -1178,7 +1178,8 @@ size while a fresh one cannot hold the batch; a
   error) are opaque 2-word values (`design/unified_value_abi.md`).
 
 Coverage today: scalar arithmetic/comparison/logic/casts, producers and
-accessors, string interpolation of every part kind, `?`/`$`, the eight array HOFs as native loops (nesting
+accessors, string interpolation of every part kind, `?`/`$`, a bare `null`
+wherever a value stands, the eight array HOFs as native loops (nesting
 included; filter_map's unwraps a `` `Keep `` result and skips a null),
 structural select destructuring with scalar and variant
 payload binds, owned binds of a nullable's payload, of a slice's rest,

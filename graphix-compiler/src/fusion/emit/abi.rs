@@ -362,6 +362,22 @@ impl LocalKind {
             // jit_par modes fail without the fix ('arg/capture type null not
             // lowered', 'let value of shape Some(Null)', 'lambda call site not
             // discovered').
+            // 2026-11-01 claude: Review E2-r1-1: the 'everywhere' above was six
+            // shapes short, each refused under #[native] where its i64 form fuses.
+            // Now a bare null is a two-word value (disc NULL) wherever one goes: an
+            // element read (a tuple, struct or slice pattern's bind, a field), a
+            // select scrutinee, ==/!= operands, a lambda kernel's return (a callee
+            // returning null, a loop over a null accumulator), a fold's accumulator,
+            // ?/$ over Result<null, E>, an abstract's payload and a bottom
+            // placeholder; kernel_abi::is_value_shape counts it. Pins
+            // lang::fusion::null_elements_destructure, null_slice_pattern_binds,
+            // null_scrutinee_selects, null_operands_compare,
+            // null_returning_callees_fuse, null_accumulator_folds,
+            // null_success_unwraps, each under #[native] (each refused before: probes
+            // ~/ptmp/cr29/scratch/r6-E/review1/nres_*.gx). Fused agrees with
+            // --no-fusion under GRAPHIX_PAR=force and cold and warm images
+            // (nd1-nd3.gx, a null arriving late and arms asleep); gxf check AGREE
+            // (fz/zn1, zn2); regress 558/0, manifests unchanged.
             AbiKind::Null => Self::Value,
             AbiKind::Unit => return None,
         })

@@ -2589,6 +2589,55 @@ run!(null_elements_fuse_in_a_map, r#"
   #[native] array::map(xs, |x| "<[x]>")
 }
 "#, prints(r#"["<null>", "<null>"]"#); FuseExpect::Jit);
+run!(null_elements_destructure, r#"
+{
+  let p: null = null;
+  let m = 3;
+  #[native] { let (a, b) = (p, m); let {c, d} = {c: p, d: m}; "[a][b][c][d]" }
+}
+"#, prints(r#""null3null3""#); FuseExpect::Jit);
+run!(null_slice_pattern_binds, r#"
+{
+  let xs: Array<null> = [null, null];
+  #[native] select xs { [a, b] => "[a][b]", _ => "x" }
+}
+"#, prints(r#""nullnull""#); FuseExpect::Jit);
+run!(null_scrutinee_selects, r#"
+{
+  let p: null = null;
+  let m = 3;
+  #[native] select p { null => m }
+}
+"#, is(Value::I64(3)); FuseExpect::Jit);
+run!(null_operands_compare, r#"
+{
+  let p: null = null;
+  let q: null = null;
+  #[native] (p == q, p != q)
+}
+"#, prints("[true, false]"); FuseExpect::Jit);
+run!(null_returning_callees_fuse, r#"
+{
+  let p: null = null;
+  let id = |v| v;
+  let rec f = |k: i64, acc: null| -> null select k { 0 => acc, _ => f(k - 1, acc) };
+  let rec g = |k: i64| -> null select k { 0 => null, _ => g(k - 1) };
+  #[native] "[id(p)][f(3, p)][g(3)]"
+}
+"#, prints(r#""nullnullnull""#); FuseExpect::Jit);
+run!(null_accumulator_folds, r#"
+{
+  let p: null = null;
+  #[native] array::fold([p, p], null, |acc, x| x)
+}
+"#, is(Value::Null); FuseExpect::Jit);
+run!(null_success_unwraps, r#"
+{
+  let m = 3;
+  let r: Result<null, `E> = select m > 2 { true => null, false => error(`E) };
+  #[native] "[r?][r$]"
+}
+"#, prints(r#""nullnull""#); FuseExpect::Jit);
 run!(nested_sample_argument_is_fed, r#"{
     let f = |x: i64, y: i64| x * y + 1;
     let a = 3;

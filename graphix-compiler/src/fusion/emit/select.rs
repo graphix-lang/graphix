@@ -426,7 +426,7 @@ fn classify_scrutinee<R: Rt>(
             let cv = node.emit_clif(cx)?;
             SelectScrut::Scalar { disc: cv.disc, value: cv.payload, prim: p }
         }
-        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
+        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null => {
             let cv = node.emit_clif(cx)?;
             adopt(cx, LocalKind::Value, cv.disc, cv.payload, owned);
             let kind = match scrut_kind {
@@ -453,7 +453,7 @@ fn classify_scrutinee<R: Rt>(
             adopt(cx, LocalKind::String, disc, cv.payload, true);
             SelectScrut::Value { kind: ValueKind::String, disc, payload: cv.payload }
         }
-        AbiKind::Unit | AbiKind::Null => {
+        AbiKind::Unit => {
             bail!("emit_clif: select scrutinee of shape {scrut_kind:?}");
         }
     };

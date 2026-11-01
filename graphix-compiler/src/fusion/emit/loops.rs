@@ -619,7 +619,7 @@ pub(crate) fn emit_fold_kind<R: Rt>(
         }
         // The init and body may emit narrower members of the acc union;
         // `emit_owned_value_operand_node` normalizes them to an owned Value.
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
             if acc.binds.is_empty() && acc.pattern.is_none() =>
         {
             for n in [init, body] {

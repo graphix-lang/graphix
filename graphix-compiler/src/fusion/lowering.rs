@@ -1311,9 +1311,7 @@ pub(crate) fn build_lambda_kernel<R: Rt>(
     let mut captures = capture_slots(g, self_bind, ec, reads)?;
     let return_type = freeze_in_env(&g.typ().rtype, &ec.env)
         .ok_or("its return type has no kernel encoding")?;
-    // A unit-typed call has no value to return; bare Null should have
-    // widened.
-    if matches!(abi_kind(&return_type), Some(AbiKind::Unit | AbiKind::Null)) {
+    if matches!(abi_kind(&return_type), Some(AbiKind::Unit)) {
         return Err("it returns no value".into());
     }
     let self_call = self_bind;

@@ -837,9 +837,12 @@ pub fn scalar_prim(t: &Type) -> Option<PrimType> {
 }
 
 /// True for types whose kernel representation is a two-register `Value`:
-/// `Variant`, `Nullable`, and the [`AbiKind::Value`] group.
+/// `Variant`, `Nullable`, the [`AbiKind::Value`] group and a bare null.
 pub fn is_value_shape(t: &Type) -> bool {
-    matches!(abi_kind(t), Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
+    matches!(
+        abi_kind(t),
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
+    )
 }
 
 /// A plain scalar `Type` for a [`PrimType`].

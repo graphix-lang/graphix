@@ -721,7 +721,7 @@ pub(crate) fn emit_qop_node<R: Rt>(
         }
         // The non-error Value is the result; the bad path continues on a
         // tainted Null placeholder.
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null) => {
             let src = node_composite_source(inner);
             let inner_owned = src == CompositeSource::Owned;
             let bad_bl = cx.b.create_block();
@@ -752,7 +752,7 @@ pub(crate) fn emit_qop_node<R: Rt>(
             // A dropped error is a fresh bottom.
             Ok(CompiledExpr::new(params[0], params[1]))
         }
-        Some(AbiKind::Unit | AbiKind::Null) | None => {
+        Some(AbiKind::Unit) | None => {
             Err(anyhow!("emit_clif: `?` with unsupported success type {}", success_typ))
         }
     }

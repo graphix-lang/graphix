@@ -70,7 +70,7 @@ pub(super) fn abstract_read_helper(rep: &Type) -> Result<&'static str> {
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             "graphix_abstract_get_array"
         }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null) => {
             "graphix_abstract_get_value"
         }
         other => {
@@ -124,16 +124,16 @@ pub(super) fn element_read_helper(
                 "graphix_valarray_get_array"
             }
         }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null) => {
             if struct_access {
                 "graphix_struct_get_value"
             } else {
                 "graphix_valarray_get_value"
             }
         }
-        Some(AbiKind::Unit | AbiKind::Null) | None => {
+        Some(AbiKind::Unit) | None => {
             return Err(anyhow!(
-                "element read of Unit/Null/non-fusable slot — emission is malformed"
+                "element read of Unit/non-fusable slot — emission is malformed"
             ));
         }
     })

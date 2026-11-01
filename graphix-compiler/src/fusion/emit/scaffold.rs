@@ -399,20 +399,17 @@ pub fn push_field(
             CompositeSource::Owned => "graphix_value_buf_push_array",
             CompositeSource::Borrowed => "graphix_value_buf_push_array_borrowed",
         },
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => match src {
-            CompositeSource::Owned => "graphix_value_buf_push_value",
-            CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
-        },
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null) => {
+            match src {
+                CompositeSource::Owned => "graphix_value_buf_push_value",
+                CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
+            }
+        }
         Some(AbiKind::String) => "graphix_value_buf_push_string",
         Some(AbiKind::Unit) => {
             return Err(anyhow!(
                 "producer-op field has Unit type — emit_*_new should reject"
             ));
-        }
-        // a null is the Value it is: the NULL disc, no payload
-        Some(AbiKind::Null) => {
-            cx.call_helper("graphix_value_buf_push_value", &[buf, cv.disc, cv.payload])?;
-            return Ok(());
         }
         None => {
             return Err(anyhow!("producer-op field has a non-fusable type {typ}"));
