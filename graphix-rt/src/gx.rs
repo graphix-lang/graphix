@@ -1724,6 +1724,9 @@ impl<X: GXExt> GX<X> {
             // Probes ~/ptmp/cr29/scratch/r6-W/w3/ (hang_round2 has the hung run's log).
             // 2026-11-01 claude: Correction: the 3000-trial pin takes 0.5 to 1.1 s here
             // under the other lanes' load, not 0.3 s.
+            // 2026-11-01 claude: UPSTREAM.md now has the tokio 1.54.1 entry (an unbounded
+            // send racing the receiver's drop keeps its message) and says the task
+            // GXConfig::start spawns works around it.
             if self.ctx.control.interrupted() {
                 return Ok(());
             }

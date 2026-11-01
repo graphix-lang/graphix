@@ -368,3 +368,28 @@ the state of a fix, and Graphix's side.
   it; no struct field or abstract type's name spells it), as it refuses two
   keys that write as one: `JsonData` promises the reader takes back what
   the writer writes, and this value it cannot. TOML needs nothing.
+
+## tokio 1.54.1: an unbounded send racing the receiver's drop keeps its message
+
+- **Bug.** `UnboundedSender::send` counts the message in the channel's
+  semaphore, which fails once the receiver is closed, and then pushes it
+  (`sync/mpsc/unbounded.rs` `send`, `inc_num_messages`). `Rx::drop` closes
+  the channel and drains what the list holds (`sync/mpsc/chan.rs`). A send
+  that passed the open check before the close and pushes after the drain
+  returns `Ok`, but its message is neither received nor dropped: it stays
+  in the channel until the last sender drops. A message holding a
+  `oneshot::Sender` leaves its receiver waiting that long, forever where a
+  sender outlives the wait.
+- **Repro.** `graphix-rt/tests/stop_race.rs`
+  `a_request_racing_the_stop_is_answered`: eight callers loop
+  `GXHandle::get_env` while the runtime is aborted, 3000 trials. Against a
+  run loop that drops its receiver it hung in 3 of 4 runs at 1000 trials.
+- **Upstream fix.** `Rx::drop` waiting out the sends its semaphore still
+  counts, as `recv` after `close` does, or a send that finds the receiver
+  gone after its push draining the list itself. Not reported.
+- **Graphix's side.** Worked around (a shell whose runtime stopped could
+  hang forever: a request sent as the run loop ended was never answered):
+  `GX::run` borrows the request receiver, and the runtime's task
+  (`GXConfig::start`) then closes it and receives until it is empty, which
+  waits for every send that passed the open check, so each request is
+  dropped and its caller answered with the stop.
