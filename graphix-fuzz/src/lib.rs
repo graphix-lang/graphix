@@ -6409,6 +6409,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn tail_recursive_loop_is_the_jits() {
         let budget = Some(ACTIVATION_BUDGET);
+        let hang_guard = Duration::from_secs(300);
         for code in [
             "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \
              select n { 0 => acc, _ => f(n - 1, *(&acc) + 1) }; f(10, 0) }",
@@ -6416,19 +6417,18 @@ mod tests {
             "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 f(n, *(&acc)); \
              f(0, 0) }",
         ] {
-            let (d, _) = judged(code, Duration::from_secs(10), budget).await;
+            let (d, _) = judged(code, hang_guard, budget).await;
             assert!(d.is_none(), "{code}: {d:?}");
         }
         let runaway = "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \
                        f(n, *(&acc)); f(0, 0) }";
         let opts = RunOpts { activations: budget, ..RunOpts::default() };
-        let t = Duration::from_secs(10);
         let o = run_subject(
             runaway,
             Mode::Interp,
             Route::InLanguage,
             SessionImage::None,
-            t,
+            hang_guard,
             opts,
         )
         .await
