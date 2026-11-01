@@ -90,7 +90,7 @@ fn every_input(_: &TVar) -> bool {
 /// unbound top-level cell (nothing decides it later) on either side, and
 /// an unbound cell of `other` where `input` says no caller can hand it
 /// one. Any other unbound cell is only itself.
-// CR claude for eric: [bug/low] A later REPL input can bind a top-level cell an
+// CR claude for claude: [bug/low] A later REPL input can bind a top-level cell an
 // earlier input left open, so the earlier input's judgment (open beside open) no
 // longer holds, and the coverage hole the fix of partial-hole-01 closes in a script
 // stays open there: inputs `let b = true`, `let e1 = []`, `let e2 = []`, `let v =
@@ -104,6 +104,14 @@ fn every_input(_: &TVar) -> bool {
 // input's write to an earlier input's cell is held to a copy, as a generalized
 // binding's is. probe: ~/tmp/cr29/scratch/laneP/repl3.txt piped into `graphix
 // --no-cache` (partial-hole-repl-01)
+// 2026-10-31 claude: Eric ruled (round 5 D3, 10-31): refuse at the select. After the
+// select makes the decisions its own arms make, its coverage is judged with every
+// type still undecided treated as a declared type variable (one unknown type, equal
+// only to itself), so the verdict holds whatever those types become; a program whose
+// types end up equal is refused until annotated. This replaces the late checks
+// (PendingSettle::OneMember, and cr32-P's open-member check, which does not land).
+// It covers this CR too: the verdict no longer waits for the check's end, which a
+// REPL input never reaches.
 pub(crate) fn settled_identical(
     test: &Type,
     other: &Type,

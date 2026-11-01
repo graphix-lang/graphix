@@ -1136,6 +1136,14 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // abstract's payload uses) and the statement's settle sets the variable to the join of
 // its lower bounds, so the order cannot matter by construction. A design doc and a
 // prototype first; branch cr30-u3 stays for reference.
+// 2026-10-31 claude: Eric ruled (round 5 D1): a widening variable met by a
+// function-typed argument does not widen; it binds as on main, pre-unification on, the
+// first argument deciding. Decisions: 1 (b'): the call's end judges the join, the widest
+// argument must contain every other, else the call is refused naming the argument; 2
+// yes, a parameter reaching a widening call as a union member stays generic; 3 yes, the
+// variable binds at the call's end; 4 confirmed, provided a census shows the newly
+// refused population is not too big; 5 accept the refusal; 6 refuse the call. Lane E
+// continues stages 2 and 3 on cr31-E.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument, whatever the order. An argument that does not
 /// fit is probed once against its formal with those variables open; it
@@ -1938,6 +1946,14 @@ impl<R: Rt> CallSite<R> {
     // arguments, so this CR's recommendation holds: an omitted default widens as a
     // written one does, as one more lower bound under D1's mechanism. Built with
     // widen-open-01.
+    // 2026-10-31 claude: Eric ruled (round 5 D1): a widening variable met by a
+    // function-typed argument does not widen; it binds as on main, pre-unification on,
+    // the first argument deciding. Decisions: 1 (b'): the call's end judges the join,
+    // the widest argument must contain every other, else the call is refused naming the
+    // argument; 2 yes, a parameter reaching a widening call as a union member stays
+    // generic; 3 yes, the variable binds at the call's end; 4 confirmed, provided a
+    // census shows the newly refused population is not too big; 5 accept the refusal; 6
+    // refuse the call. Lane E continues stages 2 and 3 on cr31-E.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

@@ -2127,6 +2127,12 @@ impl<R: Rt> Select<R> {
     // defer the open member beside the arms' cover to the check's end and refuse it
     // decided outside that cover. Found by the round-2 review of partial-hole-01.
     // probes: ~/tmp/cr29/scratch/review7/P/r2/p/om1.gx, om3.gx (open-member-cover-01)
+    // 2026-10-31 claude: Eric ruled (round 5 D3, 10-31): refuse at the select. After the
+    // select makes the decisions its own arms make, its coverage is judged with every
+    // type still undecided treated as a declared type variable (one unknown type, equal
+    // only to itself), so the verdict holds whatever those types become; a program whose
+    // types end up equal is refused until annotated. This replaces the late checks
+    // (PendingSettle::OneMember, and cr32-P's open-member check, which does not land).
     // CR claude for claude: [bug/medium] A pattern over a variant whose payload is a
     // union of structs told apart only by cells decided after the select covers only
     // the payload's first member: `let v = select b { true => `P({a: [1], c: x}), false
@@ -2141,6 +2147,12 @@ impl<R: Rt> Select<R> {
     // the partial completion's doing, since the exhaustive `{a, c: _}` misroutes too.
     // probes: ~/tmp/cr29/scratch/review7/P/p/pay2_alike.gx,
     // ~/tmp/cr29/scratch/laneP/r2/pay3.gx .. pay6.gx, pay_before.gx (payload-union-01)
+    // 2026-10-31 claude: Eric ruled (round 5 D3, 10-31): refuse at the select. After the
+    // select makes the decisions its own arms make, its coverage is judged with every
+    // type still undecided treated as a declared type variable (one unknown type, equal
+    // only to itself), so the verdict holds whatever those types become; a program whose
+    // types end up equal is refused until annotated. This replaces the late checks
+    // (PendingSettle::OneMember, and cr32-P's open-member check, which does not land).
     /// `checking`: the definition's check, which also judges coverage,
     /// dead arms and guards; an instance does only what they decide.
     fn typecheck0_with(

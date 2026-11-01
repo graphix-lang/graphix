@@ -194,6 +194,14 @@ impl<'a> Shapes<'a> {
             // a member as overlapping every member the reader converts its data into, or
             // have the union reader try it in its representation's class. probes:
             // ~/tmp/cr29/scratch/laneTA/idnum.gx, idkey.gx (textdata-abstract-01)
+            // 2026-10-31 claude: Eric ruled (round 5 D6, 10-31): JSON and TOML write an
+            // abstract value wrapped in an object keyed by its type's unqualified name,
+            // the inside being its to_value or its representation; a core wrapper type
+            // (working name Transparent<T>) writes T's inside bare, per use; every union
+            // a json/toml read or write holds is tagged members (variants, wrapped
+            // abstracts, no two sharing a tag) or one member and null, else refused,
+            // writers included; [Transparent<T>, null] is trusted and documented. This
+            // replaces the member-by-member textdata analysis; lane B builds it.
             Type::Abstract { id, params } if self.env.written_as_representation(*id) => {
                 match self.env.abstract_reps.get(id) {
                     Some(r) => {

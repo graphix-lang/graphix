@@ -2830,6 +2830,13 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 quick picks): option (b),
 // the same exactness for values: no integer member holds a float value when a real member
 // of the target holds it, so a value and its text read alike.
+// 2026-10-31 claude: Eric ruled (round 5 D2, the open questions of holds-exactly-open-01
+// on cr31-B): 1 keep exactness before kind; 2 a decimal made from a whole float keeps
+// scale 1; 3 the members that keep the value's class come first, across the rounds; 4
+// numeric text is ordered by the class of the value it parses as; 5 keep the
+// canonical-order tie-break; 6 confirmed, an integer stays an integer when union members
+// are named; 7 a bool is held exactly by a number of 1 or 0 (cast<[f32, u8]>(true) is u8
+// 1). JSON/TOML no longer follow the cast's pick: D6 refuses untagged unions there.
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3, and a float's or a decimal's text
