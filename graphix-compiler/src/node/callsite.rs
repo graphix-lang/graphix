@@ -2061,18 +2061,18 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    /// The signature this site's instance of `f` runs with: the site's
-    /// `view` where it lists `f`'s parameters, else a call's copy of `f`'s
-    /// fitted to it, each label the view hides holding the default this
-    /// site compiled for it.
+    /// The signature this site's instance of `f` runs with where the
+    /// site's `view` lists other parameters than `f`'s (`None`: the view):
+    /// a call's copy of `f`'s fitted to it, each label the view hides
+    /// holding the default this site compiled for it.
     fn instance_signature(
         &self,
         ctx: &CompileCtx<R>,
         view: &FnType,
         f: &LambdaDef<R>,
-    ) -> Result<FnType> {
+    ) -> Result<Option<FnType>> {
         if same_parameters(view, &f.typ) {
-            return Ok(view.clone());
+            return Ok(None);
         }
         let fitted = super::lambda::fit_callee(ctx, view, &f.typ)?;
         for farg in fitted.args.iter() {
@@ -2089,7 +2089,7 @@ impl<R: Rt> CallSite<R> {
                 wrap!(node, farg.typ.check_contains(&ctx.env, node.typ()))?;
             }
         }
-        Ok(fitted)
+        Ok(Some(fitted))
     }
 
     fn init_prepared_bind(
@@ -2119,9 +2119,12 @@ impl<R: Rt> CallSite<R> {
             |spec: &Expr| format_compact!("a run-time bind at {spec} did not type");
         // a site its check never typed sees the callee as a call would
         let view = match &self.ftype {
-            Some(ft) => self
-                .instance_signature(ctx, &ft.resolve_tvars(), f)
-                .with_context(|| context(&self.spec))?,
+            Some(ft) => {
+                let view = ft.resolve_tvars();
+                self.instance_signature(ctx, &view, f)
+                    .with_context(|| context(&self.spec))?
+                    .unwrap_or(view)
+            }
             None => f.typ.instantiate(&ctx.rec_defs),
         };
         let mut apply = self
@@ -2235,8 +2238,10 @@ impl<R: Rt> CallSite<R> {
             bail!("statically resolving an untyped call site: {}", self.spec)
         }
         let site_ftype = self.ftype.as_ref().unwrap().resolve_tvars();
-        let instance_ftype =
-            self.instance_signature(ctx, &site_ftype, f)?.resolve_tvars();
+        let instance_ftype = match self.instance_signature(ctx, &site_ftype, f)? {
+            Some(fitted) => fitted.resolve_tvars(),
+            None => site_ftype,
+        };
         let apply = self.init_prepared_bind(
             ctx,
             scope,
