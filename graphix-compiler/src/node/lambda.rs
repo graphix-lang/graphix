@@ -535,6 +535,16 @@ pub struct InstanceTypes {
 // the others, the bounds staying where they were among the rest (no union: the order is
 // as before). Pin lang::types::formal_union_of_two_variables_decided_by_the_result (u2b
 // and u2 in one program; main's build refuses it) fails without it.
+// 2026-11-01 claude: Review (r6 B2, round 2) found contains_gated judged each position's
+// round inside each round's filter: a position whose union an earlier position's binding
+// closed counted as not later in round two and was checked in neither, so `let g: fn(x:
+// bool) -> i64 = f` over `|x: ['a, 'b]| -> ['a, 'b] x` passed the check and ran a bool
+// as an i64 (a JIT verifier panic). The rounds are now fixed before any position is
+// checked. Pins lang::types::formal_union_of_two_variables_every_position_held,
+// _in_a_union, _in_a_field fail without it (probes ~/ptmp/cr29/scratch/r6-B/w5/sk1.gx,
+// sk3.gx, sk5.gx, sk6.gx, sk7.gx). GRAPHIX_NO_SUBST agrees with the default on these
+// pins only: under a generic caller the call site's order and this one disagree
+// (formal-union-order-01).
 /// The definition's signature `def` as the instance at `instance` holds
 /// it: each open cell copied under its name into `known` and bound to the
 /// instance's type. `None` when the instance's signature does not hold
@@ -669,6 +679,18 @@ pub struct BodyShared {
     pub(crate) prototype: Option<ExprId>,
 }
 
+// CR claude for claude: [bug/medium] A variable written in a nested definition's body
+// annotation and decided by the enclosing definition's parameter splits the check from
+// the build: `let outer = |n| { let inner = |m| { let s = |y| [y, n]; let p: fn(y: 'n)
+// -> Array<'n> = s; p(n) }; inner(n) }; outer(1); outer("w")` passes --check and the
+// build refuses "an instance at fn(m: i64) -> Array<_> of a definition typed fn(m: _)
+// -> Array<'n: i64>"; graphix-fuzz check reports DIVERGENCE (main a084f9887 and the
+// lane alike). The written `'n` is no variable either definition declares, so neither
+// owns it: an instance of outer appears to decide the cell inner's definition table
+// holds. A holder makes it reachable from shapes main refused (d3.gx: a tuple of the
+// lambdas, which main typed monomorphic). Elaboration refusing what the check accepted
+// is a type-system bug. probes: ~/ptmp/cr29/scratch/r6-B/w5/d7.gx, d3.gx, d4.gx, d8.gx
+// (nested-written-var-01)
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's.
@@ -1277,6 +1299,29 @@ impl Typing {
             // binding), and the split it would close (a call instantiates such a
             // binding while a value use binds its cells) is pre-existing and asks a
             // rule: CR holder-block-select-01.
+            // 2026-11-01 claude: Review (r6 B2, round 2) found two holes in the
+            // InHolder share. (1) A destructuring let with one written name shared
+            // the holder's definition cells into that name, which is not
+            // generalized, so its writer or annotation decided the definition after
+            // an earlier read copied it (check passed, run-time bind refused; main
+            // refuses at the check). Now the value shares only when no name the
+            // pattern binds is written; otherwise every read in it is a copy. Pins
+            // lang::types::holder_destructured_beside_a_written_name and _in_a_body
+            // fail without it. (2) A read in an array, list or map part of a
+            // holder's value was a copy, so a chain holding a link twice there
+            // doubled its type at each link (([x], [x]) at 20 links: 73G
+            // instructions, main 2.4G). share_in_holder now descends every data
+            // literal but a with-update's fields and a map's keys: a literal's
+            // union of elements binds only function members' cells (meet_open_fns),
+            // and a shared read is of a holder, whose type is data (a function
+            // binding's read is always a copy), so the share decides no definition.
+            // Lane debug --check at 18-20 links: arrpair, mix, three-let, ([x, y],
+            // [x, y]), ([x, x], [x, x]), lists, maps, variants 1.4-2.7G (main
+            // 1.3-2.6G); a with-update chain does not type (its fields keep the
+            // source's types). Pin
+            // lang::types::holder_chain_through_collections_stays_a_dag (type node
+            // count; 9722 nodes without it at 10 links, bound 176) fails without
+            // it. Probes ~/ptmp/cr29/scratch/r6-B/w5/.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),

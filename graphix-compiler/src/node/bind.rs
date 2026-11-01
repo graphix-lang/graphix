@@ -350,15 +350,16 @@ impl<R: Rt> Bind<R> {
             }
         }
         // a name holding a function, which nothing writes, is a scheme of the
-        // definitions it holds: each read copies their signatures
+        // definitions it holds: each read copies their signatures. The value
+        // takes its parts' types uncopied only when every name it binds is
+        // such a scheme: a written name's uses decide what it holds.
         if holds_function(&ctx.env, &node) {
-            let mut holder = false;
-            pattern.ids(&mut |id| {
-                if !ctx.connect_targets.contains(&id) {
-                    holder |= ctx.env.poly_binds.insert(id);
-                }
+            let (mut holder, mut written) = (false, false);
+            pattern.ids(&mut |id| match ctx.connect_targets.contains(&id) {
+                true => written = true,
+                false => holder |= ctx.env.poly_binds.insert(id),
             });
-            if holder && b.typ.is_none() {
+            if holder && !written && b.typ.is_none() {
                 share_in_holder(&mut node);
             }
         }
@@ -1298,6 +1299,15 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // instantiating a callee no generalized binding names). Recommend (a): one rule for
 // every let, written ones excepted. probes: ~/ptmp/cr29/scratch/r6-B/w4/blk1.gx,
 // c4.gx (holder-block-select-01)
+// 2026-11-01 claude: Review (r6 B2, round 2): a holder an earlier REPL input made is
+// in Env::poly_binds, so the earlier-compile rule now covers it: a later input's `let
+// r = &mut s` (or `&mut s` passed to a function) over `let s = {f: |x| x, n: 0}` is
+// refused ("s was made generic by an earlier compile"), and a later `s <- {f: |x:
+// i64| x + 1, n: 1}` is refused as not as general; main a084f9887 runs all three.
+// Sound, and the documented rule, but a REPL record of data and a callback can no
+// longer be lent `&mut` across inputs; option (a) here would widen that to every
+// unwritten let. probes ~/ptmp/cr29/scratch/r6-B/w5/rp2.txt, rp3.txt, rp5.txt
+// (graphix --no-cache < rpN.txt).
 /// Whether the value `node` builds holds a lambda literal or a generalized
 /// binding's value in a data literal (a struct, its update, a tuple, a
 /// variant, an array, a list or a map): a type that holds the definitions'
@@ -1327,10 +1337,12 @@ fn holds_function<R: Rt>(env: &Env, node: &Node<R>) -> bool {
     }
 }
 
-/// Each reference in a part of `node`, a holder's value built of structs,
-/// tuples and variants (which hold their parts' types as they are, relating
-/// none to another), takes its binding's type uncopied: the holder's reads
-/// copy it.
+/// Each reference in a part of `node`, a holder's value built of data
+/// literals, takes its binding's type uncopied: the holder's reads copy it.
+/// The parts relate only through the union of an array's, a list's or a
+/// map's elements, which binds the cells of function members alone, and a
+/// shared read is of a holder, whose type is data. A with-update relates its
+/// fields to its source's, and a map's keys take a bound: neither shares.
 fn share_in_holder<R: Rt>(node: &mut Node<R>) {
     match node.view() {
         NodeView::Ref(_) => {
@@ -1340,10 +1352,17 @@ fn share_in_holder<R: Rt>(node: &mut Node<R>) {
                 r.signature = Signature::InHolder
             }
         }
+        NodeView::Map(_) => {
+            if let Some(m) = node.downcast_mut::<super::map::Map<R>>() {
+                m.n.iter_mut().skip(1).step_by(2).for_each(share_in_holder)
+            }
+        }
         NodeView::ExplicitParens(_)
         | NodeView::Struct(_)
         | NodeView::Tuple(_)
-        | NodeView::Variant(_) => node.for_each_child_mut(&mut |c| share_in_holder(c)),
+        | NodeView::Variant(_)
+        | NodeView::Array(_)
+        | NodeView::ListLit(_) => node.for_each_child_mut(&mut |c| share_in_holder(c)),
         _ => (),
     }
 }

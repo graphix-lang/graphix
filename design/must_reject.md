@@ -73,10 +73,12 @@ what disqualifies a site.
 as a VALUE (a reference that is not a call's callee) at two uses whose
 instances the map shows taking different primitive first parameters.
 Mutation: wrap the lambda so the binding is not generalized, `let f = {
-let tm__0 = null; |..| .. }`. Rule: only a `let` of a lambda, or a
-`let` forwarding a generalized binding, generalizes, and a value
-reference to a binding that is not generalized holds the binding's own
-cells, so the two uses meet in one instance. A CALL instantiates its
+let tm__0 = null; |..| .. }`. Rule: only a `let` of a lambda, a
+`let` forwarding a generalized binding, or a `let` nothing writes that
+holds either in a data literal (`bind::holds_function`; a block's value
+and a select's arms are not data literals, CR holder-block-select-01)
+generalizes, and a value reference to a binding that is not generalized
+holds the binding's own cells, so the two uses meet in one instance. A CALL instantiates its
 callee whatever the binding (`CallSite::typecheck0`), so calls are not
 sites: `f(1); f(1.5)` over the wrapped `f` is accepted, rightly. Right
 site: the definition, or the statement of any value use up to the

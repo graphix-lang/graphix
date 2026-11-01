@@ -5456,6 +5456,108 @@ async fn holder_of_an_earlier_input_stays_generic() -> Result<()> {
     Ok(())
 }
 
+// A destructuring let that writes one of its names reads each holder in its
+// value as a copy: the written name's writer or annotation decides nothing
+// of what the holder's other reads share.
+run!(
+    holder_destructured_beside_a_written_name,
+    r#"{
+  let s = {f: |x| x};
+  let v = s.f("x");
+  let (a, b) = (s, s);
+  let {c, d} = {c: s, d: 0};
+  let ((e, i), k) = ((s, 1), 0);
+  a <- never<{f: fn(x: i64) -> i64}>();
+  c <- never<{f: fn(x: bool) -> bool}>();
+  e <- never<{f: fn(x: f64) -> f64}>();
+  let t: {f: fn(x: i64) -> i64} = a;
+  (v, t.f(1), b.f("b"), c.f(true), d, e.f(1.5), i, k, s.f(2))
+}"#,
+    prints(r#"["x", i64:1, "b", true, i64:0, f64:1.5, i64:1, i64:0, i64:2]"#);
+    FuseExpect::None
+);
+run!(
+    holder_destructured_beside_a_written_name_in_a_body,
+    r#"{
+  let g = |z| {
+    let s = {f: |x| x == x};
+    let (a, b) = (s, s);
+    b <- never();
+    (b.f(b), s.f(z), a.f("a"))
+  };
+  g(1)
+}"#,
+    prints("[true, true, true]");
+    FuseExpect::None
+);
+
+/// The nodes `t` holds, a node many paths share counted once.
+fn distinct_type_nodes(t: &graphix_compiler::typ::Type) -> usize {
+    use graphix_compiler::typ::Type;
+    use std::collections::HashSet;
+    fn go(t: &Type, seen: &mut HashSet<usize>) {
+        let at = match t {
+            Type::Tuple(a) | Type::Set(a) | Type::Variant(_, a, _) => {
+                Some(a.as_ptr().addr())
+            }
+            Type::Struct(a) => Some(a.as_ptr().addr()),
+            Type::Array(a) | Type::List(a) => Some(triomphe::Arc::as_ptr(a).addr()),
+            Type::Map { key, .. } => Some(triomphe::Arc::as_ptr(key).addr()),
+            Type::Fn(f) => Some(triomphe::Arc::as_ptr(f).addr()),
+            Type::TVar(tv) => Some(tv.cell_addr()),
+            _ => None,
+        };
+        if at.is_some_and(|a| !seen.insert(a)) {
+            return;
+        }
+        match t {
+            Type::TVar(tv) => {
+                if let Some(b) = tv.binding() {
+                    go(&b, seen)
+                }
+            }
+            t => t.for_each_child(&mut |c| go(c, seen)),
+        }
+    }
+    let mut seen = HashSet::new();
+    go(t, &mut seen);
+    seen.len()
+}
+
+/// A chain of holders, each holding the last twice in arrays, lists or a
+/// map's values, holds one copy of its last link's type: the chain's type
+/// grows by a few nodes a link, where a copy at each read would double it.
+#[tokio::test(flavor = "current_thread")]
+async fn holder_chain_through_collections_stays_a_dag() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_compiler::{Scope, expr::ModPath};
+    use graphix_package_core::testing::init;
+    const LINKS: usize = 10;
+    for (shape, link) in [
+        ("arrays", "([x], [x, y])"),
+        ("lists", "{a: [<x>], b: [<x, y>]}"),
+        ("maps", "`M({\"k\" => x}, {\"j\" => x})"),
+    ] {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+        let ctx = init(tx, crate::TEST_REGISTER).await?;
+        let mut code = String::from("let y = (|z| z, 2);\nlet x = (|x| x, 1);\n");
+        for _ in 0..LINKS {
+            code.push_str("let x = ");
+            code.push_str(link);
+            code.push_str(";\n");
+        }
+        let _c = ctx.rt.compile(ArcStr::from(code)).await?;
+        let env = ctx.rt.get_env().await?;
+        let (_, x) = env
+            .lookup_bind(&Scope::root().lexical, &ModPath::from_iter(["x"]))?
+            .ok_or_else(|| anyhow::anyhow!("x not in scope"))?;
+        let nodes = distinct_type_nodes(&x.typ);
+        assert!(nodes <= 16 * (LINKS + 1), "{shape}: {nodes} nodes");
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
 // A formal union of two variables is decided by the positions that hold
 // each alone, in an instance's signature as in a written function type.
 run!(
@@ -5496,6 +5598,39 @@ run!(
 }"#,
     prints("[[[], []], []]");
     FuseExpect::Jit
+);
+
+// Every position is held, whichever round checks it: a result whose union
+// the parameter's binding closes is checked all the same.
+run!(
+    formal_union_of_two_variables_every_position_held,
+    r#"{
+  let f = |x: ['a, 'b]| -> ['a, 'b] x;
+  let g: fn(x: bool) -> i64 = f;
+  g(true) + 1
+}"#,
+    refused("fn(x: bool) -> i64 does not contain fn(x: ['a: bool, 'b: unbound]) -> ['a: bool, 'b: unbound]");
+    FuseExpect::None
+);
+run!(
+    formal_union_of_two_variables_every_position_held_in_a_union,
+    r#"{
+  let f = |x: ['a, 'b]| -> ['a, 'b] x;
+  let g: fn(x: bool) -> [i64, string] = f;
+  g(true)
+}"#,
+    refused("fn(x: bool) -> [i64, string] does not contain fn(x: ['a: bool, 'b: unbound])");
+    FuseExpect::None
+);
+run!(
+    formal_union_of_two_variables_every_position_held_in_a_field,
+    r#"{
+  let f = |x: ['a, 'b], y: 'a, z: 'b| -> ['a, 'b] x;
+  let s: {k: fn(x: bool, y: i64, z: string) -> [i64, string]} = {k: f};
+  s.k(true, 1, "s")
+}"#,
+    refused("does not contain { k: fn(x: ['a: i64, 'b: string], y: 'a: i64, z: 'b: string)");
+    FuseExpect::None
 );
 
 // A written binding holding a function in a part, a struct field or a

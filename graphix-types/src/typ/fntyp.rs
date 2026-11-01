@@ -1234,6 +1234,22 @@ impl FnType {
         r
     }
 
+    // CR claude for eric: [bug/low] Which member of a union of two open cells (`x: ['a,
+    // 'b]`) takes what is decided by an order, not a rule, and two orders exist: this
+    // containment holds such a position after every other (instance_sig, a written
+    // function type), while a call site's check relates its arguments first, deciding
+    // `'a` from the argument. Under a generic caller the two disagree: `let f = |x: ['a,
+    // 'b]| -> (Array<'a>, Array<'b>) ([], []); let g = |p, q| { let u = never(); let r =
+    // f(u); u <- p; u <- q; r }; g(1, "s")` checks and runs by default (the instance is
+    // substituted), and GRAPHIX_NO_SUBST=1 refuses it ("(Array<i64>, Array<string>)
+    // does not contain (Array<'a: [i64, string]>, Array<'b: unbound>)"); main a084f9887
+    // refuses the build in both. At the top level `let r: (Array<i64>, Array<string>) =
+    // f(u)` with `u: [i64, string]` is refused by the call's check. The default path is
+    // sound (a substituted instance is a valid one). Options: (a) the call site defers
+    // an argument whose formal holds such a union to the statement's settle, after the
+    // result's context relates (one order everywhere); (b) keep both orders: the
+    // default path stays sound and GRAPHIX_NO_SUBST agrees on the pins only. Recommend
+    // (a). probes: ~/ptmp/cr29/scratch/r6-B/w5/fw1.gx, fw6.gx (formal-union-order-01)
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,
@@ -1272,12 +1288,18 @@ impl FnType {
         positions.push(None);
         positions.push(Some((&self.throws, &t.throws, flags)));
         // a union of open cells is decided by the positions that decide
-        // its members alone, wherever they are written
-        let later = |p: &Option<(&Type, &Type, _)>| {
-            p.is_some_and(|(c, t, _)| holds_open_union(c) || holds_open_union(t))
-        };
+        // its members alone, wherever they are written: each position's
+        // round is fixed before any position binds a cell
+        let later: SmallVec<[bool; 8]> = positions
+            .iter()
+            .map(|p| {
+                p.is_some_and(|(c, t, _)| holds_open_union(c) || holds_open_union(t))
+            })
+            .collect();
         for round in [false, true] {
-            for p in positions.iter().filter(|p| later(p) == round) {
+            let in_round =
+                positions.iter().zip(later.iter()).filter(|(_, l)| **l == round);
+            for (p, _) in in_round {
                 let holds = match p {
                     Some((c, t, flags)) => c.contains_int(*flags, env, hist, t)?,
                     None => {
@@ -2117,6 +2139,14 @@ fn holds_open_union(t: &Type) -> bool {
 }
 
 impl Type {
+    // CR claude for claude: [perf/low] Every read of a holder copies every closed
+    // definition's signature the holder holds, whatever part the read uses, so a record
+    // of W handlers read R times costs W x R copies: `let s = {f0: |x| (x, 0), ..}` with
+    // R reads `s.fK(j)`, debug --check (r6 B2 review): W=100/R=200 main a084f9887 1.46G
+    // instructions, lane 1.99G; 200/400 1.66G vs 3.83G; 400/800 2.07G vs 10.68G. The GUI
+    // examples are flat (guicheck). Copying lazily, at the first use of a function the
+    // read reaches, or only the part a field or index read projects, would make it R.
+    // probe: ~/ptmp/cr29/scratch/r6-B/w5/wide-400-800.gx (holder-read-cost-01)
     /// A read's copy of the signatures this type holds of definitions whose
     /// gates are closed (a lambda held in a struct, tuple or array): each such
     /// function type copied as a read of a generalized binding copies its

@@ -641,9 +641,11 @@ fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> 
 struct Expanding {
     stack: SmallVec<[usize; 4]>,
     met: SmallVec<[usize; 4]>,
-    clean: AHashMap<usize, SmallVec<[usize; 2]>>,
-    nodes: AHashMap<usize, (Option<Type>, bool)>,
-    apps: AHashMap<(usize, SmallVec<[usize; 2]>), (Option<Type>, bool, TArc<[Type]>)>,
+    clean: LPooled<AHashMap<usize, SmallVec<[usize; 2]>>>,
+    nodes: LPooled<AHashMap<usize, (Option<Type>, bool)>>,
+    apps: LPooled<
+        AHashMap<(usize, SmallVec<[usize; 2]>), (Option<Type>, bool, TArc<[Type]>)>,
+    >,
     found: usize,
 }
 
@@ -744,9 +746,8 @@ fn rank2_parts(
                             && expanding.met.len() == met
                         {
                             let held = tr.params.clone();
-                            expanding
-                                .apps
-                                .insert(app, (r.clone(), found(expanding), held));
+                            let f = found(expanding);
+                            expanding.apps.insert(app, (r.clone(), f, held));
                         }
                         r
                     }
@@ -756,7 +757,8 @@ fn rank2_parts(
             t => t.cow_children(&mut |c| rank2_parts(env, c, expanding, out)),
         };
         if let Some(n) = node {
-            expanding.nodes.insert(n, (r.clone(), found(expanding)));
+            let f = found(expanding);
+            expanding.nodes.insert(n, (r.clone(), f));
         }
         r
     })

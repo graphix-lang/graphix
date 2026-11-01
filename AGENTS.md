@@ -1044,7 +1044,9 @@ node graph IS the IR — there is no parallel typed IR
   closed definitions' signatures its type holds (`Type::scheme_read`), so
   an annotation, a typed formal or a site's settle decides only that
   read's copy, never the definition; a read inside such a holder's own
-  value takes the type uncopied (`Signature::InHolder`); a type written
+  value takes the type uncopied (`Signature::InHolder`), but in a
+  with-update's fields or a map's keys, or where the pattern also binds a
+  written name; two lambda literals in one array or list meet, one type; a type written
   in a body (a `let`
   annotation, `never<T>`, a nested lambda's signature) names one
   variable per name, and a name a definition around it declares, and

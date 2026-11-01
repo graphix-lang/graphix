@@ -2696,6 +2696,20 @@ fn known_members(union: &Type) -> CompactString {
     out
 }
 
+// CR claude for claude: [bug/medium] A JSON or TOML writer's value holding a generic
+// definition's own open variable is not refused at the definition, and nothing carries
+// the judgment to the definition's callers, so an instance's elaboration refuses what
+// the check accepted: `type Box<'a> = Abstract<'a>; impl<'a> Cast for Box<'a> {}; let
+// w = |x| json::write_str([Box(x), `A]); w([1, "a"])` passes --check and the build
+// refuses "JsonData refuses Array<[i64, string]>: i64 in [i64, string] has no tag";
+// and under GRAPHIX_NO_SUBST=1 `let w = |x| json::write_str(Transparent(x)); w(3)`
+// (also `[Transparent(x), null]`) is refused ("Transparent<i64> holds a type that is not
+// abstract") while the default build runs it (D6's Transparent rule never refuses over
+// a definition's own open variable, and an instance by substitution is not judged
+// again). As `Discernible` is, the bound could pass to the definition's variable from
+// its body, so each call checks it. probes: ~/ptmp/cr29/scratch/r6-B/w5/
+// generic_box_tag.gx, p12_generic_transparent.gx, g4_generic_tr_null.gx
+// (textdata-generic-01)
 /// The bounds a call's settled cells must meet beyond their check: a
 /// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
 /// map read from data).

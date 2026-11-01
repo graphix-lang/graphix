@@ -297,12 +297,24 @@ the holder (`let t: {f: fn(x: i64) -> i64} = s`), a typed formal it is
 passed to, or a site's settle of a bounded cell it reaches (`s.f(s)` over
 `{f: |x| x == x}`) decides only that read's copy, and the definition's
 scheme stays what its own check made it, which every instance is held to.
-A read in a struct, tuple or variant part of such a holder's own value
-(`let x1 = (x0, x0)`) takes the type uncopied (`Signature::InHolder`):
-the holder's reads copy it, and a chain of holders stays a DAG. A lambda
-a let holds through a block or a select is not generalized (must_reject
-family 1), though a call through it instantiates it (CR
-holder-block-select-01). Pin `lang::types::holder_reads_copy_its_signatures`.
+A read in a part of such a holder's own value (`let x1 = (x0, [x0])`)
+takes the type uncopied (`Signature::InHolder`): the holder's reads copy
+it, and a chain of holders stays a DAG (pin
+`lang::types::holder_chain_through_collections_stays_a_dag`). The parts
+of a struct, a tuple or a variant relate nothing, and the union of an
+array's, a list's or a map's elements binds the cells of function members
+alone, never of a holder's data; a with-update's fields, which its source
+holds to its own field types, and a map's keys, which take `Ordered`,
+are read as copies. So is every read in the value of a pattern that also
+binds a written name, which is not generalized: its uses would decide
+what the holder's other reads share (pin
+`holder_destructured_beside_a_written_name`). Two lambda literals one
+array or list holds meet as its elements (`[|x| x, |y| y]` is one
+function type), and a `seqq` reads a holder once per request, every step
+of the run sharing that read's copy. A lambda a let holds through a
+block or a select is not generalized (must_reject family 1), though a
+call through it instantiates it (CR holder-block-select-01). Pin
+`lang::types::holder_reads_copy_its_signatures`.
 
 An image carries each cell's level and each definition's depth.
 

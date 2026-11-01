@@ -291,7 +291,9 @@ then one type, the first call's.
 A `let` nothing writes that holds lambdas in a struct, tuple, array or
 other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`
 serves `s.f(1)` and `s.f("a")`, and an annotation of one use (`let t:
-{f: fn(x: i64) -> i64} = s`) decides nothing of the others.
+{f: fn(x: i64) -> i64} = s`) decides nothing of the others. Two lambdas
+in one array or list are one function type (`[|x| x, |y| y]`), and a
+`seqq` reads `s` once per request, so its steps share one type of it.
 
 Calls resolve statically where the compiler can trace the function. A
 function-variable write fires its call's current result even when it
