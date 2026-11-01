@@ -2592,6 +2592,21 @@ impl<R: Rt> CallSite<R> {
                 },
             );
         }
+        // CR claude for claude: [bug/medium] A function passed where a fn
+        // type hides one of its defaulted labels runs with that label's type
+        // open when the label's type is a cell only the default decides:
+        // `let g = |#x = 4096, y: string| x == str::parse(y)$; let apply = |h:
+        // fn(y: string) -> bool| h("7"); apply(g)` checks (`check_value_defaults`
+        // judges the default at `apply(g)`), and the bind of `h("7")` in
+        // apply's instance refuses "the type 'b must be fully known here, a
+        // type-directed operation reads it" at `str::parse` (main a084f9887). It
+        // runs under GRAPHIX_NO_SUBST=1 (printing false), so the instance's body
+        // types, substituted from g's table by the instance's signature, do not
+        // see the default's narrowing of x, which the instance's own check
+        // would (`checked_default` at `Judge::Bind` against g's parameter);
+        // `g("7")` alone runs. Found by the oct30b soak (ryouko
+        // divergence_000003, over `sys::net::subscribe`). probe:
+        // ~/ptmp/cr29/scratch/r6-W/hidden.gx (hidden-default-instance-01)
         let typecheck0 = {
             let (callee, arg_refs) = (&mut self.callee, &mut self.arg_refs);
             callee
