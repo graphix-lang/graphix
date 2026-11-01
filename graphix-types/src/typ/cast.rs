@@ -21,7 +21,10 @@ use immutable_chunkmap::map::Map;
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{borrow::Cow, convert::Infallible, fmt, mem, ops::ControlFlow, sync::OnceLock};
+use std::{
+    borrow::Cow, collections::hash_map::Entry, convert::Infallible, fmt, mem,
+    ops::ControlFlow, sync::OnceLock,
+};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -362,19 +365,25 @@ impl CastCx {
     }
 }
 
-/// An `is_a` walk's state: the references on its path with the value
-/// each met, each reference's expansion, made once a walk, and its
-/// verdict on each value it was decided at, decided once a walk; `cuts`
-/// counts the path repeats, a verdict reached past one kept for that path
-/// alone. Within a walk a reference is its definition and its params'
-/// allocation, and the expansions held keep those allocations alive; every
-/// value a walk meets is borrowed from its root, so an address is one value.
+/// An `is_a` walk's state: each reference with each value it met, on
+/// the walk's path or decided, once a walk; each reference's expansion,
+/// made once a walk; `cuts` counts the path repeats, a verdict reached
+/// past one kept for that path alone. Within a walk a reference is its
+/// definition and its params' allocation, and the expansions held keep
+/// those allocations alive; every value a walk meets is borrowed from its
+/// root, so an address is one value.
 #[derive(Default)]
 struct IsAHist {
-    path: AHashSet<((usize, usize), usize)>,
+    met: AHashMap<((usize, usize), usize), Met>,
     expanded: AHashMap<(usize, usize), (Arc<[Type]>, Option<Type>)>,
-    decided: AHashMap<((usize, usize), usize), bool>,
     cuts: usize,
+}
+
+/// A reference met at a value: being decided on the path, or decided.
+#[derive(Clone, Copy)]
+enum Met {
+    OnPath,
+    Decided(bool),
 }
 
 fn ref_key(tr: &TypeRef) -> Option<RefKey> {
@@ -1702,21 +1711,26 @@ impl Type {
                 };
                 let Some(t) = t else { return false };
                 let key = (rk, (v as *const Value).addr());
-                if let Some(r) = hist.decided.get(&key) {
-                    return *r;
-                }
-                if !hist.path.insert(key) {
-                    hist.cuts += 1;
-                    return false;
+                match hist.met.entry(key) {
+                    Entry::Occupied(e) => match *e.get() {
+                        Met::Decided(r) => return r,
+                        Met::OnPath => {
+                            hist.cuts += 1;
+                            return false;
+                        }
+                    },
+                    Entry::Vacant(e) => {
+                        e.insert(Met::OnPath);
+                    }
                 }
                 #[cfg(test)]
                 IS_A_NAMES.with(|n| n.set(n.get() + 1));
                 let cuts = hist.cuts;
                 let r = t.is_a_int(env, hist, flags, v);
-                hist.path.remove(&key);
-                if hist.cuts == cuts {
-                    hist.decided.insert(key, r);
-                }
+                match hist.cuts == cuts {
+                    true => hist.met.insert(key, Met::Decided(r)),
+                    false => hist.met.remove(&key),
+                };
                 r
             }
             Type::Primitive(t) => rep::kind(v).is_none() && t.contains(Typ::get(&v)),

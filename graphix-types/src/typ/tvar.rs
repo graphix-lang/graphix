@@ -2089,6 +2089,10 @@ impl Type {
     // typ::cast::tests::walks_over_a_union_dag_take_each_name_once (counts names:
     // 1048575 for either walk without its memo),
     // lib_tests::json::json_and_print_over_a_dag_of_named_unions (the values).
+    // 2026-11-01 claude: The verdicts and the path now share one map, IsAHist::met (a
+    // reference at a value on the path or decided), so a walk allocates no more than
+    // before; dag_res20 --check 2.50 G, w24 2.65 G, p24 2.52 G after, the program's own
+    // check and startup being about 2.1-2.3 G.
     /// Whether a value of `self` may be an error as the type stands: a
     /// member is an `Error`, holds the primitive `error` or is `Any`.
     /// `NoError ⊇ self` is its negation; an open member may be anything
