@@ -1,5 +1,5 @@
 use crate::{
-    BindId, CFlag,
+    AddrSet, BindId, CFlag,
     expr::{At, Expr, ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
         FieldRefSite, Ide, IdeMode, Lowered, ModuleRefSite, ReferenceSite, ScopeMapEntry,
@@ -30,7 +30,10 @@ use std::{
     fmt,
     hash::Hash,
     iter, mem,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use triomphe::Arc;
 
@@ -75,8 +78,7 @@ impl fmt::Debug for Bind {
     }
 }
 
-#[derive(Debug, Clone, Pack)]
-#[pack(unwrapped)]
+#[derive(Debug, Clone)]
 /// The representation of a Graphix-minted abstract type (`type T =
 /// Abstract<rep>`), registered globally but consulted only where the
 /// definition is visible, which gates `T(v)`, `x.0` and `T(x)`.
@@ -89,6 +91,9 @@ pub struct AbstractRep {
     /// The definition is exported, so the constructor is usable
     /// wherever the type is; otherwise only inside `scope`.
     pub public: bool,
+    /// The typedefs `rep` and the bounds name, owned from the check of
+    /// the definition that registered it ([`Env::own_abstract_rep`]).
+    pub(crate) named: Arc<OnceLock<Box<[std::sync::Arc<ResolvedRef>]>>>,
 }
 
 impl AbstractRep {
@@ -2018,6 +2023,7 @@ impl Env {
                 params: params.clone(),
                 rep: rep.clone(),
                 public,
+                named: Arc::default(),
             };
 
             // the check above refused a changed representation, or left it
@@ -2088,6 +2094,35 @@ impl Env {
         old.params.len() == params.len()
             && was.sig_matches(self, &now).is_ok()
             && now.sig_matches(self, &was).is_ok()
+    }
+
+    /// Resolve the names the abstract typedef `name` at `scope` writes in
+    /// its representation and bounds, and have the registration it made
+    /// own the typedefs they name: a body's typedefs leave the env once
+    /// the body has compiled, and the registration outlives them. Called
+    /// once every typedef its block declares is.
+    pub fn own_abstract_rep(&self, scope: &ModPath, name: &str) {
+        let Some(td) = self.lexical.typedefs.get(scope).and_then(|m| m.get(name)) else {
+            return;
+        };
+        let Type::Abstract { id, .. } = td.typ() else { return };
+        let Some(r) = self.abstract_reps.get(id) else { return };
+        if r.named.get().is_some() {
+            return;
+        }
+        let bounds = r.params.iter().filter_map(|(_, b)| b.as_ref());
+        let written = || iter::once(&r.rep).chain(bounds.clone());
+        let mut seen: LPooled<AddrSet> = LPooled::take();
+        for t in written() {
+            t.seed_refs_seen(self, &mut seen);
+        }
+        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut defs: LPooled<AHashMap<usize, std::sync::Arc<ResolvedRef>>> =
+            LPooled::take();
+        for t in written() {
+            t.named_defs(&mut cells, &mut defs)
+        }
+        let _ = r.named.set(defs.drain().map(|(_, d)| d).collect());
     }
 
     /// Refuse the abstract typedef `name` at `scope` if its representation

@@ -1,0 +1,6 @@
+// An abstract type a function body declares, its representation naming
+// itself and another typedef of the body, bound at run time by collection
+// slots and a dynamic call: each bind compares its representation with the
+// registration's, whose names no longer resolved after an image restore,
+// so the warm sessions refused every bind. Found reviewing the oct30b fixes.
+{ let f = |x: i64| { type M = [i64, null]; type N = Abstract<[`C(M, N), `Nil]>; N(`C(x, N(`Nil))) == N(`C(2, N(`Nil))) }; let fs = [f, f]; let g = fs[1]$; (array::map([1, 2, 3], f), g(2)) }

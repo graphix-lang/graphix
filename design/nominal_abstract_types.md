@@ -52,7 +52,11 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    instance of a body, a reload) compares at its check, when the block's
    typedefs are all declared, a later one shadowing a name the
    representation writes included (`Env::deftype_in_block`,
-   `Env::check_abstract_rep`). The type test
+   `Env::check_abstract_rep`). The registration owns the typedefs its
+   representation names, resolved at the check of the definition that
+   made it (`Env::own_abstract_rep`): a body's typedefs leave the env
+   once it has compiled, and an image carries them with it, so a
+   restored session's run-time binds compare against them too. The type test
    `T as t` is visible wherever `T` is — it is
    a tag comparison, which is what lets `select` accept abstract
    predicates and what trait dispatch over a union needs

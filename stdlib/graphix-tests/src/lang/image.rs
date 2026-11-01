@@ -1207,6 +1207,33 @@ async fn banked_request_values_restore() -> Result<()> {
     Ok(())
 }
 
+/// A body's abstract type whose representation names itself and another
+/// typedef of the body, bound at run time by collection slots and a
+/// dynamic call: each bind declares it again, and its representation is
+/// the registration's, restored or not.
+#[tokio::test]
+async fn a_restored_body_abstract_keeps_its_representation() -> Result<()> {
+    const BODY_ABSTRACT_REP: &str = r#"
+let f = |x: i64| {
+    type M = [i64, null];
+    type N = Abstract<[`C(M, N), `Nil]>;
+    N(`C(x, N(`Nil))) == N(`C(2, N(`Nil)))
+};
+let fs = [f, f];
+let g = fs[1]$;
+(array::map([1, 2, 3], f), g(2))
+"#;
+    let ((_, cold), (_, warm)) = cold_and_warm(BODY_ABSTRACT_REP).await?;
+    let slots = Value::Array(netidx_value::ValArray::from_iter(
+        [false, true, false].map(Value::Bool),
+    ));
+    let expect =
+        Value::Array(netidx_value::ValArray::from_iter([slots, Value::Bool(true)]));
+    assert_eq!(cold.last(), Some(&expect), "{cold:?}");
+    assert_eq!(warm, cold);
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_restored_closure_outlives_its_slot() -> Result<()> {
     let ((_, cold), (_, warm)) =

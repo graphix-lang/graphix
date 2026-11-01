@@ -558,9 +558,11 @@ impl TypeDef {
         Node::new(Self { spec, scope, name, unchanged_from })
     }
 
+    /// A registration this definition made owns what its representation
+    /// names; one another made is compared with this definition's.
     fn check_unchanged<R: Rt>(&self, ctx: &CompileCtx<R>) -> Result<()> {
         match &self.unchanged_from {
-            None => Ok(()),
+            None => Ok(ctx.env.own_abstract_rep(&self.scope, &self.name)),
             Some(old) => ctx.env.check_abstract_rep(&self.scope, &self.name, old),
         }
     }

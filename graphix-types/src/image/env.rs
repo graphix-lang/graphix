@@ -8,14 +8,19 @@ use super::{
 };
 use crate::{
     BindId,
-    env::{Bind, Env, ImplDef, ImportEntry, Lexical, Map, TraitDef, TypeDef},
+    env::{
+        AbstractRep, Bind, Env, ImplDef, ImportEntry, Lexical, Map, TraitDef, TypeDef,
+    },
     expr::ModPath,
     shared_map::{self, RelocatedMap, RelocatedSet, SharedMap, SharedSet},
 };
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
-use netidx_core::pack::{Pack, PackError};
-use std::sync::atomic::{AtomicBool, Ordering};
+use netidx_core::pack::{Pack, PackError, encode_varint, varint_len};
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 use triomphe::Arc;
 
 impl Pack for Bind {
@@ -81,6 +86,52 @@ impl Pack for TypeDef {
             doc: Pack::decode(buf)?,
             seeded: Arc::new(AtomicBool::new(bool::decode(buf)?)),
         })
+    }
+}
+
+/// The typedefs a representation names travel with it, so a restored
+/// one keeps its names resolved.
+impl Pack for AbstractRep {
+    fn encoded_len(&self) -> usize {
+        let AbstractRep { scope, name, params, rep, public, named } = self;
+        let named = named.get().map(|n| &n[..]).unwrap_or(&[]);
+        scope.encoded_len()
+            + name.encoded_len()
+            + params.encoded_len()
+            + rep.encoded_len()
+            + public.encoded_len()
+            + varint_len(named.len() as u64)
+            + named.iter().map(image::resolved_len).sum::<usize>()
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        let AbstractRep { scope, name, params, rep, public, named } = self;
+        let named = named.get().map(|n| &n[..]).unwrap_or(&[]);
+        scope.encode(buf)?;
+        name.encode(buf)?;
+        params.encode(buf)?;
+        rep.encode(buf)?;
+        public.encode(buf)?;
+        encode_varint(named.len() as u64, buf);
+        for r in named {
+            image::resolved_encode(r, buf)?;
+        }
+        Ok(())
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let (scope, name) = (Pack::decode(buf)?, Pack::decode(buf)?);
+        let (params, rep, public) =
+            (Pack::decode(buf)?, Pack::decode(buf)?, Pack::decode(buf)?);
+        let n = image::count_decode(buf)?;
+        let named = (0..n)
+            .map(|_| image::resolved_decode(buf))
+            .collect::<Result<Box<[_]>, _>>()?;
+        let named = match named.is_empty() {
+            true => OnceLock::new(),
+            false => OnceLock::from(named),
+        };
+        Ok(AbstractRep { scope, name, params, rep, public, named: Arc::new(named) })
     }
 }
 
