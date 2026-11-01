@@ -510,6 +510,15 @@ pub struct InstanceTypes {
     sig: Arc<FnType>,
 }
 
+// CR claude for claude: [bug/low] A formal union of two variables passes the check and
+// its build refuses the instance: `let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>,
+// Array<'b>) ([y], [z]); let u = never(); println(f(u, 1, "s")); u <- "t"` checks
+// (`--check` rc 0), and the run refuses "an instance at fn(x: [i64, string], y: i64, z:
+// string) .. of a definition typed fn(x: ['a, 'b], y: 'a, z: 'b) ..", on main a084f9887
+// and cr33-E alike; GRAPHIX_NO_SUBST runs it and prints ([1], ["s"]). instance_sig
+// does not hold the instance's union argument to the signature's union of two variables.
+// Elaboration refusing what the check accepted is a type-system bug.
+// probe: ~/ptmp/cr29/scratch/r6-E/r8/fu_ab.gx (formal-union-instance-01)
 /// The definition's signature `def` as the instance at `instance` holds
 /// it: each open cell copied under its name into `known` and bound to the
 /// instance's type. `None` when the instance's signature does not hold
