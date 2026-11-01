@@ -875,7 +875,9 @@ are refused (`JsonData`/`TomlData`); tag the members, `` [`N(i64),
 A whole float prints with its point (`3.0`) in interpolation, `println` and
 `cast<string>`, so the text reads back as a float (`cast<[i64, f64]>("3.0")`
 is 3.0); a scale-zero decimal prints plainly without a trailing point,
-and a decimal cast from a whole float keeps its point (`decimal:3.0`). A
+and a decimal cast from a float is the number its shortest text names,
+`decimal:0.30000000000000004` for `0.1 + 0.2`, a whole one keeping its
+point (`decimal:3.0`). A
 union cast takes a member of the value's own kind first, however much of
 it that keeps: `cast<[f32, string]>(0.1)` is f32, `cast<[i64,
 string]>(3.5)` is 3; text tries the kind it parses as next

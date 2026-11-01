@@ -628,6 +628,18 @@ run!(json_decimal_written_as_an_exact_number, r#"{
     (json::write_str(d)$, json::write_str(u)$, back$ == u, exact$ == d)
 }"#, prints(r#"["12345678901234567890.123456789", "1.10", true, true]"#); FuseExpect::None);
 
+// A decimal of seventeen significant digits round trips: JSON reads its
+// text as the f64 it names, which casts to the decimal by its shortest
+// text.
+run!(json_seventeen_digit_decimal_round_trips, r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let v: Array<decimal> = [decimal:0.30000000000000004, decimal:1.0000000000000002, decimal:0.1234567890123456];
+    let j = json::write_str(v)$;
+    let back: Result<Array<decimal>, E> = json::read(j);
+    (j, back$, back$ == v)
+}"#, prints(r#"["[0.30000000000000004,1.0000000000000002,0.1234567890123456]", [decimal:0.30000000000000004, decimal:1.0000000000000002, decimal:0.1234567890123456], true]"#);
+    FuseExpect::Jit);
+
 /// The forms JSON and TOML write: abstract values, `Transparent`, a
 /// union of tags, an option, a map keyed by strings and one keyed by an
 /// abstract type.

@@ -841,6 +841,23 @@ run!(
     )
 );
 
+// A float casts to the decimal its shortest text names, all seventeen
+// significant digits of it, an f32 by its own shortest text.
+run!(
+    float_decimal_keeps_every_digit,
+    r#"{
+  let a = cast<decimal>(0.30000000000000004)$;
+  let b = cast<decimal>(0.1 + 0.2)$;
+  let c = cast<decimal>(1.0000000000000002)$;
+  let d = cast<decimal>(f32:0.1)$;
+  let e = cast<decimal>(123456.78901234567)$;
+  (a, b, c, d, e, a == decimal:0.30000000000000004)
+}"#,
+    prints(
+        "[decimal:0.30000000000000004, decimal:0.30000000000000004, decimal:1.0000000000000002, decimal:0.1, decimal:123456.78901234567, true]"
+    )
+);
+
 // A member beside a primitive set changes nothing of that order: a union
 // tries the members of every union and name in it, and each part of a
 // primitive set with the members of its class.
