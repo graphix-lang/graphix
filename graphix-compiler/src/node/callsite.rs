@@ -627,8 +627,9 @@ fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> 
 }
 
 /// A walk's typedef expansions: those in progress, each one it met in
-/// progress and so did not expand again, and each parameterless one whose
-/// expansion held nothing, with the ones in progress it met there.
+/// progress and so did not expand again, and each parameterless one, or
+/// shared node, whose walk held nothing, with the ones in progress it met
+/// there.
 #[derive(Default)]
 struct Expanding {
     stack: SmallVec<[usize; 4]>,
@@ -658,6 +659,16 @@ impl Expanding {
             Some(_) | None => false,
         }
     }
+
+    /// Record that `key`'s walk, which began when `met` held `since`
+    /// entries, held nothing.
+    fn record_clean(&mut self, key: usize, since: usize) {
+        let mut seen: SmallVec<[usize; 2]> =
+            self.met[since..].iter().copied().filter(|k| *k != key).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        self.clean.insert(key, seen);
+    }
 }
 
 /// Push to `out` the quantifiers of each function type at a data position
@@ -670,6 +681,8 @@ fn rank2_parts(
     expanding: &mut Expanding,
     out: &mut Quantified,
 ) -> Option<Type> {
+    #[cfg(test)]
+    RANK2_STEPS.with(|n| n.set(n.get() + 1));
     ensure_sufficient(|| {
         let before = out.len();
         let expanded = |r: Option<Type>, whole: Type, out: &Quantified| {
@@ -696,21 +709,36 @@ fn rank2_parts(
                 let r = rank2_parts(env, &whole, expanding, out);
                 expanding.stack.pop();
                 if bare && out.len() == before {
-                    let mut seen: SmallVec<[usize; 2]> = expanding.met[met..]
-                        .iter()
-                        .copied()
-                        .filter(|k| *k != key)
-                        .collect();
-                    seen.sort_unstable();
-                    seen.dedup();
-                    expanding.clean.insert(key, seen);
+                    expanding.record_clean(key, met);
                 }
                 expanded(r, whole, out)
             }
             Type::Abstract { .. } => None,
-            t => t.cow_children(&mut |c| rank2_parts(env, c, expanding, out)),
+            t => {
+                // a node many paths share is walked once; one an expansion
+                // built lives only while it is walked, so it has no identity
+                let node = t.shared_identity().filter(|_| expanding.stack.is_empty());
+                if let Some(node) = node
+                    && expanding.known_clean(node)
+                {
+                    return None;
+                }
+                let met = expanding.met.len();
+                let r = t.cow_children(&mut |c| rank2_parts(env, c, expanding, out));
+                if let Some(node) = node
+                    && out.len() == before
+                {
+                    expanding.record_clean(node, met);
+                }
+                r
+            }
         }
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    static RANK2_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A rank-2 quantifier `q` keeps exactly the bounds its formal `declared`:
@@ -1040,7 +1068,7 @@ fn data_positions(
     })
 }
 
-// CR claude for claude: [perf/medium] A call whose two arguments share a type variable
+// XCR claude for claude: [perf/medium] A call whose two arguments share a type variable
 // checks in time exponential in a shared type's depth. With `let x1 = (x0, x0); let x2
 // = (x1, x1); ..`, `let f = |a: 'a, b: 'a| a; f(xN, xN)` takes 132 ms at N=20, 482 ms
 // at 24 and 1.3 s at 26 (quick build; one argument at 26 is 108 ms); the reviewer saw
@@ -1049,6 +1077,17 @@ fn data_positions(
 // structural nodes), with `data_positions` and the widening that follows as the other
 // candidates. Profile first. probe: ~/tmp/xcr-review-2026-10-28/2/dag.gx
 // (dag-check-01)
+// 2026-11-01 claude: Profiled (callgrind; perf report hung on the host): the
+// exponential walk was rank2_parts, a rebuild walk with a memo for parameterless
+// typedefs only (about 280M of the 350M instructions over the base at N=20). It now
+// records a shared node of the original type (not inside an expansion, whose nodes live
+// only while walked) whose walk found no quantifier, with the in-progress typedefs it
+// met, as the typedef memo does (Expanding::record_clean). callgrind --check: dag22
+// (f(x22, x22)) 2.666G on main a084f9887, 1.311G here; dag20 1.626G before the fix,
+// 1.295G after; the probe with no call 1.28G. holds_invariantly runs on the formals
+// before any argument is checked, so it never meets the argument's type. Pin
+// graphix-compiler node::callsite::test::rank2_parts_walks_a_shared_node_once (a
+// 16-deep shared tuple walked in at most 34 steps) fails without it.
 /// Whether `t` holds a type variable under an abstract type, a type
 /// application or a writable reference, outside any function type: such a position
 /// fixes the variable exactly, so its argument is checked first and the
@@ -4355,5 +4394,26 @@ pub(crate) fn lambda_literal<R: Rt>(node: &Node<R>) -> Option<&Lambda> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use netidx_value::Typ;
+
+    // A type whose nodes many paths share is walked once per node, not once
+    // per path: `let x1 = (x0, x0); let x2 = (x1, x1); ..` passed to a call.
+    #[test]
+    fn rank2_parts_walks_a_shared_node_once() {
+        let mut t = Type::Primitive(Typ::I64.into());
+        for _ in 0..16 {
+            t = Type::Tuple(TArc::from_iter([t.clone(), t.clone()]));
+        }
+        RANK2_STEPS.with(|n| n.set(0));
+        let mut out = Quantified::new();
+        let r = rank2_parts(&Env::default(), &t, &mut Expanding::default(), &mut out);
+        assert!(r.is_none() && out.is_empty());
+        assert!(RANK2_STEPS.with(|n| n.get()) <= 2 * 17);
     }
 }
