@@ -524,3 +524,55 @@ an object of the runtime's decoder, so an instance decoded later
 resolves into nodes decoded earlier. `encoded_len` is exact: `tree_len` goes
 through `image::object_len`, so every occurrence costs its reference,
 and a derived `Pack` may frame a shared map.
+
+## Designed, not built: static-callee records by their holders
+
+`CompileCtx::static_callees` (a `TrackedMap<BindId, StaticCall>`) records
+that a call bound a binding's definition statically, so a later compile's
+`<-` to the binding is refused (`mark_connect_target`). Nothing removes a
+record but the callee's own `Bind::delete`, so a call that is gone (a
+dynamic module's reload, a deleted REPL input) still refuses the write,
+and the registration image carries the stale record
+(tests-modules-image-01;
+`design/review-2026-10-26/repro/tests-modules-image-stale-static-callee.sh`).
+
+The rule (the CR's note): a record belongs to what keeps the static
+binding alive, and goes when the last such holder does. The holders:
+
+- a `CallSite` that resolved its function statically
+  (`try_static_resolve`), and one whose bind registered a fn-typed
+  argument's definition for its instance (`register_fn_params`);
+- an alias `Bind` (`let h = f`, `aliased_lambda`);
+- a definition whose check bound the call: its check's nodes are
+  discarded after the check, but its instances are typed from it. The
+  holder is its `DefTable` (which nested lambdas' tables hang from, and
+  which instances share), filled by `DefTable::record` from the holders
+  in the checked body.
+
+Mechanism, chosen so no merge is needed:
+
+1. The record is a liveness index, not compile state: `static_callees`
+   becomes one `Arc<Mutex<AHashMap<BindId, SmallVec<[Weak<StaticCall>;
+   1]>>>>` that every fork shares (no `TrackedMap`, no `Saved` entry).
+   `record_static_callee` returns the `Arc<StaticCall>` token, which its
+   holder keeps in a field; the index keeps a `Weak`. A failed compile
+   drops its nodes, so its tokens die with them: nothing to roll back
+   and no three-way join of two tasks' writes to one key.
+2. `mark_connect_target` refuses while one `Weak` of the binding
+   upgrades, naming that holder's call, and prunes the dead ones;
+   `Bind::delete` of the callee drops its entry, as now.
+3. The image carries holds, never the index: a `CallSite` encodes the
+   `(BindId, call)` pairs it holds, an alias `Bind` its one, a `DefTable`
+   its list; each re-records at decode and keeps the new token. A lazily
+   decoded instance's holds ride its row of the instance table (the
+   `RefsSummary` beside its reads, collected by the same `refs` walk);
+   the imaged site re-records them at its decode, as it registers the
+   instance's flat reads, and keeps them while it lives. The registration
+   image drops its `static_callees` list (a format bump).
+
+Pins to write: beside `lang::types::written_after_a_static_call_is_refused`,
+a dynamic module whose reload drops its static call takes the write
+afterwards (the probe), a definition whose body aliases `f` (`let g =
+|x| { let h = f; h(x) }`) refuses it while `g` lives, and an image pin
+(`lang::image`): a warm start refuses the write while the imaged caller
+lives, and takes it once the caller is deleted.

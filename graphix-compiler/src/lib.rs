@@ -1837,6 +1837,15 @@ impl<R: Rt> CompileCtx<R> {
     // recording nodes to carry what they recorded through the image (a lazily decoded
     // instance's sites are counted in the image but never decoded). Needs that design
     // before code.
+    // 2026-11-01 claude: Round 6 lane W: designed, not built. design/program_image.md
+    // 'Designed, not built: static-callee records by their holders' builds the note's
+    // rule as a liveness index of Weak tokens (each holder, a CallSite, an alias Bind
+    // or a definition's DefTable, keeps its Arc token; a failed compile drops its
+    // holders, so no rollback and no TrackedMap three-way join), with holds carried
+    // through the image by each holder and, for lazily decoded instances, by the
+    // instance table's row. Not built this round: it spans the registration and program
+    // image formats, the CallSite, Bind and DefTable codecs and the instance table; the
+    // lane's budget went to items 1-4. Probe still reproduces on main.
     pub(crate) fn record_static_callee(&mut self, id: BindId, spec: &Arc<expr::Expr>) {
         if !self.static_callees.contains_key(&id) {
             self.static_callees.insert(id, StaticCall(spec.clone()));
