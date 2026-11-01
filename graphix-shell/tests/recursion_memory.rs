@@ -5,10 +5,12 @@
 //!
 //! RSS is not exact: a run's peak moves by up to 2 MB with its threads'
 //! timing (the allocator's arenas, the compile's thread-local pools), so a
-//! slope over 15,000 items moves by about 100 bytes, one standard deviation,
-//! at any load. The slopes measure 9.0 to 9.4 KB an activation and 3.2 KB a
-//! slot. The activation's ceiling sits 5% over the larger, so growth of 0.5
-//! KB an activation fails it; the slot's sits 0.9 KB over its slope.
+//! slope over 15,000 items spreads over about 500 bytes between runs. The
+//! slopes measure 8.8 to 9.4 KB an activation and 3.2 KB a slot. The
+//! activation's ceiling sits 5% over the larger and the slot's 0.9 KB over
+//! its slope: the spread does not reach them, and only growth past it (1 KB
+//! an activation) fails them every run. Smaller growth is
+//! `activation_heap`'s to catch.
 
 #![cfg(target_os = "linux")]
 

@@ -1526,6 +1526,12 @@ impl<R: Rt> GXLambda<R> {
     // instance's LambdaIds may be its definition's. Also the argument map's table (52 B),
     // the formal's env binding (136 B), a select's TrackedFires sets (about 400 B), and
     // the node structs (CallSite 632 B, Select 544 B, Ref 88 B each).
+    // 2026-11-01 claude: Review E2-r1-2: 'each failing at the old' holds for
+    // activation_heap only. recursion_memory's slopes spread over about 500 B between
+    // runs (8.8-9.3 KB on this branch at load 290; 9.6-10.1 KB at the old cost), so the
+    // old cost passed its 9850 ceiling in one run of three; its doc now says it catches
+    // growth past the spread (1 KB) every run and leaves smaller growth to
+    // activation_heap.
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
