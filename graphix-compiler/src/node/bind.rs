@@ -591,6 +591,13 @@ impl<R: Rt> Update<R> for Bind<R> {
             // stamp alone is insufficient and also serves read_var's live-delivery contract.
             // Trial Rust pins and the candidate patch are retained in /tmp/q4-trial-select.rs
             // and /tmp/q4-candidate.patch. No language rule or FuseExpect changed.
+            // 2026-11-01 claude: Round 6 lane W2 built 'the later event wins' at a resume by
+            // dating each caught-up fire by its initializer's inputs (branch cr34-W: 03afebabe
+            // 389cbe00a ffebc3b3d 7eae1b817). Three review rounds each found new orders it
+            // misses, one showing a value of no world the awake run passes through
+            // (~/ptmp/cr29/scratch/review-r6/W2-r3-1/a9*, a10), at up to 1.6x instructions
+            // where a write lands at every sleep. Parked for Eric
+            // (~/ptmp/cr29/next-discuss.md, wake order); main's behaviour stands.
             self.reraise_writes_while_asleep(ctx);
         }
         let tv = self.node.update(ctx);
@@ -625,6 +632,13 @@ impl<R: Rt> Update<R> for Bind<R> {
         // contract. Trial Rust pins and the candidate patch are retained in
         // /tmp/q4-trial-select.rs and /tmp/q4-candidate.patch. No language rule or
         // FuseExpect changed.
+        // 2026-11-01 claude: Round 6 lane W2 built 'the later event wins' at a resume by
+        // dating each caught-up fire by its initializer's inputs (branch cr34-W:
+        // 03afebabe 389cbe00a ffebc3b3d 7eae1b817). Three review rounds each found new
+        // orders it misses, one showing a value of no world the awake run passes through
+        // (~/ptmp/cr29/scratch/review-r6/W2-r3-1/a9*, a10), at up to 1.6x instructions
+        // where a write lands at every sleep. Parked for Eric
+        // (~/ptmp/cr29/next-discuss.md, wake order); main's behaviour stands.
         if (woke || ctx.event.wake()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =

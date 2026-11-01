@@ -3663,23 +3663,6 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // XCR claude for claude: [bug/medium] A fused recursion called from a seq step holds
-    // more live activations at each run, on main too:
-    // ~/tmp/cr29/scratch/laneG/p9_nospike31.gx (31 runs at depth 5) needs an activation
-    // budget between 1000 and 1100 fused and under 1000 with --no-fusion; p9_nospike.gx
-    // (151 runs) aborts at 1500 fused. The node-walk sheds what a run leaves (D5,
-    // exit_kept); whatever holds the kernel path's activations is not shed.
-    // (fused-seq-rec-leak-01)
-    // 2026-11-01 claude: Cause: FusedKernel::update's rebirth (a seq step's next run)
-    // zeroed the kernel's state words with fill(0), which dropped the roots of its
-    // per-activation block trees and slot chains without freeing them, so each run
-    // leaked its blocks and their activation charges (record_self_blocks). The rebirth
-    // now frees them first (free_state under the runtime's control, as delete does) and
-    // resets tree_size. Pin:
-    // lang::functions::rec_seq_runs_hold_one_run_{interp,jit,jit_par} (seq and seqq at
-    // depth 5: live after 1, 5 and 30 runs equals one node-walked run's 7); jit and
-    // jit_par fail without the fix (7, 27, 152). p9_nospike31.gx and p9_nospike.gx now
-    // need the same budget fused and node-walked (907).
     pub(crate) fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         // A recursive edge deselected by a shrink deletes its callee, so

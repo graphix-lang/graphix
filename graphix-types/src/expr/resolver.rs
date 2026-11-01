@@ -602,50 +602,6 @@ fn needs_no_value(kind: &SigKind) -> bool {
     }
 }
 
-// XCR claude for claude: [bug/medium] An interface-only declaration is spliced right after
-// the body's copy of the ONE interface item listed before it, so when the body orders
-// its declarations differently from its .gxi, the spliced item lands ahead of interface
-// items listed before it and cannot see them (iface-splice-01). Repro, with a/l.gx
-// reading `use super::y; let z = y` and main.gx `mod a; println(a::l::z)`: a/mod.gxi
-// `val y: i64; val w: i64; mod l;` over a/mod.gx `let w = 2; let y = 1` fails compiling
-// a::l with `y not defined`, because `mod l` is keyed after `w` and the body binds `w`
-// before `y`; swap the two lets and it prints 1. A module the body declares itself
-// trips it the same way: mod.gxi `val y: i64; mod t; mod l;` over mod.gx
-// `mod t; let y = t::x + 1` (t.gx `let x = 41`). Found porting the netidx admin TUI's
-// theme, where the error named a sibling module's import, nowhere near the cause. The
-// doc below promises relative order. Two fixes: splice each item after the last body
-// declaration of EVERY interface item before it, or refuse a body out of its
-// interface's order with an error naming both items. Which one is a language rule.
-// 2026-10-31 claude: Eric ruled (10-31): splice each interface-only item after the last
-// body declaration of EVERY interface item before it, so a body may order its
-// declarations differently from its interface.
-// 2026-11-01 claude: add_interface_modules now splices each interface-only item after the
-// body's last declaration of every interface item listed before it (Eric's ruling), ahead
-// of the body when it declares none, in interface order among themselves. Pins
-// lang::modules::interface_only_mod_follows_every_earlier_item,
-// interface_only_mod_follows_a_body_module (the CR's two repros) and
-// interface_only_mods_in_a_row_keep_their_order fail without it (y not defined, every
-// mode); interface_only_mod_between_body_items pins the unchanged in-order case. Docs:
-// design/module_system.md, book modules/interfaces.md, the skill.
-// 2026-11-01 claude: Review round 2 lows: a body with no top-level declaration of an
-// earlier interface item (a val it misses, or implements by a use) put a later
-// interface-only item ahead of the body, so the build failed with y not defined inside the
-// submodule; such an item now goes after the body, and the interface's check names the
-// missing item (main's message). Pins
-// lang::modules::interface_only_mod_after_a_missing_item_is_refused_for_the_item (y not
-// defined without the change) and
-// interface_only_mod_read_before_an_earlier_item_is_refused (the ruled refusal: a body
-// reading the submodule before its declaration of an earlier item). No hint in the
-// not-defined error: the block's compile would have to know a later spliced sibling; the
-// rule is in the book, design/module_system.md and the skill, which now shows the refusal.
-// 2026-11-01 claude: Review round 3 lows (docs): book modules/interfaces.md's sub-module
-// paragraph still gave the old rule; it now says a gxi-only mod stands after the body's
-// declarations of everything the interface lists before it. design/module_system.md no
-// longer claims the interface check names a missing item: an item after a val the body
-// lacks goes after the body, refused by the interface check unless the spliced item (or a
-// body statement reading it) fails first on the missing name, which is the common case.
-// The skill says such an item goes at the end. Left: refusing a val with no top-level
-// binding before compiling (a diagnostic only; no valid program changes).
 /// `exprs` with the modules, types, traits and uses only `sig` declares
 /// spliced in, each after the body's last declaration of every interface
 /// item listed before it (ahead of the body when it declares none of
