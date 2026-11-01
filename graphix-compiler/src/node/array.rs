@@ -375,6 +375,26 @@ impl<R: Rt> ArrayRef<R> {
         // (constructor_nodes_agree_cold_and_warm) passes at this tip: the program that
         // exercises these shapes runs to the same production cold and from a restored
         // image.
+        // 2026-11-01 claude: Four more kinds now build through one constructor shared
+        // by both paths (lane E round 6): LambdaDef::of_source (Lambda::compile and
+        // image::defs::def_decode; init built from the parts there, no_loop and
+        // captures start empty there), Banking::new (Sample's compile and image_decode,
+        // which registers the payment variable either way), GxAbstract::new
+        // (Pack::decode, wrap and the tests; params_key starts empty there) and
+        // Reference::new (decode, wrap, the test). Encoded fields and order are
+        // unchanged: no image format bump. graphix-shell constructor_image now also
+        // covers a lambda definition, a ~ sample, a seqq (a banked sample) and a
+        // reference, cold and warm alike ((19, 7, 8)); an equivalence check, which
+        // passed before the change too. lang::image, byref, orphans, seqq and
+        // graphix-types pass. Still repeating: core lib.rs RtVar (its two paths hold
+        // CompileCtx and ExecCtx, as noted), queuefn.rs's runtime LambdaDef
+        // (DefOrigin::Runtime, one path, but it repeats of_source's no_loop/captures
+        // defaults), and the lower-risk ones every field of which both paths supply
+        // (fusion/emit/lower.rs SiteLayout and CtxWord, fusion/emit/record.rs
+        // RecordReloc and the RecordKind variants, fusion/share.rs RegionPrint). The
+        // brief's list (Catch, ErrorRelay, Bind, LambdaInstance, Module,
+        // CachedArgsAsync, Filter/Queue/Hold/Throttle, the net/time/watch/http
+        // builtins) was done by the 10-27/10-28 batches.
         Ok(Self::with(spec, typ, etyp, source, i))
     }
 

@@ -13,7 +13,7 @@ use crate::{
     effects::LambdaFacts,
     expr::{Arg, Expr, ExprId},
     node::lambda::{
-        BodyShare, BodyShared, DefBody, DefOrigin, LambdaDef, make_init, tables_decode,
+        BodyShare, BodyShared, DefBody, DefOrigin, LambdaDef, tables_decode,
         tables_encode,
     },
     typ::FnType,
@@ -159,36 +159,23 @@ pub(crate) fn def_decode<R: Rt>(
     let enclosing: Arc<[Arc<FnType>]> = Pack::decode(buf)?;
     let table = std::sync::Arc::new(tables_decode(buf)?);
     let shared = BodyShare::new(Mutex::new(shared_decode(buf)?));
-    let init = make_init(
-        id,
-        flags,
-        env.clone(),
-        &scope,
-        typ.clone(),
-        argspec.clone(),
-        Arc::new(spec.clone()),
-        body.clone(),
-        enclosing.clone(),
-        table.clone(),
-        shared.clone(),
-    );
-    ctx.wrap_lambda(LambdaDef {
+    ctx.wrap_lambda(LambdaDef::of_source(
         id,
         env,
         scope,
         argspec,
         typ,
-        init,
         table,
         shared,
-        facts: Mutex::new(facts),
-        param_calls: Mutex::new(param_calls),
-        recursion: Mutex::new(recursion),
-        no_loop: Mutex::new(None),
+        facts,
+        param_calls,
+        recursion,
         source,
-        origin: DefOrigin::Source { body, flags, spec, enclosing },
         level,
-        captures: Default::default(),
-    });
+        body,
+        flags,
+        Arc::new(spec),
+        enclosing,
+    ));
     Ok(id)
 }

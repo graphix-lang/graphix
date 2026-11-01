@@ -746,6 +746,62 @@ pub struct LambdaDef<R: Rt> {
     pub captures: OnceLock<Captures>,
 }
 
+impl<R: Rt> LambdaDef<R> {
+    /// The definition of the lambda expression `spec`, compiled or decoded
+    /// from an image: its instances' `init` built from its parts, the
+    /// analysis facts as given, nothing else of a run.
+    pub(crate) fn of_source(
+        id: LambdaId,
+        env: Lexical,
+        scope: Scope,
+        argspec: Arc<[Arg]>,
+        typ: Arc<FnType>,
+        table: SArc<DefTables>,
+        shared: BodyShare,
+        facts: LambdaFacts,
+        param_calls: ParamCalls,
+        recursion: RecursionKind,
+        source: ExprId,
+        level: Level,
+        body: DefBody,
+        flags: BitFlags<CFlag>,
+        spec: Arc<Expr>,
+        enclosing: Arc<[Arc<FnType>]>,
+    ) -> Self {
+        let init = make_init(
+            id,
+            flags,
+            env.clone(),
+            &scope,
+            typ.clone(),
+            argspec.clone(),
+            spec.clone(),
+            body.clone(),
+            enclosing.clone(),
+            table.clone(),
+            shared.clone(),
+        );
+        LambdaDef {
+            id,
+            env,
+            scope,
+            argspec,
+            typ,
+            init,
+            table,
+            shared,
+            facts: Mutex::new(facts),
+            param_calls: Mutex::new(param_calls),
+            recursion: Mutex::new(recursion),
+            no_loop: Mutex::new(None),
+            source,
+            origin: DefOrigin::Source { body, flags, spec: (*spec).clone(), enclosing },
+            level,
+            captures: OnceLock::new(),
+        }
+    }
+}
+
 /// Where a definition came from: a lambda expression, whose `init` is
 /// a function of these and which an image carries as data, or Rust
 /// code building an `Apply` at runtime, which no image can carry.
@@ -2086,19 +2142,6 @@ impl Lambda {
             ),
             None => (BodyShare::default(), Arc::from_iter([])),
         };
-        let init = make_init(
-            id,
-            flags,
-            ctx.env.lexical(),
-            scope,
-            typ.clone(),
-            argspec.clone(),
-            spec.clone(),
-            body.clone(),
-            enclosing.clone(),
-            table.clone(),
-            shared.clone(),
-        );
         let facts = match &body {
             DefBody::Expr(_) | DefBody::Collection(_) => LambdaFacts::PURE,
             DefBody::BuiltIn(name) => ctx.builtin_effect(name).facts(),
@@ -2106,24 +2149,24 @@ impl Lambda {
         // No signature ref seeding here: the module tree is mid-registration
         // and a name's final target may not be registered yet. Cells fill
         // at typecheck.
-        let def = ctx.registry.lambdawrap.wrap(LambdaDef {
+        let def = ctx.registry.lambdawrap.wrap(LambdaDef::of_source(
             id,
-            typ: typ.clone(),
-            env: ctx.env.lexical(),
+            ctx.env.lexical(),
+            scope.clone(),
             argspec,
-            init,
-            scope: scope.clone(),
+            typ.clone(),
             table,
             shared,
-            facts: Mutex::new(facts),
-            param_calls: Mutex::new(ParamCalls::default()),
-            recursion: Mutex::new(RecursionKind::NotRecursive),
-            no_loop: Mutex::new(None),
-            source: spec.id,
-            origin: DefOrigin::Source { body, flags, spec: (*spec).clone(), enclosing },
+            facts,
+            ParamCalls::default(),
+            RecursionKind::NotRecursive,
+            spec.id,
             level,
-            captures: OnceLock::new(),
-        });
+            body,
+            flags,
+            spec.clone(),
+            enclosing,
+        ));
         ctx.lambda_defs.insert(id, def.clone());
         Ok(Self::with(spec, def, Type::Fn(typ)))
     }

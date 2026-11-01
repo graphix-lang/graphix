@@ -2928,6 +2928,22 @@ impl Payments {
 }
 
 impl Banking {
+    /// A sample's banking: strict (`None`), one answer owed, or each paid
+    /// through the variable `pay`, which the sample at `top_id` reads.
+    fn new<R: Rt>(
+        ctx: &mut CompileCtx<R>,
+        owed: Option<Option<BindId>>,
+        top_id: ExprId,
+    ) -> Self {
+        match owed {
+            None => Banking::Strict,
+            Some(None) => Banking::One { owed: false },
+            Some(Some(pay)) => {
+                ctx.record_ref(pay, top_id);
+                Banking::Each(Payments::new(pay))
+            }
+        }
+    }
     fn result_type(&self, trigger: &Type, arg: &Type) -> Type {
         match self {
             Self::Each(_) => Type::Tuple(Arc::from_iter([trigger.clone(), arg.clone()])),
@@ -2986,14 +3002,7 @@ impl<R: Rt> Sample<R> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        let banking = match Option::<Option<BindId>>::decode(buf)? {
-            None => Banking::Strict,
-            Some(None) => Banking::One { owed: false },
-            Some(Some(id)) => {
-                ctx.record_ref(id, top_id);
-                Banking::Each(Payments::new(id))
-            }
-        };
+        let banking = Banking::new(ctx, Option::<Option<BindId>>::decode(buf)?, top_id);
         let trigger = decode_node(ctx, buf)?;
         let arg = Held::image_decode(ctx, buf)?;
         Ok(Self::with(spec, banking, typ, top_id, trigger, arg))
@@ -3009,15 +3018,11 @@ impl<R: Rt> Sample<R> {
         rhs: &Arc<Expr>,
         owed: Option<Owed>,
     ) -> Result<Node<R>> {
-        let banking = match owed {
-            None => Banking::Strict,
-            Some(Owed::One) => Banking::One { owed: false },
-            Some(Owed::Each) => {
-                let id = BindId::new();
-                ctx.record_ref(id, top_id);
-                Banking::Each(Payments::new(id))
-            }
-        };
+        let pay = owed.map(|owed| match owed {
+            Owed::One => None,
+            Owed::Each => Some(BindId::new()),
+        });
+        let banking = Banking::new(ctx, pay, top_id);
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
         let arg = Held::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
         let typ = banking.result_type(trigger.typ(), arg.node.typ());

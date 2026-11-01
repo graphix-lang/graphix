@@ -388,6 +388,12 @@ struct Reference {
     _keep: Option<Arc<Keep>>,
 }
 
+impl Reference {
+    fn new(cell: BindId, keep: Option<Arc<Keep>>) -> Self {
+        Self { cell, _keep: keep }
+    }
+}
+
 impl PartialEq for Reference {
     fn eq(&self, other: &Self) -> bool {
         self.cell == other.cell
@@ -435,7 +441,7 @@ impl Pack for Reference {
         if !crate::ids::in_session() {
             return Err(PackError::InvalidFormat);
         }
-        Ok(Reference { cell: BindId::decode(buf)?, _keep: None })
+        Ok(Reference::new(BindId::decode(buf)?, None))
     }
 }
 
@@ -456,7 +462,7 @@ pub fn register() {
 
 /// The reference whose cell is `cell`, kept alive by `keep`.
 pub fn reference(cell: BindId, keep: Option<Arc<Keep>>) -> Value {
-    WRAPPER.wrap(Reference { cell, _keep: keep })
+    WRAPPER.wrap(Reference::new(cell, keep))
 }
 
 /// The cell of `v`, if `v` is a reference.
@@ -492,7 +498,7 @@ mod test {
     #[test]
     fn reference_decodes_only_under_an_image() {
         let mut buf = Vec::new();
-        Reference { cell: BindId::new(), _keep: None }.encode(&mut buf).unwrap();
+        Reference::new(BindId::new(), None).encode(&mut buf).unwrap();
         assert!(matches!(
             Reference::decode(&mut &buf[..]),
             Err(PackError::InvalidFormat)

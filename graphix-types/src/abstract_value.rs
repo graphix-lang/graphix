@@ -122,6 +122,10 @@ pub struct GxAbstract {
 }
 
 impl GxAbstract {
+    fn new(id: AbstractId, name: ArcStr, params: Arc<[Type]>, payload: Value) -> Self {
+        Self { id, name, params, payload, params_key: OnceLock::new() }
+    }
+
     pub fn has_order_impl(&self) -> bool {
         hooked(|h| (h.cmp_applies)(h.state, self).then_some(())).is_some()
     }
@@ -323,13 +327,12 @@ impl Pack for GxAbstract {
             return Err(PackError::InvalidFormat);
         }
         nested(&DECODE_DEPTH, || {
-            Ok(GxAbstract {
-                id: Pack::decode(buf)?,
-                name: Pack::decode(buf)?,
-                params: Pack::decode(buf)?,
-                payload: Pack::decode(buf)?,
-                params_key: OnceLock::new(),
-            })
+            Ok(GxAbstract::new(
+                Pack::decode(buf)?,
+                Pack::decode(buf)?,
+                Pack::decode(buf)?,
+                Pack::decode(buf)?,
+            ))
         })
     }
 }
@@ -412,7 +415,7 @@ pub fn register() {
 /// Mint a value of the abstract type `id<params>` around `payload`.
 #[doc(hidden)]
 pub fn wrap(id: AbstractId, name: ArcStr, params: Arc<[Type]>, payload: Value) -> Value {
-    WRAPPER.wrap(GxAbstract { id, name, params, payload, params_key: OnceLock::new() })
+    WRAPPER.wrap(GxAbstract::new(id, name, params, payload))
 }
 
 /// The box inside `v`, if `v` is a Graphix-minted abstract value.
@@ -437,13 +440,7 @@ mod test {
     /// forged or stale: only an image session reads them.
     #[test]
     fn abstract_value_decodes_only_under_an_image() {
-        let v = GxAbstract {
-            id: AbstractId::of(&crate::expr::ModPath::from(["m"]), "T"),
-            name: arcstr::literal!("T"),
-            params: Arc::from_iter([]),
-            payload: Value::I64(1),
-            params_key: OnceLock::new(),
-        };
+        let v = boxed(1);
         let mut buf = Vec::new();
         v.encode(&mut buf).unwrap();
         assert!(matches!(
@@ -453,13 +450,12 @@ mod test {
     }
 
     fn boxed(payload: i64) -> GxAbstract {
-        GxAbstract {
-            id: AbstractId::of(&crate::expr::ModPath::from(["m"]), "T"),
-            name: arcstr::literal!("T"),
-            params: Arc::from_iter([]),
-            payload: Value::I64(payload),
-            params_key: OnceLock::new(),
-        }
+        GxAbstract::new(
+            AbstractId::of(&crate::expr::ModPath::from(["m"]), "T"),
+            arcstr::literal!("T"),
+            Arc::from_iter([]),
+            Value::I64(payload),
+        )
     }
 
     fn hash_of(g: &GxAbstract) -> u64 {
