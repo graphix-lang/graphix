@@ -95,7 +95,7 @@ where
 }
 
 impl Commentable for Arg {
-    fn take_eol(&mut self, eol: ArcStr) {
+    fn take_eol(&mut self, _at: SourcePosition, eol: ArcStr) {
         self.comments.eol = Eol::new(Some(eol));
     }
 }

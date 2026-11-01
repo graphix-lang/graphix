@@ -84,18 +84,22 @@ struct Reason {
     /// a failure only inside that token.
     span: Option<usize>,
     reason: CompactString,
+    /// Where the parse failed, for a refusal of something read before
+    /// that point ([`refuse_read`]): a failure there is reported at `pos`.
+    failed_at: Option<SourcePosition>,
 }
 
 impl Reason {
     fn explains(&self, failure: SourcePosition) -> bool {
-        failure.line == self.pos.line
-            && match self.span {
-                None => true,
-                Some(n) => {
-                    self.pos.column <= failure.column
-                        && failure.column <= self.pos.column + n as i32
+        self.failed_at == Some(failure)
+            || failure.line == self.pos.line
+                && match self.span {
+                    None => true,
+                    Some(n) => {
+                        self.pos.column <= failure.column
+                            && failure.column <= self.pos.column + n as i32
+                    }
                 }
-            }
     }
 }
 
@@ -111,12 +115,47 @@ pub(super) fn note_reason(
     span: Option<usize>,
     reason: CompactString,
 ) {
+    note(Reason { pos, span, reason, failed_at: None })
+}
+
+fn note(reason: Reason) {
+    let at = |r: &Reason| key(r.failed_at.unwrap_or(r.pos));
     REASON.with(|r| {
         let mut r = r.borrow_mut();
-        if r.as_ref().is_none_or(|p| key(p.pos) <= key(pos)) {
-            *r = Some(Reason { pos, span, reason });
+        if r.as_ref().is_none_or(|p| at(p) <= at(&reason)) {
+            *r = Some(reason);
         }
     })
+}
+
+/// [`refuse`] of something read before the point the parse stands at, a
+/// comment: a failure there is reported at `pos`.
+pub(super) fn refuse_read<I: Stream, T>(
+    pos: SourcePosition,
+    reason: &'static str,
+) -> RefuseRead<I, T> {
+    RefuseRead(pos, reason, PhantomData)
+}
+
+pub(super) struct RefuseRead<I, T>(SourcePosition, &'static str, PhantomData<fn(I) -> T>);
+
+impl<I, T> Parser<I> for RefuseRead<I, T>
+where
+    I: Stream<Position = SourcePosition>,
+{
+    type Output = T;
+    type PartialState = ();
+
+    fn parse_lazy(&mut self, input: &mut I) -> ParseResult<T, <I as StreamOnce>::Error> {
+        let failed_at = input.position();
+        let reason = CompactString::const_new(self.1);
+        note(Reason { pos: self.0, span: None, reason, failed_at: Some(failed_at) });
+        ParseResult::PeekErr(<I as StreamOnce>::Error::empty(failed_at).into())
+    }
+
+    fn add_error(&mut self, errors: &mut Tracked<<I as StreamOnce>::Error>) {
+        errors.error.add(StreamError::message_static_message(self.1));
+    }
 }
 
 /// Refuse what was parsed up to `pos`, saying why: combine keeps a
@@ -436,8 +475,16 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
             }
             return ParseFailure { pos: at, summary, msg };
         }
-        let pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
-        let (mut msg, mut summary) = if pos == err_pos {
+        let mut pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
+        let read = REASON.with(|r| {
+            r.borrow().as_ref().filter(|r| r.failed_at == Some(pos)).map(|r| r.pos)
+        });
+        let (mut msg, mut summary) = if let Some(at) = read {
+            pos = at;
+            let summary = "the parser refused what it read here".to_string();
+            let at = format!("Parse error at line: {}, column: {}", pos.line, pos.column);
+            (format!("{at}\n{summary}"), summary)
+        } else if pos == err_pos {
             // combine's rendering: its position line, then what it expected
             let msg = format!("{e}");
             let summary = msg.split_once('\n').map_or(&*msg, |(_, s)| s).to_string();

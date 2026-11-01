@@ -697,7 +697,7 @@ where
 fn separator_eol<I>(
     sep: char,
     why: &'static str,
-) -> impl Parser<I, Output = Option<ArcStr>>
+) -> impl Parser<I, Output = Option<EolComment>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -724,7 +724,7 @@ const SEMI_WHY: &str = "a `;` separates this statement from the one before";
 /// A `//` comment ending a line after code, its text kept verbatim. One
 /// that starts its line stands below, and a `///` is a doc and ends no
 /// line.
-fn eol_comment<I>() -> impl Parser<I, Output = Option<ArcStr>>
+fn eol_comment<I>() -> impl Parser<I, Output = Option<EolComment>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -743,28 +743,36 @@ where
                     unexpected_any("doc comment").right()
                 }
                 None if grow::starts_line(pos) => unexpected_any("comment").right(),
-                None => line_text().left(),
+                None => line_text().map(move |t| (pos, ArcStr::from(t.as_str()))).left(),
             }),
     ))
-    .map(|t: Option<CompactString>| t.map(|t| ArcStr::from(t.as_str())))
 }
+
+/// A comment ending a line: where it starts, and its text.
+type EolComment = (SourcePosition, ArcStr);
 
 /// The own-line comments after a list's last item, above what closes it;
 /// `docs` where a `///` line is an item's doc, which none follows.
-fn below_comments<I>(docs: bool) -> impl Parser<I, Output = LPooled<Vec<Comment>>>
+fn below_comments<I>(docs: bool) -> impl Parser<I, Output = Below>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    many::<CommentLines, _, _>(attempt(spaces().with(comment_line(docs))))
-        .map(|l| l.lines)
+    (
+        look_ahead(spaces().with(position())),
+        many::<CommentLines, _, _>(attempt(spaces().with(comment_line(docs)))),
+    )
+        .map(|(at, l)| (at, l.lines))
 }
+
+/// Own-line comments, and where the first starts.
+type Below = (SourcePosition, LPooled<Vec<Comment>>);
 
 /// A list item that takes the comment ending its line, after its
 /// separator.
 pub(super) trait Commentable {
-    fn take_eol(&mut self, eol: ArcStr);
+    fn take_eol(&mut self, at: SourcePosition, eol: ArcStr);
 }
 
 /// A list item whose comments its last expression carries.
@@ -785,19 +793,19 @@ impl<K> ExprItem for (K, Expr) {
 }
 
 impl<T: ExprItem> Commentable for T {
-    fn take_eol(&mut self, eol: ArcStr) {
+    fn take_eol(&mut self, _at: SourcePosition, eol: ArcStr) {
         trail(self.last_expr(), Some(eol), &[])
     }
 }
 
 impl Commentable for SigItem {
-    fn take_eol(&mut self, eol: ArcStr) {
+    fn take_eol(&mut self, _at: SourcePosition, eol: ArcStr) {
         self.eol = Eol::new(Some(eol))
     }
 }
 
 impl Commentable for TraitMethod {
-    fn take_eol(&mut self, eol: ArcStr) {
+    fn take_eol(&mut self, _at: SourcePosition, eol: ArcStr) {
         self.eol = Eol::new(Some(eol))
     }
 }
@@ -821,7 +829,7 @@ pub(super) fn trail(e: &mut Expr, eol: Option<ArcStr>, below: &[Comment]) {
 /// above it.
 enum Slot<O> {
     Item(O),
-    End(LPooled<Vec<Comment>>),
+    End(Below),
 }
 
 /// A list [`commented`] read: each slot with where it starts, `None` for
@@ -830,6 +838,8 @@ enum Slot<O> {
 struct Listed<O> {
     slots: LPooled<Vec<(SourcePosition, Option<O>)>>,
     below: LPooled<Vec<Comment>>,
+    /// Where the first line of `below` starts.
+    below_at: Option<SourcePosition>,
 }
 
 /// `p` separated by `sep` (a `;` or `,`, see [`separator`]) up to `term`,
@@ -884,9 +894,9 @@ where
 /// the comment ending the line it is on, and the slot after it; then the
 /// comment ending the last item's line and the own-line comments below.
 struct ListRest<O> {
-    rest: LPooled<Vec<(Option<ArcStr>, (SourcePosition, Slot<O>))>>,
-    eol: Option<ArcStr>,
-    below: LPooled<Vec<Comment>>,
+    rest: LPooled<Vec<(Option<EolComment>, (SourcePosition, Slot<O>))>>,
+    eol: Option<EolComment>,
+    below: Below,
 }
 
 fn list_rest<I, O, SP>(
@@ -912,13 +922,20 @@ where
 impl<O: Commentable> ListRest<O> {
     /// The list whose first slot is `first`.
     fn after(mut self, first: (SourcePosition, Slot<O>)) -> Listed<O> {
-        let mut listed = Listed { slots: LPooled::take(), below: LPooled::take() };
+        let mut listed =
+            Listed { slots: LPooled::take(), below: LPooled::take(), below_at: None };
         // only an item stands before a separator: the empty slot ends the list
         let take_eol = |slots: &mut LPooled<Vec<(SourcePosition, Option<O>)>>,
-                        eol: Option<ArcStr>| {
-            if let (Some(eol), Some((_, Some(o)))) = (eol, slots.last_mut()) {
-                o.take_eol(eol)
+                        eol: Option<EolComment>| {
+            if let (Some((at, eol)), Some((_, Some(o)))) = (eol, slots.last_mut()) {
+                o.take_eol(at, eol)
             }
+        };
+        let below = |listed: &mut Listed<O>, (at, mut lines): Below| {
+            if !lines.is_empty() {
+                listed.below_at.get_or_insert(at);
+            }
+            listed.below.extend(lines.drain(..));
         };
         for (eol, (pos, slot)) in
             std::iter::once((None, first)).chain(self.rest.drain(..))
@@ -926,14 +943,14 @@ impl<O: Commentable> ListRest<O> {
             take_eol(&mut listed.slots, eol);
             match slot {
                 Slot::Item(o) => listed.slots.push((pos, Some(o))),
-                Slot::End(mut lines) => {
-                    listed.below.extend(lines.drain(..));
+                Slot::End(lines) => {
+                    below(&mut listed, lines);
                     listed.slots.push((pos, None))
                 }
             }
         }
         take_eol(&mut listed.slots, self.eol);
-        listed.below.extend(self.below.drain(..));
+        below(&mut listed, self.below);
         listed
     }
 }
@@ -1783,7 +1800,7 @@ where
         Map(Expr, ListRest<(Expr, Expr)>),
         With(LPooled<Vec<(ArcStr, Expr)>>),
         /// The comment ending the first statement's line, and the rest.
-        Block(Option<ArcStr>, LPooled<Vec<Expr>>),
+        Block(Option<EolComment>, LPooled<Vec<Expr>>),
         One,
     }
     let entry = || (expr(), spstring("=>").with(expr()));
@@ -1852,7 +1869,7 @@ where
                         }
                     }
                     Some((mut first, Tail::Block(eol, mut rest))) => {
-                        trail(&mut first, eol, &[]);
+                        trail(&mut first, eol.map(|(_, eol)| eol), &[]);
                         ExprKind::Block {
                             exprs: Arc::from_iter(
                                 std::iter::once(first).chain(rest.drain(..)),

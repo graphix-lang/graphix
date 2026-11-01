@@ -3033,6 +3033,40 @@ fn type_definitions_keep_comments_on_fields_and_members() {
     );
 }
 
+// the lines below a union's last item, a nested union, go below the
+// member written last
+#[test]
+fn lines_below_a_nested_union_go_below_its_last_member() {
+    let src = "type T = [\n    `A,\n    [`B, `C]\n    // below\n];\n0";
+    let ori = crate::expr::Origin {
+        parent: None,
+        source: crate::expr::Source::Vfs(literal!("/test")),
+        text: ArcStr::from(src),
+    };
+    let exprs = parse(ori).unwrap();
+    let ExprKind::TypeDef(td) = &exprs[0].kind else { panic!("{:?}", exprs[0]) };
+    let TypeDefBody::Alias(body) = &td.body else { panic!("{td:?}") };
+    let mut notes = vec![];
+    td.notes.each_in(body, &mut |n| notes.push(n.map(|n| texts(n.below.lines()))));
+    assert_eq!(notes, [None, None, Some(vec![literal!(" below")])]);
+}
+
+// a refused comment is reported where it stands, not where its list closes
+#[test]
+fn a_refused_comment_is_reported_where_it_stands() {
+    for (src, at) in [
+        ("let x: [\n `A, // c\n `B\n] = `A;\nx", "line: 2, column: 6"),
+        ("let x: {\n // c\n a: i64\n} = { a: 1 };\nx", "line: 2, column: 2"),
+        ("let x: [\n `A,\n `B\n // c\n] = `A;\nx", "line: 4, column: 2"),
+        ("type T = [\n i64, // c\n string\n];\n0", "line: 2, column: 7"),
+        ("type T = [\n // c\n];\n0", "line: 2, column: 2"),
+        ("type T = {\n // c\n};\n0", "line: 2, column: 2"),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(&format!("Parse error at {at}")), "{src}: {msg}");
+    }
+}
+
 // a comment stands in a type only beside a type definition's field or
 // variant or named type, which keeps it as written
 #[test]

@@ -227,7 +227,7 @@ impl UsePaths {
 }
 
 impl Commentable for UsePaths {
-    fn take_eol(&mut self, eol: ArcStr) {
+    fn take_eol(&mut self, _at: SourcePosition, eol: ArcStr) {
         self.comment(UseCommentKind::Eol, Comment::line(eol));
     }
 }

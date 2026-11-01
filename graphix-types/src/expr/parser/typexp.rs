@@ -1,7 +1,7 @@
 use super::{
     COMMA_WHY, Commentable, Listed, ONE_TUPLE, commented, csep, fldname, fname,
     fname_noting,
-    grow::{because, grow, refuse},
+    grow::{because, grow, refuse, refuse_read},
     ident,
     lambdaexp::{LABELED_FIRST, labeled_first},
     leading_comments, not_prefix, path_root, sep_by_tok, sep_by1_tok,
@@ -345,17 +345,40 @@ struct ListItem<T> {
     above: LPooled<Vec<Comment>>,
     eol: Option<ArcStr>,
     below: LPooled<Vec<Comment>>,
+    /// Where its first comment starts, and where the lines below it do.
+    comment_at: Option<SourcePosition>,
+    below_at: Option<SourcePosition>,
     item: T,
     notes: LPooled<Vec<TypeNote>>,
 }
 
 impl<T> Commentable for ListItem<T> {
-    fn take_eol(&mut self, eol: ArcStr) {
+    fn take_eol(&mut self, at: SourcePosition, eol: ArcStr) {
+        self.comment_at.get_or_insert(at);
         self.eol = Some(eol)
     }
 }
 
 impl<T> ListItem<T> {
+    /// `item` with the comments above it, which start at `at`.
+    fn new(
+        at: SourcePosition,
+        above: LPooled<Vec<Comment>>,
+        item: T,
+        notes: LPooled<Vec<TypeNote>>,
+    ) -> Self {
+        let comment_at = (!above.is_empty()).then_some(at);
+        Self {
+            above,
+            eol: None,
+            below: LPooled::take(),
+            comment_at,
+            below_at: None,
+            item,
+            notes,
+        }
+    }
+
     fn commented(&self) -> bool {
         !self.above.is_empty() || self.eol.is_some() || !self.below.is_empty()
     }
@@ -374,16 +397,27 @@ impl<T> ListItem<T> {
 }
 
 /// The items of a list of fields or members, the lines below the last
-/// on it; `None` for comments with no item to describe.
-fn list_items<T>(mut l: Listed<ListItem<T>>) -> Option<LPooled<Vec<ListItem<T>>>> {
+/// on it; where they start for comments with no item to describe.
+fn list_items<T>(
+    mut l: Listed<ListItem<T>>,
+) -> Result<LPooled<Vec<ListItem<T>>>, SourcePosition> {
     let mut items: LPooled<Vec<ListItem<T>>> =
         l.slots.drain(..).filter_map(|(_, i)| i).collect();
-    match items.last_mut() {
-        Some(last) => last.below.extend(l.below.drain(..)),
-        None if !l.below.is_empty() => return None,
-        None => (),
+    match (items.last_mut(), l.below_at) {
+        (_, None) => (),
+        (Some(last), Some(at)) => {
+            last.comment_at.get_or_insert(at);
+            last.below_at = Some(at);
+            last.below.extend(l.below.drain(..))
+        }
+        (None, Some(at)) => return Err(at),
     }
-    Some(items)
+    Ok(items)
+}
+
+/// Where the first of `items` that holds a comment holds it.
+fn first_comment<T>(items: &[ListItem<T>]) -> Option<SourcePosition> {
+    items.iter().find_map(|i| i.comment_at)
 }
 
 /// A refusal at a position, or what was parsed.
@@ -397,7 +431,7 @@ where
 {
     match r {
         Ok(t) => value(t).left(),
-        Err((pos, why)) => refuse(pos, why).right(),
+        Err((pos, why)) => refuse_read(pos, why).right(),
     }
 }
 
@@ -413,17 +447,14 @@ where
 {
     let item = move || {
         (
+            look_ahead(spaces().with(position())),
             leading_comments(false),
             spaces().with(position()),
             fldname().skip(sptoken(':')),
             field(),
         )
-            .map(|(above, at, name, (typ, notes))| ListItem {
-                above,
-                eol: None,
-                below: LPooled::take(),
-                item: (at, name, typ),
-                notes,
+            .map(|(first, above, at, name, (typ, notes))| {
+                ListItem::new(first, above, (at, name, typ), notes)
             })
     };
     (
@@ -443,12 +474,12 @@ fn struct_fields(
     noted: bool,
 ) -> Result<Noted, (SourcePosition, &'static str)> {
     let mut items = match list_items(listed) {
-        Some(items) if !items.is_empty() => items,
-        Some(_) => return Err((end, "a struct type has at least one field")),
-        None => return Err((end, "a comment here has no field to describe")),
+        Ok(items) if !items.is_empty() => items,
+        Ok(_) => return Err((end, "a struct type has at least one field")),
+        Err(at) => return Err((at, "a comment here has no field to describe")),
     };
-    if !noted && items.iter().any(|i| i.commented()) {
-        return Err((end, TYPE_COMMENT));
+    if !noted && let Some(at) = first_comment(&items) {
+        return Err((at, TYPE_COMMENT));
     }
     if !sort_unique(&mut items, |i| &i.item.1) {
         return Err((end, "struct field names must be unique"));
@@ -477,13 +508,8 @@ where
     PF: Fn() -> P,
 {
     let item = move || {
-        (leading_comments(false), member()).map(|(above, (typ, notes))| ListItem {
-            above,
-            eol: None,
-            below: LPooled::take(),
-            item: typ,
-            notes,
-        })
+        (look_ahead(spaces().with(position())), leading_comments(false), member())
+            .map(|(first, above, (typ, notes))| ListItem::new(first, above, typ, notes))
     };
     (
         between(
@@ -496,7 +522,7 @@ where
         .then(move |(listed, end)| parsed(union_members(listed, end, noted)))
 }
 
-// CR claude for claude: [bug/low] The lines below a union's last item go to the last item
+// XCR claude for claude: [bug/low] The lines below a union's last item go to the last item
 // that records a position, and a nested union's members record none, so `type T = [`A,
 // [`B, `C] // below ]`, a comment under the outer list's last item, is refused as
 // "comments below a nested union's last member have no place in the union that holds it".
@@ -505,64 +531,95 @@ where
 // the closing bracket, not at the comment (ann_union.gx: line 4 col 2 for a comment on
 // line 2). Probes: ~/tmp/cr29/scratch/review2/RV3/d10/{nested_below,ann_union}.gx
 // (type-notes-refusal-01)
+// 2026-11-01 claude: The lines below a union's last item go below the member written last
+// after flatten_set (the largest written position, a nested union's members included),
+// merged into that member's note or as a note of their own; a nested union's own lines
+// below a member not written last are still refused (misplaced). Every comment a type
+// list refuses is reported where it stands: list items record where their first comment
+// and their lines below start (eol_comment and below_comments carry positions;
+// Commentable::take_eol takes one), and parsed() refuses through grow::refuse_read, a
+// refusal of what was read before the failure point, which the report places at the
+// comment. Pins graphix-types
+// parser::test::lines_below_a_nested_union_go_below_its_last_member and
+// a_refused_comment_is_reported_where_it_stands (six refusals, each at its comment's line
+// and column; before, at the closing bracket). gxfmt over both repos (2810 files): 66
+// skipped as unparseable, the same 66 the base parser refuses, no round-trip or
+// idempotence failure.
 fn union_members(
     listed: Listed<ListItem<Type>>,
     end: SourcePosition,
     noted: bool,
 ) -> Result<Noted, (SourcePosition, &'static str)> {
-    let Some(mut items) = list_items(listed) else {
-        return Err((end, "a comment here has no member to describe"));
-    };
-    if !noted && items.iter().any(|i| i.commented()) {
-        return Err((end, TYPE_COMMENT));
+    let mut items = list_items(listed)
+        .map_err(|at| (at, "a comment here has no member to describe"))?;
+    if !noted && let Some(at) = first_comment(&items) {
+        return Err((at, TYPE_COMMENT));
     }
-    // the lines below the last member print below the last that records
-    // where it was written, which prints last
-    let below = items.last_mut().map(|i| std::mem::take(&mut i.below));
-    if let Some(mut below) = below.filter(|b| !b.is_empty()) {
-        match items.iter_mut().rev().find(|i| i.item.written_at().is_some()) {
-            Some(i) => i.below.extend(below.drain(..)),
-            None => return Err((end, MEMBER_COMMENT)),
-        }
-    }
+    let below = items
+        .last_mut()
+        .and_then(|i| Some((i.below_at.take()?, std::mem::take(&mut i.below))));
     let mut notes: LPooled<Vec<TypeNote>> = LPooled::take();
     for i in items.iter_mut() {
         notes.extend(i.notes.drain(..));
         if i.commented() {
             match i.item.written_at() {
                 Some(at) => notes.extend(i.note(at)),
-                None => return Err((end, MEMBER_COMMENT)),
+                None => return Err((i.comment_at.unwrap_or(end), MEMBER_COMMENT)),
             }
         }
     }
     let typ = Type::flatten_set(items.drain(..).map(|i| i.item));
+    let key = |at: SourcePosition| (at.line, at.column);
+    // the lines below the last member print below the member written last,
+    // which prints last, a nested union's included
+    if let Some((at, mut below)) = below {
+        let last = match &typ {
+            Type::Set(members) => {
+                members.iter().filter_map(|m| m.written_at()).max_by_key(|at| key(*at))
+            }
+            t => t.written_at(),
+        };
+        let Some(last) = last else { return Err((at, MEMBER_COMMENT)) };
+        match notes.iter_mut().find(|n| key(n.at) == key(last)) {
+            Some(n) => {
+                let mut lines: LPooled<Vec<Comment>> =
+                    n.below.lines().iter().cloned().collect();
+                lines.extend(below.drain(..));
+                n.below = Comments::of(lines.drain(..));
+            }
+            None => notes.push(TypeNote {
+                at: last,
+                comments: ItemComments::default(),
+                below: Comments::of(below.drain(..)),
+            }),
+        }
+    }
     if !notes.is_empty() {
-        let key = |at: SourcePosition| (at.line, at.column);
         let mut kept: LPooled<Vec<(i32, i32)>> = LPooled::take();
         noted_items(&typ, &mut |at| kept.push(key(at)));
         kept.sort();
-        if notes.iter().any(|n| kept.binary_search(&key(n.at)).is_err()) {
+        if let Some(n) = notes.iter().find(|n| kept.binary_search(&key(n.at)).is_err()) {
             let why = match typ {
                 Type::Set(_) => {
                     "a commented member merges with another member of the union"
                 }
                 _ => "a comment in a union describes one of two or more members",
             };
-            return Err((end, why));
+            return Err((n.at, why));
         }
         // a nested union's members join this one, and only the last
         // prints the lines below
         if let Type::Set(members) = &typ {
             let ats = || members.iter().filter_map(|m| m.written_at()).map(key);
             let last = ats().max();
-            let misplaced = |n: &TypeNote| {
+            let misplaced = |n: &&TypeNote| {
                 !n.below.lines().is_empty()
                     && ats().any(|at| at == key(n.at))
                     && Some(key(n.at)) != last
             };
-            if notes.iter().any(misplaced) {
+            if let Some(n) = notes.iter().find(misplaced) {
                 return Err((
-                    end,
+                    n.at,
                     "comments below a nested union's last member have no place in the union that holds it",
                 ));
             }
