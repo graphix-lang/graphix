@@ -87,11 +87,15 @@ run!(write_without_cast_refused, r#"{
     json::write_str(Box(3))
 }"#, refused("Box has no Cast implementation, so no read, cast or writer reaches it"); FuseExpect::None);
 
-// A tree's value type is data: a handle backed by Rust crosses none.
+// A tree's value type is data: a handle backed by Rust crosses none, and
+// no program can give it a Cast implementation.
 run!(db_tree_of_a_handle_refused, r#"{
     let t: Result<db::Tree<string, db::Db>, `DbErr(string)> = db::tree(db::open("/nonexistent")$, null);
     t
-}"#, refused("Db has no Cast implementation"); FuseExpect::None);
+}"#, refused("Db has no Cast implementation, so no read, cast or writer reaches it: it is a Rust type"); FuseExpect::None);
+
+run!(write_of_an_rpc_id_refused, r#"json::write_str(sys::net::call_id(1))"#,
+    refused("RpcId has no Cast implementation, so no read, cast or writer reaches it: it is a Rust type, which crosses data only where its package implements Cast for it"); FuseExpect::None);
 
 // A writer writes data: a function or a reference is refused.
 run!(write_of_a_function_refused, r#"json::write_str(|x: i64| x)"#,

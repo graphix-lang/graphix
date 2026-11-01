@@ -1771,9 +1771,18 @@ impl Type {
         let mut own: LPooled<Vec<AbstractId>> = LPooled::take();
         bound.abstract_ids(env, &mut *own);
         if let Some(a) = data.uncastable_but(env, &|id| own.contains(&id)) {
+            let minted = matches!(&a, Self::Abstract { id, .. }
+                if env.abstract_reps.get(id).is_some());
+            let advice = match minted {
+                true => "implement Cast for it where it is defined",
+                false => {
+                    "it is a Rust type, which crosses data only where its package \
+                          implements Cast for it"
+                }
+            };
             return Some(anyhow::anyhow!(
                 "{a} has no Cast implementation, so no read, cast or writer reaches \
-                 it: implement Cast for it where it is defined"
+                 it: {advice}"
             ));
         }
         let part = DataMeet::new(env).walk([self, t])?;

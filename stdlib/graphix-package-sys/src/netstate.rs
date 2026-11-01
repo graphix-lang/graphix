@@ -25,7 +25,7 @@ use netidx::{
 };
 use netidx_derive::IntoValue;
 use netidx_value::Value;
-use nohash::IntMap;
+use nohash::{IntMap, IntSet};
 use parking_lot::Mutex;
 use poolshark::global::{GPooled, Pool};
 use serde_derive::{Deserialize, Serialize};
@@ -264,11 +264,18 @@ impl Drop for PendingRequest {
     }
 }
 
-// CR claude for claude: [style/low] RpcId writes its own AtomicU64 counter and
+// XCR claude for claude: [style/low] RpcId writes its own AtomicU64 counter and
 // nohash::IsEnabled where atomic_id! gives both (this file's CallSerial uses it;
 // impl_no_pack! takes the macro's type). Also the refusal for an RpcId as data says
 // "implement Cast for it where it is defined", which no user can do for a Rust type in
 // sys::net. (RV2 finding 4) (rpcid-atomic-id-01)
+// 2026-11-01 claude: The refusal is fixed: uncastable_refusal tells a Graphix-minted
+// abstract (env.abstract_reps) from a Rust type, whose advice reads 'it is a Rust
+// type, which crosses data only where its package implements Cast for it'. Pins
+// lang::cast_trait::write_of_an_rpc_id_refused and db_tree_of_a_handle_refused (now
+// holding the advice). RpcId stays its own counter: atomic_id! implements Pack,
+// encoding the u64, which conflicts with impl_no_pack! (E0119) and would let a peer
+// send an RpcId; netidx-core has no pack-less form of the macro.
 /// What `sys::net::call_id` mints and a call is known by, unique in the
 /// process. Its `Pack` refuses, so no peer can send one and it prints as
 /// `abstract:`.
@@ -296,6 +303,40 @@ struct InFlight {
     _request: PendingRequest,
 }
 
+/// The calls in flight, by id and by the site each answers. A site's
+/// entry lasts until its sleep or delete abandons what it holds.
+#[derive(Default)]
+struct Calls {
+    by_id: IntMap<RpcId, InFlight>,
+    by_site: IntMap<BindId, IntSet<RpcId>>,
+}
+
+impl Calls {
+    /// `call` as `id`, replacing a call in flight under `id`.
+    fn insert(&mut self, id: RpcId, call: InFlight) {
+        self.remove(id);
+        self.by_site.entry(call.site).or_default().insert(id);
+        self.by_id.insert(id, call);
+    }
+
+    fn remove(&mut self, id: RpcId) -> Option<InFlight> {
+        let call = self.by_id.remove(&id)?;
+        if let Some(ids) = self.by_site.get_mut(&call.site) {
+            ids.remove(&id);
+        }
+        Some(call)
+    }
+
+    /// Abort every call `site` has in flight: how many.
+    fn abandon(&mut self, site: BindId) -> usize {
+        let Some(ids) = self.by_site.remove(&site) else { return 0 };
+        for id in ids.iter() {
+            self.by_id.remove(id);
+        }
+        ids.len()
+    }
+}
+
 /// A call's one answer, delivered to its site: the server's reply, or
 /// nothing where the request was aborted first.
 #[derive(Debug)]
@@ -320,7 +361,7 @@ struct Inner {
     flusher: task::JoinHandle<()>,
     // rpc client procs, GC'd on use
     rpc_clients: Mutex<Vec<(Path, netidx_protocols::rpc::client::Proc, time::Instant)>>,
-    rpc_calls: Mutex<IntMap<RpcId, InFlight>>,
+    rpc_calls: Mutex<Calls>,
     requests: Mutex<IntMap<BindId, PendingRequest>>,
     /// Each list builtin's last answered listing.
     listings: Mutex<IntMap<BindId, LastListing>>,
@@ -403,7 +444,7 @@ impl NetState {
             flush,
             flusher,
             rpc_clients: Mutex::new(Vec::new()),
-            rpc_calls: Mutex::new(IntMap::default()),
+            rpc_calls: Mutex::new(Calls::default()),
             requests: Mutex::new(IntMap::default()),
             listings: Mutex::new(IntMap::default()),
         }));
@@ -678,9 +719,9 @@ impl NetState {
     /// aborted or replaced.
     pub(crate) fn settle_call(&self, answer: RpcAnswer) -> Option<Value> {
         let mut calls = self.0.rpc_calls.lock();
-        match calls.get(&answer.id) {
+        match calls.by_id.get(&answer.id) {
             Some(call) if call.serial == answer.serial => {
-                calls.remove(&answer.id);
+                calls.remove(answer.id);
                 answer.reply
             }
             Some(_) | None => None,
@@ -690,20 +731,28 @@ impl NetState {
     /// Abort the call in flight under `id`, if there is one: it answers
     /// aborted.
     pub(crate) fn abort_call(&self, id: RpcId) {
-        self.0.rpc_calls.lock().remove(&id);
+        self.0.rpc_calls.lock().remove(id);
     }
 
-    // CR claude for claude: [perf/low] Every sleep or delete of a call or callq site runs
+    // XCR claude for claude: [perf/low] Every sleep or delete of a call or callq site runs
     // retain over every call in flight in the runtime, under the mutex, even when the
     // site has none, and every seq step holding a call sleeps when it passes: a step's
     // completion costs the whole table, quadratic under a busy server. callq already
     // holds its own ids (RpcCallQ::calls) and could abandon exactly those; call needs a
     // per-site index. (RV2 finding 3, ~/tmp/cr29/review2-reports.md)
     // (rpc-abandon-scan-01)
-    /// Abort every call `site` has in flight. Their answers still come to
-    /// `site`'s delivery id, which its caller remints or releases.
-    pub(crate) fn abandon_calls(&self, site: BindId) {
-        self.0.rpc_calls.lock().retain(|_, call| call.site != site);
+    // 2026-11-01 claude: NetState's call table is Calls: by id and by the site each
+    // answers (a site's ids, kept until its sleep or delete abandons them). abandon_calls
+    // visits only the site's own calls and returns how many it abandoned; insert moves a
+    // replaced id off its old site, settle and abort_call take it off its site. Pin
+    // netstate::test::abandoning_visits_only_the_sites_calls (100 other calls in flight,
+    // an id moved across sites): with the old retain over the whole table the count is
+    // 102, not 2.
+    /// Abort every call `site` has in flight, visiting no other: how many.
+    /// Their answers still come to `site`'s delivery id, which its caller
+    /// remints or releases.
+    pub(crate) fn abandon_calls(&self, site: BindId) -> usize {
+        self.0.rpc_calls.lock().abandon(site)
     }
 
     pub(crate) fn publish_rpc<R: Rt>(
@@ -852,7 +901,7 @@ mod test {
         let id = RpcId::new();
         let call = |ctx: &mut ExecState<GXRt<NoExt>>, site, id| {
             state.start_call(&mut ctx.view(), site, id, std::future::pending());
-            state.0.rpc_calls.lock()[&id].serial
+            state.0.rpc_calls.lock().by_id[&id].serial
         };
         let answer = |id, serial, v| RpcAnswer { id, serial, reply: Some(Value::I64(v)) };
         let replaced = call(&mut ctx, site, id);
@@ -870,6 +919,26 @@ mod test {
         state.abandon_calls(site);
         assert_eq!(state.settle_call(answer(id, mine, 4)), None);
         assert_eq!(state.settle_call(answer(kept, theirs, 5)), Some(Value::I64(5)));
+    }
+
+    /// A site's sleep or delete visits its own calls in flight, not every
+    /// call the runtime has.
+    #[tokio::test]
+    async fn abandoning_visits_only_the_sites_calls() {
+        let mut ctx = GXRt::<NoExt>::new_state().unwrap();
+        let state = NetState::get(&mut ctx.view());
+        let site = BindId::new();
+        for _ in 0..100 {
+            let (other, id) = (BindId::new(), RpcId::new());
+            state.start_call(&mut ctx.view(), other, id, std::future::pending());
+        }
+        let shared = RpcId::new();
+        state.start_call(&mut ctx.view(), BindId::new(), shared, std::future::pending());
+        state.start_call(&mut ctx.view(), site, shared, std::future::pending());
+        state.start_call(&mut ctx.view(), site, RpcId::new(), std::future::pending());
+        assert_eq!(state.abandon_calls(site), 2);
+        assert_eq!(state.abandon_calls(site), 0);
+        assert_eq!(state.0.rpc_calls.lock().by_id.len(), 100);
     }
 
     #[tokio::test]
