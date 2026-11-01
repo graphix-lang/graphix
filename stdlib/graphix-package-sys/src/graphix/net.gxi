@@ -83,10 +83,12 @@ val rpc: fn<'spec: Data, 'result: Data, 'args: Concrete + Data>(
     #f:fn(args: 'args) -> 'result throws 'e
 ) -> Result<_, `PublishRpcError(string)> throws 'e;
 
-/// list paths under the specified path.
+/// list paths under the specified path, in order, again at each `#update`
+/// (every second by default); a listing equal to the last is not answered.
 val list: fn(?#update:Any, path: string) -> Result<Array<string>, `ListError(string)>;
 
-/// list the table under the specified path.
+/// list the table under the specified path, its rows and columns in order,
+/// again at each `#update` as `list` does.
 val list_table: fn(?#update:Any, path: string) -> Result<Table, `ListError(string)>;
 
 /// Publish the specifed value at the specified path. A write to it is cast

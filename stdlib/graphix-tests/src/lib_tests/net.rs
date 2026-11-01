@@ -126,8 +126,8 @@ run!(net_list, NET_LIST, |v: Result<&Value>| {
     }
 }; FuseExpect::None);
 
-// A polled listing whose resolver reports nothing changed answers no list,
-// and the next tick lists again: a path published after such a poll is seen.
+// A polled listing that finds what it last answered answers nothing, and
+// the next tick lists again: a path published after such a poll is seen.
 const NET_LIST_POLLED: &str = r#"
 {
   sys::net::publish("/local/poll/a", 1);
@@ -141,6 +141,28 @@ const NET_LIST_POLLED: &str = r#"
 run!(net_list_polled_sees_a_later_path, NET_LIST_POLLED, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
 }; FuseExpect::None);
+
+// A path replaced by another in one cycle: the resolver's change number for
+// the directory can be what it was before (its shards count apart), and the
+// listing still moves to the new path. Sixteen directories, so that some
+// pair lands in different shards wherever the resolver has more than one.
+const NET_LIST_REPLACED: &str = r#"
+{
+  let moved = array::init(16, |k| {
+    let dir = "/local/swap/[k]";
+    let path = "[dir]/a";
+    sys::net::publish(path, k);
+    let l = sys::net::list(#update: sys::time::timer(duration:100.ms, true), dir)$;
+    path <- select l { [p] if p == "[dir]/a" => l ~ "[dir]/b", _ => never() };
+    select l { [p] => p == "[dir]/b", _ => false }
+  });
+  select array::fold(moved, true, |all, m| all && m) { true => "moved", false => never() }
+}
+"#;
+
+run!(net_list_sees_a_replaced_path, NET_LIST_REPLACED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "moved")
+}; FuseExpect::Jit);
 
 const NET_LIST_TABLE: &str = r#"
 {

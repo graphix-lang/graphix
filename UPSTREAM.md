@@ -197,6 +197,28 @@ the state of a fix, and Graphix's side.
   open CRs sys-net-01 and x-concurrency-07 in
   `stdlib/graphix-package-sys/src/netstate.rs`).
 
+## netidx (ours): a directory's change number can repeat after a change
+
+- **Bug.** The resolver answers `GetChangeNr` with the sum of each
+  shard's counter for the path (`resolver_server/shard_store.rs`), and a
+  shard drops its counter once it holds nothing under the path
+  (`resolver_server/store.rs::remove_parents`); a later add starts it
+  again at 1. A change that empties one shard's part of a directory and
+  adds to another's can leave the sum where it was, and
+  `ResolverRead::check_changed` then reports no change.
+- **Repro.** Publish `/d/a`, check the change number, then unpublish
+  `/d/a` and publish `/d/b` where the two paths hash to different shards:
+  the number is 1 before and after.
+- **Upstream fix.** A shard keeps the counter of a path it held, or the
+  resolver bumps a counter of its own at every write under the path.
+- **Graphix's side.** Worked around (a polled listing kept answering a
+  listing that had changed: the TUI browser went on showing columns a
+  table had lost): `sys::net::list` and `list_table` list at every tick
+  and answer a listing only when it differs from the last they answered
+  (`stdlib/graphix-package-sys/src/netstate.rs`), a listing per tick
+  where a change number was. Pin
+  `lib_tests::net::net_list_sees_a_replaced_path`. Not reported.
+
 ## netidx-value (ours): integer FromValue converts with `as`
 
 - **Bug.** `FromValue` for the integer types (`netidx-value/src/convert.rs`,

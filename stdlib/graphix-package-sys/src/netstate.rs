@@ -19,7 +19,6 @@ use netidx::{
     publisher::{
         Id, PublishFlags, Publisher, PublisherBuilder, UpdateBatch, Val, WriteRequest,
     },
-    resolver_client::ChangeTracker,
     subscriber::{
         Dval, Event as NEvent, SubId, Subscriber, SubscriberBuilder, UpdatesFlags,
     },
@@ -323,10 +322,12 @@ struct Inner {
     rpc_clients: Mutex<Vec<(Path, netidx_protocols::rpc::client::Proc, time::Instant)>>,
     rpc_calls: Mutex<IntMap<RpcId, InFlight>>,
     requests: Mutex<IntMap<BindId, PendingRequest>>,
-    /// A tracker is retained only after its listing completes successfully.
-    change_trackers:
-        Mutex<IntMap<BindId, Arc<tokio::sync::Mutex<Option<ChangeTracker>>>>>,
+    /// Each list builtin's last answered listing.
+    listings: Mutex<IntMap<BindId, LastListing>>,
 }
+
+/// A listing answered, by its path; none after an error.
+type LastListing = Arc<Mutex<Option<(Path, Value)>>>;
 
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -404,7 +405,7 @@ impl NetState {
             rpc_clients: Mutex::new(Vec::new()),
             rpc_calls: Mutex::new(IntMap::default()),
             requests: Mutex::new(IntMap::default()),
-            change_trackers: Mutex::new(IntMap::default()),
+            listings: Mutex::new(IntMap::default()),
         }));
         // PUMP: netidx events -> graph events. Each reader's updates go to
         // its BindId; writes route the published Id -> the publish
@@ -731,9 +732,11 @@ impl NetState {
         Ok(proc)
     }
 
-    /// One-shot resolver list/table. The `flushed` barrier is
-    /// read-your-writes: this process's own publishes must be
-    /// registered with the resolver before the list runs.
+    /// One-shot resolver list/table, in path order, answering `Null` when it
+    /// is the listing last answered: a listing at every tick, where netidx's
+    /// change number cannot tell (UPSTREAM.md). The `flushed` barrier is
+    /// read-your-writes: this process's own publishes must be registered
+    /// with the resolver before the list runs.
     pub(crate) fn list<R: Rt>(
         &self,
         ctx: &mut ExecCtx<'_, R>,
@@ -748,33 +751,16 @@ impl NetState {
                 return;
             }
         };
-        let ct = {
-            let mut cts = self.0.change_trackers.lock();
-            let ct =
-                cts.entry(id).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)));
-            Arc::clone(ct)
-        };
+        let last = Arc::clone(self.0.listings.lock().entry(id).or_default());
         self.spawn_request(ctx, id, async move {
             publisher.flushed().await;
             let resolver = subscriber.resolver();
-            let mut saved = ct.lock().await;
-            let mut tracker = saved
-                .take()
-                .filter(|t| t.path() == &path)
-                .unwrap_or_else(|| ChangeTracker::new(path.clone()));
-            match resolver.check_changed(&mut tracker).await {
-                Err(e) => return error_value(e),
-                Ok(false) => {
-                    *saved = Some(tracker);
-                    return Value::Null;
-                }
-                Ok(true) => (),
-            }
             let result = if table {
-                match resolver.table(path).await {
+                match resolver.table(path.clone()).await {
                     Err(e) => error_value(e),
                     Ok(mut tbl) => {
                         use netidx::protocol::valarray::ValArray;
+                        tbl.cols.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
                         let cols = tbl
                             .cols
                             .drain(..)
@@ -793,7 +779,7 @@ impl NetState {
                     }
                 }
             } else {
-                match resolver.list(path).await {
+                match resolver.list(path.clone()).await {
                     Err(e) => error_value(e),
                     Ok(mut paths) => {
                         use netidx::protocol::valarray::ValArray;
@@ -802,16 +788,21 @@ impl NetState {
                     }
                 }
             };
-            if !matches!(result, Value::Error(_)) {
-                *saved = Some(tracker);
+            let mut last = last.lock();
+            if last.as_ref().is_some_and(|(p, v)| *p == path && *v == result) {
+                return Value::Null;
             }
+            *last = match &result {
+                Value::Error(_) => None,
+                v => Some((path, v.clone())),
+            };
             result
         });
     }
 
     pub(crate) fn stop_list(&self, id: BindId) {
         self.stop_request(id);
-        self.0.change_trackers.lock().remove(&id);
+        self.0.listings.lock().remove(&id);
     }
 
     /// The raw subscriber for embedder-side consumers (the gui
