@@ -2597,6 +2597,15 @@ run!(nested_sample_argument_is_fed, r#"{
 }"#, is(Value::I64(13)); FuseExpect::Jit; shape: graphix_compiler::node_shape::NodeShape::contains_fused(
     graphix_compiler::node_shape::KernelMatcher::new().params(&["a", "arg"])
 ));
+// Each attempt names one blocker; the call is retried until no new one.
+run!(two_nested_sample_arguments_are_fed, r#"{
+    let f = |x: i64, y: i64, z: i64| x * y + z;
+    let a = 3;
+    let t = 4;
+    f(a, (t ~ a) + 1, (a ~ t) + 2)
+}"#, is(Value::I64(18)); FuseExpect::Jit; shape: graphix_compiler::node_shape::NodeShape::contains_fused(
+    graphix_compiler::node_shape::KernelMatcher::new().params(&["a", "arg", "arg"])
+));
 
 pub(super) const NESTED_SAMPLE_ARGUMENT_IN_SLOTS: &str = r#"
 array::map([1, 2, 3], |a| {

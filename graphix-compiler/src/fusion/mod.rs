@@ -1106,11 +1106,14 @@ static FED_ARGS: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["#fed"]));
 /// A lambda call whose arguments do not all fuse (an effect, a stateful
 /// builtin) fuses with each such argument as a feeder: the node-walk
 /// runs it and the kernel reads its production as an input, as it would
-/// read a `let` bound to the argument.
+/// read a `let` bound to the argument. An argument is fed when discovery
+/// refuses it or it holds the blocker an attempt names; the call is
+/// tried again while each refusal names a blocker in an argument not fed
+/// yet.
 fn try_fuse_feeding_args<R: Rt>(
     child: &mut Node<R>,
     ctx: &mut CompileCtx<R>,
-    blocker: Option<ExprId>,
+    mut blocker: Option<ExprId>,
 ) -> anyhow::Result<Option<Node<R>>> {
     let top_id = ctx.fusion.top_id.unwrap_or(child.spec().id);
     let Some(cs) = child.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
@@ -1120,13 +1123,24 @@ fn try_fuse_feeding_args<R: Rt>(
     if !matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_))) {
         return Ok(None);
     }
-    // A feeder runs before the kernel, while a fused argument's raises and
-    // Io calls are delivered after its run, so a fed argument that raises
-    // or performs would act ahead of a fused earlier argument that does:
-    // then nothing is fed.
-    let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
-    for arg in cs.args.values_mut() {
-        // CR claude for claude: [perf/low] An argument is fed only when discovery
+    let mut feeds: SmallVec<[bool; 8]> = cs
+        .args
+        .values()
+        .map(|arg| {
+            arg.node.as_ref().is_some_and(|node| {
+                let mut discovery = lowering::BuiltinCallDiscovery::default();
+                lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_err()
+            })
+        })
+        .collect();
+    let mut tried = false;
+    loop {
+        let cs = child
+            .downcast_mut::<CallNode<R>>()
+            .and_then(CallNode::call_mut)
+            .expect("still the call");
+        let mut grew = false;
+        // XCR claude for claude: [perf/low] An argument is fed only when discovery
         // refuses it, and discovery rejects a `~` (or Any, Never, a reference) only at
         // its root. So `f(a, t ~ a)` fuses with its argument fed, while `f(a, (t ~ a) +
         // 1)` passes discovery, fails at emission and keeps the call in the node-walk.
@@ -1172,86 +1186,103 @@ fn try_fuse_feeding_args<R: Rt>(
         // first blocker. f(a, (t ~ a) + 1, (a ~ t) + 2), two nested blockers, still
         // leaves the call node-walked (GRAPHIX_DBG_REGION: only f's body fused). Retry
         // until no new blocker, and pin the two-blocker case.
-        let feed = arg.node.as_mut().is_some_and(|node| {
-            let mut blocked = false;
-            if let Some(id) = blocker {
-                for_each_node(node, &mut |n| blocked |= n.spec().id == id);
+        // 2026-11-01 claude: try_fuse_feeding_args loops: each refused attempt
+        // (fuse_fed now returns the FusionAttempt, its blocker included) feeds the
+        // argument holding the blocker it names, and the call is tried again while each
+        // refusal names a blocker in an argument not fed yet; it stops when none grows
+        // the fed set. Pin lang::fusion::two_nested_sample_arguments_are_fed (f(a, (t ~
+        // a) + 1, (a ~ t) + 2), a kernel with params a, arg, arg): jit fails without
+        // the fix.
+        if let Some(id) = blocker {
+            for (arg, feed) in cs.args.values().zip(feeds.iter_mut()) {
+                if !*feed && let Some(node) = arg.node.as_ref() {
+                    for_each_node(node, &mut |n| *feed |= n.spec().id == id);
+                    grew |= *feed;
+                }
             }
-            let mut discovery = lowering::BuiltinCallDiscovery::default();
-            blocked
-                || lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery)
-                    .is_err()
-        });
-        feeds.push(feed);
-    }
-    let Some(last) = feeds.iter().rposition(|f| *f) else { return Ok(None) };
-    let mut fused_effect = false;
-    for (arg, feed) in cs.args.values().zip(feeds.iter()).take(last + 1) {
-        let Some(node) = arg.node.as_ref() else { continue };
-        match (
-            *feed,
-            may_raise_to_handler(node) || crate::analysis::region_facts(node, ctx).io,
-        ) {
-            (true, true) if fused_effect => return Ok(None),
-            (false, true) => fused_effect = true,
-            _ => (),
         }
-    }
-    let mut fed: LPooled<Vec<(BindId, Node<R>)>> = LPooled::take();
-    for (arg, feed) in cs.args.values_mut().zip(feeds) {
-        let Some(node) = arg.node.as_mut().filter(|_| feed) else { continue };
-        let typ = node.typ().clone();
-        let (id, read) = genn::bind(ctx, &FED_ARGS, "arg", typ, top_id);
-        if free_var_input(id, ctx).is_none() {
+        if !grew && (tried || !feeds.contains(&true)) {
+            return Ok(None);
+        }
+        tried = true;
+        // A feeder runs before the kernel, while a fused argument's raises
+        // and Io calls are delivered after its run, so a fed argument that
+        // raises or performs would act ahead of a fused earlier argument
+        // that does: then nothing is fed.
+        let last = feeds.iter().rposition(|f| *f).unwrap_or(0);
+        let mut fused_effect = false;
+        for (arg, feed) in cs.args.values().zip(feeds.iter()).take(last + 1) {
+            let Some(node) = arg.node.as_ref() else { continue };
+            match (
+                *feed,
+                may_raise_to_handler(node) || crate::analysis::region_facts(node, ctx).io,
+            ) {
+                (true, true) if fused_effect => return Ok(None),
+                (false, true) => fused_effect = true,
+                _ => (),
+            }
+        }
+        let mut fed: LPooled<Vec<(BindId, Node<R>)>> = LPooled::take();
+        for (arg, feed) in cs.args.values_mut().zip(feeds.iter()) {
+            let Some(node) = arg.node.as_mut().filter(|_| *feed) else { continue };
+            let typ = node.typ().clone();
+            let (id, read) = genn::bind(ctx, &FED_ARGS, "arg", typ, top_id);
+            if free_var_input(id, ctx).is_none() {
+                ctx.env.unbind_variable(id);
+                ctx.discard(read);
+                continue;
+            }
+            fed.push((id, std::mem::replace(node, read)));
+        }
+        if fed.is_empty() {
+            return Ok(None);
+        }
+        // the bindings name the inputs for the attempt alone: a kernel's
+        // feeder replaces its read
+        let ids: SmallVec<[BindId; 8]> = fed.iter().map(|(id, _)| *id).collect();
+        let r = fuse_fed(child, ctx, &mut fed);
+        for id in ids {
             ctx.env.unbind_variable(id);
-            ctx.discard(read);
-            continue;
         }
-        fed.push((id, std::mem::replace(node, read)));
+        match r? {
+            FusionAttempt::Fused(new) => return Ok(Some(new)),
+            FusionAttempt::Refused(b) => blocker = b,
+        }
     }
-    if fed.is_empty() {
-        return Ok(None);
-    }
-    // the bindings name the inputs for the attempt alone: a kernel's
-    // feeder replaces its read
-    let ids: SmallVec<[BindId; 8]> = fed.iter().map(|(id, _)| *id).collect();
-    let r = fuse_fed(child, ctx, &mut fed);
-    for id in ids {
-        ctx.env.unbind_variable(id);
-    }
-    r
 }
 
+/// One attempt at the call with its fed arguments bound; a refusal
+/// restores them and names its blocker.
 fn fuse_fed<R: Rt>(
     child: &mut Node<R>,
     ctx: &mut CompileCtx<R>,
     fed: &mut Vec<(BindId, Node<R>)>,
-) -> anyhow::Result<Option<Node<R>>> {
+) -> anyhow::Result<FusionAttempt<R>> {
     // Every fed argument must be an input: an argument the kernel skips
     // would drop its effect.
-    let kernel = match try_fuse(child, ctx)? {
-        Some(mut new) => {
+    let attempt = match try_fuse_attempt(child, ctx)? {
+        FusionAttempt::Fused(mut new) => {
             let k =
                 new.downcast_mut::<FusedKernel<R>>().expect("try_fuse builds a kernel");
             if fed.iter().all(|(id, _)| k.has_input(*id)) {
-                Some(new)
+                FusionAttempt::Fused(new)
             } else {
                 ctx.discard(new);
-                None
+                FusionAttempt::Refused(None)
             }
         }
-        None => None,
+        refused @ FusionAttempt::Refused(_) => refused,
     };
-    match kernel {
-        Some(mut new) => {
+    match attempt {
+        FusionAttempt::Fused(mut new) => {
             let kernel = new.downcast_mut::<FusedKernel<R>>().expect("checked above");
             for (id, mut node) in fed.drain(..) {
                 fuse_parts([&mut node], ctx)?;
                 kernel.feed(ctx, id, node);
             }
-            Ok(Some(new))
+            Ok(FusionAttempt::Fused(new))
         }
-        None => {
+        refused @ FusionAttempt::Refused(_) => {
             let cs = child
                 .downcast_mut::<CallNode<R>>()
                 .and_then(CallNode::call_mut)
@@ -1265,7 +1296,7 @@ fn fuse_fed<R: Rt>(
                     ctx.discard(std::mem::replace(node, orig));
                 }
             }
-            Ok(None)
+            Ok(refused)
         }
     }
 }
