@@ -171,7 +171,12 @@ block, past the expression that holds it. A dynamic `mod` stays an expression wi
 
 Unchanged in role: `use`, `type`, `trait` and `mod` in the `.gxi` apply
 to the `.gx` automatically (requiring duplication is ceremony), spliced
-into its body. The `.gx` may not define a type or trait its interface
+into its body (`resolver::add_interface_modules`): each after the body's
+last declaration of every interface item listed before it, whatever
+order the body declares them in, ahead of the body when it declares
+none of them, and in interface order among themselves; a type, or a
+trait with no default body, reads no value and goes ahead of the body.
+The `.gx` may not define a type or trait its interface
 defines: only a hidden type (`type T;`) takes a definition there, an
 abstract with the declared parameters (`module.rs::check_redefinition`).
 The reverse does not hold: a name the `.gxi` writes resolves through

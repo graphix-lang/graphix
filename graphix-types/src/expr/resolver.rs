@@ -13,7 +13,6 @@ use bytes::Bytes;
 use combine::stream::position::SourcePosition;
 use compact_str::{CompactString, format_compact};
 use futures::future::{Future, join_all};
-use indexmap::IndexMap;
 use log::{info, warn};
 use netidx_core::path::Path;
 use parking_lot::Mutex;
@@ -529,8 +528,8 @@ enum SpliceKey {
     Use(bool, Arc<[UseItem]>),
 }
 
-/// What an interface item is placed after: a name the item before it
-/// in the interface declares.
+/// A name a declaration declares: a spliced interface item goes after
+/// the body's last declaration of each name an earlier item declares.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Anchor {
     Bind(ArcStr),
@@ -603,7 +602,7 @@ fn needs_no_value(kind: &SigKind) -> bool {
     }
 }
 
-// CR claude for claude: [bug/medium] An interface-only declaration is spliced right after
+// XCR claude for claude: [bug/medium] An interface-only declaration is spliced right after
 // the body's copy of the ONE interface item listed before it, so when the body orders
 // its declarations differently from its .gxi, the spliced item lands ahead of interface
 // items listed before it and cannot see them (iface-splice-01). Repro, with a/l.gx
@@ -620,8 +619,19 @@ fn needs_no_value(kind: &SigKind) -> bool {
 // 2026-10-31 claude: Eric ruled (10-31): splice each interface-only item after the last
 // body declaration of EVERY interface item before it, so a body may order its
 // declarations differently from its interface.
+// 2026-11-01 claude: add_interface_modules now splices each interface-only item after the
+// body's last declaration of every interface item listed before it (Eric's ruling), ahead
+// of the body when it declares none, in interface order among themselves. Pins
+// lang::modules::interface_only_mod_follows_every_earlier_item,
+// interface_only_mod_follows_a_body_module (the CR's two repros) and
+// interface_only_mods_in_a_row_keep_their_order fail without it (y not defined, every
+// mode); interface_only_mod_between_body_items pins the unchanged in-order case. Docs:
+// design/module_system.md, book modules/interfaces.md, the skill.
 /// `exprs` with the modules, types, traits and uses only `sig` declares
-/// spliced in, keeping their relative location and order.
+/// spliced in, each after the body's last declaration of every interface
+/// item listed before it (ahead of the body when it declares none of
+/// them), in interface order among themselves; one that needs no value
+/// goes ahead of everything.
 pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     let synth = |si: &SigItem| {
         let kind = match &si.kind {
@@ -646,69 +656,48 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
             end: Default::default(),
         })
     };
-    // the interface-only declarations in interface order: what needs no
-    // value before it first, each other one keyed after the declaration
-    // before it
-    let mut pending: LPooled<IndexMap<SpliceKey, &SigItem>> = LPooled::take();
-    let mut after: LPooled<AHashMap<Anchor, SpliceKey>> = LPooled::take();
-    let mut front: LPooled<Vec<SpliceKey>> = LPooled::take();
-    let mut first: Option<SpliceKey> = None;
-    let mut last: Option<&SigItem> = None;
+    let mut declared: LPooled<AHashSet<SpliceKey>> =
+        exprs.iter().filter_map(|e| SpliceKey::of_expr(&e.kind)).collect();
+    let mut last_decl: LPooled<AHashMap<Anchor, usize>> = LPooled::take();
+    for (i, e) in exprs.iter().enumerate() {
+        for a in Anchor::of_expr(&e.kind) {
+            last_decl.insert(a, i);
+        }
+    }
+    let mut front: LPooled<Vec<&SigItem>> = LPooled::take();
+    // each spliced item with the index of the body statement it goes
+    // ahead of
+    let mut placed: LPooled<Vec<(usize, &SigItem)>> = LPooled::take();
+    let mut at = 0;
     for si in sig.items.iter() {
-        if let Some(key) = SpliceKey::of_sig(&si.kind) {
+        if let Some(key) = SpliceKey::of_sig(&si.kind)
+            && declared.insert(key)
+        {
             if needs_no_value(&si.kind) {
-                front.push(key.clone());
-                pending.insert(key, si);
-                continue;
+                front.push(si);
+            } else {
+                placed.push((at, si));
             }
-            match last {
-                None => first = Some(key.clone()),
-                Some(prev) => {
-                    for a in Anchor::of_sig(&prev.kind) {
-                        after.insert(a, key.clone());
-                    }
-                }
-            }
-            pending.insert(key, si);
         }
-        // an `impl` declaration is never spliced, so it anchors nothing
-        if !matches!(si.kind, SigKind::Impl(_)) {
-            last = Some(si);
+        for a in Anchor::of_sig(&si.kind) {
+            if let Some(i) = last_decl.get(&a) {
+                at = at.max(i + 1);
+            }
         }
     }
-    for e in exprs.iter() {
-        if let Some(key) = SpliceKey::of_expr(&e.kind) {
-            pending.shift_remove(&key);
-        }
-    }
-    if pending.is_empty() {
+    if front.is_empty() && placed.is_empty() {
         return exprs;
     }
     let mut res: LPooled<Vec<Expr>> = LPooled::take();
-    for key in front.drain(..) {
-        if let Some(si) = pending.shift_remove(&key) {
+    res.extend(front.drain(..).filter_map(synth));
+    let mut placed = placed.drain(..).peekable();
+    for (i, e) in exprs.iter().enumerate() {
+        while let Some((_, si)) = placed.next_if(|(at, _)| *at <= i) {
             res.extend(synth(si));
         }
-    }
-    // the item keyed at `next`, then each one keyed after it in turn
-    let mut splice = |mut next: Option<SpliceKey>,
-                      after: &mut AHashMap<Anchor, SpliceKey>,
-                      res: &mut Vec<Expr>| {
-        while let Some(si) = next.take().and_then(|k| pending.shift_remove(&k)) {
-            res.extend(synth(si));
-            next = Anchor::of_sig(&si.kind).iter().find_map(|a| after.remove(a));
-        }
-    };
-    splice(first, &mut after, &mut res);
-    for e in exprs.iter() {
         res.push(e.clone());
-        for a in Anchor::of_expr(&e.kind) {
-            let next = after.remove(&a);
-            splice(next, &mut after, &mut res);
-        }
     }
-    drop(splice);
-    res.extend(pending.drain(..).filter_map(|(_, si)| synth(si)));
+    res.extend(placed.filter_map(|(_, si)| synth(si)));
     Arc::from_iter(res.drain(..))
 }
 

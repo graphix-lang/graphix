@@ -168,7 +168,11 @@ When a module has an interface file:
    declared in the interface automatically apply to the implementation. A
    type or trait the interface defines must not be defined again in the `.gx`
    file. The one exception is a type the interface hides (`type T;`): the
-   implementation defines it, as `type T = Abstract<..>`.
+   implementation defines it, as `type T = Abstract<..>`. A `mod` or
+   `use` only the interface declares takes effect in the implementation
+   after everything the interface lists before it, in whatever order the
+   implementation declares those: a submodule the interface lists after
+   `val y` can read `super::y`.
 
 2. **Value declarations (`val`)** specify what bindings must exist in the
    implementation with matching types.

@@ -1310,6 +1310,109 @@ run!(
     "#; FuseExpect::None
 );
 
+// An interface-only `mod` goes after the body's declarations of every
+// interface item listed before it, in whatever order the body declares
+// them.
+run!(
+    interface_only_mod_follows_every_earlier_item,
+    is(Value::I64(1)),
+    "/test.gx" => r#"
+        mod a;
+        let result = a::l::z
+    "#,
+    "/test/a.gxi" => r#"
+        val y: i64;
+        val w: i64;
+        mod l
+    "#,
+    "/test/a.gx" => r#"
+        let w = 2;
+        let y = 1
+    "#,
+    "/test/a/l.gx" => r#"
+        use super::y;
+        let z = y
+    "#; FuseExpect::None
+);
+
+run!(
+    interface_only_mod_follows_a_body_module,
+    is(Value::I64(42)),
+    "/test.gx" => r#"
+        mod a;
+        let result = a::l::z
+    "#,
+    "/test/a.gxi" => r#"
+        val y: i64;
+        mod t;
+        mod l
+    "#,
+    "/test/a.gx" => r#"
+        mod t;
+        let y = t::x + 1
+    "#,
+    "/test/a/t.gx" => r#"
+        let x = 41
+    "#,
+    "/test/a/l.gx" => r#"
+        use super::y;
+        let z = y
+    "#; FuseExpect::Jit
+);
+
+// A body in its interface's order takes the spliced `mod` between the
+// declarations around it: `w` reads it, and it reads `y`.
+run!(
+    interface_only_mod_between_body_items,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        mod a;
+        let result = a::w
+    "#,
+    "/test/a.gxi" => r#"
+        val y: i64;
+        mod l;
+        val w: i64
+    "#,
+    "/test/a.gx" => r#"
+        let y = 1;
+        let w = l::z + 1
+    "#,
+    "/test/a/l.gx" => r#"
+        use super::y;
+        let z = y
+    "#; FuseExpect::Jit
+);
+
+// Two interface-only items in a row keep their interface order after the
+// last body declaration before them.
+run!(
+    interface_only_mods_in_a_row_keep_their_order,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        mod a;
+        let result = a::k::q
+    "#,
+    "/test/a.gxi" => r#"
+        val y: i64;
+        val w: i64;
+        mod l;
+        mod k
+    "#,
+    "/test/a.gx" => r#"
+        let w = 2;
+        let y = 1
+    "#,
+    "/test/a/l.gx" => r#"
+        use super::y;
+        let z = y
+    "#,
+    "/test/a/k.gx" => r#"
+        use super::{l, w};
+        let q = l::z + w
+    "#; FuseExpect::Jit
+);
+
 // A loaded body's primes are its own: two modules loading in one cycle
 // requeue nothing, and nothing later in the cycle fires from a prime.
 async fn loads_leave_no_primes(mode: Mode) -> Result<()> {

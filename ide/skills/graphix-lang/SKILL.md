@@ -675,13 +675,12 @@ docs; types and mods from the gxi are in scope in the impl. A hidden
 type must be `Abstract<..>` or Rust-backed.
 
 A gxi `mod` or `use` the body does not repeat is spliced into the body
-right after the body's copy of the gxi item listed just before it (at
-the top when it is the gxi's first; a gxi-only type, or a trait with no
-default body, always goes to the top). So the body can use a gxi-only
-submodule the gxi lists before the `val` that uses it, and the body must
-declare what the gxi lists in the gxi's order: out of order, a spliced
-submodule lands ahead of a binding the gxi lists before it and fails
-with `y not defined` in that submodule (CR iface-splice-01).
+after the body's last declaration of every gxi item listed before it,
+in whatever order the body declares them (at the top when the body
+declares none of them; a gxi-only type, or a trait with no default
+body, always goes to the top). So a gxi-only submodule sees every
+binding the gxi lists before it, and the body can use the submodule
+once those are all declared.
 
 Traits: `trait Show { val show: fn(self) -> string; val twice: fn(self)
 -> string = |s| "[show(s)] [show(s)]" }`, `impl Show for Counter { let
