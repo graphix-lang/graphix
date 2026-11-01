@@ -246,8 +246,9 @@ their order, but values are not: a module's body runs where its `mod`
 statement stands, so a value it imports from its parent must be bound
 above that `mod`. Place `mod` after the values the child imports, as the
 example below does. A `mod` declared only in the `.gxi` stands in the
-body right after the item the interface lists before it, so a body
-statement above that point cannot read the child's values.
+body after the body's declarations of everything the interface lists
+before it, so a body statement above the last of those cannot read the
+child's values.
 
 Privacy follows Rust's rule: a private item is visible to its defining
 module and that module's descendants. So a sub-module may

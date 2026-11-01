@@ -174,10 +174,12 @@ to the `.gx` automatically (requiring duplication is ceremony), spliced
 into its body (`resolver::add_interface_modules`): each after the body's
 last declaration of every interface item listed before it, whatever
 order the body declares them in, ahead of the body when it declares
-none of them, after it when one of them (a `val`) has no declaration
-there, so the interface's check names the missing item, and in
-interface order among themselves; a type, or a
+none of them, and in interface order among themselves; a type, or a
 trait with no default body, reads no value and goes ahead of the body.
+One listed after a `val` the body does not declare goes after the body,
+which the interface's check refuses for the missing item, unless the
+compile fails first: the spliced item, or a body statement reading it,
+that reads the missing name is refused as not defined.
 The `.gx` may not define a type or trait its interface
 defines: only a hidden type (`type T;`) takes a definition there, an
 abstract with the declared parameters (`module.rs::check_redefinition`).

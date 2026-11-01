@@ -638,6 +638,14 @@ fn needs_no_value(kind: &SigKind) -> bool {
 // reading the submodule before its declaration of an earlier item). No hint in the
 // not-defined error: the block's compile would have to know a later spliced sibling; the
 // rule is in the book, design/module_system.md and the skill, which now shows the refusal.
+// 2026-11-01 claude: Review round 3 lows (docs): book modules/interfaces.md's sub-module
+// paragraph still gave the old rule; it now says a gxi-only mod stands after the body's
+// declarations of everything the interface lists before it. design/module_system.md no
+// longer claims the interface check names a missing item: an item after a val the body
+// lacks goes after the body, refused by the interface check unless the spliced item (or a
+// body statement reading it) fails first on the missing name, which is the common case.
+// The skill says such an item goes at the end. Left: refusing a val with no top-level
+// binding before compiling (a diagnostic only; no valid program changes).
 /// `exprs` with the modules, types, traits and uses only `sig` declares
 /// spliced in, each after the body's last declaration of every interface
 /// item listed before it (ahead of the body when it declares none of
@@ -693,8 +701,8 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         for a in Anchor::of_sig(&si.kind) {
             match last_decl.get(&a) {
                 Some(i) => at = at.max(i + 1),
-                // an item the body lacks: the check of the interface names
-                // it before a later item's body can trip on it
+                // an item the body lacks: a later item goes after the body,
+                // which the interface's check refuses
                 None if !spliced => at = exprs.len(),
                 None => (),
             }

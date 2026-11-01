@@ -677,8 +677,9 @@ type must be `Abstract<..>` or Rust-backed.
 A gxi `mod` or `use` the body does not repeat is spliced into the body
 after the body's last declaration of every gxi item listed before it,
 in whatever order the body declares them (at the top when the body
-declares none of them; a gxi-only type, or a trait with no default
-body, always goes to the top). So a gxi-only submodule sees every
+declares none of them, at the end when one of them is a `val` the body
+lacks; a gxi-only type, or a trait with no default body, always goes to
+the top). So a gxi-only submodule sees every
 binding the gxi lists before it, and the body can use the submodule
 only once those are all declared: `let c = l::z` above the body's
 `let a` of a `val a` the gxi lists before `mod l` is `l::z not defined`.
