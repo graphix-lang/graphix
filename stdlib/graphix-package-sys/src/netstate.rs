@@ -25,10 +25,11 @@ use netidx::{
 };
 use netidx_derive::IntoValue;
 use netidx_value::Value;
-use nohash::{IntMap, IntSet};
+use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::global::{GPooled, Pool};
 use serde_derive::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::{
     sync::{
         Arc, LazyLock, OnceLock,
@@ -264,7 +265,7 @@ impl Drop for PendingRequest {
     }
 }
 
-// XCR claude for claude: [style/low] RpcId writes its own AtomicU64 counter and
+// CR claude for claude: [style/low] RpcId writes its own AtomicU64 counter and
 // nohash::IsEnabled where atomic_id! gives both (this file's CallSerial uses it;
 // impl_no_pack! takes the macro's type). Also the refusal for an RpcId as data says
 // "implement Cast for it where it is defined", which no user can do for a Rust type in
@@ -276,6 +277,12 @@ impl Drop for PendingRequest {
 // holding the advice). RpcId stays its own counter: atomic_id! implements Pack,
 // encoding the u64, which conflicts with impl_no_pack! (E0119) and would let a peer
 // send an RpcId; netidx-core has no pack-less form of the macro.
+// 2026-11-01 claude: Review E2-r1-2: half of the request is declined, so it stays a
+// CR. Done: the refusal advice (pinned by
+// lang::cast_trait::write_of_an_rpc_id_refused). Left: RpcId keeps its own AtomicU64
+// counter, since atomic_id! implements Pack (conflicting with impl_no_pack! and
+// letting a peer send one); taking the macro needs a pack-less form of atomic_id! in
+// netidx-core, which a lane cannot edit, or Eric accepting the hand-written counter.
 /// What `sys::net::call_id` mints and a call is known by, unique in the
 /// process. Its `Pack` refuses, so no peer can send one and it prints as
 /// `abstract:`.
@@ -308,21 +315,26 @@ struct InFlight {
 #[derive(Default)]
 struct Calls {
     by_id: IntMap<RpcId, InFlight>,
-    by_site: IntMap<BindId, IntSet<RpcId>>,
+    by_site: IntMap<BindId, SmallVec<[RpcId; 4]>>,
+    /// The entries of `by_id` every abandon so far has visited.
+    #[cfg(test)]
+    visited: usize,
 }
 
 impl Calls {
     /// `call` as `id`, replacing a call in flight under `id`.
     fn insert(&mut self, id: RpcId, call: InFlight) {
         self.remove(id);
-        self.by_site.entry(call.site).or_default().insert(id);
+        self.by_site.entry(call.site).or_default().push(id);
         self.by_id.insert(id, call);
     }
 
     fn remove(&mut self, id: RpcId) -> Option<InFlight> {
         let call = self.by_id.remove(&id)?;
-        if let Some(ids) = self.by_site.get_mut(&call.site) {
-            ids.remove(&id);
+        if let Some(ids) = self.by_site.get_mut(&call.site)
+            && let Some(i) = ids.iter().position(|held| *held == id)
+        {
+            ids.swap_remove(i);
         }
         Some(call)
     }
@@ -330,7 +342,11 @@ impl Calls {
     /// Abort every call `site` has in flight: how many.
     fn abandon(&mut self, site: BindId) -> usize {
         let Some(ids) = self.by_site.remove(&site) else { return 0 };
-        for id in ids.iter() {
+        for id in &ids {
+            #[cfg(test)]
+            {
+                self.visited += 1;
+            }
             self.by_id.remove(id);
         }
         ids.len()
@@ -748,6 +764,13 @@ impl NetState {
     // netstate::test::abandoning_visits_only_the_sites_calls (100 other calls in flight,
     // an id moved across sites): with the old retain over the whole table the count is
     // 102, not 2.
+    // 2026-11-01 claude: Review E2-r1-2: the pin counted the calls abandoned, which a
+    // whole-table retain returns as 2 too. Calls now counts (cfg(test)) the by_id entries
+    // every abandon visits, and abandoning_visits_only_the_sites_calls asserts 2 visits
+    // with 100 other calls in flight: the old retain fails it with 202 visits when it
+    // counts them, 0 when it does not. A site's ids are a SmallVec<[RpcId; 4]>, not an
+    // IntSet, so a site's calls allocate nothing up to four in flight (its sleep remints
+    // its id, so its entry cannot be kept for the next run).
     /// Abort every call `site` has in flight, visiting no other: how many.
     /// Their answers still come to `site`'s delivery id, which its caller
     /// remints or releases.
@@ -938,7 +961,9 @@ mod test {
         state.start_call(&mut ctx.view(), site, RpcId::new(), std::future::pending());
         assert_eq!(state.abandon_calls(site), 2);
         assert_eq!(state.abandon_calls(site), 0);
-        assert_eq!(state.0.rpc_calls.lock().by_id.len(), 100);
+        let calls = state.0.rpc_calls.lock();
+        assert_eq!(calls.visited, 2);
+        assert_eq!(calls.by_id.len(), 100);
     }
 
     #[tokio::test]
