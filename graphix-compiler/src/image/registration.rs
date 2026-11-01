@@ -17,9 +17,9 @@ use super::{
 };
 use crate::{
     BindId, BuiltinBindInfo, CompileCtx, DefAssertion, ExecCtx, ExecState, LambdaId,
-    LambdaInstanceId, Node, Rt, Saved, Scope, StaticCall,
+    LambdaInstanceId, Node, Rt, Saved, Scope,
     env::Env,
-    expr::{Expr, ExprId, ModPath},
+    expr::{ExprId, ModPath},
     image,
     node::{callsite::InstanceRefs, lambda::LambdaDef},
     profile::{self, Phase},
@@ -31,12 +31,11 @@ use bytes::{Buf, BufMut, Bytes};
 use compact_str::CompactString;
 use log::{info, warn};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
-use triomphe::Arc;
 
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 103;
+pub const REGISTRATION_FORMAT: u8 = 104;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -95,7 +94,6 @@ struct Tables<'a, R: Rt> {
     fn_forward_resolutions: Vec<(BindId, LambdaId)>,
     connect_targets: Vec<BindId>,
     batch_connect_targets: Vec<BindId>,
-    static_callees: Vec<(BindId, &'a Arc<Expr>)>,
     tags: Vec<ArcStr>,
     /// The definition assertions a later compile or run-time bind still
     /// checks.
@@ -136,9 +134,6 @@ impl<'a, R: Rt> Tables<'a, R> {
         let mut batch_connect_targets: Vec<_> =
             ctx.batch_connect_targets.iter().copied().collect();
         batch_connect_targets.sort();
-        let mut static_callees: Vec<_> =
-            ctx.static_callees.iter().map(|(b, StaticCall(e))| (*b, e)).collect();
-        static_callees.sort_by_key(|(b, _)| *b);
         let mut tags: Vec<_> = ctx.tags.iter().cloned().collect();
         tags.sort();
         let def_assertions = ctx.def_assertions.lock().clone();
@@ -149,7 +144,6 @@ impl<'a, R: Rt> Tables<'a, R> {
             fn_forward_resolutions,
             connect_targets,
             batch_connect_targets,
-            static_callees,
             tags,
             def_assertions,
         })
@@ -165,11 +159,6 @@ impl<'a, R: Rt> Tables<'a, R> {
         self.fn_forward_resolutions.encode(buf)?;
         self.connect_targets.encode(buf)?;
         self.batch_connect_targets.encode(buf)?;
-        encode_varint(self.static_callees.len() as u64, buf);
-        for (b, spec) in &self.static_callees {
-            b.encode(buf)?;
-            spec.encode(buf)?;
-        }
         self.tags.encode(buf)?;
         self.def_assertions.encode(buf)
     }
@@ -196,10 +185,6 @@ fn restore_tables<R: Rt>(
     ctx.fn_forward_resolutions.extend(<Vec<(BindId, LambdaId)> as Pack>::decode(buf)?);
     ctx.connect_targets.extend(<Vec<BindId> as Pack>::decode(buf)?);
     ctx.batch_connect_targets.extend(<Vec<BindId> as Pack>::decode(buf)?);
-    for _ in 0..decode_varint(buf)? {
-        let b = BindId::decode(buf)?;
-        ctx.static_callees.insert(b, StaticCall(Arc::new(Expr::decode(buf)?)));
-    }
     ctx.tags.extend(<Vec<ArcStr> as Pack>::decode(buf)?);
     ctx.def_assertions.lock().extend(<Vec<DefAssertion> as Pack>::decode(buf)?);
     Ok(())

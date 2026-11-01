@@ -278,6 +278,8 @@ pub struct Refs {
     /// Stop at each lambda callee, recording its instance, instead of
     /// walking its body.
     callees: Option<Vec<LambdaInstanceId>>,
+    /// Collect the static holds of the nodes walked ([`StaticHold`]).
+    static_holds: Option<Vec<(BindId, Arc<expr::Expr>)>>,
 }
 
 impl Refs {
@@ -287,13 +289,38 @@ impl Refs {
     }
 
     /// A walk of one body that stops at its lambda callees
-    /// ([`Refs::take_callees`]).
+    /// ([`Refs::take_callees`]), collecting its static holds
+    /// ([`Refs::take_static_holds`]).
     pub(crate) fn stopping_at_callees() -> Self {
-        Self { callees: Some(Vec::new()), ..Self::default() }
+        Self {
+            callees: Some(Vec::new()),
+            static_holds: Some(Vec::new()),
+            ..Self::default()
+        }
+    }
+
+    /// A walk of a whole tree, callee bodies included, that collects its
+    /// static holds ([`Refs::take_static_holds`]).
+    pub(crate) fn holding() -> Self {
+        Self { static_holds: Some(Vec::new()), ..Self::default() }
     }
 
     pub(crate) fn take_callees(&mut self) -> Vec<LambdaInstanceId> {
         self.callees.take().unwrap_or_default()
+    }
+
+    pub(crate) fn take_static_holds(&mut self) -> Vec<(BindId, Arc<expr::Expr>)> {
+        self.static_holds.take().unwrap_or_default()
+    }
+
+    /// Record the static holds of a walked node.
+    pub(crate) fn static_holds<'a>(
+        &mut self,
+        holds: impl IntoIterator<Item = &'a StaticHold>,
+    ) {
+        if let Some(out) = &mut self.static_holds {
+            out.extend(holds.into_iter().map(|h| (h.id, h.call.clone())))
+        }
     }
 
     /// Record a read of `id`, triggering unless under a sample's right
@@ -1413,11 +1440,11 @@ pub struct CompileCtx<R: Rt> {
     /// is per batch): `Bind::update` must not reseed a woken target that
     /// holds a value. `Bind::delete` removes its ids.
     pub connect_targets: TrackedSet<BindId>,
-    /// Every binding a call site resolved statically, with the first such
-    /// call: that call keeps the definition it bound, so a later compile's
-    /// `<-` to the binding is refused ([`Self::mark_connect_target`]).
-    /// `Bind::delete` removes its ids.
-    pub static_callees: TrackedMap<BindId, StaticCall>,
+    /// The bindings a live call bound statically: that call keeps the
+    /// definition it bound, so a later compile's `<-` to the binding is
+    /// refused ([`Self::mark_connect_target`]). Its holders keep their
+    /// holds ([`StaticHold`]); `Bind::delete` forgets its ids.
+    pub(crate) static_callees: Arc<StaticCallees>,
     /// Per block being compiled, innermost last: the lets something in
     /// it writes, by statement and name ([`node::written_lets`]).
     pub(crate) written_lets: Vec<AHashSet<(ExprId, CompactString)>>,
@@ -1626,7 +1653,7 @@ impl<R: Rt> CompileCtx<R> {
             bind_to_lambda: self.bind_to_lambda.fork(),
             batch_connect_targets: self.batch_connect_targets.fork(),
             connect_targets: self.connect_targets.fork(),
-            static_callees: self.static_callees.fork(),
+            static_callees: self.static_callees.clone(),
             written_lets: self.written_lets.clone(),
             block_typedefs: self.block_typedefs.clone(),
             builtin_bindings: self.builtin_bindings.fork(),
@@ -1676,7 +1703,7 @@ impl<R: Rt> CompileCtx<R> {
             bind_to_lambda,
             batch_connect_targets,
             connect_targets,
-            static_callees,
+            static_callees: _,
             written_lets: _,
             block_typedefs: _,
             builtin_bindings,
@@ -1708,7 +1735,6 @@ impl<R: Rt> CompileCtx<R> {
         self.bind_to_lambda.join(bind_to_lambda);
         self.batch_connect_targets.join(batch_connect_targets);
         self.connect_targets.join(connect_targets);
-        self.static_callees.join(static_callees);
         self.builtin_bindings.join(builtin_bindings);
         self.fn_forward_resolutions.join(fn_forward_resolutions);
         let frame = self.pending_settles.last_mut().expect("root settle frame");
@@ -1795,7 +1821,7 @@ impl<R: Rt> CompileCtx<R> {
     /// an earlier compile generalized stays so, its uses having relied on
     /// it, and a write is held to its type (`Connect::typecheck0_with`).
     pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
-        if let Some(StaticCall(call)) = self.static_callees.get(&id) {
+        if let Some(call) = self.static_callees.held(id) {
             let name =
                 self.env.by_id.get(&id).map(|b| b.name.clone()).unwrap_or_default();
             bail!(
@@ -1812,44 +1838,9 @@ impl<R: Rt> CompileCtx<R> {
         Ok(())
     }
 
-    /// Record that the call `spec` binds `id`'s definition statically.
-    // CR claude for claude: [bug/medium] A record here is never removed when the call
-    // that made it is deleted; Bind::delete removes only the callee's entry. After a
-    // dynamic module reloads a body that called `super::f(1)` statically with one that
-    // does not, a REPL `f <- |x: i64| x + 100` is still refused: "an earlier compile
-    // calls it as a fixed function ... super::f(1)". The same happens for any deleted
-    // calling site, and the stale entry is also written into the image. Fix: key the
-    // record by the recording sites (BindId -> site ExprIds), drop a site's entry when
-    // its CallSite or alias Bind is deleted, and refuse only while a live site remains.
-    // Pin it beside written_after_a_static_call_is_refused. probe:
-    // design/review-2026-10-26/repro/tests-modules-image-stale-static-callee.sh
-    // (tests-modules-image-01)
-    // 2026-10-26 claude: Not fixed (L3-b05). Still reproduces. The suggested per-site
-    // key is not enough: a definition's check builds its body's CallSites, which record
-    // here, and then discards them (lambda.rs: ctx.discard_apply(f) after the def
-    // check), so dropping a site's record at its delete would forget every static call
-    // inside a definition, and 'let g = |x| f(x); f <- ..' would be accepted while g's
-    // later instances are typed from a check that bound f statically. A record must
-    // belong to what keeps the static binding alive: a live CallSite or alias Bind, and
-    // a live definition whose checked body holds the call (released when the definition
-    // is forgotten). Per-site counts also need TrackedMap::join to merge two compile
-    // tasks' writes to one key (a three-way merge; today the fork's value wins) and the
-    // recording nodes to carry what they recorded through the image (a lazily decoded
-    // instance's sites are counted in the image but never decoded). Needs that design
-    // before code.
-    // 2026-11-01 claude: Round 6 lane W: designed, not built. design/program_image.md
-    // 'Designed, not built: static-callee records by their holders' builds the note's
-    // rule as a liveness index of Weak tokens (each holder, a CallSite, an alias Bind
-    // or a definition's DefTable, keeps its Arc token; a failed compile drops its
-    // holders, so no rollback and no TrackedMap three-way join), with holds carried
-    // through the image by each holder and, for lazily decoded instances, by the
-    // instance table's row. Not built this round: it spans the registration and program
-    // image formats, the CallSite, Bind and DefTable codecs and the instance table; the
-    // lane's budget went to items 1-4. Probe still reproduces on main.
-    pub(crate) fn record_static_callee(&mut self, id: BindId, spec: &Arc<expr::Expr>) {
-        if !self.static_callees.contains_key(&id) {
-            self.static_callees.insert(id, StaticCall(spec.clone()));
-        }
+    /// Hold `id`, a binding the call `call` binds statically.
+    pub(crate) fn hold_static(&self, id: BindId, call: &Arc<expr::Expr>) -> StaticHold {
+        StaticCallees::hold(&self.static_callees, id, call)
     }
 
     /// Whether `id` is a binding an earlier compile generalized: its
@@ -2036,7 +2027,7 @@ impl<R: Rt> ExecState<R> {
                 bind_to_lambda: TrackedMap::default(),
                 batch_connect_targets: TrackedSet::default(),
                 connect_targets: TrackedSet::default(),
-                static_callees: TrackedMap::default(),
+                static_callees: Arc::new(StaticCallees::default()),
                 written_lets: Vec::new(),
                 block_typedefs: Vec::new(),
                 builtin_bindings: TrackedMap::default(),
@@ -3535,15 +3526,120 @@ pub fn record_expr_types<R: Rt>(nodes: &[Node<R>], out: &mut Vec<ide::ExprTypeSi
     }
 }
 
-/// A call that binds a definition statically ([`CompileCtx::static_callees`]):
-/// any one names the binding's refusal, so compile tasks recording different
-/// calls of one binding agree.
-#[derive(Debug, Clone)]
-pub struct StaticCall(pub Arc<expr::Expr>);
+// XCR claude for claude: [bug/medium] A record here is never removed when the call
+// that made it is deleted; Bind::delete removes only the callee's entry. After a
+// dynamic module reloads a body that called `super::f(1)` statically with one that
+// does not, a REPL `f <- |x: i64| x + 100` is still refused: "an earlier compile
+// calls it as a fixed function ... super::f(1)". The same happens for any deleted
+// calling site, and the stale entry is also written into the image. Fix: key the
+// record by the recording sites (BindId -> site ExprIds), drop a site's entry when
+// its CallSite or alias Bind is deleted, and refuse only while a live site remains.
+// Pin it beside written_after_a_static_call_is_refused. probe:
+// design/review-2026-10-26/repro/tests-modules-image-stale-static-callee.sh
+// (tests-modules-image-01)
+// 2026-10-26 claude: Not fixed (L3-b05). Still reproduces. The suggested per-site
+// key is not enough: a definition's check builds its body's CallSites, which record
+// here, and then discards them (lambda.rs: ctx.discard_apply(f) after the def
+// check), so dropping a site's record at its delete would forget every static call
+// inside a definition, and 'let g = |x| f(x); f <- ..' would be accepted while g's
+// later instances are typed from a check that bound f statically. A record must
+// belong to what keeps the static binding alive: a live CallSite or alias Bind, and
+// a live definition whose checked body holds the call (released when the definition
+// is forgotten). Per-site counts also need TrackedMap::join to merge two compile
+// tasks' writes to one key (a three-way merge; today the fork's value wins) and the
+// recording nodes to carry what they recorded through the image (a lazily decoded
+// instance's sites are counted in the image but never decoded). Needs that design
+// before code.
+// 2026-11-01 claude: Round 6 lane W: designed, not built. design/program_image.md
+// 'Designed, not built: static-callee records by their holders' builds the note's
+// rule as a liveness index of Weak tokens (each holder, a CallSite, an alias Bind
+// or a definition's DefTable, keeps its Arc token; a failed compile drops its
+// holders, so no rollback and no TrackedMap three-way join), with holds carried
+// through the image by each holder and, for lazily decoded instances, by the
+// instance table's row. Not built this round: it spans the registration and program
+// image formats, the CallSite, Bind and DefTable codecs and the instance table; the
+// lane's budget went to items 1-4. Probe still reproduces on main.
+// 2026-11-01 claude: Round 6 lane W: built. A static binding is held by what keeps
+// it alive: a CallSite (its function, and fn-typed arguments its instance bound),
+// an alias Bind, and the FusedKernel that replaced them (kernel_node collects the
+// region's holds, callee instances included); each keeps a StaticHold whose drop
+// releases it in the shared StaticCallees index, so no Saved entry or TrackedMap
+// join. A definition holds nothing: its check resolves no call statically and
+// GX::prune_static_resolution drops a <- target from bind_to_lambda before the next
+// compile, so its later instances call through the binding (pinned by
+// an_alias_holds_its_callee_while_its_instance_lives, which calls g after the write
+// and gets 101). The image carries each holder's holds (CallSite, Bind, FusedKernel
+// codecs; an imaged site holds its undecoded tree's from InstanceRefs::holds) and
+// the registration list is gone (format 104). Pins:
+// lang::types::{a_deleted_static_call_releases_its_callee,
+// a_reloaded_module_releases_its_static_callee,
+// an_alias_holds_its_callee_while_its_instance_lives} fail with the release off;
+// the fused case of the first and written_after_a_static_call_is_refused fail
+// without the kernel's holds;
+// lang::image::a_restored_static_call_holds_its_callee_while_it_lives fails per
+// program with each codec's re-hold off (site, alias, untaken-arm imaged instance,
+// kernel) and after the delete with the release off. The probe now takes the write.
+/// The live holds on bindings whose definitions calls bound statically
+/// ([`CompileCtx::static_callees`]): per binding, each holding call with
+/// the number of holders that hold it. One index serves a context and
+/// every compile task it forks.
+#[derive(Debug, Default)]
+pub(crate) struct StaticCallees(
+    Mutex<AHashMap<BindId, SmallVec<[(Arc<expr::Expr>, u32); 1]>>>,
+);
 
-impl graphix_types::tracked::SameValue for StaticCall {
-    fn same_value(&self, _: &Self) -> bool {
-        true
+impl StaticCallees {
+    /// Hold `id` for the call `call`, until the hold drops.
+    fn hold(index: &Arc<Self>, id: BindId, call: &Arc<expr::Expr>) -> StaticHold {
+        let mut held = index.0.lock();
+        let calls = held.entry(id).or_default();
+        match calls.iter_mut().find(|(c, _)| c.id == call.id) {
+            Some((_, n)) => *n += 1,
+            None => calls.push((call.clone(), 1)),
+        }
+        StaticHold { index: index.clone(), id, call: call.clone() }
+    }
+
+    /// A call holding `id`, if one is live.
+    fn held(&self, id: BindId) -> Option<Arc<expr::Expr>> {
+        self.0.lock().get(&id).and_then(|calls| calls.first()).map(|(c, _)| c.clone())
+    }
+
+    /// Forget `id`, a deleted binding: nothing can write it again.
+    pub(crate) fn forget(&self, id: BindId) {
+        self.0.lock().remove(&id);
+    }
+
+    fn release(&self, id: BindId, call: ExprId) {
+        let mut held = self.0.lock();
+        let Some(calls) = held.get_mut(&id) else { return };
+        if let Some(i) = calls.iter().position(|(c, _)| c.id == call) {
+            calls[i].1 -= 1;
+            if calls[i].1 == 0 {
+                calls.swap_remove(i);
+            }
+        }
+        if calls.is_empty() {
+            held.remove(&id);
+        }
+    }
+}
+
+/// A node's hold on a binding its call bound statically: while it lives
+/// a `<-` to the binding is refused ([`CompileCtx::mark_connect_target`]).
+/// The holders are the call that bound it (a call site, an alias `let`)
+/// and the kernel that replaced them; each carries its holds through an
+/// image.
+#[derive(Debug)]
+pub(crate) struct StaticHold {
+    index: Arc<StaticCallees>,
+    pub(crate) id: BindId,
+    pub(crate) call: Arc<expr::Expr>,
+}
+
+impl Drop for StaticHold {
+    fn drop(&mut self) {
+        self.index.release(self.id, self.call.id)
     }
 }
 
@@ -3557,7 +3653,6 @@ pub struct Saved {
     fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
     connect_targets: TrackedSet<BindId>,
     batch_connect_targets: TrackedSet<BindId>,
-    static_callees: TrackedMap<BindId, StaticCall>,
     tags: TrackedSet<ArcStr>,
 }
 
@@ -3576,7 +3671,7 @@ impl Saved {
             bind_to_lambda,
             batch_connect_targets,
             connect_targets,
-            static_callees,
+            static_callees: _,
             written_lets: _,
             block_typedefs: _,
             builtin_bindings,
@@ -3610,7 +3705,6 @@ impl Saved {
             fn_forward_resolutions: fn_forward_resolutions.clone(),
             connect_targets: connect_targets.clone(),
             batch_connect_targets: batch_connect_targets.clone(),
-            static_callees: static_callees.clone(),
             tags: tags.clone(),
         }
     }
@@ -3624,7 +3718,6 @@ impl Saved {
             fn_forward_resolutions,
             connect_targets,
             batch_connect_targets,
-            static_callees,
             tags,
         } = self;
         ctx.env = env;
@@ -3634,7 +3727,6 @@ impl Saved {
         ctx.fn_forward_resolutions = fn_forward_resolutions;
         ctx.connect_targets = connect_targets;
         ctx.batch_connect_targets = batch_connect_targets;
-        ctx.static_callees = static_callees;
         ctx.tags = tags;
     }
 }

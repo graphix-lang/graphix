@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs,
-    Rt, Scope, Tag, TagValue, Update, bailat,
+    Rt, Scope, StaticHold, Tag, TagValue, Update, bailat,
     compiler::compile,
     dbgenv,
     env::{self, Env},
@@ -74,6 +74,8 @@ pub struct Bind<R: Rt> {
     /// before: the enclosing block takes them back after its last
     /// statement, so only the readers that slept with this `let` see them.
     reraised: SmallVec<[BindId; 1]>,
+    /// The binding an alias (`let h = f`) binds statically.
+    static_hold: Option<StaticHold>,
 }
 
 /// Rewrite a node into a block: each already-compiled operand becomes a
@@ -167,6 +169,7 @@ impl<R: Rt> Bind<R> {
             node,
             ever_published: false,
             reraised: SmallVec::new(),
+            static_hold: None,
         })
     }
 
@@ -480,7 +483,7 @@ impl<R: Rt> Bind<R> {
 
     /// What the binding tells the rest of the check: the settle of a
     /// `let` over ⊥, and the lambda a name binds.
-    fn publish(&self, ctx: &mut CompileCtx<R>) {
+    fn publish(&mut self, ctx: &mut CompileCtx<R>) {
         if let Type::TVar(tv) = &self.typ {
             super::defer_settle(ctx, || crate::PendingSettle::LetOverBottom {
                 tv: tv.clone(),
@@ -499,18 +502,18 @@ impl<R: Rt> Bind<R> {
     }
 
     /// The LambdaDef `Value` of the binding this one aliases (`let h =
-    /// f`), when `f` resolves statically and no `<-` writes it.
-    fn aliased_lambda(&self, ctx: &mut CompileCtx<R>) -> Option<Value> {
-        match ungrouped(&self.node) {
-            NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => {
-                let fv = ctx.bind_to_lambda.get(&r.id).cloned();
-                if fv.is_some() {
-                    ctx.record_static_callee(r.id, &self.spec);
-                }
-                fv
-            }
-            _ => None,
+    /// f`), when `f` resolves statically and no `<-` writes it, which this
+    /// one then holds.
+    fn aliased_lambda(&mut self, ctx: &mut CompileCtx<R>) -> Option<Value> {
+        let id = match ungrouped(&self.node) {
+            NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => r.id,
+            _ => return None,
+        };
+        let fv = ctx.bind_to_lambda.get(&id).cloned()?;
+        if self.static_hold.is_none() {
+            self.static_hold = Some(ctx.hold_static(id, &self.spec));
         }
+        Some(fv)
     }
 
     /// The LambdaDef `Value` this binding holds when its value node is
@@ -529,7 +532,13 @@ impl<R: Rt> Bind<R> {
         let typ = Type::decode(buf)?;
         let pattern = StructPatternNode::decode(buf)?;
         let node = decode_node(ctx, buf)?;
-        Ok(Self::with(spec, typ, pattern, node, None))
+        let held = Option::<BindId>::decode(buf)?;
+        let static_hold = held.map(|id| ctx.hold_static(id, &spec));
+        let mut bind = Self::with(spec, typ, pattern, node, None);
+        if let Some(b) = bind.downcast_mut::<Self>() {
+            b.static_hold = static_hold;
+        }
+        Ok(bind)
     }
 }
 
@@ -547,7 +556,8 @@ impl<R: Rt> Update<R> for Bind<R> {
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
         self.pattern.encode(buf)?;
-        self.node.image_encode(buf)
+        self.node.image_encode(buf)?;
+        self.static_hold.as_ref().map(|h| h.id).encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -676,6 +686,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         self.pattern.ids(&mut |id| {
             refs.bound.insert(id);
         });
+        refs.static_holds(&self.static_hold);
         self.node.refs(refs);
     }
 
@@ -684,7 +695,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         // bind's entry must go with it.
         self.pattern.ids(&mut |id| {
             ctx.bind_to_lambda.remove(&id);
-            ctx.static_callees.remove(&id);
+            ctx.static_callees.forget(id);
             ctx.connect_targets.remove(&id);
             ctx.batch_connect_targets.remove(&id);
         });

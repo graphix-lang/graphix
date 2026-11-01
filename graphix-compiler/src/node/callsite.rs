@@ -12,7 +12,7 @@ use super::{
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
     LambdaId, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, ResolvingLambda, Rt,
-    Scope, Tag, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
+    Scope, StaticHold, Tag, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     format_with_flags,
@@ -161,6 +161,9 @@ struct FnParams {
     binds: LPooled<Vec<BindId>>,
     formals: SmallVec<[((LambdaId, u32), Option<BindId>); 4]>,
     args: SmallVec<[BindId; 4]>,
+    /// The arguments' bindings the instance binds statically, which the
+    /// site holds ([`CallSite::hold_static`]).
+    held: SmallVec<[BindId; 2]>,
 }
 
 /// The call's argument nodes, keyed for signature lookups and iterating
@@ -1370,28 +1373,37 @@ impl ImagedRefs {
         self.flat.get_or_init(|| {
             let mut refed: LPooled<IntSet<BindId>> = LPooled::take();
             let mut bound: LPooled<IntSet<BindId>> = LPooled::take();
-            let mut seen: LPooled<IntSet<LambdaInstanceId>> = LPooled::take();
-            let mut stack: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
-            stack.push(instance);
-            while let Some(i) = stack.pop() {
-                if !seen.insert(i) {
-                    continue;
-                }
-                let Some(r) = self.table.get(&i) else { continue };
+            self.reach(instance, &mut |r| {
                 refed.extend(r.own.refed.iter().copied());
                 bound.extend(r.own.bound.iter().copied());
-                stack.extend(r.callees.iter().copied());
-            }
+            });
             RefsSummary::of_sets(&refed, &bound)
         })
     }
+
+    /// Each instance of `instance`'s tree, once.
+    fn reach(&self, instance: LambdaInstanceId, f: &mut dyn FnMut(&InstanceRefs)) {
+        let mut seen: LPooled<IntSet<LambdaInstanceId>> = LPooled::take();
+        let mut stack: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
+        stack.push(instance);
+        while let Some(i) = stack.pop() {
+            if !seen.insert(i) {
+                continue;
+            }
+            let Some(r) = self.table.get(&i) else { continue };
+            f(r);
+            stack.extend(r.callees.iter().copied());
+        }
+    }
 }
 
-/// What a heap instance's own nodes read, and its callees by instance.
+/// What a heap instance's own nodes read and bind statically, and its
+/// callees by instance.
 #[derive(Debug, Clone, netidx_derive::Pack)]
 pub(crate) struct InstanceRefs {
     own: RefsSummary,
     callees: Vec<LambdaInstanceId>,
+    holds: Vec<(BindId, TArc<Expr>)>,
 }
 
 pub(crate) type InstanceRefsTable = AHashMap<LambdaInstanceId, InstanceRefs>;
@@ -1489,6 +1501,9 @@ pub struct CallSite<R: Rt> {
     /// its first update leaves imaged are held after it.
     decoded: bool,
     pub(crate) fork: ForkSite,
+    /// The bindings this call bound statically, its function's and its
+    /// fn-typed arguments', and, for an imaged callee, its whole tree's.
+    static_holds: SmallVec<[StaticHold; 1]>,
 }
 
 /// A pure callee a shrink left asleep at a recursive edge (`CallSite::
@@ -1625,6 +1640,14 @@ impl<R: Rt> CallSite<R> {
             kept: Kept::Nothing,
             decoded: false,
             fork: ForkSite::default(),
+            static_holds: SmallVec::new(),
+        }
+    }
+
+    /// Hold `id`, a binding this call binds statically.
+    fn hold_static(&mut self, ctx: &CompileCtx<R>, id: BindId) {
+        if !self.static_holds.iter().any(|h| h.id == id) {
+            self.static_holds.push(ctx.hold_static(id, &self.spec))
         }
     }
 
@@ -2136,6 +2159,7 @@ impl<R: Rt> CallSite<R> {
             ctx.discard_apply(apply);
             return Err(e.context(context(&self.spec)));
         }
+        params.held.iter().for_each(|id| self.hold_static(ctx, *id));
         Ok((apply, defaults, params))
     }
 
@@ -2627,6 +2651,7 @@ impl<R: Rt> CallSite<R> {
             let apply = self.callee.apply().expect("static callee must have an apply");
             self.register_fn_params(ctx, apply, &instance_ftype, def.id)
         };
+        param_binds.held.iter().for_each(|id| self.hold_static(ctx, *id));
         if let Some(instance) = instance {
             ctx.push_resolving(
                 def.id,
@@ -2700,9 +2725,10 @@ impl<R: Rt> CallSite<R> {
                 if ctx.batch_connect_targets.contains(&r.id) {
                     None
                 } else {
-                    let fv = ctx.bind_to_lambda.get(&r.id).cloned();
+                    let id = r.id;
+                    let fv = ctx.bind_to_lambda.get(&id).cloned();
                     if fv.is_some() {
-                        ctx.record_static_callee(r.id, &self.spec);
+                        self.hold_static(ctx, id);
                     }
                     fv
                 }
@@ -2803,7 +2829,7 @@ impl<R: Rt> CallSite<R> {
                         continue;
                     }
                     if let Some(fv) = ctx.bind_to_lambda.get(&r.id).cloned() {
-                        ctx.record_static_callee(r.id, &self.spec);
+                        params.held.push(r.id);
                         if let Some(def) = fv.downcast_ref::<LambdaDef<R>>() {
                             ctx.fn_forward_resolutions.insert(id, def.id);
                         }
@@ -3216,11 +3242,12 @@ impl<R: Rt> CallSite<R> {
             let mut refs = Refs::stopping_at_callees();
             apply.refs(&mut refs);
             let callees = refs.take_callees();
+            let holds = refs.take_static_holds();
             let own = RefsSummary::of_sets(&refs.refed, &refs.bound);
             image::encoding(|e| {
                 e.ext::<image::Compiled>()
                     .instance_refs
-                    .insert(instance, InstanceRefs { own, callees })
+                    .insert(instance, InstanceRefs { own, callees, holds })
             });
         }
         Ok(())
@@ -3370,9 +3397,14 @@ impl<R: Rt> CallSite<R> {
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         let fork = ForkSite::image_decode(buf)?;
+        let n = crate::image::count_decode(buf)?;
+        let held = (0..n)
+            .map(|_| BindId::decode(buf))
+            .collect::<Result<SmallVec<[BindId; 1]>, _>>()?;
         let mut site =
             Self::unbound(spec, ftype, rtype, fnode, args, scope, flags, top_id);
         site.fork = fork;
+        held.into_iter().for_each(|id| site.hold_static(ctx, id));
         site.arg_refs = arg_refs;
         site.callee = match imaged {
             None => callee,
@@ -3389,10 +3421,16 @@ impl<R: Rt> CallSite<R> {
         // body decodes, as a cold compile's registrations do; the site holds
         // them until the body decodes and registers its own (recorded, so a
         // failed read unwinds them)
+        // and holds what its tree binds statically for as long as it lives:
+        // an imaged site inside a decoding instance is under one that does
         if let Callee::Imaged { instance, refs, reader, held: true, .. } = &site.callee {
             for id in refs.flat(*instance).refed.iter() {
                 ctx.record_reader(*id, reader.clone())
             }
+            refs.reach(*instance, &mut |r| {
+                site.static_holds
+                    .extend(r.holds.iter().map(|(id, call)| ctx.hold_static(*id, call)))
+            });
         }
         Ok(Node::new(CallNode::Call(site)))
     }
@@ -3599,7 +3637,9 @@ impl<R: Rt> CallSite<R> {
         image::flags_encode(self.flags, buf)?;
         image::scope_encode(&self.scope, buf)?;
         self.top_id.encode(buf)?;
-        self.fork.image_encode(buf)
+        self.fork.image_encode(buf)?;
+        encode_varint(self.static_holds.len() as u64, buf);
+        self.static_holds.iter().try_for_each(|h| h.id.encode(buf))
     }
 
     pub(crate) fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -3973,6 +4013,7 @@ impl<R: Rt> CallSite<R> {
                 imaged.flat(*instance).add_to(refs);
             }
         }
+        refs.static_holds(&self.static_holds);
         self.fnode.refs(refs);
         for arg in self.args.values() {
             refs.bound.insert(arg.id);

@@ -1123,6 +1123,66 @@ async fn fused_program_image(program: &str) -> Result<Bytes> {
     Ok(image)
 }
 
+/// A restored call holds the binding it calls statically, as the cold
+/// one did, until it is deleted: a call the image restores eagerly, an
+/// alias, a call in an instance body decoded at its first dispatch or not
+/// yet decoded (an arm never taken), and the kernel that replaced a call
+/// each carry their holds.
+#[tokio::test]
+async fn a_restored_static_call_holds_its_callee_while_it_lives() -> Result<()> {
+    let fused = graphix_compiler::BitFlags::empty();
+    let walked = CFlag::FusionDisabled.into();
+    for (program, flags) in [
+        ("str::len(\"abc\")", walked),
+        ("{ let h = str::len; h(\"abc\") }", walked),
+        ("{ let g = |s: string| -> i64 str::len(s); g(\"abc\") }", walked),
+        (
+            "{ let g = |s: string| -> i64 str::len(s); \
+             let b = false; select b { true => g(\"abc\"), false => 0 } }",
+            walked,
+        ),
+        ("{ let g = |s: string| -> i64 str::len(s) + 1; g(\"abc\") }", fused),
+    ] {
+        let (tx, _rx) = mpsc::channel(10);
+        let (reg_tx, _reg_rx) = oneshot::channel();
+        let (prog_tx, prog_rx) = oneshot::channel();
+        let cold = TestCtx::start(
+            config(tx, TEST_REGISTER, vec![], |_| {})?
+                .flags(flags)
+                .registration(RegistrationImage::save(reg_tx))
+                .program(Load::Text(program.into()))
+                .program_image(prog_tx),
+        )
+        .await?;
+        let image = prog_rx.await??.image;
+        assert_eq!(
+            cold.rt.fusion_stats().await?.fused > 0,
+            flags.is_empty(),
+            "{program}"
+        );
+        cold.shutdown().await;
+        let (tx, _rx) = mpsc::channel(10);
+        let warm = TestCtx::start(
+            config(tx, TEST_REGISTER, vec![], |_| {})?
+                .flags(flags)
+                .registration(RegistrationImage::load(image)),
+        )
+        .await?;
+        assert!(
+            warm.rt.env_stats().await?.restored,
+            "{program}: the warm runtime compiled cold"
+        );
+        let root = warm.rt.program().await?.expect("the program restored");
+        let write = || warm.rt.compile(literal!("str::len <- |s: string| 0"));
+        let e = write().await.expect_err(program);
+        assert!(format!("{e:#}").contains("len cannot be written"), "{program}: {e:#}");
+        drop(root);
+        write().await?;
+        warm.shutdown().await;
+    }
+    Ok(())
+}
+
 /// A chain of recursive kernels, each calling the one before and itself
 /// twice, shares its callees' activation layouts: its image grows with
 /// the chain, not with the layouts' copies (3^n).

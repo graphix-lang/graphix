@@ -1608,7 +1608,22 @@ pub(crate) fn kernel_node<R: Rt>(
         .iter()
         .map(|fv| genn::reference::<R>(ctx, fv.bind_id, fv.typ.clone(), top))
         .collect();
-    FusedKernel::new(node.spec().clone(), node.typ().clone(), facts, kernel, jit, feeders)
+    let mut region = Refs::holding();
+    node.refs(&mut region);
+    let static_holds = region
+        .take_static_holds()
+        .iter()
+        .map(|(id, call)| ctx.hold_static(*id, call))
+        .collect();
+    FusedKernel::new(
+        node.spec().clone(),
+        node.typ().clone(),
+        facts,
+        kernel,
+        jit,
+        feeders,
+        static_holds,
+    )
 }
 
 fn build_region<R: Rt>(

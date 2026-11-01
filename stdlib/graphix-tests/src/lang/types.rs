@@ -5343,6 +5343,112 @@ async fn written_after_a_static_call_is_refused() -> Result<()> {
     Ok(())
 }
 
+/// The first value the expression `id` produces, within 10 s.
+async fn value_of(
+    rx: &mut tokio::sync::mpsc::Receiver<
+        poolshark::global::GPooled<Vec<graphix_rt::GXEvent>>,
+    >,
+    id: graphix_compiler::expr::ExprId,
+) -> Result<Value> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let batch = tokio::time::timeout_at(deadline, rx.recv()).await;
+        let Ok(Some(batch)) = batch else { anyhow::bail!("{id:?} never produced") };
+        if let Some(v) = batch.iter().find_map(|ev| match ev {
+            graphix_rt::GXEvent::Updated(eid, v) if *eid == id => Some(v.clone()),
+            _ => None,
+        }) {
+            return Ok(v);
+        }
+    }
+}
+
+/// A static call holds its callee only while it lives: once the input
+/// that made it is deleted, a `<-` to the callee compiles. Fused, the
+/// kernel that replaced the call holds it in the call's place.
+#[tokio::test(flavor = "current_thread")]
+async fn a_deleted_static_call_releases_its_callee() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_compiler::CFlag;
+    use graphix_package_core::testing::{TestCtx, config};
+    for flags in [CFlag::FusionDisabled.into(), Default::default()] {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+        let ctx = TestCtx::start(
+            config(tx, crate::TEST_REGISTER, vec![], |_| {})?.flags(flags),
+        )
+        .await?;
+        let _f = ctx.rt.compile(ArcStr::from("let f = |x: i64| -> i64 x + 1")).await?;
+        let fused = ctx.rt.fusion_stats().await?.fused;
+        let r = ctx.rt.compile(ArcStr::from("let r = f(1)")).await?;
+        let fused = ctx.rt.fusion_stats().await?.fused > fused;
+        assert_eq!(fused, flags.is_empty(), "{flags:?}");
+        let e = ctx.rt.compile(ArcStr::from("f <- |x| x + 100")).await.unwrap_err();
+        let e = format!("{e:#}");
+        assert!(e.contains("f cannot be written") && e.contains("f(1)"), "{e}");
+        drop(r);
+        let _w = ctx.rt.compile(ArcStr::from("f <- |x| x + 100")).await?;
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
+/// A dynamic module's body that called `f` statically holds it until a
+/// reload replaces the body: then nothing calls `f` and a `<-` to it
+/// compiles.
+#[tokio::test(flavor = "current_thread")]
+async fn a_reloaded_module_releases_its_static_callee() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let mut held = Vec::new();
+    for i in [
+        "let f = |x: i64| x + 1",
+        "let src = \"let v = super::f(1)\"",
+        "let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src }",
+    ] {
+        held.push(ctx.rt.compile(ArcStr::from(i)).await?);
+    }
+    let v = ctx.rt.compile(ArcStr::from("d::v")).await?;
+    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(2));
+    let e = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 100")).await.unwrap_err();
+    assert!(format!("{e:#}").contains("super::f(1)"), "{e:#}");
+    let _w = ctx.rt.compile(ArcStr::from("src <- \"let v = 5\"")).await?;
+    ctx.rt.wait_settled().await?;
+    let v = ctx.rt.compile(ArcStr::from("d::v")).await?;
+    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(5));
+    let _w = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 100")).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
+/// An alias `let h = f` in a function's body holds `f` while an instance
+/// of the function lives. The definition holds nothing: an instance a
+/// later input builds after a `<-` to `f` calls what was written.
+#[tokio::test(flavor = "current_thread")]
+async fn an_alias_holds_its_callee_while_its_instance_lives() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let _f = ctx
+        .rt
+        .compile(ArcStr::from(
+            "let f = |x: i64| -> i64 x + 1; \
+             let g = |x: i64| -> i64 { let h = f; h(x) }",
+        ))
+        .await?;
+    let r = ctx.rt.compile(ArcStr::from("let r = g(1)")).await?;
+    let e = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 100")).await.unwrap_err();
+    assert!(format!("{e:#}").contains("let h = f"), "{e:#}");
+    drop(r);
+    let _w = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 100")).await?;
+    let v = ctx.rt.compile(ArcStr::from("g(1)")).await?;
+    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(101));
+    ctx.shutdown().await;
+    Ok(())
+}
+
 const WRITTEN_BINDING_WRITER_FIRST: &str = r#"
 {
     let f = |x| x;

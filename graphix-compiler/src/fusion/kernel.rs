@@ -7,7 +7,7 @@
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
-    BindId, CompileCtx, ExecCtx, Node, NodeView, Rt, Update,
+    BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, StaticHold, Update,
     analysis::RegionFacts,
     cost::ForkSite,
     expr::Expr,
@@ -74,6 +74,9 @@ pub struct FusedKernel<R: Rt> {
     /// A slot's kernel shared with its prototype delivers these raises
     /// to the slot's handlers (`fusion::share`).
     redirects: Redirects,
+    /// What the region it replaced bound statically, its callees'
+    /// instances' included: the kernel calls those definitions.
+    static_holds: Box<[StaticHold]>,
 }
 
 impl<R: Rt> Drop for FusedKernel<R> {
@@ -114,6 +117,7 @@ impl<R: Rt> FusedKernel<R> {
         kernel: Arc<KernelSig>,
         jit: WrappedKernel,
         feeders: Box<[Node<R>]>,
+        static_holds: Box<[StaticHold]>,
     ) -> Node<R> {
         debug_assert_eq!(feeders.len(), kernel.params.len(), "one feeder per param");
         let state = vec![0u64; jit.state_words].into_boxed_slice();
@@ -131,6 +135,7 @@ impl<R: Rt> FusedKernel<R> {
             self_gen: 0,
             tree_size: 0,
             redirects: Box::default(),
+            static_holds,
         })
     }
 
@@ -190,7 +195,10 @@ impl<R: Rt> FusedKernel<R> {
         if feeders.len() != kernel.params.len() {
             return Err(PackError::InvalidFormat);
         }
-        Ok(Self::new(spec, typ, facts, kernel, jit, feeders))
+        let held = Vec::<(BindId, Arc<Expr>)>::decode(buf)?;
+        let static_holds =
+            held.iter().map(|(id, call)| ctx.hold_static(*id, call)).collect();
+        Ok(Self::new(spec, typ, facts, kernel, jit, feeders, static_holds))
     }
 
     /// Nothing ran yet: every word the image does not carry is initial.
@@ -281,6 +289,11 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
         self.feeders.iter_mut().for_each(f)
     }
 
+    fn refs(&self, refs: &mut Refs) {
+        refs.static_holds(&self.static_holds);
+        self.feeders.iter().for_each(|n| n.refs(refs))
+    }
+
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         crate::stack::with_control(&ctx.control, || self.free_state());
         self.for_each_child_mut(&mut |node| node.delete(ctx));
@@ -296,7 +309,10 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
         self.typ.typ.encode(buf)?;
         self.facts.encode(buf)?;
         encode_nodes(&self.feeders, buf)?;
-        w.image_encode(buf)
+        w.image_encode(buf)?;
+        let held: Vec<(BindId, Arc<Expr>)> =
+            self.static_holds.iter().map(|h| (h.id, h.call.clone())).collect();
+        held.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
