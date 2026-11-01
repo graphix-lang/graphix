@@ -1871,6 +1871,13 @@ impl<R: Rt> ByRef<R> {
                 Referent::Channel(c) => (&**c as &dyn Any).downcast_ref::<Ref>(),
             };
             if let Some(r) = named {
+                // CR claude for claude: [bug/low] `&mut a::f` over `val f: fn(x: i64) -> i64`
+                // is refused with "a::f was made generic by an earlier compile, and a
+                // writable reference to it would let a write narrow it", though the type
+                // holds no variable and `a::f <- ..` is accepted: membership in poly_binds
+                // is not generality. mark_connect_target asks generalized_earlier, which
+                // reads the type's cells; this refusal likely should too. Main a084f9887
+                // alike. probe: ~/ptmp/cr29/scratch/r6-W/r38/rf2 (mut-ref-poly-01)
                 if ctx.env.poly_binds.contains(&r.id) {
                     bailat!(
                         spec,

@@ -1035,24 +1035,27 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
 }
 
 /// A `<-` to either binding of an interface pair reaches every call
-/// through the other, from the image as cold.
+/// through the other, and outlasts its arm's sleep, from the image as cold.
 #[tokio::test]
 async fn a_restored_interface_pair_calls_what_was_written() -> Result<()> {
     use super::modules::{
-        BODY_WRITE_BEFORE_A_LOAD, BODY_WRITES_ITS_VAL, ROOT_WRITE_BEFORE_A_LOAD,
-        ROOT_WRITES_A_VAL, ROOT_WRITES_AN_ALIASED_VAL,
+        A_WRITE_IN_A_SLEEPING_ARM, BODY_WRITE_BEFORE_A_LOAD, BODY_WRITES_ITS_VAL,
+        ROOT_WRITE_BEFORE_A_LOAD, ROOT_WRITES_A_VAL, ROOT_WRITES_AN_ALIASED_VAL,
     };
     let program = literal!("mod test; test::result");
-    let fixtures: [&[(&str, &str)]; 5] = [
-        &BODY_WRITES_ITS_VAL.files(),
-        &ROOT_WRITES_A_VAL.files(),
-        &ROOT_WRITES_AN_ALIASED_VAL.files(),
-        &BODY_WRITE_BEFORE_A_LOAD.files(),
-        &[("/test.gx", ROOT_WRITE_BEFORE_A_LOAD)],
+    let fixtures: [(&[(&str, &str)], Value); 6] = [
+        (&BODY_WRITES_ITS_VAL.files(), Value::I64(101)),
+        (&ROOT_WRITES_A_VAL.files(), Value::I64(101)),
+        (&ROOT_WRITES_AN_ALIASED_VAL.files(), Value::I64(101)),
+        (&BODY_WRITE_BEFORE_A_LOAD.files(), Value::I64(101)),
+        (&[("/test.gx", ROOT_WRITE_BEFORE_A_LOAD)], Value::I64(101)),
+        (&A_WRITE_IN_A_SLEEPING_ARM.files(), Value::String("101 101".into())),
     ];
     let fused = graphix_compiler::BitFlags::empty();
     let walked = CFlag::FusionDisabled.into();
-    for (fixture, flags) in fixtures.iter().flat_map(|f| [(f, fused), (f, walked)]) {
+    for ((fixture, expected), flags) in
+        fixtures.iter().flat_map(|f| [(f, fused), (f, walked)])
+    {
         let root = fixture[0].1;
         let files = || {
             let files = fixture.iter().map(|(path, text)| {
@@ -1075,7 +1078,7 @@ async fn a_restored_interface_pair_calls_what_was_written() -> Result<()> {
         )
         .await?;
         let image = prog_rx.await??.image;
-        assert_eq!(first_values(&mut cold_rx).await, [Value::I64(101)], "{root} cold");
+        assert_eq!(first_values(&mut cold_rx).await, [expected.clone()], "{root} cold");
         cold.shutdown().await;
         let (tx, mut warm_rx) = mpsc::channel(10);
         let warm = TestCtx::start(
@@ -1090,7 +1093,7 @@ async fn a_restored_interface_pair_calls_what_was_written() -> Result<()> {
         );
         // the root's owner; dropping it deletes the program
         let _program = warm.rt.program().await?.expect("the program restored");
-        assert_eq!(first_values(&mut warm_rx).await, [Value::I64(101)], "{root} warm");
+        assert_eq!(first_values(&mut warm_rx).await, [expected.clone()], "{root} warm");
         warm.shutdown().await;
     }
     Ok(())

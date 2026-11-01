@@ -1460,7 +1460,9 @@ pub struct CompileCtx<R: Rt> {
     pub batch_connect_targets: TrackedSet<BindId>,
     /// Every `<-` target for the program's lifetime (`batch_connect_targets`
     /// is per batch): `Bind::update` must not reseed a woken target that
-    /// holds a value. `Bind::delete` removes its ids.
+    /// holds a value. Both bindings of an interface pair are one where
+    /// either is ([`Self::join_interface_pair`]). `Bind::delete` removes
+    /// its ids.
     pub connect_targets: TrackedSet<BindId>,
     /// The bindings a live call bound statically: that call keeps the
     /// definition it bound, so a later compile's `<-` to the binding is
@@ -1877,6 +1879,21 @@ impl<R: Rt> CompileCtx<R> {
         if self.connect_targets.contains(&a) || self.connect_targets.contains(&b) {
             self.batch_connect_targets.insert(a);
             self.batch_connect_targets.insert(b);
+        }
+    }
+
+    /// Join `inner`, a body's binding implementing an interface `val`, with
+    /// `outer`, the `val`'s ([`StaticCallees::join`]). From here on they are
+    /// one `<-` target where either is, so a woken `let` keeps what was
+    /// written through either. The typing stays the written binding's: the
+    /// body's check, before this, took the value restriction from the
+    /// targets as the writes named them.
+    pub(crate) fn join_interface_pair(&mut self, inner: BindId, outer: BindId) {
+        self.static_callees.join(inner, outer);
+        if self.connect_targets.contains(&inner) || self.connect_targets.contains(&outer)
+        {
+            self.connect_targets.insert(inner);
+            self.connect_targets.insert(outer);
         }
     }
 
@@ -3590,10 +3607,31 @@ pub(crate) struct StaticCallees(Mutex<Holds>);
 #[derive(Debug, Default)]
 struct Holds {
     calls: AHashMap<BindId, SmallVec<[(Arc<expr::Expr>, u32); 1]>>,
-    joined: AHashMap<BindId, SmallVec<[BindId; 1]>>,
+    joined: AHashMap<BindId, Side>,
     /// The holds of a body being replaced, which a write its replacement
     /// makes does not see ([`StaticCallees::set_aside`]).
     aside: AHashMap<(BindId, ExprId), u32>,
+}
+
+/// A binding's side of the interface pairs it is in
+/// ([`StaticCallees::join`]).
+#[derive(Debug)]
+enum Side {
+    /// It implements the `val` whose binding this is.
+    Inner(BindId),
+    /// It is a `val`'s, implemented by these: a reload's body joins its
+    /// own before the body it replaces retires.
+    Outer(SmallVec<[BindId; 1]>),
+}
+
+impl Side {
+    /// The bindings on the other side.
+    fn with(&self) -> &[BindId] {
+        match self {
+            Side::Inner(outer) => std::slice::from_ref(outer),
+            Side::Outer(inners) => inners,
+        }
+    }
 }
 
 impl StaticCallees {
@@ -3666,27 +3704,48 @@ impl StaticCallees {
     // a_reload_may_write_what_an_old_instance_calls (z1). u2/u4 now reach run time: main
     // refused them only through the stale static call; the typing hole is CR
     // iface-generic-written-01. probe: ~/ptmp/cr29/scratch/r6-W/w11/probes.sh
-    /// `a` and `b` are one variable, a write to either reaching the
-    /// other: an interface's binding and the one implementing it.
-    pub(crate) fn join(&self, a: BindId, b: BindId) {
+    // 2026-11-01 claude: Review of cr37-W (review-r6 W2-r1-1, W2-r1-2), follow-up
+    // commit: (1) the wake hold: a pre-join write through the val left the body's let
+    // off connect_targets, so its arm's wake published the initializer over the write
+    // (w3, w1: '2 2' where '101 101'). CompileCtx::join_interface_pair, called at
+    // check_sig after the body's check and at decode, now makes both bindings targets
+    // where either is; the hold reads that, the value restriction was decided before it.
+    // Pins lang::modules::{a_write_through_an_interface_outlasts_its_arms_sleep,
+    // a_write_through_an_interface_outlasts_a_sleep_in_an_instance} fail without it. (2)
+    // The seq planner counted the pair as two variables (q1, q2: 0 where 5 and 7):
+    // plan_machines adds each written binding's joined partners
+    // (StaticCallees::add_joined); pins
+    // a_seq_step_reads_a_body_write_through_its_interface,
+    // a_seq_step_reads_a_write_through_an_interface_in_the_body fail without it. (3)
+    // typecheck0_instance's carry is pinned:
+    // a_body_write_reaches_a_call_through_its_interface_in_an_instance (2 where 101
+    // without it). StaticCallees records each binding's side of a pair (Side). probe:
+    // ~/ptmp/cr29/scratch/r6-W/r38/{w3, w1, q1, q2, q6}
+    /// `inner` and `outer` are one variable, a write to either reaching
+    /// the other: the binding implementing an interface's `val`, and the
+    /// `val`'s.
+    pub(crate) fn join(&self, inner: BindId, outer: BindId) {
         let mut held = self.0.lock();
-        for (x, y) in [(a, b), (b, a)] {
-            let with = held.joined.entry(x).or_default();
-            if !with.contains(&y) {
-                with.push(y)
-            }
+        held.joined.insert(inner, Side::Inner(outer));
+        let side =
+            held.joined.entry(outer).or_insert_with(|| Side::Outer(SmallVec::new()));
+        if let Side::Outer(inners) = side
+            && !inners.contains(&inner)
+        {
+            inners.push(inner)
         }
     }
 
-    /// `a` and `b` are no longer one variable.
-    pub(crate) fn unjoin(&self, a: BindId, b: BindId) {
+    /// `inner` and `outer` are no longer one variable.
+    pub(crate) fn unjoin(&self, inner: BindId, outer: BindId) {
         let mut held = self.0.lock();
-        for (x, y) in [(a, b), (b, a)] {
-            if let Some(with) = held.joined.get_mut(&x) {
-                with.retain(|id| *id != y);
-                if with.is_empty() {
-                    held.joined.remove(&x);
-                }
+        if matches!(held.joined.get(&inner), Some(Side::Inner(o)) if *o == outer) {
+            held.joined.remove(&inner);
+        }
+        if let Some(Side::Outer(inners)) = held.joined.get_mut(&outer) {
+            inners.retain(|id| *id != inner);
+            if inners.is_empty() {
+                held.joined.remove(&outer);
             }
         }
     }
@@ -3695,28 +3754,38 @@ impl StaticCallees {
     fn variable(&self, id: BindId) -> SmallVec<[BindId; 2]> {
         let held = self.0.lock();
         let mut ids: SmallVec<[BindId; 2]> = smallvec::smallvec![id];
-        let mut i = 0;
-        while let Some(id) = ids.get(i).copied() {
-            for with in held.joined.get(&id).into_iter().flatten() {
-                if !ids.contains(with) {
-                    ids.push(*with)
-                }
-            }
-            i += 1;
-        }
+        held.close_over_joins(&mut ids);
         ids
+    }
+
+    /// Add to `ids` every binding one of them is one variable with.
+    pub(crate) fn add_joined(&self, ids: &mut IntSet<BindId>) {
+        let held = self.0.lock();
+        if held.joined.is_empty() || ids.is_empty() {
+            return;
+        }
+        let mut all: SmallVec<[BindId; 8]> = ids.iter().copied().collect();
+        held.close_over_joins(&mut all);
+        ids.extend(all);
     }
 
     /// Forget `id`, a deleted binding: nothing can write it again.
     pub(crate) fn forget(&self, id: BindId) {
         let mut held = self.0.lock();
         held.calls.remove(&id);
-        for with in held.joined.remove(&id).into_iter().flatten() {
-            if let Some(ids) = held.joined.get_mut(&with) {
-                ids.retain(|i| *i != id);
-                if ids.is_empty() {
-                    held.joined.remove(&with);
+        let Some(side) = held.joined.remove(&id) else { return };
+        for with in side.with() {
+            match held.joined.get_mut(with) {
+                Some(Side::Outer(inners)) => {
+                    inners.retain(|i| *i != id);
+                    if inners.is_empty() {
+                        held.joined.remove(with);
+                    }
                 }
+                Some(Side::Inner(_)) => {
+                    held.joined.remove(with);
+                }
+                None => (),
             }
         }
     }
@@ -3767,6 +3836,21 @@ pub(crate) struct StaticHold {
     index: Arc<StaticCallees>,
     pub(crate) id: BindId,
     pub(crate) call: Arc<expr::Expr>,
+}
+
+impl Holds {
+    /// Extend `ids` with every binding one of them is one variable with.
+    fn close_over_joins<A: smallvec::Array<Item = BindId>>(&self, ids: &mut SmallVec<A>) {
+        let mut i = 0;
+        while let Some(id) = ids.get(i).copied() {
+            for with in self.joined.get(&id).map(Side::with).unwrap_or_default() {
+                if !ids.contains(with) {
+                    ids.push(*with)
+                }
+            }
+            i += 1;
+        }
+    }
 }
 
 impl Drop for StaticHold {

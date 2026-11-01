@@ -2401,8 +2401,9 @@ fn plan_runs<R: Rt>(
 /// Decide each seq machine's step boundaries: a step enters in the cycle
 /// its predecessor completes unless it reads or writes a variable a write
 /// since the last next-cycle boundary is still carrying there
-/// (`design/dependency_summaries.md` §3). A `seqq` capture of a variable
-/// some step writes is live (§4).
+/// (`design/dependency_summaries.md` §3), both bindings of an interface
+/// pair being one variable. A `seqq` capture of a variable some step
+/// writes is live (§4).
 fn plan_machines<R: Rt>(graph: &StaticCallGraph<'_, R>, ctx: &CompileCtx<R>) {
     let StaticCallGraph { machines, captures, .. } = graph;
     if machines.is_empty() {
@@ -2451,6 +2452,8 @@ fn plan_machines<R: Rt>(graph: &StaticCallGraph<'_, R>, ctx: &CompileCtx<R>) {
                 });
                 s.reads.ids.remove(&m.pc_id);
                 s.writes.ids.remove(&m.pc_id);
+                // a write to either binding of an interface pair is to both
+                ctx.static_callees.add_joined(&mut s.writes.ids);
                 s
             })
             .collect();

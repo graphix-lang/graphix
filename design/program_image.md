@@ -574,7 +574,9 @@ a static call in the batch, and the next compile prunes both. The carry
 is static resolution alone: the binding the write names takes its typing
 (the value restriction, a generic binding holding the write to its
 generality), the other keeps its own, and a write after the join marks
-both as above.
+both as above. The join itself (`CompileCtx::join_interface_pair`, after
+the body's check) makes both targets where either is, which the wake
+hold reads, not the typing.
 
 A dynamic module's reload compiles while the body it replaces is set
 aside: that body goes with a load that compiles, so its holds are left
@@ -609,6 +611,9 @@ a_write_through_an_interface_reaches_a_later_load,
 a_body_write_keeps_a_generic_interface_generic,
 a_write_through_a_generic_interface_keeps_the_body_generic,
 a_load_cannot_narrow_a_written_generic_interface,
-a_reload_may_write_what_an_old_instance_calls}`,
+a_reload_may_write_what_an_old_instance_calls,
+a_body_write_reaches_a_call_through_its_interface_in_an_instance,
+a_write_through_an_interface_outlasts_its_arms_sleep,
+a_write_through_an_interface_outlasts_a_sleep_in_an_instance}`,
 `lang::image::{a_restored_static_call_holds_its_callee_while_it_lives,
 a_restored_interface_pair_calls_what_was_written}`.

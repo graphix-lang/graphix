@@ -136,7 +136,9 @@ own). `node/seq_machine.rs` runs it:
 the first cycle; `analyze_bound_callee` for a runtime-bound body).
 Step `j+1` enters in the next cycle when its summary's reads or writes
 meet the writes pending since the last next-cycle boundary (`all` and
-`refs` meet any non-empty set; `pc` is left out). Otherwise it enters
+`refs` meet any non-empty set; `pc` is left out). A write to either
+binding of a module's interface pair is pending on both
+(`StaticCallees::add_joined`). Otherwise it enters
 in the same cycle. Every statement follows it, `until` and `try`
 included; the jump into a `with` body writes `pc`, so it is the next
 cycle. A call with no static target costs a cycle before a later read

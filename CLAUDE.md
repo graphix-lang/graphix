@@ -185,7 +185,9 @@ holds through the image; a module's interface binding and its
 implementation's are one binding there from the module's check on, a
 write to either compiled before it keeps static calls off both from the
 body's check on (`CompileCtx::carry_static_mark`; its typing stays the
-named binding's), and a reload's replaced body holds nothing against its
+named binding's) and makes both `<-` targets from the join on
+(`CompileCtx::join_interface_pair`: a woken `let` keeps what was written
+through either), and a reload's replaced body holds nothing against its
 replacement (`design/program_image.md`).
 
 **Runtime.** `graphix-rt` implements `Rt`: variables, timers, spawned
@@ -1377,7 +1379,8 @@ cycle, across workers; the compiler never pins threads.
   be seen: the next step enters in the cycle its predecessor completes
   unless it reads or writes a variable a pending write targets, by the
   post-resolution dependency summaries (`design/dependency_summaries.md`,
-  `analysis::plan_machines`, per instance): a callee's writes count, a
+  `analysis::plan_machines`, per instance): a callee's writes count, an
+  interface pair is one variable, a
   read or write through a reference or a call with no static target
   counts as every variable; `until` and `try` follow the same rule.
   Entering a step is its birth for the run (`View::Step`: constants fire,

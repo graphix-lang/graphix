@@ -400,11 +400,12 @@ struct Proxy {
 }
 
 impl Proxy {
-    /// A private inner binding is one variable with the outer one, so a
-    /// static call to either holds both.
-    fn join<R: Rt>(&self, ctx: &CompileCtx<R>) {
+    /// A private inner binding is one variable with the outer one: a
+    /// static call to either holds both, and a write to either is one to
+    /// both.
+    fn join<R: Rt>(&self, ctx: &mut CompileCtx<R>) {
         if self.private_inner {
-            ctx.static_callees.join(self.inner, self.outer)
+            ctx.join_interface_pair(self.inner, self.outer)
         }
     }
 }
@@ -442,6 +443,11 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // implementation holds as a cell it does not own (p1, `f <- |x| x` under a generic
 // val, which main runs, would be refused: declare it at one type). probe:
 // ~/ptmp/cr29/scratch/r6-W/w11/probes.sh (u2, u4) (iface-generic-written-01)
+// 2026-11-01 claude: Review of cr37-W: 'Main refused both' holds for base 432e34ac6;
+// main a084f9887 accepted u2 and ran u4 stale. The hole predates this lane without any
+// static call: u4i (a::f called through an array, let fs = [a::f]; h = fs[0]$; h(t ~
+// "s")) fails at run time with the same 'did not type' message on main, base and lane.
+// probe: ~/ptmp/cr29/scratch/r6-W/r38/u4i
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared`.
 fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
@@ -666,6 +672,10 @@ fn implemented_vals<R: Rt>(
     sig_binds: &Map<CompactString, BindId>,
     nodes: &[Node<R>],
 ) -> LPooled<Vec<(usize, BindId, BindId)>> {
+    let mut vals: LPooled<Vec<(usize, BindId, BindId)>> = LPooled::take();
+    if sig_binds.is_empty() {
+        return vals;
+    }
     let binds = || {
         nodes
             .iter()
@@ -681,7 +691,6 @@ fn implemented_vals<R: Rt>(
             }
         });
     }
-    let mut vals: LPooled<Vec<(usize, BindId, BindId)>> = LPooled::take();
     for (i, bind) in binds() {
         bind.pattern.ids(&mut |id| {
             let Some(b) = env.by_id.get(&id) else { return };

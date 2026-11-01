@@ -1569,6 +1569,95 @@ run!(
     is(Value::String("loaded".into())); FuseExpect::None
 );
 
+/// `f` and `g` over it, the implementation a `<-` through `a::f` writes.
+const F_AND_G: (&str, &str) = (
+    "val f: fn(x: i64) -> i64; val g: fn(x: i64) -> i64",
+    "let f = |x: i64| -> i64 x + 1; let g = |x: i64| -> i64 f(x)",
+);
+
+/// The root writes `a::f` from inside the arm holding the module, which
+/// sleeps for two cycles and wakes.
+pub(crate) const A_WRITE_IN_A_SLEEPING_ARM: WithInterface = WithInterface {
+    root: r#"
+        let ep = 0;
+        ep <- select ep { n if n < 8 => n + 1, _ => never() };
+        let on = select ep { 3 => false, 4 => false, _ => true };
+        let r = select on {
+            true => {
+                mod a;
+                a::f <- once(ep) ~ |x: i64| -> i64 x + 100;
+                (a::f(ep ~ 1), a::g(ep ~ 1))
+            },
+            false => never()
+        };
+        let result = select ep { 8 => "[r.0] [r.1]", _ => never() }
+    "#,
+    gxi: F_AND_G.0,
+    gx: F_AND_G.1,
+};
+
+// What a `<-` through an interface wrote stands when the implementation's
+// arm wakes, as it does for a binding with no interface.
+run!(
+    a_write_through_an_interface_outlasts_its_arms_sleep,
+    is(Value::String("101 101".into())),
+    "/test.gx" => A_WRITE_IN_A_SLEEPING_ARM.root,
+    "/test/a.gxi" => A_WRITE_IN_A_SLEEPING_ARM.gxi,
+    "/test/a.gx" => A_WRITE_IN_A_SLEEPING_ARM.gx; FuseExpect::Jit
+);
+
+run!(
+    a_write_through_an_interface_outlasts_a_sleep_in_an_instance,
+    is(Value::String("101 101".into())),
+    "/test.gx" => r#"
+        let ep = 0;
+        ep <- select ep { n if n < 8 => n + 1, _ => never() };
+        let on = select ep { 3 => false, 4 => false, _ => true };
+        let mk = |t: i64| -> (i64, i64) {
+            mod a;
+            a::f <- once(t) ~ |x: i64| -> i64 x + 100;
+            (a::f(t ~ 1), a::g(t ~ 1))
+        };
+        let r = select on { true => mk(ep), false => never() };
+        let result = select ep { 8 => "[r.0] [r.1]", _ => never() }
+    "#,
+    "/test/a.gxi" => F_AND_G.0,
+    "/test/a.gx" => F_AND_G.1; FuseExpect::Jit
+);
+
+// A module in a function's body: each instance's pair carries the mark.
+run!(
+    a_body_write_reaches_a_call_through_its_interface_in_an_instance,
+    is(Value::I64(101)),
+    "/test.gx" => r#"
+        let ep = 0;
+        ep <- select ep { n if n < 3 => n + 1, _ => never() };
+        let k = |t: i64| -> i64 { mod a; a::f(t) };
+        let r = k(ep ~ 1);
+        let result = select ep { 3 => r, _ => never() }
+    "#,
+    "/test/a.gxi" => BODY_WRITES_ITS_VAL.gxi,
+    "/test/a.gx" => BODY_WRITES_ITS_VAL.gx; FuseExpect::Jit
+);
+
+// A seq step after one that writes either binding of an interface pair
+// waits for the write, as it does for one binding.
+run!(
+    a_seq_step_reads_a_body_write_through_its_interface,
+    is(Value::I64(5)),
+    "/test.gx" => "mod a; let result = seq { a::set(5); a::v }",
+    "/test/a.gxi" => "val v: i64; val set: fn(x: i64) -> i64",
+    "/test/a.gx" => "let v = 0; let set = |x: i64| -> i64 { v <- x; x }"; FuseExpect::Jit
+);
+
+run!(
+    a_seq_step_reads_a_write_through_an_interface_in_the_body,
+    is(Value::I64(7)),
+    "/test.gx" => "mod a; let result = seq { a::v <- 7; a::get(null) }",
+    "/test/a.gxi" => "val v: i64; val get: fn(u: null) -> i64",
+    "/test/a.gx" => "let v = 0; let get = |u: null| -> i64 u ~ v"; FuseExpect::Jit
+);
+
 // An interface-only `mod` goes after the body's declarations of every
 // interface item listed before it, in whatever order the body declares
 // them.
