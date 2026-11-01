@@ -454,9 +454,7 @@ pub(crate) fn check_bound_tail_loops<R: Rt>(
         // the loop itself, the call dispatching it: one kernel, its body,
         // runs it as a loop, else each level is a call of its own
         Some(a) => {
-            let looped = g.tail_loop()
-                && matches!(g.body().view(), NodeView::FusedKernel(_))
-                && walked_call(g.body(), &due).is_none();
+            let looped = loops_in_its_kernel(g) && walked_call(g.body(), &due).is_none();
             (!looped).then(|| (a, written(call), NoLoopAt::Unfused))
         }
         None => due.unbuilt(g.body()),
@@ -464,6 +462,12 @@ pub(crate) fn check_bound_tail_loops<R: Rt>(
     if let Some(found) = found {
         TailLoops::report(ctx, found)
     }
+}
+
+/// Whether `g`'s body is one kernel that runs its tail recursion as a
+/// loop: a call dispatching `g` is no level of the recursion.
+fn loops_in_its_kernel<R: Rt>(g: &GXLambda<R>) -> bool {
+    g.tail_loop() && matches!(g.body().view(), NodeView::FusedKernel(_))
 }
 
 /// `call` when the program wrote it, not a builtin or a collection: a
@@ -501,7 +505,7 @@ fn walked_call<'a, R: Rt>(
             NodeView::CallSite(cs) => {
                 let Some(ApplyView::Lambda(g)) = cs.resolved_apply() else { return };
                 let call = by.or_else(|| written(cs.spec()));
-                if found.is_none() {
+                if found.is_none() && !loops_in_its_kernel(g) {
                     found = due.of(g).map(|a| (a, call));
                 }
                 let by = match g.body().view() {

@@ -232,7 +232,7 @@ pub(crate) fn reuse<R: Rt>(
         k.redirect(redirects);
     }
     if !ctx.attr_census.lock().is_empty() {
-        let decorated = super::discover_lambda_calls(node, ctx);
+        let decorated = super::discover_lambda_calls(node, None, ctx);
         ctx.attr_absorbed.lock().extend(decorated.decorated.iter().map(|n| n.spec().id));
     }
     FusionAttempt::Fused(fused)

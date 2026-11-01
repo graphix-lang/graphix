@@ -443,8 +443,8 @@ run!(
     TAIL_RECURSIVE_SLOT_INSTANCES,
     prints("[i64:2, i64:4, i64:7]"); FuseExpect::Jit);
 
-// A collection handed the loop itself calls it through a function value,
-// in the node-walk: the refusal names the collection's call.
+// A collection handed the loop itself calls it through a function value:
+// each slot's instance, self-recursive, is one kernel that runs the loop.
 const TAIL_RECURSIVE_COLLECTION_CALLBACK: &str = r#"
 {
   #[tail_recursive]
@@ -456,7 +456,36 @@ const TAIL_RECURSIVE_COLLECTION_CALLBACK: &str = r#"
 run!(
     tail_recursive_collection_callback,
     TAIL_RECURSIVE_COLLECTION_CALLBACK,
-    refused("#[tail_recursive]: no loop is built for the call `array::map([1, 2, 3], tri)` (line 5, column 3)"); FuseExpect::None; jit_only);
+    prints("[i64:0, i64:0, i64:0]"); FuseExpect::Jit);
+
+const TAIL_RECURSIVE_FOLD_CALLBACK: &str = r#"
+{
+  #[tail_recursive]
+  let rec step = |acc: i64, x: i64| -> i64 select x { 0 => acc, _ => step(acc + x, x - 1) };
+  array::fold([1, 2, 3], 0, step)
+}
+"#;
+
+run!(
+    tail_recursive_fold_callback,
+    TAIL_RECURSIVE_FOLD_CALLBACK,
+    is(Value::I64(10)); FuseExpect::Jit);
+
+// A self-recursive instance bound at run time, through a function value
+// or as a collection's callback, recursing in and out of tail position.
+const BOUND_SELF_RECURSION: &str = r#"
+{
+  let rec fib = |n: i64| -> i64 select n { 0 => 0, 1 => 1, _ => fib(n - 1) + fib(n - 2) };
+  let b = true;
+  let g = select b { true => fib, false => |n: i64| -> i64 n };
+  (g(20), array::map([10, 15, 20], fib))
+}
+"#;
+
+run!(
+    bound_self_recursion,
+    BOUND_SELF_RECURSION,
+    prints("[i64:6765, [i64:55, i64:610, i64:6765]]"); FuseExpect::Jit);
 
 // Labeled formals loop as positional ones do: a self-call passes each by
 // name, in any order, and one it omits takes its default.
@@ -776,9 +805,8 @@ async fn native_body_attribute_survives_repl_inputs() -> Result<()> {
 
 /// A `#[tail_recursive]` covers the instances later inputs build: one
 /// that does not fuse is refused after one that did, and after the loop
-/// called through a function value was reported as the program ran; so is
-/// one whose callback keeps state, and one after them that fuses is
-/// accepted.
+/// called through a function value, which its bind fused; so is one whose
+/// callback keeps state, and one after them that fuses is accepted.
 #[tokio::test]
 async fn tail_recursive_covers_later_inputs() -> Result<()> {
     use arcstr::literal;
@@ -834,10 +862,10 @@ async fn tail_recursive_covers_later_inputs() -> Result<()> {
     Ok(())
 }
 
-/// The loop called through a function value runs in the node-walk, each
-/// level a bind of its own: the first bind tries to fuse its instance and
-/// is reported, and the levels after it do not try again, so a deeper
-/// recursion fails no more fusions.
+/// A loop whose body does not fuse, called through a function value, runs
+/// in the node-walk, each level a bind of its own: the first bind tries to
+/// fuse its instance and is reported, and the levels after it do not try
+/// again, so a deeper recursion fails no more fusions.
 #[tokio::test]
 async fn tail_recursive_reported_bind_fuses_once() -> Result<()> {
     use graphix_package_core::testing::{
@@ -847,7 +875,7 @@ async fn tail_recursive_reported_bind_fuses_once() -> Result<()> {
     use tokio::time::Instant;
     const CODE: &str = "{
   #[tail_recursive]
-  let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, acc + n) };
+  let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, *(&acc) + n) };
   let b = true;
   let g = select b { true => loop, false => |n: i64, acc: i64| -> i64 n + acc };
   g(DEPTH, 0)

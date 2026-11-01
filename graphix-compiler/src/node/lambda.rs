@@ -971,6 +971,10 @@ impl<R: Rt> GXLambda<R> {
         &self.body
     }
 
+    pub(crate) fn body_mut(&mut self) -> &mut Node<R> {
+        &mut self.body
+    }
+
     pub(crate) fn inline_callback_body(&self) -> Option<&Node<R>> {
         match self.body.view() {
             NodeView::MapQ(map) => map.callback_body(),
@@ -1235,7 +1239,7 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
         if dbgenv::gxdbg_instance_fusion() {
             let before = ctx.fusion.stats.failed.len();
             let fused_before = ctx.fusion.stats.fused;
-            let r = fusion::fuse(&mut self.body, ctx);
+            let r = fusion::fuse_instance_body(self, ctx);
             eprintln!(
                 "INSTANCE-FUSION GXLambda::fuse id={:?} fused_delta={} new_failures:",
                 self.id,
@@ -1246,7 +1250,7 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
             }
             return r;
         }
-        fusion::fuse(&mut self.body, ctx)
+        fusion::fuse_instance_body(self, ctx)
     }
 
     fn typ(&self) -> Arc<FnType> {

@@ -69,15 +69,15 @@ fn bound_callee_captured_param_call_is_judged() {
     }
 }
 
-/// A `#[tail_recursive]` covers an instance a run-time bind builds: a
-/// function value whose body calls the loop is fused at its bind and runs
-/// the loop, while the loop called through the value runs in the
-/// node-walk and is reported, once, as the program runs on. So is an
-/// instance a bound body builds over a callback that keeps state, after
-/// the definition passed its check.
+/// A `#[tail_recursive]` covers an instance a run-time bind builds: the
+/// loop called through a function value, and a function value whose body
+/// calls the loop, are fused at the bind and run the loop; a loop whose
+/// body does not fuse runs in the node-walk and is reported, once, as the
+/// program runs on. So is an instance a bound body builds over a callback
+/// that keeps state, after the definition passed its check.
 const BOUND_LOOP: &str = r#"
 #[tail_recursive]
-let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, acc + n) };
+let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, ACC) };
 let b = true;
 let g = select b { true => CALLEE, false => |n: i64, acc: i64| -> i64 n + acc };
 println(g(4, 0));
@@ -88,10 +88,12 @@ sys::exit(sys::time::after_idle(duration:100.ms, 0))
 fn bound_callee_tail_loop_is_checked() {
     const LOOP_MSG: &str = "#[tail_recursive]: no loop is built for the call `g(4, 0)`";
     let dir = tempfile::tempdir().expect("tempdir");
-    for (callee, reported) in
-        [("loop", true), ("|n: i64, acc: i64| -> i64 loop(n, acc)", false)]
-    {
-        let program = BOUND_LOOP.replace("CALLEE", callee);
+    for (acc, callee, reported) in [
+        ("acc + n", "loop", false),
+        ("acc + n", "|n: i64, acc: i64| -> i64 loop(n, acc)", false),
+        ("*(&acc) + n", "loop", true),
+    ] {
+        let program = BOUND_LOOP.replace("ACC", acc).replace("CALLEE", callee);
         let ran = graphix(dir.path(), &program, &["--no-cache"], &[]);
         match reported {
             true => assert_eq!(ran.stderr.matches(LOOP_MSG).count(), 1, "{}", ran.stderr),
@@ -145,12 +147,12 @@ fn no_fusion_checks_no_loop() {
     assert_eq!(out, ["[0, 0, 0]", "10"], "{}", ran.stderr);
 }
 
-/// A collection handed the loop through a function value calls it in the
-/// node-walk, from each slot: reported once, naming no call the collection
-/// built.
+/// A collection handed through a function value a loop whose body does not
+/// fuse calls it in the node-walk, from each slot: reported once, naming
+/// no call the collection built.
 const SLOT_LOOP: &str = r#"
 #[tail_recursive]
-let rec tri = |n: i64| -> i64 select n { 0 => 0, _ => tri(n - 1) };
+let rec tri = |n: i64| -> i64 select n { 0 => 0, _ => tri(*(&n) - 1) };
 let b = true;
 let f = select b { true => tri, false => |n: i64| -> i64 n };
 println(array::map([1, 2, 3], f));

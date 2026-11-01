@@ -666,7 +666,8 @@ node graph IS the IR — there is no parallel typed IR
   `#[tail_recursive]` analysis's gate plus, for every instance a compile
   or a run-time bind builds (a later REPL input's included), the loop
   fusion built: no call to it left in the node-walk, a dynamic call's
-  included (`analysis::check_tail_loops`; a bind it covers is fused until
+  included, but one dispatching an instance whose body is the loop's
+  kernel (`analysis::check_tail_loops`; a bind it covers is fused until
   its failure is reported, once; unchecked where fusion does not run). A
   run-time bind fuses as its runtime does, whatever its site's flags (the
   package root's have fusion off, a site a collection or a builtin builds
@@ -982,7 +983,9 @@ value (`` [`A, `B, null] ``, a list beside an array) with its written
 type tests, tail loops
 over any kernel param
 kind, every fast-fn builtin and non-inline cast, cross-kernel lambda
-calls, trait default bodies. A subtree that does not fuse whole
+calls, trait default bodies, a self-recursive instance's body, its
+self-calls calling its own kernel (`fusion::fuse_instance_body`: the loop
+a function value or a collection's callback binds at run time). A subtree that does not fuse whole
 descends: every part that calls a function (a lambda call, a collection
 operation) is tried as a region of its own, any other part only
 descends (`fusion::fuse_parts`); a lambda call whose argument does not

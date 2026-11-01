@@ -96,9 +96,10 @@ loop (`has_tail_loop`). After fusion, `analysis::check_tail_loops` walks
 what is left of the node-walk (the callee bodies it binds, a kernel's
 feeders) and refuses the first call it finds to an instance of the
 definition, naming it (a call a collection makes of its callback by the
-collection's own call; a call a builtin builds, by none): an instance
-over a callback that does not fuse fails even where another instance
-fused. The assertion stays pending as
+collection's own call; a call a builtin builds, by none), except a call
+dispatching an instance whose body is one kernel running the loop
+(`loops_in_its_kernel`): an instance over a callback that does not fuse
+fails even where another instance fused. The assertion stays pending as
 `DefAssertionKind::TailLoop` once its definition's check passed: that
 check is not run again (a node-walked activation's analysis, its body
 lazy, would misjudge it), but every instance a later analysis reaches
@@ -110,7 +111,11 @@ input) checks its own instances, and a run-time bind it covers is fused
 (`TailLoops::checking`): the bound instance
 itself is a dynamic call, dispatched in the node-walk, so a function
 value that is the loop fails unless its body fused into one kernel that
-leaves no call of it, while one whose body calls it builds the loop; the
+leaves no call of it. A self-recursive instance's body is tried as a
+region whose self-calls call the instance's own kernel
+(`fusion::fuse_instance_body`), so the loop called through a function
+value, or handed to a collection, is one kernel as a call naming it is;
+the
 program already runs, so the failure is reported as an unhandled error
 is, once a definition (`DefAssertion::said`), and the assertion stays for
 the compiles after it. Where fusion does not run (`--no-fusion`, a

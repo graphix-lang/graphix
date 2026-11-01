@@ -72,6 +72,10 @@ impl<R: Rt> Prune<R> {
         &self.child
     }
 
+    pub(crate) fn boundary_ref(&self) -> &BoundaryRef {
+        &self.boundary
+    }
+
     pub(crate) fn child_mut(&mut self) -> &mut Node<R> {
         &mut self.child
     }

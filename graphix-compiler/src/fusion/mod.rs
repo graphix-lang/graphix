@@ -26,7 +26,7 @@ use crate::{
     expr::{Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
     fusion::kernel_abi::{KernelParam, KernelSig, ParamKind},
-    node::{self, callsite::CallNode, genn},
+    node::{self, callsite::CallNode, genn, lambda::GXLambda},
     profile::{self, Phase},
     typ::{Brief, FnType, Type},
 };
@@ -440,7 +440,7 @@ impl FusionCtx {
     /// walked once until a kernel is spliced.
     pub(crate) fn fingerprint<R: Rt>(
         &self,
-        g: &crate::node::lambda::GXLambda<R>,
+        g: &GXLambda<R>,
         ec: &CompileCtx<R>,
     ) -> (lowering::QopCoverage, lowering::FnResolutions) {
         let generation = {
@@ -968,9 +968,12 @@ pub(crate) struct Discovery<'n, R: Rt> {
 /// that fails to build is not recorded; its call site bails at emission
 /// and the region de-fuses (never a partial kernel). A callee already
 /// in `bodies` is not re-scanned, which closes self- and mutual
-/// recursion.
+/// recursion. Where `root` is the body of `own`, a self-recursive
+/// instance, the root's self-calls call `own`'s kernel, which runs the
+/// rest of the recursion.
 pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     root: &'n Node<R>,
+    own: Option<&'n GXLambda<R>>,
     ctx: &CompileCtx<R>,
 ) -> Discovery<'n, R> {
     let collect_decorated = !ctx.attr_census.lock().is_empty();
@@ -988,6 +991,17 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
         LPooled::take();
     worklist.push((root, None));
     let mut reads = lowering::ReadsMemo::default();
+    // CR claude for claude: [perf/low] Only a region that is a self-recursive
+    // instance's body routes its self-calls to the instance's kernel. A collection
+    // handed the function itself (`array::map(xs, tri)`, `array::fold(xs, 0, step)`)
+    // inlines its callback instance's body into the collection's region, whose
+    // self-call finds no kernel ("mutually recursive static call edge"), so the
+    // collection's loop stays in the node-walk while each slot's instance runs the
+    // recursion as one kernel; `array::map(xs, |x| tri(x))` fuses whole. Routing a
+    // self-call in an inlined callback body to that instance's kernel needs the
+    // callback's instance where `for_each_emitted_node` meets its body. probe:
+    // ~/ptmp/cr29/scratch/r6-E/n4/direct.gx (collection-self-callback-01)
+    let own = own.and_then(|g| Some((g, g.self_bind()?, &**g.typ())));
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();
@@ -1002,8 +1016,18 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
             let NodeView::CallSite(cs) = n.view() else {
                 return;
             };
-            let Some(ApplyView::Lambda(g)) = cs.resolved_apply() else {
-                return;
+            let (g, site_ftype) = match (cs.resolved_apply(), &own) {
+                (Some(ApplyView::Lambda(g)), _) => match cs.resolved_ftype() {
+                    Some(t) => (g, t),
+                    None => return,
+                },
+                (None, Some((g, bind, ftype)))
+                    if target.is_none()
+                        && matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == *bind) =>
+                {
+                    (*g, *ftype)
+                }
+                _ => return,
             };
             // A collection-bodied lambda is emitted inline at its call site.
             if matches!(g.body().view(), NodeView::MapQ(_) | NodeView::FoldQ(_)) {
@@ -1019,9 +1043,6 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
                 _ => literal!("lambda"),
             };
             // The site's resolved FnType keys the kernel cache.
-            let Some(site_ftype) = cs.resolved_ftype() else {
-                return;
-            };
             let cached = match lowering::build_lambda_kernel(
                 g, site_ftype, &name, ctx, &mut reads,
             ) {
@@ -1083,7 +1104,52 @@ pub fn fuse<R: Rt>(child: &mut Node<R>, ctx: &mut CompileCtx<R>) -> anyhow::Resu
     if let Some(p) = child.as_prune_mut() {
         return p.fuse_child(ctx);
     }
-    let blocker = match try_fuse_attempt(child, ctx)? {
+    let attempt = try_fuse_attempt(child, None, ctx)?;
+    take_attempt(child, attempt, ctx)
+}
+
+/// [`fuse`] for the body of the instance `g`. A self-recursive instance's
+/// body is tried as a region whose self-calls call `g`'s own kernel, so
+/// one kernel runs the recursion of an instance bound at run time, as it
+/// does a call that names the definition.
+pub(crate) fn fuse_instance_body<R: Rt>(
+    g: &mut GXLambda<R>,
+    ctx: &mut CompileCtx<R>,
+) -> anyhow::Result<()> {
+    if g.self_bind().is_none() {
+        return fuse(g.body_mut(), ctx);
+    }
+    match g.body().as_prune().map(|p| p.boundary_ref().clone()) {
+        Some(boundary) => ctx.in_boundary(Some(&boundary), |ctx| fuse_own_body(g, ctx)),
+        None => fuse_own_body(g, ctx),
+    }
+}
+
+fn fuse_own_body<R: Rt>(
+    g: &mut GXLambda<R>,
+    ctx: &mut CompileCtx<R>,
+) -> anyhow::Result<()> {
+    let attempt = {
+        let body = g.body();
+        let root = body.as_prune().map_or(body, |p| p.child());
+        try_fuse_attempt(root, Some(&*g), ctx)?
+    };
+    let body = g.body_mut();
+    let root = match body.as_prune().is_some() {
+        true => body.as_prune_mut().expect("a boundary").child_mut(),
+        false => body,
+    };
+    take_attempt(root, attempt, ctx)
+}
+
+/// Splice the kernel `attempt` built in for `child`, else fuse `child`
+/// with its arguments fed, else by its parts.
+fn take_attempt<R: Rt>(
+    child: &mut Node<R>,
+    attempt: FusionAttempt<R>,
+    ctx: &mut CompileCtx<R>,
+) -> anyhow::Result<()> {
+    let blocker = match attempt {
         FusionAttempt::Fused(new) => {
             ctx.discard(std::mem::replace(child, new));
             check_node_attributes(child, ctx)?;
@@ -1260,7 +1326,7 @@ fn fuse_fed<R: Rt>(
 ) -> anyhow::Result<FusionAttempt<R>> {
     // Every fed argument must be an input: an argument the kernel skips
     // would drop its effect.
-    let attempt = match try_fuse_attempt(child, ctx)? {
+    let attempt = match try_fuse_attempt(child, None, ctx)? {
         FusionAttempt::Fused(mut new) => {
             let k =
                 new.downcast_mut::<FusedKernel<R>>().expect("try_fuse builds a kernel");
@@ -1542,14 +1608,17 @@ pub fn try_fuse<R: Rt>(
     node: &Node<R>,
     ctx: &mut CompileCtx<R>,
 ) -> anyhow::Result<Option<Node<R>>> {
-    Ok(match try_fuse_attempt(node, ctx)? {
+    Ok(match try_fuse_attempt(node, None, ctx)? {
         FusionAttempt::Fused(node) => Some(node),
         FusionAttempt::Refused(_) => None,
     })
 }
 
+/// [`try_fuse`]'s attempt, `own` the self-recursive instance whose body
+/// `node` is ([`discover_lambda_calls`]).
 fn try_fuse_attempt<R: Rt>(
     node: &Node<R>,
+    own: Option<&GXLambda<R>>,
     ctx: &mut CompileCtx<R>,
 ) -> anyhow::Result<FusionAttempt<R>> {
     if !region_is_candidate(node) {
@@ -1574,7 +1643,7 @@ fn try_fuse_attempt<R: Rt>(
     if ctx.fusion.reusing() {
         return Ok(share::reuse(ctx, node, &return_type));
     }
-    let mut attempt = build_region(node, ctx, return_type)?;
+    let mut attempt = build_region(node, own, ctx, return_type)?;
     share::record(ctx, node, &mut attempt);
     Ok(attempt)
 }
@@ -1606,6 +1675,7 @@ pub(crate) fn kernel_node<R: Rt>(
 
 fn build_region<R: Rt>(
     node: &Node<R>,
+    own: Option<&GXLambda<R>>,
     ctx: &mut CompileCtx<R>,
     return_type: Type,
 ) -> anyhow::Result<FusionAttempt<R>> {
@@ -1625,7 +1695,7 @@ fn build_region<R: Rt>(
     drop(phase);
     let phase = profile::phase(Phase::Callees);
     ctx.fusion.emission()?.attempt();
-    let lambdas = discover_lambda_calls(node, ctx);
+    let lambdas = discover_lambda_calls(node, own, ctx);
     drop(phase);
     if let Some(spec) = lambdas.collided {
         ctx.fusion.emission()?.forget_attempt();
