@@ -877,10 +877,12 @@ node graph IS the IR — there is no parallel typed IR
   included, but one dispatching an instance whose body is the loop's
   kernel (`analysis::check_tail_loops`; a bind it covers is fused until
   its failure is reported, once; unchecked where fusion does not run). A
-  run-time bind fuses as its runtime does, whatever its site's flags (the
-  package root's have fusion off, a site a collection or a builtin builds
-  has none): a runtime whose flags disable fusion disables its context's
-  (`FusionCtx::disable`).
+  run-time bind fuses a collection slot's instance (its prototype's
+  kernels) and one an assertion it reaches covers, no other (a function
+  value called with no attribute in reach node-walks); it does so as its
+  runtime does, whatever its site's flags (the package root's have fusion
+  off, a site a collection or a builtin builds has none): a runtime whose
+  flags disable fusion disables its context's (`FusionCtx::disable`).
 - **Bottom is dense** (`design/dense_delivery.md`,
   `design/representable_bottom.md`): `update` returns a `TagValue`
   every cycle — `Fired(v)`/`Stale(v)`/`FreshBottom`/`StaleBottom`, the
@@ -1193,7 +1195,8 @@ over any kernel param
 kind, every fast-fn builtin and non-inline cast, cross-kernel lambda
 calls, trait default bodies, a self-recursive instance's body, its
 self-calls calling its own kernel (`fusion::fuse_instance_body`: the loop
-a function value or a collection's callback binds at run time). A subtree that does not fuse whole
+a collection's callback, or a function value an assertion covers, binds at
+run time). A subtree that does not fuse whole
 descends: every part that calls a function (a lambda call, a collection
 operation) is tried as a region of its own, any other part only
 descends (`fusion::fuse_parts`); a lambda call whose argument does not

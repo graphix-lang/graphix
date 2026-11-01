@@ -2371,7 +2371,17 @@ impl<R: Rt> CallSite<R> {
                 Self::unregister_fn_params(ctx, params);
                 res.map(|tail_loops| (defaults, tail_loops))
             })?;
-            // a run-time bind fuses iff its runtime does
+            // CR claude for eric: [perf/low] A run-time bind fuses only a collection
+            // slot's instance and one an assertion it reaches covers (`asserted`): a
+            // function value called with no attribute in reach, `let g = select b {
+            // true => fib, .. }; g(20)`, runs every level of its recursion in the
+            // node-walk where `fib(20)` named fuses (GXDBG_CS: the same dispatch count
+            // with and without fusion, no INSTANCE-FUSION line). Fusing every bind
+            // would make a function value cost what a named call does, at a JIT
+            // compile for each new instance at run time (fusion::fuse_instance caches
+            // by definition and type, so a later bind of it takes the kernels). Should
+            // every run-time bind fuse? probe:
+            // ~/ptmp/cr29/scratch/review-r6/E2-r1-1/b8.gx (bound-bind-policy-01)
             if !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads
@@ -4011,7 +4021,6 @@ impl<R: Rt> CallSite<R> {
         // loop(n, acc)`) builds it. CLAUDE.md asks to push on such de-fuse
         // corners. probes: ~/tmp/cr29/scratch/review7/A/bs10.gx, map_self.gx
         // (bound-self-defuse-01)
-        // a self-call in the body of the instance the region is: its kernel
         // 2026-11-01 claude: A self-recursive instance's body is tried as a
         // region whose self-calls call the instance's own kernel
         // (fusion::fuse_instance_body from GXLambda::fuse; discover_lambda_calls
@@ -4031,6 +4040,18 @@ impl<R: Rt> CallSite<R> {
         // bound_slot_tail_loop_names_no_built_call now use an unfused loop
         // (*(&acc)) for the reported case. The collection's own loop still
         // node-walks around such a callback: CR collection-self-callback-01.
+        // 2026-11-01 claude: Review E2-r1-1/E2-r1-2: a run-time bind of a
+        // function value fuses only under an assertion it reaches (or as a
+        // collection slot), so the non-tail case was pinned by value alone:
+        // graphix-shell
+        // bound_callee_assertion::bound_self_recursion_fuses_at_the_bind holds a
+        // #[native] in fib's body and calls it through a function value (main
+        // a084f9887 reports 'mutually recursive static call edge is not
+        // supported' and prints nothing; this branch prints 6765). CLAUDE.md and
+        // design/recursive_activations.md now say a run-time bind fuses a slot's
+        // instance and one an assertion covers, no other; whether every bind
+        // should fuse is CR bound-bind-policy-01 for Eric. The stray comment
+        // inside this block is gone.
         if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
             return emit_lambda_call_node(cx, self, Called::Other(&info));
         }

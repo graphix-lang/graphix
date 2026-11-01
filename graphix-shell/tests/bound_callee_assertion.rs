@@ -103,6 +103,25 @@ fn bound_callee_tail_loop_is_checked() {
     }
 }
 
+/// A self-recursive function value, out of tail position, fuses at the
+/// bind: its body is one kernel whose self-calls call that kernel, so the
+/// `#[native]` it holds passes and the call answers.
+const BOUND_SELF: &str = r#"
+let rec fib = |n: i64| -> i64 #[native] select n { 0 => 0, 1 => 1, _ => fib(n - 1) + fib(n - 2) };
+let b = true;
+let g = select b { true => fib, false => |n: i64| -> i64 n };
+println(g(20));
+sys::exit(sys::time::after_idle(duration:100.ms, 0))
+"#;
+
+#[test]
+fn bound_self_recursion_fuses_at_the_bind() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ran = graphix(dir.path(), BOUND_SELF, &["--no-cache"], &[]);
+    assert!(!ran.stderr.contains("#[native]"), "{}", ran.stderr);
+    assert!(ran.stdout.lines().any(|l| l == "6765"), "{}", ran.stderr);
+}
+
 const BOUND_STATEFUL: &str = r#"
 #[tail_recursive]
 let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
