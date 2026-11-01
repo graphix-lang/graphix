@@ -869,7 +869,10 @@ pub struct RtVar {
 
 impl RtVar {
     pub fn new<R: Rt>(ctx: &mut CompileCtx<R>, top_id: ExprId) -> Self {
-        let id = BindId::new();
+        Self::recorded(ctx, BindId::new(), top_id)
+    }
+
+    fn recorded<R: Rt>(ctx: &mut CompileCtx<R>, id: BindId, top_id: ExprId) -> Self {
         ctx.record_ref(id, top_id);
         Self { id, top_id }
     }
@@ -889,8 +892,7 @@ impl RtVar {
     ) -> Result<Self, PackError> {
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Self { id, top_id })
+        Ok(Self::recorded(ctx, id, top_id))
     }
 
     /// Answer under a fresh id: what was sent under the old one lands

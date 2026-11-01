@@ -4,7 +4,6 @@ use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, ExecCtx, InitFn, LambdaId,
     Node, Refs, Rt, Scope, Tag, TagValue, TagView, WriteTarget,
-    effects::{LambdaFacts, RecursionKind},
     env::Env,
     expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
     image::{self, ImageBuf},
@@ -443,24 +442,16 @@ impl<R: Rt> QueueFn<R> {
                 )
             },
         );
-        let def = LambdaDef {
+        let def = LambdaDef::runtime(
             id,
-            env: ctx.env.lexical(),
-            scope: self.scope.clone(),
+            ctx.env.lexical(),
+            self.scope.clone(),
             argspec,
-            typ: ftyp,
+            ftyp,
             init,
-            table: Default::default(),
-            shared: Default::default(),
-            captures: Default::default(),
-            param_calls: Default::default(),
-            facts: Mutex::new(LambdaFacts::ASYNC),
-            recursion: Mutex::new(RecursionKind::NotRecursive),
-            no_loop: Default::default(),
-            source: self.top_id,
-            origin: graphix_compiler::node::lambda::DefOrigin::Runtime,
-            level: graphix_compiler::typ::tvar::Level::Def { depth: 1, owner: id },
-        };
+            self.top_id,
+            graphix_compiler::typ::tvar::Level::Def { depth: 1, owner: id },
+        );
         Ok(ctx.wrap_lambda(def))
     }
 

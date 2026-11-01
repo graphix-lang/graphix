@@ -781,6 +781,71 @@ impl<R: Rt> LambdaDef<R> {
             table.clone(),
             shared.clone(),
         );
+        let origin = DefOrigin::Source { body, flags, spec: (*spec).clone(), enclosing };
+        Self::with(
+            id,
+            env,
+            scope,
+            argspec,
+            typ,
+            init,
+            table,
+            shared,
+            facts,
+            param_calls,
+            recursion,
+            source,
+            origin,
+            level,
+        )
+    }
+
+    /// The definition an `Apply` built by Rust at run time stands for:
+    /// `init` builds it, and an analysis knows nothing of it.
+    pub fn runtime(
+        id: LambdaId,
+        env: Lexical,
+        scope: Scope,
+        argspec: Arc<[Arg]>,
+        typ: Arc<FnType>,
+        init: InitFn<R>,
+        source: ExprId,
+        level: Level,
+    ) -> Self {
+        Self::with(
+            id,
+            env,
+            scope,
+            argspec,
+            typ,
+            init,
+            Default::default(),
+            Default::default(),
+            LambdaFacts::ASYNC,
+            Default::default(),
+            RecursionKind::NotRecursive,
+            source,
+            DefOrigin::Runtime,
+            level,
+        )
+    }
+
+    fn with(
+        id: LambdaId,
+        env: Lexical,
+        scope: Scope,
+        argspec: Arc<[Arg]>,
+        typ: Arc<FnType>,
+        init: InitFn<R>,
+        table: SArc<DefTables>,
+        shared: BodyShare,
+        facts: LambdaFacts,
+        param_calls: ParamCalls,
+        recursion: RecursionKind,
+        source: ExprId,
+        origin: DefOrigin,
+        level: Level,
+    ) -> Self {
         LambdaDef {
             id,
             env,
@@ -795,7 +860,7 @@ impl<R: Rt> LambdaDef<R> {
             recursion: Mutex::new(recursion),
             no_loop: Mutex::new(None),
             source,
-            origin: DefOrigin::Source { body, flags, spec: (*spec).clone(), enclosing },
+            origin,
             level,
             captures: OnceLock::new(),
         }
