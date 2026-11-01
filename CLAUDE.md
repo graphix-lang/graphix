@@ -182,7 +182,8 @@ that binding (a REPL input's) is refused, naming the call, while the
 call lives: its holders (the call site, an alias `let`, the kernel that
 replaced them) hold it in `CompileCtx::static_callees` and carry their
 holds through the image; a module's interface binding and its
-implementation's are one binding there, and a reload's replaced body
+implementation's are one binding there from the module's check on (a
+write marked before it reaches only the binding it names), and a reload's replaced body
 holds nothing against its replacement (`design/program_image.md`).
 
 **Runtime.** `graphix-rt` implements `Rt`: variables, timers, spawned

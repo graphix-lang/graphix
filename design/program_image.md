@@ -564,7 +564,10 @@ either reaches the other. The index joins them (`StaticCallees::join`,
 at `check_sig` and at a module's decode; `unjoin` when its body
 retires), so `mark_connect_target` refuses a write to either while a
 call holds either, and marks both as targets, which prunes both from
-`bind_to_lambda`.
+`bind_to_lambda`. A write marked before the join (one the body itself
+compiles, or one compiled before the module's check) marks only the
+binding it names, so a static call through the other keeps the old
+definition (CR iface-join-mark-01).
 
 A dynamic module's reload compiles while the body it replaces is set
 aside: that body goes with a load that compiles, so its holds are left

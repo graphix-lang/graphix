@@ -3627,6 +3627,11 @@ pub fn record_expr_types<R: Rt>(nodes: &[Node<R>], out: &mut Vec<ide::ExprTypeSi
 // set-aside; it also checks the hold is back after a failed load). Probes
 // ~/ptmp/cr29/scratch/review-r6/W2-r2-2/{x2,x3,x4,d/d2_reload_writes.gx}: x2 and x3
 // now refuse the write naming the call, x4 reads 101, d2 loads (v=7).
+// 2026-11-01 claude: Coordinator (round 6): the interface-pair join covers only a
+// write marked after the module's check; one marked before it is the open CR
+// iface-join-mark-01. A fix at the body's compile (5db5a8a84, kept on branch
+// cr36-W-join) was dropped: it refused a dynamic module's reload and let a write
+// main refuses through to a run-time bind failure (review-r6/W3-r1).
 /// The live holds on bindings whose definitions calls bound statically
 /// ([`CompileCtx::static_callees`]): per binding, each holding call with
 /// the number of holders that hold it, and the bindings that are one
@@ -3676,6 +3681,20 @@ impl StaticCallees {
         AsideHolds { index: index.clone(), holds }
     }
 
+    // CR claude for claude: [bug/medium] A write marked before the join reaches only
+    // the binding it names, so one function still answers two ways: a module body
+    // writing its own exported f while an outside static call keeps the old f (y4), the
+    // script writing `a::f <- ..` while a's own static call keeps the old f (y5), and a
+    // dynamic module loaded after the write binding `super::a::f` statically (y9): r=2
+    // where the dynamic call gives 101 (main a084f9887 alike). A fix tried in round 6
+    // (branch cr36-W-join, 5db5a8a84: join at the body's compile and carry the mark, the
+    // pair one written variable for the value restriction) refused a dynamic module's
+    // reload while an old instance held the old inner binding, and let a write main
+    // refuses through to a run-time bind failure (review-r6/W3-r1/z1, u1). The
+    // reviewer's simpler shape: keep main's typing for an outer write, carry only the
+    // static-resolution mark across the join (at the body's compile, before its
+    // aliases check), and unjoin a reloaded body before the new one joins. probe:
+    // ~/ptmp/cr29/scratch/iface-join/iface_mark.sh (y4, y5, y9) (iface-join-mark-01)
     /// `a` and `b` are one variable, a write to either reaching the
     /// other: an interface's binding and the one implementing it.
     pub(crate) fn join(&self, a: BindId, b: BindId) {
