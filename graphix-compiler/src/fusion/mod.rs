@@ -1026,7 +1026,26 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     // callback calling the enclosing recursive function from its kernel's body (`let
     // rec k = |n| .. array::fold([n - 1], 0, |a, x| a + k(x))`) de-fuses the same
     // way on main and here.
+    // 2026-11-01 claude: Review (E2-r1-2): the case left out above, a closure
+    // callback calling the enclosing recursive function, now has a CR of its own
+    // below (collection-closure-recursion-01); this XCR covers a collection handed
+    // a function whose recursion is a direct self-call.
     let own = own.and_then(|g| Some((g, g.self_bind()?, &**g.typ())));
+    // CR claude for claude: [perf/medium] A collection callback that calls the
+    // recursive function whose body holds it de-fuses that function and every call of
+    // it: with `let rec k = |n: i64| -> i64 select n { 0 => 0, _ => n +
+    // array::fold([n - 1], 0, |a, x| a + k(x)) }`, `#[native] k(4)` and `#[native]
+    // array::map([1, 2, 4], k)` are refused "emit_clif: mutually recursive static call
+    // edge is not supported" (main a084f9887 the same). The callback is emitted inline
+    // in k's kernel, but the static call graph sees k -> callback -> k, a cycle of two
+    // instances, so k has no self bind (analysis::mark_recursion records one only for a
+    // direct self edge), and this walk records no site for `k(x)`: its callee is
+    // unresolved, the callback has no self bind, and `own` names only a region that is
+    // k's own body. Routing it needs mark_recursion to count an edge from an inlined
+    // callback to the instance holding it as that instance's self-call, and the
+    // emitter to make that call from a loop slot (outline.rs asserts no self-call root
+    // in a loop). probe: ~/ptmp/cr29/scratch/review-r6/E2-r1-2/c2.gx, c3.gx
+    // (collection-closure-recursion-01)
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();

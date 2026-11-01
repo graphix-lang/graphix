@@ -617,6 +617,13 @@ impl StructPatternNode {
             }
             return merge_leaves(env, all, out);
         };
+        // CR claude for claude: [bug/low] A whole capture shared by or-alternatives over a
+        // declared variable held rigid is typed as the bound's members the alternatives
+        // match, not the variable, though one alternative's capture (`a@ `A(_) => a`)
+        // keeps the variable: `'b: [`A(i64), `B(i64)] |x: 'b| -> 'b select x { a@ `A(_) |
+        // a@ `B(_) => a }` is refused "'b ... does not contain [`A(i64), `B(i64)]" where
+        // the same as two arms checks (main a084f9887 refuses it too). probe:
+        // ~/ptmp/cr29/scratch/review-r6/E2-r1-1/r2/c8.gx (or-capture-rigid-01)
         let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
         let ts: SmallVec<[Type; 4]> = ts.into_iter().flatten().map(|(t, _)| t).collect();
         if checking {

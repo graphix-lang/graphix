@@ -2093,6 +2093,11 @@ impl Type {
     // reference at a value on the path or decided), so a walk allocates no more than
     // before; dag_res20 --check 2.50 G, w24 2.65 G, p24 2.52 G after, the program's own
     // check and startup being about 2.1-2.3 G.
+    // 2026-11-01 claude: Review (E2-r1-2): this XCR covers may_be_error, is_a and the
+    // printer. The select walks the CR text names are still exponential over the same
+    // DAG (`select v { _ => 3 }` at L14 46-52 G instructions at --check, main the same):
+    // union_members and cast.rs's flatten_union_members, now CR (union-members-dag-01)
+    // in expr/pattern.rs, left for the parked select work.
     /// Whether a value of `self` may be an error as the type stands: a
     /// member is an `Error`, holds the primitive `error` or is `Any`.
     /// `NoError ⊇ self` is its negation; an open member may be anything

@@ -795,6 +795,11 @@ pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type, WrittenAt)]> {
 // lang::fusion::native_variant_pattern_at_a_nullable_element (a tuple element, a
 // struct field and a payload; fails jit/jit_par with the select.rs change
 // reverted, 'variant pattern `A doesn't match its predicate').
+// 2026-11-01 claude: Review (E2-r1-2): the payload third of the pin
+// (`W([`A(i64), null]) under #[native]) already fused on main a084f9887 (probe
+// ~/ptmp/cr29/scratch/review-r6/E2-r1-2/p1c.gx prints (105, -3, 100) there);
+// only the tuple-element and struct-field parts fail without the fix. The
+// payload part stays in the pin as coverage, not as a regression catch.
 /// The `(tag, payload-types)` case of a variant type; `None` otherwise.
 pub fn variant_case(t: &Type) -> Option<(ArcStr, Vec<Type>)> {
     t.with_deref(|r| match r {

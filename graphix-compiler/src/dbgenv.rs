@@ -12,6 +12,17 @@ dbg_flag!(graphix_dbg_region, "GRAPHIX_DBG_REGION");
 dbg_flag!(graphix_dbg_select, "GRAPHIX_DBG_SELECT");
 dbg_flag!(graphix_dump_clif, "GRAPHIX_DUMP_CLIF");
 dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
+// CR claude for claude: [test-gap/low] GRAPHIX_NO_SUBST is the A/B for instances by
+// substitution, but an instance it checks again at a call's narrower type refuses a
+// select arm the definition's check kept: `let g = 'b: [`A(i64), `B(i64)] |x: 'b|
+// select x { `A(z) => "ga [z]", _ => "gn" }; (g(`A(3)), g(`B(1)))` prints ("ga 3",
+// "gn") by default and is refused "unreachable arm" under the flag (base 31519602c
+// and main a084f9887 alike), so the pins
+// lang::select::literal_pool_over_a_bounded_variable_counts_its_bound and
+// lang::fusion::native_interpolates_a_bind_over_a_bounded_variable_at_one_member fail
+// under it in every mode. The re-check should skip the coverage verdicts the
+// definition's check owns. probe: ~/ptmp/cr29/scratch/r6-E/r6F-fix/ns.gx
+// (no-subst-dead-arm-01)
 dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
 dbg_flag!(graphix_no_outline, "GRAPHIX_NO_OUTLINE");

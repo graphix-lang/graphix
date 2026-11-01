@@ -598,6 +598,19 @@ fn slice_type(list: bool, elem: Type) -> Type {
     if list { Type::List(Arc::new(elem)) } else { Type::Array(Arc::new(elem)) }
 }
 
+// CR claude for claude: [perf/low] union_members expands every name each time a path
+// reaches it, so over a DAG of named unions (type L1 = [`A, `B], M1 = [`A, `C], Li =
+// [Li-1, Mi-1], Mi = [Mi-1, Li-1]) it returns 2^depth members, nearly all repeats, and
+// each select walk over the scrutinee pays that: `let v: L14 = `C; select v { _ => 3 }`
+// costs 46-52 G instructions at --check and L16 about 490 G (main a084f9887 the same),
+// where the same program without the select costs 2.6 G. An experiment that expanded
+// each name once per call (a seen set) took L14 to 2.67 G; with three tag arms (`A =>
+// 1, `B => 2, `C => 3) L16 went 8.7 to 4.9 G and L18 17.2 to 10.9 G, the rest from
+// cast.rs's flatten_union_members (ShallowScrutinee::facts and discriminant), which
+// keeps only a path. Callers read the list as a set, but Reach and the literal pool
+// consume it, which are parked for Eric: run the select pins with the change. Probes:
+// ~/ptmp/cr29/scratch/review-r6/E2-r1-2/sel114.gx, sel116.gx, sel16.gx, sel18.gx,
+// plain16.gx (meas.sh BIN FILE --check there) (union-members-dag-01)
 /// The concrete members of `t`: bound tvars dereferenced, aliases
 /// expanded, unions flattened. An unbound tvar contributes none. An alias
 /// chain ends: a typedef recursing through unions and aliases alone is
