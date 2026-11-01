@@ -1479,6 +1479,38 @@ async fn rec_partly_reached_chain_is_shed_par() -> Result<()> {
     rec_partly_reached_chain_is_shed(Mode::Par).await
 }
 
+/// A recursion a seq step calls is born again at each run, fused or not:
+/// the activations its last run left are let go, so after many runs at one
+/// depth the live activations are those one run holds in the node-walk.
+async fn rec_seq_runs_hold_one_run(mode: Mode) -> Result<()> {
+    for call in ["seqq let n = t { f(n) }", "seq let n = t { f(n) }"] {
+        let (_, one, _) = run_rec(LINEAR, call, &[5], Mode::Interp).await?;
+        let mut live = vec![];
+        for runs in [1, 5, 30] {
+            let (values, n, _) = run_rec(LINEAR, call, &vec![5; runs], mode).await?;
+            assert_eq!(values.last(), Some(&15), "{call}: {runs} runs");
+            live.push(n);
+        }
+        assert_eq!(live, [one; 3], "{call}: live after 1, 5 and 30 runs");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_seq_runs_hold_one_run_interp() -> Result<()> {
+    rec_seq_runs_hold_one_run(Mode::Interp).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_seq_runs_hold_one_run_jit() -> Result<()> {
+    rec_seq_runs_hold_one_run(Mode::Jit).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rec_seq_runs_hold_one_run_jit_par() -> Result<()> {
+    rec_seq_runs_hold_one_run(Mode::JitPar).await
+}
+
 // Pure non-tail recursion re-fired with changing args recomputes:
 // [fib(8), fib(9), fib(10)] = [21, 34, 55].
 const REC_TRANSIENT_PURE_REFIRE: &str = r#"

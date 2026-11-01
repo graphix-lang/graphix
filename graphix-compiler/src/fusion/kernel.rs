@@ -93,8 +93,8 @@ impl<R: Rt> std::fmt::Debug for FusedKernel<R> {
 
 impl<R: Rt> FusedKernel<R> {
     fn free_state(&mut self) {
-        // Only instance death frees the slot chains and activation trees;
-        // `sleep` does not touch them.
+        // Instance death and a rebirth free the slot chains and activation
+        // trees; `sleep` does not touch them.
         // SAFETY: the words are taken out of the state, so each chain and
         // tree is freed once, by the layout the wrapper describes.
         for a in self.jit.slot_table_words.iter() {
@@ -304,7 +304,9 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
         // born again (a seq step's next run): its interior memory starts
         // afresh, as a call site's builtins are reborn
         if woke && ctx.event.born() {
-            self.state.fill(0)
+            crate::stack::with_control(&ctx.control, || self.free_state());
+            self.state.fill(0);
+            self.tree_size = 0;
         }
         // the feeders are a fork point, as a call's arguments are
         let (_, mut polled) = crate::node::gather(ctx, &mut self.feeders, &mut self.fork);
