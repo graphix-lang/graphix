@@ -1164,10 +1164,11 @@ impl<X: GXExt> GXConfig<X> {
         let task = task::spawn({
             let aborted = aborted.clone();
             async move {
+                let mut rx = rx;
                 match GX::new(self).await {
                     Ok(bs) => {
                         let _ = init_tx.send(Ok(()));
-                        if let Err(e) = bs.run(rx, &aborted).await {
+                        if let Err(e) = bs.run(&mut rx, &aborted).await {
                             error!("run loop exited with error {e:?}")
                         }
                     }
@@ -1175,6 +1176,10 @@ impl<X: GXExt> GXConfig<X> {
                         let _ = init_tx.send(Err(e));
                     }
                 };
+                // every request sent before the close is received and dropped,
+                // which answers its caller: dropping the receiver can miss one
+                rx.close();
+                while rx.recv().await.is_some() {}
             }
         });
         let st = std::time::Instant::now();

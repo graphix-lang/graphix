@@ -1445,7 +1445,7 @@ impl<X: GXExt> GX<X> {
 
     pub(super) async fn run(
         mut self,
-        mut to_rt: tmpsc::UnboundedReceiver<ToGX<X>>,
+        to_rt: &mut tmpsc::UnboundedReceiver<ToGX<X>>,
         aborted: &Notify,
     ) -> Result<()> {
         let mut tasks: Vec<(BindId, Value)> = vec![];
@@ -1615,7 +1615,7 @@ impl<X: GXExt> GX<X> {
             }
             // an abort that landed while waiting ends the loop before the
             // next cycle
-            // CR claude for claude: [bug/medium] A runtime the activation budget aborted
+            // XCR claude for claude: [bug/medium] A runtime the activation budget aborted
             // can leave the shell's process hung forever instead of exiting.
             // graphix-shell/tests/script_exit.rs a_stopped_runtime_says_why hung in the
             // gate of 2026-10-24; the same test passed in the day's earlier gates. The
@@ -1703,6 +1703,27 @@ impl<X: GXExt> GX<X> {
             // GXEvent sender clone outliving GX, e.g. in a task the JoinSets do not own),
             // is the next step: debug logs at GX::run's return, at GX's drop and in the
             // session loop, then loop2.sh again.
+            // 2026-11-01 claude: Round 6 lane W: found and fixed. With debug logs in the
+            // shell and the run loop (loop.sh, 4 loops, cold then 4 warm runs per cache) a
+            // hang logged: the program request answered, the budget stop, 'run:
+            // interrupted at the loop top', then load_env's GetEnv request sent, then the
+            // run task's end, and no answer ever. The request lost a race with the end of
+            // the run loop: UnboundedSender::send checks that the channel is open, then
+            // pushes; when the receiver dropped in between, its drop had already drained
+            // the channel, so the message, holding the request's oneshot sender, stayed in
+            // the channel for as long as any GXHandle lived (the shell's), and load_env
+            // waited forever with every thread idle. Only warm runs hit it because their
+            // first cycles end as load_env sends. Fix (GXConfig::start's task): GX::run
+            // borrows the receiver, and after it returns the task closes the channel and
+            // receives until it is empty, which waits for every send that passed the open
+            // check, so each request is dropped and its caller answered with the stop. Pin
+            // graphix-rt/tests/stop_race.rs a_request_racing_the_stop_is_answered (8
+            // callers looping get_env while the runtime is aborted, 3000 trials, a 30 s
+            // bound per trial): against the old run loop it failed 3 of 4 runs at 1000
+            // trials (trials 605, 163, 660); with the fix every run passes in about 0.3 s.
+            // Probes ~/ptmp/cr29/scratch/r6-W/w3/ (hang_round2 has the hung run's log).
+            // 2026-11-01 claude: Correction: the 3000-trial pin takes 0.5 to 1.1 s here
+            // under the other lanes' load, not 0.3 s.
             if self.ctx.control.interrupted() {
                 return Ok(());
             }
@@ -1713,7 +1734,7 @@ impl<X: GXExt> GX<X> {
                 &mut tasks,
                 &mut sets,
                 &mut custom_tasks,
-                &mut to_rt,
+                to_rt,
                 &mut input,
                 aborted,
                 batch,
