@@ -2542,8 +2542,9 @@ async fn switching_a_live_column_to_sparkline_records_updates() -> Result<()> {
 }
 
 /// A live column whose type flips keeps its cell's subscription, so each
-/// type shows the value it holds: one dropped and made again for its path
-/// can miss its replay (UPSTREAM.md).
+/// type shows the value it holds: one made again for its path while the
+/// dropped one's subscribe is in flight hears nothing under its own id
+/// (UPSTREAM.md).
 #[tokio::test(flavor = "current_thread")]
 async fn a_live_column_flipping_types_keeps_its_subscription() -> Result<()> {
     let mut h = dt(r#"

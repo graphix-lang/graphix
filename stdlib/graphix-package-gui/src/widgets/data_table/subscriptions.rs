@@ -190,8 +190,9 @@ impl SharedCellsInner {
     /// wants, subscribe what is missing, then drop the subscriptions left
     /// playing no role. One whose role changes (a cell's history window, a
     /// shown cell becoming a sort key) stays live meanwhile, so its new
-    /// role takes the value it holds: dropped and subscribed again, its
-    /// replay can be lost (UPSTREAM.md).
+    /// role takes the value it holds: one made again for its path while the
+    /// dropped one's subscribe is still in flight hears its events under
+    /// the dropped one's id (UPSTREAM.md).
     fn reconcile(
         &mut self,
         previous: &SubscriptionWindow,

@@ -219,36 +219,44 @@ the state of a fix, and Graphix's side.
   where a change number was. Pin
   `lib_tests::net::net_list_sees_a_replaced_path`. Not reported.
 
-## netidx (ours): a path subscribed again as its Dval drops can miss its replay
+## netidx (ours): a Dval that joins its path's subscription hears it under another id
 
-- **Bug.** Dropping a durable subscription (`Dval`) and subscribing its
-  path again at once, with the same updates channel, can leave the new
-  `Dval` subscribed (its `last()` holds the value) while the channel gets
-  neither the `BEGIN_WITH_LAST` replay nor anything else until the next
-  update. Not root-caused; likely the connection still lists the channel
-  on the subscription being unsubscribed, so
-  `subscriber/connection.rs::handle_connect_stream` takes it for one
-  already there and replays nothing.
-- **Repro.** Graphix's data table before the workaround: a live column
-  flipped from Text to Sparkline drops its cell's `Dval` and subscribes
-  the path again in one reconcile; with a value published meanwhile, a
-  probe found the cell empty 20 s later in 4 of 5 runs (load 10-40), the
-  new `Dval` holding the value. The GUI tests
-  `switching_a_live_column_to_sparkline_records_updates` and
-  `sort_by_change_resorts_offscreen_rows` failed so, rarely, in gates.
-- **Upstream fix.** Replay to a channel a new subscription registers
-  whatever an old one on the same publisher id held, or forget the old
-  subscription's channels when its last `Val` drops.
+- **Bug.** A `Dval` mints its `SubId` when it is made
+  (`subscriber/mod.rs::subscribe_internal`), and a connection tags a
+  subscription's events with the id of the request that made its `Val`.
+  A `Dval` made for a path whose subscribe is in flight for one dropped
+  meanwhile joins that subscribe (`St::WaitingOther`) and holds its
+  `Val`, but every event on its channels, the `BEGIN_WITH_LAST` replay
+  included, carries the dropped one's id, so a consumer that routes by
+  `SubId` drops them all. The subscribe is in flight until the
+  resubscription task takes its result, after the connection has already
+  sent the first value, so a consumer that drops a `Dval` as it shows its
+  first value hits this. So does a `Dval` made beside a live non-durable
+  `Val` of its path, and one whose path aliases another's published value
+  (the alias arm of `From::Subscribed` in `subscriber/connection.rs`).
+- **Repro.** Hold a subscribe at a default publisher, drop the `Dval`
+  that asked, subscribe the path again with a channel, then answer: the
+  channel gets every event under the dropped `Dval`'s id and none under
+  the new one's (3 of 3 runs). A `Dval` made while a non-durable `Val`
+  of its path lives has another id than the `Val`, whose id its events
+  carry (3 of 3).
+- **Upstream fix.** A new `Dval` takes the id of its path's subscription,
+  live or pending: `SubStatus::Pending` carries the id minted when the
+  subscribe starts, which the request then uses. The alias case needs an
+  id per registered channel.
 - **Graphix's side.** Worked around in part (a hang: a cell or a sort
-  never got its value): the data table keeps a subscription whose role
-  changes live through the reconcile, so it never drops a path and
-  subscribes it again in one (`SharedCellsInner::reconcile` in
-  `stdlib/graphix-package-gui/src/widgets/data_table/subscriptions.rs`).
-  Pin `data_table_test::a_live_column_flipping_types_keeps_its_subscription`.
-  A path one reconcile drops and a later one wants again can still miss
-  its value: `sort_by_change_resorts_offscreen_rows` (rows scrolled away
-  by a direction flip, then sorted by their other column) failed 1 of 10
-  suite runs under load with the workaround. Not reported.
+  never got its value). The data table routes its one channel's events by
+  `SubId` (`spawn_dispatch_task` in
+  `stdlib/graphix-package-gui/src/widgets/data_table/subscriptions.rs`),
+  so it keeps a subscription whose role changes live through the
+  reconcile and never drops a path and subscribes it again in one
+  (`SharedCellsInner::reconcile`). Pin
+  `data_table_test::a_live_column_flipping_types_keeps_its_subscription`.
+  A path one reconcile drops while its subscribe is in flight and a later
+  one wants again still hangs: `sort_by_change_resorts_offscreen_rows`
+  (rows scrolled away by a direction flip, then sorted by their other
+  column) failed 1 of 10 suite runs under load. `sys::net` gives each
+  reader a channel of its own and reads no tag. Not reported.
 
 ## netidx-value (ours): integer FromValue converts with `as`
 
