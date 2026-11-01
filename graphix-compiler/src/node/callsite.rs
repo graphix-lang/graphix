@@ -4009,49 +4009,6 @@ impl<R: Rt> CallSite<R> {
         {
             return emit_lambda_call_node(cx, self, Called::Own(own));
         }
-        // XCR claude for claude: [perf/medium] A self-recursive instance bound at
-        // run time does not fuse: `fusion::fuse_instance` refuses its body here
-        // ("mutually recursive static call edge is not supported", twice), so
-        // each level of its recursion is a node-walked call bound at run time. A
-        // function value that is the loop (`let g = select b { true => loop, ..
-        // }; g(10, 0)`, GXDBG_INSTANCE_FUSION=1: fused_delta=0) and a collection
-        // handed it (`array::map([1, 2, 3], tri)`) run that way on main 3c784b3db
-        // as on cr31-A, so a `#[tail_recursive]` over either fails, at run time
-        // or refused at compile, where calling the loop from a lambda (`|n, acc|
-        // loop(n, acc)`) builds it. CLAUDE.md asks to push on such de-fuse
-        // corners. probes: ~/tmp/cr29/scratch/review7/A/bs10.gx, map_self.gx
-        // (bound-self-defuse-01)
-        // 2026-11-01 claude: A self-recursive instance's body is tried as a
-        // region whose self-calls call the instance's own kernel
-        // (fusion::fuse_instance_body from GXLambda::fuse; discover_lambda_calls
-        // takes the instance as own and routes a root self-call site, unresolved,
-        // to build_lambda_kernel of it; CallSite::emit_clif emits a site
-        // discovery recorded before this bail). The body becomes one kernel:
-        // level 0 inline, the rest in the instance's kernel, a native loop for a
-        // tail recursion. analysis::walked_call no longer counts a call
-        // dispatching an instance whose body is the loop's kernel
-        // (loops_in_its_kernel, which check_bound_tail_loops already accepted).
-        // bs10 and map_self now run their #[tail_recursive] with no report. Pins:
-        // lang::attributes::tail_recursive_collection_callback (was a refusal
-        // pin), tail_recursive_fold_callback (refused before),
-        // bound_self_recursion (fib through a function value and a map, values);
-        // graphix-shell bound_callee_assertion::bound_callee_tail_loop_is_checked
-        // (the loop through a function value, reported before) and
-        // bound_slot_tail_loop_names_no_built_call now use an unfused loop
-        // (*(&acc)) for the reported case. The collection's own loop still
-        // node-walks around such a callback: CR collection-self-callback-01.
-        // 2026-11-01 claude: Review E2-r1-1/E2-r1-2: a run-time bind of a
-        // function value fuses only under an assertion it reaches (or as a
-        // collection slot), so the non-tail case was pinned by value alone:
-        // graphix-shell
-        // bound_callee_assertion::bound_self_recursion_fuses_at_the_bind holds a
-        // #[native] in fib's body and calls it through a function value (main
-        // a084f9887 reports 'mutually recursive static call edge is not
-        // supported' and prints nothing; this branch prints 6765). CLAUDE.md and
-        // design/recursive_activations.md now say a run-time bind fuses a slot's
-        // instance and one an assertion covers, no other; whether every bind
-        // should fuse is CR bound-bind-policy-01 for Eric. The stray comment
-        // inside this block is gone.
         if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
             return emit_lambda_call_node(cx, self, Called::Other(&info));
         }

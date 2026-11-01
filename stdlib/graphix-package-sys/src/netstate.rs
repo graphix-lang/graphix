@@ -761,33 +761,6 @@ impl NetState {
         self.0.rpc_calls.lock().remove(id);
     }
 
-    // XCR claude for claude: [perf/low] Every sleep or delete of a call or callq site runs
-    // retain over every call in flight in the runtime, under the mutex, even when the
-    // site has none, and every seq step holding a call sleeps when it passes: a step's
-    // completion costs the whole table, quadratic under a busy server. callq already
-    // holds its own ids (RpcCallQ::calls) and could abandon exactly those; call needs a
-    // per-site index. (RV2 finding 3, ~/tmp/cr29/review2-reports.md)
-    // (rpc-abandon-scan-01)
-    // 2026-11-01 claude: NetState's call table is Calls: by id and by the site each
-    // answers (a site's ids, kept until its sleep or delete abandons them). abandon_calls
-    // visits only the site's own calls and returns how many it abandoned; insert moves a
-    // replaced id off its old site, settle and abort_call take it off its site. Pin
-    // netstate::test::abandoning_visits_only_the_sites_calls (100 other calls in flight,
-    // an id moved across sites): with the old retain over the whole table the count is
-    // 102, not 2.
-    // 2026-11-01 claude: Review E2-r1-2: the pin counted the calls abandoned, which a
-    // whole-table retain returns as 2 too. Calls now counts (cfg(test)) the by_id entries
-    // every abandon visits, and abandoning_visits_only_the_sites_calls asserts 2 visits
-    // with 100 other calls in flight: the old retain fails it with 202 visits when it
-    // counts them, 0 when it does not. A site's ids are a SmallVec<[RpcId; 4]>, not an
-    // IntSet, so a site's calls allocate nothing up to four in flight (its sleep remints
-    // its id, so its entry cannot be kept for the next run).
-    // 2026-11-01 claude: Coordinator: Calls::remove found an id in its site's list by a
-    // linear scan, so settling k calls of one site cost k^2/4 (final review E2-r2-2). Each
-    // call now holds its slot in its site's list (Held), and remove swaps the last id into
-    // the gap and updates its slot: constant time. Pin
-    // netstate::test::a_sites_list_follows_its_calls_out_of_order panics (swap_remove out
-    // of bounds) when the moved id's slot is not updated.
     /// Abort every call `site` has in flight, visiting no other: how many.
     /// Their answers still come to `site`'s delivery id, which its caller
     /// remints or releases.

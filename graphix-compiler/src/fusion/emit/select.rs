@@ -2246,23 +2246,6 @@ type AltMatch = (Option<ClifValue>, SmallVec<[SelectArmBind; 8]>);
 /// whole. `None` where no value of the scrutinee passes that member: its
 /// pattern need not fit the scrutinee's layout, as a whole arm's need not
 /// in [`emit_select_arms`].
-// XCR claude for claude: [perf/low] An or-alternative no value of an instance's
-// scrutinee passes is emitted against the scrutinee's layout, and the region
-// de-fuses: `'a: [(i64, string), (i64, f64, bool)] |x: 'a| -> i64 select x { (a, _) |
-// (a, _, _) => a }` gives "tuple pattern over non-tuple scrutinee (i64, f64, bool)"
-// in each instance (GXDBG_INSTANCE_FUSION=1), though the answer is right.
-// emit_select_arms skips a whole arm no value passes (`Type::could_pass`); the
-// or-chain needs the same for an alternative: an AltMatch that binds nothing, and
-// a done block whose layout comes from the live alternatives.
-// (or-alt-instance-defuse-01)
-// 2026-11-01 claude: emit_alt_match judges each alternative by its member of the
-// arm's Set (Type::could_pass against the instance's scrutinee, as emit_select_arms
-// judges an arm) and yields None for one no value passes; the or-chain jumps over it,
-// or_of_alts leaves it out, and the done block's layout comes from the live
-// alternatives. Pins lang::select::or_alt_no_instance_value_passes and _guarded (the
-// guard prologue's path), #[native] in each instance: jit and jit_par fail without
-// the fix. A nested or-pattern's alternatives still de-fuse the same way: CR
-// or-alt-nested-defuse-01.
 fn emit_alt_match(
     cx: &mut BodyCx,
     alts: &[StructPatternNode],

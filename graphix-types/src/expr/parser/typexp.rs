@@ -522,39 +522,6 @@ where
         .then(move |(listed, end)| parsed(union_members(listed, end, noted)))
 }
 
-// XCR claude for claude: [bug/low] The lines below a union's last item go to the last item
-// that records a position, and a nested union's members record none, so `type T = [`A,
-// [`B, `C] // below ]`, a comment under the outer list's last item, is refused as
-// "comments below a nested union's last member have no place in the union that holds it".
-// Attach them to the member with the largest written position after flatten_set, or
-// refuse with the real reason. Also struct_fields and union_members report a refusal at
-// the closing bracket, not at the comment (ann_union.gx: line 4 col 2 for a comment on
-// line 2). Probes: ~/tmp/cr29/scratch/review2/RV3/d10/{nested_below,ann_union}.gx
-// (type-notes-refusal-01)
-// 2026-11-01 claude: The lines below a union's last item go below the member written last
-// after flatten_set (the largest written position, a nested union's members included),
-// merged into that member's note or as a note of their own; a nested union's own lines
-// below a member not written last are still refused (misplaced). Every comment a type
-// list refuses is reported where it stands: list items record where their first comment
-// and their lines below start (eol_comment and below_comments carry positions;
-// Commentable::take_eol takes one), and parsed() refuses through grow::refuse_read, a
-// refusal of what was read before the failure point, which the report places at the
-// comment. Pins graphix-types
-// parser::test::lines_below_a_nested_union_go_below_its_last_member and
-// a_refused_comment_is_reported_where_it_stands (six refusals, each at its comment's line
-// and column; before, at the closing bracket). gxfmt over both repos (2810 files): 66
-// skipped as unparseable, the same 66 the base parser refuses, no round-trip or
-// idempotence failure.
-// 2026-11-01 claude: Review E2-r1-2: refuse_read made every type-list refusal lead with a
-// generic 'the parser refused what it read here' and move its reason to a note line, a
-// duplicate field and an empty struct included; now a read refusal's reason is its
-// headline, said once, as every refusal's was. And the earlier note overstated: a comment
-// that has no item, a type comment outside a definition and one beside a member that
-// records no position report at the comment; the merge and misplaced refusals report at
-// the member that holds the comment (merge.gx: the merged member on line 4 for a comment
-// on line 3). Pin parser::test::a_refused_type_list_leads_with_its_reason (five refusals,
-// each its reason right under its position and said once; fails with the generic
-// headline).
 fn union_members(
     listed: Listed<ListItem<Type>>,
     end: SourcePosition,

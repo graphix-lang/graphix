@@ -1206,59 +1206,6 @@ fn try_fuse_feeding_args<R: Rt>(
             .and_then(CallNode::call_mut)
             .expect("still the call");
         let mut grew = false;
-        // XCR claude for claude: [perf/low] An argument is fed only when discovery
-        // refuses it, and discovery rejects a `~` (or Any, Never, a reference) only at
-        // its root. So `f(a, t ~ a)` fuses with its argument fed, while `f(a, (t ~ a) +
-        // 1)` passes discovery, fails at emission and keeps the call in the node-walk.
-        // Feed the argument that holds the blocker named by the failed attempt's
-        // FusionBlocker and retry once, so the rule in CLAUDE.md holds for any argument
-        // that does not emit. probe:
-        // design/review-2026-10-26/repro/f-mod-lowering-feed-nested-sample.gx
-        // (f-mod-lowering-04)
-        // 2026-10-26 claude: Not started in batch L4-b02. try_fuse reports its blocker
-        // only into the failure stats, so a retry needs try_fuse to return the
-        // blocker's spec (a refusal value, not Ok(None)) and try_fuse_feeding_args to
-        // feed the argument that holds it; a ctx field for the last blocker would be a
-        // new ctx global.
-        // 2026-10-27 codex: The default Update::emit_clif in compiler lib.rs now
-        // returns FusionBlocker (the prior plain error lost its expression identity),
-        // retaining its diagnostic text. Fusion attempts now return the refusing
-        // expression id to the feeder retry. An argument containing that blocker is
-        // fed, subject to the existing effect-order and input checks; the call retries
-        // once. Collection prototype records retain refusal roots and blockers so
-        // runtime slots make the same choice, including after image restoration; the
-        // image format advances. Pins: lang::fusion::nested_sample_argument_is_fed::jit
-        // failed without the fix on the required outer-kernel shape and passes with it.
-        // nested_sample_argument_in_slots and
-        // nested_sample_argument_kernel_runs_in_each_slot use an identity callee whose
-        // body creates no standalone kernel; the old debug shell emitted zero kernels
-        // for this exact fixture. The counter pin and
-        // lang::image::nested_sample_argument_slots_restore_fusion require three kernel
-        // runs for three slots and pass with the fix. Those final slot fixtures were
-        // not run as Rust tests against old sources. All lang::fusion, lang::select and
-        // lang::seq tests, program_image_restores_kernels, and the long-seq/select
-        // time-budget pins pass. No existing FuseExpect moved. The named nested-sample
-        // probe now builds the fed outer kernel as well as the direct-sample call. The
-        // small named --no-cache --expand probe took a median 0.140 s before and 0.088
-        // s after (three debug runs each); no compile-time speedup is claimed.
-        // 2026-10-27 codex: Validation limitation: cargo --offline fmt --all passed
-        // before the final test batch; its final repeat reached
-        // /home/eric/proj/graphix/stdlib/graphix-tests/src/lang/seq_calls.rs through
-        // netidx's path dependencies and failed because that checkout is read-only.
-        // Formatted all changed Rust files directly with the workspace rustfmt
-        // configuration and skip_children=true; git diff --check passes. No external
-        // files changed.
-        // 2026-10-28 claude: Review (2026-10-28): the feeder retry runs once, for the
-        // first blocker. f(a, (t ~ a) + 1, (a ~ t) + 2), two nested blockers, still
-        // leaves the call node-walked (GRAPHIX_DBG_REGION: only f's body fused). Retry
-        // until no new blocker, and pin the two-blocker case.
-        // 2026-11-01 claude: try_fuse_feeding_args loops: each refused attempt
-        // (fuse_fed now returns the FusionAttempt, its blocker included) feeds the
-        // argument holding the blocker it names, and the call is tried again while each
-        // refusal names a blocker in an argument not fed yet; it stops when none grows
-        // the fed set. Pin lang::fusion::two_nested_sample_arguments_are_fed (f(a, (t ~
-        // a) + 1, (a ~ t) + 2), a kernel with params a, arg, arg): jit fails without
-        // the fix.
         if let Some(id) = blocker {
             for (arg, feed) in cs.args.values().zip(feeds.iter_mut()) {
                 if !*feed && let Some(node) = arg.node.as_ref() {
