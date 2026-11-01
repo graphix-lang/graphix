@@ -7,7 +7,7 @@ use super::{
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::GXExt;
-use netidx::path::Path;
+use netidx::{path::Path, subscriber::SubId};
 use poolshark::{global::GPooled, local::LPooled};
 use std::time::Instant;
 
@@ -49,6 +49,12 @@ impl<X: GXExt> DataTableW<X> {
             .sparklines
             .get(&key)
             .map(|h| h.iter().map(|(_, v)| *v).collect())
+    }
+
+    /// The subscription the cell `(row, col)` reads, by the row's basename.
+    pub fn dt_cell_subscription(&self, row: &str, col: &str) -> Option<SubId> {
+        let key = self.sparkline_key_for(row, col)?;
+        self.cells.inner.lock().cells.get(&key).copied()
     }
 
     /// Record a sparkline point as a live update would, at `when`.

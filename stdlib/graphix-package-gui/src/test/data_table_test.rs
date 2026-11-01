@@ -2541,6 +2541,52 @@ async fn switching_a_live_column_to_sparkline_records_updates() -> Result<()> {
     Ok(())
 }
 
+/// A live column whose type flips keeps its cell's subscription, so each
+/// type shows the value it holds: one dropped and made again for its path
+/// can miss its replay (UPSTREAM.md).
+#[tokio::test(flavor = "current_thread")]
+async fn a_live_column_flipping_types_keeps_its_subscription() -> Result<()> {
+    let mut h = dt(r#"
+        use gui::data_table::ColumnType;
+        let typ: ColumnType = `Text({on_edit: null});
+        let spark = |t: Any| typ <- t ~ `Sparkline({history_seconds: 60.0, min: null, max: null});
+        let text = |t: Any| typ <- t ~ `Text({on_edit: null});
+        let c = 0;
+        sys::net::publish("/local/dt_flip/r0/load", c);
+        let tbl = {rows: ["/local/dt_flip/r0"], columns: [{name: "load", typ: typ, display_name: null, source: &`Netidx(null), width: &null, on_resize: &null}]};
+        let result = data_table(#table: &tbl)
+    "#).await?;
+    h.wait_until(
+        |h| h.dt_snapshot().grid[0][0] == "0",
+        Duration::from_secs(5),
+        "initial live value",
+    )
+    .await?;
+    let sub = h.dt().dt_cell_subscription("r0", "load");
+    let spark = h.compile_named_callable("test::spark").await?;
+    let text = h.compile_named_callable("test::text").await?;
+    for k in 1..=10i64 {
+        let to_spark = k % 2 == 1;
+        let flip = if to_spark { spark } else { text };
+        h.call_callback(flip, ValArray::from_iter([Value::Null])).await?;
+        h.set_var("test::c", Value::I64(k))?;
+        h.wait_until(
+            |h| match to_spark {
+                true => h
+                    .dt()
+                    .dt_sparkline_values("r0", "load")
+                    .is_some_and(|vs| vs.last() == Some(&(k as f64))),
+                false => h.dt_snapshot().grid[0][0] == format!("{k}"),
+            },
+            Duration::from_secs(5),
+            "the flipped column's value",
+        )
+        .await?;
+        assert_eq!(h.dt().dt_cell_subscription("r0", "load"), sub, "flip {k}");
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn only_declared_column_headers_call_the_program() -> Result<()> {
     for (columns, clickable) in [(r#"["value"]"#, true), ("[]", false)] {

@@ -219,6 +219,37 @@ the state of a fix, and Graphix's side.
   where a change number was. Pin
   `lib_tests::net::net_list_sees_a_replaced_path`. Not reported.
 
+## netidx (ours): a path subscribed again as its Dval drops can miss its replay
+
+- **Bug.** Dropping a durable subscription (`Dval`) and subscribing its
+  path again at once, with the same updates channel, can leave the new
+  `Dval` subscribed (its `last()` holds the value) while the channel gets
+  neither the `BEGIN_WITH_LAST` replay nor anything else until the next
+  update. Not root-caused; likely the connection still lists the channel
+  on the subscription being unsubscribed, so
+  `subscriber/connection.rs::handle_connect_stream` takes it for one
+  already there and replays nothing.
+- **Repro.** Graphix's data table before the workaround: a live column
+  flipped from Text to Sparkline drops its cell's `Dval` and subscribes
+  the path again in one reconcile; with a value published meanwhile, a
+  probe found the cell empty 20 s later in 4 of 5 runs (load 10-40), the
+  new `Dval` holding the value. The GUI tests
+  `switching_a_live_column_to_sparkline_records_updates` and
+  `sort_by_change_resorts_offscreen_rows` failed so, rarely, in gates.
+- **Upstream fix.** Replay to a channel a new subscription registers
+  whatever an old one on the same publisher id held, or forget the old
+  subscription's channels when its last `Val` drops.
+- **Graphix's side.** Worked around in part (a hang: a cell or a sort
+  never got its value): the data table keeps a subscription whose role
+  changes live through the reconcile, so it never drops a path and
+  subscribes it again in one (`SharedCellsInner::reconcile` in
+  `stdlib/graphix-package-gui/src/widgets/data_table/subscriptions.rs`).
+  Pin `data_table_test::a_live_column_flipping_types_keeps_its_subscription`.
+  A path one reconcile drops and a later one wants again can still miss
+  its value: `sort_by_change_resorts_offscreen_rows` (rows scrolled away
+  by a direction flip, then sorted by their other column) failed 1 of 10
+  suite runs under load with the workaround. Not reported.
+
 ## netidx-value (ours): integer FromValue converts with `as`
 
 - **Bug.** `FromValue` for the integer types (`netidx-value/src/convert.rs`,

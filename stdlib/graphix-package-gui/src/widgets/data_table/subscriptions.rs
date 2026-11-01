@@ -153,10 +153,13 @@ impl SharedCellsInner {
             .is_some_and(|roles| roles.iter().any(has))
     }
 
-    fn remove_grid(&mut self, row: &Path, col: &ArcStr) {
+    /// Take the cell's grid role away: the subscription it leaves playing
+    /// no role, which the caller forgets once it has subscribed what it
+    /// wants ([`Self::forget_unplayed`]).
+    fn remove_grid(&mut self, row: &Path, col: &ArcStr) -> Option<SubId> {
         let key = (row.clone(), col.clone());
-        let Some(id) = self.cells.get(&key).copied() else { return };
-        let Some(roles) = self.routing.get_mut(&id) else { return };
+        let id = self.cells.get(&key).copied()?;
+        let roles = self.routing.get_mut(&id)?;
         roles.retain(|role| !matches!(role, SubRole::Grid { row_path, col_name, .. } if row_path == row && col_name == col));
         let keeps_cell = roles.iter().any(|role| match role {
             SubRole::Grid { row_path, col_name, .. }
@@ -169,12 +172,26 @@ impl SharedCellsInner {
         }
         if roles.is_empty() {
             self.routing.remove(&id);
-            self.dvals.remove(&id);
-            self.values.remove(&id);
-            self.formatted.remove(&id);
+            return Some(id);
+        }
+        None
+    }
+
+    /// Drop each of `ids` that plays no role any more, with its value.
+    fn forget_unplayed(&mut self, ids: &[SubId]) {
+        for id in ids.iter().filter(|id| !self.routing.contains_key(id)) {
+            self.dvals.remove(id);
+            self.values.remove(id);
+            self.formatted.remove(id);
         }
     }
 
+    /// Move the roles from `previous` to `next`: drop the roles nothing
+    /// wants, subscribe what is missing, then drop the subscriptions left
+    /// playing no role. One whose role changes (a cell's history window, a
+    /// shown cell becoming a sort key) stays live meanwhile, so its new
+    /// role takes the value it holds: dropped and subscribed again, its
+    /// replay can be lost (UPSTREAM.md).
     fn reconcile(
         &mut self,
         previous: &SubscriptionWindow,
@@ -183,8 +200,9 @@ impl SharedCellsInner {
         mut subscribe: impl FnMut(&mut Self, &Path, &ArcStr, SubRole),
     ) {
         let full = sort.is_some();
+        let mut unplayed: LPooled<Vec<SubId>> = LPooled::take();
         if let Some((rows, sort_cols)) = sort {
-            self.routing.retain(|_, roles| {
+            self.routing.retain(|id, roles| {
                 roles.retain(|r| match &*r {
                     SubRole::Grid { row_path, col_name, .. } => {
                         next.rows.contains(row_path)
@@ -197,18 +215,18 @@ impl SharedCellsInner {
                         rows.contains_key(row_path) && sort_cols.contains(col_name)
                     }
                 });
+                if roles.is_empty() {
+                    unplayed.push(*id)
+                }
                 !roles.is_empty()
             });
             let routing = &self.routing;
-            self.dvals.retain(|id, _| routing.contains_key(id));
-            self.values.retain(|id, _| routing.contains_key(id));
-            self.formatted.retain(|id, _| routing.contains_key(id));
             self.cells.retain(|_, id| routing.contains_key(id));
         } else {
             for row in previous.rows.iter() {
                 for (col, hs) in previous.columns.iter() {
                     if !next.rows.contains(row) || next.columns.get(col) != Some(hs) {
-                        self.remove_grid(row, col);
+                        unplayed.extend(self.remove_grid(row, col));
                     }
                 }
             }
@@ -249,6 +267,7 @@ impl SharedCellsInner {
                 }
             }
         }
+        self.forget_unplayed(&unplayed)
     }
 
     /// The cell's live value, if it has one.
@@ -947,13 +966,15 @@ mod window_tests {
             }]),
         );
         inner.values.insert(other_id, Value::I64(42));
-        inner.remove_grid(&row, &col);
+        assert_eq!(inner.remove_grid(&row, &col), None);
         assert_eq!(inner.live_value(&row, &col), Some(&Value::I64(12)));
         assert!(inner.routing[&id].as_slice() == [sort]);
         assert_eq!(inner.formatted_for(id).as_deref(), Some("12"));
         assert_eq!(inner.live_value(&row, &other), Some(&Value::I64(42)));
         inner.routing.insert(id, SubRoles::from_iter([grid]));
-        inner.remove_grid(&row, &col);
+        assert_eq!(inner.remove_grid(&row, &col), Some(id));
+        assert_eq!(inner.values.get(&id), Some(&Value::I64(12)));
+        inner.forget_unplayed(&[id]);
         assert!(!inner.cells.contains_key(&(row.clone(), col)));
         assert!(!inner.values.contains_key(&id));
         assert!(!inner.formatted.contains_key(&id));
