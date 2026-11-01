@@ -1682,6 +1682,27 @@ impl<X: GXExt> GX<X> {
             // the run loop's top check and the send loop poll Control::interrupted, true
             // once Abort is set by any stop; GXHandle::interrupt now also notifies the run
             // loop, as GXHandle::abort does, and a budget stop still does not.
+            // 2026-11-01 claude: Round 6 lane W: REPRODUCED, not fixed (no code changed).
+            // ~/ptmp/cr29/scratch/r6-W/w2/loop2.sh (4 loops, each a fresh cache, one cold
+            // run then four warm, a run alive at 60 s kept and SIGABRTed for a core) hung
+            // 4 times in about 15 minutes at load 40 to 130 on this host, each a warm run
+            // (k = 2 to 4), roughly 1 in 1500 runs per loop. Every thread was idle: the
+            // tokio workers parked in Condvar::wait, one in epoll (the signal/io driver),
+            // graphix-tokio in Runtime::block_on of tokio_main, the main thread in
+            // run_on_main's channel recv (core backtrace
+            // ~/ptmp/cr29/scratch/r6-W/w2/hang/core2_bt.txt, built from a stable copy of
+            // the binary; coredumpctl reads a core without ptrace, which yama scope 1
+            // forbids eu-stack and gdb). So a lost wakeup, not a lock: some future waits
+            // for an event that never comes. Under RUST_LOG=info the log
+            // (hang/logged_hang/log) ends 'first cycle time' then the activation budget
+            // error, as in the gate's hang; without RUST_LOG one hung run wrote no log at
+            // all. Code read again: the abort is raised only inside a cycle, and both the
+            // run loop's top and do_cycle's send loop check Control::interrupted before
+            // they wait, so the run loop should return; whether it does, and what then
+            // keeps the shell's session select pending (from_gx not closing would mean a
+            // GXEvent sender clone outliving GX, e.g. in a task the JoinSets do not own),
+            // is the next step: debug logs at GX::run's return, at GX's drop and in the
+            // session loop, then loop2.sh again.
             if self.ctx.control.interrupted() {
                 return Ok(());
             }
