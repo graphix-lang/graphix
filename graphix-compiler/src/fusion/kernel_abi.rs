@@ -779,7 +779,7 @@ pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type, WrittenAt)]> {
     }
 }
 
-// CR claude for claude: [perf/low] A variant pattern at a tuple or struct
+// XCR claude for claude: [perf/low] A variant pattern at a tuple or struct
 // element whose type is variants beside null does not fuse: `let o: [`A(i64),
 // `B(i64), null] = `A(1); #[native] select (o, 1) { (`A(z), _) => .., _ => .. }`
 // is refused "variant pattern `A doesn't match its predicate [null, `A(i64),
@@ -789,20 +789,28 @@ pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type, WrittenAt)]> {
 // optional variant inside a tuple is a common shape. probe:
 // ~/ptmp/cr29/scratch/review-r6/E2-r2-1/u4.gx (graphix --no-cache)
 // (null-variant-element-defuse-01)
+// 2026-11-01 claude: emit_variant_cond reads its cases from the variant members
+// of the leaf's type alone (kernel_abi::variant_case): a null member fails the
+// tag test (rep::is_variant), as at the top level. Pin:
+// lang::fusion::native_variant_pattern_at_a_nullable_element (a tuple element, a
+// struct field and a payload; fails jit/jit_par with the select.rs change
+// reverted, 'variant pattern `A doesn't match its predicate').
+/// The `(tag, payload-types)` case of a variant type; `None` otherwise.
+pub fn variant_case(t: &Type) -> Option<(ArcStr, Vec<Type>)> {
+    t.with_deref(|r| match r {
+        Some(Type::Variant(tag, payloads, _)) => {
+            Some((tag.clone(), payloads.iter().cloned().collect()))
+        }
+        _ => None,
+    })
+}
+
 /// The `(tag, payload-types)` cases of a `Type::Variant` or a `Type::Set`
 /// of single-Variant members; `None` otherwise.
 pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
-    fn one(t: &Type) -> Option<(ArcStr, Vec<Type>)> {
-        t.with_deref(|r| match r {
-            Some(Type::Variant(tag, payloads, _)) => {
-                Some((tag.clone(), payloads.iter().cloned().collect()))
-            }
-            _ => None,
-        })
-    }
     match t {
-        Type::Variant(_, _, _) => one(t).map(|c| vec![c]),
-        Type::Set(members) => members.iter().map(one).collect(),
+        Type::Variant(_, _, _) => variant_case(t).map(|c| vec![c]),
+        Type::Set(members) => members.iter().map(variant_case).collect(),
         _ => None,
     }
 }

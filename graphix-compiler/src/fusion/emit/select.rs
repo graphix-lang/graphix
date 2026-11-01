@@ -2162,10 +2162,11 @@ fn emit_member_cond(
     Ok(Some((test, c)))
 }
 
-/// A variant pattern's condition over the variant whose words are `v`
+/// A variant pattern's condition over the value whose words are `v`
 /// (the scrutinee, or a borrowed leaf or payload): its tag and arity,
 /// then each payload's own pattern against its member of `pred`, the
-/// frozen predicate.
+/// frozen predicate. A member of `pred` that is no variant (a null)
+/// fails the tag test.
 fn emit_variant_cond(
     cx: &mut BodyCx,
     v: (ClifValue, ClifValue),
@@ -2176,9 +2177,13 @@ fn emit_variant_cond(
 ) -> Result<ClifValue> {
     // each payload is read at its one type: the predicate's cases of this
     // tag and arity must agree on it
-    let mut cases = kernel_abi::variant_cases(pred)
-        .into_iter()
-        .flatten()
+    let members = match pred {
+        Type::Set(members) => &members[..],
+        pred => std::slice::from_ref(pred),
+    };
+    let mut cases = members
+        .iter()
+        .filter_map(kernel_abi::variant_case)
         .filter(|(t, e)| t == tag && e.len() == pbinds.len())
         .map(|(_, e)| e);
     let elts = cases.next().ok_or_else(|| {

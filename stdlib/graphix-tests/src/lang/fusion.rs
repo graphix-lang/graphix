@@ -2368,6 +2368,19 @@ run!(native_variant_pattern_over_a_nullable, r#"{
 }"#, prints("[i64:7, i64:0]");
     FuseExpect::Jit);
 
+// A variant pattern at a tuple element, a struct field or a payload whose
+// type is variants beside null tests the tag, null failing it.
+run!(native_variant_pattern_at_a_nullable_element, r#"{
+    let f = |o: [`A(i64), `B(i64), null], n: [`C(string), null], w: `W([`A(i64), null])| #[native] {
+        let t = select (o, 1) { (`A(z), _) => z, (`B(z), _) => z * 10, _ => -1 };
+        let s = select {n, k: 2} { {n: `C(s), k} => str::len(s) * k, _ => -2 };
+        let p = select w { `W(`A(z)) => z + 100, _ => -3 };
+        (t, s, p)
+    };
+    (f(`A(1), `C("abc"), `W(`A(5))), f(`B(2), null, `W(null)), f(null, `C(""), `W(`A(0))))
+}"#, prints("[[i64:1, i64:6, i64:105], [i64:20, i64:-2, i64:-3], [i64:-1, i64:0, i64:100]]");
+    FuseExpect::Jit);
+
 // A bind the guard and the body both read is installed once, for the
 // guard, and the body reads it; every exit drops it, the arms not taken,
 // a false guard and the fallback included.
