@@ -178,39 +178,6 @@ async fn own_trigger_write_starts_the_next_run(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// CR claude for claude: [test-gap/low] This pins rebirth for count, take, uniq and hold
-// only. The reborn bodies of once, skip, queue, iterq, iter, range, throttle and filter
-// (graphix-package-core lib.rs) can be deleted without a failure, and no test enters an
-// async call site for a second run while its previous call is in flight. Add those
-// columns, plus a non-cancel-safe read aborted mid-run. Found by reading; not run.
-// (core-lib-07)
-// 2026-10-27 claude: Partial. restart_builtins_are_reborn_at_each_run now has once,
-// queue, iterq and throttle columns; with each one's reborn body emptied its probe
-// changes (once, queue and throttle never answer run 2, iterq answers run 1's leftover
-// 2). Not added, unreachable from a seq step: skip, take and filter see one value per
-// argument per run (a step issues its call once over an argument snapshot) and a
-// constant #n fires at each entry, restarting the count; iter's and range's reborn only
-// reset out, which their sleep, which comes before every rebirth, already did. Open: an
-// async call in flight across runs. The not CANCEL_SAFE case is core-lib-01, which
-// waits on Eric's ruling; the cancel-safe case needs a Fifo cancel-safe eval with a
-// delay the test controls, and the stdlib's (process wait) is Latest, whose next call
-// aborts the earlier one anyway.
-// 2026-10-28 qwen: The async call in flight across runs is now pinned. New fixture
-// lang::seq_steps::an_aborted_runs_read_is_not_the_next_runs_answer (run!, all four
-// modes): run 1 reads a child whose data arrives only after the run aborts, run 2 reads
-// a second child that is already ready. The aborted read answers nothing after the
-// abort and its bytes return to the stream, so run 2 answers its own read, "BBBB"; with
-// the reply kept across the abort (the old core-lib-01 behaviour) run 2 answers "AAAA"
-// and this test fails. It runs next to restart_builtins_are_reborn_at_each_run and ends
-// by itself (the count's timer fires twice, then nothing is awake). cargo test -p
-// graphix-tests --offline --lib lang::seq_steps is 64 passed, 0 failed. Remaining: the
-// reborn columns this CR lists that are unreachable from a seq step (skip, take, filter
-// see one value per argument per run and iter/range reset only out, which their sleep
-// already did); that part is unchanged by this commit. Commit f4cf3c3.
-// A fused region in a step starts afresh at each run, as the node-walk's
-// builtins are reborn: the fold's slot runs its callback again although
-// the only input it reads, the trigger's alias, fired at the step's entry
-// only in the first run.
 async fn kernels_are_reborn_at_each_run(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
