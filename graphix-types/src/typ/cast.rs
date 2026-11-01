@@ -7,7 +7,7 @@ use crate::{
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, CoreTrait, TVar, Type, TypeRef, params_size,
+        AbstractId, Bound, CoreTrait, RefKey, TVar, Type, TypeRef, params_size,
         setops::union_identical,
         tval::{NakedPrefix, PlainScalar, has_form, member_of},
     },
@@ -116,10 +116,6 @@ fn cast_elts<T>(
     }
     Ok(out)
 }
-
-/// A type reference as a path walk keys it: its definition and the
-/// parameters it is applied to, so `Id<i64>` and `Id<&i64>` are two.
-type RefKey = (usize, Arc<[Type]>);
 
 /// How many values deep a cast reads: data nested deeper is refused, so
 /// foreign data bounds neither the walk's stack nor its memory.
@@ -367,13 +363,18 @@ impl CastCx {
 }
 
 /// An `is_a` walk's state: the references on its path with the value
-/// each met, and each reference's expansion, made once a walk. Within a
-/// walk a reference is its definition and its params' allocation, and
-/// the expansions held keep those allocations alive.
+/// each met, each reference's expansion, made once a walk, and its
+/// verdict on each value it was decided at, decided once a walk; `cuts`
+/// counts the path repeats, a verdict reached past one kept for that path
+/// alone. Within a walk a reference is its definition and its params'
+/// allocation, and the expansions held keep those allocations alive; every
+/// value a walk meets is borrowed from its root, so an address is one value.
 #[derive(Default)]
 struct IsAHist {
     path: AHashSet<((usize, usize), usize)>,
     expanded: AHashMap<(usize, usize), (Arc<[Type]>, Option<Type>)>,
+    decided: AHashMap<((usize, usize), usize), bool>,
+    cuts: usize,
 }
 
 fn ref_key(tr: &TypeRef) -> Option<RefKey> {
@@ -1701,11 +1702,22 @@ impl Type {
                 };
                 let Some(t) = t else { return false };
                 let key = (rk, (v as *const Value).addr());
-                hist.path.insert(key.clone()) && {
-                    let r = t.is_a_int(env, hist, flags, v);
-                    hist.path.remove(&key);
-                    r
+                if let Some(r) = hist.decided.get(&key) {
+                    return *r;
                 }
+                if !hist.path.insert(key) {
+                    hist.cuts += 1;
+                    return false;
+                }
+                #[cfg(test)]
+                IS_A_NAMES.with(|n| n.set(n.get() + 1));
+                let cuts = hist.cuts;
+                let r = t.is_a_int(env, hist, flags, v);
+                hist.path.remove(&key);
+                if hist.cuts == cuts {
+                    hist.decided.insert(key, r);
+                }
+                r
             }
             Type::Primitive(t) => rep::kind(v).is_none() && t.contains(Typ::get(&v)),
             Type::Abstract { id, params } => match v {
@@ -3308,6 +3320,7 @@ fn parsed_scalar(s: &str) -> Option<Value> {
 #[cfg(test)]
 thread_local! {
     static LITERALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static IS_A_NAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// `s` read as a value literal.
@@ -3584,6 +3597,31 @@ pub(crate) mod tests {
         let v = Value::String(arcstr::literal!("C"));
         let flat = parse_type("[`A, `B, `C]").unwrap();
         assert_eq!(t.cast_value(&env, v.clone()), flat.cast_value(&env, v));
+    }
+
+    // An is_a walk over a DAG of named unions decides each reference once
+    // at a value, and may_be_error expands each name once: a value no
+    // member holds costs each of the 39 names at most once per reference
+    // to it (two), and a type no member of which is an error each name
+    // once, not each of the 2^19 paths (no-error-dag-01).
+    #[test]
+    fn walks_over_a_union_dag_take_each_name_once() {
+        let defs = union_dag(20);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "L20");
+        let d = crate::rep::make_variant(arcstr::literal!("D"), [Value::I64(1)]);
+        let c = crate::rep::make_variant(arcstr::literal!("C"), []);
+        let names = |v: &Value| {
+            super::IS_A_NAMES.with(|n| n.set(0));
+            let r = t.is_a(&env, v);
+            (r, super::IS_A_NAMES.with(|n| n.get()))
+        };
+        let (holds, n) = names(&d);
+        assert!(!holds && n <= 2 * 39, "{n} names");
+        assert!(names(&c).0);
+        crate::typ::tvar::MAY_BE_ERROR_NAMES.with(|n| n.set(0));
+        assert!(!t.may_be_error(&env, false).unwrap());
+        assert_eq!(crate::typ::tvar::MAY_BE_ERROR_NAMES.with(|n| n.get()), 39);
     }
 
     // A text cast into a union parses the text as a literal once, and only

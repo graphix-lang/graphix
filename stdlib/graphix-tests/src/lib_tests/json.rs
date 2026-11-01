@@ -640,6 +640,45 @@ run!(json_seventeen_digit_decimal_round_trips, r#"{
 }"#, prints(r#"["[0.30000000000000004,1.0000000000000002,0.1234567890123456]", [decimal:0.30000000000000004, decimal:1.0000000000000002, decimal:0.1234567890123456], true]"#);
     FuseExpect::Jit);
 
+// A DAG of named unions is walked once per name: the check of a Result
+// over it (`NoError`), json's member choice and the typed printer each
+// expand a name once a walk (no-error-dag-01).
+run!(json_and_print_over_a_dag_of_named_unions, r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type L1 = [`A, `B];
+    type M1 = [`A, `C];
+    type L2 = [L1, M1];
+    type M2 = [M1, L1];
+    type L3 = [L2, M2];
+    type M3 = [M2, L2];
+    type L4 = [L3, M3];
+    type M4 = [M3, L3];
+    type L5 = [L4, M4];
+    type M5 = [M4, L4];
+    type L6 = [L5, M5];
+    type M6 = [M5, L5];
+    type L7 = [L6, M6];
+    type M7 = [M6, L6];
+    type L8 = [L7, M7];
+    type M8 = [M7, L7];
+    type L9 = [L8, M8];
+    type M9 = [M8, L8];
+    type L10 = [L9, M9];
+    type M10 = [M9, L9];
+    type L11 = [L10, M10];
+    type M11 = [M10, L10];
+    type L12 = [L11, M11];
+    type M12 = [M11, L11];
+    type L13 = [L12, M12];
+    type M13 = [M12, L12];
+    type L14 = [L13, M13];
+    type M14 = [M13, L13];
+    let v: Array<[L14, `D(i64)]> = [`C, `D(1)];
+    let r: Result<L14, E> = `B;
+    let back: Result<Array<[L14, `D(i64)]>, E> = json::read(json::write_str(v)$);
+    (json::write_str(v)$, "[v]", "[r]", back$ == v)
+}"#, prints(r#"["[\"C\",[\"D\",1]]", "[`C, `D(1)]", "`B", true]"#); FuseExpect::Jit);
+
 /// The forms JSON and TOML write: abstract values, `Transparent`, a
 /// union of tags, an option, a map keyed by strings and one keyed by an
 /// abstract type.

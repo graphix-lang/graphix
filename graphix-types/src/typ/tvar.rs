@@ -6,7 +6,7 @@ use crate::{
     image,
     stack::ensure_sufficient,
     typ::{
-        Bound, Mutability, PRINT_FLAGS, PrintFlag, Type, node_addr,
+        Bound, Mutability, PRINT_FLAGS, PrintFlag, RefKey, Type, node_addr,
         setops::union_identical,
     },
 };
@@ -34,6 +34,12 @@ use std::{
 use triomphe::Arc;
 
 image_id!(TVarId);
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static MAY_BE_ERROR_NAMES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
 
 /// Advanced by every change to a bound cell that can make it reach a cell
 /// it did not (a binding replaced, a constraint or lower bound added, an
@@ -2051,7 +2057,7 @@ impl Type {
         Ok(parts.known <= 1)
     }
 
-    // CR claude for claude: [perf/low] may_be_error expands every name each time a path
+    // XCR claude for claude: [perf/low] may_be_error expands every name each time a path
     // reaches it, so a DAG of named unions costs 2^depth: with type L1 = [`A, `B], M1 =
     // [`A, `C] and Li = [Li-1, Mi-1], Mi = [Mi-1, Li-1], checking `let v: Result<L20, E>
     // = never()` (Result's 'r: NoError) takes ~9.8 G instructions where `let v: L20`
@@ -2071,17 +2077,40 @@ impl Type {
     // ~/ptmp/cr29/scratch/r6-B/f3/dag/{c,w,p}{20,22,24}.gx (gen.py N KIND OUT; perf stat
     // -e instructions:u graphix --no-cache). The same fix applies: a seen set of names
     // per walk, as members_by_class keeps.
+    // 2026-11-01 claude: may_be_error expands each name once a walk (a seen set of
+    // RefKeys, keyed by the definition resolve_peek finds, so a walk that does not
+    // commit fills nothing); is_a, under json::write_str's member choice
+    // (tval::member_of) and the typed printer, keeps each reference's verdict at each
+    // value it was decided at for the walk (IsAHist::decided; a verdict reached past a
+    // path repeat is not kept). Instructions (graphix --no-cache, lane before/after):
+    // dag_res16 --check 2.96/2.62 G, dag_res20 --check 16.0/2.47 G (dag_plain20 2.08 G),
+    // w20 4.10/2.68, p20 6.45/2.61, w22 10.4/2.34, p22 16.5/2.35, w24 34.7/2.15, p24
+    // 65.0/2.29 G; wd25 2.33 G, print25 2.19 G after. Pins: graphix-types
+    // typ::cast::tests::walks_over_a_union_dag_take_each_name_once (counts names:
+    // 1048575 for either walk without its memo),
+    // lib_tests::json::json_and_print_over_a_dag_of_named_unions (the values).
     /// Whether a value of `self` may be an error as the type stands: a
     /// member is an `Error`, holds the primitive `error` or is `Any`.
     /// `NoError ⊇ self` is its negation; an open member may be anything
     /// its own conjuncts admit and is not counted.
     pub(crate) fn may_be_error(&self, env: &Env, commit: bool) -> Result<bool> {
+        self.may_be_error_past(env, commit, &mut LPooled::take())
+    }
+
+    /// [`Self::may_be_error`], each name expanded once a walk: one met
+    /// again was found to hold no error, or the walk would have ended.
+    fn may_be_error_past(
+        &self,
+        env: &Env,
+        commit: bool,
+        named: &mut LPooled<Vec<RefKey>>,
+    ) -> Result<bool> {
         ensure_sufficient(|| match self {
             Type::Error(_) | Type::Any => Ok(true),
             Type::Primitive(p) => Ok(p.contains(netidx_value::Typ::Error)),
             Type::Set(ts) => {
                 for t in ts.iter() {
-                    if t.may_be_error(env, commit)? {
+                    if t.may_be_error_past(env, commit, named)? {
                         return Ok(true);
                     }
                 }
@@ -2089,12 +2118,23 @@ impl Type {
             }
             Type::TVar(tv) => match tv.binding() {
                 None => Ok(false),
-                Some(b) => b.may_be_error(env, commit),
+                Some(b) => b.may_be_error_past(env, commit, named),
             },
-            Type::Ref(_) => match self.lookup_ref_with(env, commit)? {
-                Some(t) => t.may_be_error(env, commit),
-                None => Ok(true),
-            },
+            Type::Ref(tr) => {
+                if let Some(r) = tr.resolve_peek(env) {
+                    let k = (r.def_key(), tr.params.clone());
+                    if named.contains(&k) {
+                        return Ok(false);
+                    }
+                    named.push(k)
+                }
+                #[cfg(test)]
+                MAY_BE_ERROR_NAMES.with(|n| n.set(n.get() + 1));
+                match self.lookup_ref_with(env, commit)? {
+                    Some(t) => t.may_be_error_past(env, commit, named),
+                    None => Ok(true),
+                }
+            }
             _ => Ok(false),
         })
     }

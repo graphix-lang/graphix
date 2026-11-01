@@ -778,6 +778,10 @@ pub struct TypeRef {
     pub(in crate::typ) resolved: Arc<Mutex<Resolution>>,
 }
 
+/// A type reference as a path walk keys it: its definition and the
+/// parameters it is applied to, so `Id<i64>` and `Id<&i64>` are two.
+pub(crate) type RefKey = (usize, Arc<[Type]>);
+
 pub(crate) fn resolved_encode(
     r: &ResolvedRef,
     buf: &mut impl BufMut,
