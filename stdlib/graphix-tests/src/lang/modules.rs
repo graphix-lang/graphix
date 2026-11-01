@@ -1310,6 +1310,47 @@ run!(
     "#; FuseExpect::None
 );
 
+// A module's interface binding and its implementation's are one
+// variable: a static call to either holds both, so a later compile's `<-`
+// to the other is refused, naming the call.
+run!(
+    a_write_through_an_interface_is_refused_while_its_body_calls_it,
+    load_refused("f cannot be written: an earlier compile calls it as a fixed function"),
+    "/test.gx" => r#"
+        mod a;
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val v: i64 };
+            source "super::a::f <- |x: i64| x + 100; let v = 1"
+        };
+        let result = select s { error as e => e, null as _ => "accepted" }
+    "#,
+    "/test/a.gxi" => "val f: fn(x: i64) -> i64; val r: i64",
+    "/test/a.gx" => "let f = |x: i64| -> i64 x + 1; let r = f(1)"; FuseExpect::Jit
+);
+
+run!(
+    a_write_inside_a_module_is_refused_while_its_interface_is_called,
+    load_refused("f cannot be written: an earlier compile calls it as a fixed function"),
+    "/test.gx" => r#"
+        mod a;
+        let r = a::f(1);
+        let result = select a::s { error as e => e, null as _ => "accepted" }
+    "#,
+    "/test/a.gxi" => r#"
+        val f: fn(x: i64) -> i64;
+        val s: [Error<`DynamicLoadError(string)>, null]
+    "#,
+    "/test/a.gx" => r#"
+        let f = |x: i64| -> i64 x + 1;
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val v: i64 };
+            source "super::f <- |x: i64| x + 100; let v = 1"
+        }
+    "#; FuseExpect::Jit
+);
+
 // An interface-only `mod` goes after the body's declarations of every
 // interface item listed before it, in whatever order the body declares
 // them.

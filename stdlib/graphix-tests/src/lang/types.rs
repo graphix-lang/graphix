@@ -5422,6 +5422,76 @@ async fn a_reloaded_module_releases_its_static_callee() -> Result<()> {
     Ok(())
 }
 
+/// A reload's new body may write what the body it replaces calls
+/// statically, since that body goes with the reload; a new body that
+/// does not compile leaves the old one, holding its callee again.
+#[tokio::test(flavor = "current_thread")]
+async fn a_reload_may_write_what_the_replaced_body_calls() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let mut held = Vec::new();
+    for i in [
+        "let f = |x: i64| x + 1",
+        "let src = \"let v = super::f(1)\"",
+        "let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src }",
+    ] {
+        held.push(ctx.rt.compile(ArcStr::from(i)).await?);
+    }
+    let v = ctx.rt.compile(ArcStr::from("d::v")).await?;
+    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(2));
+    let bad = "src <- \"super::f <- |x: i64| x + 100; let v = nope\"";
+    let _w = ctx.rt.compile(ArcStr::from(bad)).await?;
+    ctx.rt.wait_settled().await?;
+    let e = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 100")).await.unwrap_err();
+    assert!(format!("{e:#}").contains("super::f(1)"), "{e:#}");
+    let good = "src <- \"super::f <- |x: i64| x + 100; let v = 7\"";
+    let _w = ctx.rt.compile(ArcStr::from(good)).await?;
+    ctx.rt.wait_settled().await?;
+    let st = ctx.rt.compile(ArcStr::from("s")).await?;
+    assert_eq!(value_of(&mut rx, st.exprs[0].id).await?, Value::Null);
+    let v = ctx.rt.compile(ArcStr::from("d::v")).await?;
+    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(7));
+    let r = ctx.rt.compile(ArcStr::from("f(1)")).await?;
+    assert_eq!(value_of(&mut rx, r.exprs[0].id).await?, Value::I64(101));
+    ctx.shutdown().await;
+    Ok(())
+}
+
+/// A `<-` to a module's interface binding writes the implementation's
+/// too: a static call a later input builds in the module calls what was
+/// written.
+#[tokio::test(flavor = "current_thread")]
+async fn a_write_through_an_interface_reaches_a_later_static_call() -> Result<()> {
+    use arcstr::{ArcStr, literal};
+    use graphix_compiler::expr::{VfsEntry, VfsResolver};
+    use graphix_package_core::testing::{TestCtx, config};
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let files = vec![VfsResolver::new(ahash::AHashMap::from_iter([
+        (
+            netidx_core::path::Path::from("/a.gxi"),
+            VfsEntry::from(literal!(
+                "val f: fn(x: i64) -> i64; val g: fn(x: i64) -> i64"
+            )),
+        ),
+        (
+            netidx_core::path::Path::from("/a.gx"),
+            VfsEntry::from(literal!(
+                "let f = |x: i64| -> i64 x + 1; let g = |x: i64| -> i64 f(x)"
+            )),
+        ),
+    ]))];
+    let ctx = TestCtx::start(config(tx, crate::TEST_REGISTER, files, |_| {})?).await?;
+    let _a = ctx.rt.compile(ArcStr::from("mod a")).await?;
+    let _w = ctx.rt.compile(ArcStr::from("a::f <- |x: i64| x + 100")).await?;
+    ctx.rt.wait_settled().await?;
+    let v = ctx.rt.compile(ArcStr::from("a::g(1)")).await?;
+    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(101));
+    ctx.shutdown().await;
+    Ok(())
+}
+
 /// An alias `let h = f` in a function's body holds `f` while an instance
 /// of the function lives. The definition holds nothing: an instance a
 /// later input builds after a `<-` to `f` calls what was written.

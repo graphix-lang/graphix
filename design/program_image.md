@@ -558,6 +558,21 @@ discarded with the check. An instance built later resolves against
 the next compile (`GX::prune_static_resolution`), so after a write the
 definition's instances call through the binding.
 
+A module's interface binding and the binding implementing it (a
+`Proxy` with a private inner binding) are one variable: a write to
+either reaches the other. The index joins them (`StaticCallees::join`,
+at `check_sig` and at a module's decode; `unjoin` when its body
+retires), so `mark_connect_target` refuses a write to either while a
+call holds either, and marks both as targets, which prunes both from
+`bind_to_lambda`.
+
+A dynamic module's reload compiles while the body it replaces is set
+aside: that body goes with a load that compiles, so its holds are left
+out of the refusal while the new source compiles
+(`StaticCallees::set_aside`, the holds a `Refs::holders` walk finds, each
+counted once), and count again when the guard drops, which a load that
+fails leaves running.
+
 The image carries holds, never the index (registration format 104).
 A `CallSite` writes the bindings it holds, an alias `Bind` its one, a
 `FusedKernel` its `(binding, call)` pairs; each holds them again at
@@ -571,5 +586,9 @@ nothing for its tree: the site that decoded it already does.
 
 Pins: `lang::types::{a_deleted_static_call_releases_its_callee,
 a_reloaded_module_releases_its_static_callee,
+a_reload_may_write_what_the_replaced_body_calls,
+a_write_through_an_interface_reaches_a_later_static_call,
 an_alias_holds_its_callee_while_its_instance_lives}`,
+`lang::modules::{a_write_through_an_interface_is_refused_while_its_body_calls_it,
+a_write_inside_a_module_is_refused_while_its_interface_is_called}`,
 `lang::image::a_restored_static_call_holds_its_callee_while_it_lives`.

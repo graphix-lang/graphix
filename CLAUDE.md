@@ -181,7 +181,9 @@ bound statically keeps its definition, so a later compile's `<-` to
 that binding (a REPL input's) is refused, naming the call, while the
 call lives: its holders (the call site, an alias `let`, the kernel that
 replaced them) hold it in `CompileCtx::static_callees` and carry their
-holds through the image (`design/program_image.md`).
+holds through the image; a module's interface binding and its
+implementation's are one binding there, and a reload's replaced body
+holds nothing against its replacement (`design/program_image.md`).
 
 **Runtime.** `graphix-rt` implements `Rt`: variables, timers, spawned
 tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`)

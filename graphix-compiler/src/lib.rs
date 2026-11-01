@@ -280,6 +280,9 @@ pub struct Refs {
     callees: Option<Vec<LambdaInstanceId>>,
     /// Collect the static holds of the nodes walked ([`StaticHold`]).
     static_holds: Option<Vec<(BindId, Arc<expr::Expr>)>>,
+    /// Collect each static hold of the nodes walked once, by its address
+    /// ([`Refs::holders`]).
+    holders: Option<AHashMap<usize, (BindId, ExprId)>>,
 }
 
 impl Refs {
@@ -313,13 +316,32 @@ impl Refs {
         self.static_holds.take().unwrap_or_default()
     }
 
+    /// A walk of a whole tree, callee bodies included, that collects each
+    /// static hold it holds once ([`Refs::take_holders`]).
+    pub(crate) fn holders() -> Self {
+        Self { holders: Some(AHashMap::default()), ..Self::default() }
+    }
+
+    /// The binding and the call of each hold [`Refs::holders`] collected.
+    pub(crate) fn take_holders(&mut self) -> Vec<(BindId, ExprId)> {
+        self.holders.take().map(|h| h.into_values().collect()).unwrap_or_default()
+    }
+
     /// Record the static holds of a walked node.
     pub(crate) fn static_holds<'a>(
         &mut self,
         holds: impl IntoIterator<Item = &'a StaticHold>,
     ) {
-        if let Some(out) = &mut self.static_holds {
-            out.extend(holds.into_iter().map(|h| (h.id, h.call.clone())))
+        match (&mut self.static_holds, &mut self.holders) {
+            (Some(out), _) => {
+                out.extend(holds.into_iter().map(|h| (h.id, h.call.clone())))
+            }
+            (None, Some(out)) => out.extend(
+                holds
+                    .into_iter()
+                    .map(|h| (h as *const StaticHold as usize, (h.id, h.call.id))),
+            ),
+            (None, None) => (),
         }
     }
 
@@ -1820,8 +1842,11 @@ impl<R: Rt> CompileCtx<R> {
     /// type, which every value written takes (the value restriction). One
     /// an earlier compile generalized stays so, its uses having relied on
     /// it, and a write is held to its type (`Connect::typecheck0_with`).
+    /// The bindings `id` is one variable with ([`StaticCallees::join`]),
+    /// each a target with it.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
-        if let Some(call) = self.static_callees.held(id) {
+        let ids = self.static_callees.variable(id);
+        if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
             let name =
                 self.env.by_id.get(&id).map(|b| b.name.clone()).unwrap_or_default();
             bail!(
@@ -1830,10 +1855,12 @@ impl<R: Rt> CompileCtx<R> {
                 call.pos
             )
         }
-        self.batch_connect_targets.insert(id);
-        self.connect_targets.insert(id);
-        if !self.generalized_earlier(id) {
-            self.env.poly_binds.remove(&id);
+        for id in ids {
+            self.batch_connect_targets.insert(id);
+            self.connect_targets.insert(id);
+            if !self.generalized_earlier(id) {
+                self.env.poly_binds.remove(&id);
+            }
         }
         Ok(())
     }
@@ -3579,20 +3606,48 @@ pub fn record_expr_types<R: Rt>(nodes: &[Node<R>], out: &mut Vec<ide::ExprTypeSi
 // lang::image::a_restored_static_call_holds_its_callee_while_it_lives fails per
 // program with each codec's re-hold off (site, alias, untaken-arm imaged instance,
 // kernel) and after the delete with the release off. The probe now takes the write.
+// 2026-11-01 claude: Review round 3 found a hole in the same rule and a false
+// refusal; both fixed. (1) A module's interface binding and its implementation's (a
+// Proxy with a private inner) are one variable, but the index held them apart: a
+// static call to one let a later write to the other through (the same function then
+// answered two ways), and a write to the outer one left the inner in bind_to_lambda
+// for a later static call. StaticCallees::join/unjoin now keeps the pairs
+// (check_sig and a module's decode join, retire unjoins), and mark_connect_target
+// checks every binding of the variable and marks each as a target, so the prune
+// drops both. Pins:
+// lang::modules::{a_write_through_an_interface_is_refused_while_its_body_calls_it,
+// a_write_inside_a_module_is_refused_while_its_interface_is_called},
+// lang::types::a_write_through_an_interface_reaches_a_later_static_call (each fails
+// with mark_connect_target checking the written id alone). (2) A reload whose new
+// body writes what the replaced body calls was refused, naming the replaced body's
+// call: compile_source now leaves the replaced body's holds out
+// (StaticCallees::set_aside over a Refs::holders walk, each hold counted once by
+// address) until its guard drops, so a failed load holds again. Pin
+// lang::types::a_reload_may_write_what_the_replaced_body_calls (fails without the
+// set-aside; it also checks the hold is back after a failed load). Probes
+// ~/ptmp/cr29/scratch/review-r6/W2-r2-2/{x2,x3,x4,d/d2_reload_writes.gx}: x2 and x3
+// now refuse the write naming the call, x4 reads 101, d2 loads (v=7).
 /// The live holds on bindings whose definitions calls bound statically
 /// ([`CompileCtx::static_callees`]): per binding, each holding call with
-/// the number of holders that hold it. One index serves a context and
-/// every compile task it forks.
+/// the number of holders that hold it, and the bindings that are one
+/// variable. One index serves a context and every compile task it forks.
 #[derive(Debug, Default)]
-pub(crate) struct StaticCallees(
-    Mutex<AHashMap<BindId, SmallVec<[(Arc<expr::Expr>, u32); 1]>>>,
-);
+pub(crate) struct StaticCallees(Mutex<Holds>);
+
+#[derive(Debug, Default)]
+struct Holds {
+    calls: AHashMap<BindId, SmallVec<[(Arc<expr::Expr>, u32); 1]>>,
+    joined: AHashMap<BindId, SmallVec<[BindId; 1]>>,
+    /// The holds of a body being replaced, which a write its replacement
+    /// makes does not see ([`StaticCallees::set_aside`]).
+    aside: AHashMap<(BindId, ExprId), u32>,
+}
 
 impl StaticCallees {
     /// Hold `id` for the call `call`, until the hold drops.
     fn hold(index: &Arc<Self>, id: BindId, call: &Arc<expr::Expr>) -> StaticHold {
         let mut held = index.0.lock();
-        let calls = held.entry(id).or_default();
+        let calls = held.calls.entry(id).or_default();
         match calls.iter_mut().find(|(c, _)| c.id == call.id) {
             Some((_, n)) => *n += 1,
             None => calls.push((call.clone(), 1)),
@@ -3600,18 +3655,85 @@ impl StaticCallees {
         StaticHold { index: index.clone(), id, call: call.clone() }
     }
 
-    /// A call holding `id`, if one is live.
+    /// A call holding `id`, if one is live and not set aside.
     fn held(&self, id: BindId) -> Option<Arc<expr::Expr>> {
-        self.0.lock().get(&id).and_then(|calls| calls.first()).map(|(c, _)| c.clone())
+        let held = self.0.lock();
+        let aside = |call: ExprId| held.aside.get(&(id, call)).copied().unwrap_or(0);
+        let calls = held.calls.get(&id)?;
+        calls.iter().find(|(c, n)| *n > aside(c.id)).map(|(c, _)| c.clone())
+    }
+
+    /// Leave `holds`, a replaced body's, out of [`Self::held`] until the
+    /// guard drops: the body goes when its replacement compiles.
+    pub(crate) fn set_aside(
+        index: &Arc<Self>,
+        holds: Vec<(BindId, ExprId)>,
+    ) -> AsideHolds {
+        let mut held = index.0.lock();
+        for key in holds.iter() {
+            *held.aside.entry(*key).or_default() += 1;
+        }
+        AsideHolds { index: index.clone(), holds }
+    }
+
+    /// `a` and `b` are one variable, a write to either reaching the
+    /// other: an interface's binding and the one implementing it.
+    pub(crate) fn join(&self, a: BindId, b: BindId) {
+        let mut held = self.0.lock();
+        for (x, y) in [(a, b), (b, a)] {
+            let with = held.joined.entry(x).or_default();
+            if !with.contains(&y) {
+                with.push(y)
+            }
+        }
+    }
+
+    /// `a` and `b` are no longer one variable.
+    pub(crate) fn unjoin(&self, a: BindId, b: BindId) {
+        let mut held = self.0.lock();
+        for (x, y) in [(a, b), (b, a)] {
+            if let Some(with) = held.joined.get_mut(&x) {
+                with.retain(|id| *id != y);
+                if with.is_empty() {
+                    held.joined.remove(&x);
+                }
+            }
+        }
+    }
+
+    /// `id` and every binding it is one variable with.
+    fn variable(&self, id: BindId) -> SmallVec<[BindId; 2]> {
+        let held = self.0.lock();
+        let mut ids: SmallVec<[BindId; 2]> = smallvec::smallvec![id];
+        let mut i = 0;
+        while let Some(id) = ids.get(i).copied() {
+            for with in held.joined.get(&id).into_iter().flatten() {
+                if !ids.contains(with) {
+                    ids.push(*with)
+                }
+            }
+            i += 1;
+        }
+        ids
     }
 
     /// Forget `id`, a deleted binding: nothing can write it again.
     pub(crate) fn forget(&self, id: BindId) {
-        self.0.lock().remove(&id);
+        let mut held = self.0.lock();
+        held.calls.remove(&id);
+        for with in held.joined.remove(&id).into_iter().flatten() {
+            if let Some(ids) = held.joined.get_mut(&with) {
+                ids.retain(|i| *i != id);
+                if ids.is_empty() {
+                    held.joined.remove(&with);
+                }
+            }
+        }
     }
 
     fn release(&self, id: BindId, call: ExprId) {
         let mut held = self.0.lock();
+        let held = &mut held.calls;
         let Some(calls) = held.get_mut(&id) else { return };
         if let Some(i) = calls.iter().position(|(c, _)| c.id == call) {
             calls[i].1 -= 1;
@@ -3621,6 +3743,26 @@ impl StaticCallees {
         }
         if calls.is_empty() {
             held.remove(&id);
+        }
+    }
+}
+
+/// Holds [`StaticCallees::set_aside`] left out, back when it drops.
+pub(crate) struct AsideHolds {
+    index: Arc<StaticCallees>,
+    holds: Vec<(BindId, ExprId)>,
+}
+
+impl Drop for AsideHolds {
+    fn drop(&mut self) {
+        let mut held = self.index.0.lock();
+        for key in self.holds.iter() {
+            if let Some(n) = held.aside.get_mut(key) {
+                *n -= 1;
+                if *n == 0 {
+                    held.aside.remove(key);
+                }
+            }
         }
     }
 }

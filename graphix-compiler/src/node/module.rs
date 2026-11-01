@@ -1,6 +1,6 @@
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, PrintFlag, Refs, Rt, Saved,
-    Scope, Tag, TagValue, Update, View,
+    Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
     env::{Env, Glob, ImplDef, ImportEntry, Lexical, Map, UseAnchor, scope_params},
     errf,
@@ -395,6 +395,16 @@ struct Proxy {
     private_inner: bool,
 }
 
+impl Proxy {
+    /// A private inner binding is one variable with the outer one, so a
+    /// static call to either holds both.
+    fn join<R: Rt>(&self, ctx: &CompileCtx<R>) {
+        if self.private_inner {
+            ctx.static_callees.join(self.inner, self.outer)
+        }
+    }
+}
+
 /// An impl head as the type of a function over it, quantified by the
 /// head's variables, so a declaration and its implementation compare by
 /// [`FnType::sig_matches`]: shape, variables and bounds.
@@ -648,9 +658,10 @@ fn check_sig<R: Rt>(
         proxy.truncate(first_proxy);
         return Err(e);
     }
-    for Proxy { inner, outer, .. } in proxy[first_proxy..].iter() {
-        ctx.record_ref(*inner, top_id);
-        ctx.record_ref(*outer, top_id);
+    for p in proxy[first_proxy..].iter() {
+        ctx.record_ref(p.inner, top_id);
+        ctx.record_ref(p.outer, top_id);
+        p.join(ctx);
     }
     Ok(())
 }
@@ -1030,9 +1041,10 @@ impl<R: Rt> Module<R> {
         let runs = Runs::image_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         // the registrations check_sig made
-        for Proxy { inner, outer, .. } in proxy.iter() {
-            ctx.record_ref(*inner, top_id);
-            ctx.record_ref(*outer, top_id);
+        for p in proxy.iter() {
+            ctx.record_ref(p.inner, top_id);
+            ctx.record_ref(p.outer, top_id);
+            p.join(ctx);
         }
         Ok(Node::new(Self::with(
             spec,
@@ -1176,6 +1188,11 @@ impl<R: Rt> Module<R> {
         ctx.with_restored_mut(env, |ctx| {
             nodes.iter_mut().for_each(|n| n.unregister(ctx))
         });
+        // what the replaced body binds statically goes with it
+        let mut holders = Refs::holders();
+        nodes.iter().for_each(|n| n.refs(&mut holders));
+        let _aside =
+            StaticCallees::set_aside(&ctx.static_callees, holders.take_holders());
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical);
@@ -1371,9 +1388,12 @@ impl<R: Rt> Module<R> {
     /// what still holds one keeps it.
     fn retire(&self, ctx: &mut ExecCtx<'_, R>, body: SetAside<R>) {
         let SetAside { mut env, nodes, proxy, .. } = body;
-        for Proxy { inner, outer, .. } in proxy {
+        for Proxy { inner, outer, private_inner } in proxy {
             ctx.unref_var(inner, self.top_id);
             ctx.unref_var(outer, self.top_id);
+            if private_inner {
+                ctx.static_callees.unjoin(inner, outer)
+            }
         }
         ctx.with_restored_mut(&mut env, |ctx| {
             for mut n in nodes {
