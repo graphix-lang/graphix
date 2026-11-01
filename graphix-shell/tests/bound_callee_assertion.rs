@@ -212,3 +212,44 @@ fn bound_callee_in_package_body_builds_the_loop() {
         assert!(ran.stdout.lines().any(|l| l == "10"), "{call}:\n{}", ran.stderr);
     }
 }
+
+/// A node-walked recursion binds each level at run time and passes its
+/// function parameter on: a level's call through it is judged by the
+/// function the first level was handed, whether that level was built by
+/// the program's compile or by a call through a function value. A sync
+/// callback fails neither `#[sync]` nor `#[pure]` at any depth; an async
+/// one handed through the value fails the check, once.
+const ACTIVATION: &str = r#"
+#[ATTR]
+let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+  select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+let b = true;
+let g = select b { true => loop, false => |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64 n };
+println((loop(|x| x, 3, 0), g(|x| CALLBACK, 3, 0)));
+sys::exit(sys::time::after_idle(duration:100.ms, 0))
+"#;
+
+#[test]
+fn bound_activation_is_judged_by_its_callback() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for attr in ["sync", "pure"] {
+        let head = format!("#[{attr}]");
+        for (callback, out, fails) in [
+            ("x * 2", "(6, 12)", false),
+            ("sys::time::after_idle(duration:1.ms, x * 2)", "(6, 12)", true),
+        ] {
+            let program = ACTIVATION.replace("ATTR", attr).replace("CALLBACK", callback);
+            for args in [&["--no-cache"][..], &["--no-cache", "--no-fusion"]] {
+                let ran = graphix(dir.path(), &program, args, &[]);
+                let what = format!("{attr} {callback} {args:?}");
+                assert_eq!(
+                    ran.stderr.matches(&head).count(),
+                    fails as usize,
+                    "{what}:\n{}",
+                    ran.stderr
+                );
+                assert!(ran.stdout.lines().any(|l| l == out), "{what}:\n{}", ran.stderr);
+            }
+        }
+    }
+}

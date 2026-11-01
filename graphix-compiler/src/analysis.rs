@@ -591,7 +591,7 @@ fn check_def_assertions<R: Rt>(
                  lookup, a kernel recomputing), as many times as each engine needs",
             )?;
         }
-        // CR claude for claude: [bug/medium] A `#[sync]` or `#[pure]` stays
+        // XCR claude for claude: [bug/medium] A `#[sync]` or `#[pure]` stays
         // pending, so every run-time bind's analysis checks it again, a
         // node-walked self-call activation's included. That activation's body
         // stays lazy (`CallSite::elaborate_bound`, `already_active`), its call
@@ -605,6 +605,23 @@ fn check_def_assertions<R: Rt>(
         // `#[tail_recursive]` escapes it only because its definition's check runs
         // once (`TailLoop`). probes: ~/tmp/cr29/scratch/laneA/sync_act.gx,
         // pure_act.gx (def-assert-activation-01)
+        // 2026-11-01 claude: Cause, measured: not a lazy body (already_active was
+        // false at every bind of the probes) but the bind's registration. A
+        // node-walked level is a run-time bind whose argument for f is the
+        // enclosing level's formal, whose bind_to_lambda entry left with that
+        // level's check, so the new level's call through f stayed unresolved and
+        // its analysis read it async, joined into the definition's facts.
+        // register_fn_params now forwards such a formal the definition
+        // fn_forward_resolutions holds for the enclosing one (the call stays
+        // dynamic; the instance's delete drops the entry, as before), and
+        // callee_own_facts judges a call through a forwarded formal by that
+        // definition. #[tail_recursive] and #[native] paths unchanged (their
+        // shell and attributes tests pass). Pin:
+        // graphix-shell/tests/bound_callee_assertion.rs
+        // bound_activation_is_judged_by_its_callback (#[sync] and #[pure], fused
+        // and --no-fusion, a sync callback accepted, an async one through a
+        // function value refused once); fails without the fix (the sync callback
+        // is refused).
 
         // an instance a later analysis reaches can still make the
         // function async, or build no loop
@@ -1300,6 +1317,9 @@ fn callee_own_facts<R: Rt>(
             ctx.bind_to_lambda.get(&r.id).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
         {
             return of_def(d.id);
+        }
+        if let Some(lid) = ctx.fn_forward_resolutions.get(&r.id) {
+            return of_def(*lid);
         }
         if let Some(bind) = ctx.env.by_id.get(&r.id)
             && let Some(info) =

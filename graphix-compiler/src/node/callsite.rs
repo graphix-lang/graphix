@@ -2759,7 +2759,11 @@ impl<R: Rt> CallSite<R> {
     /// Register this site's statically known fn-typed args under the
     /// param BindIds of `apply`, its instance of `lid`. Held for the whole
     /// body typecheck so calls to and captures of a fn parameter resolve
-    /// in one pass.
+    /// in one pass. An arg that is an enclosing instance's formal, whose
+    /// check has ended, passes on only the definition forwarded to it
+    /// (`fn_forward_resolutions`, which the instance's delete drops): the
+    /// analysis judges the calls through it by that definition, and they
+    /// stay dynamic.
     fn register_fn_params(
         &self,
         ctx: &mut CompileCtx<R>,
@@ -2805,6 +2809,10 @@ impl<R: Rt> CallSite<R> {
                         }
                         ctx.bind_to_lambda.insert(id, fv);
                         param_binds.push(id);
+                    } else if let Some(lid) =
+                        ctx.fn_forward_resolutions.get(&r.id).copied()
+                    {
+                        ctx.fn_forward_resolutions.insert(id, lid);
                     }
                 }
                 _ => {}
