@@ -88,8 +88,8 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 const SIZES: [i64; 3] = [1, 5_000, 20_000];
-const MAX_BYTES_PER_ACTIVATION: i64 = 6_200;
-const MAX_BYTES_PER_SLOT: i64 = 3_300;
+const MAX_BYTES_PER_ACTIVATION: i64 = 5_640;
+const MAX_BYTES_PER_SLOT: i64 = 3_140;
 
 /// The most heap bytes, over what was live before it compiled, that
 /// `program` held until its value arrived, in a runtime of its own on a

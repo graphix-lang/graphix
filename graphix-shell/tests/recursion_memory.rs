@@ -6,9 +6,9 @@
 //! RSS is not exact: a run's peak moves by up to 2 MB with its threads'
 //! timing (the allocator's arenas, the compile's thread-local pools), so a
 //! slope over 15,000 items moves by about 100 bytes, one standard deviation,
-//! at any load. The slopes measure 10.3 KB an activation and 3.4 KB a slot,
-//! and each ceiling sits more than six deviations over its slope: the noise
-//! does not reach it, and growth of 2 KB an activation or 0.7 KB a slot does.
+//! at any load. The slopes measure 9.0 to 9.4 KB an activation and 3.2 KB a
+//! slot. The activation's ceiling sits 5% over the larger, so growth of 0.5
+//! KB an activation fails it; the slot's sits 0.9 KB over its slope.
 
 #![cfg(target_os = "linux")]
 
@@ -19,7 +19,7 @@ use std::{
 };
 
 const SIZES: [i64; 3] = [1, 5_000, 20_000];
-const MAX_BYTES_PER_ACTIVATION: i64 = 12 * 1024;
+const MAX_BYTES_PER_ACTIVATION: i64 = 9_850;
 
 fn peak_rss_kb(program: &str) -> i64 {
     let file = tempfile::Builder::new().suffix(".gx").tempfile().unwrap();

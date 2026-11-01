@@ -179,9 +179,60 @@ pub(crate) struct TrackedFires {
     /// Per arm: its refs were collected again after its first
     /// evaluation, which names what a node knows only once it ran (a
     /// `Deref`'s target).
-    ran: Vec<bool>,
+    ran: ArmMask,
     /// Per arm: where it stands in time.
     clock: Vec<ArmClock>,
+}
+
+/// One bit per arm; inline up to 64 arms.
+#[derive(Debug, Default)]
+pub(crate) struct ArmMask(SmallVec<[u64; 1]>);
+
+impl ArmMask {
+    pub(super) fn new(arms: usize) -> Self {
+        let mut mask = Self::default();
+        mask.clear(arms);
+        mask
+    }
+
+    pub(super) fn clear(&mut self, arms: usize) {
+        self.0.clear();
+        self.0.resize(arms.div_ceil(64), 0);
+    }
+
+    /// Bit i = the i-th of `bits`.
+    pub(super) fn of(bits: impl ExactSizeIterator<Item = bool>) -> Self {
+        let mut mask = Self::new(bits.len());
+        for (i, b) in bits.enumerate() {
+            if b {
+                mask.set(i)
+            }
+        }
+        mask
+    }
+
+    pub(super) fn set(&mut self, i: usize) {
+        self.0[i / 64] |= 1 << (i % 64);
+    }
+
+    /// Set bit `i`, saying whether it was set.
+    pub(super) fn replace(&mut self, i: usize) -> bool {
+        let was = self.get(i);
+        self.set(i);
+        was
+    }
+
+    pub(super) fn unset(&mut self, i: usize) {
+        self.0[i / 64] &= !(1 << (i % 64));
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.iter().all(|w| *w == 0)
+    }
+
+    pub(super) fn get(&self, i: usize) -> bool {
+        self.0.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0)
+    }
 }
 
 /// The inputs a tracker's arms read, each with how many arms read it,
@@ -283,7 +334,7 @@ impl TrackedFires {
             all: Inputs::default(),
             pending: Arc::default(),
             carried: IntSet::default(),
-            ran: vec![false; n],
+            ran: ArmMask::new(n),
             clock: vec![ArmClock::Asleep(cycle); n],
         };
         for i in 0..n {
@@ -329,7 +380,7 @@ impl TrackedFires {
         i: usize,
         fill: impl FnOnce(&mut Refs),
     ) {
-        if std::mem::replace(&mut self.ran[i], true) {
+        if self.ran.replace(i) {
             return;
         }
         let mut r = Refs::without_callees();

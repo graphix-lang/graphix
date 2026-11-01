@@ -2,7 +2,7 @@ use super::{
     Held, Holders, WakeBit,
     compiler::compile,
     pattern::{ArmMatch, PatternNode, SliceKind, StructPatternNode},
-    wake::TrackedFires,
+    wake::{ArmMask, TrackedFires},
 };
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
@@ -96,10 +96,10 @@ struct LazyArmFacts {
     tracked: TrackedFires,
     /// Per arm: sleep on deselect? False only for a pure non-recursive
     /// body, which is neither slept nor updated while untaken.
-    sleep_on_deselect: Vec<bool>,
+    sleep_on_deselect: ArmMask,
     /// Per arm: entered before. A first entry is the arm's birth, every
     /// later one a resume.
-    entered: Vec<bool>,
+    entered: ArmMask,
     discriminants: Arc<ArmDiscriminants>,
     /// A value no arm matched was logged: once per select.
     logged_no_match: bool,
@@ -107,7 +107,7 @@ struct LazyArmFacts {
     guarded: SmallVec<[usize; 4]>,
     /// Per arm: a scrutinee fire the chain passed its guard by; the guard
     /// is given the value fired when the chain next reaches it.
-    missed: Vec<bool>,
+    missed: ArmMask,
     /// A select with guards: the ones the chain does not reach sleep.
     guards: Option<Vec<GuardRun>>,
     /// The arms whose deselect kept a recursive callee asleep.
@@ -185,11 +185,10 @@ impl LazyArmFacts {
                     None => guard_refs(&arms[i - arms.len()].0, r),
                 }
             }),
-            sleep_on_deselect: arms
-                .iter()
-                .map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n))
-                .collect(),
-            entered: vec![false; arms.len()],
+            sleep_on_deselect: ArmMask::of(
+                arms.iter().map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n)),
+            ),
+            entered: ArmMask::new(arms.len()),
             discriminants,
             logged_no_match: false,
             guarded: arms
@@ -198,43 +197,10 @@ impl LazyArmFacts {
                 .filter(|(_, (pat, _))| pat.guard.is_some())
                 .map(|(i, _)| i)
                 .collect(),
-            missed: vec![false; arms.len()],
+            missed: ArmMask::new(arms.len()),
             guards: has_guards.then(|| vec![GuardRun::Unborn; arms.len()]),
             kept: ArmMask::new(arms.len()),
         }
-    }
-}
-
-/// One bit per arm; inline up to 64 arms.
-#[derive(Debug, Default)]
-struct ArmMask(SmallVec<[u64; 1]>);
-
-impl ArmMask {
-    fn new(arms: usize) -> Self {
-        let mut mask = Self::default();
-        mask.clear(arms);
-        mask
-    }
-
-    fn clear(&mut self, arms: usize) {
-        self.0.clear();
-        self.0.resize(arms.div_ceil(64), 0);
-    }
-
-    fn set(&mut self, i: usize) {
-        self.0[i / 64] |= 1 << (i % 64);
-    }
-
-    fn unset(&mut self, i: usize) {
-        self.0[i / 64] &= !(1 << (i % 64));
-    }
-
-    fn is_empty(&self) -> bool {
-        self.0.iter().all(|w| *w == 0)
-    }
-
-    fn get(&self, i: usize) -> bool {
-        self.0.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0)
     }
 }
 
@@ -369,30 +335,30 @@ impl<R: Rt> Select<R> {
         let flags = flags & !CFlag::RunEvent;
         let arg = Held::new(compile(ctx, flags, arg.clone(), scope, top_id)?);
         let inputs = scrutinee_inputs(&ctx.env, &arg.node);
-        let arms = arms
-            .iter()
-            .map(|(pat, body)| {
-                let scope = scope.append_block("sel", body.id.inner());
-                let pat = PatternNode::compile(
-                    ctx,
-                    flags,
-                    pat,
-                    &scope,
-                    top_id,
-                    body.pos,
-                    body.ori.clone(),
-                )
-                .at(&pattern_site(pat, body))?;
-                pat.structure_predicate
-                    .ids(&mut |id| ctx.env.mark_pattern_bind(id, inputs.clone()));
-                let n = super::prune::Prune::compile(ctx, |ctx| {
-                    compile(ctx, flags, body.clone(), &scope, top_id)
-                })?;
-                Ok((pat, n))
-            })
-            .collect::<Result<Vec<_>>>()
+        // every instance holds its arms: exactly as many as written
+        let mut built = Vec::with_capacity(arms.len());
+        for (pat, body) in arms.iter() {
+            let scope = scope.append_block("sel", body.id.inner());
+            let pat = PatternNode::compile(
+                ctx,
+                flags,
+                pat,
+                &scope,
+                top_id,
+                body.pos,
+                body.ori.clone(),
+            )
+            .at(&pattern_site(pat, body))
             .at(&spec)?;
-        Ok(Self::new(arg, arms, Type::empty_tvar(), spec, flags | own))
+            pat.structure_predicate
+                .ids(&mut |id| ctx.env.mark_pattern_bind(id, inputs.clone()));
+            let n = super::prune::Prune::compile(ctx, |ctx| {
+                compile(ctx, flags, body.clone(), &scope, top_id)
+            })
+            .at(&spec)?;
+            built.push((pat, n));
+        }
+        Ok(Self::new(arg, built, Type::empty_tvar(), spec, flags | own))
     }
 }
 
@@ -1666,8 +1632,8 @@ impl<R: Rt> Update<R> for Select<R> {
         let held = match woke && ctx.event.born() {
             false => None,
             true => {
-                entered.fill(false);
-                missed.fill(false);
+                entered.clear(arms.len());
+                missed.clear(arms.len());
                 if let Some(runs) = guards.as_mut() {
                     runs.fill(GuardRun::Unborn);
                 }
@@ -1707,10 +1673,11 @@ impl<R: Rt> Update<R> for Select<R> {
                 open &= reach.is_none();
                 continue;
             }
-            let tag = if missed[i] { arg_prod.fresh() } else { arg_prod };
+            let tag = if missed.get(i) { arg_prod.fresh() } else { arg_prod };
             match reach {
-                Some(_) => missed[i] = false,
-                None => missed[i] |= arg_prod.triggers(),
+                Some(_) => missed.unset(i),
+                None if arg_prod.triggers() => missed.set(i),
+                None => (),
             }
             let runs = guards.as_mut().expect("a guarded arm builds the guard sleep");
             let Some(v) = reach else {
@@ -1756,7 +1723,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 exit_kept(ctx, kept, arms, None)
             }
             if let Some(j) = selected.take().or(held) {
-                deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
+                deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect.get(j));
             }
             return resident.set_bottom(arg_prod.triggers());
         }
@@ -1826,7 +1793,14 @@ impl<R: Rt> Update<R> for Select<R> {
                     slept.set();
                 }
                 if let Some(j) = selected.take().or(held) {
-                    deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
+                    deselect(
+                        ctx,
+                        tracked,
+                        kept,
+                        j,
+                        &mut arms[j],
+                        sleep_on_deselect.get(j),
+                    );
                 }
                 return resident.set_bottom(planes.anyfire);
             }
@@ -1851,7 +1825,14 @@ impl<R: Rt> Update<R> for Select<R> {
                     );
                 }
                 if let Some(j) = selected.replace(i).or(held.filter(|j| *j != i)) {
-                    deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
+                    deselect(
+                        ctx,
+                        tracked,
+                        kept,
+                        j,
+                        &mut arms[j],
+                        sleep_on_deselect.get(j),
+                    );
                 }
                 // A bind is a facet of its scrutinee's delivery: a stale
                 // scrutinee binds stale, at a first consult, a wake or a
@@ -1866,9 +1847,9 @@ impl<R: Rt> Update<R> for Select<R> {
                 // constants stand, as a kernel's do. A pure arm, not slept
                 // when deselected since nothing in it runs, is slept now so
                 // its nodes recompute from what stands, as a slept arm's do.
-                let view = match mem::replace(&mut entered[i], true) {
+                let view = match entered.replace(i) {
                     true => {
-                        if !sleep_on_deselect[i] {
+                        if !sleep_on_deselect.get(i) {
                             arms[i].1.sleep(ctx);
                         }
                         match flags.contains(CFlag::RunEvent) {
@@ -1893,7 +1874,14 @@ impl<R: Rt> Update<R> for Select<R> {
                     ));
                 }
                 if let Some(j) = selected.take().or(held) {
-                    deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect[j]);
+                    deselect(
+                        ctx,
+                        tracked,
+                        kept,
+                        j,
+                        &mut arms[j],
+                        sleep_on_deselect.get(j),
+                    );
                 }
                 return resident.set_bottom(false);
             }

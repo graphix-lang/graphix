@@ -578,7 +578,7 @@ fn compile_apply_args<R: Rt>(
     spec: &Expr,
     args: &TArc<[(Option<ArcStr>, Expr)]>,
 ) -> Result<ArgMap<R>> {
-    let mut res = ArgMap::default();
+    let mut res = ArgMap::with_capacity_and_hasher(args.len(), Default::default());
     for ((_, expr), key) in args.iter().zip(ArgKey::of_written(args)) {
         let arg_spec = ctx.shared_spec(expr.clone());
         let node = Some(compile(ctx, flags, expr.clone(), scope, top_id)?);
@@ -1482,7 +1482,7 @@ pub struct CallSite<R: Rt> {
     /// they reach stay open for the bind.
     defaults_open: bool,
     /// The bound callee's function went bottom and its instance sleeps.
-    absent: Option<Absent>,
+    absent: Option<Box<Absent>>,
     /// What a shrink kept of this recursive edge's pure callee.
     kept: Kept,
     /// The imaged instance decoded at this update's dispatch: the sites
@@ -2939,12 +2939,17 @@ impl<R: Rt> CallSite<R> {
             // with catch-up when the same function returns, or is born then
             // if it was due a birth meanwhile
             if let Some(f) = self.callee.apply_mut() {
-                let absent = self.absent.get_or_insert_with(|| Absent {
-                    missed: SmallVec::new(),
-                    captured: TrackedFires::new(&ctx.env, ctx.rt.cycle(), 1, |_, r| {
-                        f.refs(r)
-                    }),
-                    unborn: None,
+                let absent = self.absent.get_or_insert_with(|| {
+                    Box::new(Absent {
+                        missed: SmallVec::new(),
+                        captured: TrackedFires::new(
+                            &ctx.env,
+                            ctx.rt.cycle(),
+                            1,
+                            |_, r| f.refs(r),
+                        ),
+                        unborn: None,
+                    })
                 });
                 if reborn {
                     let view = if rebirth {
@@ -3021,7 +3026,7 @@ impl<R: Rt> CallSite<R> {
                 let arg_refs = &mut self.arg_refs;
                 match absent {
                     None => Some(f.update(ctx, arg_refs).clone()),
-                    Some(absent) => Some(absent.dispatch(ctx, f, arg_refs)),
+                    Some(absent) => Some((*absent).dispatch(ctx, f, arg_refs)),
                 }
             }
             Some(f) => {

@@ -1450,6 +1450,26 @@ impl<R: Rt> GXLambda<R> {
     // D1): "lets try lever 1 and 3. for 3 I propose we do something like delete only 1%
     // of the cells we could delete for a shorter activation, which saves a lot of work,
     // but eventually cleans up after a transient large activation."
+    // 2026-11-01 claude: Lever 1 continued (lane E round 6): an activation of the
+    // recursion_memory program holds 5367 B of live heap, was 6055 (activation_heap,
+    // exact, -11%), and 9.0-9.4 KB of RSS, was 9.5-9.9 (recursion_memory;
+    // tests-shell-compiler-activation-cost.py: high 9896 -> 9515). Cut: a select's arms
+    // are built at their exact length (a collect through Result kept room for four, 704
+    // -> 336 B); a call's argument map is sized to its arguments (entries 192 -> 64 B); a
+    // call site's state for a bottom callee (Absent, about 200 B inline) is boxed; a
+    // select's per-arm flags and TrackedFires.ran are bit masks (ArmMask, now in
+    // wake.rs). Ceilings at 5% over the new costs, each failing at the old:
+    // activation_heap MAX_BYTES_PER_ACTIVATION 6200 -> 5640, MAX_BYTES_PER_SLOT 3300 ->
+    // 3140 (slots shrank too: 3186 -> 2986), recursion_memory 12288 -> 9850. What an
+    // activation still holds that its definition could share (DHAT, depth 100 against
+    // depth 1): about 1.3 KB of instantiated types, each made though the definition holds
+    // no open cell (the instance's FnType 176 B, each call site's ftype 176 B and its
+    // fresh LambdaIds 72 B, the fnode Ref's fn type 176 B, the self-call's static target
+    // 176 B, a fresh cell instance_sig makes, 256 B); FnType::instantiate_how always
+    // builds a new FnType and LambdaIds, so sharing them needs a rule for when an
+    // instance's LambdaIds may be its definition's. Also the argument map's table (52 B),
+    // the formal's env binding (136 B), a select's TrackedFires sets (about 400 B), and
+    // the node structs (CallSite 632 B, Select 544 B, Ref 88 B each).
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
