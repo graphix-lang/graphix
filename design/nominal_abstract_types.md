@@ -128,7 +128,11 @@ part overridable through the core traits, `traits.md`); a value prints as
 (`typ::regular::key`: every resolved reference expanded, recursion
 included, unions flattened, then refined to canonical ranks), so an alias,
 a cast's target as written and a construction's frozen type name one
-parameter, and the orderings and hashes agree with equality.
+parameter, and the orderings and hashes agree with equality. An
+application whose arguments grow at every level (`type N<'a> = [`Nil,
+`Cons('a, N<Array<'a>>)]`) is no regular tree: where `cast::grows_on`
+says it grows, the key holds its definition's name over its arguments'
+keys, a function of the type that never equates two different ones.
 
 ## Why: one view instead of two
 

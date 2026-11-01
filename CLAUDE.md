@@ -1255,7 +1255,9 @@ cycle, across workers; the compiler never pins threads.
   binds it holds its argument to that binding, which a call's context
   then cannot widen; a trait bound or dispatch reads it, so decides it
   there. Two values compare their
-  parameters, as regular trees (`typ::regular`), before their payloads. A pattern `T(p)` with no
+  parameters, as regular trees (`typ::regular`; an application whose
+  arguments grow at every level as its definition over its arguments),
+  before their payloads. A pattern `T(p)` with no
   type test tests the tag and takes its parameters from the scrutinee,
   never from `p` (`StructPatternNode::narrow_payloads`).
 - **Traits v1** (`design/traits.md`): static dispatch on the self

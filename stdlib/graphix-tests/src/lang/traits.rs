@@ -2761,6 +2761,24 @@ run!(
     prints("[true, i64:1, i64:2]")
 );
 
+// A parameter whose typedef's arguments grow as it recurses compares by
+// the definition over its arguments.
+run!(
+    abstract_growing_parameters_compare,
+    r#"{
+    type N<'a> = [`Nil, `Cons('a, N<Array<'a>>)];
+    type B<'x> = Abstract<i64>;
+    let a: B<N<i64>> = B(1);
+    let b: B<N<i64>> = B(1);
+    let c: B<N<u64>> = B(1);
+    let m = {a => "a", b => "b"};
+    let n: Map<[B<N<i64>>, B<N<u64>>], string> = {a => "a", c => "c"};
+    (a == b, map::len(m), map::len(n))
+}"#,
+    prints("[true, i64:1, i64:2]");
+    FuseExpect::None
+);
+
 // A recursive alias compares as the regular tree it names, however many
 // times a form unfolds it.
 run!(

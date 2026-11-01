@@ -3,10 +3,12 @@
 //! equi-recursive containment (`type R = [i64, Array<R>]` and `type S =
 //! [i64, Array<R>]`) have one key, whatever form each was written in.
 
-use crate::typ::Type;
+use crate::typ::{Type, TypeRef, cast::grows_on, params_size};
 use ahash::AHashMap;
+use compact_str::CompactString;
 use compact_str::format_compact;
 use netidx_core::pack::encode_varint;
+use netidx_core::path::Path;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
@@ -26,6 +28,9 @@ struct Graph {
     nodes: Vec<Node>,
     /// Each reference by its definition and its arguments.
     refs: AHashMap<(usize, Arc<[Type]>), usize>,
+    /// The definitions and parameter sizes of the references being
+    /// expanded, outermost first.
+    path: Vec<(usize, usize)>,
 }
 
 fn label(tag: u8, rest: &[u8]) -> LPooled<Vec<u8>> {
@@ -56,6 +61,16 @@ impl Graph {
         Some((tr.def_key()?, tr.expand_cell()?))
     }
 
+    /// The name of the definition `tr` resolved to, in the scope it is
+    /// defined in.
+    fn defined_name(tr: &TypeRef) -> CompactString {
+        let base = Path::basename(&tr.name.0).unwrap_or("");
+        match tr.resolved() {
+            Some(r) => format_compact!("{}::{base}", r.canonical_scope()),
+            None => format_compact!("{}", tr.name),
+        }
+    }
+
     fn node(&mut self, t: &Type) -> usize {
         crate::stack::ensure_sufficient(|| match t {
             Type::TVar(tv) => match tv.binding() {
@@ -72,9 +87,19 @@ impl Graph {
                     if let Some(id) = self.refs.get(&key) {
                         return *id;
                     }
+                    // an application whose parameters grow at every level
+                    // never closes into a regular tree: it is its
+                    // definition over its parameters
+                    let size = params_size(&tr.params);
+                    if grows_on(&self.path, &def, size) {
+                        let name = Self::defined_name(tr);
+                        return self.ordered(b'g', name.as_bytes(), &tr.params);
+                    }
                     let id = self.push(Node::Forward(None));
                     self.refs.insert(key, id);
+                    self.path.push((def, size));
                     let body = self.node(&body);
+                    self.path.pop();
                     self.nodes[id] = Node::Forward(Some(body));
                     id
                 }
@@ -175,7 +200,7 @@ struct Sig<'a> {
     kids: SmallVec<[usize; 4]>,
 }
 
-// CR claude for claude: [bug/medium] A parameter that is no regular tree never ends here: a
+// XCR claude for claude: [bug/medium] A parameter that is no regular tree never ends here: a
 // typedef whose arguments grow as it recurses (type N<'a> = [`Nil, `Cons('a,
 // N<Array<'a>>)]) expands N<i64>, N<Array<i64>>, ... without end, so comparing two values of
 // type B<'x> = Abstract<i64> at B<N<i64>> passes --check and hangs the runtime (main grows
@@ -186,6 +211,14 @@ struct Sig<'a> {
 // the type and never equates two different ones (a refusal at the check would have to
 // cover every operation that keys params: ==, ordering, map keys, dedup, a select's tag
 // test). probe: ~/tmp/cr29/scratch/laneB/r5/reg2.gx (regular-grows-01)
+// 2026-11-01 claude: Fixed as suggested: Graph::node keeps the definitions and parameter
+// sizes of the references it is expanding, and where cast::grows_on says an application
+// grows it is not expanded: its node is its definition's name (canonical scope and base
+// name, never an address, so orderings stay deterministic) over its arguments' nodes. Pins
+// typ::regular::test::a_growing_application_has_a_key (N<i64> keys alike twice and apart
+// from N<u64>) and lang::traits::abstract_growing_parameters_compare (==, a map over two
+// keys, a map of two instantiations) hang without it; the latter node-walks
+// (FuseExpect::None).
 /// The key of `roots` read as regular trees: equal exactly when each
 /// root is the same regular tree as its counterpart.
 pub(crate) fn key(roots: &[Type]) -> Arc<[u8]> {
@@ -290,5 +323,17 @@ mod test {
         let (_i_env, i) = typed("R<i64>");
         assert_eq!(key(&[r.clone()]), key(&[s]));
         assert_ne!(key(&[r]), key(&[i]));
+    }
+
+    // A typedef whose arguments grow as it recurses is no regular tree:
+    // its key ends, and tells its applications apart by their arguments.
+    #[test]
+    fn a_growing_application_has_a_key() {
+        let defs = [("N<'a>", "[`Nil, `Cons('a, N<Array<'a>>)]")];
+        let typed = |t| Env::typed_at_root(&defs, t).unwrap();
+        let ((_a_env, a), (_b_env, b)) = (typed("N<i64>"), typed("N<i64>"));
+        let (_c_env, c) = typed("N<u64>");
+        assert_eq!(key(&[a.clone()]), key(&[b]));
+        assert_ne!(key(&[a]), key(&[c]));
     }
 }
