@@ -3146,6 +3146,25 @@ run!(recursive_abstract_in_a_body, RECURSIVE_ABSTRACT_IN_A_BODY, |v: Result<&Val
     Ok(Value::Array(a)) if &a[..] == [Value::Bool(true), Value::Bool(false)]
 ); FuseExpect::Jit);
 
+// An abstract type whose representation names a typedef its block
+// declares after it, in a function body: each instance compares the
+// representation once both are declared.
+run!(
+    abstract_naming_a_later_typedef_in_a_body,
+    r#"{
+        let f = |x: i64| {
+            type N = Abstract<[`C(M), `Nil]>;
+            type M = [N, i64];
+            N(`C(x)) == N(`C(1))
+        };
+        (f(1), f(2))
+    }"#,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::Array(a)) if &a[..] == [Value::Bool(true), Value::Bool(false)]
+    )
+);
+
 // A generic lambda literal a function body uses at one type: each instance
 // of the body types the literal as the definition's check did, its
 // quantifier decided.

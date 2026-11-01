@@ -1556,6 +1556,43 @@ run!(reload_changes_a_representation_through_a_typedef,
     RELOAD_CHANGES_A_REPRESENTATION_THROUGH_A_TYPEDEF,
     load_refused("representation cannot change"); FuseExpect::Jit);
 
+// The same with the typedef declared after the abstract type, whose
+// representation is compared once it is.
+const RELOAD_CHANGES_A_REPRESENTATION_THROUGH_A_LATER_TYPEDEF: &str = r#"
+{
+    let source = """type C = Abstract<R>; type R = {x: string}; let make = |x: i64| C({x: "v"})""";
+    sys::net::publish("/local/reprchange_later", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { type C; val make: fn(x: i64) -> C };
+        source sys::net::subscribe("/local/reprchange_later")?
+    };
+    source <- once(status) ~ """type C = Abstract<R>; type R = {x: i64}; let make = |x: i64| C({x: x})""";
+    select status { error as e => e, null as _ => never() }
+}
+"#;
+
+run!(reload_changes_a_representation_through_a_later_typedef,
+    RELOAD_CHANGES_A_REPRESENTATION_THROUGH_A_LATER_TYPEDEF,
+    load_refused("representation cannot change"); FuseExpect::Jit);
+
+// A reload keeping such a representation loads.
+run!(
+    reload_keeps_a_representation_through_a_later_typedef,
+    r#"{
+    let source = "type C = Abstract<R>; type R = {x: string}; let make = |x: i64| C({x: \"v\"}); let n = 1";
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { type C; val make: fn(x: i64) -> C; val n: i64 };
+        source source
+    };
+    source <- once(status) ~ "type C = Abstract<R>; type R = {x: string}; let make = |x: i64| C({x: \"w\"}); let n = 2";
+    select status { error as e => e, null as _ => select foo::n { 2 => "reloaded", _ => never() } }
+}"#,
+    is(Value::String("reloaded".into()));
+    FuseExpect::Jit
+);
+
 // Of several modules that fail to resolve, the first in program order is
 // the one reported.
 run!(

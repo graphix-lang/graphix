@@ -543,11 +543,26 @@ pub struct TypeDef {
     spec: Arc<Expr>,
     scope: ModPath,
     name: ArcStr,
+    /// The registered representation this abstract one must be, compared
+    /// at the check, once the typedefs it names are declared.
+    unchanged_from: Option<Arc<env::AbstractRep>>,
 }
 
 impl TypeDef {
-    fn with<R: Rt>(spec: Arc<Expr>, scope: ModPath, name: ArcStr) -> Node<R> {
-        Node::new(Self { spec, scope, name })
+    fn with<R: Rt>(
+        spec: Arc<Expr>,
+        scope: ModPath,
+        name: ArcStr,
+        unchanged_from: Option<Arc<env::AbstractRep>>,
+    ) -> Node<R> {
+        Node::new(Self { spec, scope, name, unchanged_from })
+    }
+
+    fn check_unchanged<R: Rt>(&self, ctx: &CompileCtx<R>) -> Result<()> {
+        match &self.unchanged_from {
+            None => Ok(()),
+            Some(old) => ctx.env.check_abstract_rep(&self.scope, &self.name, old),
+        }
     }
 
     pub(crate) fn compile<R: Rt>(
@@ -560,15 +575,13 @@ impl TypeDef {
     ) -> Result<Node<R>> {
         let (params, body) = Type::reset_typedef_tvars(params, body);
         let parametric = !params.is_empty();
-        let verdict = ctx
+        let (verdict, unchanged_from) = ctx
             .env
-            .deftype(
+            .deftype_in_block(
                 &scope.lexical,
                 name,
                 params,
                 &body,
-                false,
-                None,
                 name.pos_or(spec.pos),
                 spec.pos,
                 spec.ori.clone(),
@@ -588,7 +601,7 @@ impl TypeDef {
                 (*spec).clone(),
             ));
         }
-        Ok(Self::with(spec, scope.lexical.clone(), name))
+        Ok(Self::with(spec, scope.lexical.clone(), name, unchanged_from))
     }
 }
 
@@ -600,7 +613,7 @@ impl TypeDef {
         let spec = Arc::new(Expr::decode(buf)?);
         let scope = ModPath::decode(buf)?;
         let name = ArcStr::decode(buf)?;
-        Ok(Self::with(spec, scope, name))
+        Ok(Self::with(spec, scope, name, None))
     }
 }
 
@@ -611,6 +624,18 @@ impl<R: Rt> Update<R> for TypeDef {
 
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         let _ = f;
+    }
+
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        self.check_unchanged(ctx)
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R>,
+        _types: &mut lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.check_unchanged(ctx)
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {

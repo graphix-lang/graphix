@@ -341,6 +341,22 @@ pub struct TraitMethodRef {
     pub index: usize,
 }
 
+/// Where and how a typedef is declared, beside what it declares.
+struct TypeDefSite {
+    public: bool,
+    doc: Option<ArcStr>,
+    pos: SourcePosition,
+    decl: SourcePosition,
+    ori: Arc<Origin>,
+}
+
+fn rep_changed(name: &str, old: &Type) -> String {
+    format!(
+        "{name} is already defined as Abstract<{old}>: a value of it may still be \
+         held, so its representation cannot change"
+    )
+}
+
 fn non_contractive(name: &str) -> String {
     format!(
         "recursive type {name} refers back to itself through unions and aliases \
@@ -1823,6 +1839,39 @@ impl Env {
         decl: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Unguarded> {
+        let site = TypeDefSite { public, doc, pos, decl, ori };
+        self.deftype_inner(scope, name, params, body, site, false).map(|(u, _)| u)
+    }
+
+    /// [`Self::deftype`] for a typedef a block declares among others: an
+    /// abstract representation that differs from the one registered for
+    /// its type while it names a typedef not declared yet is compared
+    /// once it is, by [`Self::check_abstract_rep`] over the registered
+    /// one this returns.
+    pub fn deftype_in_block(
+        &mut self,
+        scope: &ModPath,
+        name: &str,
+        params: Arc<[(TVar, Option<Type>)]>,
+        body: &TypeDefBody,
+        pos: SourcePosition,
+        decl: SourcePosition,
+        ori: Arc<Origin>,
+    ) -> Result<(Unguarded, Option<Arc<AbstractRep>>)> {
+        let site = TypeDefSite { public: false, doc: None, pos, decl, ori };
+        self.deftype_inner(scope, name, params, body, site, true)
+    }
+
+    fn deftype_inner(
+        &mut self,
+        scope: &ModPath,
+        name: &str,
+        params: Arc<[(TVar, Option<Type>)]>,
+        body: &TypeDefBody,
+        site: TypeDefSite,
+        defer: bool,
+    ) -> Result<(Unguarded, Option<Arc<AbstractRep>>)> {
+        let TypeDefSite { public, doc, pos, decl, ori } = site;
         if self.lexical.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined {}", in_scope(scope))
         }
@@ -1912,7 +1961,7 @@ impl Env {
         );
         // compared with the definition in scope, where a self-reference in
         // the representation resolves
-        // CR claude for claude: [bug/low] A representation naming a typedef its
+        // XCR claude for claude: [bug/low] A representation naming a typedef its
         // block declares later is refused when a function instance declares it
         // again: `let f = |x: i64| { type N = Abstract<[`C(M), `Nil]>; type M =
         // [N, i64]; let a = N(`Nil); 0 }; f(3)` checks, and the build says "N is
@@ -1924,29 +1973,29 @@ impl Env {
         // purely syntactic comparison would not, since a reload may change what
         // `M` means (`reload_changes_a_representation_through_a_typedef`).
         // probe: ~/ptmp/cr29/scratch/r6-W/absfwd.gx (abstract-forward-ref-01)
+        // 2026-11-01 claude: Compared at the check: Env::deftype_in_block, for a
+        // block's typedef, defers a differing representation that names a
+        // typedef not declared yet, and the TypeDef node's typecheck0 (and
+        // typecheck0_instance) compares it with the registered one it kept
+        // (Env::check_abstract_rep), once the block's typedefs are declared. A
+        // reload is covered too. Pins
+        // lang::functions::abstract_naming_a_later_typedef_in_a_body and
+        // lang::modules::reload_keeps_a_representation_through_a_later_typedef
+        // (all 4 modes fail without), and
+        // reload_changes_a_representation_through_a_later_typedef (a changed one
+        // is still refused).
+        let mut deferred = None;
         if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep)
-            && let Some(old) = self.abstract_reps.get(id)
+            && let Some(old) = self.abstract_reps.get(id).cloned()
+            && !self.rep_unchanged(&old, &params, rep)
         {
-            // the formals by position, then the body
-            let shape = |params: &[(TVar, Option<Type>)], rep: &Type| {
-                Type::Tuple(Arc::from_iter(
-                    params
-                        .iter()
-                        .map(|(tv, _)| Type::TVar(tv.clone()))
-                        .chain([rep.clone()]),
-                ))
-            };
-            let (was, now) = (shape(&old.params, &old.rep), shape(&params, rep));
-            if old.params.len() != params.len()
-                || was.sig_matches(self, &now).is_err()
-                || now.sig_matches(self, &was).is_err()
-            {
-                let old = old.rep.clone();
+            let mut unresolved = Vec::new();
+            let _ = rep.unresolved_names(self, &mut unresolved);
+            if defer && !unresolved.is_empty() {
+                deferred = Some(old);
+            } else {
                 self.undeftype(scope, name);
-                bail!(
-                    "{name} is already defined as Abstract<{old}>: a value of it may \
-                     still be held, so its representation cannot change"
-                )
+                bail!("{}", rep_changed(name, &old.rep))
             }
         }
         if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep) {
@@ -1961,9 +2010,10 @@ impl Env {
                 public,
             };
 
-            // the check above refused a changed representation, so an
-            // entry of the same publicity is this one: writing it again would
-            // be a second write a parallel task's join refuses
+            // the check above refused a changed representation, or left it
+            // to `check_abstract_rep`, so an entry of the same publicity is
+            // this one: writing it again would be a second write a parallel
+            // task's join refuses
             if self.abstract_reps.get(id).is_none_or(|old| old.public != public) {
                 self.abstract_reps.insert(*id, Arc::new(r));
             }
@@ -2007,8 +2057,49 @@ impl Env {
                 self.undeftype(scope, name);
                 bail!("{}", non_contractive(name))
             }
-            u => Ok(u),
+            u => Ok((u, deferred)),
         }
+    }
+
+    /// Whether `params` and `rep` declare what `old` does: the formals by
+    /// position, then the body.
+    fn rep_unchanged(
+        &self,
+        old: &AbstractRep,
+        params: &[(TVar, Option<Type>)],
+        rep: &Type,
+    ) -> bool {
+        let shape = |params: &[(TVar, Option<Type>)], rep: &Type| {
+            Type::Tuple(Arc::from_iter(
+                params.iter().map(|(tv, _)| Type::TVar(tv.clone())).chain([rep.clone()]),
+            ))
+        };
+        let (was, now) = (shape(&old.params, &old.rep), shape(params, rep));
+        old.params.len() == params.len()
+            && was.sig_matches(self, &now).is_ok()
+            && now.sig_matches(self, &was).is_ok()
+    }
+
+    /// Refuse the abstract typedef `name` at `scope` if its representation
+    /// is not `old`'s: [`Self::deftype_in_block`]'s comparison, once the
+    /// typedefs it names are declared. One that still names nothing is
+    /// the check's end's to refuse.
+    pub fn check_abstract_rep(
+        &self,
+        scope: &ModPath,
+        name: &str,
+        old: &AbstractRep,
+    ) -> Result<()> {
+        let Some(td) = self.lexical.typedefs.get(scope).and_then(|m| m.get(name)) else {
+            return Ok(());
+        };
+        let Some(rep) = &td.rep else { return Ok(()) };
+        let mut unresolved = Vec::new();
+        let _ = rep.unresolved_names(self, &mut unresolved);
+        if unresolved.is_empty() && !self.rep_unchanged(old, td.def.params(), rep) {
+            bail!("{}", rep_changed(name, &old.rep))
+        }
+        Ok(())
     }
 
     /// [`Self::deftype`]'s contractiveness again, for a definition whose
