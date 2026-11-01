@@ -5981,6 +5981,70 @@ async fn a_write_through_an_interface_reaches_a_later_static_call() -> Result<()
     Ok(())
 }
 
+/// A dynamic module's reload reaches what an earlier input bound to its
+/// interface, as it reaches a reader in its own input.
+#[tokio::test(flavor = "current_thread")]
+async fn a_reload_reaches_a_reader_in_an_earlier_input() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let mut held = Vec::new();
+    for i in [
+        "let src = \"let v = 1\"",
+        "let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src }",
+        "let w = d::v",
+    ] {
+        held.push(ctx.rt.compile(ArcStr::from(i)).await?);
+    }
+    let tens = ctx.rt.compile(ArcStr::from("d::v * 10")).await?;
+    assert_eq!(value_of(&mut rx, tens.exprs[0].id).await?, Value::I64(10));
+    let _w = ctx.rt.compile(ArcStr::from("src <- \"let v = 5\"")).await?;
+    assert_eq!(value_of(&mut rx, tens.exprs[0].id).await?, Value::I64(50));
+    ctx.rt.wait_settled().await?;
+    let w = ctx.rt.compile(ArcStr::from("w")).await?;
+    assert_eq!(value_of(&mut rx, w.exprs[0].id).await?, Value::I64(5));
+    ctx.shutdown().await;
+    Ok(())
+}
+
+/// What a module's body produces reaches its readers in other inputs: a
+/// `let` bound to an interface value, and an instance of a function of the
+/// body reading a binding a write through the interface changes.
+#[tokio::test(flavor = "current_thread")]
+async fn a_module_reaches_its_readers_in_other_inputs() -> Result<()> {
+    use arcstr::{ArcStr, literal};
+    use graphix_compiler::expr::{VfsEntry, VfsResolver};
+    use graphix_package_core::testing::{TestCtx, config};
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let files = vec![VfsResolver::new(ahash::AHashMap::from_iter([
+        (
+            netidx_core::path::Path::from("/a.gxi"),
+            VfsEntry::from(literal!("val x: i64; val y: i64; val g: fn(k: i64) -> i64")),
+        ),
+        (
+            netidx_core::path::Path::from("/a.gx"),
+            VfsEntry::from(literal!(
+                "let x = 0; let y = x + 1; let g = |k: i64| -> i64 x + k"
+            )),
+        ),
+    ]))];
+    let ctx = TestCtx::start(config(tx, crate::TEST_REGISTER, files, |_| {})?).await?;
+    let mut held = Vec::new();
+    for i in ["mod a", "let w = a::y", "let r = a::g(1)"] {
+        held.push(ctx.rt.compile(ArcStr::from(i)).await?);
+    }
+    let tens = ctx.rt.compile(ArcStr::from("a::y * 10")).await?;
+    assert_eq!(value_of(&mut rx, tens.exprs[0].id).await?, Value::I64(10));
+    let _w = ctx.rt.compile(ArcStr::from("a::x <- 10")).await?;
+    assert_eq!(value_of(&mut rx, tens.exprs[0].id).await?, Value::I64(110));
+    ctx.rt.wait_settled().await?;
+    let wr = ctx.rt.compile(ArcStr::from("\"[w] [r]\"")).await?;
+    assert_eq!(value_of(&mut rx, wr.exprs[0].id).await?, Value::String("11 11".into()));
+    ctx.shutdown().await;
+    Ok(())
+}
+
 /// An alias `let h = f` in a function's body holds `f` while an instance
 /// of the function lives. The definition holds nothing: an instance a
 /// later input builds after a `<-` to `f` calls what was written.

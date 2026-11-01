@@ -194,6 +194,14 @@ item is visible to the defining module and its descendants, uniformly
 for values and types — a private type in a public lambda's body is the
 module's own business when the body is instance-elaborated elsewhere.
 
+At run time a `val` and the binding implementing it are one variable
+(`module.rs::Proxy`): the module node moves each production of one to
+the other as a binding delivers its own (`deliver_production`: stored,
+in the cycle's event, and a fire schedules every other root that reads
+it), so a `let` in another REPL input bound to `a::v`, or an instance of
+one of the body's functions called from another input, sees a value the
+body produces after it, a dynamic module's reload included.
+
 ## Resolution
 
 ### The table

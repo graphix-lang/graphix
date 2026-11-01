@@ -1023,14 +1023,19 @@ struct SetAside<R: Rt> {
     runs: Runs,
 }
 
-/// Store a production for `id` as the binding that made it does, a
-/// bottom included.
-fn store_production<R: Rt>(ctx: &mut ExecCtx<'_, R>, id: BindId, tv: &TagValue) {
+/// Deliver `tv`, a production of one binding of a proxy, to the other,
+/// `id`, as a binding delivers its own: stored, a bottom included, in the
+/// cycle's event, and a fire scheduling the other roots that read `id`.
+fn deliver_production<R: Rt>(ctx: &mut ExecCtx<'_, R>, id: BindId, tv: TagValue) {
     let stored = match tv.is_bottom() {
         true => TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
         false => TagValue::fired(tv.value_cloned()),
     };
     ctx.rt.store_insert(id, stored);
+    if tv.tag().triggers() {
+        ctx.rt.notify_set(id)
+    }
+    ctx.event.variables.insert(id, tv);
 }
 
 impl<R: Rt> Module<R> {
@@ -1214,7 +1219,7 @@ impl<R: Rt> Module<R> {
     /// it gives back what it registered in the global registries first,
     /// so the new source registers as the first load did, and `saved`
     /// puts those registrations back when the new source does not check.
-    // CR claude for claude: [bug/medium] A binding an earlier REPL input bound to a
+    // XCR claude for claude: [bug/medium] A binding an earlier REPL input bound to a
     // dynamic module's value keeps the old value after a reload: `let w = d::v` in
     // one input, `src <- "let v = 5"` in the next, and two seconds later a fresh `d::v`
     // reads 5 while `w` still reads 1. Within one root (a script) the reader does see
@@ -1222,6 +1227,20 @@ impl<R: Rt> Module<R> {
     // `d::v` after the reload for that reason. Find what the reload re-registers for
     // the interface's values and why a reader in another root is left out. probe:
     // ~/ptmp/cr29/scratch/r6-W/w3/dyn_reload_reader.sh (dyn-reload-reader-01)
+    // 2026-11-01 claude: Cause: Module::update moved each production between a val and
+    // the binding implementing it with a store_insert and an event insert but no
+    // notify_set, so only roots already scheduled saw it; a reader in another root (an
+    // earlier REPL input's let w = d::v) was never scheduled. Not specific to reloads:
+    // a static module's value read by another input, and an instance of a body function
+    // called from another input reading a binding a write through the interface
+    // changed, were stale alike (probe sm, sm2). Fix: deliver_production stores,
+    // notify_sets a fire and puts the event, in both directions. Pins (each fails
+    // without the fix): lang::types::a_reload_reaches_a_reader_in_an_earlier_input
+    // (d::v * 10 never produces 50),
+    // lang::types::a_module_reaches_its_readers_in_other_inputs (outer side: never
+    // produces 110; inner side alone off: 11 1 where 11 11). probe:
+    // ~/ptmp/cr29/scratch/r6-W/w11/{repl.sh, sm, sm2} and
+    // ~/ptmp/cr29/scratch/r6-W/w3/dyn_reload_reader.sh
     fn compile_source(
         &mut self,
         ctx: &mut ExecCtx<'_, R>,
@@ -1611,8 +1630,7 @@ impl<R: Rt> Update<R> for Module<R> {
                         ctx.rt.set_var(*inner, tv.value());
                         continue;
                     }
-                    store_production(ctx, *inner, &tv);
-                    ctx.event.variables.insert(*inner, tv);
+                    deliver_production(ctx, *inner, tv);
                 }
             }
             self.runs.update(ctx, &mut self.nodes, &self.catches);
@@ -1638,8 +1656,7 @@ impl<R: Rt> Update<R> for Module<R> {
                 },
                 None => continue,
             };
-            store_production(ctx, *outer, &tv);
-            ctx.event.variables.insert(*outer, tv);
+            deliver_production(ctx, *outer, tv);
         }
         if let Some(e) = failed {
             self.resident.set(TagValue::tagged(e, src_tag))
