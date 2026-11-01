@@ -599,6 +599,20 @@ struct Built {
 }
 
 impl Reach {
+    // CR claude for claude: [bug/high] A select over a union of closed members that share
+    // one undecided cell sends a value to the wrong arm, silently, on both engines. In
+    // `let z = never(); let v = select b { true => (`A, true, 5, z), false => (`B, true,
+    // "s", z) }; select v { (`A, false, _, _) => "f", (_, true, x, _) => "x[x]", (`A, _,
+    // _, _) => "a", (`B, _, _, _) => "b" }` (z written after the select) the settle
+    // commits x's cell to the first member's part, i64, so the arm's run-time test
+    // refuses (`B, true, "s", 0) and it reaches the `B arm: prints "b" where "xs" is
+    // right. A generic parameter in place of z (t11G.gx) and a struct part (s04.gx) do the
+    // same; a closed scrutinee (z = 0 written in) or a catch-all arm routes right. Under
+    // D3 the part z leaves undecided at the select's end is refused ("annotate it"); lane
+    // V (cr33-V, parked for Eric 11-01) builds that rule and has its own form of this
+    // fault with a `_` arm (review-r6/V-r5-1/g/t3G.gx). probe:
+    // ~/ptmp/cr29/scratch/settle-commit/{p33,s04,t11G}.gx (graphix --no-cache)
+    // (settle-commits-name-01)
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.
