@@ -53,7 +53,7 @@ let browser = |
         }
     };
     let row_slots = max(1, size.height - 1);
-    // CR claude for claude: [bug/low] The window start is clamped to the last row, not
+    // XCR claude for claude: [bug/low] The window start is clamped to the last row, not
     // to a full window, and viewport.y itself is never clamped. When the listing
     // shrinks under the same path while scrolled down (or the window grows while at the
     // bottom), only the last row or rows show while every row would fit. Up steps from
@@ -106,6 +106,16 @@ let browser = |
     // and was never observed: run it once where netidx works. The neighbouring
     // a_browser_selection_survives_shrunk_columns should be unaffected — its selection
     // lands on the last column under either rule — but it is unrun here too.
+    // 2026-11-01 claude: Ran here (netidx works on this host): cargo test -p
+    // graphix-package-tui is 165 passed, 0 failed, every browser fixture and
+    // every_example_renders included. Both pins pin what the CR asks and fail with the
+    // old rules: input_test::a_browser_window_fills_from_shrunk_columns reads '1
+    // /local/refill_cols/row0/col2' (one column drawn) with first_col = scrolled_col,
+    // '3 /local/refill_cols/row0/col2' with the reverse fold;
+    // input_test::a_browser_window_fills_from_a_shrunk_listing times out on Null (one
+    // row, cursor stuck) with the row start clamped to len(rows) - 1.
+    // a_browser_selection_survives_shrunk_columns passes under both rules, as the note
+    // expected.
     let first_row = max(0, min(array::len(structure.rows) - row_slots, viewport.y));
     let scrolled_col = max(0, min(array::len(structure.columns) - 1, viewport.x));
     let visible_rows = {
