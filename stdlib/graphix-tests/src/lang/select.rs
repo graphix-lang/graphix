@@ -2247,6 +2247,24 @@ const OR_ALT_NO_INSTANCE_VALUE_PASSES_GUARDED: &str = r#"
 run!(or_alt_no_instance_value_passes_guarded, OR_ALT_NO_INSTANCE_VALUE_PASSES_GUARDED,
     prints("[i64:1, i64:0]"); FuseExpect::Jit);
 
+// A nested alternative no value of an instance's leaf passes is skipped
+// too: a tuple of another arity, a variant of another tag, binding or not.
+const OR_ALT_NESTED_NO_INSTANCE_VALUE_PASSES: &str = r#"
+{
+  let f = 'a: [(i64, string), (i64, f64, bool)] |x: 'a, y: i64| -> i64
+    #[native] select (x, y) { ((a, _) | (a, _, _), n) => a + n };
+  let g = 'a: [(i64, string), (i64, f64, bool)] |x: 'a, y: i64| -> i64
+    #[native] select (x, y) { ((_, _) | (_, _, _), n) => n, _ => 0 };
+  let h = 'a: [`A(i64), `B(i64, string)] |x: 'a, y: i64| -> i64
+    #[native] select (x, y) { (`A(a) | `B(a, _), n) => a + n };
+  (f((1, "s"), 10), f((2, 2.0, true), 10), g((1, "s"), 3), g((2, 2.0, true), 4),
+    h(`A(3), 100), h(`B(4, "s"), 100))
+}
+"#;
+
+run!(or_alt_nested_no_instance_value_passes, OR_ALT_NESTED_NO_INSTANCE_VALUE_PASSES,
+    prints("[i64:11, i64:12, i64:3, i64:4, i64:103, i64:104]"); FuseExpect::Jit);
+
 // A scrutinee member whose variant payload is a union is exhausted by
 // per-member arms: `[`P(A), `P(B)]` covers `P([A, B])`; fuses.
 const SELECT_VARIANT_UNION_PAYLOAD: &str = r#"

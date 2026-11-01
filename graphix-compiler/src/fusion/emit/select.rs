@@ -196,8 +196,8 @@ enum SelectArmBind {
     Subslice { id: BindId, start: usize, back: usize, parent_ptr: ClifValue },
     /// A binding or-pattern below the arm's top (`(`A(x) | `B(x), n)`):
     /// each alternative's test and binds, the first that matches binding
-    /// the names they share.
-    Or(Box<[AltMatch]>),
+    /// the names they share; `None` for one no value of the leaf passes.
+    Or(Box<[Option<AltMatch>]>),
 }
 
 impl SelectArmBind {
@@ -213,7 +213,7 @@ impl SelectArmBind {
             | Self::Subslice { id, .. } => f(*id),
             // the alternatives bind the same names
             Self::Or(alts) => {
-                for b in alts.first().into_iter().flat_map(|(_, b)| b.iter()) {
+                for b in alts.iter().flatten().take(1).flat_map(|(_, b)| b.iter()) {
                     b.ids(f)
                 }
             }
@@ -225,10 +225,10 @@ impl SelectArmBind {
 fn retain_read(binds: &mut SmallVec<[SelectArmBind; 8]>, reads: &Refs) {
     binds.retain(|b| match b {
         SelectArmBind::Or(alts) => {
-            for (_, b) in alts.iter_mut() {
+            for (_, b) in alts.iter_mut().flatten() {
                 retain_read(b, reads)
             }
-            alts.first().is_some_and(|(_, b)| !b.is_empty())
+            alts.iter().flatten().next().is_some_and(|(_, b)| !b.is_empty())
         }
         b => {
             let mut read = false;
@@ -789,7 +789,7 @@ fn emit_leaf_cond_inner(
             let words = at.words(cx)?;
             Some(emit_value_leaf_cond(cx, sub, typ, words)?)
         }
-        // CR claude for claude: [perf/low] A nested or-pattern's alternative no value
+        // XCR claude for claude: [perf/low] A nested or-pattern's alternative no value
         // of an instance's leaf passes is still emitted against the leaf's layout,
         // and the region de-fuses: `'a: [(i64, string), (i64, f64, bool)] |x: 'a, y:
         // i64| -> i64 select (x, y) { ((a, _) | (a, _, _), _) => a }` gives "tuple
@@ -799,16 +799,28 @@ fn emit_leaf_cond_inner(
         // has no type of its own here, so the leaf needs the predicate's part at it or
         // a structural fit test. probe: ~/ptmp/cr29/scratch/r6-E/n2/b.gx
         // (or-alt-nested-defuse-01)
+        // 2026-11-01 claude: A nested alternative (binding, at a leaf, or not, in
+        // emit_value_leaf_cond) is emitted only where StructPatternNode::may_pass says
+        // a value of the leaf's type may pass its structure (a tuple of its arity, a
+        // variant of its tag and arity, a struct with its fields, here or below); one
+        // that cannot is skipped as a top-level one is (SelectArmBind::Or holds
+        // Option<AltMatch>). Pin: lang::select::or_alt_nested_no_instance_value_passes
+        // (#[native] in each instance over a tuple arity and a variant tag, binding and
+        // not; fails jit/jit_par with the select.rs filter reverted, 'tuple pattern
+        // over non-tuple scrutinee').
         StructPatternNode::Or { alts } => {
             let alts = alts
                 .iter()
                 .map(|alt| {
+                    if !alt.may_pass(cx.ctx.type_env, typ) {
+                        return Ok(None);
+                    }
                     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
                     let c = emit_leaf_cond(cx, at, alt, typ, &mut binds)?;
-                    Ok((c, binds))
+                    Ok(Some((c, binds)))
                 })
-                .collect::<Result<Box<[AltMatch]>>>()?;
-            let any = or_of_alts(cx, alts.iter().map(Some));
+                .collect::<Result<Box<[Option<AltMatch>]>>>()?;
+            let any = or_of_alts(cx, alts.iter().map(Option::as_ref));
             binds.push(SelectArmBind::Or(alts));
             any
         }
@@ -882,15 +894,15 @@ fn emit_value_leaf_cond(
         _ => ValueKind::Value,
     };
     let scrut = SelectScrut::Value { kind, disc: v.0, payload: v.1 };
-    // every alternative tests the whole type; the reads are total, so
-    // their tests OR in one block
+    // every alternative a value of the type may pass tests the whole
+    // type; the reads are total, so their tests OR in one block
     let alts = match sub {
         StructPatternNode::Or { alts } => &alts[..],
         sub => std::slice::from_ref(sub),
     };
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
     let mut cond: Option<ClifValue> = None;
-    for alt in alts {
+    for alt in alts.iter().filter(|a| a.may_pass(cx.ctx.type_env, typ)) {
         let c = match emit_structure_cond(cx, alt, typ, false, scrut, typ, &mut binds)? {
             Some(c) => c,
             None => cx.b.ins().iconst(types::I8, 1),
@@ -903,7 +915,7 @@ fn emit_value_leaf_cond(
     if !binds.is_empty() {
         bail!("emit_clif: a value leaf pattern binds")
     }
-    cond.ok_or_else(|| anyhow!("emit_clif: an empty or-pattern"))
+    Ok(cond.unwrap_or_else(|| cx.b.ins().iconst(types::I8, 0)))
 }
 
 /// One prologue-evaluated guard.
@@ -1761,7 +1773,7 @@ fn install_arm_binds(
             SelectArmBind::Or(alts) => {
                 let stale = cx.b.ins().band_imm_u(sdisc, STALE);
                 let nomatch = NoMatch::Placeholders(stale);
-                let mut alt = |_: &mut BodyCx, k: usize| Ok(Some(alts[k].clone()));
+                let mut alt = |_: &mut BodyCx, k: usize| Ok(alts[k].clone());
                 stack::ensure_sufficient(|| {
                     emit_or_chain(cx, alts.len(), &mut alt, scrut, nomatch, mask)
                 })?;

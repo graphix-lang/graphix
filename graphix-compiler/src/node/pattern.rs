@@ -1741,6 +1741,40 @@ impl StructPatternNode {
             .all(|(c, t)| t.is_some_and(|(t, _)| c.covers(env, &t, sub)))
     }
 
+    /// Whether a value of `typ` may pass this structure, by shape alone:
+    /// false only where no member of `typ` has a constructor, tag, arity
+    /// or field the structure tests, here or below.
+    pub(crate) fn may_pass(&self, env: &Env, typ: &Type) -> bool {
+        crate::stack::ensure_sufficient(|| {
+            let Some(t) = expand(env, typ) else { return true };
+            match (self, &t) {
+                (Self::Or { alts }, _) => alts.iter().any(|a| a.may_pass(env, &t)),
+                (
+                    Self::Ignore
+                    | Self::Literal(_)
+                    | Self::Bind(_)
+                    | Self::Abstract { .. },
+                    _,
+                ) => true,
+                (_, Type::Set(ms)) => ms.iter().any(|m| self.may_pass(env, m)),
+                (
+                    _,
+                    Type::Tuple(_)
+                    | Type::Variant(..)
+                    | Type::Struct(_)
+                    | Type::Array(_)
+                    | Type::List(_),
+                ) => self.child_types(env, &t, false).is_some_and(|ts| {
+                    self.children()
+                        .into_iter()
+                        .zip(ts)
+                        .all(|(c, t)| t.is_some_and(|(t, _)| c.may_pass(env, &t)))
+                }),
+                _ => true,
+            }
+        })
+    }
+
     /// Whether an abstract pattern is in this one.
     pub(super) fn holds_abstract(&self) -> bool {
         crate::stack::ensure_sufficient(|| {
