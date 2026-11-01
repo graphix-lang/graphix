@@ -858,6 +858,23 @@ run!(
     )
 );
 
+// A float too small for a decimal's 28 places is a zero with a point and the
+// float's sign, as a whole float is.
+run!(
+    float_decimal_too_small_is_a_signed_zero,
+    r#"{
+  let a = cast<decimal>(1e-29)$;
+  let b = cast<decimal>(5e-324)$;
+  let c = cast<decimal>(f32:1e-30)$;
+  let d = cast<decimal>(-1e-30)$;
+  let e = cast<decimal>(-0.0)$;
+  let f = cast<decimal>(0.0)$;
+  let g = cast<decimal>(1.5e-28)$;
+  ("[a] [b] [c] [d] [e] [f] [g]", a == decimal:0.0, d == decimal:0.0)
+}"#,
+    prints(r#"["0.0 0.0 0.0 -0.0 -0.0 0.0 0.0000000000000000000000000002", true, true]"#)
+);
+
 // A member beside a primitive set changes nothing of that order: a union
 // tries the members of every union and name in it, and each part of a
 // primitive set with the members of its class.

@@ -666,8 +666,9 @@ on a cycle through cells and unions alone are one type, merged
 `design/tvar_constraints.md`).
 A cast to an integer type, a type-directed read's included, is an
 `InvalidCast` where the value does not fit (a float drops its fraction);
-a float cast to `decimal` is the decimal its shortest text names, a
-whole one keeping its point (`float_decimal`). A cast leaves a value's runtime class
+a float cast to `decimal` is the decimal its shortest text names,
+rounded to 28 places, a whole one keeping its point and a zero (one
+too small for 28 places included) `0.0` with its sign (`float_decimal`). A cast leaves a value's runtime class
 only to parse a string into a scalar (never a collection), to print a number, bool, datetime or duration
 plainly (`"42"`; a whole float, and a duration's seconds, keep the
 point, `"3.0"`, as every plain print does: `typ::PlainScalar`), between a number and a datetime (Unix seconds) or a

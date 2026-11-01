@@ -3181,9 +3181,17 @@ fn convert_text(
 // this cast) round trips. Pins: lang::types::float_decimal_keeps_every_digit (casts),
 // lib_tests::json::json_seventeen_digit_decimal_round_trips (write then read of
 // Array<decimal>); both fail in all four modes with cast.rs reverted (0.3, 1.0).
+// 2026-11-01 claude: Review (E2-r1-1, E2-r1-2): a float too small for 28 places
+// parsed to a scale-28 zero printing 0.0000000000000000000000000000, and -0.0 lost
+// its sign; a zero is now 0.0 with the float's sign, as main gave. A tie at the 28th
+// place rounds as the string cast of the same text does (5e-29 is 1e-28). Pin
+// lang::types::float_decimal_too_small_is_a_signed_zero (fails in all four modes with
+// the zero arm removed).
 /// The float `v` as the decimal its shortest text names, the number the
-/// program wrote; a whole one keeps a point (scale 1) where the decimal
-/// can hold it, so it prints as the float does (`3.0`).
+/// program wrote, rounded to the decimal's 28 places; a whole one keeps a
+/// point (scale 1) where the decimal can hold it, so it prints as the
+/// float does (`3.0`), and a zero, one that rounds to zero included, is
+/// `0.0` with the float's sign.
 fn float_decimal(v: &Value) -> Option<Value> {
     let text = match v {
         Value::F32(f) => format_compact!("{f}"),
@@ -3191,6 +3199,11 @@ fn float_decimal(v: &Value) -> Option<Value> {
         _ => return None,
     };
     let d: rust_decimal::Decimal = text.parse().ok()?;
+    if d.is_zero() {
+        let mut zero = rust_decimal::Decimal::new(0, 1);
+        zero.set_sign_negative(text.starts_with('-'));
+        return Some(Value::Decimal(Arc::new(zero)));
+    }
     if d.scale() > 0 {
         return Some(Value::Decimal(Arc::new(d)));
     }

@@ -876,8 +876,9 @@ A whole float prints with its point (`3.0`) in interpolation, `println` and
 `cast<string>`, so the text reads back as a float (`cast<[i64, f64]>("3.0")`
 is 3.0); a scale-zero decimal prints plainly without a trailing point,
 and a decimal cast from a float is the number its shortest text names,
-`decimal:0.30000000000000004` for `0.1 + 0.2`, a whole one keeping its
-point (`decimal:3.0`). A
+`decimal:0.30000000000000004` for `0.1 + 0.2`, rounded to 28 places, a
+whole one keeping its point (`decimal:3.0`) and a zero, one too small for
+28 places included, `decimal:0.0` with the float's sign. A
 union cast takes a member of the value's own kind first, however much of
 it that keeps: `cast<[f32, string]>(0.1)` is f32, `cast<[i64,
 string]>(3.5)` is 3; text tries the kind it parses as next
