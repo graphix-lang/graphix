@@ -598,7 +598,9 @@ call's result and throws do not hold, and no argument the call passes or
 omits can carry a value of (no function, no open part), settles to ⊥
 whatever its bounds (`CallSite::settle_unread`): `publish`'s handler is
 `[fn(v: 'a) -> _, null] = null` under `'a: Concrete`. A definition's call sites settle with
-the enclosing statement, the signature's cells exempt.
+the enclosing statement, the signature's cells exempt, and no site binds
+a generic cell nothing bounds (a closed definition's own, which a value
+held in a struct carries uncopied).
 
 **Queued calls** (`design/queue_fn.md`): `queuefn` uses a counting
 semaphore, initially one permit, and banks unused post-birth trigger

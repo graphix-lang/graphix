@@ -5274,6 +5274,47 @@ run!(
     FuseExpect::Jit
 );
 
+// A lambda a struct, tuple or array holds keeps its signature generic: a
+// call through it handed a value holding it decides nothing of the
+// signature, so its instance is typed at the call's types.
+run!(
+    holder_of_a_lambda_passed_to_it,
+    r#"{
+  let s = {f: |x| 0};
+  let g = s.f;
+  let t = (|x| 1, 1);
+  let a = [|x| 2];
+  (s.f(s), s.f([s]), s.f({a: s}), s.f(s.f), g(s), t.0([t]), a[0]$([a]))
+}"#,
+    prints("[i64:0, i64:0, i64:0, i64:0, i64:0, i64:1, i64:2]");
+    FuseExpect::None
+);
+
+// A formal union of two variables is decided by the positions that hold
+// each alone, in an instance's signature as in a written function type.
+run!(
+    formal_union_of_two_variables_instance,
+    r#"{
+  let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]);
+  let u = never();
+  let r = f(u, 1, "s");
+  u <- "t";
+  r
+}"#,
+    prints(r#"[[i64:1], ["s"]]"#);
+    FuseExpect::Jit
+);
+run!(
+    formal_union_of_two_variables_written,
+    r#"{
+  let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]);
+  let g: fn(x: [i64, string], y: i64, z: string) -> (Array<i64>, Array<string>) = f;
+  g("t", 1, "s")
+}"#,
+    prints(r#"[[i64:1], ["s"]]"#);
+    FuseExpect::Jit
+);
+
 // A written binding holding a function in a part, a struct field or a
 // tuple element written through a place reference, shares one instance
 // of it with its writers; so does a binding a lambda body writes. Each

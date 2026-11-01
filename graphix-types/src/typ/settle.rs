@@ -11,7 +11,7 @@ use crate::{
         Bound, FnType, Mutability, TVar, Type,
         contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
-        tvar::{CellFact, Fresh, would_cycle_inner},
+        tvar::{CellFact, Fresh, Level, would_cycle_inner},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -284,7 +284,10 @@ impl FnType {
     /// binding or constraints reach. Ordering keys are (name, TVarId)
     /// only — `cell_addr` is ASLR-dependent and used for identity alone.
     /// `exempt` cells, and every cell in `kept` (what the enclosing
-    /// definitions' signatures reach now), are ordered but not settled.
+    /// definitions' signatures reach now), are ordered but not settled,
+    /// nor is a generic cell nothing bounds: a closed definition's scheme,
+    /// which a value of the definition carries into the site's types
+    /// uncopied, and which ⊥ would narrow for every other use.
     pub fn settle_terminal(
         &self,
         env: &Env,
@@ -376,6 +379,9 @@ impl FnType {
             if exempt.contains(&addr)
                 || quantifiers.contains_key(&addr)
                 || kept.iter().any(|k| k.contains(&addr))
+                || (tv.level() == Level::GENERIC
+                    && tv.cell_constraints().is_empty()
+                    && tv.cell_lower().is_empty())
                 || (!positional.contains_key(&addr)
                     && (tv.requires_concrete() || tv.requires_function()))
             {

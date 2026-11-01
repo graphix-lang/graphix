@@ -326,6 +326,12 @@ An image carries each cell's level and each definition's depth.
   reaches when the settle runs, not when the gate closed: an impl
   head's `'k` reaches a method's scheme only once the impl relates
   them, after the method's gate closed (`PendingSettle::Site::sigs`).
+  It also leaves a generic cell nothing bounds: a closed definition's
+  signature, which a value of the definition held in a struct, tuple or
+  array carries into a call's types uncopied (`s.f(s)`), and which ⊥
+  would narrow for every other call (pin
+  `lang::types::holder_of_a_lambda_passed_to_it`); a bounded one is
+  settled, so an unread `Concrete` one is refused as before.
   It also leaves every quantifier of a function type its signature
   holds (`FnType::inner_quantifiers`): a rank-2 formal's `'b` is its
   callers' to pick.

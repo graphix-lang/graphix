@@ -1258,9 +1258,19 @@ impl FnType {
             return Ok(false);
         }
         let args = flags ^ ContainsFlags::Contra;
-        for (s, t) in pairs {
-            if !t.typ.contains_int(args, env, hist, &s.typ)? {
-                return Ok(false);
+        // a union of open cells is decided by the positions that decide
+        // its members alone, wherever they are written
+        let later: SmallVec<[bool; 8]> = pairs
+            .iter()
+            .map(|(s, t)| holds_open_union(&s.typ) || holds_open_union(&t.typ))
+            .collect();
+        for round in [false, true] {
+            for ((s, t), _) in
+                pairs.iter().zip(later.iter()).filter(|(_, l)| **l == round)
+            {
+                if !t.typ.contains_int(args, env, hist, &s.typ)? {
+                    return Ok(false);
+                }
             }
         }
         Ok(match (&t.vargs, &self.vargs) {
@@ -2065,4 +2075,33 @@ fn param_bounds_of(env: &Env, t: &Type, out: &mut AddrMap<SmallVec<[Type; 1]>>) 
         Type::Fn(ft) => ft.for_each_part(&mut |t, _| param_bounds_of(env, t, out)),
         t => t.for_each_child(&mut |c| param_bounds_of(env, c, out)),
     })
+}
+
+/// Whether `t` holds a union two of whose members are open cells, which
+/// a containment of it decides only through their other positions.
+fn holds_open_union(t: &Type) -> bool {
+    fn go(t: &Type, seen: &mut AHashSet<usize>) -> bool {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => seen.insert(tv.cell_addr()) && go(&b, seen),
+                None => false,
+            },
+            Type::Set(ms)
+                if ms
+                    .iter()
+                    .filter(|m| matches!(m, Type::TVar(tv) if tv.open_cell().is_some()))
+                    .nth(1)
+                    .is_some() =>
+            {
+                true
+            }
+            t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
+            t => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found = found || go(c, seen));
+                found
+            }
+        })
+    }
+    go(t, &mut LPooled::take())
 }

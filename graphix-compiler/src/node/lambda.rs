@@ -510,7 +510,7 @@ pub struct InstanceTypes {
     sig: Arc<FnType>,
 }
 
-// CR claude for claude: [bug/low] A formal union of two variables passes the check and
+// XCR claude for claude: [bug/low] A formal union of two variables passes the check and
 // its build refuses the instance: `let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>,
 // Array<'b>) ([y], [z]); let u = never(); println(f(u, 1, "s")); u <- "t"` checks
 // (`--check` rc 0), and the run refuses "an instance at fn(x: [i64, string], y: i64, z:
@@ -519,6 +519,14 @@ pub struct InstanceTypes {
 // does not hold the instance's union argument to the signature's union of two variables.
 // Elaboration refusing what the check accepted is a type-system bug.
 // probe: ~/ptmp/cr29/scratch/r6-E/r8/fu_ab.gx (formal-union-instance-01)
+// 2026-11-01 claude: Fixed in FnType's containment (contains_gated), which instance_sig
+// and a written function type share: a parameter pair either side of which holds a union
+// two of whose members are open cells is checked after every other pair, so the
+// positions that decide each member alone (y: 'a, z: 'b) decide them first, wherever
+// they are written. Pins lang::types::formal_union_of_two_variables_instance (the probe)
+// and formal_union_of_two_variables_written (let g: fn(x: [i64, string], y: i64, z:
+// string) -> .. = f, refused on the base) fail without it; both pass under
+// GRAPHIX_NO_SUBST=1.
 /// The definition's signature `def` as the instance at `instance` holds
 /// it: each open cell copied under its name into `known` and bound to the
 /// instance's type. `None` when the instance's signature does not hold
@@ -1185,7 +1193,7 @@ impl Typing {
         };
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
-            // CR claude for claude: [bug/medium] A lambda literal held in a
+            // XCR claude for claude: [bug/medium] A lambda literal held in a
             // struct, tuple or array and passed a value holding itself passes
             // --check, then its run-time bind is refused here and the call never
             // produces: `{ let s = {f: |x| 0}; s.f(s) }` prints "binding the callee
@@ -1213,6 +1221,19 @@ impl Typing {
             // way: `{ let s = {f: |x| 0}; let g = s.f; g(s) }` passes --check and
             // its run-time bind is refused (main 24ae12e91 and cr30-u1; review
             // probe ~/tmp/cr29/scratch/review4/u1/c02.gx).
+            // 2026-11-01 claude: A call site's terminal settle
+            // (FnType::settle_terminal) now leaves a generic cell nothing bounds
+            // (no conjunct, no lower bound): a closed definition's own signature
+            // cell, which a lambda literal held in a struct, tuple or array carries
+            // into a call's argument types uncopied, and which ⊥ would narrow for
+            // every other call. A bounded generic cell is settled as before, so an
+            // unread Concrete cell of a callback literal is still refused
+            // (lang::types::concrete_targets_are_known_where_they_settle,
+            // parse_unannotated_in_callback_err). Pin
+            // lang::types::holder_of_a_lambda_passed_to_it (s.f(s), s.f([s]),
+            // s.f({a: s}), s.f(s.f), g(s) with g = s.f, t.0([t]), a[0]$([a])) fails
+            // without it (the run-time bind refused) and passes under
+            // GRAPHIX_NO_SUBST=1.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),
