@@ -3015,6 +3015,16 @@ fn suffixed(e: &Expr) -> bool {
 /// Whether `e`, the operand of a prefix operator (`!`, `-`, `*`, `&`),
 /// needs parens: an operator's binds looser, and a lambda stands bare
 /// only where the operator `takes_lambda` (`&`).
+// CR claude for claude: [bug/low] A `&lambda` under another prefix prints bare and
+// does not parse back: `*&(|| i8:0)` with its parens taken out prints `*&|| i8:0`,
+// and the parser takes `&|..|` only where `any_lambda` is (an expression's start, an
+// operator's last operand), never as the operand of `*`, `!` or `-` (`&'a: C |..|`
+// alike). A parsed tree keeps its parens, so only a tree the compiler built prints
+// so. A `ByRef` whose operand is a lambda needs parens here when `takes_lambda` is
+// false. Found by expr::test::printer_parenthesizes_unparenthesized_trees in a lane
+// B gate (2026-11-01, not lane B's change); its proptest seed: cc
+// 52d95362b7daab64d7b2e2754e1f2c0db9e8813205cf280634d516337cfa8ea6, shrinks to s =
+// Deref(ByRef(Shared, ExplicitParens(Lambda(|| i8:0)))). (printer-prefix-lambda-01)
 fn prefixed(e: &Expr, takes_lambda: bool) -> bool {
     match e.kind {
         ExprKind::BinOp { .. } => true,
