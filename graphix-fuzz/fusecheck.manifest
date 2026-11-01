@@ -270,6 +270,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	never-type-names-sep2026/00_never_of_an_undefined_type.gx
 0	oct30b-oct2026/01_builtin_binding_in_forked_slots.gx
 1	oct30b-oct2026/02_recursive_abstract_in_a_function_body.gx
+0	oct30b-oct2026/03_default_hidden_by_a_fn_type_types_the_instance.gx
+2	oct30b-oct2026/04_a_body_lambdas_quantifier_decided_by_its_use.gx
 0	omitted-default-check-sep2026/01_default_types_the_site.gx
 1	omitted-default-check-sep2026/02_default_and_argument_agree.gx
 1	operand-bound-member-oct2026/00_extracted_callback.gx

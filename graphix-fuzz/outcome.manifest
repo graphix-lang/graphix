@@ -270,6 +270,8 @@ trace	never-args-elided-sep2026/01_raise_in_never_arm.gx
 reject	N: undefined type Act at line: N, column: N in module /test	never-type-names-sep2026/00_never_of_an_undefined_type.gx
 trace	oct30b-oct2026/01_builtin_binding_in_forked_slots.gx
 trace	oct30b-oct2026/02_recursive_abstract_in_a_function_body.gx
+trace	oct30b-oct2026/03_default_hidden_by_a_fn_type_types_the_instance.gx
+trace	oct30b-oct2026/04_a_body_lambdas_quantifier_decided_by_its_use.gx
 reject	N: cannot compute fN + iN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	omitted-default-check-sep2026/01_default_types_the_site.gx
 trace	omitted-default-check-sep2026/02_default_and_argument_agree.gx
 trace	operand-bound-member-oct2026/00_extracted_callback.gx
