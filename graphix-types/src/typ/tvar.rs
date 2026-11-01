@@ -2060,6 +2060,17 @@ impl Type {
     // members do; select's flatten_union_members keeps only a path, the same shape.
     // Probes: ~/ptmp/cr29/scratch/r6-B/r7/dag_res16.gx, dag_res20.gx, dag_plain20.gx
     // (perf stat -e instructions:u graphix --no-cache --check) (no-error-dag-01)
+    // 2026-11-01 claude: Round 6 (brief r6B fix 3): two runtime walks are exponential
+    // over the same DAG of named unions, on main too. json::write_str's member choice
+    // (tval::member_of over is_a) and the typed printer (println of a value of the type)
+    // expand every name each time a path reaches it: for let v: Array<[LN, `D(i64)]> =
+    // [`C, `D(1)] with the DAG above, main's write costs 2.8 G instructions at N=20, 7.9
+    // G at 22 and 30.5 G at 24, its print 4.9, 9.7 and 47.9 G, where --check of the same
+    // program is 1.3 to 1.7 G (lane cr33-B: write 5.3 G, print 11.7 G at 22). Probes:
+    // ~/ptmp/cr29/scratch/review-r6/B-r3-1/dag/wd25.gx, print25.gx; the series
+    // ~/ptmp/cr29/scratch/r6-B/f3/dag/{c,w,p}{20,22,24}.gx (gen.py N KIND OUT; perf stat
+    // -e instructions:u graphix --no-cache). The same fix applies: a seen set of names
+    // per walk, as members_by_class keeps.
     /// Whether a value of `self` may be an error as the type stands: a
     /// member is an `Error`, holds the primitive `error` or is `Any`.
     /// `NoError ⊇ self` is its negation; an open member may be anything

@@ -338,3 +338,33 @@ the state of a fix, and Graphix's side.
   `test::panic_test::enormous_chart_axes_preserve_each_graph_type`, and
   `chart::tests::reentering_line_uses_one_layer` (also prints render timings).
 - **Status.** Not reported upstream.
+
+## serde_json 1.0.154 (arbitrary_precision): an object keyed by the number token reads as a number
+
+- **Bug.** Under `arbitrary_precision`, which graphix-package-json turns on
+  to read numbers exactly, serde_json hands a visitor a number as a map of
+  one entry keyed `$serde_json::private::Number`, the number's text its
+  value. An object in the input with that key reaches the visitor the same
+  way, so no reader tells the two apart, and json's reader takes such an
+  object for a number (documented in its gxi).
+- **Repro.** `let v: Map<string, i64> = {"$serde_json::private::Number" =>
+  5}`: `json::write_str(v)` writes `{"$serde_json::private::Number":5}`,
+  and `json::read` of it into `Map<string, i64>` fails ``JsonErr("invalid
+  type: integer `5`, expected a string at line 1 column 33")``; the key over
+  the string `"42"` reads back as the number 42, an `InvalidCast` into
+  `Map<string, string>`. On main a map under `Any` writes as an object too,
+  so `Map<string, Any>` holding that map reads back, silently, as `{"x" =>
+  42}`; under the map-key ruling (lane B round 6) a map under `Any` writes
+  its pairs and only a `string`-keyed map writes the key, whose read is
+  refused. TOML reads the key back. Probes
+  `~/ptmp/cr29/scratch/review-r6/B-r3-1/rt/serde_key.gx`,
+  `~/ptmp/cr29/scratch/r6-B/f3/serde_key2.gx`, `serde_key3.gx`.
+- **Upstream fix.** A number passed to a visitor through a channel a JSON
+  object cannot reach (serde's private `Content`, or a token no object can
+  spell). Not reported.
+- **Graphix's side.** Not worked around: with the map-key ruling what is
+  left is a refused read, no wrong answer. The json writer should still
+  refuse the key (in a `string`-keyed map, the only place a program writes
+  it; no struct field or abstract type's name spells it), as it refuses two
+  keys that write as one: `JsonData` promises the reader takes back what
+  the writer writes, and this value it cannot. TOML needs nothing.
