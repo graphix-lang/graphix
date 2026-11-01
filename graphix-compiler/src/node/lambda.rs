@@ -1249,10 +1249,11 @@ impl Typing {
             // typed formal bound the scheme (let t: {f: fn(x: i64) -> i64} = s;
             // arrays and tuples alike), a later REPL input too. Now a let nothing
             // writes whose value holds a lambda or a generalized binding's value,
-            // through data literals, a block's value or a select's arms
-            // (bind::holds_function), is generalized (Env::poly_binds): each read
-            // takes a fresh placeholder at compile and, in typecheck0, a copy of
-            // every closed definition's signature its type holds
+            // in a data literal (a struct, its update, a tuple, a variant, an
+            // array, a list, a map: bind::holds_function), is generalized
+            // (Env::poly_binds): each read takes a fresh placeholder at compile
+            // and, in typecheck0, a copy of every closed definition's signature
+            // its type holds
             // (Type::scheme_read, Fresh::Scheme), so nothing outside the definition
             // writes its scheme; a read inside such a holder's own value shares the
             // type (Signature::InHolder), which keeps a chain of holders a DAG
@@ -1270,6 +1271,12 @@ impl Typing {
             // lang::byref pass without it; a literal passed straight to a call
             // (h({f: |x| 0}).f(1)) is decided by that call, as a callback literal
             // is (probes d2-d4.gx run alike).
+            // 2026-11-01 claude: A lambda a let holds through a block's value or a
+            // select's arms is left out: generalizing those too broke must_reject
+            // family 1 (a block-wrapped lambda is the documented monomorphic
+            // binding), and the split it would close (a call instantiates such a
+            // binding while a value use binds its cells) is pre-existing and asks a
+            // rule: CR holder-block-select-01.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),
