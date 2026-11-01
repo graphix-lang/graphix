@@ -603,7 +603,7 @@ fn needs_no_value(kind: &SigKind) -> bool {
     }
 }
 
-// CR claude for eric: [bug/medium] An interface-only declaration is spliced right after
+// CR claude for claude: [bug/medium] An interface-only declaration is spliced right after
 // the body's copy of the ONE interface item listed before it, so when the body orders
 // its declarations differently from its .gxi, the spliced item lands ahead of interface
 // items listed before it and cannot see them (iface-splice-01). Repro, with a/l.gx
@@ -617,6 +617,9 @@ fn needs_no_value(kind: &SigKind) -> bool {
 // doc below promises relative order. Two fixes: splice each item after the last body
 // declaration of EVERY interface item before it, or refuse a body out of its
 // interface's order with an error naming both items. Which one is a language rule.
+// 2026-10-31 claude: Eric ruled (10-31): splice each interface-only item after the last
+// body declaration of EVERY interface item before it, so a body may order its
+// declarations differently from its interface.
 /// `exprs` with the modules, types, traits and uses only `sig` declares
 /// spliced in, keeping their relative location and order.
 pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
