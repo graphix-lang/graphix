@@ -1276,7 +1276,8 @@ impl FnType {
             }
             false => self,
         };
-        let gates = this.open_quantifier_gates(flags.contains(ContainsFlags::Adopt));
+        let adopted = flags.contains(ContainsFlags::Adopt).then_some(t);
+        let gates = this.open_quantifier_gates(adopted);
         let gated = u32::from(!gates.is_empty());
         hist.gated += gated;
         let r = this.contains_gated(flags, env, hist, t);
@@ -1325,16 +1326,30 @@ impl FnType {
     }
 
     /// Rigid gates on the quantifiers no call has picked: each holds what
-    /// it meets to its declared bounds, unless it `adopts` them.
+    /// it meets to its declared bounds, unless self is the written form of
+    /// the function `adopted` types: then each adopts the bounds of its
+    /// counterpart there, and takes the type `adopted` decided it to.
     fn open_quantifier_gates(
         &self,
-        adopts: bool,
+        adopted: Option<&Self>,
     ) -> LPooled<Vec<super::tvar::RigidGate>> {
+        let mut decided: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        if let Some(t) = adopted {
+            decided.extend(t.quantifiers.iter().cloned());
+            t.each_quantifier(|name, tv| {
+                if tv.open_cell().is_some() {
+                    decided.remove(name);
+                }
+            })
+        }
         let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
-        self.open_quantifiers(|tv, _| {
-            gates.push(match adopts {
-                true => tv.open_rigid(),
-                false => tv.open_quantifier_rigid(),
+        self.each_quantifier(|name, tv| {
+            if tv.open_cell().is_none() || decided.contains(name) {
+                return;
+            }
+            gates.push(match adopted {
+                Some(_) => tv.open_rigid(),
+                None => tv.open_quantifier_rigid(),
             })
         });
         gates

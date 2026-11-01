@@ -3146,6 +3146,29 @@ run!(recursive_abstract_in_a_body, RECURSIVE_ABSTRACT_IN_A_BODY, |v: Result<&Val
     Ok(Value::Array(a)) if &a[..] == [Value::Bool(true), Value::Bool(false)]
 ); FuseExpect::Jit);
 
+// A generic lambda literal a function body uses at one type: each instance
+// of the body types the literal as the definition's check did, its
+// quantifier decided.
+run!(
+    a_body_lambdas_quantifier_decided_by_its_use,
+    r#"{
+        let f = |x: i64| { let l: fn(s: f64) -> f64 = 'a: Number |s: 'a| -> 'a s; l(1.5) };
+        f(1)
+    }"#,
+    is(Value::F64(1.5))
+);
+
+run!(
+    a_body_lambdas_quantifier_decided_through_an_array,
+    r#"{
+        let g = |a: Array<'q>| array::len(a);
+        let f = |x: i64| g(['a: Number |#start: 'a = 0.0| -> 'a start]);
+        f(1)
+    }"#,
+    is(Value::I64(1));
+    FuseExpect::None
+);
+
 const DEFAULT_OF_A_BOUNDED_PARAMETER: &str = r#"
 {
     let scale = |k| {

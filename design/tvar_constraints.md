@@ -218,12 +218,16 @@ than judges: an instance rebuilds a lambda from its written type and
 checks it over the type its definition's check recorded, which may hold
 a bound the body added (`'a: Number` with `+` gains `Singleton`); that
 check passes `ContainsFlags::Adopt`, whose plain rigid gates absorb the
-recorded bounds. Pins: `lang::types::rank2_struct_field_refuses_narrower_bound`,
+recorded bounds. A quantifier the recorded type no longer holds open
+(the check decided it where the literal met a fn type that fixes it, a
+`let` annotation or an array element held to its use) gets no gate: the
+instance's takes the decided type. Pins: `lang::types::rank2_struct_field_refuses_narrower_bound`,
 `rank2_let_annotation_refuses_narrower_bound`,
 `rank2_let_annotation_holds_each_instantiation`,
 `lang::image::a_definition_entered_three_times_restores` (the mutual
 bounds), `lang::collection::collection_returns_a_generic_function` (the
-adopting check).
+adopting check), `lang::functions::a_body_lambdas_quantifier_decided_by_its_use`
+(a decided quantifier).
 
 ### Generalization
 

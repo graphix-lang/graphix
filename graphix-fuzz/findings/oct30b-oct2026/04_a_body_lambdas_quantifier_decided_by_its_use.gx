@@ -1,0 +1,6 @@
+// A generic lambda literal in a function body, used at one type through an
+// array: the definition's check decided its quantifier, and an instance of
+// the body, typing the literal from that check, held the quantifier rigid
+// against the decision, so the build refused what the check passed. Found
+// by the oct30b soak (ryouko, a `[Float, Int]` bound inside nested folds).
+{ let src = array::init(3, |i| i); array::fold(src, 0, |acc, x| array::fold([x, 'a: [Float, Int] |#start: 'a = 0.0, x: 'a| -> 'a start + x], acc, |a, y| a + 1)) }

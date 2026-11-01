@@ -1061,8 +1061,9 @@ node graph IS the IR — there is no parallel typed IR
   bounds, predicates included (`fn<'b: Number>` takes no `|x| x * x`:
   declare `Number + Singleton`; `FnType::contains_int`, judged
   coinductively where bounds name each other), except a lambda's written
-  type over its own checked one, which adopts its bounds
-  (`ContainsFlags::Adopt`); while a call checks its argument against the
+  type over its own checked one, which adopts its bounds and a
+  quantifier the check decided (`ContainsFlags::Adopt`); while a call
+  checks its argument against the
   formal, `'b` is one type, which no definition in the argument
   generalizes or copies (`TVar::freshen`); a call copies `'b`
   generic, the formal passed on is any instance of itself in an
