@@ -546,6 +546,10 @@ pub struct TypeDef {
     /// The registered representation this abstract one must be, compared
     /// at the check, once the typedefs it names are declared.
     unchanged_from: Option<Arc<env::AbstractRep>>,
+    /// The definition, kept while the node lives: a block compiled in an
+    /// environment it does not outlive (a labeled default's, at each call
+    /// that omits it) still names it.
+    _definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
 }
 
 impl TypeDef {
@@ -554,8 +558,9 @@ impl TypeDef {
         scope: ModPath,
         name: ArcStr,
         unchanged_from: Option<Arc<env::AbstractRep>>,
+        _definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
     ) -> Node<R> {
-        Node::new(Self { spec, scope, name, unchanged_from })
+        Node::new(Self { spec, scope, name, unchanged_from, _definition })
     }
 
     /// A registration this definition made owns what its representation
@@ -590,6 +595,7 @@ impl TypeDef {
             )
             .at(&spec)?;
         let name = name.name.clone();
+        let definition = ctx.env.typedef_definition(&scope.lexical, &name);
         if parametric {
             // A cycle a definition completes runs through it: without
             // parameters through its body, which deftype walked; with them also
@@ -603,7 +609,7 @@ impl TypeDef {
                 (*spec).clone(),
             ));
         }
-        Ok(Self::with(spec, scope.lexical.clone(), name, unchanged_from))
+        Ok(Self::with(spec, scope.lexical.clone(), name, unchanged_from, definition))
     }
 }
 
@@ -615,7 +621,7 @@ impl TypeDef {
         let spec = Arc::new(Expr::decode(buf)?);
         let scope = ModPath::decode(buf)?;
         let name = ArcStr::decode(buf)?;
-        Ok(Self::with(spec, scope, name, None))
+        Ok(Self::with(spec, scope, name, None, None))
     }
 }
 

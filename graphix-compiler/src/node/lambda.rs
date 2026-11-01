@@ -2466,44 +2466,13 @@ fn check_defaults<R: Rt>(
     };
     for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
         let Some(expr) = arg.kind.default() else { continue };
-        let mut node = ctx.with_restored(def.env.clone(), |ctx| {
-            def.in_signature(ctx, |ctx| {
+        let (node, res) = ctx.with_restored(def.env.clone(), |ctx| {
+            let mut node = def.in_signature(ctx, |ctx| {
                 compile(ctx, flags, expr.clone(), scope, ExprId::new())
-            })
+            })?;
+            let res = judge_default(ctx, def, at, &mut node);
+            Ok::<_, anyhow::Error>((node, res))
         })?;
-        let res = node.typecheck0(ctx).and_then(|()| {
-            let typ = node.typ().clone();
-            let depth = def.level.depth();
-            let enclosing =
-                |tv: &TVar| matches!(tv.level(), Level::Def { depth: d, .. } if d < depth);
-            if at.typ.has_unbound()
-                && holds_unbound(&typ, &|tv| !tv.is_rigid() && enclosing(tv))
-            {
-                bail!(
-                    "default reads an enclosing open type: annotate the factory's \
-                     parameter or give the defaulted parameter a closed type"
-                );
-            }
-            let declared = holds_unbound(&typ, &|tv| {
-                tv.is_rigid() && (enclosing(tv) || tv.is_quantifier_rigid())
-            });
-            match &at.typ {
-                // no call instantiates an enclosing definition's variable or
-                // a rank-2 formal's quantifier the default sits under: the
-                // default fits for every instance of it, or not at all
-                _ if declared => at.typ.check_contains(&ctx.env, &typ),
-                // each conjunct narrows the default's open cells, which
-                // may be the environment's, rather than deciding them
-                Type::TVar(tv) if !tv.is_bound() => tv
-                    .cell_constraints()
-                    .iter()
-                    .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
-                // a variable inside the type is checked as any instance of
-                // it: each omitting call checks the default again
-                t if t.has_unbound() => t.reset_tvars().check_contains(&ctx.env, &typ),
-                t => t.check_contains(&ctx.env, &typ),
-            }
-        });
         let res = res.at(&node.spec());
         if res.is_ok() {
             fusion::for_each_node(&node, &mut |n| {
@@ -2514,6 +2483,49 @@ fn check_defaults<R: Rt>(
         res?;
     }
     Ok(())
+}
+
+/// The default `node` of the parameter `at` checked against it, in the
+/// lexical environment the default compiled in.
+fn judge_default<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    def: &LambdaDef<R>,
+    at: &FnArgType,
+    node: &mut Node<R>,
+) -> Result<()> {
+    node.typecheck0(ctx).and_then(|()| {
+        let typ = node.typ().clone();
+        let depth = def.level.depth();
+        let enclosing =
+            |tv: &TVar| matches!(tv.level(), Level::Def { depth: d, .. } if d < depth);
+        if at.typ.has_unbound()
+            && holds_unbound(&typ, &|tv| !tv.is_rigid() && enclosing(tv))
+        {
+            bail!(
+                "default reads an enclosing open type: annotate the factory's \
+                     parameter or give the defaulted parameter a closed type"
+            );
+        }
+        let declared = holds_unbound(&typ, &|tv| {
+            tv.is_rigid() && (enclosing(tv) || tv.is_quantifier_rigid())
+        });
+        match &at.typ {
+            // no call instantiates an enclosing definition's variable or
+            // a rank-2 formal's quantifier the default sits under: the
+            // default fits for every instance of it, or not at all
+            _ if declared => at.typ.check_contains(&ctx.env, &typ),
+            // each conjunct narrows the default's open cells, which
+            // may be the environment's, rather than deciding them
+            Type::TVar(tv) if !tv.is_bound() => tv
+                .cell_constraints()
+                .iter()
+                .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
+            // a variable inside the type is checked as any instance of
+            // it: each omitting call checks the default again
+            t if t.has_unbound() => t.reset_tvars().check_contains(&ctx.env, &typ),
+            t => t.check_contains(&ctx.env, &typ),
+        }
+    })
 }
 
 impl<R: Rt> Update<R> for Lambda {

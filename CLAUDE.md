@@ -440,8 +440,10 @@ weakly and the `TypeDef` owns it (a recursive body reaches its own
 cell), so a type outliving its definition's env entry is refused,
 never re-resolved, and what outlives the entry owns the definitions
 its types name (a definition's check table, a kernel's type constant,
-an abstract type's registration: `DefTable::typedefs`,
-`record::KernelType`, `AbstractRep::named`); `Env::seed_typedef_refs` runs at the
+an abstract type's registration, the block's `TypeDef` node, which a
+labeled default compiled at a call outlives the env clone with:
+`DefTable::typedefs`, `record::KernelType`, `AbstractRep::named`,
+`node::TypeDef`); `Env::seed_typedef_refs` runs at the
 check's end (an instance elaborates under its definition's env) and
 again right before fusion in both modes. A bound's ref resolves the same way, its
 cell holding the trait (`Resolution::Trait`), filled by the seed walk at

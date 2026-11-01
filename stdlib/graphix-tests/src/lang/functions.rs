@@ -3840,6 +3840,24 @@ run!(default_of_a_rank2_quantifier_fits_its_own_parameter, r#"{
   app(|x| { let g = |#d: 'q = x, y: i64| d; g })
 }"#, refused("'q: unbound does not contain"); FuseExpect::None);
 
+// A labeled default's block names the types it declares, at the
+// definition's check and at each call that omits it.
+run!(default_names_a_type_its_block_declares, r#"{
+  let f = |#d = { type M = [i64, null]; let q: M = 3; q }, x: i64| (d, x);
+  (f(1), f(#d: null, 2))
+}"#, prints("[[i64:3, i64:1], [null, i64:2]]"); FuseExpect::Jit);
+
+run!(default_compares_a_type_its_block_declares, r#"{
+  let f = |#d = {
+    type M = [i64, null];
+    type N = Abstract<[`C(M), `Nil]>;
+    N(`C(3)) == N(`C(3))
+  }, x: i64| (d, x);
+  let fs = [f, f];
+  let g = fs[1]$;
+  (array::map([1, 2], |x| f(x)), g(5), f(#d: false, 2))
+}"#, prints("[[[true, i64:1], [true, i64:2]], [true, i64:5], [false, i64:2]]"); FuseExpect::Jit);
+
 run!(same_function_write_fires_without_reset, r#"{
     let step = 0;
     step <- select step { s if s < 7 => s + 1, _ => never() };

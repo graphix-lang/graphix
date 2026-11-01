@@ -129,8 +129,9 @@ impl AbstractRep {
 
 #[derive(Debug, Clone)]
 pub struct TypeDef {
-    /// The parameters, body, scope and site. The only strong owner:
-    /// every resolution cell naming this definition holds it weakly.
+    /// The parameters, body, scope and site. Every resolution cell
+    /// naming this definition holds it weakly; its owners are this entry,
+    /// the node that declared it, and what outlives both (a check table).
     pub(crate) def: std::sync::Arc<ResolvedRef>,
     /// For a Graphix-minted abstract type, the representation its
     /// constructor wraps; present only where the definition is visible.
@@ -2180,6 +2181,21 @@ impl Env {
     /// Is `id` a Graphix-minted (not Rust-backed) abstract type?
     pub fn abstract_minted(&self, id: AbstractId) -> bool {
         self.abstract_reps.get(&id).is_some()
+    }
+
+    /// The definition `name` names at `scope`, for a holder that must
+    /// keep it alive past the env entry (the node that declared it).
+    #[doc(hidden)]
+    pub fn typedef_definition(
+        &self,
+        scope: &ModPath,
+        name: &str,
+    ) -> Option<std::sync::Arc<ResolvedRef>> {
+        self.lexical
+            .typedefs
+            .get(scope)
+            .and_then(|m| m.get(name))
+            .map(|td| td.def.clone())
     }
 
     /// Drop the name `name` at `scope`. An abstract type's
