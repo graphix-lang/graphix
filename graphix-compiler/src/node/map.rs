@@ -184,64 +184,6 @@ impl<R: Rt> Map<R> {
         }
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
         require_bounds(&[Type::Bound(Bound::Ordered)], &ktype);
-        // CR claude for claude: [perf/low] The chain fix that SeqLit::typecheck0_with
-        // got (one element is its own union; the unshared cell binds with no occurs
-        // walk) is missing from this copy of the same code. Here a let chain `x_i = {1
-        // => x_(i-1)}` checks in quadratic time: 0.59 / 2.3 / 9.0 s at n = 1000 / 2000
-        // / 4000, against 0.21 s at 4000 for `[x_(i-1)]`. Share one element-union
-        // helper between the two literals. The Discernible judgment below also walks
-        // the value type per literal. A two-element array literal is quadratic too
-        // (union_of_alternatives over identical deep types: skip a pointer-equal
-        // member). probe: design/review-2026-10-19/repro/x-rerun-4-literal-chain.sh
-        // (x-rerun-4-03)
-        // 2026-10-20 claude: Shared now: array::element_union (an element of the very
-        // type of an earlier one, by cell or by shared Arc, adds nothing; one type
-        // left is its own union) and array::bind_element (the literal's own cell binds
-        // with no occurs walk) serve SeqLit and Map. Probe (quick): two
-        // n=1000/2000/4000 0.36/1.29/7.08 s -> 0.40/0.29/0.33 s; map 0.74/3.23/15.6 s
-        // -> 0.41/2.25/11.3 s. Pin:
-        // deep_nesting::wrapped_let_chains_check_in_linear_time ([X, X] at 20000 lets
-        // within 15 s). What stands is the map's Discernible(Keys) judgment:
-        // map_key_failure walks the value type for nested maps' keys, once per
-        // literal, so a chain of map literals stays quadratic. The nested maps a
-        // literal's value holds were judged where they were built (a literal, a
-        // builtin bound Ordered, a read's Concrete), so judging this literal's key
-        // alone would be linear, but it stops refusing a value whose map type nothing
-        // judged (one only an annotation wrote): a checker rule, so readdressed for
-        // that ruling.
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Keep the rule (a value's map type is judged); make the judgment
-        // linear, e.g. memoize map_key_failure per type content key.
-        // 2026-10-27 claude: Measured again (debug, --check, lets of {1 => x_(i-1)}):
-        // 1.1 / 1.7 / 4.0 / 10.9 s at n = 1000 / 2000 / 4000 / 8000, against 1.0-1.1 s
-        // for [x_(i-1)]; with Map's defer_judgment removed the map chain is 1.1 / 1.2
-        // s at 4000 / 8000, so the Discernible(Keys) judgment is all of what stands.
-        // Not fixed: a memo across literals has to outlive one statement's settle
-        // (each let settles alone), so it is state held across statements (a
-        // CompileCtx field, which the no-ctx-globals rule pushes back on, or a
-        // thread-local that a compile task scopes and that keeps the types it names
-        // alive), and a node judged clear may hold an open cell a later statement
-        // binds to an unjudged key type, so only a node with no open cell under it may
-        // be remembered, which the walk does not report today (Expanded::clear is per
-        // walk and ignores open cells). Map has no node_addr either; the key would be
-        // its value Arc. Needs that design first; the shape is a chain of thousands of
-        // nested map literals.
-        // 2026-10-27 codex: Reproduced with the existing target/debug/graphix
-        // --no-cache --check binary and the probe's generated chains (Python monotonic
-        // timer because bc is unavailable): array n=1000/2000/4000/8000 took
-        // 0.203/0.214/0.298/0.462 s; map took 0.388/1.254/4.671/19.703 s, all exit 0.
-        // The original shell probe also completed all nine checks but printed no
-        // durations because bc is missing. Investigated a block-scoped key-judgment
-        // memo. The literal's key/value Arcs hold TVars; caching only syntactically
-        // immutable subtrees would miss this chain. Merely remembering a successful
-        // walk is unsafe: Expanded::once currently forgets whether success passed an
-        // open cell, and TVar::bind explicitly replaces an existing binding. A proof
-        // must propagate unresolved/mutable dependencies through memo hits and
-        // ordered-key subwalks, and account for later cell changes and
-        // abstract/typedef environment changes. Did not introduce an unproved
-        // cross-statement cache or weaken Keys to inspect only the outer key. No fix
-        // or passing regression pin in this commit; the CR remains open for that
-        // design and implementation.
         let vtype = wrap!(self, super::array::element_union(&ctx.env, &vts))?;
         let bound = match &self.typ {
             Type::Map { key, value } => {

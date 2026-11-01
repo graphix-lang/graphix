@@ -743,27 +743,6 @@ impl<X: GXExt> GX<X> {
     }
 
     /// Readers of `id` update this cycle.
-    // CR claude for claude: [perf/low] A delivery costs O(readers of the id), not
-    // O(boundaries that run). Each Reader costs an `updated` entry and a mark, even one
-    // already stamped or asleep, and notify_set and mark_readers do the same. Every seq
-    // step reads the machine's pc (`seqpc ~! v` in --expand), so each step transition
-    // walks all S steps' readers: a seq of S cycle-separated steps costs 18.7 us a step
-    // at S=400 and 58.3 at S=3200 (O(S^2) per run). 1600 idle arms reading a ticking
-    // variable add about 7 ns each to every cycle. Two decisions: group readers by root
-    // so `updated` is touched once per root, and decide whether the seq lowering needs
-    // every step to register a read of pc. probe:
-    // design/review-2026-10-19/repro/x-perf-runtime-seq-pc-readers.sh
-    // (x-perf-runtime-04)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Group readers by root so `updated` is touched once per root; drop the
-    // per-step pc read if the lowering does not need it.
-    // 2026-10-26 claude: Not fixed in L4-b06. Re-measured on a loaded host:
-    // 106/87/160/369 us per step at S=400/800/1600/3200 (debug), noisy. Grouping
-    // by_ref's readers by root saves one updated entry per reader but leaves one
-    // boundary mark per reader, so a seq delivery stays O(S); the O(S) goes only if a
-    // step's sleeping arms stop reading pc (each step reads it in its snapshot and its
-    // value gate, --expand) or a mark skips a boundary whose arm sleeps, both changes
-    // to the seq lowering or the wake catch-up that want their own pass.
     fn wake_readers(&mut self, id: &BindId) {
         let cycle = self.ctx.rt.cycle;
         if let Some(readers) = self.ctx.rt.by_ref.get(id) {

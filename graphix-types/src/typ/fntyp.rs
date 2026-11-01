@@ -902,11 +902,6 @@ impl FnType {
         any
     }
 
-    // CR claude for claude: [perf/low] FnType::contains_int on a type with declared
-    // quantifiers walks the signature twice more (this, on self and on t) beside its own
-    // walk, and in a later compile task copies self (fresh_quantified) at every
-    // comparison. GUI-example --check instructions did not move (94.6e9), so it is cost,
-    // not a regression; one walk could answer both sides. (earlier-quantifier-cost-01)
     /// A quantifier an earlier compile task left open: the check decided
     /// it open, so a later task compares the type as any instance of
     /// itself and never writes the cell (`tvar::earlier_task`).
@@ -1100,53 +1095,6 @@ impl FnType {
     /// deeper: the definition at `depth` closed over them. A cell a
     /// binding lowered above it is its environment's.
     #[doc(hidden)]
-    // CR claude for claude: [perf/low] A chain of closures that each return the previous
-    // one (`let x1 = |a: i64| x0; let x2 = |a: i64| x1; ..`) checks in quadratic time
-    // and memory: 2500 lets take 18 s and 5000 lets went past a 6 GB cap in --check.
-    // Each definition re-walks the whole nested signature here (`reached_cells`), and
-    // `Type::reset_tvars_int` copies every nested fn type fresh (gdb samples land in
-    // both, thousands of frames deep). Deciding the fix is yours: stop generalize/claim
-    // at a nested fn type a closed definition already generalized, and let a copy share
-    // a nested fn type that reaches no cell it must freshen. probe:
-    // design/review-2026-10-19/repro/x-stack-flat-chain-quadratic.sh (x-stack-03)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Stop generalize/claim at a nested fn type a closed definition already
-    // generalized; share nested fn types that reach no cell.
-    // 2026-10-26 claude: Measured (debug, --check): every other shape in the probe is
-    // now linear ([X], {a: X}, (X, 1), `A(X) at 0.4-0.6 s for 1000 and 2000 lets; &X
-    // 0.55/0.72 s; {"k" => X} 0.55/1.35 s); the closure chain alone stays quadratic, 3.6
-    // s at 1000 lets and 14.9 s at 2000. Its nested fn types hold no type variable at
-    // all, so the fix is a cached "holds no TVar" fact per FnType that generalize, claim
-    // (reached_cells) and reset_tvars_int stop at. Not done: FnType's fields are public
-    // and it is built by struct literal at about 33 sites, and code clones one and then
-    // edits a field, so a cached fact goes stale unless it lives behind a constructor;
-    // that refactor is the work.
-    // 2026-10-27 claude: Still quadratic (debug --check: 1000 lets 1.6 s, 2000 lets 6.7
-    // s). Not done in batch L1-b07. One more constraint for the fix: reset_tvars_int /
-    // instantiate_how give every nested FnType a fresh lambda_ids node
-    // (LambdaIds::instantiate), so letting a copy share a TVar-free nested fn type also
-    // shares its lambda_ids node with the definition, and a later link through the
-    // instance would land on the definition's node; the share needs lambda_ids copied
-    // lazily (or a rule that a nested fn type's ids need no copy) before it is sound.
-    // generalize and claim (reached_cells) could stop at a TVar-free nested fn type
-    // without that question, which removes part of the walk but not reset_tvars_int's.
-    // 2026-10-27 claude: One more constraint for a shared nested FnType: a copy
-    // instantiates its lambda_ids (FnType::reset_tvars_int sets fresh.lambda_ids =
-    // self.lambda_ids.instantiate()), so a copy that shares a variable-free nested fn
-    // type instead of copying it would also share that type's LambdaIds set, and lambda
-    // ids added under one copy would reach the other. The fact the fix caches must cover
-    // the lambda ids too: share only a nested fn type whose LambdaIds set is closed. Or
-    // the copy must instantiate the set and nothing else.
-    // 2026-10-28 claude: Profiled (perf, quick build, 2000 lets, 8.4 s, all of it
-    // Typecheck0): the time is spread over several whole-type walks per definition,
-    // cell_constraints 10%, settle::reached 8%, collect_position_tvars 8%,
-    // would_cycle_seen_inner (occurs check) 6%, TVar::binding 6%, reset_memo/freshen 5%,
-    // position_cells 3%, seed_refs_seen 3%, named_defs 3%. The nested fn types are not
-    // TVar-free: each closure's result is a bound cell, so the 'holds no TVar' fact
-    // proposed above never applies. A fix needs a checked signature's resolved, closed
-    // form (bound cells replaced by their bindings once its definition's check ends)
-    // that every one of these walks can stop at, plus the lambda_ids question above.
-    // Left open: only programs that nest a thousand closures reach it.
     pub fn generalize(&self, depth: u32) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);

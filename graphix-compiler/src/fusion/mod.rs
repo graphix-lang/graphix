@@ -969,42 +969,6 @@ pub(crate) struct Discovery<'n, R: Rt> {
 /// and the region de-fuses (never a partial kernel). A callee already
 /// in `bodies` is not re-scanned, which closes self- and mutual
 /// recursion.
-// CR claude for claude: [perf/low] Every region's discovery walks its whole transitive
-// callee closure again, building each callee's kernel lookup and enqueuing its body,
-// even when an earlier region already discovered that callee. A static call chain over
-// a leaf that does not fuse makes every level a region, so fusion is quadratic: 1500
-// functions take 13.4 s (6 s in the Callees phase) against 0.39 s with a fusable leaf.
-// Fix: cache each callee's discovered body and sites by kernel key on the emission and
-// reuse them instead of re-walking. probe:
-// design/review-2026-10-26/repro/x-stack-fusion-callee-chain.py (x-stack-05)
-// 2026-10-26 claude: Not started in batch L4-b02. Caching discovery across regions
-// needs the callee bodies to outlive the region (Discovery holds &'n borrows of the
-// region tree, and later regions splice kernels into callee bodies), so the cache
-// would key by kernel and hold what build_lambda_kernel and the sites walk produce,
-// not node borrows.
-// 2026-10-27 codex: Reproduced a static chain over once(x), using --no-cache --expand
-// to measure compilation without the probe's exit timer: 750 functions took 27.605 s
-// and 1500 exceeded a 90 s timeout on the shared host while another build was active.
-// No discovery cache applied. In addition to Discovery's borrowed bodies,
-// Emission::forget_attempt removes every signature created by a failed region: those
-// signatures name the failed instance's slots, so retaining them alone can make
-// another instance emit against the wrong slots. A reusable cache needs owned
-// discovery/site data, instance/formal rebinding, and a rule for callee bodies changed
-// by later fusion, including task forks and joins. Definition-wide effect flags are
-// not a safe shortcut: inference joins facts from different instances into the
-// definition, so a stateful specialization must not de-fuse another. No new pin or
-// fix-specific test; leaving open.
-// 2026-10-28 claude: Partly fixed: the cubic term was build_lambda_kernel's
-// body_fingerprint, recomputed per callee per region (40401 walks of the callee
-// closure at n=200). FusionCtx::fingerprint now memoizes each instance's fingerprint,
-// shared with compile tasks and forgotten at every splice (kernel_node bumps a
-// generation), so it returns exactly what a walk would. Quick build, the probe: n=500
-// 7.8 -> 2.2 s, 1000 60 -> 9.4 s, 2000 >170 -> 45 s; fusion manifest unchanged. What
-// stands is quadratic: a region that fails forgets the kernel signatures it built, so
-// each region rebuilds its callee chain before f0's refusal (profile now flat:
-// compile_region, kernel-cache lookups, build_lambda_kernel). A transitive refusal
-// memo would remove it but changes which call site a #[native] refusal names; left
-// open.
 pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     root: &'n Node<R>,
     ctx: &CompileCtx<R>,

@@ -2002,37 +2002,6 @@ impl Env {
         // Every self-reference must sit under a constructor: `type T =
         // [i64, T]` (or `type A = B; type B = A`) names no value, and
         // contains' coinductive memo would accept it against anything.
-        // CR claude for claude: [perf/low] Each typedef walks every earlier typedef its
-        // body reaches unguarded (and `seen` is a linear scan), so a chain `type T_i =
-        // [`A_i(i64), T_{i+1}]` checks in quadratic time in either order: 0.20/0.82/4.5
-        // s at 1000/2000/4000 types (debug), against 0.07 s at 4000 for a guarded
-        // chain. The 1000-type pin cannot see it. Mark a parameterless TypeDef whose
-        // walk ended Guarded with every name resolved, and stop at it: an earlier
-        // definition cannot reach a newer key except through parameters. probe:
-        // design/review-2026-10-26/repro/x-rerun-5-typedef-chain-quadratic.py
-        // (x-rerun-5-10)
-        // 2026-10-26 claude: The suggested memo is unsound: reaches_unguarded resolves
-        // names in the env as it stands (resolve_pure), so a later typedef that shadows
-        // a name an earlier definition reached changes that definition's walk. In a
-        // block under 'type X = i64', 'type D = X; type X = [D, i64]' must be refused,
-        // and a memo marking D clean at its definition would accept it (pinned:
-        // lang::types::shadow_closes_an_unguarded_cycle). A sound memo holds only while
-        // the env is fixed (within check_pending_names, and only for a walk's root,
-        // since a walk cuts cycles not through its root at 'seen'), or needs
-        // invalidation whenever a definition or import shadows a resolvable name. Left
-        // for a design that can afford that; real programs do not chain a thousand
-        // unguarded aliases.
-        // 2026-10-27 codex: Reproduced with the worktree's debug graphix and the named
-        // Python probe: forward/backward 1000 = 0.32/0.29 s, 2000 = 1.11/1.08 s, 4000 =
-        // 6.21/8.11 s; guarded4000 = 0.15 s. No fix applied. Investigated invalidation:
-        // resolution depends on Env::names as well as lexical typedefs, and
-        // swap_lexical, interface_view, scope removal, imports and task joins can
-        // change those independently. A persistent clean-definition memo needs to cover
-        // those transitions and shadowing; a check_pending_names-only memo cannot fix
-        // the backward chain's repeated deftype walks. The existing
-        // shadow_closes_an_unguarded_cycle pin remains essential. No new pin or cargo
-        // test for this investigation; leaving the CR open rather than introducing the
-        // known unsound memo.
         match typ.reaches_unguarded(self, key) {
             Unguarded::Reaches => {
                 self.undeftype(scope, name);

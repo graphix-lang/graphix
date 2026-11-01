@@ -926,40 +926,6 @@ impl Machine<'_> {
     }
 
     /// Lower `stmts` in a lexical scope of their own, below the current.
-    // CR claude for claude: [perf/low] Each try body gets a lexical scope here, and
-    // SeqMachine::compile compiles every step under its scope's chain of append_blocks.
-    // So a step at try depth d resolves its generated names (the catch's pc connect,
-    // the #seqe cells) d levels deep, at Env::chain_lookup's O(d^2) (t-misc-02). Nested
-    // tries make the check cubic: 990 deep (a 25 KB file) checks in 45 s, 500 in 6.2 s.
-    // Fix: t-misc-02's (scope, name) memo, or resolve the generated machine names
-    // without the per-try scope chain. probe:
-    // design/review-2026-10-26/repro/x-stack-seq-try-nesting.py (x-stack-06)
-    // 2026-10-26 claude: Not done in batch L5-b04. Measured: the probe at D=500 checks
-    // in 11.5 s (debug, loaded host). The fix that stays in the seq lowering would drop
-    // the per-try lexical scopes by sending each try body's lets to cells the rewrite
-    // scopes (as a seq let trigger's names are), so every step compiles in the
-    // machine's scope; that is a larger change to lower_try and touches IDE sites
-    // (x-lsp-probe-01). The other is t-misc-02's (scope, name) memo in
-    // Env::chain_lookup, which belongs to that CR's lane.
-    // 2026-10-27 claude: seq-try-depth-01's fix (eb9bf67e5) took the cubic factor out:
-    // Env::chain_lookup no longer recomputes mod_root per level, so the nested-try
-    // check went from 5.95 to 1.02 s at depth 500, and to 6.4 s at 993 (debug; 45 s at
-    // 990 when this CR was written). What remains is quadratic. Each lookup still walks
-    // its chain, hashing every level's path, and a step at depth d still resolves its
-    // generated names d levels deep. Remaining: the per-try lexical scopes, or a
-    // (scope, name) memo, as above.
-    // 2026-10-27 codex: Reproduced the named nested-try shape with the worktree debug
-    // binary: --check depths 250/500/993 took 0.481/1.602/8.368 s. After t-seq-06's
-    // constant-size pc, they took 0.363/1.221/7.276 s: the scope-chain cost remains. No
-    // scope rewrite applied. Investigated qualifying generated cells at compile time,
-    // but CatchRole::Try captures and generated references both use lexical resolution,
-    // while user lets must retain their try scopes and shadowing; dropping or
-    // flattening the scope chain without rewriting those bindings would change lookup
-    // and IDE sites. A safe implementation still needs a scoped-name rewrite preserving
-    // those sites, or the general lookup memo owned by t-misc-02. No new pin; the
-    // existing nested_trys_check_in_time budget is too loose to distinguish this
-    // remaining cost. All 651 seq fixtures pass for the preceding pc change, which does
-    // not resolve this CR. Leaving open.
     fn lower_scoped(
         &mut self,
         stmts: &[&Expr],

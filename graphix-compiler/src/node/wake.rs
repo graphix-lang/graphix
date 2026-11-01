@@ -299,44 +299,6 @@ impl TrackedFires {
 
     /// Re-collect arm `i`'s refs, at a deselect, when its subtree is
     /// fully materialized.
-    // CR claude for claude: [perf/low] Every select deselect and every seq step passage
-    // call this. It builds a fresh Refs and walks the arm's entire subtree with `refs`,
-    // descending into every bound callee instance and every collection slot. It then
-    // rebuilds the arm's input map and the select-wide `all` set. The arm's refs change
-    // only when something under it binds or resizes, yet a state machine that switches
-    // arms on each event repeats the full walk and rehash at every switch, on top of
-    // the sleep walk. Fix: refresh arm i only when its subtree changed since its last
-    // refresh. A dirty bit or generation that the arm's CallSites and collections bump
-    // when they bind or resize would do it. (x-alloc-06)
-    // 2026-10-16 claude: The dirty bit this asks for is the same mechanism as Eric's
-    // generalized walk pruning (his 2026-10-14 note on x-perf-runtime-01: a NodeId per
-    // node, BindId -> dependent NodeIds, a dirty bit per node). Readdressed to Eric so
-    // both are designed once.
-    // 2026-10-18 claude: Walk pruning is built (design/walk_pruning.md), but its marks
-    // record deliveries, not structural change: a boundary is marked when something it
-    // reads is written this cycle, never when a CallSite under it binds or a collection
-    // resizes. So it does not give this refresh the generation it needs. That
-    // generation is a separate, local fix (a counter the arm's binds and resizes bump),
-    // no longer coupled to the pruning design; readdressed to claude.
-    // 2026-10-20 claude: Looked at for this round and left: a generation that gates
-    // refresh must move with every way an arm's refs grow, and not all of them pass
-    // through a bind or a resize. Control::rebuilds (new this round, bumped by
-    // ExecCtx::apply_deferred and CallSite::bind) covers binds, slot builds, lazily
-    // decoded bodies and module recompiles, but a Deref's moving target is read only by
-    // the refs walk (TrackedFires::evaluated takes it on the first run alone), and a
-    // skipped refresh that misses a new input loses that input's catch-up, a semantics
-    // change. Gating on rebuilds plus a per-arm count of the Deref retargets under it
-    // would do; it wants a pin of a woken arm whose reference moved while it slept.
-    // 2026-10-27 claude: Looked at for L2-b07 and left. Gating refresh on
-    // Control::rebuilds alone would be sound only if every way an arm's refs grow bumps
-    // it: CallSite::bind and ExecCtx::apply_deferred do; Bind::address's moved target
-    // (a Deref retarget) does not and would have to; and every Update::refs or
-    // Apply::refs reading run-time state must be on that list (28 impls: callsite,
-    // collection slots, bind's Deref, array's group predicate, core's handler/queuefn,
-    // http::serve and sys::net per-request instances). A refs shrink skipped is
-    // harmless (a stale input only injects a fire no node reads). Wants that inventory
-    // plus a pin of a woken arm whose Deref moved while it slept before it is safe to
-    // land.
     pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
         let Self { per_arm, consumes, all, pending, carried, .. } = self;
         let mut r = Refs::default();
@@ -405,36 +367,6 @@ impl TrackedFires {
         carried: Option<&IntSet<BindId>>,
     ) {
         let Self { all, pending, carried: carried_bits, per_arm, .. } = self;
-        // CR claude for claude: [perf/low] Walk pruning, now built, does not shrink
-        // this scan, contrary to the x-perf-runtime-03 note: a walked select still
-        // read_vars every input of every arm. Pruning does make a sound filter
-        // possible. In a Cycle view, an arm whose body Prune is not marked this cycle
-        // had none of its tracked inputs delivered, since every this-cycle write marks
-        // its readers' boundaries and their ancestors. Catch-up injections are unmarked
-        // but happen only under Wake or Step. Visit only the per_arm maps of dirty arms
-        // when the view is Cycle (any statement boundary of a seq step, the instance
-        // body for Absent), and scan everything under other views. Cites
-        // x-perf-runtime-03. Found by reading; not run. (c-prune-wake-06)
-        // 2026-10-20 claude: Looked at for this round and left: the filter is sound
-        // only where every fire of a tracked input marks the arm's boundary, and
-        // several deliveries are raw event.variables inserts (a module's proxies, a seq
-        // pc, a bind's republish) whose marking is not pinned; a missed fire here is a
-        // lost catch-up, not a slower cycle. Safe way in: apply the filter only under
-        // PruneMode::On, and under Audit scan everything and panic when a fired input
-        // belongs to no dirty arm, so GRAPHIX_PRUNE=audit and the fuzzer's Pair::Prune
-        // check it. Gain to expect: x-perf-runtime-05.py (d) puts the scan at about
-        // 0.22 ms a cycle for 1600 idle arms, nothing measurable at a handful.
-        // 2026-10-27 claude: Looked at again for L2-b07 and left. A further hole in the
-        // filter's soundness argument: catch-up injections are not confined to Wake or
-        // Step views. TrackedFires::deliver runs at every arm evaluation, a Cycle-view
-        // one included (a guard flip or a scrutinee routing to an arm with a pending
-        // bit), and wake::inject writes the event without marking any reader, so a
-        // select nested in that arm observes the injected input as fired in a Cycle
-        // view with no boundary of its arms marked; the filter would stop it recording
-        // that bit for its other arms, a semantics change. Making inject mark its
-        // readers would close that one (it only costs walks). With the scan's cost
-        // about 0.2 ms a cycle at 1600 idle arms, the Audit check suggested on 10-20 is
-        // still the way in.
         let seen: LPooled<IntSet<BindId>> =
             evaluated.iter().flat_map(|i| per_arm[*i].iter().copied()).collect();
         for id in all.keys.iter() {
