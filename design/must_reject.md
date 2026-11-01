@@ -91,13 +91,16 @@ forwards the wrapped binding, so the value uses of `g` are uses of `f`
 Mutation: add a statement that equates two of them (`x == y`) or binds
 one to a concrete type (`x == 1`) or to ⊥ (`let b: _ = x`). Rule: a
 def's declared variables are rigid in its body check: none binds to a
-concrete type or to ⊥ and no two unify. Skip: a variable with a constraint the concrete type satisfies
+concrete type or to ⊥, no two unify and none escapes into a cell outside
+the definition (a write to an outer binding, through a reference or a
+function sharing its type: `DefGate::check_named_kept`). Skip: a variable with a constraint the concrete type satisfies
 only through the constraint (`'a: Number` against `1` is still refused,
 but keep the first cut to unconstrained variables). Built: a first
 statement comparing a parameter `x: 'a` with a literal or, alternately,
 binding it under a `_` annotation, or calling a
 parameter `f: fn(x: 'a) -> ..` with one (`'a` not `f`'s own
-quantifier: each call picks that anew), right site the definition. Open: equating two declared variables.
+quantifier: each call picks that anew), right site the definition. Open: equating two declared variables;
+writing a parameter `x: 'a` to an outer `let y = never()` (`y <- x`).
 
 **3. Call conflicts.** Site: a call argument. (a) The callee's resolved
 parameter type is concrete: substitute a literal of a disjoint type.

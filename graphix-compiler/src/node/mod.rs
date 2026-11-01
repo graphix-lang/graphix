@@ -1865,7 +1865,7 @@ impl<R: Rt> Connect<R> {
     }
 }
 
-// CR claude for claude: [bug/medium] A declared quantifier escapes through a captured
+// XCR claude for claude: [bug/medium] A declared quantifier escapes through a captured
 // write: `let y = never(); let f = 'a: Concrete |x: 'a| -> 'a { y <- x; x }; f("hello");
 // let k: i64 = y` passes the check and the build refuses it ("instance at fn(x: string)
 // -> string of a definition typed fn<'a>(x: 'a: i64)"); through a collection the build
@@ -1875,6 +1875,17 @@ impl<R: Rt> Connect<R> {
 // generic, the condition under which FnType::has_earlier_quantifier's fresh-copy
 // comparison would be unsound. Probes: ~/tmp/cr29/scratch/review2/RV7/{e2,e3}.gx
 // (quantifier-escape-01)
+// 2026-11-01 claude: Fixed at the definition's gate, not the write, so every route is
+// covered: DefGate records the depth of each variable the signature names when it opens,
+// and DefGate::check_named_kept (after the body and the defaults) refuses the definition
+// when one moved to a shallower level, which a binding, conjunct or lower bound of a
+// cell outside the definition does (tvar::lower): "'a escapes the definition: something
+// outside it would hold a value of that type ...". Pins
+// lang::types::declared_variable_escapes_by_a_write, _through_a_collection,
+// _through_a_reference (*r <- x, r = &mut y), _through_a_call (an outer |v| { y <- v; v
+// } sharing y's cell) fail without it; declared_variable_stays_inside (a nested function
+// writing the definition's own let, an undeclared |x| writing the outer y) holds.
+// must_reject.md family 2 names the rule (its mutation is open).
 impl<R: Rt> Update<R> for Connect<R> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.node)

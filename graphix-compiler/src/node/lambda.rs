@@ -2297,6 +2297,9 @@ struct DefGate<R: Rt> {
     args: LPooled<Vec<Node<R>>>,
     scope: Scope,
     rigid: LPooled<Vec<RigidGate>>,
+    /// Each variable the signature names, at the depth it had at the
+    /// gate's opening.
+    named: LPooled<Vec<(TVar, u32)>>,
 }
 
 impl<R: Rt> DefGate<R> {
@@ -2339,6 +2342,7 @@ impl<R: Rt> DefGate<R> {
             .map(|tv| tv.open_rigid())
             .chain(quantifiers.values().map(|tv| tv.open_quantifier_rigid()))
             .collect();
+        let named = named.values().map(|tv| (tv.clone(), tv.level().depth())).collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
         ctx.pending_settles.push(crate::SettleFrame::default());
@@ -2351,7 +2355,26 @@ impl<R: Rt> DefGate<R> {
             args,
             scope,
             rigid,
+            named,
         }
+    }
+
+    /// A variable the signature names stays its own: the body binds no
+    /// cell outside the definition to a type holding it (which would
+    /// lower the variable to that cell's depth), since each call picks
+    /// it anew.
+    fn check_named_kept(&self) -> Result<()> {
+        for (tv, depth) in self.named.iter() {
+            if tv.level().depth() < *depth {
+                bail!(
+                    "'{} escapes the definition: something outside it would hold a \
+                     value of that type, which each call picks anew; annotate what \
+                     outside the definition the body writes or calls",
+                    tv.name
+                )
+            }
+        }
+        Ok(())
     }
 
     /// What the body raised: ⊥ when nothing joined the faux catch; an
@@ -2641,7 +2664,9 @@ impl<R: Rt> Update<R> for Lambda {
             ftyp.throws.check_contains(&ctx.env, &inferred_throws).at(spec)?;
             Ok(())
         });
-        let res = res.and_then(|()| check_defaults(ctx, def, &gate.scope, &mut captures));
+        let res = res
+            .and_then(|()| check_defaults(ctx, def, &gate.scope, &mut captures))
+            .and_then(|()| gate.check_named_kept().at(spec));
         if res.is_ok() && (table.is_some() || !captures.is_empty()) {
             let mut table = table.unwrap_or_else(|| DefTable {
                 facts: *def.facts.lock(),

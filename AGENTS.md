@@ -1054,8 +1054,9 @@ node graph IS the IR — there is no parallel typed IR
   head's) may not reach it, directly, under a constructor or through
   another's bound (`'a: 'a`, `'a: Array<'a>`, `'a: 'b, 'b: 'a`;
   `check_bounds_acyclic`): a recursive bound is a recursive type; a def's declared tvars are
-  rigid in its body check: none binds to a concrete type or ⊥ and no
-  two unify (`contains.rs` Distinct), so a function type without
+  rigid in its body check: none binds to a concrete type or ⊥, no
+  two unify (`contains.rs` Distinct) and none escapes into a cell outside
+  the definition (`DefGate::check_named_kept`), so a function type without
   `throws` (which throws nothing) refuses one that throws `'e`, while a call instantiates them
   freely; a call copies only what the callee's definition owns once
   its gate is closed (or not yet open): a cell shared with the

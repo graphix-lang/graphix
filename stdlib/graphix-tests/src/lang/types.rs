@@ -3367,6 +3367,72 @@ const RIGID_SURVIVES_ALIAS: &str = r#"
 
 run!(rigid_survives_alias, RIGID_SURVIVES_ALIAS, refused("cannot hold"); FuseExpect::None);
 
+// A declared variable is each call's own: nothing outside the definition
+// may hold a value of it, written directly, through a reference or by a
+// function that shares the outer binding's type.
+run!(
+    declared_variable_escapes_by_a_write,
+    r#"{
+    let y = never();
+    let f = 'a: Concrete |x: 'a| -> 'a { y <- x; x };
+    let s = f("hello");
+    let k: i64 = y;
+    k
+}"#,
+    refused("'a escapes the definition");
+    FuseExpect::None
+);
+run!(
+    declared_variable_escapes_through_a_collection,
+    r#"{
+    let y = never();
+    let f = 'a: Concrete |x: 'a| -> 'a { y <- x; x };
+    let r = array::map([f], |g| g("hello"));
+    let k: i64 = y;
+    k
+}"#,
+    refused("'a escapes the definition");
+    FuseExpect::None
+);
+run!(
+    declared_variable_escapes_through_a_reference,
+    r#"{
+    let y = never();
+    let r = &mut y;
+    let f = 'a: Concrete |x: 'a| -> 'a { *r <- x; x };
+    f(1)
+}"#,
+    refused("'a escapes the definition");
+    FuseExpect::None
+);
+run!(
+    declared_variable_escapes_through_a_call,
+    r#"{
+    let y = never();
+    let put = |v| { y <- v; v };
+    let f = 'a: Concrete |x: 'a| -> 'a put(x);
+    f(1)
+}"#,
+    refused("'a escapes the definition");
+    FuseExpect::None
+);
+run!(
+    declared_variable_stays_inside,
+    r#"{
+    let y = never();
+    let f = 'a: Concrete |x: 'a| -> 'a {
+      let z = never();
+      let g = |u: i64| { z <- x; u };
+      g(1);
+      x
+    };
+    let h = |x| { y <- x; x };
+    (f(1), f("s"), h(2))
+}"#,
+    prints(r#"[i64:1, "s", i64:2]"#);
+    FuseExpect::None
+);
+
 /// A union implements no trait whose method takes `self` beyond the
 /// receiver: dispatch narrows only the receiver.
 const UNION_TRAIT_SELF_ARGUMENT: &str = r#"
