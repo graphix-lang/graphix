@@ -2562,14 +2562,33 @@ run!(callback_instances_at_float_and_int, r#"{
     matches!(v, Ok(v) if v.to_string() == "[[i64:2, i64:8, i64:0], [f64:4.5, f64:12.5, f64:0.]]")
 }; FuseExpect::Jit);
 
-// A formal whose instance type is bare null is a kernel input like any
-// other: its reads fuse.
+// A value whose type is bare null is a kernel value like any other: a
+// formal, an argument a kernel passes, a let and a loop's element.
 run!(null_formal_fuses, r#"
 {
   let show = |p| -> string #[native] "<[p]>";
   (show(null), show(1))
 }
 "#, prints(r#"["<null>", "<1>"]"#); FuseExpect::Jit);
+run!(null_argument_fuses_in_a_kernel_call, r#"
+{
+  let show = |p| "<[p]>";
+  let f = |x: i64| -> string #[native] "[show(null)][x]";
+  f(1)
+}
+"#, prints(r#""<null>1""#); FuseExpect::Jit);
+run!(null_let_fuses, r#"
+{
+  let show = |p| -> string #[native] { let q = p; "<[q]>" };
+  show(null)
+}
+"#, prints(r#""<null>""#); FuseExpect::Jit);
+run!(null_elements_fuse_in_a_map, r#"
+{
+  let xs = [null, null];
+  #[native] array::map(xs, |x| "<[x]>")
+}
+"#, prints(r#"["<null>", "<null>"]"#); FuseExpect::Jit);
 run!(nested_sample_argument_is_fed, r#"{
     let f = |x: i64, y: i64| x * y + 1;
     let a = 3;

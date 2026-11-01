@@ -324,15 +324,16 @@ pub(crate) enum LocalKind {
 }
 
 impl LocalKind {
-    /// The kind of a local holding a value of ABI shape `k`; `None` for
-    /// `Unit` and bare `Null`, which bind no local.
+    /// The kind of a local holding a value of ABI shape `k`: a bare null
+    /// is a two-word value (disc NULL, payload 0); `None` for `Unit`, which
+    /// binds no local.
     pub(super) fn of(k: AbiKind) -> Option<Self> {
         Some(match k {
             AbiKind::Scalar(p) => Self::Scalar(p),
             AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Self::Composite,
             AbiKind::String => Self::String,
             AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => Self::Value,
-            // CR claude for claude: [perf/low] A formal whose instance type is bare
+            // XCR claude for claude: [perf/low] A formal whose instance type is bare
             // null binds no local, so a read of it does not fuse: `let show = |p| ->
             // string #[native] "<[p]>"; show(null)` is refused with "emit_clif:
             // undefined local `p`" (show(1) and a union holding null fuse). The value
@@ -352,7 +353,17 @@ impl LocalKind {
             // over a null p ('let value of shape Some(Null)') and array::map over
             // nulls are refused, where the i64 forms fuse. null_formal_fuses covers
             // the top-level formal only.
-            AbiKind::Unit | AbiKind::Null => return None,
+            // 2026-11-01 claude: LocalKind::of binds a bare null as a Value local
+            // (disc NULL, payload 0); a kernel's lambda call passes a null argument
+            // (call_slots no longer refuses one), a let binds one and a loop takes
+            // null elements (bindable_array_element). Pins
+            // lang::fusion::null_argument_fuses_in_a_kernel_call, null_let_fuses,
+            // null_elements_fuse_in_a_map, each under #[native]: their jit and
+            // jit_par modes fail without the fix ('arg/capture type null not
+            // lowered', 'let value of shape Some(Null)', 'lambda call site not
+            // discovered').
+            AbiKind::Null => Self::Value,
+            AbiKind::Unit => return None,
         })
     }
 

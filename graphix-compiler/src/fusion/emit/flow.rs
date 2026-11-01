@@ -379,7 +379,7 @@ fn emit_let_node<R: Rt>(
                 bind_id,
             );
         }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null) => {
             let cv = value.emit_clif(cx)?;
             let produced = kernel_abi::freeze_for_abi_normalized(value.typ())
                 .unwrap_or_else(|| value.typ().clone());

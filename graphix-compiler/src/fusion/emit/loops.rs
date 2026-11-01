@@ -106,7 +106,8 @@ fn bindable_array_element(
             | AbiKind::String
             | AbiKind::Variant
             | AbiKind::Nullable
-            | AbiKind::Value,
+            | AbiKind::Value
+            | AbiKind::Null,
         ) => Some((typ, leaves)),
         _ => None,
     }

@@ -648,10 +648,7 @@ fn call_slots<'a, R: Rt>(
                  position — subtree node-walks"
             ));
         }
-        if matches!(
-            kernel_abi::abi_kind(s.typ()),
-            Some(AbiKind::Unit | AbiKind::Null) | None
-        ) {
+        if matches!(kernel_abi::abi_kind(s.typ()), Some(AbiKind::Unit) | None) {
             return Err(anyhow!(
                 "lambda call `{fn_name}`: arg/capture type {} not \
                  lowered on the calling side — subtree node-walks",
