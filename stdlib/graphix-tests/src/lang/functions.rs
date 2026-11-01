@@ -3118,6 +3118,24 @@ run!(builtin_bound_in_forked_slots, BUILTIN_BOUND_IN_FORKED_SLOTS, |v: Result<&V
     Ok(Value::Array(a)) if &a[..] == [Value::I64(1), Value::I64(2)]
 ); FuseExpect::None);
 
+// An abstract type whose representation names itself, defined in a
+// function body: each instance defines it again, the same.
+const RECURSIVE_ABSTRACT_IN_A_BODY: &str = r#"
+{
+    let f = |x: i64| {
+        type N = Abstract<[`Cons(i64, N), `Nil]>;
+        let a = N(`Cons(x, N(`Nil)));
+        a == N(`Cons(1, N(`Nil)))
+    };
+    (f(1), f(2))
+}
+"#;
+
+run!(recursive_abstract_in_a_body, RECURSIVE_ABSTRACT_IN_A_BODY, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Array(a)) if &a[..] == [Value::Bool(true), Value::Bool(false)]
+); FuseExpect::Jit);
+
 const DEFAULT_OF_A_BOUNDED_PARAMETER: &str = r#"
 {
     let scale = |k| {

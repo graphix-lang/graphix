@@ -45,7 +45,10 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    (`Env::abstract_reps`, gated by `AbstractRep::public` or the scope
    prefix). Every compile of one definition (its check, each instance)
    registers the same representation, so deleting one compile's `type`
-   leaves it (`Env::undeftype` drops only the name). The type test
+   leaves it (`Env::undeftype` drops only the name). A compile compares
+   its representation with the registered one once its own definition is
+   in scope, where a self-reference resolves, and refuses a different one
+   (a value of the old may be held). The type test
    `T as t` is visible wherever `T` is — it is
    a tag comparison, which is what lets `select` accept abstract
    predicates and what trait dispatch over a union needs

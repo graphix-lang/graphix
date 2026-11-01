@@ -1,0 +1,6 @@
+// An abstract type whose representation names itself, defined in a
+// function body: the instance defines it again, and its representation's
+// self-reference did not resolve before the comparison with the check's,
+// so the build refused what the check passed. Found by the oct30b soak
+// (aieka, ryouko).
+{ let rec f = |x: i64| { type N = Abstract<[`Cons(i64, N), `Nil]>; let rec build = |n: i64, acc: N| -> N select n { 0 => acc, n => build(n - 1, N(`Cons(n, acc))) }; let a = build(10, N(`Nil)); let b = build(10, N(`Nil)); a == b }; f(3) }

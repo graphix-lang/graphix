@@ -1892,6 +1892,38 @@ impl Env {
             // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);
         }
+        let def = std::sync::Arc::new(ResolvedRef::new(
+            scope.clone(),
+            pos,
+            ori,
+            params.clone(),
+            typ.clone(),
+        ));
+        let key = def.def_key();
+        let defs = self.lexical.typedefs.get_or_default_cow(scope.clone());
+        defs.insert_cow(
+            name.into(),
+            TypeDef {
+                def,
+                rep: rep.clone(),
+                doc,
+                seeded: Arc::new(AtomicBool::new(false)),
+            },
+        );
+        // compared with the definition in scope, where a self-reference in
+        // the representation resolves
+        // CR claude for claude: [bug/low] A representation naming a typedef its
+        // block declares later is refused when a function instance declares it
+        // again: `let f = |x: i64| { type N = Abstract<[`C(M), `Nil]>; type M =
+        // [N, i64]; let a = N(`Nil); 0 }; f(3)` checks, and the build says "N is
+        // already defined as Abstract<[`C(M), `Nil]>: a value of it may still be
+        // held": `M` does not resolve yet when the instance's `deftype` of N
+        // compares, so `sig_matches` fails (main a084f9887 too; written with M
+        // first it runs). Comparing once the block's typedefs are all declared
+        // (the TypeDef node's check, and its instance's) would cover it; a
+        // purely syntactic comparison would not, since a reload may change what
+        // `M` means (`reload_changes_a_representation_through_a_typedef`).
+        // probe: ~/ptmp/cr29/scratch/r6-W/absfwd.gx (abstract-forward-ref-01)
         if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep)
             && let Some(old) = self.abstract_reps.get(id)
         {
@@ -1909,10 +1941,11 @@ impl Env {
                 || was.sig_matches(self, &now).is_err()
                 || now.sig_matches(self, &was).is_err()
             {
+                let old = old.rep.clone();
+                self.undeftype(scope, name);
                 bail!(
-                    "{name} is already defined as Abstract<{}>: a value of it may still \
-                     be held, so its representation cannot change",
-                    old.rep
+                    "{name} is already defined as Abstract<{old}>: a value of it may \
+                     still be held, so its representation cannot change"
                 )
             }
         }
@@ -1935,19 +1968,6 @@ impl Env {
                 self.abstract_reps.insert(*id, Arc::new(r));
             }
         }
-        let def = std::sync::Arc::new(ResolvedRef::new(
-            scope.clone(),
-            pos,
-            ori,
-            params,
-            typ.clone(),
-        ));
-        let key = def.def_key();
-        let defs = self.lexical.typedefs.get_or_default_cow(scope.clone());
-        defs.insert_cow(
-            name.into(),
-            TypeDef { def, rep, doc, seeded: Arc::new(AtomicBool::new(false)) },
-        );
         // Every self-reference must sit under a constructor: `type T =
         // [i64, T]` (or `type A = B; type B = A`) names no value, and
         // contains' coinductive memo would accept it against anything.
