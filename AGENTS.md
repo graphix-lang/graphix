@@ -1505,7 +1505,8 @@ cycle, across workers; the compiler never pins threads.
   union of references has the union of their referent types; a write must
   fit every referent. Reads and writes expand typedefs through the same
   `node::reference_targets` walk. `&mut` of a
-  non-place expression is a fresh cell its uses type; an optional
+  non-place expression is a fresh cell it bounds from below, which its
+  uses decide (else its type); an optional
   writable argument is `[&mut T, null]`. `&a[i]`, `&s.f`, `&t.0`,
   `&m{k}` are root + path; writes patch the root at delivery; a dynamic
   key is a moving reference, and a write while its address is bottom (a

@@ -2140,12 +2140,12 @@ impl<R: Rt> ByRef<R> {
         };
         let t = match &self.referent {
             // A writable reference to a fresh cell only it reaches: the
-            // cell's type is any type the initializer fits, decided by the
-            // uses.
+            // initializer bounds the cell from below, the uses decide it,
+            // and one nothing decides settles to the initializer's type.
             Referent::Channel(n)
                 if *mutability == Mutability::Mut && !(&**n as &dyn Any).is::<Ref>() =>
             {
-                // CR claude for claude: [bug/high] Inside a definition's body this
+                // XCR claude for claude: [bug/high] Inside a definition's body this
                 // check never runs: defer_settle drops a settle while
                 // ctx.def_gate_depth is nonzero, and an instance does not check
                 // again. `{ let f = |x: i64| { let r: &mut string = &mut [x];
@@ -2158,11 +2158,36 @@ impl<R: Rt> ByRef<R> {
                 // decides), or keep it on the definition's DefTable for its check's
                 // end. op.rs's UnaryOp::Neg defers its Contains the same way.
                 // (mut-channel-settle-01)
-                super::defer_settle(ctx, || crate::PendingSettle::Contains {
-                    outer: (**cell).clone(),
-                    inner: n.typ().clone(),
-                    spec: self.spec.clone(),
-                });
+                // 2026-11-01 claude: Fixed by a local rule in place of the
+                // deferral: a &mut of a value takes the value's type as a lower
+                // bound of its fresh cell (check_contains_lower) and settles it as
+                // an Operand, as Construct does for a parameter, so the body's uses
+                // decide it in a definition as at the top and nothing is deferred
+                // to a settle a gate drops. This also fixes the top level, where
+                // the statement's site settles ran first: { let x = 1; let r = &mut
+                // [x]; array::len(*r) } was refused (Array<'a: _> does not contain
+                // Array<i64>) on main, with GRAPHIX_NO_SUBST too. Pins
+                // (lang::byref): mut_of_value_in_definition_refused,
+                // mut_of_value_in_generic_definition_refused,
+                // mut_of_value_written_in_definition_refused,
+                // mut_of_value_infinite_in_definition_refused,
+                // mut_of_value_read_by_a_generic_call fail without it;
+                // mut_of_value_in_definitions holds both ways; all pass under
+                // GRAPHIX_NO_SUBST=1. UnaryOp::Neg's deferred Contains is left as
+                // it was: its operand cell carries the negatable constraint
+                // (constrain_operand) into every copy, so a write or a call outside
+                // the negatable set is refused at the write or the call (probes
+                // ~/ptmp/cr29/scratch/r6-B/w2/n1.gx-n4top.gx), and judging
+                // negatable over a signature cell in a body would decide a generic
+                // cell. The other defer_settle callers (Operand, LetOverBottom)
+                // settle a definition's own cells, which its Body settle covers.
+                wrap!(self, cell.check_contains_lower(&ctx.env, n.typ()))?;
+                if let Type::TVar(tv) = &**cell {
+                    super::defer_settle(ctx, || crate::PendingSettle::Operand {
+                        tv: tv.clone(),
+                        spec: self.spec.clone(),
+                    })
+                }
                 return Ok(());
             }
             Referent::Channel(n) => n.typ().clone(),

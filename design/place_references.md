@@ -104,8 +104,9 @@ and `v` to fit each one's referent (`ConnectDeref::typecheck0_with`).
 - `&mut x` and a `&mut` place over a binding are pinned to the binding's
   type. A `&mut` place rooted at `*r` requires `r: &mut`. `&mut e` over
   any other expression mints a fresh cell only the reference reaches:
-  its type is a variable with the deferred lower bound `⊇ typeof(e)`,
-  decided by the uses (`&mut null` into `&mut [i64, null]`).
+  its type is a variable with the lower bound `⊇ typeof(e)`, decided
+  by the uses (`&mut null` into `&mut [i64, null]`), in a definition's
+  body as at the top, and `typeof(e)` where nothing decides it.
 - An optional writable argument is `[&mut T, null]` (queuefn's
   `#count`): `&mut [T, null]` would refuse `&mut x` for `x: T`.
 

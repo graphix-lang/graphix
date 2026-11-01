@@ -1365,3 +1365,45 @@ run!(any_reference_cast_abstract_map_is_refused, r#"{
     cast<B>([(a, 1)])
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Error(e))
     if e.to_string().contains("references have no order")); FuseExpect::None);
+
+// A `&mut` of a value is a fresh cell the value bounds from below: its
+// uses decide it, in a definition's body as at the top, and one nothing
+// decides is the value's type.
+run!(
+    mut_of_value_in_definition_refused,
+    "{ let f = |x: i64| { let r: &mut string = &mut [x]; str::len(*r) }; f(1) }",
+    refused("&mut string does not contain &mut Array<i64>");
+    FuseExpect::None
+);
+run!(
+    mut_of_value_in_generic_definition_refused,
+    r#"{ let f = |x| { let r: &mut Array<i64> = &mut [x]; x }; (f(1), f("s")) }"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    mut_of_value_written_in_definition_refused,
+    r#"{ let f = |x: i64| { let r = &mut [x]; *r <- ["s"]; 0 }; f(1) }"#,
+    refused("Array<i64> does not contain Array<string>");
+    FuseExpect::None
+);
+run!(
+    mut_of_value_infinite_in_definition_refused,
+    "{ let rec f = |x| f(&mut [f]); 0 }",
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+run!(
+    mut_of_value_read_by_a_generic_call,
+    "{ let x = 1; let r = &mut [x]; array::len(*r) }",
+    is(Value::I64(1));
+    FuseExpect::None
+);
+run!(mut_of_value_in_definitions, r#"{
+  let f = |x: i64| { let r = &mut [x]; array::len(*r) };
+  let g = |x| { let r = &mut [x]; *r };
+  let h = |x| &mut [x];
+  let d = |#d: &mut Array<i64> = &mut [1], x: i64| (*d, x);
+  let q = h("a");
+  (f(1), g(1), g("s"), *q, d(2))
+}"#, prints(r#"[i64:1, [i64:1], ["s"], ["a"], [[i64:1], i64:2]]"#); FuseExpect::None);
