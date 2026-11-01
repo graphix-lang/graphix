@@ -2816,12 +2816,7 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                         && let Some(m) = t.toml_root_pairs(env)
                     {
                         let t = t.resolve_tvars();
-                        let why = format_compact!(
-                            "a TOML document is a table, and {}, a map whose key type \
-                             is not string, is written as the array of its [key, value] \
-                             pairs: put it in a struct's field",
-                            m.resolve_tvars()
-                        );
+                        let why = typ::toml_root_refusal(Some(&m.resolve_tvars()));
                         match tv.name.starts_with('_') {
                             true => bail!("{c} refuses {t}: {why}"),
                             false => bail!("'{}: {c} refuses {t}: {why}", tv.name),

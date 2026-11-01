@@ -10,7 +10,7 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 use graphix_compiler::{
     env::Env,
     errf,
-    typ::{FnType, Type},
+    typ::{FnType, Type, toml_root_refusal},
 };
 use graphix_package_core::{
     CachedArgsAsync, CachedVals, CastTarget, Form, Keys, ReadFormat, ReadInput, Shape,
@@ -84,10 +84,6 @@ fn offset_datetime(dt: &toml::value::Datetime) -> Option<DateTime<Utc>> {
 /// reads.
 const MAX_DEPTH: usize = 80;
 
-/// Why a map written as its pairs is refused as a document.
-const ROOT_PAIRS: &str = "a TOML document is a table, and a map whose key type is not \
-    string is written as the array of its [key, value] pairs: put it in a struct's field";
-
 /// `value` as TOML, written as its type `typ` says (`None` reads the
 /// value alone).
 fn value_to_toml(
@@ -134,7 +130,7 @@ fn to_toml(
                 .collect::<Result<_, _>>()?;
             Ok(toml::Value::Array(vals.drain(..).collect()))
         }
-        Shape::Pairs(_) if depth == 0 => Err(ROOT_PAIRS.into()),
+        Shape::Pairs(_) if depth == 0 => Err(toml_root_refusal(None).into()),
         Shape::Pairs(mut pairs) => {
             let depth = deeper(deeper(depth)?)?;
             let mut seen: LPooled<AHashSet<LPooled<String>>> = LPooled::take();

@@ -20,6 +20,7 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
+use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
@@ -402,6 +403,19 @@ impl Type {
             _ => None,
         })
     }
+}
+
+/// Why a TOML document cannot be `map`, a map written as its pairs
+/// ([`Type::toml_root_pairs`]); `None` where its type is not at hand.
+pub fn toml_root_refusal(map: Option<&Type>) -> CompactString {
+    let what = match map {
+        Some(m) => format_compact!("{m}, a map whose key type is not string,"),
+        None => CompactString::const_new("a map whose key type is not string"),
+    };
+    format_compact!(
+        "a TOML document is a table, and {what} is written as the array of its \
+         [key, value] pairs: put it in a struct's field"
+    )
 }
 
 #[cfg(test)]
