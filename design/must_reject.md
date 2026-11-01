@@ -284,7 +284,12 @@ Mutation: the element replaced by a function of one type (`|x: i64|
 x`). Rule: a written `fn<..>` type's quantifiers are rigid wherever the
 type stands, from where it is written (`Type::alias_tvars`,
 `CellFact::FormalQuantifier`), whichever use of the binding comes first.
-Right site: the let. Open.
+Right site: the let. Open. Rigid holds a quantifier against a type, not
+against a cell outside the lambda: only a call's argument is checked for
+one that would carry the quantifier out (`callsite::polymorphic_in`,
+`escapes_through`), so a mutant that ties it to an outer binding (`|x| {
+y <- x; x }`) passes the check and its build refuses
+(CR rank2-escape-01).
 
 ## Labeled and optional arguments across the fuzzer
 

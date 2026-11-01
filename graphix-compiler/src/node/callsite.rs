@@ -969,6 +969,30 @@ fn callee_param<R: Rt>(
     inst.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
 }
 
+// CR claude for claude: [bug/high] A written quantified fn type checks the lambda it
+// holds with its quantifiers rigid, but only a call's argument is checked for a cell
+// outside the lambda that a quantifier reaches (polymorphic_in, escapes_through). A
+// let annotation, a struct field or an array element lets the quantifier escape:
+// `let y = never(); let h: fn<'a: Any>(x: 'a) -> 'a = |x| { y <- x; x }; let k:
+// fn(x: string) -> string = h; println(k("s")); println(y + 1)` passes --check and
+// its build refuses k("s") ("an instance at fn(x: string) -> string of a definition
+// typed fn(x: i64) -> 'a: i64"); in the REPL `p(1); p("s"); y + 1` runs and a string
+// reaches `y + 1` (rp2.txt). The same with `|x| (x, n)` over an outer `n` (v4),
+// inside a definition (d5, d6), in a struct field (w2) and through a module's use of
+// the parent's typedef (mt4, mt5); main a084f9887 the same. Fix: run
+// polymorphic_in/escapes_through wherever a written quantified fn type contains its
+// value (a let annotation, a field, an element, a return type), as a call does for
+// its formal. probes: ~/ptmp/cr29/scratch/review-r6/B2-r3-1/q/{w7,v4,d5,d6,w2}.gx,
+// mt4/main.gx, mt5/main.gx, rp2.txt (graphix --no-cache < rp2.txt)
+// (rank2-escape-01)
+// CR claude for claude: [bug/low] A rank-2 array element passed straight to a rank-2
+// formal is refused: `let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| x]; let f = |k:
+// fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s")); f(fs[0]$)` says "the argument is not
+// polymorphic in 'b: its type holds '_N, a variable of its environment, which would
+// carry 'b out", while `let e: T = fs[0]$; f(e)`, T the same written type, runs and
+// prints (1, "s") (main a084f9887 the same). probes:
+// ~/ptmp/cr29/scratch/review-r6/B2-r3-1/q/mt9.gx (refused), mt8.gx (runs)
+// (rank2-element-arg-01)
 /// An argument checked against a formal with quantifiers of its own
 /// holds for every choice of them only if none was aliased to a cell the
 /// argument does not own: a top-level variable or an enclosing
