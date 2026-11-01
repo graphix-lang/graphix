@@ -254,3 +254,19 @@ run!(
         impl Cast for T {};
         let mk = |x: i64| -> T T(x)
     "#; FuseExpect::Jit);
+
+// Outside JSON and TOML core's `Transparent<T>` is its representation:
+// a cast and pack read it from `T`'s data. A template's data writes an
+// abstract value bare.
+run!(transparent_is_its_representation_elsewhere, r#"{
+    type Port = Abstract<u16>;
+    impl Cast for Port {};
+    let t = Transparent(Port(u16:80));
+    let c: Any = 80;
+    let back: Result<Transparent<Port>, [`PackErr(string), `InvalidCast(string)]> =
+        pack::read(pack::write_bytes(t)$);
+    let shown = hbs::render("{{p}}", {p: Port(u16:80)})$;
+    "[cast<Transparent<Port>>(c)$ == t] [back$ == t] [t.0 == Port(u16:80)] [shown]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "true true true 80")
+}; FuseExpect::Jit);

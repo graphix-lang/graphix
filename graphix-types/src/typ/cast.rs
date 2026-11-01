@@ -1522,6 +1522,16 @@ impl Type {
         // the parsed literal inhabits (which also makes cast agree with str::parse).
         // Probes: ~/tmp/cr29/scratch/review2/RV3/{real_order,parse_vs_cast2}.gx
         // (real-member-order-01)
+        // 2026-10-31 claude: Lane B round 6 (D2) leaves this as it was: on cr33-B as on
+        // main, cast<Number>("3.0") and cast<Real>("3.0") are decimal:3.0 while
+        // cast<[f32, f64, decimal]>("3.0") is f32:3.0, cast<Number>("0.1") is
+        // decimal:0.1 where the flat spelling gives f64 0.1, and cast<Real>(u8:3) is
+        // decimal where the flat spelling gives f32 (probes
+        // ~/ptmp/cr29/scratch/r6-B/real_order{,2}.gx). D2's ruling 5 (keep the
+        // canonical tie-break) picks the first suggested fix, the expansion's primitive
+        // order: Real and Number would then read "0.1" as f64 and "3.0" as f32, a
+        // visible change for whoever reads text into Number. Not in lane B's brief, so
+        // left for a later round.
         let parsed = parsed_scalar(v);
         let mut groups: [SmallVec<[&Type; 4]>; 5] = Default::default();
         for t in ts.iter() {

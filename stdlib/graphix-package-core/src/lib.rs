@@ -539,9 +539,7 @@ fn written<'a>(
             }
         };
         let (dt, d) = match bare {
-            Some((pt, p @ Value::Abstract(_))) => {
-                data_of(env, &p, depth).map(|(t, d)| (t.or(pt), d))?
-            }
+            Some((_, p @ Value::Abstract(_))) => data_of(env, &p, depth)?,
             Some((pt, p)) => (pt, p),
             None => data_of(env, &v, depth)?,
         };

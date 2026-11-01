@@ -52,8 +52,8 @@ struct Walk<'a> {
 }
 
 impl<'a> Walk<'a> {
-    /// `f` over the expansion of the named type `named` at `params`,
-    /// unless the walk expanded it already.
+    /// The walk of `body`, the expansion of the named type `named` at
+    /// `params`, unless the walk expanded it already.
     fn named(
         &mut self,
         named: Named,
