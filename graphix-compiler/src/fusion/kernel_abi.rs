@@ -779,6 +779,16 @@ pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type, WrittenAt)]> {
     }
 }
 
+// CR claude for claude: [perf/low] A variant pattern at a tuple or struct
+// element whose type is variants beside null does not fuse: `let o: [`A(i64),
+// `B(i64), null] = `A(1); #[native] select (o, 1) { (`A(z), _) => .., _ => .. }`
+// is refused "variant pattern `A doesn't match its predicate [null, `A(i64),
+// `B(i64)]" (emit_variant_cond), since variant_cases gives up on a set holding
+// null. The same select at the top level (`select o { `A(z) => .. }`) fuses, and
+// so does the tuple without null. Main a084f9887 refuses it the same way. An
+// optional variant inside a tuple is a common shape. probe:
+// ~/ptmp/cr29/scratch/review-r6/E2-r2-1/u4.gx (graphix --no-cache)
+// (null-variant-element-defuse-01)
 /// The `(tag, payload-types)` cases of a `Type::Variant` or a `Type::Set`
 /// of single-Variant members; `None` otherwise.
 pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {

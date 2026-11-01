@@ -987,9 +987,10 @@ type tests, tail loops
 over any kernel param
 kind, every fast-fn builtin and non-inline cast, cross-kernel lambda
 calls, trait default bodies, a self-recursive instance's body, its
-self-calls calling its own kernel (`fusion::fuse_instance_body`: the loop
-a collection's callback, or a function value an assertion covers, binds at
-run time). A subtree that does not fuse whole
+self-calls calling its own kernel, wherever an instance's body fuses
+(`fusion::fuse_instance_body`: a compiled instance whose call does not
+fuse as a region, and the loop a collection's callback, or a function
+value an assertion covers, binds at run time). A subtree that does not fuse whole
 descends: every part that calls a function (a lambda call, a collection
 operation) is tried as a region of its own, any other part only
 descends (`fusion::fuse_parts`); a lambda call whose argument does not

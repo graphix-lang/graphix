@@ -299,6 +299,14 @@ struct ValueOperand {
     owned: Option<LocalKind>,
 }
 
+// CR claude for claude: [perf/low] Interpolating a payload bind under a
+// definition's declared type variable does not fuse: `let g = 'b: [`A(i64),
+// `B(i64)] |x: 'b| #[native] select x { `A(z) => "ga [z]", _ => "gn" }; g(`A(3))`
+// is refused "emit_clif: value operand has unexpected type Some(Unit)", so the
+// operand's kind does not resolve in the instance. `z + 1` in the same body
+// fuses, and so does the body with `x: [`A(i64), `B(i64)]` written directly
+// (u8.gx). Main a084f9887 refuses it the same way. probe:
+// ~/ptmp/cr29/scratch/review-r6/E2-r2-1/u7.gx, u8.gx (tvar-interp-defuse-01)
 fn emit_value_operand_node<R: Rt>(
     cx: &mut BodyCx,
     node: &Node<R>,

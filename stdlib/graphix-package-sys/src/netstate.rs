@@ -310,11 +310,17 @@ struct InFlight {
     _request: PendingRequest,
 }
 
+/// A call in flight and the index of its id in its site's `Calls::by_site` list.
+struct Held {
+    call: InFlight,
+    slot: usize,
+}
+
 /// The calls in flight, by id and by the site each answers. A site's
 /// entry lasts until its sleep or delete abandons what it holds.
 #[derive(Default)]
 struct Calls {
-    by_id: IntMap<RpcId, InFlight>,
+    by_id: IntMap<RpcId, Held>,
     by_site: IntMap<BindId, SmallVec<[RpcId; 4]>>,
     /// The entries of `by_id` every abandon so far has visited.
     #[cfg(test)]
@@ -325,16 +331,21 @@ impl Calls {
     /// `call` as `id`, replacing a call in flight under `id`.
     fn insert(&mut self, id: RpcId, call: InFlight) {
         self.remove(id);
-        self.by_site.entry(call.site).or_default().push(id);
-        self.by_id.insert(id, call);
+        let ids = self.by_site.entry(call.site).or_default();
+        let slot = ids.len();
+        ids.push(id);
+        self.by_id.insert(id, Held { call, slot });
     }
 
     fn remove(&mut self, id: RpcId) -> Option<InFlight> {
-        let call = self.by_id.remove(&id)?;
-        if let Some(ids) = self.by_site.get_mut(&call.site)
-            && let Some(i) = ids.iter().position(|held| *held == id)
-        {
-            ids.swap_remove(i);
+        let Held { call, slot } = self.by_id.remove(&id)?;
+        if let Some(ids) = self.by_site.get_mut(&call.site) {
+            ids.swap_remove(slot);
+            if let Some(moved) = ids.get(slot)
+                && let Some(held) = self.by_id.get_mut(moved)
+            {
+                held.slot = slot;
+            }
         }
         Some(call)
     }
@@ -736,7 +747,7 @@ impl NetState {
     pub(crate) fn settle_call(&self, answer: RpcAnswer) -> Option<Value> {
         let mut calls = self.0.rpc_calls.lock();
         match calls.by_id.get(&answer.id) {
-            Some(call) if call.serial == answer.serial => {
+            Some(held) if held.call.serial == answer.serial => {
                 calls.remove(answer.id);
                 answer.reply
             }
@@ -771,6 +782,12 @@ impl NetState {
     // counts them, 0 when it does not. A site's ids are a SmallVec<[RpcId; 4]>, not an
     // IntSet, so a site's calls allocate nothing up to four in flight (its sleep remints
     // its id, so its entry cannot be kept for the next run).
+    // 2026-11-01 claude: Coordinator: Calls::remove found an id in its site's list by a
+    // linear scan, so settling k calls of one site cost k^2/4 (final review E2-r2-2). Each
+    // call now holds its slot in its site's list (Held), and remove swaps the last id into
+    // the gap and updates its slot: constant time. Pin
+    // netstate::test::a_sites_list_follows_its_calls_out_of_order panics (swap_remove out
+    // of bounds) when the moved id's slot is not updated.
     /// Abort every call `site` has in flight, visiting no other: how many.
     /// Their answers still come to `site`'s delivery id, which its caller
     /// remints or releases.
@@ -924,7 +941,7 @@ mod test {
         let id = RpcId::new();
         let call = |ctx: &mut ExecState<GXRt<NoExt>>, site, id| {
             state.start_call(&mut ctx.view(), site, id, std::future::pending());
-            state.0.rpc_calls.lock().by_id[&id].serial
+            state.0.rpc_calls.lock().by_id[&id].call.serial
         };
         let answer = |id, serial, v| RpcAnswer { id, serial, reply: Some(Value::I64(v)) };
         let replaced = call(&mut ctx, site, id);
@@ -964,6 +981,37 @@ mod test {
         let calls = state.0.rpc_calls.lock();
         assert_eq!(calls.visited, 2);
         assert_eq!(calls.by_id.len(), 100);
+    }
+
+    /// Settling or aborting a site's calls in any order keeps each call's
+    /// slot in its site's list, so the site's abandon visits exactly the
+    /// calls still in flight.
+    #[tokio::test]
+    async fn a_sites_list_follows_its_calls_out_of_order() {
+        let mut ctx = GXRt::<NoExt>::new_state().unwrap();
+        let state = NetState::get(&mut ctx.view());
+        let site = BindId::new();
+        let ids: [RpcId; 5] = std::array::from_fn(|_| RpcId::new());
+        for id in ids {
+            state.start_call(&mut ctx.view(), site, id, std::future::pending());
+        }
+        let settle = |id| {
+            let serial = state.0.rpc_calls.lock().by_id[&id].call.serial;
+            state.settle_call(RpcAnswer { id, serial, reply: Some(Value::I64(0)) })
+        };
+        assert_eq!(settle(ids[0]), Some(Value::I64(0)));
+        state.abort_call(ids[3]);
+        assert_eq!(settle(ids[4]), Some(Value::I64(0)));
+        {
+            let calls = state.0.rpc_calls.lock();
+            for (id, held) in calls.by_id.iter() {
+                assert_eq!(calls.by_site[&held.call.site][held.slot], *id);
+            }
+        }
+        assert_eq!(state.abandon_calls(site), 2);
+        let calls = state.0.rpc_calls.lock();
+        assert_eq!(calls.visited, 2);
+        assert!(calls.by_id.is_empty());
     }
 
     #[tokio::test]
