@@ -2303,7 +2303,7 @@ struct DefGate<R: Rt> {
 }
 
 impl<R: Rt> DefGate<R> {
-    // CR claude for claude: [bug/low] A module using its parent's annotated array of
+    // XCR claude for claude: [bug/low] A module using its parent's annotated array of
     // generic functions through a callback is refused with "the check decides a type the
     // code around the module left open: annotate `fs`", though fs is annotated: the
     // foreign write is this gate's mark_formal_quantifier on the parent's cell (not
@@ -2321,6 +2321,20 @@ impl<R: Rt> DefGate<R> {
     // V's file this round. On 04a9c29b0 a top-level program with the same calls (no
     // module) runs ([4.0, 4.0] [3, 3]), and calls through fs[0] copy the quantifier
     // without any mark (probe ~/ptmp/cr29/scratch/r6-B/w2/g1.gx, g2.gx).
+    // 2026-11-01 claude: The mark was not the only foreign write: the gate's
+    // open_quantifier_rigid on the parent's cell is one too (GRAPHIX_TASK_AUDIT shows
+    // both). Fixed at the written type: Type::alias_tvars marks a written fn type's own
+    // quantifiers CellFact::FormalQuantifier in the task that created them (a let
+    // annotation's, a field's, an element's, a typedef's; an interface val's own stay
+    // its scheme's, module.rs bind_sig_item), so the fact holds from the start,
+    // whichever use comes first, and DefGate::open neither marks nor holds rigid a
+    // quantifier an earlier task created and marked: it is any instance of itself to the
+    // later task already, and that task writes nothing of it. Pins:
+    // lang::modules::module_calls_outer_rank2_elements (fails with the gate filter or
+    // the mark reverted), lang::types::rank2_element_annotated_then_used_again and
+    // rank2_let_used_at_two_types (top-level order dependence: an annotation picking one
+    // instance bound the written quantifier for every later use; fail with the mark
+    // reverted). Probes ~/ptmp/cr29/scratch/r6-B/w3/.
     fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>) -> Self {
         let at = AtLevel::enter(def.level);
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
@@ -2343,9 +2357,12 @@ impl<R: Rt> DefGate<R> {
         def.typ.collect_tvars(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
         // a rank-2 formal's own quantifiers are held too: a use of the
-        // formal in the body takes an instance of it, never binds them
+        // formal in the body takes an instance of it, never binds them.
+        // One an earlier task created and marked is any instance of itself
+        // to this task already, which writes nothing of it.
         let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         def.typ.inner_quantifiers(&mut quantifiers);
+        quantifiers.retain(|_, tv| !(tv.earlier_task() && tv.is_formal_quantifier()));
         for tv in quantifiers.values() {
             tv.mark_formal_quantifier()
         }

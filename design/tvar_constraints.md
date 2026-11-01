@@ -535,6 +535,23 @@ copy it, and a labeled default reading it fits its parameter whole
 against `fn<'b>(x: 'b) -> fn(y: i64) -> string` is refused at the check
 rather than at the bind.
 
+A written function type's own quantifiers anywhere but a declared
+signature's own (a formal's, a field's, an element's, a `let`
+annotation's, a typedef's) are any instance of themselves from where
+the type takes its cells: `Type::alias_tvars` marks them
+`CellFact::FormalQuantifier` in the task that created them, and every
+copy keeps the fact. So an annotation that picks one instance decides
+nothing for a later use, whichever comes first (pins `lang::types::
+rank2_element_annotated_then_used_again`, `rank2_let_used_at_two_types`).
+A gate holds rigid and marks the quantifiers its signature holds but
+one an earlier task created and marked: that one is any instance of
+itself to the gate's task already, which writes nothing of it, so a
+module whose callbacks call its parent's `Array<fn<'a: Number>(..)>`
+decides nothing of the parent's
+(`lang::modules::module_calls_outer_rank2_elements`). An interface
+`val`'s and a definition's own quantifiers are their scheme's, which
+each use copies, and carry no mark.
+
 A type written in a body names the variables of the definitions around
 it (`lambda::body_annotation`); a labeled default is written in its
 definition's signature, so its types name the variables of the

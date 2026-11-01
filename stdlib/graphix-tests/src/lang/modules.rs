@@ -942,6 +942,29 @@ run!(
     FuseExpect::None
 );
 
+// A module's callbacks over its parent's annotated array of rank-2
+// functions call each element at a type of their own and decide nothing
+// of the parent's written type.
+run!(
+    module_calls_outer_rank2_elements,
+    prints("[[f64:4., f64:4.], [i64:3, i64:3]]"),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+        let fs: Array<fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a> = [f, f];
+        mod m;
+        let result = (m::r, m::q)
+    "#,
+    "/test/m.gxi" => r#"
+        val r: Array<f64>;
+        val q: Array<i64>
+    "#,
+    "/test/m.gx" => r#"
+        use super::fs;
+        let r = array::map(fs, |h| h(1.5, 2.5));
+        let q = array::map(fs, |h| h(1, 2))
+    "#
+);
+
 // A module that only reads a binding the code around it settled is not
 // deciding it, though the binding is not in normal form.
 run!(

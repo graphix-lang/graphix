@@ -255,12 +255,16 @@ fn bind_sig_item(
         }
         SigKind::Bind(BindSig { name, typ }) => {
             let typ = typ.scope_refs(&scope.lexical).rewrite_trait_args(env)?;
-            typ.alias_tvars(&mut LPooled::take());
             // a declared signature has no gate to close over its cells:
             // every one is a quantifier, a constructor trait's element
-            // included, copied at each use
-            if let Type::Fn(ft) = &typ {
-                ft.generalize(0)
+            // included, copied at each use, and its own are its scheme's,
+            // which each use picks, not a rank-2 type's
+            match &typ {
+                Type::Fn(ft) => {
+                    ft.alias_tvars(&mut LPooled::take());
+                    ft.generalize(0)
+                }
+                typ => typ.alias_tvars(&mut LPooled::take()),
             }
             if env.ide.is_lsp() {
                 typ.record_ide_refs(env, &scope.lexical);

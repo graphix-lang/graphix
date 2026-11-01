@@ -847,8 +847,9 @@ pub(crate) enum CellFact {
     /// a `_` annotation, a `-> _` return): a fact the gate keeps, where a
     /// ⊥ nothing required is vacuous and reopens.
     BottomRequired,
-    /// The cell is a quantifier of a rank-2 formal: wherever the formal is
-    /// passed on, in its definition's check or an instance's elaboration,
+    /// The cell is a quantifier of a rank-2 formal, or of a written fn
+    /// type other than a declared signature's own: wherever the type is
+    /// passed on, in a definition's check or an instance's elaboration,
     /// it is any instance of itself, copied fresh for each use.
     FormalQuantifier,
 }
@@ -1823,7 +1824,10 @@ impl TVar {
         self.read().cell.read().quantifier_gates > 0
     }
 
-    pub(crate) fn earlier_task(&self) -> bool {
+    /// Whether a compile task started before the running one created the
+    /// cell.
+    #[doc(hidden)]
+    pub fn earlier_task(&self) -> bool {
         earlier_task(&self.cell().read())
     }
 
@@ -1853,8 +1857,10 @@ impl TVar {
         }
     }
 
-    /// Whether the cell is a quantifier of a rank-2 formal.
-    pub(crate) fn is_formal_quantifier(&self) -> bool {
+    /// Whether the cell is a rank-2 type's quantifier; see
+    /// [`CellFact::FormalQuantifier`].
+    #[doc(hidden)]
+    pub fn is_formal_quantifier(&self) -> bool {
         self.cell().read().facts.contains(CellFact::FormalQuantifier)
     }
 
@@ -2452,13 +2458,19 @@ impl Type {
                 }
             },
             // a nested fn type's own quantifiers are its own, whatever an
-            // enclosing signature names alike
+            // enclosing signature names alike, and any instance of
+            // themselves wherever the type stands, marked by the task that
+            // created them (`CellFact::FormalQuantifier`)
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
                 let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
                     ft.quantifiers.iter().map(|q| (q.clone(), known.remove(q))).collect();
                 ft.alias_tvars(known);
                 for (q, tv) in outer {
-                    known.remove(&q);
+                    if let Some(own) = known.remove(&q)
+                        && !own.earlier_task()
+                    {
+                        own.mark_formal_quantifier()
+                    }
                     if let Some(tv) = tv {
                         known.insert(q, tv);
                     }

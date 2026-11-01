@@ -6635,6 +6635,36 @@ run!(
     FuseExpect::None
 );
 
+// A written rank-2 element is any instance of itself from where it is
+// written: an annotation picking one instance decides nothing for a later
+// use, whichever comes first.
+run!(
+    rank2_element_annotated_then_used_again,
+    prints("[i64:3, [f64:4.]]"),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+        let fs: Array<fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a> = [f];
+        let h: fn(x: i64, y: i64) -> i64 = fs[0]$;
+        let result = (h(1, 2), array::map(fs, |g| g(1.5, 2.5)))
+    "#;
+    FuseExpect::None
+);
+
+// A `let` annotated with a written rank-2 type holds a function that is
+// any instance of itself: each annotated use picks its own.
+run!(
+    rank2_let_used_at_two_types,
+    prints("[i64:3, f64:4.]"),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+        let g: fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a = f;
+        let h: fn(x: i64, y: i64) -> i64 = g;
+        let k: fn(x: f64, y: f64) -> f64 = g;
+        let result = (h(1, 2), k(1.5, 2.5))
+    "#;
+    FuseExpect::Jit
+);
+
 // A rank-2 formal bounded Data takes only a generic handler; a
 // monomorphic one is refused as no instance of it, not as a function
 // that is not data.

@@ -1096,8 +1096,12 @@ node graph IS the IR — there is no parallel typed IR
   formal, `'b` is one type, which no definition in the argument
   generalizes or copies (`TVar::freshen`); a call copies `'b`
   generic, the formal passed on is any instance of itself in an
-  instance's elaboration as in the definition's check
-  (`CellFact::FormalQuantifier`), as is a quantifier an earlier compile
+  instance's elaboration as in the definition's check, as is any such
+  written type from where it takes its cells, whichever use comes first
+  (`CellFact::FormalQuantifier`, marked by `Type::alias_tvars` in the
+  creating task, and a gate holds rigid none an earlier task marked; an
+  interface `val`'s own quantifiers are its scheme's and unmarked), as
+  is a quantifier an earlier compile
   task left open, which a later task's `contains` compares as a fresh
   copy on either side and never writes (`FnType::has_earlier_quantifier`:
   parallel elaborations share the check's cells), and an open quantifier
