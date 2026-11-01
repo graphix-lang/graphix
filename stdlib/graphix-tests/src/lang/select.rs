@@ -2222,6 +2222,31 @@ run!(or_guard_prologue, OR_GUARD_PROLOGUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
 }; FuseExpect::Jit);
 
+// Each instance's scrutinee is one member of the bound: the alternative no
+// value of it passes is skipped, and the select fuses in each instance.
+const OR_ALT_NO_INSTANCE_VALUE_PASSES: &str = r#"
+{
+  let f = 'a: [(i64, string), (i64, f64, bool)] |x: 'a| -> i64
+    #[native] select x { (a, _) | (a, _, _) => a };
+  (f((1, "s")), f((2, 2.0, true)))
+}
+"#;
+
+run!(or_alt_no_instance_value_passes, OR_ALT_NO_INSTANCE_VALUE_PASSES,
+    prints("[i64:1, i64:2]"); FuseExpect::Jit);
+
+// The same under a guard, whose prologue emits each alternative's test.
+const OR_ALT_NO_INSTANCE_VALUE_PASSES_GUARDED: &str = r#"
+{
+  let f = 'a: [(i64, string), (i64, f64, bool)] |x: 'a, k: i64| -> i64
+    #[native] select x { (a, _) | (a, _, _) if a > k => a, _ => 0 };
+  (f((1, "s"), 0), f((2, 2.0, true), 5))
+}
+"#;
+
+run!(or_alt_no_instance_value_passes_guarded, OR_ALT_NO_INSTANCE_VALUE_PASSES_GUARDED,
+    prints("[i64:1, i64:0]"); FuseExpect::Jit);
+
 // A scrutinee member whose variant payload is a union is exhausted by
 // per-member arms: `[`P(A), `P(B)]` covers `P([A, B])`; fuses.
 const SELECT_VARIANT_UNION_PAYLOAD: &str = r#"

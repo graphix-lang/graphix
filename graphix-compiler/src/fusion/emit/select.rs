@@ -789,6 +789,16 @@ fn emit_leaf_cond_inner(
             let words = at.words(cx)?;
             Some(emit_value_leaf_cond(cx, sub, typ, words)?)
         }
+        // CR claude for claude: [perf/low] A nested or-pattern's alternative no value
+        // of an instance's leaf passes is still emitted against the leaf's layout,
+        // and the region de-fuses: `'a: [(i64, string), (i64, f64, bool)] |x: 'a, y:
+        // i64| -> i64 select (x, y) { ((a, _) | (a, _, _), _) => a }` gives "tuple
+        // pattern over non-tuple scrutinee" in each instance (GXDBG_INSTANCE_FUSION=1),
+        // though the answer is right. A top-level alternative is skipped by its member
+        // of the arm's Set (emit_alt_match, or-alt-instance-defuse-01); a nested one
+        // has no type of its own here, so the leaf needs the predicate's part at it or
+        // a structural fit test. probe: ~/ptmp/cr29/scratch/r6-E/n2/b.gx
+        // (or-alt-nested-defuse-01)
         StructPatternNode::Or { alts } => {
             let alts = alts
                 .iter()
@@ -798,7 +808,7 @@ fn emit_leaf_cond_inner(
                     Ok((c, binds))
                 })
                 .collect::<Result<Box<[AltMatch]>>>()?;
-            let any = or_of_alts(cx, &alts);
+            let any = or_of_alts(cx, alts.iter().map(Some));
             binds.push(SelectArmBind::Or(alts));
             any
         }
@@ -913,8 +923,9 @@ enum Tested {
     Guarded(Option<ClifValue>),
     /// An unguarded non-or arm: its condition and its bind specs.
     Unguarded(Option<ClifValue>, SmallVec<[SelectArmBind; 8]>),
-    /// An unguarded or-arm: each alternative's condition and bind specs.
-    Or(SmallVec<[AltMatch; 4]>),
+    /// An unguarded or-arm: each alternative's condition and bind specs,
+    /// `None` for one no value of the scrutinee passes.
+    Or(SmallVec<[Option<AltMatch>; 4]>),
 }
 
 /// Arm `pat`'s pattern condition against `scrut`, pushing its binds
@@ -930,7 +941,7 @@ fn emit_arm_condition<R: Rt>(
     scrut_typ: &Type,
     nomatch: Option<Block>,
     mask: Option<ClifValue>,
-    pre: Option<SmallVec<[AltMatch; 4]>>,
+    pre: Option<SmallVec<[Option<AltMatch>; 4]>>,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<Option<ClifValue>> {
     if let StructPatternNode::Or { alts } = &pat.structure_predicate {
@@ -1043,7 +1054,7 @@ pub(super) fn emit_select_arms<R: Rt>(
                         scrut,
                         scrut_typ,
                     )?;
-                    (or_of_alts(cx, &m), Tested::Or(m))
+                    (or_of_alts(cx, m.iter().map(Option::as_ref)), Tested::Or(m))
                 }
                 _ => {
                     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
@@ -1750,7 +1761,7 @@ fn install_arm_binds(
             SelectArmBind::Or(alts) => {
                 let stale = cx.b.ins().band_imm_u(sdisc, STALE);
                 let nomatch = NoMatch::Placeholders(stale);
-                let mut alt = |_: &mut BodyCx, k: usize| Ok(alts[k].clone());
+                let mut alt = |_: &mut BodyCx, k: usize| Ok(Some(alts[k].clone()));
                 stack::ensure_sufficient(|| {
                     emit_or_chain(cx, alts.len(), &mut alt, scrut, nomatch, mask)
                 })?;
@@ -2232,8 +2243,10 @@ type AltMatch = (Option<ClifValue>, SmallVec<[SelectArmBind; 8]>);
 
 /// Alternative `k`'s [`AltMatch`]: it tests against its own member of
 /// the arm's inferred Set (`alt_types`); a non-Set predicate applies
-/// whole.
-// CR claude for claude: [perf/low] An or-alternative no value of an instance's
+/// whole. `None` where no value of the scrutinee passes that member: its
+/// pattern need not fit the scrutinee's layout, as a whole arm's need not
+/// in [`emit_select_arms`].
+// XCR claude for claude: [perf/low] An or-alternative no value of an instance's
 // scrutinee passes is emitted against the scrutinee's layout, and the region
 // de-fuses: `'a: [(i64, string), (i64, f64, bool)] |x: 'a| -> i64 select x { (a, _) |
 // (a, _, _) => a }` gives "tuple pattern over non-tuple scrutinee (i64, f64, bool)"
@@ -2242,6 +2255,14 @@ type AltMatch = (Option<ClifValue>, SmallVec<[SelectArmBind; 8]>);
 // or-chain needs the same for an alternative: an AltMatch that binds nothing, and
 // a done block whose layout comes from the live alternatives.
 // (or-alt-instance-defuse-01)
+// 2026-11-01 claude: emit_alt_match judges each alternative by its member of the
+// arm's Set (Type::could_pass against the instance's scrutinee, as emit_select_arms
+// judges an arm) and yields None for one no value passes; the or-chain jumps over it,
+// or_of_alts leaves it out, and the done block's layout comes from the live
+// alternatives. Pins lang::select::or_alt_no_instance_value_passes and _guarded (the
+// guard prologue's path), #[native] in each instance: jit and jit_par fail without
+// the fix. A nested or-pattern's alternatives still de-fuse the same way: CR
+// or-alt-nested-defuse-01.
 fn emit_alt_match(
     cx: &mut BodyCx,
     alts: &[StructPatternNode],
@@ -2250,11 +2271,17 @@ fn emit_alt_match(
     pred_typ: &Type,
     scrut: SelectScrut,
     scrut_typ: &Type,
-) -> Result<AltMatch> {
+) -> Result<Option<AltMatch>> {
     let at = alt_types.map_or(pred_typ, |ts| &ts[k]);
+    if !resolve_node_typ(cx.ctx, at)
+        .could_pass(cx.ctx.type_env, scrut_typ)
+        .unwrap_or(true)
+    {
+        return Ok(None);
+    }
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
     let c = emit_structure_cond(cx, &alts[k], at, false, scrut, scrut_typ, &mut binds)?;
-    Ok((c, binds))
+    Ok(Some((c, binds)))
 }
 
 /// Every alternative's [`AltMatch`], all emitted in the current block:
@@ -2265,7 +2292,7 @@ fn emit_alt_matches(
     pred_typ: &Type,
     scrut: SelectScrut,
     scrut_typ: &Type,
-) -> Result<SmallVec<[AltMatch; 4]>> {
+) -> Result<SmallVec<[Option<AltMatch>; 4]>> {
     let alt_types = set_members(pred_typ, alts.len());
     (0..alts.len())
         .map(|k| {
@@ -2275,21 +2302,26 @@ fn emit_alt_matches(
 }
 
 /// Whether any alternative matched; `None` when one takes every value.
-fn or_of_alts(cx: &mut BodyCx, m: &[AltMatch]) -> Option<ClifValue> {
+/// A `None` alternative is one no value passes.
+fn or_of_alts<'m>(
+    cx: &mut BodyCx,
+    m: impl IntoIterator<Item = Option<&'m AltMatch>>,
+) -> Option<ClifValue> {
     let mut any: Option<ClifValue> = None;
-    for (c, _) in m {
+    for (c, _) in m.into_iter().flatten() {
         let c = (*c)?;
         any = Some(match any {
             None => c,
             Some(a) => cx.b.ins().bor(a, c),
         });
     }
-    any
+    Some(any.unwrap_or_else(|| cx.b.ins().iconst(types::I8, 0)))
 }
 
 /// Emit an or-pattern's alternative chain over the `n` alternatives
 /// `alt` yields (each emitted where the chain reaches it, or handed over
-/// from a block dominating this one): alternatives test left to right;
+/// from a block dominating this one; `None` for one no value passes,
+/// which the chain skips): alternatives test left to right;
 /// the first match installs its binds and jumps to one `done` block whose
 /// params bind the locals once under the shared BindIds, each at its
 /// alternatives' common kind, or as a Value where they differ (a shared
@@ -2301,7 +2333,7 @@ fn or_of_alts(cx: &mut BodyCx, m: &[AltMatch]) -> Option<ClifValue> {
 fn emit_or_chain(
     cx: &mut BodyCx,
     n: usize,
-    alt: &mut dyn FnMut(&mut BodyCx, usize) -> Result<AltMatch>,
+    alt: &mut dyn FnMut(&mut BodyCx, usize) -> Result<Option<AltMatch>>,
     scrut: SelectScrut,
     nomatch: NoMatch,
     mask: Option<ClifValue>,
@@ -2322,7 +2354,10 @@ fn emit_or_chain(
         cx.b.switch_to_block(tests[k]);
         cx.b.seal_block(tests[k]);
         let fail_to = if k + 1 < n { tests[k + 1] } else { last_fail };
-        let (scond, binds) = alt(cx, k)?;
+        let Some((scond, binds)) = alt(cx, k)? else {
+            cx.b.ins().jump(fail_to, &[]);
+            continue;
+        };
         let mk = cx.b.create_block();
         match scond {
             Some(c) => {
