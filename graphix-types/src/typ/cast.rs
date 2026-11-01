@@ -170,6 +170,9 @@ struct CastCx {
     holds: Holds,
     /// How the reading so far took the numbers it met.
     nums: NumReads,
+    /// The last text the walk parsed and the scalar it parses as, the
+    /// text held so its address names it.
+    text: Option<(ArcStr, Option<Value>)>,
     input: CastInput,
     check_keys: bool,
 }
@@ -359,9 +362,25 @@ impl CastCx {
             depth: 0,
             holds: Holds::Partly,
             nums: NumReads::default(),
+            text: None,
             input,
             check_keys,
         }
+    }
+
+    /// The scalar the text `v` parses as ([`parsed_scalar`]), parsed once
+    /// however many members of a union read it; `None` for a value that
+    /// is no text.
+    fn scalar(&mut self, v: &Value) -> Option<Value> {
+        let Value::String(s) = v else { return None };
+        if let Some((t, p)) = &self.text
+            && ArcStr::ptr_eq(t, s)
+        {
+            return p.clone();
+        }
+        let p = parsed_scalar(s);
+        self.text = Some((s.clone(), p.clone()));
+        p
     }
 
     /// `t`'s reading of `v` and how it took the numbers it met, the count
@@ -968,7 +987,10 @@ impl Type {
                 // the value's class, then the class of the scalar text parses
                 // as, then the rest; a real value, or text that parses as one,
                 // tries the reals of each first
-                let parsed = parsed_scalar(v);
+                let parsed = match s.intersects(text_scalars()) {
+                    true => cx.scalar(v),
+                    false => None,
+                };
                 let like = parsed.as_ref().unwrap_or(v);
                 let own = own_class(v);
                 let as_parsed =
@@ -977,14 +999,14 @@ impl Type {
                     true => Typ::real(),
                     false => BitFlags::empty(),
                 };
-                let mut known = None;
-                let kind = || *known.get_or_insert_with(|| number_kind(v));
+                let kind = || NumKind::of(Typ::get(like));
+                let to = |t| convert_text(v.clone(), t, |_| parsed.clone());
                 let read =
                     [own, as_parsed, !own & !as_parsed].into_iter().find_map(|class| {
                         let tier = *s & class;
                         let members = (tier & reals).iter().chain((tier & !reals).iter());
                         let mut exact = members.clone().filter_map(|t| {
-                            convert(v.clone(), t).filter(|c| holds_exactly(v, c))
+                            to(t).filter(|c| holds_exactly(v, parsed.as_ref(), c))
                         });
                         exact
                             .next()
@@ -993,8 +1015,9 @@ impl Type {
                                     .then(|| {
                                         members.clone().filter(|t| t.is_real()).find_map(
                                             |t| {
-                                                convert(v.clone(), t)
-                                                    .filter(|c| holds_rounded(v, c))
+                                                to(t).filter(|c| {
+                                                    holds_rounded(v, parsed.as_ref(), c)
+                                                })
                                             },
                                         )
                                     })
@@ -1015,11 +1038,7 @@ impl Type {
                             // (class-first-overflow-01)
                             .or_else(|| {
                                 (cx.holds == Holds::Partly)
-                                    .then(|| {
-                                        members
-                                            .clone()
-                                            .find_map(|t| convert(v.clone(), t))
-                                    })
+                                    .then(|| members.clone().find_map(to))
                                     .flatten()
                             })
                     });
@@ -1500,17 +1519,29 @@ impl Type {
         ts: &[Type],
         array: bool,
     ) -> Cast {
-        let parsed = parsed_scalar(v);
         let own = match rep::kind(v) {
             None => own_class(v),
             Some(_) => BitFlags::empty(),
         };
-        let as_parsed = parsed.as_ref().map_or(BitFlags::empty(), own_class) & !own;
         let mut members: SmallVec<[Cow<Type>; 8]> = SmallVec::new();
-        let mut named: LPooled<Vec<RefKey>> = LPooled::take();
-        for t in ts.iter() {
-            let classes = [own, as_parsed];
-            members_by_class(env, Cow::Borrowed(t), classes, &mut members, &mut named, 0)
+        let by_class = |classes, out: &mut SmallVec<_>| {
+            let mut named: LPooled<Vec<RefKey>> = LPooled::take();
+            for t in ts.iter() {
+                members_by_class(env, Cow::Borrowed(t), classes, out, &mut named, 0)
+            }
+        };
+        by_class([own, BitFlags::empty()], &mut members);
+        // text parses only where a member may read the scalar it parses as
+        let parsed = match v {
+            Value::String(_) if members.iter().any(|t| takes_scalar(env, t)) => {
+                cx.scalar(v)
+            }
+            _ => None,
+        };
+        let as_parsed = parsed.as_ref().map_or(BitFlags::empty(), own_class) & !own;
+        if !as_parsed.is_empty() {
+            members.clear();
+            by_class([own, as_parsed], &mut members);
         }
         let ts = || members.iter().map(|t| &**t);
         if array {
@@ -3045,6 +3076,22 @@ fn members_by_class<'a>(
     })
 }
 
+/// Whether the union member `t`, past [`members_by_class`], may read the
+/// scalar a text parses as ([`in_own_class`] of it) where the text's own
+/// class does not hold it.
+fn takes_scalar(env: &Env, t: &Type) -> bool {
+    match rep_head(env, t).as_deref() {
+        Some(Type::Primitive(p)) => p.intersects(text_scalars()),
+        Some(Type::Set(_)) => true,
+        _ => false,
+    }
+}
+
+/// The classes of the scalars a text parses as ([`parsed_scalar`]).
+fn text_scalars() -> BitFlags<Typ> {
+    Typ::number() | Typ::Bool | Typ::DateTime | Typ::Duration
+}
+
 /// How many unions deep [`members_by_class`] looks into a union's members;
 /// a deeper one is tried whole.
 const MAX_UNION_NESTING: usize = 64;
@@ -3120,6 +3167,16 @@ fn fields_in_own_class(
 /// nearest it, a float to its decimal (a whole one with a point), and an
 /// array of numbers to bytes. Nothing converts to null or to an error.
 fn convert(v: Value, t: Typ) -> Option<Value> {
+    convert_text(v, t, parsed_scalar)
+}
+
+/// [`convert`], `scalar` reading a text as the scalar it parses as
+/// ([`parsed_scalar`]) where the conversion needs it.
+fn convert_text(
+    v: Value,
+    t: Typ,
+    scalar: impl FnOnce(&str) -> Option<Value>,
+) -> Option<Value> {
     match (&v, t) {
         (_, Typ::Null | Typ::Error) => None,
         (v, t) if Typ::get(v) == t => Some(v.clone()),
@@ -3134,7 +3191,7 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
             Some(Value::Bytes(bytes::Bytes::copy_from_slice(&bytes).into()))
         }
         (Value::Array(_) | Value::Map(_), Typ::Map | Typ::Array) => v.cast(t),
-        (Value::String(s), t) => parse(s, t),
+        (Value::String(s), t) => parse(s, t, scalar),
         (_, Typ::String) => printed(&v),
         (_, Typ::DateTime | Typ::Duration) if Typ::get(&v).is_number() => v.cast(t),
         (_, t) if t.is_integer() && counts(&v) => integer(&v, t),
@@ -3174,8 +3231,13 @@ fn float_decimal(v: &Value) -> Option<Value> {
     }))
 }
 
-/// The string `s` read as the primitive `t`.
-fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
+/// The string `s` read as the primitive `t`, `scalar` reading it as the
+/// scalar it parses as.
+fn parse(
+    s: &ArcStr,
+    t: Typ,
+    scalar: impl FnOnce(&str) -> Option<Value>,
+) -> Option<Value> {
     if t == Typ::DateTime
         && let Ok(d) = chrono::DateTime::parse_from_rfc3339(s)
     {
@@ -3198,10 +3260,13 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     if plain.is_some() {
         return plain;
     }
+    if text_scalars().contains(t) {
+        return scalar(s).and_then(|p| convert(p, t));
+    }
     if parses_to_collection(s) {
         return None;
     }
-    match s.parse::<Value>() {
+    match literal(s) {
         Ok(Value::String(_)) | Err(_) => None,
         Ok(parsed) => convert(parsed, t),
     }
@@ -3489,13 +3554,10 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 /// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
 /// class it is `v` again. A string is what it parses as, so `"3.50"` is
 /// held exactly by 3.5 and not by 3, and a bool is held by the number 1
-/// or 0.
-fn holds_exactly(v: &Value, c: &Value) -> bool {
+/// or 0. `parsed` is the scalar `v` parses as when it is text.
+fn holds_exactly(v: &Value, parsed: Option<&Value>, c: &Value) -> bool {
     match (v, c) {
-        (Value::String(s), c) => match s.trim().parse::<Value>() {
-            Ok(Value::String(_)) | Err(_) => true,
-            Ok(p) => holds_exactly(&p, c),
-        },
+        (Value::String(_), c) => parsed.is_none_or(|p| holds_exactly(p, None, c)),
         // CR claude for eric: [design/low] D2 ruling 7 (a bool is held exactly by the
         // number 1 or 0) with ruling 5 (the canonical tie-break) reads a bool into a
         // number before a string: cast<[i64, string]>(true) is i64 1 and cast<[f32,
@@ -3505,7 +3567,7 @@ fn holds_exactly(v: &Value, c: &Value) -> bool {
         // tries its text before a number (the string first). Probe:
         // ~/ptmp/cr29/scratch/r6-B/realord.gx (bool-union-number-01)
         (Value::Bool(b), c) if Typ::get(c).is_number() => {
-            holds_exactly(&Value::U8(*b as u8), c)
+            holds_exactly(&Value::U8(*b as u8), None, c)
         }
         (v, c) => convert(c.clone(), Typ::get(v)).as_ref() == Some(v),
     }
@@ -3513,7 +3575,8 @@ fn holds_exactly(v: &Value, c: &Value) -> bool {
 
 /// Whether the real `c`, `v` converted, holds `v` rounded to its
 /// precision: any real but an infinity a finite value overflowed to.
-fn holds_rounded(v: &Value, c: &Value) -> bool {
+/// `parsed` is the scalar `v` parses as when it is text.
+fn holds_rounded(v: &Value, parsed: Option<&Value>, c: &Value) -> bool {
     let infinite = |v: &Value| match v {
         Value::F32(f) => f.is_infinite(),
         Value::F64(f) => f.is_infinite(),
@@ -3522,25 +3585,27 @@ fn holds_rounded(v: &Value, c: &Value) -> bool {
     Typ::get(c).is_real()
         && (!infinite(c)
             || match v {
-                Value::String(s) => s.trim().parse::<Value>().is_ok_and(|p| infinite(&p)),
+                Value::String(_) => parsed.is_some_and(infinite),
                 v => infinite(v),
             })
 }
 
-/// Which kind of number `v` is, or the text `v` parses as.
-fn number_kind(v: &Value) -> Option<NumKind> {
-    NumKind::of(Typ::get(parsed_scalar(v).as_ref().unwrap_or(v)))
+/// The scalar the text `s` parses as: a number, a bool, a datetime or a
+/// duration; `None` for anything else.
+fn parsed_scalar(s: &str) -> Option<Value> {
+    literal(s).ok().filter(|p| text_scalars().contains(Typ::get(p)))
 }
 
-/// The scalar the text `v` parses as: a number, a bool, a datetime or a
-/// duration; `None` for anything else, and for a value that is no text.
-fn parsed_scalar(v: &Value) -> Option<Value> {
-    let Value::String(s) = v else { return None };
-    match s.trim().parse::<Value>().ok()? {
-        Value::String(_) | Value::Array(_) | Value::Map(_) => None,
-        p if rep::kind(&p).is_some() => None,
-        p => Some(p),
-    }
+#[cfg(test)]
+thread_local! {
+    static LITERALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `s` read as a value literal.
+fn literal(s: &str) -> Result<Value> {
+    #[cfg(test)]
+    LITERALS.with(|n| n.set(n.get() + 1));
+    s.parse()
 }
 
 /// Whether `v` reads as a number: a number, a bool (1 or 0), a datetime
@@ -3572,7 +3637,7 @@ fn of_int(n: i128, t: Typ) -> Option<Value> {
 /// string holds.
 fn parses_to_collection(s: &str) -> bool {
     matches!(s.trim_start().as_bytes().first(), Some(b'[' | b'{'))
-        && matches!(s.parse::<Value>(), Ok(Value::Array(_) | Value::Map(_)))
+        && matches!(literal(s), Ok(Value::Array(_) | Value::Map(_)))
 }
 
 /// A float's integer part, `None` for NaN or an infinity.
@@ -3810,6 +3875,32 @@ pub(crate) mod tests {
         let v = Value::String(arcstr::literal!("C"));
         let flat = parse_type("[`A, `B, `C]").unwrap();
         assert_eq!(t.cast_value(&env, v.clone()), flat.cast_value(&env, v));
+    }
+
+    // A text cast into a union parses the text as a literal once, and only
+    // where a member may read the scalar it parses as.
+    #[test]
+    fn a_union_parses_its_text_once_and_only_for_a_scalar_member() {
+        let parses = |t: &str, v: Value| {
+            let (env, t) = typed(&[], t);
+            super::LITERALS.with(|n| n.set(0));
+            let r = t.cast_value(&env, v);
+            (r, super::LITERALS.with(|n| n.get()))
+        };
+        let s = |s: &str| Value::String(s.into());
+        let strs = |ss: &[&str]| Value::Array(ss.iter().map(|x| s(x)).collect());
+        let a = crate::rep::make_variant(arcstr::literal!("A"), []);
+        assert_eq!(parses("[`A, null]", s("A")), (a.clone(), 0));
+        assert_eq!(parses("[`A, `B(i64)]", s("A")), (a.clone(), 0));
+        assert_eq!(parses("[string, `Z]", s("w1")), (s("w1"), 0));
+        assert_eq!(parses("Array<[`A, null]>", strs(&["A", "A", "A"])).1, 0);
+        assert_eq!(parses("[i64, `A]", s("3")), (Value::I64(3), 1));
+        assert_eq!(parses("[i64, `A]", s("A")), (a, 1));
+        assert_eq!(parses("[f32, bool, `A]", s("true")), (Value::Bool(true), 1));
+        let d = "3.0".parse::<rust_decimal::Decimal>().unwrap();
+        let d = Value::Decimal(triomphe::Arc::new(d));
+        assert_eq!(parses("[duration, decimal]", s("3.0")), (d, 1));
+        assert_eq!(parses("Array<[i64, `A]>", strs(&["3", "A", "4"])).1, 3);
     }
 
     // A failing union read costs what the data's size does: each union

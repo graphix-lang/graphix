@@ -108,7 +108,10 @@ tried at every degree of exactness before any other member, so
 `cast<[f32, string]>(0.1)` is the f32 and `cast<[i64, string]>(3.5)` the
 integer 3; text then tries the members of the class of the scalar it
 parses as (`parsed_scalar`: `cast<[duration, decimal]>("3.0")` is the
-decimal, as the value 3.0 is), then the rest. Unmarked array data reads
+decimal, as the value 3.0 is), then the rest. A text is parsed as a
+literal once however many members try it (`CastCx::scalar`), and only
+where a member may read a scalar outside the text's class (a number,
+bool, datetime or duration member: `takes_scalar`). Unmarked array data reads
 as a tuple of its length, then a struct, before the rest of its class,
 so what a writer emits of a tuple or a struct reads back as it
 (`Type::cast_member`). An array the source type says is one
