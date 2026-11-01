@@ -2908,6 +2908,16 @@ run!(default_fits_its_variant_member, r#"
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::None);
 
+// A default a fn type hides decides the type its function's instance runs
+// with: here the target `str::parse` reads.
+run!(default_hidden_by_a_fn_type_types_the_instance, r#"
+{
+    let g = |#x = 4096, y: string| x == str::parse(y)$;
+    let apply = |h: fn(y: string) -> bool| h("4096");
+    apply(g)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::None);
+
 // A hidden label's type that only the result or the throws hold is fixed
 // by the fn type's result or throws.
 run!(default_hidden_by_a_result_type, r#"

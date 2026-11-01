@@ -2061,6 +2061,37 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
+    /// The signature this site's instance of `f` runs with: the site's
+    /// `view` where it lists `f`'s parameters, else a call's copy of `f`'s
+    /// fitted to it, each label the view hides holding the default this
+    /// site compiled for it.
+    fn instance_signature(
+        &self,
+        ctx: &CompileCtx<R>,
+        view: &FnType,
+        f: &LambdaDef<R>,
+    ) -> Result<FnType> {
+        if same_parameters(view, &f.typ) {
+            return Ok(view.clone());
+        }
+        let fitted = super::lambda::fit_callee(ctx, view, &f.typ)?;
+        for farg in fitted.args.iter() {
+            let Some(name) = farg.label() else { continue };
+            if view.args.iter().any(|a| a.label() == Some(name)) {
+                continue;
+            }
+            if let Some(node) = self
+                .args
+                .get(&ArgKey::Named(name.clone()))
+                .filter(|a| a.stage.is_default())
+                .and_then(|a| a.node.as_ref())
+            {
+                wrap!(node, farg.typ.check_contains(&ctx.env, node.typ()))?;
+            }
+        }
+        Ok(fitted)
+    }
+
     fn init_prepared_bind(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -2084,13 +2115,15 @@ impl<R: Rt> CallSite<R> {
         self.prepare_bind(ctx, scope, flags, f, &mut refs)?;
         let mut defaults = SmallVec::new();
         refs.with_external_refs(|id| defaults.push(id));
-        // a site its check never typed sees the callee as a call would
-        let view = match &self.ftype {
-            Some(ft) => ft.resolve_tvars(),
-            None => f.typ.instantiate(&ctx.rec_defs),
-        };
         let context =
             |spec: &Expr| format_compact!("a run-time bind at {spec} did not type");
+        // a site its check never typed sees the callee as a call would
+        let view = match &self.ftype {
+            Some(ft) => self
+                .instance_signature(ctx, &ft.resolve_tvars(), f)
+                .with_context(|| context(&self.spec))?,
+            None => f.typ.instantiate(&ctx.rec_defs),
+        };
         let mut apply = self
             .init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))
             .with_context(|| context(&self.spec))?;
@@ -2202,11 +2235,8 @@ impl<R: Rt> CallSite<R> {
             bail!("statically resolving an untyped call site: {}", self.spec)
         }
         let site_ftype = self.ftype.as_ref().unwrap().resolve_tvars();
-        let instance_ftype = if same_parameters(&site_ftype, &f.typ) {
-            site_ftype.clone()
-        } else {
-            super::lambda::fit_callee(ctx, &site_ftype, &f.typ)?.resolve_tvars()
-        };
+        let instance_ftype =
+            self.instance_signature(ctx, &site_ftype, f)?.resolve_tvars();
         let apply = self.init_prepared_bind(
             ctx,
             scope,
@@ -2592,7 +2622,7 @@ impl<R: Rt> CallSite<R> {
                 },
             );
         }
-        // CR claude for claude: [bug/medium] A function passed where a fn
+        // XCR claude for claude: [bug/medium] A function passed where a fn
         // type hides one of its defaulted labels runs with that label's type
         // open when the label's type is a cell only the default decides:
         // `let g = |#x = 4096, y: string| x == str::parse(y)$; let apply = |h:
@@ -2607,6 +2637,15 @@ impl<R: Rt> CallSite<R> {
         // `g("7")` alone runs. Found by the oct30b soak (ryouko
         // divergence_000003, over `sys::net::subscribe`). probe:
         // ~/ptmp/cr29/scratch/r6-W/hidden.gx (hidden-default-instance-01)
+        // 2026-10-31 claude: A static or run-time bind whose site's fn type hides
+        // a defaulted label now builds its instance at a signature whose hidden
+        // labels hold the defaults the site compiled
+        // (CallSite::instance_signature, after fit_callee), as the site's own
+        // view does when it names the label. Pin
+        // lang::functions::default_hidden_by_a_fn_type_types_the_instance (all 4
+        // modes fail without); corpus
+        // graphix-fuzz/findings/oct30b-oct2026/03_default_hidden_by_a_fn_type_types_the_instance.gx
+        // (main DIVERGENCE, lane AGREE).
         let typecheck0 = {
             let (callee, arg_refs) = (&mut self.callee, &mut self.arg_refs);
             callee

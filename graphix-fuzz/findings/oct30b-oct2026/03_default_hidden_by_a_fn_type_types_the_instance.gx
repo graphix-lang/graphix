@@ -1,0 +1,6 @@
+// A function whose labeled default a fn type hides, called through that
+// type: the instance ran with the label's type open where only the
+// default decides it, so the type-directed read in its body refused what
+// the check passed. Found by the oct30b soak (ryouko, over
+// sys::net::subscribe).
+{ let g = |#x = 4096, y: string| x == str::parse(y)$; let apply = |h: fn(y: string) -> bool| h("4096"); apply(g) }

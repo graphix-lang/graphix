@@ -304,7 +304,12 @@ An image carries each cell's level and each definition's depth.
   compiles it again for the bind and finds the cells decided. When a
   definition is not known at the check (a fn-typed parameter, a
   runtime definition), the cells the omitted defaults reach are exempt
-  from the site's settle and the default binds them at the bind.
+  from the site's settle and the default binds them at the bind. Where
+  the site's fn type hides the label, the bind's instance runs at a copy
+  of the callee's signature fitted to the site's, and the default the
+  bind compiled is checked over that copy's label, so the instance's
+  body types see what it decides (`CallSite::instance_signature`; pin
+  `lang::functions::default_hidden_by_a_fn_type_types_the_instance`).
 - The terminal settle (`FnType::settle_terminal`, the check's drain)
   walks the LIVE ftype in dependency order, the cells its bindings hold
   as positions included, and settles whatever remains. A cell still
