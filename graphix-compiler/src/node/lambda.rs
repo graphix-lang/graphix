@@ -2309,6 +2309,18 @@ impl<R: Rt> DefGate<R> {
     // foreign write is this gate's mark_formal_quantifier on the parent's cell (not
     // contains), which the module's foreign-write rule counts as a decision. Probe:
     // ~/tmp/cr29/scratch/review2/RV7/mod1/ (gate-foreign-mark-01)
+    // 2026-11-01 claude: Round 6 lane B wave 2 leaves this open. The mark is persistent
+    // and read later (an instance's elaboration copies a formal's quantifier by it,
+    // generic_inner_quantifiers; is_rigid_formal), so skipping it for a cell an earlier
+    // task created would elaborate the module's callback differently from the same code
+    // outside a module, and counting it as no decision would let a sibling module see
+    // another's mark depending on timing. A deterministic fix: mark a written fn<..>
+    // type's quantifiers when the written type becomes cells, so every copy carries the
+    // fact (TVar::freshen copies facts), and make mark_formal_quantifier skip the write
+    // when the fact is set, as mark_cycle_refused does; that touches typ/tvar.rs, lane
+    // V's file this round. On 04a9c29b0 a top-level program with the same calls (no
+    // module) runs ([4.0, 4.0] [3, 3]), and calls through fs[0] copy the quantifier
+    // without any mark (probe ~/ptmp/cr29/scratch/r6-B/w2/g1.gx, g2.gx).
     fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>) -> Self {
         let at = AtLevel::enter(def.level);
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
