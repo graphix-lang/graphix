@@ -1093,7 +1093,7 @@ impl<'a> Shapes<'a> {
             // lib_tests::json::json_abstract_key_read_as_its_representation_writes_an_object; round 8's
             // pins (json_abstract_key_that_may_write_a_string_reads_back, toml_ alike,
             // json_abstract_key_writer_follows_recursive_representations) still pass.
-            // CR claude for eric: [design/low] textdata trusts an abstract type whose Cast
+            // CR claude for claude: [design/low] textdata trusts an abstract type whose Cast
             // implementation writes to_value (Shape::Unknown shares a form with nothing),
             // whatever its from_value does, while one that writes only from_value is judged
             // to read every value it is tried on (Shape::Foreign(_, true)). With a
@@ -1155,6 +1155,14 @@ impl<'a> Shapes<'a> {
             // ito_dt_json.gx, ito_dt_toml.gx, ito_dur_json.gx, ito_dur_toml.gx; results
             // ~/tmp/cr29/scratch/review7/B/r6/ito.txt. The ruling's write-side options decide
             // them.
+            // 2026-10-31 claude: Eric ruled (round 5 D6, 10-31): neither half is judged. JSON
+            // and TOML write an abstract value wrapped in an object keyed by its type's
+            // unqualified name (the inside its to_value or representation); a core wrapper type
+            // (working name Transparent<T>) writes T's inside bare, per use; every union a
+            // json/toml read or write holds is tagged members (variants, wrapped abstracts, no
+            // two sharing a tag) or one member and null, else refused, writers included;
+            // [Transparent<T>, null] is trusted and documented. Lane B's next round replaces
+            // the member-by-member analysis with this.
             Type::Abstract { id, params } => {
                 let writes = self.env.written_as_representation(*id);
                 let reads_rep = self.env.read_as_representation(*id);

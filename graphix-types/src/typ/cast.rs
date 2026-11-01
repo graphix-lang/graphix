@@ -234,7 +234,7 @@ impl NumReads {
     }
 }
 
-// CR claude for eric: [design/low] What the one exactness rule (holds-exactly-class-01)
+// CR claude for claude: [design/low] What the one exactness rule (holds-exactly-class-01)
 // leaves open, each a semantics question; JsonData/TomlData refuse the unions these make
 // read back as another member (textdata.rs follows the pick). (1) An exact integer comes
 // before a rounding real: cast<[i64, f32]>(1234567900.0) is i64, so an f32 1234567936's
@@ -269,6 +269,12 @@ impl NumReads {
 // bool held exactly by a number of 1 or 0 (cast<[f32, u8]>(true) is u8:1 again, and
 // textdata's leaves read Bool exactly), or keep it. textdata follows the cast as it is
 // (holds-exactly-class-01's round 3 note). Probe: ~/tmp/cr29/scratch/laneB/r4/hole3.gx
+// 2026-10-31 claude: Eric ruled (round 5 D2, 10-31): 1 keep exactness before kind; 2 a
+// decimal made from a whole float keeps scale 1; 3 the members that keep the value's class
+// come first, across the rounds; 4 numeric text is ordered by the class of the value it
+// parses as; 5 keep the canonical-order tie-break; 6 confirmed; 7 a bool is held exactly
+// by a number of 1 or 0 (cast<[f32, u8]>(true) is u8 1). JsonData no longer follows the
+// cast's pick: D6 refuses untagged unions in JSON/TOML.
 /// A union's reading of a value among those its members offer, in its
 /// order: the first, except that in a round that drops no part one reading
 /// a number across the line between integers and reals gives way to a
