@@ -627,11 +627,23 @@ fn needs_no_value(kind: &SigKind) -> bool {
 // interface_only_mods_in_a_row_keep_their_order fail without it (y not defined, every
 // mode); interface_only_mod_between_body_items pins the unchanged in-order case. Docs:
 // design/module_system.md, book modules/interfaces.md, the skill.
+// 2026-11-01 claude: Review round 2 lows: a body with no top-level declaration of an
+// earlier interface item (a val it misses, or implements by a use) put a later
+// interface-only item ahead of the body, so the build failed with y not defined inside the
+// submodule; such an item now goes after the body, and the interface's check names the
+// missing item (main's message). Pins
+// lang::modules::interface_only_mod_after_a_missing_item_is_refused_for_the_item (y not
+// defined without the change) and
+// interface_only_mod_read_before_an_earlier_item_is_refused (the ruled refusal: a body
+// reading the submodule before its declaration of an earlier item). No hint in the
+// not-defined error: the block's compile would have to know a later spliced sibling; the
+// rule is in the book, design/module_system.md and the skill, which now shows the refusal.
 /// `exprs` with the modules, types, traits and uses only `sig` declares
 /// spliced in, each after the body's last declaration of every interface
 /// item listed before it (ahead of the body when it declares none of
-/// them), in interface order among themselves; one that needs no value
-/// goes ahead of everything.
+/// them, after it when one of them has no declaration there), in
+/// interface order among themselves; one that needs no value goes ahead
+/// of everything.
 pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     let synth = |si: &SigItem| {
         let kind = match &si.kind {
@@ -670,9 +682,8 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     let mut placed: LPooled<Vec<(usize, &SigItem)>> = LPooled::take();
     let mut at = 0;
     for si in sig.items.iter() {
-        if let Some(key) = SpliceKey::of_sig(&si.kind)
-            && declared.insert(key)
-        {
+        let spliced = SpliceKey::of_sig(&si.kind).is_some_and(|key| declared.insert(key));
+        if spliced {
             if needs_no_value(&si.kind) {
                 front.push(si);
             } else {
@@ -680,8 +691,12 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
             }
         }
         for a in Anchor::of_sig(&si.kind) {
-            if let Some(i) = last_decl.get(&a) {
-                at = at.max(i + 1);
+            match last_decl.get(&a) {
+                Some(i) => at = at.max(i + 1),
+                // an item the body lacks: the check of the interface names
+                // it before a later item's body can trip on it
+                None if !spliced => at = exprs.len(),
+                None => (),
             }
         }
     }

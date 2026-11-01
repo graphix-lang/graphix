@@ -1413,6 +1413,58 @@ run!(
     "#; FuseExpect::Jit
 );
 
+// A body that reads an interface-only `mod` before its declaration of an
+// item the interface lists ahead of the `mod` reads it before the splice.
+run!(
+    interface_only_mod_read_before_an_earlier_item_is_refused,
+    refused("l::z not defined"),
+    "/test.gx" => r#"
+        mod a;
+        let result = a::c
+    "#,
+    "/test/a.gxi" => r#"
+        val a: i64;
+        val b: i64;
+        mod l;
+        val c: i64
+    "#,
+    "/test/a.gx" => r#"
+        let b = 1;
+        let c = l::z + 1;
+        let a = 2
+    "#,
+    "/test/a/l.gx" => r#"
+        let z = 41
+    "#
+);
+
+// An interface item the body does not declare puts the interface-only
+// `mod` after it: the interface's check names the missing item before
+// the submodule reads it.
+run!(
+    interface_only_mod_after_a_missing_item_is_refused_for_the_item,
+    refused("val y: i64 is missing an implementation"),
+    "/test.gx" => r#"
+        mod a;
+        let result = a::l::z
+    "#,
+    "/test/a.gxi" => r#"
+        val y: i64;
+        mod l
+    "#,
+    "/test/a.gx" => r#"
+        mod t;
+        use t::y
+    "#,
+    "/test/a/t.gx" => r#"
+        let y = 7
+    "#,
+    "/test/a/l.gx" => r#"
+        use super::y;
+        let z = y
+    "#
+);
+
 // A loaded body's primes are its own: two modules loading in one cycle
 // requeue nothing, and nothing later in the cycle fires from a prime.
 async fn loads_leave_no_primes(mode: Mode) -> Result<()> {

@@ -680,7 +680,8 @@ in whatever order the body declares them (at the top when the body
 declares none of them; a gxi-only type, or a trait with no default
 body, always goes to the top). So a gxi-only submodule sees every
 binding the gxi lists before it, and the body can use the submodule
-once those are all declared.
+only once those are all declared: `let c = l::z` above the body's
+`let a` of a `val a` the gxi lists before `mod l` is `l::z not defined`.
 
 Traits: `trait Show { val show: fn(self) -> string; val twice: fn(self)
 -> string = |s| "[show(s)] [show(s)]" }`, `impl Show for Counter { let
