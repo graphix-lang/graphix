@@ -974,6 +974,10 @@ fn typecheck_arg<R: Rt>(
         // graphix-compiler
         // node::callsite::test::rank2_parts_walks_an_application_over_a_rebuilt_function_or_wide_parameter_once
         // (2621438 and 27787262 steps without; bound 1088, 86 with it). Probes ~/ptmp/cr29/scratch/r7-B/i2/.
+        // 2026-11-02 claude: Follow-up: a back-reference is keyed by the node's identity and a variant's tag or an abstract type's
+        // id, which Type::shared_identity leaves out (a variant's identity is its payload allocation), so two variants over one
+        // payload are two keys. Pin graphix-types typ::contains::tests::a_param_key_tells_apart_variants_over_one_payload (fails
+        // with the tag left out).
         Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
@@ -4849,7 +4853,7 @@ mod test {
 
     // And where that parameter is a function type with no quantifiers of
     // its own, holding the quantified one in its result or only in its
-    // parameter (no holder), or one whose key passes `ParamKey::WORDS`.
+    // parameter (no holder), or a struct of 26 fields.
     #[test]
     fn rank2_parts_walks_an_application_over_a_rebuilt_function_or_wide_parameter_once() {
         let wide: String =

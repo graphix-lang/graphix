@@ -3583,7 +3583,7 @@ mod tests {
     }
 
     // And where that parameter is a function type with no quantifiers of
-    // its own, or one whose key passes `ParamKey::WORDS`: both by content.
+    // its own, or a struct of 26 fields: both by content, names by text.
     #[test]
     fn an_expanded_chain_over_a_rebuilt_function_or_wide_parameter_contains_its_application_once_per_level()
      {
@@ -3593,6 +3593,18 @@ mod tests {
             let steps = chain_steps(&["'a"], "('a, i64)", pass, "");
             assert!(steps <= 64 * CHAIN_DEPTH, "{pass}: {steps} steps");
         }
+    }
+
+    // A key names a node it met already by where its words start, by the
+    // node's identity and a variant's tag: two variants over one payload
+    // allocation are two types.
+    #[test]
+    fn a_param_key_tells_apart_variants_over_one_payload() {
+        let ts: Arc<[Type]> = Arc::from_iter([Type::Primitive(Typ::I64.into())]);
+        let v = |tag| Type::Variant(tag, ts.clone(), Default::default());
+        let ab = Type::Tuple(Arc::from_iter([v(literal!("A")), v(literal!("B"))]));
+        let aa = Type::Tuple(Arc::from_iter([v(literal!("A")), v(literal!("A"))]));
+        assert_ne!(ab.param_key(), aa.param_key());
     }
 
     const CHAIN_DEPTH: usize = 12;

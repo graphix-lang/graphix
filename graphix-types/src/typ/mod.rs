@@ -95,14 +95,24 @@ impl Type {
 
     /// The words of [`Type::param_key`]: a tag, then the part's content; a
     /// shared node met again in this key by the position its first words
-    /// start at (`at`).
-    fn key_words(&self, out: &mut SmallVec<[usize; 8]>, at: &mut AHashMap<usize, usize>) {
+    /// start at (`at`, by the node's identity and a variant's tag or an
+    /// abstract type's id, which its identity leaves out).
+    fn key_words(
+        &self,
+        out: &mut SmallVec<[usize; 8]>,
+        at: &mut AHashMap<(usize, usize), usize>,
+    ) {
         let each = |ts: &[Type], out: &mut SmallVec<[usize; 8]>, at: &mut _| {
             out.push(ts.len());
             ts.iter().for_each(|t| t.key_words(out, at))
         };
+        let named = match self {
+            Type::Variant(tag, _, _) => tag.as_ptr().addr(),
+            Type::Abstract { id, .. } => id.0 as usize,
+            _ => 0,
+        };
         if let Some(n) = self.shared_identity() {
-            match at.entry(n) {
+            match at.entry((n, named)) {
                 Entry::Occupied(e) => return out.extend([7, *e.get()]),
                 Entry::Vacant(e) => {
                     e.insert(out.len());
