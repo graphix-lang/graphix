@@ -795,6 +795,28 @@ fn conjuncts_admit(
     Ok(true)
 }
 
+// CR claude for claude: [bug/medium] A written type naming an enclosing
+// definition's variable takes a rank-2 quantifier through a constructor's lower
+// bound on the let path: `type W<'t> = Abstract<'t>; let outer = |z: W<'c>| { let h:
+// fn<'a: Any>(x: 'a) -> 'a = |x| { let q: W<'c> = W(x); x }; (h(1), h("s"), z) };
+// println(outer(W(1)))` passes --check and the build refuses the instance ("fn<'a:
+// Any>(x: 'a) -> 'a does not contain fn(x: [i64, Any]) -> [i64, Any]"); graphix-fuzz
+// check fz_enc3b.gx: DIVERGENCE (the check accepted what the build refused). The same
+// with 'c declared (enc3d), through Transparent (enc3t), a labeled default (enc_def),
+// a struct field (enc_field) and beside a W<'c> formal (enc3); a call formal refuses
+// it (enc3f), as a rigid 'c refuses a concrete or signature payload (rig1-rig7). Main
+// 8beb0735a the same. Cause (GRAPHIX_DBG_BIND over enc3d): the let path checks the
+// lambda's body before the annotation contains it, so W<'c> ⊇ W(x) merges W's
+// parameter into 'c while x's cell is still an ordinary open cell, and 'c, rigid,
+// keeps that cell as a lower bound; the annotation then merges x's cell with the
+// quantifier 'a, and nothing judges again the lower bound 'c now holds. The escape
+// walk (callsite::escapes_through) does not see 'c either: no binding from outside
+// the value holds it, only a written type inside it. Fix: a merge of an open cell with
+// a rigid quantifier judges each cell holding it as a lower bound as admits_lower
+// judges a merge (a rigid cell holds only itself), or the let path pre-unifies the
+// annotation with the lambda before checking its body, as a call does. probes:
+// ~/ptmp/cr29/scratch/review-r7/B5-r3-1/i1/{enc3b,enc3d,enc3t,enc_def,enc_field,enc3,
+// enc3f,rig1-rig7}.gx, fz/fz_enc3b.gx (rank2-rigid-lower-01)
 /// Whether the open cell `to` (as `tt`) admits the lower bounds of the
 /// open cell `from` its unification would merge in: its conjuncts
 /// contain each, and a rigid cell, which holds only itself, holds each.
