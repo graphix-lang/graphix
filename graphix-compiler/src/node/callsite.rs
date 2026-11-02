@@ -889,7 +889,7 @@ fn typecheck_arg<R: Rt>(
                 ArgFit::Misfit
             })
         }
-        // CR claude for claude: [perf/low] A formal holding a quantified function
+        // XCR claude for claude: [perf/low] A formal holding a quantified function
         // type through a chain of parametric typedefs is still checked in time
         // exponential in the chain's depth, though rank2_parts walks it once:
         // `type P0<'a> = ('a, i64); type P1<'a> = (P0<'a>, P0<'a>); ..; let x:
@@ -902,6 +902,16 @@ fn typecheck_arg<R: Rt>(
         // one twice. Memoize a containment of two applications by definition and
         // parameter identity, as Expanding::apps does here. probe:
         // ~/ptmp/cr29/scratch/r6-B/w4/ptq-16.gx, ptq-20.gx (dag-check-02)
+        // 2026-11-01 claude: ContainsHist's committed-pair memo now keys an
+        // application by its definition and its parameters' identities
+        // (ContainsHist::pair_key, interned in apps, pinned), not by its node: an
+        // expansion builds its applications anew, so P15<F> met twice under one
+        // P16<F> expansion was a new pair each time and a containment of an expanded
+        // chain against its application walked 2^depth. --check instructions (debug,
+        // cpu_atom + cpu_core) before -> after: ptq-16 6.6G -> 2.5G, ptq-20 89.7G ->
+        // 2.5G (the stdlib registration alone is about 2G). Pin graphix-types
+        // typ::contains::tests::an_expanded_chain_contains_its_application_once_per_level:
+        // 43 containment steps at depth 12, 24577 without (bound 768).
         Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();

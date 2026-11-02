@@ -27,6 +27,7 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
     cell::RefCell,
+    collections::hash_map::Entry,
     mem,
     ops::{ControlFlow, Deref, DerefMut},
 };
@@ -110,6 +111,10 @@ pub(super) struct ContainsHist {
     /// shared nodes are met once per path otherwise). Pinned with
     /// `probe_pins`.
     commit_pairs: Lazy<AHashSet<(NormKey, NormKey, BitFlags<ContainsFlags>)>>,
+    /// An id for each application [`Self::pair_key`] met, by its
+    /// definition and its parameters' identities, the application pinned
+    /// with `probe_pins`.
+    apps: Lazy<AHashMap<(usize, SmallVec<[usize; 2]>), usize>>,
     /// The questions in progress on this path, answered by assumption
     /// when met again.
     in_progress: SmallVec<[Question; 4]>,
@@ -172,6 +177,7 @@ impl ContainsHist {
             probe_pairs: Lazy::new(),
             probe_pins: Lazy::new(),
             commit_pairs: Lazy::new(),
+            apps: Lazy::new(),
             in_progress: SmallVec::new(),
             tainted: None,
             low_water: usize::MAX,
@@ -269,13 +275,40 @@ impl ContainsHist {
         assumed >= height && tainted.is_none()
     }
 
-    fn commit_held(&self, flags: BitFlags<ContainsFlags>, t0: &Type, t1: &Type) -> bool {
-        let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1)) else { return false };
+    /// The key a committed pair is held under: a node's identity, or an
+    /// application's definition and its parameters' identities, since an
+    /// expansion builds its applications anew and two of one definition
+    /// over the same parameters are one type.
+    fn pair_key(&mut self, t: &Type) -> Option<NormKey> {
+        let Type::Ref(tr) = t else { return probe_key(t) };
+        let def = tr.def_key()?;
+        let params: SmallVec<[usize; 2]> =
+            tr.params.iter().map(|p| p.shared_identity()).collect::<Option<_>>()?;
+        let next = self.apps.get().map_or(0, |m| m.len());
+        let id = match self.apps.get_mut().entry((def, params)) {
+            Entry::Occupied(e) => *e.get(),
+            Entry::Vacant(e) => {
+                self.probe_pins.get_mut().push(t.clone());
+                *e.insert(next)
+            }
+        };
+        Some((mem::discriminant(t), def, id))
+    }
+
+    fn commit_held(
+        &mut self,
+        flags: BitFlags<ContainsFlags>,
+        t0: &Type,
+        t1: &Type,
+    ) -> bool {
+        let (Some(k0), Some(k1)) = (self.pair_key(t0), self.pair_key(t1)) else {
+            return false;
+        };
         self.commit_pairs.get().is_some_and(|m| m.contains(&(k0, k1, flags)))
     }
 
     fn commit_put(&mut self, flags: BitFlags<ContainsFlags>, t0: &Type, t1: &Type) {
-        if let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1))
+        if let (Some(k0), Some(k1)) = (self.pair_key(t0), self.pair_key(t1))
             && self.commit_pairs.get_mut().insert((k0, k1, flags))
         {
             let pins = self.probe_pins.get_mut();
@@ -1921,6 +1954,8 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
+        #[cfg(test)]
+        CONTAINS_STEPS.with(|n| n.set(n.get() + 1));
         ensure_sufficient(|| self.contains_int_inner(flags, env, hist, t))
     }
 
@@ -3517,6 +3552,35 @@ mod tests {
     use super::*;
     use arcstr::literal;
 
+    // A type expanded through a chain of parametric typedefs, a DAG that
+    // shares each level, contains the application it expanded with each
+    // pair of a node and an application met once: every expansion builds
+    // its applications anew, `P11<'a>` twice under each `P12<'a>`.
+    #[test]
+    fn an_expanded_chain_contains_its_application_once_per_level() {
+        let depth = 12;
+        let mut names = vec![String::from("P0<'a>")];
+        let mut bodies = vec![String::from("('a, i64)")];
+        for i in 1..=depth {
+            names.push(format!("P{i}<'a>"));
+            bodies.push(format!("(P{}<'a>, P{}<'a>)", i - 1, i - 1));
+        }
+        let defs: Vec<(&str, &str)> =
+            names.iter().zip(bodies.iter()).map(|(n, b)| (&**n, &**b)).collect();
+        let app = format!("P{depth}<fn<'b: Number>(x: 'b) -> 'b>");
+        let (env, app) = Env::typed_at_root(&defs, &app).unwrap();
+        let f = parsed("fn<'c: Number>(x: 'c) -> 'c");
+        let mut expanded =
+            Type::Tuple(Arc::from_iter([f, Type::Primitive(Typ::I64.into())]));
+        for _ in 0..depth {
+            expanded = Type::Tuple(Arc::from_iter([expanded.clone(), expanded.clone()]));
+        }
+        CONTAINS_STEPS.with(|n| n.set(0));
+        expanded.check_contains(&env, &app).unwrap();
+        let steps = CONTAINS_STEPS.with(|n| n.get());
+        assert!(steps <= 64 * depth, "{steps} steps");
+    }
+
     fn parsed(s: &str) -> Type {
         let t = crate::expr::parser::parse_type(s).unwrap();
         t.alias_tvars(&mut LPooled::take());
@@ -3759,4 +3823,9 @@ pub(crate) fn find_impl(
     t: &Type,
 ) -> Result<Option<Arc<ImplDef>>> {
     find_impl_with(env, trait_id, t, &mut ContainsHist::new())
+}
+
+#[cfg(test)]
+thread_local! {
+    static CONTAINS_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
