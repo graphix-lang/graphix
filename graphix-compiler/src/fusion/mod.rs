@@ -1019,6 +1019,26 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     // emitter to make that call from a loop slot (outline.rs asserts no self-call root
     // in a loop). probe: ~/ptmp/cr29/scratch/review-r6/E2-r1-2/c2.gx, c3.gx
     // (collection-closure-recursion-01)
+    // 2026-11-02 claude: Lane J, round 7: stopped here, as the round's brief says to when
+    // the loop-slot self-call needs a new kernel ABI piece; it does. Counting the
+    // callback's k(x) edge as k's self-call in mark_recursion would let the site emit as
+    // Called::Own, but a self-call's callee block is a lazily grown per-activation tree
+    // whose root word BodyCx::claim_self_block_word claims only at loop depth 0 (in a
+    // loop the one root would alias every slot). A slot needs a root of its own: a
+    // per-slot table in a slot chain whose leaf (SiteLeaf: a KernelConst the code points
+    // at, written into an image by site_leaf_encode) names the ActivationLayout its trees
+    // have. Here that is the kernel's own layout, which compile_into_function builds only
+    // once emission ends and which would hold the leaf through its anchors, a cycle the
+    // immutable Arcs cannot express; ActivationLayout::slots says 'a child of this same
+    // layout' only for depth-0 roots. Needed: a leaf entry meaning 'these words root
+    // child activations of the enclosing activation'; free_self_block_tree,
+    // reclaim_self_block_tree, reclaim_slot_chain, free_blocks and the
+    // graphix_slot_state_blocks truncation carrying the enclosing layout down to such a
+    // leaf; its codec in site_leaf_encode/site_leaf_decode; claim_self_block_word
+    // claiming that table inside a loop (and outline.rs's chunk frames passing it); then
+    // the mark_recursion edge and the own/callback match in discover_lambda_calls. c2.gx
+    // and c3.gx still refuse at bbb06c0c6 'mutually recursive static call edge is not
+    // supported'.
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();
