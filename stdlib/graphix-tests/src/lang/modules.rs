@@ -2364,19 +2364,20 @@ run!(glob_in_forked_slots, GLOB_IN_FORKED_SLOTS, |v: Result<&Value>| matches!(
     Ok(Value::Array(a)) if &a[..] == [Value::I64(3), Value::I64(4)]
 ); FuseExpect::Jit);
 
-// A module with no interface in a select arm: `v` is written through an
-// escaped `&mut a::v` while the arm sleeps (ep 6, 7). At the wake (ep 9)
-// the module's `let v` re-raises the write once to the readers that slept
-// with it, the arm's own `count(a::v)` beside the body's `a::c`; the
-// escaped reader outside, which saw both writes live, sees no third.
-async fn module_let_reraises_to_the_arm_around_it(mode: Mode) -> Result<()> {
-    let code = "{
+/// A module in a select arm that sleeps for ep 5 to 8, while a binding of
+/// the module is written through the `&mut` the arm hands out (`REF`), at
+/// ep 6 and 7. At the wake (ep 9) the binding's `let` re-raises the write
+/// once to the readers that slept with it (the arm's `ARM` beside the
+/// module's own reader); the escaped reader outside, which saw both
+/// writes live, sees no third. The result is `ARM`'s value and the
+/// outside reader's count.
+const ARM_WAKE: &str = "{
   let ep = 0;
   ep <- select ep { n if n < 12 => n + 1, _ => never() };
   let on = select ep { n if n > 4 && n < 9 => false, _ => true };
   let rv: [&mut i64, null] = null;
   let r = select on {
-    true => { mod a; rv <- once(ep) ~ &mut a::v; (count(a::v), a::c) },
+    true => { mod a; rv <- once(ep) ~ REF; ARM },
     false => never()
   };
   let rr = rv$;
@@ -2384,10 +2385,54 @@ async fn module_let_reraises_to_the_arm_around_it(mode: Mode) -> Result<()> {
   let outside = count(*rr);
   select ep { 12 => (r, outside), _ => never() }
 }";
+
+async fn arm_wake(
+    rf: &str,
+    arm: &str,
+    files: &[(&str, &str)],
+    mode: Mode,
+) -> Result<Vec<String>> {
+    let code = ARM_WAKE.replace("REF", rf).replace("ARM", arm);
+    super::delivery::result_updates(&code, files, mode).await
+}
+
+// A module with no interface: the arm's `count(a::v)` sees the re-raise.
+async fn module_let_reraises_to_the_arm_around_it(mode: Mode) -> Result<()> {
     let files = [("/test/a.gx", "let v = 1; let c = count(v)")];
-    let got = super::delivery::result_updates(code, &files, mode).await?;
+    let got = arm_wake("&mut a::v", "(count(a::v), a::c)", &files, mode).await?;
     assert_eq!(got, ["[[2, 2], 3]"], "{mode:?}");
     Ok(())
 }
 
 modes!(module_let_reraises_to_the_arm_around_it);
+
+// A submodule with no interface that its parent's interface exposes: the
+// arm reads `a::b::v` after the `mod a` statement, as the parent's `r`
+// reads `b::v`, and both see the re-raise.
+async fn exposed_submodule_let_reraises_to_the_arm_around_it(mode: Mode) -> Result<()> {
+    let files = [
+        ("/test/a/mod.gx", "mod b; let r = count(b::v)"),
+        ("/test/a/mod.gxi", "mod b; val r: i64"),
+        ("/test/a/b.gx", "let v = 1"),
+    ];
+    let got = arm_wake("&mut a::b::v", "(count(a::b::v), a::r)", &files, mode).await?;
+    assert_eq!(got, ["[[2, 2], 3]"], "{mode:?}");
+    Ok(())
+}
+
+modes!(exposed_submodule_let_reraises_to_the_arm_around_it);
+
+// A private `let` of a module with an interface, written through the
+// `&mut` its interface exports: the escaped reader outside sees each
+// write once, the re-raise taken back after the arm's last statement.
+async fn interface_module_private_let_reraises_once(mode: Mode) -> Result<()> {
+    let files = [
+        ("/test/a.gx", "let w = 1; let c = count(w); let r = &mut w"),
+        ("/test/a.gxi", "val c: i64; val r: &mut i64"),
+    ];
+    let got = arm_wake("a::r", "(count(*a::r), a::c)", &files, mode).await?;
+    assert_eq!(got, ["[[2, 2], 3]"], "{mode:?}");
+    Ok(())
+}
+
+modes!(interface_module_private_let_reraises_once);

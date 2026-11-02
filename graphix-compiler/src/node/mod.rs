@@ -785,9 +785,9 @@ pub struct Block<R: Rt> {
     /// reverse syntactic order: an inner handler's rethrow delivers to
     /// its predecessor, which only sees it if it updates after.
     pub(crate) catches: Box<[usize]>,
-    /// The children that are `let`s or modules with no interface, whose
-    /// wake re-raises a non-module block takes back at its end and a
-    /// module leaves to the block around it (`Bind::take_back_reraised`).
+    /// The children that are `let`s or modules, whose wake re-raises a
+    /// non-module block takes back at its end and a module leaves to the
+    /// block around it (`Bind::take_back_reraised`).
     lets: Box<[u32]>,
     /// The block's production when it cannot hand back its last
     /// child's borrow: after a catch pass or a forked run.
@@ -867,17 +867,28 @@ impl Runs {
     }
 }
 
+/// Take back what a wake re-raised to the `let` `n`, or to the `let`s of
+/// the module `n`, whose names the block around it reads.
+fn take_back_reraised<R: Rt>(n: &mut Node<R>, ctx: &mut ExecCtx<'_, R>) {
+    if let Some(b) = n.downcast_mut::<bind::Bind<R>>() {
+        b.take_back_reraised(ctx)
+    } else if let Some(b) = n.downcast_mut::<Block<R>>()
+        && b.module
+    {
+        b.take_back_reraised(ctx)
+    } else if let Some(m) = n.downcast_mut::<module::Module<R>>() {
+        crate::stack::ensure_sufficient(|| {
+            m.nodes.iter_mut().for_each(|n| take_back_reraised(n, ctx))
+        })
+    }
+}
+
 impl<R: Rt> Block<R> {
     /// Take back what a wake re-raised to the `let`s among the children,
-    /// those of the modules with no interface among them included.
-    pub(crate) fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
+    /// those of the modules among them included.
+    fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
         for i in self.lets.iter() {
-            let n = &mut self.children[*i as usize];
-            if let Some(b) = n.downcast_mut::<bind::Bind<R>>() {
-                b.take_back_reraised(ctx)
-            } else if let Some(m) = n.downcast_mut::<Block<R>>() {
-                m.take_back_reraised(ctx)
-            }
+            take_back_reraised(&mut self.children[*i as usize], ctx)
         }
     }
 
@@ -920,14 +931,14 @@ impl<R: Rt> Block<R> {
     }
 }
 
-/// The indices of the `let`s among a block's children, and of the
-/// modules with no interface: a module's names are the enclosing
-/// block's to read, so that block takes back what its `let`s re-raise.
+/// The indices of the `let`s and the modules among a block's children: a
+/// module's names are the enclosing block's to read, so that block takes
+/// back what its `let`s re-raise.
 fn lets_of<R: Rt>(children: &[Node<R>]) -> Box<[u32]> {
     let mut lets: SmallVec<[u32; 8]> = SmallVec::new();
     for (i, n) in children.iter().enumerate() {
         match n.view() {
-            NodeView::Bind(_) => lets.push(i as u32),
+            NodeView::Bind(_) | NodeView::Module(_) => lets.push(i as u32),
             NodeView::Block(b) if b.module => lets.push(i as u32),
             _ => (),
         }

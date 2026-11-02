@@ -352,9 +352,10 @@ As built:
   `pc`): its `let` re-raises it, fired, at its wake
   (`Bind::reraise_writes_while_asleep`), to the readers that slept with
   it: its block takes the delivery back after its last statement, so a
-  reader outside (an escaped `&mut`) sees the write once. A module with
-  no interface is a block whose names the block around it reads, so it
-  leaves the take-back to that block (`Block::take_back_reraised`). The reactive fuzzer found the
+  reader outside (an escaped `&mut`) sees the write once. A module, with
+  an interface or without, leaves the take-back of its `let`s to the
+  block around it, whose later statements read its names, those of a
+  submodule its interface exposes included (`node::take_back_reraised`). The reactive fuzzer found the
   gap (`findings/wake-resume-seq-abort-oct2026/`): the constants that
   used to fire at a wake had papered over it.
 - **Rebirth is a birth's.** `Apply::reborn` (no-op by default) holds

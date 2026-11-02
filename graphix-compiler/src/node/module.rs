@@ -15,7 +15,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    node::{Block, Nop, Runs, bind::Bind, traits},
+    node::{Nop, Runs, bind::Bind, traits},
     profile::{self, Phase},
     shared_map::SharedMap,
     typ::{
@@ -1735,13 +1735,6 @@ impl<R: Rt> Update<R> for Module<R> {
                 }
             }
             self.runs.update(ctx, &mut self.nodes, &self.catches);
-            for n in self.nodes.iter_mut() {
-                if let Some(m) = n.downcast_mut::<Block<R>>()
-                    && m.module
-                {
-                    m.take_back_reraised(ctx)
-                }
-            }
         });
         // a prime is for the fresh body alone: left, it would fire readers
         // later in the cycle, and a forked merge would requeue it
@@ -1801,6 +1794,21 @@ impl<R: Rt> Update<R> for Module<R> {
     // iface-pair-one-var-01. Pin: lang::modules::module_let_reraises_to_the_arm_around_it
     // (four modes; [[1, 2], 3] on bbb06c0c6 and at 463516534, [[2, 2], 3] now, its 3 the
     // escaped reader seeing the write once). Needs a soak.
+    // 2026-11-02 claude: Round 7 lane N, after review r8: the take-back moved for a module
+    // with an interface too. A Module node no longer takes back for the modules in its
+    // body; the block around it does (lets_of lists Module nodes, node::take_back_reraised
+    // walks a Module's statements: its lets, its module blocks, its Modules). Review r8
+    // found two shapes: a no-interface submodule its parent's interface exposes (a.gxi
+    // says mod b): the arm's count(a::b::v) missed the re-raise a's own r saw, (1, 2)
+    // where the gxi-less twin gives (2, 2); and an interface module's private let written
+    // through an exported &mut, whose re-raise nothing took back, so the escaped reader
+    // outside counted the write twice (4 against the twin's 3; bbb06c0c6 alike). Both now
+    // match their twins. Pins (lang::modules, four modes):
+    // exposed_submodule_let_reraises_to_the_arm_around_it ([[1, 2], 3] at d0c85e540) and
+    // interface_module_private_let_reraises_once ([[2, 2], 4] at d0c85e540 and on
+    // bbb06c0c6), with module_let_reraises_to_the_arm_around_it. cr37/c1m now gives a::r
+    // and count(a::b::v) alike (4, 4 at ep 9; outside fires 5 as on bbb06c0c6). Needs a
+    // soak.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.sleep(ctx);
