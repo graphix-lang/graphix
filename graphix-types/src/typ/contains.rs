@@ -3582,6 +3582,19 @@ mod tests {
         assert!(steps <= 64 * CHAIN_DEPTH, "{steps} steps");
     }
 
+    // And where that parameter is a function type with no quantifiers of
+    // its own, or one whose key passes `ParamKey::WORDS`: both by content.
+    #[test]
+    fn an_expanded_chain_over_a_rebuilt_function_or_wide_parameter_contains_its_application_once_per_level()
+     {
+        let wide: String =
+            (1..=25).map(|k| format!("a{k:02}: i64, ")).chain(["z: 'a".into()]).collect();
+        for pass in ["fn(x: 'a) -> i64", &format!("{{{wide}}}")] {
+            let steps = chain_steps(&["'a"], "('a, i64)", pass, "");
+            assert!(steps <= 64 * CHAIN_DEPTH, "{pass}: {steps} steps");
+        }
+    }
+
     const CHAIN_DEPTH: usize = 12;
 
     fn expanded_chain_steps(params: &[&str], base: &str, leaf: &str) -> usize {
@@ -3592,7 +3605,7 @@ mod tests {
     /// (P0<pass>, P0<pass>); ..` to [`CHAIN_DEPTH`], expanded by hand over a
     /// quantified function and `leaf` (when `params` has two), against its
     /// application to them. `pass` is `params` or, over one parameter,
-    /// `('a, i64)`.
+    /// a type of `'a`.
     fn chain_steps(params: &[&str], base: &str, pass: &str, leaf: &str) -> usize {
         let rebuilt = pass != params.join(", ");
         let params = params.join(", ");
@@ -3610,13 +3623,13 @@ mod tests {
         };
         let app = format!("P{CHAIN_DEPTH}<fn<'b: Number>(x: 'b) -> 'b{second}>");
         let (env, app) = Env::typed_at_root(&defs, &app).unwrap();
-        let mut f = parsed("fn<'c: Number>(x: 'c) -> 'c");
+        let mut f = String::from("fn<'c: Number>(x: 'c) -> 'c");
         if rebuilt {
             for _ in 0..CHAIN_DEPTH {
-                f = Type::Tuple(Arc::from_iter([f, Type::Primitive(Typ::I64.into())]));
+                f = pass.replace("'a", &f);
             }
         }
-        let mut expanded = Type::Tuple(Arc::from_iter([f, last]));
+        let mut expanded = Type::Tuple(Arc::from_iter([parsed(&f), last]));
         for _ in 0..CHAIN_DEPTH {
             expanded = Type::Tuple(Arc::from_iter([expanded.clone(), expanded.clone()]));
         }

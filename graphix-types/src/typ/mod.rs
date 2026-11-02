@@ -89,18 +89,26 @@ impl Type {
     /// be held while the key is, so the identities stay its parameters'.
     pub fn param_key(&self) -> ParamKey {
         let mut words = SmallVec::new();
-        self.key_words(&mut words);
+        self.key_words(&mut words, &mut LPooled::take());
         ParamKey(words)
     }
 
-    /// The words of [`Type::param_key`]: a tag, then the part's content,
-    /// a part past [`ParamKey::WORDS`] by its node.
-    fn key_words(&self, out: &mut SmallVec<[usize; 8]>) {
-        let part = |t: &Arc<Type>| Arc::as_ptr(t).addr();
-        let each = |ts: &[Type], out: &mut SmallVec<[usize; 8]>| {
+    /// The words of [`Type::param_key`]: a tag, then the part's content; a
+    /// shared node met again in this key by the position its first words
+    /// start at (`at`).
+    fn key_words(&self, out: &mut SmallVec<[usize; 8]>, at: &mut AHashMap<usize, usize>) {
+        let each = |ts: &[Type], out: &mut SmallVec<[usize; 8]>, at: &mut _| {
             out.push(ts.len());
-            ts.iter().for_each(|t| t.key_words(out))
+            ts.iter().for_each(|t| t.key_words(out, at))
         };
+        if let Some(n) = self.shared_identity() {
+            match at.entry(n) {
+                Entry::Occupied(e) => return out.extend([7, *e.get()]),
+                Entry::Vacant(e) => {
+                    e.insert(out.len());
+                }
+            }
+        }
         ensure_sufficient(|| match self {
             Type::Bottom => out.push(0),
             Type::Any => out.push(1),
@@ -108,88 +116,126 @@ impl Type {
             Type::Bound(b) => out.extend([3, *b as usize]),
             Type::Primitive(p) => out.extend([4, p.bits() as usize]),
             Type::TVar(tv) => out.extend([5, tv.cell_addr()]),
-            Type::Fn(f) => out.extend([6, Arc::as_ptr(f).addr()]),
-            Type::Map { key, value } if out.len() >= ParamKey::WORDS => {
-                out.extend([7, part(key), part(value)])
-            }
-            Type::App(c, a) if out.len() >= ParamKey::WORDS => {
-                out.extend([8, part(c), part(a)])
-            }
-            t if out.len() >= ParamKey::WORDS => {
-                out.extend([9, t.shared_identity().expect("a composite has an identity")])
+            Type::Fn(f) if !f.quantifiers.is_empty() => {
+                out.extend([6, Arc::as_ptr(f).addr()])
             }
             Type::Ref(r) => {
                 out.extend([10, Arc::as_ptr(&r.resolved).addr()]);
-                each(&r.params, out)
+                each(&r.params, out, at)
             }
             Type::Set(ts) => {
                 out.push(11);
-                each(ts, out)
+                each(ts, out, at)
             }
             Type::Tuple(ts) => {
                 out.push(12);
-                each(ts, out)
+                each(ts, out, at)
             }
             Type::Error(t) => {
                 out.push(13);
-                t.key_words(out)
+                t.key_words(out, at)
             }
             Type::Array(t) => {
                 out.push(14);
-                t.key_words(out)
+                t.key_words(out, at)
             }
             Type::List(t) => {
                 out.push(15);
-                t.key_words(out)
+                t.key_words(out, at)
             }
             Type::ByRef(Mutability::Shared, t) => {
                 out.push(16);
-                t.key_words(out)
+                t.key_words(out, at)
             }
             Type::ByRef(Mutability::Mut, t) => {
                 out.push(17);
-                t.key_words(out)
+                t.key_words(out, at)
             }
             Type::Struct(fs) => {
                 out.extend([18, fs.len()]);
                 for (name, t, _) in fs.iter() {
-                    out.push(name.as_ptr().addr());
-                    t.key_words(out)
+                    text_words(name, out);
+                    t.key_words(out, at)
                 }
             }
             Type::Variant(tag, ts, _) => {
-                out.extend([19, tag.as_ptr().addr()]);
-                each(ts, out)
+                out.push(19);
+                text_words(tag, out);
+                each(ts, out, at)
             }
             Type::Map { key, value } => {
                 out.push(20);
-                key.key_words(out);
-                value.key_words(out)
+                key.key_words(out, at);
+                value.key_words(out, at)
             }
             Type::Abstract { id, params } => {
                 out.extend([21, id.0 as usize]);
-                each(params, out)
+                each(params, out, at)
             }
             Type::App(c, a) => {
                 out.push(22);
-                c.key_words(out);
-                a.key_words(out)
+                c.key_words(out, at);
+                a.key_words(out, at)
+            }
+            Type::Fn(f) => {
+                let FnType {
+                    args,
+                    vargs,
+                    rtype,
+                    throws,
+                    explicit_throws,
+                    quantifiers: _,
+                    lambda_ids,
+                } = &**f;
+                let own = lambda_ids.own().map_or(0, |id| id.inner() as usize + 1);
+                out.extend([23, own, args.len()]);
+                for a in args.iter() {
+                    match &a.kind {
+                        FnArgKind::Positional { name: None } => out.push(0),
+                        FnArgKind::Positional { name: Some(n) } => {
+                            out.push(1);
+                            text_words(n, out)
+                        }
+                        FnArgKind::Labeled { name, has_default } => {
+                            out.extend([2, *has_default as usize]);
+                            text_words(name, out)
+                        }
+                    }
+                    a.typ.key_words(out, at)
+                }
+                match vargs {
+                    None => out.push(0),
+                    Some(t) => {
+                        out.push(1);
+                        t.key_words(out, at)
+                    }
+                }
+                rtype.key_words(out, at);
+                throws.key_words(out, at);
+                out.push(*explicit_throws as usize)
             }
         })
     }
 }
 
+/// `s` as key words: its length, then its bytes eight to a word.
+fn text_words(s: &str, out: &mut SmallVec<[usize; 8]>) {
+    out.push(s.len());
+    out.extend(s.as_bytes().chunks(8).map(|c| {
+        let mut w = [0u8; 8];
+        w[..c.len()].copy_from_slice(c);
+        u64::from_le_bytes(w) as usize
+    }))
+}
+
 /// A typedef application's parameter as [`Type::param_key`] keys it: by
 /// its content, a variable by its cell, a name by its resolution and
-/// parameters, a function type by its node; a part met after
-/// [`Self::WORDS`] words by its node instead, which bounds the walk.
+/// parameters, a function type with quantifiers of its own by its node
+/// and any other with the lambda it is, a shared node met again by where
+/// its first words start.
 /// Each tag fixes the words that follow it, so equal keys are one type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ParamKey(SmallVec<[usize; 8]>);
-
-impl ParamKey {
-    const WORDS: usize = 64;
-}
 
 /// The pairs of shared composites a conjunctive walk over two types
 /// found to agree, so a DAG is walked once per pair of nodes rather than

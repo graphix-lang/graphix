@@ -888,7 +888,7 @@ fn typecheck_arg<R: Rt>(
                 ArgFit::Misfit
             })
         }
-        // CR claude for claude: [perf/low] A formal holding a quantified function
+        // XCR claude for claude: [perf/low] A formal holding a quantified function
         // type through a chain of parametric typedefs is still checked in time
         // exponential in the chain's depth, though rank2_parts walks it once:
         // `type P0<'a> = ('a, i64); type P1<'a> = (P0<'a>, P0<'a>); ..; let x:
@@ -947,6 +947,20 @@ fn typecheck_arg<R: Rt>(
         // (ptf-14 94.8G lane, 25.5G main). Fix: key a function type with no quantifiers by its content, and keep
         // equality past WORDS (hash the rest rather than fall back to the node). probes
         // ~/ptmp/cr29/scratch/review-r6/B4-r3-1/i4/genf.sh, B4-r3-2/i4/{genf,gens}.sh (./inst BIN ptf0-14.gx).
+        // 2026-11-02 claude: Review B4-r3: Type::param_key keys a function type with no quantifiers of its own by
+        // its content (with the lambda it is, if any), names (fields, tags, labels) by their text, not their
+        // allocation (an expansion's copies of a written fn type carried a new ArcStr per copy), and has no WORDS
+        // cutoff: a shared node met again in one key is a back-reference to where its first words start, so the
+        // key stays exact and linear in the parameter's DAG. --check instructions (debug, atom+core) main
+        // 8beb0735a -> lane: ptf0-14 3.13G -> 2.52G (ptf0-16 5.89G -> 2.30G), ptf-14 (B4-r3-1, let + call) 3.25G
+        // -> 2.72G, ptf-14 (B4-r3-2, quantified fn at P0) 58.74G -> 2.30G, pts-14 4.47G -> 2.38G (pts-16 16.35G ->
+        // 2.72G); the earlier chains stay flat (ptc-14, ptg-16, ptq-20, ptp-18, pta-16, ptm-16 2.0-3.0G both).
+        // guicheck main 92.96G, lane 93.01G. Pins graphix-types
+        // typ::contains::tests::an_expanded_chain_over_a_rebuilt_function_or_wide_parameter_contains_its_application_once_per_level
+        // (49147 steps for the fn, 237517 for the wide struct without it; bound 768, 79 with it) and
+        // graphix-compiler
+        // node::callsite::test::rank2_parts_walks_an_application_over_a_rebuilt_function_or_wide_parameter_once
+        // (2621438 and 27787262 steps without; bound 1088, 86 with it). Probes ~/ptmp/cr29/scratch/r7-B/i2/.
         Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
@@ -4803,5 +4817,26 @@ mod test {
         assert_eq!(quantified.len(), 1);
         let steps = RANK2_STEPS.with(|n| n.get());
         assert!(steps <= 8 * 17, "{steps} steps");
+    }
+
+    // And where that parameter is a function type with no quantifiers of
+    // its own, holding the quantified one in its result or only in its
+    // parameter (no holder), or one whose key passes `ParamKey::WORDS`.
+    #[test]
+    fn rank2_parts_walks_an_application_over_a_rebuilt_function_or_wide_parameter_once() {
+        let wide: String =
+            (1..=25).map(|k| format!("a{k:02}: i64, ")).chain(["z: 'a".into()]).collect();
+        let wide = format!("{{{wide}}}");
+        for (pass, holds) in
+            [("fn(x: i64) -> 'a", true), ("fn(x: 'a) -> i64", false), (&*wide, true)]
+        {
+            let env = chain_passing("R", "'a", "('a, i64)", pass);
+            let t = parse_type("R16<fn<'b: Number>(x: 'b) -> 'b>").unwrap();
+            RANK2_STEPS.with(|n| n.set(0));
+            let found = quantified_formal(&env, &t).map(|(_, _, q)| q.len());
+            assert_eq!(found, holds.then_some(1), "{pass}");
+            let steps = RANK2_STEPS.with(|n| n.get());
+            assert!(steps <= 64 * 17, "{pass}: {steps} steps");
+        }
     }
 }
