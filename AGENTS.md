@@ -683,7 +683,8 @@ put a cell under a constructor of itself is refused (`b <- B([t ~
 b.0])`); a lower bound's check follows its direction, and the cells
 on a cycle through cells and unions alone are one type, merged
 (`tvar::cycle_toward`, `contains::merge_bare_cycle`,
-`design/tvar_constraints.md`).
+`design/tvar_constraints.md`). A rigid cell holds only itself: an open
+cell a merge would put below it merges into it (`TVar::merge_into`).
 A cast to an integer type, a type-directed read's included, is an
 `InvalidCast` where the value does not fit (a float drops its fraction);
 a float cast to `decimal` is the decimal its shortest text names,
@@ -1143,8 +1144,7 @@ node graph IS the IR — there is no parallel typed IR
   and constraints, outside a function type there that quantifies `'b`
   itself (`callsite::check_general`, `contain_generally`; what the
   function whose result holds it shares across its own calls is not
-  judged: CR rank2-result-maker-01, nor what an outer cell holds as a
-  lower bound: CR rank2-rigid-lower-01);
+  judged: CR rank2-result-maker-01);
   while a call
   checks its argument against the
   formal, `'b` is one type, which no definition in the argument

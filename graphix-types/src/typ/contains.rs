@@ -795,7 +795,7 @@ fn conjuncts_admit(
     Ok(true)
 }
 
-// CR claude for claude: [bug/medium] A written type naming an enclosing
+// XCR claude for claude: [bug/medium] A written type naming an enclosing
 // definition's variable takes a rank-2 quantifier through a constructor's lower
 // bound on the let path: `type W<'t> = Abstract<'t>; let outer = |z: W<'c>| { let h:
 // fn<'a: Any>(x: 'a) -> 'a = |x| { let q: W<'c> = W(x); x }; (h(1), h("s"), z) };
@@ -817,6 +817,22 @@ fn conjuncts_admit(
 // annotation with the lambda before checking its body, as a call does. probes:
 // ~/ptmp/cr29/scratch/review-r7/B5-r3-1/i1/{enc3b,enc3d,enc3t,enc_def,enc_field,enc3,
 // enc3f,rig1-rig7}.gx, fz/fz_enc3b.gx (rank2-rigid-lower-01)
+// 2026-11-02 claude: Round 8 lane R: fixed by the merge judgment, at the merge that
+// puts the open cell below the rigid one rather than at its later merge with the
+// quantifier: a rigid cell holds only itself, so an open cell a merge would move below
+// a rigid survivor merges into it (TVar::merge_into; one the occurs check refuses
+// stays a lower bound). W<'c> ⊇ W(x) under a rigid 'c makes x 'c, and the annotation's
+// fn<'a: Any>(x: 'a) -> 'a then refuses fn(x: 'c) -> 'c. Chosen over the let path's
+// pre-unify, which would fix one path: the cause reaches a labeled default (enc_def),
+// a connect (enc_conn), a struct field and an unannotated inner lambda with no rank-2
+// type at all (`|z: W<'c>| { let inner = |v| { let q: W<'c> = W(v); v }; (inner(1),
+// inner("s"), z) }` passed --check and the build refused inner(1); main the same).
+// Refused now: enc3b enc3d enc3t enc_def enc_field enc3 enc_conn enc3g; rig1-rig7 and
+// enc3f as before with the same messages; enc4-enc6 (a written variable no definition
+// declares, never rigid) still run; fz_enc3b AGREE (reject). Pins:
+// RIGID_BELOW_{LET,DECLARED,TRANSPARENT,DEFAULT,FIELD,CONNECT,UNANNOTATED} in
+// lang::types::unsound_acceptances_are_refused (each passes --check on main),
+// lang::types::rigid_below_takes_the_enclosing_variable (no over-refusal).
 /// Whether the open cell `to` (as `tt`) admits the lower bounds of the
 /// open cell `from` its unification would merge in: its conjuncts
 /// contain each, and a rigid cell, which holds only itself, holds each.

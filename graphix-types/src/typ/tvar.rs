@@ -1599,6 +1599,24 @@ impl TVar {
             true => LPooled::take(),
             false => new_conjuncts(&o_cell.read().lower, s_cell.read().lower.clone()),
         };
+        // a rigid cell holds only itself: an open cell below it is it
+        let mut absorbed: SmallVec<[TVar; 2]> = SmallVec::new();
+        if o_cell.read().rigid_gates > 0 {
+            below.retain(|l| match l {
+                Type::TVar(v) => match v.open_cell() {
+                    Some(o)
+                        if !o.is_rigid()
+                            && !Arc::ptr_eq(&o.cell(), &s_cell)
+                            && !Arc::ptr_eq(&o.cell(), &o_cell) =>
+                    {
+                        absorbed.push(o);
+                        false
+                    }
+                    _ => true,
+                },
+                _ => true,
+            });
+        }
         let oid = other.read().id;
         if !same {
             let s_task = s_cell.read().task;
@@ -1661,6 +1679,16 @@ impl TVar {
         let at = other.level();
         for t in moved.iter() {
             lower(t, at)
+        }
+        for o in absorbed {
+            o.alias_cells(other);
+            if !o.same_cell(other) {
+                let cell = other.cell();
+                let mut c = cell.write();
+                if decided(&c) {
+                    c.lower.push(Type::TVar(o))
+                }
+            }
         }
     }
 

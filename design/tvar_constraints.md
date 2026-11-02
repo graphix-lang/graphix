@@ -107,7 +107,9 @@ to the open cells of each lower bound, whichever came first
 `JsonData` reaches the variable a payload bounds `Box`'s parameter by
 in `|x| json::write_str([Box(x), `A])`, so each call judges it; a merge joins
 both cells' lists after each side's conjuncts admit the other's (a
-rigid cell admits none but itself); a copy, an image and a level claim
+rigid cell admits none but itself, and an open cell below a rigid
+survivor merges into it, since it can be no other type: `W<'c> ⊇ W(x)`
+under a rigid `'c` makes `x` `'c`); a copy, an image and a level claim
 carry the list. The witness
 of a cell with lower bounds is their union, so every settle binds it
 there, one a ⊥ was produced into as well (`CellFact::BottomFed`)

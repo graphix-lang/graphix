@@ -2930,6 +2930,75 @@ const DECLARED_CONSTRAINS_OUTER: &str = r#"{
     (f(1), t, y + 1)
 }"#;
 
+// A rigid variable holds only itself: an open cell a merge would put
+// below it is it. So a payload that bounds an enclosing definition's
+// written or declared variable makes the lambda's parameter that
+// variable, which no rank-2 quantifier holds and no call may choose.
+const RIGID_BELOW_LET: &str = r#"{
+  type W<'t> = Abstract<'t>;
+  let outer = |z: W<'c>| {
+    let h: fn<'a: Any>(x: 'a) -> 'a = |x| { let q: W<'c> = W(x); x };
+    (h(1), h("s"), z)
+  };
+  outer(W(1))
+}"#;
+
+const RIGID_BELOW_DECLARED: &str = r#"{
+  type W<'t> = Abstract<'t>;
+  let outer = 'c: Any |z: W<'c>| {
+    let h: fn<'a: Any>(x: 'a) -> 'a = |x| { let q: W<'c> = W(x); x };
+    (h(1), h("s"), z)
+  };
+  outer(W(1))
+}"#;
+
+const RIGID_BELOW_TRANSPARENT: &str = r#"{
+  let outer = |z: Transparent<'c>| {
+    let h: fn<'a: Any>(x: 'a) -> 'a = |x| { let q: Transparent<'c> = Transparent(x); x };
+    (h(1), h("s"), z)
+  };
+  outer(Transparent(1))
+}"#;
+
+const RIGID_BELOW_DEFAULT: &str = r#"{
+  type W<'t> = Abstract<'t>;
+  let outer = |z: W<'c>| {
+    let run = |#k: fn<'a: Any>(x: 'a) -> 'a = |x| { let q: W<'c> = W(x); x }, n: i64|
+      (k(n), k("s"));
+    (run(1), z)
+  };
+  outer(W(1))
+}"#;
+
+const RIGID_BELOW_FIELD: &str = r#"{
+  type W<'t> = Abstract<'t>;
+  let outer = |z: W<'c>| {
+    let s: {h: fn<'a: Any>(x: 'a) -> 'a} = {h: |x| { let q: W<'c> = W(x); x }};
+    let h = s.h;
+    (h(1), h("s"), z)
+  };
+  outer(W(1))
+}"#;
+
+const RIGID_BELOW_CONNECT: &str = r#"{
+  type W<'t> = Abstract<'t>;
+  let outer = |z: W<'c>| {
+    let h: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+    h <- |x| { let q: W<'c> = W(x); x };
+    (h(1), h("s"), z)
+  };
+  outer(W(1))
+}"#;
+
+const RIGID_BELOW_UNANNOTATED: &str = r#"{
+  type W<'t> = Abstract<'t>;
+  let outer = |z: W<'c>| {
+    let inner = |v| { let q: W<'c> = W(v); v };
+    (inner(1), inner("s"), z)
+  };
+  outer(W(true))
+}"#;
+
 // Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
@@ -3148,6 +3217,13 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (RANK2_ARG_CONSTRAINS_OUTER, "the argument is not polymorphic in 'a"),
         (RANK2_LET_CONSTRAINS_OUTER_BY_REFERENCE, "the value is not polymorphic in 'a"),
         (DECLARED_CONSTRAINS_OUTER, "'a escapes the definition"),
+        (RIGID_BELOW_LET, "does not contain fn(x:"),
+        (RIGID_BELOW_DECLARED, "does not contain fn(x:"),
+        (RIGID_BELOW_TRANSPARENT, "does not contain fn(x:"),
+        (RIGID_BELOW_DEFAULT, "does not contain fn(x:"),
+        (RIGID_BELOW_FIELD, "does not contain { h: fn(x:"),
+        (RIGID_BELOW_CONNECT, "cannot hold fn(x:"),
+        (RIGID_BELOW_UNANNOTATED, "does not contain i64"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
@@ -7706,6 +7782,32 @@ run!(
 }"#,
     prints(r#"[i64:1, "s", i64:2, "t", i64:3, "v", i64:4, "w"]"#);
     FuseExpect::None
+);
+
+// A payload that bounds an enclosing definition's variable makes the
+// parameter that variable, which a call of the enclosing variable's own
+// type passes: through an abstract type, Transparent and a declared
+// variable alike.
+run!(
+    rigid_below_takes_the_enclosing_variable,
+    r#"{
+  type W<'t> = Abstract<'t>;
+  let outer = |z: W<'c>| {
+    let inner = |v| { let q: W<'c> = W(v); v };
+    inner(z.0)
+  };
+  let t = |z: Transparent<'c>| {
+    let k = |v| { let q: Transparent<'c> = Transparent(v); v };
+    k(z.0)
+  };
+  let d = 'c: Any |z: W<'c>| {
+    let h: fn(x: 'c) -> 'c = |x| { let q: W<'c> = W(x); x };
+    h(z.0)
+  };
+  (outer(W(1)), outer(W("s")), t(Transparent(2)), d(W(true)))
+}"#,
+    prints(r#"[i64:1, "s", i64:2, true]"#);
+    FuseExpect::Jit
 );
 
 // A module holding a written rank-2 typedef of its parent's: its value is

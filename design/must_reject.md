@@ -300,9 +300,7 @@ tying the outer `y` to `x`), outside a function type there that
 quantifies it (`callsite::check_general`, `contain_generally`). Right
 site: the value. Open: what the function whose result holds the
 quantifier shares across its own calls (a let of its body the function
-it makes captures), CR rank2-result-maker-01; a written type in the
-value naming an enclosing definition's variable (`let q: W<'c> =
-W(x)`), CR rank2-rigid-lower-01.
+it makes captures), CR rank2-result-maker-01.
 
 ## Labeled and optional arguments across the fuzzer
 
