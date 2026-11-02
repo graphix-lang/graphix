@@ -269,6 +269,26 @@ fn bind_sig_item(
             if env.ide.is_lsp() {
                 typ.record_ide_refs(env, &scope.lexical);
             }
+            // CR claude for eric: [bug/critical] A val's type variable outside a function
+            // type is never claimed at the top level, so a definition outside the module
+            // copies it: with `val v: Array<'a>` over `let v = never()`, the main program's
+            // `let wr = |x| { m::v <- x; x }; let rd = |u| u ~ m::v` write v at Array<i64>
+            // and read it at Array<string>; the check passes and the run aborts reading an
+            // i64 as an ArcStr ("misaligned pointer dereference" in arcstr; undefined
+            // behaviour in a release build) (b2). The same through a sibling module's
+            // generic vals (e1), through a variable standing both in a function type and in
+            // data (`type Codec<'a> = {show: fn(x: 'a) -> string, last: ['a, null]}; val c:
+            // Codec<'a>`, hw17, hw12), and in the REPL, where a dynamic module's load
+            // unbinds a variable an earlier input decided (repl2). Only a val typed `fn(..)`
+            // goes in poly_binds, so a write through any other generic val is held to
+            // nothing. Branch cr44-E claims such a variable at the top level (b4682bb47,
+            // closing b2 and e1); its review found hw17, a load's `unbind_tvars` reopening
+            // the claimed variable (dl2), an alias defined after the module claimed whole
+            // (fw3), and a sibling's one-type use refused with no binding named (e2). The
+            // rule is Eric's (next-discuss): refuse a val whose variable stands anywhere
+            // outside a function type (no .gxi in either repo has one), or claim it as one
+            // type. probes: ~/ptmp/cr29/scratch/review-r7/E5-r3-1/{b2,e1},
+            // E5-r4-2/{hw17,hw12,e2,fw3}, E5-r4-1/{repl2,dl2} (iface-val-data-var-01)
             let poly = matches!(typ, Type::Fn(_));
             let bind = env.bind_variable(
                 &scope.lexical,
@@ -448,6 +468,12 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // static call: u4i (a::f called through an array, let fs = [a::f]; h = fs[0]$; h(t ~
 // "s")) fails at run time with the same 'did not type' message on main, base and lane.
 // probe: ~/ptmp/cr29/scratch/r6-W/r38/u4i
+// 2026-11-02 claude: Lane I (branch cr44-E, wave 5) worked this through three fix
+// rounds and is parked: each review found a new route (round 4: dl2, a dynamic load
+// unbinding a val variable item 2 decided, reads a string as an i64; hw17, main's own,
+// CR iface-val-data-var-01). Its commits are the starting point once Eric rules on the
+// val variable rule (next-discuss item 13). Final reviews:
+// ~/ptmp/cr29/scratch/review-r7/E5-r4-{1,2}/.
 // CR claude for claude: [bug/low] An implementation binding's open cell is not decided by
 // the val it implements: with `type B<'x>; val e: B<i64>; val i: B<i64>;` in m.gxi and
 // `type B<'x> = Abstract<i64>; let e = B(1); let i: B<i64> = B(1)` in m.gx, e's parameter
@@ -460,6 +486,31 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // declared exactly so. Main a084f9887 and lane E (cr40-E) alike. probes:
 // ~/ptmp/cr29/scratch/review-r6/E4-r1-1/modv/main.gx (prints 'static e==i false'),
 // modu/main.gx, modt/main.gx (iface-open-param-01)
+// 2026-11-02 claude: Lane I (branch cr44-E, wave 5) worked this through three fix rounds
+// and is parked: each review found a new route (round 4: dl2, a dynamic load unbinding a
+// val variable item 2 decided, reads a string as an i64; hw17, main's own, CR
+// iface-val-data-var-01). Its commits are the starting point once Eric rules on the val
+// variable rule (next-discuss item 13). Final reviews:
+// ~/ptmp/cr29/scratch/review-r7/E5-r4-{1,2}/.
+// CR claude for eric: [bug/medium] A write through a val narrower than its implementation
+// reaches the implementation at the val's type alone: with `val f: fn(x: i64) -> i64; val
+// g: fn(t: Any) -> string` over `let f = |x| x; let g = |t| f(t ~ "s")`, the main
+// program's `m::f <- t ~ |x: i64| -> i64 x + 100` passes --check, held to the val's type,
+// lands on the body's f, and g's call fails at run time ("a run-time bind at f(t ~ "s")
+// did not type: an instance at fn(x: string) -> string of a definition typed fn(x: i64)
+// -> i64", ca1); `val f: fn<'a: Number + Singleton>(x: 'a) -> 'a` over `|x| x` written
+// `|x| x * x` alike (rb1); a dynamic module's `super::m::f <- ..` over a body calling f
+// through `let fs = [f]` alike (dyn2b). The run-time bind catches it: no value of the
+// wrong type flows. `&mut m::f` is refused at the check (poly_binds), which is what keeps
+// mut-ref-poly-01 open: branch cr44-E's 535c0c322 let `&mut` of a val at one type through
+// and so reached this route (ca2, rb2), and was held back. Choices: hold a write through a
+// val to its implementation's type too, rigid where a use copies it (as
+// Connect::typecheck0_with holds a write to an earlier-generalized binding); or refuse, at
+// the val's check, a val whose implementation has a cell a use copies where the val has a
+// fixed type. Either must leave rf2 (`val f: fn(x: i64) -> i64` over `|x: i64| -> i64 x +
+// 1`) writable: its open throws cell is one a use copies, and ⊥ fits every instance of it.
+// probes: ~/ptmp/cr29/scratch/review-r7/E5-r1-1/{ca1,rb1,ca2,rb2},
+// ~/ptmp/cr29/scratch/r7-E/rv/dyn2b (iface-narrow-write-01)
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared`.
 fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
@@ -480,6 +531,12 @@ fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     // 2026-11-02 claude: Main has CR iface-generic-written-01 (node/module.rs, at
     // Module::typecheck0's val check) for the generic-val class; both are a val's
     // quantifier the implementation ties to an outer binding, so fix them together.
+    // 2026-11-02 claude: Lane I (branch cr44-E, wave 5) worked this through three fix
+    // rounds and is parked: each review found a new route (round 4: dl2, a dynamic load
+    // unbinding a val variable item 2 decided, reads a string as an i64; hw17, main's
+    // own, CR iface-val-data-var-01). Its commits are the starting point once Eric
+    // rules on the val variable rule (next-discuss item 13). Final reviews:
+    // ~/ptmp/cr29/scratch/review-r7/E5-r4-{1,2}/.
     declared.sig_matches(env, typ).map_err(|e| {
         let typ = format_with_flags(PrintFlag::DerefTVars, || {
             format_compact!("{}", Brief(typ))

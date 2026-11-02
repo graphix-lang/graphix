@@ -1873,6 +1873,11 @@ impl<R: Rt> ByRef<R> {
                 // is not generality. mark_connect_target asks generalized_earlier, which
                 // reads the type's cells; this refusal likely should too. Main a084f9887
                 // alike. probe: ~/ptmp/cr29/scratch/r6-W/r38/rf2 (mut-ref-poly-01)
+                // 2026-11-02 claude: Lane I (cr44-E) fixed this in 535c0c322 and held it back
+                // in 3d7b6bca7: a `&mut` in the same compile sees only the val's type, so
+                // ca2/rb2 (refused here at the check) passed the check and failed at run
+                // time. Waits on iface-narrow-write-01 (for eric). probes
+                // ~/ptmp/cr29/scratch/review-r7/E5-r1-1/{ca2,rb2}
                 if ctx.env.poly_binds.contains(&r.id) {
                     bailat!(
                         spec,

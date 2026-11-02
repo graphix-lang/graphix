@@ -73,6 +73,19 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
+// CR claude for claude: [bug/medium] A trait method's val is not held to what an interface
+// val is (module::check_val, iface-generic-written-01): with `trait Put { val put:
+// fn(self, x: 'a) -> 'a }`, `let y = never(); impl Put for C { let put = |s, x| { y <- x;
+// x } }` pairs the method's 'a with y's cell, which no use copies, and passes. Beside a
+// reader `y + 1`, `Put::put(c, t ~ 1)` and `Put::put(c, t ~ "s")` pass --check and the
+// build refuses the second ("an instance at fn(self: C, x: string) -> string of a
+// definition typed fn(s: C, x: 'a: i64) -> 'a: i64", tr2, GRAPHIX_ELAB_AUDIT reports it);
+// without the reader it runs with y written at two types (tr1); a trait and impl declared
+// in a .gxi alike (tr4). Main 8beb0735a alike. The fix is whatever rule
+// iface-generic-written-01 takes, applied here: an implementation cell no use copies
+// refused under a variable each use picks (branch cr44-E's check_val has it for vals).
+// probes: ~/ptmp/cr29/scratch/review-r7/E5-r1-1/{tr1,tr2,tr4},
+// review-r7/E5-r1-2/p/{g1_trait_written,g2_trait_written_read} (trait-generic-written-01)
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface

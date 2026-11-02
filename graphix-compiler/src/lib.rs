@@ -2684,6 +2684,15 @@ impl PendingSettle {
                 // input's binding no longer reaches the lambda's cell, so nothing carries
                 // the quantifier there. probes: ~/ptmp/cr29/scratch/r6-B/i2/rp5.txt,
                 // rp10.txt, rp11.txt (repl-bottom-settle-01)
+                // 2026-11-02 claude: A dynamic module takes this route past
+                // iface-generic-written-01's rule: with the main program's let y = never()
+                // read by nothing that decides it, a module loaded with sig { val h: fn(x:
+                // 'a) -> 'a; val g: fn(u: i64) -> i64 } over let h = |x| { super::y <- x;
+                // x }; let g = |u: i64| -> i64 u + super::y loads; h keeps cells of its
+                // own, so check_val sees no cell a use shares, h(1) and h("s") both write
+                // y, and g logs an arith error over "s" (main 8beb0735a and cr44-E alike;
+                // a static nested module is refused at the val). probes
+                // ~/ptmp/cr29/scratch/review-r7/E5-r1-1/dm8, dm2.
                 PendingSettle::LetOverBottom { tv, init, spec } => {
                     let bottom = init.with_deref(|t| matches!(t, Some(Type::Bottom)));
                     (if bottom { tv.settle_or_bottom(env) } else { Ok(()) }, spec)
