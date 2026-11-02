@@ -199,7 +199,7 @@ bytes or with a <code>K</code>, <code>M</code> or <code>G</code> suffix, as in <
 activation budget, the live activations (calls, collection slots)
 a runtime may hold (<code>Control::set_activation_budget</code>, or
 <code>GRAPHIX_ACTIVATION_BUDGET</code>); unlimited by default. A program that
-exceeds a budget is stopped the way Ctrl-C stops it.</p>
+exceeds a budget is stopped the way the interrupt key, <code>Ctrl-\</code>, stops it.</p>
 <p>If you rely on a function running as a constant-space loop, assert it:</p>
 <pre><code class="language-graphix">#[tail_recursive]
 let rec sum_to = |n: i64, acc: i64| -&gt; i64 select n {
@@ -211,14 +211,19 @@ let total = #[native] sum_to(1000000, 0)
 <p><code>#[tail_recursive]</code> asserts the shape and <code>#[native]</code> that the call
 compiles to native code. <code>#[tail_recursive]</code> is a compile-time check: if any recursive call is
 not in tail position, if the body is stateful or async, if the body
-holds memory of its own per call (a collection operation, or a call to
+holds memory of its own per call (a collection operation, a call to a
+function that recurses other than by tail calls to itself, or a call to
 a function that holds one, which each activation keeps apart), if the
 function does not recurse at all, or if it recurses mutually, the
 program does not compile. Only compiled code runs the loop: the
-interpreter keeps an activation per call, so the assertion holds when
-fusion is on and the body compiles to native code, and a body that
-does not (it takes a reference, say) fails the compile. With
-<code>--no-fusion</code> it is not checked, as <code>#[native]</code> is not.</p>
+interpreter keeps an activation per call, so the assertion also needs
+every call of the function to compile to native code. A body that does
+not (it takes a reference, say) fails the compile, and so does one call
+whose callback does not, even beside a call that does. A call through a
+function value chosen at runtime is made by the interpreter, so it
+fails too; a function the value holds may call the recursive one
+directly, and that call compiles. With <code>--no-fusion</code> that last part is
+not checked, nor is <code>#[native]</code>; the rest still fails the compile.</p>
 <p>Two related assertions document a function's timing: <code>#[sync]</code> asserts that
 every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and <code>#[async]</code> asserts the opposite.
@@ -227,9 +232,11 @@ arguments, with no state, no effect such as <code>println</code>, and no raise t
 handler; <code>dbg</code> is allowed, with a warning. Like <code>#[tail_recursive]</code> they never change how the function compiles — they
 only fail the compile when the compiler disagrees with your expectation.</p>
 <p>The check needs a call to look at. A function called only through a
-value chosen at runtime (<code>let g = select b { true =&gt; f, false =&gt; h }; g(x)</code>) is checked when that call first reaches it; the program is
-already running then, so a failure is reported the way an unhandled
-error is, on stderr and in the log.</p>
+value chosen at runtime (<code>let g = select b { true =&gt; f, false =&gt; h }; g(x)</code>) is checked when that call first reaches it, a
+<code>#[tail_recursive]</code> one at every such call; the program is already
+running then, so a failure is reported the way an unhandled error is, on
+stderr and in the log. A later input to the REPL checks the calls it
+makes as any compile does.</p>
 <p>With that out of the way, lets
 write a recursive function to add up pairs of numbers in an array,</p>
 <pre><code class="language-graphix repl">let rec add_pairs = 'a: Number |a: Array&lt;'a&gt;| -&gt; Array&lt;'a&gt; select a {

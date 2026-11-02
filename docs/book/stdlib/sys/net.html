@@ -158,13 +158,44 @@
                         <h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
 <p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
 <a href="https://netidx.github.io/netidx-book">netidx</a>.</p>
-<p><code>sys::net::call</code> waits only for the latest call's reply. Starting another
-call, or leaving the select arm containing the call, abandons the pending
-reply. The server may already be running the request: abandoning its
-reply does not cancel or undo the server's effects. The last completed
-result survives a sleep, and waking alone does not send another request.
-When the result must be observed, keep the call outside the sleeping arm
-or in a seq step that waits for it.</p>
+<p><code>sys::net::call</code> runs calls side by side. Each fire of its arguments
+starts a call, named by <code>#id</code> (an id <code>call_id</code> minted) or by a fresh id,
+and every call answers <code>(id, result)</code> once: its reply, an error,
+or <code>`Aborted</code>. The answers come in the order they arrive, one a
+cycle, so a fast call is never held behind a slow one. A new call cancels
+nothing, except that a call under an id still in flight replaces that
+call, which answers <code>`Aborted</code>. One id for a search box keeps only
+the latest query in flight:</p>
+<pre><code class="language-graphix">let query = "graphix";
+let search = sys::net::call_id(null);
+let (_, reply) = sys::net::call(#id: search, "/local/search", {q: query});
+let hits: Array&lt;string&gt; = reply$;
+</code></pre>
+<p><code>sys::net::abort_call(id)</code> aborts the call in flight under <code>id</code> from
+anywhere in the program: it answers <code>`Aborted</code> and its reply is
+ignored. Aborting, replacing or abandoning a call stops the wait, not the
+server: netidx has no cancel, so the handler still runs and its effects
+still happen. When the select arm holding the call sleeps, its calls in
+flight are abandoned and answer nothing. The last completed result
+survives the sleep, and waking alone sends no request. When a result must
+be observed, keep the call outside the sleeping arm or in a seq step that
+waits for it.</p>
+<p><code>sys::net::callq(path, args)</code> is the common case: no id goes in or comes
+out, and the answers come in the order the calls were made. Each fire of
+an argument still starts a call at once, so any number run side by side,
+but an answer that comes before an earlier call's waits for it, so a
+call the server never answers holds every later answer. Each call
+answers once, one a cycle: its reply or an error. Nothing can replace or
+abort a <code>callq</code> call, so its result has no <code>`Aborted</code>. When its arm
+sleeps, its calls in flight are abandoned and the answers waiting behind
+them are dropped.</p>
+<pre><code class="language-graphix">let sku = "graphix-mug";
+let price: f64 = sys::net::callq("/local/price", {sku})$;
+</code></pre>
+<p><code>callq</code> shares nothing with other call sites, so a fan-out over it (an
+<code>array::map</code> over requests, a server's handlers) can run in parallel.
+<code>call</code> cannot: any site may name a call's id, so the calls of a fan-out
+over <code>call</code> run in program order.</p>
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
@@ -177,13 +208,57 @@ val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `Write
 /// subscribe to the specified path
 val subscribe: fn&lt;'a: Concrete&gt;(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
-/// Call the specified RPC. args must be a struct or null. A new call or
-/// a sleep discards any pending reply. This does not undo work already
-/// started on the server: its handler can finish, but its reply is ignored.
-/// The last completed result survives sleep; waking starts no call unless
-/// an argument fires. Keep the call outside a sleeping arm, or in a seq
-/// step that waits for its result, when that result must be observed.
-val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
+/// A call's id: equal only to itself, ordered by when it was minted, so
+/// it keys a map. It is not data: no writer takes it, and it prints as
+/// `abstract:`.
+type RpcId;
+
+/// A fresh id at each fire of `e`.
+val call_id: fn(e: Any) -&gt; RpcId;
+
+/// Call the procedure at `path` with `args`, a struct or null. Each fire
+/// of an argument starts a call, named `#id`, or a fresh id when `#id` is
+/// null; a new call cancels nothing and waits for nothing. Each call
+/// answers `(id, result)` once: its reply, an error, or `` `Aborted ``.
+/// The answers come in the order they arrive, one a cycle, a fast one
+/// never behind a slow one. A call under an id that is still in flight,
+/// from this call site or another, replaces it: the old call answers
+/// `` `Aborted ``. When the call site's arm sleeps, the calls it has in
+/// flight are abandoned and answer nothing. Aborting, replacing or
+/// abandoning a call stops the wait for its reply: the server is not
+/// told, its handler still runs and its effects still happen. A
+/// completed result survives a sleep; waking starts no call unless an
+/// argument fires. When the answers are wanted in the order the calls
+/// were made and no call is aborted, `callq` is simpler.
+val call: fn&lt;'a: Data, 'b: Concrete&gt;(
+    ?#id: [RpcId, null],
+    path: string,
+    args: 'a
+) -&gt; (RpcId, Result&lt;'b, [`RpcError(string), `InvalidCast(string), `Aborted]&gt;);
+
+/// Call the procedure at `path` with `args`, a struct or null, answering
+/// in call order. Each fire of an argument starts a call at once, and any
+/// number may be in flight. Each call answers once, its reply or an
+/// error, in the order the calls were made, one a cycle: an answer that
+/// comes before an earlier call's waits for it, so a call the server never
+/// answers holds every later answer. No id is taken or returned, so
+/// nothing replaces or aborts a call. When the call site's arm sleeps,
+/// its calls in flight are abandoned and the answers waiting behind them
+/// dropped: none of them answers. The server is not told: its handler
+/// still runs and its effects still happen. A completed result survives
+/// a sleep; waking starts no call unless an argument fires.
+val callq: fn&lt;'a: Data, 'b: Concrete&gt;(
+    path: string,
+    args: 'a
+) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
+
+/// At each fire of `id`, abort the call in flight under it, from any call
+/// site: it answers `` `Aborted ``, and its reply, when it comes, is
+/// ignored. An id not in flight (answered, or never used) is left alone.
+/// The server is not told: its handler still runs. A call's fresh id
+/// arrives only with its answer, so a call to be aborted while it waits
+/// is named with `call_id`.
+val abort_call: fn(id: RpcId) -&gt; null;
 
 /// Publish an rpc,
 /// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)
@@ -206,10 +281,12 @@ val rpc: fn&lt;'spec: Data, 'result: Data, 'args: Concrete + Data&gt;(
     #f:fn(args: 'args) -&gt; 'result throws 'e
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
-/// list paths under the specified path.
+/// list paths under the specified path, in order, again at each `#update`
+/// (every second by default); a listing equal to the last is not answered.
 val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
-/// list the table under the specified path.
+/// list the table under the specified path, its rows and columns in order,
+/// again at each `#update` as `list` does.
 val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
 /// Publish the specifed value at the specified path. A write to it is cast

@@ -161,6 +161,10 @@ rendering.</p>
 <pre><code class="language-graphix">/// Render a Handlebars template with the given data context.
 /// Use #partials to register named partial templates (as a struct or map).
 /// Use #strict to error on missing variables instead of rendering empty strings.
+/// The data is written as JSON is, except that an abstract value is its
+/// data alone and a map whose keys are scalars that print apart is an
+/// object keyed by their text (`{{m.[1]}}` over `{1 =&gt; "one"}` is "one");
+/// any other map is an array of `[key, value]` pairs.
 val render: fn&lt;'a: Data, 'b: Data&gt;(?#strict: bool, ?#partials: 'a, template: string, data: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>

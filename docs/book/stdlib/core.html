@@ -232,24 +232,34 @@ trait Cast {
     val from_value: fn(v: Any) -&gt; Result&lt;self, `InvalidCast(string)&gt;
 };
 
+/// An abstract value JSON and TOML write bare. They write an abstract
+/// value inside an object keyed by its type's name (`{"Port": 80}`, `{
+/// Port = 80 }`); `Transparent&lt;Port&gt;` writes Port's data alone (`80`)
+/// and reads it back through Port's `Cast`. `Transparent(p)` wraps a
+/// value and `t.0` unwraps it. Everywhere else (casts, pack, netidx) it
+/// is its representation. JSON and TOML refuse it over a type known not
+/// to be abstract, where it would change nothing; over a generic
+/// definition's own type variable it is not judged.
+type Transparent&lt;'a&gt; = Abstract&lt;'a&gt;;
+impl&lt;'a&gt; Cast for Transparent&lt;'a&gt;;
+
 /// A collection: a type constructor whose values can be traversed and
 /// rebuilt — `Array`, `List`, `Map` (over its values), and any type a
 /// program implements it for. `self&lt;'a&gt;` is the constructor applied to
 /// the element type. `fold`, `filter_map` and `flat_map` are required;
 /// the rest derive from them, and an implementation overrides what it
 /// can do better. `filter_map`'s callback drops an element by returning
-/// null and keeps one by returning it, or `` `Keep(v) `` to keep a `v`
-/// that may itself be null, which is how the derived `map` and `filter`
-/// keep null elements.
+/// null and keeps `v` by returning `` `Keep(v) ``, a null `v` included,
+/// so the derived `map` and `filter` keep null elements.
 /// `use Collection::*` makes the methods callable bare, and `map(c, f)`
 /// then does the same thing whatever `c` is. A parameter typed
 /// `Collection` accepts any collection: `|c: Collection| fold(c, ..)`.
 trait Collection {
     /// fold the elements, front to back
     val fold: fn(self&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
-    /// the elements `f` maps to a value, in order: null drops one,
+    /// the values `f` keeps, in order: null drops an element,
     /// `` `Keep(v) `` keeps `v`, null included
-    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; [`Keep('b), null] throws 'e) -&gt; self&lt;'b&gt; throws 'e;
     /// the concatenation of `f` over the elements
     val flat_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; self&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
     /// `f` over every element
@@ -400,7 +410,9 @@ val uniq: fn&lt;'a: Discernible&gt;(v: 'a) -&gt; 'a;
 /// values from the queue when they are available. When flush updates
 /// discard every value waiting in the queue; recorded clock updates are kept.
 /// When flush_before updates to n, discard the values waiting that arrived
-/// before the n-th v update, the first being the 0-th.
+/// before the n-th v update, the first being the 0-th, and those numbered
+/// below n that arrive later. A queue born again (in a seq step, at each
+/// run) starts empty and numbers its values from 0 again.
 val queue: fn(#clock:Any, ?#flush:Any, ?#flush_before: [i64, null], v: 'a) -&gt; 'a;
 
 /// queuefn wraps a function f and returns a function with the same signature

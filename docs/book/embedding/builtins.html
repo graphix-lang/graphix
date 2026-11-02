@@ -326,8 +326,9 @@ dropped, or handed to <code>EvalCachedAsync::reclaim</code>, which gives a read'
 bytes back to the stream). Only an event source clears
 its output to <code>TagValue::phantom()</code>, since its output is its last
 event. <code>reborn</code> is called before an update that follows a sleep and is
-a birth, a seq step entered for its next run: that is where <code>once</code>
-clears its flag, as a new one would hold nothing.</p>
+a birth, a seq step entered for its next run or a call it issues: that
+is where <code>once</code> clears its flag and an async builtin drops its last
+answer, as a new one would hold nothing.</p>
 <h2 id="higher-order-functions"><a class="header" href="#higher-order-functions">Higher Order Functions</a></h2>
 <p>Now for a built-in that takes another Graphix function as an argument.
 The simplest example in the standard library is <code>array::group</code>, <code>Group</code>

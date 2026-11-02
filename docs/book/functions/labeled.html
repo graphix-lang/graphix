@@ -183,6 +183,18 @@ defaulted parameter (<code>|#d: i64 = z, x|</code>). An unannotated factory such
 <code>|z| { let g = |#d = z, x| (d, x); g }</code> is refused, as is a default
 like <code>#d: Array&lt;'q&gt; = [z]</code>: a call cannot safely infer the enclosing
 function's type from an omitted argument.</p>
+<p>A type variable the enclosing function declares is closed, since each
+call of that function fixes it: <code>|z: 'a| { let g = |#d: 'a = z, y: i64| d; g(1) }</code> is fine, as are <code>#d: Array&lt;'a&gt; = [z]</code> and an unannotated <code>#d = z</code>,
+which takes the type <code>'a</code>. Such a default must fit its parameter whatever
+<code>'a</code> is, so <code>|z: 'b, w: 'a| { let g = |#d: Array&lt;'a&gt; = [z], y: i64| d; g }</code>
+is refused. A closure returned this way keeps its default per call of the
+factory: <code>mk(1)</code> and <code>mk("s")</code> each omit <code>#d</code> at their own type. A type
+written inside the default names the enclosing function's variables too,
+as one written in its body does: <code>|#d: fn(q: i64) -&gt; 'a = |q: i64| -&gt; 'a z, y: i64|</code> is a function returning the factory's <code>'a</code>.</p>
+<p>The same holds inside a function passed for a polymorphic parameter
+(<code>f: fn&lt;'b: Any&gt;(x: 'b) -&gt; ..</code>): there <code>'b</code> is closed, so <code>app(|x| { let g = |#d = x, y: i64| d; g })</code> gives <code>g</code> the type <code>fn(?#d: 'b, y: i64) -&gt; 'b</code>,
+which a parameter typed <code>fn&lt;'b: Any&gt;(x: 'b) -&gt; fn(y: i64) -&gt; string</code>
+refuses.</p>
 <p>The compiler implements subtyping for functions with optional arguments. For
 example if you write a function that takes a function with a labeled argument
 <code>foo</code>, you can pass any function that has a labeled argument <code>foo</code>, even if it

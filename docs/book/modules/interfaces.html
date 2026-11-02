@@ -280,7 +280,11 @@ let pi = math::constants.pi
 declared in the interface automatically apply to the implementation. A
 type or trait the interface defines must not be defined again in the <code>.gx</code>
 file. The one exception is a type the interface hides (<code>type T;</code>): the
-implementation defines it, as <code>type T = Abstract&lt;..&gt;</code>.</p>
+implementation defines it, as <code>type T = Abstract&lt;..&gt;</code>. A <code>mod</code> or
+<code>use</code> only the interface declares takes effect in the implementation
+after everything the interface lists before it, in whatever order the
+implementation declares those: a submodule the interface lists after
+<code>val y</code> can read <code>super::y</code>.</p>
 </li>
 <li>
 <p><strong>Value declarations (<code>val</code>)</strong> specify what bindings must exist in the
@@ -339,8 +343,9 @@ their order, but values are not: a module's body runs where its <code>mod</code>
 statement stands, so a value it imports from its parent must be bound
 above that <code>mod</code>. Place <code>mod</code> after the values the child imports, as the
 example below does. A <code>mod</code> declared only in the <code>.gxi</code> stands in the
-body right after the item the interface lists before it, so a body
-statement above that point cannot read the child's values.</p>
+body after the body's declarations of everything the interface lists
+before it, so a body statement above the last of those cannot read the
+child's values.</p>
 <p>Privacy follows Rust's rule: a private item is visible to its defining
 module and that module's descendants. So a sub-module may
 <code>use super::private_setup</code> even when <code>private_setup</code> is not exported in

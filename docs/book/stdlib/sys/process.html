@@ -265,6 +265,9 @@ a no-op for a process that already exited. On Windows a <code>kill_on_drop</code
 child is also assigned to a job object, so it is terminated even if
 the graphix process crashes; a child spawned with <code>kill_on_drop: false</code> is detached and may outlive the graphix process on every
 platform.</p>
+<p>A child shares the shell's terminal, so the keys the terminal turns into
+signals reach it too: <code>Ctrl+C</code> (SIGINT) and <code>Ctrl+\</code> (SIGQUIT) at the
+shell stop it, even where the shell itself keeps the session.</p>
 <p>There is no separate status-probe function: <code>wait</code> is the reactive
 status source. To track running state, give it an initial value:</p>
 <pre><code class="language-graphix">let child = sys::process::spawn(sys::process::options(

@@ -159,35 +159,53 @@
 <p>The <code>toml</code> module provides TOML serialization and deserialization.
 Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization, and
 the writers write a value as its type says, as <code>json::write_str</code> does: a
-document is a struct or a map with scalar keys; an <code>Array&lt;(string, T)&gt;</code>
+document is a struct or a map keyed by strings; an <code>Array&lt;(string, T)&gt;</code>
 is refused as a document.
 As with json, only a value whose type says nothing (<code>Any</code>) is written by
 its contents, where an array of <code>(string, _)</code> pairs in key order is a
 table.</p>
-<p>A <code>toml::read</code> target holds no union two of whose members one TOML value
-could be written by, as with <a href="json.html#unions-in-the-target">json</a>:
-<code>[u8, i64]</code> and <code>[Array&lt;string&gt;, Array&lt;i64&gt;]</code> are refused. TOML has a
-datetime of its own, so <code>[string, datetime]</code> reads apart here.</p>
-<p>Maps follow JSON's key rule: scalar keys form a table, while a map holding
-a composite or bytes key is an array of <code>[key, value]</code> pairs. Such a map must
-be inside a document field because TOML requires a table at the root. TOML
-cannot represent a null key. Bytes write as an array of byte integers.</p>
+<p>Every union in a type <code>toml::read</code> reads or <code>toml::write_str</code> writes is
+one member beside <code>null</code>, or members each carrying a tag, as with
+<a href="json.html#unions-and-abstract-types">json</a>. An abstract value is a table of
+one entry its type's name keys (<code>{ Port = 80 }</code>), the data inside in
+the form its reader reads (abstract values bare, untagged, in the data a
+<code>from_value</code> reads), and <code>Transparent&lt;T&gt;</code> writes it bare.</p>
+<p>TOML has no null. A struct field that is null is left out, and a key the
+document leaves out reads as null where the field's type admits it, so an
+optional field reads back. A null anywhere else, an array's element, a
+map's value or what an abstract type writes, is refused when written.
+TOML cannot write a <code>duration</code> or a <code>decimal</code> either, and has a datetime of
+its own.</p>
+<p>A map is a table when its key type is <code>string</code> and an array of <code>[key, value]</code> pairs under any other, which must be inside a document field
+because TOML requires a table at the root: <code>toml::write_str</code> of a
+<code>Map&lt;i64, string&gt;</code> is refused by its type, and of such a map under <code>Any</code>
+when written. <code>toml::read</code> reads such a map from a document's entries.
+Bytes write as an array of byte integers.</p>
 <pre><code class="language-graphix">/// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
-/// The target holds no union two members of which one TOML value could
-/// be written by (`TomlData`), as `json::read`'s.
+/// The target reads back what `write_str` writes of it (`TomlData`), as
+/// `json::read`'s does: every union in it tells its members apart by a
+/// tag, or is one member and null.
 val read: fn&lt;'b: Concrete + TomlData&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`TomlErr(string), `InvalidCast(string)]&gt;;
 
-/// Serialize a value to a TOML string. Maps with scalar keys are tables;
-/// other maps are arrays of key/value pairs and require a containing table.
-/// Null map keys cannot be represented.
-val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `TomlErr(string)&gt;;
+/// Serialize a value to a TOML string, as `json::write_str` does: a map
+/// is a table when its key type is `string` and an array of `[key,
+/// value]` pairs, which needs a table around it, under any other, so such
+/// a map is refused as the document itself (by its type, or by the value
+/// where its type is `Any`); an
+/// abstract value is a table of one entry its type's name keys (`{ Port
+/// = 80 }`), or under `Transparent` its data alone, the data inside as
+/// `json::write_str` writes it. TOML has no null: a
+/// struct field that is null is left out, and reads back as null; a null
+/// anywhere else is refused when written. The value's type must be one
+/// `read` reads back (`TomlData`).
+val write_str: fn&lt;'a: Data + TomlData&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `TomlErr(string)&gt;;
 
-/// Serialize a value to TOML bytes.
+/// Serialize a value to TOML bytes, as `write_str` does.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, toml::write_bytes(v)?)`.
-val write_bytes: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
+val write_bytes: fn&lt;'a: Data + TomlData&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">

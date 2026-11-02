@@ -223,10 +223,9 @@ val map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; List&lt;'b
 /// Return a new list containing only elements where f returned true.
 val filter: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; List&lt;'a&gt; throws 'e;
 
-/// Return a new list of the outputs of f, in order: a null output
-/// drops its element, `Keep(v) keeps v (null included), and any other
-/// output is kept.
-val filter_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+/// Return a new list of the values f keeps, in order: a null output
+/// drops its element and `Keep(v) keeps v, null included.
+val filter_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; [`Keep('b), null] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Return the lists f returns for each element, concatenated in order.
 val flat_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; List&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;

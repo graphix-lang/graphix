@@ -438,9 +438,13 @@ impl Cast for Sorted {
         }
     }
 };
-let s: Result&lt;Sorted, [`JsonErr(string), `InvalidCast(string)]&gt; = json::read("\[2, 1\]")
+let s: Result&lt;Sorted, [`JsonErr(string), `InvalidCast(string)]&gt; =
+    json::read("{\"Sorted\": \[2, 1\]}")
 </code></pre>
-<p><code>s</code> is the error <code>can't cast [2, 1] to Sorted: not sorted</code>.</p>
+<p><code>s</code> is the error <code>can't cast [2, 1] to Sorted: not sorted</code>. JSON and TOML
+write an abstract value inside an object its type's name keys
+(<code>{"Sorted":[1,2]}</code>), so a union of abstract types and variants reads
+back, and <code>Transparent&lt;T&gt;</code> writes one bare (<a href="../stdlib/json.html">json</a>).</p>
 <p>Only the module that defines the type implements <code>Cast</code>, where the
 representation is visible, and a method it leaves out is the
 representation itself: <code>impl Cast for Point {}</code> reads and writes
@@ -463,7 +467,7 @@ program's own <code>Tree&lt;'_&gt;</code>) selects the implementation. Core's
 <pre><code class="language-graphix">trait Collection {
     val fold: fn(self&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
     // null drops an element, `Keep(v) keeps v, null included
-    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; [`Keep('b), null] throws 'e) -&gt; self&lt;'b&gt; throws 'e;
     val flat_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; self&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
     // a default, as are filter, find, find_map and len
     val map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; self&lt;'b&gt; throws 'e

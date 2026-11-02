@@ -251,14 +251,13 @@ let rec fold_l = |l: L&lt;'a&gt;, acc: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws
         `C(x, rest) =&gt; fold_l(rest, f(acc, x), f)
     };
 
-let rec filter_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e|
+let rec filter_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; [`Keep('b), null] throws 'e|
     -&gt; L&lt;'b&gt; throws 'e
     select l {
         `N =&gt; `N,
         `C(x, rest) =&gt; select f(x) {
             null as _ =&gt; filter_map_l(rest, f),
-            `Keep(y) =&gt; `C(y, filter_map_l(rest, f)),
-            y =&gt; `C(y, filter_map_l(rest, f))
+            `Keep(y) =&gt; `C(y, filter_map_l(rest, f))
         }
     };
 

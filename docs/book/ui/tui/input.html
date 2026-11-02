@@ -302,8 +302,11 @@ other):</p>
 </code></pre>
 <p>The <code>modifiers</code> array contains all modifiers held during the key event.</p>
 <h2 id="ending-the-program"><a class="header" href="#ending-the-program">Ending the Program</a></h2>
-<p>A TUI program runs until Ctrl-C, or until it calls <code>tui::exit</code>, which
-ends it the same way: the terminal is restored and the runtime stops.
+<p>A TUI program runs until Ctrl-C (or the interrupt, <code>Ctrl-\</code>), or until it
+calls <code>tui::exit</code>, which ends it the same way: the terminal is restored
+and the runtime stops. Neither key reaches the program. Shown in the
+REPL, Ctrl-C leaves the display with the session kept, and <code>Ctrl-\</code> also
+replaces the runtime with a fresh one.
 Fire it from the key that quits, sampled with the event:</p>
 <pre><code class="language-graphix ignore">`Char("q") =&gt; { tui::exit(k ~ null); `Stop }
 </code></pre>
@@ -570,7 +573,9 @@ input_handler(
 <p><code>tui::form::form</code> is a modal form of several line editors: Tab and Down
 move to the next field, BackTab and Up to the previous, Enter calls
 <code>#on_submit</code> with every field's text, Esc calls <code>#on_cancel</code>. Render its
-<code>view</code> in an <code>input_handler</code> running its <code>handle</code>, on an overlay layer:</p>
+<code>view</code> in an <code>input_handler</code> running its <code>handle</code>, on an overlay layer.
+<code>#style</code> fills its box, and <code>#title_style</code>, <code>#hint_style</code> (help, labels,
+legend) and <code>#field_style</code> (each field's row) style the rest:</p>
 <pre><code class="language-graphix">use tui::{
   block::block,
   form::form,

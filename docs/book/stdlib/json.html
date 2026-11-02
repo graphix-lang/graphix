@@ -165,21 +165,31 @@ inferred from the type annotation at the call site.</p>
 /// Numbers are read exactly, so an object whose only key is
 /// `$serde_json::private::Number` reads as the number its value spells
 /// (`{"$serde_json::private::Number": "42"}` is 42), not as an object.
-/// The target holds no union two members of which one JSON value could
-/// be written by (`JsonData`): `[u8, i64]`, `[string, datetime]` and
-/// `[Array&lt;string&gt;, Array&lt;i64&gt;]` are refused, since what was written as
-/// one could read back as the other.
+/// The target reads back what `write_str` writes of it (`JsonData`):
+/// every union in it tells its members apart by a tag, a variant's or an
+/// abstract type's name, or is one member and null. `[i64, string]`,
+/// `[Port, u8]` and `` [Transparent&lt;Port&gt;, `A] `` are refused. Inside the
+/// data an abstract type's `from_value` reads, abstract values are bare
+/// and carry no tag.
 val read: fn&lt;'b: Concrete + JsonData&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`JsonErr(string), `InvalidCast(string)]&gt;;
 
-/// Serialize a value to a JSON string, as its type says: a struct or a
-/// map with scalar keys is an object; another map is an array of key/value
-/// pairs. An array, tuple or list is an array.
-val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
+/// Serialize a value to a JSON string, as its type says: a struct is an
+/// object, a map an object when its key type is `string` and an array of
+/// `[key, value]` pairs under any other, an array, tuple or list an
+/// array, a bare variant its tag and a variant with a payload an array of
+/// its tag and payload, and an abstract value the object of one entry
+/// its type's name keys (`{"Port": 80}`), its data inside, or under
+/// `Transparent` its data alone. The abstract values inside that data are
+/// bare where the type's `from_value` reads it, else wrapped too. A `T`
+/// written bare that writes null reads back from `[T, null]` as the outer
+/// null, under `Transparent` or in a `from_value`'s data. The value's
+/// type must be one `read` reads back (`JsonData`).
+val write_str: fn&lt;'a: Data + JsonData&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
-/// Serialize a value to JSON bytes.
+/// Serialize a value to JSON bytes, as `write_str` does.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, json::write_bytes(v)?)`.
-val write_bytes: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
+val write_bytes: fn&lt;'a: Data + JsonData&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
 </code></pre>
 <p>Parsing takes <code>bytes</code> or a <code>string</code>, so parsing from a stream is
 reading the stream (<a href="sys/io.html">sys::io</a>):</p>
@@ -202,18 +212,53 @@ let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 
 let items: Array&lt;{id: i64, label: string}&gt; = json::read(data)?;
 let maybe: [string, null] = json::read(data)?;
 </code></pre>
-<h3 id="unions-in-the-target"><a class="header" href="#unions-in-the-target">Unions in the target</a></h3>
+<h3 id="unions-and-abstract-types"><a class="header" href="#unions-and-abstract-types">Unions and abstract types</a></h3>
 <p>JSON keeps no record of which member of a union a value was written as,
-so a target holds no union two of whose members one JSON value could be
-written by: the read could hand back the other one. <code>[u8, i64]</code> (two
-integers), <code>[string, datetime]</code> (a datetime is written as a string),
-<code>[string, `A]</code> (a variant with no payload is written as its tag),
-<code>[decimal, f64]</code>, <code>[Array&lt;string&gt;, Array&lt;i64&gt;]</code> (both write <code>[]</code>) and a
-struct beside a map of strings (an object reads as both) are refused.
-Members JSON writes apart are fine: <code>[i64, f64]</code> (an integer and a number
-with a fraction), <code>[`A(i64), `B(string)]</code>, <code>[{a: i64}, {b: i64}]</code>,
-<code>[T, null]</code>. Pack and db keep the member, so their reads take these
-unions.</p>
+so a reader tells members apart only by a tag the data carries. Every
+union in a type <code>json::read</code> reads or <code>json::write_str</code> writes is one
+member beside <code>null</code>, or its members other than <code>null</code> each carry a tag,
+no two the same:</p>
+<ul>
+<li>a variant carries its tag: <code>`A</code> is written <code>"A"</code> and <code>`B(1)</code>
+<code>["B",1]</code>;</li>
+<li>an abstract type carries its name: <code>Port(80)</code> is written <code>{"Port":80}</code>,
+an object of one entry keyed by the type's unqualified name, holding
+what its <code>Cast</code> implementation writes (its <code>to_value</code>, else its
+representation), and a read takes it only so.</li>
+</ul>
+<p><code>[`A, `B(i64), Port, null]</code> and <code>[T, null]</code>, for a <code>T</code> that is not
+itself a union, read back. <code>[i64, string]</code>, <code>[u8, i64]</code>, <code>[Port, u8]</code>, <code>[string, `A]</code>,
+<code>[{a: i64}, {b: i64}]</code> and a type variable beside another member are
+refused, as a target and as a written value. So is a typedef whose
+parameters grow as it recurses, such as <code>type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Array&lt;'a&gt;&gt;)]</code>.</p>
+<p>The data inside an abstract value's object is written for its reader:
+where <code>T</code>'s <code>Cast</code> implementation writes <code>from_value</code>, which casts it as
+data, the abstract values in it are written bare (<code>{"Tags":["a","b"]}</code>
+for a <code>Tags</code> holding <code>Tag("a")</code> and <code>Tag("b")</code>); where the reader reads
+the representation they are wrapped too (<code>{"Svc":{"port":{"Port":80}}}</code>).
+Bare, an abstract value carries no tag, so in the data a <code>from_value</code>
+reads an abstract type stands in a union only beside <code>null</code>, and there a
+value that writes <code>null</code> reads back as the null: <code>Array&lt;[Port, Ito]&gt;</code> and
+<code>Array&lt;[S, `A]&gt;</code> are refused inside such data, where <code>Port(1)</code> and
+<code>Ito(1)</code> both write <code>1</code>. Where the implementation also writes <code>to_value</code>,
+what the data holds is the implementation's to keep apart.</p>
+<p><code>Transparent&lt;T&gt;</code> (in core) writes an abstract value bare, its data alone,
+and reads it back through <code>T</code>'s <code>Cast</code>. It carries no tag, so in a union
+it stands only beside <code>null</code>; there a <code>T</code> that writes <code>null</code> reads back as
+the outer null. Over a type known not to be abstract it is refused: it
+would change nothing (inside a generic definition, over the definition's
+own type variable, it is not judged, and writes a non-abstract value's
+data as it is). <code>Transparent&lt;Transparent&lt;T&gt;&gt;</code> writes what
+<code>Transparent&lt;T&gt;</code> does. Everywhere else (casts, pack, netidx) a
+<code>Transparent&lt;T&gt;</code> is its representation.</p>
+<pre><code class="language-graphix">type Port = Abstract&lt;u16&gt;;
+impl Cast for Port {};
+let p = Port(u16:80);
+// {"Port":80}
+json::write_str(p)$;
+// 80
+json::write_str(Transparent(p))$
+</code></pre>
 <h3 id="numbers"><a class="header" href="#numbers">Numbers</a></h3>
 <p>A number reads exactly where its position in the target holds an
 integer or a <code>decimal</code>: <code>-9223372036854775809</code> read as an <code>i64</code> is an
@@ -243,14 +288,15 @@ json::write_str(pairs)$;
 // {"a":1,"b":2}
 json::write_str({a: 1, b: 2})$
 </code></pre>
-<p>A map whose keys all write as strings, numbers, booleans, datetimes, durations
-or bare variant tags is an object. If any key has another form, the whole map
-is an array of <code>[key, value]</code> pairs. The key keeps its data structure, so a typed
-read can reconstruct tuple, struct, array, list and payload-variant keys, as
-well as null and bytes keys. For example, <code>{(1, 2) =&gt; 3}</code> writes as
-<code>[[[1,2],3]]</code>.</p>
-<p>A writer refuses a map whose distinct keys serialize as the same data,
-including when the map uses the pairs representation.</p>
+<p>A map is an object when its key type is <code>string</code>. Under any other key
+type, a bare variant's or an abstract type's included, it is an array of
+<code>[key, value]</code> pairs, as it is where its type is not known (<code>Any</code>): the
+type decides, never the keys. A key keeps its data structure, so a typed
+read can reconstruct tuple, struct, array, list and payload-variant keys,
+as well as null and bytes keys. For example, <code>{(1, 2) =&gt; 3}</code> writes as
+<code>[[[1,2],3]]</code> and <code>{1 =&gt; 2}</code> as <code>[[1,2]]</code>.</p>
+<p>A writer refuses a map whose distinct keys serialize as the same data
+(<code>`A</code> and <code>"A"</code> under <code>Any</code>).</p>
 
                     </main>
 

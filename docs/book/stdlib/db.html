@@ -163,10 +163,15 @@ across program runs and Graphix builds; upgrading the executable does not
 rewrite stored records.</p>
 <p>Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, <code>db::tree</code> returns a <code>DbErr</code>.</p>
-<p>A tree orders and matches its keys by their data. For the primitive and
-structural types that is the language's own order; a key of an abstract
-type is stored as its <code>Cast</code> data, so a custom <code>Eq</code> or <code>Ord</code> on it does not
-reach the tree, and its <code>to_value</code> decides the stored order.</p>
+<p>A tree orders and matches its keys by their stored bytes. For a key type
+of one class (a primitive or a structural type) that is the language's own
+order; a key of an abstract type is stored as its <code>Cast</code> data, so a custom
+<code>Eq</code> or <code>Ord</code> on it does not reach the tree, and its <code>to_value</code> decides the
+stored order. A tree keyed by <code>Any</code> may hold keys of different types, and
+orders them by type first, in a fixed order of the types (every <code>i64</code>
+before every <code>f64</code>, every <code>f64</code> before every <code>bool</code>), where the language
+orders numbers by value and before every other kind: iterating such a tree
+is not <code>array::sort</code>'s order.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
 <p>Stored values preserve tuple, struct, variant and list kinds, including in
 unions. This preserves structural kinds, not abstract identity: abstract

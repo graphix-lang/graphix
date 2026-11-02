@@ -165,10 +165,10 @@ val map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; 
 /// (key, value) returns true
 val filter: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; bool throws 'e) -&gt; Map&lt;'k, 'v&gt; throws 'e;
 
-/// filter_map returns a new map of the pairs f outputs: a null output
-/// drops its pair, `Keep(kv) keeps kv, and any other output is kept;
-/// when two outputs share a key, the later one's value wins
-val filter_map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; [('k2, 'v2), null, `Keep(('k2, 'v2))] throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+/// filter_map returns a new map of the pairs f keeps: a null output
+/// drops its pair and `Keep(kv) keeps kv; when two kept pairs share a
+/// key, the later one's value wins
+val filter_map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; [`Keep(('k2, 'v2)), null] throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return the result of f applied to the init and every k, v pair of m in
 /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)

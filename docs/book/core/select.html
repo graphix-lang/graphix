@@ -192,8 +192,9 @@ whichever arm reads a missed fire first spends it for the whole select,
 and an arm's guard and its body, one evaluation, both see it.
 The first time an arm
 is selected is its birth: its constants fire then, and only then. A select
-inside a seq step starts a new entry history at each run, so its arms
-can be born again in the new run, including after an asynchronous wait.
+inside a seq step, or inside a function a step calls, starts a new entry
+history at each run, so its arms can be born again in the new run,
+including after an asynchronous wait.
 An arm first entered with a new function instance or collection slot reads
 standing values as fired, just like the rest of that new instance or slot.</p>
 <p>An event source in the arm (a timer, a subscription, a line reader) keeps
@@ -483,6 +484,38 @@ compiler asks you to annotate the member you mean:</p>
 </code></pre>
 <p>Any type in scope (or an inline structural type,
 <code>{x: i64, y: i64} as {x, ..}</code>) works as the annotation.</p>
+<p>Two members whose left-out fields differ only in types the program has
+not decided yet, where the pattern is checked, look alike, and the
+pattern takes them for one member. Once the whole program (or REPL
+input) is checked, the pattern is refused the same way if they turned
+out different:</p>
+<pre><code class="language-graphix refused">let b = true;
+let x = never();
+let y = never();
+let v = select b { true =&gt; {a: [1], c: x}, false =&gt; {a: ["s"], c: y} };
+let r = select v { {a, ..} =&gt; "[a]" };
+// x and y are decided here, after the select
+x &lt;- 1;
+y &lt;- "w";
+r
+</code></pre>
+<pre><code>$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 5, column: 20 in file test.gx
+    1: the pattern { a, .. } matches more than one member of [{ a: Array&lt;i64&gt;, c: i64 }, { a: Array&lt;string&gt;, c: string }] once its cells are decided; annotate the member you mean, e.g. `T as { a, .. }`, or name every field
+</code></pre>
+<p>Inside a function, a type its callers decide counts as different from
+every other, since two calls may decide them apart: a type whose values
+a caller passes in, as a parameter's are, or can put in later (under a
+<code>&amp;mut</code>, or as a parameter of a function it returns). A type that holds
+no value, such as the element type of an empty <code>[]</code> nothing else
+decides, differs from none, even when the function returns it. The
+first member is what the arm tests at run time, though, so an empty
+<code>[]</code> there that the function returns, whose element a caller may name,
+still differs from a type in another member that holds values. Naming
+every field, <code>{a, c: _}</code>, matches both members as they are.</p>
 <h3 id="variant-patterns"><a class="header" href="#variant-patterns">Variant Patterns</a></h3>
 <p>Variant patterns match variants. Consider,</p>
 <pre><code class="language-graphix">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;

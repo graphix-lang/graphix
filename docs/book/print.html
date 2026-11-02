@@ -442,11 +442,12 @@ string (<code>"…"</code>, <code>r"…"</code>, <code>"""…"""</code>), your c
 normalizes the rest: adjacent <code>use</code> statements are merged into one sorted
 tree per root, <code>i64</code>/<code>f64</code> literals lose a redundant type prefix,
 primitive types come first in a union, a blank line separates every
-top-level item that spans more than one line, and lines are fitted to the
-width. Before anything is written the formatted text is parsed again and
-compared with your program; if the two differ in any way the file is left
-untouched and the difference is reported, so a formatter bug can never
-change what your code means.</p>
+top-level item that spans more than one line, a run of blank lines inside
+a comment block becomes one, and lines are fitted to the width. Before
+anything is written the formatted text is parsed again and compared with
+your program; if the two differ in any way the file is left untouched and
+the difference is reported, so a formatter bug can never change what your
+code means.</p>
 <p>The language server formats through the same code, and the editor
 configurations in <code>ide/editors/</code> turn format-on-save ON by default, with
 a four-space indent to match the formatter. To turn it off:</p>
@@ -511,7 +512,7 @@ using, plus a minimal <code>.gx</code> snippet that triggers the problem.</p>
 </code></pre>
 <p>You'll see a prompt that looks like this:</p>
 <pre><code>Welcome to the graphix shell
-Press ctrl-c to cancel, ctrl-d to exit, and tab for help
+Press ctrl-c to get the prompt back, ctrl-\ to reset the session, ctrl-d to exit, and tab for help
 〉
 </code></pre>
 <p>The REPL evaluates expressions and shows you both the type and the value. The output format is:</p>
@@ -530,17 +531,20 @@ value
 the value. You may be wondering why you don't get the 〉 prompt after
 running this expression. This is because, being a dataflow language,
 expressions are pipelines that can output more than one value, they
-will run until you stop them by hitting ctrl-c. Do this now to get the
-prompt back.</p>
-<p>Since ctrl-c is used to stop the currently running pipeline, if you
-want to exit the REPL press ctrl-d.</p>
+will show their values until you hit ctrl-c. Do this now to get the
+prompt back. What you defined stays: ctrl-c only stops showing the
+value.</p>
+<p>To stop everything, press <code>ctrl-\</code> (ctrl-break on Windows): it stops the
+runtime, even one stuck in a computation that never ends, and starts a
+fresh session, so the bindings you made before it are gone. To exit the
+REPL press ctrl-d.</p>
 <p>Try a more complex expression:</p>
 <pre><code class="language-graphix">〉10 * 5 + 3
 -: i64
 53
 〉2.5 * 4.0
 -: f64
-10
+10.0
 </code></pre>
 <p>Notice that integer arithmetic produces <code>i64</code> (integer) results, while floating-point arithmetic produces <code>f64</code> (float) results.</p>
 <h3 id="strings"><a class="header" href="#strings">Strings</a></h3>
@@ -747,7 +751,7 @@ Caused by:
     1: cannot compute f64 + i64: arithmetic is fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a — both operands must be one numeric type (cast one side explicitly)
 〉1. + cast&lt;f64&gt;(1)$
 -: f64
-2
+2.0
 </code></pre>
 <p>With unchecked operators, a division by zero returns bottom (logged by the interpreter only) -- the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
 <pre><code class="language-graphix">〉0 / 0
@@ -886,7 +890,14 @@ such expressions are surrounded by unescaped <code>[]</code> in the string. For 
 "/foo/bar/1/999"
 </code></pre>
 <p>Values in an interpolation need not be strings, they are printed into the
-string when they are used. You can write a literal <code>[</code> or <code>]</code> in a string by escaping
+string when they are used. A whole float keeps its point, so the text
+reads back as the float it printed:</p>
+<pre><code class="language-graphix">〉let x = 1.5
+〉"[x] doubled is [x * 2.0]"
+-: string
+"1.5 doubled is 3.0"
+</code></pre>
+<p>You can write a literal <code>[</code> or <code>]</code> in a string by escaping
 it.</p>
 <pre><code class="language-graphix">〉"this is a string with a \[ and a \] but it isn't an interpolation"
 -: string
@@ -944,10 +955,27 @@ tick it. Usually the first thing you do with a value of type <code>Any</code> is
 expression to match its type (more on select later). A cast keeps a
 value's kind: a number converts to another number (an integer type only
 when it holds the value exactly), and a union target takes a member of
-the value's own kind first, so <code>cast&lt;[i8, Array&lt;f64&gt;]&gt;([1, 2])</code> is
-<code>[1., 2.]</code>. Across kinds a cast only parses a string (<code>cast&lt;i64&gt;("42")</code>,
+the value's own kind first, whatever another kind's member would keep, so
+<code>cast&lt;[i8, Array&lt;f64&gt;]&gt;([1, 2])</code> is <code>[1., 2.]</code>, <code>cast&lt;[f32, string]&gt;(0.1)</code>
+is the <code>f32</code> 0.1 and <code>cast&lt;[i64, string]&gt;(3.5)</code> the integer 3, whatever
+other members stand beside them (<code>cast&lt;[i64, string, `A]&gt;(3.5)</code> is 3
+too: a union reads by the members of every union and type name in it).
+Text tries
+the members of the kind it parses as next: <code>cast&lt;[duration, decimal]&gt;("3.0")</code>
+is the decimal 3.0, as <code>cast&lt;[duration, decimal]&gt;(3.0)</code> is. Among the
+members of one kind, one that holds the value exactly comes first, then one
+that holds it rounded to its precision, then one that would drop part of
+it: <code>cast&lt;[i64, f32]&gt;(0.1)</code> is the <code>f32</code> 0.1, not the integer 0. A float
+or a decimal, or its text, goes to an integer member only where no <code>f32</code>,
+<code>f64</code> or <code>decimal</code> member holds it exactly: <code>cast&lt;[i64, decimal]&gt;(3.0)</code>
+and <code>cast&lt;[i64, decimal]&gt;("3.0")</code> are both the decimal 3.0 (a decimal made
+of a whole float keeps its point), while <code>cast&lt;[i64, datetime]&gt;("3.0")</code> is
+the integer 3. A bool is held exactly by the number 1 or 0:
+<code>cast&lt;[f32, u8]&gt;(true)</code> is the <code>u8</code> 1.
+Across kinds a cast only parses a string (<code>cast&lt;i64&gt;("42")</code>,
 <code>cast&lt;bool&gt;("true")</code>), prints a number, bool, datetime or duration
-plainly (<code>cast&lt;string&gt;(42)</code> is <code>"42"</code>), converts between a number and
+plainly (<code>cast&lt;string&gt;(42)</code> is <code>"42"</code>, and a whole float keeps its
+point: <code>cast&lt;string&gt;(3.0)</code> is <code>"3.0"</code>), converts between a number and
 a datetime (Unix seconds) or a duration (seconds), turns a bool into a
 number (1 or 0), or reads an array of numbers as bytes; anything else,
 such as <code>cast&lt;bool&gt;(1)</code>, <code>cast&lt;string&gt;([1, 2])</code> or <code>cast&lt;Array&lt;i64&gt;&gt;(5)</code>,
@@ -1554,9 +1582,34 @@ select point.x {
   // every other column
 }
 </code></pre>
-<p>Anywhere else is a parse error: between an operator and its operand
+<p>A blank line between two comment lines stays part of the comment block,
+as one blank line however many were written. One between a comment and
+what it describes, or between an item and the comments below it, is not
+kept.</p>
+<p>A type definition's struct fields and union members take comments the
+same way, through the fields and members of the types inside them too.
+In a union only a variant or a named type takes one: the other members
+print in a fixed order, so a comment could not stay beside them.</p>
+<pre><code class="language-graphix">type Config = {
+  port: i64, // the listening port
+  host: string
+};
+type Msg = [
+  // begin a run
+  `Start,
+  `Stop
+  // more to come
+];
+let c: Config = { port: 8080, host: "localhost" };
+let m: Msg = `Start;
+c.port
+</code></pre>
+<p>A comment anywhere else in a type, in an annotation, a type argument
+(<code>Array&lt;..&gt;</code>), a variant's payload or a function type, is a parse error.
+So is a comment anywhere else in a program: between an operator and its operand
 (<code>x + // no</code>), after an opening bracket on its line, or inside a string's
-<code>[..]</code> splice or an attribute's arguments, which print on one line. The rule is what
+<code>[..]</code> splice or an attribute's arguments, which print on one line; a
+splice holds no <code>///</code> doc or <code>#[..]</code> attribute either. The rule is what
 lets the parser keep every comment in the syntax tree, so tools that
 rewrite a program (the formatter, the REPL echo) never lose one.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="connect"><a class="header" href="#connect">Connect</a></h1>
@@ -1858,8 +1911,9 @@ whichever arm reads a missed fire first spends it for the whole select,
 and an arm's guard and its body, one evaluation, both see it.
 The first time an arm
 is selected is its birth: its constants fire then, and only then. A select
-inside a seq step starts a new entry history at each run, so its arms
-can be born again in the new run, including after an asynchronous wait.
+inside a seq step, or inside a function a step calls, starts a new entry
+history at each run, so its arms can be born again in the new run,
+including after an asynchronous wait.
 An arm first entered with a new function instance or collection slot reads
 standing values as fired, just like the rest of that new instance or slot.</p>
 <p>An event source in the arm (a timer, a subscription, a line reader) keeps
@@ -2149,6 +2203,38 @@ compiler asks you to annotate the member you mean:</p>
 </code></pre>
 <p>Any type in scope (or an inline structural type,
 <code>{x: i64, y: i64} as {x, ..}</code>) works as the annotation.</p>
+<p>Two members whose left-out fields differ only in types the program has
+not decided yet, where the pattern is checked, look alike, and the
+pattern takes them for one member. Once the whole program (or REPL
+input) is checked, the pattern is refused the same way if they turned
+out different:</p>
+<pre><code class="language-graphix refused">let b = true;
+let x = never();
+let y = never();
+let v = select b { true =&gt; {a: [1], c: x}, false =&gt; {a: ["s"], c: y} };
+let r = select v { {a, ..} =&gt; "[a]" };
+// x and y are decided here, after the select
+x &lt;- 1;
+y &lt;- "w";
+r
+</code></pre>
+<pre><code>$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 5, column: 20 in file test.gx
+    1: the pattern { a, .. } matches more than one member of [{ a: Array&lt;i64&gt;, c: i64 }, { a: Array&lt;string&gt;, c: string }] once its cells are decided; annotate the member you mean, e.g. `T as { a, .. }`, or name every field
+</code></pre>
+<p>Inside a function, a type its callers decide counts as different from
+every other, since two calls may decide them apart: a type whose values
+a caller passes in, as a parameter's are, or can put in later (under a
+<code>&amp;mut</code>, or as a parameter of a function it returns). A type that holds
+no value, such as the element type of an empty <code>[]</code> nothing else
+decides, differs from none, even when the function returns it. The
+first member is what the arm tests at run time, though, so an empty
+<code>[]</code> there that the function returns, whose element a caller may name,
+still differs from a type in another member that holds values. Naming
+every field, <code>{a, c: _}</code>, matches both members as they are.</p>
 <h3 id="variant-patterns"><a class="header" href="#variant-patterns">Variant Patterns</a></h3>
 <p>Variant patterns match variants. Consider,</p>
 <pre><code class="language-graphix">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;
@@ -2479,8 +2565,8 @@ earlier step:</p>
 <p>If an argument is bottom at entry, the call waits; it cannot reuse a
 previous run's snapshot. After issuance, later argument changes or bottom
 do not change the snapshot or interrupt the pending result. Nested calls
-get their own snapshots. A call without arguments is read at entry like a
-level.</p>
+get their own snapshots. A call without arguments is issued at entry as
+any call is.</p>
 <p>A step snapshots every variable its text names together, including variables
 read only by an untaken select arm or an uncalled lambda. It waits until
 all of them are present before taking that whole snapshot:</p>
@@ -2504,14 +2590,21 @@ value left standing from an earlier run. A call's answer is what the call
 produces after it is issued; a step that reads a level (<code>let y = x</code>)
 takes the level as it stands at entry, or when the whole step snapshot
 is ready if any named input is absent.
-One consequence: a function that returns a level it does not derive from
-its argument (<code>|v| k</code>) produces nothing new when called again, so a step
-calling it never completes after the first run. Sample the level on the
-argument instead (<code>|v| v ~ k</code>). Another: entering a step is a fresh
-start for the functions it calls, so a function whose answer starts from
-a constant completes the step on that constant. <code>let counter = |t| { let n = 0; n &lt;- t ~ n + 1; n }</code> makes <code>let a = counter(t)</code> 0 at every run,
-its count arriving a cycle later. Start such state at <code>never()</code>, or keep
-it outside the seq.</p>
+A call a step makes is a fresh call at every run, as in an ordinary
+language: the function's body starts again, reading its arguments and
+the variables it captures as they stand. So <code>let load = || sys::fs::read_all(path)</code> reads the file again at each run, though <code>path</code>
+never changed, where outside a seq a function that returns a level it
+does not derive from its argument (<code>|v| k</code>) produces nothing new when
+called again. State inside the function starts afresh too, so a
+function whose answer starts from a constant completes the step on that
+constant: <code>let counter = |t| { let n = 0; n &lt;- t ~ n + 1; n }</code> makes
+<code>let a = counter(t)</code> 0 at every run, its count arriving a cycle later.
+What the function captures from outside keeps its value: keep a count
+that must last across runs outside the function. An event it captures
+is read as it stands too: a call to <code>let wait = |u| ev</code> answers <code>ev</code>'s
+last event at once at every run, never waiting for the next one. A call
+through a function value that is bottom when the step issues it is made
+when the function arrives, and is a fresh call all the same.</p>
 <p>This clocks the call site, not the function body: callbacks and captured
 state inside a function remain reactive. References are sampled as
 handles, not copies of their contents. Calls inside <code>until</code> conditions and
@@ -2646,7 +2739,9 @@ starts. <code>flush(event)</code> also empties the queue:</p>
 <pre><code class="language-graphix ignore">seqq request; abort(skip); flush(cancel_all) { ... }
 </code></pre>
 <p><code>flush</code> follows <code>abort</code> when both are present, and only <code>seqq</code> accepts
-it. The flush source stays active between runs, so it empties queued
+it. It drops every request queued before it, those still waiting for
+their captures (see <a href="core/seq.html#captured-inputs">Captured inputs</a>) included. The
+flush source stays active between runs, so it empties queued
 requests even during the handoff between short runs. A request already
 dispatched for the next run is no longer queued. A request that arrives
 with the flush or after it is kept. Only the abort of the running
@@ -2901,6 +2996,18 @@ defaulted parameter (<code>|#d: i64 = z, x|</code>). An unannotated factory such
 <code>|z| { let g = |#d = z, x| (d, x); g }</code> is refused, as is a default
 like <code>#d: Array&lt;'q&gt; = [z]</code>: a call cannot safely infer the enclosing
 function's type from an omitted argument.</p>
+<p>A type variable the enclosing function declares is closed, since each
+call of that function fixes it: <code>|z: 'a| { let g = |#d: 'a = z, y: i64| d; g(1) }</code> is fine, as are <code>#d: Array&lt;'a&gt; = [z]</code> and an unannotated <code>#d = z</code>,
+which takes the type <code>'a</code>. Such a default must fit its parameter whatever
+<code>'a</code> is, so <code>|z: 'b, w: 'a| { let g = |#d: Array&lt;'a&gt; = [z], y: i64| d; g }</code>
+is refused. A closure returned this way keeps its default per call of the
+factory: <code>mk(1)</code> and <code>mk("s")</code> each omit <code>#d</code> at their own type. A type
+written inside the default names the enclosing function's variables too,
+as one written in its body does: <code>|#d: fn(q: i64) -&gt; 'a = |q: i64| -&gt; 'a z, y: i64|</code> is a function returning the factory's <code>'a</code>.</p>
+<p>The same holds inside a function passed for a polymorphic parameter
+(<code>f: fn&lt;'b: Any&gt;(x: 'b) -&gt; ..</code>): there <code>'b</code> is closed, so <code>app(|x| { let g = |#d = x, y: i64| d; g })</code> gives <code>g</code> the type <code>fn(?#d: 'b, y: i64) -&gt; 'b</code>,
+which a parameter typed <code>fn&lt;'b: Any&gt;(x: 'b) -&gt; fn(y: i64) -&gt; string</code>
+refuses.</p>
 <p>The compiler implements subtyping for functions with optional arguments. For
 example if you write a function that takes a function with a labeled argument
 <code>foo</code>, you can pass any function that has a labeled argument <code>foo</code>, even if it
@@ -3054,6 +3161,29 @@ equal, which is exactly what the signature said they need not be. A
 caller may still pass two values of the same type to a two-variable
 function; the promise is about what the body may assume, not about what
 callers may do.</p>
+<p>A call chooses a type for each declared variable from its arguments, its
+result and what it throws, so a variable must appear in the signature:
+on an argument, the return type or the throws, or inside the bound of
+another variable that does (<code>'a: Array&lt;'b&gt;, 'b: Int |x: 'a|</code>). One that
+only the body names could be chosen by no call, and the definition is
+refused,</p>
+<pre><code class="language-graphix">〉let h = 'a: Number |x: i64| -&gt; i64 { let v: 'a = 1; x }
+error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type, the throws or the bound of a quantifier the signature holds, or remove it
+</code></pre>
+<p>A written function type follows the same rule: <code>fn&lt;'a: Number&gt;(x: i64) -&gt; i64</code> is refused too.</p>
+<p>A bound may not reach its own variable, directly (<code>'a: 'a</code>), inside
+another type (<code>'a: Array&lt;'a&gt;</code>) or through the bound of another variable
+(<code>'a: 'b, 'b: 'a</code>); a definition, a written function type and an impl
+head are refused where they declare one. A recursive bound is written as
+a recursive type, which the variable is then bounded by,</p>
+<pre><code class="language-graphix">〉let n = 'a: [i64, Array&lt;'a&gt;] |x: 'a| -&gt; 'a x
+error: ... 'a's bound names 'a: a bound may not reach its own variable; a recursive bound is a recursive type (`type T = [i64, Array&lt;T&gt;]`, `'a: T`)
+〉type Nested = [i64, Array&lt;Nested&gt;]
+〉let n = 'a: Nested |x: 'a| -&gt; 'a x
+〉n([1, [2, [3]]])
+-: Array&lt;[i64, Array&lt;[i64, Array&lt;i64&gt;]&gt;]&gt;
+[1, [2, [3]]]
+</code></pre>
 <p>A third bound, <code>Discernible</code>, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
 can: a string, an array, a tuple, a struct, a list and each variant are
@@ -3171,7 +3301,7 @@ bytes or with a <code>K</code>, <code>M</code> or <code>G</code> suffix, as in <
 activation budget, the live activations (calls, collection slots)
 a runtime may hold (<code>Control::set_activation_budget</code>, or
 <code>GRAPHIX_ACTIVATION_BUDGET</code>); unlimited by default. A program that
-exceeds a budget is stopped the way Ctrl-C stops it.</p>
+exceeds a budget is stopped the way the interrupt key, <code>Ctrl-\</code>, stops it.</p>
 <p>If you rely on a function running as a constant-space loop, assert it:</p>
 <pre><code class="language-graphix">#[tail_recursive]
 let rec sum_to = |n: i64, acc: i64| -&gt; i64 select n {
@@ -3183,14 +3313,19 @@ let total = #[native] sum_to(1000000, 0)
 <p><code>#[tail_recursive]</code> asserts the shape and <code>#[native]</code> that the call
 compiles to native code. <code>#[tail_recursive]</code> is a compile-time check: if any recursive call is
 not in tail position, if the body is stateful or async, if the body
-holds memory of its own per call (a collection operation, or a call to
+holds memory of its own per call (a collection operation, a call to a
+function that recurses other than by tail calls to itself, or a call to
 a function that holds one, which each activation keeps apart), if the
 function does not recurse at all, or if it recurses mutually, the
 program does not compile. Only compiled code runs the loop: the
-interpreter keeps an activation per call, so the assertion holds when
-fusion is on and the body compiles to native code, and a body that
-does not (it takes a reference, say) fails the compile. With
-<code>--no-fusion</code> it is not checked, as <code>#[native]</code> is not.</p>
+interpreter keeps an activation per call, so the assertion also needs
+every call of the function to compile to native code. A body that does
+not (it takes a reference, say) fails the compile, and so does one call
+whose callback does not, even beside a call that does. A call through a
+function value chosen at runtime is made by the interpreter, so it
+fails too; a function the value holds may call the recursive one
+directly, and that call compiles. With <code>--no-fusion</code> that last part is
+not checked, nor is <code>#[native]</code>; the rest still fails the compile.</p>
 <p>Two related assertions document a function's timing: <code>#[sync]</code> asserts that
 every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and <code>#[async]</code> asserts the opposite.
@@ -3199,9 +3334,11 @@ arguments, with no state, no effect such as <code>println</code>, and no raise t
 handler; <code>dbg</code> is allowed, with a warning. Like <code>#[tail_recursive]</code> they never change how the function compiles — they
 only fail the compile when the compiler disagrees with your expectation.</p>
 <p>The check needs a call to look at. A function called only through a
-value chosen at runtime (<code>let g = select b { true =&gt; f, false =&gt; h }; g(x)</code>) is checked when that call first reaches it; the program is
-already running then, so a failure is reported the way an unhandled
-error is, on stderr and in the log.</p>
+value chosen at runtime (<code>let g = select b { true =&gt; f, false =&gt; h }; g(x)</code>) is checked when that call first reaches it, a
+<code>#[tail_recursive]</code> one at every such call; the program is already
+running then, so a failure is reported the way an unhandled error is, on
+stderr and in the log. A later input to the REPL checks the calls it
+makes as any compile does.</p>
 <p>With that out of the way, lets
 write a recursive function to add up pairs of numbers in an array,</p>
 <pre><code class="language-graphix repl">let rec add_pairs = 'a: Number |a: Array&lt;'a&gt;| -&gt; Array&lt;'a&gt; select a {
@@ -4291,9 +4428,13 @@ impl Cast for Sorted {
         }
     }
 };
-let s: Result&lt;Sorted, [`JsonErr(string), `InvalidCast(string)]&gt; = json::read("\[2, 1\]")
+let s: Result&lt;Sorted, [`JsonErr(string), `InvalidCast(string)]&gt; =
+    json::read("{\"Sorted\": \[2, 1\]}")
 </code></pre>
-<p><code>s</code> is the error <code>can't cast [2, 1] to Sorted: not sorted</code>.</p>
+<p><code>s</code> is the error <code>can't cast [2, 1] to Sorted: not sorted</code>. JSON and TOML
+write an abstract value inside an object its type's name keys
+(<code>{"Sorted":[1,2]}</code>), so a union of abstract types and variants reads
+back, and <code>Transparent&lt;T&gt;</code> writes one bare (<a href="udt/../stdlib/json.html">json</a>).</p>
 <p>Only the module that defines the type implements <code>Cast</code>, where the
 representation is visible, and a method it leaves out is the
 representation itself: <code>impl Cast for Point {}</code> reads and writes
@@ -4316,7 +4457,7 @@ program's own <code>Tree&lt;'_&gt;</code>) selects the implementation. Core's
 <pre><code class="language-graphix">trait Collection {
     val fold: fn(self&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
     // null drops an element, `Keep(v) keeps v, null included
-    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; [`Keep('b), null] throws 'e) -&gt; self&lt;'b&gt; throws 'e;
     val flat_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; self&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
     // a default, as are filter, find, find_map and len
     val map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; self&lt;'b&gt; throws 'e
@@ -4489,14 +4630,13 @@ let rec fold_l = |l: L&lt;'a&gt;, acc: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws
         `C(x, rest) =&gt; fold_l(rest, f(acc, x), f)
     };
 
-let rec filter_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e|
+let rec filter_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; [`Keep('b), null] throws 'e|
     -&gt; L&lt;'b&gt; throws 'e
     select l {
         `N =&gt; `N,
         `C(x, rest) =&gt; select f(x) {
             null as _ =&gt; filter_map_l(rest, f),
-            `Keep(y) =&gt; `C(y, filter_map_l(rest, f)),
-            y =&gt; `C(y, filter_map_l(rest, f))
+            `Keep(y) =&gt; `C(y, filter_map_l(rest, f))
         }
     };
 
@@ -4797,7 +4937,11 @@ let pi = math::constants.pi
 declared in the interface automatically apply to the implementation. A
 type or trait the interface defines must not be defined again in the <code>.gx</code>
 file. The one exception is a type the interface hides (<code>type T;</code>): the
-implementation defines it, as <code>type T = Abstract&lt;..&gt;</code>.</p>
+implementation defines it, as <code>type T = Abstract&lt;..&gt;</code>. A <code>mod</code> or
+<code>use</code> only the interface declares takes effect in the implementation
+after everything the interface lists before it, in whatever order the
+implementation declares those: a submodule the interface lists after
+<code>val y</code> can read <code>super::y</code>.</p>
 </li>
 <li>
 <p><strong>Value declarations (<code>val</code>)</strong> specify what bindings must exist in the
@@ -4856,8 +5000,9 @@ their order, but values are not: a module's body runs where its <code>mod</code>
 statement stands, so a value it imports from its parent must be bound
 above that <code>mod</code>. Place <code>mod</code> after the values the child imports, as the
 example below does. A <code>mod</code> declared only in the <code>.gxi</code> stands in the
-body right after the item the interface lists before it, so a body
-statement above that point cannot read the child's values.</p>
+body after the body's declarations of everything the interface lists
+before it, so a body statement above the last of those cannot read the
+child's values.</p>
 <p>Privacy follows Rust's rule: a private item is visible to its defining
 module and that module's descendants. So a sub-module may
 <code>use super::private_setup</code> even when <code>private_setup</code> is not exported in
@@ -5205,12 +5350,24 @@ ignored, and will be inaccessible to the loading program.</p>
 <li>printed to stdout if they are not</li>
 </ul>
 </li>
-<li><code>Ctrl+C</code> cancels the currently running expression/tui</li>
+<li><code>Ctrl+C</code> gives the prompt back: it leaves the value being shown (or
+abandons the line being typed) and keeps the session, every binding
+included. It stops nothing: while an input waits on a busy runtime it
+only says that <code>Ctrl+\</code> would</li>
+<li><code>Ctrl+\</code> (<code>Ctrl+Break</code> on Windows) is the interrupt: whether something
+is running or not, it stops the runtime, even one stuck in a cycle that
+never ends, forgets every binding, starts a fresh one and says
+<code>interrupted: the session was reset</code></li>
+<li>the terminal sends both keys to every process it runs in the
+foreground, so a child a program spawned (<code>sys::process</code>) that shares
+the terminal receives them too: <code>Ctrl+C</code> stops such a child even
+though the shell keeps the session</li>
 <li><code>Ctrl+D</code> exits the shell</li>
-<li>with input piped in (<code>graphix &lt; lines.gx</code>), the end of the input ends
-the shell once what its lines started has run (at most five seconds for
-a program that never goes idle), with the status a <code>sys::exit</code> among
-them asked for</li>
+<li>with input piped in (<code>graphix &lt; lines.gx</code>), each line replaces the
+output before it once what that output had produced is printed, and the
+end of the input ends the shell once what its lines started has run (at
+most five seconds for a program that never goes idle), with the status a
+<code>sys::exit</code> among them asked for</li>
 </ul>
 <p>REPL mode is designed for interactive exploration. It doesn't enable warnings by default to keep the experience lightweight.</p>
 <h3 id="script-mode"><a class="header" href="#script-mode">Script Mode</a></h3>
@@ -5228,7 +5385,8 @@ graphix netidx:/path/to/my/program
 <li>printed to stdout as it updates if it is not</li>
 </ul>
 </li>
-<li><code>Ctrl+C</code> exits the program</li>
+<li><code>Ctrl+C</code>, or the interrupt <code>Ctrl+\</code>, stops the program and exits
+with status 130</li>
 <li>Warnings about unhandled errors are enabled by default</li>
 </ul>
 <p>Script mode is for running complete programs. The shell stays running to
@@ -5297,15 +5455,15 @@ count &lt;- timer ~ (count + 1);
 count
 </code></pre>
 <p>The last line <code>count</code> is an output expression. Its value changes every second as the timer fires. The shell stays running, printing each new value.</p>
-<p>To stop watching the output and return to the REPL prompt, press <code>Ctrl+C</code>. In script mode, <code>Ctrl+C</code> exits the entire program.</p>
+<p>To stop watching the output and return to the REPL prompt, press <code>Ctrl+C</code>. The program keeps its bindings: <code>count</code> goes on counting, and the next line can read it. To stop the program itself, press <code>Ctrl+\</code>: the runtime is replaced by a fresh one, so the bindings made before it are gone. In script mode, <code>Ctrl+C</code> exits the entire program.</p>
 <h3 id="non-terminating-expressions"><a class="header" href="#non-terminating-expressions">Non-Terminating Expressions</a></h3>
-<p>Most useful Graphix programs don't terminate naturally because they're reactive systems responding to events. The program runs until you explicitly stop it with <code>Ctrl+C</code>.</p>
+<p>Most useful Graphix programs don't terminate naturally because they're reactive systems responding to events. The program runs until you explicitly stop it: <code>Ctrl+C</code> in script mode, <code>Ctrl+\</code> in the REPL.</p>
 <p>However, some expressions produce a single value and effectively "complete":</p>
 <pre><code class="language-graphix">〉2 + 2
 -: i64
 4
 </code></pre>
-<p>Even though this printed its value immediately, the shell is still waiting for potential updates. Since <code>2 + 2</code> can never update, nothing more will happen, but you still need <code>Ctrl+C</code> to return to the prompt.</p>
+<p>Even though this printed its value immediately, the shell is still waiting for potential updates. Since <code>2 + 2</code> can never update, nothing more will happen, but you still need <code>Ctrl+C</code> to return to the prompt, which keeps the session as above.</p>
 <h3 id="script-output-behavior"><a class="header" href="#script-output-behavior">Script Output Behavior</a></h3>
 <p>When you run in script mode only the <strong>last top-level expression</strong> produces output. Consider this file:</p>
 <pre><code class="language-graphix">let x = 10;
@@ -5335,8 +5493,9 @@ mode and will render the output expression as a tui. For example,</p>
 <p>won't print the expression returned by <code>tui::text::text(&amp;"count is [count]")</code> to stdout, it will build a tui,</p>
 <p><img src="ui/tui/media/tui_output_example.gif" alt="TUI Output" /></p>
 <p>When you type <code>Ctrl+C</code> the shell will exit TUI mode and return to the
-normal shell mode. You can use this behavior to experiment with TUI
-widgets interactively.</p>
+normal shell mode, with the session kept; <code>Ctrl+\</code> returns to it in a
+fresh session. You can use this behavior to experiment with TUI widgets
+interactively.</p>
 <h2 id="module-resolution"><a class="header" href="#module-resolution">Module Resolution</a></h2>
 <p>A crucial feature of the shell is its automatic module path configuration. Understanding how this works is essential for organizing larger projects.</p>
 <h3 id="running-a-local-file"><a class="header" href="#running-a-local-file">Running a Local File</a></h3>
@@ -5570,11 +5729,12 @@ graphix --no-cache ./myprogram.gx
 # compile, write the cache and exit (prepare a deployment's first start)
 graphix --warm ./myprogram.gx
 </code></pre>
-<p>On Unix, the cache directories and entries must belong to the effective
-user and must not be writable by group or others. Your cache base
-(<code>$XDG_CACHE_HOME</code>, or <code>~/.cache</code>) may be a symlink if you own every
-link and its target directory meets those ownership and permission
-requirements. The shell refuses symlinks for its managed subdirectories
+<p>On Unix, the cache's own directories and entries must belong to the
+effective user and must not be writable by group or others. Your cache
+base (<code>$XDG_CACHE_HOME</code>, or <code>~/.cache</code>) must belong to you and must not be
+writable by others; it may be writable by your group, as a user private
+group's umask leaves it. It may be a symlink if you own every link and
+its target directory meets those requirements. The shell refuses symlinks for its managed subdirectories
 and image files. It creates new directories with mode 0700 and entries
 with mode 0600. An untrusted cache is a miss and the program compiles
 normally; the first refusal prints one line on stderr saying why, and
@@ -5607,7 +5767,8 @@ log.</p>
 <ul>
 <li><strong>Output expressions</strong> produce values that can update over time</li>
 <li><strong>Programs keep running</strong> to display ongoing updates</li>
-<li><strong>Ctrl+C</strong> stops the current expression (REPL) or exits (file mode)</li>
+<li><strong>Ctrl+C</strong> gives the prompt back (REPL) or exits (file mode); <strong><code>Ctrl+\</code></strong>
+resets the session (REPL)</li>
 <li><strong>Module resolution</strong> is automatic based on where you run from</li>
 <li><strong>Project structure</strong> can be flat or hierarchical</li>
 <li><strong>Shared code</strong> can live in the init directory, GRAPHIX_MODPATH, or netidx</li>
@@ -5712,24 +5873,34 @@ trait Cast {
     val from_value: fn(v: Any) -&gt; Result&lt;self, `InvalidCast(string)&gt;
 };
 
+/// An abstract value JSON and TOML write bare. They write an abstract
+/// value inside an object keyed by its type's name (`{"Port": 80}`, `{
+/// Port = 80 }`); `Transparent&lt;Port&gt;` writes Port's data alone (`80`)
+/// and reads it back through Port's `Cast`. `Transparent(p)` wraps a
+/// value and `t.0` unwraps it. Everywhere else (casts, pack, netidx) it
+/// is its representation. JSON and TOML refuse it over a type known not
+/// to be abstract, where it would change nothing; over a generic
+/// definition's own type variable it is not judged.
+type Transparent&lt;'a&gt; = Abstract&lt;'a&gt;;
+impl&lt;'a&gt; Cast for Transparent&lt;'a&gt;;
+
 /// A collection: a type constructor whose values can be traversed and
 /// rebuilt — `Array`, `List`, `Map` (over its values), and any type a
 /// program implements it for. `self&lt;'a&gt;` is the constructor applied to
 /// the element type. `fold`, `filter_map` and `flat_map` are required;
 /// the rest derive from them, and an implementation overrides what it
 /// can do better. `filter_map`'s callback drops an element by returning
-/// null and keeps one by returning it, or `` `Keep(v) `` to keep a `v`
-/// that may itself be null, which is how the derived `map` and `filter`
-/// keep null elements.
+/// null and keeps `v` by returning `` `Keep(v) ``, a null `v` included,
+/// so the derived `map` and `filter` keep null elements.
 /// `use Collection::*` makes the methods callable bare, and `map(c, f)`
 /// then does the same thing whatever `c` is. A parameter typed
 /// `Collection` accepts any collection: `|c: Collection| fold(c, ..)`.
 trait Collection {
     /// fold the elements, front to back
     val fold: fn(self&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
-    /// the elements `f` maps to a value, in order: null drops one,
+    /// the values `f` keeps, in order: null drops an element,
     /// `` `Keep(v) `` keeps `v`, null included
-    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; [`Keep('b), null] throws 'e) -&gt; self&lt;'b&gt; throws 'e;
     /// the concatenation of `f` over the elements
     val flat_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; self&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
     /// `f` over every element
@@ -5880,7 +6051,9 @@ val uniq: fn&lt;'a: Discernible&gt;(v: 'a) -&gt; 'a;
 /// values from the queue when they are available. When flush updates
 /// discard every value waiting in the queue; recorded clock updates are kept.
 /// When flush_before updates to n, discard the values waiting that arrived
-/// before the n-th v update, the first being the 0-th.
+/// before the n-th v update, the first being the 0-th, and those numbered
+/// below n that arrive later. A queue born again (in a seq step, at each
+/// run) starts empty and numbers its values from 0 again.
 val queue: fn(#clock:Any, ?#flush:Any, ?#flush_before: [i64, null], v: 'a) -&gt; 'a;
 
 /// queuefn wraps a function f and returns a function with the same signature
@@ -6289,10 +6462,9 @@ val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool 
 <pre><code class="language-graphix">/// filter returns a new array containing only elements where f returned true
 val filter: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
-/// filter_map returns a new array of the outputs of f, in order: a
-/// null output drops its element, `Keep(v) keeps v (null included),
-/// and any other output is kept
-val filter_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+/// filter_map returns a new array of the values f keeps, in order: a
+/// null output drops its element and `Keep(v) keeps v, null included
+val filter_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; [`Keep('b), null] throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
 /// return a new array where each element is the output of f applied to the
 /// corresponding element in a
@@ -6412,10 +6584,10 @@ val map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; 
 /// (key, value) returns true
 val filter: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; bool throws 'e) -&gt; Map&lt;'k, 'v&gt; throws 'e;
 
-/// filter_map returns a new map of the pairs f outputs: a null output
-/// drops its pair, `Keep(kv) keeps kv, and any other output is kept;
-/// when two outputs share a key, the later one's value wins
-val filter_map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; [('k2, 'v2), null, `Keep(('k2, 'v2))] throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+/// filter_map returns a new map of the pairs f keeps: a null output
+/// drops its pair and `Keep(kv) keeps kv; when two kept pairs share a
+/// key, the later one's value wins
+val filter_map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; [`Keep(('k2, 'v2)), null] throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return the result of f applied to the init and every k, v pair of m in
 /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
@@ -6459,10 +6631,11 @@ val iterq: fn(#clock: Any, m: Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 <div style="break-before: page; page-break-before: always;"></div><h1 id="str"><a class="header" href="#str">Str</a></h1>
 <p><code>str::parse</code> reads printed values into its annotated type. Inside composites,
 strings escape interpolation brackets and numeric kinds other than <code>i64</code> and
-<code>f64</code> retain their type prefix. Bytes print as <code>bytes:</code> literals.</p>
+<code>f64</code> retain their type prefix. A whole float prints with its point (<code>3.0</code>),
+so <code>cast&lt;[i64, f64]&gt;("[x]")</code> of a float <code>x</code> reads back the float. Bytes print as
+<code>bytes:</code> literals.</p>
 <p>The data reader accepts printed UTC datetimes, durations in every printed unit
-(<code>ns</code>, <code>µs</code>, <code>ms</code>, <code>s</code>, <code>m</code>, <code>h</code>, <code>d</code>), large finite floats printed as integers,
-and <code>NaN</code>, <code>inf</code>, and <code>-inf</code>. These printed forms do not extend program syntax.
+(<code>ns</code>, <code>us</code>, <code>ms</code>, <code>s</code>, <code>m</code>, <code>h</code>, <code>d</code>, <code>M</code>, <code>y</code>; <code>µs</code> too), and <code>NaN</code>, <code>inf</code>, and <code>-inf</code>. These printed forms do not extend program syntax.
 Diagnostic strings inside errors retain their readable, unescaped brackets.</p>
 <pre><code class="language-graphix">type Escape = {
     escape: string,
@@ -7285,6 +7458,9 @@ a no-op for a process that already exited. On Windows a <code>kill_on_drop</code
 child is also assigned to a job object, so it is terminated even if
 the graphix process crashes; a child spawned with <code>kill_on_drop: false</code> is detached and may outlive the graphix process on every
 platform.</p>
+<p>A child shares the shell's terminal, so the keys the terminal turns into
+signals reach it too: <code>Ctrl+C</code> (SIGINT) and <code>Ctrl+\</code> (SIGQUIT) at the
+shell stop it, even where the shell itself keeps the session.</p>
 <p>There is no separate status-probe function: <code>wait</code> is the reactive
 status source. To track running state, give it an initial value:</p>
 <pre><code class="language-graphix">let child = sys::process::spawn(sys::process::options(
@@ -7408,13 +7584,44 @@ val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsSt
 <div style="break-before: page; page-break-before: always;"></div><h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
 <p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
 <a href="https://netidx.github.io/netidx-book">netidx</a>.</p>
-<p><code>sys::net::call</code> waits only for the latest call's reply. Starting another
-call, or leaving the select arm containing the call, abandons the pending
-reply. The server may already be running the request: abandoning its
-reply does not cancel or undo the server's effects. The last completed
-result survives a sleep, and waking alone does not send another request.
-When the result must be observed, keep the call outside the sleeping arm
-or in a seq step that waits for it.</p>
+<p><code>sys::net::call</code> runs calls side by side. Each fire of its arguments
+starts a call, named by <code>#id</code> (an id <code>call_id</code> minted) or by a fresh id,
+and every call answers <code>(id, result)</code> once: its reply, an error,
+or <code>`Aborted</code>. The answers come in the order they arrive, one a
+cycle, so a fast call is never held behind a slow one. A new call cancels
+nothing, except that a call under an id still in flight replaces that
+call, which answers <code>`Aborted</code>. One id for a search box keeps only
+the latest query in flight:</p>
+<pre><code class="language-graphix">let query = "graphix";
+let search = sys::net::call_id(null);
+let (_, reply) = sys::net::call(#id: search, "/local/search", {q: query});
+let hits: Array&lt;string&gt; = reply$;
+</code></pre>
+<p><code>sys::net::abort_call(id)</code> aborts the call in flight under <code>id</code> from
+anywhere in the program: it answers <code>`Aborted</code> and its reply is
+ignored. Aborting, replacing or abandoning a call stops the wait, not the
+server: netidx has no cancel, so the handler still runs and its effects
+still happen. When the select arm holding the call sleeps, its calls in
+flight are abandoned and answer nothing. The last completed result
+survives the sleep, and waking alone sends no request. When a result must
+be observed, keep the call outside the sleeping arm or in a seq step that
+waits for it.</p>
+<p><code>sys::net::callq(path, args)</code> is the common case: no id goes in or comes
+out, and the answers come in the order the calls were made. Each fire of
+an argument still starts a call at once, so any number run side by side,
+but an answer that comes before an earlier call's waits for it, so a
+call the server never answers holds every later answer. Each call
+answers once, one a cycle: its reply or an error. Nothing can replace or
+abort a <code>callq</code> call, so its result has no <code>`Aborted</code>. When its arm
+sleeps, its calls in flight are abandoned and the answers waiting behind
+them are dropped.</p>
+<pre><code class="language-graphix">let sku = "graphix-mug";
+let price: f64 = sys::net::callq("/local/price", {sku})$;
+</code></pre>
+<p><code>callq</code> shares nothing with other call sites, so a fan-out over it (an
+<code>array::map</code> over requests, a server's handlers) can run in parallel.
+<code>call</code> cannot: any site may name a call's id, so the calls of a fan-out
+over <code>call</code> run in program order.</p>
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
@@ -7427,13 +7634,57 @@ val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `Write
 /// subscribe to the specified path
 val subscribe: fn&lt;'a: Concrete&gt;(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
-/// Call the specified RPC. args must be a struct or null. A new call or
-/// a sleep discards any pending reply. This does not undo work already
-/// started on the server: its handler can finish, but its reply is ignored.
-/// The last completed result survives sleep; waking starts no call unless
-/// an argument fires. Keep the call outside a sleeping arm, or in a seq
-/// step that waits for its result, when that result must be observed.
-val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
+/// A call's id: equal only to itself, ordered by when it was minted, so
+/// it keys a map. It is not data: no writer takes it, and it prints as
+/// `abstract:`.
+type RpcId;
+
+/// A fresh id at each fire of `e`.
+val call_id: fn(e: Any) -&gt; RpcId;
+
+/// Call the procedure at `path` with `args`, a struct or null. Each fire
+/// of an argument starts a call, named `#id`, or a fresh id when `#id` is
+/// null; a new call cancels nothing and waits for nothing. Each call
+/// answers `(id, result)` once: its reply, an error, or `` `Aborted ``.
+/// The answers come in the order they arrive, one a cycle, a fast one
+/// never behind a slow one. A call under an id that is still in flight,
+/// from this call site or another, replaces it: the old call answers
+/// `` `Aborted ``. When the call site's arm sleeps, the calls it has in
+/// flight are abandoned and answer nothing. Aborting, replacing or
+/// abandoning a call stops the wait for its reply: the server is not
+/// told, its handler still runs and its effects still happen. A
+/// completed result survives a sleep; waking starts no call unless an
+/// argument fires. When the answers are wanted in the order the calls
+/// were made and no call is aborted, `callq` is simpler.
+val call: fn&lt;'a: Data, 'b: Concrete&gt;(
+    ?#id: [RpcId, null],
+    path: string,
+    args: 'a
+) -&gt; (RpcId, Result&lt;'b, [`RpcError(string), `InvalidCast(string), `Aborted]&gt;);
+
+/// Call the procedure at `path` with `args`, a struct or null, answering
+/// in call order. Each fire of an argument starts a call at once, and any
+/// number may be in flight. Each call answers once, its reply or an
+/// error, in the order the calls were made, one a cycle: an answer that
+/// comes before an earlier call's waits for it, so a call the server never
+/// answers holds every later answer. No id is taken or returned, so
+/// nothing replaces or aborts a call. When the call site's arm sleeps,
+/// its calls in flight are abandoned and the answers waiting behind them
+/// dropped: none of them answers. The server is not told: its handler
+/// still runs and its effects still happen. A completed result survives
+/// a sleep; waking starts no call unless an argument fires.
+val callq: fn&lt;'a: Data, 'b: Concrete&gt;(
+    path: string,
+    args: 'a
+) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
+
+/// At each fire of `id`, abort the call in flight under it, from any call
+/// site: it answers `` `Aborted ``, and its reply, when it comes, is
+/// ignored. An id not in flight (answered, or never used) is left alone.
+/// The server is not told: its handler still runs. A call's fresh id
+/// arrives only with its answer, so a call to be aborted while it waits
+/// is named with `call_id`.
+val abort_call: fn(id: RpcId) -&gt; null;
 
 /// Publish an rpc,
 /// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)
@@ -7456,10 +7707,12 @@ val rpc: fn&lt;'spec: Data, 'result: Data, 'args: Concrete + Data&gt;(
     #f:fn(args: 'args) -&gt; 'result throws 'e
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
-/// list paths under the specified path.
+/// list paths under the specified path, in order, again at each `#update`
+/// (every second by default); a listing equal to the last is not answered.
 val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
-/// list the table under the specified path.
+/// list the table under the specified path, its rows and columns in order,
+/// again at each `#update` as `list` does.
 val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
 /// Publish the specifed value at the specified path. A write to it is cast
@@ -7743,21 +7996,31 @@ inferred from the type annotation at the call site.</p>
 /// Numbers are read exactly, so an object whose only key is
 /// `$serde_json::private::Number` reads as the number its value spells
 /// (`{"$serde_json::private::Number": "42"}` is 42), not as an object.
-/// The target holds no union two members of which one JSON value could
-/// be written by (`JsonData`): `[u8, i64]`, `[string, datetime]` and
-/// `[Array&lt;string&gt;, Array&lt;i64&gt;]` are refused, since what was written as
-/// one could read back as the other.
+/// The target reads back what `write_str` writes of it (`JsonData`):
+/// every union in it tells its members apart by a tag, a variant's or an
+/// abstract type's name, or is one member and null. `[i64, string]`,
+/// `[Port, u8]` and `` [Transparent&lt;Port&gt;, `A] `` are refused. Inside the
+/// data an abstract type's `from_value` reads, abstract values are bare
+/// and carry no tag.
 val read: fn&lt;'b: Concrete + JsonData&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`JsonErr(string), `InvalidCast(string)]&gt;;
 
-/// Serialize a value to a JSON string, as its type says: a struct or a
-/// map with scalar keys is an object; another map is an array of key/value
-/// pairs. An array, tuple or list is an array.
-val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
+/// Serialize a value to a JSON string, as its type says: a struct is an
+/// object, a map an object when its key type is `string` and an array of
+/// `[key, value]` pairs under any other, an array, tuple or list an
+/// array, a bare variant its tag and a variant with a payload an array of
+/// its tag and payload, and an abstract value the object of one entry
+/// its type's name keys (`{"Port": 80}`), its data inside, or under
+/// `Transparent` its data alone. The abstract values inside that data are
+/// bare where the type's `from_value` reads it, else wrapped too. A `T`
+/// written bare that writes null reads back from `[T, null]` as the outer
+/// null, under `Transparent` or in a `from_value`'s data. The value's
+/// type must be one `read` reads back (`JsonData`).
+val write_str: fn&lt;'a: Data + JsonData&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
-/// Serialize a value to JSON bytes.
+/// Serialize a value to JSON bytes, as `write_str` does.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, json::write_bytes(v)?)`.
-val write_bytes: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
+val write_bytes: fn&lt;'a: Data + JsonData&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
 </code></pre>
 <p>Parsing takes <code>bytes</code> or a <code>string</code>, so parsing from a stream is
 reading the stream (<a href="stdlib/sys/io.html">sys::io</a>):</p>
@@ -7780,18 +8043,53 @@ let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 
 let items: Array&lt;{id: i64, label: string}&gt; = json::read(data)?;
 let maybe: [string, null] = json::read(data)?;
 </code></pre>
-<h3 id="unions-in-the-target"><a class="header" href="#unions-in-the-target">Unions in the target</a></h3>
+<h3 id="unions-and-abstract-types"><a class="header" href="#unions-and-abstract-types">Unions and abstract types</a></h3>
 <p>JSON keeps no record of which member of a union a value was written as,
-so a target holds no union two of whose members one JSON value could be
-written by: the read could hand back the other one. <code>[u8, i64]</code> (two
-integers), <code>[string, datetime]</code> (a datetime is written as a string),
-<code>[string, `A]</code> (a variant with no payload is written as its tag),
-<code>[decimal, f64]</code>, <code>[Array&lt;string&gt;, Array&lt;i64&gt;]</code> (both write <code>[]</code>) and a
-struct beside a map of strings (an object reads as both) are refused.
-Members JSON writes apart are fine: <code>[i64, f64]</code> (an integer and a number
-with a fraction), <code>[`A(i64), `B(string)]</code>, <code>[{a: i64}, {b: i64}]</code>,
-<code>[T, null]</code>. Pack and db keep the member, so their reads take these
-unions.</p>
+so a reader tells members apart only by a tag the data carries. Every
+union in a type <code>json::read</code> reads or <code>json::write_str</code> writes is one
+member beside <code>null</code>, or its members other than <code>null</code> each carry a tag,
+no two the same:</p>
+<ul>
+<li>a variant carries its tag: <code>`A</code> is written <code>"A"</code> and <code>`B(1)</code>
+<code>["B",1]</code>;</li>
+<li>an abstract type carries its name: <code>Port(80)</code> is written <code>{"Port":80}</code>,
+an object of one entry keyed by the type's unqualified name, holding
+what its <code>Cast</code> implementation writes (its <code>to_value</code>, else its
+representation), and a read takes it only so.</li>
+</ul>
+<p><code>[`A, `B(i64), Port, null]</code> and <code>[T, null]</code>, for a <code>T</code> that is not
+itself a union, read back. <code>[i64, string]</code>, <code>[u8, i64]</code>, <code>[Port, u8]</code>, <code>[string, `A]</code>,
+<code>[{a: i64}, {b: i64}]</code> and a type variable beside another member are
+refused, as a target and as a written value. So is a typedef whose
+parameters grow as it recurses, such as <code>type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Array&lt;'a&gt;&gt;)]</code>.</p>
+<p>The data inside an abstract value's object is written for its reader:
+where <code>T</code>'s <code>Cast</code> implementation writes <code>from_value</code>, which casts it as
+data, the abstract values in it are written bare (<code>{"Tags":["a","b"]}</code>
+for a <code>Tags</code> holding <code>Tag("a")</code> and <code>Tag("b")</code>); where the reader reads
+the representation they are wrapped too (<code>{"Svc":{"port":{"Port":80}}}</code>).
+Bare, an abstract value carries no tag, so in the data a <code>from_value</code>
+reads an abstract type stands in a union only beside <code>null</code>, and there a
+value that writes <code>null</code> reads back as the null: <code>Array&lt;[Port, Ito]&gt;</code> and
+<code>Array&lt;[S, `A]&gt;</code> are refused inside such data, where <code>Port(1)</code> and
+<code>Ito(1)</code> both write <code>1</code>. Where the implementation also writes <code>to_value</code>,
+what the data holds is the implementation's to keep apart.</p>
+<p><code>Transparent&lt;T&gt;</code> (in core) writes an abstract value bare, its data alone,
+and reads it back through <code>T</code>'s <code>Cast</code>. It carries no tag, so in a union
+it stands only beside <code>null</code>; there a <code>T</code> that writes <code>null</code> reads back as
+the outer null. Over a type known not to be abstract it is refused: it
+would change nothing (inside a generic definition, over the definition's
+own type variable, it is not judged, and writes a non-abstract value's
+data as it is). <code>Transparent&lt;Transparent&lt;T&gt;&gt;</code> writes what
+<code>Transparent&lt;T&gt;</code> does. Everywhere else (casts, pack, netidx) a
+<code>Transparent&lt;T&gt;</code> is its representation.</p>
+<pre><code class="language-graphix">type Port = Abstract&lt;u16&gt;;
+impl Cast for Port {};
+let p = Port(u16:80);
+// {"Port":80}
+json::write_str(p)$;
+// 80
+json::write_str(Transparent(p))$
+</code></pre>
 <h3 id="numbers-1"><a class="header" href="#numbers-1">Numbers</a></h3>
 <p>A number reads exactly where its position in the target holds an
 integer or a <code>decimal</code>: <code>-9223372036854775809</code> read as an <code>i64</code> is an
@@ -7821,47 +8119,66 @@ json::write_str(pairs)$;
 // {"a":1,"b":2}
 json::write_str({a: 1, b: 2})$
 </code></pre>
-<p>A map whose keys all write as strings, numbers, booleans, datetimes, durations
-or bare variant tags is an object. If any key has another form, the whole map
-is an array of <code>[key, value]</code> pairs. The key keeps its data structure, so a typed
-read can reconstruct tuple, struct, array, list and payload-variant keys, as
-well as null and bytes keys. For example, <code>{(1, 2) =&gt; 3}</code> writes as
-<code>[[[1,2],3]]</code>.</p>
-<p>A writer refuses a map whose distinct keys serialize as the same data,
-including when the map uses the pairs representation.</p>
+<p>A map is an object when its key type is <code>string</code>. Under any other key
+type, a bare variant's or an abstract type's included, it is an array of
+<code>[key, value]</code> pairs, as it is where its type is not known (<code>Any</code>): the
+type decides, never the keys. A key keeps its data structure, so a typed
+read can reconstruct tuple, struct, array, list and payload-variant keys,
+as well as null and bytes keys. For example, <code>{(1, 2) =&gt; 3}</code> writes as
+<code>[[[1,2],3]]</code> and <code>{1 =&gt; 2}</code> as <code>[[1,2]]</code>.</p>
+<p>A writer refuses a map whose distinct keys serialize as the same data
+(<code>`A</code> and <code>"A"</code> under <code>Any</code>).</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="toml"><a class="header" href="#toml">toml</a></h1>
 <p>The <code>toml</code> module provides TOML serialization and deserialization.
 Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization, and
 the writers write a value as its type says, as <code>json::write_str</code> does: a
-document is a struct or a map with scalar keys; an <code>Array&lt;(string, T)&gt;</code>
+document is a struct or a map keyed by strings; an <code>Array&lt;(string, T)&gt;</code>
 is refused as a document.
 As with json, only a value whose type says nothing (<code>Any</code>) is written by
 its contents, where an array of <code>(string, _)</code> pairs in key order is a
 table.</p>
-<p>A <code>toml::read</code> target holds no union two of whose members one TOML value
-could be written by, as with <a href="stdlib/json.html#unions-in-the-target">json</a>:
-<code>[u8, i64]</code> and <code>[Array&lt;string&gt;, Array&lt;i64&gt;]</code> are refused. TOML has a
-datetime of its own, so <code>[string, datetime]</code> reads apart here.</p>
-<p>Maps follow JSON's key rule: scalar keys form a table, while a map holding
-a composite or bytes key is an array of <code>[key, value]</code> pairs. Such a map must
-be inside a document field because TOML requires a table at the root. TOML
-cannot represent a null key. Bytes write as an array of byte integers.</p>
+<p>Every union in a type <code>toml::read</code> reads or <code>toml::write_str</code> writes is
+one member beside <code>null</code>, or members each carrying a tag, as with
+<a href="stdlib/json.html#unions-and-abstract-types">json</a>. An abstract value is a table of
+one entry its type's name keys (<code>{ Port = 80 }</code>), the data inside in
+the form its reader reads (abstract values bare, untagged, in the data a
+<code>from_value</code> reads), and <code>Transparent&lt;T&gt;</code> writes it bare.</p>
+<p>TOML has no null. A struct field that is null is left out, and a key the
+document leaves out reads as null where the field's type admits it, so an
+optional field reads back. A null anywhere else, an array's element, a
+map's value or what an abstract type writes, is refused when written.
+TOML cannot write a <code>duration</code> or a <code>decimal</code> either, and has a datetime of
+its own.</p>
+<p>A map is a table when its key type is <code>string</code> and an array of <code>[key, value]</code> pairs under any other, which must be inside a document field
+because TOML requires a table at the root: <code>toml::write_str</code> of a
+<code>Map&lt;i64, string&gt;</code> is refused by its type, and of such a map under <code>Any</code>
+when written. <code>toml::read</code> reads such a map from a document's entries.
+Bytes write as an array of byte integers.</p>
 <pre><code class="language-graphix">/// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
-/// The target holds no union two members of which one TOML value could
-/// be written by (`TomlData`), as `json::read`'s.
+/// The target reads back what `write_str` writes of it (`TomlData`), as
+/// `json::read`'s does: every union in it tells its members apart by a
+/// tag, or is one member and null.
 val read: fn&lt;'b: Concrete + TomlData&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`TomlErr(string), `InvalidCast(string)]&gt;;
 
-/// Serialize a value to a TOML string. Maps with scalar keys are tables;
-/// other maps are arrays of key/value pairs and require a containing table.
-/// Null map keys cannot be represented.
-val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `TomlErr(string)&gt;;
+/// Serialize a value to a TOML string, as `json::write_str` does: a map
+/// is a table when its key type is `string` and an array of `[key,
+/// value]` pairs, which needs a table around it, under any other, so such
+/// a map is refused as the document itself (by its type, or by the value
+/// where its type is `Any`); an
+/// abstract value is a table of one entry its type's name keys (`{ Port
+/// = 80 }`), or under `Transparent` its data alone, the data inside as
+/// `json::write_str` writes it. TOML has no null: a
+/// struct field that is null is left out, and reads back as null; a null
+/// anywhere else is refused when written. The value's type must be one
+/// `read` reads back (`TomlData`).
+val write_str: fn&lt;'a: Data + TomlData&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `TomlErr(string)&gt;;
 
-/// Serialize a value to TOML bytes.
+/// Serialize a value to TOML bytes, as `write_str` does.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, toml::write_bytes(v)?)`.
-val write_bytes: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
+val write_bytes: fn&lt;'a: Data + TomlData&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">
@@ -8022,10 +8339,15 @@ across program runs and Graphix builds; upgrading the executable does not
 rewrite stored records.</p>
 <p>Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, <code>db::tree</code> returns a <code>DbErr</code>.</p>
-<p>A tree orders and matches its keys by their data. For the primitive and
-structural types that is the language's own order; a key of an abstract
-type is stored as its <code>Cast</code> data, so a custom <code>Eq</code> or <code>Ord</code> on it does not
-reach the tree, and its <code>to_value</code> decides the stored order.</p>
+<p>A tree orders and matches its keys by their stored bytes. For a key type
+of one class (a primitive or a structural type) that is the language's own
+order; a key of an abstract type is stored as its <code>Cast</code> data, so a custom
+<code>Eq</code> or <code>Ord</code> on it does not reach the tree, and its <code>to_value</code> decides the
+stored order. A tree keyed by <code>Any</code> may hold keys of different types, and
+orders them by type first, in a fixed order of the types (every <code>i64</code>
+before every <code>f64</code>, every <code>f64</code> before every <code>bool</code>), where the language
+orders numbers by value and before every other kind: iterating such a tree
+is not <code>array::sort</code>'s order.</p>
 <h2 id="interface-2"><a class="header" href="#interface-2">Interface</a></h2>
 <p>Stored values preserve tuple, struct, variant and list kinds, including in
 unions. This preserves structural kinds, not abstract identity: abstract
@@ -8337,10 +8659,9 @@ val map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; List&lt;'b
 /// Return a new list containing only elements where f returned true.
 val filter: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; List&lt;'a&gt; throws 'e;
 
-/// Return a new list of the outputs of f, in order: a null output
-/// drops its element, `Keep(v) keeps v (null included), and any other
-/// output is kept.
-val filter_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+/// Return a new list of the values f keeps, in order: a null output
+/// drops its element and `Keep(v) keeps v, null included.
+val filter_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; [`Keep('b), null] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Return the lists f returns for each element, concatenated in order.
 val flat_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; List&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
@@ -8480,6 +8801,10 @@ rendering.</p>
 <pre><code class="language-graphix">/// Render a Handlebars template with the given data context.
 /// Use #partials to register named partial templates (as a struct or map).
 /// Use #strict to error on missing variables instead of rendering empty strings.
+/// The data is written as JSON is, except that an abstract value is its
+/// data alone and a map whose keys are scalars that print apart is an
+/// object keyed by their text (`{{m.[1]}}` over `{1 =&gt; "one"}` is "one");
+/// any other map is an array of `[key, value]` pairs.
 val render: fn&lt;'a: Data, 'b: Data&gt;(?#strict: bool, ?#partials: 'a, template: string, data: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
 </code></pre>
 <h2 id="example-3"><a class="header" href="#example-3">Example</a></h2>
@@ -8678,11 +9003,12 @@ gauge(
 )
 </code></pre>
 <h2 id="printing-while-a-tui-runs"><a class="header" href="#printing-while-a-tui-runs">Printing While a TUI Runs</a></h2>
-<p>The display owns stdout: <code>print</code>, <code>println</code> and a log written to stdout
-land in the terminal between frames and stay there. Write debug output
-to stderr instead. When stderr goes where the display draws (the
-terminal), the display holds it while it runs and writes what was held
-after it gives the terminal back; when stderr is redirected (<code>graphix app.gx 2&gt;debug.log</code>), every write goes straight to the file, so <code>tail -f debug.log</code> follows the program live.</p>
+<p>The display holds neither stdout nor stderr: whatever a program, a
+library or a child process writes to either while the display runs goes
+straight to where it points. On the terminal it lands over the display
+and stays until the display draws over it. To keep debug output off the display, redirect stderr and write
+to it (<code>graphix app.gx 2&gt;debug.log</code>, then <code>tail -f debug.log</code> in another
+terminal follows the program live).</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="style"><a class="header" href="#style">Style</a></h1>
 <p>Styles control the visual appearance of TUI widgets, including colors and text
 modifiers. Most widgets accept style parameters to customize their appearance.</p>
@@ -10468,8 +10794,11 @@ other):</p>
 </code></pre>
 <p>The <code>modifiers</code> array contains all modifiers held during the key event.</p>
 <h2 id="ending-the-program"><a class="header" href="#ending-the-program">Ending the Program</a></h2>
-<p>A TUI program runs until Ctrl-C, or until it calls <code>tui::exit</code>, which
-ends it the same way: the terminal is restored and the runtime stops.
+<p>A TUI program runs until Ctrl-C (or the interrupt, <code>Ctrl-\</code>), or until it
+calls <code>tui::exit</code>, which ends it the same way: the terminal is restored
+and the runtime stops. Neither key reaches the program. Shown in the
+REPL, Ctrl-C leaves the display with the session kept, and <code>Ctrl-\</code> also
+replaces the runtime with a fresh one.
 Fire it from the key that quits, sampled with the event:</p>
 <pre><code class="language-graphix ignore">`Char("q") =&gt; { tui::exit(k ~ null); `Stop }
 </code></pre>
@@ -10736,7 +11065,9 @@ input_handler(
 <p><code>tui::form::form</code> is a modal form of several line editors: Tab and Down
 move to the next field, BackTab and Up to the previous, Enter calls
 <code>#on_submit</code> with every field's text, Esc calls <code>#on_cancel</code>. Render its
-<code>view</code> in an <code>input_handler</code> running its <code>handle</code>, on an overlay layer:</p>
+<code>view</code> in an <code>input_handler</code> running its <code>handle</code>, on an overlay layer.
+<code>#style</code> fills its box, and <code>#title_style</code>, <code>#hint_style</code> (help, labels,
+legend) and <code>#field_style</code> (each field's row) style the rest:</p>
 <pre><code class="language-graphix">use tui::{
   block::block,
   form::form,
@@ -17625,11 +17956,17 @@ use the default display or delegate to your package.</li>
 channel (<code>graphix_package::Stop</code>), which the display keeps for as long as it
 lives. It carries <code>Result&lt;graphix_package::Ended&gt;</code>: send
 <code>Ok(Ended::Requested)</code> when the program is done (the user closed the
-window, the script called your exit builtin), <code>Ok(Ended::Interrupted)</code>
-when the user interrupted it (Ctrl-C), and <code>Err(e)</code> when the display
-cannot go on (the terminal went away). Dropping it unsent means the display
-died. The shell calls <code>clear()</code> before dropping the display; a script then
-exits, with the error if there was one, and the REPL returns to its prompt.
+window, the script called your exit builtin), <code>Ok(Ended::Left)</code> when the
+user left it (Ctrl-C, read as a key by a display that holds the terminal
+raw), <code>Ok(Ended::Interrupted)</code> when the user interrupted the runtime
+(<code>Ctrl-\</code>), and <code>Err(e)</code> when the display cannot go on (the terminal went
+away). Dropping it unsent means the display died. A display that leaves
+the terminal in its usual mode sends neither key: the terminal sends them
+to the shell as signals. The shell calls <code>clear()</code> before dropping the
+display, and the runtime may already be stopped then, so <code>clear()</code> must
+not wait on it; a script then exits, with the error if there was one, or
+with status 130 at either key, and the REPL returns to its prompt, the
+session kept when left and fresh when interrupted.
 It also receives <code>run_on_main</code>, for a display that needs the main thread.</li>
 </ul>
 <p>Here is a minimal example that prints every update to stderr:</p>
@@ -17968,8 +18305,9 @@ dropped, or handed to <code>EvalCachedAsync::reclaim</code>, which gives a read'
 bytes back to the stream). Only an event source clears
 its output to <code>TagValue::phantom()</code>, since its output is its last
 event. <code>reborn</code> is called before an update that follows a sleep and is
-a birth, a seq step entered for its next run: that is where <code>once</code>
-clears its flag, as a new one would hold nothing.</p>
+a birth, a seq step entered for its next run or a call it issues: that
+is where <code>once</code> clears its flag and an async builtin drops its last
+answer, as a new one would hold nothing.</p>
 <h2 id="higher-order-functions-1"><a class="header" href="#higher-order-functions-1">Higher Order Functions</a></h2>
 <p>Now for a built-in that takes another Graphix function as an argument.
 The simplest example in the standard library is <code>array::group</code>, <code>Group</code>
@@ -18133,8 +18471,9 @@ programs that never touch <code>sys::net</code> never create it.</p>
 <p>To connect to a real netidx environment, seed a
 <a href="https://docs.rs/graphix-package-core/latest/graphix_package_core/enum.NetConfig.html"><code>NetConfig</code></a>
 into the context with <code>setup_context</code> — the general hook for
-embedder-seeded package state, run against the freshly created context
-before anything compiles:</p>
+embedder-seeded package state, run against each freshly created context
+before anything compiles (a REPL's interrupt, <code>Ctrl-\</code>, starts a fresh
+runtime, and the hook seeds it too):</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use graphix_package_core::NetConfig;
@@ -18145,7 +18484,7 @@ ShellBuilder::&lt;NoExt&gt;::default()
     .mode(Mode::Script(Load::File(PathBuf::from("main.gx"))))
     .setup_context(Box::new(move |ctx| {
         ctx.libstate.set(NetConfig::Config {
-            config,
+            config: config.clone(),
             auth: DesiredAuth::Anonymous,
             bind: None,
         });

@@ -220,8 +220,9 @@ programs that never touch <code>sys::net</code> never create it.</p>
 <p>To connect to a real netidx environment, seed a
 <a href="https://docs.rs/graphix-package-core/latest/graphix_package_core/enum.NetConfig.html"><code>NetConfig</code></a>
 into the context with <code>setup_context</code> — the general hook for
-embedder-seeded package state, run against the freshly created context
-before anything compiles:</p>
+embedder-seeded package state, run against each freshly created context
+before anything compiles (a REPL's interrupt, <code>Ctrl-\</code>, starts a fresh
+runtime, and the hook seeds it too):</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use graphix_package_core::NetConfig;
@@ -232,7 +233,7 @@ ShellBuilder::&lt;NoExt&gt;::default()
     .mode(Mode::Script(Load::File(PathBuf::from("main.gx"))))
     .setup_context(Box::new(move |ctx| {
         ctx.libstate.set(NetConfig::Config {
-            config,
+            config: config.clone(),
             auth: DesiredAuth::Anonymous,
             bind: None,
         });

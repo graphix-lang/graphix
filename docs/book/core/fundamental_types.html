@@ -194,7 +194,7 @@ Caused by:
     1: cannot compute f64 + i64: arithmetic is fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a — both operands must be one numeric type (cast one side explicitly)
 〉1. + cast&lt;f64&gt;(1)$
 -: f64
-2
+2.0
 </code></pre>
 <p>With unchecked operators, a division by zero returns bottom (logged by the interpreter only) -- the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
 <pre><code class="language-graphix">〉0 / 0
@@ -333,7 +333,14 @@ such expressions are surrounded by unescaped <code>[]</code> in the string. For 
 "/foo/bar/1/999"
 </code></pre>
 <p>Values in an interpolation need not be strings, they are printed into the
-string when they are used. You can write a literal <code>[</code> or <code>]</code> in a string by escaping
+string when they are used. A whole float keeps its point, so the text
+reads back as the float it printed:</p>
+<pre><code class="language-graphix">〉let x = 1.5
+〉"[x] doubled is [x * 2.0]"
+-: string
+"1.5 doubled is 3.0"
+</code></pre>
+<p>You can write a literal <code>[</code> or <code>]</code> in a string by escaping
 it.</p>
 <pre><code class="language-graphix">〉"this is a string with a \[ and a \] but it isn't an interpolation"
 -: string
@@ -391,10 +398,27 @@ tick it. Usually the first thing you do with a value of type <code>Any</code> is
 expression to match its type (more on select later). A cast keeps a
 value's kind: a number converts to another number (an integer type only
 when it holds the value exactly), and a union target takes a member of
-the value's own kind first, so <code>cast&lt;[i8, Array&lt;f64&gt;]&gt;([1, 2])</code> is
-<code>[1., 2.]</code>. Across kinds a cast only parses a string (<code>cast&lt;i64&gt;("42")</code>,
+the value's own kind first, whatever another kind's member would keep, so
+<code>cast&lt;[i8, Array&lt;f64&gt;]&gt;([1, 2])</code> is <code>[1., 2.]</code>, <code>cast&lt;[f32, string]&gt;(0.1)</code>
+is the <code>f32</code> 0.1 and <code>cast&lt;[i64, string]&gt;(3.5)</code> the integer 3, whatever
+other members stand beside them (<code>cast&lt;[i64, string, `A]&gt;(3.5)</code> is 3
+too: a union reads by the members of every union and type name in it).
+Text tries
+the members of the kind it parses as next: <code>cast&lt;[duration, decimal]&gt;("3.0")</code>
+is the decimal 3.0, as <code>cast&lt;[duration, decimal]&gt;(3.0)</code> is. Among the
+members of one kind, one that holds the value exactly comes first, then one
+that holds it rounded to its precision, then one that would drop part of
+it: <code>cast&lt;[i64, f32]&gt;(0.1)</code> is the <code>f32</code> 0.1, not the integer 0. A float
+or a decimal, or its text, goes to an integer member only where no <code>f32</code>,
+<code>f64</code> or <code>decimal</code> member holds it exactly: <code>cast&lt;[i64, decimal]&gt;(3.0)</code>
+and <code>cast&lt;[i64, decimal]&gt;("3.0")</code> are both the decimal 3.0 (a decimal made
+of a whole float keeps its point), while <code>cast&lt;[i64, datetime]&gt;("3.0")</code> is
+the integer 3. A bool is held exactly by the number 1 or 0:
+<code>cast&lt;[f32, u8]&gt;(true)</code> is the <code>u8</code> 1.
+Across kinds a cast only parses a string (<code>cast&lt;i64&gt;("42")</code>,
 <code>cast&lt;bool&gt;("true")</code>), prints a number, bool, datetime or duration
-plainly (<code>cast&lt;string&gt;(42)</code> is <code>"42"</code>), converts between a number and
+plainly (<code>cast&lt;string&gt;(42)</code> is <code>"42"</code>, and a whole float keeps its
+point: <code>cast&lt;string&gt;(3.0)</code> is <code>"3.0"</code>), converts between a number and
 a datetime (Unix seconds) or a duration (seconds), turns a bool into a
 number (1 or 0), or reads an array of numbers as bytes; anything else,
 such as <code>cast&lt;bool&gt;(1)</code>, <code>cast&lt;string&gt;([1, 2])</code> or <code>cast&lt;Array&lt;i64&gt;&gt;(5)</code>,

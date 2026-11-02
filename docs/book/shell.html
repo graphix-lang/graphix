@@ -174,12 +174,24 @@
 <li>printed to stdout if they are not</li>
 </ul>
 </li>
-<li><code>Ctrl+C</code> cancels the currently running expression/tui</li>
+<li><code>Ctrl+C</code> gives the prompt back: it leaves the value being shown (or
+abandons the line being typed) and keeps the session, every binding
+included. It stops nothing: while an input waits on a busy runtime it
+only says that <code>Ctrl+\</code> would</li>
+<li><code>Ctrl+\</code> (<code>Ctrl+Break</code> on Windows) is the interrupt: whether something
+is running or not, it stops the runtime, even one stuck in a cycle that
+never ends, forgets every binding, starts a fresh one and says
+<code>interrupted: the session was reset</code></li>
+<li>the terminal sends both keys to every process it runs in the
+foreground, so a child a program spawned (<code>sys::process</code>) that shares
+the terminal receives them too: <code>Ctrl+C</code> stops such a child even
+though the shell keeps the session</li>
 <li><code>Ctrl+D</code> exits the shell</li>
-<li>with input piped in (<code>graphix &lt; lines.gx</code>), the end of the input ends
-the shell once what its lines started has run (at most five seconds for
-a program that never goes idle), with the status a <code>sys::exit</code> among
-them asked for</li>
+<li>with input piped in (<code>graphix &lt; lines.gx</code>), each line replaces the
+output before it once what that output had produced is printed, and the
+end of the input ends the shell once what its lines started has run (at
+most five seconds for a program that never goes idle), with the status a
+<code>sys::exit</code> among them asked for</li>
 </ul>
 <p>REPL mode is designed for interactive exploration. It doesn't enable warnings by default to keep the experience lightweight.</p>
 <h3 id="script-mode"><a class="header" href="#script-mode">Script Mode</a></h3>
@@ -197,7 +209,8 @@ graphix netidx:/path/to/my/program
 <li>printed to stdout as it updates if it is not</li>
 </ul>
 </li>
-<li><code>Ctrl+C</code> exits the program</li>
+<li><code>Ctrl+C</code>, or the interrupt <code>Ctrl+\</code>, stops the program and exits
+with status 130</li>
 <li>Warnings about unhandled errors are enabled by default</li>
 </ul>
 <p>Script mode is for running complete programs. The shell stays running to
@@ -266,15 +279,15 @@ count &lt;- timer ~ (count + 1);
 count
 </code></pre>
 <p>The last line <code>count</code> is an output expression. Its value changes every second as the timer fires. The shell stays running, printing each new value.</p>
-<p>To stop watching the output and return to the REPL prompt, press <code>Ctrl+C</code>. In script mode, <code>Ctrl+C</code> exits the entire program.</p>
+<p>To stop watching the output and return to the REPL prompt, press <code>Ctrl+C</code>. The program keeps its bindings: <code>count</code> goes on counting, and the next line can read it. To stop the program itself, press <code>Ctrl+\</code>: the runtime is replaced by a fresh one, so the bindings made before it are gone. In script mode, <code>Ctrl+C</code> exits the entire program.</p>
 <h3 id="non-terminating-expressions"><a class="header" href="#non-terminating-expressions">Non-Terminating Expressions</a></h3>
-<p>Most useful Graphix programs don't terminate naturally because they're reactive systems responding to events. The program runs until you explicitly stop it with <code>Ctrl+C</code>.</p>
+<p>Most useful Graphix programs don't terminate naturally because they're reactive systems responding to events. The program runs until you explicitly stop it: <code>Ctrl+C</code> in script mode, <code>Ctrl+\</code> in the REPL.</p>
 <p>However, some expressions produce a single value and effectively "complete":</p>
 <pre><code class="language-graphix">〉2 + 2
 -: i64
 4
 </code></pre>
-<p>Even though this printed its value immediately, the shell is still waiting for potential updates. Since <code>2 + 2</code> can never update, nothing more will happen, but you still need <code>Ctrl+C</code> to return to the prompt.</p>
+<p>Even though this printed its value immediately, the shell is still waiting for potential updates. Since <code>2 + 2</code> can never update, nothing more will happen, but you still need <code>Ctrl+C</code> to return to the prompt, which keeps the session as above.</p>
 <h3 id="script-output-behavior"><a class="header" href="#script-output-behavior">Script Output Behavior</a></h3>
 <p>When you run in script mode only the <strong>last top-level expression</strong> produces output. Consider this file:</p>
 <pre><code class="language-graphix">let x = 10;
@@ -304,8 +317,9 @@ mode and will render the output expression as a tui. For example,</p>
 <p>won't print the expression returned by <code>tui::text::text(&amp;"count is [count]")</code> to stdout, it will build a tui,</p>
 <p><img src="ui/tui/media/tui_output_example.gif" alt="TUI Output" /></p>
 <p>When you type <code>Ctrl+C</code> the shell will exit TUI mode and return to the
-normal shell mode. You can use this behavior to experiment with TUI
-widgets interactively.</p>
+normal shell mode, with the session kept; <code>Ctrl+\</code> returns to it in a
+fresh session. You can use this behavior to experiment with TUI widgets
+interactively.</p>
 <h2 id="module-resolution"><a class="header" href="#module-resolution">Module Resolution</a></h2>
 <p>A crucial feature of the shell is its automatic module path configuration. Understanding how this works is essential for organizing larger projects.</p>
 <h3 id="running-a-local-file"><a class="header" href="#running-a-local-file">Running a Local File</a></h3>
@@ -539,11 +553,12 @@ graphix --no-cache ./myprogram.gx
 # compile, write the cache and exit (prepare a deployment's first start)
 graphix --warm ./myprogram.gx
 </code></pre>
-<p>On Unix, the cache directories and entries must belong to the effective
-user and must not be writable by group or others. Your cache base
-(<code>$XDG_CACHE_HOME</code>, or <code>~/.cache</code>) may be a symlink if you own every
-link and its target directory meets those ownership and permission
-requirements. The shell refuses symlinks for its managed subdirectories
+<p>On Unix, the cache's own directories and entries must belong to the
+effective user and must not be writable by group or others. Your cache
+base (<code>$XDG_CACHE_HOME</code>, or <code>~/.cache</code>) must belong to you and must not be
+writable by others; it may be writable by your group, as a user private
+group's umask leaves it. It may be a symlink if you own every link and
+its target directory meets those requirements. The shell refuses symlinks for its managed subdirectories
 and image files. It creates new directories with mode 0700 and entries
 with mode 0600. An untrusted cache is a miss and the program compiles
 normally; the first refusal prints one line on stderr saying why, and
@@ -576,7 +591,8 @@ log.</p>
 <ul>
 <li><strong>Output expressions</strong> produce values that can update over time</li>
 <li><strong>Programs keep running</strong> to display ongoing updates</li>
-<li><strong>Ctrl+C</strong> stops the current expression (REPL) or exits (file mode)</li>
+<li><strong>Ctrl+C</strong> gives the prompt back (REPL) or exits (file mode); <strong><code>Ctrl+\</code></strong>
+resets the session (REPL)</li>
 <li><strong>Module resolution</strong> is automatic based on where you run from</li>
 <li><strong>Project structure</strong> can be flat or hierarchical</li>
 <li><strong>Shared code</strong> can live in the init directory, GRAPHIX_MODPATH, or netidx</li>

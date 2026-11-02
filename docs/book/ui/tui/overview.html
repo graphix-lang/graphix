@@ -306,11 +306,12 @@ gauge(
 )
 </code></pre>
 <h2 id="printing-while-a-tui-runs"><a class="header" href="#printing-while-a-tui-runs">Printing While a TUI Runs</a></h2>
-<p>The display owns stdout: <code>print</code>, <code>println</code> and a log written to stdout
-land in the terminal between frames and stay there. Write debug output
-to stderr instead. When stderr goes where the display draws (the
-terminal), the display holds it while it runs and writes what was held
-after it gives the terminal back; when stderr is redirected (<code>graphix app.gx 2&gt;debug.log</code>), every write goes straight to the file, so <code>tail -f debug.log</code> follows the program live.</p>
+<p>The display holds neither stdout nor stderr: whatever a program, a
+library or a child process writes to either while the display runs goes
+straight to where it points. On the terminal it lands over the display
+and stays until the display draws over it. To keep debug output off the display, redirect stderr and write
+to it (<code>graphix app.gx 2&gt;debug.log</code>, then <code>tail -f debug.log</code> in another
+terminal follows the program live).</p>
 
                     </main>
 

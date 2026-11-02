@@ -231,6 +231,29 @@ equal, which is exactly what the signature said they need not be. A
 caller may still pass two values of the same type to a two-variable
 function; the promise is about what the body may assume, not about what
 callers may do.</p>
+<p>A call chooses a type for each declared variable from its arguments, its
+result and what it throws, so a variable must appear in the signature:
+on an argument, the return type or the throws, or inside the bound of
+another variable that does (<code>'a: Array&lt;'b&gt;, 'b: Int |x: 'a|</code>). One that
+only the body names could be chosen by no call, and the definition is
+refused,</p>
+<pre><code class="language-graphix">〉let h = 'a: Number |x: i64| -&gt; i64 { let v: 'a = 1; x }
+error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type, the throws or the bound of a quantifier the signature holds, or remove it
+</code></pre>
+<p>A written function type follows the same rule: <code>fn&lt;'a: Number&gt;(x: i64) -&gt; i64</code> is refused too.</p>
+<p>A bound may not reach its own variable, directly (<code>'a: 'a</code>), inside
+another type (<code>'a: Array&lt;'a&gt;</code>) or through the bound of another variable
+(<code>'a: 'b, 'b: 'a</code>); a definition, a written function type and an impl
+head are refused where they declare one. A recursive bound is written as
+a recursive type, which the variable is then bounded by,</p>
+<pre><code class="language-graphix">〉let n = 'a: [i64, Array&lt;'a&gt;] |x: 'a| -&gt; 'a x
+error: ... 'a's bound names 'a: a bound may not reach its own variable; a recursive bound is a recursive type (`type T = [i64, Array&lt;T&gt;]`, `'a: T`)
+〉type Nested = [i64, Array&lt;Nested&gt;]
+〉let n = 'a: Nested |x: 'a| -&gt; 'a x
+〉n([1, [2, [3]]])
+-: Array&lt;[i64, Array&lt;[i64, Array&lt;i64&gt;]&gt;]&gt;
+[1, [2, [3]]]
+</code></pre>
 <p>A third bound, <code>Discernible</code>, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
 can: a string, an array, a tuple, a struct, a list and each variant are
