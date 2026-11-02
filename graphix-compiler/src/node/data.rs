@@ -1132,7 +1132,11 @@ impl<R: Rt> StructWith<R> {
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
                 if check {
                     for typ in typs.iter() {
-                        wrap!(rep.n, typ.check_contains(&ctx.env, &rep.n.typ()))?;
+                        let contain = |t: &Type| t.check_contains(&ctx.env, &rep.n.typ());
+                        wrap!(
+                            rep.n,
+                            super::callsite::contain_generally(ctx, typ, &rep.n, contain)
+                        )?;
                         wrap!(
                             rep.n,
                             super::callsite::check_hidden_defaults(

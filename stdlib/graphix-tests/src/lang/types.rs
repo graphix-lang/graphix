@@ -2585,6 +2585,108 @@ const RANK2_ARG_OF_A_CALLS_INSTANCE: &str = r#"{
     apply(mk(never()))
 }"#;
 
+// A written quantified function type holds its value wherever it stands as
+// a formal holds its argument: a let annotation, a field, an element, a
+// typedef, a write's target, a struct update's field, a return type and a
+// labeled default are each refused a lambda that writes or returns a
+// binding outside it, or a value a call's instance makes.
+const RANK2_LET_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let h: fn<'a: Any>(x: 'a) -> 'a = |x| { y <- x; x };
+    let k: fn(x: string) -> string = h;
+    (k("s"), y + 1)
+}"#;
+
+const RANK2_LET_RETURNS_OUTER: &str = r#"{
+    let n = never();
+    let h: fn<'a: Any>(x: 'a) -> ('a, 'a) = |x| (x, n);
+    n <- 3;
+    h("s")
+}"#;
+
+const RANK2_LET_WRITES_A_PARAMETER: &str = r#"{
+    let f = |n| {
+        let h: fn<'a: Any>(x: 'a) -> 'a = |x| { n <- x; x };
+        (h(1), h("s"))
+    };
+    f(1)
+}"#;
+
+const RANK2_LET_RETURNS_A_PARAMETER: &str = r#"{
+    let f = |n| {
+        let h: fn<'a: Any>(x: 'a) -> ('a, 'a) = |x| (x, n);
+        h(1)
+    };
+    f(1)
+}"#;
+
+const RANK2_LET_FIELD_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let s: {f: fn<'a: Any>(x: 'a) -> 'a} = {f: |x| { y <- x; x }};
+    (s.f(1), s.f("s"), y + 1)
+}"#;
+
+const RANK2_LET_ELEMENT_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| { y <- x; x }];
+    (fs[0]$(1), fs[0]$("s"), y + 1)
+}"#;
+
+const RANK2_LET_TYPEDEF_WRITES_OUTER: &str = r#"{
+    type T = fn<'a: Any>(x: 'a) -> 'a;
+    let y = never();
+    let h: T = |x| { y <- x; x };
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_CONNECT_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let h: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+    h <- |x| { y <- x; x };
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_DEREF_WRITE_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let h: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+    let r = &mut h;
+    *r <- |x| { y <- x; x };
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_UPDATE_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let s: {f: fn<'a: Any>(x: 'a) -> 'a, n: i64} = {f: |x| x, n: 1};
+    let t = {s with f: |x| { y <- x; x }};
+    (t.f(1), t.f("s"), y + 1)
+}"#;
+
+const RANK2_RETURN_TYPE_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let mk = |z: i64| -> fn<'a: Any>(x: 'a) -> 'a |x| { y <- x; x };
+    let h = mk(0);
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_RETURN_FIELD_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let mk = |z: i64| -> {f: fn<'a: Any>(x: 'a) -> 'a} {f: |x| { y <- x; x }};
+    let s = mk(0);
+    (s.f(1), s.f("s"), y + 1)
+}"#;
+
+const RANK2_DEFAULT_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let g = |#f: fn<'a: Any>(x: 'a) -> 'a = |x| { y <- x; x }, z: i64| (f(z), f("s"));
+    (g(1), y + 1)
+}"#;
+
+const RANK2_LET_OF_A_CALLS_INSTANCE: &str = r#"{
+    let mk = |z| |x| { z <- x; z };
+    let h: fn<'a: Any>(x: 'a) -> 'a = mk(never());
+    (h(1), h("s"))
+}"#;
+
 // Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
@@ -2743,6 +2845,20 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (RANK2_ARG_NESTED_LAMBDA_WRITES_OUTER, "not polymorphic in 'b"),
         (RANK2_FIELD_WRITES_OUTER, "not polymorphic in 'b"),
         (RANK2_ARG_OF_A_CALLS_INSTANCE, "the instance a call in it makes"),
+        (RANK2_LET_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_LET_RETURNS_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_LET_WRITES_A_PARAMETER, "the value is not polymorphic in 'a"),
+        (RANK2_LET_RETURNS_A_PARAMETER, "the value is not polymorphic in 'a"),
+        (RANK2_LET_FIELD_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_LET_ELEMENT_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_LET_TYPEDEF_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_CONNECT_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_DEREF_WRITE_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_UPDATE_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_RETURN_TYPE_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_RETURN_FIELD_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_DEFAULT_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_LET_OF_A_CALLS_INSTANCE, "the instance a call in it makes"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
@@ -7124,6 +7240,54 @@ run!(
     prints(r#"[[i64:1, "s"], [i64:1, "s"], [[i64:1, "s"]], [[i64:1, "s"]]]"#);
     FuseExpect::None
 );
+
+// A written quantified function type holds a value general in it wherever
+// it stands: lambdas, an element read from a rank-2 array and lambda
+// literals in data, through a let, a write, a struct update, a return type
+// and a labeled default, and an array literal passed to a rank-2 element.
+run!(
+    rank2_written_holders_take_general_values,
+    r#"{
+  type T = fn<'a: Any>(x: 'a) -> 'a;
+  let app = |k: T| (k(1), k("s"));
+  let fs: Array<T> = [|x| x];
+  let e: T = fs[0]$;
+  let s: {f: T, n: i64} = {f: |x| x, n: 1};
+  let t = {s with f: |x| x};
+  let h: T = |x| x;
+  h <- |x| x;
+  let r = &mut h;
+  *r <- |x| x;
+  let mk = |z: i64| -> T |x| x;
+  let g = |#f: T = |x| x, z: i64| f(z);
+  let each = |ks: Array<T>| array::map(ks, |k| app(k));
+  (app(e), app(t.f), app(h), app(mk(0)), g(2), each([|x| x]), s.n)
+}"#,
+    prints(r#"[[i64:1, "s"], [i64:1, "s"], [i64:1, "s"], [i64:1, "s"], i64:2, [[i64:1, "s"]], i64:1]"#);
+    FuseExpect::None
+);
+
+// A module holding a written rank-2 typedef of its parent's: its value is
+// held to it, the escape refused as at the top level.
+run!(
+    rank2_module_let_writes_outer,
+    refused("the value is not polymorphic in 'a"),
+    "/test.gx" => r#"
+type T = fn<'a: Any>(x: 'a) -> 'a;
+mod m;
+let result = m::r
+"#,
+    "/test/m.gxi" => r#"
+val r: (i64, string, i64);
+"#,
+    "/test/m.gx" => r#"
+use super::T;
+let y = never();
+let h: T = |x| { y <- x; x };
+let g: fn(x: string) -> string = h;
+let r = (h(1), g("s"), y + 1)
+"#
+    ; FuseExpect::None);
 
 // A `let` annotated with a written rank-2 type holds a function that is
 // any instance of itself: each annotated use picks its own.

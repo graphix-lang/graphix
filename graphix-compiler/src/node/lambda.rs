@@ -1442,9 +1442,15 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                         super::rechecking_instance(recheck, || body.typecheck0(ctx));
                     wrap!(self.body, res)?;
                     let body = self.body.typ().clone();
+                    let contain = |t: &Type| t.check_contains_rigid(&ctx.env, &body);
                     wrap!(
                         self.body,
-                        self.typ.rtype.check_contains_rigid(&ctx.env, &body)
+                        super::callsite::contain_generally(
+                            ctx,
+                            &self.typ.rtype,
+                            &self.body,
+                            contain
+                        )
                     )?;
                     let top = self.body.spec().id;
                     wrap!(
@@ -2706,8 +2712,14 @@ fn judge_default<R: Rt>(
                 .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
             // a variable inside the type is checked as any instance of
             // it: each omitting call checks the default again
-            t if t.has_unbound() => t.reset_tvars().check_contains(&ctx.env, &typ),
-            t => t.check_contains(&ctx.env, &typ),
+            t => {
+                let held = match t.has_unbound() {
+                    true => t.reset_tvars(),
+                    false => t.clone(),
+                };
+                let contain = |t: &Type| t.check_contains(&ctx.env, &typ);
+                super::callsite::contain_generally(ctx, &held, node, contain)
+            }
         }
     })
 }

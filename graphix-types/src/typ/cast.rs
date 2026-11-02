@@ -422,6 +422,9 @@ struct Verdicts<T> {
     /// The types the walk built outside any application being decided,
     /// alive until it ends: a node `walked` holds keeps its address.
     built: LPooled<Vec<Type>>,
+    /// The walk only looks: a name it expands resolves as it stands and
+    /// is decided for no check ([`Type::lookup_ref_probe`]).
+    looks: bool,
 }
 
 impl<T> Verdicts<T> {
@@ -433,7 +436,12 @@ impl<T> Verdicts<T> {
             read: usize::MAX,
             walked: LPooled::take(),
             built: LPooled::take(),
+            looks: false,
         }
+    }
+
+    fn looking() -> Self {
+        Self { looks: true, ..Self::new() }
     }
 
     /// `f` over `t`, a type built for this walk.
@@ -713,7 +721,7 @@ impl Type {
     /// function type that declares quantifiers of its own (`fn<'b: C>`).
     #[doc(hidden)]
     pub fn holds_quantified_fn(&self, env: &Env) -> bool {
-        self.holds(env, &mut Verdicts::new(), &|t| match t {
+        self.holds(env, &mut Verdicts::looking(), &|t| match t {
             Type::Fn(ft) => Some(!ft.quantifiers.is_empty()),
             Type::Abstract { .. } => Some(false),
             _ => None,
@@ -833,10 +841,19 @@ impl Type {
                     None => a.holds(env, seen, leaf),
                 },
                 Type::Ref(tr) => {
-                    let Ok(t) = self.lookup_ref(env) else { return false };
+                    let (key, t) = match seen.looks {
+                        true => match self.lookup_ref_probe(env) {
+                            Some((key, t)) => (Some(key), t),
+                            None => return false,
+                        },
+                        false => match self.lookup_ref(env) {
+                            Ok(t) => (tr.def_key(), t),
+                            Err(_) => return false,
+                        },
+                    };
                     let shape =
                         tr.params.iter().map(|p| p.holds(env, seen, leaf)).collect();
-                    match tr.def_key() {
+                    match key {
                         None => seen.over_built(t, |seen, t| t.holds(env, seen, leaf)),
                         Some(k) => decide_once(seen, (k, shape), false, |seen| {
                             t.holds(env, seen, leaf)

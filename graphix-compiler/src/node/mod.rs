@@ -3227,9 +3227,8 @@ impl<R: Rt> Connect<R> {
             held.collect_tvars(&mut rigid);
         }
         let _gates: LPooled<Vec<_>> = rigid.values().map(|tv| tv.open_rigid()).collect();
-        wrap!(
-            self,
-            held.check_contains(&ctx.env, written).map_err(|e| {
+        let contain = |t: &Type| {
+            t.check_contains(&ctx.env, written).map_err(|e| {
                 match e.downcast_ref::<TypeMismatch>() {
                     Some(_) if generic => format_with_flags(
                         PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
@@ -3253,7 +3252,8 @@ impl<R: Rt> Connect<R> {
                     _ => e,
                 }
             })
-        )?;
+        };
+        wrap!(self, callsite::contain_generally(ctx, &held, &self.node, contain))?;
         // as general as the binding: the written value may not carry one of
         // its variables into the environment, as a function's parameter would
         let quantified: LPooled<Vec<(ArcStr, usize)>> =
@@ -3350,7 +3350,11 @@ impl<R: Rt> ConnectDeref<R> {
                             "can't write through a read-only reference ({btyp}): take it with `&mut`"
                         )
                     }
-                    wrap!(self, t.check_contains(&ctx.env, rhs))?;
+                    let contain = |t: &Type| t.check_contains(&ctx.env, rhs);
+                    wrap!(
+                        self,
+                        callsite::contain_generally(ctx, &t, &self.rhs, contain)
+                    )?;
                     wrap!(
                         self,
                         callsite::check_hidden_defaults(

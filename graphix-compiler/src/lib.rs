@@ -2667,6 +2667,21 @@ impl PendingSettle {
         for s in frame.iter() {
             let res = match s {
                 PendingSettle::Operand { tv, spec } => (tv.settle(env), spec),
+                // CR claude for claude: [bug/high] In the REPL a `let` over ⊥ that a
+                // lambda writes is ⊥ for the inputs after it, and the lambda keeps cells
+                // of its own, so a later input calls it at any type and the binding holds
+                // a value of each: inputs `let y = never()`, `let p = |x| { y <- x; x }`,
+                // `p(1)`, `p("s")`, `y + 1` all pass and the last logs an arith error
+                // over "s"; after one input `let st = never(); let g = |x| { st <- x; st
+                // }`, `g` shows `fn(x: '_N: unbound) -> '_M: unbound` and `st` shows `_`
+                // (main a084f9887 the same; the statements of one line are separate
+                // inputs too). A script checks every call in one frame
+                // before this settle, so its writer decides the type and `p("s")` is
+                // refused. This settle, run at each input's end, is the likely site. It is
+                // why the REPL shape of rank2-escape-01 (rp2.txt) still runs: the earlier
+                // input's binding no longer reaches the lambda's cell, so nothing carries
+                // the quantifier there. probes: ~/ptmp/cr29/scratch/r6-B/i2/rp5.txt,
+                // rp10.txt, rp11.txt (repl-bottom-settle-01)
                 PendingSettle::LetOverBottom { tv, init, spec } => {
                     let bottom = init.with_deref(|t| matches!(t, Some(Type::Bottom)));
                     (if bottom { tv.settle_or_bottom(env) } else { Ok(()) }, spec)

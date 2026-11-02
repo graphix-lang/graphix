@@ -586,16 +586,27 @@ impl<R: Rt> Bind<R> {
         self.type_leaves(ctx, leaves, apart)
     }
 
-    /// The binding holds its value's type, unless it forwards it.
+    /// The binding holds its value's type, unless it forwards it; an
+    /// annotation holds it generally
+    /// ([`super::callsite::contain_generally`]).
     fn check_value(&self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if !self.forwards(&ctx.env) {
             let value = match written(ctx, &self.pattern) {
                 true => ctx.monomorphic(self.node.typ()),
                 false => self.node.typ().clone(),
             };
-            wrap!(self.node, self.typ.check_contains(&ctx.env, &value))?;
             let annotated =
                 matches!(&self.spec.kind, ExprKind::Bind(b) if b.typ.is_some());
+            let contain = |t: &Type| t.check_contains(&ctx.env, &value);
+            match annotated {
+                true => wrap!(
+                    self.node,
+                    super::callsite::contain_generally(
+                        ctx, &self.typ, &self.node, contain
+                    )
+                )?,
+                false => wrap!(self.node, contain(&self.typ))?,
+            }
             if annotated {
                 let scope = Scope::root();
                 let (flags, top) = (BitFlags::empty(), self.spec.id);

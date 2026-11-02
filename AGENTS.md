@@ -1112,10 +1112,13 @@ node graph IS the IR — there is no parallel typed IR
   declare `Number + Singleton`; `FnType::contains_int`, judged
   coinductively where bounds name each other), except a lambda's written
   type over its own checked one, which adopts its bounds and a
-  quantifier the check decided (`ContainsFlags::Adopt`); only a call's
-  argument is held to carry `'b` into no cell outside it
-  (`callsite::polymorphic_in`), so a lambda an annotation, field or
-  element holds may tie it to one (CR rank2-escape-01); while a call
+  quantifier the check decided (`ContainsFlags::Adopt`); the value it
+  holds (a call's argument, a `let`'s, a write's, a struct update's
+  field, a body under a written return type, a labeled default) carries
+  `'b` into nothing that outlives it: no binding it reads or writes from
+  outside, its lambdas' captures included, and no instance a call in it
+  makes reaches `'b` (`callsite::check_general`, `contain_generally`);
+  while a call
   checks its argument against the
   formal, `'b` is one type, which no definition in the argument
   generalizes or copies (`TVar::freshen`); a call copies `'b`

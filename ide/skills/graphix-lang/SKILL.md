@@ -286,7 +286,11 @@ directly or through another's bound (`'a: [i64, Array<'a>]`, `'a: 'b,
 may not reach a binding outside the function: `'a: Concrete |x: 'a| -> 'a
 { y <- x; x }` is refused. Give `y` a type that holds every `'a` (the
 bound, or `Any`), or declare no `'a`: `|x: 'a| -> 'a { y <- x; x }` is
-then one type, the first call's.
+then one type, the first call's. A written `fn<'a: ..>` type holds a value
+the same way wherever it stands (a parameter, a `let` annotation, a field,
+an element, a return type, a labeled default): `let h: fn<'a: Any>(x: 'a)
+-> 'a = |x| { y <- x; x }` is refused, and so is a function a call made
+whose instance holds `'a` (`mk(never())` over `|z| |x| { z <- x; z }`).
 
 A `let` nothing writes that holds lambdas in a struct, tuple, array or
 other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`

@@ -36,6 +36,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
+        TypeMismatch,
         tvar::{Level, RigidGate},
     },
     wrap,
@@ -916,7 +917,30 @@ fn typecheck_arg<R: Rt>(
     }
 }
 
-// CR claude for claude: [bug/high] A written quantified fn type checks the lambda it
+/// `contain` the value `n` in `holder`, a written type. Where the type
+/// holds quantified function types it is expanded to them, their
+/// quantifiers held rigid, for the containment (a mismatch shows
+/// `holder`), and the value must be general in each, as a call's argument
+/// must be in its formal's ([`check_general`]).
+pub(crate) fn contain_generally<R: Rt>(
+    ctx: &CompileCtx<R>,
+    holder: &Type,
+    n: &Node<R>,
+    contain: impl FnOnce(&Type) -> Result<()>,
+) -> Result<()> {
+    match quantified_formal(&ctx.env, holder) {
+        None => contain(holder),
+        Some((formal, _rigid, quantified)) => {
+            contain(&formal).map_err(|e| match e.downcast::<TypeMismatch>() {
+                Ok(m) => anyhow::Error::new(m.shown_as(holder.clone())),
+                Err(e) => e,
+            })?;
+            check_general(ctx, &quantified, n, "the value")
+        }
+    }
+}
+
+// XCR claude for claude: [bug/high] A written quantified fn type checks the lambda it
 // holds with its quantifiers rigid, but only a call's argument is checked for a cell
 // outside the lambda that a quantifier reaches (polymorphic_in, escapes_through). A
 // let annotation, a struct field or an array element lets the quantifier escape:
@@ -932,6 +956,24 @@ fn typecheck_arg<R: Rt>(
 // its formal. probes: ~/ptmp/cr29/scratch/review-r6/B2-r3-1/q/{w7,v4,d5,d6,w2}.gx,
 // mt4/main.gx, mt5/main.gx, rp2.txt (graphix --no-cache < rp2.txt)
 // (rank2-escape-01)
+// 2026-11-01 claude: Every place a written type holds a value now checks it as a
+// call checks its argument (callsite::contain_generally: the type expanded to its
+// quantified fn types, their quantifiers held rigid, then check_general): a let
+// annotation (fields, elements, typedefs, a module using the parent's typedef), a
+// connect's target, *r <-, a struct update's field, a written return type and a
+// labeled default. The holds_quantified_fn probe no longer resolves the names it
+// meets (Verdicts::looking): run at those sites over sibling modules' types it
+// filled a TypeRef cell from the wrong environment (data_table's Source as core's),
+// a rare nondeterministic 'ColumnSpec does not contain' refusal of the gui package
+// (1 in 60 --check runs before, 0 in 120 after). The REPL shape (rp2.txt) still
+// runs: the statements of a line are separate inputs, and a later input's write to
+// an earlier ⊥ let is the separate CR repl-bottom-settle-01; one input holding the
+// shape is refused. Pins: the 14 RANK2_LET_*/CONNECT/DEREF/UPDATE/RETURN/DEFAULT
+// cases of lang::types::unsound_acceptances_are_refused,
+// rank2_module_let_writes_outer, rank2_written_holders_take_general_values (no
+// over-refusal), graphix-shell tests/rank2_escape.rs,
+// node::callsite::test::quantified_formal_decides_no_name; each fails without it;
+// pass under GRAPHIX_NO_SUBST=1.
 // XCR claude for claude: [bug/low] A rank-2 array element passed straight to a rank-2
 // formal is refused: `let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| x]; let f = |k:
 // fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s")); f(fs[0]$)` says "the argument is not
@@ -4583,6 +4625,18 @@ mod test {
         RANK2_STEPS.with(|n| n.set(0));
         assert!(quantified_formal(&env, &t).is_none());
         assert_eq!(RANK2_STEPS.with(|n| n.get()), 0);
+    }
+
+    // The walk that asks whether a type holds one only looks: it decides no
+    // name it meets, which another task's check may resolve in another
+    // environment.
+    #[test]
+    fn quantified_formal_decides_no_name() {
+        let env = typedef_chain();
+        let t = parse_type("P16<i64>").unwrap();
+        let Type::Ref(tr) = &t else { panic!("not a reference: {t}") };
+        assert!(quantified_formal(&env, &t).is_none());
+        assert!(tr.def_key().is_none());
     }
 
     // One that holds one walks each application of a typedef to the same

@@ -1216,6 +1216,15 @@ pub struct TypeMismatch {
     infinite: bool,
 }
 
+impl TypeMismatch {
+    /// The report with `expected` shown for the type it was found against:
+    /// its written form, where the check ran over an expansion of it.
+    pub fn shown_as(mut self, expected: Type) -> Self {
+        self.expected = expected;
+        self
+    }
+}
+
 impl std::fmt::Display for TypeMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.infinite {
