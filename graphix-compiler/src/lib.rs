@@ -1934,6 +1934,18 @@ impl<R: Rt> CompileCtx<R> {
         })
     }
 
+    // CR claude for claude: [perf/medium] A chain of lets holding functions, where each
+    // link binds a written name or carries an annotation, checks in time exponential in
+    // its length: each occurrence of a shared node holding a function takes its own
+    // copy here, so a DAG of holders becomes a tree. `let (a, w) = (x, 0); w <- 1; let
+    // x = (a, a)` repeated: 2.7/3.2/12.0G instructions at N=10/12/14 (debug --check,
+    // main bbb06c0c6), past an 8G RSS cap at 16; o-wtup 6.4/61.9G at 14/18, o-annot
+    // 2.7/33.2G, o-apart2 40.8G at 14; the controls without a lambda stay flat, and
+    // u-wsingle (no holder) grows too, so not all of it is the holder rule's. Copies
+    // keyed by the shared node and the instantiation they came from would keep the
+    // DAG. Found by the r8 re-review of self-arg-instance-01. probes
+    // ~/ptmp/cr29/scratch/review-r8/xcr-self-arg/c/ (t-ownone-N, u-wsingle, o-wtup,
+    // o-annot, o-apart2) (holder-mono-chain-01)
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {

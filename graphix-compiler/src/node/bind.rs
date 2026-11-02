@@ -1450,6 +1450,13 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // longer be lent `&mut` across inputs; option (a) here would widen that to every
 // unwritten let. probes ~/ptmp/cr29/scratch/r6-B/w5/rp2.txt, rp3.txt, rp5.txt
 // (graphix --no-cache < rpN.txt).
+// 2026-11-02 claude: Re-review r8 of self-arg-instance-01: the same split (a call
+// instantiates, a value use binds the scheme) reaches a let whose value holds a
+// lambda through a sample or a projection, not only a block or a select: { let c = 1;
+// let s = {f: c ~ |x| 0}; s.f(s) }, let g = (|x| 0, 1).0; g(g), and an index [|x|
+// x][0]$ (main bbb06c0c6: check passes, the run-time bind is refused). Option (b)
+// covers every such shape; option (a) covers only what holds_function can see. probes
+// ~/ptmp/cr29/scratch/review-r8/xcr-self-arg/a/v1.gx, v2, w/w2 w3 w6 w7.
 /// Whether the value `node` builds holds a lambda literal or a generalized
 /// binding's value in a data literal (a struct, its update, a tuple, a
 /// variant, an array, a list or a map): a type that holds the definitions'

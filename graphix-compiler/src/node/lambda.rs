@@ -1200,7 +1200,7 @@ impl Typing {
         };
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
-            // XCR claude for claude: [bug/medium] A lambda literal held in a
+            // CR claude for claude: [bug/medium] A lambda literal held in a
             // struct, tuple or array and passed a value holding itself passes
             // --check, then its run-time bind is refused here and the call never
             // produces: `{ let s = {f: |x| 0}; s.f(s) }` prints "binding the callee
@@ -1373,6 +1373,32 @@ impl Typing {
             // "x" (refused before). The m.f(5) line of
             // holder_forwarded_beside_a_written_name still passes; new pin
             // lang::types::holder_forwarded_through_a_partial_capture.
+            // 2026-11-02 claude: Re-review r8 (fix 3 holds for what it changed: the
+            // Shared-read chains stay flat, every pin and earlier review shape
+            // passes) found three open problems, each on main bbb06c0c6, probes
+            // ~/ptmp/cr29/scratch/review-r8/xcr-self-arg/ (NOTES.txt, r.sh). (1)
+            // medium: a lambda literal in a data literal passed to a collection
+            // call: array::map([{f: |x| x}], |h| h.f(1)) (g/e1.gx) passes --check,
+            // ELAB-AUDIT reports it and the run refuses h.f(1) "an instance at
+            // fn(x: i64) -> i64 of a definition typed fn(x: _) -> _"; list::map
+            // (e3), array::filter (e4), a callback returning the literal (e5, h5,
+            // d6) alike; the fuzzer says AGREE (both engines fail alike). The 11-01
+            // note that a literal passed straight to a call is decided by that call
+            // held for user functions only (d3, d7): removing the settle exemption
+            // is the likely cause. (2) medium: the original s.f(s) through a value
+            // holds_function does not see as a data literal: { let c = 1; let s =
+            // {f: c ~ |x| 0}; s.f(s) } (a/v1.gx), let g = (|x| 0, 1).0; g(g) (v2),
+            // and w2 w3 w6 w7 (a sample, a projection, an index): the mechanism of
+            // holder-block-select-01 (option b there covers these, option a does
+            // not). (3) medium perf: chains with a written name or an annotation
+            // grow exponentially through CompileCtx::monomorphic, which copies each
+            // occurrence of a shared node holding a function (c/t-ownone-N
+            // 2.7/3.2/12.0G instructions at N=10/12/14, killed at 8G RSS at 16;
+            // o-wtup 61.9G at 18; u-wsingle needs no holder, so likely older): new
+            // CR holder-mono-chain-01. Low: an interface-declared holder accepts by
+            // statement order (m/m3 vs m9); NO_SUBST refuses array::map([s, s], |h|
+            // h.f(true)) which default runs (g/g5-g8, n3). Shape (1) is mine to
+            // fix; shape (2) goes with holder-block-select-01.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),
