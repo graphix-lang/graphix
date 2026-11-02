@@ -248,6 +248,17 @@ fn checked_default<R: Rt>(
     value: Option<&FnType>,
     judge: Judge,
 ) -> Result<Node<R>> {
+    // CR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
+    // in full here at the instance's types, so a select in it over an enclosing
+    // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
+    // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
+    // i64 as n => n * 10 }, y: i64| d + y; f(1) }; outer((true, 3))` is refused "cannot
+    // compute [] * i64" (the arm `i64 as n` reaches nothing at (bool, i64)), while
+    // `outer(v)` with `v: [(bool, i64), i64]` prints 51 and the same select in outer's body
+    // rather than a default checks at both (lane E on 6441a6d70, main a084f9887 alike).
+    // The definition's check owns the coverage verdicts, as for a GRAPHIX_NO_SUBST
+    // re-check (no-subst-dead-arm-01). probe: ~/ptmp/cr29/scratch/r6-E/r6G2/ns3.gx
+    // (default-bind-coverage-01)
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };

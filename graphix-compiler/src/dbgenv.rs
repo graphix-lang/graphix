@@ -12,7 +12,7 @@ dbg_flag!(graphix_dbg_region, "GRAPHIX_DBG_REGION");
 dbg_flag!(graphix_dbg_select, "GRAPHIX_DBG_SELECT");
 dbg_flag!(graphix_dump_clif, "GRAPHIX_DUMP_CLIF");
 dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
-// CR claude for claude: [test-gap/low] GRAPHIX_NO_SUBST is the A/B for instances by
+// XCR claude for claude: [test-gap/low] GRAPHIX_NO_SUBST is the A/B for instances by
 // substitution, but an instance it checks again at a call's narrower type refuses a
 // select arm the definition's check kept: `let g = 'b: [`A(i64), `B(i64)] |x: 'b|
 // select x { `A(z) => "ga [z]", _ => "gn" }; (g(`A(3)), g(`B(1)))` prints ("ga 3",
@@ -51,6 +51,19 @@ dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
 // and cast_of_a_reference_in_an_instance (can't cast a reference),
 // union_bound_open_cell_accepts ($ on i64). Lists:
 // ~/ptmp/cr29/scratch/r6-E/r6G/nosubst_before.txt, nosubst_after.txt.
+// 2026-11-01 claude: The remaining pin passes: under a NO_SUBST re-check an arm
+// nothing reaches at the instance's types (an earlier unguarded wildcard, nothing
+// left, or a test that cannot match what is left: Reach::passes_nothing) binds its
+// names at ⊥ in Select::typecheck0_with, not at the [] narrowing gives, so its body
+// checks ('n * 10' over ⊥ takes i64). The default path never asks (the condition is
+// ctx.instance_recheck first).
+// lang::select::literal_pool_over_a_bounded_variable_counts_its_bound passes under
+// GRAPHIX_NO_SUBST=1 in all four modes and fails there without the change ('cannot
+// compute [] * i64'); lang::select + lang::types under the flag: 24 failures (6 tests
+// x 4 modes), the six listed in the note above, all the instance's own check judging
+// the caller's types, left as they are (list
+// ~/ptmp/cr29/scratch/r6-E/r6G2/nosubst_after2.txt). The same class on the default
+// path, a labeled default compiled at a bind, is default-bind-coverage-01.
 dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
 dbg_flag!(graphix_no_outline, "GRAPHIX_NO_OUTLINE");

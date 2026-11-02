@@ -529,7 +529,8 @@ The default `typecheck0_instance` is the check: the leaves, a reference
 checks every instance again, but for its selects' coverage, dead arms
 and guards, which stay its definition's verdicts
 (`CompileCtx::instance_recheck`): the instance's narrower types can make
-an arm the definition needs unreachable.
+an arm the definition needs unreachable, and such an arm, which never
+runs, binds its names at ⊥.
 
 **Every instance.** An instance records how it is typed
 (`node::lambda::Typing`): it is its definition's check, it substitutes

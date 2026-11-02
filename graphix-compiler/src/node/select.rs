@@ -903,6 +903,13 @@ impl Reach {
         Ok(())
     }
 
+    /// Nothing that reaches `pat`'s arm can pass its test.
+    fn passes_nothing<R: Rt>(&self, env: &Env, pat: &PatternNode<R>) -> Result<bool> {
+        Ok(self.wildcard
+            || self.atype == Type::Primitive(BitFlags::empty())
+            || !pat.type_predicate.could_match(env, &self.atype)?)
+    }
+
     /// Nothing reaches past the last arm: an unguarded arm matches
     /// anything, or what the arms cover leaves no case.
     fn exhausted(&self, env: &Env, scrut: &Type) -> Result<()> {
@@ -2288,7 +2295,13 @@ impl<R: Rt> Select<R> {
             // The arm's binds alias against what reaches it. The
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the
             // walk.
-            let reaching = reach.atype.clone();
+            let reaching =
+                match !ctx.instance_recheck || !reach.passes_nothing(&ctx.env, pat)? {
+                    true => reach.atype.clone(),
+                    // an arm its definition's check kept that nothing reaches
+                    // at the instance's types never runs
+                    false => Type::Bottom,
+                };
             let mut members: SmallVec<[Type; 8]> = SmallVec::new();
             union_members(&ctx.env, &reaching, &mut members)?;
             let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
