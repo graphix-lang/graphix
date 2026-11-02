@@ -463,6 +463,20 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared`.
 fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
+    // CR claude for claude: [bug/medium] An interface val's written quantified fn type
+    // lets its quantifier escape through the implementation, as a let annotation did
+    // before rank2-escape-01: `val h: fn<'a: Any>(x: 'a) -> 'a; val y: i64` over `let y
+    // = never(); let h = |x| { y <- x; x }` (if1) and `val mk: fn(z: i64) -> fn<'a:
+    // Any>(x: 'a) -> 'a` over `let mk = |z| |x| { y <- x; x }` (if3) pass --check, and
+    // the build refuses the instance of m::h(1) ("an instance at fn(x: i64) -> i64 of a
+    // definition typed fn(x: _) -> _"), of m::mk(0) alike; main a084f9887 the same.
+    // sig_matches pairs the declared quantifier with the implementation's cell, which
+    // is y's, a cell the implementation does not own; it binds nothing, so holding the
+    // quantifier rigid and asking carried_out of the implementation's type after the
+    // match finds nothing. The rule is main's iface-generic-written-01's: a declared
+    // quantifier, a rank-2 one included, paired with a cell the implementation does
+    // not own is refused. probes: ~/ptmp/cr29/scratch/r6-B/r7/if1/, if3/ (controls
+    // if4/ runs) (iface-rank2-escape-01)
     declared.sig_matches(env, typ).map_err(|e| {
         let typ = format_with_flags(PrintFlag::DerefTVars, || {
             format_compact!("{}", Brief(typ))

@@ -691,6 +691,12 @@ pub struct BodyShared {
 // written_variable_an_enclosing_parameter_decides_in_a_holder,
 // written_variable_an_enclosing_parameter_decides_is_that_parameter fail without it
 // (all 12 modes), pass under GRAPHIX_NO_SUBST=1; graphix-tests lib 13095 ok.
+// 2026-11-02 claude: Review B4-r1-2: of the first part's two pins,
+// written_variable_of_a_nested_body_is_its_own fails with a9078d0eb reverted only
+// under GRAPHIX_NO_SUBST=1 (the body's half shows only where an instance's body is
+// checked again); written_variable_of_a_nested_signature_is_its_own fails without it
+// in the plain gate. A regression of the body half shows in a NO_SUBST run of
+// lang::types, not in cargo test.
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's; any other

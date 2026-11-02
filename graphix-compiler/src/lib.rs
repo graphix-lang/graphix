@@ -4088,6 +4088,17 @@ pub(crate) fn with_attribute_frame<R: Rt, T>(
     result
 }
 
+// CR claude for claude: [bug/low] A REPL input its check refuses keeps what the
+// check wrote into the cells of earlier inputs' bindings: inputs `let y = []`, `let p:
+// fn<'b: Any>(x: 'b) -> 'b = |x| { y <- [x]; x }` (refused, rightly: the escape check
+// runs after the containment, which bound y's element cell to the quantifier), then
+// `y` shows `Array<'b: unbound within Any>`, and `y <- [1]` binds the refused input's
+// quantifier to i64 (`Array<'b: i64>`), so `y <- ["s"]` is refused naming 'b. Main
+// a084f9887's call path the same: `f(|x| { y <- [x]; x })` over `f = |k: fn<'b:
+// Any>(x: 'b) -> 'b| k(1)` refused leaves y `Array<'_: unbound within Any>`. Saved
+// restores the environment, not the cells a refused check wrote. probes:
+// ~/ptmp/cr29/scratch/r6-B/r7/rq_b3.txt, rq_b6.txt (piped into `graphix --no-cache`)
+// (repl-refused-cells-01)
 /// Unwind a statement that was built but failed its checks: delete what
 /// it registered (runtime refs, lambda and `<-` target entries), then
 /// restore the environment it started from.
