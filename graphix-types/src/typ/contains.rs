@@ -833,6 +833,32 @@ fn conjuncts_admit(
 // RIGID_BELOW_{LET,DECLARED,TRANSPARENT,DEFAULT,FIELD,CONNECT,UNANNOTATED} in
 // lang::types::unsound_acceptances_are_refused (each passes --check on main),
 // lang::types::rigid_below_takes_the_enclosing_variable (no over-refusal).
+// 2026-11-02 claude: Round 8 review (lane R): the absorb was a recursion, merge_into
+// calling itself once per link of a chain of open cells each the next one's lower
+// bound, with no stack guard between (gen_chain.sh 8000 overflowed --check; main
+// checks it). TVar::merge_into now runs one merge (merge_one) and then the cells it
+// hands back, from a worklist, merging each into its rigid survivor in turn. Pins:
+// typ::tvar::tests::a_chain_below_a_rigid_cell_merges_into_it_flat (4000 cells on a
+// 256KB thread; overflows the stack with the recursion) and
+// graphix-shell/tests/deep_nesting.rs's rigidchain shape at CHAIN_DEPTH (slow-tests;
+// the 29145700c binary aborts at 10000 with a stack overflow, the worklist checks it
+// in 93.7G instructions, main 93.8G). Also from that review: (a) the message of
+// 29145700c says each RIGID_BELOW_* pin passed --check with the commit before it but
+// DEFAULT; RIGID_BELOW_UNANNOTATED was refused there too, with another message (i64
+// against string), item 2's level claim making the inner lambda monomorphic. (b) An
+// outer never-let a body uses as a constructor's payload at the written variable
+// becomes that variable (r8-R/r2f.gx: outer is monomorphic in 'c, y's cell, and y <-
+// "t" is refused "y is [i64, string] and cannot hold string"; main runs it). Left as
+// it stands: conservative and contrived, an annotation on y gives both binaries the
+// same refusal, and the declared form (r3) is a real hole of main's this rule closes;
+// the cost is the message. (c) A refusal names x by its own anonymous name (fn(x: '_N)
+// -> '_M), not 'c: the printer names a var by its own name and knows none of the names
+// its cell took; naming them is a printer change across every mismatch message, left.
+// (d) A definition's own labeled default (t6c.gx: |#k: fn<'a: Any>(x: 'a) -> W<'c> =
+// |x| W(x), z: W<'c>| called as outer(W(1))) passes --check and the build refuses: not
+// this cause. 'c there is the call's instance of the callee's variable, an open cell,
+// and an explicit argument does the same with no default (r8-R/d6.gx); new CR
+// rank2-call-signature-01.
 /// Whether the open cell `to` (as `tt`) admits the lower bounds of the
 /// open cell `from` its unification would merge in: its conjuncts
 /// contain each, and a rigid cell, which holds only itself, holds each.

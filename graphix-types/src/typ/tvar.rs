@@ -1524,11 +1524,34 @@ impl TVar {
     }
 
     fn merge_into(&self, other: &Self, how: Merge) {
+        let mut absorbed: SmallVec<[(TVar, TVar); 2]> = SmallVec::new();
+        self.merge_one(other, how, &mut absorbed);
+        while let Some((o, into)) = absorbed.pop() {
+            o.merge_one(&into, Merge::Cells, &mut absorbed);
+            if !o.same_cell(&into) {
+                let cell = into.cell();
+                let mut c = cell.write();
+                if decided(&c) {
+                    c.lower.push(Type::TVar(o))
+                }
+            }
+        }
+    }
+
+    /// One merge of [`Self::merge_into`]; each open cell it would move below
+    /// a rigid survivor goes to `absorbed`, with that survivor, to merge
+    /// into it next.
+    fn merge_one(
+        &self,
+        other: &Self,
+        how: Merge,
+        absorbed: &mut SmallVec<[(TVar, TVar); 2]>,
+    ) {
         if how == Merge::Cells
             && !other.is_rigid()
             && (self.is_rigid() || self.cell().read().task < other.cell().read().task)
         {
-            return other.merge_into(self, how);
+            return other.merge_one(self, how, absorbed);
         }
         let (s_cell, o_cell) = (self.cell(), other.cell());
         let earlier = (earlier_task(&s_cell.read()), earlier_task(&o_cell.read()));
@@ -1548,8 +1571,8 @@ impl TVar {
             (true, false) if how == Merge::Name => {
                 let frozen = other.read().frozen;
                 return match frozen {
-                    false => other.merge_into(self, Merge::Name),
-                    true => self.merge_into(other, Merge::Cells),
+                    false => other.merge_one(self, Merge::Name, absorbed),
+                    true => self.merge_one(other, Merge::Cells, absorbed),
                 };
             }
             _ => (),
@@ -1600,7 +1623,7 @@ impl TVar {
             false => new_conjuncts(&o_cell.read().lower, s_cell.read().lower.clone()),
         };
         // a rigid cell holds only itself: an open cell below it is it
-        let mut absorbed: SmallVec<[TVar; 2]> = SmallVec::new();
+        let mut absorb: SmallVec<[TVar; 2]> = SmallVec::new();
         if o_cell.read().rigid_gates > 0 {
             below.retain(|l| match l {
                 Type::TVar(v) => match v.open_cell() {
@@ -1609,7 +1632,7 @@ impl TVar {
                             && !Arc::ptr_eq(&o.cell(), &s_cell)
                             && !Arc::ptr_eq(&o.cell(), &o_cell) =>
                     {
-                        absorbed.push(o);
+                        absorb.push(o);
                         false
                     }
                     _ => true,
@@ -1680,16 +1703,7 @@ impl TVar {
         for t in moved.iter() {
             lower(t, at)
         }
-        for o in absorbed {
-            o.alias_cells(other);
-            if !o.same_cell(other) {
-                let cell = other.cell();
-                let mut c = cell.write();
-                if decided(&c) {
-                    c.lower.push(Type::TVar(o))
-                }
-            }
-        }
+        absorbed.extend(absorb.into_iter().map(|o| (o, other.clone())));
     }
 
     /// [`Self::alias`] by an enclosing scope's same-named var: one a nested
@@ -3334,6 +3348,30 @@ impl Type {
 mod tests {
     use super::*;
     use arcstr::literal;
+
+    /// A chain of open cells, each the lower bound of the next, merged
+    /// below a rigid cell: every one becomes that cell, one merge after
+    /// another, never a recursion as deep as the chain.
+    #[test]
+    fn a_chain_below_a_rigid_cell_merges_into_it_flat() {
+        let n = 4000;
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let rigid = TVar::empty_named(literal!("c"));
+                let _gate = rigid.open_rigid();
+                let cells: Vec<TVar> =
+                    (0..n).map(|i| TVar::empty_named(arcstr::format!("_{i}"))).collect();
+                for w in cells.windows(2) {
+                    w[1].add_lower(Type::TVar(w[0].clone()))
+                }
+                cells[n - 1].alias_cells(&rigid);
+                assert!(cells.iter().all(|c| c.same_cell(&rigid)));
+            })
+            .expect("spawn")
+            .join()
+            .expect("the merges")
+    }
 
     #[test]
     fn alias_to_itself_is_a_no_op() {

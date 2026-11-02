@@ -296,6 +296,19 @@ fn program(shape: &str, d: usize) -> String {
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
             format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
         }
+        // Open cells, each the lower bound of the next, the last below a
+        // rigid cell: the merge takes every one into it.
+        "rigidchain" => {
+            let mut s = String::from(
+                "type W<'t> = Abstract<'t>;\nlet outer = 'c: Any |z: W<'c>| {\n\
+                 let a0 = never();\nlet a1 = W(a0);\n",
+            );
+            for i in 2..=d {
+                s.push_str(&format!("let a{i} = W(a{}.0);\n", i - 1));
+            }
+            s.push_str(&format!("let q: W<'c> = a{d};\nz\n}};\nouter(W(1))"));
+            s
+        }
         // a static call chain: each kernel calls the one before, so the
         // link installs (and an image writes) a record tree this deep
         "calleechain" => {
@@ -334,7 +347,8 @@ fn paren_chain(d: usize) -> String {
 const FLAT_SHAPES: &[&str] = &["flattype", "flatcast", "calleechain"];
 const FLAT_DEPTH: usize = 3000;
 
-/// Cells chained by bounds in one signature (`chainbounds`).
+/// Cells chained by bounds: in one signature (`chainbounds`), and by lower
+/// bounds below a rigid cell (`rigidchain`).
 const CHAIN_DEPTH: usize = 10000;
 
 /// A chain of module files, each its own parse, so the parser's limit
@@ -904,6 +918,7 @@ fn deep_nesting_does_not_overflow() {
         .chain(FLAT_SHAPES.iter().flat_map(|s| MODES.map(|m| (*s, FLAT_DEPTH, m))))
         .chain([("modchain", MODCHAIN_DEPTH, "check")])
         .chain([("chainbounds", CHAIN_DEPTH, "check")])
+        .chain([("rigidchain", CHAIN_DEPTH, "check")])
         .collect();
     let mut codes: HashMap<(&str, usize, &str), Option<i32>> = HashMap::new();
     for batch in cases.chunks(CONCURRENCY) {
