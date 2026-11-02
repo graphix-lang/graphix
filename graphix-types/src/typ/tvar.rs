@@ -1633,6 +1633,8 @@ impl TVar {
             );
         }
         let level = s_cell.read().level;
+        let moved: LPooled<Vec<Type>> =
+            to_add.iter().chain(below.iter()).cloned().collect();
         {
             let mut oc = o_cell.write();
             if oc.binding.is_some() && !(to_add.is_empty() && below.is_empty()) {
@@ -1656,6 +1658,10 @@ impl TVar {
         s.cell = o_cell;
         drop(s);
         lower(&Type::TVar(other.clone()), level);
+        let at = other.level();
+        for t in moved.iter() {
+            lower(t, at)
+        }
     }
 
     /// [`Self::alias`] by an enclosing scope's same-named var: one a nested

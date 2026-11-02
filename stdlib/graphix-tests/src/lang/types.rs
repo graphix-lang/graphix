@@ -2889,6 +2889,47 @@ const RANK2_CONNECT_TRANSPARENT_ITSELF_BESIDE_ITS_QUANTIFIER: &str = r#"{
     (f(1), f("s"), z.0.v + 1)
 }"#;
 
+// A callee's bound ties the quantifier to an outer cell's constraint:
+// carried out as a binding carries it, at a let, a call's formal and
+// through a reference parameter.
+const RANK2_LET_CONSTRAINS_OUTER: &str = r#"{
+    let y = never();
+    let g = 'b: 'c, 'c: Any |p: 'b, q: 'c| q;
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| { let r = g(y, x); x };
+    let t = f("s");
+    y <- 5;
+    (f(1), t, y + 1)
+}"#;
+
+const RANK2_ARG_CONSTRAINS_OUTER: &str = r#"{
+    let y = never();
+    let g = 'b: 'c, 'c: Any |p: 'b, q: 'c| q;
+    let app = |k: fn<'a: Any>(x: 'a) -> 'a| (k(1), k("s"));
+    let r = app(|x| { let r = g(y, x); x });
+    y <- 5;
+    (r, y + 1)
+}"#;
+
+const RANK2_LET_CONSTRAINS_OUTER_BY_REFERENCE: &str = r#"{
+    let y = never();
+    let g = 'b: 'c, 'c: Any |p: &'b, q: 'c| q;
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| { let r = g(&y, x); x };
+    let t = f("s");
+    y <- 5;
+    (f(1), t, y + 1)
+}"#;
+
+// A definition's declared variable a callee's bound ties to an outer
+// cell's constraint escapes it as a binding would.
+const DECLARED_CONSTRAINS_OUTER: &str = r#"{
+    let y = never();
+    let g = 'b: 'c, 'c: Any |p: 'b, q: 'c| q;
+    let f = 'a: Any |x: 'a| -> 'a { let r = g(y, x); x };
+    let t = f("s");
+    y <- 5;
+    (f(1), t, y + 1)
+}"#;
+
 // Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
@@ -3103,6 +3144,10 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
             RANK2_CONNECT_TRANSPARENT_ITSELF_BESIDE_ITS_QUANTIFIER,
             "the value is not polymorphic in 'a",
         ),
+        (RANK2_LET_CONSTRAINS_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_ARG_CONSTRAINS_OUTER, "the argument is not polymorphic in 'a"),
+        (RANK2_LET_CONSTRAINS_OUTER_BY_REFERENCE, "the value is not polymorphic in 'a"),
+        (DECLARED_CONSTRAINS_OUTER, "'a escapes the definition"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),

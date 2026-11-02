@@ -1223,7 +1223,7 @@ pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
     out
 }
 
-// CR claude for claude: [bug/medium] A quantifier escapes into an outer cell's
+// XCR claude for claude: [bug/medium] A quantifier escapes into an outer cell's
 // constraint through a callee's bound, and nothing sees it: escapes_through's walk
 // (reaches_cell) follows bindings, never a cell's constraints, and
 // DefGate::check_declared_kept misses a rank-1 declared variable there (the cell's
@@ -1239,6 +1239,22 @@ pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
 // check_declared_kept refuses a declared variable an outside cell's constraint
 // names. probes: ~/ptmp/cr29/scratch/review-r7/B5-r1-1/i1/{k_constr,k_constr3,
 // k_constr4,k_constr_r1}.gx, fz/fz_constr.gx (rank2-escape-constraint-01)
+// 2026-11-02 claude: Round 8 lane R: two causes, both fixed. (1) TVar::merge_into
+// moved the absorbed cell's conjuncts and lower bounds into the surviving cell
+// without lowering them to its level, so y's top-level cell held 'c (the call's
+// instance of g's bound) at the call's depth, and the merge of 'c with the declared
+// 'a lowered nothing: what a merge moves into the surviving cell is now claimed at
+// that cell's level (the rule design/tvar_constraints.md already stated), so
+// k_constr_r1 is refused by DefGate::check_declared_kept ("'a escapes the
+// definition"). (2) The escape walk (callsite::Reach) follows an open cell's
+// constraints as it follows its lower bounds, so the rank-2 forms are refused as not
+// polymorphic in 'a (k_constr let, k_constr3 call formal, k_constr4 reference
+// parameter, fz_constr). Pins: RANK2_LET_CONSTRAINS_OUTER,
+// RANK2_ARG_CONSTRAINS_OUTER, RANK2_LET_CONSTRAINS_OUTER_BY_REFERENCE and
+// DECLARED_CONSTRAINS_OUTER in lang::types::unsound_acceptances_are_refused (main
+// passes --check on all four),
+// node::callsite::test::escapes_through_follows_an_open_cells_constraints (fails
+// without the walk change).
 /// A binding the value reads or writes, or an instance it makes, of type
 /// `env`, holds none of the quantifiers outside a function type there that
 /// quantifies it: its cell would carry one out.
@@ -1275,8 +1291,8 @@ fn escapes_through(
 }
 
 /// A walk of the cells under a type, following bindings and an open
-/// cell's lower bounds (what it will bind to holds them), each cell and
-/// shared node once.
+/// cell's lower bounds and constraints (what it will bind to holds the
+/// one and is held by the other), each cell and shared node once.
 #[derive(Default)]
 struct Reach {
     seen: LPooled<AHashSet<usize>>,
@@ -1303,7 +1319,10 @@ impl Reach {
                 }
                 match tv.binding() {
                     Some(b) => self.go(&b, cut, f),
-                    None => tv.cell_lower().iter().any(|l| self.go(l, cut, f)),
+                    None => {
+                        let (lower, cons) = (tv.cell_lower(), tv.cell_constraints());
+                        lower.iter().chain(cons.iter()).any(|t| self.go(t, cut, f))
+                    }
                 }
             }
             t if t.shared_identity().is_some_and(|n| !self.seen.insert(n)) => false,
@@ -4844,6 +4863,22 @@ mod test {
         assert_eq!(cells.len(), 1);
         let bare = Type::TVar(cells.values().next().unwrap().clone());
         assert!(check([g, bare]).is_err());
+    }
+
+    // An open cell is held by its constraints as by its lower bounds: one
+    // a quantifier bounds carries it out.
+    #[test]
+    fn escapes_through_follows_an_open_cells_constraints() {
+        let (g, q, _) = quantified_holding_a_node();
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        g.reached_cells(&mut cells);
+        let quantifier = cells.values().next().unwrap().clone();
+        let outer = TVar::empty_named(literal!("y"));
+        assert!(
+            escapes_through(&[q.clone()], &Type::TVar(outer.clone()), "v", "b").is_ok()
+        );
+        outer.add_cell_constraint(Type::TVar(quantifier));
+        assert!(escapes_through(&[q], &Type::TVar(outer), "v", "b").is_err());
     }
 
     /// `n` levels over `i64`, each `(fn<'a: Any>(x: 'a) -> ('a, L),

@@ -94,8 +94,9 @@ Mutation: add a statement that equates two of them (`x == y`) or binds
 one to a concrete type (`x == 1`) or to ⊥ (`let b: _ = x`). Rule: a
 def's declared variables are rigid in its body check: none binds to a
 concrete type or to ⊥, no two unify and none escapes into a cell outside
-the definition (a write to an outer binding, through a reference or a
-function sharing its type: `DefGate::check_declared_kept`; a variable the
+the definition (a write to an outer binding, through a reference, a
+function sharing its type or a callee's bound tying it to an outer cell's
+constraint: `DefGate::check_declared_kept`; a variable the
 signature names undeclared is lowered with the outer cell instead, and the
 definition is monomorphic in it). Skip: a variable with a constraint the concrete type satisfies
 only through the constraint (`'a: Number` against `1` is still refused,
@@ -294,7 +295,8 @@ payload, an abstract type's parameter, a function type's result):
 nothing outside the
 value that outlives it, a binding it reads or writes or a call's
 instance, reaches a quantifier, through bindings and an open cell's
-lower bounds (`y <- W(x)`), outside a function type there that
+lower bounds (`y <- W(x)`) and constraints (a callee's bound `'b: 'c`
+tying the outer `y` to `x`), outside a function type there that
 quantifies it (`callsite::check_general`, `contain_generally`). Right
 site: the value. Open: what the function whose result holds the
 quantifier shares across its own calls (a let of its body the function

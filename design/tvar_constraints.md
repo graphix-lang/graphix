@@ -256,8 +256,10 @@ the definition gates:
   `lambda::body_annotation`) is `Level::Written`: generic, but lowered
   as any other cell.
 - Binding a cell, merging two, or adding a conjunct lowers every cell
-  the new contents reach to the cell's level (`tvar::lower`): what an
-  outer cell is bound to is the environment's. A generic cell is never
+  the new contents reach to the cell's level (`tvar::lower`), the
+  conjuncts and lower bounds a merge moves into the surviving cell
+  included: what an outer cell is bound to or bounded by is the
+  environment's. A generic cell is never
   lowered: a scheme bound into a cell (a let's name, a reference's
   placeholder) is still a scheme. A written cell is: an enclosing
   definition's parameter merged into `'n` in `let p: fn(y: 'n) ->
