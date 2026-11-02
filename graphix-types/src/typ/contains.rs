@@ -3572,19 +3572,35 @@ mod tests {
         }
     }
 
+    // And so where each level passes its parameter rebuilt, a new node at
+    // every expansion: `P<i><'a> = (P<i-1><('a, i64)>, P<i-1><('a, i64)>)`,
+    // its parameters keyed by their content.
+    #[test]
+    fn an_expanded_chain_over_a_rebuilt_parameter_contains_its_application_once_per_level()
+     {
+        let steps = chain_steps(&["'a"], "('a, i64)", "('a, i64)", "");
+        assert!(steps <= 64 * CHAIN_DEPTH, "{steps} steps");
+    }
+
     const CHAIN_DEPTH: usize = 12;
 
-    /// The containment steps of `P0<params> = base; P1<params> =
-    /// (P0<params>, P0<params>); ..` to [`CHAIN_DEPTH`], expanded by hand
-    /// over a quantified function and `leaf` (when `params` has two),
-    /// against its application to them.
     fn expanded_chain_steps(params: &[&str], base: &str, leaf: &str) -> usize {
+        chain_steps(params, base, &params.join(", "), leaf)
+    }
+
+    /// The containment steps of `P0<params> = base; P1<params> =
+    /// (P0<pass>, P0<pass>); ..` to [`CHAIN_DEPTH`], expanded by hand over a
+    /// quantified function and `leaf` (when `params` has two), against its
+    /// application to them. `pass` is `params` or, over one parameter,
+    /// `('a, i64)`.
+    fn chain_steps(params: &[&str], base: &str, pass: &str, leaf: &str) -> usize {
+        let rebuilt = pass != params.join(", ");
         let params = params.join(", ");
         let mut names = vec![format!("P0<{params}>")];
         let mut bodies = vec![String::from(base)];
         for i in 1..=CHAIN_DEPTH {
             names.push(format!("P{i}<{params}>"));
-            bodies.push(format!("(P{}<{params}>, P{}<{params}>)", i - 1, i - 1));
+            bodies.push(format!("(P{}<{pass}>, P{}<{pass}>)", i - 1, i - 1));
         }
         let defs: Vec<(&str, &str)> =
             names.iter().zip(bodies.iter()).map(|(n, b)| (&**n, &**b)).collect();
@@ -3594,7 +3610,12 @@ mod tests {
         };
         let app = format!("P{CHAIN_DEPTH}<fn<'b: Number>(x: 'b) -> 'b{second}>");
         let (env, app) = Env::typed_at_root(&defs, &app).unwrap();
-        let f = parsed("fn<'c: Number>(x: 'c) -> 'c");
+        let mut f = parsed("fn<'c: Number>(x: 'c) -> 'c");
+        if rebuilt {
+            for _ in 0..CHAIN_DEPTH {
+                f = Type::Tuple(Arc::from_iter([f, Type::Primitive(Typ::I64.into())]));
+            }
+        }
         let mut expanded = Type::Tuple(Arc::from_iter([f, last]));
         for _ in 0..CHAIN_DEPTH {
             expanded = Type::Tuple(Arc::from_iter([expanded.clone(), expanded.clone()]));

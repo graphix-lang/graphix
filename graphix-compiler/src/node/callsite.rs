@@ -924,6 +924,21 @@ fn typecheck_arg<R: Rt>(
         // (24577 steps without, bound 768) and graphix-compiler
         // node::callsite::test::rank2_parts_walks_an_application_over_a_leaf_once (524286
         // steps without, bound 136). Probes ~/ptmp/cr29/scratch/r6-B/r7/i4/.
+        // 2026-11-02 claude: Review B4-r2 (reviewer 2 medium, reviewer 1 low): a chain whose
+        // applications take a parameter each expansion builds anew (P<i><'a> = (P<i-1><('a, i64)>,
+        // ..), or Array<'c> per level) was still 2^depth, in rank2_parts at a let annotation (ptc0-18
+        // 14.1G) and in the call's containment (ptc-14 11.6G, ptg-16 36.7G): Type::param_key keyed a
+        // composite parameter by its node, which no two expansions share. Now ParamKey is a
+        // parameter's content (a variable by its cell, a name by its resolution cell and parameters,
+        // a function type by its node, a part past 64 words by its node), so equal parameters meet.
+        // --check instructions (debug, atom+core) before -> after: ptc0-14 3.90G -> 2.54G, ptc0-18
+        // 14.07G -> 2.43G, ptc-12 4.23G -> 2.37G, ptc-14 11.64G -> 2.24G, ptg-12 4.97G -> 2.45G,
+        // ptg-14 8.37G -> 2.48G, ptg-16 36.70G -> 2.48G; ptc-18 2.26G, ptg-18 2.59G, ptq-20 2.53G,
+        // ptp-16 2.33G, pta-16 2.42G, ptm-16 2.65G. Pins graphix-types
+        // typ::contains::tests::an_expanded_chain_over_a_rebuilt_parameter_contains_its_application_once_per_level
+        // (40957 steps without, bound 768) and graphix-compiler
+        // node::callsite::test::rank2_parts_walks_an_application_over_a_rebuilt_parameter_once
+        // (2621438 steps without, bound 136). Probes ~/ptmp/cr29/scratch/r6-B/r8/i4/.
         Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
@@ -4661,13 +4676,17 @@ mod test {
         chain_of("P", "'a", "('a, i64)")
     }
 
-    /// `type <name>0<params> = base; type <name>1<params> = (<name>0<params>,
-    /// <name>0<params>); ..` to depth 16.
     fn chain_of(name: &str, params: &str, base: &str) -> Env {
+        chain_passing(name, params, base, params)
+    }
+
+    /// `type <name>0<params> = base; type <name>1<params> = (<name>0<pass>,
+    /// <name>0<pass>); ..` to depth 16.
+    fn chain_passing(name: &str, params: &str, base: &str, pass: &str) -> Env {
         let mut env = Env::default();
         let mut defs = vec![format!("type {name}0<{params}> = {base}")];
         for i in 1..=16 {
-            let below = format!("{name}{}<{params}>", i - 1);
+            let below = format!("{name}{}<{pass}>", i - 1);
             defs.push(format!("type {name}{i}<{params}> = ({below}, {below})"));
         }
         for d in defs.iter() {
@@ -4741,5 +4760,19 @@ mod test {
             let steps = RANK2_STEPS.with(|n| n.get());
             assert!(steps <= 8 * 17, "{leaf}: {steps} steps");
         }
+    }
+
+    // And to a parameter each level rebuilds, by its content: `P<i><'a> =
+    // (P<i-1><('a, i64)>, P<i-1><('a, i64)>)` under a let's annotation.
+    #[test]
+    fn rank2_parts_walks_an_application_over_a_rebuilt_parameter_once() {
+        let env = chain_passing("R", "'a", "('a, i64)", "('a, i64)");
+        let t = parse_type("R16<fn<'b: Number>(x: 'b) -> 'b>").unwrap();
+        RANK2_STEPS.with(|n| n.set(0));
+        let (_, _, quantified) =
+            quantified_formal(&env, &t).expect("a quantified formal");
+        assert_eq!(quantified.len(), 1);
+        let steps = RANK2_STEPS.with(|n| n.get());
+        assert!(steps <= 8 * 17, "{steps} steps");
     }
 }

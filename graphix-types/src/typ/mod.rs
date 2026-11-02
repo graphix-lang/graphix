@@ -88,35 +88,107 @@ impl Type {
     /// keys each of its parameters by ([`ParamKey`]); the application must
     /// be held while the key is, so the identities stay its parameters'.
     pub fn param_key(&self) -> ParamKey {
+        let mut words = SmallVec::new();
+        self.key_words(&mut words);
+        ParamKey(words)
+    }
+
+    /// The words of [`Type::param_key`]: a tag, then the part's content,
+    /// a part past [`ParamKey::WORDS`] by its node.
+    fn key_words(&self, out: &mut SmallVec<[usize; 8]>) {
         let part = |t: &Arc<Type>| Arc::as_ptr(t).addr();
-        match self {
-            Type::Bottom => ParamKey::Bottom,
-            Type::Any => ParamKey::Any,
-            Type::Primitive(p) => ParamKey::Primitive(*p),
-            Type::Hole => ParamKey::Hole,
-            Type::Bound(b) => ParamKey::Bound(*b),
-            Type::Map { key, value } => ParamKey::Map(part(key), part(value)),
-            Type::App(c, a) => ParamKey::App(part(c), part(a)),
-            t => {
-                ParamKey::Node(t.shared_identity().expect("a composite has an identity"))
+        let each = |ts: &[Type], out: &mut SmallVec<[usize; 8]>| {
+            out.push(ts.len());
+            ts.iter().for_each(|t| t.key_words(out))
+        };
+        ensure_sufficient(|| match self {
+            Type::Bottom => out.push(0),
+            Type::Any => out.push(1),
+            Type::Hole => out.push(2),
+            Type::Bound(b) => out.extend([3, *b as usize]),
+            Type::Primitive(p) => out.extend([4, p.bits() as usize]),
+            Type::TVar(tv) => out.extend([5, tv.cell_addr()]),
+            Type::Fn(f) => out.extend([6, Arc::as_ptr(f).addr()]),
+            Type::Map { key, value } if out.len() >= ParamKey::WORDS => {
+                out.extend([7, part(key), part(value)])
             }
-        }
+            Type::App(c, a) if out.len() >= ParamKey::WORDS => {
+                out.extend([8, part(c), part(a)])
+            }
+            t if out.len() >= ParamKey::WORDS => {
+                out.extend([9, t.shared_identity().expect("a composite has an identity")])
+            }
+            Type::Ref(r) => {
+                out.extend([10, Arc::as_ptr(&r.resolved).addr()]);
+                each(&r.params, out)
+            }
+            Type::Set(ts) => {
+                out.push(11);
+                each(ts, out)
+            }
+            Type::Tuple(ts) => {
+                out.push(12);
+                each(ts, out)
+            }
+            Type::Error(t) => {
+                out.push(13);
+                t.key_words(out)
+            }
+            Type::Array(t) => {
+                out.push(14);
+                t.key_words(out)
+            }
+            Type::List(t) => {
+                out.push(15);
+                t.key_words(out)
+            }
+            Type::ByRef(Mutability::Shared, t) => {
+                out.push(16);
+                t.key_words(out)
+            }
+            Type::ByRef(Mutability::Mut, t) => {
+                out.push(17);
+                t.key_words(out)
+            }
+            Type::Struct(fs) => {
+                out.extend([18, fs.len()]);
+                for (name, t, _) in fs.iter() {
+                    out.push(name.as_ptr().addr());
+                    t.key_words(out)
+                }
+            }
+            Type::Variant(tag, ts, _) => {
+                out.extend([19, tag.as_ptr().addr()]);
+                each(ts, out)
+            }
+            Type::Map { key, value } => {
+                out.push(20);
+                key.key_words(out);
+                value.key_words(out)
+            }
+            Type::Abstract { id, params } => {
+                out.extend([21, id.0 as usize]);
+                each(params, out)
+            }
+            Type::App(c, a) => {
+                out.push(22);
+                c.key_words(out);
+                a.key_words(out)
+            }
+        })
     }
 }
 
-/// A typedef application's parameter as [`Type::param_key`] keys it: a
-/// shared node by its identity ([`Type::shared_identity`]), a `Map` or an
-/// `App` by its two parts', a leaf by its content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ParamKey {
-    Node(usize),
-    Map(usize, usize),
-    App(usize, usize),
-    Primitive(BitFlags<Typ>),
-    Bound(Bound),
-    Any,
-    Bottom,
-    Hole,
+/// A typedef application's parameter as [`Type::param_key`] keys it: by
+/// its content, a variable by its cell, a name by its resolution and
+/// parameters, a function type by its node; a part met after
+/// [`Self::WORDS`] words by its node instead, which bounds the walk.
+/// Each tag fixes the words that follow it, so equal keys are one type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParamKey(SmallVec<[usize; 8]>);
+
+impl ParamKey {
+    const WORDS: usize = 64;
 }
 
 /// The pairs of shared composites a conjunctive walk over two types
