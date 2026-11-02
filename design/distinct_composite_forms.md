@@ -193,7 +193,13 @@ judged on its own, its test among the element type less itself
 and nested slices): `` [`Keep(r), ..] `` over `` Array<['b, `Keep('b)]> ``
 is refused, `[h, ..]` over it is not. Over an unannotated parameter the
 slice's rest is an open cell of the definition, so a tested element whose
-form another type shares is refused there too ("annotate it").
+form another type shares is refused there too ("annotate it"). Under a
+written type the arm's own test is the written type, which covers what
+reaches it; a constructor at a union position of it is a test of its own,
+what its structure admits among the rest of that union, judged so too
+(`PatternNode::written_tests`, which the pattern's compile records):
+`` ['b, `Keep('b)] as `Keep(r) `` is refused as `` `Keep(r) `` is, at the
+top, inside a slice's element and inside a tuple.
 
 **Seq machines.** A machine's `pc` holds its step labels as bare variants
 (`seq_machine.rs`, `SeqAbort`).

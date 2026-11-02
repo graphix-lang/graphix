@@ -422,7 +422,8 @@ across a bottom cycle).
   variable may be any type, so a test beside one is refused where an
   instance could share the tested form: `` `Keep(r) `` over `` ['b,
   `Keep('b)] ``, and a slice element alike, `` [`Keep(r), ..] `` over
-  `` Array<['b, `Keep('b)]> `` (`[h, ..]` tests nothing and checks). Over
+  `` Array<['b, `Keep('b)]> `` (`[h, ..]` tests nothing and checks), and a
+  written type alike, `` ['b, `Keep('b)] as `Keep(r) ``. Over
   an unannotated parameter a slice's rest is such a variable: annotate
   the parameter.
 - References, functions and a type holding two numeric types cannot

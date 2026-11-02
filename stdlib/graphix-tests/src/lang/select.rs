@@ -5139,6 +5139,43 @@ element_untold!(
     "`W([`Keep(1)])"
 );
 
+// Under a written type a constructor at a union position is a test of its
+// own, told apart from the rest of the union as an inferred one is.
+element_untold!(
+    written_variant_telling_quantifier_from_keep_refused,
+    "['b, `Keep('b)]",
+    "['b, `Keep('b)] as `Keep(r)",
+    "`Keep(1)"
+);
+element_untold!(
+    written_slice_element_telling_quantifier_from_keep_refused,
+    "Array<['b, `Keep('b)]>",
+    "Array<['b, `Keep('b)]> as [`Keep(r), ..]",
+    "[`Keep(1)]"
+);
+run!(written_tuple_element_telling_quantifier_from_keep_refused, r#"{
+  let f = |x: (['b, `Keep('b)], i64)| -> 'b
+    select x { (['b, `Keep('b)], i64) as (`Keep(r), _) => r };
+  f((`Keep(1), 2))
+}"#, refused("isn't known here and may share `Keep("); FuseExpect::None);
+
+// A written test beside members whose forms it does not share, or a
+// declared variable whose bound shares none, checks.
+run!(
+    written_keep_beside_told_members_checks,
+    r#"{
+  let g = |x: [i64, `Keep(i64)]| -> i64
+    select x { [i64, `Keep(i64)] as `Keep(r) => r, i64 as n => n };
+  let h = 'b: Number |x: ['b, `Keep('b)]| -> ['b, null]
+    select x { ['b, `Keep('b)] as `Keep(r) => r, _ => null };
+  let k = |x: Array<[string, `Keep(i64)]>| -> [i64, null]
+    select x { Array<[string, `Keep(i64)]> as [`Keep(r), ..] => r, _ => null };
+  let v: [i64, `Keep(i64)] = `Keep(5);
+  (g(v), h(`Keep(3)), k([`Keep(4)]))
+}"#,
+    prints("[i64:5, i64:3, i64:4]")
+);
+
 // An unannotated scrutinee's slice rest is a type variable too: an
 // instance may bind it to a `Keep.
 run!(unannotated_slice_element_telling_rest_from_keep_refused, r#"{
