@@ -3648,6 +3648,57 @@ run!(
     FuseExpect::Jit
 );
 
+// A written type's own variable that an enclosing definition's parameter
+// merges into is that parameter, live in the enclosing definition.
+run!(
+    written_variable_an_enclosing_parameter_decides,
+    r#"{
+  let outer = |n| {
+    let inner = |m| {
+      let s = |y| [y, n];
+      let p: fn(y: 'n) -> Array<'n> = s;
+      p(n)
+    };
+    inner(n)
+  };
+  (outer(1), outer("w"))
+}"#,
+    prints(r#"[[i64:1, i64:1], ["w", "w"]]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    written_variable_an_enclosing_parameter_decides_in_a_holder,
+    r#"{
+  let outer = |n| {
+    let inner = |m| {
+      let s = (|x| (x, m), |y| [y, n]);
+      let p: (fn(x: string) -> (string, 'm), fn(y: 'n) -> Array<'n>) = s;
+      (s.0(1), p.0("s"), s.1(n), p.1(n))
+    };
+    inner(n)
+  };
+  (outer(1), outer("w"))
+}"#,
+    prints(
+        r#"[[[i64:1, i64:1], ["s", i64:1], [i64:1, i64:1], [i64:1, i64:1]], [[i64:1, "w"], ["s", "w"], ["w", "w"], ["w", "w"]]]"#
+    );
+    FuseExpect::None
+);
+
+run!(
+    written_variable_an_enclosing_parameter_decides_is_that_parameter,
+    r#"{
+  let outer = |n| {
+    let inner = |m| { let p: fn(y: 'n) -> Array<'n> = |y| [y, n]; p(n) };
+    let r: Array<string> = inner(n);
+    r
+  };
+  outer(1)
+}"#,
+    refused("string does not contain i64")
+);
+
 /// A union implements no trait whose method takes `self` beyond the
 /// receiver: dispatch narrows only the receiver.
 const UNION_TRAIT_SELF_ARGUMENT: &str = r#"

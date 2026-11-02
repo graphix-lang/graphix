@@ -1919,9 +1919,7 @@ impl<R: Rt> CompileCtx<R> {
             b.typ.reached_cells(&mut cells);
             let mut generic = cells
                 .iter()
-                .filter(|(_, tv)| {
-                    tv.level() == typ::tvar::Level::GENERIC && !tv.is_quantifier_rigid()
-                })
+                .filter(|(_, tv)| tv.level().is_generic() && !tv.is_quantifier_rigid())
                 .peekable();
             if generic.peek().is_none() {
                 return false;

@@ -245,12 +245,18 @@ the definition gates:
   trait argument or an impl head, and a let's compile-time scratch (the
   pattern predicate, the `let rec` placeholder) is born generic; a copy
   (`scope_refs`, `resolve_tvars`, `Fresh::Copy`) keeps the source
-  cell's level.
+  cell's level. A variable a body's written type owns (a `let`
+  annotation's or a `never<T>`'s, named by no definition around it:
+  `lambda::body_annotation`) is `Level::Written`: generic, but lowered
+  as any other cell.
 - Binding a cell, merging two, or adding a conjunct lowers every cell
   the new contents reach to the cell's level (`tvar::lower`): what an
   outer cell is bound to is the environment's. A generic cell is never
   lowered: a scheme bound into a cell (a let's name, a reference's
-  placeholder) is still a scheme.
+  placeholder) is still a scheme. A written cell is: an enclosing
+  definition's parameter merged into `'n` in `let p: fn(y: 'n) ->
+  Array<'n> = |y| [y, n]` makes `'n` that parameter, which every call
+  of the enclosing definition's inner functions shares.
 - A gate's close marks generic every cell its signature reaches at its
   depth or deeper (`FnType::generalize`). A cell a binding lowered
   above it (`let t = |x| x + y` gives `x` the top-level `y`'s cell)

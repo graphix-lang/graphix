@@ -1062,7 +1062,9 @@ node graph IS the IR — there is no parallel typed IR
   annotation, `never<T>`, a nested lambda's signature) names one
   variable per name, and a name a definition around it declares, and
   the written place does not declare itself, is that definition's
-  variable (`lambda::body_annotation`, `enclosing_tvars`; a labeled
+  variable, any other the written type's own: generic until a cell of
+  a definition or the top level merges into it, which claims it there
+  (`tvar::Level::Written`; `lambda::body_annotation`, `enclosing_tvars`; a labeled
   default's, the definitions' around its own, `LambdaDef::in_signature`;
   in an instance, the instance's types under the definition's names,
   `lambda::instance_sig`, the names its signature writes alone, never one

@@ -362,6 +362,9 @@ pub enum Level {
     Def { depth: u32, owner: LambdaId },
     /// A scheme's variable no definition owns; deepest of all.
     Generic,
+    /// A variable a body's written type owns: generic until a cell of a
+    /// definition or the top level merges into it, which claims it there.
+    Written,
 }
 
 impl Level {
@@ -377,7 +380,7 @@ impl Level {
         match self {
             Self::Top => 0,
             Self::Def { depth, .. } => *depth,
-            Self::Generic => u32::MAX,
+            Self::Generic | Self::Written => u32::MAX,
         }
     }
 
@@ -386,12 +389,14 @@ impl Level {
     pub fn owner(&self) -> Option<LambdaId> {
         match self {
             Self::Def { owner, .. } => Some(*owner),
-            Self::Top | Self::Generic => None,
+            Self::Top | Self::Generic | Self::Written => None,
         }
     }
 
-    fn is_generic(&self) -> bool {
-        matches!(self, Self::Generic)
+    /// Does no definition own the cell yet: a scheme's or a written one.
+    #[doc(hidden)]
+    pub fn is_generic(&self) -> bool {
+        matches!(self, Self::Generic | Self::Written)
     }
 
     /// The level of the definition `id` compiled now: one below the
@@ -410,7 +415,7 @@ impl Level {
     /// A top-level cell, and an open gate's, is shared.
     pub(super) fn copied_by(&self, open: &IntSet<LambdaId>) -> bool {
         match self {
-            Self::Generic => true,
+            Self::Generic | Self::Written => true,
             Self::Def { owner, .. } => !open.contains(owner),
             Self::Top => false,
         }
@@ -421,7 +426,7 @@ impl Pack for Level {
     fn encoded_len(&self) -> usize {
         1 + match self {
             Self::Def { depth, owner } => depth.encoded_len() + owner.encoded_len(),
-            Self::Top | Self::Generic => 0,
+            Self::Top | Self::Generic | Self::Written => 0,
         }
     }
 
@@ -434,6 +439,7 @@ impl Pack for Level {
                 owner.encode(buf)
             }
             Self::Generic => Ok(buf.put_u8(2)),
+            Self::Written => Ok(buf.put_u8(3)),
         }
     }
 
@@ -445,6 +451,7 @@ impl Pack for Level {
             0 => Ok(Self::Top),
             1 => Ok(Self::Def { depth: u32::decode(buf)?, owner: Pack::decode(buf)? }),
             2 => Ok(Self::Generic),
+            3 => Ok(Self::Written),
             _ => Err(PackError::UnknownTag),
         }
     }
@@ -739,13 +746,13 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
-/// A generic cell stays generic (a scheme bound into a cell is still a
-/// scheme), and a cell already at or above `level`'s depth reaches
-/// nothing deeper.
+/// A scheme's generic cell stays generic (a scheme bound into a cell is
+/// still a scheme), and a cell already at or above `level`'s depth
+/// reaches nothing deeper.
 pub(super) fn lower(t: &Type, level: Level) {
     fn go(t: &Type, level: Level, nodes: &mut AHashSet<usize>) {
         ensure_sufficient(|| match t {
-            Type::TVar(tv) if !tv.level().is_generic() => tv.claim(level),
+            Type::TVar(tv) if tv.level() != Level::Generic => tv.claim(level),
             Type::TVar(_) => (),
             t if node_addr(t).is_some_and(|n| !nodes.insert(n)) => (),
             t => t.for_each_child(&mut |c| go(c, level, nodes)),
@@ -1194,6 +1201,14 @@ impl TVar {
         let f = Self::empty_named(self.name.clone());
         f.set_level(self.level());
         f
+    }
+
+    /// Mark a generic cell a written type's own ([`Level::Written`]).
+    #[doc(hidden)]
+    pub fn own_written(&self) {
+        if self.level() == Level::Generic {
+            self.set_level(Level::Written)
+        }
     }
 
     /// Mark the cell generic: its definition closed over it.

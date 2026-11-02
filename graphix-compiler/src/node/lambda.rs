@@ -644,7 +644,7 @@ pub struct BodyShared {
     pub(crate) prototype: Option<ExprId>,
 }
 
-// CR claude for claude: [bug/medium] A variable written in a nested definition's body
+// XCR claude for claude: [bug/medium] A variable written in a nested definition's body
 // annotation and decided by the enclosing definition's parameter splits the check from
 // the build: `let outer = |n| { let inner = |m| { let s = |y| [y, n]; let p: fn(y: 'n)
 // -> Array<'n> = s; p(n) }; inner(n) }; outer(1); outer("w")` passes --check and the
@@ -680,13 +680,29 @@ pub struct BodyShared {
 // scheme's cell are both Level::Generic, and the merge needs to tell them apart (a
 // let-level generalization, or a mark on a written place's cells). probes:
 // ~/ptmp/cr29/scratch/r6-B/i5/
+// 2026-11-01 claude: Lane B round 6, second pass: d7/d3 fixed. A variable a body's
+// written type owns (no definition around it declares it) is born tvar::Level::Written
+// (lambda::body_annotation, TVar::own_written): generic for every copy and call as
+// before, but tvar::lower claims it as any other cell, so outer's parameter merged
+// into 'n makes 'n that parameter, live in outer, where a scheme's Generic cell still
+// stays generic. d7, d3, d4, d8 run ([1, 1] / ["w", "w"]), u4 is refused at the check
+// (string does not contain i64), graphix-fuzz check d7v/d3v AGREE (trace) where main
+// split. Pins lang::types::written_variable_an_enclosing_parameter_decides,
+// written_variable_an_enclosing_parameter_decides_in_a_holder,
+// written_variable_an_enclosing_parameter_decides_is_that_parameter fail without it
+// (all 12 modes), pass under GRAPHIX_NO_SUBST=1; graphix-tests lib 13095 ok.
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
-/// quantifiers are its own) is the innermost such definition's.
+/// quantifiers are its own) is the innermost such definition's; any other
+/// is the written type's own (`Level::Written`).
 pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) {
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     enclosing_tvars(ctx, &mut known);
+    let enclosing: LPooled<AHashSet<ArcStr>> = known.keys().cloned().collect();
     t.alias_tvars(&mut known);
+    for (_, tv) in known.iter().filter(|(name, _)| !enclosing.contains(*name)) {
+        tv.own_written()
+    }
 }
 
 /// The variables the definitions around the body being compiled declare,

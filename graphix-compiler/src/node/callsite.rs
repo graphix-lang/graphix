@@ -1185,7 +1185,7 @@ pub(crate) fn carried_out(
         _ if bound.contains(&tv.cell_addr()) => (),
         Level::Top => foreign.push(tv.clone()),
         Level::Def { owner, .. } if !own.contains(&owner) => foreign.push(tv.clone()),
-        Level::Def { .. } | Level::Generic => (),
+        Level::Def { .. } | Level::Generic | Level::Written => (),
     });
     foreign.into_iter().find_map(|tv| {
         let mut reached = None;
