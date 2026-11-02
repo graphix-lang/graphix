@@ -784,6 +784,17 @@ macro_rules! report_ignored {
 }
 pub(crate) use report_ignored;
 
+// CR claude for claude: [bug/low] A raise to a catch in its own root is put in the event
+// alone (try_publish), never stored; one in another root is a runtime write
+// (rt.set_var), stored. So a reader in the handler born after the raise does not see
+// the error: `catch(e) out <- select ep { n if n >= 3 => ep ~ "[e.0.error]", _ =>
+// never() }` over a raise at ep 1 never writes out (the arm born at ep 3 reads e from
+// the store, which never held it), where a reader present at the raise sees it
+// (`catch(e) out <- "[e.0.error]"` gives `Boom(1) from ep 2). bbb06c0c6 alike. Deliver
+// it through ExecCtx::deliver (Notify::Walk), keeping the queue for a second raise in
+// one cycle, so both roots store it, and pin both. Found by a probe for x-dup-02's
+// doc: ~/ptmp/cr29/scratch/r8-N/catch/{c0,c2}.gx (catch-binder-store-01)
+
 /// Deliver a `?`'s raw error payload `e`, a value of `raised`, to
 /// `handler` on behalf of the `?` at `spec` under `own_top`. The one handler path, shared by
 /// `Qop::update` and the fused kernel's delivery drain: same-top

@@ -2372,6 +2372,20 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     // guard_rematch_binds_stale hold today's behaviour. No fixture tells deliver's old
     // StaleBottom from FreshBottom: a same-cycle store read without an event entry was
     // not reachable from a program I could write. Needs a soak.
+    // 2026-11-02 claude: Round 7 lane N, after review r8. Docs: CLAUDE.md and
+    // design/dense_delivery.md claimed every delivery goes through deliver; five fires
+    // go into the event alone, never stored, and now say so: a let's wake re-raise,
+    // wake::inject, a priming from the store (a reloaded module's body, a fresh bind's
+    // defaults), a born callee's quiet arguments (publish_production's
+    // QuietAtRoot::Deliver), an error raised to a catch in its own root (that one is
+    // catch-binder-store-01). Not named in 463516534's message: a stale delivery that
+    // used to go through deliver (a collection's element at a wake, a fold's
+    // accumulator, filter/queuefn/genn feeds with stale tags) now stands with the
+    // binding's previous stamp instead of a fresh one; review r8 probed it (h1/coll.gx)
+    // and found no changed answer, and no pin tells it. The guard-flip rebind that
+    // carries a NEW value now owes a later-bound callee no fire (bbb06c0c6 gave 7001,
+    // now bottom; a quiet let did so already): CLAUDE.md does not decide it, so it is
+    // quiet-change-owed-01 for Eric and 463516534 stands as it is. Needs a soak.
     pub fn deliver(&mut self, id: BindId, tv: TagValue, notify: Notify) {
         let tag = tv.tag();
         let stored = match tag.is_bottom() {

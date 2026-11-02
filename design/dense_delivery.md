@@ -77,19 +77,30 @@ stamp of the entry it replaces, or stamps it as an earlier cycle when
 that entry is absent or this cycle's — value-channel maintenance that is
 deliberately not a delivery (`ByRef`'s seed, a formal seeded standing).
 
-Every delivery to a binding goes through `ExecCtx::deliver`: a let's
-publication, a reference cell's, a module's relay between an interface
-pair, a select's pattern binds, a call's formals, a collection's
-elements and accumulators, the seq machine's `pc`, a runtime write
-(`GX::deliver`). It puts the production into the event; a fire is
-stored as the event holds it (a value Fired, a bottom FreshBottom),
-stamped this cycle; a quiet production stands (`store_insert_standing`),
-since nothing fired: a wake owes no fire for it (a `let` republished at
-its wake, a stale scrutinee's binds, a module's val relayed quietly).
-Its `Notify` says whether a fire also schedules the roots that read the
-binding (`Roots`: a let, a reference cell, a module's val, `pc`, a
-runtime write) or only the walk's readers (`Walk`: binds read inside
-their own root).
+A node's production to a binding is delivered through
+`ExecCtx::deliver`: a let's publication, a reference cell's, a module's
+relay between an interface pair, a select's pattern binds, a call's
+fired formals, a collection's elements and accumulators, the seq
+machine's `pc`, a runtime write (`GX::deliver`). It puts the production
+into the event; a fire is stored as the event holds it (a value Fired, a
+bottom FreshBottom), stamped this cycle; a quiet production stands
+(`store_insert_standing`), since nothing fired: a wake owes no fire for
+it (a `let` republished at its wake, a stale scrutinee's binds, a
+module's val relayed quietly, a collection's element or a fold's
+accumulator delivered stale). Its `Notify` says whether a fire also
+schedules the roots that read the binding (`Roots`: a let, a reference
+cell, a module's val, `pc`, a runtime write) or only the walk's readers
+(`Walk`: binds read inside their own root).
+
+Five fires go into the event alone and are never stored: a `let`'s wake
+re-raise of a write the store already holds
+(`Bind::reraise_writes_while_asleep`), wake catch-up's inject of a
+standing value (`wake::inject`), a priming of a fresh body's reads from
+the store (a reloaded module's, a fresh bind's defaults), a born
+callee's quiet arguments (`publish_production`'s
+`QuietAtRoot::Deliver`; a quiet formal's seed stands, `Stand`, as
+`ByRef`'s does), and an error raised to a catch in its own root
+(`error::deliver_error`; one in another root is a runtime write).
 
 `event.variables` is the OVERLAY, not the store: same-cycle transient
 deliveries (select arm binds, call-site formal publishes). Reads fall
