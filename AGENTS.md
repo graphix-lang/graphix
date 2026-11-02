@@ -1245,7 +1245,7 @@ or a union, `never()` arms as bottom
 productions of the merge shape, or-patterns, list patterns, type tests
 that hold the scrutinee's type, any union of encoded members as one
 value (`` [`A, `B, null] ``, a list beside an array) with its written
-type tests, tail loops
+type tests, a union naming union typedefs as the flat union they name, tail loops
 over any kernel param
 kind, every fast-fn builtin and non-inline cast, cross-kernel lambda
 calls, trait default bodies, a self-recursive instance's body, its

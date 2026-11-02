@@ -730,3 +730,44 @@ run!(unions_of_marked_kinds_fuse, r#"
     )
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[[i64:1, i64:1, i64:0, i64:0, i64:9, i64:0], [i64:2, i64:13, i64:5, i64:400, i64:-1], [i64:7, i64:7, i64:4, i64:2, i64:-5, i64:0], [i64:6, i64:2, i64:3, i64:300, i64:-1, i64:8], [true, false, true, false, true], ["<`B(2)>", "<null>", "<s>", "<`A>", "<{x: 0}>", "<`N>", "<[<0, 1>]>", "<[3]>"], [i64:1, i64:5, i64:0]]"#); FuseExpect::Jit);
+
+// A union that names a union typedef fuses as the flat union its names
+// expand to: as a select's scrutinee, a kernel's parameter, a return and
+// an element.
+run!(select_named_union_members, r#"
+{
+    type L = [`A, `X];
+    type M = [`B, `Y];
+    type U = [L, M];
+    type P = [`N(i64), `Z];
+    let f = |u: [L, `Y]| select u { `A => 1, `X => 4, `Y => 5 };
+    let g = |u: U| select u { `A => 1, `B => 2, `X => 4, `Y => 5 };
+    let h = |u: [L, M]| select u { `A => 1, `B => 2, `X => 4, `Y => 5 };
+    let p = |u: [P, `S(string)]| select u { `N(k) => k, `Z => 0, `S(s) => str::len(s) };
+    let pick = |n: i64| -> [L, `Y] select n { 0 => `A, 1 => `X, _ => `Y };
+    let arr = |xs: Array<[L, M]>| -> Array<i64> array::map(xs, |x| h(x));
+    #[native] (
+        (f(`A), f(`X), f(`Y), g(`A), g(`B), g(`X), g(`Y), h(`B), h(`Y)),
+        (p(`N(7)), p(`Z), p(`S("abc"))),
+        (f(pick(0)), f(pick(1)), f(pick(2)), arr([`Y, `A, `B, `X]))
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[i64:1, i64:4, i64:5, i64:1, i64:2, i64:4, i64:5, i64:2, i64:5], [i64:7, i64:0, i64:3], [i64:1, i64:4, i64:5, [i64:5, i64:1, i64:2, i64:4]]]"); FuseExpect::Jit);
+
+// A named union beside a null, a primitive and a recursive named union.
+run!(select_named_union_mixed_members, r#"
+{
+    type L = [`A, `X];
+    type K = [`A, i64];
+    type T = [`Nil, `Cons(i64, T)];
+    let o = |u: [L, null]| select u { `A => 1, `X => 4, null => 0 };
+    let k = |u: [K, string]| select u { `A => -1, i64 as n => n, string as s => str::len(s) };
+    let rec sum = |t: T| -> i64 select t { `Nil => 0, `Cons(h, r) => h + sum(r) };
+    let w = |u: [T, `Y]| select u { `Y => -1, `Nil => 0, `Cons(h, r) => h + sum(r) };
+    #[native] (
+        (o(`A), o(`X), o(null)),
+        (k(`A), k(9), k("abcd")),
+        (w(`Y), w(`Nil), w(`Cons(2, `Cons(3, `Nil))))
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[i64:1, i64:4, i64:0], [i64:-1, i64:9, i64:4], [i64:-1, i64:0, i64:5]]"); FuseExpect::Jit);

@@ -670,15 +670,32 @@ impl Freeze {
                             return Err(NonCanonical);
                         }
                     }
-                    let frozen: Result<LPooled<Vec<Type>>, FreezeError> = members
-                        .iter()
-                        .map(|m| match self.freeze(m, seen)? {
-                            Type::Set(_) | Type::Bottom => Err(NonCanonical),
-                            m => Ok(m),
-                        })
-                        .collect();
-                    let mut frozen = frozen?;
-                    Ok(Type::Set(Arc::from_iter(frozen.drain(..))))
+                    let mut frozen: LPooled<Vec<Type>> = LPooled::take();
+                    let mut spliced = false;
+                    for m in members.iter() {
+                        let m = self.freeze(m, seen)?;
+                        match &m {
+                            Type::Bottom => return Err(NonCanonical),
+                            Type::Set(ms) => {
+                                spliced = true;
+                                frozen.extend(ms.iter().cloned())
+                            }
+                            _ => frozen.push(m),
+                        }
+                    }
+                    let set = Type::Set(Arc::from_iter(frozen.drain(..)));
+                    if !spliced {
+                        return Ok(set);
+                    }
+                    // a member naming a union is the members it expands to,
+                    // merged as the written flat union's are
+                    let flat = set.resolve_tvars().normalize();
+                    let nested = |m: &Type| matches!(m, Type::Set(_) | Type::Bottom);
+                    match &flat {
+                        Type::Bottom => Err(NonCanonical),
+                        Type::Set(ms) if ms.iter().any(nested) => Err(NonCanonical),
+                        _ => Ok(flat),
+                    }
                 }
                 Type::Abstract { id, params } => {
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
@@ -1209,6 +1226,38 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(freeze_for_abi_normalized(&t).is_some());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    /// A union naming union typedefs freezes as the flat union written out.
+    #[test]
+    fn union_of_named_unions_freezes_flat() {
+        let defs = [
+            ("L".to_string(), "[`A, `X]".to_string()),
+            ("M".into(), "[`B, `Y]".into()),
+            ("K".into(), "[`A, i64]".into()),
+            ("P".into(), "[`N(i64), `Z]".into()),
+            ("T".into(), "[`Nil, `Cons(i64, T)]".into()),
+        ];
+        for (named, flat) in [
+            ("[L, `Y]", "[`A, `X, `Y]"),
+            ("[L, M]", "[`A, `B, `X, `Y]"),
+            ("[L, `A]", "[`A, `X]"),
+            ("[K, string]", "[`A, i64, string]"),
+            ("[P, `S(string)]", "[`N(i64), `S(string), `Z]"),
+            ("Array<[L, M]>", "Array<[`A, `B, `X, `Y]>"),
+        ] {
+            let (_env, named_t) = typed(&defs, named);
+            let (_env, flat_t) = typed(&defs, flat);
+            let frozen = freeze_for_abi_normalized(&named_t);
+            assert!(frozen.is_some(), "{named} freezes");
+            assert_eq!(frozen, freeze_for_abi_normalized(&flat_t), "{named} as {flat}");
+        }
+        let (_env, t) = typed(&defs, "[T, `Y]");
+        let frozen = freeze_for_abi_normalized(&t).expect("[T, `Y] freezes");
+        assert!(
+            matches!(&frozen, Type::Set(ms) if ms.len() == 3),
+            "[T, `Y] freezes as three members: {frozen}"
+        );
     }
 
     #[test]

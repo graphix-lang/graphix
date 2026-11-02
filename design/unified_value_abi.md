@@ -31,7 +31,9 @@ encoding:
     boxing a scalar gets at any value seam, and any other union of
     encoded members (`` [`A, `B, null] ``, `` [{x: i64}, `N] ``,
     `[List<i64>, Array<i64>]`), which the members' tags and kind
-    markers tell apart. A select over a primitive union tests the
+    markers tell apart. A member naming a union (`[L, `Y]` over
+    `type L = [`A, `X]`) freezes as the members it expands to, merged
+    as the written flat union's are (`kernel_abi::Freeze`). A select over a primitive union tests the
     value's tag against each primitive of an arm's predicate; over
     another union, a written type test is the value's own test
     (`graphix_value_is_a`). Arithmetic takes scalars only, so a varint or a union
