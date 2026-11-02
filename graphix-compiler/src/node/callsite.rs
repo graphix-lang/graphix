@@ -991,6 +991,14 @@ pub(crate) fn contain_generally<R: Rt>(
 // over-refusal), graphix-shell tests/rank2_escape.rs,
 // node::callsite::test::quantified_formal_decides_no_name; each fails without it;
 // pass under GRAPHIX_NO_SUBST=1.
+// 2026-11-01 claude: Follow-up 0966d1faa: the quick test is now
+// Type::may_hold_quantified_fn (walks the type and each definition it reaches once,
+// as written, copying nothing and peeking names only; rank2_parts makes it exact),
+// and holds_quantified_fn and Verdicts::looking are gone; only a written return type
+// is checked as a holder. guicheck main a084f9887 91.47G, lane 92.82G (95.95G before
+// the follow-up); CR quantified-quick-test-01 for the rest. The unit pin
+// quantified_formal_decides_no_name holds; 0 refusals in 60 --check runs of a trivial
+// program.
 // XCR claude for claude: [bug/low] A rank-2 array element passed straight to a rank-2
 // formal is refused: `let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| x]; let f = |k:
 // fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s")); f(fs[0]$)` says "the argument is not
