@@ -1145,49 +1145,6 @@ fn data_positions(
     })
 }
 
-// XCR claude for claude: [perf/medium] A call whose two arguments share a type variable
-// checks in time exponential in a shared type's depth. With `let x1 = (x0, x0); let x2
-// = (x1, x1); ..`, `let f = |a: 'a, b: 'a| a; f(xN, xN)` takes 132 ms at N=20, 482 ms
-// at 24 and 1.3 s at 26 (quick build; one argument at 26 is 108 ms); the reviewer saw
-// 21 s for `max` at N=30. Something walks the bound type as a tree, not a DAG; the
-// suspect is this walk (its `clean` memo covers parameterless typedefs only, not shared
-// structural nodes), with `data_positions` and the widening that follows as the other
-// candidates. Profile first. probe: ~/tmp/xcr-review-2026-10-28/2/dag.gx
-// (dag-check-01)
-// 2026-11-01 claude: Profiled (callgrind; perf report hung on the host): the
-// exponential walk was rank2_parts, a rebuild walk with a memo for parameterless
-// typedefs only (about 280M of the 350M instructions over the base at N=20). It now
-// records a shared node of the original type (not inside an expansion, whose nodes live
-// only while walked) whose walk found no quantifier, with the in-progress typedefs it
-// met, as the typedef memo does (Expanding::record_clean). callgrind --check: dag22
-// (f(x22, x22)) 2.666G on main a084f9887, 1.311G here; dag20 1.626G before the fix,
-// 1.295G after; the probe with no call 1.28G. holds_invariantly runs on the formals
-// before any argument is checked, so it never meets the argument's type. Pin
-// graphix-compiler node::callsite::test::rank2_parts_walks_a_shared_node_once (a
-// 16-deep shared tuple walked in at most 34 steps) fails without it.
-// 2026-11-01 claude: Review (r6 B2) found two shapes still exponential: a chain of
-// parametric typedefs (type P1<'a> = (P0<'a>, P0<'a>); ..; f(x, x) with x: P20<i64>,
-// 37G) and a let DAG whose leaf holds a quantified function (101G at N=20), the memo
-// keeping only clean nodes outside expansions. Now quantified_formal first asks whether
-// the formal holds a quantified function at all (Type::holds_quantified_fn, the holds
-// walk, which decides a typedef application once per shape of its parameters), and
-// rank2_parts keeps each shared node's result outside expansions, found or not
-// (Expanding::nodes), with a count of the quantified functions met in place of the
-// length of out, which takes each quantifier once. Lane debug --check: ptdefs-20 2.09G,
-// r2leaf-20 3.77G, fnleaf-18 2.06G (main 37G, 101G, 1.8G). Pins
-// node::callsite::test::rank2_parts_walks_a_quantified_dag_once and
-// quantified_formal_skips_a_formal_holding_none (step counts) fail without it, as does
-// rank2_parts_walks_a_shared_node_once.
-// 2026-11-01 claude: Further: the call's escape checks (polymorphic_in and
-// escapes_through, through reaches_cell) walked the argument per path, which kept
-// r2leaf exponential past N=20 (18G at 22); reaches_cell now walks a shared node once
-// (pin node::callsite::test::reaches_cell_walks_a_shared_node_once; r2leaf-26 2.2G).
-// rank2_parts also keeps each typedef application whose walk met none in progress, by
-// definition and parameter identity (Expanding::apps; pin
-// rank2_parts_walks_an_application_once: P16<fn<'b: Number>(..)>), and a parameterless
-// chain over a quantified function (type T1 = (T0, T0)) is linear (tq-20 2.3G). Left:
-// the same chain applied to a quantified function is still exponential in the
-// containment that follows (CR dag-check-02).
 /// Whether `t` holds a type variable under an abstract type, a type
 /// application or a writable reference, outside any function type: such a position
 /// fixes the variable exactly, so its argument is checked first and the

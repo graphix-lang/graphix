@@ -1865,40 +1865,6 @@ impl<R: Rt> Connect<R> {
     }
 }
 
-// XCR claude for claude: [bug/medium] A declared quantifier escapes through a captured
-// write: `let y = never(); let f = 'a: Concrete |x: 'a| -> 'a { y <- x; x }; f("hello");
-// let k: i64 = y` passes the check and the build refuses it ("instance at fn(x: string)
-// -> string of a definition typed fn<'a>(x: 'a: i64)"); through a collection the build
-// accepts it too and the run-time bind fails. On main as well. The body check holds 'a
-// rigid, so the write should be refused there: an outer binding cannot take a type only
-// one instance decides. The only way found for an open declared quantifier to be not
-// generic, the condition under which FnType::has_earlier_quantifier's fresh-copy
-// comparison would be unsound. Probes: ~/tmp/cr29/scratch/review2/RV7/{e2,e3}.gx
-// (quantifier-escape-01)
-// 2026-11-01 claude: Fixed at the definition's gate, not the write, so every route is
-// covered: DefGate records the depth of each variable the signature names when it opens,
-// and DefGate::check_named_kept (after the body and the defaults) refuses the definition
-// when one moved to a shallower level, which a binding, conjunct or lower bound of a
-// cell outside the definition does (tvar::lower): "'a escapes the definition: something
-// outside it would hold a value of that type ...". Pins
-// lang::types::declared_variable_escapes_by_a_write, _through_a_collection,
-// _through_a_reference (*r <- x, r = &mut y), _through_a_call (an outer |v| { y <- v; v
-// } sharing y's cell) fail without it; declared_variable_stays_inside (a nested function
-// writing the definition's own let, an undeclared |x| writing the outer y) holds.
-// must_reject.md family 2 names the rule (its mutation is open).
-// 2026-11-01 claude: Review (r6 B2) found the check refused undeclared written variables
-// too (|x: 'a| -> 'a { y <- x; x }), which main types soundly: the outer cell lowers 'a,
-// the definition is not generalized over it and a second type is refused at its call.
-// DefGate now records the quantifiers the definition declares alone
-// (FnType::quantifiers), which a call copies whatever their level, and
-// check_declared_kept refuses only those; the refusal now says what holds every 'a (the
-// bound of 'a, or Any) or to declare none. Pins
-// lang::types::written_variable_written_outside_is_monomorphic (q1/u1/u3 shapes,
-// accepted and run as on main) and written_variable_written_outside_takes_one_type
-// (refused at the call) fail on the previous fix; the declared_variable_* pins hold.
-// declared_variable_escapes_through_a_reference covers the message only: main refuses
-// the same program at let y = never() ('the type _N must be fully known here'), the
-// other three escape pins show holes main lets through.
 impl<R: Rt> Update<R> for Connect<R> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.node)

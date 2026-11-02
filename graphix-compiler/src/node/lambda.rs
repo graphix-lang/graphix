@@ -510,41 +510,6 @@ pub struct InstanceTypes {
     sig: Arc<FnType>,
 }
 
-// XCR claude for claude: [bug/low] A formal union of two variables passes the check and
-// its build refuses the instance: `let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>,
-// Array<'b>) ([y], [z]); let u = never(); println(f(u, 1, "s")); u <- "t"` checks
-// (`--check` rc 0), and the run refuses "an instance at fn(x: [i64, string], y: i64, z:
-// string) .. of a definition typed fn(x: ['a, 'b], y: 'a, z: 'b) ..", on main a084f9887
-// and cr33-E alike; GRAPHIX_NO_SUBST runs it and prints ([1], ["s"]). instance_sig
-// does not hold the instance's union argument to the signature's union of two variables.
-// Elaboration refusing what the check accepted is a type-system bug.
-// probe: ~/ptmp/cr29/scratch/r6-E/r8/fu_ab.gx (formal-union-instance-01)
-// 2026-11-01 claude: Fixed in FnType's containment (contains_gated), which instance_sig
-// and a written function type share: a parameter pair either side of which holds a union
-// two of whose members are open cells is checked after every other pair, so the
-// positions that decide each member alone (y: 'a, z: 'b) decide them first, wherever
-// they are written. Pins lang::types::formal_union_of_two_variables_instance (the probe)
-// and formal_union_of_two_variables_written (let g: fn(x: [i64, string], y: i64, z:
-// string) -> .. = f, refused on the base) fail without it; both pass under
-// GRAPHIX_NO_SUBST=1.
-// 2026-11-01 claude: Review (r6 B2) found the order covered only the parameters: a union
-// decided by the result (|x: ['a, 'b]| -> (Array<'a>, Array<'b>) at [string, i64])
-// passed the check and the build refused it (fuzzer DIVERGENCE, u2b.gx).
-// FnType::contains_gated now orders every position by the rule, parameters, variadic,
-// result and throws: a position holding a union of two open cells is checked after all
-// the others, the bounds staying where they were among the rest (no union: the order is
-// as before). Pin lang::types::formal_union_of_two_variables_decided_by_the_result (u2b
-// and u2 in one program; main's build refuses it) fails without it.
-// 2026-11-01 claude: Review (r6 B2, round 2) found contains_gated judged each position's
-// round inside each round's filter: a position whose union an earlier position's binding
-// closed counted as not later in round two and was checked in neither, so `let g: fn(x:
-// bool) -> i64 = f` over `|x: ['a, 'b]| -> ['a, 'b] x` passed the check and ran a bool
-// as an i64 (a JIT verifier panic). The rounds are now fixed before any position is
-// checked. Pins lang::types::formal_union_of_two_variables_every_position_held,
-// _in_a_union, _in_a_field fail without it (probes ~/ptmp/cr29/scratch/r6-B/w5/sk1.gx,
-// sk3.gx, sk5.gx, sk6.gx, sk7.gx). GRAPHIX_NO_SUBST agrees with the default on these
-// pins only: under a generic caller the call site's order and this one disagree
-// (formal-union-order-01).
 /// The definition's signature `def` as the instance at `instance` holds
 /// it: each open cell copied under its name into `known` and bound to the
 /// instance's type. `None` when the instance's signature does not hold
@@ -1377,6 +1342,15 @@ impl Typing {
             // whole bind's type is itself wrong (the pattern's fields only, so a
             // field read takes the wrong index at run time, main the same): CR
             // partial-whole-bind-01.
+            // 2026-11-01 claude: Landed on main with fix 3 (the reads in a holder's
+            // value share one copy per binding; a forwarded destructure copies per
+            // name). The coordinator measured the B2-r3-2 chains at N=14, 16, 18
+            // and 30: lane and main within noise (1.6-3.0G instructions, flat),
+            // every verdict the same. Fix 3 was not adversarially re-reviewed, so
+            // this stays an XCR for review at the meeting and the soak. Pins:
+            // lang::types::holder_chain_stays_a_dag,
+            // holder_value_reads_a_binding_once,
+            // holder_forwarded_beside_a_written_name{,_in_a_body}.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),
@@ -2446,38 +2420,6 @@ struct DefGate<R: Rt> {
 }
 
 impl<R: Rt> DefGate<R> {
-    // XCR claude for claude: [bug/low] A module using its parent's annotated array of
-    // generic functions through a callback is refused with "the check decides a type the
-    // code around the module left open: annotate `fs`", though fs is annotated: the
-    // foreign write is this gate's mark_formal_quantifier on the parent's cell (not
-    // contains), which the module's foreign-write rule counts as a decision. Probe:
-    // ~/tmp/cr29/scratch/review2/RV7/mod1/ (gate-foreign-mark-01)
-    // 2026-11-01 claude: Round 6 lane B wave 2 leaves this open. The mark is persistent
-    // and read later (an instance's elaboration copies a formal's quantifier by it,
-    // generic_inner_quantifiers; is_rigid_formal), so skipping it for a cell an earlier
-    // task created would elaborate the module's callback differently from the same code
-    // outside a module, and counting it as no decision would let a sibling module see
-    // another's mark depending on timing. A deterministic fix: mark a written fn<..>
-    // type's quantifiers when the written type becomes cells, so every copy carries the
-    // fact (TVar::freshen copies facts), and make mark_formal_quantifier skip the write
-    // when the fact is set, as mark_cycle_refused does; that touches typ/tvar.rs, lane
-    // V's file this round. On 04a9c29b0 a top-level program with the same calls (no
-    // module) runs ([4.0, 4.0] [3, 3]), and calls through fs[0] copy the quantifier
-    // without any mark (probe ~/ptmp/cr29/scratch/r6-B/w2/g1.gx, g2.gx).
-    // 2026-11-01 claude: The mark was not the only foreign write: the gate's
-    // open_quantifier_rigid on the parent's cell is one too (GRAPHIX_TASK_AUDIT shows
-    // both). Fixed at the written type: Type::alias_tvars marks a written fn type's own
-    // quantifiers CellFact::FormalQuantifier in the task that created them (a let
-    // annotation's, a field's, an element's, a typedef's; an interface val's own stay
-    // its scheme's, module.rs bind_sig_item), so the fact holds from the start,
-    // whichever use comes first, and DefGate::open neither marks nor holds rigid a
-    // quantifier an earlier task created and marked: it is any instance of itself to the
-    // later task already, and that task writes nothing of it. Pins:
-    // lang::modules::module_calls_outer_rank2_elements (fails with the gate filter or
-    // the mark reverted), lang::types::rank2_element_annotated_then_used_again and
-    // rank2_let_used_at_two_types (top-level order dependence: an annotation picking one
-    // instance bound the written quantifier for every later use; fail with the mark
-    // reverted). Probes ~/ptmp/cr29/scratch/r6-B/w3/.
     fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>) -> Self {
         let at = AtLevel::enter(def.level);
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();

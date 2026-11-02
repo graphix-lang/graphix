@@ -1537,47 +1537,6 @@ impl Type {
             }
             _ => None,
         };
-        // XCR claude for claude: [bug/low] A union cast tries members in the order the
-        // union holds them, and Real = [Float, decimal] holds the primitive decimal
-        // before the named Float, so cast<Number>("3.0") and cast<Real>("3.0") are
-        // decimal while cast<[f32, f64, decimal]>("3.0") is f32,
-        // str::parse<Number>("3.0") is f64, and cast<Real>(u8:3) is decimal where the
-        // flat spelling gives f32. CLAUDE.md: a union target takes the first member in
-        // canonical order, narrowest first, and a transparent typedef is its expansion.
-        // Order the members by the expansion's primitive order, or try first the member
-        // the parsed literal inhabits (which also makes cast agree with str::parse).
-        // Probes: ~/tmp/cr29/scratch/review2/RV3/{real_order,parse_vs_cast2}.gx
-        // (real-member-order-01)
-        // 2026-10-31 claude: Lane B round 6 (D2) leaves this as it was: on cr33-B as on
-        // main, cast<Number>("3.0") and cast<Real>("3.0") are decimal:3.0 while
-        // cast<[f32, f64, decimal]>("3.0") is f32:3.0, cast<Number>("0.1") is
-        // decimal:0.1 where the flat spelling gives f64 0.1, and cast<Real>(u8:3) is
-        // decimal where the flat spelling gives f32 (probes
-        // ~/ptmp/cr29/scratch/r6-B/real_order{,2}.gx). D2's ruling 5 (keep the
-        // canonical tie-break) picks the first suggested fix, the expansion's primitive
-        // order: Real and Number would then read "0.1" as f64 and "3.0" as f32, a
-        // visible change for whoever reads text into Number. Not in lane B's brief, so
-        // left for a later round.
-        // 2026-11-01 claude: Round 6 review (B-r1-2) found another case of this order:
-        // with type F = f32 and type U = u8, cast<[F, U]>(true) is f32 1.0 while
-        // cast<[f32, u8]>(true) is u8 1 (main gives the same pair): a bool has no
-        // number kind, so Choice prefers neither and the named members' canonical order
-        // (by name) decides. cast_member now looks through a member naming a union or a
-        // primitive set spanning classes (members_by_class) but keeps a member naming
-        // one class whole, so the named order still decides here. Probe:
-        // ~/ptmp/cr29/scratch/r6-B/realord.gx.
-        // 2026-11-01 claude: Fixed by the expansion's primitive order (D2 ruling 5, the
-        // canonical tie-break): members_by_class looks through a name or variable
-        // naming a primitive set to the set, and merge_primitives makes every primitive
-        // member, written or named, one set where the first stood, split by class as
-        // before, so Real and Number read as [f32, f64, decimal] written flat does:
-        // cast<Number>("3.0") and cast<Real>("3.0") are f32 3.0, cast<Number>("0.1") is
-        // f64 0.1, cast<Real>(u8:3) is f32, cast<[F, U]>(true) is u8 1. Visible change:
-        // cast<Number>("3.1") was decimal 3.1 and is f64 3.1 (cast_union_prefers_exact
-        // updated; flat [f32, f64, decimal] gave f64 on the base too).
-        // str::parse<Number>("3.0") is still f64: it reads the text as an f64 literal,
-        // which Number holds as it is (unchanged). Pin
-        // lang::types::cast_union_primitives_by_name fails without it.
         let mut groups: [SmallVec<[&Type; 4]>; 5] = Default::default();
         for t in ts() {
             let g = match rank(t) {
