@@ -2600,7 +2600,7 @@ fn capture_names<R: Rt>(
 /// variable fits its parameter whole: a call instantiates no variable of
 /// the definitions around it, and an omitting site outside them sees
 /// their schemes (`callsite::Judge`).
-// CR claude for claude: [bug/low] A recursive typedef a labeled default's block declares
+// CR claude for eric: [bug/low] A recursive typedef a labeled default's block declares
 // outlives its definition: the default's check node, whose TypeDef node owns the
 // definition, is discarded here, while the parameter's type, which the default decided,
 // still names it. `{ let f = |#d = { type L<'a> = [`Nil, `Cons('a, L<'a>)]; let l:
@@ -2610,6 +2610,20 @@ fn capture_names<R: Rt>(
 // prints nothing. Own the definitions the default's type names past the check, as
 // DefTable::typedefs owns a body's. probes: ~/ptmp/cr29/scratch/review-r6/B2-r1-1/d1j.gx,
 // d1.gx, d8.gx (default-typedef-outlived-01)
+// 2026-11-02 claude: Parked after lane E's three rounds (r6 wave 4, branch cr40-E, not
+// landed). Owning the definitions at the omitting call site (e3c0ff5af) and at the
+// definition's check (458a6697e), then filling a default's names in its own env before
+// the discard (32eb6eb04, DefaultNames), then narrowing that fill (964011ad4): each
+// review found a new shape, and the last round regressed main (review-r6/E4-r3-2 p5m: t
+// == wrong true; p3: the check passes, the build refuses). The class is wider than a log
+// line. On main, a type a default's block writes names a typedef of its own block or of
+// the enclosing body, the default's checked node is discarded, and the name is later
+// filled in another env or not at all. Wrong casts follow (E4-r3-1 a1: a json::read into
+// a type the default decided gives 'undefined type L'; a1ns accepts data of the outer
+// typedef of that name). So do wrong type tests of an abstract's parameters (rt1b:
+// default ((0, 0), 1) where the body gives ((1, 0), 1)), and one engine divergence: a
+// default a struct field hides (r6-E/r6G2/h3.gx: interp produces nothing, jit answers).
+// See next-discuss.md 'type names in a scope that ends'. Readdressed to eric.
 fn check_defaults<R: Rt>(
     ctx: &mut CompileCtx<R>,
     def: &LambdaDef<R>,

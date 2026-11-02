@@ -89,6 +89,14 @@ impl Graph {
             // reference where the written argument is seeded, or key an unexpanded
             // reference by the definition it names. probes:
             // ~/ptmp/cr29/scratch/review-r6/B2-r1-1/rg8.gx, rg9.gx (regular-inline-ref-01)
+            // 2026-11-02 claude: Parked with default-typedef-outlived-01 (for eric). Lane
+            // E filled written names at the check's end: a let's annotation first
+            // (ada956703), then every type outside a definition (6e09af91c,
+            // seed_node_types, about +0.2% on a build). Reviews found values of one
+            // written type keyed apart by the road that decided them (E4-r1-2 ri11: false
+            // 2 1 where main gives true 1 1), and names filled in the wrong scope. Keying
+            // an unexpanded reference by the definition it names needs that name resolved
+            // where it was written, which is the parked question.
             Type::Ref(tr) => match Self::expand(t) {
                 None => {
                     let name = format_compact!("{}", tr.name);
