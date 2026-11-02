@@ -1195,7 +1195,9 @@ impl Writes {
                 })
             }
             ExprKind::Module { value, .. } => {
-                if let ModuleKind::Resolved { exprs, .. } = &**value {
+                if let ModuleKind::Resolved { exprs, .. } = &**value
+                    && !self.declared.is_empty()
+                {
                     let mut names: LPooled<Vec<CompactString>> = LPooled::take();
                     module_writes(exprs, 1, &mut names);
                     for n in names.iter() {
