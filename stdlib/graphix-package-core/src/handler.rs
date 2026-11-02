@@ -1,8 +1,8 @@
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    BindId, CompileCtx, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue, TagView,
-    branch,
+    BindId, CompileCtx, ExecCtx, LambdaId, Node, Notify, Refs, Rt, Scope, TagValue,
+    TagView, branch,
     cost::Siblings,
     errf,
     expr::ExprId,
@@ -219,7 +219,7 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
     /// Take the function's value when its argument fires.
     pub fn set_fn(&mut self, ctx: &mut ExecCtx<'_, R>, f: Option<Value>, fired: bool) {
         if fired && let Some(v) = f {
-            ctx.deliver(self.pid, TagValue::fired(v));
+            ctx.deliver(self.pid, TagValue::fired(v), Notify::Walk);
             self.siblings = Siblings::default();
         }
     }
@@ -248,7 +248,7 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
                     &self.scope,
                     self.top_id,
                 );
-                ctx.deliver(r.x(), TagValue::fired(req));
+                ctx.deliver(r.x(), TagValue::fired(req), Notify::Walk);
                 self.running.push((r, q));
             }
         }

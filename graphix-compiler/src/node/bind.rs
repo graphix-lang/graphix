@@ -8,8 +8,8 @@ use super::{
     read_var, standing_view,
 };
 use crate::{
-    BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs,
-    Rt, Scope, StaticHold, Tag, TagValue, Update, bailat,
+    BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, Notify,
+    PrintFlag, Refs, Rt, Scope, StaticHold, Tag, TagValue, Update, bailat,
     compiler::compile,
     dbgenv,
     env::{self, Env},
@@ -813,33 +813,18 @@ impl<R: Rt> Update<R> for Bind<R> {
         }
         if publish {
             self.reraised.retain(|id| held.contains(id));
-            let quiet = !tag.triggers();
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
-                    if held.contains(&id) {
-                        return;
-                    }
-                    ctx.event.variables.insert(id, TagValue::tagged(Value::Null, tag));
-                    let stored = TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM);
-                    if quiet {
-                        ctx.rt.store_insert_standing(id, stored)
-                    } else {
-                        ctx.rt.store_insert(id, stored);
-                        ctx.rt.notify_set(id);
+                    if !held.contains(&id) {
+                        let tv = TagValue::tagged(Value::Null, tag);
+                        ctx.deliver(id, tv, Notify::Roots)
                     }
                 });
             } else {
                 let v = tv.value_cloned();
                 self.pattern.bind(&v, &mut |id, v| {
-                    if held.contains(&id) {
-                        return;
-                    }
-                    ctx.event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-                    if quiet {
-                        ctx.rt.store_insert_standing(id, TagValue::fired(v))
-                    } else {
-                        ctx.rt.store_insert(id, TagValue::fired(v));
-                        ctx.rt.notify_set(id);
+                    if !held.contains(&id) {
+                        ctx.deliver(id, TagValue::tagged(v, tag), Notify::Roots)
                     }
                 });
                 self.ever_published = true;
@@ -1913,16 +1898,8 @@ impl<R: Rt> ByRef<R> {
     /// `let` publishes; a quiet production under an init view stands in
     /// it, so the cell exists from the reference's birth.
     fn publish(&self, ctx: &mut ExecCtx<'_, R>, tv: TagValue) {
-        let tag = tv.tag();
-        if tag.triggers() {
-            let stored = if tag.is_bottom() {
-                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
-            } else {
-                TagValue::fired(tv.value_cloned())
-            };
-            ctx.rt.store_insert(self.id, stored);
-            ctx.event.variables.insert(self.id, tv);
-            ctx.rt.notify_set(self.id);
+        if tv.tag().triggers() {
+            ctx.deliver(self.id, tv, Notify::Roots)
         } else if ctx.event.init() {
             ctx.rt.store_insert_standing(self.id, tv);
         }

@@ -11,8 +11,9 @@ use super::{
 };
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
-    LambdaId, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, ResolvingLambda, Rt,
-    Scope, StaticHold, Tag, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
+    LambdaId, LambdaInstanceId, Node, NodeView, Notify, PrintFlag, Refs, ResolvingLambda,
+    Rt, Scope, StaticHold, Tag, TagValue, Update, View, analysis, bailat, dbgenv,
+    deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     format_with_flags,
@@ -4609,10 +4610,10 @@ pub(crate) enum QuietAtRoot {
 }
 
 /// Publish `tv`, a production feeding `feeds`, to the readers of this
-/// dispatch. A fire (a value or a fresh bottom) is stored and delivered
-/// on the overlay; a quiet one per `root`. `born` delivers a quiet value FIRED: a fresh
-/// callee's first dispatch reads its arguments as new. Returns whether
-/// the overlay was written.
+/// dispatch. A fire (a value or a fresh bottom) is delivered
+/// ([`ExecCtx::deliver`]); a quiet one per `root`. `born` delivers a quiet
+/// value FIRED: a fresh callee's first dispatch reads its arguments as
+/// new. Returns whether the overlay was written.
 pub(crate) fn publish_production<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
     feeds: Feeds<'_>,
@@ -4622,28 +4623,18 @@ pub(crate) fn publish_production<R: Rt>(
 ) -> bool {
     let tag = tv.tag();
     let bottom = tag.is_bottom();
+    let fired = tag.triggers();
+    if !fired && matches!(root, QuietAtRoot::Skip) {
+        return false;
+    }
     let delivered = if born && !bottom { Tag::FIRED } else { tag };
-    let (store, overlay) = if tag.triggers() {
-        let store = if bottom { Tag::FRESH_BOTTOM } else { Tag::FIRED };
-        (Some((store, false)), Some(tag))
-    } else {
-        match root {
-            QuietAtRoot::Skip => return false,
-            QuietAtRoot::Stand => (Some((tag, true)), None),
-            QuietAtRoot::Deliver => (None, Some(delivered)),
+    let mut put = |id: BindId, v: Value| match (fired, root) {
+        (true, _) => ctx.deliver(id, TagValue::tagged(v, tag), Notify::Walk),
+        (false, QuietAtRoot::Skip) => (),
+        (false, QuietAtRoot::Stand) => {
+            ctx.rt.store_insert_standing(id, TagValue::tagged(v, tag))
         }
-    };
-    let mut put = |id: BindId, v: Value| {
-        match store {
-            None => (),
-            Some((t, false)) => ctx.rt.store_insert(id, TagValue::tagged(v.clone(), t)),
-            Some((t, true)) => {
-                ctx.rt.store_insert_standing(id, TagValue::tagged(v.clone(), t))
-            }
-        }
-        if let Some(t) = overlay {
-            ctx.publish(id, TagValue::tagged(v, t));
-        }
+        (false, QuietAtRoot::Deliver) => ctx.publish(id, TagValue::tagged(v, delivered)),
     };
     match (feeds, bottom) {
         (Feeds::Id(id), true) => put(id, Value::Null),
@@ -4654,7 +4645,7 @@ pub(crate) fn publish_production<R: Rt>(
             pat.bind(&v, &mut |id, v| put(id, v))
         }
     }
-    overlay.is_some()
+    fired || matches!(root, QuietAtRoot::Deliver)
 }
 
 /// The lambda literal an argument is: bare, or sampled (a seq step's

@@ -11,8 +11,8 @@ use super::{
     typecheck1_statements, wake::TrackedFires,
 };
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue,
-    Update, View,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Notify, Refs, Rt, Scope,
+    TagValue, Update, View,
     expr::{Expr, ExprId, SeqCaptureExpr, SeqMachineExpr},
     fusion::{
         self,
@@ -198,9 +198,7 @@ impl<R: Rt> SeqMachine<R> {
                 ctx.rt.set_var(*pc_id, at);
                 break;
             }
-            ctx.event.variables.insert(*pc_id, TagValue::fired(at.clone()));
-            ctx.rt.store_insert(*pc_id, TagValue::fired(at));
-            ctx.rt.notify_set(*pc_id);
+            ctx.deliver(*pc_id, TagValue::fired(at), Notify::Roots);
             *current = Some(n);
             entered = true;
         }

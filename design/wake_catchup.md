@@ -104,9 +104,10 @@ The bits cover the inputs an arm names before it runs. Two it learns
 only as it runs: the body of a callee a function value selects, bound
 at its first dispatch, and a reference's new target. For those a write
 stamps its variable with the cycle it landed in (the store's stamp); a
-standing entry (a `let`'s quiet republication at its wake, a formal
-re-seeded standing) is no write and keeps the stamp it had
-(`branch::standing_stamp`). Each arm records the first cycle whose
+standing entry (any quiet delivery: a `let`'s republication at its wake,
+a stale scrutinee's pattern binds, a module's val relayed quietly; a
+formal re-seeded standing) is no write and keeps the stamp it had
+(`branch::standing_stamp`, `ExecCtx::deliver`). Each arm records the first cycle whose
 writes it did not see (`node::wake::ArmClock`): a run makes it the
 next cycle, and the arm's falling asleep (its deselect, a guard the
 chain passes by, the select's or the machine's own sleep while it is

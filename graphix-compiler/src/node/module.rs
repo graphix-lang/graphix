@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, PrintFlag, Refs, Rt, Saved,
-    Scope, StaticCallees, Tag, TagValue, Update, View,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, Notify, PendingImport, PrintFlag, Refs, Rt,
+    Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
     env::{Env, Glob, ImplDef, ImportEntry, Lexical, Map, UseAnchor, scope_params},
     errf,
@@ -1124,21 +1124,6 @@ struct SetAside<R: Rt> {
     runs: Runs,
 }
 
-/// Deliver `tv`, a production of one binding of a proxy, to the other,
-/// `id`, as a binding delivers its own: stored, a bottom included, in the
-/// cycle's event, and a fire scheduling the other roots that read `id`.
-fn deliver_production<R: Rt>(ctx: &mut ExecCtx<'_, R>, id: BindId, tv: TagValue) {
-    let stored = match tv.is_bottom() {
-        true => TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
-        false => TagValue::fired(tv.value_cloned()),
-    };
-    ctx.rt.store_insert(id, stored);
-    if tv.tag().triggers() {
-        ctx.rt.notify_set(id)
-    }
-    ctx.event.variables.insert(id, tv);
-}
-
 // CR claude for eric: [structure/medium] An interface pair is two runtime variables (the
 // val's binding and the body's) kept in step by relays: the static-call mark carry, the seq
 // planner's joined pairs (StaticCallees::add_joined), this cycle-start delivery, the module
@@ -1168,11 +1153,11 @@ pub(crate) fn deliver_pair_writes<R: Rt>(ctx: &mut ExecCtx<'_, R>) {
     for (inner, outer) in pairs.drain(..) {
         let written = |id| ctx.event.variables.get(&id).cloned();
         match (written(inner), written(outer)) {
-            (Some(tv), None) => deliver_production(ctx, outer, tv),
-            (None, Some(tv)) => deliver_production(ctx, inner, tv),
+            (Some(tv), None) => ctx.deliver(outer, tv, Notify::Roots),
+            (None, Some(tv)) => ctx.deliver(inner, tv, Notify::Roots),
             (Some(tv), Some(next)) => {
                 ctx.rt.set_var(inner, next.value());
-                deliver_production(ctx, outer, tv)
+                ctx.deliver(outer, tv, Notify::Roots)
             }
             (None, None) => (),
         }
@@ -1746,7 +1731,7 @@ impl<R: Rt> Update<R> for Module<R> {
                     && !ctx.event.variables.contains_key(inner)
                     && let Some(tv) = ctx.event.variables.get(outer)
                 {
-                    deliver_production(ctx, *inner, tv.clone());
+                    ctx.deliver(*inner, tv.clone(), Notify::Roots);
                 }
             }
             self.runs.update(ctx, &mut self.nodes, &self.catches);
@@ -1772,7 +1757,7 @@ impl<R: Rt> Update<R> for Module<R> {
                 },
                 None => continue,
             };
-            deliver_production(ctx, *outer, tv);
+            ctx.deliver(*outer, tv, Notify::Roots);
         }
         if let Some(e) = failed {
             self.resident.set(TagValue::tagged(e, src_tag))

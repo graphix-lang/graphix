@@ -5,7 +5,7 @@ use super::{
 };
 use crate::SourcePosition;
 use crate::{
-    BindId, CompileCtx, ExecCtx, Node, Refs, Rt, Scope, TagValue,
+    BindId, CompileCtx, ExecCtx, Node, Notify, Refs, Rt, Scope, TagValue,
     expr::{ApplyExpr, Expr, ExprId, ExprKind, ModPath, Origin},
     image::ImageBuf,
     typ::{FnType, Type},
@@ -402,12 +402,12 @@ impl<R: Rt> Callback<R> {
     /// none.
     pub fn feed_fn(&self, ctx: &mut ExecCtx<'_, R>, f: TagValue) {
         if let Function::Own(fid) | Function::Shared(fid) = self.function {
-            ctx.deliver(fid, f)
+            ctx.deliver(fid, f, Notify::Walk)
         }
     }
 
     pub fn feed_arg(&self, ctx: &mut ExecCtx<'_, R>, i: usize, v: TagValue) {
-        ctx.deliver(self.args[i], v)
+        ctx.deliver(self.args[i], v, Notify::Walk)
     }
 
     pub fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {

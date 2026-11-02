@@ -195,7 +195,11 @@ tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`)
 that packages use to feed external events in. Event processing is
 batched: all simultaneous events form one `Event` delivered in one
 cycle; several writes to one variable in a cycle queue for the next,
-except a level's (`Rt::set_level`), which replaces its pending write. A
+except a level's (`Rt::set_level`), which replaces its pending write.
+Every delivery to a binding goes through `ExecCtx::deliver`: into the
+event; a fire stored as delivered, stamped this cycle, a quiet
+production standing (no wake is owed it); `Notify` picks whether a fire
+schedules the roots that read it (`design/dense_delivery.md`). A
 write to either binding of a module's interface pair lands on both as
 the cycle starts (`ExecCtx::deliver_pair_writes`); what the body
 produces reaches the `val` at the module node. A

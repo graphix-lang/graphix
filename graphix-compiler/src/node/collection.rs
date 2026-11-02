@@ -12,8 +12,8 @@ use super::{
 };
 use crate::cost::{ProbeSite, SlotPlan, SlotSite};
 use crate::{
-    ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, PruneMode, Refs, Rt, Scope,
-    SourcePosition, Tag, TagValue, Update, View,
+    ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Notify, PruneMode, Refs, Rt,
+    Scope, SourcePosition, Tag, TagValue, Update, View,
     dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
     fusion::{
@@ -750,7 +750,7 @@ fn take_source<R: Rt, C: MapCollection, S: Send>(
     build_fresh(ctx, &mut slots[fresh..], build, kind.call);
     let from = if moved { 0 } else { fresh };
     for (slot, value) in slots[from..].iter().zip(source.values().skip(from)) {
-        ctx.deliver((kind.element)(slot), TagValue::tagged(value, tag));
+        ctx.deliver((kind.element)(slot), TagValue::tagged(value, tag), Notify::Walk);
     }
     Sourced { tag, source: Some(source), resized, back, paused, moved }
 }
@@ -1681,7 +1681,7 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
                 (&mut self.seen, self.slots.first())
                 && init.tag().triggers()
             {
-                ctx.deliver(slot.acc_id, init);
+                ctx.deliver(slot.acc_id, init, Notify::Walk);
                 missed.observe(ctx);
             }
             return self.resident.set_bottom_as(tag);
@@ -1691,7 +1691,7 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
         let anew = moved || woke || back;
         let pass_acc = |ctx: &mut ExecCtx<'_, R>, id, tv: TagValue| {
             if tv.tag().triggers() || anew {
-                ctx.deliver(id, tv)
+                ctx.deliver(id, tv, Notify::Walk)
             } else {
                 ctx.rt.store_insert_standing(id, tv)
             }
@@ -1738,7 +1738,7 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
                             SlotState::Value(v) => TagValue::fired(v.clone()),
                         },
                     };
-                    ctx.deliver(slots[i].acc_id, seed);
+                    ctx.deliver(slots[i].acc_id, seed, Notify::Walk);
                 }
                 let slot = &mut slots[i];
                 let tv = ctx.under(views.of(i), |ctx| slot.call.update(ctx).clone());

@@ -182,6 +182,16 @@ impl View {
     }
 }
 
+/// Whom a binding's fire schedules besides the readers the walk in
+/// progress reaches ([`ExecCtx::deliver`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notify {
+    /// The walk's readers alone: a binding its own root reads.
+    Walk,
+    /// Also the roots that read the binding, which update this cycle.
+    Roots,
+}
+
 /// Everything that happened simultaneously in one execution cycle. At
 /// most one update per variable per cycle; further updates are queued
 /// for later cycles.
@@ -2310,9 +2320,11 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         self.rt.store_release(&id);
     }
 
-    /// Deliver `tv` to the binding `id` this cycle: into the event, and
-    /// into the store, where a bottom stands as a stale one.
-    // CR claude for claude: [risk/medium] Six other sites deliver to a binding by hand:
+    /// Deliver `tv` to the binding `id` this cycle, into the event. A fire
+    /// is stored as the event holds it, stamped this cycle, and schedules
+    /// what `notify` says; a quiet production stands in the store with the
+    /// stamp of the binding's last fire, so no wake is owed a fire for it.
+    // XCR claude for claude: [risk/medium] Six other sites deliver to a binding by hand:
     // Bind::update's publish, ByRef::publish, module::store_production with its
     // inserts, PatternNode::bind_event, the seq machine's pc entry, and GX::deliver.
     // They store a bottom three ways: STALE_BOTTOM here, FRESH_BOTTOM in
@@ -2337,13 +2349,43 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     // read. deliver also never calls notify_set, which Bind, ByRef and the seq pc do. A
     // unification must pick, per caller, the event tag, the stored tag, stamped vs
     // standing and notify, and pin each choice.
-    pub fn deliver(&mut self, id: BindId, tv: TagValue) {
-        let standing = if tv.tag().is_bottom() {
-            TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)
-        } else {
-            tv.clone()
+    // 2026-11-02 claude: Round 7 lane N: every delivery to a binding goes through
+    // ExecCtx::deliver(id, tv, notify): into the event; a fire stored as the event
+    // holds it (a value Fired, a bottom FreshBottom, never StaleBottom), stamped this
+    // cycle; a quiet production stands (store_insert_standing). Notify::Roots (a let, a
+    // reference cell, a module's relay between an interface pair, the seq pc,
+    // GX::deliver) also schedules the roots that read the binding, Notify::Walk
+    // (pattern binds, formals through publish_production's fire path, collection
+    // elements and accs, genn, handler, queuefn, coretraits) the walk's readers alone,
+    // each as before. ByRef's quiet seed and publish_production's quiet Stand/Deliver
+    // stay as they were (no event entry, or the overlay alone). Two sites were wrong by
+    // wake catch-up and now stand quietly: the module relay stamped a quiet val
+    // republication as a fire (count of a::x over an interface counted 1 at another
+    // arm's wake, 0 without the interface), and a guard's re-match over a stale
+    // scrutinee stamped its binds (count(x) in a callee bound at a wake counted 1).
+    // Pins (stdlib/graphix-tests/src/lang/delivery.rs, four modes each):
+    // module_quiet_republish_is_owed_no_fire and stale_rebind_is_owed_no_fire fail on
+    // bbb06c0c6; let_fire_schedules_its_readers,
+    // reference_cell_fire_schedules_its_readers, module_val_fire_schedules_its_readers
+    // fail with Notify::Walk at the let, the reference and the module;
+    // seq_steps_enter_in_the_cycle_their_predecessor_completed and
+    // guard_rematch_binds_stale hold today's behaviour. No fixture tells deliver's old
+    // StaleBottom from FreshBottom: a same-cycle store read without an event entry was
+    // not reachable from a program I could write. Needs a soak.
+    pub fn deliver(&mut self, id: BindId, tv: TagValue, notify: Notify) {
+        let tag = tv.tag();
+        let stored = match tag.is_bottom() {
+            true => TagValue::tagged(Value::Null, tag),
+            false => tv.clone(),
         };
-        self.rt.store_insert(id, standing);
+        if tag.triggers() {
+            self.rt.store_insert(id, stored);
+            if notify == Notify::Roots {
+                self.rt.notify_set(id)
+            }
+        } else {
+            self.rt.store_insert_standing(id, stored)
+        }
         self.event.variables.insert(id, tv);
     }
 

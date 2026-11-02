@@ -10,7 +10,7 @@
 
 use super::genn::SynthCall;
 use crate::{
-    BindId, Event, ExecCtx, Rt, Scope, TagValue, View,
+    BindId, Event, ExecCtx, Notify, Rt, Scope, TagValue, View,
     abstract_value::{self, CastHook, GxAbstract, ValueHookDispatch},
     env::{Env, ImplDef},
     expr::ExprId,
@@ -482,7 +482,7 @@ fn call_hook_over<R: Rt>(
     };
     let s = &mut loan.site;
     for (id, v) in s.call.args.iter().zip(args.iter()) {
-        ctx.deliver(*id, TagValue::fired(v.clone()));
+        ctx.deliver(*id, TagValue::fired(v.clone()), Notify::Walk);
     }
     let view =
         if std::mem::replace(&mut s.first, false) { View::Birth } else { View::Cycle };

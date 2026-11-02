@@ -75,8 +75,21 @@ bind). A reader interprets `stamp == cycle()` as delivered this cycle
 entry), absence as the phantom. `store_insert_standing` keeps the
 stamp of the entry it replaces, or stamps it as an earlier cycle when
 that entry is absent or this cycle's — value-channel maintenance that is
-deliberately not a delivery (`ByRef`'s seed, a `let`'s quiet
-republication).
+deliberately not a delivery (`ByRef`'s seed, a formal seeded standing).
+
+Every delivery to a binding goes through `ExecCtx::deliver`: a let's
+publication, a reference cell's, a module's relay between an interface
+pair, a select's pattern binds, a call's formals, a collection's
+elements and accumulators, the seq machine's `pc`, a runtime write
+(`GX::deliver`). It puts the production into the event; a fire is
+stored as the event holds it (a value Fired, a bottom FreshBottom),
+stamped this cycle; a quiet production stands (`store_insert_standing`),
+since nothing fired: a wake owes no fire for it (a `let` republished at
+its wake, a stale scrutinee's binds, a module's val relayed quietly).
+Its `Notify` says whether a fire also schedules the roots that read the
+binding (`Roots`: a let, a reference cell, a module's val, `pc`, a
+runtime write) or only the walk's readers (`Walk`: binds read inside
+their own root).
 
 `event.variables` is the OVERLAY, not the store: same-cycle transient
 deliveries (select arm binds, call-site formal publishes). Reads fall

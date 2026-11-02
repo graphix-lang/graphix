@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, ExecCtx, InitFn, LambdaId,
-    Node, Refs, Rt, Scope, Tag, TagValue, TagView, WriteTarget,
+    Node, Notify, Refs, Rt, Scope, Tag, TagValue, TagView, WriteTarget,
     env::Env,
     expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
     image::{self, ImageBuf},
@@ -239,7 +239,7 @@ impl<R: Rt> Apply<R> for WrapperApply<R> {
                 for (bid, v) in delta.drain(..) {
                     match landed {
                         true => ctx.rt.set_var(bid, v),
-                        false => ctx.deliver(bid, TagValue::fired(v)),
+                        false => ctx.deliver(bid, TagValue::fired(v), Notify::Walk),
                     }
                 }
             } else {
@@ -502,7 +502,7 @@ impl<R: Rt> Apply<R> for QueueFn<R> {
                     self.ftyp = Some(Arc::new(def.typ.reset_tvars()));
                 }
             }
-            ctx.deliver(self.fid, TagValue::tagged(v, tag));
+            ctx.deliver(self.fid, TagValue::tagged(v, tag), Notify::Walk);
             if self.lambda.is_none() {
                 match self.build_lambda(ctx) {
                     Ok(lv) => {

@@ -6,7 +6,7 @@ use enumflags2::BitFlags;
 use futures::{FutureExt, Stream, StreamExt, stream::SelectAll};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
-    View, WriteTarget, diagnostic_site,
+    TagValue, View, WriteTarget, diagnostic_site,
     expr::{
         self, Expr, ExprId, ExprKind, Load, ModPath, Origin, Probes, ResolverRef,
         Resolvers, RootFile, Sig, Source, join_in_order,
@@ -807,9 +807,7 @@ impl<X: GXExt> GX<X> {
                 }
             }
         };
-        self.ctx.rt.store_insert(id, graphix_compiler::TagValue::fired(v.clone()));
-        self.ctx.event.variables.insert(id, graphix_compiler::TagValue::fired(v));
-        self.wake_readers(&id);
+        self.ctx.view().deliver(id, TagValue::fired(v), graphix_compiler::Notify::Roots)
     }
 
     /// `id`'s delivery this cycle, or its wait behind what `id` has waiting

@@ -8,6 +8,7 @@ mod byref;
 mod cast_trait;
 mod collection;
 mod datetime;
+mod delivery;
 mod dense_deltas;
 mod errors;
 mod functions;

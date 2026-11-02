@@ -1,7 +1,7 @@
 use crate::SourcePosition;
 use crate::image::ImageBuf;
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue,
+    BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
     env::Env,
     expr::{ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt, union_members},
     format_with_flags,
@@ -2185,10 +2185,8 @@ impl<R: Rt> PatternNode<R> {
         v: &Value,
         tag: crate::Tag,
     ) {
-        self.structure_predicate.bind(v, &mut |id, v| {
-            ctx.event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-            ctx.rt.store_insert(id, TagValue::tagged(v, tag));
-        })
+        self.structure_predicate
+            .bind(v, &mut |id, v| ctx.deliver(id, TagValue::tagged(v, tag), Notify::Walk))
     }
 
     /// [`Self::bind_event`] for a guard's tick, returning the store
