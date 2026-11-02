@@ -779,27 +779,6 @@ pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type, WrittenAt)]> {
     }
 }
 
-// XCR claude for claude: [perf/low] A variant pattern at a tuple or struct
-// element whose type is variants beside null does not fuse: `let o: [`A(i64),
-// `B(i64), null] = `A(1); #[native] select (o, 1) { (`A(z), _) => .., _ => .. }`
-// is refused "variant pattern `A doesn't match its predicate [null, `A(i64),
-// `B(i64)]" (emit_variant_cond), since variant_cases gives up on a set holding
-// null. The same select at the top level (`select o { `A(z) => .. }`) fuses, and
-// so does the tuple without null. Main a084f9887 refuses it the same way. An
-// optional variant inside a tuple is a common shape. probe:
-// ~/ptmp/cr29/scratch/review-r6/E2-r2-1/u4.gx (graphix --no-cache)
-// (null-variant-element-defuse-01)
-// 2026-11-01 claude: emit_variant_cond reads its cases from the variant members
-// of the leaf's type alone (kernel_abi::variant_case): a null member fails the
-// tag test (rep::is_variant), as at the top level. Pin:
-// lang::fusion::native_variant_pattern_at_a_nullable_element (a tuple element, a
-// struct field and a payload; fails jit/jit_par with the select.rs change
-// reverted, 'variant pattern `A doesn't match its predicate').
-// 2026-11-01 claude: Review (E2-r1-2): the payload third of the pin
-// (`W([`A(i64), null]) under #[native]) already fused on main a084f9887 (probe
-// ~/ptmp/cr29/scratch/review-r6/E2-r1-2/p1c.gx prints (105, -3, 100) there);
-// only the tuple-element and struct-field parts fail without the fix. The
-// payload part stays in the pin as coverage, not as a regression catch.
 /// The `(tag, payload-types)` case of a variant type; `None` otherwise.
 pub fn variant_case(t: &Type) -> Option<(ArcStr, Vec<Type>)> {
     t.with_deref(|r| match r {

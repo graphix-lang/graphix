@@ -3166,27 +3166,6 @@ fn convert_text(
     }
 }
 
-// XCR claude for claude: [bug/low] A float whose shortest form has 17 significant
-// digits loses digits on its way to a decimal: Value::cast(Typ::Decimal) rounds
-// 0.30000000000000004 to 0.3. JSON reads a number in a decimal position as the f64
-// wherever the f64 prints back as the text (graphix-package-json's number and
-// reads_back), so an Array<decimal> holding decimal:0.30000000000000004 writes that
-// text and reads back as 0.3 (main too); 16-digit decimals read back. Convert a float
-// through its shortest text, as f32_as_written does, or have json keep the decimal
-// for a decimal position. Probe: ~/ptmp/cr29/scratch/review-r6/B-r2-1/probes/dec16.gx
-// (prints decimal:0.3 for the fourth element) (float-decimal-digits-01)
-// 2026-11-01 claude: float_decimal converts a float through its shortest text (format
-// then Decimal::from_str), an f32 by its own, so 0.30000000000000004 is
-// decimal:0.30000000000000004 and json's decimal read of that text (the f64, then
-// this cast) round trips. Pins: lang::types::float_decimal_keeps_every_digit (casts),
-// lib_tests::json::json_seventeen_digit_decimal_round_trips (write then read of
-// Array<decimal>); both fail in all four modes with cast.rs reverted (0.3, 1.0).
-// 2026-11-01 claude: Review (E2-r1-1, E2-r1-2): a float too small for 28 places
-// parsed to a scale-28 zero printing 0.0000000000000000000000000000, and -0.0 lost
-// its sign; a zero is now 0.0 with the float's sign, as main gave. A tie at the 28th
-// place rounds as the string cast of the same text does (5e-29 is 1e-28). Pin
-// lang::types::float_decimal_too_small_is_a_signed_zero (fails in all four modes with
-// the zero arm removed).
 /// The float `v` as the decimal its shortest text names, the number the
 /// program wrote, rounded to the decimal's 28 places; a whole one keeps a
 /// point (scale 1) where the decimal can hold it, so it prints as the
@@ -3630,7 +3609,7 @@ pub(crate) mod tests {
     // at a value, and may_be_error expands each name once: a value no
     // member holds costs each of the 39 names at most once per reference
     // to it (two), and a type no member of which is an error each name
-    // once, not each of the 2^19 paths (no-error-dag-01).
+    // once, not each of the 2^19 paths.
     #[test]
     fn walks_over_a_union_dag_take_each_name_once() {
         let defs = union_dag(20);

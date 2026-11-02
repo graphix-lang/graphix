@@ -642,7 +642,7 @@ run!(json_seventeen_digit_decimal_round_trips, r#"{
 
 // A DAG of named unions is walked once per name: the check of a Result
 // over it (`NoError`), json's member choice and the typed printer each
-// expand a name once a walk (no-error-dag-01).
+// expand a name once a walk.
 run!(json_and_print_over_a_dag_of_named_unions, r#"{
     type E = [`JsonErr(string), `InvalidCast(string)];
     type L1 = [`A, `B];

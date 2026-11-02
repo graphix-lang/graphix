@@ -2057,47 +2057,6 @@ impl Type {
         Ok(parts.known <= 1)
     }
 
-    // XCR claude for claude: [perf/low] may_be_error expands every name each time a path
-    // reaches it, so a DAG of named unions costs 2^depth: with type L1 = [`A, `B], M1 =
-    // [`A, `C] and Li = [Li-1, Mi-1], Mi = [Mi-1, Li-1], checking `let v: Result<L20, E>
-    // = never()` (Result's 'r: NoError) takes ~9.8 G instructions where `let v: L20`
-    // takes 1.6 G, and each level about doubles it (main the same). Expand each name
-    // once per walk (a seen set of RefKeys), as cast's members_by_class and textdata's
-    // members do; select's flatten_union_members keeps only a path, the same shape.
-    // Probes: ~/ptmp/cr29/scratch/r6-B/r7/dag_res16.gx, dag_res20.gx, dag_plain20.gx
-    // (perf stat -e instructions:u graphix --no-cache --check) (no-error-dag-01)
-    // 2026-11-01 claude: Round 6 (brief r6B fix 3): two runtime walks are exponential
-    // over the same DAG of named unions, on main too. json::write_str's member choice
-    // (tval::member_of over is_a) and the typed printer (println of a value of the type)
-    // expand every name each time a path reaches it: for let v: Array<[LN, `D(i64)]> =
-    // [`C, `D(1)] with the DAG above, main's write costs 2.8 G instructions at N=20, 7.9
-    // G at 22 and 30.5 G at 24, its print 4.9, 9.7 and 47.9 G, where --check of the same
-    // program is 1.3 to 1.7 G (lane cr33-B: write 5.3 G, print 11.7 G at 22). Probes:
-    // ~/ptmp/cr29/scratch/review-r6/B-r3-1/dag/wd25.gx, print25.gx; the series
-    // ~/ptmp/cr29/scratch/r6-B/f3/dag/{c,w,p}{20,22,24}.gx (gen.py N KIND OUT; perf stat
-    // -e instructions:u graphix --no-cache). The same fix applies: a seen set of names
-    // per walk, as members_by_class keeps.
-    // 2026-11-01 claude: may_be_error expands each name once a walk (a seen set of
-    // RefKeys, keyed by the definition resolve_peek finds, so a walk that does not
-    // commit fills nothing); is_a, under json::write_str's member choice
-    // (tval::member_of) and the typed printer, keeps each reference's verdict at each
-    // value it was decided at for the walk (IsAHist::decided; a verdict reached past a
-    // path repeat is not kept). Instructions (graphix --no-cache, lane before/after):
-    // dag_res16 --check 2.96/2.62 G, dag_res20 --check 16.0/2.47 G (dag_plain20 2.08 G),
-    // w20 4.10/2.68, p20 6.45/2.61, w22 10.4/2.34, p22 16.5/2.35, w24 34.7/2.15, p24
-    // 65.0/2.29 G; wd25 2.33 G, print25 2.19 G after. Pins: graphix-types
-    // typ::cast::tests::walks_over_a_union_dag_take_each_name_once (counts names:
-    // 1048575 for either walk without its memo),
-    // lib_tests::json::json_and_print_over_a_dag_of_named_unions (the values).
-    // 2026-11-01 claude: The verdicts and the path now share one map, IsAHist::met (a
-    // reference at a value on the path or decided), so a walk allocates no more than
-    // before; dag_res20 --check 2.50 G, w24 2.65 G, p24 2.52 G after, the program's own
-    // check and startup being about 2.1-2.3 G.
-    // 2026-11-01 claude: Review (E2-r1-2): this XCR covers may_be_error, is_a and the
-    // printer. The select walks the CR text names are still exponential over the same
-    // DAG (`select v { _ => 3 }` at L14 46-52 G instructions at --check, main the same):
-    // union_members and cast.rs's flatten_union_members, now CR (union-members-dag-01)
-    // in expr/pattern.rs, left for the parked select work.
     /// Whether a value of `self` may be an error as the type stands: a
     /// member is an `Error`, holds the primitive `error` or is `Any`.
     /// `NoError ⊇ self` is its negation; an open member may be anything

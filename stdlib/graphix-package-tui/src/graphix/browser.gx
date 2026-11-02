@@ -53,69 +53,6 @@ let browser = |
         }
     };
     let row_slots = max(1, size.height - 1);
-    // XCR claude for claude: [bug/low] The window start is clamped to the last row, not
-    // to a full window, and viewport.y itself is never clamped. When the listing
-    // shrinks under the same path while scrolled down (or the window grows while at the
-    // bottom), only the last row or rows show while every row would fit. Up steps from
-    // the stale viewport.y, so several presses change nothing. Clamp to
-    // `array::len(structure.rows) - row_slots` and read first_row instead of viewport.y
-    // in the Up/Down arms' updates. Fix it together with the column offset in the
-    // candidates slice, which has the same flaw. probe:
-    // design/review-2026-10-26/repro/gx-ui-browser-shrunk-listing.gx (gx-ui-02)
-    // 2026-10-26 claude: Rows done: first_row clamps to len(rows) - row_slots, so a
-    // shrunk listing or a grown window shows a full window, and every cursor arm writes
-    // the viewport from first_row/first_col, so a stale viewport.y no longer swallows
-    // presses. Pin: input_test::a_browser_window_fills_from_a_shrunk_listing (12 rows
-    // scrolled to the end, shrunk to 3: shows 3 and two Ups reach r0; the old code
-    // showed 1 row and stayed on r2). Remains: the column start clamps only to the last
-    // column (gx-ui-01), so after the columns shrink under a scrolled window it shows
-    // from that column on although earlier ones might fit; the window's extent is known
-    // only after the width fold over first_col.., so a full-window column clamp needs a
-    // second (reverse) fold over the widths, and its content widths are indexed by
-    // visible slot, not column.
-    // 2026-10-28 qwen: Column start now clamps to a full window. browser.gx folds the
-    // width twice: window(first) is the fold over columns[first ..] as it was,
-    // scrolled_col is the clamped viewport.x, and when window(scrolled_col) ends with
-    // room left over — every column from the stale offset already fits — a reverse fold
-    // walks the columns before it and takes them in while the room lasts, each charged
-    // at its name and the width of the leftmost visible slot, which is the only cost a
-    // column that has never been drawn can have. first_col is that start, and the
-    // window that is drawn (visible_columns, widths) is folded from it. A start with no
-    // room left over is unchanged, so a full 8-column window still starts at 5. Not
-    // observable in this sandbox: every browser fixture feeds its listing through
-    // sys::net::publish and netidx cannot start here (subscribe answers
-    // SubscribeError("loading the netidx config: Operation not permitted"), the
-    // resolver server logs Operation not permitted), so all of them time out on a blank
-    // render. cargo test -p graphix-package-tui --offline was 144 passed, 8 failed
-    // before any change here — every_example_renders and seven browser fixtures, among
-    // them a_browser_window_fills_from_a_shrunk_listing, the pin the note above names.
-    // It is 144 passed, 9 failed after: the new fixture fails the same blank-render
-    // way, and no other test moved. What was checked without a fixture. graphix --check
-    // on a program that calls browser compiles this module — proved by planting a type
-    // error in the width fold, which --check reported in module tui/browser — so the
-    // new code type-checks, and the same check passes on the fixture's own program. The
-    // arithmetic ran outside the browser over a fake listing (no netidx): a 24-wide
-    // window with 4-wide columns over a listing shrunk to 3 columns and scrolled to its
-    // last starts at 0 and shows col0..col2 where the old rule started at 2 and showed
-    // col2 alone; 8 columns scrolled to 5 start at 5, unscrolled start at 0, wide
-    // columns (nothing fits) keep their start, one column is unchanged. Pin:
-    // input_test::a_browser_window_fills_from_shrunk_columns — 8 columns in a 24-wide
-    // window, scrolled right, then shrunk to 3: the header's widths plus the selected
-    // path must read "3 /local/refill_cols/row0/col2". The old rule reads "1
-    // /local/refill_cols/row0/col1". Its expected value is derived from the fold above
-    // and was never observed: run it once where netidx works. The neighbouring
-    // a_browser_selection_survives_shrunk_columns should be unaffected — its selection
-    // lands on the last column under either rule — but it is unrun here too.
-    // 2026-11-01 claude: Ran here (netidx works on this host): cargo test -p
-    // graphix-package-tui is 165 passed, 0 failed, every browser fixture and
-    // every_example_renders included. Both pins pin what the CR asks and fail with the
-    // old rules: input_test::a_browser_window_fills_from_shrunk_columns reads '1
-    // /local/refill_cols/row0/col2' (one column drawn) with first_col = scrolled_col,
-    // '3 /local/refill_cols/row0/col2' with the reverse fold;
-    // input_test::a_browser_window_fills_from_a_shrunk_listing times out on Null (one
-    // row, cursor stuck) with the row start clamped to len(rows) - 1.
-    // a_browser_selection_survives_shrunk_columns passes under both rules, as the note
-    // expected.
     let first_row = max(0, min(array::len(structure.rows) - row_slots, viewport.y));
     let scrolled_col = max(0, min(array::len(structure.columns) - 1, viewport.x));
     let visible_rows = {

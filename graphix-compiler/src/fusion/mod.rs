@@ -1003,33 +1003,6 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
         LPooled::take();
     worklist.push((root, None));
     let mut reads = lowering::ReadsMemo::default();
-    // XCR claude for claude: [perf/low] Only a region that is a self-recursive
-    // instance's body routes its self-calls to the instance's kernel. A collection
-    // handed the function itself (`array::map(xs, tri)`, `array::fold(xs, 0, step)`)
-    // inlines its callback instance's body into the collection's region, whose
-    // self-call finds no kernel ("mutually recursive static call edge"), so the
-    // collection's loop stays in the node-walk while each slot's instance runs the
-    // recursion as one kernel; `array::map(xs, |x| tri(x))` fuses whole. Routing a
-    // self-call in an inlined callback body to that instance's kernel needs the
-    // callback's instance where `for_each_emitted_node` meets its body. probe:
-    // ~/ptmp/cr29/scratch/r6-E/n4/direct.gx (collection-self-callback-01)
-    // 2026-11-01 claude: discover_lambda_calls walks with for_each_emitted_node_in,
-    // which hands each node the collection callback instance whose body holds it
-    // (GXLambda::inline_callback); a self-call in a self-recursive callback's body
-    // calls that instance's kernel (build_lambda_kernel over its own FnType), so
-    // array::map(xs, fib) and array::fold(xs, 0, step) fuse whole. Two instances of
-    // one callback at different kernels in one region still collide and refuse
-    // (Discovery::collided). Pin:
-    // lang::fusion::native_collection_of_a_recursive_function (#[native] over map
-    // and fold, tail-recursive callbacks included; fails jit/jit_par with the owner
-    // arm reverted, 'mutually recursive static call edge'). Not covered: a closure
-    // callback calling the enclosing recursive function from its kernel's body (`let
-    // rec k = |n| .. array::fold([n - 1], 0, |a, x| a + k(x))`) de-fuses the same
-    // way on main and here.
-    // 2026-11-01 claude: Review (E2-r1-2): the case left out above, a closure
-    // callback calling the enclosing recursive function, now has a CR of its own
-    // below (collection-closure-recursion-01); this XCR covers a collection handed
-    // a function whose recursion is a direct self-call.
     let own = own.and_then(|g| Some((g, g.self_bind()?, &**g.typ())));
     // CR claude for claude: [perf/medium] A collection callback that calls the
     // recursive function whose body holds it de-fuses that function and every call of

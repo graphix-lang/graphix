@@ -789,25 +789,6 @@ fn emit_leaf_cond_inner(
             let words = at.words(cx)?;
             Some(emit_value_leaf_cond(cx, sub, typ, words)?)
         }
-        // XCR claude for claude: [perf/low] A nested or-pattern's alternative no value
-        // of an instance's leaf passes is still emitted against the leaf's layout,
-        // and the region de-fuses: `'a: [(i64, string), (i64, f64, bool)] |x: 'a, y:
-        // i64| -> i64 select (x, y) { ((a, _) | (a, _, _), _) => a }` gives "tuple
-        // pattern over non-tuple scrutinee" in each instance (GXDBG_INSTANCE_FUSION=1),
-        // though the answer is right. A top-level alternative is skipped by its member
-        // of the arm's Set (emit_alt_match, or-alt-instance-defuse-01); a nested one
-        // has no type of its own here, so the leaf needs the predicate's part at it or
-        // a structural fit test. probe: ~/ptmp/cr29/scratch/r6-E/n2/b.gx
-        // (or-alt-nested-defuse-01)
-        // 2026-11-01 claude: A nested alternative (binding, at a leaf, or not, in
-        // emit_value_leaf_cond) is emitted only where StructPatternNode::may_pass says
-        // a value of the leaf's type may pass its structure (a tuple of its arity, a
-        // variant of its tag and arity, a struct with its fields, here or below); one
-        // that cannot is skipped as a top-level one is (SelectArmBind::Or holds
-        // Option<AltMatch>). Pin: lang::select::or_alt_nested_no_instance_value_passes
-        // (#[native] in each instance over a tuple arity and a variant tag, binding and
-        // not; fails jit/jit_par with the select.rs filter reverted, 'tuple pattern
-        // over non-tuple scrutinee').
         StructPatternNode::Or { alts } => {
             let alts = alts
                 .iter()
