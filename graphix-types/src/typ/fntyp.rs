@@ -377,6 +377,14 @@ impl Drop for Walking {
     }
 }
 
+// CR claude for claude: [bug/low] check_bounds_acyclic's refusal depends on hash order:
+// it drains `named` (an AHashMap) into `edges`, so the cycle it reports, and through which
+// variable, varies from run to run. design/review-2026-10-12/repro/t-image-01.gx (`'a:
+// [i64, ('a, 'b)], 'b: [i64, ('a, 'b)]`) is refused with "'a's bound names 'a" in some
+// --check runs and "'a's bound reaches 'a through 'b" in others (main bbb06c0c6, four
+// runs: both messages). The verdict holds; the message does not. Walking each bound's
+// names in a fixed order (sorted, or as written) makes it one message.
+// (bounds-acyclic-order-01)
 /// Refuse a bound that reaches its own variable: directly (`'a: 'a`), under
 /// a constructor (`'a: Array<'a>`) or through another declared variable's
 /// bound (`'a: 'b, 'b: 'a`). A recursive bound is a recursive type.
