@@ -1423,7 +1423,7 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// CR claude for claude: [bug/medium] An argument whose type holds a cell its uses decide
+// CR claude for eric: [bug/medium] An argument whose type holds a cell its uses decide
 // (a read target such as str::parse's or sys::net::subscribe's, an unwritten `let x =
 // never()`, an empty `[]`'s element) is not widened over: its cell is decided by
 // whichever argument the loop meets first, so "the widest argument, whatever the
@@ -1450,6 +1450,8 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // variable binds at the call's end; 4 confirmed, provided a census shows the newly
 // refused population is not too big; 5 accept the refusal; 6 refuse the call. Lane E
 // continues stages 2 and 3 on cr31-E.
+// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D1 widening"
+// (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument, whatever the order. An argument that does not
 /// fit is probed once against its formal with those variables open; it
@@ -2246,7 +2248,7 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // CR claude for claude: [risk/medium] An omitted labeled default only narrows: it is
+    // CR claude for eric: [risk/medium] An omitted labeled default only narrows: it is
     // checked after Widening::settle has set the call's widenable variables, so a
     // default wider than the arguments is refused when omitted and accepted when
     // written. Over `let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y`, `f(#x: [1,
@@ -2280,6 +2282,8 @@ impl<R: Rt> CallSite<R> {
     // generic; 3 yes, the variable binds at the call's end; 4 confirmed, provided a
     // census shows the newly refused population is not too big; 5 accept the refusal; 6
     // refuse the call. Lane E continues stages 2 and 3 on cr31-E.
+    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D1 widening"
+    // (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

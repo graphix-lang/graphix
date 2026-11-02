@@ -709,7 +709,7 @@ impl<R: Rt> Update<R> for Bind<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         if woke {
-            // CR claude for claude: [bug/low] At a wake the write that landed during the
+            // CR claude for eric: [bug/low] At a wake the write that landed during the
             // sleep is re-raised here. The initializer then updates with its input's
             // catch-up fire and publishes over it, even when that input fired before
             // the write. Catch-up loses the order inside the sleep, so the let ends on
@@ -744,6 +744,9 @@ impl<R: Rt> Update<R> for Bind<R> {
             // (~/ptmp/cr29/scratch/review-r6/W2-r3-1/a9*, a10), at up to 1.6x instructions
             // where a write lands at every sleep. Parked for Eric
             // (~/ptmp/cr29/next-discuss.md, wake order); main's behaviour stands.
+            // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "c-bind-06 /
+            // x-engine-firing-05 wake order" (~/ptmp/cr29/next-discuss.md). Readdressed to
+            // eric until then.
             self.reraise_writes_while_asleep(ctx);
         }
         let tv = self.node.update(ctx);
@@ -752,7 +755,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         // initializer fired; otherwise a production publishes when it
         // fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
-        // CR claude for claude: [bug/medium] Two events missed during a sleep are applied
+        // CR claude for eric: [bug/medium] Two events missed during a sleep are applied
         // in the wrong order. The initializer input fired at c=4 and a write to this
         // target landed at c=5. At the wake the re-raised write is published first,
         // then the initializer's caught-up fire overwrites it, so x is 100 where an arm
@@ -785,6 +788,9 @@ impl<R: Rt> Update<R> for Bind<R> {
         // (~/ptmp/cr29/scratch/review-r6/W2-r3-1/a9*, a10), at up to 1.6x instructions
         // where a write lands at every sleep. Parked for Eric
         // (~/ptmp/cr29/next-discuss.md, wake order); main's behaviour stands.
+        // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "c-bind-06 /
+        // x-engine-firing-05 wake order" (~/ptmp/cr29/next-discuss.md). Readdressed to
+        // eric until then.
         if (woke || ctx.event.wake()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =
@@ -1866,7 +1872,7 @@ impl<R: Rt> ByRef<R> {
                 Referent::Channel(c) => (&**c as &dyn Any).downcast_ref::<Ref>(),
             };
             if let Some(r) = named {
-                // CR claude for claude: [bug/low] `&mut a::f` over `val f: fn(x: i64) -> i64`
+                // CR claude for eric: [bug/low] `&mut a::f` over `val f: fn(x: i64) -> i64`
                 // is refused with "a::f was made generic by an earlier compile, and a
                 // writable reference to it would let a write narrow it", though the type
                 // holds no variable and `a::f <- ..` is accepted: membership in poly_binds
@@ -1878,6 +1884,9 @@ impl<R: Rt> ByRef<R> {
                 // ca2/rb2 (refused here at the check) passed the check and failed at run
                 // time. Waits on iface-narrow-write-01 (for eric). probes
                 // ~/ptmp/cr29/scratch/review-r7/E5-r1-1/{ca2,rb2}
+                // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
+                // "Interface val type variables" (~/ptmp/cr29/next-discuss.md). It waits on
+                // iface-narrow-write-01, decided there. Readdressed to eric until then.
                 if ctx.env.poly_binds.contains(&r.id) {
                     bailat!(
                         spec,

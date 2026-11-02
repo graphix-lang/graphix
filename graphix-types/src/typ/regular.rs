@@ -77,7 +77,7 @@ impl Graph {
                 Some(b) => self.node(&b),
                 None => self.leaf(b'v', &[]),
             },
-            // CR claude for claude: [bug/low] A reference that does not expand here is
+            // CR claude for eric: [bug/low] A reference that does not expand here is
             // keyed by its written name, and a nested reference in an inline written
             // type argument reaches the key unresolved: with `type R<'a> = [`Nil,
             // `Cons('a, R<'a>)]; type B<'x> = Abstract<i64>`, `B<R<i64>>` and
@@ -97,6 +97,9 @@ impl Graph {
             // 2 1 where main gives true 1 1), and names filled in the wrong scope. Keying
             // an unexpanded reference by the definition it names needs that name resolved
             // where it was written, which is the parked question.
+            // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "Type
+            // names in a scope that ends" (~/ptmp/cr29/next-discuss.md). Readdressed to
+            // eric until then.
             Type::Ref(tr) => match Self::expand(t) {
                 None => {
                     let name = format_compact!("{}", tr.name);

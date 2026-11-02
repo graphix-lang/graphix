@@ -1270,7 +1270,7 @@ impl<R: Rt> Construct<R> {
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {
                 if let Type::TVar(tv) = p {
-                    // CR claude for claude: [bug/medium] In the REPL a constructed
+                    // CR claude for eric: [bug/medium] In the REPL a constructed
                     // abstract value's parameter that its input leaves open is decided
                     // by a later input, after the value was built at ⊥: with `type
                     // B<'x> = Abstract<i64>; type R<'a> = [`Nil, `Cons('a, R<'a>)]`,
@@ -1290,6 +1290,9 @@ impl<R: Rt> Construct<R> {
                     // Main a084f9887 and lane E (cr40-E) alike. probe:
                     // ~/ptmp/cr29/scratch/review-r6/E4-r2-2/repl3.txt
                     // (repl-abstract-param-01)
+                    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
+                    // "REPL inputs and the open types an earlier input left"
+                    // (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
                     super::defer_settle(ctx, || crate::PendingSettle::Operand {
                         tv: tv.clone(),
                         spec: self.spec.clone(),

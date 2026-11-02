@@ -265,7 +265,7 @@ impl Drop for PendingRequest {
     }
 }
 
-// CR claude for claude: [style/low] RpcId writes its own AtomicU64 counter and
+// CR claude for eric: [style/low] RpcId writes its own AtomicU64 counter and
 // nohash::IsEnabled where atomic_id! gives both (this file's CallSerial uses it;
 // impl_no_pack! takes the macro's type). Also the refusal for an RpcId as data says
 // "implement Cast for it where it is defined", which no user can do for a Rust type in
@@ -283,6 +283,8 @@ impl Drop for PendingRequest {
 // counter, since atomic_id! implements Pack (conflicting with impl_no_pack! and
 // letting a peer send one); taking the macro needs a pack-less form of atomic_id! in
 // netidx-core, which a lane cannot edit, or Eric accepting the hand-written counter.
+// 2026-11-02 claude: Waits on Eric (round6-report.md, Other items): a pack-less
+// atomic_id! in netidx-core, or accept the hand-written counter. Readdressed to eric.
 /// What `sys::net::call_id` mints and a call is known by, unique in the
 /// process. Its `Pack` refuses, so no peer can send one and it prints as
 /// `abstract:`.

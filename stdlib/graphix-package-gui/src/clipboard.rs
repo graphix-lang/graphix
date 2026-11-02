@@ -73,6 +73,9 @@ static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(N
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q52, The clipboard
 // on Wayland): We need a solution for wayland, is wayland-data-control that solution?
 // lets discuss.
+// 2026-11-02 claude: Eric ruled (11-02, next-discuss gui-core-02): option (a),
+// arboard's wayland-data-control feature, and log every clipboard error (iced
+// Clipboard read/write and the builtins).
 pub(crate) fn clipboard<T>(
     f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>,
 ) -> Result<T, arboard::Error> {

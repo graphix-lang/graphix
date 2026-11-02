@@ -449,7 +449,7 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     }
 }
 
-// CR claude for claude: [bug/medium] A generic `val` passes over an implementation
+// CR claude for eric: [bug/medium] A generic `val` passes over an implementation
 // with one type: `val f: fn(x: 'a) -> 'a` over `let f = |x| x; f <- |x| x` (a written
 // `let`, so monomorphic) and `val set: fn(g: fn(x: 'a) -> 'a) -> null` over `let set =
 // |g| { f <- g; null }` (g shares f's cell) both match, so a write that narrows f is
@@ -474,7 +474,9 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // CR iface-val-data-var-01). Its commits are the starting point once Eric rules on the
 // val variable rule (next-discuss item 13). Final reviews:
 // ~/ptmp/cr29/scratch/review-r7/E5-r4-{1,2}/.
-// CR claude for claude: [bug/low] An implementation binding's open cell is not decided by
+// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "Interface val
+// type variables" (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
+// CR claude for eric: [bug/low] An implementation binding's open cell is not decided by
 // the val it implements: with `type B<'x>; val e: B<i64>; val i: B<i64>;` in m.gxi and
 // `type B<'x> = Abstract<i64>; let e = B(1); let i: B<i64> = B(1)` in m.gx, e's parameter
 // stays open past the check, its value is built at B<⊥>, and `m::e == m::i` is false
@@ -492,6 +494,8 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // iface-val-data-var-01). Its commits are the starting point once Eric rules on the val
 // variable rule (next-discuss item 13). Final reviews:
 // ~/ptmp/cr29/scratch/review-r7/E5-r4-{1,2}/.
+// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "Interface val type
+// variables" (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
 // CR claude for eric: [bug/medium] A write through a val narrower than its implementation
 // reaches the implementation at the val's type alone: with `val f: fn(x: i64) -> i64; val
 // g: fn(t: Any) -> string` over `let f = |x| x; let g = |t| f(t ~ "s")`, the main
@@ -514,7 +518,7 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared`.
 fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
-    // CR claude for claude: [bug/medium] An interface val's written quantified fn type
+    // CR claude for eric: [bug/medium] An interface val's written quantified fn type
     // lets its quantifier escape through the implementation, as a let annotation did
     // before rank2-escape-01: `val h: fn<'a: Any>(x: 'a) -> 'a; val y: i64` over `let y
     // = never(); let h = |x| { y <- x; x }` (if1) and `val mk: fn(z: i64) -> fn<'a:
@@ -537,6 +541,8 @@ fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     // own, CR iface-val-data-var-01). Its commits are the starting point once Eric
     // rules on the val variable rule (next-discuss item 13). Final reviews:
     // ~/ptmp/cr29/scratch/review-r7/E5-r4-{1,2}/.
+    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "Interface val
+    // type variables" (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
     declared.sig_matches(env, typ).map_err(|e| {
         let typ = format_with_flags(PrintFlag::DerefTVars, || {
             format_compact!("{}", Brief(typ))

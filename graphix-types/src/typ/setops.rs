@@ -90,7 +90,7 @@ fn every_input(_: &TVar) -> bool {
 /// unbound top-level cell (nothing decides it later) on either side, and
 /// an unbound cell of `other` where `input` says no caller can hand it
 /// one. Any other unbound cell is only itself.
-// CR claude for claude: [bug/low] A later REPL input can bind a top-level cell an
+// CR claude for eric: [bug/low] A later REPL input can bind a top-level cell an
 // earlier input left open, so the earlier input's judgment (open beside open) no
 // longer holds, and the coverage hole the fix of partial-hole-01 closes in a script
 // stays open there: inputs `let b = true`, `let e1 = []`, `let e2 = []`, `let v =
@@ -112,6 +112,10 @@ fn every_input(_: &TVar) -> bool {
 // (PendingSettle::OneMember, and cr32-P's open-member check, which does not land).
 // It covers this CR too: the verdict no longer waits for the check's end, which a
 // REPL input never reaches.
+// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
+// (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
+// (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
+// to eric until then.
 pub(crate) fn settled_identical(
     test: &Type,
     other: &Type,

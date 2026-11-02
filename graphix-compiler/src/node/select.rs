@@ -599,7 +599,7 @@ struct Built {
 }
 
 impl Reach {
-    // CR claude for claude: [bug/high] A select over a union of closed members that share
+    // CR claude for eric: [bug/high] A select over a union of closed members that share
     // one undecided cell sends a value to the wrong arm, silently, on both engines. In
     // `let z = never(); let v = select b { true => (`A, true, 5, z), false => (`B, true,
     // "s", z) }; select v { (`A, false, _, _) => "f", (_, true, x, _) => "x[x]", (`A, _,
@@ -613,6 +613,9 @@ impl Reach {
     // fault with a `_` arm (review-r6/V-r5-1/g/t3G.gx). probe:
     // ~/ptmp/cr29/scratch/settle-commit/{p33,s04,t11G}.gx (graphix --no-cache)
     // (settle-commits-name-01)
+    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
+    // (cr33-V)" (~/ptmp/cr29/next-discuss.md). Option (c) there is fixing this alone on
+    // main now. Readdressed to eric until then.
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.
@@ -1173,7 +1176,7 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
-// CR claude for claude: [bug/low] The pool does not join a tuple's bool heads with a
+// CR claude for eric: [bug/low] The pool does not join a tuple's bool heads with a
 // variant head at one payload position, so an exhaustive select is refused: over
 // `[`B([(bool, bool), `A((bool, bool))]), `C(i64)]` the arms `B((_, true)),
 // `B((_, false)), `B(`A(_)) and `C(_) cover every value, and the check says "no arm
@@ -1183,9 +1186,13 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // expects `B(L) in its message, which is this defect: a pool fix changes the pin.
 // Left with the parked pool work; see (pool-open-member-01). probes:
 // ~/ptmp/cr29/scratch/r7-B/r4/{u5inl,u5nam}.gx (pool-payload-heads-01)
+// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
+// (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
+// (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
+// to eric until then.
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null` and variants.
-// CR claude for claude: [bug/high] heads takes a position's members by union_members,
+// CR claude for eric: [bug/high] heads takes a position's members by union_members,
 // which drops an unbound cell, so a declared variable beside null at a composite
 // pattern's position reads as null alone and a `null` arm completes the pool: `'b:
 // [i64, string] |x: (['b, null], i64)| select x { (7, n) => n, (null, n) => n * 2 }`
@@ -1196,6 +1203,10 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // unbound cell has no finite set of heads (`None`). Left with the parked pool work;
 // see (open-member-cover-01). probe: ~/ptmp/cr29/scratch/r6-E/r6F-fix2/p4.gx, p3.gx
 // (graphix --no-cache) (pool-open-member-01)
+// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
+// (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
+// (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
+// to eric until then.
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, t, &mut members)?;
@@ -2147,7 +2158,7 @@ impl<R: Rt> Select<R> {
         Ok(())
     }
 
-    // CR claude for claude: [bug/medium] A scrutinee member that is an open cell decided
+    // CR claude for eric: [bug/medium] A scrutinee member that is an open cell decided
     // after the select counts as covered by a struct arm: `let z = never(); let v =
     // select b { true => {a: [1], c: 1}, false => z }` read by `{a, ..} => "[a]"` (the
     // full `{a, c}` alike) with `z <- {a: ["s"], c: "w"}` after it passes the check,
@@ -2164,7 +2175,11 @@ impl<R: Rt> Select<R> {
     // only to itself), so the verdict holds whatever those types become; a program whose
     // types end up equal is refused until annotated. This replaces the late checks
     // (PendingSettle::OneMember, and cr32-P's open-member check, which does not land).
-    // CR claude for claude: [bug/medium] A pattern over a variant whose payload is a
+    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
+    // (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
+    // (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
+    // to eric until then.
+    // CR claude for eric: [bug/medium] A pattern over a variant whose payload is a
     // union of structs told apart only by cells decided after the select covers only
     // the payload's first member: `let v = select b { true => `P({a: [1], c: x}), false
     // => `P({a: ["s"], c: y}) }` read by `` `P({a, ..}) => "[a]", _ => "other" `` with `x
@@ -2184,6 +2199,10 @@ impl<R: Rt> Select<R> {
     // only to itself), so the verdict holds whatever those types become; a program whose
     // types end up equal is refused until annotated. This replaces the late checks
     // (PendingSettle::OneMember, and cr32-P's open-member check, which does not land).
+    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
+    // (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
+    // (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
+    // to eric until then.
     /// `checking`: the definition's check, which also judges coverage,
     /// dead arms and guards; an instance does only what they decide.
     fn typecheck0_with(

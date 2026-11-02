@@ -73,7 +73,7 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
-// CR claude for claude: [bug/medium] A trait method's val is not held to what an interface
+// CR claude for eric: [bug/medium] A trait method's val is not held to what an interface
 // val is (module::check_val, iface-generic-written-01): with `trait Put { val put:
 // fn(self, x: 'a) -> 'a }`, `let y = never(); impl Put for C { let put = |s, x| { y <- x;
 // x } }` pairs the method's 'a with y's cell, which no use copies, and passes. Beside a
@@ -86,6 +86,9 @@ pub(crate) fn method_sig(
 // refused under a variable each use picks (branch cr44-E's check_val has it for vals).
 // probes: ~/ptmp/cr29/scratch/review-r7/E5-r1-1/{tr1,tr2,tr4},
 // review-r7/E5-r1-2/p/{g1_trait_written,g2_trait_written_read} (trait-generic-written-01)
+// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "Interface val type
+// variables" (~/ptmp/cr29/next-discuss.md). Its fix is the rule iface-generic-written-01
+// takes. Readdressed to eric until then.
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface

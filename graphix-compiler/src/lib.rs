@@ -2669,7 +2669,7 @@ impl PendingSettle {
         for s in frame.iter() {
             let res = match s {
                 PendingSettle::Operand { tv, spec } => (tv.settle(env), spec),
-                // CR claude for claude: [bug/high] In the REPL a `let` over ⊥ that a
+                // CR claude for eric: [bug/high] In the REPL a `let` over ⊥ that a
                 // lambda writes is ⊥ for the inputs after it, and the lambda keeps cells
                 // of its own, so a later input calls it at any type and the binding holds
                 // a value of each: inputs `let y = never()`, `let p = |x| { y <- x; x }`,
@@ -2693,6 +2693,9 @@ impl PendingSettle {
                 // y, and g logs an arith error over "s" (main 8beb0735a and cr44-E alike;
                 // a static nested module is refused at the val). probes
                 // ~/ptmp/cr29/scratch/review-r7/E5-r1-1/dm8, dm2.
+                // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "REPL
+                // inputs and the open types an earlier input left"
+                // (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
                 PendingSettle::LetOverBottom { tv, init, spec } => {
                     let bottom = init.with_deref(|t| matches!(t, Some(Type::Bottom)));
                     (if bottom { tv.settle_or_bottom(env) } else { Ok(()) }, spec)
@@ -4040,7 +4043,7 @@ pub(crate) fn with_attribute_frame<R: Rt, T>(
     result
 }
 
-// CR claude for claude: [bug/low] A REPL input its check refuses keeps what the
+// CR claude for eric: [bug/low] A REPL input its check refuses keeps what the
 // check wrote into the cells of earlier inputs' bindings: inputs `let y = []`, `let p:
 // fn<'b: Any>(x: 'b) -> 'b = |x| { y <- [x]; x }` (refused, rightly: the escape check
 // runs after the containment, which bound y's element cell to the quantifier), then
@@ -4051,6 +4054,9 @@ pub(crate) fn with_attribute_frame<R: Rt, T>(
 // restores the environment, not the cells a refused check wrote. probes:
 // ~/ptmp/cr29/scratch/r6-B/r7/rq_b3.txt, rq_b6.txt (piped into `graphix --no-cache`)
 // (repl-refused-cells-01)
+// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "REPL inputs and
+// the open types an earlier input left" (~/ptmp/cr29/next-discuss.md). Readdressed to
+// eric until then.
 /// Unwind a statement that was built but failed its checks: delete what
 /// it registered (runtime refs, lambda and `<-` target entries), then
 /// restore the environment it started from.

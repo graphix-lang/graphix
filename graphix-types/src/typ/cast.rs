@@ -966,7 +966,7 @@ impl Type {
                                     })
                                     .flatten()
                             })
-                            // CR claude for eric: [design/low] Class first across the
+                            // CR claude for claude: [design/low] Class first across the
                             // rounds (D2 ruling 3) lets an infinity a finite value
                             // overflows to beat an exact member of another class: this
                             // round takes any conversion, so cast<[f32, string]>(1e300)
@@ -979,6 +979,11 @@ impl Type {
                             // the string. Probes: ~/ptmp/cr29/scratch/r6-B/realord.gx,
                             // ~/ptmp/cr29/scratch/review-r6/B-r1-1/p07_inf.gx
                             // (class-first-overflow-01)
+                            // 2026-11-02 claude: Eric ruled (11-02, next-discuss Lane B
+                            // item 1): the recommendation. An infinity reached from a
+                            // finite value is a last resort after every group:
+                            // cast<f32>(1e300) stays inf, cast<[f32, string]>(1e300)
+                            // reads the string.
                             .or_else(|| {
                                 (cx.holds == Holds::Partly)
                                     .then(|| members.clone().find_map(to))
@@ -3292,14 +3297,6 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
 fn holds_exactly(v: &Value, parsed: Option<&Value>, c: &Value) -> bool {
     match (v, c) {
         (Value::String(_), c) => parsed.is_none_or(|p| holds_exactly(p, None, c)),
-        // CR claude for eric: [design/low] D2 ruling 7 (a bool is held exactly by the
-        // number 1 or 0) with ruling 5 (the canonical tie-break) reads a bool into a
-        // number before a string: cast<[i64, string]>(true) is i64 1 and cast<[f32,
-        // string]>(true) f32 1.0, where main gives "true" for both, since the string
-        // holds the bool exactly too and a bool's class holds neither member. Pinned as
-        // built in lang::types::cast_union_order (i64:1). Options: keep it; or a bool
-        // tries its text before a number (the string first). Probe:
-        // ~/ptmp/cr29/scratch/r6-B/realord.gx (bool-union-number-01)
         (Value::Bool(b), c) if Typ::get(c).is_number() => {
             holds_exactly(&Value::U8(*b as u8), None, c)
         }
