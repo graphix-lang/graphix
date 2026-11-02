@@ -1173,6 +1173,16 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
+// CR claude for claude: [bug/low] The pool does not join a tuple's bool heads with a
+// variant head at one payload position, so an exhaustive select is refused: over
+// `[`B([(bool, bool), `A((bool, bool))]), `C(i64)]` the arms `B((_, true)),
+// `B((_, false)), `B(`A(_)) and `C(_) cover every value, and the check says "no arm
+// covers" `B(..); under typedef names (`type P = (bool, bool); type L = [P, `A(P)]`)
+// the same. Main 8beb0735a the same. The pin
+// lang::select::missing_cases_over_a_union_names_reach_leave_a_covered_member_out
+// expects `B(L) in its message, which is this defect: a pool fix changes the pin.
+// Left with the parked pool work; see (pool-open-member-01). probes:
+// ~/ptmp/cr29/scratch/r7-B/r4/{u5inl,u5nam}.gx (pool-payload-heads-01)
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null` and variants.
 // CR claude for claude: [bug/high] heads takes a position's members by union_members,

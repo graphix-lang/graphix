@@ -142,6 +142,16 @@ impl Type {
             // every copy's cells. probes: ~/ptmp/cr29/scratch/review-r7/B5-r1-2/p/ptqf0-
             // {8,10,12}.gx, ptqf-{8,10}.gx, selq{8,10,12}.gx (cg1.sh BIN FILE there)
             // (dag-quantified-fn-01)
+            // 2026-11-02 claude: Review B5-r4 (main 8beb0735a the same): two more
+            // super-linear shapes. A chain of typedef applications passing an abstract
+            // application (type W<'t> = Abstract<'t>; type P_i<'a> = (P_{i-1}<W<'a>>,
+            // P_{i-1}<W<'a>>); let x: P_N<fn<'b: Number + Singleton>(x: 'b) -> 'b> =
+            // never()): N=14/16/18 main 3.4/6.8/17.5G (P18<i64> 2.0G flat;
+            // review-r7/B5-r4-2/d/pxl-abs-*.gx). A rank-2 holder of a DAG of distinct
+            // parameterless typedefs (type L_k = (fn<'a: Any>(x: 'a) -> ('a, L_{k-1}),
+            // fn<'b: Any>(x: 'b) -> ('b, L_{k-1}))) grows about 1.4x a level with no outer
+            // write (tr12_noo 3.3G, tr16_noo about 15G; review-r7/B5-r4-1/p/tr16_noo.gx), in
+            // the holder's containment, not the escape walk.
             Type::Fn(f) if !f.quantifiers.is_empty() => {
                 out.extend([6, Arc::as_ptr(f).addr()])
             }

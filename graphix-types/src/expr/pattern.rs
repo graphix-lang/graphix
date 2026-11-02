@@ -598,53 +598,6 @@ fn slice_type(list: bool, elem: Type) -> Type {
     if list { Type::List(Arc::new(elem)) } else { Type::Array(Arc::new(elem)) }
 }
 
-// XCR claude for claude: [perf/low] union_members expands every name each time a path
-// reaches it, so over a DAG of named unions (type L1 = [`A, `B], M1 = [`A, `C], Li =
-// [Li-1, Mi-1], Mi = [Mi-1, Li-1]) it returns 2^depth members, nearly all repeats, and
-// each select walk over the scrutinee pays that: `let v: L14 = `C; select v { _ => 3 }`
-// costs 46-52 G instructions at --check and L16 about 490 G (main a084f9887 the same),
-// where the same program without the select costs 2.6 G. An experiment that expanded
-// each name once per call (a seen set) took L14 to 2.67 G; with three tag arms (`A =>
-// 1, `B => 2, `C => 3) L16 went 8.7 to 4.9 G and L18 17.2 to 10.9 G, the rest from
-// cast.rs's flatten_union_members (ShallowScrutinee::facts and discriminant), which
-// keeps only a path. Callers read the list as a set, but Reach and the literal pool
-// consume it, which are parked for Eric: run the select pins with the change. Probes:
-// ~/ptmp/cr29/scratch/review-r6/E2-r1-2/sel114.gx, sel116.gx, sel16.gx, sel18.gx,
-// plain16.gx (meas.sh BIN FILE --check there) (union-members-dag-01)
-// 2026-11-02 claude: union_members and cast.rs flatten_union_members expand each
-// application once per call (typ::Unfolded: definition and parameters' keys,
-// Type::param_key, each application held), in the order first met; one met again adds
-// nothing, its members are in already (flatten keeps its path for the cycle refusal).
-// lang::select (1603) and lang::types (1849) pass unchanged; gxf regress 559 programs,
-// 0 regressions, outcome 0, fusion 0 mismatches: no verdict or message change. --check
-// instructions (debug) main 8beb0735a -> lane: sel114 19.53G -> 2.74G, sel116 lane
-// 2.69G, sel16 7.76G -> 4.53G, sel18 22.92G -> 8.60G, plain16 2.62G -> 2.35G. The
-// three-tag-arm shape is still super-linear (sel20 31.9G): Type::diff under the
-// select's coverage, the new CR diff-dag-01. Pin graphix-types
-// typ::cast::tests::select_members_expand_each_application_once (L16: 4 members, 65536
-// without; flatten_union_members the same list).
-// 2026-11-02 claude: Review B5-r1-1 (low): the change does move verdicts, which the
-// note above missed (no fixture or regress pin had the shape): over a named-union DAG
-// reaching one application twice (type U = [L, M], L = [B, `X], M = [B, `Y]), main
-// 8beb0735a refused exhaustive selects whose literal pool or slice ladder covers B
-// ("missing match cases: no arm covers (bool, bool)", "the slice arms leave length 1 of
-// Array<bool> uncovered"; variant payloads and struct field literals alike): the
-// repeated members split the pool. Each is now accepted and runs as over the flat
-// union; a select really not exhaustive, and a dead arm, keep main's refusal and
-// message. Pin lang::select::pools_over_a_union_two_names_reach_cover_it (main refuses
-// its program). Review B5-r1-2 (low): both walks now ask Unfolded::first before
-// building an application's expansion (the name resolved first, so its key is its
-// definition's). Probes ~/ptmp/cr29/scratch/review-r7/B5-r1-1/i4/.
-// 2026-11-02 claude: Review B5-r3-1 (low): the change also moves a refusal's message
-// over a named-union DAG: a select short of exhaustive lists only what the pool leaves
-// out, where main 8beb0735a also lists a member the arms cover (u5: main 'no arm covers
-// [(bool, bool), `A(P), `B(L)]', now 'no arm covers [`A(P), `B(L)]'). Pinned by
-// lang::select::missing_cases_over_a_union_names_reach_leave_a_covered_member_out
-// (fails with union_members expanding every name each time). `B(L) stays in both: the
-// pool joins no tuple's bool heads with a variant head in one payload union, so `B((_,
-// true)), `B((_, false)), `B(`A(_)) do not cover `B(L) (inline types alike, main the
-// same; u5inl.gx, u5nam.gx in ~/ptmp/cr29/scratch/r7-B/r4/), left with the parked pool
-// work.
 /// The concrete members of `t`: bound tvars dereferenced, aliases
 /// expanded, unions flattened, in the order first met; an application met
 /// again adds nothing, its members are in already. An unbound tvar

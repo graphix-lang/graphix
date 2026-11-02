@@ -621,7 +621,9 @@ no table row types, reads `'a` as the instance's type. It is checked
 there as an instance's body is again (`node::rechecking_instance`): its
 definition's check judged its selects' verdicts at the types written, so
 an arm the instance's narrower type leaves unreached binds at ⊥ and never
-runs (pin `lang::select::default_at_a_bind_takes_its_definitions_coverage`).
+runs (pin `lang::select::default_at_a_bind_takes_its_definitions_coverage`;
+a body reading such a bind is still refused by the build, CR
+default-bind-coverage-01).
 
 A signature finds its quantifiers by name (`FnType::quantifiers`). A
 parameter the body unifies with a declared quantifier (`x` in `'a:

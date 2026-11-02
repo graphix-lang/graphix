@@ -923,90 +923,6 @@ fn typecheck_arg<R: Rt>(
                 ArgFit::Misfit
             })
         }
-        // XCR claude for claude: [perf/low] A formal holding a quantified function
-        // type through a chain of parametric typedefs is still checked in time
-        // exponential in the chain's depth, though rank2_parts walks it once:
-        // `type P0<'a> = ('a, i64); type P1<'a> = (P0<'a>, P0<'a>); ..; let x:
-        // P20<fn<'b: Number + Singleton>(x: 'b) -> 'b> = never(); let f = |a: 'a, b:
-        // 'a| a; f(x, x)` takes 55G instructions to --check (debug; 9G at 16; main
-        // a084f9887 297G and 23G). callgrind puts it in pre_unify_arg and
-        // check_contains_rigid below: their containment expands each application
-        // anew (ContainsHist::expand_ref, lookup_ref_by, replace_tvars), and an
-        // expansion's applications are new nodes, so the ref-pair memo never meets
-        // one twice. Memoize a containment of two applications by definition and
-        // parameter identity, as Expanding::apps does here. probe:
-        // ~/ptmp/cr29/scratch/r6-B/w4/ptq-16.gx, ptq-20.gx (dag-check-02)
-        // 2026-11-01 claude: ContainsHist's committed-pair memo now keys an
-        // application by its definition and its parameters' identities
-        // (ContainsHist::pair_key, interned in apps, pinned), not by its node: an
-        // expansion builds its applications anew, so P15<F> met twice under one
-        // P16<F> expansion was a new pair each time and a containment of an expanded
-        // chain against its application walked 2^depth. --check instructions (debug,
-        // cpu_atom + cpu_core) before -> after: ptq-16 6.6G -> 2.5G, ptq-20 89.7G ->
-        // 2.5G (the stdlib registration alone is about 2G). Pin graphix-types
-        // typ::contains::tests::an_expanded_chain_contains_its_application_once_per_level:
-        // 43 containment steps at depth 12, 24577 without (bound 768).
-        // 2026-11-02 claude: Review B4-r1-2: an application with a parameter of no node
-        // identity (a primitive, Any, a map) got no memo key, so the chain with a leaf
-        // parameter was still 2^depth (ptp-16 25.0G, ptp-18 98.1G). Now every parameter
-        // has a key (Type::param_key: a node's identity, a map's or an application's two
-        // parts', a leaf's content), used by ContainsHist::pair_key and rank2_parts'
-        // Expanding::apps alike. --check instructions (debug, atom+core) after: ptp-12
-        // 2.30G, ptp-16 2.46G, ptp-18 2.45G, ptp-20 2.52G, pta-16 (Any) 2.80G, ptm-16
-        // (Map<string, i64>) 2.40G (main a084f9887 16.7G), pts-16 2.42G, ptq-16 2.35G,
-        // ptq-20 2.25G. Pins graphix-types
-        // typ::contains::tests::an_expanded_chain_over_a_leaf_contains_its_application_once_per_level
-        // (24577 steps without, bound 768) and graphix-compiler
-        // node::callsite::test::rank2_parts_walks_an_application_over_a_leaf_once (524286
-        // steps without, bound 136). Probes ~/ptmp/cr29/scratch/r6-B/r7/i4/.
-        // 2026-11-02 claude: Review B4-r2 (reviewer 2 medium, reviewer 1 low): a chain whose
-        // applications take a parameter each expansion builds anew (P<i><'a> = (P<i-1><('a, i64)>,
-        // ..), or Array<'c> per level) was still 2^depth, in rank2_parts at a let annotation (ptc0-18
-        // 14.1G) and in the call's containment (ptc-14 11.6G, ptg-16 36.7G): Type::param_key keyed a
-        // composite parameter by its node, which no two expansions share. Now ParamKey is a
-        // parameter's content (a variable by its cell, a name by its resolution cell and parameters,
-        // a function type by its node, a part past 64 words by its node), so equal parameters meet.
-        // --check instructions (debug, atom+core) before -> after: ptc0-14 3.90G -> 2.54G, ptc0-18
-        // 14.07G -> 2.43G, ptc-12 4.23G -> 2.37G, ptc-14 11.64G -> 2.24G, ptg-12 4.97G -> 2.45G,
-        // ptg-14 8.37G -> 2.48G, ptg-16 36.70G -> 2.48G; ptc-18 2.26G, ptg-18 2.59G, ptq-20 2.53G,
-        // ptp-16 2.33G, pta-16 2.42G, ptm-16 2.65G. Pins graphix-types
-        // typ::contains::tests::an_expanded_chain_over_a_rebuilt_parameter_contains_its_application_once_per_level
-        // (40957 steps without, bound 768) and graphix-compiler
-        // node::callsite::test::rank2_parts_walks_an_application_over_a_rebuilt_parameter_once
-        // (2621438 steps without, bound 136). Probes ~/ptmp/cr29/scratch/r6-B/r8/i4/.
-        // 2026-11-02 claude: Review B4-r3 (both reviewers): still 2^depth where each level passes a function type
-        // built anew (`type P<i><'a> = (P<i-1><fn(x: 'a) -> i64>, P<i-1><fn(x: 'a) -> i64>)`), since ParamKey keys
-        // a function type by its node, or a parameter whose key passes ParamKey::WORDS (a 25-field struct). At a
-        // let annotation that is new against main, whose let runs no rank2_parts: ptf0-14 27.4G instructions on
-        // the lane against 2.31G on main, pts-14 6.33G against 2.14G. With a call f(x, x) both are exponential
-        // (ptf-14 94.8G lane, 25.5G main). Fix: key a function type with no quantifiers by its content, and keep
-        // equality past WORDS (hash the rest rather than fall back to the node). probes
-        // ~/ptmp/cr29/scratch/review-r6/B4-r3-1/i4/genf.sh, B4-r3-2/i4/{genf,gens}.sh (./inst BIN ptf0-14.gx).
-        // 2026-11-02 claude: Review B4-r3: Type::param_key keys a function type with no quantifiers of its own by
-        // its content (with the lambda it is, if any), names (fields, tags, labels) by their text, not their
-        // allocation (an expansion's copies of a written fn type carried a new ArcStr per copy), and has no WORDS
-        // cutoff: a shared node met again in one key is a back-reference to where its first words start, so the
-        // key stays exact and linear in the parameter's DAG. --check instructions (debug, atom+core) main
-        // 8beb0735a -> lane: ptf0-14 3.13G -> 2.52G (ptf0-16 5.89G -> 2.30G), ptf-14 (B4-r3-1, let + call) 3.25G
-        // -> 2.72G, ptf-14 (B4-r3-2, quantified fn at P0) 58.74G -> 2.30G, pts-14 4.47G -> 2.38G (pts-16 16.35G ->
-        // 2.72G); the earlier chains stay flat (ptc-14, ptg-16, ptq-20, ptp-18, pta-16, ptm-16 2.0-3.0G both).
-        // guicheck main 92.96G, lane 93.01G. Pins graphix-types
-        // typ::contains::tests::an_expanded_chain_over_a_rebuilt_function_or_wide_parameter_contains_its_application_once_per_level
-        // (49147 steps for the fn, 237517 for the wide struct without it; bound 768, 79 with it) and
-        // graphix-compiler
-        // node::callsite::test::rank2_parts_walks_an_application_over_a_rebuilt_function_or_wide_parameter_once
-        // (2621438 and 27787262 steps without; bound 1088, 86 with it). Probes ~/ptmp/cr29/scratch/r7-B/i2/.
-        // 2026-11-02 claude: Follow-up: a back-reference is keyed by the node's identity and a variant's tag or an abstract type's
-        // id, which Type::shared_identity leaves out (a variant's identity is its payload allocation), so two variants over one
-        // payload are two keys. Pin graphix-types typ::contains::tests::a_param_key_tells_apart_variants_over_one_payload (fails
-        // with the tag left out).
-        // 2026-11-02 claude: Review B5-r1-2 (medium): the fix keys by content a function type with no quantifiers of its own, as
-        // the brief scoped it; one with its own, rebuilt with fresh quantifier cells at each level (`type P<i><'a> = (P<i-1><fn<'b:
-        // Any>(x: 'b) -> 'a>, ..)`), is still keyed by its node and still 2^depth (callgrind ptqf0-8 1.46G, ptqf0-10 2.71G; main
-        // 8beb0735a the same): the new CR dag-quantified-fn-01 at Type::key_words. A content key leaves out a function type's
-        // lambda_ids past its own id, so a memo hit on a second, content-equal pair skips the lambda_ids link that pair's
-        // containment would make; ParamKey's doc says so, and no probe shows a wrong answer. The application key is built in one
-        // place, TypeRef::app_key (AppKey), used by ContainsHist::pair_key, rank2_parts' Expanding::apps and Unfolded.
         Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
@@ -1149,6 +1065,26 @@ pub(crate) fn contain_generally<R: Rt>(
 // open cell's lower bounds, or the let path pre-unifies as a call does. probes
 // ~/ptmp/cr29/scratch/review-r6/B4-r3-1/s/lb*.gx (NS=1 ./both). The interface val is
 // iface-rank2-escape-01, the REPL shape repl-bottom-settle-01.
+// 2026-11-02 claude: Wave 5 lane J (branch cr44-B, parked): 69b865ec2 makes the
+// escape walk follow an open cell's lower bounds (lb4 lb12 lb13 lb14 refused),
+// f451dfff5 and 32865de34 skip a quantifier only under the function type that binds
+// it (o11 own_prec o13 own_conn_tr), 0b925e0e6 scopes only the asked quantifiers. Not
+// landed: its final reviews (~/ptmp/cr29/scratch/review-r7/B5-r4-1, B5-r4-2) found
+// the scope-keyed walk exponential when the asked quantifiers lie inside the walked
+// DAG: a rank-2 holder over distinct typedefs, two quantified fns a level, writing
+// part of its formal to an outer binding (p/gen_tr.sh: tr16 --check 13.7G main,
+// 164.7G lane; a call formal tc14, a connect tk14 alike), and a connect reading its
+// own target (p/rcself16.gx: 82G main, 499G lane; unit review_test.patch 434G at 16
+// levels). A linear rule: memoize per node the asked quantifiers free under it (its
+// children's, less those its own function type binds), or one walk per asked
+// quantifier with its binders cut. Also open, main the same: at a connect, *r <- and
+// a REPL write to a generic binding, a quantifier carried through a collection HOF's
+// callback that constructs an abstract (y <- array::map([x], |e| W(e)); filter_map,
+// list::map, a named constructor, Transparent) passes --check and the run-time bind
+// refuses f("s"); graphix-fuzz check says AGREE, so the fuzzer cannot see it
+// (B5-r4-1/i1c/map_conn.gx, map_deref, fm_conn, lmap_conn, mapn_conn, mapt_conn;
+// repl/h5.txt). A quantifier carried into a constraint is rank2-escape-constraint-01,
+// a written type in the value rank2-rigid-lower-01.
 // CR claude for eric: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing
@@ -1266,6 +1202,22 @@ pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
     out
 }
 
+// CR claude for claude: [bug/medium] A quantifier escapes into an outer cell's
+// constraint through a callee's bound, and nothing sees it: escapes_through's walk
+// (reaches_cell) follows bindings, never a cell's constraints, and
+// DefGate::check_declared_kept misses a rank-1 declared variable there (the cell's
+// level is not lowered). `let y = never(); let g = 'b: 'c, 'c: Any |p: 'b, q: 'c| q;
+// let f: fn<'a: Any>(x: 'a) -> 'a = |x| { let r = g(y, x); x }; let t = f("s"); y <-
+// 5; println(y + 1)` passes --check, and the build refuses f("s") ("an instance at
+// fn(x: string) -> string of a definition typed fn(x: i64) -> 'a: i64";
+// GRAPHIX_ELAB_AUDIT reports it). The same through a call's formal, where pre_unify
+// runs (k_constr3), a reference parameter (k_constr4) and a rank-1 `'a: Any |x: 'a|
+// -> 'a` (k_constr_r1); graphix-fuzz check fz_constr.gx: DIVERGENCE (the check
+// accepted what the build refused). Main 8beb0735a the same. Fix: the escape walk
+// follows an open cell's constraints as it follows a binding, and
+// check_declared_kept refuses a declared variable an outside cell's constraint
+// names. probes: ~/ptmp/cr29/scratch/review-r7/B5-r1-1/i1/{k_constr,k_constr3,
+// k_constr4,k_constr_r1}.gx, fz/fz_constr.gx (rank2-escape-constraint-01)
 /// A binding the value reads or writes, or an instance it makes, of type
 /// `env`, holds none of the quantifiers: its cell would carry one out.
 fn escapes_through(
