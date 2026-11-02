@@ -898,6 +898,26 @@ enum ArgFit {
     Open,
 }
 
+// CR claude for claude: [bug/medium] A call's argument checked against a rank-2 formal
+// can put the formal's quantifier below a cell the call's instance shares with its
+// other formals or its result, and nothing judges that: check_general walks the
+// bindings the argument reaches and the instances calls in it make, never the call's
+// own signature. `type W<'t> = Abstract<'t>; let outer = |#k: fn<'a: Any>(x: 'a) ->
+// W<'c>, n: i64| (k(n), k("s")); let r = outer(#k: |x| W(x), 1); let w: W<i64> =
+// r.1; println(w.0 + 1)` passes --check, and the build refuses the instance ("an
+// instance at fn(?#k: fn(x: i64) -> W<i64>, n: i64) -> (W<i64>, W<i64>) of a
+// definition typed fn(?#k: fn<'a: Any>(x: 'a) -> W<'c>, n: i64) -> .."; with
+// GRAPHIX_ELAB_AUDIT=1): W<'c> containing W(x) merges the call's instance of 'c with
+// the payload's cell, which holds 'a below it. The same through a labeled default
+// the call omits (t6c, t9b, a struct field t14_default_field), where checked_default
+// contains the default in the site's label with no generality check at all, and
+// graphix-fuzz check fz_t4.gx says DIVERGENCE. Main bbb06c0c6 the same. A declared
+// 'c (t4d) widens to Any at the calls and is sound. Fix (not tried): walk the call's
+// signature too, the formal counted where it stands (escapes_through over the site's
+// fn type: 'a under the formal is bound there, the result's W<'c> reaches it free),
+// on the argument's path and the omitted default's. probes:
+// ~/ptmp/cr29/scratch/r8-R/{d6,d4,t6c,t9b,t14_default_field,t4d}.gx, fz_t4.gx
+// (rank2-call-signature-01)
 /// Check a call's argument node against its formal's type `typ`; an
 /// argument holding an undecided cell is [`ArgFit::Open`] when `waits`.
 fn typecheck_arg<R: Rt>(
@@ -1282,6 +1302,16 @@ pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
 // passes --check on all four),
 // node::callsite::test::escapes_through_follows_an_open_cells_constraints (fails
 // without the walk change).
+// 2026-11-02 claude: Round 8 review (lane R): following an open cell's constraints
+// is conservative where the quantifier sits inside a union constraint: with g = 'b:
+// ['c, i64], 'c: Any |p: 'b, q: 'c| q, the body |x| { let r = g(y, x); x } of a
+// written fn<'a: Any>(x: 'a) -> 'a over an outer let y = never() later written 5 is
+// refused ("a binding it reaches, of type '_N: unbound within [i64, 'c: 'a], would
+// carry 'a out"), while main runs it right (y within ['a, i64] holds for y: i64 at
+// every 'a). Left as it stands: it needs a written bound naming another variable,
+// which no stdlib bound does, and annotating y (let y: i64 = never()) checks and
+// runs on both binaries, a conservative rule plus an annotation. probes
+// ~/ptmp/cr29/scratch/r8-R/{o2_constraint_union,o2b_annotated}.gx
 /// A binding the value reads or writes, or an instance it makes, of type
 /// `env`, holds none of the quantifiers outside a function type there that
 /// quantifies it: its cell would carry one out.

@@ -300,7 +300,12 @@ tying the outer `y` to `x`), outside a function type there that
 quantifies it (`callsite::check_general`, `contain_generally`). Right
 site: the value. Open: what the function whose result holds the
 quantifier shares across its own calls (a let of its body the function
-it makes captures), CR rank2-result-maker-01.
+it makes captures), CR rank2-result-maker-01; a value contained as its
+monomorphic copy (a connect whose collection HOF's callback constructs
+from the quantifier), CR rank2-escape-hof-01; a cell of a call's own
+signature the argument or an omitted labeled default puts the quantifier
+below (`k: fn<'a: Any>(x: 'a) -> W<'c>` given `|x| W(x)`), CR
+rank2-call-signature-01.
 
 ## Labeled and optional arguments across the fuzzer
 
