@@ -35,7 +35,7 @@ use crate::{
     profile::{self, Phase},
     stack::ensure_sufficient,
     typ::{
-        ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, ParamKey, TVar, Type,
+        AppKey, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
         TypeMismatch,
         tvar::{Level, RigidGate},
     },
@@ -669,9 +669,7 @@ struct Expanding {
     met: SmallVec<[usize; 4]>,
     clean: LPooled<AHashMap<usize, SmallVec<[usize; 2]>>>,
     nodes: LPooled<AHashMap<usize, (Option<Type>, bool)>>,
-    apps: LPooled<
-        AHashMap<(usize, SmallVec<[ParamKey; 2]>), (Option<Type>, bool, TArc<[Type]>)>,
-    >,
+    apps: LPooled<AHashMap<AppKey, (Option<Type>, bool, TArc<[Type]>)>>,
     found: usize,
 }
 
@@ -749,7 +747,7 @@ fn rank2_parts(
                     None => None,
                     Some((key, _)) if bare && expanding.known_clean(key) => None,
                     Some((key, whole)) => {
-                        let app = (key, tr.params.iter().map(Type::param_key).collect());
+                        let app = tr.app_key(key);
                         if let Some((r, hit, _)) = expanding.apps.get(&app) {
                             expanding.found += usize::from(*hit);
                             return r.clone();
@@ -978,6 +976,13 @@ fn typecheck_arg<R: Rt>(
         // id, which Type::shared_identity leaves out (a variant's identity is its payload allocation), so two variants over one
         // payload are two keys. Pin graphix-types typ::contains::tests::a_param_key_tells_apart_variants_over_one_payload (fails
         // with the tag left out).
+        // 2026-11-02 claude: Review B5-r1-2 (medium): the fix keys by content a function type with no quantifiers of its own, as
+        // the brief scoped it; one with its own, rebuilt with fresh quantifier cells at each level (`type P<i><'a> = (P<i-1><fn<'b:
+        // Any>(x: 'b) -> 'a>, ..)`), is still keyed by its node and still 2^depth (callgrind ptqf0-8 1.46G, ptqf0-10 2.71G; main
+        // 8beb0735a the same): the new CR dag-quantified-fn-01 at Type::key_words. A content key leaves out a function type's
+        // lambda_ids past its own id, so a memo hit on a second, content-equal pair skips the lambda_ids link that pair's
+        // containment would make; ParamKey's doc says so, and no probe shows a wrong answer. The application key is built in one
+        // place, TypeRef::app_key (AppKey), used by ContainsHist::pair_key, rank2_parts' Expanding::apps and Unfolded.
         Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();

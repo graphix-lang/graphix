@@ -6,9 +6,9 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, AndAc, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
-        Mutability, NodePairs, NormKey, Open, ParamKey, RefHist, RefPair, TVar, TraitId,
-        Type, node_addr, params_size, probe_key,
+        AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
+        Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
+        node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{
             CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cycle_toward,
@@ -114,7 +114,7 @@ pub(super) struct ContainsHist {
     /// An id for each application [`Self::pair_key`] met, by its
     /// definition and its parameters' keys, the application pinned with
     /// `probe_pins`.
-    apps: Lazy<AHashMap<(usize, SmallVec<[ParamKey; 2]>), usize>>,
+    apps: Lazy<AHashMap<AppKey, usize>>,
     /// The questions in progress on this path, answered by assumption
     /// when met again.
     in_progress: SmallVec<[Question; 4]>,
@@ -282,10 +282,8 @@ impl ContainsHist {
     fn pair_key(&mut self, t: &Type) -> Option<NormKey> {
         let Type::Ref(tr) = t else { return probe_key(t) };
         let def = tr.def_key()?;
-        let params: SmallVec<[ParamKey; 2]> =
-            tr.params.iter().map(Type::param_key).collect();
         let next = self.apps.get().map_or(0, |m| m.len());
-        let id = match self.apps.get_mut().entry((def, params)) {
+        let id = match self.apps.get_mut().entry(tr.app_key(def)) {
             Entry::Occupied(e) => *e.get(),
             Entry::Vacant(e) => {
                 self.probe_pins.get_mut().push(t.clone());

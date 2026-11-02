@@ -126,6 +126,22 @@ impl Type {
             Type::Bound(b) => out.extend([3, *b as usize]),
             Type::Primitive(p) => out.extend([4, p.bits() as usize]),
             Type::TVar(tv) => out.extend([5, tv.cell_addr()]),
+            // CR claude for claude: [perf/low] A chain of typedef applications passing a
+            // quantified function type each level builds anew is still checked in time
+            // exponential in its depth: `type P0<'a> = ('a, i64); type P1<'a> =
+            // (P0<fn<'b: Any>(x: 'b) -> 'a>, P0<fn<'b: Any>(x: 'b) -> 'a>); ..; let x:
+            // P8<i64> = never()`. Each expansion copies the written `fn<'b: Any>(..)` with
+            // fresh quantifier cells, and such a function type is keyed here by its node,
+            // so no application is met twice: --check (debug, callgrind) 1.46G
+            // instructions at depth 8, 2.71G at 10, about 3.7x per two levels above the
+            // stdlib; a select over such a chain (selq8 1.63G, selq10 3.24G, through
+            // Unfolded) and a call f(x, x) alike; main 8beb0735a the same. rank2_parts finds
+            // 2^(d+1)-1 distinct quantifiers. Fix: key a function type's own quantifiers by
+            // their position in it and their bounds, as variables the key binds, and
+            // dedup rank2_parts' Quantified list to match, so the escape check still sees
+            // every copy's cells. probes: ~/ptmp/cr29/scratch/review-r7/B5-r1-2/p/ptqf0-
+            // {8,10,12}.gx, ptqf-{8,10}.gx, selq{8,10,12}.gx (cg1.sh BIN FILE there)
+            // (dag-quantified-fn-01)
             Type::Fn(f) if !f.quantifiers.is_empty() => {
                 out.extend([6, Arc::as_ptr(f).addr()])
             }
@@ -243,15 +259,28 @@ fn text_words(s: &str, out: &mut SmallVec<[usize; 8]>) {
 /// parameters, a function type with quantifiers of its own by its node
 /// and any other with the lambda it is, a shared node met again by where
 /// its first words start.
-/// Each tag fixes the words that follow it, so equal keys are one type.
+/// Each tag fixes the words that follow it, so equal keys are one type,
+/// though not one set of linked lambdas: a function type's
+/// `lambda_ids` past its own id are left out, so a memo hit on a second,
+/// content-equal pair skips the link its containment would make.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ParamKey(SmallVec<[usize; 8]>);
 
-/// The typedef applications a walk has expanded, by definition and
-/// parameters' keys ([`Type::param_key`]), each held so its keys stay its
-/// own.
+/// A typedef application as a walk that meets it many times keys it: its
+/// definition and its parameters' keys ([`Type::param_key`]).
+pub type AppKey = (usize, SmallVec<[ParamKey; 2]>);
+
+impl TypeRef {
+    /// The [`AppKey`] of this application of the definition `def`.
+    pub fn app_key(&self, def: usize) -> AppKey {
+        (def, self.params.iter().map(Type::param_key).collect())
+    }
+}
+
+/// The typedef applications a walk has expanded, by [`AppKey`], each held
+/// so its keys stay its own.
 #[derive(Default)]
-pub(crate) struct Unfolded(LPooled<AHashMap<(usize, SmallVec<[ParamKey; 2]>), Type>>);
+pub(crate) struct Unfolded(LPooled<AHashMap<AppKey, Type>>);
 
 impl Unfolded {
     /// Whether the walk meets `t`, a resolved typedef application, for
@@ -259,7 +288,7 @@ impl Unfolded {
     pub(crate) fn first(&mut self, t: &Type) -> bool {
         let Type::Ref(tr) = t else { return true };
         let Some(def) = tr.def_key() else { return true };
-        match self.0.entry((def, tr.params.iter().map(Type::param_key).collect())) {
+        match self.0.entry(tr.app_key(def)) {
             Entry::Occupied(_) => false,
             Entry::Vacant(e) => {
                 e.insert(t.clone());
