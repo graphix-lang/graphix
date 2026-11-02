@@ -1749,7 +1749,7 @@ impl<R: Rt> GXLambda<R> {
         )
     }
 
-    // CR claude for claude: [perf/medium] Every node-walked call is a retained activation
+    // CR claude for eric: [perf/medium] Every node-walked call is a retained activation
     // built here, and each one still holds about 10-12 KB after runtime-heap-01. A
     // node-walked binary recursion therefore grows by GBs at modest depth. fib(20)
     // under --no-fusion peaks at 273 MB against 58 MB fused. fib(25), about 243k calls,
@@ -1811,6 +1811,36 @@ impl<R: Rt> GXLambda<R> {
     // old cost passed its 9850 ceiling in one run of three; its doc now says it catches
     // growth past the spread (1 KB) every run and leaves smaller growth to
     // activation_heap.
+    // 2026-11-02 claude: Round 7 lane N, not cut: the measured program's definition is
+    // not closed. activation_heap at d0c85e540: 5399 B an activation, 3018 B a slot
+    // (ceilings unchanged). DHAT (depth 201 against 1, --no-fusion, serial; blocks per
+    // activation integral) puts the instantiated types at 1104 B: the instance's FnType
+    // (lambda::instance_type, 176 B), a fresh cell (TVar::freshen, 200+56 B), a table
+    // row's Fn copy (Type::instantiate_memo, 176 B, its LambdaIds 72 B), the call site's
+    // ftype (InstanceTypes::ftype, 176 B, LambdaIds 72 B), the self-call's static target
+    // (resolve_static_entered, 176 B, prepare_bind 64 B). The cell, the row copy and its
+    // LambdaIds come from the definition's throws cell, which `let rec f = |n: i64| ->
+    // i64 select ..` leaves open (nothing raises, nothing bounds it): the signature
+    // prints fn(n: i64) -> i64 yet has_unbound() holds, and every instantiation copies
+    // it. Written `-> i64 throws _` (closed), the same recursion costs 4895 B (504 B
+    // less) with no change to the compiler, and its remaining type allocations are
+    // instance_type 176, the call site's ftype 176+72 and the static target 176+64 (664
+    // B). Sharing a closed Fn row across instances
+    // (Type::instantiate_memo returning the row when no open cell is beneath) moved
+    // neither program: tried and reverted. The cut that reaches the benchmark is a typing
+    // rule, not a sharing one: settle a definition's throws cell that nothing bounds (no
+    // lower bound, no conjunct, no argument carries it) to bottom at its check, as
+    // CallSite::settle_unread does for a builtin's unread quantifier; that is a checker
+    // change (guicheck) and wants Eric's yes. After it, the closed-definition cuts
+    // (instance_type and the call site's ftype as the definition's Arc, which needs
+    // DefTable.ftypes to hold Arc<FnType>; the static target likewise) are about 600 B
+    // more, under one rule: an instance shares a function type of its definition's check
+    // that reaches no open cell, LambdaIds included, since an instance does not check and
+    // a link into a shared closed type adds only ids that are its own. DHAT recipe and
+    // the per-site diff script: ~/ptmp/cr29/scratch/r8-N/dhat/.
+    // 2026-11-02 claude: Readdressed to eric: the next cut that moves the measured cost
+    // is the throws-cell rule in the note above, a checker change; the closed-definition
+    // sharing beside it moves a closed definition alone.
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
