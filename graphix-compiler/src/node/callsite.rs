@@ -252,7 +252,7 @@ fn checked_default<R: Rt>(
     value: Option<&FnType>,
     judge: Judge,
 ) -> Result<Node<R>> {
-    // XCR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
+    // CR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
     // in full here at the instance's types, so a select in it over an enclosing
     // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
     // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
@@ -272,6 +272,30 @@ fn checked_default<R: Rt>(
     // lang::select::default_at_a_bind_takes_its_definitions_coverage: outer((true, 3)) 4,
     // outer((false, 4)) -3, the control outer(v) with v: [(bool, i64), i64] = 5 51; refused
     // in every mode without the change, passes under GRAPHIX_NO_SUBST=1.
+    // 2026-11-02 claude: Review B5-r3-1 (medium): 8e561fcf3 is incomplete. What it makes
+    // work (each refused by main 8beb0735a's build): ns3 and the pin
+    // lang::select::default_at_a_bind_takes_its_definitions_coverage, d_slot (a collection
+    // slot's bind: [4, -3] [51, 61]), d_dyn (a dynamic call's bind: 4 -3 71), d_guard
+    // (guarded arms: 4 102 -3 51 -4 51), d_nested (a default inside a default: 4 -3 61 51).
+    // What still fails (--check passes, the build refuses): an arm nothing reaches at the
+    // instance binds at bottom under the recheck, so a body that reads its bind is refused,
+    // d_tuple 'reading a tuple needs its type known here', d_ref, d_field, d_fn alike
+    // (main: 'unreachable arm'); and a reached arm whose bind is narrower at the instance
+    // than at the definition, d_opt (`S(o) => o$ at `S(i64): 'cannot use the $ operator on
+    // i64', main the same). Two ways out (the reviewer's): take the default's types from
+    // the definition's DefTable, as an instance body does (closes both), or leave an
+    // unreached arm's body unchecked under the recheck (closes d_tuple, d_ref, d_field,
+    // d_fn, not d_opt). The GRAPHIX_NO_SUBST failures the log records (24:
+    // union_bound_open_cell_accepts, cast_of_a_reference_beside_a_filled_application,
+    // cast_of_a_reference_in_an_instance, generic_select_telling_quantifier_bound_told,
+    // generic_slice_binds_beside_keep_check,
+    // partial_struct_empty_cells_a_definition_returns_are_one_member, four modes each) are
+    // d_opt's half of the gap, not d_tuple's: each is a rule the definition's check decided
+    // judged again at the instance's narrower types ($ over i64, a cast whose source holds
+    // a reference, what reaches an arm and its binds' types, a partial struct's member
+    // count); none is an unreached arm reading its bottom bind. So only the first way
+    // closes the default's form; NO_SUBST, which checks every instance again by design,
+    // keeps them. Probes ~/ptmp/cr29/scratch/review-r7/B5-r3-1/i3/d_*.gx.
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
