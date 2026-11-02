@@ -1268,49 +1268,6 @@ impl<R: Rt> Module<R> {
     /// it gives back what it registered in the global registries first,
     /// so the new source registers as the first load did, and `saved`
     /// puts those registrations back when the new source does not check.
-    // XCR claude for claude: [bug/medium] A binding an earlier REPL input bound to a
-    // dynamic module's value keeps the old value after a reload: `let w = d::v` in
-    // one input, `src <- "let v = 5"` in the next, and two seconds later a fresh `d::v`
-    // reads 5 while `w` still reads 1. Within one root (a script) the reader does see
-    // the reload. Found while pinning tests-modules-image-01, whose test reads a fresh
-    // `d::v` after the reload for that reason. Find what the reload re-registers for
-    // the interface's values and why a reader in another root is left out. probe:
-    // ~/ptmp/cr29/scratch/r6-W/w3/dyn_reload_reader.sh (dyn-reload-reader-01)
-    // 2026-11-01 claude: Cause: Module::update moved each production between a val and
-    // the binding implementing it with a store_insert and an event insert but no
-    // notify_set, so only roots already scheduled saw it; a reader in another root (an
-    // earlier REPL input's let w = d::v) was never scheduled. Not specific to reloads:
-    // a static module's value read by another input, and an instance of a body function
-    // called from another input reading a binding a write through the interface
-    // changed, were stale alike (probe sm, sm2). Fix: deliver_production stores,
-    // notify_sets a fire and puts the event, in both directions. Pins (each fails
-    // without the fix): lang::types::a_reload_reaches_a_reader_in_an_earlier_input
-    // (d::v * 10 never produces 50),
-    // lang::types::a_module_reaches_its_readers_in_other_inputs (outer side: never
-    // produces 110; inner side alone off: 11 1 where 11 11). probe:
-    // ~/ptmp/cr29/scratch/r6-W/w11/{repl.sh, sm, sm2} and
-    // ~/ptmp/cr29/scratch/r6-W/w3/dyn_reload_reader.sh
-    // 2026-11-01 claude: Review of cr37-W: the relay at the module node still missed a
-    // reader that ran earlier in the cycle, for a write in either direction (es: a
-    // statement before mod a; er, e2, e3: an earlier REPL input). Now
-    // ExecCtx::deliver_pair_writes, which GX::do_cycle calls after the cycle's
-    // deliveries, delivers a write to either binding of a pair to the other before any
-    // node runs (writes to both in one cycle: the body's lands on both now, the other's
-    // next cycle, as the module node did); the module node's pre-body relay is left for
-    // a pair a load joined this cycle. Pins
-    // lang::modules::{a_write_through_an_interface_reaches_an_earlier_reader_of_the_body,
-    // a_body_write_reaches_an_earlier_reader_through_its_interface} and
-    // lang::types::a_write_through_an_interface_reaches_an_earlier_input ('1 11' where
-    // '11 11') fail without it. A production (e4, a reload's new value; e5, any let)
-    // read by a reader that ran earlier in the cycle is the general case, now CR
-    // root-order-production-01; design/module_system.md says so. probe:
-    // ~/ptmp/cr29/scratch/r6-W/r38/{es, er, e4, e5}
-    // 2026-11-01 claude: Landed on main through the lane's e20117003: a write to either
-    // binding of a pair is delivered to both at the cycle's start, so readers in earlier
-    // and later roots see it. Same-cycle writes from both sides still differ from one
-    // variable (pp, n7, n2), and so does a wake's re-raise (s1). Both are main alike and
-    // filed under iface-pair-one-var-01 (for eric). The lane's merged-queue fix for them
-    // (2681714fa) is not landed.
     fn compile_source(
         &mut self,
         ctx: &mut ExecCtx<'_, R>,
@@ -1778,6 +1735,17 @@ impl<R: Rt> Update<R> for Module<R> {
                 let _task = InTask::enter(self.task);
                 let _module = profile::module(&self.scope.lexical);
                 let writes = OwnWrites::enter(self.task);
+                // CR claude for claude: [bug/low] A file module inside a lambda whose body
+                // reads a timer or sys::time::after_idle is refused here with "the check
+                // decides a type the code around the module left open: annotate `faux`",
+                // naming a binding the program never wrote (a DefGate's). Shape: `let mk =
+                // |t: datetime| -> i64 { mod a; let fs = [a::f]; a::f(t ~ 1) + fs[0]$(t ~ 1)
+                // * 1000 }` over a.gx `let f = |x: i64| -> i64 x + 1; let go =
+                // sys::time::after_idle(duration:100.ms, null); f <- go ~ |x: i64| -> i64
+                // x + 100` and a.gxi `val f: fn(x: i64) -> i64`. Still refused on main
+                // cadc8fca6, after gate-foreign-mark-01's fix landed; main a084f9887 alike.
+                // Find which cell outside the module the body's check writes. probe:
+                // ~/ptmp/cr29/scratch/r6-W/r38/m1 (module-faux-mark-01)
                 let res = self.check_body(ctx).and_then(|()| match writes.foreign() {
                     Some(w) => bail!(
                         "the check decides a type the code around the module \

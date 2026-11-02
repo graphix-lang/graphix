@@ -3682,65 +3682,6 @@ impl StaticCallees {
         AsideHolds { index: index.clone(), holds }
     }
 
-    // XCR claude for claude: [bug/medium] A write marked before the join reaches only
-    // the binding it names, so one function still answers two ways: a module body
-    // writing its own exported f while an outside static call keeps the old f (y4), the
-    // script writing `a::f <- ..` while a's own static call keeps the old f (y5), and a
-    // dynamic module loaded after the write binding `super::a::f` statically (y9): r=2
-    // where the dynamic call gives 101 (main a084f9887 alike). A fix tried in round 6
-    // (branch cr36-W-join, 5db5a8a84: join at the body's compile and carry the mark, the
-    // pair one written variable for the value restriction) refused a dynamic module's
-    // reload while an old instance held the old inner binding, and let a write main
-    // refuses through to a run-time bind failure (review-r6/W3-r1/z1, u1). The
-    // reviewer's simpler shape: keep main's typing for an outer write, carry only the
-    // static-resolution mark across the join (at the body's compile, before its
-    // aliases check), and unjoin a reloaded body before the new one joins. probe:
-    // ~/ptmp/cr29/scratch/iface-join/iface_mark.sh (y4, y5, y9) (iface-join-mark-01)
-    // 2026-11-01 claude: Round 6 wave 3 lane W (cr37-W): the reviewer's shape without an
-    // early join. The body's check (Module::check_body, and typecheck0_instance) first
-    // runs carry_static_marks: for each implemented val (implemented_vals, the pairing
-    // check_sig_items now uses too) CompileCtx::carry_static_mark puts both bindings in
-    // batch_connect_targets where either is a connect target, so neither binds a static
-    // call in the batch, the body's aliases included, and the next compile prunes both.
-    // Static resolution only: connect_targets, poly_binds and the hold check are
-    // untouched, so every write keeps main's typing (u1 still refused; p2/t1 still
-    // accepted), and the join stays at check_sig, so no unjoin is needed before a reload
-    // (z1 loads; the carry neither walks the join nor checks holds). Pins that fail
-    // without the carry (2 where 101):
-    // lang::modules::{a_body_write_reaches_a_call_through_its_interface,
-    // a_write_through_an_interface_reaches_the_bodys_call,
-    // a_write_through_an_interface_reaches_the_bodys_alias,
-    // a_body_write_reaches_a_later_load_through_its_interface,
-    // a_write_through_an_interface_reaches_a_later_load} and
-    // lang::image::a_restored_interface_pair_calls_what_was_written (cold and warm,
-    // fused and walked). Guards: a_body_write_keeps_a_generic_interface_generic,
-    // a_write_through_a_generic_interface_keeps_the_body_generic,
-    // a_load_cannot_narrow_a_written_generic_interface (u1),
-    // a_reload_may_write_what_an_old_instance_calls (z1). u2/u4 now reach run time: main
-    // refused them only through the stale static call; the typing hole is CR
-    // iface-generic-written-01. probe: ~/ptmp/cr29/scratch/r6-W/w11/probes.sh
-    // 2026-11-01 claude: Review of cr37-W (review-r6 W2-r1-1, W2-r1-2), follow-up
-    // commit: (1) the wake hold: a pre-join write through the val left the body's let
-    // off connect_targets, so its arm's wake published the initializer over the write
-    // (w3, w1: '2 2' where '101 101'). CompileCtx::join_interface_pair, called at
-    // check_sig after the body's check and at decode, now makes both bindings targets
-    // where either is; the hold reads that, the value restriction was decided before it.
-    // Pins lang::modules::{a_write_through_an_interface_outlasts_its_arms_sleep,
-    // a_write_through_an_interface_outlasts_a_sleep_in_an_instance} fail without it. (2)
-    // The seq planner counted the pair as two variables (q1, q2: 0 where 5 and 7):
-    // plan_machines adds each written binding's joined partners
-    // (StaticCallees::add_joined); pins
-    // a_seq_step_reads_a_body_write_through_its_interface,
-    // a_seq_step_reads_a_write_through_an_interface_in_the_body fail without it. (3)
-    // typecheck0_instance's carry is pinned:
-    // a_body_write_reaches_a_call_through_its_interface_in_an_instance (2 where 101
-    // without it). StaticCallees records each binding's side of a pair (Side). probe:
-    // ~/ptmp/cr29/scratch/r6-W/r38/{w3, w1, q1, q2, q6}
-    // 2026-11-01 claude: Landed on main through the lane's e20117003 (pairs joined as
-    // one write target and one seq variable). The lane's third round, 2681714fa on
-    // branch cr37-W, is not landed: its merged write queue regressed d6 and lv.
-    // Residuals: iface-reload-mark-01 (a mark outlives a reload) and
-    // iface-pair-one-var-01 (for eric).
     /// `inner` and `outer` are one variable, a write to either reaching
     /// the other: the binding implementing an interface's `val`, and the
     /// `val`'s.
