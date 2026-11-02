@@ -2775,6 +2775,20 @@ fn known_members(union: &Type) -> CompactString {
 // its body, so each call checks it. probes: ~/ptmp/cr29/scratch/r6-B/w5/
 // generic_box_tag.gx, p12_generic_transparent.gx, g4_generic_tr_null.gx
 // (textdata-generic-01)
+// 2026-11-01 claude: Lane B round 6: not fixed (time). Findings: the bound does reach a
+// generic definition's variable through a lone abstract payload (|x|
+// json::write_str(Box(x)) refuses w([1, "a"]) at the check, b3.gx) and a struct field
+// (b4.gx); it does not through an array literal's element union [Box(x), `A]
+// (generic_box_tag.gx): likely the conjunct lands on an open cell whose lower bounds hold Box's
+// parameter, itself lower-bounded by x's cell (a payload bounds its parameters from
+// below), and tvar::require_everywhere hands a bound to an open cell, never to its lower
+// bounds. Handing it again at the site's settle (site_bounds, require_bounds over the
+// settled binding) changed nothing, so the lower bounds are still open there. Handing a
+// predicate bound to an open cell's lower bounds would fix this shape but changes every
+// hand-off of Concrete, Data and Discernible. The GRAPHIX_NO_SUBST half (p12, g4) is
+// separate: an instance's re-check judges Transparent<i64> written from the definition's
+// variable as if written, which D6 exempts only at the definition. probes:
+// ~/ptmp/cr29/scratch/r6-B/i6/
 /// The bounds a call's settled cells must meet beyond their check: a
 /// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
 /// map read from data).
