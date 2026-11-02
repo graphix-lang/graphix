@@ -416,7 +416,7 @@ impl<R: Rt> Bind<R> {
                 }
             }
         }
-        // CR claude for claude: [bug/low] A name a module with no interface writes is
+        // XCR claude for claude: [bug/low] A name a module with no interface writes is
         // not known as written when its parent's `let` compiles (written_lets sees the
         // block alone), so `let (a, b) = (s, s)` reads `s` once for both names, and the
         // module's `a <- never<{f: fn(x: i64) -> i64}>()` decides the copy `b` holds
@@ -431,6 +431,21 @@ impl<R: Rt> Bind<R> {
         // variables rigid as a later REPL input's is, would make acceptance
         // order-free. probes: ~/ptmp/cr29/scratch/r6-B/fix3/md2, md4,
         // ~/ptmp/cr29/scratch/review-r6/B2-r3-2/md1 (module-holder-write-01)
+        // 2026-11-02 claude: Fixed (lane G r8) by the CR's first option:
+        // node::written_lets reads a module in the block for the names it may write
+        // there (node::module_writes): a super:: path that reaches the block, a name it
+        // imports from it (use super::a, use super::a as q, a glob importing every name
+        // it writes), at any depth of nested modules; a name the module declares over
+        // an import still counts. Such a let is a <- target from its binding on, so a
+        // let binding it reads its holder value with a copy at each read, before mod m
+        // or after it. md2, md4 and md1 now run (w z 1, w z 1, x 1; main bbb06c0c6
+        // refuses md2 at b.f("z")). Pins
+        // lang::modules::module_writes_a_holder_name_reads_after_the_module,
+        // module_writes_a_holder_name_by_its_path and
+        // nested_module_writes_a_holder_name fail in all four modes with the module
+        // walk off; module_writes_a_holder_name_reads_before_the_module and
+        // module_writes_an_outer_holder_name hold. A dynamic module's body is not read
+        // (it loads at run time).
 
         // a name holding a function, which nothing writes, is a scheme of the
         // definitions it holds: each read copies their signatures. The reads

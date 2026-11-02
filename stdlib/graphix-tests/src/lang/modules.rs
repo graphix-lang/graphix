@@ -985,6 +985,85 @@ run!(
     "#
 );
 
+// A name a module may write counts as written in the block around it, so
+// each read of the holder in a `let` binding it is a copy of its own: the
+// parent's reads of the other name agree whether they stand before or
+// after `mod m`, through `use super::a`, `super::a` or a nested module.
+run!(
+    module_writes_a_holder_name_reads_after_the_module,
+    prints(r#"["w", "z", i64:1]"#),
+    "/test.gx" => r#"
+        let s = {f: |x| x};
+        let (a, b) = (s, s);
+        let w = b.f("w");
+        mod m;
+        let z = b.f("z");
+        let result = (w, z, m::n)
+    "#,
+    "/test/m.gx" => r#"
+        use super::a;
+        a <- never<{f: fn(x: i64) -> i64}>();
+        let n = a.f(1)
+    "#
+);
+
+run!(
+    module_writes_a_holder_name_reads_before_the_module,
+    prints(r#"["w", "z", i64:1]"#),
+    "/test.gx" => r#"
+        let s = {f: |x| x};
+        let (a, b) = (s, s);
+        let w = b.f("w");
+        let z = b.f("z");
+        mod m;
+        let result = (w, z, m::n)
+    "#,
+    "/test/m.gx" => r#"
+        use super::a;
+        a <- never<{f: fn(x: i64) -> i64}>();
+        let n = a.f(1)
+    "#
+);
+
+run!(
+    module_writes_a_holder_name_by_its_path,
+    prints(r#"["w", "z", i64:1]"#),
+    "/test.gx" => r#"
+        let s = {f: |x| x};
+        let (a, b) = (s, s);
+        let w = b.f("w");
+        mod m;
+        let z = b.f("z");
+        let result = (w, z, m::n)
+    "#,
+    "/test/m.gx" => r#"
+        super::a <- never<{f: fn(x: i64) -> i64}>();
+        let n = super::a.f(1)
+    "#
+);
+
+run!(
+    nested_module_writes_a_holder_name,
+    prints(r#"["w", "z", i64:1]"#),
+    "/test.gx" => r#"
+        let s = {f: |x| x};
+        let (a, b) = (s, s);
+        let w = b.f("w");
+        mod m;
+        let z = b.f("z");
+        let result = (w, z, m::n)
+    "#,
+    "/test/m.gx" => r#"
+        mod k;
+        let n = k::n
+    "#,
+    "/test/m/k.gx" => r#"
+        use super::super::a;
+        a <- never<{f: fn(x: i64) -> i64}>();
+        let n = a.f(1)
+    "#
+);
+
 // A module that only reads a binding the code around it settled is not
 // deciding it, though the binding is not in normal form.
 run!(
