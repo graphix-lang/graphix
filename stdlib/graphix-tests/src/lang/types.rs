@@ -2687,6 +2687,76 @@ const RANK2_LET_OF_A_CALLS_INSTANCE: &str = r#"{
     (h(1), h("s"))
 }"#;
 
+// A quantified function type in a function type's result is held the same
+// way, at a let, a call's formal, a labeled default, a written return type
+// and a struct field, under a quantified outer type and through a struct
+// result; and so is an abstract type's payload at its constructor.
+const RANK2_RESULT_LET_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let mk: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a = |z| |x| { y <- x; x };
+    let h = mk(0);
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_RESULT_ARG_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let app = |m: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a| { let h = m(0); (h(1), h("s")) };
+    (app(|z| |x| { y <- x; x }), y + 1)
+}"#;
+
+const RANK2_RESULT_DEFAULT_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let g = |#m: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a = |z| |x| { y <- x; x }, q: i64| {
+        let h = m(q);
+        (h(1), h("s"))
+    };
+    (g(0), y + 1)
+}"#;
+
+const RANK2_RESULT_RETURN_TYPE_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let mk = |q: i64| -> fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a |z| |x| { y <- x; x };
+    let h = mk(0)(1);
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_RESULT_FIELD_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let s: {mk: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a} = {mk: |z| |x| { y <- x; x }};
+    let h = s.mk(0);
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_RESULT_OF_A_QUANTIFIED_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let mk: fn<'q: Any>(z: 'q) -> fn<'a: Any>(x: 'a) -> 'a = |z| |x| { y <- x; x };
+    let h = mk(0);
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_RESULT_STRUCT_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let mk: fn(z: i64) -> {f: fn<'a: Any>(x: 'a) -> 'a} = |z| {f: |x| { y <- x; x }};
+    let h = mk(0).f;
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_CONSTRUCT_WRITES_OUTER: &str = r#"{
+    type W = Abstract<fn<'a: Any>(x: 'a) -> 'a>;
+    let y = never();
+    let w = W(|x| { y <- x; x });
+    let h = w.0;
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_CONSTRUCT_PARAMETRIC_WRITES_OUTER: &str = r#"{
+    type W<'t> = Abstract<('t, fn<'a: Any>(x: 'a) -> 'a)>;
+    let y = never();
+    let w = W((1, |x| { y <- x; x }));
+    let h = w.0.1;
+    (h(1), h("s"), y + 1)
+}"#;
+
 // Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
@@ -2859,6 +2929,15 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (RANK2_RETURN_FIELD_WRITES_OUTER, "the value is not polymorphic in 'a"),
         (RANK2_DEFAULT_WRITES_OUTER, "the value is not polymorphic in 'a"),
         (RANK2_LET_OF_A_CALLS_INSTANCE, "the instance a call in it makes"),
+        (RANK2_RESULT_LET_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_RESULT_ARG_WRITES_OUTER, "the argument is not polymorphic in 'a"),
+        (RANK2_RESULT_DEFAULT_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_RESULT_RETURN_TYPE_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_RESULT_FIELD_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_RESULT_OF_A_QUANTIFIED_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_RESULT_STRUCT_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_CONSTRUCT_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_CONSTRUCT_PARAMETRIC_WRITES_OUTER, "the value is not polymorphic in 'a"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
@@ -7347,6 +7426,45 @@ run!(
   (app(e), app(t.f), app(h), app(mk(0)), g(2), each([|x| x]), s.n)
 }"#,
     prints(r#"[[i64:1, "s"], [i64:1, "s"], [i64:1, "s"], [i64:1, "s"], i64:2, [[i64:1, "s"]], i64:1]"#);
+    FuseExpect::None
+);
+
+// A quantified function type in a function type's result, or an abstract
+// type's payload, holds a value general in it: a let, a call's formal, a
+// quantified outer type, a struct result, a written return type, a labeled
+// default and a constructor each take one.
+run!(
+    rank2_result_holders_take_general_values,
+    r#"{
+  let mk: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a = |z| |x| x;
+  let h = mk(0);
+  let app = |m: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a| { let k = m(0); (k(2), k("t")) };
+  let mq: fn<'q: Any>(z: 'q) -> fn<'a: Any>(x: 'a) -> ('a, 'q) = |z| |x| (x, z);
+  let g = mq(5);
+  let ms: fn(z: i64) -> {f: fn<'a: Any>(x: 'a) -> 'a, n: i64} = |z| {f: |x| x, n: z};
+  let r = ms(7);
+  let mr = |q: i64| -> fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a |z| |x| x;
+  let hh = mr(0)(1);
+  let gd = |#m: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a = |z| |x| x, q: i64| {
+    let k = m(q);
+    (k(4), k("x"))
+  };
+  type W = Abstract<fn<'a: Any>(x: 'a) -> 'a>;
+  let w = W(|x| x);
+  let wf = w.0;
+  (
+    (h(1), h("s")),
+    app(|z| |x| x),
+    (g(1), g("u")),
+    (r.f(1), r.f("v"), r.n),
+    (hh(3), hh("w")),
+    gd(0),
+    (wf(1), wf("y"))
+  )
+}"#,
+    prints(
+        r#"[[i64:1, "s"], [i64:2, "t"], [[i64:1, i64:5], ["u", i64:5]], [i64:1, "v", i64:7], [i64:3, "w"], [i64:4, "x"], [i64:1, "y"]]"#
+    );
     FuseExpect::None
 );
 

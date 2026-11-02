@@ -209,7 +209,8 @@ fact, and erasing it made the static type lie about the runtime value
 ### Quantified function types written elsewhere
 
 A written `fn<'b: C>(..)` means the same wherever it stands: a `let`
-annotation, a struct field, a typedef or a return type holds what it is
+annotation, a struct field, a typedef, a return type, another function
+type's result or an abstract type's representation holds what it is
 given to every `'b` the bound admits, as a formal does.
 `FnType::contains_int` opens quantifier gates (`open_quantifier_rigid`)
 on the containing side's open quantifiers, so a merge into one is judged

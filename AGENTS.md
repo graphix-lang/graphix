@@ -1109,7 +1109,8 @@ node graph IS the IR — there is no parallel typed IR
   transparent typedef is its expansion)
   (`callsite.rs::Widening`, `holds_invariantly`); a written function type with its own quantifiers
   (`fn<'b: C>(..)`) is rank-2 wherever it stands (a formal, a field, an
-  element, a member, a `let` annotation, a typedef, a return type): what
+  element, a member, a `let` annotation, a typedef, a return type, a
+  function type's result, an abstract type's representation): what
   it holds is checked with `'b` rigid and held to exactly its declared
   bounds, predicates included (`fn<'b: Number>` takes no `|x| x * x`:
   declare `Number + Singleton`; `FnType::contains_int`, judged
@@ -1117,7 +1118,8 @@ node graph IS the IR — there is no parallel typed IR
   type over its own checked one, which adopts its bounds and a
   quantifier the check decided (`ContainsFlags::Adopt`); the value it
   holds (a call's argument, a `let`'s, a write's, a struct update's
-  field, a body under a written return type, a labeled default) carries
+  field, a body under a written return type, a labeled default, a
+  constructor's payload; the function whose result holds it) carries
   `'b` into nothing that outlives it: no binding it reads or writes from
   outside, its lambdas' captures included, and no instance a call in it
   makes reaches `'b` (`callsite::check_general`, `contain_generally`);

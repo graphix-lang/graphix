@@ -1262,7 +1262,11 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
-        wrap!(self.arg, self.rep.check_contains_lower(&ctx.env, &self.arg.typ()))?;
+        let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
+        wrap!(
+            self.arg,
+            super::callsite::contain_generally(ctx, &self.rep, &self.arg, contain)
+        )?;
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {
                 if let Type::TVar(tv) = p {

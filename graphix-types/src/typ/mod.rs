@@ -2789,11 +2789,12 @@ impl Type {
     }
 
     /// Whether a function type with quantifiers of its own may stand at a
-    /// part of this type outside an abstract one: through bindings, an open
-    /// cell's lower bounds, and each definition a name reaches, its body
-    /// walked as written, once. A quick test that only looks: it copies no
-    /// body and decides no name, which another task's check may resolve in
-    /// another environment.
+    /// part of this type a value of it produces, outside an abstract one (a
+    /// function type's result and throws, never its parameters): through
+    /// bindings, an open cell's lower bounds, and each definition a name
+    /// reaches, its body walked as written, once. A quick test that only
+    /// looks: it copies no body and decides no name, which another task's
+    /// check may resolve in another environment.
     #[doc(hidden)]
     pub fn may_hold_quantified_fn(&self, env: &Env) -> bool {
         fn go(
@@ -2803,7 +2804,7 @@ impl Type {
             nodes: &mut AHashSet<usize>,
         ) -> bool {
             ensure_sufficient(|| match t {
-                Type::Fn(ft) => !ft.quantifiers.is_empty(),
+                Type::Fn(ft) if !ft.quantifiers.is_empty() => true,
                 Type::Abstract { .. } => false,
                 Type::TVar(tv) => match tv.binding() {
                     Some(b) => go(&b, env, defs, nodes),
@@ -2816,6 +2817,9 @@ impl Type {
                         })
                 }
                 t if node_addr(t).is_some_and(|n| !nodes.insert(n)) => false,
+                Type::Fn(ft) => {
+                    go(&ft.rtype, env, defs, nodes) || go(&ft.throws, env, defs, nodes)
+                }
                 t => {
                     let mut r = false;
                     t.for_each_child(&mut |c| r = r || go(c, env, defs, nodes));

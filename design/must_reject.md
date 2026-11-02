@@ -289,7 +289,8 @@ outer binding (`|x| { y <- x; x }`, `|x| (x, n)`) or takes the value
 from a call whose instance holds it (`mk(never())` over `|z| |x| { z <-
 x; z }`). Rule: a written quantified type holds its value as a formal
 holds its argument, wherever it stands (a let, a write, a struct
-update's field, a return type, a labeled default): nothing outside the
+update's field, a return type, a labeled default, a constructor's
+payload, a function type's result): nothing outside the
 value that outlives it, a binding it reads or writes or a call's
 instance, reaches a quantifier (`callsite::check_general`,
 `contain_generally`). Right site: the value.

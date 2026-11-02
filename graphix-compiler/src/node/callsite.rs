@@ -608,8 +608,9 @@ fn compile_apply_args<R: Rt>(
 }
 
 /// The rank-2 quantifiers of a formal: those of each function type at a
-/// data position of it (the formal itself, a field, an element, a
-/// member; never inside a function type), as the function type names them.
+/// part of it the value produces (the formal itself, a field, an element,
+/// a member, a function type's result or throws; never a parameter), as
+/// the function type names them.
 type Quantified = SmallVec<[(ArcStr, TVar); 2]>;
 
 /// A formal holding a quantified function type `fn<'b: C>(..)`, with the
@@ -685,10 +686,10 @@ impl Expanding {
     }
 }
 
-/// Push to `out` the quantifiers of each function type at a data position
-/// of `t`, each once; `t` rebuilt with every binding and typedef on the way
-/// to one expanded, `None` where it is unchanged. A typedef already being
-/// expanded is not expanded again.
+/// Push to `out` the quantifiers of each function type at a part of `t`
+/// the value produces ([`Quantified`]), each once; `t` rebuilt with every
+/// binding and typedef on the way to one expanded, `None` where it is
+/// unchanged. A typedef already being expanded is not expanded again.
 fn rank2_parts(
     env: &Env,
     t: &Type,
@@ -715,7 +716,15 @@ fn rank2_parts(
                     }
                 });
                 expanding.found += usize::from(!ft.quantifiers.is_empty());
-                None
+                let rtype = rank2_parts(env, &ft.rtype, expanding, out);
+                let throws = rank2_parts(env, &ft.throws, expanding, out);
+                (rtype.is_some() || throws.is_some()).then(|| {
+                    Type::Fn(TArc::new(FnType {
+                        rtype: rtype.unwrap_or_else(|| ft.rtype.clone()),
+                        throws: throws.unwrap_or_else(|| ft.throws.clone()),
+                        ..(**ft).clone()
+                    }))
+                })
             }
             Type::TVar(tv) => tv.binding().and_then(|b| {
                 let r = rank2_parts(env, &b, expanding, out);
@@ -999,6 +1008,20 @@ pub(crate) fn contain_generally<R: Rt>(
 // the follow-up); CR quantified-quick-test-01 for the rest. The unit pin
 // quantified_formal_decides_no_name holds; 0 refusals in 60 --check runs of a trivial
 // program.
+// 2026-11-02 claude: Review B4-r1 (both reviewers): the escape check missed a
+// quantified fn type in another function type's result (let, call formal, labeled
+// default, written return type, struct field, a quantified outer type, a struct
+// result: b1b b6 b7 b8 b9 b15 b16, fuzz DIVERGENCE) and an abstract constructor's
+// payload (b2b, ab1, ab2). Now rank2_parts and Type::may_hold_quantified_fn walk a
+// function type's result and throws (never its parameters: a value receives those,
+// and a call through one inside it is checked at that call), and
+// Construct::typecheck0_with contains its payload through contain_generally. Pins:
+// the RANK2_RESULT_* and RANK2_CONSTRUCT_* cases of
+// lang::types::unsound_acceptances_are_refused (each passed --check before; the test
+// fails without the fix), lang::types::rank2_result_holders_take_general_values (no
+// over-refusal). Still open: an interface val (if1, if3) is the new CR
+// iface-rank2-escape-01, the class of main's iface-generic-written-01; the REPL shape
+// rp2 is repl-bottom-settle-01. Probes ~/ptmp/cr29/scratch/r6-B/r7/.
 // XCR claude for claude: [bug/low] A rank-2 array element passed straight to a rank-2
 // formal is refused: `let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| x]; let f = |k:
 // fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s")); f(fs[0]$)` says "the argument is not
