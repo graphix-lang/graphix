@@ -368,8 +368,15 @@ impl<R: Rt> Bind<R> {
             if let Some(shape) = &narrowed {
                 pattern.retype_by_member(ctx, &typ, shape).at(&spec)?;
             }
-            if let Some(Deferred::Shape(_)) = &deferred {
-                pattern.ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
+            match &deferred {
+                Some(Deferred::Shape(_)) => {
+                    pattern.ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()))
+                }
+                // a capture stands over the whole value, not the fields named
+                Some(Deferred::Partial(_)) => {
+                    pattern.fresh_ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()))
+                }
+                None => (),
             }
             (node, pattern, typ)
         };
@@ -541,17 +548,6 @@ impl<R: Rt> Bind<R> {
         self.forwards(&ctx.env) && written(ctx, &self.pattern)
     }
 
-    // CR claude for claude: [bug/high] A whole bind over a partial struct pattern
-    // completed here takes the pattern's own type, the fields it names, not the
-    // value's, so a field read through it uses the wrong index at run time: `let f =
-    // |x| x; let k = {n: 5, p: 1, q: 2}; let all@ {p: m, ..} = f(k); println(all.p)`
-    // passes --check and prints 5, n's value (main a084f9887 the same); `all`'s type
-    // is `{p: i64}`. A let forwarding a holder takes this path too (`let all@ {p: m,
-    // ..} = k` over `k = {p: s, q: s, n: 0}`: all.p prints 0, all.p.f(5) never
-    // produces). Type each whole bind by its part of the value's members, as
-    // complete_shape does through names_by_member, and drop the pattern's partial
-    // type from it. probes: ~/ptmp/cr29/scratch/r6-B/fix3/p2/p15.gx, p17.gx, p12.gx
-    // (partial-whole-bind-01)
     /// Complete a pattern that leaves struct fields out against the
     /// value's type.
     fn complete_partial(&mut self, ctx: &mut CompileCtx<R>, ptyp: Type) -> Result<()> {
@@ -571,35 +567,23 @@ impl<R: Rt> Bind<R> {
                 bailat!(spec, "match error {} can't be matched by {ptyp}", self.typ)
             });
         };
-        let mismatch = |t: &Type| {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                bailat!(spec, "match error {} can't be matched by {t}", self.typ)
-            })
-        };
         let apart = self.apart(ctx);
         let fits = match apart {
             true => t.reset_tvars().contains(&ctx.env, &self.typ),
             false => t.contains(&ctx.env, &self.typ),
         };
         if !fits.at(spec)? {
-            mismatch(&t)?
+            format_with_flags(PrintFlag::DerefTVars, || {
+                bailat!(spec, "match error {} can't be matched by {t}", self.typ)
+            })?
         }
         self.pattern.realign(&ctx.env, &t).at(spec)?;
         if !self.pattern.covers(&ctx.env, &self.typ, false) {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
-        if apart {
-            let leaves =
-                self.pattern.names_by_member(&ctx.env, &self.typ, &t).at(spec)?;
-            // a whole bind takes the pattern's type, which holds the names'
-            if !leaves.iter().any(|l| l.fresh) {
-                return self.type_leaves(ctx, leaves, true);
-            }
-            if !t.contains(&ctx.env, &self.typ).at(spec)? {
-                mismatch(&t)?
-            }
-        }
-        Ok(())
+        let leaves = self.pattern.names_by_member(&ctx.env, &self.typ, &t).at(spec)?;
+        let leaves = leaves.into_iter().filter(|l| apart || l.fresh).collect();
+        self.type_leaves(ctx, leaves, apart)
     }
 
     /// The binding holds its value's type, unless it forwards it.

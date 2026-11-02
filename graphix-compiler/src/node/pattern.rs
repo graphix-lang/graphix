@@ -823,7 +823,7 @@ impl StructPatternNode {
 
     /// The id of every [`Leaf::fresh`] name: each capture and every
     /// name an or-pattern binds.
-    fn fresh_ids(&self, f: &mut impl FnMut(BindId)) {
+    pub(super) fn fresh_ids(&self, f: &mut impl FnMut(BindId)) {
         crate::stack::ensure_sufficient(|| match self {
             Self::Or { .. } => self.ids(&mut *f),
             // a payload compiled against its written rep: its binds are typed

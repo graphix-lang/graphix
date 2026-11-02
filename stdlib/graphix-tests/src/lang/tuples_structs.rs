@@ -441,6 +441,21 @@ run!(
     FuseExpect::None
 );
 
+// A capture over a partial struct pattern stands over the whole value, so a
+// field read through it takes the value's index.
+run!(
+    let_partial_struct_capture_is_the_whole_value,
+    r#"{
+    let f = |x| x;
+    let k = {n: 5, p: 1, q: 2};
+    let all@ {p: m, ..} = f(k);
+    let (j, w@ {q, ..}) = (1, f(k));
+    let r = select f(k) { a@ {p: z, ..} => (a.p, a.n, z) };
+    (all.p, all.n, all.q, m, w.n, q, j, r)
+}"#,
+    prints("[i64:1, i64:5, i64:2, i64:1, i64:5, i64:2, i64:1, [i64:1, i64:5, i64:1]]")
+);
+
 // A field read over a union of structs of one shape, or of tuples of one
 // arity, reads the field every member holds at one index: a typedef and
 // its expansion, records differing in a variant field.

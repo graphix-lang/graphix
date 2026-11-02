@@ -1351,6 +1351,16 @@ impl Typing {
             // lang::types::holder_chain_stays_a_dag,
             // holder_value_reads_a_binding_once,
             // holder_forwarded_beside_a_written_name{,_in_a_body}.
+            // 2026-11-01 claude: Lane B round 6 item 1 (partial-whole-bind-01): a
+            // partial struct pattern with a whole bind no longer reads one copy.
+            // The whole bind is a fresh cell (Bind::compile retypes the pattern's
+            // fresh_ids under Deferred::Partial) typed in complete_partial by its
+            // part of the value's members, so a forwarded destructure beside a
+            // written name gives every name its own copy, the capture included: let
+            // al2@ {p: m2, ..} = k; m2 <- ..; al2.p.f("x") now checks and prints
+            // "x" (refused before). The m.f(5) line of
+            // holder_forwarded_beside_a_written_name still passes; new pin
+            // lang::types::holder_forwarded_through_a_partial_capture.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),

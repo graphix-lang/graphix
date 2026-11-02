@@ -5519,6 +5519,19 @@ run!(
     FuseExpect::None
 );
 run!(
+    holder_forwarded_through_a_partial_capture,
+    r#"{
+  let s = {f: |x| x};
+  let k = {p: s, q: s, n: 0};
+  let all@ {p: m, ..} = k;
+  let al2@ {p: m2, ..} = k;
+  m2 <- never<{f: fn(x: i64) -> i64}>();
+  (all.p.f(5), all.q.f("a"), all.n, m.f(true), m2.f(7), al2.p.f("x"), al2.n)
+}"#,
+    prints(r#"[i64:5, "a", i64:0, true, i64:7, "x", i64:0]"#);
+    FuseExpect::None
+);
+run!(
     holder_forwarded_beside_a_written_name_in_a_body,
     r#"{
   let g = |z| {

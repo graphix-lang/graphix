@@ -1451,7 +1451,8 @@ cycle, across workers; the compiler never pins threads.
   `` [`Keep('b), null] ``: null drops an element, `` `Keep(v) `` keeps
   `v`, null included, and the unwrap strips that one layer, so a `'b`
   that is itself a `` `Keep `` round trips.
-- **`name@ pattern` captures** are typed from the SCRUTINEE: under an
+- **`name@ pattern` captures** are typed from the SCRUTINEE (a `let`'s
+  from its value, `Bind::complete_partial`): under an
   inferred predicate a capture is a type variable that
   `PatternNode::bind_narrowed` binds, after the select narrows the arm,
   to its part of the narrowed predicate (a `_` slot, the fields a
@@ -1466,7 +1467,8 @@ cycle, across workers; the compiler never pins threads.
   position, so a name an element binds holds its part of every member
   the element's structure admits (`hold_slice_members`). Pins:
   `lang::select::capture_*`, `slice_elements_typed_apart`,
-  `slice_rest_scrutinee_type`, `slice_element_binds_hold_every_member`.
+  `slice_rest_scrutinee_type`, `slice_element_binds_hold_every_member`,
+  `let_partial_struct_capture_is_the_whole_value`.
 - **Or-patterns** (`design/or_patterns.md`): select arms and bracketed
   element positions; each alternative is typed over the scrutinee as a
   separate arm is, alternatives bind the same names, and a shared name
