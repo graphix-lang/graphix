@@ -778,6 +778,21 @@ impl StructPatternNode {
     // false`, `'_N` the bind's cell in the predicate's Set [i64, '_N], after `SET-T [i64,
     // '_N] >= i64`; whether this check or bind_narrowed's makes it is not located. Main
     // (a3d9a2d7c) refuses it too. (slice-bind-mismatch-01)
+    // 2026-11-02 claude: Located (lane G r8), not fixed: the refusal is
+    // hold_slice_members's check_contains (this function), and it is right: h may hold an
+    // i64 (x = [5, 1] at 'b = string), so its cell must contain [i64, 'b]. The cell
+    // can't, because two steps before it have merged it with 'b, which the gate holds
+    // rigid: select::Reach::new's settle (itype.contains(scrut), run since the scrutinee
+    // has_unbound) pairs the predicate's element Set ['_h, i64] with ['b, i64], i64 with
+    // i64 and '_h with 'b (CELL-MERGE via place_members/contains_tvars); with that settle
+    // skipped, Type::narrow_pattern (narrow_member) makes the same merge. Over
+    // Array<[string, i64]> the same pairing binds '_h to [i64, string] whole, so it
+    // checks; over ['b, `Keep('b)] no member pairs with the literal. The fix is in the
+    // pairing: an exact-length slice element's bind cell stands for every member at its
+    // position (as the rest cell does) and must pair with no single member, in Reach's
+    // settle and in narrow_pattern. Both are parked for Eric (D3; rigid-pattern-bind-01),
+    // so this waits on those rulings. Probes ~/ptmp/cr29/scratch/r8-G/i3/s1.gx (refused),
+    // s3.gx ([h, 1] and [1, h] with values).
     fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
