@@ -448,6 +448,18 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // static call: u4i (a::f called through an array, let fs = [a::f]; h = fs[0]$; h(t ~
 // "s")) fails at run time with the same 'did not type' message on main, base and lane.
 // probe: ~/ptmp/cr29/scratch/r6-W/r38/u4i
+// CR claude for claude: [bug/low] An implementation binding's open cell is not decided by
+// the val it implements: with `type B<'x>; val e: B<i64>; val i: B<i64>;` in m.gxi and
+// `type B<'x> = Abstract<i64>; let e = B(1); let i: B<i64> = B(1)` in m.gx, e's parameter
+// stays open past the check, its value is built at B<⊥>, and `m::e == m::i` is false
+// where both have the static type B<i64>; a map keyed by them takes two entries and
+// `array::dedup` keeps two. The same through a val written with an aliased or inline
+// recursive argument (modt: `m::c == m::e` false where `m::c == m::a`, `a` annotated, is
+// true). sig_matches compares the implementation's type without binding its cells, where
+// an annotation on the let decides them; a hidden abstract type with parameters is
+// declared exactly so. Main a084f9887 and lane E (cr40-E) alike. probes:
+// ~/ptmp/cr29/scratch/review-r6/E4-r1-1/modv/main.gx (prints 'static e==i false'),
+// modu/main.gx, modt/main.gx (iface-open-param-01)
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared`.
 fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
