@@ -2763,63 +2763,6 @@ fn known_members(union: &Type) -> CompactString {
     out
 }
 
-// XCR claude for claude: [bug/medium] A JSON or TOML writer's value holding a generic
-// definition's own open variable is not refused at the definition, and nothing carries
-// the judgment to the definition's callers, so an instance's elaboration refuses what
-// the check accepted: `type Box<'a> = Abstract<'a>; impl<'a> Cast for Box<'a> {}; let
-// w = |x| json::write_str([Box(x), `A]); w([1, "a"])` passes --check and the build
-// refuses "JsonData refuses Array<[i64, string]>: i64 in [i64, string] has no tag";
-// and under GRAPHIX_NO_SUBST=1 `let w = |x| json::write_str(Transparent(x)); w(3)`
-// (also `[Transparent(x), null]`) is refused ("Transparent<i64> holds a type that is not
-// abstract") while the default build runs it (D6's Transparent rule never refuses over
-// a definition's own open variable, and an instance by substitution is not judged
-// again). As `Discernible` is, the bound could pass to the definition's variable from
-// its body, so each call checks it. probes: ~/ptmp/cr29/scratch/r6-B/w5/
-// generic_box_tag.gx, p12_generic_transparent.gx, g4_generic_tr_null.gx
-// (textdata-generic-01)
-// 2026-11-01 claude: Lane B round 6: not fixed (time). Findings: the bound does reach a
-// generic definition's variable through a lone abstract payload (|x|
-// json::write_str(Box(x)) refuses w([1, "a"]) at the check, b3.gx) and a struct field
-// (b4.gx); it does not through an array literal's element union [Box(x), `A]
-// (generic_box_tag.gx): likely the conjunct lands on an open cell whose lower bounds hold Box's
-// parameter, itself lower-bounded by x's cell (a payload bounds its parameters from
-// below), and tvar::require_everywhere hands a bound to an open cell, never to its lower
-// bounds. Handing it again at the site's settle (site_bounds, require_bounds over the
-// settled binding) changed nothing, so the lower bounds are still open there. Handing a
-// predicate bound to an open cell's lower bounds would fix this shape but changes every
-// hand-off of Concrete, Data and Discernible. The GRAPHIX_NO_SUBST half (p12, g4) is
-// separate: an instance's re-check judges Transparent<i64> written from the definition's
-// variable as if written, which D6 exempts only at the definition. probes:
-// ~/ptmp/cr29/scratch/r6-B/i6/
-// 2026-11-01 claude: Lane B round 6, second pass: the default-path half is fixed.
-// TVar::add_cell_constraint now hands a new predicate conjunct to the open cells of the cell's
-// existing lower bounds, as TVar::add_lower already handed existing conjuncts to a new lower
-// bound: in [Box(x), `A] the Box parameter took its lower bound x before the writer's JsonData
-// reached it, so x never took it. generic_box_tag.gx is refused at the check now (JsonData
-// refuses Array<[i64, string]>), where the build alone refused it. Pins
-// lib_tests::json::json_generic_payload_beside_a_tag_judged_at_the_call (fails without it in
-// interp: the check passed what the build refused) and
-// json_generic_payload_beside_a_tag_writes. What remains is the GRAPHIX_NO_SUBST half
-// (p12_generic_transparent.gx, g4_generic_tr_null.gx run by default and are refused under the
-// flag): the re-check judges Transparent<i64> at the caller's type, a verdict D6 leaves to the
-// definition's check, the same class as no-subst-dead-arm-01. Lane G (cr40-E ab00f7906) adds
-// CompileCtx::instance_recheck for that re-check; once both land, PendingSettle::Site can
-// record it and site_bounds skip TextRefusal::Transparent under it. JUDGED: a call w(3) of |x|
-// json::write_str(Transparent(x)) runs (D6 exempts Transparent over the definition's own
-// variable, and JsonData of i64 holds), so the default path's answer is the intended one.
-// 2026-11-02 claude: Lane B round 6, third pass: the GRAPHIX_NO_SUBST half is fixed. An
-// instance's body checked or elaborated again under the flag runs inside
-// node::rechecking_instance (the scoped thread-local lane G's cr40-E adds for
-// no-subst-dead-arm-01, same names; GXLambda::typecheck0 and typecheck1, Typing::rechecks); a
-// call site's PendingSettle::Site records typ::TextSite::Instance there, and site_bounds'
-// Type::text_refusal then leaves every Transparent to the definition's check, which judged it
-// where written; every other JSON/TOML refusal is judged as before. p12_generic_transparent.gx
-// and g4_generic_tr_null.gx run under the flag as by default (80 3, [1,null]). Pins:
-// lib_tests::json::json_transparent_over_a_definitions_variable_writes fails under
-// GRAPHIX_NO_SUBST=1 in all four modes with TextSite::Instance never chosen;
-// json_transparent_over_a_type_the_definition_knows_refused keeps the written refusal; the
-// default-path pins json_generic_payload_beside_a_tag_judged_at_the_call and _writes stay. All
-// 292 lib_tests::json pass under the flag.
 /// The bounds a call's settled cells must meet beyond their check: a
 /// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
 /// map read from data).

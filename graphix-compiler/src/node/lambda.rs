@@ -644,59 +644,6 @@ pub struct BodyShared {
     pub(crate) prototype: Option<ExprId>,
 }
 
-// XCR claude for claude: [bug/medium] A variable written in a nested definition's body
-// annotation and decided by the enclosing definition's parameter splits the check from
-// the build: `let outer = |n| { let inner = |m| { let s = |y| [y, n]; let p: fn(y: 'n)
-// -> Array<'n> = s; p(n) }; inner(n) }; outer(1); outer("w")` passes --check and the
-// build refuses "an instance at fn(m: i64) -> Array<_> of a definition typed fn(m: _)
-// -> Array<'n: i64>"; graphix-fuzz check reports DIVERGENCE (main a084f9887 and the
-// lane alike). The written `'n` is no variable either definition declares, so neither
-// owns it: an instance of outer appears to decide the cell inner's definition table
-// holds. A holder makes it reachable from shapes main refused (d3.gx: a tuple of the
-// lambdas, which main typed monomorphic). Elaboration refusing what the check accepted
-// is a type-system bug. probes: ~/ptmp/cr29/scratch/r6-B/w5/d7.gx, d3.gx, d4.gx, d8.gx
-// (nested-written-var-01)
-// 2026-11-01 claude: Lane B round 6: half fixed. enclosing_tvars now takes from each
-// enclosing signature only the names that definition's signature writes (its
-// LambdaDef's typ, walked without bindings): an instance's signature also held a cell
-// its check named after a body's annotation (outer's result Array<'n>), so in an
-// instance a nested definition's own written 'n became that cell, and the check and
-// the build split (|n| { let a: Array<'n> = [n]; let inner = |m: 'n| -> 'n m; (a,
-// inner(0), inner("s")) }: --check passed, the build refused inner("s"), main
-// a084f9887 too; a body's 'n alike under GRAPHIX_NO_SUBST). Pins
-// lang::types::written_variable_of_a_nested_signature_is_its_own and
-// written_variable_of_a_nested_body_is_its_own fail without it. What remains is d7/d3
-// themselves, a check-side cause: in inner's body the containment of p's annotation
-// merges outer's parameter cell (Def level, outer's gate open) into the annotation's
-// own 'n, a cell born generic in source, and a merge into a generic cell leaves it
-// generic (tvar::lower skips generic cells), so outer's parameter is generic while
-// outer checks: inner(n) copies it, and let r: Array<string> = inner(n) with n: i64
-// passes --check (u4.gx). Claiming
-// the merged cell at the abandoned cell's level fixed d7, d3, d4, d8 and u4 but made a
-// scheme's cells live where a holder or a factory's default merges a live cell into
-// them (lang::types::default_of_a_declared_variable_outside_the_factory,
-// holder_destructured_beside_a_written_name_in_a_body refused), and restricting it to
-// definition-owned cells still broke the second: a written annotation's own cell and a
-// scheme's cell are both Level::Generic, and the merge needs to tell them apart (a
-// let-level generalization, or a mark on a written place's cells). probes:
-// ~/ptmp/cr29/scratch/r6-B/i5/
-// 2026-11-01 claude: Lane B round 6, second pass: d7/d3 fixed. A variable a body's
-// written type owns (no definition around it declares it) is born tvar::Level::Written
-// (lambda::body_annotation, TVar::own_written): generic for every copy and call as
-// before, but tvar::lower claims it as any other cell, so outer's parameter merged
-// into 'n makes 'n that parameter, live in outer, where a scheme's Generic cell still
-// stays generic. d7, d3, d4, d8 run ([1, 1] / ["w", "w"]), u4 is refused at the check
-// (string does not contain i64), graphix-fuzz check d7v/d3v AGREE (trace) where main
-// split. Pins lang::types::written_variable_an_enclosing_parameter_decides,
-// written_variable_an_enclosing_parameter_decides_in_a_holder,
-// written_variable_an_enclosing_parameter_decides_is_that_parameter fail without it
-// (all 12 modes), pass under GRAPHIX_NO_SUBST=1; graphix-tests lib 13095 ok.
-// 2026-11-02 claude: Review B4-r1-2: of the first part's two pins,
-// written_variable_of_a_nested_body_is_its_own fails with a9078d0eb reverted only
-// under GRAPHIX_NO_SUBST=1 (the body's half shows only where an instance's body is
-// checked again); written_variable_of_a_nested_signature_is_its_own fails without it
-// in the plain gate. A regression of the body half shows in a NO_SUBST run of
-// lang::types, not in cargo test.
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's; any other

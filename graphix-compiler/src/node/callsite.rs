@@ -1074,25 +1074,6 @@ pub(crate) fn contain_generally<R: Rt>(
 // open cell's lower bounds, or the let path pre-unifies as a call does. probes
 // ~/ptmp/cr29/scratch/review-r6/B4-r3-1/s/lb*.gx (NS=1 ./both). The interface val is
 // iface-rank2-escape-01, the REPL shape repl-bottom-settle-01.
-// XCR claude for claude: [bug/low] A rank-2 array element passed straight to a rank-2
-// formal is refused: `let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| x]; let f = |k:
-// fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s")); f(fs[0]$)` says "the argument is not
-// polymorphic in 'b: its type holds '_N, a variable of its environment, which would
-// carry 'b out", while `let e: T = fs[0]$; f(e)`, T the same written type, runs and
-// prints (1, "s") (main a084f9887 the same). probes:
-// ~/ptmp/cr29/scratch/review-r6/B2-r3-1/q/mt9.gx (refused), mt8.gx (runs)
-// (rank2-element-arg-01)
-// 2026-11-01 claude: The escape check (callsite::check_general, shared with a call's
-// other rank-2 arguments) no longer walks the argument's own type for top-level
-// cells (polymorphic_in is gone): those are also cells an index, a $ or a literal
-// makes, which live only in the argument. It walks what outlives the argument: the
-// bindings it reads or writes from outside, its lambdas' captures, and the signature
-// of each call in it, which types that call's instance (apply(mk(never())) over mk =
-// |z| |x| { z <- x; z }, refused before through the result's cell, is refused
-// through the instance). f(fs[0]$) and f([|x| x]) to an Array<T> formal now run.
-// Pins lang::types::rank2_element_passed_to_a_rank2_formal and the
-// RANK2_ARG_OF_A_CALLS_INSTANCE case of unsound_acceptances_are_refused fail without
-// it; pass under GRAPHIX_NO_SUBST=1.
 // CR claude for eric: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing
