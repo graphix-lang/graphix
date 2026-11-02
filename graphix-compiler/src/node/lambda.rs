@@ -1200,7 +1200,7 @@ impl Typing {
         };
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
-            // CR claude for claude: [bug/medium] A lambda literal held in a
+            // CR claude for eric: [bug/medium] A lambda literal held in a
             // struct, tuple or array and passed a value holding itself passes
             // --check, then its run-time bind is refused here and the call never
             // produces: `{ let s = {f: |x| 0}; s.f(s) }` prints "binding the callee
@@ -1399,6 +1399,16 @@ impl Typing {
             // statement order (m/m3 vs m9); NO_SUBST refuses array::map([s, s], |h|
             // h.f(true)) which default runs (g/g5-g8, n3). Shape (1) is mine to
             // fix; shape (2) goes with holder-block-select-01.
+            // 2026-11-02 claude: Shape (1) is the same rule question as shape (2):
+            // in array::map([{f: |x| x}], |h| h.f(1)) the array is checked before
+            // the callback, so h.f has the closed literal's type and the call
+            // copies it, and the statement's settle then makes the literal fn(x: ⊥)
+            // -> ⊥; with a user function whose callback formal comes first (d3.gx,
+            // app({f: |x| x}, |h| h.f(true))) the call meets an open cell and
+            // decides the literal, so argument order decides acceptance. Option (b)
+            // of holder-block-select-01 (a call through a value no generalized
+            // binding names shares its cells instead of instantiating) closes (1)
+            // and (2) alike, in any order. Readdressed to eric with that CR.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),
