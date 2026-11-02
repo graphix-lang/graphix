@@ -2629,7 +2629,7 @@ impl<R: Rt> DefGate<R> {
             Arc::new(Bind {
                 doc: None,
                 id: faux_id,
-                name: "faux".into(),
+                name: "#faux".into(),
                 scope: def.scope.lexical.clone(),
                 typ: Type::empty_tvar(),
                 pos: SourcePosition::default(),

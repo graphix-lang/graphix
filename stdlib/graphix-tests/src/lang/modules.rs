@@ -1064,6 +1064,44 @@ run!(
     "#
 );
 
+// A call that raises nothing joins nothing into the handler around it:
+// a module checked on its own inside a function writes nothing of the
+// function's throws.
+run!(
+    module_in_a_function_calls_what_raises_nothing,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        let mk = |t: i64| -> i64 { mod a; a::f(t) };
+        let result = mk(1)
+    "#,
+    "/test/a.gxi" => r#"
+        val f: fn(x: i64) -> i64
+    "#,
+    "/test/a.gx" => r#"
+        let n = str::len("ab");
+        let f = |x: i64| -> i64 x + n
+    "#
+);
+
+// An error such a module raises to the function around it is refused
+// without naming the function's own throws, which no program writes.
+run!(
+    module_in_a_function_raising_to_it_refused,
+    refused("an error the module raises reaches the function around it"),
+    "/test.gx" => r#"
+        let mk = |t: i64| -> i64 { mod a; a::f(t) };
+        let result = mk(1)
+    "#,
+    "/test/a.gxi" => r#"
+        val f: fn(x: i64) -> i64
+    "#,
+    "/test/a.gx" => r#"
+        let g = |x: i64| -> [i64, Error<`E>] select x { 0 => error(`E), n => n };
+        let n = g(1)?;
+        let f = |x: i64| -> i64 x + n
+    "#; FuseExpect::None
+);
+
 // A module that only reads a binding the code around it settled is not
 // deciding it, though the binding is not in normal form.
 run!(

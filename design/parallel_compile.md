@@ -135,7 +135,15 @@ not made (`tvar::decided`): every sibling that would make it is refused
 in turn, none sees another's, and the first in order is the error, so an
 unannotated `let x = never()` whose first use is in a child module must
 be annotated. Over the gate the only foreign writes in module tasks are
-the interface's own type variables, frozen at compile.
+the interface's own type variables, frozen at compile. A raise joins its
+handler's cell, so a module inside a function raising to the function's
+own throws (the gate's catch, a binding a lowering names and the refusal
+never does) would write the function's cell: a raise of nothing joins
+nothing (`error::join_raised`), so a call that throws nothing writes no
+handler, and a module that raises an error there is refused, told to
+catch it inside the module (pins
+`lang::modules::module_in_a_function_calls_what_raises_nothing`,
+`module_in_a_function_raising_to_it_refused`).
 
 Admin registration, quick build, four P-cores, unpinned smoke runs:
 85-97 -> 61-62 ms.

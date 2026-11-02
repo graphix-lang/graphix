@@ -1876,7 +1876,7 @@ impl<R: Rt> Update<R> for Module<R> {
                 let _task = InTask::enter(self.task);
                 let _module = profile::module(&self.scope.lexical);
                 let writes = OwnWrites::enter(self.task);
-                // CR claude for claude: [bug/low] A file module inside a lambda whose body
+                // XCR claude for claude: [bug/low] A file module inside a lambda whose body
                 // reads a timer or sys::time::after_idle is refused here with "the check
                 // decides a type the code around the module left open: annotate `faux`",
                 // naming a binding the program never wrote (a DefGate's). Shape: `let mk =
@@ -1893,10 +1893,30 @@ impl<R: Rt> Update<R> for Module<R> {
                 // on bbb06c0c6 and cr45-N alike; with 'let c = 1' it checks. So a builtin
                 // call in an interface module inside a lambda body is enough. probe:
                 // ~/ptmp/cr29/scratch/r8-N/faux (graphix --check main.gx)
+                // 2026-11-02 claude: Found (lane G r8): the cell is the enclosing function's
+                // own throws, its DefGate's faux catch, and the write is
+                // node::error::join_raised from CallSite::raise_throws at a module
+                // statement's call that throws nothing (let go = sys::time::after_idle(..)):
+                // a raise of ⊥ bound the unbound catch cell to ⊥, a write to a cell created
+                // outside the module's task (GRAPHIX_TASK_AUDIT shows the backtrace). Not
+                // the interface pair's join. Fixed by the local rule 'a raise of nothing
+                // joins nothing' (join_raised returns before binding; a catch cell left
+                // unbound and one bound to ⊥ read alike, thrown() maps both to ⊥). m1 now
+                // runs (r=101101; main bbb06c0c6 refuses it naming faux). A real raise from
+                // such a module (m2: let v = g(1)? in a.gx) still writes the function's cell
+                // and is refused, now without naming it: the gate's binding is #faux, a
+                // lowered name, decided_binds never names a lowered binding, and the refusal
+                // says 'an error the module raises reaches the function around it, whose
+                // throws only its own check may decide: catch it inside the module' (a catch
+                // at the module's top makes m2 run). Pins
+                // lang::modules::module_in_a_function_calls_what_raises_nothing (fails in
+                // all four modes without the join rule) and
+                // module_in_a_function_raising_to_it_refused (fails without the lowered-name
+                // rule). Probes ~/ptmp/cr29/scratch/r8-G/i5/{m1,m2,m2c,m4}.
                 let res = self.check_body(ctx).and_then(|()| match writes.foreign() {
                     Some(w) => bail!(
                         "the check decides a type the code around the module \
-                         left open: annotate {}",
+                         left open: {}",
                         decided_binds(ctx, &self.scope.lexical, &self.spec.ori, &w)
                     ),
                     None => Ok(()),
@@ -1934,13 +1954,15 @@ impl<R: Rt> Update<R> for Module<R> {
 
 /// The bindings around `module` whose types hold what its check wrote,
 /// by position, for the refusal of its statement in `at`: each named
-/// with its file where that is not `at`'s.
+/// with its file where that is not `at`'s. A binding a lowering made (a
+/// definition's own throws) is never named.
 fn decided_binds<R: Rt>(
     ctx: &CompileCtx<R>,
     module: &ModPath,
     at: &Origin,
     w: &ForeignWrite,
 ) -> CompactString {
+    let mut lowered = false;
     let mut held: LPooled<Vec<(bool, crate::SourcePosition, &str, &Source)>> = ctx
         .env
         .by_id
@@ -1951,6 +1973,11 @@ fn decided_binds<R: Rt>(
                 && Path::is_parent(&*b.scope.0, &*module.0)
                 && w.held_by(&b.typ)
         })
+        .filter(|b| {
+            let named = !crate::is_lowered(&b.name);
+            lowered |= !named;
+            named
+        })
         .map(|b| {
             let src = &b.ori.source;
             (*src != at.source, b.pos, b.name.as_str(), src)
@@ -1960,12 +1987,17 @@ fn decided_binds<R: Rt>(
     held.dedup();
     let mut out = CompactString::new("");
     for (i, (elsewhere, pos, name, src)) in held.iter().take(3).enumerate() {
-        let sep = if i == 0 { "" } else { ", " };
+        let sep = if i == 0 { "annotate " } else { ", " };
         let _ = write!(out, "{sep}`{name}` (line {}, column {}", pos.line, pos.column);
         let _ = if *elsewhere { write!(out, " in {src})") } else { write!(out, ")") };
     }
-    if out.is_empty() {
-        out.push_str("the binding it decides");
+    match (out.is_empty(), lowered) {
+        (false, _) => (),
+        (true, true) => out.push_str(
+            "an error the module raises reaches the function around it, whose \
+             throws only its own check may decide: catch it inside the module",
+        ),
+        (true, false) => out.push_str("annotate the binding it decides"),
     }
     out
 }

@@ -1565,7 +1565,10 @@ cycle, across workers; the compiler never pins threads.
   (`Env::hidden_impls`) and seen after them, and a module's check that
   would write a cell created outside the module is refused and the
   write not made (`tvar::decided`; annotate the binding it would
-  decide; `design/parallel_compile.md`) A job a compile puts on a shared pool runs
+  decide; `design/parallel_compile.md`); a raise of nothing joins no
+  handler (`error::join_raised`), and an error the body raises to the
+  function around the module, whose throws are a cell only its check
+  writes, is refused: catch it inside the module. A job a compile puts on a shared pool runs
   under its spawner's `tvar::TaskContext` (task, level; the thread's
   foreign-write record set aside), never the thread's: a runtime
   compiles on its own pool (`Control::eval_pool`), and a worker blocked

@@ -179,6 +179,10 @@ impl<R: Rt> AbortRole<R> {
 /// Join `etyp`, an error type raised to `handler`'s catch, into the type
 /// its bind infers. A sealed catch takes only what its bind holds.
 pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Result<()> {
+    // a raise of nothing joins nothing
+    if etyp.with_deref(|t| matches!(t, Some(Type::Bottom))) {
+        return Ok(());
+    }
     let (catch, _) = handler.id();
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
