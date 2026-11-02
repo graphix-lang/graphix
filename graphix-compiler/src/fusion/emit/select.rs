@@ -345,6 +345,15 @@ pub(super) struct ScrutDrop {
     mark: usize,
 }
 
+// CR claude for claude: [perf/low] A select over a union that names a union
+// typedef does not fuse: `type L = [`A, `X]; let f = |u: [L, `Y]| select u { `A =>
+// 1, `X => 4, `Y => 5 }` node-walks, "select scrutinee type [L, `Y] doesn't freeze
+// concrete", where `|u: L|` and the written `[`A, `X, `Y]` fuse; a union of two such
+// names ([L, M]) alike. Main 8beb0735a the same. Fix: freeze_for_abi_normalized
+// freezes a union holding a name as the flat union of the members it expands to.
+// probes:
+// ~/ptmp/cr29/scratch/r7-B/fix/{nf,nf1,nf2,nf3}.gx (graphix --no-cache; each wraps
+// the block in #[native]) (select-named-union-freeze-01)
 /// Classify and emit the read of a select scrutinee. An owned one is
 /// adopted as an env local, the returned [`ScrutDrop`]: every
 /// terminator drops the env, and a value-position select drops it at

@@ -623,6 +623,18 @@ fn slice_type(list: bool, elem: Type) -> Type {
 // select's coverage, the new CR diff-dag-01. Pin graphix-types
 // typ::cast::tests::select_members_expand_each_application_once (L16: 4 members, 65536
 // without; flatten_union_members the same list).
+// 2026-11-02 claude: Review B5-r1-1 (low): the change does move verdicts, which the
+// note above missed (no fixture or regress pin had the shape): over a named-union DAG
+// reaching one application twice (type U = [L, M], L = [B, `X], M = [B, `Y]), main
+// 8beb0735a refused exhaustive selects whose literal pool or slice ladder covers B
+// ("missing match cases: no arm covers (bool, bool)", "the slice arms leave length 1 of
+// Array<bool> uncovered"; variant payloads and struct field literals alike): the
+// repeated members split the pool. Each is now accepted and runs as over the flat
+// union; a select really not exhaustive, and a dead arm, keep main's refusal and
+// message. Pin lang::select::pools_over_a_union_two_names_reach_cover_it (main refuses
+// its program). Review B5-r1-2 (low): both walks now ask Unfolded::first before
+// building an application's expansion (the name resolved first, so its key is its
+// definition's). Probes ~/ptmp/cr29/scratch/review-r7/B5-r1-1/i4/.
 /// The concrete members of `t`: bound tvars dereferenced, aliases
 /// expanded, unions flattened, in the order first met; an application met
 /// again adds nothing, its members are in already. An unbound tvar
@@ -640,10 +652,10 @@ pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Resu
             None => Ok(()),
             Some(t) => match &t {
                 Type::Set(ts) => ts.iter().try_for_each(|t| go(env, t, out, unfolded)),
-                Type::Ref(_) => {
-                    let whole = t.lookup_ref(env)?;
+                Type::Ref(tr) => {
+                    tr.resolve_in(env);
                     match unfolded.first(&t) {
-                        true => go(env, &whole, out, unfolded),
+                        true => go(env, &t.lookup_ref(env)?, out, unfolded),
                         false => Ok(()),
                     }
                 }

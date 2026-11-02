@@ -2113,7 +2113,7 @@ fn flatten_union_members(
                 Some(())
             }
             Type::Ref(tr) => {
-                let whole = t.lookup_ref(env).ok()?;
+                tr.resolve_in(env)?;
                 let key = ref_key(tr)?;
                 if seen.contains(&key) {
                     return None;
@@ -2121,6 +2121,7 @@ fn flatten_union_members(
                 if !unfolded.first(t) {
                     return Some(());
                 }
+                let whole = t.lookup_ref(env).ok()?;
                 seen.push(key);
                 let res = go(&whole, env, out, seen, unfolded);
                 seen.pop();

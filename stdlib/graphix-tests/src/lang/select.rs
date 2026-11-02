@@ -5768,6 +5768,32 @@ run!(
     prints("[i64:4, i64:-3, i64:51]")
 );
 
+// A named union two names reach covers its members once: the literal
+// pool and a slice ladder over `U = [L, M]`, where `L` and `M` both hold
+// `B`, cover `B` as they cover it written once.
+run!(
+    pools_over_a_union_two_names_reach_cover_it,
+    r#"{
+        type B = (bool, bool);
+        type L = [B, `X];
+        type M = [B, `Y];
+        type U = [L, M];
+        let f = |u: U| select u {
+            (true, _) => 1, (false, true) => 2, (false, false) => 3, `X => 4, `Y => 5
+        };
+        type A = Array<bool>;
+        type P = [A, `X];
+        type Q = [A, `Y];
+        type R = [P, Q];
+        let g = |r: R| select r {
+            [] => 0, [true] => 1, [false] => 2, [_, _, ..] => 3, `X => 4, `Y => 5
+        };
+        (f((true, false)), f((false, false)), f(`Y), g([]), g([false]), g([true, true]), g(`X))
+    }"#,
+    prints("[i64:1, i64:3, i64:5, i64:0, i64:2, i64:3, i64:4]");
+    FuseExpect::None
+);
+
 run!(
     literal_pool_over_a_bounded_variable_misses_a_head,
     r#"{
