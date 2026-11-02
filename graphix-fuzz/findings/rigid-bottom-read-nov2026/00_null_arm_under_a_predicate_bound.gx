@@ -1,0 +1,10 @@
+// A pattern testing a value at a declared variable held rigid (`(null, n)` over
+// `('b, i64)`, 'b: Concrete) leaves its sibling bind `n` an open cell, ⊥ in the
+// instance (rigid-pattern-bind-01). The JIT read `n` as a bottom production and
+// lost the null arm's outputs (cycles 0, 3, 6) where the node-walk produced them.
+// emit_ref_node refuses a read typed ⊥ of a local holding a value, so the body
+// de-fuses and the engines agree.
+{let step = i64:0; step <- select step {s if s < i64:6 => s + i64:1, _ => never()};
+ let g = 'b: Concrete |x: ('b, i64)| select x { (null, n) => n, (_, n) => n + i64:1 };
+ let o: [`A(i64), `B(i64), null] = select step % i64:3 { i64:0 => null, i64:1 => `B(step), _ => `A(step) };
+ g((o, step))}

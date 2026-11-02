@@ -23,6 +23,10 @@ dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
 // under it in every mode. The re-check should skip the coverage verdicts the
 // definition's check owns. probe: ~/ptmp/cr29/scratch/r6-E/r6F-fix/ns.gx
 // (no-subst-dead-arm-01)
+// 2026-11-01 claude: The second pin named above,
+// native_interpolates_a_bind_over_a_bounded_variable_at_one_member, is on the parked
+// branch cr35-E (5dbc36a34), not on main;
+// literal_pool_over_a_bounded_variable_counts_its_bound shows the failure here.
 dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
 dbg_flag!(graphix_no_outline, "GRAPHIX_NO_OUTLINE");

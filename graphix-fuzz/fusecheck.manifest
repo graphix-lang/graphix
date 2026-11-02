@@ -330,6 +330,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 8	review-fusion-oct2026/02_slot_birth_reads_standing.gx
 1	review-fusion-oct2026/03_fed_arg_raise_order.gx
 1	review-oct2026/01_defaulted_label_handler.gx
+4	rigid-bottom-read-nov2026/00_null_arm_under_a_predicate_bound.gx
 0	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
 0	rigid-commit-sep2026/01_annotation_variable_split.gx
 0	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx

@@ -2722,6 +2722,25 @@ impl Type {
     /// `self ⊇ pred` for a pattern's predicate over what reaches it: over
     /// a union, by member ([`Self::narrow_per_member`]). Whether some
     /// member, or `self`, contains it.
+    // CR claude for eric: [bug/high] A pattern that tests a value at a definition's
+    // declared variable held rigid binds nothing there: containing the pattern in the
+    // variable decides none of its cells, so the arm's binds stay open, ⊥ in every
+    // instance, and the body may read them at any type, which the run-time test then
+    // refuses, silently. `let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(z) => z +
+    // 1.5, _ => 0.0 }; g(`A(3))` is accepted and prints 0.0 on both engines; a sibling
+    // of a literal at the variable's position (`(null, n)` over `('b, i64)`) is the same,
+    // and with a predicate bound alone (`'b: Concrete`) the JIT read the open bind as a
+    // bottom and lost the null arm's outputs where the node-walk produced them
+    // (review-r6/E2-r3-1/f/cc6.gx; nodes::emit_ref_node now refuses such a read, so it
+    // de-fuses). Narrowing the variable's part against its bound was built on branch
+    // cr35-E (755308984, 8f10218b0, da234f1da, 5dbc36a34) and each of three reviews found
+    // a new hole: a bare bind lost the variable, a second bound, the variable under a
+    // constructor or as a union's member, predicate-only bounds, and last an open cell
+    // beside the variable no longer held to the pattern, so the check accepted a
+    // wrong-typed program and the engines diverged (review-r6/E2-r3-2/fz10.gx). Parked
+    // for a rule: see ~/ptmp/cr29/next-discuss.md. probes:
+    // ~/ptmp/cr29/scratch/review-r6/E2-r1-1/r2/e1.gx, E2-r2-2/r/z6.gx, z2.gx
+    // (rigid-pattern-bind-01)
     pub fn narrow_pattern(&self, env: &Env, pred: &Type) -> Result<bool> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         crate::expr::union_members(env, self, &mut members)?;

@@ -1168,6 +1168,17 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null` and variants.
+// CR claude for claude: [bug/high] heads takes a position's members by union_members,
+// which drops an unbound cell, so a declared variable beside null at a composite
+// pattern's position reads as null alone and a `null` arm completes the pool: `'b:
+// [i64, string] |x: (['b, null], i64)| select x { (7, n) => n, (null, n) => n * 2 }`
+// passes the check and, called with ("w", 3), prints "no arm matches: a coverage hole
+// in the check"; a catch-all `(_, n)` after the two arms is refused as unreachable
+// (main 432e34ac6 and cr35-E alike). Over `x: ['b, null]` or `('b, i64)` the pool is
+// not consulted and the missing case is refused. A position whose members hold an
+// unbound cell has no finite set of heads (`None`). Left with the parked pool work;
+// see (open-member-cover-01). probe: ~/ptmp/cr29/scratch/r6-E/r6F-fix2/p4.gx, p3.gx
+// (graphix --no-cache) (pool-open-member-01)
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, t, &mut members)?;

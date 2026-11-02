@@ -158,6 +158,13 @@ pub(crate) fn emit_ref_node(
         let l = &cx.env.locals[index];
         (index, l.words, l.kind)
     };
+    // a local holds a value of its binding's type, which no read types ⊥
+    if typ.with_deref(|t| matches!(t, Some(Type::Bottom))) {
+        bail!(
+            "emit_clif: a read of `{}` typed ⊥ where the local holds a {kind:?}",
+            name.unwrap_or("<synthetic>")
+        )
+    }
     // A wake reads a standing binding with its STALE disc intact; only a
     // genuine init upgrades: the kernel's at the boundary, a slot's here.
     let disc = cx.read_disc(index);
@@ -307,6 +314,13 @@ struct ValueOperand {
 // fuses, and so does the body with `x: [`A(i64), `B(i64)]` written directly
 // (u8.gx). Main a084f9887 refuses it the same way. probe:
 // ~/ptmp/cr29/scratch/review-r6/E2-r2-1/u7.gx, u8.gx (tvar-interp-defuse-01)
+// 2026-11-01 claude: Lane F (cr35-E) found the cause in the check, not the
+// emitter: a pattern over a declared variable held rigid binds nothing, so its
+// binds are ⊥ in every instance (hence Unit here) and a body may read them at any
+// type, a silent wrong answer on main. That is now CR (rigid-pattern-bind-01) at
+// Type::narrow_pattern, for eric; the narrowing built on cr35-E (755308984,
+// 8f10218b0, da234f1da, 5dbc36a34) is parked with it, since each review found a
+// new hole. This de-fuse goes with that ruling.
 fn emit_value_operand_node<R: Rt>(
     cx: &mut BodyCx,
     node: &Node<R>,
