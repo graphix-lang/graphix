@@ -350,7 +350,11 @@ As built:
   is no tracked input, yet a write can land on it while the arm sleeps
   (a write queued in its last awake cycle, a seq machine's reset of
   `pc`): its `let` re-raises it, fired, at its wake
-  (`Bind::reraise_writes_while_asleep`). The reactive fuzzer found the
+  (`Bind::reraise_writes_while_asleep`), to the readers that slept with
+  it: its block takes the delivery back after its last statement, so a
+  reader outside (an escaped `&mut`) sees the write once. A module with
+  no interface is a block whose names the block around it reads, so it
+  leaves the take-back to that block (`Block::take_back_reraised`). The reactive fuzzer found the
   gap (`findings/wake-resume-seq-abort-oct2026/`): the constants that
   used to fire at a wake had papered over it.
 - **Rebirth is a birth's.** `Apply::reborn` (no-op by default) holds

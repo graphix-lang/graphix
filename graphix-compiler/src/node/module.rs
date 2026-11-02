@@ -15,7 +15,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    node::{Nop, Runs, bind::Bind, traits},
+    node::{Block, Nop, Runs, bind::Bind, traits},
     profile::{self, Phase},
     shared_map::SharedMap,
     typ::{
@@ -1735,6 +1735,13 @@ impl<R: Rt> Update<R> for Module<R> {
                 }
             }
             self.runs.update(ctx, &mut self.nodes, &self.catches);
+            for n in self.nodes.iter_mut() {
+                if let Some(m) = n.downcast_mut::<Block<R>>()
+                    && m.module
+                {
+                    m.take_back_reraised(ctx)
+                }
+            }
         });
         // a prime is for the fresh body alone: left, it would fire readers
         // later in the cycle, and a forked merge would requeue it
@@ -1777,12 +1784,23 @@ impl<R: Rt> Update<R> for Module<R> {
         self.clear_compiled(ctx);
     }
 
-    // CR claude for claude: [bug/low] A module with no interface in a select arm: a
+    // XCR claude for claude: [bug/low] A module with no interface in a select arm: a
     // write to its binding through `&mut a::v` while the arm sleeps is seen at the wake by
     // the body's own reader (a::c, 4) but not by the arm's `count(a::v)` after the module
     // statement, which stays 3. With a .gxi the select catches the val up and both read 4.
     // main a084f9887 alike. probe: ~/ptmp/cr29/scratch/review-r6/W2-r3-1/cr37/{b2,b2n}
     // (module-arm-wake-01)
+    // 2026-11-02 claude: Round 7 lane N: a module with no interface is a Block whose names
+    // the block around it reads, so it no longer takes back its lets' wake re-raises at
+    // its own end: the enclosing block does, after its last statement
+    // (Block::take_back_reraised walks the module blocks among its children, lets_of lists
+    // them; a Module node with an interface does it for the no-interface modules in its
+    // body). No relay involved. The arm's count(a::v) now sees the re-raise at the wake
+    // beside a::c (b2n at ep 9: r=(70, 70, 4, 4), fires outside still 5); b2 (with the
+    // gxi) is unchanged, its outside reader still counting the extra fire of
+    // iface-pair-one-var-01. Pin: lang::modules::module_let_reraises_to_the_arm_around_it
+    // (four modes; [[1, 2], 3] on bbb06c0c6 and at 463516534, [[2, 2], 3] now, its 3 the
+    // escaped reader seeing the write once). Needs a soak.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.sleep(ctx);

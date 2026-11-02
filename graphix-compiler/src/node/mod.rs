@@ -785,8 +785,9 @@ pub struct Block<R: Rt> {
     /// reverse syntactic order: an inner handler's rethrow delivers to
     /// its predecessor, which only sees it if it updates after.
     pub(crate) catches: Box<[usize]>,
-    /// The children that are `let`s, which take back at the block's end
-    /// what a wake re-raised (`Bind::take_back_reraised`).
+    /// The children that are `let`s or modules with no interface, whose
+    /// wake re-raises a non-module block takes back at its end and a
+    /// module leaves to the block around it (`Bind::take_back_reraised`).
     lets: Box<[u32]>,
     /// The block's production when it cannot hand back its last
     /// child's borrow: after a catch pass or a forked run.
@@ -867,10 +868,15 @@ impl Runs {
 }
 
 impl<R: Rt> Block<R> {
-    fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
+    /// Take back what a wake re-raised to the `let`s among the children,
+    /// those of the modules with no interface among them included.
+    pub(crate) fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
         for i in self.lets.iter() {
-            if let Some(b) = self.children[*i as usize].downcast_mut::<bind::Bind<R>>() {
+            let n = &mut self.children[*i as usize];
+            if let Some(b) = n.downcast_mut::<bind::Bind<R>>() {
                 b.take_back_reraised(ctx)
+            } else if let Some(m) = n.downcast_mut::<Block<R>>() {
+                m.take_back_reraised(ctx)
             }
         }
     }
@@ -914,12 +920,16 @@ impl<R: Rt> Block<R> {
     }
 }
 
-/// The indices of the `let`s among a block's children.
+/// The indices of the `let`s among a block's children, and of the
+/// modules with no interface: a module's names are the enclosing
+/// block's to read, so that block takes back what its `let`s re-raise.
 fn lets_of<R: Rt>(children: &[Node<R>]) -> Box<[u32]> {
     let mut lets: SmallVec<[u32; 8]> = SmallVec::new();
     for (i, n) in children.iter().enumerate() {
-        if matches!(n.view(), NodeView::Bind(_)) {
-            lets.push(i as u32)
+        match n.view() {
+            NodeView::Bind(_) => lets.push(i as u32),
+            NodeView::Block(b) if b.module => lets.push(i as u32),
+            _ => (),
         }
     }
     lets.into_iter().collect()
@@ -1608,8 +1618,9 @@ impl<R: Rt> Update<R> for Block<R> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
+        let takes_back = !self.module && !self.lets.is_empty();
         if self.catches.is_empty()
-            && self.lets.is_empty()
+            && !takes_back
             && !Runs::forks(ctx, self.children.len())
         {
             let res = self
@@ -1619,7 +1630,9 @@ impl<R: Rt> Update<R> for Block<R> {
             return if self.module { TagValue::phantom_ref() } else { res };
         }
         let res = self.runs.update(ctx, &mut self.children, &self.catches);
-        self.take_back_reraised(ctx);
+        if takes_back {
+            self.take_back_reraised(ctx);
+        }
         match res {
             Some(tv) if !self.module => self.resident.set(tv),
             _ => TagValue::phantom_ref(),

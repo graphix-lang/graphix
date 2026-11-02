@@ -2363,3 +2363,31 @@ run!(glob_in_forked_slots, GLOB_IN_FORKED_SLOTS, |v: Result<&Value>| matches!(
     v,
     Ok(Value::Array(a)) if &a[..] == [Value::I64(3), Value::I64(4)]
 ); FuseExpect::Jit);
+
+// A module with no interface in a select arm: `v` is written through an
+// escaped `&mut a::v` while the arm sleeps (ep 6, 7). At the wake (ep 9)
+// the module's `let v` re-raises the write once to the readers that slept
+// with it, the arm's own `count(a::v)` beside the body's `a::c`; the
+// escaped reader outside, which saw both writes live, sees no third.
+async fn module_let_reraises_to_the_arm_around_it(mode: Mode) -> Result<()> {
+    let code = "{
+  let ep = 0;
+  ep <- select ep { n if n < 12 => n + 1, _ => never() };
+  let on = select ep { n if n > 4 && n < 9 => false, _ => true };
+  let rv: [&mut i64, null] = null;
+  let r = select on {
+    true => { mod a; rv <- once(ep) ~ &mut a::v; (count(a::v), a::c) },
+    false => never()
+  };
+  let rr = rv$;
+  *rr <- select ep { 6 => 50, 7 => 70, _ => never() };
+  let outside = count(*rr);
+  select ep { 12 => (r, outside), _ => never() }
+}";
+    let files = [("/test/a.gx", "let v = 1; let c = count(v)")];
+    let got = super::delivery::result_updates(code, &files, mode).await?;
+    assert_eq!(got, ["[[2, 2], 3]"], "{mode:?}");
+    Ok(())
+}
+
+modes!(module_let_reraises_to_the_arm_around_it);
