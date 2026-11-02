@@ -1262,6 +1262,26 @@ impl<R: Rt> Construct<R> {
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {
                 if let Type::TVar(tv) = p {
+                    // CR claude for claude: [bug/medium] In the REPL a constructed
+                    // abstract value's parameter that its input leaves open is decided
+                    // by a later input, after the value was built at ⊥: with `type
+                    // B<'x> = Abstract<i64>; type R<'a> = [`Nil, `Cons('a, R<'a>)]`,
+                    // the inputs `let t = B(1)` and then `let q = select t {
+                    // B<[`Nil, `Cons(i64, R<i64>)]> as _ => 1 }` both check, and the
+                    // select logs "no arm matches abstract:..: a coverage hole in the
+                    // check" at run time, since t's value carries B<⊥> while its static
+                    // type is the tested one; `let v = B(1)` and then `v <-
+                    // never<B<..>>()` leave v unequal to an annotated `let c: B<R<i64>>
+                    // = B(1)`. One script holding the same statements is right: its
+                    // values are built after the whole check. The Operand settle
+                    // (`TVar::settle`) leaves a cell no bound decides open, and an
+                    // input's end fixes the values built at it: settle such a cell to ⊥
+                    // when its input ends (the later type test is then a dead arm), or
+                    // refuse a later input that decides a cell an earlier input's values
+                    // were built at. Compare repl-bottom-settle-01 (lane B, cr39-B).
+                    // Main a084f9887 and lane E (cr40-E) alike. probe:
+                    // ~/ptmp/cr29/scratch/review-r6/E4-r2-2/repl3.txt
+                    // (repl-abstract-param-01)
                     super::defer_settle(ctx, || crate::PendingSettle::Operand {
                         tv: tv.clone(),
                         spec: self.spec.clone(),
