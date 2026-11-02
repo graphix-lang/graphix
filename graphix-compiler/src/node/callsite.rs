@@ -996,6 +996,21 @@ fn typecheck_arg<R: Rt>(
 // (~/ptmp/cr29/guicheck.sh: main a084f9887 91.47G, lane 92.82G). A verdict per
 // definition, kept where every name its body reaches is resolved and no definition
 // in progress was met, would make each walk one lookup. (quantified-quick-test-01)
+// 2026-11-02 claude: Round 7 lane B: skipped, the gain is under 0.5%. Tried: a verdict
+// on the definition (ResolvedRef, a OnceLock) kept where its body's walk read only names
+// resolved in their cells, cells holding no type, and definitions decided or in progress
+// around it (a stack depth, as ContainsHist's low water). guicheck (instructions, the
+// GUI examples) before 93.06G/93.13G, with it 92.72G/92.77G (-0.4%, run-to-run noise
+// about 0.25G); the quick test switched off entirely 91.20G (its whole cost, 2.0%,
+// rank2_parts' walks after a maybe included). The rest is out of reach as specified: at
+// a user program's check the stdlib typedef bodies' names are still open in their cells
+// (data_table_dashboard.gx: Length 752 reads, Color 588, Style 421, Widget 273, ...), so
+// every definition's walk reads the environment and keeps nothing; keeping verdicts read
+// through the environment reaches 91.60G (-1.5%) but decides a verdict from the walker's
+// environment, which a sibling task's check may resolve differently (the data_table
+// Source fault noted on rank2-escape-01). What it needs: the stdlib's typedef bodies
+// seeded (their TypeRef cells filled) before a program's check, after which the
+// per-definition verdict above keeps them. Measurement binaries were not kept.
 /// `contain` the value `n` in `holder`, a written type. Where the type
 /// holds quantified function types it is expanded to them, their
 /// quantifiers held rigid, for the containment (a mismatch shows
