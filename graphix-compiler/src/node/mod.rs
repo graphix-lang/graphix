@@ -3275,6 +3275,10 @@ impl<R: Rt> Connect<R> {
         // outside it. probes: ~/ptmp/cr29/scratch/review-r7/B5-r4-1/i1c/{map_conn,
         // map_deref,fm_conn,lmap_conn,mapn_conn,mapt_conn}.gx, repl/h5.txt,
         // ~/ptmp/cr29/scratch/r8-R/map_let_w.gx (rank2-escape-hof-01)
+        // 2026-11-02 claude: Not specific to the collection intrinsics: a user generic HOF
+        // does it too, B5-r4-1/i1c/app3_conn.gx (`let app = 'p: Any, 'q: Any |g: fn(v: 'p)
+        // -> 'q, v: 'p| -> 'q g(v); f <- |x| { y <- app(|e| W(e), x); x }`) passes --check
+        // with 29145700c and runs, y holding W(1) and then W("s").
         let written = &ctx.monomorphic(self.node.typ());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
