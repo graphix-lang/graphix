@@ -1882,6 +1882,15 @@ impl<R: Rt> CompileCtx<R> {
         }
     }
 
+    // CR claude for claude: [perf/low] The `<-`-target mark this puts on the outer outlives
+    // the body whose write caused it: Bind::delete removes only the old inner at a reload,
+    // so a reloaded body that writes nothing has its calls through the val resolved
+    // dynamically (GXDBG_RESOLVE: unstable=true; base 432e34ac6 static), and fusion may go
+    // with them. No answer changes. The same holds for a write a body function compiles
+    // after the join (mark_connect_target through StaticCallees::variable). Branch cr37-W
+    // 2681714fa dropped this mark for a wake hold that reads the pair (written_target) and
+    // fixed the first shape only. probes: ~/ptmp/cr29/scratch/review-r6/W2-r2-1/{n1,n1ctl},
+    // W2-r3-1/cr37/{d5b,n2} (iface-reload-mark-01)
     /// Join `inner`, a body's binding implementing an interface `val`, with
     /// `outer`, the `val`'s ([`StaticCallees::join`]). From here on they are
     /// one `<-` target where either is, so a woken `let` keeps what was
@@ -3727,6 +3736,11 @@ impl StaticCallees {
     // a_body_write_reaches_a_call_through_its_interface_in_an_instance (2 where 101
     // without it). StaticCallees records each binding's side of a pair (Side). probe:
     // ~/ptmp/cr29/scratch/r6-W/r38/{w3, w1, q1, q2, q6}
+    // 2026-11-01 claude: Landed on main through the lane's e20117003 (pairs joined as
+    // one write target and one seq variable). The lane's third round, 2681714fa on
+    // branch cr37-W, is not landed: its merged write queue regressed d6 and lv.
+    // Residuals: iface-reload-mark-01 (a mark outlives a reload) and
+    // iface-pair-one-var-01 (for eric).
     /// `inner` and `outer` are one variable, a write to either reaching
     /// the other: the binding implementing an interface's `val`, and the
     /// `val`'s.

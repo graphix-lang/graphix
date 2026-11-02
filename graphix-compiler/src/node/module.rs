@@ -1047,6 +1047,24 @@ fn deliver_production<R: Rt>(ctx: &mut ExecCtx<'_, R>, id: BindId, tv: TagValue)
     ctx.event.variables.insert(id, tv);
 }
 
+// CR claude for eric: [structure/medium] An interface pair is two runtime variables (the
+// val's binding and the body's) kept in step by relays: the static-call mark carry, the seq
+// planner's joined pairs (StaticCallees::add_joined), this cycle-start delivery, the module
+// node's productions, a wake's re-raise. Each review round of iface-join-mark-01 and
+// dyn-reload-reader-01 found another place the relay is not one variable. Still open here,
+// main alike: two place writes from opposite sides in one cycle lose one (pp: {x: 0, y: 9}
+// where one variable gives {x: 7, y: 9}; n7), the (Some, Some) arm reverses one variable's
+// set order (n2: 10 where 20), and a write through the val while the module's arm sleeps
+// fires readers outside the arm twice at the wake (s1: 3 where 2). A third round
+// (branch cr37-W, 2681714fa: both sides' writes merged into the val's queue) fixed those
+// and regressed two shapes main gets right: a replaced body's queued writes land on its
+// replacement, so one function answers two ways (d6: d::r 3, d::f(1) 21), and a level
+// write is ordered by the seq of the one it replaced (lv ends at 100 where 0). Proposed:
+// make the pair one variable at run time (one queue, the val's id, from the join), and
+// rule what a reload does with the replaced body's pending writes (main drops them with
+// the old binding; a root write queued across the reload lands, d4). probes:
+// ~/ptmp/cr29/scratch/review-r6/W2-r2-1/{pp,ppn,ppctl}, W2-r3-2/cr37/p/{n7,n2,s1,s1ctl},
+// W2-r3-1/cr37/{d6,d2,d1,d4}, W2-r3-2/cr37/findings.sh (lv) (iface-pair-one-var-01)
 /// Deliver each write the cycle's start brought to one binding of an
 /// interface pair to the other too, before any node runs, so a reader of
 /// either sees it this cycle wherever it runs. Writes to both in one cycle
@@ -1287,6 +1305,12 @@ impl<R: Rt> Module<R> {
     // read by a reader that ran earlier in the cycle is the general case, now CR
     // root-order-production-01; design/module_system.md says so. probe:
     // ~/ptmp/cr29/scratch/r6-W/r38/{es, er, e4, e5}
+    // 2026-11-01 claude: Landed on main through the lane's e20117003: a write to either
+    // binding of a pair is delivered to both at the cycle's start, so readers in earlier
+    // and later roots see it. Same-cycle writes from both sides still differ from one
+    // variable (pp, n7, n2), and so does a wake's re-raise (s1). Both are main alike and
+    // filed under iface-pair-one-var-01 (for eric). The lane's merged-queue fix for them
+    // (2681714fa) is not landed.
     fn compile_source(
         &mut self,
         ctx: &mut ExecCtx<'_, R>,
@@ -1719,6 +1743,12 @@ impl<R: Rt> Update<R> for Module<R> {
         self.clear_compiled(ctx);
     }
 
+    // CR claude for claude: [bug/low] A module with no interface in a select arm: a
+    // write to its binding through `&mut a::v` while the arm sleeps is seen at the wake by
+    // the body's own reader (a::c, 4) but not by the arm's `count(a::v)` after the module
+    // statement, which stays 3. With a .gxi the select catches the val up and both read 4.
+    // main a084f9887 alike. probe: ~/ptmp/cr29/scratch/review-r6/W2-r3-1/cr37/{b2,b2n}
+    // (module-arm-wake-01)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.sleep(ctx);
