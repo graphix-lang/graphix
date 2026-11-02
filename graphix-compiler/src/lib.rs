@@ -1498,11 +1498,6 @@ pub struct CompileCtx<R: Rt> {
     /// Def-gate nesting depth; a nested gate's cells are still
     /// entangled with the enclosing inference.
     pub(crate) def_gate_depth: usize,
-    /// An instance's body is checked again (`GRAPHIX_NO_SUBST`), with
-    /// what it defines: its definition's check owns a select's coverage
-    /// verdicts, which a check at the instance's narrower types does not
-    /// judge again.
-    pub(crate) instance_recheck: bool,
     pub(crate) resolving_lambdas: Mutex<Resolving>,
     /// The (definition, label) defaults being checked or elaborated,
     /// innermost last: a site its own omitted default's elaboration
@@ -1694,7 +1689,6 @@ impl<R: Rt> CompileCtx<R> {
             instance_fn_params: self.instance_fn_params.clone(),
             fn_param_args: self.fn_param_args.clone(),
             def_gate_depth: self.def_gate_depth,
-            instance_recheck: self.instance_recheck,
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             defaults_in_check: self.defaults_in_check.clone(),
             holder_reads: None,
@@ -1746,7 +1740,6 @@ impl<R: Rt> CompileCtx<R> {
             instance_fn_params: _,
             fn_param_args: _,
             def_gate_depth: _,
-            instance_recheck: _,
             resolving_lambdas: _,
             defaults_in_check: _,
             holder_reads: _,
@@ -2111,7 +2104,6 @@ impl<R: Rt> ExecState<R> {
                 instance_fn_params: AHashMap::default(),
                 fn_param_args: nohash::IntMap::default(),
                 def_gate_depth: 0,
-                instance_recheck: false,
                 resolving_lambdas: Mutex::new(Resolving::default()),
                 defaults_in_check: SmallVec::new(),
                 holder_reads: None,
@@ -2487,7 +2479,6 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// top-level compiles.
     fn resolution_scratch_is_empty(&self) -> bool {
         self.def_gate_depth == 0
-            && !self.instance_recheck
             && self.rec_defs.is_empty()
             && self.def_gate_params.is_empty()
             && self.instance_fn_params.is_empty()
@@ -2504,7 +2495,6 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// scratch.
     pub fn clear_resolution_scratch(&mut self) {
         self.def_gate_depth = 0;
-        self.instance_recheck = false;
         self.rec_defs.clear();
         self.def_gate_params.clear();
         self.instance_fn_params.clear();
@@ -3891,7 +3881,6 @@ impl Saved {
             instance_fn_params: _,
             fn_param_args: _,
             def_gate_depth: _,
-            instance_recheck: _,
             resolving_lambdas: _,
             defaults_in_check: _,
             holder_reads: _,

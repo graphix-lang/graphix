@@ -1994,7 +1994,7 @@ impl<R: Rt> Update<R> for Select<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        let checking = !ctx.instance_recheck;
+        let checking = !super::instance_rechecked();
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), checking)?;
         if self.flags.intersects(CFlag::SeqStep | CFlag::RunEvent) {
             return Ok(());
@@ -2295,13 +2295,14 @@ impl<R: Rt> Select<R> {
             // The arm's binds alias against what reaches it. The
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the
             // walk.
-            let reaching =
-                match !ctx.instance_recheck || !reach.passes_nothing(&ctx.env, pat)? {
-                    true => reach.atype.clone(),
-                    // an arm its definition's check kept that nothing reaches
-                    // at the instance's types never runs
-                    false => Type::Bottom,
-                };
+            let reaching = match !super::instance_rechecked()
+                || !reach.passes_nothing(&ctx.env, pat)?
+            {
+                true => reach.atype.clone(),
+                // an arm its definition's check kept that nothing reaches
+                // at the instance's types never runs
+                false => Type::Bottom,
+            };
             let mut members: SmallVec<[Type; 8]> = SmallVec::new();
             union_members(&ctx.env, &reaching, &mut members)?;
             let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;

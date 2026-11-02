@@ -1427,10 +1427,9 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     wrap!(self.body, self.body.typecheck0_instance(ctx, &mut types))
                 }
                 None => {
-                    let outer = ctx.instance_recheck;
-                    ctx.instance_recheck |= recheck;
-                    let res = self.body.typecheck0(ctx);
-                    ctx.instance_recheck = outer;
+                    let body = &mut self.body;
+                    let res =
+                        super::rechecking_instance(recheck, || body.typecheck0(ctx));
                     wrap!(self.body, res)?;
                     let body = self.body.typ().clone();
                     wrap!(

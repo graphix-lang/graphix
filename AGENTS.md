@@ -1737,7 +1737,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_PROFILE_INSTANCES=1` | with `GRAPHIX_PROFILE`, per-instance construction/check costs (`bench/instances.py`) |
 | `GRAPHIX_DBG_TVAL=1` | typed-printer render steps |
 | `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal |
-| `GRAPHIX_NO_SUBST=1` | every instance checks its body again instead of taking its definition's types, a select's coverage aside (A/B for instances by substitution) |
+| `GRAPHIX_NO_SUBST=1` | every instance checks its body again instead of taking its definition's types, a select's verdicts aside (A/B for instances by substitution) |
 | `GRAPHIX_FUSE_SERIAL=1` | fusion visits every part in order on one context instead of fusing disjoint subtrees in tasks (A/B: the decisions must agree) |
 | `GRAPHIX_ABORT_ON_NO_MATCH=1` | an abort at a select no arm matched, a coverage hole (both engines report it once; the fuzzer's children set it, so a hole is a crash finding) |
 | `GRAPHIX_PAR_AUDIT=1` | a panic at a join whose right branch read what its left sibling published |

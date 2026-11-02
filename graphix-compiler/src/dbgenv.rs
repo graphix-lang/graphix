@@ -64,6 +64,14 @@ dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
 // the caller's types, left as they are (list
 // ~/ptmp/cr29/scratch/r6-E/r6G2/nosubst_after2.txt). The same class on the default
 // path, a labeled default compiled at a bind, is default-bind-coverage-01.
+// 2026-11-02 claude: Landed on main without lane E's later rounds: the re-check's
+// flag is the scoped thread-local node::rechecking_instance (read by
+// instance_rechecked), not a CompileCtx field, and Reach::passes_nothing stays beside
+// Reach::arm's dead-arm test (the select code is fenced for Eric's coverage work).
+// The re-check takes every select verdict from its definition, the one-runtime-form,
+// reference and map-key refusals included, as an instance with no check rows does;
+// CLAUDE.md and design/parallel_compile.md say so. What catches a regression:
+// literal_pool_over_a_bounded_variable_counts_its_bound under GRAPHIX_NO_SUBST=1.
 dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
 dbg_flag!(graphix_no_outline, "GRAPHIX_NO_OUTLINE");

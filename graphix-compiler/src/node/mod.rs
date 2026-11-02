@@ -213,6 +213,21 @@ thread_local! {
     static DESELECTING_ARM: Cell<bool> = const { Cell::new(false) };
     static KEPT_IN_ARM: Cell<bool> = const { Cell::new(false) };
     static RUNTIME_BIND: Cell<bool> = const { Cell::new(false) };
+    static INSTANCE_RECHECK: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `f`, the check of an instance's body, as a check again
+/// (`GRAPHIX_NO_SUBST`) when `recheck`, with what the body defines: its
+/// definition's check owns a select's coverage verdicts, which a check at
+/// the instance's narrower types does not judge again.
+pub(crate) fn rechecking_instance<T>(recheck: bool, f: impl FnOnce() -> T) -> T {
+    let _restore = Restore::replace(&INSTANCE_RECHECK, recheck || INSTANCE_RECHECK.get());
+    f()
+}
+
+/// Whether this check is an instance's body checked again.
+pub(crate) fn instance_rechecked() -> bool {
+    INSTANCE_RECHECK.get()
 }
 
 /// Run `f` inside (`true`) or outside (`false`) the sleep of an arm a

@@ -526,11 +526,12 @@ and catches read: `par_growth` (20000 slots, an arithmetic callback)
 
 The default `typecheck0_instance` is the check: the leaves, a reference
 (which copies its binding's scheme), and declarations. `GRAPHIX_NO_SUBST=1`
-checks every instance again, but for its selects' coverage, dead arms
-and guards, which stay its definition's verdicts
-(`CompileCtx::instance_recheck`): the instance's narrower types can make
-an arm the definition needs unreachable, and such an arm, which never
-runs, binds its names at ⊥.
+checks every instance again, but for its selects' verdicts (coverage,
+dead arms, guards, the one-runtime-form and map-key refusals), which stay
+its definition's, as an instance without check rows takes them
+(`node::rechecking_instance`): the instance's narrower types can make an
+arm the definition needs unreachable, and such an arm, which never runs,
+binds its names at ⊥.
 
 **Every instance.** An instance records how it is typed
 (`node::lambda::Typing`): it is its definition's check, it substitutes
