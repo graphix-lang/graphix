@@ -326,7 +326,10 @@ the members of the kind it parses as next: `cast<[duration, decimal]>("3.0")`
 is the decimal 3.0, as `cast<[duration, decimal]>(3.0)` is. Among the
 members of one kind, one that holds the value exactly comes first, then one
 that holds it rounded to its precision, then one that would drop part of
-it: `cast<[i64, f32]>(0.1)` is the `f32` 0.1, not the integer 0. A float
+it: `cast<[i64, f32]>(0.1)` is the `f32` 0.1, not the integer 0. A
+number too large for a member is read as that member's infinity only when
+no member of any kind holds it: `cast<[f32, string]>(1e300)` is the
+string, `cast<f32>(1e300)` is `inf`. A float
 or a decimal, or its text, goes to an integer member only where no `f32`,
 `f64` or `decimal` member holds it exactly: `cast<[i64, decimal]>(3.0)`
 and `cast<[i64, decimal]>("3.0")` are both the decimal 3.0 (a decimal made

@@ -178,12 +178,21 @@ struct CastCx {
 
 /// How much of a value a reading keeps, the most first: all of it, all of
 /// it rounded to a real member's precision (an f64 into an f32, a decimal
-/// or a long integer into an f64), or less (a fraction an integer drops).
+/// or a long integer into an f64), less (a fraction an integer drops), or
+/// none: a finite number read as an infinity, tried after every member
+/// failed at the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Holds {
     Exactly,
     Rounded,
     Partly,
+    Overflowed,
+}
+
+impl Holds {
+    const KEEPING: [Holds; 3] = [Holds::Exactly, Holds::Rounded, Holds::Partly];
+    const ALL: [Holds; 4] =
+        [Holds::Exactly, Holds::Rounded, Holds::Partly, Holds::Overflowed];
 }
 
 /// Which side of the line between integers and reals a number is on.
@@ -292,7 +301,7 @@ impl CastCx {
             cuts: 0,
             at: 0,
             depth: 0,
-            holds: Holds::Partly,
+            holds: Holds::Overflowed,
             nums: NumReads::default(),
             text: None,
             input,
@@ -944,8 +953,9 @@ impl Type {
                 };
                 let kind = || NumKind::of(Typ::get(like));
                 let to = |t| convert_text(v.clone(), t, |_| parsed.clone());
-                let read =
-                    [own, as_parsed, !own & !as_parsed].into_iter().find_map(|class| {
+                let read = [own, as_parsed, !own & !as_parsed]
+                    .into_iter()
+                    .find_map(|class| {
                         let tier = *s & class;
                         let members = (tier & reals).iter().chain((tier & !reals).iter());
                         let mut exact = members.clone().filter_map(|t| {
@@ -966,7 +976,7 @@ impl Type {
                                     })
                                     .flatten()
                             })
-                            // CR claude for claude: [design/low] Class first across the
+                            // XCR claude for claude: [design/low] Class first across the
                             // rounds (D2 ruling 3) lets an infinity a finite value
                             // overflows to beat an exact member of another class: this
                             // round takes any conversion, so cast<[f32, string]>(1e300)
@@ -984,11 +994,46 @@ impl Type {
                             // finite value is a last resort after every group:
                             // cast<f32>(1e300) stays inf, cast<[f32, string]>(1e300)
                             // reads the string.
+                            // 2026-11-02 claude: Holds::Overflowed: a finite number
+                            // read as an infinity is a loss level of its own, tried
+                            // only after every group of a union (cast_member's last
+                            // pass) and every class of a primitive set (cast_inner's
+                            // Primitive arm) failed at Exactly, Rounded and Partly;
+                            // overflowed() is the test holds_rounded shares. cast<[f32,
+                            // string]>(1e300) is now the string (main bbb06c0c6: f32
+                            // inf); cast<f32>(1e300), [f32, i64], [f32, null], and
+                            // [f32, A] (A a variant) from text stay inf. Pin
+                            // lang::types::cast_overflow_is_a_last_resort (a primitive
+                            // set, a union with a variant, an element, a computed inf,
+                            // the single-member and no-holder cases); main's binary
+                            // gives inf for the first five. Docs: CLAUDE.md, book
+                            // core/fundamental_types.md, the skill copy. Needs a soak.
                             .or_else(|| {
-                                (cx.holds == Holds::Partly)
-                                    .then(|| members.clone().find_map(to))
+                                (cx.holds >= Holds::Partly)
+                                    .then(|| {
+                                        members.clone().find_map(|t| {
+                                            to(t).filter(|c| {
+                                                !overflowed(v, parsed.as_ref(), c)
+                                            })
+                                        })
+                                    })
                                     .flatten()
                             })
+                    })
+                    .or_else(|| {
+                        (cx.holds == Holds::Overflowed)
+                            .then(|| {
+                                [own, as_parsed, !own & !as_parsed].into_iter().find_map(
+                                    |class| {
+                                        let tier = *s & class;
+                                        (tier & reals)
+                                            .iter()
+                                            .chain((tier & !reals).iter())
+                                            .find_map(to)
+                                    },
+                                )
+                            })
+                            .flatten()
                     });
                 match read {
                     Some(c) => {
@@ -1350,7 +1395,8 @@ impl Type {
             // would drop part of it (a fraction, a sub-second part)
             // (`Holds`); short of a dropped part, one keeping every number an
             // integer or a real as it was before one reading one across
-            // (`Choice`).
+            // (`Choice`). An infinity a finite value overflows to comes after
+            // every group.
             Type::Set(ts) => {
                 let key = (cx.in_union && cx.built == 0)
                     .then(|| (ts.as_ptr().addr(), (v as *const Value).addr(), cx.holds));
@@ -1493,18 +1539,19 @@ impl Type {
             by_class([own, as_parsed], &mut members);
         }
         let ts = || members.iter().map(|t| &**t);
-        if array {
-            let arrays: SmallVec<[&Type; 4]> = ts()
+        let converts = cx.input == CastInput::Marked;
+        let arrays: SmallVec<[&Type; 4]> = match array {
+            false => SmallVec::new(),
+            true => ts()
                 .filter(|t| match rep_head(env, t).as_deref() {
                     Some(Type::Array(_)) => true,
                     Some(Type::Primitive(p)) => p.contains(Typ::Array),
                     _ => false,
                 })
-                .collect();
-            let converts = cx.input == CastInput::Marked;
-            if let Ok(r) = self.tier(env, cx, src, v, &[arrays], converts) {
-                return Ok(r);
-            }
+                .collect(),
+        };
+        if let Ok(r) = self.tier(env, cx, src, v, &[&arrays], converts, &Holds::KEEPING) {
+            return Ok(r);
         }
         // a member whose tag the value carries is its reading, whatever a
         // tagless reading of an earlier member says
@@ -1512,7 +1559,7 @@ impl Type {
             ts().filter(|t| carries_tag(env, t, v)).collect();
         if !tagged.is_empty() {
             return self
-                .tier(env, cx, src, v, &[tagged], true)
+                .tier(env, cx, src, v, &[&tagged], true, &Holds::ALL)
                 .map_err(|e| e.expect("a tagged member was tried"));
         }
         // a writer wrote the tuple or the struct the data reads back as
@@ -1542,16 +1589,22 @@ impl Type {
             groups[g].push(t)
         }
         let [tuples, structs, own, as_parsed, rest] = groups;
-        for tier in [&[tuples, structs, own][..], &[as_parsed], &[rest]] {
-            if let Ok(r) = self.tier(env, cx, src, v, tier, true) {
+        for tier in [&[&tuples, &structs, &own][..], &[&as_parsed], &[&rest]] {
+            if let Ok(r) = self.tier(env, cx, src, v, tier, true, &Holds::KEEPING) {
                 return Ok(r);
             }
+        }
+        let none = SmallVec::new();
+        let arrays = if converts { &arrays } else { &none };
+        let last = [arrays, &tuples, &structs, &own, &as_parsed, &rest];
+        if let Ok(r) = self.tier(env, cx, src, v, &last, true, &[Holds::Overflowed]) {
+            return Ok(r);
         }
         Err(self.cast_fail("no member admits it", v))
     }
 
-    /// The reading of `v` by the members `groups` hold, each round up to
-    /// `cx.holds` in turn: a member that holds `v` as it is, else what the
+    /// The reading of `v` by the members `groups` hold, each of `rounds`
+    /// up to `cx.holds` in turn: a member that holds `v` as it is, else what the
     /// round's [`Choice`] took, offered each member's conversion (only
     /// where `converts`) in order, a group at a time, the next group only
     /// where the choice may still change. `Err` when no round read it,
@@ -1562,15 +1615,16 @@ impl Type {
         cx: &mut CastCx,
         src: Option<&Type>,
         v: &Value,
-        groups: &[SmallVec<[&Type; 4]>],
+        groups: &[&SmallVec<[&Type; 4]>],
         converts: bool,
+        rounds: &[Holds],
     ) -> std::result::Result<Option<Value>, Option<CastFail>> {
         if groups.iter().all(|g| g.is_empty()) {
             return Err(None);
         }
         let outer = cx.holds;
         let mut refused = None;
-        for holds in [Holds::Exactly, Holds::Rounded, Holds::Partly] {
+        for &holds in rounds {
             if holds > outer {
                 break;
             }
@@ -3308,17 +3362,22 @@ fn holds_exactly(v: &Value, parsed: Option<&Value>, c: &Value) -> bool {
 /// precision: any real but an infinity a finite value overflowed to.
 /// `parsed` is the scalar `v` parses as when it is text.
 fn holds_rounded(v: &Value, parsed: Option<&Value>, c: &Value) -> bool {
+    Typ::get(c).is_real() && !overflowed(v, parsed, c)
+}
+
+/// Whether `c` is an infinity read from a finite number, or from text
+/// naming one.
+fn overflowed(v: &Value, parsed: Option<&Value>, c: &Value) -> bool {
     let infinite = |v: &Value| match v {
         Value::F32(f) => f.is_infinite(),
         Value::F64(f) => f.is_infinite(),
         _ => false,
     };
-    Typ::get(c).is_real()
-        && (!infinite(c)
-            || match v {
-                Value::String(_) => parsed.is_some_and(infinite),
-                v => infinite(v),
-            })
+    infinite(c)
+        && !match v {
+            Value::String(_) => parsed.is_some_and(infinite),
+            v => infinite(v),
+        }
 }
 
 /// The scalar the text `s` parses as: a number, a bool, a datetime or a

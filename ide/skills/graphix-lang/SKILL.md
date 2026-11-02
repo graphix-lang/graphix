@@ -912,7 +912,9 @@ member holds it exactly (`cast<[i64, decimal]>(3.0)` is the decimal,
 `cast<[i64, datetime]>("3.0")` the integer). An integer likewise goes to
 a real member only where no integer member holds it, however the union
 names its members; a bool is held exactly by 1 or 0 (`cast<[f32,
-u8]>(true)` is u8 1).
+u8]>(true)` is u8 1). A number too large for a float member reads as its
+infinity only when no member of any kind holds it (`cast<[f32,
+string]>(1e300)` is the string, `cast<f32>(1e300)` inf).
 Printed composites escape brackets in strings and retain numeric type prefixes
 except for i64/f64. Bytes print as `bytes:` literals. Only `str::parse` also
 reads printed UTC datetimes, every printed duration unit and bare

@@ -841,6 +841,42 @@ run!(
     )
 );
 
+// An infinity a finite value overflows to is a union's last resort, after
+// every member of every class failed short of it: a string holding the
+// text exactly comes first, a primitive set or not, in an element too.
+const CAST_OVERFLOW_IS_A_LAST_RESORT: &str = r#"
+{
+  let k = |v: [f32, string]| select v {
+    f32 as f => "[f]",
+    string as s => "text, [str::len(s)] chars"
+  };
+  let ka = |v: [f32, string, `A]| select v {
+    f32 as f => "[f]",
+    string as s => "text, [str::len(s)] chars",
+    `A => "A"
+  };
+  (
+    k(cast<[f32, string]>(1e300)$),
+    k(cast<[f32, string]>(-1e300)$),
+    k(cast<[f32, string]>(1e300 * 1e300)$),
+    ka(cast<[f32, string, `A]>(1e300)$),
+    array::map(cast<Array<[f32, string, `A]>>([1e300, 0.1])$, ka),
+    cast<f32>(1e300)$,
+    cast<[f32, i64]>(1e300)$,
+    cast<[f32, `A]>("1e300")$,
+    cast<[f32, null]>(-1e300)$
+  )
+}
+"#;
+
+run!(
+    cast_overflow_is_a_last_resort,
+    CAST_OVERFLOW_IS_A_LAST_RESORT,
+    prints(
+        r#"["text, 303 chars", "text, 304 chars", "inf", "text, 303 chars", ["text, 303 chars", "0.1"], f32:inf, f32:inf, f32:inf, f32:-inf]"#
+    )
+);
+
 // A float casts to the decimal its shortest text names, all seventeen
 // significant digits of it, an f32 by its own shortest text.
 run!(
