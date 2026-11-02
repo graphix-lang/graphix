@@ -2606,8 +2606,9 @@ fn same_positions(a: &Expr, b: &Expr) -> bool {
 }
 
 /// An operand that ends in a lambda prints in parens wherever something
-/// would follow it, and a lambda under `?`, `$` or a prefix operator in
-/// parens, so each reads back as itself, flat and laid out.
+/// would follow it, and a lambda under `?`, `$` or a prefix operator, or a
+/// `&` of one under any prefix operator, in parens, so each reads back as
+/// itself, flat and laid out.
 #[test]
 fn operands_ending_in_a_lambda_print_in_parens() {
     let e = |kind: ExprKind| kind.to_expr_nopos();
@@ -2616,6 +2617,7 @@ fn operands_ending_in_a_lambda_print_in_parens() {
     let bin = |lhs: Expr, rhs: Expr| {
         e(ExprKind::BinOp { op: BinOp::Add, lhs: Arc::new(lhs), rhs: Arc::new(rhs) })
     };
+    let by_ref = |m: Mutability| e(ExprKind::ByRef(m, Arc::new(lambda())));
     for tree in [
         bin(bin(r("a"), lambda()), r("b")),
         bin(lambda(), r("b")),
@@ -2626,6 +2628,10 @@ fn operands_ending_in_a_lambda_print_in_parens() {
         e(ExprKind::Deref(Arc::new(lambda()))),
         e(ExprKind::ByRef(Mutability::Shared, Arc::new(lambda()))),
         bin(e(ExprKind::ByRef(Mutability::Shared, Arc::new(lambda()))), r("b")),
+        e(ExprKind::Deref(Arc::new(by_ref(Mutability::Shared)))),
+        e(ExprKind::Not { expr: Arc::new(by_ref(Mutability::Mut)) }),
+        e(ExprKind::Neg(Arc::new(by_ref(Mutability::Shared)))),
+        e(ExprKind::ByRef(Mutability::Shared, Arc::new(by_ref(Mutability::Mut)))),
     ] {
         for printed in [tree.to_string(), tree.to_string_pretty(0).to_string()] {
             let read = parse_one(&printed).unwrap_or_else(|e| panic!("{printed}: {e}"));
