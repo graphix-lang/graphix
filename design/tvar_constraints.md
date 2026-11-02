@@ -617,7 +617,11 @@ definitions around that one (`LambdaDef::in_signature`). An instance's
 body compiles under its definition's signature as the instance holds it
 (`lambda::instance_sig`: each variable copied under its name and bound to
 the instance's type), so a default compiled at an instance's bind, which
-no table row types, reads `'a` as the instance's type.
+no table row types, reads `'a` as the instance's type. It is checked
+there as an instance's body is again (`node::rechecking_instance`): its
+definition's check judged its selects' verdicts at the types written, so
+an arm the instance's narrower type leaves unreached binds at ⊥ and never
+runs (pin `lang::select::default_at_a_bind_takes_its_definitions_coverage`).
 
 A signature finds its quantifiers by name (`FnType::quantifiers`). A
 parameter the body unifies with a declared quantifier (`x` in `'a:

@@ -5748,6 +5748,26 @@ run!(
     prints("[i64:3, i64:-4, i64:3, i64:-4, i64:50]")
 );
 
+// A labeled default compiled at a call's bind takes its select's verdicts
+// from its definition's check, as an instance does: at `(bool, i64)` the
+// `i64` arm reaches nothing and never runs.
+run!(
+    default_at_a_bind_takes_its_definitions_coverage,
+    r#"{
+        let outer = 'a: [(bool, i64), i64] |x: 'a| -> i64 {
+            let f = |#d = select x {
+                (true, n) => n,
+                (false, n) => 0 - n,
+                i64 as n => n * 10
+            }, y: i64| d + y;
+            f(1)
+        };
+        let v: [(bool, i64), i64] = 5;
+        (outer((true, 3)), outer((false, 4)), outer(v))
+    }"#,
+    prints("[i64:4, i64:-3, i64:51]")
+);
+
 run!(
     literal_pool_over_a_bounded_variable_misses_a_head,
     r#"{

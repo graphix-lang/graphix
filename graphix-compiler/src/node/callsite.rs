@@ -222,7 +222,10 @@ impl ArgStage {
 /// its definition's environment, where a variable of an enclosing
 /// definition whose check has closed is that definition's scheme, of which
 /// the callee is one instance: the judgment takes a copy of it rather than
-/// deciding it. At the bind, the environment is the instance's.
+/// deciding it. At the bind, the environment is the instance's, and the
+/// default is checked as an instance's body is again
+/// ([`super::rechecking_instance`]): its definition's check judged its
+/// selects' verdicts at the types written.
 #[derive(Clone, Copy)]
 enum Judge {
     Check,
@@ -249,7 +252,7 @@ fn checked_default<R: Rt>(
     value: Option<&FnType>,
     judge: Judge,
 ) -> Result<Node<R>> {
-    // CR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
+    // XCR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
     // in full here at the instance's types, so a select in it over an enclosing
     // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
     // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
@@ -260,13 +263,23 @@ fn checked_default<R: Rt>(
     // The definition's check owns the coverage verdicts, as for a GRAPHIX_NO_SUBST
     // re-check (no-subst-dead-arm-01). probe: ~/ptmp/cr29/scratch/r6-E/r6G2/ns3.gx
     // (default-bind-coverage-01)
+    // 2026-11-02 claude: checked_default runs a bind's default check (Judge::Bind) under
+    // node::rechecking_instance, as an instance's body is checked again under
+    // GRAPHIX_NO_SUBST: the definition's check (check_defaults) judged the default's
+    // selects at the types written, so an arm the instance's narrower type leaves unreached
+    // binds at bottom and never runs. ns3.gx prints 4 (main 8beb0735a refuses its build
+    // 'cannot compute [] * i64'). Pin
+    // lang::select::default_at_a_bind_takes_its_definitions_coverage: outer((true, 3)) 4,
+    // outer((false, 4)) -3, the control outer(v) with v: [(bool, i64), i64] = 5 51; refused
+    // in every mode without the change, passes under GRAPHIX_NO_SUBST=1.
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
         let mut node = f.in_signature(ctx, |ctx| {
             compile(ctx, flags, expr.clone(), &local_scope, top_id)
         })?;
-        let res = node.typecheck0(ctx);
+        let bind = matches!(judge, Judge::Bind);
+        let res = super::rechecking_instance(bind, || node.typecheck0(ctx));
         Ok::<_, anyhow::Error>((node, res))
     })?;
     let label = |ft: &FnType| -> Option<Type> {
