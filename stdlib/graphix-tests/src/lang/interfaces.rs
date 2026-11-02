@@ -1560,3 +1560,13 @@ run!(
     "/test/inner.gxi" => "val f: fn<'b: Number>(x: ['b, null]) -> string",
     "/test/inner.gx" => "let f = 'a: [Number, null] |x: 'a| -> string \"[x]\""
 ; FuseExpect::Jit);
+
+// A recursive typedef's union pairs its members under the typedef pair
+// it expands, so the match meets that pair again and ends.
+run!(
+    recursive_typedef_of_functions_val_pairs_its_union,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let result = select m::l { `C(f, _) => f(1), `N => 0 }",
+    "/test/m.gxi" => "type L<'a> = [`N, `C(fn(x: 'a) -> 'a, L<'a>)]; val l: L<'a>",
+    "/test/m.gx" => "let l: L<'q> = `C(|x| x, `N)"
+; FuseExpect::None);

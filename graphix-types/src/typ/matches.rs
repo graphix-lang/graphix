@@ -14,6 +14,7 @@ use anyhow::{Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
     mem,
     ops::{Deref, DerefMut},
@@ -25,14 +26,27 @@ use std::{
 #[derive(Debug, Default, Clone)]
 pub(super) struct SigPairs {
     pub(super) cells: AddrMap<Type>,
-    /// The unions whose pairing waits, each with its polarity.
-    deferred: Vec<(Type, Type, bool)>,
+    /// The unions whose pairing waits.
+    deferred: Vec<DeferredUnion>,
     /// Each function type paired, signature and implementation, whose
     /// bounds are judged once every variable has paired, and whether it
     /// stands in a contravariant position.
     pub(super) fns: Vec<(FnType, FnType, bool)>,
     /// The walk is under an odd number of function arguments.
     pub(super) contra: bool,
+}
+
+/// A union pair whose pairing waits ([`SigPairs::settle`]).
+#[derive(Debug, Clone)]
+struct DeferredUnion {
+    sig: Type,
+    imp: Type,
+    /// It stands in a contravariant position.
+    contra: bool,
+    /// The typedef pairs whose expansion it is part of, in progress again
+    /// while its members pair, so a recursive typedef's union meets its
+    /// own pair as the walk that deferred it would.
+    within: SmallVec<[RefPair; 2]>,
 }
 
 /// The most members an open union's pairing searches over; a larger one
@@ -79,13 +93,13 @@ impl SigPairs {
     /// Keep in `deferred` the last union and every union linked to it
     /// through an open implementation cell no pairing has decided; return
     /// the others, in order.
-    fn split_group(&mut self) -> Vec<(Type, Type, bool)> {
+    fn split_group(&mut self) -> Vec<DeferredUnion> {
         let cells: LPooled<Vec<LPooled<AddrSet>>> = self
             .deferred
             .iter()
-            .map(|(_, imp, _)| {
+            .map(|d| {
                 let mut free: LPooled<AddrSet> = LPooled::take();
-                find_open_cell(imp, true, &mut |tv| {
+                find_open_cell(&d.imp, true, &mut |tv| {
                     if !self.cells.contains_key(&tv.cell_addr()) {
                         free.insert(tv.cell_addr());
                     }
@@ -124,19 +138,26 @@ impl SigPairs {
     /// Pair the last deferred union by the first assignment of its
     /// members under which the rest settle.
     fn search(&mut self, env: &Env, hist: &mut RefHist<AHashSet<RefPair>>) -> Result<()> {
-        let Some((s0, s1, contra)) = self.deferred.pop() else { return Ok(()) };
-        let (Type::Set(m0), Type::Set(m1)) = (&s0, &s1) else { unreachable!() };
+        let Some(DeferredUnion { sig, imp, contra, within }) = self.deferred.pop() else {
+            return Ok(());
+        };
+        let (Type::Set(m0), Type::Set(m1)) = (&sig, &imp) else { unreachable!() };
         let n = m0.len();
         let mut order: LPooled<Vec<usize>> = (0..n).collect();
         let mut first_err = None;
         loop {
             let mut scratch = self.clone();
             scratch.contra = contra;
+            let entered: SmallVec<[RefPair; 2]> =
+                within.iter().filter(|k| hist.insert(**k)).copied().collect();
             let r = m0.iter().zip(order.iter()).try_for_each(|(t0, i)| {
                 t0.sig_matches_int(env, &m1[*i], &mut scratch, hist)
             });
+            entered.iter().for_each(|k| {
+                hist.remove(k);
+            });
             scratch.contra = self.contra;
-            let r = r.and_then(|()| scratch.settle(env, hist));
+            let r = r.and_then(|()| ensure_sufficient(|| scratch.settle(env, hist)));
             match r {
                 Ok(()) => {
                     *self = scratch;
@@ -524,11 +545,12 @@ impl Type {
             // a union is sorted as it was built, while its cells were open,
             // so its members pair in whichever order the rest accepts
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
-                tvar_map.deferred.push((
-                    self.clone(),
-                    impl_type.clone(),
-                    tvar_map.contra,
-                ));
+                tvar_map.deferred.push(DeferredUnion {
+                    sig: self.clone(),
+                    imp: impl_type.clone(),
+                    contra: tvar_map.contra,
+                    within: hist.iter().copied().collect(),
+                });
                 Ok(())
             }
             (Self::Error(e0), Self::Error(e1)) => {
