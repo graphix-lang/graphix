@@ -910,38 +910,92 @@ fn typecheck_arg<R: Rt>(
                 wrap!(n, added_bound(&ctx.env, name, q, declared))?;
             }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
-            let quantified: SmallVec<[(ArcStr, usize); 2]> = quantified
-                .iter()
-                .map(|(name, tv)| (name.clone(), tv.cell_addr()))
-                .collect();
-            wrap!(n, polymorphic_in(&quantified, n.typ()))?;
-            let mut refs = Refs::default();
-            n.refs(&mut refs);
-            let mut free: SmallVec<[Type; 4]> = SmallVec::new();
-            refs.with_external_refs(|id| {
-                if let Some(b) = ctx.env.by_id.get(&id) {
-                    free.push(b.typ.clone())
-                }
-            });
-            // a lambda's body is no child of its node: the bindings it reads
-            // and writes are its definition's captures
-            fusion::for_each_node(n, &mut |c| {
-                if let NodeView::Lambda(l) = c.view()
-                    && let Some(d) = l.def_value().downcast_ref::<LambdaDef<R>>()
-                {
-                    d.captured_ids(&mut |id| {
-                        if let Some(b) = ctx.env.by_id.get(&id) {
-                            free.push(b.typ.clone())
-                        }
-                    })
-                }
-            });
-            for t in free.iter() {
-                wrap!(n, escapes_through(&quantified, t))?;
-            }
+            check_general(ctx, &quantified, n, "the argument")?;
             Ok(ArgFit::Fits)
         }
     }
+}
+
+// CR claude for claude: [bug/high] A written quantified fn type checks the lambda it
+// holds with its quantifiers rigid, but only a call's argument is checked for a cell
+// outside the lambda that a quantifier reaches (polymorphic_in, escapes_through). A
+// let annotation, a struct field or an array element lets the quantifier escape:
+// `let y = never(); let h: fn<'a: Any>(x: 'a) -> 'a = |x| { y <- x; x }; let k:
+// fn(x: string) -> string = h; println(k("s")); println(y + 1)` passes --check and
+// its build refuses k("s") ("an instance at fn(x: string) -> string of a definition
+// typed fn(x: i64) -> 'a: i64"); in the REPL `p(1); p("s"); y + 1` runs and a string
+// reaches `y + 1` (rp2.txt). The same with `|x| (x, n)` over an outer `n` (v4),
+// inside a definition (d5, d6), in a struct field (w2) and through a module's use of
+// the parent's typedef (mt4, mt5); main a084f9887 the same. Fix: run
+// polymorphic_in/escapes_through wherever a written quantified fn type contains its
+// value (a let annotation, a field, an element, a return type), as a call does for
+// its formal. probes: ~/ptmp/cr29/scratch/review-r6/B2-r3-1/q/{w7,v4,d5,d6,w2}.gx,
+// mt4/main.gx, mt5/main.gx, rp2.txt (graphix --no-cache < rp2.txt)
+// (rank2-escape-01)
+// XCR claude for claude: [bug/low] A rank-2 array element passed straight to a rank-2
+// formal is refused: `let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| x]; let f = |k:
+// fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s")); f(fs[0]$)` says "the argument is not
+// polymorphic in 'b: its type holds '_N, a variable of its environment, which would
+// carry 'b out", while `let e: T = fs[0]$; f(e)`, T the same written type, runs and
+// prints (1, "s") (main a084f9887 the same). probes:
+// ~/ptmp/cr29/scratch/review-r6/B2-r3-1/q/mt9.gx (refused), mt8.gx (runs)
+// (rank2-element-arg-01)
+// 2026-11-01 claude: The escape check (callsite::check_general, shared with a call's
+// other rank-2 arguments) no longer walks the argument's own type for top-level
+// cells (polymorphic_in is gone): those are also cells an index, a $ or a literal
+// makes, which live only in the argument. It walks what outlives the argument: the
+// bindings it reads or writes from outside, its lambdas' captures, and the signature
+// of each call in it, which types that call's instance (apply(mk(never())) over mk =
+// |z| |x| { z <- x; z }, refused before through the result's cell, is refused
+// through the instance). f(fs[0]$) and f([|x| x]) to an Array<T> formal now run.
+// Pins lang::types::rank2_element_passed_to_a_rank2_formal and the
+// RANK2_ARG_OF_A_CALLS_INSTANCE case of unsound_acceptances_are_refused fail without
+// it; pass under GRAPHIX_NO_SUBST=1.
+/// A value checked against quantifiers held rigid holds for every choice
+/// of them only if nothing outside it that lives on reaches one: a binding
+/// it reads or writes from outside (its lambdas' captures included), or the
+/// instance a call in it makes, whose signature types that instance's
+/// bindings. Its own cells (a literal's, a lambda's) live only in it.
+fn check_general<R: Rt>(
+    ctx: &CompileCtx<R>,
+    quantified: &Quantified,
+    n: &Node<R>,
+    what: &str,
+) -> Result<()> {
+    let quantified: SmallVec<[(ArcStr, usize); 2]> =
+        quantified.iter().map(|(name, tv)| (name.clone(), tv.cell_addr())).collect();
+    let mut refs = Refs::default();
+    n.refs(&mut refs);
+    let mut free: SmallVec<[(Type, &str); 4]> = SmallVec::new();
+    let binding = "a binding it reaches";
+    refs.with_external_refs(|id| {
+        if let Some(b) = ctx.env.by_id.get(&id) {
+            free.push((b.typ.clone(), binding))
+        }
+    });
+    // a lambda's body is no child of its node: the bindings it reads
+    // and writes are its definition's captures
+    fusion::for_each_node(n, &mut |c| match c.view() {
+        NodeView::Lambda(l) => {
+            if let Some(d) = l.def_value().downcast_ref::<LambdaDef<R>>() {
+                d.captured_ids(&mut |id| {
+                    if let Some(b) = ctx.env.by_id.get(&id) {
+                        free.push((b.typ.clone(), binding))
+                    }
+                })
+            }
+        }
+        NodeView::CallSite(cs) => {
+            if let Some(ft) = &cs.ftype {
+                free.push((Type::Fn(ft.clone()), "the instance a call in it makes"))
+            }
+        }
+        _ => (),
+    });
+    for (t, through) in free.iter() {
+        wrap!(n, escapes_through(&quantified, t, what, through))?;
+    }
+    Ok(())
 }
 
 /// `f`'s parameter `name` as a call through `site` instantiates it: a
@@ -980,44 +1034,6 @@ fn callee_param<R: Rt>(
     inst.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
 }
 
-// CR claude for claude: [bug/high] A written quantified fn type checks the lambda it
-// holds with its quantifiers rigid, but only a call's argument is checked for a cell
-// outside the lambda that a quantifier reaches (polymorphic_in, escapes_through). A
-// let annotation, a struct field or an array element lets the quantifier escape:
-// `let y = never(); let h: fn<'a: Any>(x: 'a) -> 'a = |x| { y <- x; x }; let k:
-// fn(x: string) -> string = h; println(k("s")); println(y + 1)` passes --check and
-// its build refuses k("s") ("an instance at fn(x: string) -> string of a definition
-// typed fn(x: i64) -> 'a: i64"); in the REPL `p(1); p("s"); y + 1` runs and a string
-// reaches `y + 1` (rp2.txt). The same with `|x| (x, n)` over an outer `n` (v4),
-// inside a definition (d5, d6), in a struct field (w2) and through a module's use of
-// the parent's typedef (mt4, mt5); main a084f9887 the same. Fix: run
-// polymorphic_in/escapes_through wherever a written quantified fn type contains its
-// value (a let annotation, a field, an element, a return type), as a call does for
-// its formal. probes: ~/ptmp/cr29/scratch/review-r6/B2-r3-1/q/{w7,v4,d5,d6,w2}.gx,
-// mt4/main.gx, mt5/main.gx, rp2.txt (graphix --no-cache < rp2.txt)
-// (rank2-escape-01)
-// CR claude for claude: [bug/low] A rank-2 array element passed straight to a rank-2
-// formal is refused: `let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| x]; let f = |k:
-// fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s")); f(fs[0]$)` says "the argument is not
-// polymorphic in 'b: its type holds '_N, a variable of its environment, which would
-// carry 'b out", while `let e: T = fs[0]$; f(e)`, T the same written type, runs and
-// prints (1, "s") (main a084f9887 the same). probes:
-// ~/ptmp/cr29/scratch/review-r6/B2-r3-1/q/mt9.gx (refused), mt8.gx (runs)
-// (rank2-element-arg-01)
-/// An argument checked against a formal with quantifiers of its own
-/// holds for every choice of them only if none was aliased to a cell the
-/// argument does not own: a top-level variable or an enclosing
-/// definition's, which would carry the quantifier out.
-fn polymorphic_in(quantified: &[(ArcStr, usize)], arg: &Type) -> Result<()> {
-    if let Some((q, tv)) = carried_out(quantified, arg) {
-        bail!(
-            "the argument is not polymorphic in '{q}: its type holds {tv}, a variable \
-             of its environment, which would carry '{q} out"
-        )
-    }
-    Ok(())
-}
-
 /// The cells of the quantifiers a function type under `t` binds.
 pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
     let mut out = AHashSet::new();
@@ -1027,9 +1043,14 @@ pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
     out
 }
 
-/// A binding the argument reads or writes holds none of the formal's
-/// quantifiers: its cell would carry the quantifier out.
-fn escapes_through(quantified: &[(ArcStr, usize)], env: &Type) -> Result<()> {
+/// A binding the value reads or writes, or an instance it makes, of type
+/// `env`, holds none of the quantifiers: its cell would carry one out.
+fn escapes_through(
+    quantified: &[(ArcStr, usize)],
+    env: &Type,
+    what: &str,
+    through: &str,
+) -> Result<()> {
     let own = bound_quantifiers(env);
     let mut reached = None;
     let mut seen = AHashSet::new();
@@ -1044,8 +1065,8 @@ fn escapes_through(quantified: &[(ArcStr, usize)], env: &Type) -> Result<()> {
     match reached {
         None => Ok(()),
         Some(q) => bail!(
-            "the argument is not polymorphic in '{q}: a binding it reaches, of type \
-             {}, would carry '{q} out",
+            "{what} is not polymorphic in '{q}: {through}, of type {}, would carry \
+             '{q} out",
             printed_deref(env)
         ),
     }

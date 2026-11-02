@@ -2577,6 +2577,14 @@ const RANK2_FIELD_WRITES_OUTER: &str = r#"{
     r
 }"#;
 
+// A call's argument made by a call carries the instance the call made: its
+// signature types that instance's bindings, which outlive the argument.
+const RANK2_ARG_OF_A_CALLS_INSTANCE: &str = r#"{
+    let mk = |z| |x| { z <- x; z };
+    let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+    apply(mk(never()))
+}"#;
+
 // Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
@@ -2734,6 +2742,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (RANK2_ARG_WRITES_THROUGH_A_REFERENCE, "not polymorphic in 'b"),
         (RANK2_ARG_NESTED_LAMBDA_WRITES_OUTER, "not polymorphic in 'b"),
         (RANK2_FIELD_WRITES_OUTER, "not polymorphic in 'b"),
+        (RANK2_ARG_OF_A_CALLS_INSTANCE, "the instance a call in it makes"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
@@ -6919,7 +6928,7 @@ run!(an_open_cell_prints_short, r#"
     Err(e) => {
         let msg = format!("{e:#}");
         msg.contains("is not polymorphic in 'b")
-            && msg.contains("its type holds '_")
+            && msg.contains("a binding it reaches, of type fn(x: '_")
             && cells_print_short(&msg)
     }
     Ok(_) => false,
@@ -7095,6 +7104,24 @@ run!(
         let h: fn(x: i64, y: i64) -> i64 = fs[0]$;
         let result = (h(1, 2), array::map(fs, |g| g(1.5, 2.5)))
     "#;
+    FuseExpect::None
+);
+
+// A rank-2 element passed to a rank-2 formal is polymorphic in it, as a
+// let annotated with the element's type passes it, and so is an array
+// literal of lambdas passed to a rank-2 element type: the cells a
+// literal or an index makes live only in the argument.
+run!(
+    rank2_element_passed_to_a_rank2_formal,
+    r#"{
+  type T = fn<'a: Any>(x: 'a) -> 'a;
+  let fs: Array<T> = [|x| x];
+  let f = |k: fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s"));
+  let e: T = fs[0]$;
+  let each = |ks: Array<T>| array::map(ks, |k| f(k));
+  (f(fs[0]$), f(e), array::map(fs, |k| f(k)), each([|x| x]))
+}"#,
+    prints(r#"[[i64:1, "s"], [i64:1, "s"], [[i64:1, "s"]], [[i64:1, "s"]]]"#);
     FuseExpect::None
 );
 
