@@ -621,7 +621,7 @@ fn quantified_formal(
     env: &Env,
     typ: &Type,
 ) -> Option<(Type, LPooled<Vec<RigidGate>>, Quantified)> {
-    if !typ.holds_quantified_fn(env) {
+    if !typ.may_hold_quantified_fn(env) {
         return None;
     }
     let mut quantified = Quantified::new();
@@ -927,6 +927,13 @@ fn typecheck_arg<R: Rt>(
     }
 }
 
+// CR claude for claude: [perf/low] The quick test (Type::may_hold_quantified_fn) at each
+// written holder walks the typedef graph its written type reaches once per holder: a
+// gui definition written `-> Widget` walks Widget's every member, so the GUI examples'
+// --check costs about 1.5% more instructions than before the holders were checked
+// (~/ptmp/cr29/guicheck.sh: main a084f9887 91.47G, lane 92.82G). A verdict per
+// definition, kept where every name its body reaches is resolved and no definition
+// in progress was met, would make each walk one lookup. (quantified-quick-test-01)
 /// `contain` the value `n` in `holder`, a written type. Where the type
 /// holds quantified function types it is expanded to them, their
 /// quantifiers held rigid, for the containment (a mismatch shows

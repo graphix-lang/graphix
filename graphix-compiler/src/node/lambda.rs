@@ -1474,21 +1474,24 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     wrap!(self.body, self.body.typecheck0_instance(ctx, &mut types))
                 }
                 None => {
+                    // an unwritten result is a cell the body binds
+                    let written = !matches!(&self.typ.rtype, Type::TVar(_));
                     let body = &mut self.body;
                     let res =
                         super::rechecking_instance(recheck, || body.typecheck0(ctx));
                     wrap!(self.body, res)?;
                     let body = self.body.typ().clone();
                     let contain = |t: &Type| t.check_contains_rigid(&ctx.env, &body);
-                    wrap!(
-                        self.body,
-                        super::callsite::contain_generally(
-                            ctx,
-                            &self.typ.rtype,
-                            &self.body,
-                            contain
-                        )
-                    )?;
+                    let rtype = &self.typ.rtype;
+                    match written {
+                        true => wrap!(
+                            self.body,
+                            super::callsite::contain_generally(
+                                ctx, rtype, &self.body, contain
+                            )
+                        )?,
+                        false => wrap!(self.body, contain(rtype))?,
+                    }
                     let top = self.body.spec().id;
                     wrap!(
                         self.body,
