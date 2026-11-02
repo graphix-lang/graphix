@@ -2827,6 +2827,68 @@ const RANK2_TRANSPARENT_WRITES_OUTER: &str = r#"{
     (h(1), h("s"), y + 1)
 }"#;
 
+// A constructor's payload bounds its parameter's cell from below, so a
+// write of `W(x)` carries the quantifier out as a write of `x` does.
+const RANK2_LET_WRITES_OUTER_CONSTRUCTED: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| { y <- W(x); x };
+    (f(1), f("s"), y.0 + 1)
+}"#;
+
+const RANK2_FIELD_WRITES_OUTER_CONSTRUCTED: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let s: {f: fn<'a: Any>(x: 'a) -> 'a} = {f: |x| { y <- W(x); x }};
+    (s.f(1), s.f("s"), y.0 + 1)
+}"#;
+
+const RANK2_RETURN_TYPE_WRITES_OUTER_CONSTRUCTED: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let mk = |z: i64| -> fn<'a: Any>(x: 'a) -> 'a |x| { y <- W(x); x };
+    let h = mk(0);
+    (h(1), h("s"), y.0 + 1)
+}"#;
+
+const RANK2_LET_WRITES_OUTER_TRANSPARENT: &str = r#"{
+    let y = never();
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| { y <- Transparent(x); x };
+    (f(1), f("s"), y.0 + 1)
+}"#;
+
+// A holder of the function itself binds its quantifier only inside the
+// function's type: the bare quantifier beside it is carried out.
+const RANK2_LET_REC_WRITES_ITSELF_BESIDE_ITS_QUANTIFIER: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let u = never();
+    let rec f: fn<'a: Any>(x: 'a) -> 'a = |x| { u <- (W(f), x); x };
+    (f(1), f("s"), u.1 + 1)
+}"#;
+
+const RANK2_LET_REC_CONSTRUCTS_ITSELF_BESIDE_ITS_QUANTIFIER: &str = r#"{
+    type P<'s, 't> = Abstract<('s, 't)>;
+    let z = never();
+    let rec f: fn<'a: Any>(x: 'a) -> 'a = |x| { z <- P((f, x)); x };
+    (f(1), f("s"), z.0.1 + 1)
+}"#;
+
+const RANK2_CONNECT_WRITES_A_HOLDER_BESIDE_ITS_QUANTIFIER: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+    let y = W(f);
+    let u = never();
+    f <- |x| { u <- (y, x); x };
+    (f(1), f("s"), u.1 + 1)
+}"#;
+
+const RANK2_CONNECT_TRANSPARENT_ITSELF_BESIDE_ITS_QUANTIFIER: &str = r#"{
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+    let z = never();
+    f <- |x| { z <- Transparent({g: f, v: x}); x };
+    (f(1), f("s"), z.0.v + 1)
+}"#;
+
 // Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
@@ -3018,6 +3080,29 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
             "the value is not polymorphic in 'a",
         ),
         (RANK2_TRANSPARENT_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_LET_WRITES_OUTER_CONSTRUCTED, "is 'a, would carry 'a out"),
+        (RANK2_FIELD_WRITES_OUTER_CONSTRUCTED, "the value is not polymorphic in 'a"),
+        (
+            RANK2_RETURN_TYPE_WRITES_OUTER_CONSTRUCTED,
+            "the value is not polymorphic in 'a",
+        ),
+        (RANK2_LET_WRITES_OUTER_TRANSPARENT, "is 'a, would carry 'a out"),
+        (
+            RANK2_LET_REC_WRITES_ITSELF_BESIDE_ITS_QUANTIFIER,
+            "the value is not polymorphic in 'a",
+        ),
+        (
+            RANK2_LET_REC_CONSTRUCTS_ITSELF_BESIDE_ITS_QUANTIFIER,
+            "the value is not polymorphic in 'a",
+        ),
+        (
+            RANK2_CONNECT_WRITES_A_HOLDER_BESIDE_ITS_QUANTIFIER,
+            "the value is not polymorphic in 'a",
+        ),
+        (
+            RANK2_CONNECT_TRANSPARENT_ITSELF_BESIDE_ITS_QUANTIFIER,
+            "the value is not polymorphic in 'a",
+        ),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
@@ -7551,6 +7636,30 @@ run!(
     prints(
         r#"[[i64:1, "s"], [i64:2, "t"], [[i64:1, i64:5], ["u", i64:5]], [i64:1, "v", i64:7], [i64:3, "w"], [i64:4, "x"], [i64:1, "y"], [i64:1, "z", i64:2, "q"]]"#
     );
+    FuseExpect::None
+);
+
+// A quantified function a constructor holds keeps its own quantifiers: a
+// value of its type reading that holder is general in them, through an
+// abstract type, Transparent, a struct and a recursive binding alike.
+run!(
+    rank2_holder_of_the_function_itself_is_general,
+    r#"{
+  type W<'t> = Abstract<'t>;
+  let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+  let y = W(f);
+  f <- |x| { let q = y; x };
+  let g: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+  let z = Transparent(g);
+  g <- |x| { let q = z; x };
+  let s: {f: fn<'a: Any>(x: 'a) -> 'a} = {f: |x| x};
+  let w = W(s);
+  s <- {f: |x| { let q = w; x }};
+  let u = never();
+  let rec k: fn<'a: Any>(x: 'a) -> 'a = |x| { u <- W(k); x };
+  (f(1), f("s"), g(2), g("t"), s.f(3), s.f("v"), k(4), k("w"))
+}"#,
+    prints(r#"[i64:1, "s", i64:2, "t", i64:3, "v", i64:4, "w"]"#);
     FuseExpect::None
 );
 

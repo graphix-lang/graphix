@@ -1139,10 +1139,12 @@ node graph IS the IR — there is no parallel typed IR
   constructor's payload; the function whose result holds it) carries
   `'b` into nothing that outlives it: no binding it reads or writes from
   outside, its lambdas' captures included, and no instance a call in it
-  makes reaches `'b` (`callsite::check_general`, `contain_generally`;
-  what the function whose result holds it shares across its own calls is
-  not judged: CR rank2-result-maker-01, nor what an outer cell holds as
-  a lower bound: CRs rank2-escape-01, rank2-rigid-lower-01);
+  makes reaches `'b`, through bindings and an open cell's lower bounds,
+  outside a function type there that quantifies `'b` itself
+  (`callsite::check_general`, `contain_generally`; what the function
+  whose result holds it shares across its own calls is not judged: CR
+  rank2-result-maker-01, nor what an outer cell holds as a lower bound:
+  CR rank2-rigid-lower-01);
   while a call
   checks its argument against the
   formal, `'b` is one type, which no definition in the argument

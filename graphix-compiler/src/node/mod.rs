@@ -3257,6 +3257,24 @@ impl<R: Rt> Connect<R> {
         if !check {
             return Ok(());
         }
+        // CR claude for claude: [bug/medium] A value held through its monomorphic copy
+        // (CompileCtx::monomorphic: a connect, `*r <-`, a let of a binding something
+        // writes, a REPL write to a generic binding) is contained by a written quantified
+        // type as that copy, while callsite::check_general walks what the original reaches:
+        // where the original's cells stay generic, as a collection HOF's callback's do,
+        // the quantifier merges with the copy's cell and no binding outside reaches it.
+        // `type W<'t> = Abstract<'t>; let y = never(); let f: fn<'a: Any>(x: 'a) -> 'a =
+        // |x| x; f <- |x| { y <- array::map([x], |e| W(e)); x }` passes --check and the
+        // run-time bind refuses f("s") (map_conn; the same through `*r <-` map_deref,
+        // filter_map fm_conn, list::map lmap_conn, a named constructor mapn_conn,
+        // Transparent mapt_conn, a let of a binding a later `<-` writes map_let_w, the REPL
+        // h5.txt); the let of an unwritten binding (map_let) and a direct call (`y <-
+        // mk(x)`) are refused; graphix-fuzz check says AGREE, so the fuzzer cannot see it.
+        // Main bbb06c0c6 the same. Fix: check_general judges the cells of the copy the
+        // containment held, or the copy shares the cells the original's body reaches
+        // outside it. probes: ~/ptmp/cr29/scratch/review-r7/B5-r4-1/i1c/{map_conn,
+        // map_deref,fm_conn,lmap_conn,mapn_conn,mapt_conn}.gx, repl/h5.txt,
+        // ~/ptmp/cr29/scratch/r8-R/map_let_w.gx (rank2-escape-hof-01)
         let written = &ctx.monomorphic(self.node.typ());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),

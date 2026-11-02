@@ -293,13 +293,14 @@ update's field, a return type, a labeled default, a constructor's
 payload, an abstract type's parameter, a function type's result):
 nothing outside the
 value that outlives it, a binding it reads or writes or a call's
-instance, reaches a quantifier (`callsite::check_general`,
-`contain_generally`). Right site: the value. Open: what the function
-whose result holds the quantifier shares across its own calls (a let of
-its body the function it makes captures), CR rank2-result-maker-01; a
-quantifier an outer cell holds as a lower bound (`y <- W(x)`), CR
-rank2-escape-01; a written type in the value naming an enclosing
-definition's variable (`let q: W<'c> = W(x)`), CR rank2-rigid-lower-01.
+instance, reaches a quantifier, through bindings and an open cell's
+lower bounds (`y <- W(x)`), outside a function type there that
+quantifies it (`callsite::check_general`, `contain_generally`). Right
+site: the value. Open: what the function whose result holds the
+quantifier shares across its own calls (a let of its body the function
+it makes captures), CR rank2-result-maker-01; a written type in the
+value naming an enclosing definition's variable (`let q: W<'c> =
+W(x)`), CR rank2-rigid-lower-01.
 
 ## Labeled and optional arguments across the fuzzer
 

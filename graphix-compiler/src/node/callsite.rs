@@ -984,7 +984,7 @@ pub(crate) fn contain_generally<R: Rt>(
     }
 }
 
-// CR claude for claude: [bug/high] A written quantified fn type checks the lambda it
+// XCR claude for claude: [bug/high] A written quantified fn type checks the lambda it
 // holds with its quantifiers rigid, but only a call's argument is checked for a cell
 // outside the lambda that a quantifier reaches (polymorphic_in, escapes_through). A
 // let annotation, a struct field or an array element lets the quantifier escape:
@@ -1086,6 +1086,26 @@ pub(crate) fn contain_generally<R: Rt>(
 // (B5-r4-1/i1c/map_conn.gx, map_deref, fm_conn, lmap_conn, mapn_conn, mapt_conn;
 // repl/h5.txt). A quantifier carried into a constraint is rank2-escape-constraint-01,
 // a written type in the value rank2-rigid-lower-01.
+// 2026-11-02 claude: Round 8 lane R: the escape walk (callsite::reaches_cell over
+// Reach) follows an open cell's lower bounds as it follows a binding, so y <- W(x)
+// carries the quantifier out at a let, a field, a written return type and through
+// Transparent (lb1 lb4 lb6-lb15 refused, lb5 as before; ov1-ov3 still check). A
+// quantifier counts as bound only under a function type quantifying it, positionally:
+// one walk collects the cells and the quantified function types, and each asked cell
+// met that some function type there quantifies gets one more walk that enters no
+// function type quantifying it, so the cost is linear in the type per such cell,
+// never per path or per set of binders (cr44-B's scope-keyed walk was 2^depth).
+// carried_out uses the same walk; its second walk shares one seen set. Pins: the
+// RANK2_*_CONSTRUCTED, RANK2_LET_WRITES_OUTER_TRANSPARENT and four
+// *_BESIDE_ITS_QUANTIFIER cases of lang::types::unsound_acceptances_are_refused (the
+// test fails with main's walk),
+// lang::types::rank2_holder_of_the_function_itself_is_general (no over-refusal),
+// node::callsite::test::escapes_through_skips_a_quantifier_only_under_its_binder
+// (fails with main's walk) and escape_walk_is_linear_in_each_asked_quantifier (fails
+// with main's walk on the beside case and with the scope-keyed walk on its step
+// bound, 203 s). The HOF shape of the last note (map_conn and kin) is not this
+// walk's: the connect contains the value's monomorphic copy; new CR
+// rank2-escape-hof-01.
 // CR claude for eric: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing
@@ -1220,66 +1240,139 @@ pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
 // names. probes: ~/ptmp/cr29/scratch/review-r7/B5-r1-1/i1/{k_constr,k_constr3,
 // k_constr4,k_constr_r1}.gx, fz/fz_constr.gx (rank2-escape-constraint-01)
 /// A binding the value reads or writes, or an instance it makes, of type
-/// `env`, holds none of the quantifiers: its cell would carry one out.
+/// `env`, holds none of the quantifiers outside a function type there that
+/// quantifies it: its cell would carry one out.
 fn escapes_through(
     quantified: &[(ArcStr, usize)],
     env: &Type,
     what: &str,
     through: &str,
 ) -> Result<()> {
-    let own = bound_quantifiers(env);
+    let quantifies = |c: &TVar| quantified.iter().find(|(_, a)| *a == c.cell_addr());
     let mut reached = None;
-    let mut seen = AHashSet::new();
-    reaches_cell(env, &mut seen, &mut |c| {
-        if own.contains(&c.cell_addr()) {
-            return;
-        }
-        if let Some((q, _)) = quantified.iter().find(|(_, a)| *a == c.cell_addr()) {
-            reached = Some(q.clone())
+    reaches_cell(env, |c| quantifies(c).is_some(), &mut |c, bound| {
+        if !bound
+            && reached.is_none()
+            && let Some((q, _)) = quantifies(c)
+        {
+            reached = Some((q.clone(), c.clone()))
         }
     });
     match reached {
         None => Ok(()),
-        Some(q) => bail!(
-            "{what} is not polymorphic in '{q}: {through}, of type {}, would carry \
-             '{q} out",
-            printed_deref(env)
-        ),
+        Some((q, c)) => {
+            let named = match c.name == q {
+                true => format_compact!(""),
+                false => format_compact!(", where {c} is '{q}"),
+            };
+            bail!(
+                "{what} is not polymorphic in '{q}: {through}, of type {}{named}, would \
+                 carry '{q} out",
+                printed_deref(env)
+            )
+        }
     }
 }
 
-/// Every cell under `t`, following bindings, each once: a cell `seen`
-/// holds is not visited, nor a shared node walked already.
-fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar)) {
+/// A walk of the cells under a type, following bindings and an open
+/// cell's lower bounds (what it will bind to holds them), each cell and
+/// shared node once.
+#[derive(Default)]
+struct Reach {
+    seen: LPooled<AHashSet<usize>>,
+}
+
+impl Reach {
+    /// Walk `t`, handing `f` each cell until it answers stop, entering no
+    /// function type `cut` refuses; whether `f` stopped it.
     fn go(
+        &mut self,
         t: &Type,
-        seen: &mut AHashSet<usize>,
-        nodes: &mut AHashSet<usize>,
-        f: &mut impl FnMut(&TVar),
-    ) {
+        cut: &mut impl FnMut(&Type) -> bool,
+        f: &mut impl FnMut(&TVar) -> bool,
+    ) -> bool {
         #[cfg(test)]
         RANK2_STEPS.with(|n| n.set(n.get() + 1));
         ensure_sufficient(|| match t {
             Type::TVar(tv) => {
-                if seen.insert(tv.cell_addr()) {
-                    f(tv);
-                    if let Some(b) = tv.binding() {
-                        go(&b, seen, nodes, f)
-                    }
+                if !self.seen.insert(tv.cell_addr()) {
+                    return false;
+                }
+                if f(tv) {
+                    return true;
+                }
+                match tv.binding() {
+                    Some(b) => self.go(&b, cut, f),
+                    None => tv.cell_lower().iter().any(|l| self.go(l, cut, f)),
                 }
             }
-            t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
-            t => t.for_each_child(&mut |c| go(c, seen, nodes, f)),
+            t if t.shared_identity().is_some_and(|n| !self.seen.insert(n)) => false,
+            Type::Fn(_) if cut(t) => false,
+            t => {
+                let mut stop = false;
+                t.for_each_child(&mut |c| stop = stop || self.go(c, cut, f));
+                stop
+            }
         })
     }
-    go(t, seen, &mut LPooled::take(), f)
+}
+
+/// Every cell under `t` as [`Reach`] walks it, with whether it is bound
+/// there: a function type quantifying it stands on every path to it. Told
+/// only of the cells `asked` picks; any other reads free. One walk, and one
+/// more for each asked cell met that a function type there quantifies,
+/// which enters no function type quantifying that cell.
+fn reaches_cell(
+    t: &Type,
+    asked: impl Fn(&TVar) -> bool,
+    f: &mut impl FnMut(&TVar, bool),
+) {
+    let mut quantified: LPooled<Vec<Type>> = LPooled::take();
+    let mut met: LPooled<Vec<TVar>> = LPooled::take();
+    let mut note = |fnt: &Type| {
+        if matches!(fnt, Type::Fn(ft) if !ft.quantifiers.is_empty()) {
+            quantified.push(fnt.clone())
+        }
+        false
+    };
+    Reach::default().go(t, &mut note, &mut |tv| {
+        met.push(tv.clone());
+        false
+    });
+    let mut binders: LPooled<AHashMap<usize, SmallVec<[usize; 2]>>> = LPooled::take();
+    let mut bound_somewhere: LPooled<AHashSet<usize>> = LPooled::take();
+    if met.iter().any(|tv| asked(tv)) {
+        for fnt in quantified.iter() {
+            let (Type::Fn(ft), Some(n)) = (fnt, fnt.shared_identity()) else { continue };
+            let mut own: SmallVec<[usize; 2]> = SmallVec::new();
+            ft.each_quantifier(|_, tv| {
+                if asked(tv) {
+                    own.push(tv.cell_addr())
+                }
+            });
+            bound_somewhere.extend(own.iter().copied());
+            binders.insert(n, own);
+        }
+    }
+    for tv in met.iter() {
+        let addr = tv.cell_addr();
+        let mut binds = |fnt: &Type| {
+            fnt.shared_identity()
+                .and_then(|n| binders.get(&n))
+                .is_some_and(|own| own.contains(&addr))
+        };
+        let bound = bound_somewhere.contains(&addr)
+            && asked(tv)
+            && !Reach::default().go(t, &mut binds, &mut |c| c.cell_addr() == addr);
+        f(tv, bound)
+    }
 }
 
 /// The first of the `quantified` cells (name, cell address) that a
 /// variable of `value`'s environment reaches, with that variable: a
 /// cell at the top level or another definition's, never one the
-/// lambdas `value` holds own nor a quantifier a function type in `value`
-/// binds. Such a value is not general in that cell.
+/// lambdas `value` holds own nor a quantifier under a function type in
+/// `value` that binds it. Such a value is not general in that cell.
 pub(crate) fn carried_out(
     quantified: &[(ArcStr, usize)],
     value: &Type,
@@ -1288,22 +1381,26 @@ pub(crate) fn carried_out(
         Some(Type::Fn(ref aft)) => aft.lambda_ids.ids().iter().copied().collect(),
         _ => SmallVec::new(),
     };
-    let bound = bound_quantifiers(value);
+    let is_foreign = |tv: &TVar| match tv.level() {
+        Level::Top => true,
+        Level::Def { owner, .. } => !own.contains(&owner),
+        Level::Generic | Level::Written => false,
+    };
     let mut foreign: SmallVec<[TVar; 4]> = SmallVec::new();
-    reaches_cell(value, &mut AHashSet::new(), &mut |tv| match tv.level() {
-        _ if bound.contains(&tv.cell_addr()) => (),
-        Level::Top => foreign.push(tv.clone()),
-        Level::Def { owner, .. } if !own.contains(&owner) => foreign.push(tv.clone()),
-        Level::Def { .. } | Level::Generic | Level::Written => (),
+    reaches_cell(value, is_foreign, &mut |tv, bound| {
+        if !bound && is_foreign(tv) {
+            foreign.push(tv.clone())
+        }
     });
+    // what an earlier variable's walk met reaches none of the cells
+    let mut reach = Reach::default();
     foreign.into_iter().find_map(|tv| {
         let mut reached = None;
-        reaches_cell(&Type::TVar(tv.clone()), &mut AHashSet::new(), &mut |c| {
-            if let Some((q, _)) = quantified.iter().find(|(_, a)| *a == c.cell_addr()) {
-                reached = Some(q.clone())
-            }
+        reach.go(&Type::TVar(tv.clone()), &mut |_| false, &mut |c| {
+            reached = quantified.iter().find(|(_, a)| *a == c.cell_addr());
+            reached.is_some()
         });
-        reached.map(|q| (q, tv))
+        reached.map(|(q, _)| (q.clone(), tv))
     })
 }
 
@@ -4718,6 +4815,78 @@ mod test {
         RANK2_STEPS.with(|n| n.set(0));
         assert!(carried_out(&[], &t).is_none());
         assert!(RANK2_STEPS.with(|n| n.get()) <= 2 * (2 * 25 + 2));
+    }
+
+    /// `fn<'b: Any>(x: ('b, i64)) -> 'b`, its quantifier's cell and the
+    /// tuple node its parameter is.
+    fn quantified_holding_a_node() -> (Type, (ArcStr, usize), Type) {
+        let g = parse_type("fn<'b: Any>(x: ('b, i64)) -> 'b").unwrap();
+        let Type::Fn(ft) = &g else { panic!("{g}") };
+        let mut q = None;
+        ft.each_quantifier(|name, tv| q = Some((name.clone(), tv.cell_addr())));
+        let node = ft.args[0].typ.clone();
+        (g.clone(), q.unwrap(), node)
+    }
+
+    // A quantifier is bound only under the function type that quantifies it:
+    // beside it, the same cell, or a node it shares holding it, carries it out.
+    #[test]
+    fn escapes_through_skips_a_quantifier_only_under_its_binder() {
+        let (g, q, node) = quantified_holding_a_node();
+        let i64 = Type::Primitive(Typ::I64.into());
+        let check = |parts: [Type; 2]| {
+            escapes_through(&[q.clone()], &Type::Tuple(TArc::from_iter(parts)), "v", "b")
+        };
+        assert!(check([g.clone(), i64]).is_ok());
+        assert!(check([g.clone(), node]).is_err());
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        g.reached_cells(&mut cells);
+        assert_eq!(cells.len(), 1);
+        let bare = Type::TVar(cells.values().next().unwrap().clone());
+        assert!(check([g, bare]).is_err());
+    }
+
+    /// `n` levels over `i64`, each `(fn<'a: Any>(x: 'a) -> ('a, L),
+    /// fn<'b: Any>(x: 'b) -> ('b, L))` with quantifiers of its own and `L`
+    /// the level below, one node in each function's result.
+    fn quantified_result_pairs(n: usize) -> Type {
+        let mut t = Type::Primitive(Typ::I64.into());
+        for _ in 0..n {
+            let over = |src: &str| {
+                let Type::Fn(ref ft) = parse_type(src).unwrap() else { panic!("{src}") };
+                let Type::Tuple(ref parts) = ft.rtype else { panic!("{src}") };
+                let rtype = Type::Tuple(TArc::from_iter([parts[0].clone(), t.clone()]));
+                Type::Fn(TArc::new(FnType { rtype, ..FnType::clone(ft) }))
+            };
+            t = Type::Tuple(TArc::from_iter([
+                over("fn<'a: Any>(x: 'a) -> ('a, i64)"),
+                over("fn<'b: Any>(x: 'b) -> ('b, i64)"),
+            ]));
+        }
+        t
+    }
+
+    // Asked of every quantifier a DAG of quantified function types holds,
+    // each under its own binder, the escape walk walks the DAG once, and
+    // once more for each quantifier, never once per path or per set of
+    // binders around a node (2^16 here).
+    #[test]
+    fn escape_walk_is_linear_in_each_asked_quantifier() {
+        let n = 16;
+        let t = quantified_result_pairs(n);
+        let (_, gates, quantified) =
+            quantified_formal(&Env::default(), &t).expect("a quantified formal");
+        drop(gates);
+        assert_eq!(quantified.len(), 2 * n);
+        let q: SmallVec<[(ArcStr, usize); 2]> =
+            quantified.iter().map(|(n, tv)| (n.clone(), tv.cell_addr())).collect();
+        RANK2_STEPS.with(|n| n.set(0));
+        assert!(escapes_through(&q, &t, "v", "b").is_ok());
+        let steps = RANK2_STEPS.with(|n| n.get());
+        assert!(steps <= (2 * n + 1) * 16 * n, "{steps}");
+        let bare = Type::TVar(quantified[0].1.clone());
+        let beside = Type::Tuple(TArc::from_iter([t, bare]));
+        assert!(escapes_through(&q[..1], &beside, "v", "b").is_err());
     }
 
     // A formal holding no quantified function is not walked, a chain of
