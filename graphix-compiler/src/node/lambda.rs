@@ -1841,6 +1841,28 @@ impl<R: Rt> GXLambda<R> {
     // 2026-11-02 claude: Readdressed to eric: the next cut that moves the measured cost
     // is the throws-cell rule in the note above, a checker change; the closed-definition
     // sharing beside it moves a closed definition alone.
+    // 2026-11-02 claude: Corrects the 11-02 lane N note above (review r8, N-r1-2).
+    // Closing the throws cell removes the fresh cell alone (TVar::freshen, 200+56 B):
+    // activation_heap's exact count gives 5143 B an activation for `-> i64 throws _`
+    // against 5399 B for the open definition (256 B), as DHAT's per-site diff and the
+    // LD_PRELOAD peak-heap slopes (about 260 B) say. The closed definition still copies,
+    // once per activation, the fnode Ref's table row (InstanceTypes::instance_of ->
+    // Type::instantiate_memo, 176 B) and its LambdaIds (72 B), on the open one's call
+    // chain, so it holds about 912 B of instantiated types (instance_type 176, the row
+    // copy 176+72, the call site's ftype 176+72, the static target 176+64), not 664. The
+    // 4895 B (504 B less) the note gave is 5143 less that row copy and its LambdaIds, so
+    // it was measured with the row share in place: that share does move a closed
+    // definition (248 B) and nothing in the open one, whose row holds the open cell;
+    // 'moved neither program' was wrong. The sharing rule the note proposed is withdrawn:
+    // LambdaIds::instantiate copies so that what later unifies with an instance lands on
+    // the copy and never reaches the definition's node (graphix-types typ/fntyp.rs), and
+    // a link a later unify makes into a shared node (a run-time bind's settle, a dynamic
+    // call, a later REPL input) would reach the definition and every other instance; I
+    // have no argument that none is made. So the throws-cell checker rule is worth 256 B
+    // an activation (about 5%), and sharing a closed definition's function types (up to
+    // about 850 B more: four Fn copies and two LambdaIds) waits on a LambdaIds rule
+    // someone can justify. Evidence: ~/ptmp/cr29/scratch/review-r8/N-r1-2/{dhat,shim};
+    // this measurement ~/ptmp/cr29/scratch/r8-N/activation_heap_closed.txt.
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
