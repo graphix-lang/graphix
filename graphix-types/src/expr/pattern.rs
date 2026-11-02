@@ -635,6 +635,16 @@ fn slice_type(list: bool, elem: Type) -> Type {
 // its program). Review B5-r1-2 (low): both walks now ask Unfolded::first before
 // building an application's expansion (the name resolved first, so its key is its
 // definition's). Probes ~/ptmp/cr29/scratch/review-r7/B5-r1-1/i4/.
+// 2026-11-02 claude: Review B5-r3-1 (low): the change also moves a refusal's message
+// over a named-union DAG: a select short of exhaustive lists only what the pool leaves
+// out, where main 8beb0735a also lists a member the arms cover (u5: main 'no arm covers
+// [(bool, bool), `A(P), `B(L)]', now 'no arm covers [`A(P), `B(L)]'). Pinned by
+// lang::select::missing_cases_over_a_union_names_reach_leave_a_covered_member_out
+// (fails with union_members expanding every name each time). `B(L) stays in both: the
+// pool joins no tuple's bool heads with a variant head in one payload union, so `B((_,
+// true)), `B((_, false)), `B(`A(_)) do not cover `B(L) (inline types alike, main the
+// same; u5inl.gx, u5nam.gx in ~/ptmp/cr29/scratch/r7-B/r4/), left with the parked pool
+// work.
 /// The concrete members of `t`: bound tvars dereferenced, aliases
 /// expanded, unions flattened, in the order first met; an application met
 /// again adds nothing, its members are in already. An unbound tvar

@@ -5794,6 +5794,26 @@ run!(
     FuseExpect::None
 );
 
+// Short of exhaustive over such a union, the refusal leaves out `P`, which
+// three names reach and the first two arms cover. (`B(L)` stays: the pool
+// joins no tuple heads with a variant head in one payload.)
+run!(
+    missing_cases_over_a_union_names_reach_leave_a_covered_member_out,
+    r#"{
+        type P = (bool, bool);
+        type L = [P, `A(P)];
+        type M = [L, `B(L)];
+        type U = [M, L, `C(M)];
+        let v: U = `B(`A((true, false)));
+        select v {
+            (true, _) => 1, (false, _) => 2, `A((true, _)) => 3,
+            `B((_, true)) => 5, `B((_, false)) => 6, `B(`A(_)) => 7, `C(_) => 8
+        }
+    }"#,
+    refused("missing match cases: no arm covers [`A(P), `B(L)]");
+    FuseExpect::None
+);
+
 run!(
     literal_pool_over_a_bounded_variable_misses_a_head,
     r#"{
