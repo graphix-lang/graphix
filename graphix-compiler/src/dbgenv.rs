@@ -27,6 +27,30 @@ dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
 // native_interpolates_a_bind_over_a_bounded_variable_at_one_member, is on the parked
 // branch cr35-E (5dbc36a34), not on main;
 // literal_pool_over_a_bounded_variable_counts_its_bound shows the failure here.
+// 2026-11-01 claude: Partly fixed (lane E, r6G): an instance whose body
+// GRAPHIX_NO_SUBST checks again sets CompileCtx::instance_recheck around that check
+// (lambda.rs, the Typing::Substituted branch with no types), and Select::typecheck0
+// then judges no coverage, dead arms or guards (checking false, as an instance's
+// typecheck0_instance already does); the default path never sets it. The probe ns.gx
+// prints ("ga 3", "gn") under the flag (main a084f9887 refuses it 'unreachable arm'),
+// and under the flag lang::select + lang::types go from 14 failing tests (x4 modes)
+// to 7. Still failing, so this stays a CR:
+// literal_pool_over_a_bounded_variable_counts_its_bound. In h's instance at (bool,
+// i64) the arm 'i64 as n => n * 10' is unreachable; it is no longer refused, but its
+// bind n is narrowed to what reaches it, [] (narrow_pattern of nothing), and 'n * 10'
+// is refused 'cannot compute [] * i64'. It needs the select's arm loop
+// (typecheck0_with) to bind an arm nothing reaches at ⊥, or to leave its body the
+// definition's types, which is select narrowing this round leaves alone; the same []
+// would meet a default-path instance whose select has no aux row (a shared id), which
+// checks with checking false too. The other six under the flag are the instance's own
+// check judging the caller's types (design/tvar_constraints.md, Settling):
+// generic_select_telling_quantifier_bound_told (string does not contain [string,
+// &i64]), generic_slice_binds_beside_keep_check (`Keep(i64) does not contain [i64,
+// `Keep(i64)]), partial_struct_empty_cells_a_definition_returns_are_one_member ({ a,
+// .. } matches more than one member), cast_of_a_reference_beside_a_filled_application
+// and cast_of_a_reference_in_an_instance (can't cast a reference),
+// union_bound_open_cell_accepts ($ on i64). Lists:
+// ~/ptmp/cr29/scratch/r6-E/r6G/nosubst_before.txt, nosubst_after.txt.
 dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
 dbg_flag!(graphix_no_outline, "GRAPHIX_NO_OUTLINE");

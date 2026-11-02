@@ -1987,7 +1987,8 @@ impl<R: Rt> Update<R> for Select<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)?;
+        let checking = !ctx.instance_recheck;
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), checking)?;
         if self.flags.intersects(CFlag::SeqStep | CFlag::RunEvent) {
             return Ok(());
         }

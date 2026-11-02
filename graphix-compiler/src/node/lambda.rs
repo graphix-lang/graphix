@@ -1412,6 +1412,8 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
             // an instance's formals and return are its site's, which the
             // definition's check covers
             let types = self.instance_types(ctx)?;
+            let recheck =
+                types.is_none() && matches!(self.typing, Typing::Substituted(..));
             for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter())
             {
                 wrap!(arg, arg.typecheck0(ctx))?;
@@ -1425,7 +1427,11 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     wrap!(self.body, self.body.typecheck0_instance(ctx, &mut types))
                 }
                 None => {
-                    wrap!(self.body, self.body.typecheck0(ctx))?;
+                    let outer = ctx.instance_recheck;
+                    ctx.instance_recheck |= recheck;
+                    let res = self.body.typecheck0(ctx);
+                    ctx.instance_recheck = outer;
+                    wrap!(self.body, res)?;
                     let body = self.body.typ().clone();
                     wrap!(
                         self.body,
