@@ -7,8 +7,8 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AbstractId, AndAc, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
-        Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
-        node_addr, params_size, probe_key,
+        Mutability, NodePairs, NormKey, Open, ParamKey, RefHist, RefPair, TVar, TraitId,
+        Type, node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{
             CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cycle_toward,
@@ -112,9 +112,9 @@ pub(super) struct ContainsHist {
     /// `probe_pins`.
     commit_pairs: Lazy<AHashSet<(NormKey, NormKey, BitFlags<ContainsFlags>)>>,
     /// An id for each application [`Self::pair_key`] met, by its
-    /// definition and its parameters' identities, the application pinned
-    /// with `probe_pins`.
-    apps: Lazy<AHashMap<(usize, SmallVec<[usize; 2]>), usize>>,
+    /// definition and its parameters' keys, the application pinned with
+    /// `probe_pins`.
+    apps: Lazy<AHashMap<(usize, SmallVec<[ParamKey; 2]>), usize>>,
     /// The questions in progress on this path, answered by assumption
     /// when met again.
     in_progress: SmallVec<[Question; 4]>,
@@ -276,14 +276,14 @@ impl ContainsHist {
     }
 
     /// The key a committed pair is held under: a node's identity, or an
-    /// application's definition and its parameters' identities, since an
-    /// expansion builds its applications anew and two of one definition
-    /// over the same parameters are one type.
+    /// application's definition and its parameters' keys
+    /// ([`Type::param_key`]), since an expansion builds its applications
+    /// anew and two of one definition over the same parameters are one type.
     fn pair_key(&mut self, t: &Type) -> Option<NormKey> {
         let Type::Ref(tr) = t else { return probe_key(t) };
         let def = tr.def_key()?;
-        let params: SmallVec<[usize; 2]> =
-            tr.params.iter().map(|p| p.shared_identity()).collect::<Option<_>>()?;
+        let params: SmallVec<[ParamKey; 2]> =
+            tr.params.iter().map(Type::param_key).collect();
         let next = self.apps.get().map_or(0, |m| m.len());
         let id = match self.apps.get_mut().entry((def, params)) {
             Entry::Occupied(e) => *e.get(),
@@ -3558,27 +3558,50 @@ mod tests {
     // its applications anew, `P11<'a>` twice under each `P12<'a>`.
     #[test]
     fn an_expanded_chain_contains_its_application_once_per_level() {
-        let depth = 12;
-        let mut names = vec![String::from("P0<'a>")];
-        let mut bodies = vec![String::from("('a, i64)")];
-        for i in 1..=depth {
-            names.push(format!("P{i}<'a>"));
-            bodies.push(format!("(P{}<'a>, P{}<'a>)", i - 1, i - 1));
+        let steps = expanded_chain_steps(&["'a"], "('a, i64)", "");
+        assert!(steps <= 64 * CHAIN_DEPTH, "{steps} steps");
+    }
+
+    // And so where a parameter has no node identity: a primitive, `Any`,
+    // a map, each keyed by its content.
+    #[test]
+    fn an_expanded_chain_over_a_leaf_contains_its_application_once_per_level() {
+        for leaf in ["i64", "Any", "Map<string, i64>"] {
+            let steps = expanded_chain_steps(&["'a", "'c"], "('a, 'c)", leaf);
+            assert!(steps <= 64 * CHAIN_DEPTH, "{leaf}: {steps} steps");
+        }
+    }
+
+    const CHAIN_DEPTH: usize = 12;
+
+    /// The containment steps of `P0<params> = base; P1<params> =
+    /// (P0<params>, P0<params>); ..` to [`CHAIN_DEPTH`], expanded by hand
+    /// over a quantified function and `leaf` (when `params` has two),
+    /// against its application to them.
+    fn expanded_chain_steps(params: &[&str], base: &str, leaf: &str) -> usize {
+        let params = params.join(", ");
+        let mut names = vec![format!("P0<{params}>")];
+        let mut bodies = vec![String::from(base)];
+        for i in 1..=CHAIN_DEPTH {
+            names.push(format!("P{i}<{params}>"));
+            bodies.push(format!("(P{}<{params}>, P{}<{params}>)", i - 1, i - 1));
         }
         let defs: Vec<(&str, &str)> =
             names.iter().zip(bodies.iter()).map(|(n, b)| (&**n, &**b)).collect();
-        let app = format!("P{depth}<fn<'b: Number>(x: 'b) -> 'b>");
+        let (second, last) = match leaf {
+            "" => (String::new(), Type::Primitive(Typ::I64.into())),
+            leaf => (format!(", {leaf}"), parsed(leaf)),
+        };
+        let app = format!("P{CHAIN_DEPTH}<fn<'b: Number>(x: 'b) -> 'b{second}>");
         let (env, app) = Env::typed_at_root(&defs, &app).unwrap();
         let f = parsed("fn<'c: Number>(x: 'c) -> 'c");
-        let mut expanded =
-            Type::Tuple(Arc::from_iter([f, Type::Primitive(Typ::I64.into())]));
-        for _ in 0..depth {
+        let mut expanded = Type::Tuple(Arc::from_iter([f, last]));
+        for _ in 0..CHAIN_DEPTH {
             expanded = Type::Tuple(Arc::from_iter([expanded.clone(), expanded.clone()]));
         }
         CONTAINS_STEPS.with(|n| n.set(0));
         expanded.check_contains(&env, &app).unwrap();
-        let steps = CONTAINS_STEPS.with(|n| n.get());
-        assert!(steps <= 64 * depth, "{steps} steps");
+        CONTAINS_STEPS.with(|n| n.get())
     }
 
     fn parsed(s: &str) -> Type {

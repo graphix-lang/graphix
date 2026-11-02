@@ -35,7 +35,7 @@ use crate::{
     profile::{self, Phase},
     stack::ensure_sufficient,
     typ::{
-        ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
+        ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, ParamKey, TVar, Type,
         TypeMismatch,
         tvar::{Level, RigidGate},
     },
@@ -647,9 +647,9 @@ fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> 
 /// expansion held nothing, with the ones in progress it met there; each
 /// shared node of the walked type outside every expansion, and each
 /// application whose walk met none in progress, by its definition and its
-/// parameters' identities (the parameters held, so the identities stay
-/// theirs), with what its walk built and whether it met a quantifier; and
-/// the quantified function types met so far.
+/// parameters' keys (the parameters held, so the identities stay theirs:
+/// [`Type::param_key`]), with what its walk built and whether it met a
+/// quantifier; and the quantified function types met so far.
 #[derive(Default)]
 struct Expanding {
     stack: SmallVec<[usize; 4]>,
@@ -657,7 +657,7 @@ struct Expanding {
     clean: LPooled<AHashMap<usize, SmallVec<[usize; 2]>>>,
     nodes: LPooled<AHashMap<usize, (Option<Type>, bool)>>,
     apps: LPooled<
-        AHashMap<(usize, SmallVec<[usize; 2]>), (Option<Type>, bool, TArc<[Type]>)>,
+        AHashMap<(usize, SmallVec<[ParamKey; 2]>), (Option<Type>, bool, TArc<[Type]>)>,
     >,
     found: usize,
 }
@@ -736,15 +736,8 @@ fn rank2_parts(
                     None => None,
                     Some((key, _)) if bare && expanding.known_clean(key) => None,
                     Some((key, whole)) => {
-                        let app = tr
-                            .params
-                            .iter()
-                            .map(|p| p.shared_identity())
-                            .collect::<Option<SmallVec<[usize; 2]>>>()
-                            .map(|ps| (key, ps));
-                        if let Some((r, hit, _)) =
-                            app.as_ref().and_then(|a| expanding.apps.get(a))
-                        {
+                        let app = (key, tr.params.iter().map(Type::param_key).collect());
+                        if let Some((r, hit, _)) = expanding.apps.get(&app) {
                             expanding.found += usize::from(*hit);
                             return r.clone();
                         }
@@ -763,9 +756,7 @@ fn rank2_parts(
                             expanding.clean.insert(key, seen);
                         }
                         let r = found(expanding).then(|| r.unwrap_or(whole));
-                        if let Some(app) = app
-                            && expanding.met.len() == met
-                        {
+                        if expanding.met.len() == met {
                             let held = tr.params.clone();
                             let f = found(expanding);
                             expanding.apps.insert(app, (r.clone(), f, held));
@@ -921,6 +912,19 @@ fn typecheck_arg<R: Rt>(
         // 2.5G (the stdlib registration alone is about 2G). Pin graphix-types
         // typ::contains::tests::an_expanded_chain_contains_its_application_once_per_level:
         // 43 containment steps at depth 12, 24577 without (bound 768).
+        // 2026-11-02 claude: Review B4-r1-2: an application with a parameter of no node
+        // identity (a primitive, Any, a map) got no memo key, so the chain with a leaf
+        // parameter was still 2^depth (ptp-16 25.0G, ptp-18 98.1G). Now every parameter
+        // has a key (Type::param_key: a node's identity, a map's or an application's two
+        // parts', a leaf's content), used by ContainsHist::pair_key and rank2_parts'
+        // Expanding::apps alike. --check instructions (debug, atom+core) after: ptp-12
+        // 2.30G, ptp-16 2.46G, ptp-18 2.45G, ptp-20 2.52G, pta-16 (Any) 2.80G, ptm-16
+        // (Map<string, i64>) 2.40G (main a084f9887 16.7G), pts-16 2.42G, ptq-16 2.35G,
+        // ptq-20 2.25G. Pins graphix-types
+        // typ::contains::tests::an_expanded_chain_over_a_leaf_contains_its_application_once_per_level
+        // (24577 steps without, bound 768) and graphix-compiler
+        // node::callsite::test::rank2_parts_walks_an_application_over_a_leaf_once (524286
+        // steps without, bound 136). Probes ~/ptmp/cr29/scratch/r6-B/r7/i4/.
         Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
@@ -4644,10 +4648,17 @@ mod test {
     // parametric typedefs whose expansions no walk can share included:
     // `type P1<'a> = (P0<'a>, P0<'a>); ..` and `let x: P16<i64>`.
     fn typedef_chain() -> Env {
+        chain_of("P", "'a", "('a, i64)")
+    }
+
+    /// `type <name>0<params> = base; type <name>1<params> = (<name>0<params>,
+    /// <name>0<params>); ..` to depth 16.
+    fn chain_of(name: &str, params: &str, base: &str) -> Env {
         let mut env = Env::default();
-        let mut defs = vec![String::from("type P0<'a> = ('a, i64)")];
+        let mut defs = vec![format!("type {name}0<{params}> = {base}")];
         for i in 1..=16 {
-            defs.push(format!("type P{i}<'a> = (P{}<'a>, P{}<'a>)", i - 1, i - 1));
+            let below = format!("{name}{}<{params}>", i - 1);
+            defs.push(format!("type {name}{i}<{params}> = ({below}, {below})"));
         }
         for d in defs.iter() {
             let e = parse_one(d).unwrap();
@@ -4703,5 +4714,22 @@ mod test {
             quantified_formal(&env, &t).expect("a quantified formal");
         assert_eq!(quantified.len(), 1);
         assert!(RANK2_STEPS.with(|n| n.get()) <= 6 * 17);
+    }
+
+    // And to the same parameters by content where one has no node
+    // identity: a primitive, `Any`, a map.
+    #[test]
+    fn rank2_parts_walks_an_application_over_a_leaf_once() {
+        let env = chain_of("Q", "'a, 'c", "('a, 'c)");
+        for leaf in ["i64", "Any", "Map<string, i64>"] {
+            let t =
+                parse_type(&format!("Q16<fn<'b: Number>(x: 'b) -> 'b, {leaf}>")).unwrap();
+            RANK2_STEPS.with(|n| n.set(0));
+            let (_, _, quantified) =
+                quantified_formal(&env, &t).expect("a quantified formal");
+            assert_eq!(quantified.len(), 1);
+            let steps = RANK2_STEPS.with(|n| n.get());
+            assert!(steps <= 8 * 17, "{leaf}: {steps} steps");
+        }
     }
 }

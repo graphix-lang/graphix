@@ -83,6 +83,40 @@ impl Type {
             t => node_addr(t),
         }
     }
+
+    /// What a walk that meets one application of a typedef many times
+    /// keys each of its parameters by ([`ParamKey`]); the application must
+    /// be held while the key is, so the identities stay its parameters'.
+    pub fn param_key(&self) -> ParamKey {
+        let part = |t: &Arc<Type>| Arc::as_ptr(t).addr();
+        match self {
+            Type::Bottom => ParamKey::Bottom,
+            Type::Any => ParamKey::Any,
+            Type::Primitive(p) => ParamKey::Primitive(*p),
+            Type::Hole => ParamKey::Hole,
+            Type::Bound(b) => ParamKey::Bound(*b),
+            Type::Map { key, value } => ParamKey::Map(part(key), part(value)),
+            Type::App(c, a) => ParamKey::App(part(c), part(a)),
+            t => {
+                ParamKey::Node(t.shared_identity().expect("a composite has an identity"))
+            }
+        }
+    }
+}
+
+/// A typedef application's parameter as [`Type::param_key`] keys it: a
+/// shared node by its identity ([`Type::shared_identity`]), a `Map` or an
+/// `App` by its two parts', a leaf by its content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamKey {
+    Node(usize),
+    Map(usize, usize),
+    App(usize, usize),
+    Primitive(BitFlags<Typ>),
+    Bound(Bound),
+    Any,
+    Bottom,
+    Hole,
 }
 
 /// The pairs of shared composites a conjunctive walk over two types
