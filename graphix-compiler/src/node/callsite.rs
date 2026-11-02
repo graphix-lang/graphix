@@ -2410,12 +2410,17 @@ impl<R: Rt> CallSite<R> {
             Type::TVar(tv) => Some(tv.clone()),
             _ => None,
         };
+        let text = match super::instance_rechecked() {
+            true => crate::typ::TextSite::Instance,
+            false => crate::typ::TextSite::Written,
+        };
         crate::PendingSettle::Site {
             sigs: smallvec::SmallVec::new(),
             unread_callbacks,
             ftype: ftype.clone(),
             rtype,
             exempt,
+            text,
             spec: self.spec.clone(),
         }
     }

@@ -856,6 +856,32 @@ run!(
     )
 );
 
+// A `Transparent` over a definition's own variable is judged where it is
+// written, at the definition, never at a call's type: an instance checked
+// again (GRAPHIX_NO_SUBST) leaves it there. One over a type the definition
+// knows is refused.
+run!(
+    json_transparent_over_a_definitions_variable_writes,
+    r#"{
+    type Port = Abstract<u16>;
+    impl Cast for Port {};
+    let w = |x| json::write_str(Transparent(x));
+    let o = |x| json::write_str([Transparent(x), null]);
+    (w(Port(u16:80))$, w(3)$, o(1)$)
+}"#,
+    prints(r#"["80", "3", "[1,null]"]"#);
+    FuseExpect::None
+);
+
+run!(
+    json_transparent_over_a_type_the_definition_knows_refused,
+    r#"{
+    let w = |x| json::write_str((Transparent(3), x));
+    w(1)
+}"#,
+    refused("Transparent<i64> holds a type that is not abstract")
+);
+
 /// Abstract values whose data holds abstract values: through `from_value`
 /// (the identity impl, and one leaving `to_value` out), through the
 /// representation, and `Transparent` around them.

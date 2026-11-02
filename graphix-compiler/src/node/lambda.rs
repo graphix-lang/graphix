@@ -1219,6 +1219,12 @@ impl<R: Rt> GXLambda<R> {
 }
 
 impl Typing {
+    /// Whether the instance checks its body again (`GRAPHIX_NO_SUBST`),
+    /// where its definition's types would do.
+    fn rechecks(&self) -> bool {
+        matches!(self, Typing::Substituted(..)) && dbgenv::graphix_no_subst()
+    }
+
     fn instance_types<R: Rt>(
         &self,
         ctx: &CompileCtx<R>,
@@ -1233,7 +1239,7 @@ impl Typing {
             Typing::Substituted(table, def) => (table, def),
             Typing::Prepared(prepared) => return Ok(Some(prepared.1.clone())),
         };
-        if dbgenv::graphix_no_subst() {
+        if self.rechecks() {
             return Ok(None);
         }
         let Some(tables) = table.get() else {
@@ -1475,8 +1481,7 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
             // an instance's formals and return are its site's, which the
             // definition's check covers
             let types = self.instance_types(ctx)?;
-            let recheck =
-                types.is_none() && matches!(self.typing, Typing::Substituted(..));
+            let recheck = self.typing.rechecks();
             for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter())
             {
                 wrap!(arg, arg.typecheck0(ctx))?;
@@ -1541,8 +1546,11 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
         let _elaboration = profile::elaboration(self.instance_id);
         elab_audit::enter();
         let env = self.env.clone();
-        let res =
-            ctx.with_restored(env, |ctx| wrap!(self.body, self.body.typecheck1(ctx)));
+        let recheck = self.typing.rechecks();
+        let body = &mut self.body;
+        let res = ctx.with_restored(env, |ctx| {
+            super::rechecking_instance(recheck, || wrap!(body, body.typecheck1(ctx)))
+        });
         elab_audit::leave(ctx.def_gate_depth, "typecheck1", self.body.spec(), &res);
         res
     }

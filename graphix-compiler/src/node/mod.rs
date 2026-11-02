@@ -216,16 +216,17 @@ thread_local! {
     static INSTANCE_RECHECK: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Run `f`, the check of an instance's body, as a check again
-/// (`GRAPHIX_NO_SUBST`) when `recheck`, with what the body defines: its
-/// definition's check owns a select's coverage verdicts, which a check at
-/// the instance's narrower types does not judge again.
+/// Run `f`, the check or the elaboration of an instance's body, as one
+/// again (`GRAPHIX_NO_SUBST`) when `recheck`: its definition's check owns
+/// what it judged at the types written (a select's coverage verdicts, a
+/// `Transparent`'s text refusal), which the instance's narrower types do
+/// not judge again.
 pub(crate) fn rechecking_instance<T>(recheck: bool, f: impl FnOnce() -> T) -> T {
     let _restore = Restore::replace(&INSTANCE_RECHECK, recheck || INSTANCE_RECHECK.get());
     f()
 }
 
-/// Whether this check is an instance's body checked again.
+/// Whether this check or elaboration is an instance's body's again.
 pub(crate) fn instance_rechecked() -> bool {
     INSTANCE_RECHECK.get()
 }

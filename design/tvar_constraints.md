@@ -818,7 +818,11 @@ whose body is a union, a primitive set), each judged by its constructor.
 Over a type known not to be abstract `Transparent` is refused: it would
 change nothing. Over a definition's own open variable it is not judged,
 and where a call binds that variable to a type that is not abstract it
-writes that type's data bare, as it would without `Transparent`. The walk reaches every part of the type: elements, fields,
+writes that type's data bare, as it would without `Transparent`. The
+verdict is the written place's: an instance's body checked again
+(`GRAPHIX_NO_SUBST`, `node::rechecking_instance`) judges its JSON and TOML
+bounds with `TextSite::Instance`, which leaves every `Transparent` to the
+definition's check. The walk reaches every part of the type: elements, fields,
 payloads, a map's key and value, an abstract type's representation where
 its `Cast` implementation leaves a method out (and `Transparent`'s
 parameter), each named type once per list of arguments, in the text and

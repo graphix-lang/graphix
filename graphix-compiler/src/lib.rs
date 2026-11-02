@@ -2523,6 +2523,9 @@ pub(crate) enum PendingSettle {
         /// The signatures of the enclosing definitions: what they reach
         /// is generalized, settled by each call.
         sigs: SmallVec<[triomphe::Arc<FnType>; 1]>,
+        /// What its JSON and TOML bounds judge: `Instance` in an instance's
+        /// body checked again (`node::instance_rechecked`).
+        text: typ::TextSite,
         spec: Arc<Expr>,
     },
     /// A cell an operation leaves for its context to decide (an
@@ -2630,6 +2633,7 @@ impl PendingSettle {
                 sigs,
                 spec,
                 unread_callbacks,
+                text: _,
             } = s
             {
                 let mut kept: SmallVec<[&AHashSet<usize>; 2]> = SmallVec::new();
@@ -2702,8 +2706,8 @@ impl PendingSettle {
                     (discernible(env, typ, what), spec)
                 }
                 PendingSettle::Told { test, rest, spec } => (told(env, test, rest), spec),
-                PendingSettle::Site { ftype, spec, .. } => {
-                    (site_bounds(env, ftype), spec)
+                PendingSettle::Site { ftype, text, spec, .. } => {
+                    (site_bounds(env, ftype, *text), spec)
                 }
                 _ => continue,
             };
@@ -2759,7 +2763,7 @@ fn known_members(union: &Type) -> CompactString {
     out
 }
 
-// CR claude for claude: [bug/medium] A JSON or TOML writer's value holding a generic
+// XCR claude for claude: [bug/medium] A JSON or TOML writer's value holding a generic
 // definition's own open variable is not refused at the definition, and nothing carries
 // the judgment to the definition's callers, so an instance's elaboration refuses what
 // the check accepted: `type Box<'a> = Abstract<'a>; impl<'a> Cast for Box<'a> {}; let
@@ -2803,10 +2807,23 @@ fn known_members(union: &Type) -> CompactString {
 // record it and site_bounds skip TextRefusal::Transparent under it. JUDGED: a call w(3) of |x|
 // json::write_str(Transparent(x)) runs (D6 exempts Transparent over the definition's own
 // variable, and JsonData of i64 holds), so the default path's answer is the intended one.
+// 2026-11-02 claude: Lane B round 6, third pass: the GRAPHIX_NO_SUBST half is fixed. An
+// instance's body checked or elaborated again under the flag runs inside
+// node::rechecking_instance (the scoped thread-local lane G's cr40-E adds for
+// no-subst-dead-arm-01, same names; GXLambda::typecheck0 and typecheck1, Typing::rechecks); a
+// call site's PendingSettle::Site records typ::TextSite::Instance there, and site_bounds'
+// Type::text_refusal then leaves every Transparent to the definition's check, which judged it
+// where written; every other JSON/TOML refusal is judged as before. p12_generic_transparent.gx
+// and g4_generic_tr_null.gx run under the flag as by default (80 3, [1,null]). Pins:
+// lib_tests::json::json_transparent_over_a_definitions_variable_writes fails under
+// GRAPHIX_NO_SUBST=1 in all four modes with TextSite::Instance never chosen;
+// json_transparent_over_a_type_the_definition_knows_refused keeps the written refusal; the
+// default-path pins json_generic_payload_beside_a_tag_judged_at_the_call and _writes stay. All
+// 292 lib_tests::json pass under the flag.
 /// The bounds a call's settled cells must meet beyond their check: a
 /// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
 /// map read from data).
-fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
+fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
     let mut tvs: LPooled<AHashMap<ArcStr, typ::TVar>> = LPooled::take();
     ftype.collect_tvars(&mut tvs);
     for tv in tvs.values() {
@@ -2822,7 +2839,7 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                         Bound::JsonData => "JSON",
                         _ => "TOML",
                     };
-                    if let Some(why) = t.text_refusal(env) {
+                    if let Some(why) = t.text_refusal(env, text) {
                         let r = |t: &Type| t.resolve_tvars();
                         let what = || format_compact!("{}", r(&t));
                         let (what, why) = match &why {
