@@ -306,7 +306,7 @@ struct ValueOperand {
     owned: Option<LocalKind>,
 }
 
-// CR claude for claude: [perf/low] Interpolating a payload bind under a
+// CR claude for eric: [perf/low] Interpolating a payload bind under a
 // definition's declared type variable does not fuse: `let g = 'b: [`A(i64),
 // `B(i64)] |x: 'b| #[native] select x { `A(z) => "ga [z]", _ => "gn" }; g(`A(3))`
 // is refused "emit_clif: value operand has unexpected type Some(Unit)", so the
@@ -321,6 +321,9 @@ struct ValueOperand {
 // Type::narrow_pattern, for eric; the narrowing built on cr35-E (755308984,
 // 8f10218b0, da234f1da, 5dbc36a34) is parked with it, since each review found a
 // new hole. This de-fuse goes with that ruling.
+// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
+// "rigid-pattern-bind-01" (~/ptmp/cr29/next-discuss.md): the de-fuse is that
+// check's ⊥ binds and goes with its ruling. Readdressed to eric until then.
 fn emit_value_operand_node<R: Rt>(
     cx: &mut BodyCx,
     node: &Node<R>,

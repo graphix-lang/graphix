@@ -1882,7 +1882,7 @@ impl<R: Rt> CompileCtx<R> {
         }
     }
 
-    // CR claude for claude: [perf/low] The `<-`-target mark this puts on the outer outlives
+    // CR claude for eric: [perf/low] The `<-`-target mark this puts on the outer outlives
     // the body whose write caused it: Bind::delete removes only the old inner at a reload,
     // so a reloaded body that writes nothing has its calls through the val resolved
     // dynamically (GXDBG_RESOLVE: unstable=true; base 432e34ac6 static), and fusion may go
@@ -1891,6 +1891,10 @@ impl<R: Rt> CompileCtx<R> {
     // 2681714fa dropped this mark for a wake hold that reads the pair (written_target) and
     // fixed the first shape only. probes: ~/ptmp/cr29/scratch/review-r6/W2-r2-1/{n1,n1ctl},
     // W2-r3-1/cr37/{d5b,n2} (iface-reload-mark-01)
+    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
+    // "iface-pair-one-var-01" (~/ptmp/cr29/next-discuss.md): with the pair one run-time
+    // variable the mark has no outer to outlive; with the relays kept it needs cr37-W's
+    // wake hold. Readdressed to eric until then.
     /// Join `inner`, a body's binding implementing an interface `val`, with
     /// `outer`, the `val`'s ([`StaticCallees::join`]). From here on they are
     /// one `<-` target where either is, so a woken `let` keeps what was
