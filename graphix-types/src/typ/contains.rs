@@ -3026,6 +3026,15 @@ impl Type {
         }
     }
 
+    // CR claude for claude: [bug/low] The candidates are the set's own members, so a
+    // member naming a union typedef is one candidate whose head is a set, never its
+    // constructors: with `type L = [`A(i64), `X]`, `|n: i64| -> [L, `A(string)] select n
+    // % 3 { 0 => `A(n), 1 => `X, _ => `A("s") }` is refused "[L, `A(string)] does not
+    // contain [`A([i64, string]), `X]", where the written `[`A(i64), `X, `A(string)]`
+    // checks; a tuple member alike (type L = [(i64, i64), `Z], -> [L, (i64, f64)]). An
+    // over-refusal, never a wrong acceptance. Take candidates from the members' expanded
+    // unions too (each name once). Main d37a28f2c. Found by lane J's r8 review. probes
+    // ~/ptmp/cr29/scratch/review-r8/J-r1-1/tcA.gx, tcB.gx, tcC.gx (union-name-distribute-01)
     fn set_covers_by_distribution_inner(
         flags: BitFlags<ContainsFlags>,
         env: &Env,

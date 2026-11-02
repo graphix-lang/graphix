@@ -1494,6 +1494,16 @@ fn emit_arm_cond<R: Rt>(
                     }
                 }
             }
+            // CR claude for claude: [perf/low] A type test whose predicate is a union of
+            // variants does not fuse: `|u: [`A, `X, `Y]| select u { [`A, `X] as l =>
+            // inner(l), `Y => 5 }` under #[native] is refused "type predicate [`A, `X] not
+            // lowerable", and so is the named form `L as l` over `[L, `Y]` (type L = [`A,
+            // `X]), which freezes as that flat union since select-named-union-freeze-01.
+            // The test is "the value's tag is one of these", which the scrutinee's disc
+            // already carries. CLAUDE.md's coverage line ("any union of encoded members as
+            // one value ... with its written type tests") reads as if it fuses. Main
+            // d37a28f2c. probes ~/ptmp/cr29/scratch/review-r8/J-r1-2/adv/b_flat_test.gx,
+            // b_name_test.gx (variant-union-test-01)
             _ => {
                 return Err(anyhow!("emit_clif: type predicate {pred} not lowerable"));
             }
