@@ -152,6 +152,25 @@ impl Type {
             // fn<'b: Any>(x: 'b) -> ('b, L_{k-1}))) grows about 1.4x a level with no outer
             // write (tr12_noo 3.3G, tr16_noo about 15G; review-r7/B5-r4-1/p/tr16_noo.gx), in
             // the holder's containment, not the escape walk.
+            // 2026-11-02 claude: Round 8 lane X: built only the quadratic part. rank2_parts
+            // deduped its Quantified list by a linear scan, Q^2 over Q = 2^(d+1)-2
+            // quantifiers; it now keeps their cells in a set (Expanding::quantifiers), the
+            // same list in the same order. --check instructions (debug, one eval thread;
+            // perf stat, noise about 1G), main bbb06c0c6 vs lane: ptqf0-12 38.0G/8.6G,
+            // selq12 27.4G/12.6G, ptqf0-10 2.7G/2.1G; the call shape is untouched (ptqf-10
+            // 26.3G/26.7G), as are the second note's (pxl-abs-16 9.0G/9.0G, tr16_noo
+            // 13.2G/13.5G): what remains is 2^d expansions, the key's work. The key itself
+            // not built: param_key feeds three memos (ContainsHist's committed pairs,
+            // Unfolded, rank2_parts' apps), and keyed by position its equal keys mean alike
+            // up to renaming, not identical, so each memo needs a proof it holds up to
+            // renaming, and a quantifier cell bound or given a conjunct after its key was
+            // taken (a containment binding the right side's quantifiers) makes two equal
+            // keys name different types unless the key reads bindings and bounds; the gain
+            // is on generated chains only. Recommendation: keep open at low, or delete as
+            // not worth the risk. Whether the same key covers pxl-abs was not settled (its
+            // fn node is written once and substituted, not copied per level). Pin for the
+            // dedup: node::callsite::test::rank2_parts_takes_each_of_many_quantifiers_once
+            // (each of 2046 once; cost only, it passes without the change).
             Type::Fn(f) if !f.quantifiers.is_empty() => {
                 out.extend([6, Arc::as_ptr(f).addr()])
             }

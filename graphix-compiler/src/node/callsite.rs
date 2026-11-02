@@ -687,7 +687,8 @@ fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> 
 /// application whose walk met none in progress, by its definition and its
 /// parameters' keys (the parameters held, so the identities stay theirs:
 /// [`Type::param_key`]), with what its walk built and whether it met a
-/// quantifier; and the quantified function types met so far.
+/// quantifier; the quantified function types met so far, and the cells of
+/// the quantifiers pushed.
 #[derive(Default)]
 struct Expanding {
     stack: SmallVec<[usize; 4]>,
@@ -696,6 +697,7 @@ struct Expanding {
     nodes: LPooled<AHashMap<usize, (Option<Type>, bool)>>,
     apps: LPooled<AHashMap<AppKey, (Option<Type>, bool, TArc<[Type]>)>>,
     found: usize,
+    quantifiers: LPooled<AHashSet<usize>>,
 }
 
 impl Expanding {
@@ -746,7 +748,7 @@ fn rank2_parts(
         let r = match t {
             Type::Fn(ft) => {
                 ft.each_quantifier(|name, tv| {
-                    if !out.iter().any(|(_, q)| q.cell_addr() == tv.cell_addr()) {
+                    if expanding.quantifiers.insert(tv.cell_addr()) {
                         out.push((name.clone(), tv.clone()))
                     }
                 });
@@ -5537,6 +5539,20 @@ mod test {
         assert_eq!(quantified.len(), 1);
         let steps = RANK2_STEPS.with(|n| n.get());
         assert!(steps <= 8 * 17, "{steps} steps");
+    }
+
+    // A formal whose every level builds its quantified function types anew,
+    // `Q<i><'a> = (Q<i-1><fn<'b: Any>(x: 'b) -> 'a>, ..)`, holds 2^11 - 2
+    // distinct quantifiers at Q10, each taken once.
+    #[test]
+    fn rank2_parts_takes_each_of_many_quantifiers_once() {
+        let env = chain_passing("Q", "'a", "('a, i64)", "fn<'b: Any>(x: 'b) -> 'a");
+        let t = parse_type("Q10<i64>").unwrap();
+        let (_, _, quantified) =
+            quantified_formal(&env, &t).expect("a quantified formal");
+        let cells: AHashSet<usize> =
+            quantified.iter().map(|(_, q)| q.cell_addr()).collect();
+        assert_eq!((quantified.len(), cells.len()), (2046, 2046));
     }
 
     // And where that parameter is a function type with no quantifiers of
