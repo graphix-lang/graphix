@@ -7,7 +7,7 @@ use crate::{
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, CoreTrait, RefKey, TVar, Type, TypeRef, params_size,
+        AbstractId, Bound, CoreTrait, RefKey, TVar, Type, TypeRef, Unfolded, params_size,
         setops::union_identical,
         tval::{NakedPrefix, PlainScalar, has_form, member_of},
     },
@@ -1882,8 +1882,7 @@ impl ShallowScrutinee {
         self.facts
             .get_or_init(|| {
                 let mut scrut: LPooled<Vec<Type>> = LPooled::take();
-                let mut seen: LPooled<Vec<RefKey>> = LPooled::take();
-                flatten_union_members(&self.typ, env, &mut scrut, &mut seen)?;
+                flatten_union_members(&self.typ, env, &mut scrut)?;
                 let mut walked = ShapeSeen::default();
                 let mut below = |m: &Type| {
                     m.try_for_each_child(&mut |c| match shapes_collide(
@@ -1906,8 +1905,7 @@ impl ShallowScrutinee {
 
     pub fn discriminant(&self, env: &Env, predicate: &Type) -> Option<Type> {
         let mut preds: LPooled<Vec<Type>> = LPooled::take();
-        let mut seen: LPooled<Vec<RefKey>> = LPooled::take();
-        flatten_union_members(predicate, env, &mut preds, &mut seen)?;
+        flatten_union_members(predicate, env, &mut preds)?;
         if preds.iter().all(|p| member_facts(p).exact) {
             return None;
         }
@@ -2092,45 +2090,58 @@ fn shallowify(t: &Type) -> Type {
     }
 }
 
-/// `seen` is the path of definitions being expanded.
+/// `t`'s members, each application expanded once, in the order first
+/// met; `None` where one is open, `Any`, or recurses through unions
+/// alone (`seen`, the path of definitions being expanded).
 fn flatten_union_members(
     t: &Type,
     env: &Env,
     out: &mut LPooled<Vec<Type>>,
-    seen: &mut LPooled<Vec<RefKey>>,
 ) -> Option<()> {
-    ensure_sufficient(|| match t {
-        Type::Set(ts) => {
-            for t in ts.iter() {
-                flatten_union_members(t, env, out, seen)?;
+    fn go(
+        t: &Type,
+        env: &Env,
+        out: &mut LPooled<Vec<Type>>,
+        seen: &mut LPooled<Vec<RefKey>>,
+        unfolded: &mut Unfolded,
+    ) -> Option<()> {
+        ensure_sufficient(|| match t {
+            Type::Set(ts) => {
+                for t in ts.iter() {
+                    go(t, env, out, seen, unfolded)?;
+                }
+                Some(())
             }
-            Some(())
-        }
-        Type::Ref(tr) => {
-            let t = t.lookup_ref(env).ok()?;
-            let key = ref_key(tr)?;
-            if seen.contains(&key) {
-                return None;
+            Type::Ref(tr) => {
+                let whole = t.lookup_ref(env).ok()?;
+                let key = ref_key(tr)?;
+                if seen.contains(&key) {
+                    return None;
+                }
+                if !unfolded.first(t) {
+                    return Some(());
+                }
+                seen.push(key);
+                let res = go(&whole, env, out, seen, unfolded);
+                seen.pop();
+                res
             }
-            seen.push(key);
-            let res = flatten_union_members(&t, env, out, seen);
-            seen.pop();
-            res
-        }
-        Type::TVar(tv) => match tv.binding() {
-            Some(t) => flatten_union_members(&t, env, out, seen),
-            None => None,
-        },
-        Type::App(c, a) => match Type::app_filled(c, a) {
-            Some(t) => flatten_union_members(&t, env, out, seen),
-            None => None,
-        },
-        Type::Any | Type::Hole => None,
-        t => {
-            out.push(t.clone());
-            Some(())
-        }
-    })
+            Type::TVar(tv) => match tv.binding() {
+                Some(t) => go(&t, env, out, seen, unfolded),
+                None => None,
+            },
+            Type::App(c, a) => match Type::app_filled(c, a) {
+                Some(t) => go(&t, env, out, seen, unfolded),
+                None => None,
+            },
+            Type::Any | Type::Hole => None,
+            t => {
+                out.push(t.clone());
+                Some(())
+            }
+        })
+    }
+    go(t, env, out, &mut LPooled::take(), &mut Unfolded::default())
 }
 
 /// What a runtime test sees of `t` at its head: cells, filled
@@ -3590,6 +3601,23 @@ pub(crate) mod tests {
         let v = Value::String(arcstr::literal!("C"));
         let flat = parse_type("[`A, `B, `C]").unwrap();
         assert_eq!(t.cast_value(&env, v.clone()), flat.cast_value(&env, v));
+    }
+
+    // So do the member lists a select reads (`union_members`, the
+    // shallow test's `flatten_union_members`): L1 and M1 once each, not
+    // 2^15 times.
+    #[test]
+    fn select_members_expand_each_application_once() {
+        let defs = union_dag(16);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "L16");
+        let mut members = smallvec::SmallVec::new();
+        crate::expr::union_members(&env, &t, &mut members).unwrap();
+        let leaves: Vec<String> = members.iter().map(|m| m.to_string()).collect();
+        assert_eq!(leaves, ["`A", "`B", "`A", "`C"]);
+        let mut flat = poolshark::local::LPooled::take();
+        super::flatten_union_members(&t, &env, &mut flat).unwrap();
+        assert_eq!(&*flat, &members[..]);
     }
 
     // An is_a walk over a DAG of named unions decides each reference once

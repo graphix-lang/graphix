@@ -237,6 +237,28 @@ fn text_words(s: &str, out: &mut SmallVec<[usize; 8]>) {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ParamKey(SmallVec<[usize; 8]>);
 
+/// The typedef applications a walk has expanded, by definition and
+/// parameters' keys ([`Type::param_key`]), each held so its keys stay its
+/// own.
+#[derive(Default)]
+pub(crate) struct Unfolded(LPooled<AHashMap<(usize, SmallVec<[ParamKey; 2]>), Type>>);
+
+impl Unfolded {
+    /// Whether the walk meets `t`, a resolved typedef application, for
+    /// the first time.
+    pub(crate) fn first(&mut self, t: &Type) -> bool {
+        let Type::Ref(tr) = t else { return true };
+        let Some(def) = tr.def_key() else { return true };
+        match self.0.entry((def, tr.params.iter().map(Type::param_key).collect())) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(e) => {
+                e.insert(t.clone());
+                true
+            }
+        }
+    }
+}
+
 /// The pairs of shared composites a conjunctive walk over two types
 /// found to agree, so a DAG is walked once per pair of nodes rather than
 /// once per path; a pair found once agrees for the rest of the walk.

@@ -617,6 +617,18 @@ impl Type {
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
 
+    // CR claude for claude: [perf/low] diff takes a pair of a reference and the
+    // subtrahend apart at every path that reaches it, so over a DAG of named unions
+    // (cast.rs union_dag: Li = [Li-1, Mi-1], Mi = [Mi-1, Li-1]) a select's coverage
+    // (Reach::cover and Select::typecheck0_with, both calling diff) walks 2^depth:
+    // `let v: L18 = `C; select v { `A => 1, `B => 2, `C => 3 }` costs 8.6G instructions
+    // at --check (L16 4.5G, L20 31.9G; over `_ => 3` 2.7G flat) once union_members and
+    // flatten_union_members expand each name once (union-members-dag-01); callgrind at
+    // L16 puts 1.2G of the run's 2.6G under diff_inner. Its RefHist is a cycle guard
+    // only, inserted and removed around each pair. A memo of a finished pair's
+    // difference, kept only where it assumed no pair in progress (as ContainsHist's
+    // verdicts are), would make it linear. probes:
+    // ~/ptmp/cr29/scratch/review-r6/E2-r1-2/sel16.gx, sel18.gx, sel20.gx (diff-dag-01)
     fn diff_inner(
         &self,
         env: &Env,

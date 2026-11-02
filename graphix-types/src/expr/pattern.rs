@@ -3,7 +3,7 @@ use crate::{
     PrintFlag,
     env::Env,
     format_with_flags, print_as_written,
-    typ::{TVar, Type, settled_identical, strictly_identical, tvar::Level},
+    typ::{TVar, Type, Unfolded, settled_identical, strictly_identical, tvar::Level},
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
@@ -598,7 +598,7 @@ fn slice_type(list: bool, elem: Type) -> Type {
     if list { Type::List(Arc::new(elem)) } else { Type::Array(Arc::new(elem)) }
 }
 
-// CR claude for claude: [perf/low] union_members expands every name each time a path
+// XCR claude for claude: [perf/low] union_members expands every name each time a path
 // reaches it, so over a DAG of named unions (type L1 = [`A, `B], M1 = [`A, `C], Li =
 // [Li-1, Mi-1], Mi = [Mi-1, Li-1]) it returns 2^depth members, nearly all repeats, and
 // each select walk over the scrutinee pays that: `let v: L14 = `C; select v { _ => 3 }`
@@ -611,23 +611,50 @@ fn slice_type(list: bool, elem: Type) -> Type {
 // consume it, which are parked for Eric: run the select pins with the change. Probes:
 // ~/ptmp/cr29/scratch/review-r6/E2-r1-2/sel114.gx, sel116.gx, sel16.gx, sel18.gx,
 // plain16.gx (meas.sh BIN FILE --check there) (union-members-dag-01)
+// 2026-11-02 claude: union_members and cast.rs flatten_union_members expand each
+// application once per call (typ::Unfolded: definition and parameters' keys,
+// Type::param_key, each application held), in the order first met; one met again adds
+// nothing, its members are in already (flatten keeps its path for the cycle refusal).
+// lang::select (1603) and lang::types (1849) pass unchanged; gxf regress 559 programs,
+// 0 regressions, outcome 0, fusion 0 mismatches: no verdict or message change. --check
+// instructions (debug) main 8beb0735a -> lane: sel114 19.53G -> 2.74G, sel116 lane
+// 2.69G, sel16 7.76G -> 4.53G, sel18 22.92G -> 8.60G, plain16 2.62G -> 2.35G. The
+// three-tag-arm shape is still super-linear (sel20 31.9G): Type::diff under the
+// select's coverage, the new CR diff-dag-01. Pin graphix-types
+// typ::cast::tests::select_members_expand_each_application_once (L16: 4 members, 65536
+// without; flatten_union_members the same list).
 /// The concrete members of `t`: bound tvars dereferenced, aliases
-/// expanded, unions flattened. An unbound tvar contributes none. An alias
-/// chain ends: a typedef recursing through unions and aliases alone is
-/// refused at its definition.
+/// expanded, unions flattened, in the order first met; an application met
+/// again adds nothing, its members are in already. An unbound tvar
+/// contributes none. An alias chain ends: a typedef recursing through
+/// unions and aliases alone is refused at its definition.
 #[doc(hidden)]
 pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
-    crate::stack::ensure_sufficient(|| match t.deref_cloned() {
-        None => Ok(()),
-        Some(t) => match &t {
-            Type::Set(ts) => ts.iter().try_for_each(|t| union_members(env, t, out)),
-            Type::Ref(_) => union_members(env, &t.lookup_ref(env)?, out),
-            _ => {
-                out.push(t);
-                Ok(())
-            }
-        },
-    })
+    fn go(
+        env: &Env,
+        t: &Type,
+        out: &mut SmallVec<[Type; 8]>,
+        unfolded: &mut Unfolded,
+    ) -> Result<()> {
+        crate::stack::ensure_sufficient(|| match t.deref_cloned() {
+            None => Ok(()),
+            Some(t) => match &t {
+                Type::Set(ts) => ts.iter().try_for_each(|t| go(env, t, out, unfolded)),
+                Type::Ref(_) => {
+                    let whole = t.lookup_ref(env)?;
+                    match unfolded.first(&t) {
+                        true => go(env, &whole, out, unfolded),
+                        false => Ok(()),
+                    }
+                }
+                _ => {
+                    out.push(t);
+                    Ok(())
+                }
+            },
+        })
+    }
+    go(env, t, out, &mut Unfolded::default())
 }
 
 /// A struct pattern's fields in the order they print (as written when
