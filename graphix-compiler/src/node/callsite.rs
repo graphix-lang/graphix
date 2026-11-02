@@ -888,7 +888,7 @@ fn typecheck_arg<R: Rt>(
                 ArgFit::Misfit
             })
         }
-        // XCR claude for claude: [perf/low] A formal holding a quantified function
+        // CR claude for claude: [perf/low] A formal holding a quantified function
         // type through a chain of parametric typedefs is still checked in time
         // exponential in the chain's depth, though rank2_parts walks it once:
         // `type P0<'a> = ('a, i64); type P1<'a> = (P0<'a>, P0<'a>); ..; let x:
@@ -939,6 +939,14 @@ fn typecheck_arg<R: Rt>(
         // (40957 steps without, bound 768) and graphix-compiler
         // node::callsite::test::rank2_parts_walks_an_application_over_a_rebuilt_parameter_once
         // (2621438 steps without, bound 136). Probes ~/ptmp/cr29/scratch/r6-B/r8/i4/.
+        // 2026-11-02 claude: Review B4-r3 (both reviewers): still 2^depth where each level passes a function type
+        // built anew (`type P<i><'a> = (P<i-1><fn(x: 'a) -> i64>, P<i-1><fn(x: 'a) -> i64>)`), since ParamKey keys
+        // a function type by its node, or a parameter whose key passes ParamKey::WORDS (a 25-field struct). At a
+        // let annotation that is new against main, whose let runs no rank2_parts: ptf0-14 27.4G instructions on
+        // the lane against 2.31G on main, pts-14 6.33G against 2.14G. With a call f(x, x) both are exponential
+        // (ptf-14 94.8G lane, 25.5G main). Fix: key a function type with no quantifiers by its content, and keep
+        // equality past WORDS (hash the rest rather than fall back to the node). probes
+        // ~/ptmp/cr29/scratch/review-r6/B4-r3-1/i4/genf.sh, B4-r3-2/i4/{genf,gens}.sh (./inst BIN ptf0-14.gx).
         Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
@@ -984,7 +992,7 @@ pub(crate) fn contain_generally<R: Rt>(
     }
 }
 
-// XCR claude for claude: [bug/high] A written quantified fn type checks the lambda it
+// CR claude for claude: [bug/high] A written quantified fn type checks the lambda it
 // holds with its quantifiers rigid, but only a call's argument is checked for a cell
 // outside the lambda that a quantifier reaches (polymorphic_in, escapes_through). A
 // let annotation, a struct field or an array element lets the quantifier escape:
@@ -1051,6 +1059,21 @@ pub(crate) fn contain_generally<R: Rt>(
 // RANK2_TRANSPARENT_WRITES_OUTER in lang::types::unsound_acceptances_are_refused
 // (accepted before, the run failing its bind), the B<..>/Transparent<..> row of
 // lang::types::rank2_result_holders_take_general_values (no over-refusal).
+// 2026-11-02 claude: Landed on main without lane B's last fix round: cr39-B 0cb9a50bd
+// (callsite::Makes, check_made) is left out, and the result-position maker shape it
+// chased (a let of the maker's own body captured by the function it makes; l1 l3-l12,
+// e1b e4 e9-e13) is the new CR rank2-result-maker-01 for eric. On main: the holder
+// sites above, a function type's result and throws, a constructor's payload, an
+// abstract type's parameter. Still open here (review B4-r3-1, medium): the let path
+// does not follow a cell's lower bound (TCell::lower), so a write through an abstract
+// constructor escapes. `type W<'t> = Abstract<'t>; let y = never(); let f: fn<'a:
+// Any>(x: 'a) -> 'a = |x| { y <- W(x); x }; let s = f("s"); println(y.0 + 1)` passes
+// --check and the build refuses f("s")'s instance (lb4; lb12 a struct field, lb13
+// Transparent, lb14 a written return type; main a084f9887 the same). A call refuses
+// it (lb5), because it pre-unifies first. Fix: reaches_cell/reaches_through follow an
+// open cell's lower bounds, or the let path pre-unifies as a call does. probes
+// ~/ptmp/cr29/scratch/review-r6/B4-r3-1/s/lb*.gx (NS=1 ./both). The interface val is
+// iface-rank2-escape-01, the REPL shape repl-bottom-settle-01.
 // XCR claude for claude: [bug/low] A rank-2 array element passed straight to a rank-2
 // formal is refused: `let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| x]; let f = |k:
 // fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s")); f(fs[0]$)` says "the argument is not
@@ -1070,6 +1093,31 @@ pub(crate) fn contain_generally<R: Rt>(
 // Pins lang::types::rank2_element_passed_to_a_rank2_formal and the
 // RANK2_ARG_OF_A_CALLS_INSTANCE case of unsound_acceptances_are_refused fail without
 // it; pass under GRAPHIX_NO_SUBST=1.
+// CR claude for eric: [bug/high] A quantified fn type in a function type's result
+// (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
+// that makes the result shares nothing that reaches 'a across its calls, and nothing
+// checks that: check_general judges the bindings outside the outer value, so a let of
+// the maker's own body that the made function captures passes. `let mk: fn(z: i64) ->
+// fn<'a: Any>(x: 'a) -> 'a = |z| { let v = never(); |x| { v <- x; v } }; let h =
+// mk(0); let s = h("s"); println(h(1) + 1)` passes --check, and the run logs an arith
+// error over "s" at a value typed i64. The same at a call's formal, a labeled default,
+// a struct field, a connect, a constructor's payload, through a call's instance in the
+// body (`|q| mk2(never())`) and through a generic definition read whole (main a084f9887
+// the same); the same body under a written return type (e8) is refused. Lane B round 6
+// tried a record of what outlives a call of each lambda (callsite::Makes, judged by
+// check_made; branch cr39-B 0cb9a50bd, not landed). It missed a maker reached through a
+// field read, an element, an index or a select's first arm (ms15, ms20-ms22, s5b: the
+// run puts "s" in an i64), gave a sibling module's interface val a verdict that
+// depended on which compile task finished first (34 of 40 --check runs refused), and
+// refused a valid maker returning a struct through a let (st1, which main runs). The
+// local rule both reviewers propose: a result-position quantifier takes only a lambda
+// literal, checked as if the holder's result were its written return type (the path
+// that refuses e8), or a value whose own type quantifies 'a there; any other value is
+// refused with "write its return type". That refuses programs main runs today (a safe
+// maker read from a field, `s.mk`; a let-bound generic maker), hence for eric. probes:
+// ~/ptmp/cr29/scratch/review-r6/B4-r2-1/s/{l1,l3,l10}.gx, B4-r2-2/n/{e1b,e4,e9,e11}.gx,
+// B4-r3-1/s/{ms15,ms20,ms1,st1}.gx, B4-r3-1/s/sib/main.gx, B4-r3-2/p/{s5b,s3a,s7a}.gx
+// (rank2-result-maker-01)
 /// A value checked against quantifiers held rigid holds for every choice
 /// of them only if nothing outside it that lives on reaches one: a binding
 /// it reads or writes from outside (its lambdas' captures included), or the

@@ -477,6 +477,9 @@ fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     // quantifier, a rank-2 one included, paired with a cell the implementation does
     // not own is refused. probes: ~/ptmp/cr29/scratch/r6-B/r7/if1/, if3/ (controls
     // if4/ runs) (iface-rank2-escape-01)
+    // 2026-11-02 claude: Main has CR iface-generic-written-01 (node/module.rs, at
+    // Module::typecheck0's val check) for the generic-val class; both are a val's
+    // quantifier the implementation ties to an outer binding, so fix them together.
     declared.sig_matches(env, typ).map_err(|e| {
         let typ = format_with_flags(PrintFlag::DerefTVars, || {
             format_compact!("{}", Brief(typ))

@@ -294,7 +294,9 @@ payload, an abstract type's parameter, a function type's result):
 nothing outside the
 value that outlives it, a binding it reads or writes or a call's
 instance, reaches a quantifier (`callsite::check_general`,
-`contain_generally`). Right site: the value.
+`contain_generally`). Right site: the value. Open: what the function
+whose result holds the quantifier shares across its own calls (a let of
+its body the function it makes captures), CR rank2-result-maker-01.
 
 ## Labeled and optional arguments across the fuzzer
 
