@@ -902,9 +902,10 @@ node graph IS the IR — there is no parallel typed IR
   type the instance runs with, and only where a fn type hides the
   label against the callee's parameter as that type instantiates it
   (arguments, result and throws) and the label of the function value it
-  hides, which the default narrows; compiled at a bind, it is checked as
-  an instance's body is again, its selects' verdicts the definition's
-  (`node::rechecking_instance`). A default whose type holds an enclosing
+  hides, which the default narrows; compiled at a bind, it takes its
+  types from its definition's check, as an instance's body does (the
+  definition's `DefTable` holds the defaults' rows,
+  `InstanceTypes::of_default`). A default whose type holds an enclosing
   definition's open cell requires a closed parameter type (annotate the
   factory's parameter or the defaulted parameter); an enclosing definition's
   declared variable is closed, as is a rank-2 formal's quantifier while a

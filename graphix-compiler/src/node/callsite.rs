@@ -224,9 +224,8 @@ impl ArgStage {
 /// definition whose check has closed is that definition's scheme, of which
 /// the callee is one instance: the judgment takes a copy of it rather than
 /// deciding it. At the bind, the environment is the instance's, and the
-/// default is checked as an instance's body is again
-/// ([`super::rechecking_instance`]): its definition's check judged its
-/// selects' verdicts at the types written.
+/// default takes its types from its definition's check
+/// ([`InstanceTypes::of_default`]), as an instance's body does.
 #[derive(Clone, Copy)]
 enum Judge {
     Check,
@@ -253,7 +252,7 @@ fn checked_default<R: Rt>(
     value: Option<&FnType>,
     judge: Judge,
 ) -> Result<Node<R>> {
-    // CR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
+    // XCR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
     // in full here at the instance's types, so a select in it over an enclosing
     // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
     // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
@@ -297,14 +296,51 @@ fn checked_default<R: Rt>(
     // count); none is an unreached arm reading its bottom bind. So only the first way
     // closes the default's form; NO_SUBST, which checks every instance again by design,
     // keeps them. Probes ~/ptmp/cr29/scratch/review-r7/B5-r3-1/i3/d_*.gx.
+    // 2026-11-02 claude: Taken the reviewer's first way out (lane G r8): a default compiled
+    // at a call's bind takes its types from its definition's check, as an instance body
+    // does. check_defaults hands its checked nodes back and DefTable::record_defaults
+    // records their rows in the definition's table (DefTable::settle_open leaves them open,
+    // so a bind narrows them by its own view of the label); checked_default at Judge::Bind
+    // compiles and types the default through InstanceTypes::of_default (each open cell the
+    // definition owns copied, an enclosing instance's renamed through its map), and checks
+    // it in full only where there are no rows (a builtin's default, GRAPHIX_NO_SUBST).
+    // d_tuple d_ref d_field d_fn d_opt now print 5 1 (main bbb06c0c6's build refuses each);
+    // d_dyn d_slot d_guard d_nested ns3 as before. Pins
+    // lang::select::default_at_a_bind_reads_an_unreached_arms_binds and
+    // default_at_a_bind_keeps_its_definitions_bind_types fail in all four modes with the
+    // bind's typing switched back to the recheck;
+    // default_at_a_bind_takes_its_definitions_coverage holds. Under GRAPHIX_NO_SUBST=1 the
+    // two new pins fail as the d_*_body forms do (an instance rechecked at its narrower
+    // types, the known NO_SUBST class).
+    // 2026-11-02 claude: A default whose block declares a recursive type
+    // (review-r6/B2-r1-1/d1j.gx, d1.gx) was refused at the bind under the first cut
+    // ('undefined type L': the label check expanded the type the bind's compile declared,
+    // whose own references only that compile's environment holds). checked_default now
+    // seeds the typedefs under the callee's scope in that environment before it leaves it
+    // (Env::seed_typedef_refs_under), as a module seeds its own; record_defaults seeds the
+    // rows in the environment each default compiled in. Pin
+    // lang::select::default_at_a_bind_declares_a_recursive_type fails in all four modes
+    // without the seed (it logs default-typedef-outlived-01's 'outlived its definition'
+    // line, as main does for d1j).
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
-        let mut node = f.in_signature(ctx, |ctx| {
+        let types = match judge {
+            Judge::Bind => InstanceTypes::of_default(ctx, f, expr.id),
+            Judge::Check => None,
+        };
+        let mut node = f.in_signature(ctx, types.clone(), |ctx| {
             compile(ctx, flags, expr.clone(), &local_scope, top_id)
         })?;
-        let bind = matches!(judge, Judge::Bind);
-        let res = super::rechecking_instance(bind, || node.typecheck0(ctx));
+        let res = match types {
+            Some(mut types) => node.typecheck0_instance(ctx, &mut types),
+            None => {
+                let bind = matches!(judge, Judge::Bind);
+                super::rechecking_instance(bind, || node.typecheck0(ctx))
+            }
+        };
+        // the types its blocks declare live in this environment alone
+        ctx.env.seed_typedef_refs_under(&f.scope.lexical);
         Ok::<_, anyhow::Error>((node, res))
     })?;
     let label = |ft: &FnType| -> Option<Type> {

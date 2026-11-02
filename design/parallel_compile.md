@@ -534,8 +534,9 @@ definition's, as an instance without check rows takes them
 types can make an arm the definition needs unreachable, and such an arm,
 which never runs, binds its names at ⊥; and at the instance's types a
 `Transparent` over the definition's own variable is over the type a call
-gave it. A labeled default compiled at a bind is checked so on every
-path (`callsite::checked_default`).
+gave it. A labeled default compiled at a bind takes its types from its
+definition's check as an instance's body does, and is checked so only
+where there are no rows (`callsite::checked_default`).
 
 **Every instance.** An instance records how it is typed
 (`node::lambda::Typing`): it is its definition's check, it substitutes

@@ -84,6 +84,10 @@ pub struct DefTable {
     calls_own: bool,
     calls_captured: Box<[(LambdaId, u32)]>,
     captures: Box<[Captured]>,
+    /// The rows of the labeled defaults' nodes, which `settle_open` leaves
+    /// open: a call's bind narrows them by its own view of the label. Only
+    /// the definition's check reads it.
+    defaults: AHashSet<ExprId>,
 }
 
 #[derive(Debug, Clone, netidx_derive::Pack)]
@@ -156,6 +160,7 @@ impl DefTable {
             calls_own,
             calls_captured,
             captures,
+            defaults: AHashSet::default(),
         }
     }
 
@@ -185,11 +190,20 @@ impl DefTable {
         exempt: &AHashSet<usize>,
     ) -> Result<()> {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.for_each_type(&mut |t, constraint| {
-            if !constraint {
-                crate::typ::settle::position_cells(t, &mut cells)
-            }
-        });
+        let body = |id: &ExprId| !self.defaults.contains(id);
+        let rows = self.types.iter().filter(|(id, _)| body(id)).map(|(_, t)| t);
+        let aux =
+            self.aux.iter().filter(|(id, _)| body(id)).flat_map(|(_, ts)| ts.iter());
+        for t in rows.chain(aux) {
+            crate::typ::settle::position_cells(t, &mut cells)
+        }
+        for (_, ft) in self.ftypes.iter().filter(|(id, _)| body(id)) {
+            ft.for_each_part(&mut |t, constraint| {
+                if !constraint {
+                    crate::typ::settle::position_cells(t, &mut cells)
+                }
+            })
+        }
         let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.for_each_type(&mut |t, _| {
             t.each_quantifier(&mut |_, tv| {
@@ -229,43 +243,9 @@ impl DefTable {
         captures: &mut AHashSet<(ModPath, CompactString)>,
     ) -> Self {
         let mut table = Self { facts, calls_own, calls_captured, ..Self::default() };
-        let mut shared: LPooled<AHashSet<ExprId>> = LPooled::take();
-        fusion::for_each_node(body, &mut |n| {
-            capture_names(n, def_env, checked, captures);
-            let id = n.spec().id;
-            if table.types.insert(id, n.typ().clone()).is_some() {
-                shared.insert(id);
-            }
-            match n.view() {
-                NodeView::CallSite(cs) => {
-                    if let Some(ft) = cs.ftype.as_ref() {
-                        table.ftypes.insert(id, (**ft).clone());
-                    }
-                }
-                NodeView::Lambda(l) => {
-                    let def = l.def_value().downcast_ref::<LambdaDef<R>>();
-                    if let Some(t) = def.and_then(|d| d.table.get()) {
-                        table.lambdas.insert(id, t.table.clone());
-                    }
-                }
-                NodeView::Select(s) => {
-                    table.aux.insert(id, s.aux_types(checked));
-                }
-                NodeView::Catch(c) => {
-                    table.aux.insert(id, c.aux_types(checked));
-                }
-                NodeView::Qop(q) => {
-                    table.aux.insert(id, Box::new([q.strip.removed()]));
-                }
-                _ => (),
-            }
+        table.add_rows(body, checked, &mut |n| {
+            capture_names(n, def_env, checked, captures)
         });
-        for id in shared.drain() {
-            table.types.remove(&id);
-            table.ftypes.remove(&id);
-            table.lambdas.remove(&id);
-            table.aux.remove(&id);
-        }
         let mut seen: LPooled<AddrSet> = LPooled::take();
         let env = Env { lexical: def_env.clone(), ..Env::default() };
         table.for_each_type(&mut |t, _| {
@@ -273,6 +253,79 @@ impl DefTable {
         });
         table.own_typedefs();
         table
+    }
+
+    /// The rows of the definition's labeled defaults as its check
+    /// compiled them, each with the environment it compiled in, where the
+    /// types its blocks declare are: a call's bind types its default from
+    /// them, as an instance types its body.
+    fn record_defaults<R: Rt>(&mut self, defaults: &[(Node<R>, Lexical)], checked: &Env) {
+        let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
+        let mut seen: LPooled<AddrSet> = LPooled::take();
+        for (n, lexical) in defaults {
+            self.add_rows(n, checked, &mut |n| ids.push(n.spec().id));
+            let env = Env { lexical: lexical.clone(), ..Env::default() };
+            for id in ids.iter() {
+                let aux = self.aux.get(id).into_iter().flat_map(|ts| ts.iter());
+                for t in self.types.get(id).into_iter().chain(aux) {
+                    t.seed_refs_seen(&env, &mut seen);
+                }
+                if let Some(ft) = self.ftypes.get(id) {
+                    ft.for_each_part(&mut |t, _| {
+                        t.seed_refs_seen(&env, &mut seen);
+                    })
+                }
+            }
+            self.defaults.extend(ids.drain(..));
+        }
+        self.own_typedefs();
+    }
+
+    /// A row for each node of the tree at `root`, `visit`ing each; an id
+    /// two nodes share has none.
+    fn add_rows<R: Rt>(
+        &mut self,
+        root: &Node<R>,
+        checked: &Env,
+        visit: &mut impl FnMut(&Node<R>),
+    ) {
+        let mut shared: LPooled<AHashSet<ExprId>> = LPooled::take();
+        fusion::for_each_node(root, &mut |n| {
+            visit(n);
+            let id = n.spec().id;
+            if self.types.insert(id, n.typ().clone()).is_some() {
+                shared.insert(id);
+            }
+            match n.view() {
+                NodeView::CallSite(cs) => {
+                    if let Some(ft) = cs.ftype.as_ref() {
+                        self.ftypes.insert(id, (**ft).clone());
+                    }
+                }
+                NodeView::Lambda(l) => {
+                    let def = l.def_value().downcast_ref::<LambdaDef<R>>();
+                    if let Some(t) = def.and_then(|d| d.table.get()) {
+                        self.lambdas.insert(id, t.table.clone());
+                    }
+                }
+                NodeView::Select(s) => {
+                    self.aux.insert(id, s.aux_types(checked));
+                }
+                NodeView::Catch(c) => {
+                    self.aux.insert(id, c.aux_types(checked));
+                }
+                NodeView::Qop(q) => {
+                    self.aux.insert(id, Box::new([q.strip.removed()]));
+                }
+                _ => (),
+            }
+        });
+        for id in shared.drain() {
+            self.types.remove(&id);
+            self.ftypes.remove(&id);
+            self.lambdas.remove(&id);
+            self.aux.remove(&id);
+        }
     }
 
     fn own_typedefs(&mut self) {
@@ -529,6 +582,26 @@ fn instance_sig<R: Rt>(
 }
 
 impl InstanceTypes {
+    /// The types of `def`'s labeled default at `root` as its check
+    /// recorded them, each open cell its definition owns copied; `None`
+    /// where it recorded none or under `GRAPHIX_NO_SUBST`.
+    pub(crate) fn of_default<R: Rt>(
+        ctx: &CompileCtx<R>,
+        def: &LambdaDef<R>,
+        root: ExprId,
+    ) -> Option<Self> {
+        if dbgenv::graphix_no_subst() {
+            return None;
+        }
+        let tables = def.table.get()?;
+        tables.table.types.contains_key(&root).then(|| Self {
+            tables: tables.clone(),
+            known: Known::default(),
+            open: ctx.rec_defs.clone(),
+            sig: def.typ.clone(),
+        })
+    }
+
     /// `None` when the instance's signature does not hold the
     /// definition's: a type-system bug, which `instance_types` refuses.
     fn new<R: Rt>(
@@ -961,6 +1034,7 @@ impl<R: Rt> LambdaDef<R> {
     pub(crate) fn in_signature<T>(
         &self,
         ctx: &mut CompileCtx<R>,
+        types: Option<InstanceTypes>,
         f: impl FnOnce(&mut CompileCtx<R>) -> T,
     ) -> T {
         let declared = match &self.origin {
@@ -970,7 +1044,7 @@ impl<R: Rt> LambdaDef<R> {
         let outer = ctx.body.replace(BodyCompile {
             share: BodyShare::default(),
             checking: false,
-            types: None,
+            types,
             declared,
         });
         let r = f(ctx);
@@ -2750,6 +2824,7 @@ fn check_defaults<R: Rt>(
     def: &LambdaDef<R>,
     scope: &Scope,
     captures: &mut AHashSet<(ModPath, CompactString)>,
+    checked: &mut Vec<(Node<R>, Lexical)>,
 ) -> Result<()> {
     let flags = match &def.origin {
         DefOrigin::Source { flags, .. } => {
@@ -2761,21 +2836,22 @@ fn check_defaults<R: Rt>(
     };
     for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
         let Some(expr) = arg.kind.default() else { continue };
-        let (node, res) = ctx.with_restored(def.env.clone(), |ctx| {
-            let mut node = def.in_signature(ctx, |ctx| {
+        let (node, res, lexical) = ctx.with_restored(def.env.clone(), |ctx| {
+            let mut node = def.in_signature(ctx, None, |ctx| {
                 compile(ctx, flags, expr.clone(), scope, ExprId::new())
             })?;
             let res = judge_default(ctx, def, at, &mut node);
-            Ok::<_, anyhow::Error>((node, res))
+            Ok::<_, anyhow::Error>((node, res, ctx.env.lexical.clone()))
         })?;
-        let res = res.at(&node.spec());
-        if res.is_ok() {
-            fusion::for_each_node(&node, &mut |n| {
-                capture_names(n, &def.env, &ctx.env, captures);
-            });
+        if let Err(e) = res {
+            let e = e.at(&node.spec());
+            ctx.discard(node);
+            return Err(e);
         }
-        ctx.discard(node);
-        res?;
+        fusion::for_each_node(&node, &mut |n| {
+            capture_names(n, &def.env, &ctx.env, captures);
+        });
+        checked.push((node, lexical));
     }
     Ok(())
 }
@@ -2942,19 +3018,28 @@ impl<R: Rt> Update<R> for Lambda {
             ftyp.throws.check_contains(&ctx.env, &inferred_throws).at(spec)?;
             Ok(())
         });
+        let mut defaults: LPooled<Vec<(Node<R>, Lexical)>> = LPooled::take();
         let res = res
-            .and_then(|()| check_defaults(ctx, def, &gate.scope, &mut captures))
+            .and_then(|()| {
+                check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults)
+            })
             .and_then(|()| gate.check_declared_kept().at(spec));
-        if res.is_ok() && (table.is_some() || !captures.is_empty()) {
+        if res.is_ok()
+            && (table.is_some() || !captures.is_empty() || !defaults.is_empty())
+        {
             let mut table = table.unwrap_or_else(|| DefTable {
                 facts: *def.facts.lock(),
                 ..DefTable::default()
             });
+            table.record_defaults(&defaults, &ctx.env);
             table.captures = captures
                 .drain()
                 .map(|(scope, name)| Captured::new(&def.scope.lexical, scope, name))
                 .collect();
             def.table.set(Tables { table: SArc::new(table), outer: None });
+        }
+        for (n, _) in defaults.drain(..) {
+            ctx.discard(n)
         }
         gate.close(ctx, def.table.get().map(|t| (t.table.clone(), spec)));
         // what the body bound is the signature: a call's types follow from

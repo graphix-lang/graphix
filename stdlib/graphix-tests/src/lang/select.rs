@@ -5768,6 +5768,64 @@ run!(
     prints("[i64:4, i64:-3, i64:51]")
 );
 
+// An arm nothing reaches at the instance's types binds what the
+// definition's check gave it, so a default that reads the bind compiles
+// at every bind: a tuple, a reference, a struct, a function.
+run!(
+    default_at_a_bind_reads_an_unreached_arms_binds,
+    r#"{
+        let ot = 'a: [(i64, i64), `B] |x: 'a| -> i64 {
+            let f = |#d = select x { (i64, i64) as t => t.0, `B => 0 }, y: i64| d + y;
+            f(1)
+        };
+        let orf = 'a: [&i64, `B] |x: 'a| -> i64 {
+            let f = |#d = select x { &i64 as r => *r, `B => 0 }, y: i64| d + y;
+            f(1)
+        };
+        let os = 'a: [{v: i64, w: i64}, `B] |x: 'a| -> i64 {
+            let f = |#d = select x { {v: i64, w: i64} as s => s.v, `B => 0 }, y: i64| d + y;
+            f(1)
+        };
+        let og = 'a: [`F(fn(x: i64) -> i64), `B] |x: 'a| -> i64 {
+            let f = |#d = select x { `F(g) => g(3), `B => 0 }, y: i64| d + y;
+            f(1)
+        };
+        let n = 4;
+        (ot((4, 0)), ot(`B), orf(&n), orf(`B), os({v: 4, w: 0}), os(`B), og(`F(|x| x + 1)), og(`B))
+    }"#,
+    prints("[i64:5, i64:1, i64:5, i64:1, i64:5, i64:1, i64:5, i64:1]")
+);
+
+// A default whose block declares a recursive type is typed at the bind
+// from its definition's rows: the type it names resolves there too.
+run!(
+    default_at_a_bind_declares_a_recursive_type,
+    r#"{
+        let f = |#d = {
+            type L<'a> = [`Nil, `Cons('a, L<'a>)];
+            let l: L<i64> = `Cons(1, `Cons(2, `Nil));
+            l
+        }, x: i64| (x, d == d);
+        let g = |y| f(y);
+        (f(1), g(10))
+    }"#,
+    prints("[[i64:1, true], [i64:10, true]]")
+);
+
+// A reached arm's bind keeps the definition's type at the bind: `o` is
+// `[i64, null]` there, where `'a` is `` `S(i64) `` at the instance.
+run!(
+    default_at_a_bind_keeps_its_definitions_bind_types,
+    r#"{
+        let outer = 'a: [`S([i64, null]), `B] |x: 'a| -> i64 {
+            let f = |#d = select x { `S(o) => o$, `B => 0 }, y: i64| d + y;
+            f(1)
+        };
+        (outer(`S(4)), outer(`B))
+    }"#,
+    prints("[i64:5, i64:1]")
+);
+
 // A named union two names reach covers its members once: the literal
 // pool and a slice ladder over `U = [L, M]`, where `L` and `M` both hold
 // `B`, cover `B` as they cover it written once.
