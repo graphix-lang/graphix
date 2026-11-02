@@ -656,6 +656,30 @@ pub struct BodyShared {
 // lambdas, which main typed monomorphic). Elaboration refusing what the check accepted
 // is a type-system bug. probes: ~/ptmp/cr29/scratch/r6-B/w5/d7.gx, d3.gx, d4.gx, d8.gx
 // (nested-written-var-01)
+// 2026-11-01 claude: Lane B round 6: half fixed. enclosing_tvars now takes from each
+// enclosing signature only the names that definition's signature writes (its
+// LambdaDef's typ, walked without bindings): an instance's signature also held a cell
+// its check named after a body's annotation (outer's result Array<'n>), so in an
+// instance a nested definition's own written 'n became that cell, and the check and
+// the build split (|n| { let a: Array<'n> = [n]; let inner = |m: 'n| -> 'n m; (a,
+// inner(0), inner("s")) }: --check passed, the build refused inner("s"), main
+// a084f9887 too; a body's 'n alike under GRAPHIX_NO_SUBST). Pins
+// lang::types::written_variable_of_a_nested_signature_is_its_own and
+// written_variable_of_a_nested_body_is_its_own fail without it. What remains is d7/d3
+// themselves, a check-side cause: in inner's body the containment of p's annotation
+// merges outer's parameter cell (Def level, outer's gate open) into the annotation's
+// own 'n, a cell born generic in source, and a merge into a generic cell leaves it
+// generic (tvar::lower skips generic cells), so outer's parameter is generic while
+// outer checks: inner(n) copies it, and let r: Array<string> = inner(n) with n: i64
+// passes --check (u4.gx). Claiming
+// the merged cell at the abandoned cell's level fixed d7, d3, d4, d8 and u4 but made a
+// scheme's cells live where a holder or a factory's default merges a live cell into
+// them (lang::types::default_of_a_declared_variable_outside_the_factory,
+// holder_destructured_beside_a_written_name_in_a_body refused), and restricting it to
+// definition-owned cells still broke the second: a written annotation's own cell and a
+// scheme's cell are both Level::Generic, and the merge needs to tell them apart (a
+// let-level generalization, or a mark on a written place's cells). probes:
+// ~/ptmp/cr29/scratch/r6-B/i5/
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's.
@@ -666,14 +690,27 @@ pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) {
 }
 
 /// The variables the definitions around the body being compiled declare,
-/// by name, the innermost's where two share one.
+/// by name, the innermost's where two share one: those each definition's
+/// signature writes, never a cell its check named after a body's written
+/// type (a result bound to a let's annotated type).
 fn enclosing_tvars<R: Rt>(ctx: &CompileCtx<R>, known: &mut AHashMap<ArcStr, TVar>) {
     if let Some(body) = &ctx.body {
         for typ in body.declared.iter().rev() {
+            let written = typ
+                .lambda_ids
+                .own()
+                .and_then(|id| ctx.lambda_defs.get(&id))
+                .and_then(|d| d.downcast_ref::<LambdaDef<R>>())
+                .map(|d| {
+                    let mut names: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                    d.typ.collect_tvars(&mut names);
+                    names
+                });
             let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             typ.collect_tvars(&mut named);
             for (name, tv) in named.drain() {
-                if !name.starts_with('_') {
+                let writes = written.as_ref().is_none_or(|w| w.contains_key(&name));
+                if !name.starts_with('_') && writes {
                     known.entry(name).or_insert(tv);
                 }
             }

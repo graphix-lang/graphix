@@ -3616,6 +3616,38 @@ run!(
     FuseExpect::None
 );
 
+// A variable a nested definition's body or signature writes, which no
+// definition around it declares, is the written place's own, in an
+// instance as in the check: never a cell an enclosing definition's check
+// named after its own body's annotation.
+run!(
+    written_variable_of_a_nested_body_is_its_own,
+    r#"{
+  let outer = |n| {
+    let a: Array<'n> = [n];
+    let inner = |m| { let b: fn(y: 'n) -> 'n = |y| y; (b(m), b("s")) };
+    (a, inner(0))
+  };
+  outer(1)
+}"#,
+    prints(r#"[[i64:1], [i64:0, "s"]]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    written_variable_of_a_nested_signature_is_its_own,
+    r#"{
+  let outer = |n| {
+    let a: Array<'n> = [n];
+    let inner = |m: 'n| -> 'n m;
+    (a, inner(0), inner("s"))
+  };
+  outer(1)
+}"#,
+    prints(r#"[[i64:1], i64:0, "s"]"#);
+    FuseExpect::Jit
+);
+
 /// A union implements no trait whose method takes `self` beyond the
 /// receiver: dispatch narrows only the receiver.
 const UNION_TRAIT_SELF_ARGUMENT: &str = r#"

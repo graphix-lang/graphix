@@ -1065,7 +1065,8 @@ node graph IS the IR — there is no parallel typed IR
   variable (`lambda::body_annotation`, `enclosing_tvars`; a labeled
   default's, the definitions' around its own, `LambdaDef::in_signature`;
   in an instance, the instance's types under the definition's names,
-  `lambda::instance_sig`); a quantifier
+  `lambda::instance_sig`, the names its signature writes alone, never one
+  a body's annotation gave a cell its check reached); a quantifier
   a definition or a written `fn<..>` declares must be held by its
   signature (a parameter, the return, the throws, a held quantifier's
   bound), else it is refused (`FnType::check_quantifiers_held`), and a
