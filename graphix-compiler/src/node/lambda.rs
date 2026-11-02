@@ -1368,6 +1368,15 @@ impl Typing {
             // lang::modules::module_writes_an_outer_holder_name); what remains
             // there, order-dependent acceptance through the module's writer, is CR
             // module-holder-write-01.
+            // 2026-11-01 claude: A partial struct pattern with a whole bind (let
+            // all@ {p: m, ..} = k; m <- ..) keeps reading one copy for its names:
+            // the whole bind takes the pattern's type, which holds the names'
+            // cells, so typing its names apart refused it ("{ p: _ } does not
+            // contain {..}", main and the lane before accepted). The m.f(5) line of
+            // lang::types::holder_forwarded_beside_a_written_name pins it. That
+            // whole bind's type is itself wrong (the pattern's fields only, so a
+            // field read takes the wrong index at run time, main the same): CR
+            // partial-whole-bind-01.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),

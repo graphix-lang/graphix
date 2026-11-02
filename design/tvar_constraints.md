@@ -316,7 +316,10 @@ name's uses decide would otherwise hold for what the holder's other reads
 share (pin `holder_destructured_beside_a_written_name`). A `let`
 forwarding a generalized binding to a pattern that binds a written name
 (`let (a, b) = h; a <- ..`) gives each name a copy of its own part
-(`Bind::apart`, pin `holder_forwarded_beside_a_written_name`). A
+(`Bind::apart`, pin `holder_forwarded_beside_a_written_name`); a
+partial struct pattern with a whole bind (`all@ {p, ..}`) reads one copy
+for its names, since the whole bind takes the pattern's type (CR
+partial-whole-bind-01). A
 module with no interface that writes such a name is not known as a
 writer when the parent's `let` compiles, so its write decides the copy
 the parent's other names share (CR module-holder-write-01). Two lambda

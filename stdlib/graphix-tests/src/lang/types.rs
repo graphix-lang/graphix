@@ -5511,9 +5511,11 @@ run!(
   let {p: e, q: g, ..} = k;
   let v = g.f("v");
   e <- never<{f: fn(x: i64) -> i64}>();
-  (w, u, r, v, a.f(1), c.f(2), p.f(3), e.f(4))
+  let all@ {p: m, ..} = k;
+  m <- never<{f: fn(x: i64) -> i64}>();
+  (w, u, r, v, a.f(1), c.f(2), p.f(3), e.f(4), m.f(5))
 }"#,
-    prints(r#"["w", "u", "r", "v", i64:1, i64:2, i64:3, i64:4]"#);
+    prints(r#"["w", "u", "r", "v", i64:1, i64:2, i64:3, i64:4, i64:5]"#);
     FuseExpect::None
 );
 run!(
