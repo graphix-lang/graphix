@@ -289,7 +289,8 @@ bound, or `Any`), or declare no `'a`: `|x: 'a| -> 'a { y <- x; x }` is
 then one type, the first call's. A written `fn<'a: ..>` type holds a value
 the same way wherever it stands (a parameter, a `let` annotation, a field,
 an element, a return type, a labeled default, an abstract type's
-representation, another function type's result): `let h: fn<'a: Any>(x:
+representation or parameter (`W<fn<'a: Any>(..)>`, `Transparent<..>`),
+another function type's result): `let h: fn<'a: Any>(x:
 'a) -> 'a = |x| { y <- x; x }` is refused, and so are `let mk: fn(z: i64)
 -> fn<'a: Any>(x: 'a) -> 'a = |z| |x| { y <- x; x }` and a function a call
 made whose instance holds `'a` (`mk(never())` over `|z| |x| { z <- x; z

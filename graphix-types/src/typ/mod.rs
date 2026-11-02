@@ -2823,8 +2823,9 @@ impl Type {
     }
 
     /// Whether a function type with quantifiers of its own may stand at a
-    /// part of this type a value of it produces, outside an abstract one (a
-    /// function type's result and throws, never its parameters): through
+    /// part of this type a value of it produces (an abstract type's
+    /// parameter, a function type's result and throws, never its
+    /// parameters): through
     /// bindings, an open cell's lower bounds, and each definition a name
     /// reaches, its body walked as written, once. A quick test that only
     /// looks: it copies no body and decides no name, which another task's
@@ -2839,7 +2840,6 @@ impl Type {
         ) -> bool {
             ensure_sufficient(|| match t {
                 Type::Fn(ft) if !ft.quantifiers.is_empty() => true,
-                Type::Abstract { .. } => false,
                 Type::TVar(tv) => match tv.binding() {
                     Some(b) => go(&b, env, defs, nodes),
                     None => t.open_lower().iter().any(|l| go(l, env, defs, nodes)),

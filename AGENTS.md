@@ -1110,7 +1110,8 @@ node graph IS the IR — there is no parallel typed IR
   (`callsite.rs::Widening`, `holds_invariantly`); a written function type with its own quantifiers
   (`fn<'b: C>(..)`) is rank-2 wherever it stands (a formal, a field, an
   element, a member, a `let` annotation, a typedef, a return type, a
-  function type's result, an abstract type's representation): what
+  function type's result, an abstract type's representation or
+  parameter): what
   it holds is checked with `'b` rigid and held to exactly its declared
   bounds, predicates included (`fn<'b: Number>` takes no `|x| x * x`:
   declare `Number + Singleton`; `FnType::contains_int`, judged

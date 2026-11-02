@@ -609,8 +609,8 @@ fn compile_apply_args<R: Rt>(
 
 /// The rank-2 quantifiers of a formal: those of each function type at a
 /// part of it the value produces (the formal itself, a field, an element,
-/// a member, a function type's result or throws; never a parameter), as
-/// the function type names them.
+/// a member, an abstract type's parameter, a function type's result or
+/// throws; never a parameter), as the function type names them.
 type Quantified = SmallVec<[(ArcStr, TVar); 2]>;
 
 /// A formal holding a quantified function type `fn<'b: C>(..)`, with the
@@ -765,7 +765,6 @@ fn rank2_parts(
                     }
                 }
             }
-            Type::Abstract { .. } => None,
             t => t.cow_children(&mut |c| rank2_parts(env, c, expanding, out)),
         };
         if let Some(n) = node {
@@ -1026,6 +1025,17 @@ pub(crate) fn contain_generally<R: Rt>(
 // over-refusal). Still open: an interface val (if1, if3) is the new CR
 // iface-rank2-escape-01, the class of main's iface-generic-written-01; the REPL shape
 // rp2 is repl-bottom-settle-01. Probes ~/ptmp/cr29/scratch/r6-B/r7/.
+// 2026-11-02 claude: Review B4-r2 (both reviewers, medium): an abstract type applied
+// to a quantified fn type (type W<'t> = Abstract<'t>; let w: W<fn<'a: Any>(..)> =
+// W(|x| { y <- x; x }), core's Transparent<fn<'a>..> alike) was no holder:
+// rank2_parts and Type::may_hold_quantified_fn stopped at Type::Abstract, and
+// Construct saw its parameter still open. Both now walk an abstract type's parameters
+// as parts the value produces (conservative: a parameter used only in a function's
+// parameter inside the representation is held too). Pins:
+// RANK2_ABSTRACT_PARAMETER_WRITES_OUTER, _FIELD_, _RETURN_ and
+// RANK2_TRANSPARENT_WRITES_OUTER in lang::types::unsound_acceptances_are_refused
+// (accepted before, the run failing its bind), the B<..>/Transparent<..> row of
+// lang::types::rank2_result_holders_take_general_values (no over-refusal).
 // XCR claude for claude: [bug/low] A rank-2 array element passed straight to a rank-2
 // formal is refused: `let fs: Array<fn<'a: Any>(x: 'a) -> 'a> = [|x| x]; let f = |k:
 // fn<'b: Any>(x: 'b) -> 'b| (k(1), k("s")); f(fs[0]$)` says "the argument is not

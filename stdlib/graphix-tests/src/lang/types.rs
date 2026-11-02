@@ -2757,6 +2757,40 @@ const RANK2_CONSTRUCT_PARAMETRIC_WRITES_OUTER: &str = r#"{
     (h(1), h("s"), y + 1)
 }"#;
 
+// An abstract type applied to a quantified function type holds its payload
+// as the function type would: at a let, a field, a written return type,
+// core's `Transparent` included.
+const RANK2_ABSTRACT_PARAMETER_WRITES_OUTER: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let w: W<fn<'a: Any>(x: 'a) -> 'a> = W(|x| { y <- x; x });
+    let h = w.0;
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_ABSTRACT_PARAMETER_FIELD_WRITES_OUTER: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let s: {w: W<fn<'a: Any>(x: 'a) -> 'a>} = {w: W(|x| { y <- x; x })};
+    let h = s.w.0;
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_ABSTRACT_PARAMETER_RETURN_WRITES_OUTER: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let mk = |q: i64| -> W<fn<'a: Any>(x: 'a) -> 'a> W(|x| { y <- x; x });
+    let h = mk(0).0;
+    (h(1), h("s"), y + 1)
+}"#;
+
+const RANK2_TRANSPARENT_WRITES_OUTER: &str = r#"{
+    let y = never();
+    let t: Transparent<fn<'a: Any>(x: 'a) -> 'a> = Transparent(|x| { y <- x; x });
+    let h = t.0;
+    (h(1), h("s"), y + 1)
+}"#;
+
 // Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
@@ -2938,6 +2972,16 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (RANK2_RESULT_STRUCT_WRITES_OUTER, "the value is not polymorphic in 'a"),
         (RANK2_CONSTRUCT_WRITES_OUTER, "the value is not polymorphic in 'a"),
         (RANK2_CONSTRUCT_PARAMETRIC_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (RANK2_ABSTRACT_PARAMETER_WRITES_OUTER, "the value is not polymorphic in 'a"),
+        (
+            RANK2_ABSTRACT_PARAMETER_FIELD_WRITES_OUTER,
+            "the value is not polymorphic in 'a",
+        ),
+        (
+            RANK2_ABSTRACT_PARAMETER_RETURN_WRITES_OUTER,
+            "the value is not polymorphic in 'a",
+        ),
+        (RANK2_TRANSPARENT_WRITES_OUTER, "the value is not polymorphic in 'a"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
@@ -7452,6 +7496,11 @@ run!(
   type W = Abstract<fn<'a: Any>(x: 'a) -> 'a>;
   let w = W(|x| x);
   let wf = w.0;
+  type B<'t> = Abstract<'t>;
+  let b: B<fn<'a: Any>(x: 'a) -> 'a> = B(|x| x);
+  let bf = b.0;
+  let t: Transparent<fn<'a: Any>(x: 'a) -> 'a> = Transparent(|x| x);
+  let tf = t.0;
   (
     (h(1), h("s")),
     app(|z| |x| x),
@@ -7459,11 +7508,12 @@ run!(
     (r.f(1), r.f("v"), r.n),
     (hh(3), hh("w")),
     gd(0),
-    (wf(1), wf("y"))
+    (wf(1), wf("y")),
+    (bf(1), bf("z"), tf(2), tf("q"))
   )
 }"#,
     prints(
-        r#"[[i64:1, "s"], [i64:2, "t"], [[i64:1, i64:5], ["u", i64:5]], [i64:1, "v", i64:7], [i64:3, "w"], [i64:4, "x"], [i64:1, "y"]]"#
+        r#"[[i64:1, "s"], [i64:2, "t"], [[i64:1, i64:5], ["u", i64:5]], [i64:1, "v", i64:7], [i64:3, "w"], [i64:4, "x"], [i64:1, "y"], [i64:1, "z", i64:2, "q"]]"#
     );
     FuseExpect::None
 );
