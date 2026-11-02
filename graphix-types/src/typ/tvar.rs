@@ -1384,19 +1384,29 @@ impl TVar {
     pub fn add_cell_constraint(&self, c: Type) {
         let cell = self.cell();
         let existing = cell.read().constraints.clone();
-        let mut new = new_conjuncts(&existing, [c]);
+        let new = new_conjuncts(&existing, [c]);
         let level = cell.read().level;
         for c in new.iter() {
             lower(c, level)
         }
-        if !new.is_empty() {
+        if new.is_empty() {
+            return;
+        }
+        let below = {
             let mut c = cell.write();
-            if decided(&c) {
-                if c.binding.is_some() {
-                    bound_cell_changes();
-                }
-                c.constraints.extend(new.drain(..));
+            if !decided(&c) {
+                return;
             }
+            if c.binding.is_some() {
+                bound_cell_changes();
+            }
+            c.constraints.extend(new.iter().cloned());
+            c.lower.clone()
+        };
+        // what bounds the cell from below holds its predicates, whichever
+        // came first ([`Self::add_lower`])
+        for t in below.iter() {
+            require_bounds(&new, t)
         }
     }
 

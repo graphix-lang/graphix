@@ -1071,3 +1071,30 @@ run!(
             && !m.contains("'_")
     })
 );
+
+// A conjunct a cell takes after its lower bounds is theirs too: the payload
+// a construction bounds its parameter by carries the writer's bound to the
+// definition's variable, so its call is judged.
+run!(
+    json_generic_payload_beside_a_tag_judged_at_the_call,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    impl<'a> Cast for Box<'a> {};
+    let w = |x| json::write_str([Box(x), `A]);
+    let v: [i64, string] = 3;
+    w([v])
+}"#,
+    refused("JsonData refuses Array<[i64, string]>: i64 in [i64, string] has no tag")
+);
+
+run!(
+    json_generic_payload_beside_a_tag_writes,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    impl<'a> Cast for Box<'a> {};
+    let w = |x| json::write_str([Box(x), `A]);
+    w([1, 2])$
+}"#,
+    prints(r#""[{\"Box\":[1,2]},\"A\"]""#);
+    FuseExpect::None
+);

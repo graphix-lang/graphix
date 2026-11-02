@@ -100,7 +100,12 @@ whose check commits bounds into a cell the code around it left open
 decides that cell, which it may not (`tvar::decided`): a module's
 select over `B([x])`, `x` an outer `let x = never()`, is refused for
 an annotation of `x`. Each
-conjunct must contain a lower bound when it is added; a merge joins
+conjunct must contain a lower bound when it is added, and a predicate
+conjunct (`Concrete`, `Data`, `JsonData`, `Discernible`, ...) is handed
+to the open cells of each lower bound, whichever came first
+(`TVar::add_cell_constraint`, `TVar::add_lower`): a writer's
+`JsonData` reaches the variable a payload bounds `Box`'s parameter by
+in `|x| json::write_str([Box(x), `A])`, so each call judges it; a merge joins
 both cells' lists after each side's conjuncts admit the other's (a
 rigid cell admits none but itself); a copy, an image and a level claim
 carry the list. The witness

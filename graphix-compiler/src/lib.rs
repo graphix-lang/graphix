@@ -2787,6 +2787,22 @@ fn known_members(union: &Type) -> CompactString {
 // separate: an instance's re-check judges Transparent<i64> written from the definition's
 // variable as if written, which D6 exempts only at the definition. probes:
 // ~/ptmp/cr29/scratch/r6-B/i6/
+// 2026-11-01 claude: Lane B round 6, second pass: the default-path half is fixed.
+// TVar::add_cell_constraint now hands a new predicate conjunct to the open cells of the cell's
+// existing lower bounds, as TVar::add_lower already handed existing conjuncts to a new lower
+// bound: in [Box(x), `A] the Box parameter took its lower bound x before the writer's JsonData
+// reached it, so x never took it. generic_box_tag.gx is refused at the check now (JsonData
+// refuses Array<[i64, string]>), where the build alone refused it. Pins
+// lib_tests::json::json_generic_payload_beside_a_tag_judged_at_the_call (fails without it in
+// interp: the check passed what the build refused) and
+// json_generic_payload_beside_a_tag_writes. What remains is the GRAPHIX_NO_SUBST half
+// (p12_generic_transparent.gx, g4_generic_tr_null.gx run by default and are refused under the
+// flag): the re-check judges Transparent<i64> at the caller's type, a verdict D6 leaves to the
+// definition's check, the same class as no-subst-dead-arm-01. Lane G (cr40-E ab00f7906) adds
+// CompileCtx::instance_recheck for that re-check; once both land, PendingSettle::Site can
+// record it and site_bounds skip TextRefusal::Transparent under it. JUDGED: a call w(3) of |x|
+// json::write_str(Transparent(x)) runs (D6 exempts Transparent over the definition's own
+// variable, and JsonData of i64 holds), so the default path's answer is the intended one.
 /// The bounds a call's settled cells must meet beyond their check: a
 /// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
 /// map read from data).
