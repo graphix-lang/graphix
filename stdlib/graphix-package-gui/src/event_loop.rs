@@ -55,11 +55,12 @@ impl clipboard::Clipboard for Clipboard {
             #[cfg(not(target_os = "linux"))]
             clipboard::Kind::Primary => Err(arboard::Error::ClipboardNotSupported),
         })
+        .inspect_err(crate::clipboard::report)
         .ok()
     }
 
     fn write(&mut self, kind: clipboard::Kind, contents: String) {
-        let _ = crate::clipboard::clipboard(|cb| match kind {
+        let r = crate::clipboard::clipboard(|cb| match kind {
             clipboard::Kind::Standard => cb.set_text(contents),
             #[cfg(target_os = "linux")]
             clipboard::Kind::Primary => {
@@ -69,6 +70,9 @@ impl clipboard::Clipboard for Clipboard {
             #[cfg(not(target_os = "linux"))]
             clipboard::Kind::Primary => Ok(()),
         });
+        if let Err(e) = r {
+            crate::clipboard::report(&e)
+        }
     }
 }
 

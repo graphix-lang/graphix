@@ -60,7 +60,7 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
 /// each call would lose the text unless a clipboard manager took it.
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
 
-// CR claude for claude: [bug/medium] Every clipboard use goes through this one arboard
+// XCR claude for claude: [bug/medium] Every clipboard use goes through this one arboard
 // instance: the gui::clipboard builtins and each text input's copy/paste via the event
 // loop's iced Clipboard. arboard is built with default features, which on Linux is X11
 // only. On a Wayland session the window is a Wayland client while the clipboard goes
@@ -76,6 +76,16 @@ static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(N
 // 2026-11-02 claude: Eric ruled (11-02, next-discuss gui-core-02): option (a),
 // arboard's wayland-data-control feature, and log every clipboard error (iced
 // Clipboard read/write and the builtins).
+// 2026-11-02 claude: arboard is built with wayland-data-control (workspace Cargo.toml;
+// wl-clipboard-rs 0.9.3 and its deps added to Cargo.lock, no other version moved), so
+// with WAYLAND_DISPLAY set the clipboard uses the data-control protocol and falls back
+// to X11 where the compositor lacks it. The event loop's iced Clipboard logs every
+// failure but an empty clipboard under FAILURE_TARGET (clipboard::report), which the
+// shell shows on stderr; the builtins already answer theirs as a ClipboardError value.
+// Checked by hand on KDE Plasma (Wayland): env -u DISPLAY graphix --no-cache clip.gx
+// (gui::clipboard::read_text) reads the clipboard; main bbb06c0c6 answers "X11 server
+// connection timed out". No automated pin: it needs a compositor. probe
+// ~/ptmp/cr29/scratch/r8-M/clip.gx
 pub(crate) fn clipboard<T>(
     f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>,
 ) -> Result<T, arboard::Error> {
@@ -85,6 +95,14 @@ pub(crate) fn clipboard<T>(
         slot @ None => slot.insert(arboard::Clipboard::new()?),
     };
     f(cb)
+}
+
+/// Log a failure of the interface's clipboard, which has no caller to
+/// answer; an empty clipboard is no failure. The builtins answer theirs.
+pub(crate) fn report(e: &arboard::Error) {
+    if !matches!(e, arboard::Error::ContentNotAvailable) {
+        log::error!(target: graphix_compiler::FAILURE_TARGET, "clipboard: {e}")
+    }
 }
 
 /// Drop the clipboard: the last instance's drop hands its selection to
