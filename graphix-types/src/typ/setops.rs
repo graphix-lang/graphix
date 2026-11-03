@@ -3,7 +3,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Bound, ContainsFlags, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar,
-        Type, TypeRef, contains::on_copies, tvar::Level,
+        Type, TypeRef, contains::on_copies, node_addr, tvar::Level,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -65,18 +65,32 @@ impl DiffHist {
 
 /// Whether [`RefHist::ref_id`] may key `t` alike with a type that prints
 /// apart: `t` holds a bound cell, keyed as its binding, or a cell in a
-/// function type, paired by position. A reference's parameters are read,
-/// its expansion is not.
+/// function type, paired by position.
 fn keyed_loosely(t: &Type) -> bool {
-    fn go(t: &Type, in_fn: bool) -> ControlFlow<()> {
+    cell_beneath(t, |tv, in_fn| in_fn || tv.binding().is_some())
+}
+
+/// Whether `t` holds a cell `pick` takes (told whether the cell is in a
+/// function type), each shared node walked once. A reference's parameters
+/// are read, its expansion is not.
+fn cell_beneath(t: &Type, pick: impl Fn(&TVar, bool) -> bool) -> bool {
+    fn go(
+        t: &Type,
+        in_fn: bool,
+        pick: &impl Fn(&TVar, bool) -> bool,
+        seen: &mut AHashSet<(usize, bool)>,
+    ) -> ControlFlow<()> {
         ensure_sufficient(|| match t {
-            Type::TVar(tv) if in_fn || tv.binding().is_some() => ControlFlow::Break(()),
+            Type::TVar(tv) if pick(tv, in_fn) => ControlFlow::Break(()),
             Type::TVar(_) => ControlFlow::Continue(()),
-            Type::Fn(_) => t.try_for_each_child(&mut |c| go(c, true)),
-            t => t.try_for_each_child(&mut |c| go(c, in_fn)),
+            t if node_addr(t).is_some_and(|n| !seen.insert((n, in_fn))) => {
+                ControlFlow::Continue(())
+            }
+            Type::Fn(_) => t.try_for_each_child(&mut |c| go(c, true, pick, seen)),
+            t => t.try_for_each_child(&mut |c| go(c, in_fn, pick, seen)),
         })
     }
-    go(t, false).is_break()
+    go(t, false, &pick, &mut LPooled::take()).is_break()
 }
 
 fn is_empty_ty(t: &Type) -> bool {
@@ -897,6 +911,15 @@ impl Type {
             // cases fails without it). diff's memo of finished pairs (diff-dag-01) leans on
             // diff reading every subtrahend part through, since a key reads a bound cell as
             // its binding.
+            // 2026-11-03 claude: Review r9: same_type resolved and normalized both sides at
+            // every mismatch, where main compared with == alone: a select over 80 maps
+            // sharing a 300-field value struct cost 1.791G at --check against main's 1.663G
+            // (callgrind, one eval thread). same_type now reads through only where either
+            // side holds a bound cell (cell_beneath, each shared node once, which
+            // keyed_loosely now shares), else == decides as on main: map80 1.664G main,
+            // 1.693G lane; map40 1.461G, 1.472G; an empty program 1.331G, 1.329G.
+            // same_resolved keeps main's normalized comparison of every part (same_normal).
+            // The pins above still pass.
             (Type::Map { .. }, Type::Map { .. }) => {
                 if same_type(self, t) {
                     Ok(Type::Primitive(BitFlags::empty()))
@@ -1186,10 +1209,16 @@ fn is_any(t: &Type) -> bool {
 
 /// Equality read through bound type variables.
 fn same_type(t0: &Type, t1: &Type) -> bool {
-    t0 == t1 || t0.resolve_tvars().normalize() == t1.resolve_tvars().normalize()
+    let bound = |t: &Type| cell_beneath(t, |tv, _| tv.binding().is_some());
+    t0 == t1 || (bound(t0) || bound(t1)) && same_normal(t0, t1)
 }
 
-/// Positional [`same_type`]. `Any` in the subtrahend covers anything.
+/// Equality of both sides read through bound type variables, normalized.
+fn same_normal(t0: &Type, t1: &Type) -> bool {
+    t0.resolve_tvars().normalize() == t1.resolve_tvars().normalize()
+}
+
+/// Positional [`same_normal`]. `Any` in the subtrahend covers anything.
 fn same_resolved<'a, 'b>(
     t0: impl IntoIterator<Item = &'a Type>,
     t1: impl IntoIterator<Item = &'b Type>,
@@ -1200,7 +1229,7 @@ fn same_resolved<'a, 'b>(
         match (t0.next(), t1.next()) {
             (None, None) => return true,
             (Some(a), Some(b)) => {
-                if !is_any(b) && !same_type(a, b) {
+                if !is_any(b) && a != b && !same_normal(a, b) {
                     return false;
                 }
             }
