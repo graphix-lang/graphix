@@ -3612,7 +3612,7 @@ impl<R: Rt> Connect<R> {
         if !check {
             return Ok(());
         }
-        // CR claude for claude: [bug/medium] A value held through its monomorphic copy
+        // XCR claude for claude: [bug/medium] A value held through its monomorphic copy
         // (CompileCtx::monomorphic: a connect, `*r <-`, a let of a binding something
         // writes, a REPL write to a generic binding) is contained by a written quantified
         // type as that copy, while callsite::check_general walks what the original reaches:
@@ -3634,7 +3634,32 @@ impl<R: Rt> Connect<R> {
         // does it too, B5-r4-1/i1c/app3_conn.gx (`let app = 'p: Any, 'q: Any |g: fn(v: 'p)
         // -> 'q, v: 'p| -> 'q g(v); f <- |x| { y <- app(|e| W(e), x); x }`) passes --check
         // with 29145700c and runs, y holding W(1) and then W("s").
-        let written = &ctx.monomorphic(self.node.typ());
+        // 2026-11-03 claude: Round 9 lane R, the CR's first way: a value contained as its
+        // monomorphic copy has each of its cells whose copy is or reaches a quantifier
+        // stand for that quantifier, so check_general asks for those cells too
+        // (CompileCtx::monomorphic_noting names the cells it copied through
+        // FnType::instantiate_noting; callsite::stand_ins, contain_generally's copied;
+        // Connect, ConnectDeref and Bind::check_value pass them; the REPL write to a
+        // generic binding asks for its rigid cells' stand-ins through
+        // callsite::general_as_copied and keeps its message). Existing messages unchanged
+        // (the census). map_conn map_deref fm_conn lmap_conn mapn_conn mapt_conn map_let_w
+        // and h5.txt are refused by the check ('a binding it reaches, of type
+        // Array<W<'_N>>, where '_N is 'a'; h5 'made generic by an earlier compile'); main
+        // passes each --check and its run-time bind refuses f("s"). app3_conn is no hole:
+        // its 'q: Any settles y to Any (runs on both); with written undeclared variables
+        // (r9-R/app_undecl.gx) main passes the check and the bind refuses, now refused. The
+        // same leak with no rank-2 type (a collection callback's generic cells in an outer
+        // binding's type, gen_map) is the new CR callback-generic-leak-01. Pins: the
+        // RANK2_CONNECT_THROUGH_A_COLLECTION_CALLBACK, _FILTER_MAP, _A_LIST_CALLBACK,
+        // _A_CALLBACK, RANK2_DEREF_THROUGH_A_COLLECTION_CALLBACK and
+        // RANK2_WRITTEN_LET_THROUGH_A_COLLECTION_CALLBACK cases of
+        // lang::types::unsound_acceptances_are_refused (main's build runs each and its bind
+        // refuses, so no value arrives), graphix-shell tests/rank2_escape.rs
+        // a_repl_write_to_a_generic_binding_holds_its_copy_generally (main accepts the
+        // write), lang::types::rank2_copied_value_keeps_its_callbacks_inside (no
+        // over-refusal). Pass under GRAPHIX_NO_SUBST=1.
+        let mut copied: LPooled<Vec<_>> = LPooled::take();
+        let written = &ctx.monomorphic_noting(self.node.typ(), &mut copied);
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
@@ -3677,12 +3702,19 @@ impl<R: Rt> Connect<R> {
                 }
             })
         };
-        wrap!(self, callsite::contain_generally(ctx, &held, &self.node, contain))?;
+        wrap!(
+            self,
+            callsite::contain_generally(ctx, &held, &self.node, &copied, contain)
+        )?;
         // as general as the binding: the written value may not carry one of
         // its variables into the environment, as a function's parameter would
         let quantified: LPooled<Vec<(ArcStr, usize)>> =
             rigid.iter().map(|(n, tv)| (n.clone(), tv.cell_addr())).collect();
-        if generic && callsite::carried_out(&quantified, self.node.typ()).is_some() {
+        if generic
+            && (callsite::carried_out(&quantified, self.node.typ()).is_some()
+                || callsite::general_as_copied(ctx, &quantified, &copied, &self.node)
+                    .is_err())
+        {
             return format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
                 Err(anyhow!(
                     "{} is {}, made generic by an earlier compile, so what is written to \
@@ -3754,7 +3786,8 @@ impl<R: Rt> ConnectDeref<R> {
         if !check {
             return Ok(());
         }
-        let rhs = &ctx.monomorphic(self.rhs.typ());
+        let mut copied: LPooled<Vec<_>> = LPooled::take();
+        let rhs = &ctx.monomorphic_noting(self.rhs.typ(), &mut copied);
         let btyp = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),
@@ -3777,7 +3810,7 @@ impl<R: Rt> ConnectDeref<R> {
                     let contain = |t: &Type| t.check_contains(&ctx.env, rhs);
                     wrap!(
                         self,
-                        callsite::contain_generally(ctx, &t, &self.rhs, contain)
+                        callsite::contain_generally(ctx, &t, &self.rhs, &copied, contain)
                     )?;
                     wrap!(
                         self,

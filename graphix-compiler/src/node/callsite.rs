@@ -421,7 +421,7 @@ fn checked_default<R: Rt>(
         Some(t) => {
             let vars = call_variables(sig);
             let contain = |t: &Type| t.check_contains(&ctx.env, typ);
-            let quantified = held_generally(ctx, &t, &node, contain)?;
+            let quantified = held_generally(ctx, &t, &node, &[], contain)?;
             signature_holds_none(&quantified, &vars, sig, "the value")
         }
     };
@@ -1101,14 +1101,18 @@ fn typecheck_arg<R: Rt>(
 /// holds quantified function types it is expanded to them, their
 /// quantifiers held rigid, for the containment (a mismatch shows
 /// `holder`), and the value must be general in each, as a call's argument
-/// must be in its formal's ([`check_general`]).
+/// must be in its formal's ([`check_general`]). A value contained as its
+/// copy ([`CompileCtx::monomorphic_noting`]) names the cells copied in
+/// `copied`: a cell of it whose copy is or reaches a quantifier stands for
+/// that quantifier ([`stand_ins`]).
 pub(crate) fn contain_generally<R: Rt>(
     ctx: &CompileCtx<R>,
     holder: &Type,
     n: &Node<R>,
+    copied: &[(usize, TVar)],
     contain: impl FnOnce(&Type) -> Result<()>,
 ) -> Result<()> {
-    held_generally(ctx, holder, n, contain).map(|_| ())
+    held_generally(ctx, holder, n, copied, contain).map(|_| ())
 }
 
 /// [`contain_generally`], answering the quantifiers the value was held
@@ -1118,6 +1122,7 @@ fn held_generally<R: Rt>(
     ctx: &CompileCtx<R>,
     holder: &Type,
     n: &Node<R>,
+    copied: &[(usize, TVar)],
     contain: impl FnOnce(&Type) -> Result<()>,
 ) -> Result<SmallVec<[(ArcStr, usize); 2]>> {
     match quantified_formal(&ctx.env, holder) {
@@ -1128,7 +1133,9 @@ fn held_generally<R: Rt>(
                 Err(e) => e,
             })?;
             let quantified = cells(&quantified);
-            check_general(ctx, &quantified, n, "the value")?;
+            let mut asked = quantified.clone();
+            asked.extend(stand_ins(&quantified, copied));
+            check_general(ctx, &asked, n, "the value")?;
             let holding = "the type holding it";
             wrap!(n, escapes_through(&quantified, &formal, "the value", holding))?;
             Ok(quantified)
@@ -1412,6 +1419,44 @@ fn check_general<R: Rt>(
 /// Each quantifier by name and cell address.
 fn cells(quantified: &Quantified) -> SmallVec<[(ArcStr, usize); 2]> {
     quantified.iter().map(|(name, tv)| (name.clone(), tv.cell_addr())).collect()
+}
+
+/// The cells of a value contained as its copy, each by its address with
+/// its copy in `copied`, whose copy is or reaches one of `quantified`: in
+/// the value such a cell stands for that quantifier, so what reaches it
+/// from outside carries the quantifier out.
+fn stand_ins(
+    quantified: &[(ArcStr, usize)],
+    copied: &[(usize, TVar)],
+) -> SmallVec<[(ArcStr, usize); 2]> {
+    let mut stand = SmallVec::new();
+    if quantified.is_empty() || copied.is_empty() {
+        return stand;
+    }
+    let asked = asked(quantified);
+    let mut walk = Free::new(&asked);
+    for (original, copy) in copied {
+        if let Some(i) = walk.free(&Type::TVar(copy.clone()), &mut |_, _| ()).first() {
+            stand.push((quantified[*i as usize].0.clone(), *original))
+        }
+    }
+    stand
+}
+
+/// A value contained as its copy in a type whose cells `quantified` stand
+/// for its every instance (a binding an earlier compile generalized): no
+/// binding it reaches from outside, nor instance a call in it makes,
+/// reaches one of its cells whose copy is or reaches one of them.
+pub(crate) fn general_as_copied<R: Rt>(
+    ctx: &CompileCtx<R>,
+    quantified: &[(ArcStr, usize)],
+    copied: &[(usize, TVar)],
+    n: &Node<R>,
+) -> Result<()> {
+    match stand_ins(quantified, copied) {
+        stand if stand.is_empty() => Ok(()),
+        stand => check_general(ctx, &stand, n, "the value"),
+    }
 }
 
 /// `f`'s signature as a call through `site` instantiates it to pass the

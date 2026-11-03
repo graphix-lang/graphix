@@ -1156,9 +1156,11 @@ node graph IS the IR — there is no parallel typed IR
   a variable of the call an argument or an omitted labeled default is
   passed to is one type for the call: none named in the call's signature
   may be or reach `'b`, under the formal included
-  (`callsite::signature_holds_none`; not judged: what the function whose
-  result holds it shares across its own calls, CR rank2-result-maker-01,
-  a value contained as its monomorphic copy, CR rank2-escape-hof-01);
+  (`callsite::signature_holds_none`); a value contained as its
+  monomorphic copy (a write, a written `let`) has each cell whose copy is
+  or reaches `'b` stand for `'b` (`callsite::stand_ins`; not judged: what
+  the function whose result holds it shares across its own calls, CR
+  rank2-result-maker-01);
   while a call
   checks its argument against the
   formal, `'b` is one type, which no definition in the argument

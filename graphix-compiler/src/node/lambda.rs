@@ -1562,7 +1562,11 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                         true => wrap!(
                             self.body,
                             super::callsite::contain_generally(
-                                ctx, rtype, &self.body, contain
+                                ctx,
+                                rtype,
+                                &self.body,
+                                &[],
+                                contain
                             )
                         )?,
                         false => wrap!(self.body, contain(rtype))?,
@@ -2932,7 +2936,7 @@ fn judge_default<R: Rt>(
                     false => t.clone(),
                 };
                 let contain = |t: &Type| t.check_contains(&ctx.env, &typ);
-                super::callsite::contain_generally(ctx, &held, node, contain)
+                super::callsite::contain_generally(ctx, &held, node, &[], contain)
             }
         }
     })

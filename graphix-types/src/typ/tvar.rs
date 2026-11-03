@@ -744,6 +744,24 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
     })
 }
 
+// CR claude for eric: [bug/medium] A collection HOF's callback can leave its generic
+// cells in an outer binding's type, with no rank-2 type anywhere: `type W<'t> =
+// Abstract<'t>; let y = never(); let g = |x| { y <- array::map([x], |e| W(e)); x };
+// let b = g("s"); let n = select y { [w, ..] => w.0 + 1, _ => 0 }` passes --check and
+// the build refuses g("s") ("an instance at fn(x: string) -> string of a definition
+// typed fn(x: i64) -> i64"); a named callback (`let mkw = |e| W(e)`, gen_map4) the
+// same, main ec53d4846 the same. Under GRAPHIX_DBG_BIND the map site's 'b is bound to a
+// copy of the callback's result W<'g> sharing 'g, the callback's generic cell (contains'
+// TT-LEFTCOPY, TVar::copy), and this walk never lowers a generic cell, so y's type
+// holds 'g and reaches g's parameter only through generic cells: g stays generic in
+// 'x though y depends on it, and each call's copy of 'x decides nothing of y. A user
+// HOF with written variables (`|g: fn(v: 'p) -> 'q, v: 'p| -> 'q g(v)`, gen_app2) is
+// refused by the check and the build alike. Options: instantiate a callback's scheme
+// where a call's formal contains it, as a reference's read copies a generalized
+// binding; or lower the generic cells a non-generic cell's binding reaches where no
+// let names them. Its rank-2 form is refused through callsite::stand_ins
+// (rank2-escape-hof-01). probes: ~/ptmp/cr29/scratch/r9-R/{gen_map,gen_map2,gen_map4,
+// gen_map5,gen_app2}.gx (callback-generic-leak-01)
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is

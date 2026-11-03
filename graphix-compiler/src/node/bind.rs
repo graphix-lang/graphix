@@ -631,8 +631,9 @@ impl<R: Rt> Bind<R> {
     /// ([`super::callsite::contain_generally`]).
     fn check_value(&self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if !self.forwards(&ctx.env) {
+            let mut copied: LPooled<Vec<_>> = LPooled::take();
             let value = match written(ctx, &self.pattern) {
-                true => ctx.monomorphic(self.node.typ()),
+                true => ctx.monomorphic_noting(self.node.typ(), &mut copied),
                 false => self.node.typ().clone(),
             };
             let annotated =
@@ -642,7 +643,7 @@ impl<R: Rt> Bind<R> {
                 true => wrap!(
                     self.node,
                     super::callsite::contain_generally(
-                        ctx, &self.typ, &self.node, contain
+                        ctx, &self.typ, &self.node, &copied, contain
                     )
                 )?,
                 false => wrap!(self.node, contain(&self.typ))?,

@@ -303,12 +303,14 @@ written holder's own variable reaches it only under that function type
 variable of the call an argument or an omitted labeled default is passed
 to, named in the call's signature, is not and reaches not the
 quantifier, under the formal included (`k: fn<'a: Any>(x: 'a) -> W<'c>`
-given `|x| W(x)`; `callsite::signature_holds_none`). Right site: the
+given `|x| W(x)`; `callsite::signature_holds_none`); a value contained
+as its monomorphic copy (a connect, `*r <-`, a written let) has each
+cell whose copy is or reaches the quantifier stand for it, so a binding
+a callback ties to its parameter carries it out (`f <- |x| { y <-
+array::map([x], |e| W(e)); x }`; `callsite::stand_ins`). Right site: the
 value. Open: what the function whose result holds the quantifier shares
 across its own calls (a let of its body the function it makes captures),
-CR rank2-result-maker-01; a value contained as its monomorphic copy (a
-connect whose collection HOF's callback constructs from the quantifier),
-CR rank2-escape-hof-01.
+CR rank2-result-maker-01.
 
 ## Labeled and optional arguments across the fuzzer
 

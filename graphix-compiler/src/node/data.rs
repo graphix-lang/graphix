@@ -1135,7 +1135,13 @@ impl<R: Rt> StructWith<R> {
                         let contain = |t: &Type| t.check_contains(&ctx.env, &rep.n.typ());
                         wrap!(
                             rep.n,
-                            super::callsite::contain_generally(ctx, typ, &rep.n, contain)
+                            super::callsite::contain_generally(
+                                ctx,
+                                typ,
+                                &rep.n,
+                                &[],
+                                contain
+                            )
                         )?;
                         wrap!(
                             rep.n,
@@ -1265,7 +1271,7 @@ impl<R: Rt> Construct<R> {
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
         wrap!(
             self.arg,
-            super::callsite::contain_generally(ctx, &self.rep, &self.arg, contain)
+            super::callsite::contain_generally(ctx, &self.rep, &self.arg, &[], contain)
         )?;
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {

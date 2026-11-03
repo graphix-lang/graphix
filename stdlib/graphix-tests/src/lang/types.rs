@@ -3025,6 +3025,60 @@ const RANK2_LET_HOLDER_SHARES_ITS_VARIABLE: &str = r#"{
     w.0 + 1
 }"#;
 
+// A value written to a rank-2 holder is contained as its monomorphic
+// copy: a binding a callback ties to the value's own parameter carries the
+// quantifier out as a direct write would, through a collection's callback,
+// filter_map's, list::map's, a user HOF's, at a `*r <-` and a written let.
+const RANK2_CONNECT_THROUGH_A_COLLECTION_CALLBACK: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+    f <- |x| { y <- array::map([x], |e| W(e)); x };
+    (f(1), f("s"), select y { [w, ..] => w.0 + 1, _ => 0 })
+}"#;
+
+const RANK2_CONNECT_THROUGH_FILTER_MAP: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+    f <- |x| { y <- array::filter_map([x], |e| `Keep(W(e))); x };
+    (f(1), f("s"), select y { [w, ..] => w.0 + 1, _ => 0 })
+}"#;
+
+const RANK2_CONNECT_THROUGH_A_LIST_CALLBACK: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+    f <- |x| { y <- list::map([<x>], |e| W(e)); x };
+    (f(1), f("s"), select y { [<w, ..>] => w.0 + 1, _ => 0 })
+}"#;
+
+const RANK2_CONNECT_THROUGH_A_CALLBACK: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let app = |g: fn(v: 'p) -> 'q, v: 'p| -> 'q g(v);
+    let y = never();
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+    f <- |x| { y <- app(|e| W(e), x); x };
+    (f(1), f("s"), y.0 + 1)
+}"#;
+
+const RANK2_DEREF_THROUGH_A_COLLECTION_CALLBACK: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let s: {f: fn<'a: Any>(x: 'a) -> 'a} = {f: |x| x};
+    let rs = &mut s.f;
+    *rs <- |x| { y <- array::map([x], |e| W(e)); x };
+    (s.f(1), s.f("s"), select y { [w, ..] => w.0 + 1, _ => 0 })
+}"#;
+
+const RANK2_WRITTEN_LET_THROUGH_A_COLLECTION_CALLBACK: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let y = never();
+    let f: fn<'a: Any>(x: 'a) -> 'a = |x| { y <- array::map([x], |e| W(e)); x };
+    f <- |x| x;
+    (f(1), f("s"), select y { [w, ..] => w.0 + 1, _ => 0 })
+}"#;
+
 // A definition's declared variable a callee's bound ties to an outer
 // cell's constraint escapes it as a binding would.
 const DECLARED_CONSTRAINS_OUTER: &str = r#"{
@@ -3332,6 +3386,18 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (
             RANK2_LET_HOLDER_SHARES_ITS_VARIABLE,
             "not polymorphic in 'a: the type holding it",
+        ),
+        (
+            RANK2_CONNECT_THROUGH_A_COLLECTION_CALLBACK,
+            "the value is not polymorphic in 'a",
+        ),
+        (RANK2_CONNECT_THROUGH_FILTER_MAP, "the value is not polymorphic in 'a"),
+        (RANK2_CONNECT_THROUGH_A_LIST_CALLBACK, "the value is not polymorphic in 'a"),
+        (RANK2_CONNECT_THROUGH_A_CALLBACK, "the value is not polymorphic in 'a"),
+        (RANK2_DEREF_THROUGH_A_COLLECTION_CALLBACK, "the value is not polymorphic in 'a"),
+        (
+            RANK2_WRITTEN_LET_THROUGH_A_COLLECTION_CALLBACK,
+            "the value is not polymorphic in 'a",
         ),
         (DECLARED_CONSTRAINS_OUTER, "'a escapes the definition"),
         (RIGID_BELOW_LET, "does not contain fn(x:"),
@@ -7919,6 +7985,26 @@ run!(
   (w.0, s.0.0, s.1.0, t.0.0, id(5), id(#k: |x| x, 6), app(id))
 }"#,
     prints(r#"[i64:2, i64:3, "s", i64:4, [i64:5, "u"], [i64:6, "u"], [i64:7, "u"]]"#);
+    FuseExpect::Jit
+);
+
+// A value written to a rank-2 holder as its copy may hand its parameter
+// to a callback whose result stays inside it, and write an outer binding
+// a callback decides without the parameter.
+run!(
+    rank2_copied_value_keeps_its_callbacks_inside,
+    r#"{
+  type W<'t> = Abstract<'t>;
+  let y = never();
+  let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
+  f <- |x| { let ws = array::map([x], |e| W(e)); y <- array::map([2], |e| W(e)); x };
+  let s: {g: fn<'a: Any>(x: 'a) -> 'a} = {g: |x| x};
+  let rs = &mut s.g;
+  *rs <- |x| { let ws = list::map([<x>], |e| W(e)); x };
+  let n = select y { [w, ..] => w.0 + 1, _ => 0 };
+  (f(1), f("s"), s.g(3), s.g("t"), n)
+}"#,
+    prints(r#"[i64:1, "s", i64:3, "t", i64:3]"#);
     FuseExpect::Jit
 );
 
