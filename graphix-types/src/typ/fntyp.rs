@@ -392,6 +392,11 @@ impl Drop for Walking {
 // of 20 --no-cache --check runs (main 3 of 8). Pin: graphix-types
 // expr::parser::test::a_bound_cycle_is_refused_with_one_message (64 parses of t-image-01's
 // signature; fails without the fix in 3 of 3 runs).
+// 2026-11-03 claude: Review r9: the pin parsed one signature 64 times, and its parses
+// share one pooled map and that map's hasher, so it caught a revert in only 7 of 12 runs
+// (not 3 of 3 as noted above). It now parses 64 signatures over distinct names ('a0/'b63
+// .. 'a63/'b0), each asserting "'aN's bound names 'aN", so the hash order varies within
+// one run: with the sort and the breadth-first walk reverted it fails in 12 of 12 runs.
 /// Refuse a bound that reaches its own variable: directly (`'a: 'a`), under
 /// a constructor (`'a: Array<'a>`) or through another declared variable's
 /// bound (`'a: 'b, 'b: 'a`). A recursive bound is a recursive type.
