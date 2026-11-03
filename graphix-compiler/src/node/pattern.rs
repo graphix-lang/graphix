@@ -16,7 +16,7 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint, varint_len};
 use netidx_value::{Typ, Value};
 use smallvec::{SmallVec, smallvec};
-use std::{cell::RefCell, fmt::Debug};
+use std::fmt::Debug;
 use triomphe::Arc;
 
 /// The three shapes the exact-length slice pattern compiles against:
@@ -154,15 +154,7 @@ struct PatCx<'a> {
     /// The predicate was inferred from this pattern, so an or-pattern's
     /// Set holds one member per alternative, in order.
     inferred: bool,
-    /// Where a select arm collects each test a constructor makes at a
-    /// union position under a written type, with the members it leaves
-    /// ([`PatternNode::written_tests`]).
-    told: Option<&'a RefCell<WrittenTests>>,
 }
-
-/// Each test a constructor pattern makes at a union position under a
-/// written type, with the rest of the union.
-pub(crate) type WrittenTests = SmallVec<[(Type, Type); 1]>;
 
 fn leaf_bind<R: Rt>(
     ctx: &mut CompileCtx<R>,
@@ -926,7 +918,7 @@ impl StructPatternNode {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Self> {
-        let cx = PatCx { scope, pos, ori: &ori, inferred: false, told: None };
+        let cx = PatCx { scope, pos, ori: &ori, inferred: false };
         Self::compile_with(ctx, cx, type_predicate, spec)
     }
 
@@ -1083,7 +1075,7 @@ impl StructPatternNode {
                 ctx.env.retype(id, typ)
             }
             let env = &ctx.env;
-            // XCR claude for claude: [bug/medium] Under a written type, a constructor
+            // CR claude for claude: [bug/medium] Under a written type, a constructor
             // pattern at a union position is told from the union's other members with open
             // cells benign, and the select arm's Told judgment tests the written type, which
             // covers what reaches it, so neither tells the constructor from a quantifier
@@ -1094,34 +1086,16 @@ impl StructPatternNode {
             // does the same. The inferred spellings are refused (keep-slice-told-01). A Told
             // judgment of (shape, rest) deferred from here would refuse them; this compile
             // does not know whether it is the definition's check. (keep-written-told-01)
-            // 2026-11-02 claude: Fixed (lane G r8) by the inferred spellings' path: the
-            // written route in StructPatternNode::compile_int_inner records the test it
-            // makes (the structure's footprint over its shape) with the rest of the union,
-            // through PatCx::told, on the arm's PatternNode::written_tests; the select's
-            // definition check defers a PendingSettle::Told for each, as for element_tests,
-            // so an open member of the rest reads as any type it may yet bind. ['b,
-            // `Keep('b)] as `Keep(r), Array<['b, `Keep('b)]> as [`Keep(r), ..] and (['b,
-            // `Keep('b)], i64) as (`Keep(r), _) are refused 'isn't known here and may share
-            // `Keep(..)'s runtime form: annotate it' (main bbb06c0c6 runs them: g(v) prints
-            // 5, f(v) over the tuple prints 1). Pins lang::select::written_variant_,
-            // written_slice_element_ and
-            // written_tuple_element_telling_quantifier_from_keep_refused fail in all four
-            // modes with the deferral removed; written_keep_beside_told_members_checks (a
-            // closed union, a declared 'b: Number, a string beside `Keep) holds.
-            if let Ok(rest) = type_predicate.diff(env, &shape) {
-                let test = node.footprint(env, &shape, false);
-                if test.rep_collision(env, &rest).is_some() {
-                    let (a, b) = (shape.resolve_tvars(), rest.resolve_tvars());
-                    return format_with_flags(PrintFlag::DerefTVars, || {
-                        bail!(
-                            "this pattern can't tell {a} from {b}: its structure test \
-                             passes a value of either; test the type first"
-                        )
-                    });
-                }
-                if let Some(told) = cx.told {
-                    told.borrow_mut().push((test, rest))
-                }
+            if let Ok(rest) = type_predicate.diff(env, &shape)
+                && node.footprint(env, &shape, false).rep_collision(env, &rest).is_some()
+            {
+                let (a, b) = (shape.resolve_tvars(), rest.resolve_tvars());
+                return format_with_flags(PrintFlag::DerefTVars, || {
+                    bail!(
+                        "this pattern can't tell {a} from {b}: its structure test \
+                         passes a value of either; test the type first"
+                    )
+                });
             }
             return Ok(node);
         }
@@ -1969,10 +1943,6 @@ pub struct PatternNode<R: Rt> {
     pub type_predicate: Type,
     pub structure_predicate: StructPatternNode,
     pub guard: Option<Held<R>>,
-    /// The tests the structure makes at union positions of the written
-    /// type, which the definition's check tells apart from the rest of
-    /// each union as it does the arm's own; only a compile records them.
-    pub(super) written_tests: WrittenTests,
 }
 
 impl<R: Rt> PatternNode<R> {
@@ -1981,15 +1951,8 @@ impl<R: Rt> PatternNode<R> {
         type_predicate: Type,
         structure_predicate: StructPatternNode,
         guard: Option<Held<R>>,
-        written_tests: WrittenTests,
     ) -> Self {
-        Self {
-            explicit_type_predicate,
-            type_predicate,
-            structure_predicate,
-            guard,
-            written_tests,
-        }
+        Self { explicit_type_predicate, type_predicate, structure_predicate, guard }
     }
 
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -2019,7 +1982,6 @@ impl<R: Rt> PatternNode<R> {
             type_predicate,
             structure_predicate,
             guard,
-            WrittenTests::new(),
         ))
     }
 
@@ -2212,8 +2174,7 @@ impl<R: Rt> PatternNode<R> {
             | Type::Struct(_)
             | Type::Ref(_) => (),
         }
-        let told = RefCell::new(WrittenTests::new());
-        let cx = PatCx { scope, pos, ori: &ori, inferred: !explicit, told: Some(&told) };
+        let cx = PatCx { scope, pos, ori: &ori, inferred: !explicit };
         let structure_predicate = StructPatternNode::compile_with(
             ctx,
             cx,
@@ -2232,13 +2193,7 @@ impl<R: Rt> PatternNode<R> {
             .map(|g| compiler::compile(ctx, flags, g.clone(), &scope, top_id))
             .transpose()?
             .map(Held::new);
-        Ok(Self::with(
-            explicit,
-            type_predicate,
-            structure_predicate,
-            guard,
-            told.into_inner(),
-        ))
+        Ok(Self::with(explicit, type_predicate, structure_predicate, guard))
     }
 
     // CR claude for eric: [bug/low] A callee bound at a wake catches a capture up by its

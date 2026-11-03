@@ -1264,9 +1264,7 @@ cycle, across workers; the compiler never pins threads.
   the arm does, even where the arm's capture shares it
   (`Type::rep_collision_tested`). Each element of a slice pattern is a
   test of its own among the whole element type, whatever the rest covers
-  (`StructPatternNode::element_tests`), and under a written type each
-  constructor at a union position among the rest of that union
-  (`PatternNode::written_tests`). A
+  (`StructPatternNode::element_tests`). A
   compared type (`==` and the orderings), a map key type and what the
   stdlib compares or hashes (`uniq`, `min`/`max`, the sorts, `dedup`,
   `map::` keys) may hold no such pair anywhere: the `'a: Discernible`

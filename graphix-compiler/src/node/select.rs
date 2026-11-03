@@ -2391,13 +2391,6 @@ impl<R: Rt> Select<R> {
                         crate::PendingSettle::Told { test, rest, spec },
                     );
                 }
-                for (test, rest) in pat.written_tests.iter() {
-                    let (test, rest, spec) = (test.clone(), rest.clone(), spec.clone());
-                    super::defer_judgment(
-                        ctx,
-                        crate::PendingSettle::Told { test, rest, spec },
-                    );
-                }
             }
             // The guard typechecks after the narrowing so it sees the
             // arm's binds at their settled type; it must be bool.
