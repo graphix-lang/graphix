@@ -830,6 +830,16 @@ fn emit_leaf_cond_inner(
                     None => c,
                 })
             }
+            // CR claude for claude: [perf/low] A tuple or struct pattern over a union
+            // holding its member node-walks, at the top and at a payload alike: `select v {
+            // (_, true) => 5, (_, false) => 6, `A(_) => 7 }` over `[(bool, bool), `A((bool,
+            // bool))]` is refused under #[native] ("slice/tuple/struct select pattern over
+            // .. not lowerable"), and `B((_, true))` over `B([(bool, bool), `A((bool,
+            // bool))])` the same ("nested pattern over a leaf of shape Some(Value)"). Main
+            // 30702808d alike; the pool's join of a tuple member with variant heads
+            // (pool-payload-heads-01) makes such selects exhaustive without a catch-all, so
+            // more programs meet it. The fix is not located. probes:
+            // ~/ptmp/cr29/scratch/r11-N/{f0,f1,f2}.gx (union-composite-pattern-fuse-01)
             other => bail!(
                 "emit_clif: nested pattern over a leaf of shape {other:?} not lowerable"
             ),

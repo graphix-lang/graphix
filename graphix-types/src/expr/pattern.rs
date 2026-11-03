@@ -605,20 +605,36 @@ fn slice_type(list: bool, elem: Type) -> Type {
 /// unions and aliases alone is refused at its definition.
 #[doc(hidden)]
 pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
+    union_members_open(env, t, out).map(|_| ())
+}
+
+/// [`union_members`], and whether an unbound tvar was among them.
+#[doc(hidden)]
+pub fn union_members_open(
+    env: &Env,
+    t: &Type,
+    out: &mut SmallVec<[Type; 8]>,
+) -> Result<bool> {
     fn go(
         env: &Env,
         t: &Type,
         out: &mut SmallVec<[Type; 8]>,
         unfolded: &mut Unfolded,
+        open: &mut bool,
     ) -> Result<()> {
         crate::stack::ensure_sufficient(|| match t.deref_cloned() {
-            None => Ok(()),
+            None => {
+                *open = true;
+                Ok(())
+            }
             Some(t) => match &t {
-                Type::Set(ts) => ts.iter().try_for_each(|t| go(env, t, out, unfolded)),
+                Type::Set(ts) => {
+                    ts.iter().try_for_each(|t| go(env, t, out, unfolded, open))
+                }
                 Type::Ref(tr) => {
                     tr.resolve_in(env);
                     match unfolded.first(&t) {
-                        true => go(env, &t.lookup_ref(env)?, out, unfolded),
+                        true => go(env, &t.lookup_ref(env)?, out, unfolded, open),
                         false => Ok(()),
                     }
                 }
@@ -629,7 +645,9 @@ pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Resu
             },
         })
     }
-    go(env, t, out, &mut Unfolded::default())
+    let mut open = false;
+    go(env, t, out, &mut Unfolded::default(), &mut open)?;
+    Ok(open)
 }
 
 /// A struct pattern's fields in the order they print (as written when

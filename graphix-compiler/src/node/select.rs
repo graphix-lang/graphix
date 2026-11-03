@@ -8,7 +8,10 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, View, bailat,
     env::Env,
-    expr::{At, Expr, ExprId, ExprKind, Origin, Pattern, Undecided, union_members},
+    expr::{
+        At, Expr, ExprId, ExprKind, Origin, Pattern, Undecided, union_members,
+        union_members_open,
+    },
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     image::{
@@ -1240,6 +1243,9 @@ enum Head {
     Null,
     /// A variant's tag and arity; its payload matches anything.
     Tag(ArcStr, usize),
+    /// A union's one tuple or struct member, whose own positions count
+    /// only under this head.
+    Composite,
 }
 
 /// One position of a composite pattern, keyed by its path into the
@@ -1282,7 +1288,8 @@ fn may_be_any(env: &Env, t: &Type) -> Result<bool> {
     Ok(members.iter().any(|m| matches!(m, Type::Any)))
 }
 
-/// Whether a value of `t` may have head `h`: an open position may.
+/// Whether a value of `t` may have head `h`, one [`head_of`] gives: an
+/// open position may.
 fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, t, &mut members)?;
@@ -1309,7 +1316,7 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
-// CR claude for claude: [bug/low] The pool does not join a tuple's bool heads with a
+// XCR claude for claude: [bug/low] The pool does not join a tuple's bool heads with a
 // variant head at one payload position, so an exhaustive select is refused: over
 // `[`B([(bool, bool), `A((bool, bool))]), `C(i64)]` the arms `B((_, true)),
 // `B((_, false)), `B(`A(_)) and `C(_) cover every value, and the check says "no arm
@@ -1330,8 +1337,57 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // refused on main 387c29e60 (~/ptmp/cr29/scratch/r7-B/r4/u5inl.gx); the pin
 // missing_cases_over_a_union_names_reach_leave_a_covered_member_out changes with the
 // fix.
+// 2026-11-03 claude: Fixed: heads gives a union position's one tuple or struct
+// member a head (Head::Composite) beside its bool, null and variant heads; a tuple
+// or struct pattern at such a position pools that head and its own positions, which
+// PoolGroup::matches counts only in a combination taking that head. u5inl and u5nam
+// check and print 8, u5full prints 7. The pin
+// missing_cases_over_a_union_names_reach_leave_a_covered_member_out now expects 'no
+// arm covers `A(P)' (`B(L) is covered). Pins, each failing in all four modes without
+// the fix: lang::select::pool_joins_a_tuple_member_with_variant_heads,
+// pool_joins_a_named_tuple_member_with_variant_heads,
+// pool_joins_a_struct_member_with_variant_heads,
+// pool_tuple_member_beside_a_variant_finds_a_dead_arm, and the changed pin;
+// pool_tuple_member_beside_a_variant_leaves_a_head_uncovered guards the rule
+// (refused before and after). The tuple pins node-walk:
+// (union-composite-pattern-fuse-01).
+// 2026-11-03 claude: Review r11 (low, cost): PoolGroup::matches walked every
+// position's ancestors for every arm and combination, +14% on main's wide pools with
+// no composite head (wu600t 14.46G -> 16.48G instructions for --check). matches now
+// tests the arm first and looks for an unreached ancestor only where a domain holds
+// the composite head, and Head::Composite carries no shape (a position has at most
+// one tuple or struct member, so the head names it): wu600t 15.05G, wb600t 16.80G
+// (main 16.20G), g2b500 8.47G (main 8.13G). The rest is not the walk: with main's
+// matches body the lane measures wu600t 14.88G. Also noted from review: a catch-all
+// after arms the pool now completes is refused as unreachable
+// (~/ptmp/cr29/scratch/review-r11/N-r1-2/f0b.gx ran [5, 6, 7, 8] on main); that is
+// this fix's verdict, the arms cover every value. A tuple beside variants now pools
+// at the bool pool's cubic cost under MAX_POOL_COMBINATIONS (g2c500 3.47G on main,
+// 9.53G here).
+// 2026-11-03 claude: Review r11 round 2 (low): may_hold's Head::Composite arm was
+// unreachable (its one caller, leaf, passes only heads head_of gives, never
+// Head::Composite); deleted. Also measured there: the 600-arm wide pools stay 3-5%
+// over main (wu600t 14.46G -> 15.08G instructions for --check), bounded by
+// MAX_POOL_COMBINATIONS; left.
+// 2026-11-03 claude: Lane N r13 (cr48-N2, from main 429f61c96): carried over without
+// the code of (pool-open-member-01), which is parked into the D5 (b) / D6 (b)
+// rebuild, in the final form above (Head::Composite with no shape, matches testing
+// the arm first, no may_hold arm for it). The composite head pools only where the
+// position's union holds no open cell, an undecided cell or a declared variable:
+// heads and children read the position by union_members_open, and there the pattern
+// is not pooled, as main judges it; where union_members drops the open cell the pool
+// reads as main does (that hole stays with pool-open-member-01). Pins failing in all
+// four modes without that gate, each checking as on base 30702808d:
+// lang::select::pool_takes_no_composite_head_beside_a_variable and
+// pool_takes_no_composite_head_beside_a_variable_in_a_tuple (without it: passed the
+// check, no arm at run time), pool_composite_beside_a_variable_takes_a_catch_all,
+// pool_composite_beside_a_variable_in_a_tuple_takes_a_catch_all and
+// pool_composite_beside_an_undecided_cell_takes_a_catch_all (without it: refused as
+// dead arms). probes: ~/ptmp/cr29/scratch/r13-N/g/{g1,g2,g5,g6,h2}.gx. The composite
+// pins listed above fail in all four modes on main's pool code here too.
 /// The heads `t` admits when it is a finite set of them: a union of
-/// `bool`, `null` and variants.
+/// `bool`, `null`, variants and, where no member is an open cell, at most
+/// one tuple or struct.
 // CR claude for claude: [bug/high] heads takes a position's members by union_members,
 // which drops an unbound cell, so a declared variable beside null at a composite
 // pattern's position reads as null alone and a `null` arm completes the pool: `'b:
@@ -1355,14 +1411,19 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // on main 387c29e60 (probes ~/ptmp/cr29/scratch/r6-E/r6F-fix2/{p4,p3}.gx).
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-    union_members(env, t, &mut members)?;
+    let open = union_members_open(env, t, &mut members)?;
     if members.is_empty() {
         return Ok(None);
     }
     let mut out: SmallVec<[Head; 4]> = SmallVec::new();
+    let mut composite = false;
     for m in members.iter() {
         match m {
             Type::Variant(tag, ts, _) => out.push(Head::Tag(tag.clone(), ts.len())),
+            Type::Tuple(_) | Type::Struct(_) if !open && !composite => {
+                composite = true;
+                out.push(Head::Composite)
+            }
             Type::Primitive(p) => {
                 for typ in p.iter() {
                     match typ {
@@ -1457,8 +1518,32 @@ fn pooled_leaves(
         out: &mut SmallVec<[Leaf; 8]>,
     ) -> Result<Option<Miss>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        union_members(env, t, &mut members)?;
-        let [m] = &members[..] else { return Ok(Some(Miss::Unread)) };
+        let open = union_members_open(env, t, &mut members)?;
+        let m = match &members[..] {
+            [m] => m,
+            _ if open => return Ok(Some(Miss::Unread)),
+            ms => {
+                let Some(shape) = Shape::of(sp) else { return Ok(Some(Miss::Unread)) };
+                let mut fit = ms.iter().filter(|m| shape.fits(m));
+                let m = match (fit.next(), fit.next()) {
+                    (None, _) => return Ok(Some(Miss::Never)),
+                    (Some(m), None) => m,
+                    (Some(_), Some(_)) => return Ok(Some(Miss::Unread)),
+                };
+                if !matches!(m, Type::Tuple(_) | Type::Struct(_)) {
+                    return Ok(Some(Miss::Unread));
+                }
+                match heads(env, t)? {
+                    Some(domain) if domain.contains(&Head::Composite) => out.push(Leaf {
+                        path: path.clone(),
+                        heads: Some(smallvec![Head::Composite]),
+                        domain: Some(domain),
+                    }),
+                    _ => return Ok(Some(Miss::Unread)),
+                }
+                m
+            }
+        };
         let mut at =
             |i: usize, p: &StructPatternNode, t: &Type| -> Result<Option<Miss>> {
                 path.push(i as u32);
@@ -1731,23 +1816,46 @@ impl PoolGroup {
         })
     }
 
-    fn matches(arm: &[Leaf], positions: &[(&[u32], &[Head])], combo: &[&Head]) -> bool {
-        positions.iter().zip(combo.iter()).all(|((p, _), h)| admits(arm, p, h))
+    /// Does `arm` match `combo` at every position the combination
+    /// reaches: one under a position whose head is not the composite
+    /// member is not there. Only a composite head has positions under it
+    /// (`nested`).
+    fn matches(
+        arm: &[Leaf],
+        positions: &[(&[u32], &[Head])],
+        nested: bool,
+        combo: &[&Head],
+    ) -> bool {
+        positions.iter().zip(combo.iter()).all(|((p, _), h)| {
+            admits(arm, p, h)
+                || nested
+                    && positions.iter().zip(combo.iter()).any(|((q, _), g)| {
+                        q.len() < p.len()
+                            && p.starts_with(q)
+                            && !matches!(g, Head::Composite)
+                    })
+        })
+    }
+
+    fn nested(positions: &[(&[u32], &[Head])]) -> bool {
+        positions.iter().any(|(_, d)| d.iter().any(|h| matches!(h, Head::Composite)))
     }
 
     /// Some arm matches every combination the member admits.
     fn covers_all(&self) -> bool {
         let Some(positions) = self.positions(None) else { return false };
+        let nested = Self::nested(&positions);
         Self::combinations(&positions)
-            .all(|c| self.arms.iter().any(|a| Self::matches(a, &positions, &c)))
+            .all(|c| self.arms.iter().any(|a| Self::matches(a, &positions, nested, &c)))
     }
 
     /// Earlier arms match every combination `arm` matches.
     fn covers(&self, arm: &[Leaf]) -> bool {
         let Some(positions) = self.positions(Some(arm)) else { return false };
+        let nested = Self::nested(&positions);
         Self::combinations(&positions)
-            .filter(|c| Self::matches(arm, &positions, c))
-            .all(|c| self.arms.iter().any(|a| Self::matches(a, &positions, &c)))
+            .filter(|c| Self::matches(arm, &positions, nested, c))
+            .all(|c| self.arms.iter().any(|a| Self::matches(a, &positions, nested, &c)))
     }
 }
 

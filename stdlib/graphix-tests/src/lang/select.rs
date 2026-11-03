@@ -6001,9 +6001,9 @@ run!(
     FuseExpect::None
 );
 
-// Short of exhaustive over such a union, the refusal leaves out `P`, which
-// three names reach and the first two arms cover. (`B(L)` stays: the pool
-// joins no tuple heads with a variant head in one payload.)
+// Short of exhaustive over such a union, the refusal names only what no arm
+// covers: not `P`, which three names reach and the first two arms cover, nor
+// `B(L)`, whose payload's tuple and variant the pool joins.
 run!(
     missing_cases_over_a_union_names_reach_leave_a_covered_member_out,
     r#"{
@@ -6017,7 +6017,7 @@ run!(
             `B((_, true)) => 5, `B((_, false)) => 6, `B(`A(_)) => 7, `C(_) => 8
         }
     }"#,
-    refused("missing match cases: no arm covers [`A(P), `B(L)]");
+    refused("missing match cases: no arm covers `A(P)");
     FuseExpect::None
 );
 
@@ -6171,4 +6171,147 @@ run!(
         [f([3, 4]), f([])]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0])
+);
+
+// A union position's one tuple member is a head beside its variants, and
+// the tuple's own positions count under that head alone: the bool arms and
+// the variant arm cover the payload.
+run!(
+    pool_joins_a_tuple_member_with_variant_heads,
+    r#"{
+        let f = |v: [`B([(bool, bool), `A((bool, bool))]), `C(i64)]| select v {
+            `B((_, true)) => 5, `B((_, false)) => 6, `B(`A(_)) => 7, `C(_) => 8
+        };
+        [f(`B((false, true))), f(`B((true, false))), f(`B(`A((true, true)))), f(`C(1))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 6, 7, 8]);
+    FuseExpect::None
+);
+
+run!(
+    pool_joins_a_named_tuple_member_with_variant_heads,
+    r#"{
+        type P = (bool, bool);
+        type L = [P, `A(P)];
+        type M = [L, `B(L)];
+        type U = [M, L, `C(M)];
+        let f = |v: U| select v {
+            (true, _) => 1, (false, _) => 2, `A((true, _)) => 3, `A((false, _)) => 4,
+            `B((_, true)) => 5, `B((_, false)) => 6, `B(`A(_)) => 7, `C(_) => 8
+        };
+        [f((false, true)), f(`A((false, true))), f(`B((true, false))), f(`B(`A((true, false)))), f(`C((true, true)))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 4, 6, 7, 8]);
+    FuseExpect::None
+);
+
+run!(
+    pool_joins_a_struct_member_with_variant_heads,
+    r#"{
+        let f = |v: [`B([{a: bool, b: i64}, `A]), `C]| select v {
+            `B({a: true, b}) => b, `B({a: false, ..}) => 0, `B(`A) => 7, `C => 8
+        };
+        [f(`B({a: true, b: 3})), f(`B({a: false, b: 3})), f(`B(`A)), f(`C)]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 7, 8])
+);
+
+// Under the tuple's head its positions must still be covered.
+run!(
+    pool_tuple_member_beside_a_variant_leaves_a_head_uncovered,
+    r#"{
+        let f = |v: [`B([(bool, [`X, `Y]), `A]), `C]| select v {
+            `B((true, `X)) => 1, `B((false, _)) => 3, `B(`A) => 4, `C => 8
+        };
+        f(`C)
+    }"#,
+    refused("missing match cases: no arm covers `B([(bool, [`X, `Y]), `A])");
+    FuseExpect::None
+);
+
+run!(
+    pool_tuple_member_beside_a_variant_finds_a_dead_arm,
+    r#"{
+        let f = |v: [`B([(bool, bool), `A((bool, bool))]), `C(i64)]| select v {
+            `B((_, true)) => 5, `B((_, false)) => 6, `B((_, _)) => 9, `B(`A(_)) => 7, `C(_) => 8
+        };
+        f(`C(1))
+    }"#,
+    refused("unreachable arm: every combination of heads it matches is covered by earlier arms");
+    FuseExpect::None
+);
+
+// A union position holding an open cell beside its one tuple member has no
+// composite head, so the tuple arms do not complete the pool there and a
+// value of the cell needs an arm of its own.
+run!(
+    pool_takes_no_composite_head_beside_a_variable,
+    r#"{
+        let u = 'b: [i64, string] |x: [`B(['b, (bool, bool), `A]), `C]| select x {
+            `B((_, true)) => 5, `B((_, false)) => 6, `B(`A) => 7, `C => 8
+        };
+        let w: [i64, string] = 5;
+        [u(`B(w)), u(`C)]
+    }"#,
+    refused(
+        "missing match cases: no arm covers `B(['b: unbound within [i64, string], (bool, bool), `A])"
+    );
+    FuseExpect::None
+);
+
+run!(
+    pool_composite_beside_a_variable_takes_a_catch_all,
+    r#"{
+        let u = 'b: [i64, string] |x: [`B(['b, (bool, bool), `A]), `C]| select x {
+            `B((_, true)) => 5, `B((_, false)) => 6, `B(`A) => 7, `B(_) => 9, `C => 8
+        };
+        let w: [i64, string] = 5;
+        [u(`B(w)), u(`B((true, true))), u(`B(`A)), u(`C)]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7, 8]);
+    FuseExpect::None
+);
+
+run!(
+    pool_takes_no_composite_head_beside_a_variable_in_a_tuple,
+    r#"{
+        let u = 'b: [i64, string] |x: (bool, ['b, (bool, bool), `A])| select x {
+            (_, (_, true)) => 5, (_, (_, false)) => 6, (_, `A) => 7
+        };
+        let w: [i64, string] = 5;
+        u((true, w))
+    }"#,
+    refused(
+        "missing match cases: no arm covers (bool, ['b: unbound within [i64, string], (bool, bool), `A])"
+    );
+    FuseExpect::None
+);
+
+run!(
+    pool_composite_beside_a_variable_in_a_tuple_takes_a_catch_all,
+    r#"{
+        let u = 'b: [i64, string] |x: (bool, ['b, (bool, bool), `A])| select x {
+            (_, (_, true)) => 5, (_, (_, false)) => 6, (_, `A) => 7, (_, _) => 9
+        };
+        let w: [i64, string] = 5;
+        [u((true, w)), u((true, (true, true))), u((false, `A))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7]);
+    FuseExpect::None
+);
+
+run!(
+    pool_composite_beside_an_undecided_cell_takes_a_catch_all,
+    r#"{
+        let z = never();
+        let b = 0;
+        let v = select b { 0 => `B(z), 1 => `B((true, false)), 2 => `B(`A), _ => `C };
+        let r = select v {
+            `B((_, true)) => 5, `B((_, false)) => 6, `B(`A) => 7, `B(_) => 9, `C => 8
+        };
+        z <- 5;
+        r
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(9)));
+    FuseExpect::Jit
 );
