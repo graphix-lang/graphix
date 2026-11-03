@@ -303,7 +303,7 @@ written holder's own variable reaches it only under that function type
 variable of the call an argument or an omitted labeled default is passed
 to, named in the call's signature, is not and reaches not the
 quantifier, under the formal included (`k: fn<'a: Any>(x: 'a) -> W<'c>`
-given `|x| W(x)`; `callsite::signature_holds_none`); a value contained
+given `|x| W(x)`; `callsite::HeldIn`, one walk per call); a value contained
 as its monomorphic copy (a connect, `*r <-`, a written let) has each
 cell whose copy is or reaches the quantifier stand for it, so a binding
 a callback ties to its parameter carries it out (`f <- |x| { y <-

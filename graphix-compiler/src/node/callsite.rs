@@ -1061,6 +1061,14 @@ enum ArgFit {
 // lang::types::rank2_call_signature_takes_general_arguments (no over-refusal: a 'c
 // decided without the quantifier, W<'a> under the formal, omitted, written and hidden
 // defaults). Pass under GRAPHIX_NO_SUBST=1. probes ~/ptmp/cr29/scratch/r9-R/.
+// 2026-11-03 claude: 1228297c9: the signature judgment is one walk per call
+// (callsite::HeldIn, which replaces signature_holds_none): the call's variables are
+// taken once before the first rank-2 check, every argument's and omitted default's
+// quantifiers judged together after the defaults, a refusal put at its argument; a call
+// with 512 rank-2 formals cost 4.11G instructions to --check with the per-argument
+// walk, now 1.864G as main. Pin graphix-shell tests/rank2_escape.rs
+// a_call_judges_its_signature_once. The written holder's own walk is
+// contain_generally's (no call's signature takes it).
 /// Check a call's argument node against its formal's type `typ` in the
 /// call's signature `site`, answering how it fit and the quantifiers it was
 /// held general in (`held_in` takes the call's variables first); an
@@ -1364,6 +1372,24 @@ fn held_generally<R: Rt>(
 // 32c560627: interned answers, One/Many) with no adversarial re-review, only my spot
 // checks and the fixer's model run (1.1M random graphs, hash collisions forced).
 // Review that rewrite, then delete.
+// 2026-11-03 claude: Round 9 lane R review of the fix round 3 rewrite (ea37b4e7e,
+// 32c560627) against its model (r8-R/r12/model/free_model3.rs, NFree): it holds.
+// Free::go is the model's walk line for line (the memo by Type::shared_identity: a
+// TVar by its cell, a Ref by its Arc, a composite by node_addr; OnPath depths and
+// back for cycles, a node on a cycle to an ancestor answered again; the child dedup;
+// 0, 1 or join; join's sort and dedup, its cache only for joins binding no asked
+// cell, keyed by the sorted answers whose Many ids are interned by content; union's
+// merge less the sorted bound; Interned::seal comparing contents on a hash hit). The
+// model rerun with one walker over four roots in turn, as HeldIn::judge and stand_ins
+// now walk (Free::new, Free::free share the memo across roots): 1.1M random graphs,
+// 4.4M roots, collisions forced (mod 2, 4, 16), 0 mismatches against reachability
+// (r9-R/model/free_model4.rs). Outside the model: the walk takes a function type's
+// quantifiers from FnType::each_quantifier, by name, and a typedef expansion captures
+// an argument's variable named like the body's quantifier, so the walk drops that
+// cell as bound: r9-R/name_pick5.gx passes --check on main and the lane while y's
+// parameter is used at string and i64. The cause is the substitution (capture1.gx
+// does it with no rank-2 holder), the new CR typedef-capture-01; the walk itself
+// holds. Left as XCR for the reviewers.
 // CR claude for eric: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing

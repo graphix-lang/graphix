@@ -3293,6 +3293,26 @@ impl Type {
         (!unwritable).then(|| t.normalize())
     }
 
+    // CR claude for claude: [bug/high] Substitution here goes by name and ignores the
+    // quantifiers of the function types it descends into, so a typedef's expansion
+    // (Type::lookup_ref_by: `def_typ.replace_tvars(&known)`) captures an argument's
+    // variable named like a quantifier in the body: `type K<'p> = fn<'a: Any>(x: 'p) ->
+    // 'a` applied to a cell named 'a gives a function type whose quantifier list ["a"]
+    // now names the argument's cell as well, and every by-name reading of it
+    // (FnType::instantiate's fresh_quantifiers, each_quantifier, constraint views) takes
+    // that cell for the quantifier. `let f = |v: 'a| { let g: K<'a> = |x| never(); let p
+    // = g(1); let q = g("s"); v }; f(true)` passes --check and the build refuses ("an
+    // instance at fn(x: i64) -> i64 of a definition typed fn(x: bool) -> ..": each call
+    // of g freshened x's cell as a quantifier); with the quantifier renamed 'b the check
+    // refuses it. Through the rank-2 escape walk (Free takes each_quantifier's pick as
+    // the binder): `let mk = |v: 'a| -> K<'a> |x| never(); let y = never(); let outer =
+    // |k: fn<'a: Any>(x: 'a) -> 'a| (k(1), k("s")); let r = outer(|x| { y <- mk(x); x });
+    // let z: i64 = y("s"); let w: i64 = y(2)` passes --check (y's parameter is both
+    // string and i64), and with y(1) alone the run-time bind refuses it; main ec53d4846
+    // the same. Fix: substitute capture-avoiding: under a function type, leave its own
+    // quantifiers' names alone, and rename a quantifier the substituted types name free.
+    // probes: ~/ptmp/cr29/scratch/r9-R/{capture1,capture2,name_pick,name_pick2,name_pick4,
+    // name_pick5}.gx (typedef-capture-01)
     /// A copy of self with every TVar named in `known` replaced by the
     /// corresponding type; any other TVar is freshened as
     /// [`Self::reset_tvars`] does, its conjuncts and binding rewritten
