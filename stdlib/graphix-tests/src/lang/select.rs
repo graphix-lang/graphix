@@ -4823,6 +4823,46 @@ run!(
     "#
 ; FuseExpect::None);
 
+// An arm none of whose values the scrutinee holds is dead, however long
+// a tuple beside the names it walks: S0's Error<N0> against S1's
+// Error<N1> walks Error<L0> against Error<L1> while that pair is in
+// progress, and N0 shares no tag with N1.
+run!(
+    dead_arm_over_names_in_progress_is_refused_at_any_length,
+    refused("pattern [Error<K0>, Error<L0>, Error<N0>] will never match [Error<K1>, Error<L1>, Error<N1>]"),
+    "/test.gx" => r#"
+        type K0 = (`A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `X);
+        type K1 = (`A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `Y);
+        type L0 = (N0, `P);
+        type L1 = (N1, `Q);
+        type N0 = [Error<K0>, Error<L0>, `Y];
+        type N1 = [Error<K1>, Error<L1>, `W];
+        type S0 = [Error<K0>, Error<L0>, Error<N0>];
+        type S1 = [Error<K1>, Error<L1>, Error<N1>];
+        let v: S1 = never();
+        let result = select v { S0 as x => 1, _ => 2 }
+    "#
+; FuseExpect::None);
+
+// The same over payloads: what decides the arm is `M(EA) against `M(EB),
+// never the size of PY.
+run!(
+    dead_arm_over_names_in_progress_is_refused_whatever_the_payloads,
+    refused("will never match"),
+    "/test.gx" => r#"
+        type PX = [`Pa0, `Pa1, `Pa2, `Pa3];
+        type PY = [`Pb0, `Pb1, `Pb2, `Pb3];
+        type PA = [`K(PX), `L(PX)];
+        type PB = [`K(PY), `L(PY)];
+        type EA = Error<QA>;
+        type EB = Error<QB>;
+        type QA = [(EA, `X), `Na];
+        type QB = [(EB, `Y), `Nb];
+        let v: [`A(PB), `G(QB), `M(EB)] = `G(`Nb);
+        let result = select v { [`A(PA), `G(QA), `M(EA)] as x => 0, _ => 1 }
+    "#
+; FuseExpect::None);
+
 // A guard runs only where the chain reaches its arm: an earlier arm that
 // claims the value keeps every guard below from running, so `check(-1)?`
 // never runs and never raises, whether the guard reads the arm's bind or

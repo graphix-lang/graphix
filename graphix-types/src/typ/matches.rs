@@ -194,7 +194,11 @@ fn open_member(t: &Type) -> bool {
 pub(super) struct MatchHist {
     pub(super) hist: RefHist<AHashSet<RefPair>>,
     contains: ContainsHist,
+    /// The node pairs found to overlap by a walk that assumed no pair in
+    /// progress, which overlap wherever they are asked.
     found: NodePairs,
+    /// The current walk met a pair in progress.
+    assumed: bool,
 }
 
 impl MatchHist {
@@ -203,6 +207,7 @@ impl MatchHist {
             hist: RefHist::new(),
             contains: ContainsHist::new(),
             found: NodePairs::default(),
+            assumed: false,
         }
     }
 }
@@ -222,7 +227,7 @@ impl DerefMut for MatchHist {
 }
 
 impl Type {
-    // CR claude for claude: [bug/low] could_match's node-pair cache (MatchHist::found,
+    // XCR claude for claude: [bug/low] could_match's node-pair cache (MatchHist::found,
     // a NodePairs) keeps a true reached while a pair of names is in progress, which the
     // walk assumes to overlap, and keeps it after that pair's own walk fails; a later
     // question about the same node pair takes it. NodePairs keys nothing for its first
@@ -253,6 +258,19 @@ impl Type {
     // 2026-11-02 claude: DiffHist::done and the test
     // diff_and_could_match_memos_change_no_answer named above are on the parked branch
     // cr45-X, not on main (see diff-dag-01).
+    // 2026-11-03 claude: could_match's found cache now keeps a true only where its walk
+    // met no pair in progress (MatchHist::assumed, set where a pair in progress answers
+    // true, saved and restored around each could_match_int and or-ed outward), so found
+    // answers what the walk without it answers and a verdict no longer follows
+    // NodePairs::EAGER. Pins: graphix-types
+    // typ::matches::tests::could_match_keeps_no_true_a_pair_in_progress_gave (S0 against
+    // S1 at 4 to 40 `A, and the i4 shape at PX/PY sizes 4/3, 4/4, 6/4, 6/6: all false;
+    // true at 16 without the fix); graphix-tests lang::select
+    // dead_arm_over_names_in_progress_is_refused_at_any_length (fu16) and
+    // dead_arm_over_names_in_progress_is_refused_whatever_the_payloads (i4-4); all fail
+    // without the fix. Moves main's verdicts: fu16 to fu40, ft40 and the 34 of the
+    // review's 108 generated programs main accepted (i4-4, c6-6, c6-8 among them) are
+    // now refused, each a dead arm.
     pub(super) fn could_match_int(
         &self,
         env: &Env,
@@ -263,8 +281,12 @@ impl Type {
         if pair.is_some_and(|pair| hist.found.contains(pair)) {
             return Ok(true);
         }
-        let could = ensure_sufficient(|| self.could_match_inner(env, hist, t))?;
-        if let Some(pair) = pair.filter(|_| could) {
+        let outer = mem::replace(&mut hist.assumed, false);
+        let could = ensure_sufficient(|| self.could_match_inner(env, hist, t));
+        let assumed = mem::replace(&mut hist.assumed, outer);
+        hist.assumed |= assumed;
+        let could = could?;
+        if let Some(pair) = pair.filter(|_| could && !assumed) {
             hist.found.insert(pair, self, t)
         }
         Ok(could)
@@ -305,6 +327,7 @@ impl Type {
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 if hist.contains(&key) {
+                    hist.assumed = true;
                     return Ok(true);
                 }
                 let t0 = t0.lookup_ref(env)?;
@@ -703,6 +726,57 @@ impl Type {
                     "type mismatch: signature has {sig_type}, implementation has {impl_type}"
                 )
             }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::typ::cast::tests::{parsed, typed};
+
+    fn could_match(defs: &[(&str, String)], t0: &str, t1: &str) -> bool {
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (*n, &**b)).collect();
+        let (env, _) = typed(&defs, "null");
+        parsed(&env, t0).could_match(&env, &parsed(&env, t1)).unwrap()
+    }
+
+    // Error<N0> against Error<N1> walks a pair of names in progress
+    // (assumed to overlap) and fails, past the walk's first
+    // `NodePairs::EAGER` nodes when K0 and K1 are long: the answer is the
+    // same at every length.
+    #[test]
+    fn could_match_keeps_no_true_a_pair_in_progress_gave() {
+        for n in [4, 8, 12, 16, 20, 24, 28, 32, 40] {
+            let k = |last: &str| format!("({}{last})", "`A, ".repeat(n));
+            let defs = [
+                ("K0", k("`X")),
+                ("K1", k("`Y")),
+                ("L0", "(N0, `P)".into()),
+                ("L1", "(N1, `Q)".into()),
+                ("N0", "[Error<K0>, Error<L0>, `Y]".into()),
+                ("N1", "[Error<K1>, Error<L1>, `W]".into()),
+                ("S0", "[Error<K0>, Error<L0>, Error<N0>]".into()),
+                ("S1", "[Error<K1>, Error<L1>, Error<N1>]".into()),
+            ];
+            assert!(!could_match(&defs, "S0", "S1"), "{n}");
+        }
+        for (n, m) in [(4, 3), (4, 4), (6, 4), (6, 6)] {
+            let tags = |p: &str, n: usize| {
+                let ts: Vec<String> = (0..n).map(|i| format!("`{p}{i}")).collect();
+                format!("[{}]", ts.join(", "))
+            };
+            let defs = [
+                ("PX", tags("Pa", n)),
+                ("PY", tags("Pb", m)),
+                ("PA", "[`K(PX), `L(PX)]".into()),
+                ("PB", "[`K(PY), `L(PY)]".into()),
+                ("EA", "Error<QA>".into()),
+                ("EB", "Error<QB>".into()),
+                ("QA", "[(EA, `X), `Na]".into()),
+                ("QB", "[(EB, `Y), `Nb]".into()),
+            ];
+            let (t0, t1) = ("[`A(PA), `G(QA), `M(EA)]", "[`A(PB), `G(QB), `M(EB)]");
+            assert!(!could_match(&defs, t0, t1), "{n} {m}");
         }
     }
 }

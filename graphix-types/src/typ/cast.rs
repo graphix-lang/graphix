@@ -3599,6 +3599,13 @@ pub(crate) mod tests {
         Env::typed_at_root(defs, t).unwrap()
     }
 
+    /// The type `t` written at the root of `env`.
+    pub(crate) fn parsed(env: &Env, t: &str) -> Type {
+        let t = parse_type(t).unwrap().scope_refs(&ModPath::root());
+        t.seed_refs(env);
+        t
+    }
+
     // A select's shallow test over `type T0 = [null, (T1, T1)]`, .. walks
     // each typedef once, not once per path.
     #[test]

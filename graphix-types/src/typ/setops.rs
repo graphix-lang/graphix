@@ -1107,17 +1107,7 @@ fn same_resolved<'a, 'b>(
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        env::Env,
-        expr::{ModPath, parser::parse_type},
-        typ::{Type, cast::tests::typed},
-    };
-
-    fn ty(env: &Env, s: &str) -> Type {
-        let t = parse_type(s).unwrap().scope_refs(&ModPath::root());
-        t.seed_refs(env);
-        t
-    }
+    use crate::typ::cast::tests::{parsed, typed};
 
     // Each instantiation of W expands to an abstract type built anew, so
     // the walk meets Box<i64> and Box<string> at fresh addresses.
@@ -1125,8 +1115,8 @@ mod tests {
     fn matching_type_tells_fresh_instantiations_apart() {
         let (env, _) =
             typed(&[("Box<'a>", "Abstract<'a>"), ("W<'a>", "[Box<'a>, `X]")], "null");
-        let test = ty(&env, "[W<i64>, W<string>]");
-        let reaching = ty(&env, "[Box<i64>, Box<string>, `X]");
+        let test = parsed(&env, "[W<i64>, W<string>]");
+        let reaching = parsed(&env, "[Box<i64>, Box<string>, `X]");
         for _ in 0..16 {
             let m = test.matching_type(&env, &reaching).unwrap().normalize();
             assert_eq!(m.to_string(), "[`X, Box<i64>, Box<string>]");
