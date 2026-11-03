@@ -3173,6 +3173,28 @@ impl Type {
         }
     }
 
+    // CR claude for claude: [bug/medium] Plain containment drops a rigid cell at a split
+    // position: covers_by_parts splits the position by union_members, which leaves an
+    // unbound cell out, so a declared variable beside null reads as null alone and an
+    // annotation or a return type accepts a value of the wrong type. Under `'b: [i64,
+    // string] |x: ([`A, `B], ['b, null])|`, `let y: [(`A, ['b, null]), (`B, null)] = x`
+    // (s1.gx) and the same as the function's return type (s3.gx, k1.gx) pass the check,
+    // and `(`B, "w")` then reaches a select over y with no arm for it ("no arm matches: a
+    // coverage hole in the check" on base 30702808d); k3.gx returns (`B, 7) typed (`B,
+    // null). It reaches every containment, not only a select's patterns, so it is not
+    // D5 (b) / D6 (b)'s rebuild (~/ptmp/cr-discuss.md); it needs a --check census of
+    // both repos before it is built. The reviewers' rule (review r11 round 3): at a split
+    // position a rigid cell reads as its bound's members, and as a member of its own only
+    // where it has no bound. A prototype of it on cr48-N2 over the 55 probes of
+    // ~/ptmp/cr29/scratch/review-r11/{N-r3-2/q,N-r3-1/p} against base 30702808d refuses
+    // the holes s1, s3, k1, k3 and accepts q4 and v4 (correct, refused by base for
+    // missing cases), but refuses s2 and k2, correct programs base accepts: a candidate
+    // holding the cell itself (`(`B, ['b, null])`) no longer picks the bound's members.
+    // Refined, each bound member also picked by a candidate holding the cell: the same
+    // four refused, q4, v4 and k6 accepted, s2 and k2 kept, no other verdict changed.
+    // Prototype and results: ~/ptmp/cr29/scratch/r13-N/covers/{proto2.patch,
+    // proto-rule.txt, proto-rule2.txt}. probes: ~/ptmp/cr29/scratch/review-r11/N-r3-2/q/
+    // {s1,s2,s3}.gx, N-r3-1/p/{k1,k2,k3,k6}.gx (covers-by-parts-rigid-01)
     /// Do the candidates' argument lists cover `targs` together? The first
     /// position splits into its members, and each member's candidates
     /// must cover the positions after it. A probe.

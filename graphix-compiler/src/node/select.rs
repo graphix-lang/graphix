@@ -1409,6 +1409,35 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // having no finite set of heads, so `['b, null]` is not `null` alone) stands on its
 // own; it sat with D3 only because the pool work was parked with lane V. Still a hole
 // on main 387c29e60 (probes ~/ptmp/cr29/scratch/r6-E/r6F-fix2/{p4,p3}.gx).
+// 2026-11-03 claude: PARKED into Eric's D5 (b) / D6 (b) rebuild
+// (~/ptmp/cr-discuss.md: an undecided part an arm tests is refused; a pattern that
+// tests inside a declared variable's value needs a written test), which plans exactly
+// this area; by his rule (no stopgap where a general solution is planned) none of
+// round 11's code is on main. Lane N round 11 (branch cr48-N) tried two fixes. (1)
+// e31a1898a and d5e4a5912: heads and children read a position by union_members_open,
+// with no finite set of heads and no pooled pattern where a member is open, and
+// may_hold lets such a position hold any head; review r11 round 1 found children
+// still reading by union_members (review-r11/N-r1-1/{g01,g03,g04}.gx,
+// N-r1-2/{h1..h8}.gx: holes, closed by d5e4a5912) and d4.gx ('b: [bool] beside null
+// at a nested position) refused where main ran it. (2) 5d5d506f7: with the pool
+// reading ['b, null] right, set coverage's distribution law (Type::covers_by_parts)
+// dropped the rigid 'b at a split position
+// (review-r11/N-r2-1/h/{r1,r2,t4,t5,m2c,m2f,h0}.gx holes), so covers_by_parts read a
+// rigid cell as a member only a `_` picks; review r11 round 3 found that refuses correct
+// programs main runs, a declared variable's bound split across arms at a split
+// position, in a select and in plain containment
+// (review-r11/N-r3-1/p/{v2,v5,v6,v7,k2}.gx, N-r3-2/q/{q1,q3,q5,q11,q15,r11,s2}.gx),
+// and that e31a1898a moved a hole of Eric's abstract-payload-cover-01 from the form
+// without `_` to the form with it (N-r3-2/ab/ab4.gx passed the check and diverged, JIT 5
+// 0, node-walk no arm; ab4b.gx is main's form of the same hole). The
+// plain-containment half is now its own CR, (covers-by-parts-rigid-01). Folded in
+// from round 11's pool-open-position-01 (not carried to main): a head arm at a
+// position holding an open cell keeps the pool from completing ((true, _), (false,
+// null), (false, _) over (bool, ['b, null]) refused for missing cases,
+// review-r11/N-r2-1/p/{pp3,pp3c}.gx; main refuses them as unreachable) and d4.gx; a
+// trailing `_` passes both (r11-N/r2/{pp3u,d4u}.gx). Probe directories under
+// ~/ptmp/cr29/scratch/: review-r11/{N-r1-1,N-r1-2,N-r2-1,N-r2-2,N-r3-1,N-r3-2},
+// r11-N/{,r1fix,r2}; log ~/ptmp/cr29/log.md (lane N r11 entries).
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     let open = union_members_open(env, t, &mut members)?;
