@@ -250,6 +250,9 @@ impl Type {
     // test, typ::setops::tests::diff_and_could_match_memos_change_no_answer, holds the
     // fu shape. probes: ~/ptmp/cr29/scratch/r8-X/found/ (fu*.gx, ft*.gx; i4-*.gx,
     // c6-*.gx and their generators mk.py, mki.py, mkc.py) (found-assumed-true-01)
+    // 2026-11-02 claude: DiffHist::done and the test
+    // diff_and_could_match_memos_change_no_answer named above are on the parked branch
+    // cr45-X, not on main (see diff-dag-01).
     pub(super) fn could_match_int(
         &self,
         env: &Env,
