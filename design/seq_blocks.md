@@ -250,10 +250,11 @@ nothing when re-called. State inside the callee starts afresh, so a
 callee whose answer starts from a constant completes the step on that
 constant: `let counter = |t| { let n = 0; n <- t ~ n + 1; n }` makes
 `let a = counter(t)` 0 at every run, its count landing a cycle later,
-unseen. What the callee captures keeps its value across runs: a count
-that must outlive the run lives outside the callee. A captured event
-stands like any value, so `|u| ev` answers `ev`'s last event at each
-run; it does not wait for the next one.
+unseen. A let whose initializer never fires, and a catch's binder, which
+has no initializer, keep their last value. What the callee captures keeps
+its value across runs: a count that must outlive the run lives outside
+the callee. A captured event stands like any value, so `|u| ev` answers
+`ev`'s last event at each run; it does not wait for the next one.
 
 **A `let` binds the step's production for the rest of the run.**
 Later steps read the binding itself; shadowing is sequential as in a

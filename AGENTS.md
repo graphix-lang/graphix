@@ -1650,9 +1650,10 @@ cycle, across workers; the compiler never pins threads.
   stands, its callee's captures and a callee it binds included, is
   delivered fired, and its callee's body, slept since the last run, is
   born again with the step (builtins reborn, an async one holding no
-  answer; lets take their initializers; selects forget their entry
-  history); what the callee captures keeps its value, an event's last
-  fire included. A bound callee whose function value is bottom then is
+  answer; lets take their initializers, so one whose initializer never
+  fires, and a catch's binder, which has none, keep their last value;
+  selects forget their entry history); what the callee captures keeps its
+  value, an event's last fire included. A bound callee whose function value is bottom then is
   born so when the function returns (`callsite.rs::Unborn`), as is a
   call in the callee meeting a bottom function at its birth. A call
   outside a seq is never born again.

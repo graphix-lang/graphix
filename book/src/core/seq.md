@@ -274,10 +274,12 @@ called again. State inside the function starts afresh too, so a
 function whose answer starts from a constant completes the step on that
 constant: `let counter = |t| { let n = 0; n <- t ~ n + 1; n }` makes
 `let a = counter(t)` 0 at every run, its count arriving a cycle later.
-What the function captures from outside keeps its value: keep a count
-that must last across runs outside the function. An event it captures
-is read as it stands too: a call to `let wait = |u| ev` answers `ev`'s
-last event at once at every run, never waiting for the next one. A call
+A `let` whose initializer never fires, and a `catch`'s binder, which has
+no initializer, keep their last value. What the function captures from
+outside keeps its value: keep a count that must last across runs outside
+the function. An event it captures is read as it stands too: a call to
+`let wait = |u| ev` answers `ev`'s last event at once at every run, never
+waiting for the next one. A call
 through a function value that is bottom when the step issues it is made
 when the function arrives, and is a fresh call all the same.
 

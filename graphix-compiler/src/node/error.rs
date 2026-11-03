@@ -811,6 +811,14 @@ pub(crate) use report_ignored;
 // error, as it keeps a written let's value, so a handler arm a later run enters first
 // reads an earlier run's error (review probe fz/f_seq5.gx; f_seq8.gx shows a written let
 // alike on main). Said in design/catch.md; covered by the commit's soak.
+// 2026-11-03 claude: Review r9 round 2 (low): the binder keeps its last error across a
+// seq step's fresh frame because it has no initializer, as a let whose initializer never
+// fires keeps its value (f_seq8.gx: 2 4), while a let with a constant initializer takes
+// it again at each run (s8z.gx: 0 4, base and lane alike); f_seq5.gx prints the earlier
+// run's Boom(2) on the lane, nothing on main. Said so in design/catch.md and added as the
+// exception to the fresh-frame rule in CLAUDE.md, design/seq_blocks.md,
+// book/src/core/seq.md and the graphix-lang skill. Probes
+// ~/ptmp/cr29/scratch/review-r9/N-r2-1/fz/s8z.gx, N-r1-1/fz/f_seq5.gx, f_seq8.gx.
 
 /// Deliver a `?`'s raw error payload `e`, a value of `raised`, to
 /// `handler` on behalf of the `?` at `spec` under `own_top`. The one handler path, shared by

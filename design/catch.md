@@ -92,10 +92,10 @@ flow — `design/seq_blocks.md` §7).
   earlier input) and a second raise to one handler in a cycle take the
   `set_var` next-cycle path; the shell threads a session scope so a
   toplevel catch covers later inputs. Either way the error is stored, so a
-  reader the handler builds after the raise reads it. A seq step's fresh
-  frame keeps the binder's last error as it keeps a written let's value: a
-  handler arm a later run enters first reads the error an earlier run
-  raised.
+  reader the handler builds after the raise reads it. The binder has no
+  initializer, so a seq step's fresh frame keeps its last error, as it
+  keeps the value of a let whose initializer never fires: a handler arm a
+  later run enters first reads the error an earlier run raised.
 - `catch(e: T)` ascribes `T` to `e` before checking the covered region.
   Each raised type is checked against `T` at its join, while a definition's
   declared variables are rigid. A declared error variable must carry a bound
