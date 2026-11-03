@@ -635,7 +635,7 @@ struct Built {
 }
 
 impl Reach {
-    // CR claude for eric: [bug/high] A select over a union of closed members that share
+    // CR claude for claude: [bug/high] A select over a union of closed members that share
     // one undecided cell sends a value to the wrong arm, silently, on both engines. In
     // `let z = never(); let v = select b { true => (`A, true, 5, z), false => (`B, true,
     // "s", z) }; select v { (`A, false, _, _) => "f", (_, true, x, _) => "x[x]", (`A, _,
@@ -658,6 +658,14 @@ impl Reach {
     // `_`, so the settle itself must change. slice-bind-mismatch-01 has the same cause
     // (Reach::new's settle pairing a bind's cell with one member). Question D1 in
     // ~/ptmp/cr-discuss.md.
+    // 2026-11-03 claude: Readdressed to claude (round-6 discussion merge, after its
+    // critics): the fix follows from the 10-31 select ruling, so no ruling is needed. The
+    // settle never binds a name to one member of a union scrutinee, so x gets [i64,
+    // string], the annotated program's answer; refusing would refuse what the ruling
+    // passes. Run a --check census of both repos first: a verdict change for an
+    // unannotated parameter (whose shape the settle also gives) brings it back to Eric.
+    // slice-bind-mismatch-01 shares this settle for half its cause; its narrow_pattern
+    // half is D6 in ~/ptmp/cr-discuss.md.
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.

@@ -790,6 +790,10 @@ impl StructPatternNode {
     // rulings on D3 and rigid-pattern-bind-01 (next-discuss.md); this CR follows
     // whichever rule those take, and a rule that leaves a slice element's bind cell
     // unpaired with any single member (as the rest cell is) closes it.
+    // 2026-11-03 claude: Round-6 discussion merge: the Reach::new settle half goes with
+    // settle-commits-name-01 (readdressed to claude, a local fix under the 10-31 ruling);
+    // the narrow_pattern half follows rigid-pattern-bind-01, D6 in ~/ptmp/cr-discuss.md,
+    // so this stays for eric until D6 is ruled.
     fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };

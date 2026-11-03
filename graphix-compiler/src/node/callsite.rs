@@ -253,7 +253,7 @@ fn checked_default<R: Rt>(
     judge: Judge,
     held_in: Option<&mut HeldIn>,
 ) -> Result<Node<R>> {
-    // CR claude for eric: [bug/medium] A labeled default compiled at a bind is checked
+    // CR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
     // in full here at the instance's types, so a select in it over an enclosing
     // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
     // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
@@ -385,6 +385,12 @@ fn checked_default<R: Rt>(
     // ends": rows for such a default need its type names to outlive the scope that wrote
     // them (default-typedef-outlived-01, scope-shadow-crash-01). Readdressed to eric until
     // then.
+    // 2026-11-03 claude: Readdressed to claude (round-6 discussion merge): a default naming
+    // only top-level or module types never outlives its names, so it can keep rows now;
+    // narrow the no-rows exception to a name that resolves to a typedef a block declares,
+    // as the first 11-02 note says (pin: review-r8/G-r1-2/p/dnm4.gx, which passes --check
+    // and whose build refuses on main 387c29e60). The block-type half is the question D10
+    // in ~/ptmp/cr-discuss.md (default-typedef-outlived-01).
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
