@@ -719,6 +719,14 @@ impl Reach {
     // the messages base gives with z annotated, so the settle no longer distorts them; b03's refusal
     // is array::len over a union of arrays (a call binding 'a to the first member, main alike) and
     // m01's is (slice-array-union-cover-01).
+    // 2026-11-03 claude: Lane N r13: carried to cr48-N2 from main 429f61c96 (ffa70090f, c8d6ea857, and
+    // the note in 52870690e), with pool-payload-heads-01 but without the parked pool-open-member-01
+    // code. Its seven pins pass there, under GRAPHIX_NO_SUBST=1 too; with the settle code reverted the
+    // three settle_types_* pins fail in all four modes (the settle_shapes_* pins guard c8d6ea857, as
+    // before). A message change seen on the way, both sides refusing: a never() let z bound inside a
+    // select scrutinee (`B(z) beside `B((true, false)) and `B(`A), z <- 5 later) is now refused at the
+    // write ("z is [(Any, bool), `A] ... declare z: [i64, (Any, bool), `A]"), where base refused the
+    // select for missing cases (~/ptmp/cr29/scratch/r13-N/g/{h1,h3}.gx).
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.
