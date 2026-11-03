@@ -684,7 +684,8 @@ b.0])`); a lower bound's check follows its direction, and the cells
 on a cycle through cells and unions alone are one type, merged
 (`tvar::cycle_toward`, `contains::merge_bare_cycle`,
 `design/tvar_constraints.md`). A rigid cell holds only itself: an open
-cell a merge would put below it merges into it (`TVar::merge_into`).
+cell a merge would put below it merges into it, or, where the occurs
+check refuses that merge, stays a lower bound (`TVar::merge_into`).
 A cast to an integer type, a type-directed read's included, is an
 `InvalidCast` where the value does not fit (a float drops its fraction);
 a float cast to `decimal` is the decimal its shortest text names,
