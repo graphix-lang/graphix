@@ -3015,16 +3015,6 @@ const RANK2_CALL_HIDDEN_DEFAULT: &str = r#"{
     w.0 + 1
 }"#;
 
-// A written variable of a rank-2 holder is generalized with the quantified
-// function type only where it stands under it: beside it, it carries the
-// quantifier out.
-const RANK2_LET_HOLDER_SHARES_ITS_VARIABLE: &str = r#"{
-    type W<'t> = Abstract<'t>;
-    let h: (fn<'a: Any>(x: 'a) -> W<'c>, W<'c>) = (|x| W(x), W(1));
-    let w: W<i64> = h.0("s");
-    w.0 + 1
-}"#;
-
 // A value written to a rank-2 holder is contained as its monomorphic
 // copy: a binding a callback ties to the value's own parameter carries the
 // quantifier out as a direct write would, through a collection's callback,
@@ -3383,10 +3373,6 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (RANK2_CALL_OMITTED_DEFAULT, "not polymorphic in 'a: the call's signature"),
         (RANK2_CALL_OMITTED_DEFAULT_FIELD, "not polymorphic in 'a: the call's signature"),
         (RANK2_CALL_HIDDEN_DEFAULT, "not polymorphic in 'a: the call's signature"),
-        (
-            RANK2_LET_HOLDER_SHARES_ITS_VARIABLE,
-            "not polymorphic in 'a: the type holding it",
-        ),
         (
             RANK2_CONNECT_THROUGH_A_COLLECTION_CALLBACK,
             "the value is not polymorphic in 'a",

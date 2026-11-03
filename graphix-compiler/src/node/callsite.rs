@@ -422,9 +422,8 @@ fn checked_default<R: Rt>(
         Some(t) => {
             held_in.before(sig);
             let contain = |t: &Type| t.check_contains(&ctx.env, typ);
-            if let Some((_, quantified)) = held_generally(ctx, &t, &node, &[], contain)? {
-                held_in.held(&ArgKey::Named(name.clone()), "the default", &quantified)
-            }
+            let quantified = held_generally(ctx, &t, &node, &[], contain)?;
+            held_in.held(&ArgKey::Named(name.clone()), "the default", &quantified);
             Ok(())
         }
     };
@@ -1069,6 +1068,12 @@ enum ArgFit {
 // walk, now 1.864G as main. Pin graphix-shell tests/rank2_escape.rs
 // a_call_judges_its_signature_once. The written holder's own walk is
 // contain_generally's (no call's signature takes it).
+// 2026-11-03 claude: The written holder's own walk this note's first entry names is
+// withdrawn for its cost (a walk of everything the holder's cells reach, the value's
+// types included: tr14 3.89G -> 4.47G, rcself12 5.18G -> 5.39G): the let_pair shape is
+// the new CR rank2-holder-variable-01 for eric, and its pin
+// RANK2_LET_HOLDER_SHARES_ITS_VARIABLE is gone with it. The call's signature judgment
+// (HeldIn) stands.
 /// Check a call's argument node against its formal's type `typ` in the
 /// call's signature `site`, answering how it fit and the quantifiers it was
 /// held general in (`held_in` takes the call's variables first); an
@@ -1110,7 +1115,7 @@ fn typecheck_arg<R: Rt>(
             }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
             let quantified = cells(&quantified);
-            check_general(ctx, &quantified, n, "the argument")?;
+            check_general(ctx, &quantified, &[], n, "the argument")?;
             Ok((ArgFit::Fits, quantified))
         }
     }
@@ -1124,8 +1129,23 @@ fn typecheck_arg<R: Rt>(
 /// copy ([`CompileCtx::monomorphic_noting`]) names the cells copied in
 /// `copied`: a cell of it whose copy is or reaches a quantifier stands for
 /// that quantifier ([`stand_ins`]).
-/// A written holder's own variable is generalized with a quantified
-/// function type only where it stands under it.
+// CR claude for eric: [bug/medium] A written holder's own variable that stands both
+// under a quantified function type and beside it carries the quantifier out, and
+// nothing judges it: `type W<'t> = Abstract<'t>; let h: (fn<'a: Any>(x: 'a) -> W<'c>,
+// W<'c>) = (|x| W(x), W(1)); let w: W<i64> = h.0("s"); w.0 + 1` passes --check and the
+// run-time bind refuses h.0("s") (an instance at fn(x: string) -> W<i64> of a
+// definition typed fn(x: i64) -> W<i64>); main ec53d4846 the same. One variable under
+// the function type alone is generalized with it and sound (let h: fn<'a: Any>(x: 'a)
+// -> W<'c> = |x| W(x) runs h(1), h("s")). A walk of the expanded holder after the
+// containment, each quantifier bound only under the function type quantifying it,
+// refuses it (tried in round 9 lane R), but it walks everything the holder's cells
+// reach, the value's types included: on the round-7 generators tr14 3.89G -> 4.47G
+// instructions to --check, rcself12 5.18G -> 5.39G (escapes_through 0.7M -> 192M).
+// Options: that walk at its cost; a conservative local rule refusing a written
+// holder whose variable stands under a quantified function type and outside it ("name
+// a type for 'c"); or the walk only over the variables the holder names outside its
+// quantified function types, cutting the rest. probe:
+// ~/ptmp/cr29/scratch/r9-R/let_pair.gx (rank2-holder-variable-01)
 pub(crate) fn contain_generally<R: Rt>(
     ctx: &CompileCtx<R>,
     holder: &Type,
@@ -1133,17 +1153,10 @@ pub(crate) fn contain_generally<R: Rt>(
     copied: &[(usize, TVar)],
     contain: impl FnOnce(&Type) -> Result<()>,
 ) -> Result<()> {
-    match held_generally(ctx, holder, n, copied, contain)? {
-        None => Ok(()),
-        Some((formal, quantified)) => {
-            let holding = "the type holding it";
-            wrap!(n, escapes_through(&quantified, &formal, "the value", holding))
-        }
-    }
+    held_generally(ctx, holder, n, copied, contain).map(|_| ())
 }
 
-/// [`contain_generally`] but the holder's own walk, answering the holder
-/// as the containment expanded it and the quantifiers the value was held
+/// [`contain_generally`], answering the quantifiers the value was held
 /// general in, by name and cell; none where `holder` holds no quantified
 /// function type.
 fn held_generally<R: Rt>(
@@ -1152,19 +1165,17 @@ fn held_generally<R: Rt>(
     n: &Node<R>,
     copied: &[(usize, TVar)],
     contain: impl FnOnce(&Type) -> Result<()>,
-) -> Result<Option<(Type, SmallVec<[(ArcStr, usize); 2]>)>> {
+) -> Result<SmallVec<[(ArcStr, usize); 2]>> {
     match quantified_formal(&ctx.env, holder) {
-        None => contain(holder).map(|()| None),
+        None => contain(holder).map(|()| SmallVec::new()),
         Some((formal, _rigid, quantified)) => {
             contain(&formal).map_err(|e| match e.downcast::<TypeMismatch>() {
                 Ok(m) => anyhow::Error::new(m.shown_as(holder.clone())),
                 Err(e) => e,
             })?;
             let quantified = cells(&quantified);
-            let mut asked = quantified.clone();
-            asked.extend(stand_ins(&quantified, copied));
-            check_general(ctx, &asked, n, "the value")?;
-            Ok(Some((formal, quantified)))
+            check_general(ctx, &quantified, copied, n, "the value")?;
+            Ok(quantified)
         }
     }
 }
@@ -1419,10 +1430,15 @@ fn held_generally<R: Rt>(
 /// of them only if nothing outside it that lives on reaches one: a binding
 /// it reads or writes from outside (its lambdas' captures included), or the
 /// instance a call in it makes, whose signature types that instance's
-/// bindings. Its own cells (a literal's, a lambda's) live only in it.
+/// bindings. Its own cells (a literal's, a lambda's) live only in it. A
+/// value contained as its copy names the cells copied in `copied`, each by
+/// its address with its copy: one whose copy is or reaches a quantifier
+/// stands for it in the value, judged only where something outside
+/// reaches it.
 fn check_general<R: Rt>(
     ctx: &CompileCtx<R>,
     quantified: &[(ArcStr, usize)],
+    copied: &[(usize, TVar)],
     n: &Node<R>,
     what: &str,
 ) -> Result<()> {
@@ -1454,8 +1470,28 @@ fn check_general<R: Rt>(
         }
         _ => (),
     });
+    if free.is_empty() {
+        return Ok(());
+    }
+    // each copied cell is asked after the quantifiers, and stands for the
+    // quantifier its copy is or reaches, found when something reaches it
+    let mut asked: SmallVec<[(ArcStr, usize); 4]> = quantified.iter().cloned().collect();
+    asked.extend(copied.iter().map(|(original, _)| (literal!(""), *original)));
+    let only_quantified = self::asked(quantified);
+    let mut copies: Option<Free> = None;
+    let mut known: SmallVec<[Option<Option<u32>>; 4]> =
+        copied.iter().map(|_| None).collect();
+    let q = quantified.len() as u32;
+    let mut stands = |i: u32| match i.checked_sub(q) {
+        None => Some(i),
+        Some(j) => *known[j as usize].get_or_insert_with(|| {
+            let walk = copies.get_or_insert_with(|| Free::new(&only_quantified));
+            let copy = Type::TVar(copied[j as usize].1.clone());
+            walk.free(&copy, &mut |_, _| ()).first().copied()
+        }),
+    };
     for (t, through) in free.iter() {
-        wrap!(n, escapes_through(quantified, t, what, through))?;
+        wrap!(n, escapes_standing(quantified, &asked, t, what, through, &mut stands))?;
     }
     Ok(())
 }
@@ -1463,28 +1499,6 @@ fn check_general<R: Rt>(
 /// Each quantifier by name and cell address.
 fn cells(quantified: &Quantified) -> SmallVec<[(ArcStr, usize); 2]> {
     quantified.iter().map(|(name, tv)| (name.clone(), tv.cell_addr())).collect()
-}
-
-/// The cells of a value contained as its copy, each by its address with
-/// its copy in `copied`, whose copy is or reaches one of `quantified`: in
-/// the value such a cell stands for that quantifier, so what reaches it
-/// from outside carries the quantifier out.
-fn stand_ins(
-    quantified: &[(ArcStr, usize)],
-    copied: &[(usize, TVar)],
-) -> SmallVec<[(ArcStr, usize); 2]> {
-    let mut stand = SmallVec::new();
-    if quantified.is_empty() || copied.is_empty() {
-        return stand;
-    }
-    let asked = asked(quantified);
-    let mut walk = Free::new(&asked);
-    for (original, copy) in copied {
-        if let Some(i) = walk.free(&Type::TVar(copy.clone()), &mut |_, _| ()).first() {
-            stand.push((quantified[*i as usize].0.clone(), *original))
-        }
-    }
-    stand
 }
 
 /// A value contained as its copy in a type whose cells `quantified` stand
@@ -1497,9 +1511,9 @@ pub(crate) fn general_as_copied<R: Rt>(
     copied: &[(usize, TVar)],
     n: &Node<R>,
 ) -> Result<()> {
-    match stand_ins(quantified, copied) {
-        stand if stand.is_empty() => Ok(()),
-        stand => check_general(ctx, &stand, n, "the value"),
+    match copied.is_empty() {
+        true => Ok(()),
+        false => check_general(ctx, quantified, copied, n, "the value"),
     }
 }
 
@@ -1551,17 +1565,31 @@ pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
 /// A binding the value reads or writes, or an instance it makes, of type
 /// `env`, holds none of the quantifiers outside a function type there that
 /// quantifies it: its cell would carry one out.
+#[cfg(test)]
 fn escapes_through(
     quantified: &[(ArcStr, usize)],
     env: &Type,
     what: &str,
     through: &str,
 ) -> Result<()> {
-    let asked = asked(quantified);
+    escapes_standing(quantified, quantified, env, what, through, &mut Some)
+}
+
+/// [`escapes_through`] asking the cells `asked`, each of which stands for
+/// the quantifier `stands` answers, if any.
+fn escapes_standing(
+    quantified: &[(ArcStr, usize)],
+    asked: &[(ArcStr, usize)],
+    env: &Type,
+    what: &str,
+    through: &str,
+    stands: &mut impl FnMut(u32) -> Option<u32>,
+) -> Result<()> {
+    let index = self::asked(asked);
     let mut first: SmallVec<[Option<(usize, TVar)>; 4]> =
-        quantified.iter().map(|_| None).collect();
+        asked.iter().map(|_| None).collect();
     let mut sights = 0;
-    let free = Free::new(&asked).free(env, &mut |i, tv| {
+    let free = Free::new(&index).free(env, &mut |i, tv| {
         if first[i as usize].is_none() {
             first[i as usize] = Some((sights, tv.clone()));
             sights += 1
@@ -1570,6 +1598,7 @@ fn escapes_through(
     let reached = free
         .iter()
         .filter_map(|i| first[*i as usize].as_ref().map(|(n, c)| (*n, *i, c)))
+        .filter_map(|(n, i, c)| stands(i).map(|q| (n, q, c)))
         .min_by_key(|(n, _, _)| *n);
     match reached {
         None => Ok(()),

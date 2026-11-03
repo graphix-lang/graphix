@@ -3658,6 +3658,14 @@ impl<R: Rt> Connect<R> {
         // a_repl_write_to_a_generic_binding_holds_its_copy_generally (main accepts the
         // write), lang::types::rank2_copied_value_keeps_its_callbacks_inside (no
         // over-refusal). Pass under GRAPHIX_NO_SUBST=1.
+        // 2026-11-03 claude: Cost follow-up: computing every copied cell's stand-in before
+        // the bindings' walk cost one more walk of what the copies reach (tk14 3.89G ->
+        // 5.33G instructions to --check with the holder walk below). Now check_general asks
+        // the copied cells beside the quantifiers and finds the quantifier a copied cell
+        // stands for only where a binding reaches it (its copy walked once then), so a
+        // value nothing outside reaches walks nothing more: tk14 3.894G (main 3.891G), tr14
+        // 3.894G (3.887G), rcself12 5.203G (5.181G), dq_1000_900 1.784G (1.782G).
+        // callsite::stand_ins is folded into check_general; the pins hold.
         let mut copied: LPooled<Vec<_>> = LPooled::take();
         let written = &ctx.monomorphic_noting(self.node.typ(), &mut copied);
         let bind = match ctx.env.by_id.get(&self.id) {
