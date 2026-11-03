@@ -1128,7 +1128,7 @@ fn typecheck_arg<R: Rt>(
 /// must be in its formal's ([`check_general`]). A value contained as its
 /// copy ([`CompileCtx::monomorphic_noting`]) names the cells copied in
 /// `copied`: a cell of it whose copy is or reaches a quantifier stands for
-/// that quantifier ([`stand_ins`]).
+/// that quantifier ([`check_general`]).
 // CR claude for eric: [bug/medium] A written holder's own variable that stands both
 // under a quantified function type and beside it carries the quantifier out, and
 // nothing judges it: `type W<'t> = Abstract<'t>; let h: (fn<'a: Any>(x: 'a) -> W<'c>,
@@ -1473,25 +1473,46 @@ fn check_general<R: Rt>(
     if free.is_empty() {
         return Ok(());
     }
-    // each copied cell is asked after the quantifiers, and stands for the
-    // quantifier its copy is or reaches, found when something reaches it
+    // each cell copied is asked after the quantifiers, once however often
+    // it was copied, and stands for the first quantifier one of its copies
+    // is or reaches, found when something reaches it
     let mut asked: SmallVec<[(ArcStr, usize); 4]> = quantified.iter().cloned().collect();
-    asked.extend(copied.iter().map(|(original, _)| (literal!(""), *original)));
-    let only_quantified = self::asked(quantified);
-    let mut copies: Option<Free> = None;
+    let mut copies: SmallVec<[SmallVec<[&TVar; 1]>; 4]> = SmallVec::new();
+    let mut original: LPooled<AHashMap<usize, usize>> = LPooled::take();
+    for (addr, copy) in copied {
+        let j = *original.entry(*addr).or_insert_with(|| {
+            asked.push((literal!(""), *addr));
+            copies.push(SmallVec::new());
+            copies.len() - 1
+        });
+        copies[j].push(copy)
+    }
+    let (index, only_quantified) = (self::asked(&asked), self::asked(quantified));
+    let mut walk: Option<Free> = None;
     let mut known: SmallVec<[Option<Option<u32>>; 4]> =
-        copied.iter().map(|_| None).collect();
+        copies.iter().map(|_| None).collect();
     let q = quantified.len() as u32;
     let mut stands = |i: u32| match i.checked_sub(q) {
         None => Some(i),
         Some(j) => *known[j as usize].get_or_insert_with(|| {
-            let walk = copies.get_or_insert_with(|| Free::new(&only_quantified));
-            let copy = Type::TVar(copied[j as usize].1.clone());
-            walk.free(&copy, &mut |_, _| ()).first().copied()
+            let walk = walk.get_or_insert_with(|| Free::new(&only_quantified));
+            copies[j as usize].iter().find_map(|copy| {
+                walk.free(&Type::TVar((*copy).clone()), &mut |_, _| ()).first().copied()
+            })
         }),
     };
+    let mut sights = Sights::new(asked.len());
     for (t, through) in free.iter() {
-        wrap!(n, escapes_standing(quantified, &asked, t, what, through, &mut stands))?;
+        let escape = escapes_standing(
+            quantified,
+            &index,
+            &mut sights,
+            t,
+            what,
+            through,
+            &mut stands,
+        );
+        wrap!(n, escape)?;
     }
     Ok(())
 }
@@ -1572,47 +1593,70 @@ fn escapes_through(
     what: &str,
     through: &str,
 ) -> Result<()> {
-    escapes_standing(quantified, quantified, env, what, through, &mut Some)
+    let index = asked(quantified);
+    let mut sights = Sights::new(quantified.len());
+    escapes_standing(quantified, &index, &mut sights, env, what, through, &mut Some)
 }
 
 /// [`escapes_through`] asking the cells `asked`, each of which stands for
 /// the quantifier `stands` answers, if any.
 fn escapes_standing(
     quantified: &[(ArcStr, usize)],
-    asked: &[(ArcStr, usize)],
+    asked: &AHashMap<usize, u32>,
+    sights: &mut Sights,
     env: &Type,
     what: &str,
     through: &str,
     stands: &mut impl FnMut(u32) -> Option<u32>,
 ) -> Result<()> {
-    let index = self::asked(asked);
-    let mut first: SmallVec<[Option<(usize, TVar)>; 4]> =
-        asked.iter().map(|_| None).collect();
-    let mut sights = 0;
-    let free = Free::new(&index).free(env, &mut |i, tv| {
-        if first[i as usize].is_none() {
-            first[i as usize] = Some((sights, tv.clone()));
-            sights += 1
-        }
-    });
+    let free = Free::new(asked).free(env, &mut |i, tv| sights.see(i, tv));
     let reached = free
         .iter()
-        .filter_map(|i| first[*i as usize].as_ref().map(|(n, c)| (*n, *i, c)))
-        .filter_map(|(n, i, c)| stands(i).map(|q| (n, q, c)))
-        .min_by_key(|(n, _, _)| *n);
-    match reached {
-        None => Ok(()),
-        Some((_, i, c)) => {
-            let q = &quantified[i as usize].0;
-            let named = match c.name == *q {
-                true => format_compact!(""),
-                false => format_compact!(", where {c} is '{q}"),
-            };
-            bail!(
-                "{what} is not polymorphic in '{q}: {through}, of type {}{named}, would \
-                 carry '{q} out",
-                printed_deref(env)
-            )
+        .filter_map(|i| sights.at[*i as usize].map(|n| (n, *i)))
+        .filter_map(|(n, i)| stands(i).map(|q| (n, q)))
+        .min_by_key(|(n, _)| *n);
+    let escape = reached.map(|(n, i)| {
+        let (q, c) = (&quantified[i as usize].0, &sights.met[n as usize].1);
+        let named = match c.name == *q {
+            true => format_compact!(""),
+            false => format_compact!(", where {c} is '{q}"),
+        };
+        anyhow!(
+            "{what} is not polymorphic in '{q}: {through}, of type {}{named}, would \
+             carry '{q} out",
+            printed_deref(env)
+        )
+    });
+    sights.clear();
+    escape.map_or(Ok(()), Err)
+}
+
+/// The asked cells one walk met, in the order it first met each, kept
+/// for the next walk with only what this one set cleared.
+struct Sights {
+    /// Each asked cell's place in `met`, if met.
+    at: LPooled<Vec<Option<u32>>>,
+    met: LPooled<Vec<(u32, TVar)>>,
+}
+
+impl Sights {
+    fn new(asked: usize) -> Self {
+        let mut at: LPooled<Vec<Option<u32>>> = LPooled::take();
+        at.resize(asked, None);
+        Self { at, met: LPooled::take() }
+    }
+
+    fn see(&mut self, i: u32, tv: &TVar) {
+        let at = &mut self.at[i as usize];
+        if at.is_none() {
+            *at = Some(self.met.len() as u32);
+            self.met.push((i, tv.clone()))
+        }
+    }
+
+    fn clear(&mut self) {
+        for (i, _) in self.met.drain(..) {
+            self.at[i as usize] = None
         }
     }
 }
