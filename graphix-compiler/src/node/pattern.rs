@@ -809,6 +809,11 @@ impl StructPatternNode {
     // value needs a written test; a name or `_` over the whole value keeps the variable
     // (about 30 pinned definitions in lang/select.rs get a written test; the graphix-lang
     // skill's line on selects over a declared variable changes).
+    // 2026-11-03 claude: Lane N r11 changed Reach::new's settle (settle-commits-name-01):
+    // over a non-open scrutinee it no longer binds an arm's cells, so its settle half is
+    // gone, but the probes ~/ptmp/cr29/scratch/r8-G/i3/{s1,s3}.gx are still refused with
+    // the same mismatch ('_N does not contain [i64, 'b]): Type::narrow_pattern makes the
+    // merge of the element's bind cell with 'b, the half that waits on D6.
     fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };

@@ -649,7 +649,7 @@ struct Built {
 }
 
 impl Reach {
-    // CR claude for claude: [bug/high] A select over a union of closed members that share
+    // XCR claude for claude: [bug/high] A select over a union of closed members that share
     // one undecided cell sends a value to the wrong arm, silently, on both engines. In
     // `let z = never(); let v = select b { true => (`A, true, 5, z), false => (`B, true,
     // "s", z) }; select v { (`A, false, _, _) => "f", (_, true, x, _) => "x[x]", (`A, _,
@@ -680,24 +680,40 @@ impl Reach {
     // unannotated parameter (whose shape the settle also gives) brings it back to Eric.
     // slice-bind-mismatch-01 shares this settle for half its cause; its narrow_pattern
     // half is D6 in ~/ptmp/cr-discuss.md.
+    // 2026-11-03 claude: Fixed in Reach::new: over a scrutinee that is not an open cell
+    // the settle runs against copies of the inferred predicates (reset_tvars), so it
+    // decides the scrutinee's cells and never an arm's; each name is typed where its arm
+    // narrows, its part of every member the arm can match (x is [i64, string], p33 prints
+    // x5 then xs, s04 k5 then ks, t11G x5 then xs). An open-cell scrutinee keeps the
+    // predicates' cells as its parts (its shape). Census: --check of all 2941 .gx/.gxi in
+    // graphix and netidx, no output changed against base 30702808d. Pins, each failing in
+    // all four modes without the fix: lang::select::settle_types_a_name_from_every_member,
+    // settle_types_a_struct_field_name_from_every_member,
+    // settle_types_a_name_from_every_member_over_a_parameter.
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.
+    /// An open cell takes the inferred predicates' cells as its parts;
+    /// any other scrutinee settles against copies of them, so a name is
+    /// typed only where its arm narrows: its part of every member the arm
+    /// can match.
     fn new<R: Rt>(
         env: &Env,
         scrut: &Type,
         arms: &[(PatternNode<R>, Node<R>)],
     ) -> Result<Self> {
-        let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
+        let mut preds: LPooled<Vec<&PatternNode<R>>> = LPooled::take();
         // an arm that matches anything before narrowing steers only the
         // settle: narrowing may bind its cells to one member
         let mut wildcard = false;
         for (pat, _) in arms.iter() {
             match pat.matches_every(env, scrut)? {
                 true => wildcard |= pat.guard.is_none(),
-                false => itypes.push(&pat.type_predicate),
+                false => preds.push(pat),
             }
         }
+        let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
+        itypes.extend(preds.iter().map(|p| &p.type_predicate));
         let itype = Type::union_exact(env, &itypes)?;
         drop(itypes);
         let union_scrut = match scrut.deref_cloned() {
@@ -730,7 +746,21 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            let _ = itype.contains(env, scrut);
+            let _ = match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
+                true => itype.contains(env, scrut),
+                false => {
+                    let mut copies: LPooled<Vec<Type>> = LPooled::take();
+                    copies.extend(preds.iter().map(
+                        |p| match p.explicit_type_predicate {
+                            true => p.type_predicate.clone(),
+                            false => p.type_predicate.reset_tvars(),
+                        },
+                    ));
+                    let mut ctypes: LPooled<Vec<&Type>> = LPooled::take();
+                    ctypes.extend(copies.iter());
+                    Type::union_exact(env, &ctypes)?.contains(env, scrut)
+                }
+            };
         }
         let atype = scrut.normalize();
         let members_of = atype.open_bound(env).unwrap_or_else(|| atype.clone());

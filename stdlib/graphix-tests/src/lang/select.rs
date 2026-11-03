@@ -6061,3 +6061,71 @@ run!(
     refused("may share (string, i64)'s runtime form");
     FuseExpect::None
 );
+
+// A name over a union scrutinee whose members share an undecided cell is
+// typed from every member its arm can match: `x` is [i64, string], so the
+// arm takes `B's value as it takes `A's.
+run!(
+    settle_types_a_name_from_every_member,
+    r#"{
+        let b = true;
+        let z = never();
+        let v = select b { true => (`A, true, 5, z), false => (`B, true, "s", z) };
+        let r = select v {
+            (`A, false, _, _) => "f",
+            (_, true, x, _) => "x[x]",
+            (`A, _, _, _) => "a",
+            (`B, _, _, _) => "b"
+        };
+        z <- 0;
+        b <- once(r) ~ false;
+        let out: Array<string> = [];
+        out <- array::window(#n: 2, r ~ out, r);
+        select array::len(out) { 2 => out, _ => never() }
+    }"#,
+    prints(r#"["x5", "xs"]"#)
+);
+
+// And so at a struct part.
+run!(
+    settle_types_a_struct_field_name_from_every_member,
+    r#"{
+        let b = true;
+        let z = never();
+        let v = select b { true => (`A, true, {k: 5}, z), false => (`B, true, {k: "s"}, z) };
+        let r = select v {
+            (_, true, {k}, _) => "k[k]",
+            (`A, _, _, _) => "a",
+            (`B, _, _, _) => "b"
+        };
+        z <- 0;
+        b <- once(r) ~ false;
+        let out: Array<string> = [];
+        out <- array::window(#n: 2, r ~ out, r);
+        select array::len(out) { 2 => out, _ => never() }
+    }"#,
+    prints(r#"["k5", "ks"]"#)
+);
+
+// And so where the shared cell is a function's parameter.
+run!(
+    settle_types_a_name_from_every_member_over_a_parameter,
+    r#"{
+        let b = true;
+        let f = |w| {
+            let v = select b { true => (`A, true, 5, w), false => (`B, true, "s", w) };
+            select v {
+                (_, true, x, _) => "x[x]",
+                (_, false, x, _) => "f[x]",
+                (`A, _, _, _) => "a",
+                (`B, _, _, _) => "b"
+            }
+        };
+        let r = f(0);
+        b <- once(r) ~ false;
+        let out: Array<string> = [];
+        out <- array::window(#n: 2, r ~ out, r);
+        select array::len(out) { 2 => out, _ => never() }
+    }"#,
+    prints(r#"["x5", "xs"]"#)
+);

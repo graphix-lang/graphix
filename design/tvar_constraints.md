@@ -117,9 +117,12 @@ there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
 included; a probe of a trait bound reads it so, and a commit settles it.
 
 A select's arms decide a payload's open parameter as they decide an
-inferred scrutinee: the settle binds the cell to their patterns
-(`Reach::new`), the bounds commit into the patterns' cells, and each
-arm's narrowing writes its structure into the cells of the others'.
+inferred scrutinee: the settle binds the cell to a copy of their
+patterns (`Reach::new`; only an open-cell scrutinee takes the patterns'
+own cells as its parts, so a name is typed by its arm's narrowing alone,
+its part of every member the arm can match), the bounds commit into the
+copy's cells, and each arm's narrowing writes its structure into the
+cells of the others' through the parameter.
 Arms at two depths or lengths over a payload built at two shapes
 (`[[h, ..], ..]` beside `[h, ..]` over `B([["a"]])` and `B(["b"])`;
 `[h, k]` beside `[h]`; `` [`V(a), ..] `` beside `[h, ..]`) decide a
