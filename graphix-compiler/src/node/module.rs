@@ -1765,30 +1765,6 @@ impl<R: Rt> Update<R> for Module<R> {
             }
             self.runs.update(ctx, &mut self.nodes, &self.catches);
         });
-        // XCR claude for claude: [perf/low] This scans every statement of the module at
-        // the end of each update that walks it, wake or not, though a let re-raises only
-        // at its first update after a sleep; a module block's update scans its lets the
-        // same way (Block::update). A self-loop inside a 3000-let module with a .gxi,
-        // 3000 cycles: node-walked 473k instructions a cycle on main bbb06c0c6, 541k
-        // here (+14%), fused 420k vs 545k (+30%). A let that re-raises could mark the
-        // module around it as it does (a flag the module reads and clears) instead of
-        // the module asking every statement. Found by lane N's r8 final reviews; probes
-        // ~/ptmp/cr29/scratch/review-r8/N-r3-1/, N-r3-2/ (module-reraise-scan-01)
-        // 2026-11-03 claude: A let that re-raises at a wake marks the block or module
-        // around it (node::Lets: a flag beside the indices of its lets and modules, a
-        // ThinArc each of them holds, wired where the block or module takes its
-        // statements); the block reads and clears the mark as its update ends, a module
-        // that read it notes the re-raise and marks the block around it, and only then
-        // is any let visited. Self-loop inside a 3000-let module, 3000 cycles,
-        // GRAPHIX_PAR=off, instructions per cycle base ec53d4846 / lane: gxi node-walked
-        // 669.5k / 548.5k, fused 673.7k / 555.8k; no gxi node-walked 673.5k / 544.0k,
-        // fused 680.8k / 546.4k. Pin graphix-shell/tests/idle_module_cost.rs
-        // walked_module_lets_cost_what_expression_statements_do (per walked statement
-        // and cycle, lets minus expression statements without an interface: 0.7 to 3
-        // now, 44 without the change: fails); the idle pin still passes (0.0).
-        // activation_heap unchanged (5376/5399). lang::modules/delivery/prune/interfaces
-        // 935 ok; the review's module wake probes (N-r3-1, N-r3-2/sem) print as base,
-        // fused and not, and under GRAPHIX_PAR=force GRAPHIX_PRUNE=audit.
         if node::Lets::take_mark(&self.lets) {
             self.reraised = true;
             self.around.iter().for_each(node::Lets::mark)

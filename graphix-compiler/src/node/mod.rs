@@ -1327,27 +1327,6 @@ impl<'a> Writes<'a> {
         }
     }
 
-    // XCR claude for claude: [bug/low] Anchor::of knows a write's path only by a
-    // lead of `super`s or exactly `package`, and a block walk counts `package::` only
-    // at the package root, so two spellings of a write to a holder `let` stay
-    // order-dependent (main bbb06c0c6 the same): a module p below the root whose
-    // child writes `package::p::a <- never<{f: fn(x: i64) -> i64}>()` is refused 'i64
-    // does not contain string' at p's `b.f("z")` after `mod m` and runs with the reads
-    // before it; and `self::a <- ..` in the holder's own block between the two reads
-    // is refused, after them runs (plain `a <- ..` between them runs). Recognizing
-    // `self::` (the module's top block) and a `package::` path through the walked
-    // module's own path would close both. probes: ~/ptmp/cr29/scratch/review-r8/G-r2-1/
-    // i4/{pa,pb,sa,sb}/test.gx, i4/sc.gx (module-holder-write-02)
-    // 2026-11-03 claude: A block walk knows whether its block is its module's top block
-    // and that module's path below the package root (Walk::Block { top }, from
-    // compile_block_children's scope: mod_root(scope) == scope). A self::n write there,
-    // and in a module's walk, names the walked statements' binding of n past nearer
-    // ones; a package::<path>::n write, or import, anchors at Anchor::Package(path) and
-    // names the block's let where path is the block's own (package::n at the root as
-    // before). pa pb sa sb all run ("w", "z", 1); main refuses pa and sa. The other i4
-    // probes print as main. Pin graphix-shell
-    // script_scope::a_holder_written_through_self_or_its_package_path (both orders of
-    // both spellings; fails without the change: --check refuses the pa order).
     fn target(&mut self, name: &ModPath) {
         let parts: SmallVec<[&str; 4]> = Path::parts(&**name).collect();
         match &parts[..] {
@@ -1402,33 +1381,6 @@ impl<'a> Writes<'a> {
         }
     }
 
-    // XCR claude for claude: [perf/low] Each block's walk reads every module nested
-    // in it, so a chain of d file modules, each with a let before its `mod`, costs d^2
-    // statement visits across the d blocks' compiles: `--check` instructions:u over
-    // gen.py nested d, main bbb06c0c6 / lane: d=100 1.393G / 1.415G, d=400 1.927G /
-    // 2.150G (+11.6%; main is super-linear there too). Computing each module's outer
-    // writes once (bottom-up, or a memo keyed by the module's statement that outlives
-    // one block's walk) would make it linear. probe:
-    // ~/ptmp/cr29/scratch/review-r8/G-r2-2/cost/gen.py (python3 -I gen.py nested 400;
-    // cd n_400; MODE=--check ../m.sh base|lane main.gx) (module-walk-cost-01)
-    // 2026-11-03 claude: Each module statement's outer writes are kept by its id for
-    // the compile of the outermost block (node::ModuleWrites in CompileCtx, beside
-    // written_lets, cleared when that stack empties; a fork starts empty): a block's
-    // walk takes a module's writes from the walk of a block around it, and
-    // module_writes walks a body only when no walk did. JUDGED: the memo lives in the
-    // compile scratch, since a block's walk runs before its modules' nodes exist. The
-    // walk's declared, written and outer collections are pooled (written stays pooled
-    // on the written_lets stack). Pin node::test::nested_modules_walk_linear (the
-    // compile's block walks over a chain of d modules: 601 / 2401 statement visits at
-    // d=100 / 400, bound 7(d+1); with the lookup disabled 15352 / 241402: fails).
-    // --check instructions:u (GRAPHIX_PAR=off, one eval thread), gen.py nested
-    // d=100/200/400, base ec53d4846 1.415G/1.598G/2.183G, lane 1.401G/1.537G/1.931G.
-    // The rest of main's super-linear term is outside the walk.
-    // 2026-11-03 claude: Review r9 (low): the memo's entries are now the walk's own
-    // pooled vec (module_writes hands over Writes::outer) and its map keeps its
-    // capacity across compiles (ModuleWrites::clear clears in place), so a module walk
-    // allocates nothing of its own. nested_modules_walk_linear and idle_module_cost
-    // pass.
     /// What the module `id` written here writes outside it.
     fn module(&mut self, id: ExprId, exprs: &[Expr]) {
         if let Walk::Block { .. } = self.walk

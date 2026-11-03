@@ -788,37 +788,6 @@ macro_rules! report_ignored {
 }
 pub(crate) use report_ignored;
 
-// XCR claude for claude: [bug/low] A raise to a catch in its own root is put in the event
-// alone (try_publish), never stored; one in another root is a runtime write
-// (rt.set_var), stored. So a reader in the handler born after the raise does not see
-// the error: `catch(e) out <- select ep { n if n >= 3 => ep ~ "[e.0.error]", _ =>
-// never() }` over a raise at ep 1 never writes out (the arm born at ep 3 reads e from
-// the store, which never held it), where a reader present at the raise sees it
-// (`catch(e) out <- "[e.0.error]"` gives `Boom(1) from ep 2). bbb06c0c6 alike. Deliver
-// it through ExecCtx::deliver (Notify::Walk), keeping the queue for a second raise in
-// one cycle, so both roots store it, and pin both. Found by a probe for x-dup-02's
-// doc: ~/ptmp/cr29/scratch/r8-N/catch/{c0,c2}.gx (catch-binder-store-01)
-// 2026-11-03 claude: deliver_error delivers a raise in its handler's root through
-// ExecCtx::deliver (Notify::Walk), so the store holds it as it holds a cross-root
-// raise's runtime write; a second raise to one handler in a cycle still queues through
-// rt.set_var. A reader the handler builds after the raise reads the error, and wake
-// catch-up re-raises it to a handler arm that slept through it (probe w1.gx: lane 4
-// `Boom(1) where main never writes out). Pins:
-// lang::errors::catch_reader_born_after_the_raise (times out in all four modes without
-// the change) and catch_repl_reader_born_after_the_raise (the cross-root half, passes on
-// main too). Firing change: needs a soak. Probes ~/ptmp/cr29/scratch/r9-N/catch/.
-// 2026-11-03 claude: Review r9 (low): a seq step's fresh frame keeps the binder's last
-// error, as it keeps a written let's value, so a handler arm a later run enters first
-// reads an earlier run's error (review probe fz/f_seq5.gx; f_seq8.gx shows a written let
-// alike on main). Said in design/catch.md; covered by the commit's soak.
-// 2026-11-03 claude: Review r9 round 2 (low): the binder keeps its last error across a
-// seq step's fresh frame because it has no initializer, as a let whose initializer never
-// fires keeps its value (f_seq8.gx: 2 4), while a let with a constant initializer takes
-// it again at each run (s8z.gx: 0 4, base and lane alike); f_seq5.gx prints the earlier
-// run's Boom(2) on the lane, nothing on main. Said so in design/catch.md and added as the
-// exception to the fresh-frame rule in CLAUDE.md, design/seq_blocks.md,
-// book/src/core/seq.md and the graphix-lang skill. Probes
-// ~/ptmp/cr29/scratch/review-r9/N-r2-1/fz/s8z.gx, N-r1-1/fz/f_seq5.gx, f_seq8.gx.
 
 /// Deliver a `?`'s raw error payload `e`, a value of `raised`, to
 /// `handler` on behalf of the `?` at `spec` under `own_top`. The one handler path, shared by
