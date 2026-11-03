@@ -450,7 +450,7 @@ impl<R: Rt> Bind<R> {
         }
         // a name its block writes, wherever the writer stands, is a `<-`
         // target from its binding on
-        if let Some(written) = ctx.written_lets.last()
+        if let Some(written) = ctx.written.innermost()
             && !written.is_empty()
         {
             let mut targets: SmallVec<[BindId; 4]> = SmallVec::new();

@@ -1066,8 +1066,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         let below = &lexical[ctx.env.package_root(lexical).len()..];
         CompactString::from(below.trim_start_matches('/'))
     });
-    let written = written_lets(&exprs, top, &mut ctx.module_writes);
-    ctx.written_lets.push(written);
+    ctx.written.enter(&exprs, top);
     let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);
@@ -1081,10 +1080,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         children.push(prune::Prune::wrap(boundary, node));
         Ok::<_, anyhow::Error>(())
     });
-    ctx.written_lets.pop();
-    if ctx.written_lets.is_empty() {
-        ctx.module_writes.clear()
-    }
+    ctx.written.exit();
     if declares_types {
         ctx.block_typedefs.pop();
     }
@@ -1126,7 +1122,7 @@ pub(crate) fn later_typedef<R: Rt>(ctx: &CompileCtx<R>, tr: &TypeRef) -> bool {
 /// the package root). Such a let is never generalized, whatever the order
 /// of its uses and writers. What a module in the block writes outside it
 /// comes from `known`, and what this walk finds goes there.
-pub(crate) fn written_lets(
+fn written_lets(
     exprs: &[&Expr],
     top: Option<CompactString>,
     known: &mut ModuleWrites,
@@ -1141,15 +1137,49 @@ pub(crate) fn written_lets(
 /// compile of the outermost block, so a module nested d blocks deep is
 /// walked once, not once for each block around it.
 #[derive(Default)]
-pub(crate) struct ModuleWrites(AHashMap<ExprId, LPooled<Vec<(Anchor, CompactString)>>>);
+struct ModuleWrites(AHashMap<ExprId, LPooled<Vec<(Anchor, CompactString)>>>);
 
-impl ModuleWrites {
+/// Per block being compiled, innermost last, the lets something in it
+/// writes ([`written_lets`]), and what the modules they hold write
+/// outside them, kept while any of them compiles.
+#[derive(Default)]
+pub(crate) struct BlockWrites {
+    blocks: Vec<LPooled<AHashSet<(ExprId, CompactString)>>>,
+    modules: ModuleWrites,
+}
+
+impl BlockWrites {
+    /// A block's compile starts: walk its statements.
+    pub(crate) fn enter(&mut self, exprs: &[&Expr], top: Option<CompactString>) {
+        let written = written_lets(exprs, top, &mut self.modules);
+        self.blocks.push(written)
+    }
+
+    /// The innermost block's compile ended.
+    pub(crate) fn exit(&mut self) {
+        self.blocks.pop();
+        if self.blocks.is_empty() {
+            self.modules.0.clear()
+        }
+    }
+
+    /// The lets the innermost block being compiled writes.
+    pub(crate) fn innermost(&self) -> Option<&AHashSet<(ExprId, CompactString)>> {
+        self.blocks.last().map(|w| &**w)
+    }
+
+    /// A compile task's copy: the blocks around it, and a memo of its own.
+    pub(crate) fn fork(&self) -> Self {
+        Self { blocks: self.blocks.clone(), modules: ModuleWrites::default() }
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.blocks.is_empty() && self.modules.0.is_empty()
     }
 
     pub(crate) fn clear(&mut self) {
-        self.0.clear()
+        self.blocks.clear();
+        self.modules.0.clear()
     }
 }
 
@@ -3830,7 +3860,7 @@ impl<R: Rt> Sample<R> {
 
 #[cfg(test)]
 mod test {
-    use super::{ModuleWrites, WRITES_STEPS, written_lets};
+    use super::{BlockWrites, WRITES_STEPS};
     use crate::expr::{Expr, ExprKind, ModuleKind, Origin, Source, parser};
     use arcstr::ArcStr;
     use triomphe::Arc;
@@ -3875,17 +3905,20 @@ mod test {
 
     /// The statements the writes walks visit compiling `top` and each
     /// module in it, block inside block, as `compile_block_children`
-    /// walks them, over one `known` (or a fresh one per block).
-    fn compile_steps(top: &Arc<[Expr]>, shared: bool) -> usize {
-        let mut known = ModuleWrites::default();
+    /// enters and exits them (`nested`), or each block on its own.
+    fn compile_steps(top: &Arc<[Expr]>, nested: bool) -> usize {
+        let mut written = BlockWrites::default();
         WRITES_STEPS.with(|n| n.set(0));
         let mut block = top.clone();
+        let mut depth = 0;
         loop {
-            if !shared {
-                known = ModuleWrites::default();
-            }
             let exprs: Vec<&Expr> = block.iter().collect();
-            drop(written_lets(&exprs, None, &mut known));
+            written.enter(&exprs, None);
+            if nested {
+                depth += 1
+            } else {
+                written.exit()
+            }
             let inner = block.iter().find_map(|e| match &e.kind {
                 ExprKind::Module { value, .. } => match &**value {
                     ModuleKind::Resolved { exprs, .. } => Some(exprs.clone()),
@@ -3898,20 +3931,13 @@ mod test {
                 None => break,
             }
         }
+        for _ in 0..depth {
+            written.exit()
+        }
+        assert!(written.is_empty());
         WRITES_STEPS.with(|n| n.get())
     }
 
-    // CR claude for claude: [test-gap/low] This pin drives `written_lets` through
-    // its own `compile_steps`, so it fails if the memo lookup goes, but not if the
-    // compile stops sharing `ctx.module_writes` across nested blocks
-    // (`compile_block_children` hands it to each block and clears it when the
-    // written_lets stack empties): clearing it per block makes the real compile
-    // quadratic again and this pin still passes. Today the compile shares it:
-    // --check instructions:u of gen.py's nested chain, main ec53d4846 / lane N,
-    // 2.200/1.929G at d=400, 4.200/3.177G at d=800. A pin through the compile
-    // (the step counter read after compiling the nested program) would cover it.
-    // probe: ~/ptmp/cr29/scratch/review-r9/N-r3-2/i3 (python3 -I ../gen.py nested
-    // 800; ./m.sh <graphix> n_800) (module-walk-pin-01)
     // A chain of d modules, each with a let before its `mod`, is walked
     // once in all: each block's walk takes what a module in it writes
     // outside it from the walk of a block around it, never walking the

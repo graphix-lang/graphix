@@ -788,7 +788,6 @@ macro_rules! report_ignored {
 }
 pub(crate) use report_ignored;
 
-
 /// Deliver a `?`'s raw error payload `e`, a value of `raised`, to
 /// `handler` on behalf of the `?` at `spec` under `own_top`. The one handler path, shared by
 /// `Qop::update` and the fused kernel's delivery drain. The error is
