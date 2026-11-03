@@ -251,6 +251,7 @@ fn checked_default<R: Rt>(
     site: Option<&FnType>,
     value: Option<&FnType>,
     judge: Judge,
+    held_in: Option<&mut HeldIn>,
 ) -> Result<Node<R>> {
     // CR claude for eric: [bug/medium] A labeled default compiled at a bind is checked
     // in full here at the instance's types, so a select in it over an enclosing
@@ -415,22 +416,30 @@ fn checked_default<R: Rt>(
     let typ = copy.as_ref().unwrap_or(node.typ());
     // the default is held as a written argument is: general in each
     // quantifier its label holds, in the signature the call sees it in
-    let held = |sig: &FnType| match label(sig) {
+    let held = |sig: &FnType, held_in: &mut HeldIn| match label(sig) {
         None => Ok(()),
         Some(t) if !t.may_hold_quantified_fn(&ctx.env) => t.check_contains(&ctx.env, typ),
         Some(t) => {
-            let vars = call_variables(sig);
+            held_in.before(sig);
             let contain = |t: &Type| t.check_contains(&ctx.env, typ);
-            let quantified = held_generally(ctx, &t, &node, &[], contain)?;
-            signature_holds_none(&quantified, &vars, sig, "the value")
+            if let Some((_, quantified)) = held_generally(ctx, &t, &node, &[], contain)? {
+                held_in.held(&ArgKey::Named(name.clone()), "the default", &quantified)
+            }
+            Ok(())
         }
     };
-    let res = res.and_then(|()| match site.filter(|s| label(*s).is_some()) {
-        Some(site) => held(site),
-        None => {
+    let held_at_once = |sig: &FnType| {
+        let mut held_in = HeldIn::default();
+        held(sig, &mut held_in)?;
+        held_in.judged(sig)
+    };
+    let res = res.and_then(|()| match (site.filter(|s| label(*s).is_some()), held_in) {
+        (Some(site), Some(held_in)) => held(site, held_in),
+        (Some(site), None) => held_at_once(site),
+        (None, _) => {
             let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-            held(&callee_instance(ctx, f, name, site, &mut gates))?;
-            value.map_or(Ok(()), held)
+            held_at_once(&callee_instance(ctx, f, name, site, &mut gates))?;
+            value.map_or(Ok(()), held_at_once)
         }
     });
     node.refs(defaults);
@@ -478,6 +487,7 @@ fn judge_hidden_defaults<R: Rt>(
                 Some(formal),
                 Some(value),
                 Judge::Check,
+                None,
             )?;
             ctx.discard(node);
         }
@@ -1052,16 +1062,17 @@ enum ArgFit {
 // decided without the quantifier, W<'a> under the formal, omitted, written and hidden
 // defaults). Pass under GRAPHIX_NO_SUBST=1. probes ~/ptmp/cr29/scratch/r9-R/.
 /// Check a call's argument node against its formal's type `typ` in the
-/// call's signature `site`; an argument holding an undecided cell is
-/// [`ArgFit::Open`] when `waits`.
+/// call's signature `site`, answering how it fit and the quantifiers it was
+/// held general in (`held_in` takes the call's variables first); an
+/// argument holding an undecided cell is [`ArgFit::Open`] when `waits`.
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
-    site: &FnType,
+    (site, held_in): (&FnType, &mut HeldIn),
     typ: &Type,
     hint: Option<&Type>,
     waits: bool,
     n: &mut Node<R>,
-) -> Result<ArgFit> {
+) -> Result<(ArgFit, SmallVec<[(ArcStr, usize); 2]>)> {
     // A reference instantiates its signature in its own typecheck0,
     // which must precede the pre-unify.
     if matches!(n.view(), NodeView::Ref(_)) {
@@ -1071,16 +1082,17 @@ fn typecheck_arg<R: Rt>(
         None => {
             Type::pre_unify_arg(&ctx.env, hint.unwrap_or(typ), n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
-            Ok(if waits && n.typ().has_free() {
+            let fit = if waits && n.typ().has_free() {
                 ArgFit::Open
             } else if typ.contains(&ctx.env, n.typ())? {
                 ArgFit::Fits
             } else {
                 ArgFit::Misfit
-            })
+            };
+            Ok((fit, SmallVec::new()))
         }
         Some((formal, _rigid, quantified)) => {
-            let vars = call_variables(site);
+            held_in.before(site);
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
             Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
@@ -1091,8 +1103,7 @@ fn typecheck_arg<R: Rt>(
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
             let quantified = cells(&quantified);
             check_general(ctx, &quantified, n, "the argument")?;
-            wrap!(n, signature_holds_none(&quantified, &vars, site, "the argument"))?;
-            Ok(ArgFit::Fits)
+            Ok((ArgFit::Fits, quantified))
         }
     }
 }
@@ -1105,6 +1116,8 @@ fn typecheck_arg<R: Rt>(
 /// copy ([`CompileCtx::monomorphic_noting`]) names the cells copied in
 /// `copied`: a cell of it whose copy is or reaches a quantifier stands for
 /// that quantifier ([`stand_ins`]).
+/// A written holder's own variable is generalized with a quantified
+/// function type only where it stands under it.
 pub(crate) fn contain_generally<R: Rt>(
     ctx: &CompileCtx<R>,
     holder: &Type,
@@ -1112,10 +1125,17 @@ pub(crate) fn contain_generally<R: Rt>(
     copied: &[(usize, TVar)],
     contain: impl FnOnce(&Type) -> Result<()>,
 ) -> Result<()> {
-    held_generally(ctx, holder, n, copied, contain).map(|_| ())
+    match held_generally(ctx, holder, n, copied, contain)? {
+        None => Ok(()),
+        Some((formal, quantified)) => {
+            let holding = "the type holding it";
+            wrap!(n, escapes_through(&quantified, &formal, "the value", holding))
+        }
+    }
 }
 
-/// [`contain_generally`], answering the quantifiers the value was held
+/// [`contain_generally`] but the holder's own walk, answering the holder
+/// as the containment expanded it and the quantifiers the value was held
 /// general in, by name and cell; none where `holder` holds no quantified
 /// function type.
 fn held_generally<R: Rt>(
@@ -1124,9 +1144,9 @@ fn held_generally<R: Rt>(
     n: &Node<R>,
     copied: &[(usize, TVar)],
     contain: impl FnOnce(&Type) -> Result<()>,
-) -> Result<SmallVec<[(ArcStr, usize); 2]>> {
+) -> Result<Option<(Type, SmallVec<[(ArcStr, usize); 2]>)>> {
     match quantified_formal(&ctx.env, holder) {
-        None => contain(holder).map(|()| SmallVec::new()),
+        None => contain(holder).map(|()| None),
         Some((formal, _rigid, quantified)) => {
             contain(&formal).map_err(|e| match e.downcast::<TypeMismatch>() {
                 Ok(m) => anyhow::Error::new(m.shown_as(holder.clone())),
@@ -1136,9 +1156,7 @@ fn held_generally<R: Rt>(
             let mut asked = quantified.clone();
             asked.extend(stand_ins(&quantified, copied));
             check_general(ctx, &asked, n, "the value")?;
-            let holding = "the type holding it";
-            wrap!(n, escapes_through(&quantified, &formal, "the value", holding))?;
-            Ok(quantified)
+            Ok(Some((formal, quantified)))
         }
     }
 }
@@ -1589,33 +1607,62 @@ fn call_variables(site: &FnType) -> LPooled<Vec<TVar>> {
     vars
 }
 
-/// A call's variables are one type for the call, so after an argument's
-/// check against a rank-2 formal none of them, `vars` of the call's
-/// signature `site`, may be or reach one of the formal's quantifiers,
-/// even where the formal itself holds it.
-fn signature_holds_none(
-    quantified: &[(ArcStr, usize)],
-    vars: &[TVar],
-    site: &FnType,
-    what: &str,
-) -> Result<()> {
-    if quantified.is_empty() {
-        return Ok(());
-    }
-    let asked = asked(quantified);
-    let mut walk = Free::new(&asked);
-    for v in vars {
-        if let Some(i) = walk.free(&Type::TVar(v.clone()), &mut |_, _| ()).first() {
-            let q = &quantified[*i as usize].0;
-            let site = Type::Fn(TArc::new(site.clone()));
-            bail!(
-                "{what} is not polymorphic in '{q}: the call's signature, of type {}, \
-                 would carry '{q} out through {v}, one type for the call",
-                printed_deref(&site)
-            )
+/// The quantifiers a call's arguments and the defaults it omits were held
+/// general in, each with the argument it came from. A call's variables are
+/// one type for the call, so once those are checked none of the variables,
+/// taken before the first check ([`call_variables`]), may be or reach one
+/// of them, even where its formal holds it.
+#[derive(Default)]
+struct HeldIn {
+    vars: Option<LPooled<Vec<TVar>>>,
+    quantified: SmallVec<[(ArcStr, usize); 2]>,
+    from: SmallVec<[(ArgKey, &'static str); 2]>,
+}
+
+impl HeldIn {
+    /// Before a check against a formal of `site` holding quantifiers.
+    fn before(&mut self, site: &FnType) {
+        if self.vars.is_none() {
+            self.vars = Some(call_variables(site))
         }
     }
-    Ok(())
+
+    /// The quantifiers `what`, the argument `key`, was held general in.
+    fn held(&mut self, key: &ArgKey, what: &'static str, quantified: &[(ArcStr, usize)]) {
+        for q in quantified {
+            self.quantified.push(q.clone());
+            self.from.push((key.clone(), what));
+        }
+    }
+
+    /// The first variable of the call's signature `site` that is or reaches
+    /// a quantifier, refused at the argument it came from.
+    fn judge(&self, site: &FnType) -> std::result::Result<(), (ArgKey, anyhow::Error)> {
+        let (Some(vars), false) = (&self.vars, self.quantified.is_empty()) else {
+            return Ok(());
+        };
+        let asked = asked(&self.quantified);
+        let mut walk = Free::new(&asked);
+        for v in vars.iter() {
+            if let Some(i) = walk.free(&Type::TVar(v.clone()), &mut |_, _| ()).first() {
+                let q = &self.quantified[*i as usize].0;
+                let (key, what) = &self.from[*i as usize];
+                let site = Type::Fn(TArc::new(site.clone()));
+                let e = anyhow!(
+                    "{what} is not polymorphic in '{q}: the call's signature, of type {}, \
+                     would carry '{q} out through {v}, one type for the call",
+                    printed_deref(&site)
+                );
+                return Err((key.clone(), e));
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Self::judge`] at once, for a check outside a call's own.
+    fn judged(&self, site: &FnType) -> Result<()> {
+        self.judge(site).map_err(|(_, e)| e)
+    }
 }
 
 /// A walk of the cells under a type, following bindings and an open
@@ -2823,6 +2870,7 @@ impl<R: Rt> CallSite<R> {
                 expr,
                 defaults,
                 Judge::Bind,
+                None,
             )?;
             let typ = default_node.typ().clone();
             let id = BindId::new();
@@ -2846,7 +2894,9 @@ impl<R: Rt> CallSite<R> {
     /// it: compiled in `f`'s environment under the site's handlers, and
     /// checked against the site's view of the parameter, else, where the
     /// site's fn type hides the label, `f`'s own parameter as that type
-    /// instantiates it.
+    /// instantiates it; `held_in` takes the quantifiers the site's view
+    /// holds it general in, else the site's signature is judged at once.
+    #[allow(clippy::too_many_arguments)]
     fn checked_default(
         &self,
         ctx: &mut CompileCtx<R>,
@@ -2857,6 +2907,7 @@ impl<R: Rt> CallSite<R> {
         expr: &Expr,
         defaults: &mut Refs,
         judge: Judge,
+        held_in: Option<&mut HeldIn>,
     ) -> Result<Node<R>> {
         let entered = ctx.enter_default(f.id, name);
         let node = checked_default(
@@ -2871,6 +2922,7 @@ impl<R: Rt> CallSite<R> {
             self.ftype.as_deref(),
             None,
             judge,
+            held_in,
         );
         if entered {
             ctx.leave_default(f.id, name)
@@ -2987,6 +3039,7 @@ impl<R: Rt> CallSite<R> {
         ctx: &mut CompileCtx<R>,
         ftype: &FnType,
         carriers: &mut SmallVec<[ArcStr; 2]>,
+        held_in: &mut HeldIn,
     ) -> Result<bool> {
         let omitted = |name: &ArcStr| {
             self.args
@@ -3039,6 +3092,7 @@ impl<R: Rt> CallSite<R> {
                     expr,
                     &mut Refs::default(),
                     Judge::Check,
+                    Some(&mut *held_in),
                 )?;
                 if carries(&ctx.env, node.typ()) {
                     carriers.push(name.clone());
@@ -4805,11 +4859,19 @@ impl<R: Rt> CallSite<R> {
             })
             .collect();
         formals.sort_by_key(|(later, ..)| *later);
+        let mut held_in = HeldIn::default();
         for (_, farg, key) in formals {
-            if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
+            let Some(arg) = self.args.get_mut(&key) else { continue };
+            let given = arg.stage == ArgStage::Given;
+            if let Some(n) = arg.node.as_mut() {
                 let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
                 let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
-                let fit = typecheck_arg(ctx, ftype, &farg.typ, hint.as_ref(), waits, n)?;
+                let site = (&**ftype, &mut held_in);
+                let (fit, quantified) =
+                    typecheck_arg(ctx, site, &farg.typ, hint.as_ref(), waits, n)?;
+                if given {
+                    held_in.held(&key, "the argument", &quantified)
+                }
                 widening.fit(
                     &ctx.env,
                     self.fnode.typ(),
@@ -4828,7 +4890,10 @@ impl<R: Rt> CallSite<R> {
                 if let Some(n) = arg.node.as_mut() {
                     let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, typ);
                     let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, typ);
-                    let fit = typecheck_arg(ctx, ftype, typ, hint.as_ref(), waits, n)?;
+                    let site = (&**ftype, &mut held_in);
+                    let (fit, quantified) =
+                        typecheck_arg(ctx, site, typ, hint.as_ref(), waits, n)?;
+                    held_in.held(&key, "the argument", &quantified);
                     widening.fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)?;
                 }
             }
@@ -4845,7 +4910,7 @@ impl<R: Rt> CallSite<R> {
         if fresh || self_call {
             let mut carriers = SmallVec::new();
             self.defaults_open =
-                !self.check_omitted_defaults(ctx, ftype, &mut carriers)?;
+                !self.check_omitted_defaults(ctx, ftype, &mut carriers, &mut held_in)?;
             if fresh && !self.defaults_open {
                 if static_builtin(ctx, self).is_some() {
                     self.for_each_unread(&ctx.env, ftype, &carriers, |name, tv| {
@@ -4865,6 +4930,14 @@ impl<R: Rt> CallSite<R> {
                     });
                 }
             }
+        }
+        if let Err((key, e)) = held_in.judge(ftype) {
+            return match self.args.get(&key) {
+                Some(Arg { node: Some(n), stage: ArgStage::Given, .. }) => {
+                    wrap!(n, Err(e))
+                }
+                _ => Err(e),
+            };
         }
         // A constrained cell reachable from the rtype/throws but no arg is
         // produced by the callee's body: settle it to its witness before an
