@@ -174,8 +174,8 @@ impl<'a> Input<'a> {
         self.fail_at(self.at)
     }
 
-    /// What failures at the reported point said so far, when a parse
-    /// from here could still fail past here.
+    /// How much the failures at the reported point said so far; `None`
+    /// outside [`Mode::Labels`].
     pub(super) fn hold(&self) -> Option<Held> {
         match self.g.mode {
             Mode::Labels(_) => {
@@ -243,8 +243,7 @@ impl<'a> Input<'a> {
         self.because_at(self.at, why)
     }
 
-    /// A refusal at `at`, saying why: an `and_then`'s, which stands where
-    /// what it refused started.
+    /// A refusal of what started at `at`, standing there, saying why.
     pub(super) fn because_at(&mut self, at: Mark, why: &'static str) -> Fail {
         self.labels(at.off, false, |l| l.message(Info::text(why)));
         self.fail_at(at)
@@ -256,14 +255,13 @@ impl<'a> Input<'a> {
         self.fail()
     }
 
-    /// Note why something was refused at `pos`, and refuse here: `refuse`.
+    /// A refusal here of what was read up to `pos`, saying why.
     pub(super) fn refuse(&mut self, pos: SourcePosition, why: &'static str) -> Fail {
         self.g.note_reason(pos, None, || CompactString::const_new(why));
         self.because(why)
     }
 
-    /// [`Input::refuse`] as `and_then` refuses: the failure stands where
-    /// the refused construct started.
+    /// [`Input::refuse`] of what started at `start`, standing there.
     pub(super) fn refuse_from(
         &mut self,
         start: Mark,
