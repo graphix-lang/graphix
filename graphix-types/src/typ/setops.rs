@@ -716,7 +716,7 @@ impl Type {
             | (Type::Hole, _)
             | (_, Type::Hole)
             | (Type::Bound(_), _)
-            | (_, Type::Bound(_)) => Ok(if self == t {
+            | (_, Type::Bound(_)) => Ok(if same_type(self, t) {
                 Type::Primitive(BitFlags::empty())
             } else {
                 self.clone()
@@ -786,7 +786,7 @@ impl Type {
                     Ok(self.clone())
                 }
             }
-            // CR claude for claude: [bug/low] This arm, and the Fn, App and Abstract arms
+            // XCR claude for claude: [bug/low] This arm, and the Fn, App and Abstract arms
             // below, compare with Type `==`, which does not read a bound cell through, so
             // coverage follows a cell's representation, not its type: `Error<Map<'k: i64,
             // 'v: i64>>` is not taken out by `Error<S>` with `S = Map<i64, i64>`, and in
@@ -797,8 +797,23 @@ impl Type {
             // alike): lane X's memo for diff-dag-01 moved verdicts that way. Found by lane
             // X's r8 review. probes ~/ptmp/cr29/scratch/review-r8/X-r3-1/bc/bc2.gx,
             // bc2z.gx, bc5.gx (diff-bound-cell-01)
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                if k0 == k1 && v0 == v1 {
+            // 2026-11-03 claude: diff's Map, Fn, Abstract and App/Hole/Bound arms now
+            // compare with same_type (Type == or, failing that, == of both sides'
+            // resolve_tvars().normalize(), the comparison same_resolved makes per part), so
+            // a bound cell is its binding wherever diff compares parts. Pins: graphix-types
+            // typ::setops::tests::diff_reads_bound_cells_through (a map, a union under
+            // Error, a function, an abstract type's parameters and an open constructor's
+            // argument: each case leaves its minuend without the fix); graphix-tests
+            // lang::select coverage_reads_a_bound_map_parameter_through (bc2, main
+            // accepts), coverage_reads_a_bound_map_parameter_through_beside_a_variant
+            // (bc2z), coverage_reads_a_map_literals_cells_through (bc5),
+            // coverage_reads_a_bound_abstract_parameter_through (bcA); all refuse the dead
+            // arm "unreachable arm: the earlier arms already cover the whole scrutinee" and
+            // fail without the fix. Moves main's verdicts: bc1 and bc2 (accepted) are
+            // refused; bc1z, bc2z, bc3, bc4, bc5, bc6, bc7, bcA refuse with the uncovered
+            // remainder read through.
+            (Type::Map { .. }, Type::Map { .. }) => {
+                if same_type(self, t) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
                     Ok(self.clone())
@@ -820,11 +835,11 @@ impl Type {
                     Ok(Type::Primitive(*p))
                 }
             }
-            (Type::Fn(f0), Type::Fn(f1)) => {
-                if f0 == f1 {
+            (Type::Fn(_), Type::Fn(_)) => {
+                if same_type(self, t) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
-                    Ok(Type::Fn(f0.clone()))
+                    Ok(self.clone())
                 }
             }
             // Bindings are cloned out: the recursion may lock these cells.
@@ -921,10 +936,9 @@ impl Type {
                     Ok(self.clone())
                 }
             }
-            (
-                Type::Abstract { id: id0, params: p0 },
-                Type::Abstract { id: id1, params: p1 },
-            ) if id0 == id1 && p0 == p1 => Ok(Type::Primitive(BitFlags::empty())),
+            (Type::Abstract { .. }, Type::Abstract { .. }) if same_type(self, t) => {
+                Ok(Type::Primitive(BitFlags::empty()))
+            }
             (Type::Abstract { .. }, _)
             | (_, Type::Abstract { .. })
             | (Type::Fn(_), _)
@@ -1081,8 +1095,12 @@ impl Type {
     }
 }
 
-/// Positional equality read through bound type variables. `Any` in
-/// the subtrahend covers anything.
+/// Equality read through bound type variables.
+fn same_type(t0: &Type, t1: &Type) -> bool {
+    t0 == t1 || t0.resolve_tvars().normalize() == t1.resolve_tvars().normalize()
+}
+
+/// Positional [`same_type`]. `Any` in the subtrahend covers anything.
 fn same_resolved<'a, 'b>(
     t0: impl IntoIterator<Item = &'a Type>,
     t1: impl IntoIterator<Item = &'b Type>,
@@ -1093,10 +1111,7 @@ fn same_resolved<'a, 'b>(
         match (t0.next(), t1.next()) {
             (None, None) => return true,
             (Some(a), Some(b)) => {
-                if a != b
-                    && *b != Type::Any
-                    && a.resolve_tvars().normalize() != b.resolve_tvars().normalize()
-                {
+                if *b != Type::Any && !same_type(a, b) {
                     return false;
                 }
             }
@@ -1107,7 +1122,12 @@ fn same_resolved<'a, 'b>(
 
 #[cfg(test)]
 mod tests {
-    use crate::typ::cast::tests::{parsed, typed};
+    use crate::typ::{
+        Type,
+        cast::tests::{parsed, typed},
+    };
+    use ahash::AHashMap;
+    use netidx_value::Typ;
 
     // Each instantiation of W expands to an abstract type built anew, so
     // the walk meets Box<i64> and Box<string> at fresh addresses.
@@ -1120,6 +1140,37 @@ mod tests {
         for _ in 0..16 {
             let m = test.matching_type(&env, &reaching).unwrap().normalize();
             assert_eq!(m.to_string(), "[`X, Box<i64>, Box<string>]");
+        }
+    }
+
+    // diff reads a bound cell as its binding wherever it compares parts:
+    // a map's, a function's, an abstract type's parameters and an open
+    // constructor's argument.
+    #[test]
+    fn diff_reads_bound_cells_through() {
+        let (env, _) =
+            typed(&[("S", "Map<i64, i64>"), ("Box<'a>", "Abstract<'a>")], "null");
+        let bound = |t: &str| {
+            let t = parsed(&env, t);
+            let mut cells = AHashMap::default();
+            t.collect_tvars(&mut cells);
+            cells["c"].bind(Type::Primitive(Typ::I64.into()));
+            t
+        };
+        let expanded = |t: Type| t.lookup_ref(&env).unwrap();
+        for (t0, t1) in [
+            (bound("Map<'c, i64>"), parsed(&env, "Map<i64, i64>")),
+            (parsed(&env, "Map<i64, i64>"), bound("Map<'c, i64>")),
+            (
+                bound("[Error<Map<'c, i64>>, Array<Map<i64, i64>>]"),
+                parsed(&env, "[Error<S>, Array<S>]"),
+            ),
+            (bound("fn(x: 'c) -> i64"), parsed(&env, "fn(x: i64) -> i64")),
+            (expanded(bound("Box<'c>")), expanded(parsed(&env, "Box<i64>"))),
+            (bound("'k<'c>"), parsed(&env, "'k<i64>")),
+        ] {
+            let d = t0.diff(&env, &t1).unwrap();
+            assert!(d.is_uninhabited(), "{t0:?} - {t1:?} = {d:?}");
         }
     }
 }

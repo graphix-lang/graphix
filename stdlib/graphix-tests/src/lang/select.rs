@@ -4863,6 +4863,70 @@ run!(
     "#
 ; FuseExpect::None);
 
+// Coverage reads a bound cell as its binding: a map literal's key and
+// value cells bound to i64, or a generic call's 'a bound to i64, are
+// i64, so `[Error<S>, Array<S>]` covers the whole scrutinee and a later
+// arm is dead.
+run!(
+    coverage_reads_a_bound_map_parameter_through,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"),
+    "/test.gx" => r#"
+        type R<'p> = Map<'p, i64>;
+        type S = Map<i64, i64>;
+        let mk = |x: 'a| -> R<'a> never();
+        let a = mk(1);
+        let b: R<i64> = never();
+        let v = select 0 { 0 => error(b), _ => [a] };
+        let result = select v { [Error<S>, Array<S>] as x => 0, Array<R<i64>> as e => 1 }
+    "#
+; FuseExpect::None);
+
+run!(
+    coverage_reads_a_bound_map_parameter_through_beside_a_variant,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"),
+    "/test.gx" => r#"
+        type R<'p> = Map<'p, i64>;
+        type S = Map<i64, i64>;
+        let mk = |x: 'a| -> R<'a> never();
+        let a = mk(1);
+        let b: R<i64> = never();
+        let v = select 0 { 0 => error(b), _ => [a] };
+        let result = select v {
+            [Error<S>, Array<S>] as x => 0, `Zz => 7, Array<R<i64>> as e => 1
+        }
+    "#
+; FuseExpect::None);
+
+run!(
+    coverage_reads_a_map_literals_cells_through,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"),
+    "/test.gx" => r#"
+        type S = Map<i64, i64>;
+        let m: Map<i64, i64> = {1 => 2};
+        let v = select 0 { 0 => error({3 => 4}), _ => [m] };
+        let result = select v {
+            [Error<S>, Array<S>] as x => 0, Array<S> as y => 1, error as e => 2
+        }
+    "#
+; FuseExpect::None);
+
+run!(
+    coverage_reads_a_bound_abstract_parameter_through,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"),
+    "/test.gx" => r#"
+        type Box<'p> = Abstract<'p>;
+        type R<'p> = Box<'p>;
+        type S = Box<i64>;
+        let mk = |x: 'a| -> R<'a> never();
+        let a = mk(1);
+        let b: R<i64> = never();
+        let v = select 0 { 0 => error(a), _ => [b] };
+        let result = select v {
+            [Error<S>, Array<S>] as x => 0, Array<S> as y => 1, error as e => 2
+        }
+    "#
+; FuseExpect::None);
+
 // A guard runs only where the chain reaches its arm: an earlier arm that
 // claims the value keeps every guard below from running, so `check(-1)?`
 // never runs and never raises, whether the guard reads the arm's bind or
