@@ -778,6 +778,10 @@ impl<R: Rt> Update<R> for Constant {
 #[derive(Debug)]
 pub struct Block<R: Rt> {
     pub(crate) module: bool,
+    /// A module's: a `let` among its children re-raised at a wake in the
+    /// last update that walked it, and the block around it has not taken
+    /// that back yet.
+    reraised: bool,
     pub(crate) spec: Arc<Expr>,
     pub(crate) children: Box<[Node<R>]>,
     /// Indices of `catch(e) expr` children, in syntactic order.
@@ -786,7 +790,7 @@ pub struct Block<R: Rt> {
     /// its predecessor, which only sees it if it updates after.
     pub(crate) catches: Box<[usize]>,
     /// The children that are `let`s or modules, whose wake re-raises a
-    /// non-module block takes back at its end and a module leaves to the
+    /// non-module block takes back at its end and a module notes for the
     /// block around it (`Bind::take_back_reraised`).
     lets: Box<[u32]>,
     /// The block's production when it cannot hand back its last
@@ -867,26 +871,40 @@ impl Runs {
     }
 }
 
+/// Whether the `let` or module `n` holds what a wake re-raised and its
+/// block has not taken back: a module notes it as its update ends.
+pub(crate) fn holds_reraised<R: Rt>(n: &Node<R>) -> bool {
+    match n.view() {
+        NodeView::Bind(b) => b.holds_reraised(),
+        NodeView::Block(b) => b.reraised,
+        NodeView::Module(m) => m.reraised(),
+        _ => false,
+    }
+}
+
 /// Take back what a wake re-raised to the `let` `n`, or to the `let`s of
 /// the module `n`, whose names the block around it reads.
-fn take_back_reraised<R: Rt>(n: &mut Node<R>, ctx: &mut ExecCtx<'_, R>) {
-    if let Some(b) = n.downcast_mut::<bind::Bind<R>>() {
-        b.take_back_reraised(ctx)
-    } else if let Some(b) = n.downcast_mut::<Block<R>>()
-        && b.module
-    {
-        b.take_back_reraised(ctx)
-    } else if let Some(m) = n.downcast_mut::<module::Module<R>>() {
-        crate::stack::ensure_sufficient(|| {
-            m.nodes.iter_mut().for_each(|n| take_back_reraised(n, ctx))
-        })
+pub(crate) fn take_back_reraised<R: Rt>(n: &mut Node<R>, ctx: &mut ExecCtx<'_, R>) {
+    if !holds_reraised(n) {
+        return;
     }
+    if let Some(b) = n.downcast_mut::<bind::Bind<R>>() {
+        return b.take_back_reraised(ctx);
+    }
+    crate::stack::ensure_sufficient(|| {
+        if let Some(b) = n.downcast_mut::<Block<R>>() {
+            b.take_back_reraised(ctx)
+        } else if let Some(m) = n.downcast_mut::<module::Module<R>>() {
+            m.take_back_reraised(ctx)
+        }
+    })
 }
 
 impl<R: Rt> Block<R> {
     /// Take back what a wake re-raised to the `let`s among the children,
     /// those of the modules among them included.
     fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.reraised = false;
         for i in self.lets.iter() {
             take_back_reraised(&mut self.children[*i as usize], ctx)
         }
@@ -907,6 +925,7 @@ impl<R: Rt> Block<R> {
     ) -> Node<R> {
         Node::new(Self {
             module,
+            reraised: false,
             spec,
             lets: lets_of(&children),
             children,
@@ -1629,9 +1648,8 @@ impl<R: Rt> Update<R> for Block<R> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
-        let takes_back = !self.module && !self.lets.is_empty();
         if self.catches.is_empty()
-            && !takes_back
+            && self.lets.is_empty()
             && !Runs::forks(ctx, self.children.len())
         {
             let res = self
@@ -1641,8 +1659,12 @@ impl<R: Rt> Update<R> for Block<R> {
             return if self.module { TagValue::phantom_ref() } else { res };
         }
         let res = self.runs.update(ctx, &mut self.children, &self.catches);
-        if takes_back {
-            self.take_back_reraised(ctx);
+        match self.module {
+            true => {
+                self.reraised =
+                    self.lets.iter().any(|i| holds_reraised(&self.children[*i as usize]))
+            }
+            false => self.take_back_reraised(ctx),
         }
         match res {
             Some(tv) if !self.module => self.resident.set(tv),

@@ -15,7 +15,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    node::{Nop, Runs, bind::Bind, traits},
+    node::{self, Nop, Runs, bind::Bind, traits},
     profile::{self, Phase},
     shared_map::SharedMap,
     typ::{
@@ -1112,6 +1112,10 @@ pub struct Module<R: Rt> {
     /// it creates are its own, and its check writes no others.
     task: TaskId,
     resident: TagValue,
+    /// A `let` among the statements re-raised at a wake in the last update
+    /// that walked them, and the block around the module has not taken
+    /// that back yet (`Block::reraised`).
+    reraised: bool,
 }
 
 /// A module's compiled body, set aside while its replacement compiles:
@@ -1197,7 +1201,19 @@ impl<R: Rt> Module<R> {
             top_id,
             task,
             resident: TagValue::phantom(),
+            reraised: false,
         }
+    }
+
+    pub(crate) fn reraised(&self) -> bool {
+        self.reraised
+    }
+
+    /// Take back what a wake re-raised to the `let`s among the statements
+    /// (`node::take_back_reraised`).
+    pub(crate) fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.reraised = false;
+        self.nodes.iter_mut().for_each(|n| node::take_back_reraised(n, ctx))
     }
 
     pub(crate) fn image_decode(
@@ -1736,6 +1752,7 @@ impl<R: Rt> Update<R> for Module<R> {
             }
             self.runs.update(ctx, &mut self.nodes, &self.catches);
         });
+        self.reraised = self.nodes.iter().any(node::holds_reraised);
         // a prime is for the fresh body alone: left, it would fire readers
         // later in the cycle, and a forked merge would requeue it
         for id in primed.drain(..) {
@@ -1809,6 +1826,18 @@ impl<R: Rt> Update<R> for Module<R> {
     // bbb06c0c6), with module_let_reraises_to_the_arm_around_it. cr37/c1m now gives a::r
     // and count(a::b::v) alike (4, 4 at ep 9; outside fires 5 as on bbb06c0c6). Needs a
     // soak.
+    // 2026-11-02 claude: Round 7 lane N, after review r8 (2): the take-back walked every
+    // module's statements at each update of the block around it, even where the cycle
+    // skipped the module (about 224 instructions per module statement per cycle, 20x on a
+    // 3000-let module). A module now notes, as an update that walked it ends, whether a
+    // let of its own or a module in it holds a re-raise (Block::reraised,
+    // Module::reraised), and node::take_back_reraised descends only into the modules that
+    // noted one. Per-cycle cost back to bbb06c0c6's (review probes: i1000 45k/cycle on
+    // bbb06c0c6, 722k at 5d9a9d9bf, 46k now). Semantics unchanged: the review's probes
+    // (nested, ifacelet, two, two2, lam, cr37/c1m and the rest) give the 5d9a9d9bf
+    // outputs, under GRAPHIX_PAR=force GRAPHIX_PRUNE=audit too. Pin:
+    // graphix-shell/tests/idle_module_cost.rs (223.8 instructions per idle statement and
+    // cycle at 5d9a9d9bf, 0.0 now) with the three lang::modules pins.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.sleep(ctx);
@@ -1849,6 +1878,12 @@ impl<R: Rt> Update<R> for Module<R> {
                 // cadc8fca6, after gate-foreign-mark-01's fix landed; main a084f9887 alike.
                 // Find which cell outside the module the body's check writes. probe:
                 // ~/ptmp/cr29/scratch/r6-W/r38/m1 (module-faux-mark-01)
+                // 2026-11-02 claude: Review r8 of lane N found a simpler shape, no timer:
+                // let f = |t: i64| { mod a; t + a::c } over a.gx 'let v = 1; let c =
+                // count(v)' and a.gxi 'val c: i64' is refused the same way (annotate faux),
+                // on bbb06c0c6 and cr45-N alike; with 'let c = 1' it checks. So a builtin
+                // call in an interface module inside a lambda body is enough. probe:
+                // ~/ptmp/cr29/scratch/r8-N/faux (graphix --check main.gx)
                 let res = self.check_body(ctx).and_then(|()| match writes.foreign() {
                     Some(w) => bail!(
                         "the check decides a type the code around the module \

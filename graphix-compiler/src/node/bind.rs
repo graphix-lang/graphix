@@ -253,6 +253,10 @@ impl<R: Rt> Bind<R> {
         }
     }
 
+    pub(crate) fn holds_reraised(&self) -> bool {
+        !self.reraised.is_empty()
+    }
+
     /// Take back what the wake re-raised ([`Self::reraised`]).
     pub(crate) fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
         for id in self.reraised.drain(..) {

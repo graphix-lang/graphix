@@ -953,8 +953,10 @@ node graph IS the IR — there is no parallel typed IR
   fire no reader saw: `Bind::reraise_writes_while_asleep`), to the
   readers that slept with it alone: its block takes it back after its
   last statement (a module, with an interface or without, leaves that to
-  the block around it, whose later statements read its names), so a reader outside
-  (an escaped `&mut`) sees the write once. State
+  the block around it, whose later statements read its names, and notes
+  as its walk ends whether there is any, so a module the cycle skipped
+  costs the take-back nothing), so a reader outside (an escaped `&mut`)
+  sees the write once. State
   survives an arm's sleep (`Held` residents at the select scrutinee,
   pattern guard and `~`'s arg; `CachedVals` staging; collection slots;
   a `<-` target's value, which only a fired input of its initializer

@@ -355,7 +355,12 @@ As built:
   reader outside (an escaped `&mut`) sees the write once. A module, with
   an interface or without, leaves the take-back of its `let`s to the
   block around it, whose later statements read its names, those of a
-  submodule its interface exposes included (`node::take_back_reraised`). The reactive fuzzer found the
+  submodule its interface exposes included (`node::take_back_reraised`).
+  A module notes, as an update that walked it ends, whether a `let` of
+  its own or a module in it holds a re-raise (`Block::reraised`,
+  `Module::reraised`), and the take-back descends only into the modules
+  that noted one: a module the cycle skipped re-raised nothing, and costs
+  the take-back nothing. The reactive fuzzer found the
   gap (`findings/wake-resume-seq-abort-oct2026/`): the constants that
   used to fire at a wake had papered over it.
 - **Rebirth is a birth's.** `Apply::reborn` (no-op by default) holds
