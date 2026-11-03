@@ -237,8 +237,8 @@ each was obvious in hindsight and invisible in advance.
    is tested deeply (`graphix_inferred_type_matches`), as a variant's
    payload, always typed by its predicate, is; an or-pattern of
    composites there de-fuses, since its alternatives read the words as
-   the composite untested. Pins: `fusion_review::select_*_at_a_nullable_*`,
-   `select_composite_or_pattern_at_a_payload`.
+   the composite untested. Pins: the `fusion_review::select_*_at_*`
+   fixtures (`select_false_at_a_nullable_element` and its kin).
 
 ## What was ruled out
 
