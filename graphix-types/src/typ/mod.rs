@@ -126,51 +126,6 @@ impl Type {
             Type::Bound(b) => out.extend([3, *b as usize]),
             Type::Primitive(p) => out.extend([4, p.bits() as usize]),
             Type::TVar(tv) => out.extend([5, tv.cell_addr()]),
-            // CR claude for claude: [perf/low] A chain of typedef applications passing a
-            // quantified function type each level builds anew is still checked in time
-            // exponential in its depth: `type P0<'a> = ('a, i64); type P1<'a> =
-            // (P0<fn<'b: Any>(x: 'b) -> 'a>, P0<fn<'b: Any>(x: 'b) -> 'a>); ..; let x:
-            // P8<i64> = never()`. Each expansion copies the written `fn<'b: Any>(..)` with
-            // fresh quantifier cells, and such a function type is keyed here by its node,
-            // so no application is met twice: --check (debug, callgrind) 1.46G
-            // instructions at depth 8, 2.71G at 10, about 3.7x per two levels above the
-            // stdlib; a select over such a chain (selq8 1.63G, selq10 3.24G, through
-            // Unfolded) and a call f(x, x) alike; main 8beb0735a the same. rank2_parts finds
-            // 2^(d+1)-1 distinct quantifiers. Fix: key a function type's own quantifiers by
-            // their position in it and their bounds, as variables the key binds, and
-            // dedup rank2_parts' Quantified list to match, so the escape check still sees
-            // every copy's cells. probes: ~/ptmp/cr29/scratch/review-r7/B5-r1-2/p/ptqf0-
-            // {8,10,12}.gx, ptqf-{8,10}.gx, selq{8,10,12}.gx (cg1.sh BIN FILE there)
-            // (dag-quantified-fn-01)
-            // 2026-11-02 claude: Review B5-r4 (main 8beb0735a the same): two more
-            // super-linear shapes. A chain of typedef applications passing an abstract
-            // application (type W<'t> = Abstract<'t>; type P_i<'a> = (P_{i-1}<W<'a>>,
-            // P_{i-1}<W<'a>>); let x: P_N<fn<'b: Number + Singleton>(x: 'b) -> 'b> =
-            // never()): N=14/16/18 main 3.4/6.8/17.5G (P18<i64> 2.0G flat;
-            // review-r7/B5-r4-2/d/pxl-abs-*.gx). A rank-2 holder of a DAG of distinct
-            // parameterless typedefs (type L_k = (fn<'a: Any>(x: 'a) -> ('a, L_{k-1}),
-            // fn<'b: Any>(x: 'b) -> ('b, L_{k-1}))) grows about 1.4x a level with no outer
-            // write (tr12_noo 3.3G, tr16_noo about 15G; review-r7/B5-r4-1/p/tr16_noo.gx), in
-            // the holder's containment, not the escape walk.
-            // 2026-11-02 claude: Round 8 lane X: built only the quadratic part. rank2_parts
-            // deduped its Quantified list by a linear scan, Q^2 over Q = 2^(d+1)-2
-            // quantifiers; it now keeps their cells in a set (Expanding::quantifiers), the
-            // same list in the same order. --check instructions (debug, one eval thread;
-            // perf stat, noise about 1G), main bbb06c0c6 vs lane: ptqf0-12 38.0G/8.6G,
-            // selq12 27.4G/12.6G, ptqf0-10 2.7G/2.1G; the call shape is untouched (ptqf-10
-            // 26.3G/26.7G), as are the second note's (pxl-abs-16 9.0G/9.0G, tr16_noo
-            // 13.2G/13.5G): what remains is 2^d expansions, the key's work. The key itself
-            // not built: param_key feeds three memos (ContainsHist's committed pairs,
-            // Unfolded, rank2_parts' apps), and keyed by position its equal keys mean alike
-            // up to renaming, not identical, so each memo needs a proof it holds up to
-            // renaming, and a quantifier cell bound or given a conjunct after its key was
-            // taken (a containment binding the right side's quantifiers) makes two equal
-            // keys name different types unless the key reads bindings and bounds; the gain
-            // is on generated chains only. Recommendation: keep open at low, or delete as
-            // not worth the risk. Whether the same key covers pxl-abs was not settled (its
-            // fn node is written once and substituted, not copied per level). Pin for the
-            // dedup: node::callsite::test::rank2_parts_takes_each_of_many_quantifiers_once
-            // (each of 2046 once; cost only, it passes without the change).
             Type::Fn(f) if !f.quantifiers.is_empty() => {
                 out.extend([6, Arc::as_ptr(f).addr()])
             }

@@ -2147,14 +2147,6 @@ fn holds_open_union(t: &Type) -> bool {
 }
 
 impl Type {
-    // CR claude for claude: [perf/low] Every read of a holder copies every closed
-    // definition's signature the holder holds, whatever part the read uses, so a record
-    // of W handlers read R times costs W x R copies: `let s = {f0: |x| (x, 0), ..}` with
-    // R reads `s.fK(j)`, debug --check (r6 B2 review): W=100/R=200 main a084f9887 1.46G
-    // instructions, lane 1.99G; 200/400 1.66G vs 3.83G; 400/800 2.07G vs 10.68G. The GUI
-    // examples are flat (guicheck). Copying lazily, at the first use of a function the
-    // read reaches, or only the part a field or index read projects, would make it R.
-    // probe: ~/ptmp/cr29/scratch/r6-B/w5/wide-400-800.gx (holder-read-cost-01)
     /// A read's copy of the signatures this type holds of definitions whose
     /// gates are closed (a lambda held in a struct, tuple or array): each such
     /// function type copied as a read of a generalized binding copies its
