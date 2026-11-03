@@ -640,7 +640,9 @@ gave it and never runs, and a reached arm's bind keeps its type (pins
 `default_at_a_bind_keeps_its_definitions_bind_types`). Those rows stay
 open at the definition's settle (`DefTable::settle_open` leaves them): the
 bind narrows them by its own view of the label. A default typed with a
-type name keeps no rows: the names its compile at a bind writes resolve
+type name (in a node's own type, an arm's predicates and binds or a
+catch's binds; a callee's signature is its definition's and does not
+count, `lambda::names_type_anywhere`) keeps no rows: the names its compile at a bind writes resolve
 only in that compile's environment, which typing from rows never reaches,
 and a later fill finds the wrong definition or none (a block's type, or an
 outer one of the same name: the class of CR default-typedef-outlived-01),

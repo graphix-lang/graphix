@@ -256,57 +256,20 @@ impl DefTable {
     }
 
     /// The rows of the definition's labeled defaults as its check
-    /// compiled them, in `def_env`: a call's bind types its default from
-    /// them, as an instance types its body. A default typed with a type
-    /// name keeps none: the names its compile at a bind writes resolve only
-    /// in that compile's scope, which typing it from rows never reaches
-    /// (default-typedef-outlived-01), so a bind checks it again.
-    fn record_defaults<R: Rt>(
-        &mut self,
-        defaults: &[Node<R>],
-        def_env: &Lexical,
-        checked: &Env,
-    ) {
+    /// compiled them: a call's bind types its default from them, as an
+    /// instance types its body. A default typed with a type name keeps
+    /// none: the names its compile at a bind writes resolve only in that
+    /// compile's scope, which typing it from rows never reaches
+    /// (default-typedef-outlived-01), so a bind checks it again. The rows
+    /// kept name no type, so there is nothing to seed or own.
+    fn record_defaults<R: Rt>(&mut self, defaults: &[Node<R>], checked: &Env) {
         let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
-        let mut seen: LPooled<AddrSet> = LPooled::take();
-        let env = Env { lexical: def_env.clone(), ..Env::default() };
         for n in defaults {
-            self.add_rows(n, checked, &mut |n| ids.push(n.spec().id));
-            if ids.iter().any(|id| self.row_names_type(id)) {
-                for id in ids.drain(..) {
-                    self.types.remove(&id);
-                    self.ftypes.remove(&id);
-                    self.lambdas.remove(&id);
-                    self.aux.remove(&id);
-                }
-                continue;
+            if !names_type_anywhere(n, checked) {
+                self.add_rows(n, checked, &mut |n| ids.push(n.spec().id));
+                self.defaults.extend(ids.drain(..));
             }
-            for id in ids.iter() {
-                let aux = self.aux.get(id).into_iter().flat_map(|ts| ts.iter());
-                for t in self.types.get(id).into_iter().chain(aux) {
-                    t.seed_refs_seen(&env, &mut seen);
-                }
-                if let Some(ft) = self.ftypes.get(id) {
-                    ft.for_each_part(&mut |t, _| {
-                        t.seed_refs_seen(&env, &mut seen);
-                    })
-                }
-            }
-            self.defaults.extend(ids.drain(..));
         }
-        self.own_typedefs();
-    }
-
-    /// Whether a row of the node at `id` holds a type name.
-    fn row_names_type(&self, id: &ExprId) -> bool {
-        let seen = &mut LPooled::take();
-        let aux = self.aux.get(id).into_iter().flat_map(|ts| ts.iter());
-        self.types.get(id).into_iter().chain(aux).any(|t| names_type(t, seen))
-            || self.ftypes.get(id).is_some_and(|ft| {
-                let mut found = false;
-                ft.for_each_part(&mut |t, _| found = found || names_type(t, seen));
-                found
-            })
     }
 
     /// A row for each node of the tree at `root`, `visit`ing each; an id
@@ -2884,6 +2847,28 @@ fn check_defaults<R: Rt>(
     Ok(())
 }
 
+/// Whether a type the checked tree at `root` derived holds a type name:
+/// a node's own, an arm's predicates and binds, a catch's binds. A
+/// callee's signature is its definition's, written nowhere in the tree.
+fn names_type_anywhere<R: Rt>(root: &Node<R>, checked: &Env) -> bool {
+    let seen = &mut LPooled::take();
+    let mut found = false;
+    fusion::for_each_node(root, &mut |n| {
+        found = found
+            || names_type(n.typ(), seen)
+            || match n.view() {
+                NodeView::Select(s) => {
+                    s.aux_types(checked).iter().any(|t| names_type(t, seen))
+                }
+                NodeView::Catch(c) => {
+                    c.aux_types(checked).iter().any(|t| names_type(t, seen))
+                }
+                _ => false,
+            }
+    });
+    found
+}
+
 /// Whether `t` holds a type name, through bindings.
 fn names_type(t: &Type, seen: &mut AHashSet<usize>) -> bool {
     ensure_sufficient(|| match t {
@@ -3080,7 +3065,7 @@ impl<R: Rt> Update<R> for Lambda {
                 facts: *def.facts.lock(),
                 ..DefTable::default()
             });
-            table.record_defaults(&defaults, &def.env, &ctx.env);
+            table.record_defaults(&defaults, &ctx.env);
             table.captures = captures
                 .drain()
                 .map(|(scope, name)| Captured::new(&def.scope.lexical, scope, name))

@@ -338,6 +338,12 @@ fn checked_default<R: Rt>(
     // default_at_a_bind_names_a_block_type_over_an_outer_one (crashes the test binary with
     // every default on rows) and default_at_a_bind_declares_a_recursive_type pin the
     // fallback.
+    // 2026-11-02 claude: Cost: the names test now walks the default's checked tree
+    // (lambda::names_type_anywhere: node types, arm and catch binds; a callee's signature
+    // does not count, it is written nowhere in the default) before any row is recorded, and
+    // the kept rows, naming no type, are neither seeded nor owned. guicheck
+    // (instructions:u, GUI examples --check): base bbb06c0c6 92.92G/92.95G, lane
+    // 93.15G/93.08G (first cut 93.06G; rows tested after recording, 93.69G).
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
