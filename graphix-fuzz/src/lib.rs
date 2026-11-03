@@ -1001,7 +1001,7 @@ fn code_only(code: &str) -> String {
 
 /// `code` with every string literal's text blanked, so a marker in text
 /// is not a call; what a string interpolates is code and stays. The
-/// contexts are the parser's (`grow.rs::unclosed_at_end`).
+/// contexts are the parser's (`state.rs::unclosed_at_end`).
 fn without_strings(code: &str) -> String {
     enum Ctx {
         Str,

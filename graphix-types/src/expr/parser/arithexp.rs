@@ -51,11 +51,11 @@ pub(super) fn mutability(i: &mut Input) -> R<Mutability> {
     })
 }
 
-// Each alternative is attempted so a partial parse (the `{` of a map
-// access that is really a block) ends the postfix loop cleanly. `key`
-// admits `{k}`, written against its source like a call's `(`; the head of a
-// `seq` refuses it so that its body is not read as a map access of the
-// trigger.
+// A field access, a map access or a `?`/`$` that does not parse whole ends
+// the postfix loop cleanly (the `{` of a map access may be a select's
+// arms), where a `[` or `(` commits. `key` admits `{k}`, written against
+// its source like a call's `(`; the head of a `seq` refuses it so that its
+// body is not read as a map access of the trigger.
 fn postfix_op(i: &mut Input, key: bool) -> R<Post> {
     choice!(
         i,
@@ -77,7 +77,7 @@ fn postfix_op(i: &mut Input, key: bool) -> R<Post> {
             i.attempt(|i| i.look_ahead(|i| i.token('[')))?;
             arrayexp::array_index_suffix(i).map(Post::Array)
         },
-        |i| i.attempt(|i| match key {
+        |i| i.probe(|i| match key {
             true => {
                 i.token('{')?;
                 let k = expr(i)?;

@@ -1,9 +1,11 @@
-use super::grow::{Info, Labels, Mode, State};
-use crate::stack::ensure_sufficient;
+use super::state::{Info, Labels, Mode, State};
+use crate::{expr::Attr, stack::ensure_sufficient};
+use ahash::AHashMap;
 use combine::{
     ParseResult, easy, error::StringStreamError, stream::position::SourcePosition,
 };
 use compact_str::{CompactString, format_compact};
+use poolshark::local::LPooled;
 
 /// A point in the text: its byte offset, its position as an editor counts
 /// lines (a line ends at "\r\n", "\r" or "\n"), and where its line starts.
@@ -56,6 +58,25 @@ pub(super) struct Held {
     messages: usize,
 }
 
+/// An attribute's parse where it starts, for [`Input::remembered`].
+struct Remembered {
+    r: R<Attr>,
+    end: Mark,
+    /// What it added to the depth below the knot in progress.
+    below: usize,
+    /// How far past its starting depth its knots and folds went.
+    reach: usize,
+    /// What its failures at the reported point said, if any did.
+    said: Option<Labels>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Under test, read every attribute again, as a parse without
+    /// [`Input::remembered`] would.
+    pub(super) static FORGET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The text under parse and the parse's state.
 pub(super) struct Input<'a> {
     text: &'a str,
@@ -63,6 +84,7 @@ pub(super) struct Input<'a> {
     /// Printed data (`NaN`, a printed datetime) reads as a literal.
     pub(super) printed_data: bool,
     pub(super) g: State,
+    attrs: LPooled<AHashMap<usize, Remembered>>,
 }
 
 /// The first alternative that does not fail without consuming input; a
@@ -110,7 +132,13 @@ type EasyResult<'a, T> = ParseResult<T, easy::ParseError<&'a str>>;
 
 impl<'a> Input<'a> {
     pub(super) fn new(text: &'a str, mode: Mode, printed_data: bool) -> Self {
-        Self { text, at: Mark::start(), printed_data, g: State::new(mode) }
+        Self {
+            text,
+            at: Mark::start(),
+            printed_data,
+            g: State::new(mode),
+            attrs: LPooled::take(),
+        }
     }
 
     pub(super) fn mark(&self) -> Mark {
@@ -319,6 +347,16 @@ impl<'a> Input<'a> {
 
     /// `s`, committed once its first char matched.
     pub(super) fn string(&mut self, s: &'static str) -> R<&'static str> {
+        self.matching(s, true)
+    }
+
+    /// [`Input::string`] of a comment's opener, which a failure never
+    /// names as expected: a comment may stand wherever whitespace may.
+    pub(super) fn opener(&mut self, s: &'static str) -> R<&'static str> {
+        self.matching(s, false)
+    }
+
+    fn matching(&mut self, s: &'static str, named: bool) -> R<&'static str> {
         if self.rest().starts_with(s) {
             self.advance(s.len());
             return Ok(s);
@@ -330,7 +368,11 @@ impl<'a> Input<'a> {
         {
             self.at.step(c)
         }
-        self.labels(start.off, true, |l| l.expect(Info::text(s)));
+        self.labels(start.off, true, |l| {
+            if named {
+                l.expect(Info::text(s))
+            }
+        });
         Err(self.fail_at(start))
     }
 
@@ -372,6 +414,18 @@ impl<'a> Input<'a> {
             self.at = m
         }
         r
+    }
+
+    /// [`Input::attempt`] whose nesting refusal, too, is a failure that
+    /// consumed nothing: a probe of text that what follows on its failure
+    /// reads again at fewer knots a level, as a select's arms read the
+    /// patterns a map access's probe read as expressions.
+    pub(super) fn probe<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        let m = self.at;
+        f(self).map_err(|e| {
+            self.at = m;
+            Fail { fatal: false, ..e }
+        })
     }
 
     /// `f`, or `None` where it failed without consuming.
@@ -452,7 +506,8 @@ impl<'a> Input<'a> {
         r
     }
 
-    /// Succeed, consuming nothing, where `f` fails.
+    /// Succeed, consuming nothing, where `f` fails; where it does not, a
+    /// failure that names the token it met.
     pub(super) fn not_followed_by<T>(
         &mut self,
         f: impl FnOnce(&mut Self) -> R<T>,
@@ -469,7 +524,7 @@ impl<'a> Input<'a> {
             }
             Ok(_) => {
                 self.at = m;
-                Err(self.fail())
+                Err(self.mismatch())
             }
         }
     }
@@ -497,6 +552,72 @@ impl<'a> Input<'a> {
             true => Ok(()),
             false => Err(Fail { at: self.at, fatal: true }),
         }
+    }
+
+    /// `f`, the rest of an attribute, parsed once where it starts. Its
+    /// arguments are whole expressions that a lookahead may read before
+    /// the rule that keeps them, so nested attributes would be read again
+    /// at every level. A parse that starts here ends alike at any depth
+    /// where it stays within the nesting limit, so where it did it is
+    /// replayed: its end, what it added below the knot in progress, and
+    /// what its failures at the reported point said.
+    pub(super) fn remembered(&mut self, f: impl FnOnce(&mut Self) -> R<Attr>) -> R<Attr> {
+        let start = self.at.off;
+        #[cfg(test)]
+        if FORGET.get() {
+            return f(self);
+        }
+        if self.g.quiet > 0 {
+            return f(self);
+        }
+        if let Some(m) = self.attrs.get(&start)
+            && self.g.fits(m.reach)
+        {
+            self.at = m.end;
+            self.g.add_below(m.below);
+            if let Some(said) = &m.said {
+                let l = &mut self.g.labels;
+                l.token = said.token.or(l.token);
+                l.unexpected.extend(said.unexpected.iter().cloned());
+                l.expected.extend(said.expected.iter().cloned());
+                l.messages.extend(said.messages.iter().cloned());
+            }
+            return m.r.clone();
+        }
+        let held = self.hold();
+        let token = self.g.labels.token.take();
+        let measure = self.g.measure();
+        let r = f(self);
+        let (below, reach) = self.g.measured(measure);
+        let l = &mut self.g.labels;
+        let met = l.token;
+        l.token = met.or(token);
+        if r.as_ref().is_err_and(|e| e.fatal) {
+            return r;
+        }
+        let said = held
+            .filter(|h| {
+                met.is_some()
+                    || l.unexpected.len() > h.unexpected
+                    || l.expected.len() > h.expected
+                    || l.messages.len() > h.messages
+            })
+            .map(|h| {
+                let tail = |v: &[Info], n: usize| {
+                    let mut t: LPooled<Vec<Info>> = LPooled::take();
+                    t.extend(v[n..].iter().cloned());
+                    t
+                };
+                Labels {
+                    token: met,
+                    unexpected: tail(&l.unexpected, h.unexpected),
+                    expected: tail(&l.expected, h.expected),
+                    messages: tail(&l.messages, h.messages),
+                }
+            });
+        let m = Remembered { r: r.clone(), end: self.at, below, reach, said };
+        self.attrs.insert(start, m);
+        r
     }
 
     /// Run a parser of netidx-value on the rest of the text.

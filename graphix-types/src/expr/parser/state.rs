@@ -117,6 +117,8 @@ pub(super) struct State {
     /// How deep what the knot in progress built so far goes, in knots and
     /// fold levels.
     below: usize,
+    /// The deepest any knot or fold went, counted as the limit counts.
+    reach: usize,
     /// The furthest point a knot reached, by success or failure.
     furthest: Option<SourcePosition>,
     /// The furthest point a knot parsed to.
@@ -129,6 +131,15 @@ pub(super) struct State {
     pub(super) labels: Labels,
     /// Inside a `not_followed_by`, whose failures expect nothing.
     pub(super) quiet: u32,
+    /// Knots entered, which tests read as what a parse cost.
+    #[cfg(test)]
+    pub(super) knots: usize,
+}
+
+/// The depth bookkeeping a measured parse set aside.
+pub(super) struct Measure {
+    below: usize,
+    reach: usize,
 }
 
 impl State {
@@ -137,12 +148,15 @@ impl State {
             mode,
             depth: 0,
             below: 0,
+            reach: 0,
             furthest: None,
             furthest_ok: None,
             refused: None,
             reason: None,
             labels: Labels::default(),
             quiet: 0,
+            #[cfg(test)]
+            knots: 0,
         }
     }
 
@@ -162,6 +176,11 @@ impl State {
             self.depth -= 1;
             self.refuse(pos);
             return Err(());
+        }
+        self.reach = self.reach.max(self.depth);
+        #[cfg(test)]
+        {
+            self.knots += 1
         }
         Ok(std::mem::replace(&mut self.below, 0))
     }
@@ -190,8 +209,36 @@ impl State {
             false
         } else {
             self.below = below;
+            self.reach = self.reach.max(self.depth + below);
             true
         }
+    }
+
+    /// Start a parse whose depth [`State::measured`] tells.
+    pub(super) fn measure(&mut self) -> Measure {
+        Measure {
+            below: std::mem::take(&mut self.below),
+            reach: std::mem::replace(&mut self.reach, self.depth),
+        }
+    }
+
+    /// What the parse [`State::measure`] started added to the depth below
+    /// the knot in progress, and how far past its starting depth it went.
+    pub(super) fn measured(&mut self, m: Measure) -> (usize, usize) {
+        let added = (self.below, self.reach - self.depth);
+        self.below = m.below.max(self.below);
+        self.reach = m.reach.max(self.reach);
+        added
+    }
+
+    /// Whether a parse that went `reach` past its starting depth fits here.
+    pub(super) fn fits(&self, reach: usize) -> bool {
+        self.depth + reach <= max_nesting()
+    }
+
+    /// Add to the depth below the knot in progress what a parse added.
+    pub(super) fn add_below(&mut self, below: usize) {
+        self.below = self.below.max(below)
     }
 
     fn refuse(&mut self, pos: SourcePosition) {
@@ -301,11 +348,14 @@ impl State {
         let header = |p: SourcePosition| {
             format!("Parse error at line: {}, column: {}", p.line, p.column)
         };
+        let body = labels
+            .filter(|_| pos == err && read.is_none())
+            .map(|labels| self.render(pos, labels))
+            .filter(|body| !body.is_empty());
         let (mut msg, mut summary) = if let Some((at, reason)) = &read {
             pos = *at;
             (format!("{}\n{reason}", header(pos)), reason.to_string())
-        } else if let Some(labels) = labels.filter(|_| pos == err) {
-            let body = self.render(pos, labels);
+        } else if let Some(body) = body {
             (format!("{}\n{body}", header(pos)), body)
         } else {
             let summary = "the parser could not continue past this point".to_string();

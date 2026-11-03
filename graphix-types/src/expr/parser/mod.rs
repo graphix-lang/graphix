@@ -25,22 +25,22 @@ use triomphe::Arc;
 
 mod arithexp;
 mod arrayexp;
-mod grow;
 mod input;
 mod interpolateexp;
 mod lambdaexp;
 mod modexp;
 mod patternexp;
+mod state;
 mod traitexp;
 mod typexp;
 
 #[cfg(test)]
 mod test;
 
-pub use grow::{DEFAULT_MAX_NESTING, ParseFailure, max_nesting, set_max_nesting};
+pub use state::{DEFAULT_MAX_NESTING, ParseFailure, max_nesting, set_max_nesting};
 
-use grow::Mode;
 use input::{Input, Mark, R, bridge, choice};
+use state::Mode;
 
 /// A list item's parser.
 type Item<'t, O> = &'t dyn Fn(&mut Input) -> R<O>;
@@ -136,9 +136,9 @@ fn spaces_blank(i: &mut Input) -> bool {
     i.take_while(char::is_whitespace).chars().filter(|c| *c == '\n').count() > 1
 }
 
-/// `//` and whether a `///` doc follows, from `m` on.
+/// `//`, and whether it opens a `///` doc.
 fn comment_open(i: &mut Input) -> R<bool> {
-    i.string("//")?;
+    i.opener("//")?;
     i.optional(|i| {
         i.attempt(|i| {
             i.token('/')?;
@@ -189,22 +189,25 @@ fn leading_comments(i: &mut Input, docs: bool) -> R<LPooled<Vec<Comment>>> {
 // call arg `#name` from colliding.
 fn attribute(i: &mut Input) -> R<Attr> {
     i.attempt(|i| i.string("#["))?;
-    i.spaces();
-    let name = fname(i)?;
-    i.spaces();
-    let args = i.optional(|i| {
-        i.token('(')?;
-        let args = sep_by_tok(i, &expr, &|i| i.attempt(|i| i.sptoken(')')).map(drop))?;
-        i.sptoken(')')?;
-        Ok(args)
-    })?;
-    let end = i.pos();
-    i.sptoken(']')?;
-    let mut args = args.unwrap_or_else(LPooled::take);
-    match args.iter().any(holds_comment) {
-        true => Err(i.refuse(end, "a comment cannot stand inside an attribute")),
-        false => Ok(Attr { name, args: Arc::from_iter(args.drain(..)) }),
-    }
+    i.remembered(|i| {
+        i.spaces();
+        let name = fname(i)?;
+        i.spaces();
+        let args = i.optional(|i| {
+            i.token('(')?;
+            let args =
+                sep_by_tok(i, &expr, &|i| i.attempt(|i| i.sptoken(')')).map(drop))?;
+            i.sptoken(')')?;
+            Ok(args)
+        })?;
+        let end = i.pos();
+        i.sptoken(']')?;
+        let mut args = args.unwrap_or_else(LPooled::take);
+        match args.iter().any(holds_comment) {
+            true => Err(i.refuse(end, "a comment cannot stand inside an attribute")),
+            false => Ok(Attr { name, args: Arc::from_iter(args.drain(..)) }),
+        }
+    })
 }
 
 // The own-line `//` comments and `#[..]` attributes directly above an
@@ -241,7 +244,7 @@ fn doc_comment(i: &mut Input) -> R<Doc> {
             let m = i.mark();
             i.attempt(|i| {
                 i.look_ahead(|i| {
-                    i.string("///")?;
+                    i.opener("///")?;
                     i.not_followed_by(|i| i.token('/'))
                 })
             })?;
@@ -253,7 +256,7 @@ fn doc_comment(i: &mut Input) -> R<Doc> {
                 });
                 return Err(i.unexpected("trailing doc comment"));
             }
-            i.string("///")?;
+            i.opener("///")?;
             let line = line_text(i);
             i.spaces();
             Ok(line)
@@ -269,7 +272,7 @@ fn doc_comment(i: &mut Input) -> R<Doc> {
     let pos = i.pos();
     match doc {
         None => Ok(Doc(None)),
-        Some(doc) => match i.optional(|i| i.attempt(|i| i.string("//")))? {
+        Some(doc) => match i.optional(|i| i.attempt(|i| i.opener("//")))? {
             None => Ok(Doc(Some(ArcStr::from(doc.as_str())))),
             Some(_) => {
                 i.g.note_reason(pos, None, || {
@@ -1145,7 +1148,7 @@ fn struct_head(i: &mut Input) -> R<()> {
     i.many(
         |i| {
             i.attempt(|i| {
-                i.string("//")?;
+                i.opener("//")?;
                 i.take_while(|c| c != '\n');
                 Ok(i.spaces())
             })
@@ -1828,6 +1831,14 @@ const BOM: char = '\u{feff}';
 /// `text` with every CRLF line ending read as LF, as rustc reads source,
 /// so a file means the same whatever its checkout's line endings. Only a
 /// line ending ever moves: lines and columns are unchanged.
+// CR claude for claude: [bug/low] Not for "\r\r\n": the lone CR and the CRLF
+// are two line endings, but the result holds "\r\n", which `Mark::step` (its
+// `after_cr`) and `lines` read as one, so every position after it is a line
+// short of what an editor shows (the LSP's squiggles too). `let x = 1;\r\r\nlet
+// y = ;` reports line 2, column 9; the break is line 3. Main's combine parser
+// (its `Lines` positioner) counted the same. A fix reads the converted text's
+// "\r\n" as two endings in `Mark::step` and shows the snippet from the
+// original text, whose `lines` agree. (crcrlf-lines-01)
 fn crlf_as_lf<'a>(text: &'a str, buf: &'a mut LPooled<String>) -> &'a str {
     if !text.contains("\r\n") {
         return text;
@@ -1841,8 +1852,8 @@ fn crlf_as_lf<'a>(text: &'a str, buf: &'a mut LPooled<String>) -> &'a str {
     buf.as_str()
 }
 
-/// A text's lines as [`Lines`] numbers them, each without its break;
-/// what follows the last break, empty or not, is a line.
+/// A text's lines, each without its break (`\r\n`, `\r` or `\n`); what
+/// follows the last break, empty or not, is a line.
 pub fn lines(text: &str) -> impl Iterator<Item = &str> {
     let mut rest = Some(text);
     std::iter::from_fn(move || {

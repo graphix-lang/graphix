@@ -1998,12 +1998,22 @@ fn reserved_word_as_a_name_is_named() {
 
 /// A program's parse failure, rendered as the shell shows it.
 fn parse_program(text: &str) -> String {
-    let ori = crate::expr::Origin {
+    format!("{:#}", parse(vfs(text)).unwrap_err())
+}
+
+/// `text` as the file `/test`.
+fn vfs(text: &str) -> crate::expr::Origin {
+    crate::expr::Origin {
         parent: None,
         source: crate::expr::Source::Vfs(literal!("/test")),
         text: ArcStr::from(text),
-    };
-    format!("{:#}", parse(ori).unwrap_err())
+    }
+}
+
+/// A failure's summary, what an editor shows beside the caret.
+fn summary(r: anyhow::Result<impl std::fmt::Debug>) -> String {
+    let err = r.unwrap_err();
+    err.downcast_ref::<ParseFailure>().expect("a parse failure").summary.clone()
 }
 
 // A refusal reads as its reason, no whitespace is ever the unexpected
@@ -3008,11 +3018,160 @@ fn source_error_does_not_expect_printed_data() {
         message,
         r####"at line: 1, column: 9 in module /test: Parse error at line: 1, column: 9
 Unexpected `;`
-Expected //, #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, u8, u16, u32, i8, i16, i32, v32, z32, f32, f64, `0`, true, false, null, decimal, datetime, u64, i64, v64, z64, bytes, abstract, error, duration or duration:
+Expected #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, u8, u16, u32, i8, i16, i32, v32, z32, f32, f64, `0`, true, false, null, decimal, datetime, u64, i64, v64, z64, bytes, abstract, error, duration or duration:
 
     let x = ;
             ^"####
     );
+}
+
+// A word or a literal run into what follows names what it ran into.
+#[test]
+fn a_failure_after_a_whole_word_names_what_follows() {
+    for (src, c) in [
+        ("let x = 2.s", 's'),
+        ("let x = sys::time::after_idle(100.ms, 0)", 'm'),
+        ("let x = 1.0f32", 'f'),
+        ("let x = 1;\nselect x { 0if true => 1, _ => 2 }", 'i'),
+        ("let x = 1;\nselect x { 1.5x => 1, _ => 0 }", 'x'),
+        ("seq { try { 1 } withx(e) { 2 } }", 'x'),
+    ] {
+        let s = summary(parse(vfs(src)));
+        assert!(s.starts_with(&format!("Unexpected `{c}`\n")), "{src}: {s}");
+    }
+    let s = summary(parse_fn_type("fnx(x: i64) -> i64"));
+    assert!(s.starts_with("Unexpected `x`\n"), "{s}");
+}
+
+// A failure at a point where nothing was said still says something.
+#[test]
+fn a_report_is_never_empty() {
+    let g = state::State::new(Mode::Labels(4));
+    let pos = SourcePosition { line: 1, column: 5 };
+    let p = g.report("let x", pos, Some(&g.labels));
+    assert_eq!(p.summary, "the parser could not continue past this point");
+}
+
+/// Knots a quick parse of `text`'s statements enters, parsed or not.
+fn knots(text: &str) -> usize {
+    let mut i = Input::new(text, Mode::Quick, false);
+    let _ = statements(&mut i, &|i| i.eof());
+    i.g.knots
+}
+
+// An attribute's arguments are read once where a lookahead read them
+// first, so nesting attributes costs what nesting anything else does.
+#[test]
+fn nested_attribute_arguments_parse_once() {
+    let nest = |head: &str, inner: &str, tail: &str, n: usize| {
+        format!("let x = 1;\nlet s = {}{inner}{}", head.repeat(n), tail.repeat(n))
+    };
+    let shapes = [
+        ("{ #[a(", "1", ")] x: 1 }"),
+        ("{ #[a(", "1", ")] x; y }"),
+        ("select x{ #[a(", "1", ")] _ => 1 }"),
+        ("{ #[a(", "1 +", ")] x: 1 }"),
+    ];
+    for (head, inner, tail) in shapes {
+        let small = knots(&nest(head, inner, tail, 8));
+        let large = knots(&nest(head, inner, tail, 16));
+        assert!(large < 3 * small, "{head}{inner}: {small} knots at 8, {large} at 16");
+    }
+    for (head, inner, tail) in &shapes[..3] {
+        assert!(parse(vfs(&nest(head, inner, tail, 40))).is_ok(), "{head}");
+    }
+    let msg = parse_program(&nest("{ #[a(", "1 +", ")] x: 1 }", 40));
+    assert!(msg.contains("Parse error at line: 2, column: 252\nUnexpected `)`"), "{msg}");
+}
+
+/// Every node's `[pos, end)`, its decorations' attribute arguments'
+/// included, in preorder.
+fn spans(e: &Expr, out: &mut Vec<(SourcePosition, Option<SourcePosition>)>) {
+    out.push((e.pos, e.end.get()));
+    for a in e.dec.iter().flat_map(|d| d.attrs.iter()) {
+        a.args.iter().for_each(|e| spans(e, out))
+    }
+    e.for_each_child(&mut |c| spans(c, out))
+}
+
+/// A parse of `text` as data a comparison reads: the tree with its spans,
+/// or the failure's message.
+fn outcome(text: &str) -> String {
+    match parse(vfs(text)) {
+        Err(e) => format!("{e:#}"),
+        Ok(exprs) => {
+            let mut s = Vec::new();
+            exprs.iter().for_each(|e| spans(e, &mut s));
+            format!("{exprs:?}\n{s:?}")
+        }
+    }
+}
+
+// Reading an attribute once decides and reports what reading it again
+// does: every cut, deletion and stray closer of programs that nest them.
+#[test]
+fn a_remembered_attribute_parses_as_read_again() {
+    let nest = |head: &str, inner: &str, tail: &str| {
+        format!(
+            "let x = 1;\nlet s = {{a: 1}};\nlet y = {}{inner}{}",
+            head.repeat(4),
+            tail.repeat(4)
+        )
+    };
+    let programs = [
+        nest("{ #[a(", "1", ")] x: 1 }"),
+        nest("{ #[a(", "1", ")]\n// c\n x; y }"),
+        nest("select x{ #[a(", "1", ")] _ => 1 }"),
+        nest("{ #[a(", "1", ")] x => 1 }"),
+        nest("{ #[b] #[a(", "[1, 2]", ", 3)] (s) with a: 1 }"),
+        "let y = { #[a({ #[b(select x{ #[c([1, 2])] _ => 1 }, 2)] x: 1 })] x; y };\n\
+         let w = m{ #[e(\"s\")] k };\nlet v = select x{ #[f({ #[g] x: 1 })] _ => 0 }"
+            .to_string(),
+    ];
+    let both = |text: &str| {
+        let remembered = outcome(text);
+        input::FORGET.set(true);
+        let read_again = outcome(text);
+        input::FORGET.set(false);
+        assert_eq!(remembered, read_again, "{text}");
+    };
+    for p in &programs {
+        let at: Vec<usize> = p.char_indices().map(|(n, _)| n).collect();
+        for &n in &at {
+            both(&p[..n]);
+            let next = p[n..].chars().next().unwrap().len_utf8();
+            both(&format!("{}{}", &p[..n], &p[n + next..]));
+            for c in [")", "}", "]", "+"] {
+                both(&format!("{}{c}{}", &p[..n], &p[n..]));
+            }
+        }
+    }
+}
+
+// A block's first statement is a knot deeper than a struct's first field,
+// so arguments a lookahead read at the field's depth fit the limit there
+// and not in the block.
+#[test]
+fn an_attribute_read_once_counts_as_deep_as_where_it_stands() {
+    let nest = |n: usize, tail: &str| {
+        format!("let y = {{ #[a({}1 + 1 + 1{})] {tail} }}", "(".repeat(n), ")".repeat(n))
+    };
+    assert!(parse(vfs(&nest(330, "x: 1"))).is_ok());
+    assert!(parse(vfs(&nest(329, "x; y"))).is_ok());
+    let msg = parse_program(&nest(330, "x; y"));
+    assert!(msg.contains("Parse error at line: 1, column: 684\n"), "{msg}");
+}
+
+// A map access's probe reads a select's arms as expressions, at more knots
+// a level than the patterns they are; the probe's nesting refusal leaves
+// the arms to the select.
+#[test]
+fn a_deep_pattern_after_an_unspaced_select_brace_parses() {
+    let p = format!("{}x{}", "[".repeat(400), "]".repeat(400));
+    for brace in ["v{", "v {"] {
+        let src = format!("let v = 1;\nselect {brace} {p} => 1, _ => 0 }}");
+        assert!(parse(vfs(&src)).is_ok(), "{brace}");
+    }
 }
 
 // a type definition's fields and members take comments, at any depth of
@@ -3020,12 +3179,7 @@ Expected //, #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, 
 #[test]
 fn type_definitions_keep_comments_on_fields_and_members() {
     let src = "type C = {\n    // where\n    port: i64, // the port\n    mode: [\n        `Fast, // quick\n        Named\n        // below\n    ]\n};\n0";
-    let ori = crate::expr::Origin {
-        parent: None,
-        source: crate::expr::Source::Vfs(literal!("/test")),
-        text: ArcStr::from(src),
-    };
-    let exprs = parse(ori).unwrap();
+    let exprs = parse(vfs(src)).unwrap();
     let ExprKind::TypeDef(td) = &exprs[0].kind else { panic!("{:?}", exprs[0]) };
     let TypeDefBody::Alias(body) = &td.body else { panic!("{td:?}") };
     let mut notes = vec![];
@@ -3053,12 +3207,7 @@ fn type_definitions_keep_comments_on_fields_and_members() {
 #[test]
 fn lines_below_a_nested_union_go_below_its_last_member() {
     let src = "type T = [\n    `A,\n    [`B, `C]\n    // below\n];\n0";
-    let ori = crate::expr::Origin {
-        parent: None,
-        source: crate::expr::Source::Vfs(literal!("/test")),
-        text: ArcStr::from(src),
-    };
-    let exprs = parse(ori).unwrap();
+    let exprs = parse(vfs(src)).unwrap();
     let ExprKind::TypeDef(td) = &exprs[0].kind else { panic!("{:?}", exprs[0]) };
     let TypeDefBody::Alias(body) = &td.body else { panic!("{td:?}") };
     let mut notes = vec![];
