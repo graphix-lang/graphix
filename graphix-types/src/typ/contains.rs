@@ -2993,6 +2993,17 @@ impl Type {
         }
     }
 
+    // CR claude for claude: [bug/low] A select is refused for missing cases over a
+    // product holding a union whose members share an undecided cell, which every arm
+    // meets with `_` alone: `let w = (1, v)` over `v` built from `(`A, 5, z)` and `(`B,
+    // "s", z)`, z a `never()` let written after, with `(_, (`A, _, _)) => "a"` and `(_,
+    // (`B, _, _)) => "b"`, gives "no arm covers (i64, [(`A, i64, '_N), (`B, string,
+    // '_N)])"; z = 0 written in checks, and `W(v) in place of the tuple checks. This
+    // law decides only over a cell-free scrutinee, so the covered union does not
+    // distribute over the tuple's position. Under the 10-31 select ruling a part only
+    // a name or `_` meets costs nothing, so the program passes; the D3 rebuild (D5 in
+    // ~/ptmp/cr-discuss.md) may cover it. Main 30702808d alike. probes:
+    // ~/ptmp/cr29/scratch/r11-N/{n1,n4}.gx (n1c.gx closed) (distribution-open-cell-01)
     /// The distribution law for product heads: a set whose members
     /// split one argument position of a constructor across same-shaped
     /// alternatives covers the pooled constructor —
