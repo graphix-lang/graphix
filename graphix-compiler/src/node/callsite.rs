@@ -1173,6 +1173,18 @@ fn held_generally<R: Rt>(
 // every holder (a let's type, a parameter, a labeled default, a field, a connect, a
 // constructor's payload, an interface val). Census: no rank-2 result type outside the
 // pins. Explainer ~/ptmp/cr29/d3-explainer.md.
+// 2026-11-03 claude: For whoever builds D3 (a): ~/ptmp/cr29/d3-explainer.md (probes
+// ~/ptmp/cr29/scratch/d3-explainer/) has every route run on main 30702808d. Routes that
+// pass --check: val, parameter, labeled default, field, connect, select (rd_select: a
+// block or select is not a literal, so (a) refuses it), let-bound maker, abstract
+// parameter, and a written return type one level down (rd_mr_bad: `|q: i64| -> fn(z:
+// i64) -> fn<'a: Any>(x: 'a) -> 'a |z| { let v = never(); .. }` passes, so the
+// written-return-type check must apply recursively). No timer is needed for the runtime
+// death (bad2 dies in its first cycle); not every unsafe program panics (bad.gx logs an
+// arith error). The interface val needs a test of its own (rd_val_field; D4 (a) does
+// not cover val_bad). A safe and an unsafe let-bound maker infer the same type
+// (rd_types), which is why (a) asks for the return type at the definition rather than
+// reading it.
 /// A value checked against quantifiers held rigid holds for every choice
 /// of them only if nothing outside it that lives on reaches one: a binding
 /// it reads or writes from outside (its lambdas' captures included), or the
