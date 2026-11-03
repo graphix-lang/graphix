@@ -4863,6 +4863,36 @@ run!(
     "#
 ; FuseExpect::None);
 
+// `F(A) against `F(B) walks C against D while the pair A, B is in progress,
+// then fails at `K, `L; `G(C) against `G(D), asked after it, fails too:
+// A3 against B3 rested on A2 against B2, which rested on A, B.
+run!(
+    dead_arm_over_a_true_resting_on_a_failed_pair_is_refused,
+    refused("pattern [`F(A), `G(C)] will never match [`F(B), `G(D)]"),
+    "/test.gx" => r#"
+        type P0 = (`A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A,
+                   `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A,
+                   `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A,
+                   `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A,
+                   `A, `A, `A, `A, `A, `A, `A);
+        type P1 = (`A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A,
+                   `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A,
+                   `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A,
+                   `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A, `A,
+                   `A, `A, `A, `A, `A, `A, `A);
+        type A = (P0, A2, C, `K);
+        type B = (P1, B2, D, `L);
+        type A2 = (A3, Error<A>);
+        type B2 = (B3, Error<B>);
+        type A3 = [Error<A2>, `S];
+        type B3 = [Error<B2>, `T];
+        type C = [(A3, `Z), `Q];
+        type D = [(B3, `Z), `R];
+        let v: [`F(B), `G(D)] = never();
+        let result = select v { [`F(A), `G(C)] as x => 0, _ => 1 }
+    "#
+; FuseExpect::None);
+
 // Coverage reads a bound cell as its binding: a map literal's key and
 // value cells bound to i64, or a generic call's 'a bound to i64, are
 // i64, so `[Error<S>, Array<S>]` covers the whole scrutinee and a later

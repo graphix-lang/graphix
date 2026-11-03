@@ -1215,8 +1215,8 @@ thread_local! {
     static NO_MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Whether diff and could_match read their memos of finished pairs: a
-/// test compares their answers with the walks' without them.
+/// Whether diff and could_match read their memos of pairs: a test
+/// compares their answers with the walks' without them.
 #[inline(always)]
 pub(super) fn memo_on() -> bool {
     #[cfg(test)]

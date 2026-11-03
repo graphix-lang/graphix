@@ -194,18 +194,19 @@ thread_local! {
     pub(super) static MATCH_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// could_match's walk state: its pairs in progress (assumed to overlap),
-/// the pairs refuted by walks that met none, and a memo of its own for
-/// the containment questions it asks.
+/// could_match's walk state: its pairs in progress (assumed to overlap)
+/// by depth, the pairs refuted by walks that met none, and a memo of its
+/// own for the containment questions it asks.
 pub(super) struct MatchHist {
-    pub(super) hist: RefHist<AHashSet<RefPair>>,
+    pub(super) hist: RefHist<AHashMap<RefPair, usize>>,
     refuted: Lazy<AHashMap<RefPair, Kept<()>>>,
     contains: ContainsHist,
-    /// The node pairs found to overlap by a walk that assumed no pair in
-    /// progress, which overlap wherever they are asked.
+    /// The node pairs found to overlap assuming no pair still in progress,
+    /// which overlap wherever they are asked.
     found: NodePairs,
-    /// The current walk met a pair in progress.
-    assumed: bool,
+    tentative: Tentative,
+    /// The shallowest pair in progress the current walk assumed.
+    low_water: usize,
 }
 
 impl MatchHist {
@@ -215,13 +216,77 @@ impl MatchHist {
             refuted: Lazy::new(),
             contains: ContainsHist::new(),
             found: NodePairs::default(),
-            assumed: false,
+            tentative: Tentative::new(),
+            low_water: usize::MAX,
+        }
+    }
+}
+
+/// The node pairs found to overlap by assuming pairs still in progress, in
+/// the order found, each with the depth of the shallowest it assumed. A
+/// pair's walk that fails drops those found since it began; one that
+/// succeeds assuming nothing further out keeps them for good (`found`);
+/// one that assumed a pair further out passes that pair's depth to them.
+struct Tentative {
+    pairs: Lazy<AHashMap<(usize, usize), (usize, Type, Type)>>,
+    order: Lazy<Vec<(usize, usize)>>,
+}
+
+impl Tentative {
+    fn new() -> Self {
+        Tentative { pairs: Lazy::new(), order: Lazy::new() }
+    }
+
+    fn low_water(&self, key: (usize, usize)) -> Option<usize> {
+        self.pairs.get()?.get(&key).map(|(depth, _, _)| *depth)
+    }
+
+    fn insert(&mut self, key: (usize, usize), depth: usize, t0: &Type, t1: &Type) {
+        if self.pairs.get_mut().insert(key, (depth, t0.clone(), t1.clone())).is_none() {
+            self.order.get_mut().push(key)
+        }
+    }
+
+    fn mark(&self) -> usize {
+        self.order.get().map_or(0, |o| o.len())
+    }
+
+    /// Settle what was found since `mark` by the walk of the pair at
+    /// `depth`, which assumed pairs from `low_water` on.
+    fn settle(
+        &mut self,
+        mark: usize,
+        depth: usize,
+        low_water: usize,
+        could: bool,
+        found: &mut NodePairs,
+    ) {
+        let (Some(pairs), Some(order)) = (self.pairs.0.as_mut(), self.order.0.as_mut())
+        else {
+            return;
+        };
+        if !could {
+            for key in order.drain(mark..) {
+                pairs.remove(&key);
+            }
+        } else if low_water >= depth {
+            for key in order.drain(mark..) {
+                if let Some((_, t0, t1)) = pairs.remove(&key) {
+                    found.insert(key, &t0, &t1)
+                }
+            }
+        } else {
+            for key in &order[mark..] {
+                if let Some((d, _, _)) = pairs.get_mut(key) {
+                    *d = low_water
+                }
+            }
         }
     }
 }
 
 impl Deref for MatchHist {
-    type Target = RefHist<AHashSet<RefPair>>;
+    type Target = RefHist<AHashMap<RefPair, usize>>;
 
     fn deref(&self) -> &Self::Target {
         &self.hist
@@ -284,6 +349,27 @@ impl Type {
     // (MatchHist::assumed). Reverting this fix makes
     // typ::setops::tests::diff_and_could_match_memos_change_no_answer and
     // memos_change_no_composed_answer fail with the memos on.
+    // 2026-11-03 claude: Review r9 found the flag rule above exponential where every
+    // overlap rests on a pair in progress (rt12.gx 1.6G instructions on main vs 665G;
+    // dag16 1.3G vs 7.9G). found now keeps such a true tentatively (matches.rs
+    // Tentative): with the depth of the shallowest pair in progress it assumed, reused
+    // while that pair is in progress (a reuse assumes that depth too); a pair's walk
+    // that fails drops every tentative true found since it began; one that succeeds
+    // assuming nothing further out moves them to found for good; one that assumed a pair
+    // further out passes that pair's depth to them. found then answers what the walk
+    // without it answers at every point, and the walk is linear on the review's shapes.
+    // Pins:
+    // typ::matches::tests::could_match_walks_each_pair_once_where_overlaps_are_assumed
+    // (a cycle, Error and variant chains, a pair DAG and a DAG failing at every level, n
+    // = 8..24, at most 4n+32 pairs; 255 at n=8 with the flag rule, 174762 for the
+    // failing DAG without the commit at success),
+    // a_true_resting_on_a_failed_pair_goes_with_it (fails with a reuse that takes no
+    // depth, with no depth passed on at a success, and with main's keep-every-true),
+    // graphix-tests
+    // lang::select::dead_arm_over_a_true_resting_on_a_failed_pair_is_refused (main
+    // accepts its dead arm); the earlier pins hold. In tests memo_on() also turns
+    // found's reads off, so the memo differentials compare against the walk with no memo
+    // at all.
     pub(super) fn could_match_int(
         &self,
         env: &Env,
@@ -291,16 +377,26 @@ impl Type {
         t: &Self,
     ) -> Result<bool> {
         let pair = hist.found.key(self, t);
-        if pair.is_some_and(|pair| hist.found.contains(pair)) {
-            return Ok(true);
+        if let Some(pair) = pair.filter(|_| memo_on()) {
+            if hist.found.contains(pair) {
+                return Ok(true);
+            }
+            if let Some(depth) = hist.tentative.low_water(pair) {
+                hist.low_water = hist.low_water.min(depth);
+                return Ok(true);
+            }
         }
-        let outer = mem::replace(&mut hist.assumed, false);
+        let outer = mem::replace(&mut hist.low_water, usize::MAX);
         let could = ensure_sufficient(|| self.could_match_inner(env, hist, t));
-        let assumed = mem::replace(&mut hist.assumed, outer);
-        hist.assumed |= assumed;
+        let assumed = mem::replace(&mut hist.low_water, outer);
+        hist.low_water = hist.low_water.min(assumed);
         let could = could?;
-        if let Some(pair) = pair.filter(|_| could && !assumed) {
-            hist.found.insert(pair, self, t)
+        if let Some(pair) = pair.filter(|_| could) {
+            match assumed >= hist.len() {
+                true => hist.found.insert(pair, self, t),
+                false if hist.found.contains(pair) => (),
+                false => hist.tentative.insert(pair, assumed, self, t),
+            }
         }
         Ok(could)
     }
@@ -342,19 +438,25 @@ impl Type {
                 if memo_on() && hist.refuted.get().is_some_and(|m| m.contains_key(&key)) {
                     return Ok(false);
                 }
-                if hist.contains(&key) {
-                    hist.assumed = true;
+                if let Some(&depth) = hist.get(&key) {
+                    hist.low_water = hist.low_water.min(depth);
                     return Ok(true);
                 }
                 #[cfg(test)]
                 MATCH_PAIRS.with(|n| n.set(n.get() + 1));
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                hist.insert(key);
+                let (depth, mark) = (hist.len(), hist.tentative.mark());
+                let outer = mem::replace(&mut hist.low_water, usize::MAX);
+                hist.insert(key, depth);
                 let r = t0.could_match_int(env, hist, &t1);
                 hist.remove(&key);
+                let assumed = mem::replace(&mut hist.low_water, outer);
+                hist.low_water = hist.low_water.min(assumed);
+                let could = matches!(r, Ok(true));
+                hist.tentative.settle(mark, depth, assumed, could, &mut hist.found);
                 if let Ok(false) = r
-                    && !hist.assumed
+                    && assumed == usize::MAX
                     && key.0.is_some()
                     && key.1.is_some()
                 {
@@ -757,6 +859,7 @@ impl Type {
 
 #[cfg(test)]
 mod tests {
+    use super::MATCH_PAIRS;
     use crate::typ::cast::tests::{parsed, typed};
 
     fn could_match(defs: &[(&str, String)], t0: &str, t1: &str) -> bool {
@@ -802,6 +905,116 @@ mod tests {
             ];
             let (t0, t1) = ("[`A(PA), `G(QA), `M(EA)]", "[`A(PB), `G(QB), `M(EB)]");
             assert!(!could_match(&defs, t0, t1), "{n} {m}");
+        }
+    }
+
+    // A true a pair in progress gave goes when that pair fails: A against
+    // B walks C against D while the pair A, B is in progress, then fails
+    // at `K, `L, so C against D, asked again, fails too. P0 and P1 take
+    // the walk past `NodePairs::EAGER`. In the first,
+    // C against D reuses A2 against B2, which rests on A, B; in the
+    // second, A3 against B3 rests on A2, B2, which rests on A, B.
+    #[test]
+    fn a_true_resting_on_a_failed_pair_goes_with_it() {
+        let pad = format!("({}`A)", "`A, ".repeat(70));
+        let shapes = [
+            vec![
+                ("A2", "[Error<A>, `M]"),
+                ("B2", "[Error<B>, `N]"),
+                ("C", "[(A2, `Z), `Q]"),
+                ("D", "[(B2, `Z), `R]"),
+            ],
+            vec![
+                ("A2", "(A3, Error<A>)"),
+                ("B2", "(B3, Error<B>)"),
+                ("A3", "[Error<A2>, `S]"),
+                ("B3", "[Error<B2>, `T]"),
+                ("C", "[(A3, `Z), `Q]"),
+                ("D", "[(B3, `Z), `R]"),
+            ],
+        ];
+        for shape in shapes {
+            let mut defs = vec![
+                ("P0", pad.clone()),
+                ("P1", pad.clone()),
+                ("A", "(P0, A2, C, `K)".into()),
+                ("B", "(P1, B2, D, `L)".into()),
+            ];
+            defs.extend(shape.into_iter().map(|(n, b)| (n, b.to_string())));
+            assert!(!could_match(&defs, "[`F(A), `G(C)]", "[`F(B), `G(D)]"));
+        }
+    }
+
+    /// could_match of `t0` and `t1` over `defs`, and how many pairs of
+    /// names it walked.
+    fn pairs_walked(defs: &[(String, String)], t0: &str, t1: &str) -> (bool, usize) {
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, _) = typed(&defs, "null");
+        let (t0, t1) = (parsed(&env, t0), parsed(&env, t1));
+        MATCH_PAIRS.with(|n| n.set(0));
+        let could = t0.could_match(&env, &t1).unwrap();
+        (could, MATCH_PAIRS.with(|n| n.get()))
+    }
+
+    // Where every overlap rests on a pair in progress, the walk takes each
+    // pair of names a bounded number of times: what a pair in progress
+    // gave is reused while that pair is, and kept once it has succeeded.
+    #[test]
+    fn could_match_walks_each_pair_once_where_overlaps_are_assumed() {
+        let named = |p: &str, i: usize, body: String| (format!("{p}{i}"), body);
+        let linear = |n: usize, (could, pairs): (bool, usize), expect: bool| {
+            assert_eq!(could, expect, "{n}");
+            assert!(pairs <= 4 * n + 32, "{n}: {pairs} pairs");
+        };
+        for n in [8, 16, 24] {
+            // a cycle of n names, each naming the next twice
+            let mut defs = vec![];
+            for (p, nil) in [("T", "`TNil"), ("U", "`UNil")] {
+                for i in 0..n {
+                    let next = format!("{p}{}", (i + 1) % n);
+                    defs.push(named(p, i, format!("[({next}, {next}), {nil}]")));
+                }
+            }
+            linear(n, pairs_walked(&defs, "T0", "U0"), true);
+            // a chain of pairs back to its first name through Error or a
+            // variant only
+            for back in ["Error<{p}0>", "`A({p}0)"] {
+                let mut defs = vec![];
+                for (p, leaf) in [("T", "`Z"), ("S", "`Y")] {
+                    for i in 0..n {
+                        defs.push(named(p, i, format!("({p}{}, {p}{})", i + 1, i + 1)));
+                    }
+                    let back = back.replace("{p}", p);
+                    defs.push(named(p, n, format!("[{back}, {leaf}]")));
+                }
+                linear(n, pairs_walked(&defs, "T0", "S0"), true);
+            }
+            // a DAG of pairs over two names that overlap by assumption only
+            let mut defs = vec![
+                named("T", 0, "[(T0, T0), `TNil]".into()),
+                named("U", 0, "[(U0, U0), `UNil]".into()),
+                named("D", 1, "(T0, T0)".into()),
+                named("E", 1, "(U0, U0)".into()),
+            ];
+            for i in 2..=n {
+                defs.push(named("D", i, format!("(D{}, D{})", i - 1, i - 1)));
+                defs.push(named("E", i, format!("(E{}, E{})", i - 1, i - 1)));
+            }
+            linear(n, pairs_walked(&defs, &format!("D{n}"), &format!("E{n}")), true);
+            // a DAG whose every level fails after the level below it
+            // succeeded by assumption
+            let mut defs = vec![
+                named("P", 0, "[(P0, P0), `PNil]".into()),
+                named("Q", 0, "[(Q0, Q0), `QNil]".into()),
+            ];
+            for i in 1..=n {
+                let j = i - 1;
+                defs.push(named("P", i, format!("[(P{j}, `A), (P{j}, `B)]")));
+                defs.push(named("Q", i, format!("[(Q{j}, `C), (Q{j}, `D)]")));
+            }
+            let (t0, t1) =
+                (format!("[`X(P{n}), `Y(P{n})]"), format!("[`X(Q{n}), `Y(Q{n})]"));
+            linear(n, pairs_walked(&defs, &t0, &t1), false);
         }
     }
 }
