@@ -312,7 +312,10 @@ let's, a select's or an array's of lambda literals, a read's of a
 generalized let, whose callback ties a binding outside to the original's
 generic cell (`f <- |x| { y <- array::map([x], |e| W(e)); x }`, the same
 lambda in a select's arm, `f <- g` over such a `let g`), CR
-rank2-escape-hof-01 with callback-generic-leak-01.
+rank2-escape-hof-01 with callback-generic-leak-01. Not generated: a
+quantifier's bound naming a variable its written type does not quantify
+(`fn<'b: 'c>` beside the definition's `'c`); rule
+`FnType::check_bounds_closed`, right site the definition writing it.
 
 ## Labeled and optional arguments across the fuzzer
 
