@@ -1141,7 +1141,7 @@ pub(crate) fn written_lets(
 /// compile of the outermost block, so a module nested d blocks deep is
 /// walked once, not once for each block around it.
 #[derive(Default)]
-pub(crate) struct ModuleWrites(AHashMap<ExprId, Box<[(Anchor, CompactString)]>>);
+pub(crate) struct ModuleWrites(AHashMap<ExprId, LPooled<Vec<(Anchor, CompactString)>>>);
 
 impl ModuleWrites {
     pub(crate) fn is_empty(&self) -> bool {
@@ -1149,9 +1149,7 @@ impl ModuleWrites {
     }
 
     pub(crate) fn clear(&mut self) {
-        if !self.0.is_empty() {
-            self.0 = AHashMap::default()
-        }
+        self.0.clear()
     }
 }
 
@@ -1164,13 +1162,13 @@ fn module_writes(
     id: ExprId,
     exprs: &[Expr],
     known: &mut ModuleWrites,
-) -> Box<[(Anchor, CompactString)]> {
+) -> LPooled<Vec<(Anchor, CompactString)>> {
     if let Some(outer) = known.0.remove(&id) {
         return outer;
     }
     let mut w = Writes::new(Walk::Module, known);
     w.statements(exprs.iter());
-    Box::from_iter(w.outer.drain(..))
+    mem::take(&mut w.outer)
 }
 
 /// Where a name outside a module stands: `k` levels of `super` out, or
@@ -1426,6 +1424,11 @@ impl<'a> Writes<'a> {
     // --check instructions:u (GRAPHIX_PAR=off, one eval thread), gen.py nested
     // d=100/200/400, base ec53d4846 1.415G/1.598G/2.183G, lane 1.401G/1.537G/1.931G.
     // The rest of main's super-linear term is outside the walk.
+    // 2026-11-03 claude: Review r9 (low): the memo's entries are now the walk's own
+    // pooled vec (module_writes hands over Writes::outer) and its map keeps its
+    // capacity across compiles (ModuleWrites::clear clears in place), so a module walk
+    // allocates nothing of its own. nested_modules_walk_linear and idle_module_cost
+    // pass.
     /// What the module `id` written here writes outside it.
     fn module(&mut self, id: ExprId, exprs: &[Expr]) {
         if let Walk::Block { .. } = self.walk
