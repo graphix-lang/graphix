@@ -1454,7 +1454,7 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
     }
 }
 
-// CR claude for eric: [bug/medium] A lambda a let holds through a block or a select
+// CR claude for claude: [bug/medium] A lambda a let holds through a block or a select
 // is a binding no rule generalizes (must_reject family 1 wraps a lambda in a block
 // for exactly that), yet a call through it instantiates the definition's scheme as
 // any call does, while a value use binds the scheme's own cells; a call checked
@@ -1495,6 +1495,13 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // instance) and its run refuses the bind ('an instance at fn(x: string) -> string of
 // a definition typed fn(x: i64) -> i64'); main ec53d4846 the same. probes
 // ~/ptmp/cr29/scratch/r9-N/mono/snd1.gx, snd3.gx.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D11 b (filled by claude at his word) in
+// ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an
+// annotation, then a --check census: it comes back to him only if the stdlib, the
+// book's examples or netidx-admin would need a new annotation): a call through a
+// value no generic binding names shares its type, as a value use does (ML's value
+// restriction); calls at two types through such a lambda are refused, the fix a plain
+// `let f = |x| ..`.
 /// Whether the value `node` builds holds a lambda literal or a generalized
 /// binding's value in a data literal (a struct, its update, a tuple, a
 /// variant, an array, a list or a map): a type that holds the definitions'
@@ -1917,7 +1924,7 @@ impl<R: Rt> ByRef<R> {
                 Referent::Channel(c) => (&**c as &dyn Any).downcast_ref::<Ref>(),
             };
             if let Some(r) = named {
-                // CR claude for eric: [bug/low] `&mut a::f` over `val f: fn(x: i64) -> i64`
+                // CR claude for claude: [bug/low] `&mut a::f` over `val f: fn(x: i64) -> i64`
                 // is refused with "a::f was made generic by an earlier compile, and a
                 // writable reference to it would let a write narrow it", though the type
                 // holds no variable and `a::f <- ..` is accepted: membership in poly_binds
@@ -1932,6 +1939,17 @@ impl<R: Rt> ByRef<R> {
                 // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
                 // "Interface val type variables" (~/ptmp/cr29/next-discuss.md). It waits on
                 // iface-narrow-write-01, decided there. Readdressed to eric until then.
+                // 2026-11-03 claude: Eric ruled (2026-11-03): D4 a in ~/ptmp/cr-discuss.md,
+                // under his rule for type holes (reject and require an annotation, then a
+                // --check census: it comes back to him only if the stdlib, the book's
+                // examples or netidx-admin would need a new annotation): refuse a val whose
+                // type variable stands anywhere outside a function type ("declare the val at
+                // one type"); inside function types refuse a variable the implementation ties
+                // to a type no use copies, trait methods too (lane I's item 1); then item 2,
+                // the val deciding its implementation's open types at concrete types only
+                // (iface-open-param-01); a write through a val narrower than its
+                // implementation is held to the implementation's type, and mut-ref-poly-01
+                // follows. Rebuild from cr44-E.
                 if ctx.env.poly_binds.contains(&r.id) {
                     bailat!(
                         spec,

@@ -1943,7 +1943,7 @@ impl<R: Rt> CompileCtx<R> {
         })
     }
 
-    // CR claude for eric: [perf/medium] A chain of lets holding functions, where each
+    // CR claude for claude: [perf/medium] A chain of lets holding functions, where each
     // link binds a written name or carries an annotation, checks in time exponential in
     // its length: each occurrence of a shared node holding a function takes its own
     // copy here, so a DAG of holders becomes a tree. `let (a, w) = (x, 0); w <- 1; let
@@ -2029,6 +2029,13 @@ impl<R: Rt> CompileCtx<R> {
     // item5-dag.patch, then item5-perplace.patch). Option (b) without its pins is the
     // tree as landed. The question is in ~/ptmp/cr29/next-discuss-addendum.md, Round 8
     // (found by the final review of lane N).
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D12 a (filled by claude at his word)
+    // in ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an
+    // annotation, then a --check census: it comes back to him only if the stdlib, the
+    // book's examples or netidx-admin would need a new annotation): one instance per
+    // node a written binding's value type shares (ML's weak variable): `p <- mk(g)` is
+    // refused as its `let` form is; start from ~/ptmp/cr29/scratch/r9-N/item5-dag.patch,
+    // with a CLAUDE.md line and pins.
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
@@ -2752,7 +2759,7 @@ impl PendingSettle {
         for s in frame.iter() {
             let res = match s {
                 PendingSettle::Operand { tv, spec } => (tv.settle(env), spec),
-                // CR claude for eric: [bug/high] In the REPL a `let` over ⊥ that a
+                // CR claude for claude: [bug/high] In the REPL a `let` over ⊥ that a
                 // lambda writes is ⊥ for the inputs after it, and the lambda keeps cells
                 // of its own, so a later input calls it at any type and the binding holds
                 // a value of each: inputs `let y = never()`, `let p = |x| { y <- x; x }`,
@@ -2779,6 +2786,15 @@ impl PendingSettle {
                 // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "REPL
                 // inputs and the open types an earlier input left"
                 // (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
+                // 2026-11-03 claude: Eric ruled (2026-11-03): D9 a in
+                // ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require
+                // an annotation, then a --check census: it comes back to him only if the
+                // stdlib, the book's examples or netidx-admin would need a new
+                // annotation): at a REPL input's end every cell it leaves open settles to
+                // bottom, and a later input that would decide one is refused ("annotate
+                // it", naming the binding); a refused input's cell writes are undone; a
+                // function's write to an earlier input's binding is held to that binding's
+                // type.
                 PendingSettle::LetOverBottom { tv, init, spec } => {
                     let bottom = init.with_deref(|t| matches!(t, Some(Type::Bottom)));
                     (if bottom { tv.settle_or_bottom(env) } else { Ok(()) }, spec)
@@ -3521,6 +3537,9 @@ fn check_and_fuse_inner<R: Rt>(
     // stopgap that refuses a shadowing block typedef must therefore judge later
     // declarations too, at the check's end and against later REPL inputs. Question D2 in
     // ~/ptmp/cr-discuss.md.
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D2 (a) in ~/ptmp/cr-discuss.md: no
+    // stopgap; this waits for D10 (type names in a scope that ends), whose ruling is the
+    // real fix. Stays for eric until D10 is ruled.
     ctx.env.seed_typedef_refs();
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();
@@ -4155,7 +4174,7 @@ pub(crate) fn with_attribute_frame<R: Rt, T>(
     result
 }
 
-// CR claude for eric: [bug/low] A REPL input its check refuses keeps what the
+// CR claude for claude: [bug/low] A REPL input its check refuses keeps what the
 // check wrote into the cells of earlier inputs' bindings: inputs `let y = []`, `let p:
 // fn<'b: Any>(x: 'b) -> 'b = |x| { y <- [x]; x }` (refused, rightly: the escape check
 // runs after the containment, which bound y's element cell to the quantifier), then
@@ -4169,6 +4188,13 @@ pub(crate) fn with_attribute_frame<R: Rt, T>(
 // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "REPL inputs and
 // the open types an earlier input left" (~/ptmp/cr29/next-discuss.md). Readdressed to
 // eric until then.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D9 a in ~/ptmp/cr-discuss.md, under his
+// rule for type holes (reject and require an annotation, then a --check census: it
+// comes back to him only if the stdlib, the book's examples or netidx-admin would need
+// a new annotation): at a REPL input's end every cell it leaves open settles to
+// bottom, and a later input that would decide one is refused ("annotate it", naming
+// the binding); a refused input's cell writes are undone; a function's write to an
+// earlier input's binding is held to that binding's type.
 /// Unwind a statement that was built but failed its checks: delete what
 /// it registered (runtime refs, lambda and `<-` target entries), then
 /// restore the environment it started from.

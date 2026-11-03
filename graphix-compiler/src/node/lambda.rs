@@ -1276,7 +1276,7 @@ impl Typing {
         };
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
-            // CR claude for eric: [bug/medium] A lambda literal held in a
+            // CR claude for claude: [bug/medium] A lambda literal held in a
             // struct, tuple or array and passed a value holding itself passes
             // --check, then its run-time bind is refused here and the call never
             // produces: `{ let s = {f: |x| 0}; s.f(s) }` prints "binding the callee
@@ -1485,6 +1485,14 @@ impl Typing {
             // of holder-block-select-01 (a call through a value no generalized
             // binding names shares its cells instead of instantiating) closes (1)
             // and (2) alike, in any order. Readdressed to eric with that CR.
+            // 2026-11-03 claude: Eric ruled (2026-11-03): D11 b (filled by claude
+            // at his word) in ~/ptmp/cr-discuss.md, under his rule for type holes
+            // (reject and require an annotation, then a --check census: it comes
+            // back to him only if the stdlib, the book's examples or netidx-admin
+            // would need a new annotation): a call through a value no generic
+            // binding names shares its type, as a value use does (ML's value
+            // restriction); calls at two types through such a lambda are refused,
+            // the fix a plain `let f = |x| ..`.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),

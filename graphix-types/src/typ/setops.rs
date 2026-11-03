@@ -139,7 +139,7 @@ fn every_input(_: &TVar) -> bool {
 /// unbound top-level cell (nothing decides it later) on either side, and
 /// an unbound cell of `other` where `input` says no caller can hand it
 /// one. Any other unbound cell is only itself.
-// CR claude for eric: [bug/low] A later REPL input can bind a top-level cell an
+// CR claude for claude: [bug/low] A later REPL input can bind a top-level cell an
 // earlier input left open, so the earlier input's judgment (open beside open) no
 // longer holds, and the coverage hole the fix of partial-hole-01 closes in a script
 // stays open there: inputs `let b = true`, `let e1 = []`, `let e2 = []`, `let v =
@@ -165,6 +165,13 @@ fn every_input(_: &TVar) -> bool {
 // (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
 // (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
 // to eric until then.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under
+// his rule for type holes (reject and require an annotation, then a --check census:
+// it comes back to him only if the stdlib, the book's examples or netidx-admin would
+// need a new annotation): rebuild the 10-31 select rule small from main: at a
+// select's end an undecided part an arm tests is refused ("annotate it"), a part
+// only a name or `_` meets passes; written tests by the same rule; census first;
+// built as its own lane after the settle fix (settle-commits-name-01) and D6.
 pub(crate) fn settled_identical(
     test: &Type,
     other: &Type,

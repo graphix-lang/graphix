@@ -73,7 +73,7 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
-// CR claude for eric: [bug/medium] A trait method's val is not held to what an interface
+// CR claude for claude: [bug/medium] A trait method's val is not held to what an interface
 // val is (module::check_val, iface-generic-written-01): with `trait Put { val put:
 // fn(self, x: 'a) -> 'a }`, `let y = never(); impl Put for C { let put = |s, x| { y <- x;
 // x } }` pairs the method's 'a with y's cell, which no use copies, and passes. Beside a
@@ -89,6 +89,15 @@ pub(crate) fn method_sig(
 // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "Interface val type
 // variables" (~/ptmp/cr29/next-discuss.md). Its fix is the rule iface-generic-written-01
 // takes. Readdressed to eric until then.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D4 a in ~/ptmp/cr-discuss.md, under his
+// rule for type holes (reject and require an annotation, then a --check census: it comes
+// back to him only if the stdlib, the book's examples or netidx-admin would need a new
+// annotation): refuse a val whose type variable stands anywhere outside a function type
+// ("declare the val at one type"); inside function types refuse a variable the
+// implementation ties to a type no use copies, trait methods too (lane I's item 1); then
+// item 2, the val deciding its implementation's open types at concrete types only
+// (iface-open-param-01); a write through a val narrower than its implementation is held
+// to the implementation's type, and mut-ref-poly-01 follows. Rebuild from cr44-E.
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface

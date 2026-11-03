@@ -1647,6 +1647,12 @@ test is a result.
   the typechecker must stay instant (measure the GUI suite after typing
   changes); predictable fusion is a core value — push on de-fuse corner
   cases rather than accept them.
+- A hole in the type system is closed by a local rule that refuses and
+  names the annotation that makes the program pass (pin both), never by a
+  late check chasing shapes; where the right type is local and cheap, it
+  is given instead. A `--check` census of both repos sizes the rule: one
+  that needs a new annotation in the stdlib, the book's examples or
+  netidx-admin goes to Eric first; test fixtures alone are rewritten.
 - Hot operators log and bottom on failure; rare stdlib functions return a
   catchable `Error`.
 - A bug in a crate Graphix depends on is an entry in `UPSTREAM.md`, not a

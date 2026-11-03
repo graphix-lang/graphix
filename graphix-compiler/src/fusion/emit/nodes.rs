@@ -306,7 +306,7 @@ struct ValueOperand {
     owned: Option<LocalKind>,
 }
 
-// CR claude for eric: [perf/low] Interpolating a payload bind under a
+// CR claude for claude: [perf/low] Interpolating a payload bind under a
 // definition's declared type variable does not fuse: `let g = 'b: [`A(i64),
 // `B(i64)] |x: 'b| #[native] select x { `A(z) => "ga [z]", _ => "gn" }; g(`A(3))`
 // is refused "emit_clif: value operand has unexpected type Some(Unit)", so the
@@ -324,6 +324,14 @@ struct ValueOperand {
 // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
 // "rigid-pattern-bind-01" (~/ptmp/cr29/next-discuss.md): the de-fuse is that
 // check's ⊥ binds and goes with its ruling. Readdressed to eric until then.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D6 b in ~/ptmp/cr-discuss.md, under
+// his rule for type holes (reject and require an annotation, then a --check
+// census: it comes back to him only if the stdlib, the book's examples or
+// netidx-admin would need a new annotation): a pattern that tests or binds inside
+// a declared variable's value needs a written test; a name or `_` over the whole
+// value keeps the variable (about 30 pinned definitions in lang/select.rs get a
+// written test; the graphix-lang skill's line on selects over a declared variable
+// changes).
 fn emit_value_operand_node<R: Rt>(
     cx: &mut BodyCx,
     node: &Node<R>,

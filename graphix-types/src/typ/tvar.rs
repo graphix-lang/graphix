@@ -2803,7 +2803,7 @@ impl Type {
     /// `self ⊇ pred` for a pattern's predicate over what reaches it: over
     /// a union, by member ([`Self::narrow_per_member`]). Whether some
     /// member, or `self`, contains it.
-    // CR claude for eric: [bug/high] A pattern that tests a value at a definition's
+    // CR claude for claude: [bug/high] A pattern that tests a value at a definition's
     // declared variable held rigid binds nothing there: containing the pattern in the
     // variable decides none of its cells, so the arm's binds stay open, ⊥ in every
     // instance, and the body may read them at any type, which the run-time test then
@@ -2822,6 +2822,13 @@ impl Type {
     // for a rule: see ~/ptmp/cr29/next-discuss.md. probes:
     // ~/ptmp/cr29/scratch/review-r6/E2-r1-1/r2/e1.gx, E2-r2-2/r/z6.gx, z2.gx
     // (rigid-pattern-bind-01)
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D6 b in ~/ptmp/cr-discuss.md, under his
+    // rule for type holes (reject and require an annotation, then a --check census: it
+    // comes back to him only if the stdlib, the book's examples or netidx-admin would
+    // need a new annotation): a pattern that tests or binds inside a declared variable's
+    // value needs a written test; a name or `_` over the whole value keeps the variable
+    // (about 30 pinned definitions in lang/select.rs get a written test; the graphix-lang
+    // skill's line on selects over a declared variable changes).
     pub fn narrow_pattern(&self, env: &Env, pred: &Type) -> Result<bool> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         crate::expr::union_members(env, self, &mut members)?;

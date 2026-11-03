@@ -1239,7 +1239,7 @@ impl FnType {
         r
     }
 
-    // CR claude for eric: [bug/low] Which member of a union of two open cells (`x: ['a,
+    // CR claude for claude: [bug/low] Which member of a union of two open cells (`x: ['a,
     // 'b]`) takes what is decided by an order, not a rule, and two orders exist: this
     // containment holds such a position after every other (instance_sig, a written
     // function type), while a call site's check relates its arguments first, deciding
@@ -1255,6 +1255,11 @@ impl FnType {
     // result's context relates (one order everywhere); (b) keep both orders: the
     // default path stays sound and GRAPHIX_NO_SUBST agrees on the pins only. Recommend
     // (a). probes: ~/ptmp/cr29/scratch/r6-B/w5/fw1.gx, fw6.gx (formal-union-order-01)
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D8 c in ~/ptmp/cr-discuss.md, under
+    // his rule for type holes (reject and require an annotation, then a --check census:
+    // it comes back to him only if the stdlib, the book's examples or netidx-admin would
+    // need a new annotation): with D7's rule an argument part undecided at the call's
+    // end is refused, so both orders refuse fw1 alike (annotate the let).
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,

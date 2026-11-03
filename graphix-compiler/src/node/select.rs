@@ -561,7 +561,7 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
     Ok(())
 }
 
-// CR claude for eric: [bug/low] A written type test whose structure tests a constructor
+// CR claude for claude: [bug/low] A written type test whose structure tests a constructor
 // at a nested union position holding a declared variable counts as covering the whole
 // scrutinee: `let g = 'b: Number |x: {f: ['b, `Keep('b)]}| -> ['b, null] select x { {f:
 // ['b, `Keep('b)]} as {f: `Keep(r)} => r }` passes the check, and g({f: 5}) under
@@ -584,8 +584,15 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 // 2026-11-02 claude: Lane G's Told judgment of written tests (keep-written-told-01) is
 // parked on branch cr45-G, not landed, so on main the undeclared-'b forms (k1b, k2b)
 // are a coverage hole too, not refused as the CR's text says.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under his
+// rule for type holes (reject and require an annotation, then a --check census: it
+// comes back to him only if the stdlib, the book's examples or netidx-admin would need
+// a new annotation): rebuild the 10-31 select rule small from main: at a select's end
+// an undecided part an arm tests is refused ("annotate it"), a part only a name or `_`
+// meets passes; written tests by the same rule; census first; built as its own lane
+// after the settle fix (settle-commits-name-01) and D6.
 
-// CR claude for eric: [bug/low] Coverage counts an abstract pattern whose payload
+// CR claude for claude: [bug/low] Coverage counts an abstract pattern whose payload
 // tests the variant beside a parameter of the representation as covering the whole
 // scrutinee: `type R<'a> = Abstract<['a, `Err(string)]>; let v: [i64, `Err(string)] =
 // 5; select R(v) { R(`Err(m)) => str::len(m) }` passes the check, and the run logs
@@ -597,6 +604,13 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 // (Reach, the pool), beside written-nested-cover-01. probes:
 // ~/ptmp/cr29/scratch/review-r8/G-r2-1/i2/ab8.gx (the hole), ab4.gx, ab7.gx, ab10.gx
 // (the refusals) (abstract-payload-cover-01)
+// 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under his
+// rule for type holes (reject and require an annotation, then a --check census: it
+// comes back to him only if the stdlib, the book's examples or netidx-admin would need
+// a new annotation): rebuild the 10-31 select rule small from main: at a select's end
+// an undecided part an arm tests is refused ("annotate it"), a part only a name or `_`
+// meets passes; written tests by the same rule; census first; built as its own lane
+// after the settle fix (settle-commits-name-01) and D6.
 /// What reaches each arm of a select, walked arm by arm: the scrutinee
 /// less what the unguarded arms before it cover (irrefutable atoms,
 /// `null`, a true/false pair, a completed literal pool, a completed
@@ -2221,7 +2235,7 @@ impl<R: Rt> Select<R> {
         Ok(())
     }
 
-    // CR claude for eric: [bug/medium] A scrutinee member that is an open cell decided
+    // CR claude for claude: [bug/medium] A scrutinee member that is an open cell decided
     // after the select counts as covered by a struct arm: `let z = never(); let v =
     // select b { true => {a: [1], c: 1}, false => z }` read by `{a, ..} => "[a]"` (the
     // full `{a, c}` alike) with `z <- {a: ["s"], c: "w"}` after it passes the check,
@@ -2242,7 +2256,14 @@ impl<R: Rt> Select<R> {
     // (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
     // (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
     // to eric until then.
-    // CR claude for eric: [bug/medium] A pattern over a variant whose payload is a
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under his
+    // rule for type holes (reject and require an annotation, then a --check census: it
+    // comes back to him only if the stdlib, the book's examples or netidx-admin would
+    // need a new annotation): rebuild the 10-31 select rule small from main: at a
+    // select's end an undecided part an arm tests is refused ("annotate it"), a part only
+    // a name or `_` meets passes; written tests by the same rule; census first; built as
+    // its own lane after the settle fix (settle-commits-name-01) and D6.
+    // CR claude for claude: [bug/medium] A pattern over a variant whose payload is a
     // union of structs told apart only by cells decided after the select covers only
     // the payload's first member: `let v = select b { true => `P({a: [1], c: x}), false
     // => `P({a: ["s"], c: y}) }` read by `` `P({a, ..}) => "[a]", _ => "other" `` with `x
@@ -2266,6 +2287,13 @@ impl<R: Rt> Select<R> {
     // (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
     // (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
     // to eric until then.
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under his
+    // rule for type holes (reject and require an annotation, then a --check census: it
+    // comes back to him only if the stdlib, the book's examples or netidx-admin would
+    // need a new annotation): rebuild the 10-31 select rule small from main: at a
+    // select's end an undecided part an arm tests is refused ("annotate it"), a part only
+    // a name or `_` meets passes; written tests by the same rule; census first; built as
+    // its own lane after the settle fix (settle-commits-name-01) and D6.
     /// `checking`: the definition's check, which also judges coverage,
     /// dead arms and guards; an instance does only what they decide.
     fn typecheck0_with(

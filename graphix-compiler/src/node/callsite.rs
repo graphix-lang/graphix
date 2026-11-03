@@ -1076,7 +1076,7 @@ fn typecheck_arg<R: Rt>(
 /// quantifiers held rigid, for the containment (a mismatch shows
 /// `holder`), and the value must be general in each, as a call's argument
 /// must be in its formal's ([`check_general`]).
-// CR claude for eric: [bug/medium] A written holder's own variable that stands both
+// CR claude for claude: [bug/medium] A written holder's own variable that stands both
 // under a quantified function type and beside it carries the quantifier out, and
 // nothing judges it: `type W<'t> = Abstract<'t>; let h: (fn<'a: Any>(x: 'a) -> W<'c>,
 // W<'c>) = (|x| W(x), W(1)); let w: W<i64> = h.0("s"); w.0 + 1` passes --check and the
@@ -1093,6 +1093,12 @@ fn typecheck_arg<R: Rt>(
 // a type for 'c"); or the walk only over the variables the holder names outside its
 // quantified function types, cutting the rest. probe:
 // ~/ptmp/cr29/scratch/r9-R/let_pair.gx (rank2-holder-variable-01)
+// 2026-11-03 claude: Eric ruled (2026-11-03): D15 b (filled by claude at his word) in
+// ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an
+// annotation, then a --check census: it comes back to him only if the stdlib, the
+// book's examples or netidx-admin would need a new annotation): refuse a written type
+// (typedefs expanded) whose own variable stands both inside a quantified function type
+// and outside it, "name a type for 'c".
 pub(crate) fn contain_generally<R: Rt>(
     ctx: &CompileCtx<R>,
     holder: &Type,
@@ -1895,7 +1901,7 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// CR claude for eric: [bug/medium] An argument whose type holds a cell its uses decide
+// CR claude for claude: [bug/medium] An argument whose type holds a cell its uses decide
 // (a read target such as str::parse's or sys::net::subscribe's, an unwritten `let x =
 // never()`, an empty `[]`'s element) is not widened over: its cell is decided by
 // whichever argument the loop meets first, so "the widest argument, whatever the
@@ -1924,6 +1930,12 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // continues stages 2 and 3 on cr31-E.
 // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D1 widening"
 // (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D7 b in ~/ptmp/cr-discuss.md, under his
+// rule for type holes (reject and require an annotation, then a --check census: it comes
+// back to him only if the stdlib, the book's examples or netidx-admin would need a new
+// annotation): keep the closed-argument join, an omitted default joining as a written
+// one; an argument part still undecided at the call's end is refused ("annotate it");
+// census first; rebuilt small from main, cr33-E kept for reference.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument, whatever the order. An argument that does not
 /// fit is probed once against its formal with those variables open; it
@@ -2758,7 +2770,7 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // CR claude for eric: [risk/medium] An omitted labeled default only narrows: it is
+    // CR claude for claude: [risk/medium] An omitted labeled default only narrows: it is
     // checked after Widening::settle has set the call's widenable variables, so a
     // default wider than the arguments is refused when omitted and accepted when
     // written. Over `let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y`, `f(#x: [1,
@@ -2794,6 +2806,12 @@ impl<R: Rt> CallSite<R> {
     // refuse the call. Lane E continues stages 2 and 3 on cr31-E.
     // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D1 widening"
     // (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D7 b in ~/ptmp/cr-discuss.md, under
+    // his rule for type holes (reject and require an annotation, then a --check census:
+    // it comes back to him only if the stdlib, the book's examples or netidx-admin would
+    // need a new annotation): keep the closed-argument join, an omitted default joining
+    // as a written one; an argument part still undecided at the call's end is refused
+    // ("annotate it"); census first; rebuilt small from main, cr33-E kept for reference.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

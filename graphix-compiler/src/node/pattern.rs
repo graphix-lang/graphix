@@ -617,7 +617,7 @@ impl StructPatternNode {
             }
             return merge_leaves(env, all, out);
         };
-        // CR claude for eric: [bug/low] A whole capture shared by or-alternatives over a
+        // CR claude for claude: [bug/low] A whole capture shared by or-alternatives over a
         // declared variable held rigid is typed as the bound's members the alternatives
         // match, not the variable, though one alternative's capture (`a@ `A(_) => a`)
         // keeps the variable: `'b: [`A(i64), `B(i64)] |x: 'b| -> 'b select x { a@ `A(_) |
@@ -628,6 +628,14 @@ impl StructPatternNode {
         // "rigid-pattern-bind-01" (~/ptmp/cr29/next-discuss.md). A pattern over a rigid
         // declared variable; option (b) there decides this shape too. Readdressed to eric
         // until then.
+        // 2026-11-03 claude: Eric ruled (2026-11-03): D6 b in ~/ptmp/cr-discuss.md, under
+        // his rule for type holes (reject and require an annotation, then a --check
+        // census: it comes back to him only if the stdlib, the book's examples or
+        // netidx-admin would need a new annotation): a pattern that tests or binds inside
+        // a declared variable's value needs a written test; a name or `_` over the whole
+        // value keeps the variable (about 30 pinned definitions in lang/select.rs get a
+        // written test; the graphix-lang skill's line on selects over a declared variable
+        // changes).
         let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
         let ts: SmallVec<[Type; 4]> = ts.into_iter().flatten().map(|(t, _)| t).collect();
         if checking {
@@ -761,7 +769,7 @@ impl StructPatternNode {
     /// `matched`, when not empty, is the scrutinee's members this slice can
     /// match: an array or list member's elements are its own, not the
     /// predicate's cells, which stand for any other member (`Any`).
-    // CR claude for eric: [bug/low] An exact-length slice holding a bind and a literal
+    // CR claude for claude: [bug/low] An exact-length slice holding a bind and a literal
     // over an element type with an open member is refused with a type mismatch naming
     // a cell: `let f = |x: Array<['b, i64]>| select x { [h, 1] => h, _ => null }`
     // (and `[1, h]`) gives "type mismatch '_N: unbound does not contain [i64, 'b]";
@@ -794,6 +802,13 @@ impl StructPatternNode {
     // settle-commits-name-01 (readdressed to claude, a local fix under the 10-31 ruling);
     // the narrow_pattern half follows rigid-pattern-bind-01, D6 in ~/ptmp/cr-discuss.md,
     // so this stays for eric until D6 is ruled.
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D6 b in ~/ptmp/cr-discuss.md, under his
+    // rule for type holes (reject and require an annotation, then a --check census: it
+    // comes back to him only if the stdlib, the book's examples or netidx-admin would
+    // need a new annotation): a pattern that tests or binds inside a declared variable's
+    // value needs a written test; a name or `_` over the whole value keeps the variable
+    // (about 30 pinned definitions in lang/select.rs get a written test; the graphix-lang
+    // skill's line on selects over a declared variable changes).
     fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
@@ -1079,7 +1094,7 @@ impl StructPatternNode {
                 ctx.env.retype(id, typ)
             }
             let env = &ctx.env;
-            // CR claude for eric: [bug/medium] Under a written type, a constructor
+            // CR claude for claude: [bug/medium] Under a written type, a constructor
             // pattern at a union position is told from the union's other members with open
             // cells benign, and the select arm's Told judgment tests the written type, which
             // covers what reaches it, so neither tells the constructor from a quantifier
@@ -1103,6 +1118,14 @@ impl StructPatternNode {
             // alike). Probes ~/ptmp/cr29/scratch/review-r8/G-r1-1 .. G-r3-2. How an open
             // cell or a declared variable reads at a written test is the rule D3 and
             // rigid-pattern-bind-01 decide, so this waits on them. Readdressed to eric.
+            // 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md,
+            // under his rule for type holes (reject and require an annotation, then a
+            // --check census: it comes back to him only if the stdlib, the book's examples
+            // or netidx-admin would need a new annotation): rebuild the 10-31 select rule
+            // small from main: at a select's end an undecided part an arm tests is refused
+            // ("annotate it"), a part only a name or `_` meets passes; written tests by the
+            // same rule; census first; built as its own lane after the settle fix
+            // (settle-commits-name-01) and D6.
             if let Ok(rest) = type_predicate.diff(env, &shape)
                 && node.footprint(env, &shape, false).rep_collision(env, &rest).is_some()
             {

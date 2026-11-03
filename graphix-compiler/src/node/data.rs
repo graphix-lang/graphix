@@ -1270,7 +1270,7 @@ impl<R: Rt> Construct<R> {
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {
                 if let Type::TVar(tv) = p {
-                    // CR claude for eric: [bug/medium] In the REPL a constructed
+                    // CR claude for claude: [bug/medium] In the REPL a constructed
                     // abstract value's parameter that its input leaves open is decided
                     // by a later input, after the value was built at ⊥: with `type
                     // B<'x> = Abstract<i64>; type R<'a> = [`Nil, `Cons('a, R<'a>)]`,
@@ -1293,6 +1293,15 @@ impl<R: Rt> Construct<R> {
                     // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
                     // "REPL inputs and the open types an earlier input left"
                     // (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
+                    // 2026-11-03 claude: Eric ruled (2026-11-03): D9 a in
+                    // ~/ptmp/cr-discuss.md, under his rule for type holes (reject and
+                    // require an annotation, then a --check census: it comes back to him
+                    // only if the stdlib, the book's examples or netidx-admin would need
+                    // a new annotation): at a REPL input's end every cell it leaves open
+                    // settles to bottom, and a later input that would decide one is
+                    // refused ("annotate it", naming the binding); a refused input's
+                    // cell writes are undone; a function's write to an earlier input's
+                    // binding is held to that binding's type.
                     super::defer_settle(ctx, || crate::PendingSettle::Operand {
                         tv: tv.clone(),
                         spec: self.spec.clone(),
