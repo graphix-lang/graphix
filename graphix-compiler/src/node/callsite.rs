@@ -3673,6 +3673,16 @@ impl<R: Rt> CallSite<R> {
         let formals =
             ftype.args.iter().zip(g.args()).zip(ArgKey::of_formals(&ftype.args));
         for (i, ((farg, pat), key)) in formals.enumerate() {
+            // CR claude for claude: [perf/medium] A formal whose type is a typedef naming a
+            // function type is no callback formal here: with_deref follows bindings, never a
+            // Type::Ref, so a call through it gets no static callee and de-fuses. `type K =
+            // fn(x: i64) -> i64; let outer = |#k: K, z: i64| (k(z), z); #[native] outer(#k:
+            // |x| x, 1)` is refused ("call `k(z)` has no static callee: its function is a
+            // run-time value"), where `#k: fn(x: i64) -> i64` fuses; a quantified typedef
+            // (`type K = fn<'a: Any>(x: 'a) -> 'a`) the same. typecheck0_instance's test of a
+            // callback formal reads the formal the same way. Expanding the formal's reference
+            // at these tests would make the two spellings fuse alike. Main 387c29e60 the same.
+            // probes: ~/ptmp/cr29/scratch/r11-R/{tdplain,tdpoly}.gx (typedef-callback-formal-01)
             if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
                 continue;
             }

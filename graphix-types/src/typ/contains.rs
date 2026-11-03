@@ -2109,6 +2109,17 @@ impl Type {
                 Ok(true)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
+                // CR claude for claude: [bug/low] Taking two instances of one definition as
+                // one type when their parameters contain each other decides an open cell
+                // by equality where the expansion asks less, so the order of a function
+                // type's positions decides: `type L<'p> = fn(x: 'p) -> i64; let outer =
+                // |k: L<'c>, z: 'c| z; let g: fn(k: L<Any>, z: i64) -> i64 = outer` is
+                // refused ('c := Any from k, then the result i64 cannot hold it), the same
+                // with `z` written first runs, and so does the expanded `k: fn(x: 'c) ->
+                // i64`. Main 387c29e60 the same. Taking the shortcut only where it binds
+                // no open cell, else expanding, would make the spellings agree; the growth
+                // guard below bounds that expansion. Found by lane R's round 10. probes:
+                // ~/ptmp/cr29/scratch/r11-R/{tp1,tp1z,tp2,tp3}.gx (typedef-param-equality-01)
                 // two instances of one definition whose parameters contain
                 // each other are one type: no expansion, which a parameter
                 // growing at each level would never end
