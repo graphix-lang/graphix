@@ -366,6 +366,7 @@ mod test {
         for src in [
             "let f: fn<'a: Number>(g: fn(x: 'a) -> 'a) -> 'a = h",
             "let f: fn<'b: Int, 'a: Number>(x: 'a, y: 'b) -> 'a = h",
+            "let f: fn<'b: ['f, i64, 'f]>(x: 'b, y: 'f) -> 'b = h",
         ] {
             let (exprs, unpacked) = packed(src);
             assert_eq!(exprs[0].to_string(), unpacked[0].to_string(), "{src}");

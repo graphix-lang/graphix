@@ -442,7 +442,7 @@ pub fn seed_conjuncts<'a>(
 ) {
     for (tv, tc) in constraints {
         tc.alias_tvars(known);
-        known[&tv.name].add_cell_constraint(tc);
+        known[&tv.name].add_cell_constraint(tc.normalize());
     }
 }
 
