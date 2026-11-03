@@ -2391,9 +2391,8 @@ impl<R: Rt> Select<R> {
                         crate::PendingSettle::Told { test, rest, spec },
                     );
                 }
-                for w in pat.written_tests.iter() {
-                    let rest = w.rest_among(&ctx.env, &reaching);
-                    let (test, spec) = (w.test.clone(), spec.clone());
+                for (test, rest) in pat.written_tests.iter() {
+                    let (test, rest, spec) = (test.clone(), rest.clone(), spec.clone());
                     super::defer_judgment(
                         ctx,
                         crate::PendingSettle::Told { test, rest, spec },

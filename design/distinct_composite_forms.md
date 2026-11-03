@@ -196,15 +196,10 @@ slice's rest is an open cell of the definition, so a tested element whose
 form another type shares is refused there too ("annotate it"). Under a
 written type the arm's own test is the written type, which covers what
 reaches it; a constructor at a union position of it is a test of its own,
-what its structure admits, judged so too among what reaches its position:
-the scrutinee's part there less the test, or the rest of the written union
-where a member on the way is an open cell, `Any` or an abstract payload
-(`PatternNode::written_tests`, which the pattern's compile records with
-each test's position; `WrittenTest::rest_among`):
-`` ['b, `Keep('b)] as `Keep(r) `` over `` ['b, `Keep('b)] `` is refused as
-`` `Keep(r) `` is, at the top, inside a slice's element and inside a tuple,
-while `` Res<'a> as `Err(m) `` over `` [i64, `Err(string)] ``, where only the
-written type names `'a`, checks.
+what its structure admits among the rest of that union, judged so too
+(`PatternNode::written_tests`, which the pattern's compile records):
+`` ['b, `Keep('b)] as `Keep(r) `` is refused as `` `Keep(r) `` is, at the
+top, inside a slice's element and inside a tuple.
 
 **Seq machines.** A machine's `pc` holds its step labels as bare variants
 (`seq_machine.rs`, `SeqAbort`).

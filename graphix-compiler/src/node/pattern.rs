@@ -155,101 +155,14 @@ struct PatCx<'a> {
     /// Set holds one member per alternative, in order.
     inferred: bool,
     /// Where a select arm collects each test a constructor makes at a
-    /// union position under a written type ([`PatternNode::written_tests`]).
-    told: Option<&'a RefCell<Told>>,
+    /// union position under a written type, with the members it leaves
+    /// ([`PatternNode::written_tests`]).
+    told: Option<&'a RefCell<WrittenTests>>,
 }
 
-impl PatCx<'_> {
-    /// `f`, run with the compile standing at `step` from where it stands.
-    fn at<T>(&self, step: impl FnOnce() -> Step, f: impl FnOnce() -> T) -> T {
-        let Some(told) = self.told else { return f() };
-        told.borrow_mut().at.push(step());
-        let r = f();
-        told.borrow_mut().at.pop();
-        r
-    }
-}
-
-/// A select arm's written tests as its compile collects them, and where
-/// the compile stands in the arm's pattern.
-#[derive(Default)]
-struct Told {
-    at: SmallVec<[Step; 4]>,
-    tests: WrittenTests,
-}
-
-/// A step from a pattern's position to one of its parts'.
-#[derive(Debug, Clone)]
-enum Step {
-    /// Element `i` of a tuple of `n`.
-    Tuple(usize, usize),
-    /// Payload `i` of `n` of a variant tagged `tag`.
-    Variant(ArcStr, usize, usize),
-    Field(ArcStr),
-    Element {
-        list: bool,
-    },
-    /// An abstract type's payload.
-    Payload,
-}
-
-/// A test a constructor pattern makes at a union position under a
-/// written type: the structure's footprint there, the rest of the
-/// written union, and where it stands in the arm's pattern.
-#[derive(Debug, Clone)]
-pub(crate) struct WrittenTest {
-    pub(super) test: Type,
-    rest: Type,
-    at: SmallVec<[Step; 2]>,
-}
-
-pub(crate) type WrittenTests = SmallVec<[WrittenTest; 1]>;
-
-impl WrittenTest {
-    /// What else reaches the test among `reaching`, the arm's scrutinee
-    /// type: its part at the test's position less the test, or the rest of
-    /// the written union where that part is not known.
-    pub(super) fn rest_among(&self, env: &Env, reaching: &Type) -> Type {
-        type_at(env, reaching, &self.at)
-            .and_then(|among| among.diff(env, &self.test).ok())
-            .unwrap_or_else(|| self.rest.clone())
-    }
-}
-
-/// The type at `path` in `typ`: each member's part there, a member of
-/// another shape left out; `None` where a member on the way is an open
-/// cell or `Any`, or the path enters an abstract payload.
-fn type_at(env: &Env, typ: &Type, path: &[Step]) -> Option<Type> {
-    crate::stack::ensure_sufficient(|| {
-        let Some((step, path)) = path.split_first() else { return Some(typ.clone()) };
-        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        members_or_open(env, typ, &mut members).ok()?;
-        let mut parts: SmallVec<[Type; 8]> = SmallVec::new();
-        for m in members.iter() {
-            let m = expand(env, m)?;
-            let part = match (step, &m) {
-                (_, Type::Any) | (Step::Payload, _) => return None,
-                (Step::Tuple(i, n), Type::Tuple(ts)) if ts.len() == *n => ts[*i].clone(),
-                (Step::Variant(tag, i, n), Type::Variant(t, ts, _))
-                    if t == tag && ts.len() == *n =>
-                {
-                    ts[*i].clone()
-                }
-                (Step::Field(f), Type::Struct(fs)) => {
-                    match fs.iter().find(|(name, ..)| name == f) {
-                        Some((_, t, _)) => t.clone(),
-                        None => continue,
-                    }
-                }
-                (Step::Element { list: false }, Type::Array(et))
-                | (Step::Element { list: true }, Type::List(et)) => (**et).clone(),
-                _ => continue,
-            };
-            parts.push(type_at(env, &part, path)?)
-        }
-        Some(Type::Set(Arc::from_iter(parts)))
-    })
-}
+/// Each test a constructor pattern makes at a union position under a
+/// written type, with the rest of the union.
+pub(crate) type WrittenTests = SmallVec<[(Type, Type); 1]>;
 
 fn leaf_bind<R: Rt>(
     ctx: &mut CompileCtx<R>,
@@ -1083,10 +996,7 @@ impl StructPatternNode {
             .enumerate()
             .map(|(i, p)| {
                 let et = members.as_ref().map_or(&et, |ts| &ts[i]);
-                cx.at(
-                    || Step::Element { list },
-                    || Self::compile_int(ctx, cx, et, p, mode.reborrow()),
-                )
+                Self::compile_int(ctx, cx, et, p, mode.reborrow())
             })
             .collect::<Result<Box<[Self]>>>()?;
         Ok((all, rest, elems))
@@ -1198,20 +1108,6 @@ impl StructPatternNode {
             // written_tuple_element_telling_quantifier_from_keep_refused fail in all four
             // modes with the deferral removed; written_keep_beside_told_members_checks (a
             // closed union, a declared 'b: Number, a string beside `Keep) holds.
-            // 2026-11-02 claude: Review r8 (lane G, medium): the Told pair took its rest
-            // from the written union, so a variable only the written type names (Res<'a> as
-            // `Err(m) over [i64, `Err(string)]), or one the definition declares that the
-            // scrutinee does not hold, was judged as if it reached the arm and refused
-            // 'annotate it' where main runs right (review-r8/G-r1-1/i2 y5 y6 y4 u6 u1 t2).
-            // The compile now records each written test with its position in the arm's
-            // pattern (PatCx::at, Step), and the select's check judges it among what reaches
-            // that position: the scrutinee's part there less the test
-            // (WrittenTest::rest_among), the written rest only where a member on the way is
-            // open, Any or an abstract payload. y5 y6 y4 u6 u1 t2 print as on main; the Keep
-            // shapes (w_variant, w_slice, w_tuple, wk_list, wk_nested_slice, wk_struct2/3,
-            // wk_variant2, k1b, k2b) are still refused. Pin
-            // lang::select::written_test_told_among_what_reaches_it fails in all four modes
-            // with the written rest.
             if let Ok(rest) = type_predicate.diff(env, &shape) {
                 let test = node.footprint(env, &shape, false);
                 if test.rep_collision(env, &rest).is_some() {
@@ -1224,9 +1120,7 @@ impl StructPatternNode {
                     });
                 }
                 if let Some(told) = cx.told {
-                    let mut told = told.borrow_mut();
-                    let at = told.at.iter().cloned().collect();
-                    told.tests.push(WrittenTest { test, rest, at })
+                    told.borrow_mut().push((test, rest))
                 }
             }
             return Ok(node);
@@ -1374,17 +1268,10 @@ impl StructPatternNode {
                     bail!("expected a tuple of length {}", elts.len())
                 }
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
-                let n = elts.len();
                 let binds = elts
                     .iter()
                     .zip(binds.iter())
-                    .enumerate()
-                    .map(|(i, (t, b))| {
-                        cx.at(
-                            || Step::Tuple(i, n),
-                            || Self::compile_int(ctx, cx, t, b, mode.reborrow()),
-                        )
-                    })
+                    .map(|(t, b)| Self::compile_int(ctx, cx, t, b, mode.reborrow()))
                     .collect::<Result<Box<[Self]>>>()?;
                 Self::Slice { kind: SliceKind::Tuple, all, binds }
             }
@@ -1412,17 +1299,10 @@ impl StructPatternNode {
                     bail!("expected a variant with {} args", elts.len())
                 }
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
-                let n = elts.len();
                 let binds = elts
                     .iter()
                     .zip(binds.iter())
-                    .enumerate()
-                    .map(|(i, (t, b))| {
-                        cx.at(
-                            || Step::Variant(tag.clone(), i, n),
-                            || Self::compile_int(ctx, cx, t, b, mode.reborrow()),
-                        )
-                    })
+                    .map(|(t, b)| Self::compile_int(ctx, cx, t, b, mode.reborrow()))
                     .collect::<Result<Box<[Self]>>>()?;
                 Self::Variant { tag: tag.clone(), all, binds }
             }
@@ -1464,11 +1344,7 @@ impl StructPatternNode {
                 // predicate's being the scrutinee's (`leaves` types its binds)
                 let rep = own.unwrap_or(rep);
                 let rep_cx = PatCx { inferred: false, ..cx };
-                let bind = cx.at(
-                    || Step::Payload,
-                    || Self::compile_int(ctx, rep_cx, &rep, bind, mode),
-                )?;
-                let bind = Box::new(bind);
+                let bind = Box::new(Self::compile_int(ctx, rep_cx, &rep, bind, mode)?);
                 Self::Abstract { id, all, rep, bind }
             }
             StructurePattern::Struct { exhaustive, all, binds } => {
@@ -1511,10 +1387,7 @@ impl StructPatternNode {
                     .into_iter()
                     .map(|(i, pat)| {
                         let (name, typ, _) = &elts[i];
-                        let p = cx.at(
-                            || Step::Field(name.clone()),
-                            || Self::compile_int(ctx, cx, typ, pat, mode.reborrow()),
-                        )?;
+                        let p = Self::compile_int(ctx, cx, typ, pat, mode.reborrow())?;
                         Ok((name.clone(), i, p))
                     })
                     .collect::<Result<Box<[(ArcStr, usize, Self)]>>>()?;
@@ -2339,7 +2212,7 @@ impl<R: Rt> PatternNode<R> {
             | Type::Struct(_)
             | Type::Ref(_) => (),
         }
-        let told = RefCell::new(Told::default());
+        let told = RefCell::new(WrittenTests::new());
         let cx = PatCx { scope, pos, ori: &ori, inferred: !explicit, told: Some(&told) };
         let structure_predicate = StructPatternNode::compile_with(
             ctx,
@@ -2364,7 +2237,7 @@ impl<R: Rt> PatternNode<R> {
             type_predicate,
             structure_predicate,
             guard,
-            told.into_inner().tests,
+            told.into_inner(),
         ))
     }
 

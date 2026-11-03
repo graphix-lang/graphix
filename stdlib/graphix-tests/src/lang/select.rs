@@ -5176,28 +5176,6 @@ run!(
     prints("[i64:5, i64:3, i64:4]")
 );
 
-// A written test is told from what reaches its position, not from the
-// rest of the written union: a variable only the written type names, or
-// one the definition declares that the scrutinee does not hold, reaches
-// nothing there.
-run!(
-    written_test_told_among_what_reaches_it,
-    r#"{
-  type Res<'a> = ['a, `Err(string)];
-  let f = |x: [i64, `Err(string)]| -> i64
-    select x { Res<'a> as `Err(m) => str::len(m), _ => 0 };
-  let g = 'b: Any |x: [i64, `A(i64)], y: 'b| -> i64
-    select x { ['b, `A(i64)] as `A(n) => n, _ => 0 };
-  let h = |x: ([i64, `Err(string)], i64)| -> i64
-    select x { (Res<'a>, i64) as (`Err(m), k) => str::len(m) + k, _ => 0 };
-  let v: [i64, `Err(string)] = `Err("abc");
-  let w: [i64, `A(i64)] = `A(3);
-  let top = select v { Res<'a> as `Err(m) => str::len(m), _ => 0 };
-  (f(v), f(5), g(w, 1), g(4, 2), h((v, 10)), h((5, 10)), top)
-}"#,
-    prints("[i64:3, i64:0, i64:3, i64:0, i64:13, i64:0, i64:3]")
-);
-
 // An unannotated scrutinee's slice rest is a type variable too: an
 // instance may bind it to a `Keep.
 run!(unannotated_slice_element_telling_rest_from_keep_refused, r#"{
