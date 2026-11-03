@@ -2030,6 +2030,11 @@ impl<R: Rt> CompileCtx<R> {
     // pins, as item5-perplace.patch. If Eric rules (a) it comes back with CLAUDE.md's
     // value-restriction line and lang::types pins that refuse d3, e1, e7, b1, w3 and
     // accept b3, w2 (probes ~/ptmp/cr29/scratch/review-r9/N-r1-1/m5/, N-r1-2/mono/).
+    // 2026-11-03 claude: item5-perplace.patch is a diff against c30722796, not against
+    // the branch as landed: it applies only on top of item5-dag.patch (git apply
+    // item5-dag.patch, then item5-perplace.patch). Option (b) without its pins is the
+    // tree as landed. The question is in ~/ptmp/cr29/next-discuss-addendum.md, Round 8
+    // (found by the final review of lane N).
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {

@@ -3949,6 +3949,17 @@ mod test {
         WRITES_STEPS.with(|n| n.get())
     }
 
+    // CR claude for claude: [test-gap/low] This pin drives `written_lets` through
+    // its own `compile_steps`, so it fails if the memo lookup goes, but not if the
+    // compile stops sharing `ctx.module_writes` across nested blocks
+    // (`compile_block_children` hands it to each block and clears it when the
+    // written_lets stack empties): clearing it per block makes the real compile
+    // quadratic again and this pin still passes. Today the compile shares it:
+    // --check instructions:u of gen.py's nested chain, main ec53d4846 / lane N,
+    // 2.200/1.929G at d=400, 4.200/3.177G at d=800. A pin through the compile
+    // (the step counter read after compiling the nested program) would cover it.
+    // probe: ~/ptmp/cr29/scratch/review-r9/N-r3-2/i3 (python3 -I ../gen.py nested
+    // 800; ./m.sh <graphix> n_800) (module-walk-pin-01)
     // A chain of d modules, each with a let before its `mod`, is walked
     // once in all: each block's walk takes what a module in it writes
     // outside it from the walk of a block around it, never walking the
