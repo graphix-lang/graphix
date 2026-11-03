@@ -84,10 +84,14 @@ fired formals, a collection's elements and accumulators, the seq
 machine's `pc`, a runtime write (`GX::deliver`). It puts the production
 into the event; a fire is stored as the event holds it (a value Fired, a
 bottom FreshBottom), stamped this cycle; a quiet production stands
-(`store_insert_standing`), since nothing fired: a wake owes no fire for
-it (a `let` republished at its wake, a stale scrutinee's binds, a
-module's val relayed quietly, a collection's element or a fold's
-accumulator delivered stale). Its `Notify` says whether a fire also
+(`store_insert_standing`) with the stamp of the binding's last fire,
+since nothing fired (a `let` republished at its wake, a stale
+scrutinee's binds, a module's val relayed quietly, a collection's
+element or a fold's accumulator delivered stale). A wake owes no fire
+for one that kept the value. Whether it owes one for a quiet production
+that changed the value, to a reader wake catch-up dates by write stamp
+(a callee bound at the wake), is not decided (CR quiet-change-owed-01);
+as built it owes none. Its `Notify` says whether a fire also
 schedules the roots that read the binding (`Roots`: a let, a reference
 cell, a module's val, `pc`, a runtime write) or only the walk's readers
 (`Walk`: binds read inside their own root).
@@ -101,6 +105,14 @@ callee's quiet arguments (`publish_production`'s
 `QuietAtRoot::Deliver`; a quiet formal's seed stands, `Stand`, as
 `ByRef`'s does), and an error raised to a catch in its own root
 (`error::deliver_error`; one in another root is a runtime write).
+
+Four writes go to the store alone and put nothing in the event: a
+quiet formal's seed (`publish_production`'s `QuietAtRoot::Stand`), a
+reference cell's quiet seed under an init view (`ByRef::publish`), a
+fold's quiet accumulator when its slots do not read their accumulators
+anew, each standing (`store_insert_standing`), and a reference cell's
+bottom where its place has no element or its read fails
+(`ByRef::bottom_mirror`), a FreshBottom stamped this cycle.
 
 `event.variables` is the OVERLAY, not the store: same-cycle transient
 deliveries (select arm binds, call-site formal publishes). Reads fall

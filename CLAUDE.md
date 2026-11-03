@@ -198,11 +198,15 @@ cycle; several writes to one variable in a cycle queue for the next,
 except a level's (`Rt::set_level`), which replaces its pending write.
 A node's production to a binding is delivered through
 `ExecCtx::deliver`: into the event; a fire stored as delivered, stamped
-this cycle, a quiet production standing (no wake is owed it); `Notify`
+this cycle, a quiet production standing with its old stamp (whether a
+wake owes a fire for one that changed the value is open); `Notify`
 picks whether a fire schedules the roots that read it. A wake's
 re-raise, catch-up's inject, a priming from the store, a born callee's
 quiet arguments and an error raised to a catch in its own root are
-fires in the event alone, never stored (`design/dense_delivery.md`). A
+fires in the event alone, never stored; a quiet formal's seed, a
+reference cell's quiet seed or its bottom where its place has no
+element, and a fold's quiet accumulator are written to the store alone
+(`design/dense_delivery.md`). A
 write to either binding of a module's interface pair lands on both as
 the cycle starts (`ExecCtx::deliver_pair_writes`); what the body
 produces reaches the `val` at the module node. A

@@ -2323,7 +2323,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// Deliver `tv` to the binding `id` this cycle, into the event. A fire
     /// is stored as the event holds it, stamped this cycle, and schedules
     /// what `notify` says; a quiet production stands in the store with the
-    /// stamp of the binding's last fire, so no wake is owed a fire for it.
+    /// stamp of the binding's last fire.
     // XCR claude for claude: [risk/medium] Six other sites deliver to a binding by hand:
     // Bind::update's publish, ByRef::publish, module::store_production with its
     // inserts, PatternNode::bind_event, the seq machine's pc entry, and GX::deliver.
@@ -2386,6 +2386,15 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     // carries a NEW value now owes a later-bound callee no fire (bbb06c0c6 gave 7001,
     // now bottom; a quiet let did so already): CLAUDE.md does not decide it, so it is
     // quiet-change-owed-01 for Eric and 463516534 stands as it is. Needs a soak.
+    // 2026-11-02 claude: Round 7 lane N, after review r8 (2): two doc lows fixed.
+    // CLAUDE.md, design/dense_delivery.md and deliver's doc stated 'a wake owes no fire'
+    // for every quiet production, which is the case quiet-change-owed-01 leaves to Eric:
+    // they now say a quiet production stands with its old stamp, a wake owes nothing for
+    // one that kept the value, and whether it owes one for a changed value is open (as
+    // built: none). And the four writes that go to the store alone with no event entry
+    // are named: a quiet formal's seed (publish_production's QuietAtRoot::Stand),
+    // ByRef's quiet seed under an init view, a fold's quiet accumulator,
+    // ByRef::bottom_mirror. Docs only; no behaviour change.
     pub fn deliver(&mut self, id: BindId, tv: TagValue, notify: Notify) {
         let tag = tv.tag();
         let stored = match tag.is_bottom() {
