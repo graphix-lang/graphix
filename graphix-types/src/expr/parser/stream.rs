@@ -407,3 +407,23 @@ impl<'a> RangeStreamOnce for GxStream<'a> {
         self.0.range()
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use combine::{Parser, parser::char::char};
+
+    /// A parse's errors are free unless it explains, and explaining ends
+    /// with its parse, a failure's included.
+    #[test]
+    fn errors_are_easy_only_while_explaining() {
+        let fails = || char('a').parse(GxStream::new("b")).map(|(c, _)| c);
+        assert!(matches!(fails(), Err(GxErrors::Quiet(_))));
+        let explained = explaining(fails).unwrap_err();
+        assert_eq!(explained.to_string().lines().nth(1), Some("Unexpected `b`"));
+        assert!(!is_explaining());
+        assert!(super::super::parse_one("let x = ").is_err());
+        assert!(!is_explaining());
+        assert!(matches!(fails(), Err(GxErrors::Quiet(_))));
+    }
+}
