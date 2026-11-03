@@ -470,6 +470,27 @@ impl<R: Rt> Bind<R> {
         // body, so a chain of d file modules with lets before each mod costs d^2
         // statement visits across the d blocks' compiles (review: +2.4% at d=400);
         // computing it once needs a memo that outlives one block's walk.
+        // 2026-11-02 claude: Re-review r8 (lane G). (high, cost) 504e40624's
+        // Writes::write scanned the whole stack of nearer bindings at every write,
+        // quadratic in a function body of N lets and N writes to its first
+        // (review-r8/G-r2-2/cost shw_4000 +522M over main, main linear). The nearer
+        // bindings are now indexed by name (Writes::shadow, a stack per name,
+        // Writes::shadowed the order taken back at a scope's end), so a write's lookup
+        // is one probe: shw_4000 3357M (main 3340M), shl_4000 3361M (3358M), shy_4000
+        // 3357M (main 3524M, its own scan quadratic there). Pin
+        // graphix-shell/tests/written_lets_cost.rs (4000 writes past 4000 bindings
+        // against writes past none, under 100M; 485M with the scan). (low, test gap) the
+        // soundness side is pinned:
+        // lang::modules::module_writes_a_holder_name_through_a_glob and
+        // _before_its_own_let (fail with glob writes dropped),
+        // nested_module_writes_a_holder_name_past_its_parents_let (fails with a
+        // super::super:: write resolved in the middle module),
+        // module_writes_a_holder_name_a_block_imports (a use super::a in a block inside
+        // a function; fails when only declared names and globs are looked up). Left: the
+        // spellings self::a and package::<path>::a from below the package root
+        // (review-r8/G-r2-1/i4 sa/sb, pa/pb; main the same): CR module-holder-write-02.
+        // The d^2 cost of a chain of nested modules (+223M, +11.6% at d=400 now; the
+        // note above's +2.4% is stale): CR module-walk-cost-01.
 
         // a name holding a function, which nothing writes, is a scheme of the
         // definitions it holds: each read copies their signatures. The reads

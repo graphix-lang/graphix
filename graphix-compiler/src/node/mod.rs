@@ -1127,8 +1127,12 @@ struct Writes {
     walk: Walk,
     /// The walked statements' binding of each name at the walk's position.
     declared: AHashMap<CompactString, Binding>,
-    /// The nearer bindings in scope at the walk's position, innermost last.
-    shadow: Vec<(CompactString, Binding)>,
+    /// Each name's nearer bindings in scope at the walk's position,
+    /// innermost last.
+    shadow: LPooled<AHashMap<CompactString, SmallVec<[Binding; 1]>>>,
+    /// The names bound into `shadow`, in order, so a scope's end takes
+    /// back what it bound.
+    shadowed: LPooled<Vec<CompactString>>,
     /// Where the walked module's globs import from.
     globs: SmallVec<[Anchor; 1]>,
     /// A block walk's written lets.
@@ -1192,6 +1196,17 @@ impl Writes {
         }
     }
 
+    // CR claude for claude: [bug/low] Anchor::of knows a write's path only by a
+    // lead of `super`s or exactly `package`, and a block walk counts `package::` only
+    // at the package root, so two spellings of a write to a holder `let` stay
+    // order-dependent (main bbb06c0c6 the same): a module p below the root whose
+    // child writes `package::p::a <- never<{f: fn(x: i64) -> i64}>()` is refused 'i64
+    // does not contain string' at p's `b.f("z")` after `mod m` and runs with the reads
+    // before it; and `self::a <- ..` in the holder's own block between the two reads
+    // is refused, after them runs (plain `a <- ..` between them runs). Recognizing
+    // `self::` (the module's top block) and a `package::` path through the walked
+    // module's own path would close both. probes: ~/ptmp/cr29/scratch/review-r8/G-r2-1/
+    // i4/{pa,pb,sa,sb}/test.gx, i4/sc.gx (module-holder-write-02)
     fn target(&mut self, name: &ModPath) {
         let parts: SmallVec<[&str; 4]> = Path::parts(&**name).collect();
         match &parts[..] {
@@ -1206,8 +1221,8 @@ impl Writes {
 
     /// A write to `n` as it is named here.
     fn write(&mut self, n: &str) {
-        let b = match self.shadow.iter().rev().find(|(s, _)| s == n) {
-            Some((_, b)) => Some(b),
+        let b = match self.shadow.get(n).and_then(|bs| bs.last()) {
+            Some(b) => Some(b),
             None => self.declared.get(n),
         };
         match b {
@@ -1237,6 +1252,15 @@ impl Writes {
         }
     }
 
+    // CR claude for claude: [perf/low] Each block's walk reads every module nested
+    // in it, so a chain of d file modules, each with a let before its `mod`, costs d^2
+    // statement visits across the d blocks' compiles: `--check` instructions:u over
+    // gen.py nested d, main bbb06c0c6 / lane: d=100 1.393G / 1.415G, d=400 1.927G /
+    // 2.150G (+11.6%; main is super-linear there too). Computing each module's outer
+    // writes once (bottom-up, or a memo keyed by the module's statement that outlives
+    // one block's walk) would make it linear. probe:
+    // ~/ptmp/cr29/scratch/review-r8/G-r2-2/cost/gen.py (python3 -I gen.py nested 400;
+    // cd n_400; MODE=--check ../m.sh base|lane main.gx) (module-walk-cost-01)
     /// What a module written here writes outside it.
     fn module(&mut self, exprs: &[Expr]) {
         if let Walk::Block { .. } = self.walk
@@ -1256,14 +1280,23 @@ impl Writes {
         }
     }
 
+    fn nearer(&mut self, n: CompactString, b: Binding) {
+        self.shadow.entry(n.clone()).or_default().push(b);
+        self.shadowed.push(n)
+    }
+
     fn bound(&mut self, p: &expr::StructurePattern) {
-        p.with_names(&mut |n| self.shadow.push((n.as_str().into(), Binding::Other)));
+        p.with_names(&mut |n| self.nearer(n.as_str().into(), Binding::Other));
     }
 
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
-        let len = self.shadow.len();
+        let len = self.shadowed.len();
         f(self);
-        self.shadow.truncate(len);
+        for n in self.shadowed.drain(len..) {
+            if let Some(bs) = self.shadow.get_mut(&n) {
+                bs.pop();
+            }
+        }
     }
 
     fn block(&mut self, exprs: &[Expr]) {
@@ -1272,8 +1305,8 @@ impl Writes {
                 match &e.kind {
                     ExprKind::Use { names, .. } => {
                         for item in names.iter() {
-                            if let Some(b) = w.imported(item) {
-                                w.shadow.push(b)
+                            if let Some((n, b)) = w.imported(item) {
+                                w.nearer(n, b)
                             }
                         }
                     }
@@ -1327,13 +1360,13 @@ impl Writes {
                 }
             }
             ExprKind::Catch(c) => self.scoped(|w| {
-                w.shadow.push((c.bind.name.as_str().into(), Binding::Other));
+                w.nearer(c.bind.name.as_str().into(), Binding::Other);
                 w.expr(&c.handler)
             }),
             ExprKind::TryWith(t) => {
                 self.block(&t.body);
                 self.scoped(|w| {
-                    w.shadow.push((t.bind.name.as_str().into(), Binding::Other));
+                    w.nearer(t.bind.name.as_str().into(), Binding::Other);
                     w.block(&t.handler)
                 })
             }
