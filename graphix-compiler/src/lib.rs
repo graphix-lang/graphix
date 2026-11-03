@@ -2017,10 +2017,58 @@ impl<R: Rt> CompileCtx<R> {
     // 1.30G. probes ~/ptmp/cr29/scratch/review-r9/N-r1-1/m5/,
     // ~/ptmp/cr29/scratch/review-r9/N-r1-2/mono/, ~/ptmp/cr29/scratch/r9-N/m5/gen2.gx,
     // chains ~/ptmp/cr29/scratch/r9-N/chains/
+    // 2026-11-03 claude: Review r9 round 2 (both reviewers, high): with the CR waiting
+    // on Eric, c30722796's walk is taken off cr46-N so the branch lands with main's
+    // verdicts: monomorphic is main's again (a shared node rebuilds once only while no
+    // function beneath it instantiated), its pin
+    // monomorphic_tests::a_shared_node_is_one_instance and the tvar_constraints.md
+    // sentence are gone, and the chains cost as main's column above (exponential). The
+    // notes above that describe the walk as built describe c30722796 only. Both options
+    // are saved for the ruling: option (a), this CR's DAG walk with its pin and doc
+    // sentence, as ~/ptmp/cr29/scratch/r9-N/item5-dag.patch (a diff of c30722796, apply
+    // with git apply); option (b), main's per-place rule with a linear case and its
+    // pins, as item5-perplace.patch. If Eric rules (a) it comes back with CLAUDE.md's
+    // value-restriction line and lang::types pins that refuse d3, e1, e7, b1, w3 and
+    // accept b3, w2 (probes ~/ptmp/cr29/scratch/review-r9/N-r1-1/m5/, N-r1-2/mono/).
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
-        monomorphic(t, &self.rec_defs)
+        /// A shared node rebuilds once and stays shared, unless a function
+        /// type beneath it instantiated: each occurrence of one takes its
+        /// own variables.
+        struct Memo<'a> {
+            open: &'a nohash::IntSet<LambdaId>,
+            done: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
+            fresh: bool,
+        }
+        fn instance(t: &Type, m: &mut Memo) -> Option<Type> {
+            crate::stack::ensure_sufficient(|| {
+                let key = t.shared_identity();
+                if let Some(k) = key
+                    && let Some((_, r)) = m.done.get(&k)
+                {
+                    return r.clone();
+                }
+                let outer = mem::replace(&mut m.fresh, false);
+                let r = match t {
+                    Type::TVar(tv) => tv.binding().map(|b| instance(&b, m).unwrap_or(b)),
+                    Type::Fn(ft) => {
+                        m.fresh = true;
+                        Some(Type::Fn(Arc::new(ft.instantiate(m.open))))
+                    }
+                    t => t.cow_children(&mut |c| instance(c, m)),
+                };
+                if let Some(k) = key
+                    && !m.fresh
+                {
+                    m.done.insert(k, (t.clone(), r.clone()));
+                }
+                m.fresh |= outer;
+                r
+            })
+        }
+        let mut m = Memo { open: &self.rec_defs, done: LPooled::take(), fresh: false };
+        instance(t, &mut m).unwrap_or_else(|| t.clone())
     }
 
     pub fn register_builtin<T: BuiltIn<R>>(&mut self) -> Result<()> {
@@ -4132,76 +4180,6 @@ fn abandon_stmt<R: Rt>(
     ctx.drop_deferred();
     saved.restore(ctx);
     e
-}
-
-/// [`CompileCtx::monomorphic`] under the definitions `open` being
-/// checked. A shared node rebuilds once and stays shared: every occurrence
-/// of it holds the one instance of each function beneath it.
-fn monomorphic(t: &Type, open: &IntSet<LambdaId>) -> Type {
-    /// Each entry keeps its node alive, so no other node takes its address.
-    type Done = AHashMap<usize, (Type, Option<Type>)>;
-    fn instance(t: &Type, open: &IntSet<LambdaId>, done: &mut Done) -> Option<Type> {
-        crate::stack::ensure_sufficient(|| {
-            let key = t.shared_identity();
-            if let Some(k) = key
-                && let Some((_, r)) = done.get(&k)
-            {
-                return r.clone();
-            }
-            let r = match t {
-                Type::TVar(tv) => {
-                    tv.binding().map(|b| instance(&b, open, done).unwrap_or(b))
-                }
-                Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate(open)))),
-                t => t.cow_children(&mut |c| instance(c, open, done)),
-            };
-            if let Some(k) = key {
-                done.insert(k, (t.clone(), r.clone()));
-            }
-            r
-        })
-    }
-    let mut done: LPooled<Done> = LPooled::take();
-    instance(t, open, &mut done).unwrap_or_else(|| t.clone())
-}
-
-#[cfg(test)]
-mod monomorphic_tests {
-    use super::*;
-    use crate::expr::parser::parse_type;
-    use netidx_value::Typ;
-
-    /// The tuple and function nodes `t` holds, one many paths share once.
-    fn nodes(t: &Type, seen: &mut AHashSet<usize>) {
-        if let Some(k) = t.shared_identity()
-            && !seen.insert(k)
-        {
-            return;
-        }
-        if let Type::Tuple(ts) = t {
-            ts.iter().for_each(|c| nodes(c, seen))
-        }
-    }
-
-    // A written binding's value of `DEPTH` pairs, each holding the last
-    // twice, down to a generic function: its instance stays a DAG of a few
-    // nodes a pair, the two parts of each pair one instance, where an
-    // instance at each occurrence makes 2^DEPTH.
-    #[test]
-    fn a_shared_node_is_one_instance() {
-        const DEPTH: usize = 16;
-        let f = parse_type("fn(x: 'a) -> 'a").expect("a function type");
-        let mut t = Type::Tuple(Arc::from_iter([f, Type::Primitive(Typ::I64.into())]));
-        for _ in 0..DEPTH {
-            t = Type::Tuple(Arc::from_iter([t.clone(), t.clone()]));
-        }
-        let m = monomorphic(&t, &IntSet::default());
-        let mut seen = AHashSet::default();
-        nodes(&m, &mut seen);
-        assert!(seen.len() <= 2 * (DEPTH + 1), "{} nodes", seen.len());
-        let Type::Tuple(parts) = &m else { panic!("{m}") };
-        assert_eq!(parts[0].shared_identity(), parts[1].shared_identity());
-    }
 }
 
 #[cfg(test)]

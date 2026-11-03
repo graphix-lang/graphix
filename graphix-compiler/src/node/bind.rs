@@ -107,6 +107,10 @@ enum ValueReads {
     // The conclusion stands: that commit leaves these chains as main has them,
     // and so does main's per-place rule if holder-mono-chain-01 is ruled that
     // way.
+    // 2026-11-03 claude: c30722796's monomorphic walk (holder-mono-chain-01) is
+    // off cr46-N pending that CR's ruling, so the monomorphic chains are
+    // exponential again on this branch as on main; the counts for o-wtup and
+    // o-annot are main's column above.
     Own,
 }
 
