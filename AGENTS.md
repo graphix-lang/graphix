@@ -1143,7 +1143,10 @@ node graph IS the IR — there is no parallel typed IR
   (`fn<'b: C>(..)`) is rank-2 wherever it stands (a formal, a field, an
   element, a member, a `let` annotation, a typedef, a return type, a
   function type's result, an abstract type's representation or
-  parameter): what
+  parameter; an interface `val`'s or trait method's own quantifiers are
+  its scheme's), and its bounds name only written types and its own
+  quantifiers (`fn<'b: 'c>` beside a definition's `'c`, or a typedef's
+  parameter, is refused: `FnType::check_bounds_closed`): what
   it holds is checked with `'b` rigid and held to exactly its declared
   bounds, predicates included (`fn<'b: Number>` takes no `|x| x * x`:
   declare `Number + Singleton`; `FnType::contains_int`, judged

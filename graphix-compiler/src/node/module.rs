@@ -254,7 +254,7 @@ fn bind_sig_item(
             compile_use_items(env, pending, si.pos, si_ori, scope, false, false, names)?;
         }
         SigKind::Bind(BindSig { name, typ }) => {
-            let typ = typ.scope_refs(&scope.lexical).rewrite_trait_args(env)?;
+            let typ = typ.scope_refs(&scope.lexical).rewrite_declared_args(env)?;
             // a declared signature has no gate to close over its cells:
             // every one is a quantifier, a constructor trait's element
             // included, copied at each use, and its own are its scheme's,
@@ -1043,7 +1043,7 @@ pub fn check_script_sig<R: Rt>(
                 let Some(bind) = bind else { return Err(missing()) };
                 let declared = declared
                     .scope_refs(scope)
-                    .rewrite_trait_args(&ctx.env)
+                    .rewrite_declared_args(&ctx.env)
                     .map_err(at)?;
                 if let Type::Fn(ft) = &declared {
                     ft.generalize(0)

@@ -47,9 +47,9 @@ use smallvec::SmallVec;
 use triomphe::Arc;
 
 /// The declared signature of a trait method, scoped to the declaring
-/// module and written as any signature is (`rewrite_trait_args`), with
-/// `self` a trait-bounded quantifier (rigid while a default body is
-/// checked).
+/// module and written as any declared signature is
+/// (`rewrite_declared_args`), with `self` a trait-bounded quantifier
+/// (rigid while a default body is checked).
 pub(crate) fn method_sig(
     env: &Env,
     parsed: &FnType,
@@ -57,7 +57,7 @@ pub(crate) fn method_sig(
     scope: &ModPath,
 ) -> Result<FnType> {
     let ft =
-        match &Type::Fn(Arc::new(parsed.scope_refs(scope))).rewrite_trait_args(env)? {
+        match &Type::Fn(Arc::new(parsed.scope_refs(scope))).rewrite_declared_args(env)? {
             Type::Fn(ft) => (**ft).clone(),
             _ => unreachable!("a rewritten function type is a function type"),
         };

@@ -3334,23 +3334,37 @@ impl Type {
 
     /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
     /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
-    /// trait anywhere else is an error. Returns the rewritten type.
+    /// trait anywhere else is an error. Every function type it holds is
+    /// rank-2, its bounds held to [`FnType::check_bounds_closed`].
+    /// Returns the rewritten type.
     pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
+        self.rewrite_written(env, false)
+    }
+
+    /// [`Self::rewrite_trait_args`] over a declared signature (an
+    /// interface `val`, a trait method), whose own quantifiers at its top
+    /// are its scheme's, which each use picks: their bounds may name any
+    /// variable.
+    pub fn rewrite_declared_args(&self, env: &Env) -> Result<Type> {
+        self.rewrite_written(env, true)
+    }
+
+    fn rewrite_written(&self, env: &Env, scheme: bool) -> Result<Type> {
         if self.holes() > 0 {
             bail!(
                 "'_ is the hole of a constructor trait's implementation target \
                  (`impl Collection for Array<'_>`); it is not a type"
             )
         }
-        Ok(self.rewrite_trait_args_int(env)?.unwrap_or_else(|| self.clone()))
+        Ok(self.rewrite_trait_args_int(env, scheme)?.unwrap_or_else(|| self.clone()))
     }
 
     /// The rewrite of what changed; `None` for a type it leaves alone.
-    fn rewrite_trait_args_int(&self, env: &Env) -> Result<Option<Type>> {
-        ensure_sufficient(|| self.rewrite_trait_args_inner(env))
+    fn rewrite_trait_args_int(&self, env: &Env, scheme: bool) -> Result<Option<Type>> {
+        ensure_sufficient(|| self.rewrite_trait_args_inner(env, scheme))
     }
 
-    fn rewrite_trait_args_inner(&self, env: &Env) -> Result<Option<Type>> {
+    fn rewrite_trait_args_inner(&self, env: &Env, scheme: bool) -> Result<Option<Type>> {
         match self {
             Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(
                 "trait {} used as a type: a trait is a bound — write it as a \
@@ -3363,11 +3377,14 @@ impl Type {
                 for (_, c) in ft.constraint_view().iter() {
                     c.check_bound(env)?;
                 }
+                if !scheme {
+                    ft.check_bounds_closed()?;
+                }
                 let mut quantifiers: LPooled<Vec<ArcStr>> =
                     ft.quantifiers.iter().cloned().collect();
                 let mut changed = false;
                 let mut part = |t: &Type| -> Result<Type> {
-                    Ok(match t.rewrite_trait_args_int(env)? {
+                    Ok(match t.rewrite_trait_args_int(env, false)? {
                         Some(r) => {
                             changed = true;
                             r
@@ -3432,13 +3449,14 @@ impl Type {
             }
             t => {
                 let mut err = None;
-                let r = t.cow_children(&mut |c| match c.rewrite_trait_args_int(env) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        err = Some(e);
-                        None
-                    }
-                });
+                let r =
+                    t.cow_children(&mut |c| match c.rewrite_trait_args_int(env, false) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            err = Some(e);
+                            None
+                        }
+                    });
                 match err {
                     Some(e) => Err(e),
                     None => Ok(r),

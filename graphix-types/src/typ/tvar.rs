@@ -3565,6 +3565,13 @@ impl Type {
     // returns at once when nothing is substituted, and walks the function type's names
     // only where a substituted type holds a name of its quantifiers or a quantifier
     // shadows a substituted name.
+    // 2026-11-03 claude: Round 11 (lane R, branch cr47-R2):
+    // typedef_quantifier_bounded_by_an_argument_named_alike and its _apart twin are gone:
+    // a typedef whose function type's quantifier is bounded by its parameter is now
+    // refused at the typedef (FnType::check_bounds_closed, rank2-bound-instance-01).
+    // Replaced by typedef_quantifier_named_like_its_argument_in_a_siblings_bound (a
+    // renamed quantifier is renamed in a sibling's bound; main 387c29e60 refuses it, "'a:
+    // unbound within Any does not contain i64") and its 'q twin.
     /// A copy of self with every TVar named in `known` replaced by the
     /// corresponding type; any other TVar is freshened as
     /// [`Self::reset_tvars`] does, its conjuncts and binding rewritten

@@ -296,7 +296,12 @@ another function type's result): `let h: fn<'a: Any>(x:
 'a) -> 'a = |x| { y <- x; x }` is refused, and so are `let mk: fn(z: i64)
 -> fn<'a: Any>(x: 'a) -> 'a = |z| |x| { y <- x; x }` and a function a call
 made whose instance holds `'a` (`mk(never())` over `|z| |x| { z <- x; z
-}`). A parameter's other variables are one type per call: `|#k: fn<'a:
+}`). Its bounds name only written types and its own quantifiers: `|#k:
+fn<'a: 'c>(x: 'a) -> 'a, z: 'c|`, `type K<'p> = fn<'a: 'p>(x: 'a) -> 'a`
+and `fn<'q: Any>(k: fn<'a: 'q>(..), ..)` are refused (bound it by a
+written type, `fn<'a: i64>`); a sibling, `fn<'a: Any, 'b: ['a, null]>`,
+is fine, and so is any bound of a `.gxi` `val`'s own quantifiers. A
+parameter's other variables are one type per call: `|#k: fn<'a:
 Any>(x: 'a) -> W<'c>, n: i64| ..` takes no `|x| W(x)`, passed or as its
 default, since its `'c` would have to be every `'a`; write `W<'a>`. An
 argument that makes `'c` its `'a` is refused even where another argument

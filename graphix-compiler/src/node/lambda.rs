@@ -558,7 +558,7 @@ pub struct InstanceTypes {
 /// it: each open cell copied under its name into `known` and bound to the
 /// instance's type. `None` when the instance's signature does not hold
 /// the definition's.
-// CR claude for claude: [bug/medium] A rank-2 formal whose quantifier is bounded by a
+// XCR claude for claude: [bug/medium] A rank-2 formal whose quantifier is bounded by a
 // variable of its definition fails every instance here, so the check accepts what the
 // build refuses: `let outer = |#k: fn<'a: 'c>(x: 'a) -> 'a, z: 'c| z; println(outer(#k:
 // |x| x, 1))` passes --check and the build refuses the call's instance ("an instance at
@@ -569,6 +569,28 @@ pub struct InstanceTypes {
 // the copy instantiate_owned makes of the formal's bound, or check_contains holding the
 // formal's bounds exactly, are where to look. Found by review r9 of lane R (R-r1-2).
 // probes: ~/ptmp/cr29/scratch/r9-R/{o10,o10b,o10c,o10d}.gx (rank2-bound-instance-01)
+// 2026-11-03 claude: Closed by refusing, at the definition's check:
+// Type::rewrite_trait_args runs FnType::check_bounds_closed on every function type a
+// written type holds (a formal, a field, an element, a let or body annotation, a typedef
+// body, an abstract's representation, a return type, a bound), so a rank-2 quantifier's
+// bound names only written types and its own fn<..>'s quantifiers: "a rank-2
+// quantifier's bound names 'c, which this function type does not quantify: bound it by a
+// written type". An interface val's and a trait method's own quantifiers are their
+// scheme's and exempt (Type::rewrite_declared_args); a sibling bound (fn<'a: Any, 'b:
+// ['a, null]>) stays. o10, o10b, o10c and o10d (declared 'c: main's build refuses it in
+// every mode) and the reviewers' tdef4/5/9/12, s15-17, leak1/7/13, esc1-3 are refused by
+// --check; the round-9 approaches (late round, quantifier_admits taking the conjunct)
+// are withdrawn. Pins that fail with the rule disabled (120 of 128 runs):
+// lang::types::rank2_bound_*_is_refused* (29) and
+// lang::interfaces::a_rank2_bound_in_a_val_names_only_its_own_quantifiers;
+// rank2_bound_by_a_written_type_runs and rank2_bound_naming_a_sibling_quantifier_runs
+// hold the passing forms. Lost, which main runs: s15-17 and sc_z2 (the positions' order
+// happened to decide the bound first), and a let or body annotation, a return type or a
+// typedef applied to a written type
+// (~/ptmp/cr29/scratch/r11-R/{let1,body1,ret1,td1,td2}.gx); the --check census of both
+// repos has no verdict change. rank2-structured-bound-01 and
+// body-annotation-bound-quantifier-01 (round-9 CRs that never landed) are moot: their
+// shapes are refused.
 fn instance_sig<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,

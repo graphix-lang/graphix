@@ -964,6 +964,23 @@ impl FnType {
         }
     }
 
+    /// Refuse a bound of the type's own quantifiers naming a variable it
+    /// does not quantify. A rank-2 quantifier is held rigid at exactly its
+    /// bounds, which such a variable, decided elsewhere, does not say.
+    pub fn check_bounds_closed(&self) -> Result<()> {
+        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        for (_, b) in self.constraint_view().iter() {
+            b.collect_tvars(&mut named);
+        }
+        match named.keys().filter(|n| !self.quantifiers.contains(*n)).min() {
+            None => Ok(()),
+            Some(n) => bail!(
+                "a rank-2 quantifier's bound names '{n}, which this function type \
+                 does not quantify: bound it by a written type"
+            ),
+        }
+    }
+
     /// Each of the signature's own quantifiers whose cell is open, as the
     /// signature names it and as its open cell.
     fn open_quantifiers(&self, mut f: impl FnMut(&TVar, TVar)) {

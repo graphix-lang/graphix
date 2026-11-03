@@ -1433,6 +1433,16 @@ run!(
     "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
 ; FuseExpect::None);
 
+// A val's own quantifiers are its scheme's, so their bounds name any
+// variable; a rank-2 function type inside it is held to its own.
+run!(
+    a_rank2_bound_in_a_val_names_only_its_own_quantifiers,
+    refused("a rank-2 quantifier's bound names 'c, which this function type does not quantify"),
+    "/test.gx" => "mod m; let result = m::f(|x| x, 1)",
+    "/test/m.gxi" => "val f: fn(k: fn<'a: 'c>(x: 'a) -> 'a, z: 'c) -> 'c;",
+    "/test/m.gx" => "let f = |k: fn<'a: i64>(x: 'a) -> 'a, z: i64| k(z)"
+; FuseExpect::None);
+
 // A predicate the implementation needs of a compound signature type asks
 // it of the variables inside: Array<'a> is discernible only if 'a is.
 run!(

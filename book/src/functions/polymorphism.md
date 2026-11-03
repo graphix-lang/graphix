@@ -133,6 +133,26 @@ error: ... 'a's bound names 'a: a bound may not reach its own variable; a recurs
 [1, [2, [3]]]
 ```
 
+A function type written with variables of its own, as a parameter's
+type, a field's, a `let`'s or a typedef's (`k: fn<'a: Number>(x: 'a) ->
+'a`), holds a function that works at every `'a` its bound admits. Its
+bounds may name only written types and its own variables: a variable of
+the definition around it, decided by the other arguments, is not a bound
+the function can be held to, and is refused,
+
+```graphix
+〉let outer = |#k: fn<'a: 'c>(x: 'a) -> 'a, z: 'c| (k(z), z)
+error: ... a rank-2 quantifier's bound names 'c, which this function type does not quantify: bound it by a written type
+〉let outer = |#k: fn<'a: i64>(x: 'a) -> 'a, z: i64| (k(z), z)
+〉outer(#k: |x| x, 1)
+-: (i64, i64)
+(1, 1)
+```
+
+A bound naming another variable of the same function type
+(`fn<'a: Any, 'b: ['a, null]>`) is fine, and so is any bound of an
+interface `val`'s own variables, which each use picks.
+
 A third bound, `Discernible`, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
 can: a string, an array, a tuple, a struct, a list and each variant are

@@ -215,6 +215,22 @@ A written `fn<'b: C>(..)` means the same wherever it stands: a `let`
 annotation, a struct field, a typedef, a return type, another function
 type's result or an abstract type's representation or parameter holds what it is
 given to every `'b` the bound admits, as a formal does.
+
+Its bounds name only written types and its own quantifiers
+(`FnType::check_bounds_closed`, run on every written type by
+`Type::rewrite_trait_args`). `quantifier_admits` holds a rank-2 bound
+exactly, so a bound naming a variable something else decides (`#k:
+fn<'a: 'c>(..)` beside `z: 'c`, a typedef's parameter, a quantifier of an
+enclosing written type) is judged before or after that variable is
+decided depending on where its positions are written, and the check and
+an instance's signature disagree; it is refused wherever written, with
+`bound it by a written type`. A sibling (`fn<'a: Any, 'b: ['a, null]>`)
+is held rigid with it and stays. An interface `val`'s or trait method's
+own quantifiers are its scheme's, not rank-2, and their bounds name any
+variable (`Type::rewrite_declared_args`). Pins:
+`lang::types::rank2_bound_*_is_refused`, `rank2_bound_by_a_written_type_runs`,
+`rank2_bound_naming_a_sibling_quantifier_runs`,
+`lang::interfaces::a_rank2_bound_in_a_val_names_only_its_own_quantifiers`.
 `FnType::contains_int` opens quantifier gates (`open_quantifier_rigid`)
 on the containing side's open quantifiers, so a merge into one is judged
 by `quantifier_admits`: `let f: fn<'b: Number>(..) = add` over `add` at

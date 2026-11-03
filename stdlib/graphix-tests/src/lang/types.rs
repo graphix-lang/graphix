@@ -8318,27 +8318,28 @@ run!(
     FuseExpect::None
 );
 
-const TYPEDEF_QUANTIFIER_BOUNDED_BY_ITS_ARGUMENT: &str = r#"{
-  type K<'p> = fn<'a: 'p>(x: 'a) -> 'a;
+// A renamed quantifier is renamed in a sibling's bound too.
+const TYPEDEF_QUANTIFIER_NAMED_IN_A_SIBLINGS_BOUND: &str = r#"{
+  type K<'p> = fn<'a: Any, 'b: ['a, null]>(x: 'p, y: 'a, z: 'b) -> 'a;
   let f = |v: 'a| {
-    let g: K<'a> = |x| x;
-    (g(v), g(1))
+    let g: K<'a> = |x, y, z| y;
+    (g(v, 1, null), g(v, "s", "t"))
   };
   f(true)
 }"#;
 
 run!(
-    typedef_quantifier_bounded_by_an_argument_named_alike,
-    TYPEDEF_QUANTIFIER_BOUNDED_BY_ITS_ARGUMENT,
-    refused("unbound within 'a: unbound does not contain i64");
-    FuseExpect::None
+    typedef_quantifier_named_like_its_argument_in_a_siblings_bound,
+    TYPEDEF_QUANTIFIER_NAMED_IN_A_SIBLINGS_BOUND,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
 );
 
 run!(
-    typedef_quantifier_bounded_by_an_argument_named_apart,
-    TYPEDEF_QUANTIFIER_BOUNDED_BY_ITS_ARGUMENT.replace("'a: 'p>(x: 'a) -> 'a", "'b: 'p>(x: 'b) -> 'b"),
-    refused("unbound within 'a: unbound does not contain i64");
-    FuseExpect::None
+    typedef_quantifier_named_apart_from_its_argument_in_a_siblings_bound,
+    TYPEDEF_QUANTIFIER_NAMED_IN_A_SIBLINGS_BOUND.replace("fn<'a: Any, 'b: ['a, null]>(x: 'p, y: 'a, z: 'b) -> 'a", "fn<'q: Any, 'b: ['q, null]>(x: 'p, y: 'q, z: 'b) -> 'q"),
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
 );
 
 const TYPEDEF_ARGUMENT_ESCAPES_A_RANK2_ARGUMENT: &str = r#"{
@@ -8446,5 +8447,333 @@ run!(
   p.0
 }"#,
     refused("K<i64> does not contain (Array<i64>, fn(x: i64) -> i64)");
+    FuseExpect::None
+);
+
+// A rank-2 quantifier's bound names only written types and the
+// quantifiers of its own function type: one naming a variable the type
+// does not quantify, which the other positions or the calls decide, is
+// refused wherever the type is written. Bound it by a written type.
+const RANK2_BOUND_NAMES_THE_DEFINITIONS_VARIABLE: &str = r#"{
+  let outer = |#k: fn<'a: 'c>(x: 'a) -> 'a, z: 'c| (k(z), z);
+  outer(#k: |x| x, 1)
+}"#;
+
+const RANK2_UNQUANTIFIED: &str =
+    "which this function type does not quantify: bound it by a written type";
+
+run!(
+    rank2_bound_naming_the_definitions_variable_is_refused,
+    RANK2_BOUND_NAMES_THE_DEFINITIONS_VARIABLE,
+    refused("a rank-2 quantifier's bound names 'c, which this function type does not quantify: bound it by a written type");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_the_definitions_variable_is_refused_uncalled,
+    RANK2_BOUND_NAMES_THE_DEFINITIONS_VARIABLE.replace("(k(z), z)", "k(z)"),
+    refused(RANK2_UNQUANTIFIED);
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_the_definitions_variable_is_refused_unread,
+    RANK2_BOUND_NAMES_THE_DEFINITIONS_VARIABLE.replace("(k(z), z)", "z"),
+    refused(RANK2_UNQUANTIFIED);
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_a_declared_variable_is_refused,
+    RANK2_BOUND_NAMES_THE_DEFINITIONS_VARIABLE.replace("let outer = |", "let outer = 'c: Any |"),
+    refused(RANK2_UNQUANTIFIED);
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_by_a_written_type_runs,
+    RANK2_BOUND_NAMES_THE_DEFINITIONS_VARIABLE.replace("fn<'a: 'c>(x: 'a) -> 'a, z: 'c", "fn<'a: i64>(x: 'a) -> 'a, z: i64"),
+    prints("[i64:1, i64:1]");
+    FuseExpect::Jit
+);
+
+run!(
+    rank2_bound_naming_the_variable_in_a_union_is_refused,
+    r#"{
+  let outer = |#k: fn<'a: ['c, null]>(x: 'a) -> 'a, z: 'c| (k(z), k(null), z);
+  outer(#k: |x| x, 1)
+}"#,
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_the_variable_in_a_constructor_is_refused,
+    r#"{
+  let outer = |#k: fn<'a: Array<'c>>(x: 'a) -> 'a, z: 'c| (k([z]), z);
+  outer(#k: |x| x, 1)
+}"#,
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_a_variable_decided_first_is_refused,
+    r#"{
+  let outer = |z: 'c, k: fn<'a: ['c, null]>(x: 'a) -> 'a| (k(z), z);
+  let f: fn<'b: [i64, null]>(x: 'b) -> 'b = |x| x;
+  outer(1, f)
+}"#,
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_a_variable_beside_a_union_is_refused,
+    r#"{
+  let outer = |w: 'e, u: ['c, 'd], k: fn<'a: 'e>(x: 'a) -> 'c| (u, k(w));
+  let r: ([i64, string], i64) = outer(5, 1, |x| 7);
+  r
+}"#,
+    refused("bound names 'e, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_a_variable_in_a_written_alias_is_refused,
+    r#"{
+  let outer = |w: 'e, u: ['c, 'd], k: fn<'a: 'e>(x: 'a) -> 'c| (u, k(w));
+  let g: fn(w: i64, u: [i64, string], k: fn<'a: i64>(x: 'a) -> i64) -> ([i64, string], i64) = outer;
+  g(5, 1, |x| 7)
+}"#,
+    refused("bound names 'e, which");
+    FuseExpect::None
+);
+
+const RANK2_BOUND_IN_A_UNION_MEMBER: &str = r#"{
+  let outer = |k: [fn<'a: 'c>(x: 'a) -> string, fn<'a: 'd>(x: 'a) -> 'a], z: 'c| z;
+  let f: fn<'b: i64>(x: 'b) -> 'b = |x| x;
+  outer(f, "s")
+}"#;
+
+run!(
+    rank2_bound_in_a_union_member_is_refused,
+    RANK2_BOUND_IN_A_UNION_MEMBER,
+    refused(RANK2_UNQUANTIFIED);
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_in_a_union_member_written_second_is_refused,
+    RANK2_BOUND_IN_A_UNION_MEMBER.replace("[fn<'a: 'c>(x: 'a) -> string, fn<'a: 'd>(x: 'a) -> 'a]", "[fn<'a: 'd>(x: 'a) -> 'a, fn<'a: 'c>(x: 'a) -> string]"),
+    refused(RANK2_UNQUANTIFIED);
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_in_a_union_member_beside_a_misfit_is_refused,
+    r#"{
+  let outer = |k: [fn<'a: 'c>(x: 'a) -> i64, fn<'a: 'd>(x: 'a) -> 'a], z: 'c| z;
+  let f: fn<'b: string>(x: 'b) -> 'b = |x| x;
+  outer(f, 1)
+}"#,
+    refused(RANK2_UNQUANTIFIED);
+    FuseExpect::None
+);
+
+// A bound naming a sibling quantifier stays; the formal's other bound
+// names the definition's variable.
+const RANK2_BOUND_BESIDE_A_SIBLING_BOUND: &str = r#"{
+  let outer = |k: fn<'p: Any, 'a: 'c>(x: 'p, y: 'a) -> ['p, null], z: 'c| k("str", z);
+  let f: fn<'q: Any, 'b: ['q, null]>(x: 'q, y: 'b) -> ['q, null] = |x, y| y;
+  outer(f, 1)
+}"#;
+
+run!(
+    rank2_bound_beside_a_sibling_bound_is_refused,
+    RANK2_BOUND_BESIDE_A_SIBLING_BOUND,
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_beside_a_sibling_bound_is_refused_at_another_type,
+    RANK2_BOUND_BESIDE_A_SIBLING_BOUND.replace(r#"k("str", z)"#, "k(1, z)").replace("outer(f, 1)", r#"outer(f, "s")"#),
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_beside_a_bare_sibling_bound_is_refused,
+    RANK2_BOUND_BESIDE_A_SIBLING_BOUND
+        .replace(r#"k("str", z)"#, "k(1, z)")
+        .replace("fn<'q: Any, 'b: ['q, null]>", "fn<'q: Any, 'b: 'q>")
+        .replace("outer(f, 1)", r#"outer(f, "s")"#),
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_a_sibling_quantifier_runs,
+    r#"{
+  let f: fn<'q: Any, 'b: ['q, null]>(x: 'q, y: 'b) -> ['q, null] = |x, y| y;
+  (f(1, null), f("s", "t"))
+}"#,
+    prints(r#"[null, "t"]"#);
+    FuseExpect::Jit
+);
+
+const RANK2_BOUND_FIRST_OF_TWO: &str = r#"{
+  let outer = |k: fn<'a: 'c, 'b: Any>(x: 'a, y: 'b) -> i64, z: 'c| (k(z, "s"), z);
+  let g: fn<'p: Any, 'q: 'p>(x: 'q, y: 'p) -> i64 = |x, y| 0;
+  outer(g, 1)
+}"#;
+
+run!(
+    rank2_bound_first_of_two_quantifiers_is_refused,
+    RANK2_BOUND_FIRST_OF_TWO,
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_a_variable_only_the_bound_holds_is_refused,
+    r#"{
+  let outer = |k: fn<'a: 'c, 'b: Any>(x: 'a, y: 'b) -> i64| k;
+  let g: fn<'p: Any, 'q: 'p>(x: 'q, y: 'p) -> i64 = |x, y| 0;
+  let h = outer(g);
+  h(1, "s")
+}"#,
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+// A typedef's body is a written type: its quantifier's bound may not name
+// the typedef's parameter, whatever the typedef is applied to.
+const RANK2_BOUND_NAMES_A_TYPEDEF_PARAMETER: &str = r#"{
+  type K2<'p> = fn<'a: 'p>(x: 'a) -> 'a;
+  let outer = |#k: K2<'c>, z: 'c| (k(z), z);
+  let g: fn(#k: K2<i64>, z: i64) -> (i64, i64) = outer;
+  g(#k: |x| x, 1)
+}"#;
+
+run!(
+    rank2_bound_naming_a_typedef_parameter_is_refused,
+    RANK2_BOUND_NAMES_A_TYPEDEF_PARAMETER,
+    refused("a rank-2 quantifier's bound names 'p, which this function type does not quantify");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_a_typedef_parameter_is_refused_under_a_written_alias,
+    RANK2_BOUND_NAMES_A_TYPEDEF_PARAMETER.replace("fn(#k: K2<i64>, z: i64)", "fn(#k: fn<'a: i64>(x: 'a) -> 'a, z: i64)"),
+    refused("bound names 'p, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_a_typedef_parameter_is_refused_at_two_types,
+    RANK2_BOUND_NAMES_A_TYPEDEF_PARAMETER.replace(
+        "g(#k: |x| x, 1)",
+        r#"let h: fn(#k: K2<string>, z: string) -> (string, string) = outer;
+  (g(#k: |x| x, 1), h(#k: |x| x, "s"))"#
+    ),
+    refused("bound names 'p, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_a_typedef_parameter_is_refused_applied_to_a_written_type,
+    r#"{
+  type K<'p> = fn<'a: 'p>(x: 'a) -> 'a;
+  let f: K<i64> = |x| x;
+  f(1)
+}"#,
+    refused("bound names 'p, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_an_abstract_types_parameter_is_refused,
+    r#"{
+  type W<'p> = Abstract<fn<'a: 'p>(x: 'a) -> 'a>;
+  0
+}"#,
+    refused("bound names 'p, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_in_a_field_is_refused,
+    r#"{
+  let o = |r: {f: fn<'a: 'c>(x: 'a) -> 'a, n: 'c}| r.f(r.n);
+  o({f: |x| x, n: 1})
+}"#,
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_in_a_body_annotation_is_refused,
+    r#"{
+  let o = |z: 'c| { let f: fn<'a: 'c>(x: 'a) -> 'a = |x| x; (f(z), z) };
+  o(1)
+}"#,
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_beside_a_sibling_in_a_body_annotation_is_refused,
+    r#"{
+  let f = |v: 'p| {
+    let g: fn<'c: Any, 'd: ['c, 'p]>(y: 'd) -> ['c, 'p] = |y| y;
+    g(v)
+  };
+  f(true)
+}"#,
+    refused("bound names 'p, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_in_a_let_annotation_is_refused,
+    r#"{
+  let h = |x, y| x;
+  let f: fn<'b: ['f, i64]>(x: 'b, y: 'f) -> 'b = h;
+  f(1, 2)
+}"#,
+    refused("bound names 'f, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_in_a_return_type_is_refused,
+    r#"{
+  let o = |z: 'c| -> fn<'a: 'c>(x: 'a) -> 'a |x| x;
+  let g = o(1);
+  g(2)
+}"#,
+    refused("bound names 'c, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_an_enclosing_quantifier_is_refused,
+    r#"{
+  let g: fn<'q: Any>(k: fn<'a: 'q>(x: 'a) -> 'a, z: 'q) -> 'q = |k, z| k(z);
+  g(|x| x, 1)
+}"#,
+    refused("bound names 'q, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_in_a_trait_methods_parameter_is_refused,
+    r#"{
+  trait T { val m: fn(self, f: fn<'a: 'b>(x: 'a) -> 'a, y: 'b) -> 'b };
+  0
+}"#,
+    refused("bound names 'b, which");
     FuseExpect::None
 );
