@@ -984,6 +984,30 @@ impl FnType {
     // rank2_bound_naming_a_ctor_traits_element_is_refused. probes:
     // ~/ptmp/cr29/scratch/r11-R/r1fix/{t7_self_in_rank2,t8_self_in_rank2_generic,t9_ctor_elem_rank2,t11_self_rank2_default,t12_elem_rank2_default,s7_labeled_first,s8_labeled_first_default,s9_elem_labeled_first,s10_elem_labeled_first_default}.gx
     // (rank2-self-bound-01)
+    // 2026-11-03 claude: Corrected evidence (review r12 of lane R, both reviewers): no
+    // shape of a rank-2 bound naming self is the hole; only the constructor trait's element
+    // is. Main (387c29e60, 30702808d) runs every labeled-self method its check passes right
+    // in every mode (default, --no-fusion, GRAPHIX_NO_SUBST=1, ELAB_AUDIT silent, fuzzer
+    // check AGREE): s7i (one i64 impl, exactly the pin rank2_bound_naming_self_is_refused),
+    // s7s (i64 and string), s11 (a 'q: T caller), s15 (a struct self), s16 (a HOF argument,
+    // under array::map). Its check refuses labeled self only over a generic impl (s7, s14)
+    // or a default body (s8, s8i), and its build refuses none. So refusing self is
+    // over-refusal of methods that run, with no annotation that passes: lost s7i, s7s, s11,
+    // s15, s16 and the positional t7, t8, t11; the element is the hole labeled (s9, s10)
+    // and a loss positional (t9, t12). Option (b) above rests on the wrong premise.
+    // Corrected options: (a) keep refusing self and the element, the one-line rule as
+    // built, with those losses; (b) let a trait method's rank-2 bound name self, the
+    // element staying refused. (b) is not a filter by name: self parses as a type anywhere
+    // and outside a trait is a plain variable, where it is the hole (|#k: fn<'a: [self,
+    // null]>(x: 'a) -> 'a, z: self| ..: main's check passes, its build refuses the
+    // instance, selfout_let), so the exemption needs scoping to a trait method's signature
+    // and its impls' and default's lets, and two further choices: at a generic impl self
+    // becomes the target, whose variable the rule then names (t8 runs on main, s7 and s14
+    // its check refuses), and at a default body self stays a variable (t11 runs on main, s8
+    // its check refuses). Not built: a mechanism and a rule the brief does not state.
+    // probes: ~/ptmp/cr29/scratch/review-r11/R-r2-1/t/{s7i,s7s,s11,s14,s15,s16,s8i}_*.gx,
+    // review-r11/R-r2-2/{pin_self,self_lab_two_mono,self_lab_generic,self_lab_default_i64,pin_elem}.gx,
+    // ~/ptmp/cr29/scratch/r11-R/r12/selfout_{let,pos}.gx
     /// Refuse a bound of the type's own quantifiers (`bounds`, its
     /// [`Self::constraint_view`]) naming a variable it does not quantify.
     /// A rank-2 quantifier is held rigid at exactly its bounds, which such

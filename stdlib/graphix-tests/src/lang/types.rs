@@ -8791,6 +8791,9 @@ run!(
     FuseExpect::None
 );
 
+// No shape of a bound naming self is the hole: this refuses a method
+// that would run, as the rule refuses any variable its type does not
+// quantify (CR rank2-self-bound-01).
 run!(
     rank2_bound_naming_self_is_refused,
     r#"{

@@ -611,6 +611,17 @@ pub struct InstanceTypes {
 // quantifier (enc_q2) passes main's check and its build refuses it,
 // rank2-bound-instance-01's own class, not a main check refusal. probes:
 // ~/ptmp/cr29/scratch/r11-R/r1fix/.
+// 2026-11-03 claude: Corrected (review r12 of lane R): the note above says a labeled
+// parameter before self is the hole for self as for the element. It is for the element
+// alone (s9, s10). No shape of a rank-2 bound naming self is: main runs every
+// labeled-self method its check passes right in every mode (s7i, s7s, s11, s15, s16),
+// and its check refuses the rest (a generic impl, s7 and s14; a default body, s8 and
+// s8i). So the pin rank2_bound_naming_self_is_refused (s7i) holds a disclosed
+// over-refusal, and the loss list adds labeled self over a closed impl target (s7i, s7s,
+// s11, s15, s16) to the positional t7, t8, t11. Whether to let self stand in a rank-2
+// bound is CR rank2-self-bound-01 (its note has the corrected options); the rule here is
+// unchanged, and the element's refusal is this hole's. probes:
+// ~/ptmp/cr29/scratch/review-r11/R-r2-1/t/, review-r11/R-r2-2/.
 fn instance_sig<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,

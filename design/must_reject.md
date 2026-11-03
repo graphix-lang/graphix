@@ -316,6 +316,11 @@ rank2-escape-hof-01 with callback-generic-leak-01. Not generated: a
 quantifier's bound naming a variable its written type does not quantify
 (`fn<'b: 'c>` beside the definition's `'c`); rule
 `FnType::check_bounds_closed`, right site the definition writing it.
+The module generator writes sites for it (its trait-bounded `let via`
+and `let tsum` annotate `fn<'a: Tr>(..)`), but the rule reads the
+written type alone, so no inference can repair around a mutant: the
+shallow kind the principle above leaves to its pins
+(`lang::types::rank2_bound_*_is_refused`).
 
 ## Labeled and optional arguments across the fuzzer
 

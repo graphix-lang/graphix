@@ -230,10 +230,13 @@ with `bound it by a written type`. A catch's annotation, a cast's target
 and a pattern's type test do not pass through the rewrite and are not
 held to it (a cast or a type test of a function type is refused on its
 own). A sibling (`fn<'a: Any, 'b: ['a, null]>`) is held rigid with it
-and stays. `self` and a constructor trait's element are no quantifiers
-of a function type a trait method's parameter writes, and a labeled
-parameter comes before `self`, so a bound naming either is refused too
-(CR rank2-self-bound-01). An interface `val`'s or trait method's own
+and stays. `self` and a constructor trait's element are not quantifiers
+of the function type a trait method's parameter writes, so a bound
+naming either is refused too. For the element under a labeled
+parameter, which comes before the `self` that decides it, that closes
+the hole; for `self` it closes none (no shape of it passes the check
+and fails the build) and refuses methods that would run (CR
+rank2-self-bound-01). An interface `val`'s or trait method's own
 quantifiers are its scheme's, not rank-2, and their bounds name any
 variable (`Type::rewrite_declared_args`); so are an impl's method's and
 a default body's, whose `let` stands directly in the impl's or the
