@@ -1752,6 +1752,15 @@ impl<R: Rt> Update<R> for Module<R> {
             }
             self.runs.update(ctx, &mut self.nodes, &self.catches);
         });
+        // CR claude for claude: [perf/low] This scans every statement of the module at
+        // the end of each update that walks it, wake or not, though a let re-raises only
+        // at its first update after a sleep; a module block's update scans its lets the
+        // same way (Block::update). A self-loop inside a 3000-let module with a .gxi,
+        // 3000 cycles: node-walked 473k instructions a cycle on main bbb06c0c6, 541k
+        // here (+14%), fused 420k vs 545k (+30%). A let that re-raises could mark the
+        // module around it as it does (a flag the module reads and clears) instead of
+        // the module asking every statement. Found by lane N's r8 final reviews; probes
+        // ~/ptmp/cr29/scratch/review-r8/N-r3-1/, N-r3-2/ (module-reraise-scan-01)
         self.reraised = self.nodes.iter().any(node::holds_reraised);
         // a prime is for the fresh body alone: left, it would fire readers
         // later in the cycle, and a forked merge would requeue it
