@@ -28,7 +28,7 @@ use cranelift_module::FuncId;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::BTreeMap,
 };
 use triomphe::Arc;
@@ -38,7 +38,7 @@ use super::{
     body::{BodyRole, BodySource, emit_interrupt_check_every, param_id},
     call::BufKind,
     jit::{ChunkFn, Names},
-    record::EmitConst,
+    record::{EmitConst, KernelConst},
 };
 
 /// A kernel a body calls: its body, the spill thunk a call takes when
@@ -74,6 +74,7 @@ pub(super) fn compile_into_function<'a>(
     helper_ids: &'a HelperFuncIds,
     consts: &'a RefCell<Vec<EmitConst>>,
     chunks: &'a RefCell<Vec<ChunkFn>>,
+    child_roots: &'a OnceCell<Arc<kernel_abi::SiteLeaf>>,
     names: &'a RefCell<&'a mut Names>,
     body: &'a BodySource<'a>,
     callee_layouts: &'a ahash::AHashMap<KernelKey, SiteLayout>,
@@ -176,6 +177,7 @@ pub(super) fn compile_into_function<'a>(
         owned_input_stack: RefCell::new(Vec::new()),
         collection_site: Cell::new(None),
         self_call_roots: RefCell::new(Vec::new()),
+        child_roots,
         pending_exit: RefCell::new(None),
         ladder: RefCell::default(),
         consts,
@@ -229,14 +231,21 @@ pub(super) fn compile_into_function<'a>(
         self_call_roots.into_inner().into_iter().map(|off| (off / 8) as u32).collect();
     slots.sort_unstable();
     publish_site_block_words(kernel, words)?;
-    let anchors = site.anchors.into_inner();
+    let mut anchors = site.anchors.into_inner();
     let nested = site.self_blocks.into_inner();
+    let slot_roots = site.slot_roots.into_inner();
     let activation = Arc::new(kernel_abi::ActivationLayout {
         words,
         slots: slots.iter().copied().collect(),
+        slot_roots: slot_roots.iter().copied().collect(),
         anchors: anchors.iter().cloned().collect(),
         nested: nested.iter().cloned().collect(),
     });
+    if let Some(stand_in) = child_roots.get() {
+        let leaf = Arc::new(kernel_abi::SiteLeaf::child_roots(&activation));
+        resolve_child_roots(stand_in, &leaf, consts, chunks);
+        anchors.extend(slot_roots.iter().map(|r| r.anchor(&leaf)));
+    }
     let self_blocks: Vec<kernel_abi::SelfBlock> = slots
         .iter()
         .map(|rel| kernel_abi::SelfBlock { rel: *rel, layout: activation.clone() })
@@ -252,6 +261,27 @@ pub(super) fn compile_into_function<'a>(
             self_blocks: self_blocks.into(),
         },
     })
+}
+
+/// Name `leaf`, the body's child-roots leaf, wherever the body's code or
+/// its chunks' named the `stand_in` its emission passed.
+fn resolve_child_roots(
+    stand_in: &Arc<kernel_abi::SiteLeaf>,
+    leaf: &Arc<kernel_abi::SiteLeaf>,
+    consts: &RefCell<Vec<EmitConst>>,
+    chunks: &RefCell<Vec<ChunkFn>>,
+) {
+    let resolve = |c: &mut EmitConst| {
+        if let KernelConst::SiteLeaf(l) = &c.recipe
+            && Arc::ptr_eq(l, stand_in)
+        {
+            c.recipe = KernelConst::SiteLeaf(leaf.clone());
+        }
+    };
+    consts.borrow_mut().iter_mut().for_each(&resolve);
+    for chunk in chunks.borrow_mut().iter_mut() {
+        chunk.consts.iter_mut().for_each(&resolve);
+    }
 }
 
 /// The most stack a function's explicit slots may take: a kernel runs
@@ -432,6 +462,9 @@ pub(super) struct StateChannel {
     /// Words holding per-activation block trees owned by this channel,
     /// including callee-owned ones rebased into blocks this body carves.
     pub(super) self_blocks: RefCell<Vec<kernel_abi::SelfBlock>>,
+    /// Words owning the per-slot chains of this body's own child
+    /// activations: its self-calls in loops.
+    pub(super) slot_roots: RefCell<Vec<kernel_abi::SlotRoots>>,
 }
 
 impl StateChannel {
@@ -448,6 +481,7 @@ impl StateChannel {
             next: Cell::new(0),
             anchors: RefCell::new(Vec::new()),
             self_blocks: RefCell::new(Vec::new()),
+            slot_roots: RefCell::new(Vec::new()),
         }
     }
 }
@@ -536,6 +570,11 @@ pub(crate) struct LowerCtx<'a> {
     /// Site-word byte offsets rooting self-call activation trees; the
     /// block size they describe is final only after emission.
     pub(super) self_call_roots: RefCell<Vec<i32>>,
+    /// The leaf the code passes for the chains of `StateChannel::slot_roots`,
+    /// shared with the body's chunks: a stand-in while the body's layout is
+    /// open, replaced by the body's [`kernel_abi::SiteLeaf::child_roots`]
+    /// in every constant once emission ends ([`resolve_child_roots`]).
+    pub(super) child_roots: &'a OnceCell<Arc<kernel_abi::SiteLeaf>>,
     /// The constants this body refers to by address, in symbol order;
     /// harvested into the body's record.
     pub(super) consts: &'a RefCell<Vec<EmitConst>>,

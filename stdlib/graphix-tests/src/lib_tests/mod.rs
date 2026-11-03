@@ -37,6 +37,7 @@ mod sys;
 mod tcp;
 mod tls;
 mod toml;
+mod tree_recursion;
 mod typecheck;
 mod wake;
 mod xls;

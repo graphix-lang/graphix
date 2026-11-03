@@ -38,7 +38,7 @@ fn as_i64(vs: &[Value]) -> Result<Vec<i64>> {
 
 /// Like [`collect_n`] in `jit` mode, but samples the runtime's live
 /// per-activation `SelfBlock` count after each value.
-async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
+pub(super) async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
     let (ctx, mut rx) = fixture_runtime(
         [("/test.gx", result_source(code))],
         &crate::TEST_REGISTER,
@@ -112,7 +112,7 @@ async fn fused_loop_recursion_sheds_unreached_blocks() -> Result<()> {
 }
 
 /// In every mode the i64 stream starts with `expected`.
-async fn assert_stream(code: &str, expected: &[i64]) -> Result<()> {
+pub(super) async fn assert_stream(code: &str, expected: &[i64]) -> Result<()> {
     for mode in Mode::ALL {
         let got = as_i64(&collect_n(code, mode, expected.len()).await?)?;
         if got != expected {
@@ -123,7 +123,7 @@ async fn assert_stream(code: &str, expected: &[i64]) -> Result<()> {
 }
 
 /// In every mode the stream starts with values that print as `expected`.
-async fn assert_values(code: &str, expected: &[&str]) -> Result<()> {
+pub(super) async fn assert_values(code: &str, expected: &[&str]) -> Result<()> {
     for mode in Mode::ALL {
         let got = collect_n(code, mode, expected.len()).await?;
         let got: Vec<String> = got.iter().map(|v| v.to_string()).collect();

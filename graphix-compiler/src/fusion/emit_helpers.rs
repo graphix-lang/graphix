@@ -1439,10 +1439,57 @@ pub unsafe fn free_self_block_tree(root: u64, layout: &ActivationLayout) -> u64 
                 free_slot_chain(word(a.rel), a.own_levels as u64, a.leaf.as_deref())
             };
         }
+        for r in l.slot_roots.iter() {
+            unsafe {
+                free_slot_roots(word(r.rel), r.own_levels, &mut |c| work.push((c, l)))
+            };
+        }
         work.extend(l.nested.iter().map(|n| (word(n.rel), &*n.layout)));
         work.extend(l.slots.iter().map(|s| (word(*s), l)));
     }
     freed
+}
+
+/// Free the tables of the [`SlotRoots`](super::kernel_abi::SlotRoots)
+/// chain at `word`, `own_levels` directory levels deep, handing each root
+/// word of its leaf to `root`.
+///
+/// SAFETY: `word` is 0 or the sole owner of such a chain; it is not read
+/// again.
+unsafe fn free_slot_roots(word: u64, own_levels: u32, root: &mut impl FnMut(u64)) {
+    if word == 0 {
+        return;
+    }
+    let v = unsafe { Box::from_raw(word as *mut Vec<u64>) };
+    for e in v.iter() {
+        match own_levels {
+            0 => root(*e),
+            n => unsafe { free_slot_roots(*e, n - 1, root) },
+        }
+    }
+}
+
+/// The address of each root word at the leaf of the
+/// [`SlotRoots`](super::kernel_abi::SlotRoots) chain whose word is at
+/// `word`, `own_levels` directory levels deep.
+///
+/// SAFETY: `word` addresses 0 or the owner of such a chain.
+unsafe fn each_slot_root(
+    word: *mut u64,
+    own_levels: u32,
+    root: &mut impl FnMut(*mut u64),
+) {
+    let p = unsafe { *word };
+    if p == 0 {
+        return;
+    }
+    let v: &mut Vec<u64> = unsafe { &mut *(p as *mut Vec<u64>) };
+    for e in v.iter_mut() {
+        match own_levels {
+            0 => root(e),
+            n => unsafe { each_slot_root(e, n - 1, root) },
+        }
+    }
 }
 
 thread_local! {
@@ -1495,6 +1542,13 @@ pub unsafe fn reclaim_self_block_tree(
             }
             for s in l.slots.iter().filter(|s| at(**s)) {
                 work.push((unsafe { base.add(*s as usize) }, l));
+            }
+            for r in l.slot_roots.iter().filter(|r| at(r.rel)) {
+                unsafe {
+                    each_slot_root(base.add(r.rel as usize), r.own_levels, &mut |c| {
+                        work.push((c, l))
+                    })
+                };
             }
             for a in l.anchors.iter().filter(|a| at(a.rel)) {
                 freed += unsafe {

@@ -280,6 +280,33 @@ let nf = &mut named.name;
 /// same values.
 #[tokio::test]
 async fn program_image_restores_kernels() -> Result<()> {
+    kernels_restore(PROGRAM).await.map(|_| ())
+}
+
+/// A recursion whose collection callbacks call it: the image carries its
+/// slot-root chains' layout and leaf.
+#[tokio::test]
+async fn program_image_restores_slot_root_chains() -> Result<()> {
+    let values = kernels_restore(
+        r#"
+let rec t = |d: i64| -> i64 select d {
+    0 => 1,
+    _ => 1 + array::fold(array::map([d - 1, d - 1, 0], |c| t(c)), 0, |a, x| a + x)
+};
+let rec k = |n: i64| -> i64 select n { 0 => 0, _ => n + array::fold([n - 1], 0, |a, x| a + k(x)) };
+(#[native] t(5), #[native] array::map([1, 2, 4], k))
+"#,
+    )
+    .await?;
+    let printed: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(printed, ["[i64:94, [i64:1, i64:3, i64:10]]"]);
+    Ok(())
+}
+
+/// `program` compiled cold with fusion on and restored from its image
+/// produces the same values, the restored runtime running its kernels:
+/// the values.
+async fn kernels_restore(program: &str) -> Result<Vec<Value>> {
     let (tx, mut cold_rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
@@ -287,7 +314,7 @@ async fn program_image_restores_kernels() -> Result<()> {
         config(tx, TEST_REGISTER, vec![], |_| {})?
             .flags(Default::default())
             .registration(RegistrationImage::save(reg_tx))
-            .program(Load::Text(PROGRAM.into()))
+            .program(Load::Text(program.into()))
             .program_image(prog_tx),
     )
     .await?;
@@ -313,7 +340,7 @@ async fn program_image_restores_kernels() -> Result<()> {
         "the restored program must run its kernels"
     );
     warm.shutdown().await;
-    Ok(())
+    Ok(warm_values)
 }
 
 /// How a session gets its program.

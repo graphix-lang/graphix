@@ -1,5 +1,6 @@
 //! The live heap bytes a call activation and a collection slot cost the
-//! node-walk, serial and pruned as a script runs: the same on every host,
+//! node-walk, and a fused activation the JIT, serial and pruned as a
+//! script runs: the same on every host,
 //! so the caps sit a few percent over them. The count is the runtime's
 //! thread's (a current-thread tokio runtime): the worker pools' own
 //! allocations scale with the host's cores and their scheduling.
@@ -90,30 +91,35 @@ static ALLOCATOR: Counting = Counting;
 const SIZES: [i64; 3] = [1, 5_000, 20_000];
 const MAX_BYTES_PER_ACTIVATION: i64 = 5_640;
 const MAX_BYTES_PER_SLOT: i64 = 3_140;
+const MAX_BYTES_PER_FUSED_ACTIVATION: i64 = 192;
 
 /// The most heap bytes, over what was live before it compiled, that
 /// `program` held until its value arrived, in a runtime of its own on a
-/// thread of its own, so no thread-local pool outlives it.
-fn peak_bytes(program: CompactString, expected: Value) -> i64 {
+/// thread of its own, so no thread-local pool outlives it; fused or not.
+fn peak_bytes(program: CompactString, expected: Value, fused: bool) -> i64 {
     thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(run(program, expected))
+            .block_on(run(program, expected, fused))
             .unwrap()
     })
     .join()
     .unwrap()
 }
 
-async fn run(program: CompactString, expected: Value) -> Result<i64> {
+async fn run(program: CompactString, expected: Value, fused: bool) -> Result<i64> {
     let (tx, mut rx) = mpsc::channel(1024);
     let cfg = testing::config(tx, REGISTER, vec![], |ctx| {
         ctx.control.set_par_mode(ParMode::Off);
         ctx.control.set_prune_mode(PruneMode::On);
     })?;
-    let ctx = TestCtx::start(cfg.flags(CFlag::FusionDisabled.into())).await?;
+    let flags = match fused {
+        true => Default::default(),
+        false => CFlag::FusionDisabled.into(),
+    };
+    let ctx = TestCtx::start(cfg.flags(flags)).await?;
     let base = HEAP.with(|h| {
         let live = h.get().live;
         h.set(Heap { live, peak: live });
@@ -132,11 +138,12 @@ async fn run(program: CompactString, expected: Value) -> Result<i64> {
 fn assert_linear_cost(
     what: &str,
     ceiling: i64,
+    fused: bool,
     program: impl Fn(i64) -> (CompactString, Value),
 ) {
     let [base, mid, deep] = SIZES.map(|n| {
         let (text, expected) = program(n);
-        peak_bytes(text, expected)
+        peak_bytes(text, expected, fused)
     });
     let low = (mid - base) / (SIZES[1] - SIZES[0]);
     let high = (deep - mid) / (SIZES[2] - SIZES[1]);
@@ -154,14 +161,14 @@ fn assert_linear_cost(
 
 #[test]
 fn activations_and_slots_cost_linear_heap() {
-    assert_linear_cost("activation", MAX_BYTES_PER_ACTIVATION, |depth| {
+    assert_linear_cost("activation", MAX_BYTES_PER_ACTIVATION, false, |depth| {
         let program = format_compact!(
             "{{\n  let rec f = |n: i64| -> i64 select n {{\n    0 => 0,\n    \
              _ => n + f(n - 1)\n  }};\n  f({depth})\n}}"
         );
         (program, Value::I64(depth * (depth + 1) / 2))
     });
-    assert_linear_cost("slot", MAX_BYTES_PER_SLOT, |n| {
+    assert_linear_cost("slot", MAX_BYTES_PER_SLOT, false, |n| {
         let program = format_compact!(
             "{{\n  let values = array::init({n}, |i| i);\n  \
              (array::len(values), values[0]$, values[-1]$)\n}}"
@@ -169,4 +176,23 @@ fn activations_and_slots_cost_linear_heap() {
         let expected = [n, 0, n - 1].map(Value::I64);
         (program, Value::Array(ValArray::from_iter_exact(expected.into_iter())))
     });
+}
+
+/// A fused recursion whose every activation is a loop slot's: the slot's
+/// root word, its chain table and the activation's block.
+#[test]
+fn fused_slot_activations_cost_linear_heap() {
+    assert_linear_cost(
+        "fused activation",
+        MAX_BYTES_PER_FUSED_ACTIVATION,
+        true,
+        |depth| {
+            let program = format_compact!(
+                "{{\n  let rec t = |d: i64| -> i64 select d {{\n    0 => 1,\n    \
+             _ => 1 + array::fold([d - 1], 0, |a, c| a + t(c))\n  }};\n  \
+             #[native] t({depth})\n}}"
+            );
+            (program, Value::I64(depth + 1))
+        },
+    );
 }

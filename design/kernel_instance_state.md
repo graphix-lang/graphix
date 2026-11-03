@@ -1,12 +1,13 @@
 # Per-kernel-instance state (the firing-exactness wire slots)
 
 Status: built 2026-07-03 (per-slot chains 2026-07-15, per-call-site
-blocks 2026-07-16, per-activation trees 2026-08); reduced to firing
-bookkeeping only by strict fusion 2026-09-01
+blocks 2026-07-16, per-activation trees 2026-08, slot-root chains
+2026-11); reduced to firing bookkeeping only by strict fusion 2026-09-01
 Pins: `lang/functions.rs` `hof_const_body_prev_len`,
 `lang/select.rs` `guard_fire_emits_unchanged_selection`,
 `guard_fire_emits_in_loop`,
 `lib_tests/lift.rs` `fused_recursion_sheds_unreached_blocks`,
+`lib_tests/tree_recursion.rs` (slot-root chains),
 `findings/firing-jul2026/`, `findings/select-slot-memory-jul2026/`,
 `findings/recursive-activation-blocks-aug2026/`
 
@@ -195,6 +196,52 @@ pointer walk lives where ASAN can see it. Both tree walks
 (`free_self_block_tree` and the reclaim) are explicit worklists, per
 the stack discipline: they recurse one frame per activation otherwise,
 and depth is unbounded.
+
+### Activation roots in a loop: slot-root chains
+
+A collection callback the kernel runs inline in a recursive function's
+body may call that function (`|a, x| a + k(x)` in a fold in `k`, a
+tree's `array::map(children, |c| t(c))`): the call is the body's own
+self-call (`analysis::mark_recursion` counts an edge from a callback a
+loop runs inline, through any nesting of them, to the instance whose body
+holds it as that instance's self edge), made from a loop slot. In the
+node-walk each slot's callback instance holds its own activation, so the
+JIT's root word must be the slot's, never one shared by the slots.
+
+- **The leaf.** A self-call at loop depth `d` claims, in the body's
+  site channel, the anchor of a slot chain of `d - 1` directory levels
+  over a leaf of one word per slot (`BodyCx::claim_slot_roots`); each
+  leaf word roots a child activation as a depth-0 self-call's word does
+  (`graphix_site_child_block`). The activation layout names the anchor
+  as a `SlotRoots { rel, own_levels }` beside `slots`: "the root words at
+  this chain's leaf hold children of this same layout".
+- **Who owns the words.** The activation block that holds the anchor
+  owns the chain and every tree its leaf roots; a slot owns its root
+  word, so its activation and everything under it. A layout cannot hold
+  itself through `Arc`s, so inside the layout the chain carries no
+  `SiteLeaf`: `free_self_block_tree` frees its tables and pushes each
+  root onto its own worklist with the layout it is walking, and the
+  reclaim visits each root of a kept block the same way, so both walks
+  stay iterative whatever the depth.
+- **A slot's deletion.** The chain's truncate record and every directory
+  ensure pass the body's child-roots leaf (`SiteLeaf::child_roots`:
+  stride 1, its word 0 rooting a tree of the body's layout), so a shrink
+  frees the dropped slots' trees through `free_blocks` as it frees a
+  callee's. The layout is final only when emission ends, so emission
+  passes a stand-in leaf, shared with the body's chunks, and
+  `compile_into_function` names the real one in every constant of the
+  body and its chunks before the record is built (`resolve_child_roots`).
+- **Outside the activation.** The body's `SiteLayout` lists each chain
+  as an ordinary anchor whose leaf is that child-roots leaf, so a caller
+  that carves the block (a root call, an in-loop call, a parent's state)
+  frees, sheds and truncates it with the walks it already has.
+- **Images.** The child-roots leaf is a `SiteLeaf` like any other, its
+  code constant and the callers' anchors one image object; the layout
+  writes its `slot_roots` beside `slots`.
+
+A collection whose callback is the recursive binding itself
+(`array::map(children, t)` in `t`) has no statically resolved callback
+and does not fuse (collection-self-callback-01); `|c| t(c)` does.
 
 ## What this is not
 

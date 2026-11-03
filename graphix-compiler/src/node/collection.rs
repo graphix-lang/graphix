@@ -852,6 +852,18 @@ impl<R: Rt> MapQBase<R> {
         if emit::node_is_bottom(source) {
             return Ok(None);
         }
+        // CR claude for claude: [perf/low] A collection whose callback is the
+        // recursive binding itself does not fuse: in `let rec t = |d: i64| -> i64
+        // select d { 0 => 1, _ => 1 + array::fold(array::map([d - 1, 0, 0], t), 0,
+        // |a, x| a + x) }`, `#[native] t(20)` is refused "lambda call site
+        // `array::map([d - 1, 0, 0], t)` not discovered": the prototype's call of
+        // `t` has no resolved callback (the binding is the one the body defines),
+        // so `callback` is None here and no loop is emitted (main ec53d4846 the
+        // same). `|c| t(c)` fuses through the slot-root chains
+        // (collection-closure-recursion-01). Fusing the bare form needs a loop whose
+        // slot makes the enclosing kernel's self-call over the element, with no
+        // callback body to emit; a fold's callback alike. probe:
+        // ~/ptmp/cr29/scratch/r9-J/tmap_bare.gx (collection-self-callback-01)
         let Some(callback) = callback(&self.prototype) else { return Ok(None) };
         let Some(param) = callback_param(callback, 0, literal!("__elem"), spec)? else {
             return Ok(None);

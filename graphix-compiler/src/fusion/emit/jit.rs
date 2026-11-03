@@ -2104,6 +2104,7 @@ fn emit_kernel_body(
     }
     let consts: RefCell<Vec<EmitConst>> = RefCell::new(Vec::new());
     let chunks: RefCell<Vec<ChunkFn>> = RefCell::new(Vec::new());
+    let child_roots = std::cell::OnceCell::new();
     let mut emitted = None;
     let frontend = em.shared.isa.frontend_config();
     let func = em.build(func_id, sig.clone(), |names, helpers, b| {
@@ -2139,6 +2140,7 @@ fn emit_kernel_body(
             helpers,
             &consts,
             &chunks,
+            &child_roots,
             &names,
             body_emitter,
             callee_layouts,

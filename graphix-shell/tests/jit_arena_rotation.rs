@@ -142,3 +142,32 @@ fn kernels_moved_every_cycle_compute_the_same() {
         ran.log
     );
 }
+
+/// A recursion whose collection callbacks call it, its slot-root chains
+/// regrown and shrunk at every cycle, answers as before with its kernels
+/// moved every cycle, cold and restored from its image.
+#[test]
+fn tree_recursion_moved_every_cycle_computes_the_same() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = "let clock = sys::time::timer(duration:1.ms, true);\n\
+         let n = 0;\n\
+         n <- clock ~ n + 1;\n\
+         let rec f = |d: i64| -> i64 select d {\n\
+           0 => 1,\n\
+           _ => 1 + array::fold(array::filter([d - 1, d - 2], |c| c >= 0), 0, |a, c| a + f(c))\n\
+         };\n\
+         let r = #[native] f(n % 8);\n\
+         sys::exit(select (n, r) { (33, 2) => 0, (33, _) => 1, _ => never() })\n";
+    let env = [LOG, ("GRAPHIX_JIT_RELOCATE", "every")];
+    let cold = graphix(dir.path(), program, &[], &env);
+    assert!(cold.status.success(), "{}\n{}", cold.stderr, cold.log);
+    assert_eq!(program_image(&cold), (true, false), "{}", cold.log);
+    assert!(
+        cold.log.matches(MOVED).count() >= 30,
+        "the kernels did not move every cycle:\n{}",
+        cold.log
+    );
+    let warm = graphix(dir.path(), program, &[], &env);
+    assert!(warm.status.success(), "{}\n{}", warm.stderr, warm.log);
+    assert_eq!(program_image(&warm), (false, true), "{}", warm.log);
+}

@@ -858,25 +858,30 @@ pub(crate) fn for_each_emitted_node<'a, R: Rt>(
     for_each_emitted_node_in(node, &mut |n, _| f(n))
 }
 
+/// The collection callback instances whose bodies hold a node a kernel
+/// runs inline, outermost first.
+type Owners<'a, R> = SmallVec<[&'a GXLambda<R>; 4]>;
+
 /// [`for_each_emitted_node`], each node with the collection callback
-/// instance whose body holds it, `None` for `node`'s own.
+/// instances whose bodies hold it, outermost first, none for `node`'s own.
 pub(crate) fn for_each_emitted_node_in<'a, R: Rt>(
     node: &'a Node<R>,
-    f: &mut dyn FnMut(&'a Node<R>, Option<&'a GXLambda<R>>),
+    f: &mut dyn FnMut(&'a Node<R>, &[&'a GXLambda<R>]),
 ) {
-    let mut stack: LPooled<Vec<(&'a Node<R>, Option<&'a GXLambda<R>>)>> = LPooled::take();
-    stack.push((node, None));
-    while let Some((node, owner)) = stack.pop() {
-        let mut inline: LPooled<Vec<(&'a Node<R>, Option<&'a GXLambda<R>>)>> =
-            LPooled::take();
+    let mut stack: LPooled<Vec<(&'a Node<R>, Owners<'a, R>)>> = LPooled::take();
+    stack.push((node, SmallVec::new()));
+    while let Some((node, owners)) = stack.pop() {
+        let mut inline: LPooled<Vec<(&'a Node<R>, Owners<'a, R>)>> = LPooled::take();
         for_each_node(node, &mut |node| {
-            f(node, owner);
+            f(node, &owners);
             let NodeView::CallSite(callsite) = node.view() else { return };
             let Some(ApplyView::Lambda(lambda)) = callsite.resolved_apply() else {
                 return;
             };
             if let Some(callback) = lambda.inline_callback() {
-                inline.push((callback.body(), Some(callback)));
+                let mut held = owners.clone();
+                held.push(callback);
+                inline.push((callback.body(), held));
             }
         });
         stack.extend(inline.drain(..));
@@ -978,11 +983,11 @@ pub(crate) struct Discovery<'n, R: Rt> {
 /// that fails to build is not recorded; its call site bails at emission
 /// and the region de-fuses (never a partial kernel). A callee already
 /// in `bodies` is not re-scanned, which closes self- and mutual
-/// recursion. A self-call in a self-recursive collection callback's
-/// body, which the loop emits inline, calls that callback instance's
-/// kernel; where `root` is the body of `own`, a self-recursive
-/// instance, the root's other self-calls call `own`'s kernel, which
-/// runs the rest of the recursion.
+/// recursion. A self-call of a self-recursive collection callback the
+/// loop emits inline, from its body or a callback inline in it, calls
+/// that callback instance's kernel; where `root` is the body of `own`, a
+/// self-recursive instance, the root's other self-calls call `own`'s
+/// kernel, which runs the rest of the recursion.
 pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     root: &'n Node<R>,
     own: Option<&'n GXLambda<R>>,
@@ -1004,7 +1009,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     worklist.push((root, None));
     let mut reads = lowering::ReadsMemo::default();
     let own = own.and_then(|g| Some((g, g.self_bind()?, &**g.typ())));
-    // CR claude for claude: [perf/medium] A collection callback that calls the
+    // XCR claude for claude: [perf/medium] A collection callback that calls the
     // recursive function whose body holds it de-fuses that function and every call of
     // it: with `let rec k = |n: i64| -> i64 select n { 0 => 0, _ => n +
     // array::fold([n - 1], 0, |a, x| a + k(x)) }`, `#[native] k(4)` and `#[native]
@@ -1039,12 +1044,32 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     // the mark_recursion edge and the own/callback match in discover_lambda_calls. c2.gx
     // and c3.gx still refuse at bbb06c0c6 'mutually recursive static call edge is not
     // supported'.
+    // 2026-11-03 claude: Built: analysis::mark_recursion counts a call from a collection
+    // callback a loop runs inline (StaticCallGraph::inline_holders, any nesting) as the
+    // self-call of the instance holding it; discover_lambda_calls matches a call against
+    // every enclosing inline callback (for_each_emitted_node_in hands the owner chain),
+    // so array::map([1, 2, 4], k) calls k's kernel; a self-call at loop depth > 0 roots
+    // its child in a per-slot SlotRoots chain (BodyCx::claim_slot_roots, call.rs
+    // slot_root_word), which ActivationLayout::slot_roots names and free_self_block_tree
+    // / reclaim_self_block_tree walk on their own worklists; the code's leaf is a
+    // stand-in resolved to SiteLeaf::child_roots once the layout is final (lower.rs
+    // resolve_child_roots), and SiteLayout lists each chain as an ordinary anchor with
+    // that leaf. Design: design/kernel_instance_state.md, slot-root chains. Pins (all
+    // fail without the change): lib_tests::tree_recursion (c2 and c3 shapes, depth-20
+    // breadth-3 trees through map and fold, a full ternary tree, a callback beside a tail
+    // call, a sleeping arm, deleted slots outside and inside the recursion, live
+    // SelfBlocks after a shrink), lang::image::program_image_restores_slot_root_chains,
+    // graphix-shell
+    // jit_arena_rotation::tree_recursion_moved_every_cycle_computes_the_same
+    // (GRAPHIX_JIT_RELOCATE=every, cold and warm image),
+    // activation_heap::fused_slot_activations_cost_linear_heap. The bare form
+    // array::map(children, t) is collection-self-callback-01.
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();
         let mut enqueue: LPooled<Vec<(&'n Node<R>, kernel_abi::KernelKey)>> =
             LPooled::take();
-        for_each_emitted_node_in(body, &mut |n, callback| {
+        for_each_emitted_node_in(body, &mut |n, owners| {
             if collect_decorated
                 && n.spec().dec.as_ref().is_some_and(|dec| !dec.attrs.is_empty())
             {
@@ -1054,12 +1079,13 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
                 return;
             };
             let calls = |bind: BindId| matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == bind);
-            let (g, site_ftype) = match (cs.resolved_apply(), callback, &own) {
+            let holder = owners.iter().rev().find(|g| g.self_bind().is_some_and(calls));
+            let (g, site_ftype) = match (cs.resolved_apply(), holder, &own) {
                 (Some(ApplyView::Lambda(g)), _, _) => match cs.resolved_ftype() {
                     Some(t) => (g, t),
                     None => return,
                 },
-                (None, Some(g), _) if g.self_bind().is_some_and(calls) => (g, &**g.typ()),
+                (None, Some(g), _) => (*g, &**g.typ()),
                 (None, _, Some((g, bind, ftype))) if target.is_none() && calls(*bind) => {
                     (*g, *ftype)
                 }

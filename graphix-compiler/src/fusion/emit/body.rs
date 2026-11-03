@@ -402,6 +402,38 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         (anchor, self.claimed_word(off))
     }
 
+    /// Claim the anchor of a [`kernel_abi::SlotRoots`] chain of
+    /// `own_levels` directory levels in this callee body's site channel:
+    /// the per-slot roots of a self-call in a loop.
+    pub(crate) fn claim_slot_roots(
+        &mut self,
+        own_levels: u32,
+    ) -> (TruncAnchor, StateWord) {
+        assert_eq!(self.ctx.claims, Channel::Site, "a self-call is a callee body's");
+        let off = self.ctx.site.claim();
+        self.ctx
+            .site
+            .slot_roots
+            .borrow_mut()
+            .push(kernel_abi::SlotRoots { rel: (off / 8) as u32, own_levels });
+        (TruncAnchor::Site(off), self.claimed_word(off))
+    }
+
+    /// The leaf this body's code passes for its [`Self::claim_slot_roots`]
+    /// chains.
+    pub(crate) fn child_roots_leaf(&self) -> triomphe::Arc<kernel_abi::SiteLeaf> {
+        self.ctx
+            .child_roots
+            .get_or_init(|| {
+                triomphe::Arc::new(kernel_abi::SiteLeaf {
+                    stride: 1,
+                    anchors: triomphe::Arc::from_iter(std::iter::empty()),
+                    self_blocks: triomphe::Arc::from_iter(std::iter::empty()),
+                })
+            })
+            .clone()
+    }
+
     /// Open a scaffold loop's per-slot state-table frame; emit in the
     /// loop preheader. For each state site in `sites` it
     /// anchors a chain of owning tables mirroring the loop nesting

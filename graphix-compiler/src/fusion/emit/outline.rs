@@ -180,6 +180,7 @@ fn continued(ch: &StateChannel, ptr: ClifValue) -> StateChannel {
         next: Cell::new(ch.next.get()),
         anchors: RefCell::new(ch.anchors.take()),
         self_blocks: RefCell::new(ch.self_blocks.take()),
+        slot_roots: RefCell::new(ch.slot_roots.take()),
     }
 }
 
@@ -187,6 +188,7 @@ fn give_back(ch: &StateChannel, from: StateChannel) {
     ch.next.set(from.next.get());
     ch.anchors.replace(from.anchors.into_inner());
     ch.self_blocks.replace(from.self_blocks.into_inner());
+    ch.slot_roots.replace(from.slot_roots.into_inner());
 }
 
 /// Build the chunk `(frame, lo, hi, out)` that runs slots `lo..hi` of
@@ -287,6 +289,7 @@ fn emit_chunk(
         owned_input_stack: RefCell::new(Vec::new()),
         collection_site: Cell::new(p.collection_site.get()),
         self_call_roots: RefCell::new(Vec::new()),
+        child_roots: p.child_roots,
         consts: &consts,
         names: &names,
         kernel: p.kernel,

@@ -1005,14 +1005,38 @@ pub struct SelfBlock {
 
 /// What every block of an activation tree holds, identical at every
 /// level: `words` words and the reach stamp after them, the child
-/// activations' roots at `slots`, the chains `anchors` own and the
-/// other kernels' activation trees rooted at `nested`.
+/// activations' roots at `slots`, the per-slot chains of child roots
+/// `slot_roots` own, the chains `anchors` own and the other kernels'
+/// activation trees rooted at `nested`.
 #[derive(Debug)]
 pub struct ActivationLayout {
     pub words: u32,
     pub slots: Box<[u32]>,
+    pub slot_roots: Box<[SlotRoots]>,
     pub anchors: Box<[SiteAnchor]>,
     pub nested: Box<[SelfBlock]>,
+}
+
+/// A self-call in a loop: the block word at `rel` owns a slot chain of
+/// `own_levels` directory levels over a leaf of one word per slot, each
+/// the root of a child activation with the layout of the block that
+/// holds the chain.
+#[derive(Debug, Clone, Copy, Pack)]
+pub struct SlotRoots {
+    pub rel: u32,
+    pub own_levels: u32,
+}
+
+impl SlotRoots {
+    /// The chain as an anchor outside the activation that holds it,
+    /// `leaf` the [`SiteLeaf::child_roots`] of that activation's layout.
+    pub fn anchor(&self, leaf: &Arc<SiteLeaf>) -> SiteAnchor {
+        SiteAnchor {
+            rel: self.rel,
+            own_levels: self.own_levels,
+            leaf: Some(leaf.clone()),
+        }
+    }
 }
 
 /// One owner of a per-slot state chain: the word at `rel` (absolute in
@@ -1046,6 +1070,19 @@ pub struct SiteLeaf {
     pub stride: u32,
     pub anchors: Arc<[SiteAnchor]>,
     pub self_blocks: Arc<[SelfBlock]>,
+}
+
+impl SiteLeaf {
+    /// The leaf of a [`SlotRoots`] chain: one word per slot rooting an
+    /// activation of `layout`.
+    pub fn child_roots(layout: &Arc<ActivationLayout>) -> Self {
+        let root = SelfBlock { rel: 0, layout: layout.clone() };
+        SiteLeaf {
+            stride: 1,
+            anchors: Arc::from_iter(std::iter::empty()),
+            self_blocks: Arc::from_iter([root]),
+        }
+    }
 }
 
 /// Leading `u64` wire slots before the parameter list, present in every
@@ -1361,9 +1398,11 @@ impl PackTrait for SelfBlock {
             buf,
             |buf| {
                 crate::stack::ensure_sufficient(|| {
-                    let ActivationLayout { words, slots, anchors, nested } = &**layout;
+                    let ActivationLayout { words, slots, slot_roots, anchors, nested } =
+                        &**layout;
                     words.encode(buf)?;
                     crate::image::slice_encode(slots, buf)?;
+                    crate::image::slice_encode(slot_roots, buf)?;
                     crate::image::slice_encode(anchors, buf)?;
                     crate::image::slice_encode(nested, buf)
                 })
@@ -1386,11 +1425,13 @@ fn activation_layout_decode(
             crate::stack::ensure_sufficient(|| {
                 let words = u32::decode(buf)?;
                 let slots: Vec<u32> = PackTrait::decode(buf)?;
+                let slot_roots: Vec<SlotRoots> = PackTrait::decode(buf)?;
                 let anchors: Vec<SiteAnchor> = PackTrait::decode(buf)?;
                 let nested: Vec<SelfBlock> = PackTrait::decode(buf)?;
                 Ok(Arc::new(ActivationLayout {
                     words,
                     slots: slots.into(),
+                    slot_roots: slot_roots.into(),
                     anchors: anchors.into(),
                     nested: nested.into(),
                 }))
