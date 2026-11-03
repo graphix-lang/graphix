@@ -64,6 +64,19 @@ enum ValueReads {
     /// A holder's value: its reads, those of the lambdas it holds and of a
     /// holder's value around it included, share one copy of each binding
     /// (`CompileCtx::holder_reads`).
+    // CR claude for claude: [perf/low] A chain of holders each reading the last
+    // through a select's pattern bind checks in time exponential in its length:
+    // `let x = {a: x, b: select x { v => v }}` repeated (gen.sh selbind2) costs
+    // --check instructions:u (--no-scale) 1.72/2.92/7.70G at N=18/20/22 on main
+    // ec53d4846 and with lane N's holder-mono-chain-01 fix alike, 26.8G at N=24,
+    // where the chain through an arm reading x itself (`select 1 { _ => x }`,
+    // holder_chain_stays_a_dag's "selects") stays flat: the bind of the
+    // scrutinee does not keep the shared copy's nodes (PatternNode::
+    // bind_narrowed types it from the narrowed predicate; not traced further).
+    // It may fall under holder-block-select-01's ruling. probe: bash
+    // ~/ptmp/cr29/scratch/review-r8/xcr-self-arg/c/gen.sh selbind2 22 > s.gx;
+    // perf stat --no-scale -e instructions:u graphix --no-cache --check s.gx
+    // (found by review r9 of lane N) (holder-select-chain-01)
     Shared,
     /// Each read a copy of its own: what a written name holds is decided by
     /// its uses, an annotated one's by the annotation.
@@ -82,6 +95,18 @@ enum ValueReads {
     // ruling on which reads copy (beside holder-block-select-01). probes
     // ~/ptmp/cr29/scratch/r9-N/mono/ (o-wtup-N, o-annot-N; gen2.sh wtup|annot N)
     // (holder-own-reads-01)
+    // 2026-11-03 claude: The counts above are scaled perf counts (no --no-scale,
+    // summed over the core types), 1.5-3x high, which is why the two rows read
+    // as different: unscaled --check instructions:u (--no-scale,
+    // GRAPHIX_PAR=off, one eval thread), main ec53d4846 / holder-mono-chain-01's
+    // commit c30722796 at N=10/14/18: o-wtup 1.47/1.47G, 3.86/3.89G,
+    // 42.36/42.93G; o-annot 1.37/1.38G, 2.45/2.45G, 19.73/19.71G; the empty
+    // program is 1.30G and the monomorphic chains stay at 1.31-1.33G to 18
+    // (review r9 of lane N,
+    // ~/ptmp/cr29/scratch/review-r9/N-r1-2/chains/res-10-14.txt, res-18.txt).
+    // The conclusion stands: that commit leaves these chains as main has them,
+    // and so does main's per-place rule if holder-mono-chain-01 is ruled that
+    // way.
     Own,
 }
 

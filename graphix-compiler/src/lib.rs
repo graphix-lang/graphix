@@ -1949,7 +1949,7 @@ impl<R: Rt> CompileCtx<R> {
         })
     }
 
-    // XCR claude for claude: [perf/medium] A chain of lets holding functions, where each
+    // CR claude for eric: [perf/medium] A chain of lets holding functions, where each
     // link binds a written name or carries an annotation, checks in time exponential in
     // its length: each occurrence of a shared node holding a function takes its own
     // copy here, so a DAG of holders becomes a tree. `let (a, w) = (x, 0); w <- 1; let
@@ -1983,6 +1983,40 @@ impl<R: Rt> CompileCtx<R> {
     // monomorphic_tests::a_shared_node_is_one_instance (16 doubling pairs over a
     // generic function: 34 nodes at most, the two parts one instance; the old walk
     // 196607 nodes: fails).
+    // 2026-11-03 claude: Review r9 of lane N (both reviewers, high/medium): the fix
+    // changes verdicts. A write whose value's type holds one node twice now holds one
+    // instance there, so p <- mk(g) (let g = |x| x; let mk = |f| (f, f); p = (|x: i64|
+    // x, |x: string| x)), p <- (gg, gg) with let gg = id(g), *r <- mk(g), and a holder
+    // let hh = (h, h) written into q: ({f: fn(x: i64) -> i64}, {f: fn(x: string) ->
+    // string}) (q <- hh, or an annotated let that something writes) are refused here and
+    // run on main ec53d4846, while p <- (g, g) and q <- (h, h) (two reads, two copies)
+    // pass on both. Main's verdicts and a linear check do not go together under a local
+    // rule: a node whose functions' instances copy no cell can be one instance with
+    // main's verdicts, but every chain this CR names copies a cell at each link (the
+    // lambda's generic argument cell; the binding's own cell is Top), so that variant
+    // measured exactly as main (--check instructions:u, --no-scale, GRAPHIX_PAR=off, one
+    // eval thread; main / that variant at N=10 and 14: t-ownone 1.38/1.38G, 5.23/5.23G;
+    // u-wsingle 1.37/1.37G, 5.24/5.24G; o-apart2 1.44/1.44G, 9.14/9.13G; both killed at
+    // 150 s at N=18), where this commit stays at 1.31-1.33G to 18. Main already ties
+    // such places where the shared cell is the binding's own: let a2 = x1; a2 <- never()
+    // over x1 = (a1, a1), a1 a written copy of x0 = (|x| x, 1), cannot be annotated
+    // ((fn(x: i64) -> i64, i64), (fn(x: string) -> string, i64)) on main. Ruling needed:
+    // (a) one instance per node the value's type shares (this commit; ML's rule: OCaml
+    // types mk g as ('_w -> '_w) * ('_w -> '_w), one weak variable; <- then agrees with
+    // let, whose forms d7, e8, e9 main already refuses); it needs CLAUDE.md's
+    // value-restriction line and pins that refuse d3, e1, e7, b1, w3 and accept b3, w2
+    // (two reads are two copies, as p <- (g, g) is); or (b) one instance per place
+    // (main): drop c30722796 and the chains stay exponential; the per-place variant with
+    // its pins (lang::types::written_value_sharing_a_node_holds_an_instance_per_place,
+    // monomorphic_tests::a_shared_node_copying_nothing_is_one_instance and
+    // a_shared_node_copying_a_cell_is_an_instance_per_occurrence, each failing under the
+    // other walk) is ~/ptmp/cr29/scratch/r9-N/item5-perplace.patch. The counts in the
+    // note above are scaled perf counts (no --no-scale), 1.5-3x high: unscaled, main /
+    // this commit at N=14: t-ownone 5.23/1.32G, u-wsingle 5.24/1.31G, o-apart2
+    // 9.14/1.32G; at 18 main killed at 150 s, this commit 1.32-1.33G; the empty program
+    // 1.30G. probes ~/ptmp/cr29/scratch/review-r9/N-r1-1/m5/,
+    // ~/ptmp/cr29/scratch/review-r9/N-r1-2/mono/, ~/ptmp/cr29/scratch/r9-N/m5/gen2.gx,
+    // chains ~/ptmp/cr29/scratch/r9-N/chains/
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
