@@ -203,7 +203,9 @@ const fn fnv1a(mut h: u64, s: &str) -> u64 {
 
 /// The sources of every type a blob holds: derived `Pack` writes variant
 /// indices, so two builds read each other's blobs only from the same
-/// definitions, whatever their version strings say.
+/// definitions, whatever their version strings say. Its evaluation steps
+/// grow with the sources' length, past the lint's fixed count.
+#[allow(long_running_const_eval)]
 const LAYOUT: u64 = {
     let mut h = 0xcbf29ce484222325;
     h = fnv1a(h, include_str!("mod.rs"));
