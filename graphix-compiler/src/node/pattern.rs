@@ -175,7 +175,7 @@ impl PatCx<'_> {
 #[derive(Default)]
 struct Told {
     at: SmallVec<[Step; 4]>,
-    tests: SmallVec<[WrittenTest; 1]>,
+    tests: WrittenTests,
 }
 
 /// A step from a pattern's position to one of its parts'.
@@ -200,8 +200,10 @@ enum Step {
 pub(crate) struct WrittenTest {
     pub(super) test: Type,
     rest: Type,
-    at: Box<[Step]>,
+    at: SmallVec<[Step; 2]>,
 }
+
+pub(crate) type WrittenTests = SmallVec<[WrittenTest; 1]>;
 
 impl WrittenTest {
     /// What else reaches the test among `reaching`, the arm's scrutinee
@@ -2097,7 +2099,7 @@ pub struct PatternNode<R: Rt> {
     /// The tests the structure makes at union positions of the written
     /// type, which the definition's check tells apart from the rest of
     /// each union as it does the arm's own; only a compile records them.
-    pub(super) written_tests: Box<[WrittenTest]>,
+    pub(super) written_tests: WrittenTests,
 }
 
 impl<R: Rt> PatternNode<R> {
@@ -2106,7 +2108,7 @@ impl<R: Rt> PatternNode<R> {
         type_predicate: Type,
         structure_predicate: StructPatternNode,
         guard: Option<Held<R>>,
-        written_tests: Box<[WrittenTest]>,
+        written_tests: WrittenTests,
     ) -> Self {
         Self {
             explicit_type_predicate,
@@ -2144,7 +2146,7 @@ impl<R: Rt> PatternNode<R> {
             type_predicate,
             structure_predicate,
             guard,
-            Box::default(),
+            WrittenTests::new(),
         ))
     }
 
@@ -2362,7 +2364,7 @@ impl<R: Rt> PatternNode<R> {
             type_predicate,
             structure_predicate,
             guard,
-            told.into_inner().tests.into_iter().collect(),
+            told.into_inner().tests,
         ))
     }
 
