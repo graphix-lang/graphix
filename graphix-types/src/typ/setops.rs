@@ -15,30 +15,6 @@ use smallvec::{SmallVec, smallvec};
 use std::{iter, mem, ops::ControlFlow};
 use triomphe::Arc;
 
-// XCR claude for claude: [bug/medium] matching_type's memo (MatchingTypes::memo) keeps
-// every pair for the walk, keyed by RefHist::ref_id, which keys an abstract type by
-// its parameters' address and an open cell by its cell's and holds neither: an
-// expansion's parameters (built anew by lookup_ref) die with its frame, and the next
-// instantiation's take their address and read the dead one's answer. main bbb06c0c6
-// refuses `type Box<'a> = Abstract<'a>; type W<'a> = [Box<'a>, `X]; let v: [Box<i64>,
-// Box<string>, `X] = Box("s"); select v { [W<i64>, W<string>] as b => select b {
-// Box<string> as s => 1, _ => 2 } }` with "pattern Box<string> will never match [`X,
-// Box<i64>]" in 11 runs of 12 (address reuse follows allocation order and AHash's
-// seeds, so the program is not a deterministic probe): the capture lost Box<string>.
-// With the members written (`[Box<i64>, Box<string>, `X] as b`) it prints 1. A unit
-// walk of matching_type([W<i64>, W<string>], [Box<i64>, Box<string>, `X]) gives [`X,
-// Box<i64>]; keeping each memoized pair's sides alive for the walk gives [`X,
-// Box<i64>, Box<string>]: pin the fix with that walk. Found by lane X (round 7).
-// probes: ~/ptmp/cr29/scratch/r8-X/mt1.gx, mt1b.gx (matching-type-pins-01)
-// 2026-11-02 claude: MatchingTypes::memo now holds each pair's sides beside its
-// answer (Matched), so an address its key reads stays its node's for the walk. Pin:
-// graphix-types typ::setops::tests::matching_type_tells_fresh_instantiations_apart
-// (the unit walk named above; gives [`X, Box<i64>] without the fix, every run).
-// Env::typed_at_root now takes a body Abstract<rep> as an abstract typedef for such
-// tests.
-// 2026-11-03 claude: Matched is now Kept<A> (typ/mod.rs), shared by this memo, diff's
-// memo of finished pairs (DiffHist::done) and could_match's refuted memo
-// (diff-dag-01).
 struct MatchingTypes {
     memo: RefHist<AHashMap<RefPair, Kept<Type>>>,
     refs: LPooled<AHashSet<(Option<usize>, Option<usize>)>>,
@@ -706,65 +682,6 @@ impl Type {
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
 
-    // XCR claude for claude: [perf/low] diff takes a pair of a reference and the
-    // subtrahend apart at every path that reaches it, so over a DAG of named unions
-    // (cast.rs union_dag: Li = [Li-1, Mi-1], Mi = [Mi-1, Li-1]) a select's coverage
-    // (Reach::cover and Select::typecheck0_with, both calling diff) walks 2^depth:
-    // `let v: L18 = `C; select v { `A => 1, `B => 2, `C => 3 }` costs 8.6G instructions
-    // at --check (L16 4.5G, L20 31.9G; over `_ => 3` 2.7G flat) once union_members and
-    // flatten_union_members expand each name once (union-members-dag-01); callgrind at
-    // L16 puts 1.2G of the run's 2.6G under diff_inner. Its RefHist is a cycle guard
-    // only, inserted and removed around each pair. A memo of a finished pair's
-    // difference, kept only where it assumed no pair in progress (as ContainsHist's
-    // verdicts are), would make it linear. probes:
-    // ~/ptmp/cr29/scratch/review-r6/E2-r1-2/sel16.gx, sel18.gx, sel20.gx (diff-dag-01)
-    // 2026-11-02 claude: Round 7 lane X built a memo of finished pairs (DiffHist::done)
-    // and one of refuted pairs in could_match; three review rounds each found it moving
-    // select verdicts against main: a hang through recursive Error payloads, address
-    // reuse, the refuted memo shifting where could_match's found cache starts
-    // (found-assumed-true-01), a bound cell keyed as its binding (diff-bound-cell-01),
-    // and a shared output node reaching found's stale trues. Not landed: branch cr45-X
-    // (cdcab0a9f, 326be068c, ca7f82513) keeps it; on it sel16-32 check flat at about
-    // 1.34G and selp16/18/20 at 1.65/2.65/6.62G (main 3.24/8.99G). Fix
-    // found-assumed-true-01 and diff-bound-cell-01 first; then the memo moves nothing
-    // (the lane measured selp linear with both memos once found keeps only trues no
-    // in-progress pair assumed).
-    // 2026-11-03 claude: Built from cr45-X's memos, after found-assumed-true-01 and
-    // diff-bound-cell-01: diff keeps a finished pair's difference (DiffHist::done) and
-    // could_match a refuted pair (MatchHist::refuted) where the pair's walk met no pair
-    // in progress, each with its sides (Kept). diff keeps one only where ref_id keys
-    // its minuend exactly (keyed_loosely: no bound cell, no cell in a function type),
-    // since a difference is made of its minuend's parts; a subtrahend keyed alike reads
-    // alike because diff now reads every subtrahend part through (is_any in the
-    // follow-up of diff-bound-cell-01). callgrind --check, one eval thread, base
-    // ec53d4846 vs lane: empty 1.332G/1.327G, sel16 2.542G/1.345G, sel18 -/1.344G,
-    // sel20 -/1.339G, selp16 3.269G/1.345G, selp18 9.028G (lane linear like selp16).
-    // Pins: graphix-types
-    // typ::setops::tests::diff_and_could_match_take_each_name_of_a_union_dag_once (39
-    // diff pairs and 39 could_match pairs over L20; 2^20-1 with the memos off),
-    // diff_and_could_match_memos_change_no_answer (the four families of cr45-X, the
-    // K0/K1 shape at 16 and 24, a family of bound, open, function-type and Any-bound
-    // cells; fails with the minuend guard dropped, with the subtrahend's Any read as
-    // written, and with found-assumed-true-01 reverted),
-    // memos_change_no_composed_answer (could_match over diff's output, the round-8
-    // review's generator, 40 seeds; 1500 pass). Census of 3828 files: see the lane's
-    // report.
-    // 2026-11-03 claude: Review r9: the memos can answer more precisely than the walk
-    // without them where a cell is bound to a recursive name itself: over seed 305's
-    // names, with 'c0 bound to N5, [Error<'c0>, Error<N5>] - [N1, N2] is [] with the
-    // memo and a five-deep Error tower without it, since ref_id keys Error<'c0> as
-    // Error<N5> and the walk cuts at that pair in progress, where DiffHist::done
-    // answers exactly ([N1, N2] holds Error<N5>, so [] is right). A program binds a
-    // cell to a name's expansion, not to the name: there they agree.
-    // diff_and_could_match_memos_change_no_answer now holds that form too (seed 305's
-    // names, cells bound to N5's, N1's, N4's and N0's expansions). In tests memo_on()
-    // also turns could_match's found reads off (found-assumed-true-01), so the
-    // differentials compare against the walk with no memo at all.
-    // 2026-11-03 claude: could_match's refuted memo now keeps every false, wherever its
-    // walk found it, and found's trues rest on exactly what their walks read
-    // (matches.rs Rests); see found-assumed-true-01's note of this date. The memo
-    // differentials (diff_and_could_match_memos_change_no_answer,
-    // memos_change_no_composed_answer) hold.
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(tr0, tr1) => {
@@ -893,49 +810,6 @@ impl Type {
                     Ok(self.clone())
                 }
             }
-            // XCR claude for claude: [bug/low] This arm, and the Fn, App and Abstract arms
-            // below, compare with Type `==`, which does not read a bound cell through, so
-            // coverage follows a cell's representation, not its type: `Error<Map<'k: i64,
-            // 'v: i64>>` is not taken out by `Error<S>` with `S = Map<i64, i64>`, and in
-            // bc2.gx an arm `[Error<S>, Array<S>] as x` covering the whole scrutinee leaves
-            // a later dead arm `Array<R<i64>>` accepted (main 4a886eb8f). Compare with
-            // bound cells read through (as same_resolved does). It also keeps any memo of
-            // diff from conflating `R<'c: i64>` with `R<i64>` (RefHist::ref_id keys them
-            // alike): lane X's memo for diff-dag-01 moved verdicts that way. Found by lane
-            // X's r8 review. probes ~/ptmp/cr29/scratch/review-r8/X-r3-1/bc/bc2.gx,
-            // bc2z.gx, bc5.gx (diff-bound-cell-01)
-            // 2026-11-03 claude: diff's Map, Fn, Abstract and App/Hole/Bound arms now
-            // compare with same_type (Type == or, failing that, == of both sides'
-            // resolve_tvars().normalize(), the comparison same_resolved makes per part), so
-            // a bound cell is its binding wherever diff compares parts. Pins: graphix-types
-            // typ::setops::tests::diff_reads_bound_cells_through (a map, a union under
-            // Error, a function, an abstract type's parameters and an open constructor's
-            // argument: each case leaves its minuend without the fix); graphix-tests
-            // lang::select coverage_reads_a_bound_map_parameter_through (bc2, main
-            // accepts), coverage_reads_a_bound_map_parameter_through_beside_a_variant
-            // (bc2z), coverage_reads_a_map_literals_cells_through (bc5),
-            // coverage_reads_a_bound_abstract_parameter_through (bcA); all refuse the dead
-            // arm "unreachable arm: the earlier arms already cover the whole scrutinee" and
-            // fail without the fix. Moves main's verdicts: bc1 and bc2 (accepted) are
-            // refused; bc1z, bc2z, bc3, bc4, bc5, bc6, bc7, bcA refuse with the uncovered
-            // remainder read through.
-            // 2026-11-03 claude: A follow-up commit reads a cell bound to Any through where
-            // diff asks whether a part covers anything: same_resolved's Any test (a
-            // tuple's, struct's or variant's position) and the (Primitive, Map/Array/Error)
-            // arms, through is_any. Pin: graphix-types
-            // typ::setops::tests::diff_reads_a_cell_bound_to_any_as_any (each of its four
-            // cases fails without it). diff's memo of finished pairs (diff-dag-01) leans on
-            // diff reading every subtrahend part through, since a key reads a bound cell as
-            // its binding.
-            // 2026-11-03 claude: Review r9: same_type resolved and normalized both sides at
-            // every mismatch, where main compared with == alone: a select over 80 maps
-            // sharing a 300-field value struct cost 1.791G at --check against main's 1.663G
-            // (callgrind, one eval thread). same_type now reads through only where either
-            // side holds a bound cell (cell_beneath, each shared node once, which
-            // keyed_loosely now shares), else == decides as on main: map80 1.664G main,
-            // 1.693G lane; map40 1.461G, 1.472G; an empty program 1.331G, 1.329G.
-            // same_resolved keeps main's normalized comparison of every part (same_normal).
-            // The pins above still pass.
             (Type::Map { .. }, Type::Map { .. }) => {
                 if same_type(self, t) {
                     Ok(Type::Primitive(BitFlags::empty()))

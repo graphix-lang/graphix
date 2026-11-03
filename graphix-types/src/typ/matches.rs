@@ -228,6 +228,25 @@ impl MatchHist {
 const NO_LINK: u32 = u32::MAX;
 const NO_NODE: u32 = u32::MAX;
 
+// CR claude for claude: [perf/low] could_match is polynomial where a failing pair
+// takes back a chain of trues that each level above walks again: P_k = ([Error<P_k+1>,
+// `K], C1, `A) over a chain C1..CM ending in [Error<P_1>, .., Error<P_N>], a twin Q/D
+// side with `B, names sorted so the union scan meets the innermost pair in progress
+// first. Each P_k fails at its tag and its failure takes the chain's trues; the level
+// above walks the chain again and rescans every refuted pair. --check callgrind, main
+// ec53d4846 / Rests (c9b04b08b): nest128 2.81G / 6.26G, nest256 7.00G / 32.40G
+// (could_match_int calls at M=32, N=64/128/256: 318k / 2.30M / 17.6M against main's
+// 919 / 1687 / 3223). Main is linear only because its found kept trues a failed pair
+// gave, the unsound rule found-assumed-true-01 removed. Bounded: refuted keeps a named
+// pair's false, so each pair fails once. A second shape is quadratic (n pairs each
+// failing at its tag after a chain resting on it: q800 4.56G / 16.88G). A possible
+// direction, sound by refuted's own argument: a NodePairs memo of node-pair falses read
+// where refuted is (66k / 247k / 953k calls, still superlinear; 0 mismatches over
+// review_cm3_random seeds 1-200). Only generated programs with hundreds of mutually
+// recursive names reach it; guicheck and the census are unchanged, random name graphs
+// cost about 5% over main (rg40 68.25G / 72.16G). probes:
+// ~/ptmp/cr29/scratch/review-r9/X-r3-1/nest/mknest.py, X-r3-2/p/mkq.py
+// (could-match-rests-cost-01)
 /// What could_match's trues rest on. Each pair of names entered and each
 /// node pair found to overlap by assuming a pair in progress is a node,
 /// which rests on the nodes its walk read true. A pair whose walk fails
@@ -364,101 +383,6 @@ impl DerefMut for MatchHist {
 }
 
 impl Type {
-    // XCR claude for claude: [bug/low] could_match's node-pair cache (MatchHist::found,
-    // a NodePairs) keeps a true reached while a pair of names is in progress, which the
-    // walk assumes to overlap, and keeps it after that pair's own walk fails; a later
-    // question about the same node pair takes it. NodePairs keys nothing for its first
-    // NodePairs::EAGER (64) calls, so whether such a true is kept depends on how far the
-    // walk has gone, and a select arm that can match nothing is refused or accepted by
-    // the size of a type the arm does not decide. main bbb06c0c6 refuses fu12.gx (S0 =
-    // [Error<K0>, Error<L0>, Error<N0>], K0 a tuple of 12 `A and `X, L0 = (N0, `P), N0 =
-    // [Error<K0>, Error<L0>, `Y]; S1 the same over K1 (`Y last), L1 (`Q), N1 (`W); `let
-    // v: S1 = never(); select v { S0 as x => 1, _ => 2 }`) with "pattern [Error<K0>,
-    // Error<L0>, Error<N0>] will never match [Error<K1>, Error<L1>, Error<N1>]" and
-    // accepts it at 16 to 40 `A (fu16.gx .. fu40.gx), though no value of S1 is in S0;
-    // it refuses i4-3.gx and accepts i4-4.gx, whose unrelated union PY holds one tag
-    // more. A unit walk: could_match(S0, S1) over fu16's names is true. could_match
-    // also narrows binds and picks cast members (could_pass), where a stale true
-    // reaches too. The fix: keep a true in found only where its walk met no pair in
-    // progress (a flag set where a pair in progress answers true, saved and restored
-    // around each pair's walk, as DiffHist::cycled is), so found answers what the walk
-    // without it answers; it refuses the programs above that main accepts. With it,
-    // could_match can keep a refuted pair as diff keeps a finished one
-    // (DiffHist::done), which makes a select over a DAG of named unions beside a payload
-    // arm linear (callgrind --check, one eval thread, an empty program 1.31G: selp16,
-    // selp18, selp20 main 3.24G, 8.99G, -; diff's memo alone 1.65G, 2.65G, 6.62G; with
-    // such a memo too 1.34G, -, 1.33G); that memo, built for diff-dag-01, moved these
-    // verdicts against main's found and was dropped. The pair memo's differential
-    // test, typ::setops::tests::diff_and_could_match_memos_change_no_answer, holds the
-    // fu shape. probes: ~/ptmp/cr29/scratch/r8-X/found/ (fu*.gx, ft*.gx; i4-*.gx,
-    // c6-*.gx and their generators mk.py, mki.py, mkc.py) (found-assumed-true-01)
-    // 2026-11-02 claude: DiffHist::done and the test
-    // diff_and_could_match_memos_change_no_answer named above are on the parked branch
-    // cr45-X, not on main (see diff-dag-01).
-    // 2026-11-03 claude: could_match's found cache now keeps a true only where its walk
-    // met no pair in progress (MatchHist::assumed, set where a pair in progress answers
-    // true, saved and restored around each could_match_int and or-ed outward), so found
-    // answers what the walk without it answers and a verdict no longer follows
-    // NodePairs::EAGER. Pins: graphix-types
-    // typ::matches::tests::could_match_keeps_no_true_a_pair_in_progress_gave (S0 against
-    // S1 at 4 to 40 `A, and the i4 shape at PX/PY sizes 4/3, 4/4, 6/4, 6/6: all false;
-    // true at 16 without the fix); graphix-tests lang::select
-    // dead_arm_over_names_in_progress_is_refused_at_any_length (fu16) and
-    // dead_arm_over_names_in_progress_is_refused_whatever_the_payloads (i4-4); all fail
-    // without the fix. Moves main's verdicts: fu16 to fu40, ft40 and the 34 of the
-    // review's 108 generated programs main accepted (i4-4, c6-6, c6-8 among them) are
-    // now refused, each a dead arm.
-    // 2026-11-03 claude: could_match's refuted memo (MatchHist::refuted) landed with
-    // diff-dag-01, kept by the same rule: a false whose walk met no pair in progress
-    // (MatchHist::assumed). Reverting this fix makes
-    // typ::setops::tests::diff_and_could_match_memos_change_no_answer and
-    // memos_change_no_composed_answer fail with the memos on.
-    // 2026-11-03 claude: Review r9 found the flag rule above exponential where every
-    // overlap rests on a pair in progress (rt12.gx 1.6G instructions on main vs 665G;
-    // dag16 1.3G vs 7.9G). found now keeps such a true tentatively (matches.rs
-    // Tentative): with the depth of the shallowest pair in progress it assumed, reused
-    // while that pair is in progress (a reuse assumes that depth too); a pair's walk
-    // that fails drops every tentative true found since it began; one that succeeds
-    // assuming nothing further out moves them to found for good; one that assumed a pair
-    // further out passes that pair's depth to them. found then answers what the walk
-    // without it answers at every point, and the walk is linear on the review's shapes.
-    // Pins:
-    // typ::matches::tests::could_match_walks_each_pair_once_where_overlaps_are_assumed
-    // (a cycle, Error and variant chains, a pair DAG and a DAG failing at every level, n
-    // = 8..24, at most 4n+32 pairs; 255 at n=8 with the flag rule, 174762 for the
-    // failing DAG without the commit at success),
-    // a_true_resting_on_a_failed_pair_goes_with_it (fails with a reuse that takes no
-    // depth, with no depth passed on at a success, and with main's keep-every-true),
-    // graphix-tests
-    // lang::select::dead_arm_over_a_true_resting_on_a_failed_pair_is_refused (main
-    // accepts its dead arm); the earlier pins hold. In tests memo_on() also turns
-    // found's reads off, so the memo differentials compare against the walk with no memo
-    // at all.
-    // 2026-11-03 claude: Review r9 round 2: the depth rule above was still exponential
-    // where trues rest on an outer pair alone and pairs walked after them fail (fdc12.gx
-    // 1.9G instructions on main, 842G on the lane), where a level fails after
-    // overlapping by itself (fx16.gx 1.35G vs 3.68G), and quadratic in its pass-on over
-    // long cycles (rtb200.gx 5.75G vs 9.10G). Tentative is replaced by Rests: a pair met
-    // in progress and a node pair found true by reading one are nodes, each linked to
-    // the nodes its walk read true (a node pair true that read one node shares it); a
-    // pair whose walk fails takes exactly the nodes resting on it, directly or through
-    // others; and refuted keeps every false, wherever found (the walk's answer at each
-    // point lies between its answer with no pair in progress and its answer with those
-    // in progress assumed to overlap, which agree at the top, so a false found anywhere
-    // and a standing true leave the top answer as the walk with no memo gives it).
-    // callgrind --check, one eval thread, main ec53d4846 vs lane: empty 1.331/1.331G,
-    // fdc12 1.347/1.346G, fx16 1.348/1.348G, rtA12 1.608/1.606G, dag20 1.360/1.361G,
-    // rtB150 3.700/3.797G, rtb200 5.770/5.952G, rg30 7.602/7.971G (part of rg30's in
-    // union-name-distribute-01's distribution). Pins:
-    // could_match_walks_each_pair_once_where_overlaps_are_assumed adds the fx family
-    // (134 pairs at n=8 under the depth rule) and the fdc family (152916 pairs at n=8);
-    // a_cycle_of_names_links_each_true_once (6371 steps at n=50 under the depth rule,
-    // its settle counted the same way); a_true_resting_on_a_failed_pair_goes_with_it
-    // fails with a failed pair taking only its own node, with no links made, and with
-    // main's keep-every-true (which memos_change_no_composed_answer and
-    // could_match_keeps_no_true_a_pair_in_progress_gave also catch). Reviewer 1's random
-    // family at K=8 seed 79: 257724 pairs (main's rule 457k, the depth rule 71.4M, no
-    // memo 414M).
     pub(super) fn could_match_int(
         &self,
         env: &Env,

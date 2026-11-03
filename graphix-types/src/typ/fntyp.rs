@@ -378,25 +378,6 @@ impl Drop for Walking {
     }
 }
 
-// XCR claude for claude: [bug/low] check_bounds_acyclic's refusal depends on hash order:
-// it drains `named` (an AHashMap) into `edges`, so the cycle it reports, and through which
-// variable, varies from run to run. design/review-2026-10-12/repro/t-image-01.gx (`'a:
-// [i64, ('a, 'b)], 'b: [i64, ('a, 'b)]`) is refused with "'a's bound names 'a" in some
-// --check runs and "'a's bound reaches 'a through 'b" in others (main bbb06c0c6, four
-// runs: both messages). The verdict holds; the message does not. Walking each bound's
-// names in a fixed order (sorted, or as written) makes it one message.
-// (bounds-acyclic-order-01)
-// 2026-11-03 claude: check_bounds_acyclic now sorts each variable's bound names and walks
-// them breadth first, so the refusal names the shortest path back (the first in name order
-// among equals) whatever the hash order: t-image-01.gx prints "'a's bound names 'a" in 20
-// of 20 --no-cache --check runs (main 3 of 8). Pin: graphix-types
-// expr::parser::test::a_bound_cycle_is_refused_with_one_message (64 parses of t-image-01's
-// signature; fails without the fix in 3 of 3 runs).
-// 2026-11-03 claude: Review r9: the pin parsed one signature 64 times, and its parses
-// share one pooled map and that map's hasher, so it caught a revert in only 7 of 12 runs
-// (not 3 of 3 as noted above). It now parses 64 signatures over distinct names ('a0/'b63
-// .. 'a63/'b0), each asserting "'aN's bound names 'aN", so the hash order varies within
-// one run: with the sort and the breadth-first walk reverted it fails in 12 of 12 runs.
 /// Refuse a bound that reaches its own variable: directly (`'a: 'a`), under
 /// a constructor (`'a: Array<'a>`) or through another declared variable's
 /// bound (`'a: 'b, 'b: 'a`). A recursive bound is a recursive type.
