@@ -287,6 +287,19 @@ fn program(shape: &str, d: usize) -> String {
         }
         // A chain of bounds as long as the program, every cell a position
         // of one signature: the call's settle orders them all.
+        // CR claude for claude: [bug/medium] chainbounds at CHAIN_DEPTH never
+        // finishes its check, so deep_nesting_does_not_overflow (slow-tests)
+        // hangs. `graphix --check --no-cache` of this program costs, net of
+        // the stdlib's 1.36 G instructions, 0.5 / 4.0 / 31.4 / 162.6 G at
+        // depth 250 / 500 / 1000 / 2000 on main 30702808d (base-r10), and the
+        // same at 250-1000 on base-r9: about cubic. At 10000 neither base-r10
+        // nor 3ced2aa37 plus the one-stream parser finished in 900 s, where
+        // `graphix fmt` of it takes 1.9 G. 56e48357c made a chain of bounds
+        // settle in linear time (t-tvar-03); something since made it
+        // superlinear again. The test passes with this case left out (lane
+        // Z, 11-03). probe:
+        // ~/ptmp/cr29/scratch/r11-Z/cb{250,500,1000,2000}.gx under `perf stat
+        // -e instructions:u` (chainbounds-cubic-01)
         "chainbounds" => {
             let bounds = (0..d)
                 .map(|i| format!("'a{i}: Array<'a{}>", i + 1))
