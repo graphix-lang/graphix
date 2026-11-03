@@ -760,6 +760,11 @@ impl Type {
     // names, cells bound to N5's, N1's, N4's and N0's expansions). In tests memo_on()
     // also turns could_match's found reads off (found-assumed-true-01), so the
     // differentials compare against the walk with no memo at all.
+    // 2026-11-03 claude: could_match's refuted memo now keeps every false, wherever its
+    // walk found it, and found's trues rest on exactly what their walks read
+    // (matches.rs Rests); see found-assumed-true-01's note of this date. The memo
+    // differentials (diff_and_could_match_memos_change_no_answer,
+    // memos_change_no_composed_answer) hold.
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(tr0, tr1) => {
