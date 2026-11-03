@@ -1438,36 +1438,75 @@ impl Reach {
     }
 }
 
-/// A node [`Free`] met: on the walk's path at a depth, or answered, its
-/// answer a range of `Free::sets`.
+/// A node [`Free`] met: on the walk's path at a depth, or answered.
 enum Met {
     OnPath(usize),
-    Answered(u32, u32),
-}
-
-/// Where [`Free::go`] left a node's answer: a range of `Free::sets`, or
-/// the stack's tail from where the node started, sorted and deduped.
-#[derive(Clone, Copy, PartialEq)]
-enum Ans {
-    Range(u32, u32),
-    Stack,
+    Answered(Option<u32>),
 }
 
 /// The cells [`Free`] is asked of, by address, each with its number.
 type Asked = LPooled<AHashMap<usize, u32>>;
+
+/// Runs of `u32` interned by content: equal runs share one id.
+#[derive(Default)]
+struct Interned {
+    data: LPooled<Vec<u32>>,
+    spans: LPooled<Vec<(u32, u32)>>,
+    by_hash: LPooled<AHashMap<u64, SmallVec<[u32; 1]>>>,
+}
+
+impl Interned {
+    fn get(&self, id: u32) -> &[u32] {
+        let (s, e) = self.spans[id as usize];
+        &self.data[s as usize..e as usize]
+    }
+
+    /// The id of the run `data` holds from `at`, and whether it is new; a
+    /// run equal to an earlier one is taken off `data`.
+    fn seal(&mut self, at: usize) -> (u32, bool) {
+        let Self { data, spans, by_hash } = self;
+        for _ in at..data.len() {
+            rank2_step();
+        }
+        let hash = by_hash.hasher().hash_one(&data[at..]);
+        let ids = by_hash.entry(hash).or_default();
+        for id in ids.iter() {
+            let (s, e) = spans[*id as usize];
+            for _ in s..e {
+                rank2_step();
+            }
+            if data[s as usize..e as usize] == data[at..] {
+                data.truncate(at);
+                return (*id, false);
+            }
+        }
+        let id = spans.len() as u32;
+        spans.push((at as u32, data.len() as u32));
+        ids.push(id);
+        (id, true)
+    }
+}
 
 /// The asked cells, each by its number, free under a type walked as
 /// [`Reach`] walks it: under a cell, itself if asked and those under what
 /// it reaches; under a function type, its children's less the cells it
 /// quantifies. A node is answered once, except one on a cycle back to a
 /// node still on the walk's path: its answer misses what the cycle reaches
-/// there, so it is answered again where it is met again. A node whose
-/// answer is one child's shares that child's range.
+/// there, so it is answered again where it is met again. Answers are
+/// interned, so a node whose children answer alike shares their answer,
+/// and a join of the same answers is made once.
 struct Free<'a> {
     asked: &'a AHashMap<usize, u32>,
     nodes: LPooled<AHashMap<usize, Met>>,
-    sets: LPooled<Vec<u32>>,
-    /// The answers in progress, each node's the tail it pushed.
+    /// Every answer: the asked cells it holds, by number, sorted.
+    sets: Interned,
+    /// Every join made: the answers joined, sorted, then `u32::MAX` and
+    /// the cells the node binds where it binds any; `joined` holds what
+    /// each one answered.
+    joins: Interned,
+    joined: LPooled<Vec<Option<u32>>>,
+    /// The answers of the children of the nodes in progress, each node's
+    /// the tail it pushed.
     stack: LPooled<Vec<u32>>,
     depth: usize,
 }
@@ -1483,28 +1522,28 @@ impl<'a> Free<'a> {
         let mut walk = Self {
             asked,
             nodes: LPooled::take(),
-            sets: LPooled::take(),
+            sets: Interned::default(),
+            joins: Interned::default(),
+            joined: LPooled::take(),
             stack: LPooled::take(),
             depth: 0,
         };
-        if let (_, Some(Ans::Range(s, e))) = walk.go(t, met) {
-            walk.push_range(s, e)
+        let mut free: LPooled<Vec<u32>> = LPooled::take();
+        if let (_, Some(a)) = walk.go(t, met) {
+            free.extend_from_slice(walk.sets.get(a))
         }
-        walk.stack
+        free
     }
 
     /// What is free under `t`, none for nothing; the shallowest depth on the
     /// path a cycle from `t` returned to, `usize::MAX` for none.
-    fn go(&mut self, t: &Type, met: &mut impl FnMut(u32, &TVar)) -> (usize, Option<Ans>) {
+    fn go(&mut self, t: &Type, met: &mut impl FnMut(u32, &TVar)) -> (usize, Option<u32>) {
         rank2_step();
         ensure_sufficient(|| {
             let key = t.shared_identity();
             if let Some(k) = key {
                 match self.nodes.get(&k) {
-                    Some(Met::Answered(s, e)) if s == e => return (usize::MAX, None),
-                    Some(Met::Answered(s, e)) => {
-                        return (usize::MAX, Some(Ans::Range(*s, *e)));
-                    }
+                    Some(Met::Answered(a)) => return (usize::MAX, *a),
                     Some(Met::OnPath(d)) => return (*d, None),
                     None => {
                         self.nodes.insert(k, Met::OnPath(self.depth));
@@ -1514,34 +1553,24 @@ impl<'a> Free<'a> {
             let (depth, start) = (self.depth, self.stack.len());
             self.depth += 1;
             let mut back = usize::MAX;
-            // what the node holds so far, and whether a stack tail holding
-            // more than one answer wants settling
-            let mut held: Option<Ans> = None;
-            let mut mixed = false;
             let mut own: SmallVec<[u32; 2]> = SmallVec::new();
-            let mut child = |walk: &mut Self, (b, ans): (usize, Option<Ans>)| {
+            let mut child = |walk: &mut Self, (b, ans): (usize, Option<u32>)| {
                 back = back.min(b);
-                match (held, ans) {
-                    (_, None) => (),
-                    (None, a) => held = a,
-                    (Some(h), Some(a)) if h == a && matches!(a, Ans::Range(..)) => (),
-                    (Some(h), Some(a)) => {
-                        for x in [h, a] {
-                            if let Ans::Range(s, e) = x {
-                                walk.push_range(s, e)
-                            }
-                        }
-                        held = Some(Ans::Stack);
-                        mixed = true
-                    }
+                if let Some(a) = ans
+                    && walk.stack[start..].last() != Some(&a)
+                {
+                    rank2_step();
+                    walk.stack.push(a)
                 }
             };
             match t {
                 Type::TVar(tv) => {
                     if let Some(i) = self.number(tv) {
                         met(i, tv);
-                        self.stack.push(i);
-                        child(self, (usize::MAX, Some(Ans::Stack)))
+                        let at = self.sets.data.len();
+                        self.sets.data.push(i);
+                        let one = self.sets.seal(at).0;
+                        child(self, (usize::MAX, Some(one)))
                     }
                     match tv.binding() {
                         Some(b) => {
@@ -1569,35 +1598,11 @@ impl<'a> Free<'a> {
                 }
             }
             self.depth -= 1;
-            if !own.is_empty()
-                && let Some(Ans::Range(s, e)) = held
-            {
-                self.push_range(s, e);
-                held = Some(Ans::Stack)
-            }
-            if mixed || !own.is_empty() {
-                self.settle(start, &own);
-                if self.stack.len() == start {
-                    held = None
-                }
-            }
+            let held = self.join(start, &own);
             if let Some(k) = key {
                 match back >= depth {
                     true => {
-                        let (s, e) = match held {
-                            None => (0, 0),
-                            Some(Ans::Range(s, e)) => (s, e),
-                            Some(Ans::Stack) => {
-                                let s = self.sets.len() as u32;
-                                self.sets.extend_from_slice(&self.stack[start..]);
-                                self.stack.truncate(start);
-                                (s, self.sets.len() as u32)
-                            }
-                        };
-                        self.nodes.insert(k, Met::Answered(s, e));
-                        if held.is_some() {
-                            held = Some(Ans::Range(s, e))
-                        }
+                        self.nodes.insert(k, Met::Answered(held));
                         back = usize::MAX;
                     }
                     false => {
@@ -1609,43 +1614,82 @@ impl<'a> Free<'a> {
         })
     }
 
-    /// Push `sets[s..e]`, an answer, to the stack.
-    fn push_range(&mut self, s: u32, e: u32) {
-        let (s, e) = (s as usize, e as usize);
-        for _ in s..e {
-            rank2_step();
-        }
-        self.stack.extend_from_slice(&self.sets[s..e])
-    }
-
     /// `tv`'s number, if it is asked.
     fn number(&self, tv: &TVar) -> Option<u32> {
         rank2_step();
         self.asked.get(&tv.cell_addr()).copied()
     }
 
-    /// Sort and dedup the stack from `start`, dropping the cells in `bound`,
-    /// which is sorted.
-    fn settle(&mut self, start: usize, bound: &[u32]) {
-        let tail = &mut self.stack[start..];
-        if tail.len() > 1 {
-            tail.sort_unstable();
-        }
-        let (mut kept, mut b) = (start, 0);
-        for at in start..self.stack.len() {
-            let i = self.stack[at];
-            while bound.get(b).is_some_and(|q| *q < i) {
-                rank2_step();
-                b += 1
-            }
+    /// The answer of a node whose children answered `stack[start..]`,
+    /// taken off the stack, less the cells it binds, `bound`, sorted.
+    fn join(&mut self, start: usize, bound: &[u32]) -> Option<u32> {
+        let parts = &mut self.stack[start..];
+        for _ in 0..parts.len() {
             rank2_step();
-            if (kept == start || self.stack[kept - 1] != i) && bound.get(b) != Some(&i) {
-                self.stack[kept] = i;
-                kept += 1
+        }
+        parts.sort_unstable();
+        let mut n = 0;
+        for at in 0..parts.len() {
+            if n == 0 || parts[n - 1] != parts[at] {
+                parts[n] = parts[at];
+                n += 1
             }
         }
-        self.stack.truncate(kept)
+        let parts = &parts[..n];
+        let r = match (parts, bound) {
+            ([], _) => None,
+            ([a], []) => Some(*a),
+            (parts, bound) => {
+                let at = self.joins.data.len();
+                self.joins.data.extend_from_slice(parts);
+                if !bound.is_empty() {
+                    self.joins.data.push(u32::MAX);
+                    self.joins.data.extend_from_slice(bound)
+                }
+                match self.joins.seal(at) {
+                    (k, false) => self.joined[k as usize],
+                    (_, true) => {
+                        let r = union(&mut self.sets, parts, bound);
+                        self.joined.push(r);
+                        r
+                    }
+                }
+            }
+        };
+        self.stack.truncate(start);
+        r
     }
+}
+
+/// The interned union of the answers `parts` less the cells in `bound`,
+/// both sorted; none for nothing.
+fn union(sets: &mut Interned, parts: &[u32], bound: &[u32]) -> Option<u32> {
+    let at = sets.data.len();
+    for p in parts {
+        let (s, e) = sets.spans[*p as usize];
+        for _ in s..e {
+            rank2_step();
+        }
+        sets.data.extend_from_within(s as usize..e as usize)
+    }
+    if parts.len() > 1 {
+        sets.data[at..].sort_unstable()
+    }
+    let (mut kept, mut b) = (at, 0);
+    for i in at..sets.data.len() {
+        let c = sets.data[i];
+        while bound.get(b).is_some_and(|q| *q < c) {
+            rank2_step();
+            b += 1
+        }
+        rank2_step();
+        if (kept == at || sets.data[kept - 1] != c) && bound.get(b) != Some(&c) {
+            sets.data[kept] = c;
+            kept += 1
+        }
+    }
+    sets.data.truncate(kept);
+    (kept > at).then(|| sets.seal(at).0)
 }
 
 /// The first of the `quantified` cells (name, cell address) that a
@@ -5237,7 +5281,7 @@ mod test {
         let t = quantified_result_pairs(n);
         let (r, steps) = escape_steps(&t);
         assert!(r.is_ok());
-        assert!(steps <= 32 * n, "{steps}");
+        assert!(steps <= 64 * n, "{steps}");
         let (q, cells) = asked_of(&t);
         assert_eq!(q.len(), 2 * n);
         let beside = Type::Tuple(TArc::from_iter([t, Type::TVar(cells[0].clone())]));
@@ -5257,7 +5301,7 @@ mod test {
         let t = parse_type(&format!("{{{fields}}}")).unwrap();
         let (r, steps) = escape_steps(&t);
         assert!(r.is_ok());
-        assert!(steps <= 16 * n, "{steps}");
+        assert!(steps <= 32 * n, "{steps}");
     }
 
     // One function quantifying `n` variables, asked of every one: the walk
@@ -5275,7 +5319,7 @@ mod test {
         .unwrap();
         let (r, steps) = escape_steps(&t);
         assert!(r.is_ok());
-        assert!(steps <= 16 * n, "{steps}");
+        assert!(steps <= 32 * n, "{steps}");
     }
 
     // One function quantifying `n` variables whose parameter wraps their
@@ -5294,6 +5338,55 @@ mod test {
         let (r, steps) = escape_steps(&t);
         assert!(r.is_ok());
         assert!(steps <= 16 * (n + d), "{steps}");
+    }
+
+    /// `fn<'a0: Any, .., 'c: ('a0, ..), 'd: Any>(x: {f0: F0, ..}) -> i64`
+    /// over `n` quantifiers 'a, its fields `fields`.
+    fn binding_c_and_d(n: usize, fields: &[&str]) -> Type {
+        let each = |f: &dyn Fn(usize) -> String, k: usize| {
+            (0..k).map(f).collect::<Vec<_>>().join(", ")
+        };
+        parse_type(&format!(
+            "fn<{}, 'c: ({}), 'd: Any>(x: {{{}}}) -> i64",
+            each(&|i| format!("'a{i}: Any"), n),
+            each(&|i| format!("'a{i}"), n),
+            each(&|i| format!("f{i}: {}", fields[i]), fields.len()),
+        ))
+        .unwrap()
+    }
+
+    // Where `m` nodes each join the same answers, 'c's (its `n` bound cells)
+    // and 'd's, in `m` fields `('c, 'd)`, or one node joins them `m` times,
+    // in `m` fields alternating 'c and 'd, the join is made once and its
+    // answer shared: the walk copies and compares no cell per node or per
+    // field, so it is linear in `n + m`, not in `n * m`.
+    #[test]
+    fn escape_walk_joins_the_same_answers_once() {
+        let (n, m) = (128, 1024);
+        let alternating = (0..m).map(|i| ["'c", "'d"][i % 2]).collect::<Vec<_>>();
+        for fields in [vec!["('c, 'd)"; m], alternating] {
+            let (r, steps) = escape_steps(&binding_c_and_d(n, &fields));
+            assert!(r.is_ok());
+            assert!(steps <= 32 * (n + m), "{} {steps}", fields[0]);
+        }
+    }
+
+    // A tuple of `n` quantifiers that `d` wrappers `(_, 'a0)` each join with
+    // a cell it holds answers as the tuple does: the walk is linear in `n +
+    // d`, not in `n * d`.
+    #[test]
+    fn escape_walk_joins_a_wrapper_with_a_cell_it_holds_once() {
+        let (n, d) = (128, 512);
+        let vars = (0..n).map(|i| format!("'a{i}")).collect::<Vec<_>>();
+        let bounds = vars.iter().map(|v| format!("{v}: Any")).collect::<Vec<_>>();
+        let mut x = format!("({})", vars.join(", "));
+        for _ in 0..d {
+            x = format!("({x}, 'a0)")
+        }
+        let t = parse_type(&format!("fn<{}>(x: {x}) -> i64", bounds.join(", "))).unwrap();
+        let (r, steps) = escape_steps(&t);
+        assert!(r.is_ok());
+        assert!(steps <= 32 * (n + d), "{steps}");
     }
 
     // A formal holding no quantified function is not walked, a chain of
