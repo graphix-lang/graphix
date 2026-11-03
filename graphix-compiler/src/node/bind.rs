@@ -121,6 +121,9 @@ pub struct Bind<R: Rt> {
     /// before: the enclosing block takes them back after its last
     /// statement, so only the readers that slept with this `let` see them.
     reraised: SmallVec<[BindId; 1]>,
+    /// The lets of the block around it, which it marks when a wake
+    /// re-raises to it.
+    pub(crate) around: Option<super::Lets>,
     /// The binding an alias (`let h = f`) binds statically.
     static_hold: Option<StaticHold>,
 }
@@ -225,6 +228,7 @@ impl<R: Rt> Bind<R> {
             node,
             ever_published: false,
             reraised: SmallVec::new(),
+            around: None,
             static_hold: None,
         })
     }
@@ -250,6 +254,9 @@ impl<R: Rt> Bind<R> {
         for (id, tv) in late {
             ctx.publish(id, tv);
             self.reraised.push(id);
+        }
+        if !self.reraised.is_empty() {
+            self.around.iter().for_each(super::Lets::mark)
         }
     }
 

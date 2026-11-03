@@ -40,8 +40,16 @@ use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::{cell::Cell, collections::VecDeque, iter, sync::OnceLock};
-use triomphe::Arc;
+use std::{
+    cell::Cell,
+    collections::VecDeque,
+    iter,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use triomphe::{Arc, ThinArc};
 
 pub(crate) mod array;
 pub use collection::MAX_ARRAY_INIT_LEN;
@@ -782,6 +790,9 @@ pub struct Block<R: Rt> {
     /// last update that walked it, and the block around it has not taken
     /// that back yet.
     reraised: bool,
+    /// A module's: the lets of the block around it, which it marks when it
+    /// notes a re-raise.
+    around: Option<Lets>,
     pub(crate) spec: Arc<Expr>,
     pub(crate) children: Box<[Node<R>]>,
     /// Indices of `catch(e) expr` children, in syntactic order.
@@ -792,7 +803,7 @@ pub struct Block<R: Rt> {
     /// The children that are `let`s or modules, whose wake re-raises a
     /// non-module block takes back at its end and a module notes for the
     /// block around it (`Bind::take_back_reraised`).
-    lets: Box<[u32]>,
+    lets: Option<Lets>,
     /// The block's production when it cannot hand back its last
     /// child's borrow: after a catch pass or a forked run.
     resident: TagValue,
@@ -900,13 +911,71 @@ pub(crate) fn take_back_reraised<R: Rt>(n: &mut Node<R>, ctx: &mut ExecCtx<'_, R
     })
 }
 
+/// The `let` and module children of a block or a module, by index, and
+/// the mark one of them sets when a wake re-raised to it, which the block
+/// reads and clears as its update ends: only an update after a re-raise
+/// visits them.
+#[derive(Debug, Clone)]
+pub(crate) struct Lets(ThinArc<AtomicBool, u32>);
+
+impl Lets {
+    /// The `let`s and modules among `children`, each handed these to
+    /// mark; `None` when there are none. A module's names are the block
+    /// around it to read, so that block takes back what its `let`s
+    /// re-raise.
+    pub(crate) fn wire<R: Rt>(children: &mut [Node<R>]) -> Option<Self> {
+        let mut at: SmallVec<[u32; 8]> = SmallVec::new();
+        for (i, n) in children.iter().enumerate() {
+            match n.view() {
+                NodeView::Bind(_) | NodeView::Module(_) => at.push(i as u32),
+                NodeView::Block(b) if b.module => at.push(i as u32),
+                _ => (),
+            }
+        }
+        if at.is_empty() {
+            return None;
+        }
+        let lets = Self(ThinArc::from_header_and_iter(
+            AtomicBool::new(false),
+            at.iter().copied(),
+        ));
+        for i in lets.iter() {
+            let n = &mut children[i];
+            let around = Some(lets.clone());
+            if let Some(b) = n.downcast_mut::<bind::Bind<R>>() {
+                b.around = around
+            } else if let Some(b) = n.downcast_mut::<Block<R>>() {
+                b.around = around
+            } else if let Some(m) = n.downcast_mut::<module::Module<R>>() {
+                m.around = around
+            }
+        }
+        Some(lets)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0.slice.iter().map(|i| *i as usize)
+    }
+
+    /// One of the lets holds a re-raise this update.
+    pub(crate) fn mark(&self) {
+        self.0.header.header.store(true, Ordering::Relaxed)
+    }
+
+    /// Whether one of the lets marked since the last take.
+    pub(crate) fn take_mark(lets: &Option<Self>) -> bool {
+        lets.as_ref().is_some_and(|l| l.0.header.header.swap(false, Ordering::Relaxed))
+    }
+}
+
 impl<R: Rt> Block<R> {
     /// Take back what a wake re-raised to the `let`s among the children,
     /// those of the modules among them included.
     fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.reraised = false;
-        for i in self.lets.iter() {
-            take_back_reraised(&mut self.children[*i as usize], ctx)
+        let Self { lets: Some(lets), children, .. } = self else { return };
+        for i in lets.iter() {
+            take_back_reraised(&mut children[i], ctx)
         }
     }
 
@@ -919,15 +988,16 @@ impl<R: Rt> Block<R> {
     fn with(
         module: bool,
         spec: Arc<Expr>,
-        children: Box<[Node<R>]>,
+        mut children: Box<[Node<R>]>,
         catches: Box<[usize]>,
         runs: Runs,
     ) -> Node<R> {
         Node::new(Self {
             module,
             reraised: false,
+            around: None,
             spec,
-            lets: lets_of(&children),
+            lets: Lets::wire(&mut children),
             children,
             catches,
             resident: TagValue::phantom(),
@@ -948,21 +1018,6 @@ impl<R: Rt> Block<R> {
             compile_block_children(ctx, flags, scope, top_id, module, exprs.iter())?;
         Ok(Self::with(module, spec, children, catches, Runs::default()))
     }
-}
-
-/// The indices of the `let`s and the modules among a block's children: a
-/// module's names are the enclosing block's to read, so that block takes
-/// back what its `let`s re-raise.
-fn lets_of<R: Rt>(children: &[Node<R>]) -> Box<[u32]> {
-    let mut lets: SmallVec<[u32; 8]> = SmallVec::new();
-    for (i, n) in children.iter().enumerate() {
-        match n.view() {
-            NodeView::Bind(_) | NodeView::Module(_) => lets.push(i as u32),
-            NodeView::Block(b) if b.module => lets.push(i as u32),
-            _ => (),
-        }
-    }
-    lets.into_iter().collect()
 }
 
 /// Compile a statement list: each `catch(e) expr` child compiles
@@ -1849,7 +1904,7 @@ impl<R: Rt> Update<R> for Block<R> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         if self.catches.is_empty()
-            && self.lets.is_empty()
+            && self.lets.is_none()
             && !Runs::forks(ctx, self.children.len())
         {
             let res = self
@@ -1859,12 +1914,14 @@ impl<R: Rt> Update<R> for Block<R> {
             return if self.module { TagValue::phantom_ref() } else { res };
         }
         let res = self.runs.update(ctx, &mut self.children, &self.catches);
-        match self.module {
-            true => {
-                self.reraised =
-                    self.lets.iter().any(|i| holds_reraised(&self.children[*i as usize]))
+        if Lets::take_mark(&self.lets) {
+            match self.module {
+                true => {
+                    self.reraised = true;
+                    self.around.iter().for_each(Lets::mark)
+                }
+                false => self.take_back_reraised(ctx),
             }
-            false => self.take_back_reraised(ctx),
         }
         match res {
             Some(tv) if !self.module => self.resident.set(tv),

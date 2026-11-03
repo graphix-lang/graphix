@@ -1116,6 +1116,11 @@ pub struct Module<R: Rt> {
     /// that walked them, and the block around the module has not taken
     /// that back yet (`Block::reraised`).
     reraised: bool,
+    /// The `let`s and modules among the statements (`Block::lets`).
+    lets: Option<node::Lets>,
+    /// The lets of the block around the module, which it marks when it
+    /// notes a re-raise.
+    pub(crate) around: Option<node::Lets>,
 }
 
 /// A module's compiled body, set aside while its replacement compiles:
@@ -1123,6 +1128,7 @@ pub struct Module<R: Rt> {
 struct SetAside<R: Rt> {
     env: Lexical,
     nodes: Box<[Node<R>]>,
+    lets: Option<node::Lets>,
     catches: Box<[usize]>,
     proxy: Vec<Proxy>,
     runs: Runs,
@@ -1178,13 +1184,14 @@ impl<R: Rt> Module<R> {
         sig: Sig,
         scope: Scope,
         proxy: Vec<Proxy>,
-        nodes: Box<[Node<R>]>,
+        mut nodes: Box<[Node<R>]>,
         catches: Box<[usize]>,
         runs: Runs,
         top_id: ExprId,
         task: TaskId,
     ) -> Self {
         let base = env.clone();
+        let lets = node::Lets::wire(&mut nodes);
         Self {
             spec,
             flags,
@@ -1202,6 +1209,8 @@ impl<R: Rt> Module<R> {
             task,
             resident: TagValue::phantom(),
             reraised: false,
+            lets,
+            around: None,
         }
     }
 
@@ -1213,7 +1222,8 @@ impl<R: Rt> Module<R> {
     /// (`node::take_back_reraised`).
     pub(crate) fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.reraised = false;
-        self.nodes.iter_mut().for_each(|n| node::take_back_reraised(n, ctx))
+        let Self { lets: Some(lets), nodes, .. } = self else { return };
+        lets.iter().for_each(|i| node::take_back_reraised(&mut nodes[i], ctx))
     }
 
     pub(crate) fn image_decode(
@@ -1446,6 +1456,7 @@ impl<R: Rt> Module<R> {
             )
         });
         (self.nodes, self.catches) = compiled?;
+        self.lets = node::Lets::wire(&mut self.nodes);
         self.runs = Runs::default();
         if let Body::Dynamic { .. } = &self.body {
             self.check_body(ctx)
@@ -1556,6 +1567,7 @@ impl<R: Rt> Module<R> {
         SetAside {
             env,
             nodes: mem::take(&mut self.nodes),
+            lets: self.lets.take(),
             catches: mem::take(&mut self.catches),
             proxy: mem::take(&mut self.proxy),
             runs: mem::take(&mut self.runs),
@@ -1565,9 +1577,10 @@ impl<R: Rt> Module<R> {
     /// Put a set-aside body back where it was: the load that would
     /// replace it failed, so it runs on.
     fn put_back(&mut self, body: SetAside<R>) {
-        let SetAside { env, nodes, catches, proxy, runs } = body;
+        let SetAside { env, nodes, lets, catches, proxy, runs } = body;
         self.env = env;
         self.nodes = nodes;
+        self.lets = lets;
         self.catches = catches;
         self.proxy = proxy;
         self.runs = runs;
@@ -1752,7 +1765,7 @@ impl<R: Rt> Update<R> for Module<R> {
             }
             self.runs.update(ctx, &mut self.nodes, &self.catches);
         });
-        // CR claude for claude: [perf/low] This scans every statement of the module at
+        // XCR claude for claude: [perf/low] This scans every statement of the module at
         // the end of each update that walks it, wake or not, though a let re-raises only
         // at its first update after a sleep; a module block's update scans its lets the
         // same way (Block::update). A self-loop inside a 3000-let module with a .gxi,
@@ -1761,7 +1774,25 @@ impl<R: Rt> Update<R> for Module<R> {
         // module around it as it does (a flag the module reads and clears) instead of
         // the module asking every statement. Found by lane N's r8 final reviews; probes
         // ~/ptmp/cr29/scratch/review-r8/N-r3-1/, N-r3-2/ (module-reraise-scan-01)
-        self.reraised = self.nodes.iter().any(node::holds_reraised);
+        // 2026-11-03 claude: A let that re-raises at a wake marks the block or module
+        // around it (node::Lets: a flag beside the indices of its lets and modules, a
+        // ThinArc each of them holds, wired where the block or module takes its
+        // statements); the block reads and clears the mark as its update ends, a module
+        // that read it notes the re-raise and marks the block around it, and only then
+        // is any let visited. Self-loop inside a 3000-let module, 3000 cycles,
+        // GRAPHIX_PAR=off, instructions per cycle base ec53d4846 / lane: gxi node-walked
+        // 669.5k / 548.5k, fused 673.7k / 555.8k; no gxi node-walked 673.5k / 544.0k,
+        // fused 680.8k / 546.4k. Pin graphix-shell/tests/idle_module_cost.rs
+        // walked_module_lets_cost_what_expression_statements_do (per walked statement
+        // and cycle, lets minus expression statements without an interface: 0.7 to 3
+        // now, 44 without the change: fails); the idle pin still passes (0.0).
+        // activation_heap unchanged (5376/5399). lang::modules/delivery/prune/interfaces
+        // 935 ok; the review's module wake probes (N-r3-1, N-r3-2/sem) print as base,
+        // fused and not, and under GRAPHIX_PAR=force GRAPHIX_PRUNE=audit.
+        if node::Lets::take_mark(&self.lets) {
+            self.reraised = true;
+            self.around.iter().for_each(node::Lets::mark)
+        }
         // a prime is for the fresh body alone: left, it would fire readers
         // later in the cycle, and a forked merge would requeue it
         for id in primed.drain(..) {
