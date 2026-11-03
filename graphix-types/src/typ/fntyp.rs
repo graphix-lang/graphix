@@ -1008,6 +1008,14 @@ impl FnType {
     // probes: ~/ptmp/cr29/scratch/review-r11/R-r2-1/t/{s7i,s7s,s11,s14,s15,s16,s8i}_*.gx,
     // review-r11/R-r2-2/{pin_self,self_lab_two_mono,self_lab_generic,self_lab_default_i64,pin_elem}.gx,
     // ~/ptmp/cr29/scratch/r11-R/r12/selfout_{let,pos}.gx
+    // 2026-11-03 claude: Scope of the note above (review r13 of lane R): 'no shape of a
+    // rank-2 bound naming self is the hole' holds for a self dispatched to one impl. A
+    // union self fails the build for ANY rank-2 argument, self in its bound or not (y1,
+    // y1c, y1d, a6, a8: main's check passes, every mode's build refuses 'the argument is
+    // not polymorphic in 'a'), a separate bug, CR union-self-rank2-01; and self outside a
+    // trait is the hole (selfout_let). Options (a) and (b) stand. The note's s15/s16 are
+    // review-r11/R-r2-1 probes, not review-r10's. probes:
+    // ~/ptmp/cr29/scratch/review-r11/R-r3-2/y/, R-r3-1/t/
     /// Refuse a bound of the type's own quantifiers (`bounds`, its
     /// [`Self::constraint_view`]) naming a variable it does not quantify.
     /// A rank-2 quantifier is held rigid at exactly its bounds, which such

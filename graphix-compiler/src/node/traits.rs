@@ -1310,6 +1310,19 @@ impl<R: Rt> CallSite<R> {
     /// ```
     ///
     /// The implementation bindings are named by id (`#bind::N`).
+    // CR claude for claude: [bug/medium] A trait method taking any rank-2 formal, called
+    // with a union self, passes the check and the build refuses it in every mode
+    // (default, --no-fusion, GRAPHIX_NO_SUBST=1): `trait T { val m: fn(#k: fn<'a: Any>(x:
+    // 'a) -> 'a, self) -> (self, null) }` with impls for i64 and string, then `let v:
+    // [i64, string] = "x"; T::m(#k: |x| x, v)` ("the argument is not polymorphic in 'a: a
+    // binding it reaches ... would carry 'a out", callsite::check_general); graphix-fuzz
+    // check reports DIVERGENCE. The bound does not matter (a written one, Any, self), nor
+    // the formal's position; the same method called once per member runs. Likely this
+    // lowering: `let #a_i = <arg_i>` binds the argument outside the select, which the
+    // build's general check rejects and the definition's check never sees. Not traced.
+    // Found by review r13 of lane R. probes:
+    // ~/ptmp/cr29/scratch/review-r11/R-r3-1/t/{a6_union_any_rank2,a8_union_any_rank2_positional,a7_mono_any_rank2}.gx,
+    // R-r3-2/y/{y1c_union_written_bound,y1d_union_any_bound}.gx (union-self-rank2-01)
     fn lower_trait_union(
         &mut self,
         ctx: &mut CompileCtx<R>,

@@ -234,12 +234,14 @@ and stays. `self` and a constructor trait's element are not quantifiers
 of the function type a trait method's parameter writes, so a bound
 naming either is refused too. For the element under a labeled
 parameter, which comes before the `self` that decides it, that closes
-the hole; for `self` it closes none (no shape of it passes the check
-and fails the build) and refuses methods that would run (CR
-rank2-self-bound-01). An interface `val`'s or trait method's own
-quantifiers are its scheme's, not rank-2, and their bounds name any
-variable (`Type::rewrite_declared_args`); so are an impl's method's and
-a default body's, whose `let` stands directly in the impl's or the
+the hole; for `self` dispatched to one impl it closes none (no such
+shape passes the check and fails the build) and refuses methods that
+would run (CR rank2-self-bound-01). A union self fails the build for any
+rank-2 argument, `self` in its bound or not (CR union-self-rank2-01).
+An interface `val`'s or trait method's own quantifiers are its
+scheme's, not rank-2, and their bounds name any variable
+(`Type::rewrite_declared_args`); so are an impl's method's and a
+default body's, whose `let` stands directly in the impl's or the
 trait's block (`is_method_block`) and whose annotation is the method's
 signature. Pins:
 `lang::types::rank2_bound_*_is_refused`, `rank2_bound_by_a_written_type_runs`,

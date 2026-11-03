@@ -3518,60 +3518,6 @@ impl Type {
         (!unwritable).then(|| t.normalize())
     }
 
-    // XCR claude for claude: [bug/high] Substitution here goes by name and ignores the
-    // quantifiers of the function types it descends into, so a typedef's expansion
-    // (Type::lookup_ref_by: `def_typ.replace_tvars(&known)`) captures an argument's
-    // variable named like a quantifier in the body: `type K<'p> = fn<'a: Any>(x: 'p) ->
-    // 'a` applied to a cell named 'a gives a function type whose quantifier list ["a"]
-    // now names the argument's cell as well, and every by-name reading of it
-    // (FnType::instantiate's fresh_quantifiers, each_quantifier, constraint views) takes
-    // that cell for the quantifier. `let f = |v: 'a| { let g: K<'a> = |x| never(); let p
-    // = g(1); let q = g("s"); v }; f(true)` passes --check and the build refuses ("an
-    // instance at fn(x: i64) -> i64 of a definition typed fn(x: bool) -> ..": each call
-    // of g freshened x's cell as a quantifier); with the quantifier renamed 'b the check
-    // refuses it. Through the rank-2 escape walk (Free takes each_quantifier's pick as
-    // the binder): `let mk = |v: 'a| -> K<'a> |x| never(); let y = never(); let outer =
-    // |k: fn<'a: Any>(x: 'a) -> 'a| (k(1), k("s")); let r = outer(|x| { y <- mk(x); x });
-    // let z: i64 = y("s"); let w: i64 = y(2)` passes --check (y's parameter is both
-    // string and i64), and with y(1) alone the run-time bind refuses it; main ec53d4846
-    // the same. Fix: substitute capture-avoiding: under a function type, leave its own
-    // quantifiers' names alone, and rename a quantifier the substituted types name free.
-    // probes: ~/ptmp/cr29/scratch/r9-R/{capture1,capture2,name_pick,name_pick2,name_pick4,
-    // name_pick5}.gx (typedef-capture-01)
-    // 2026-11-03 claude: Type::replace_tvars_int's Fn arm now substitutes capture-avoiding
-    // (tvar::under_quantifiers): a function type's quantifiers shadow the names
-    // substituted, and one named like a variable a substituted type holds (its cells,
-    // conjuncts, lower bounds, bindings) is renamed to the first 'a1, 'a2, .. nothing in
-    // the function type or the substituted types holds, through a copy of its cell. Covers
-    // typedef expansion and abstract representations; FnType::replace_tvars at the top
-    // keeps substituting the signature's own quantifiers (its callers, eta and trait
-    // method signatures, rename them on purpose). capture1 now refuses at check and build
-    // alike, name_pick/name_pick4/name_pick5 refuse as name_pick2 does. Pins in
-    // lang::types, which fail with under_quantifiers disabled:
-    // typedef_quantifier_named_like_its_argument (refused before, runs (1, "s") as the 'b
-    // twin does), typedef_argument_named_like_a_quantifier_stays_one_type,
-    // typedef_quantifier_bounded_by_an_argument_named_alike,
-    // typedef_argument_named_like_a_quantifier_escapes,
-    // typedef_parameter_shadowed_by_a_quantifier and its _takes_no_monomorphic_value;
-    // twins named apart and typedef_argument_quantified_like_the_body hold the verdicts.
-    // Binding resolution under a quantified fn type, the one site left, is
-    // resolve-capture-01.
-    // 2026-11-03 claude: Review r10 of lane R (R-r1-2): the capture-avoidance also reaches
-    // a trait method's signature for its impl and a method value, at the function types
-    // the signature holds (main refused both); now pinned, failing with under_quantifiers
-    // disabled: lang::types::impl_signature_quantifier_named_like_its_variable,
-    // method_value_quantifier_named_like_its_variable, their 'q twins holding the verdict;
-    // CLAUDE.md and design/env_independent_typerefs.md name them. under_quantifiers
-    // returns at once when nothing is substituted, and walks the function type's names
-    // only where a substituted type holds a name of its quantifiers or a quantifier
-    // shadows a substituted name.
-    // 2026-11-03 claude: Round 11 (lane R, branch cr47-R2):
-    // typedef_quantifier_bounded_by_an_argument_named_alike and its _apart twin are gone:
-    // a typedef whose function type's quantifier is bounded by its parameter is now
-    // refused at the typedef (FnType::check_bounds_closed, rank2-bound-instance-01).
-    // Replaced by typedef_quantifier_named_like_its_argument_in_a_siblings_bound (a
-    // renamed quantifier is renamed in a sibling's bound; main 387c29e60 refuses it, "'a:
-    // unbound within Any does not contain i64") and its 'q twin.
     /// A copy of self with every TVar named in `known` replaced by the
     /// corresponding type; any other TVar is freshened as
     /// [`Self::reset_tvars`] does, its conjuncts and binding rewritten

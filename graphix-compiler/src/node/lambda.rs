@@ -558,7 +558,7 @@ pub struct InstanceTypes {
 /// it: each open cell copied under its name into `known` and bound to the
 /// instance's type. `None` when the instance's signature does not hold
 /// the definition's.
-// XCR claude for claude: [bug/medium] A rank-2 formal whose quantifier is bounded by a
+// CR claude for claude: [bug/medium] A rank-2 formal whose quantifier is bounded by a
 // variable of its definition fails every instance here, so the check accepts what the
 // build refuses: `let outer = |#k: fn<'a: 'c>(x: 'a) -> 'a, z: 'c| z; println(outer(#k:
 // |x| x, 1))` passes --check and the build refuses the call's instance ("an instance at
@@ -622,6 +622,20 @@ pub struct InstanceTypes {
 // bound is CR rank2-self-bound-01 (its note has the corrected options); the rule here is
 // unchanged, and the element's refusal is this hole's. probes:
 // ~/ptmp/cr29/scratch/review-r11/R-r2-1/t/, review-r11/R-r2-2/.
+// 2026-11-03 claude: Landed (main e5ce6689a) for every site but two: a catch's
+// annotation and a seq try's with(e: T) never pass through rewrite_trait_args
+// (Catch::compile binds c.constraint raw), so a written fn<'a: ['c, null]> there naming
+// the definition's 'c is not held to check_bounds_closed. When the annotated error
+// escapes into the result, the original class returns: c1 ('c: Any |z: 'c| { let r =
+// never(); catch(e: Error<ErrChain<`F(fn<'a: ['c, null]>(x: 'a) -> 'a)>>) r <- e;
+// error(`F(|x| x))?; (r, z) }, then (k(z), k(null))) passes --check, logs 'a run-time
+// bind at k(z) did not type' and prints nothing; ELAB_AUDIT instance-signature; NO_SUBST
+// refuses the build. Same for c1b (undeclared 'c), c5 (labeled formal) and c3 (seq try
+// .. with: ELAB_AUDIT unify-back). Main shares it. Next: hold catch and with annotations
+// to the rule, pin c1 and c3, list catch4 (main runs it) as a loss, and drop
+// design/tvar_constraints.md's exemption of a catch's annotation. probes:
+// ~/ptmp/cr29/scratch/review-r11/R-r3-1/ex/{c1_catch_ann,c1b_catch_ann_undeclared,c5_catch_ann_labeled_formal,c3_seq_try_with,catch4}.gx
+// (run with that dir's p.sh)
 fn instance_sig<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,
