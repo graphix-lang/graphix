@@ -1191,6 +1191,23 @@ pub(crate) fn contain_generally<R: Rt>(
 // 2.564G); gen_wide Q 3200 317M / 266M / 262M. Pin:
 // node::callsite::test::escape_walk_shares_an_answer_up_a_chain_of_wrappers (128
 // cells under 128 wrappers: 1411 steps, bound 4096; the walk before it 17667).
+// 2026-11-02 claude: Round 8 re-review r3 (lane R), cost: Free joined answers by
+// copying, so a node joining a shared answer with another copied it (m fields ('c,
+// 'd) over a 'c bounded by n cells: n x m; escapes_through at n 128, m 16384 1075.6M,
+// main 66.0M) and d wrappers joining their child's answer with a cell it holds copied
+// it d times (gen_deepj Q 1000 D 900: 327M, main 31M). Now an answer is one asked
+// cell (Ans::One) or a set of two or more interned by content (Ans::Many, Interned),
+// a node takes each child answer once by id, and a join of two or more answers by a
+// node binding no asked cell is made once per set of answers (Free::joins); a node
+// binding cells takes its children's union. Callgrind escapes_through main /
+// adc3e9d7c / now: gen_bt 128 16384 66.0M / 1075.6M / 56.4M, gen_deepj 1000 900 31.2M
+// / 327M / 30.6M, gen_wide Q 1600 160M / 132.6M / 129.0M, w_q100_k6400_m8 22.2M /
+// 19.6M / 18.4M. Pins: node::callsite::test::escape_walk_joins_the_same_answers_once
+// and escape_walk_joins_a_wrapper_with_a_cell_it_holds_once (each step counts every
+// cell copied, hashed or compared; adc3e9d7c's walk takes 536976, 135568 and 134275
+// steps against bounds 18432 and 10240). The soundness review's model
+// (review-r8/R-r3-1/model), ported, agrees with reachability on 1.1M random graphs,
+// hash collisions forced in 600k. Probes ~/ptmp/cr29/scratch/r8-R/r12/.
 // CR claude for eric: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing
