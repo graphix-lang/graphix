@@ -19,7 +19,7 @@ use crate::{
     wrap,
 };
 use ahash::AHashMap;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
@@ -690,13 +690,30 @@ impl Reach {
     // all four modes without the fix: lang::select::settle_types_a_name_from_every_member,
     // settle_types_a_struct_field_name_from_every_member,
     // settle_types_a_name_from_every_member_over_a_parameter.
+    // 2026-11-03 claude: Review r11 (high): over a composite scrutinee holding an open
+    // cell (an unannotated parameter or a never() let, as in select (v, 0) { ([x, ..], _)
+    // => x + 1, .. }) the copy settle bound the cell to a copy of the slice predicate that
+    // no bind reached, leaving a free element cell (Array<['_N, i64]>): f(["s"]) passed
+    // the check and the JIT read a string's pointer as an i64 or panicked. Fixed in
+    // Type::contains_through_copy: a copy the settle leaves open is its pattern's cell
+    // again, so the scrutinee's open parts take the arms' own cells as on main, and only a
+    // copy bound to a closed part stays apart. The settle now copies the predicates' union
+    // once (the written type tests' cells kept as they are). Pins failing without it:
+    // lang::select::settle_shapes_an_open_part_with_the_arms_cells,
+    // settle_shapes_an_open_struct_field_with_the_arms_cells,
+    // settle_shapes_a_later_written_part_with_the_arms_cells (the test process aborts on a
+    // misaligned pointer); settle_shapes_an_open_part_and_runs guards the accepted form.
+    // Reviewer probes
+    // ~/ptmp/cr29/scratch/review-r11/N-r1-1/{b12f,j01,j08r,k01,k04,d01,d03,d09,e03,l03,l04,l07,b12}.gx
+    // now check as on base 30702808d; p33/s04/t11G still print x5,xs / k5,ks / x5,xs.
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.
     /// An open cell takes the inferred predicates' cells as its parts;
     /// any other scrutinee settles against copies of them, so a name is
     /// typed only where its arm narrows: its part of every member the arm
-    /// can match.
+    /// can match. A copy the settle leaves open, the part an open cell
+    /// inside the scrutinee took, is the arm's own cell again.
     fn new<R: Rt>(
         env: &Env,
         scrut: &Type,
@@ -746,21 +763,23 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            let _ = match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
-                true => itype.contains(env, scrut),
-                false => {
-                    let mut copies: LPooled<Vec<Type>> = LPooled::take();
-                    copies.extend(preds.iter().map(
-                        |p| match p.explicit_type_predicate {
-                            true => p.type_predicate.clone(),
-                            false => p.type_predicate.reset_tvars(),
-                        },
-                    ));
-                    let mut ctypes: LPooled<Vec<&Type>> = LPooled::take();
-                    ctypes.extend(copies.iter());
-                    Type::union_exact(env, &ctypes)?.contains(env, scrut)
+            match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
+                true => {
+                    let _ = itype.contains(env, scrut);
                 }
-            };
+                false => {
+                    let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                    for p in preds.iter().filter(|p| p.explicit_type_predicate) {
+                        p.type_predicate.reached_cells(&mut written)
+                    }
+                    if !itype.contains_through_copy(env, &mut written, scrut)? {
+                        bail!(
+                            "the arms decide this scrutinee's type from their patterns, \
+                             and cannot: annotate its type where it is built"
+                        )
+                    }
+                }
+            }
         }
         let atype = scrut.normalize();
         let members_of = atype.open_bound(env).unwrap_or_else(|| atype.clone());

@@ -118,11 +118,14 @@ included; a probe of a trait bound reads it so, and a commit settles it.
 
 A select's arms decide a payload's open parameter as they decide an
 inferred scrutinee: the settle binds the cell to a copy of their
-patterns (`Reach::new`; only an open-cell scrutinee takes the patterns'
-own cells as its parts, so a name is typed by its arm's narrowing alone,
-its part of every member the arm can match), the bounds commit into the
-copy's cells, and each arm's narrowing writes its structure into the
-cells of the others' through the parameter.
+patterns (`Reach::new`, `Type::contains_through_copy`; only an open-cell
+scrutinee takes the patterns' own cells as its parts, so a name is
+typed by its arm's narrowing alone, its part of every member the arm
+can match), the bounds commit into the copy's cells, and each arm's
+narrowing writes its structure into the cells of the others' through
+the parameter. A copy the settle leaves open, the part an open cell
+inside the scrutinee took (`v` in `select (v, 0) { ([x, ..], _) => ..
+}`), is its pattern's cell again, so the arm's binds decide it.
 Arms at two depths or lengths over a payload built at two shapes
 (`[[h, ..], ..]` beside `[h, ..]` over `B([["a"]])` and `B(["b"])`;
 `[h, k]` beside `[h]`; `` [`V(a), ..] `` beside `[h, ..]`) decide a

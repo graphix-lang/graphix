@@ -3278,6 +3278,38 @@ impl Type {
             .unwrap_or_else(|| self.clone())
     }
 
+    /// `self ⊇ t` over a copy of self's cells but those `known` maps
+    /// already (to themselves), so binding a copy to a part of `t` binds
+    /// none of self's cells; a copy still open after, a part an open cell
+    /// of `t` took, is its source cell again. `false` when one cannot be.
+    #[doc(hidden)]
+    pub fn contains_through_copy(
+        &self,
+        env: &Env,
+        known: &mut AHashMap<usize, TVar>,
+        t: &Type,
+    ) -> Result<bool> {
+        let mut sources: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.reached_cells(&mut sources);
+        let copy =
+            self.reset_tvars_int(known, Fresh::Copy).unwrap_or_else(|| self.clone());
+        let mut pairs: LPooled<Vec<(TVar, TVar)>> = sources
+            .drain()
+            .filter_map(|(addr, s)| {
+                let c = known.get(&addr)?;
+                (!c.same_cell(&s)).then(|| (s, c.clone()))
+            })
+            .collect();
+        pairs.sort_by_key(|(_, c)| c.read().id);
+        let _ = copy.contains(env, t);
+        for (s, c) in pairs.iter().filter(|(_, c)| c.open_cell().is_some()) {
+            if !Type::TVar(s.clone()).contains(env, &Type::TVar(c.clone()))? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// A typedef's params and body over fresh cells this task owns, with
     /// their alias topology: what [`crate::env::Env::deftype`] aliases and
     /// freezes in place, so a definition built elsewhere is never written.

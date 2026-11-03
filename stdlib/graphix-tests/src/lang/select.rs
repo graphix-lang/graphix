@@ -6129,3 +6129,46 @@ run!(
     }"#,
     prints(r#"["x5", "xs"]"#)
 );
+
+// An open cell inside the scrutinee takes its shape from the arms' own
+// cells: `x + 1` makes `v` an Array<i64>, so a string array is refused.
+run!(
+    settle_shapes_an_open_part_with_the_arms_cells,
+    r#"{
+        let f = |v| select (v, 0) { ([x, ..], _) => x + 1, (_, _) => 0 };
+        f(["s"])
+    }"#,
+    refused("type mismatch Array<i64> does not contain Array<string>");
+    FuseExpect::None
+);
+
+run!(
+    settle_shapes_an_open_struct_field_with_the_arms_cells,
+    r#"{
+        let f = |v| select {a: v, b: 0} { {a: [x, ..], b: _} => x + 1, {a: _, b: _} => 0 };
+        f(["s"])
+    }"#,
+    refused("type mismatch Array<i64> does not contain Array<string>");
+    FuseExpect::None
+);
+
+run!(
+    settle_shapes_a_later_written_part_with_the_arms_cells,
+    r#"{
+        let z = never();
+        let r = select (z, 0) { ([x, ..], _) => str::len(x), (_, _) => 0 };
+        z <- [1];
+        r
+    }"#,
+    refused("z is Array<string>, inferred from an earlier use, and cannot hold Array<i64>");
+    FuseExpect::None
+);
+
+run!(
+    settle_shapes_an_open_part_and_runs,
+    r#"{
+        let f = |v| select (v, 0) { ([x, ..], _) => x + 1, (_, _) => 0 };
+        [f([3, 4]), f([])]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0])
+);
