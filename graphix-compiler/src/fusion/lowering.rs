@@ -1221,11 +1221,7 @@ pub(crate) fn invariant_formals<R: Rt>(
         g.args().iter().map(|p| p.single_bind_id()).collect();
     let mut inv: SmallVec<[bool; 8]> = ids.iter().map(|id| id.is_some()).collect();
     let Some(sb) = self_bind else { return inv };
-    fusion::for_each_emitted_node(g.body(), &mut |n| {
-        let NodeView::CallSite(cs) = n.view() else { return };
-        if !matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == sb) {
-            return;
-        }
+    for_each_self_call(g.body(), sb, &mut |cs| {
         for i in 0..inv.len() {
             if !inv[i] {
                 continue;
@@ -1242,6 +1238,26 @@ pub(crate) fn invariant_formals<R: Rt>(
         }
     });
     inv
+}
+
+/// Each self-call through `self_bind` the body emits: a call naming it,
+/// and the prototype call of a loop whose callback is its bare name
+/// (`CallSite::recursion_callback`), which each slot makes.
+fn for_each_self_call<'a, R: Rt>(
+    body: &'a Node<R>,
+    self_bind: BindId,
+    f: &mut dyn FnMut(&'a CallSite<R>),
+) {
+    fusion::for_each_emitted_node(body, &mut |n| {
+        let NodeView::CallSite(cs) = n.view() else { return };
+        match cs.recursion_callback() {
+            Some((call, name)) if name == self_bind => f(call),
+            _ if matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind) => {
+                f(cs)
+            }
+            _ => (),
+        }
+    })
 }
 
 /// The argument a call passes formal `i` of `ftype`: a labeled one by
@@ -1720,12 +1736,8 @@ fn self_calls_abi_consistent<R: Rt>(
 ) -> bool {
     let mut ok = true;
     let ftype = g.typ();
-    fusion::for_each_emitted_node(g.body(), &mut |n| {
+    for_each_self_call(g.body(), self_bind, &mut |cs| {
         if !ok {
-            return;
-        }
-        let NodeView::CallSite(cs) = n.view() else { return };
-        if !matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind) {
             return;
         }
         for (i, formal_kt) in formal_slot_types_by_position.iter() {
