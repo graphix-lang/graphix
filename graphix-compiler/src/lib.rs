@@ -3503,6 +3503,15 @@ fn check_and_fuse_inner<R: Rt>(
     // gone. The class of default-typedef-outlived-01 (next-discuss 'type names in a scope
     // that ends'); a labeled default took the same road under default-bind-coverage-01's
     // first cut. probes: ~/ptmp/cr29/scratch/r8-G/i1/e3.gx, d3b.gx (scope-shadow-crash-01)
+    // 2026-11-02 claude: Lane G r8 review (reviewer 1): another shape, with no default and
+    // no type written in the instance body; the block's type reaches the instance only
+    // through the declared variable's bound and the argument's type: type L = string; let
+    // top = |w: i64| { type L = [i64, null]; let outer = 'a: L |x: 'a| -> i64 select x {
+    // i64 as n => n + 1, null => 0 }; let v: L = w; (outer(w), outer(v), outer(null)) };
+    // top(5) aborts under fusion 'misaligned pointer dereference ... 0x5' on main
+    // bbb06c0c6 and the lane alike; --no-fusion prints (6, 6, 0). n1.gx is the same with a
+    // default. probes: ~/ptmp/cr29/scratch/r8-G/fz/n1b.gx, n1.gx (graphix-fuzz check, or a
+    // run without --no-fusion).
     ctx.env.seed_typedef_refs();
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();

@@ -561,6 +561,17 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
     Ok(())
 }
 
+// CR claude for eric: [bug/low] A written type test whose structure tests a constructor
+// at a nested union position holding a declared variable counts as covering the whole
+// scrutinee: `let g = 'b: Number |x: {f: ['b, `Keep('b)]}| -> ['b, null] select x { {f:
+// ['b, `Keep('b)]} as {f: `Keep(r)} => r }` passes the check, and g({f: 5}) under
+// GRAPHIX_ABORT_ON_NO_MATCH=1 aborts "no arm matches: a coverage hole in the check"
+// (main bbb06c0c6 alike; a tuple position, `(['b, `Keep('b)], i64) as (`Keep(r), _)`,
+// the same). At the top position the same arm is refused "missing match cases", as it
+// should be. The undeclared-'b forms are refused by the Told judgment
+// (keep-written-told-01); a declared 'b: Number shares no form with `Keep, so only
+// coverage can refuse this one, and coverage is D3's (Reach, the pool). probes:
+// ~/ptmp/cr29/scratch/r8-G/i2/k1c.gx, k1tup.gx, k1top.gx (written-nested-cover-01)
 /// What reaches each arm of a select, walked arm by arm: the scrutinee
 /// less what the unguarded arms before it cover (irrefutable atoms,
 /// `null`, a true/false pair, a completed literal pool, a completed

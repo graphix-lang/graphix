@@ -252,7 +252,7 @@ fn checked_default<R: Rt>(
     value: Option<&FnType>,
     judge: Judge,
 ) -> Result<Node<R>> {
-    // XCR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
+    // CR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
     // in full here at the instance's types, so a select in it over an enclosing
     // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
     // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
@@ -352,6 +352,24 @@ fn checked_default<R: Rt>(
     // dbl2_18_0 and dbl2_22_0 --check 1.31G on the lane as on main. Pin
     // graphix-shell/tests/default_check_cost.rs (depth 20 against depth 2 under 0.3G more)
     // fails without it (3.74G more).
+    // 2026-11-02 claude: Back to a CR (lane G r8 review, reviewer 2, medium): the fix is
+    // partial. A default whose checked types hold no type name takes its types from its
+    // definition's check (d_tuple d_ref d_field d_fn d_opt print 5 1 and stay pinned), but
+    // the exception for a default typed with a type name fires on any name, a stable
+    // top-level typedef's included, so such a default keeps main's recheck at the bind and
+    // its bug: review-r8/G-r1-2/p/dnm4.gx (type P = (i64, i64) at top level, the default's
+    // arm reading let k: P) is refused 'reading a tuple needs its type known here' on main
+    // and the lane, while dnm4_inline.gx (let k: (i64, i64)) prints (6, 1); which spellings
+    // keep a name in the checked types (dnm1's P as t does not) is not one a reader can
+    // predict. What remains: narrow the exception to a name that resolves to a typedef a
+    // block declares (a scope with a generated component, where the crash class of
+    // scope-shadow-crash-01 and default-typedef-outlived-01 lives), keeping rows for a
+    // default naming only module and top-level types. That needs each name resolved in the
+    // environment the default compiled in (inside check_defaults' with_restored, where its
+    // block's typedefs still stand; TypeRef::resolve_peek is crate-private to
+    // graphix-types) and the kept rows seeded and their definitions owned as
+    // DefTable::record does a body's; left for that change. The block class itself waits on
+    // Eric's 'type names in a scope that ends'.
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
