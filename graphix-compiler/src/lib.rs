@@ -1481,7 +1481,10 @@ pub struct CompileCtx<R: Rt> {
     pub(crate) static_callees: Arc<StaticCallees>,
     /// Per block being compiled, innermost last: the lets something in
     /// it writes, by statement and name ([`node::written_lets`]).
-    pub(crate) written_lets: Vec<AHashSet<(ExprId, CompactString)>>,
+    pub(crate) written_lets: Vec<LPooled<AHashSet<(ExprId, CompactString)>>>,
+    /// What the modules the blocks being compiled hold write outside
+    /// them, kept while a block compiles ([`node::ModuleWrites`]).
+    pub(crate) module_writes: node::ModuleWrites,
     /// Per block being compiled that declares types, innermost last: its
     /// scope and the names its type definitions declare
     /// ([`node::later_typedef`]).
@@ -1692,6 +1695,7 @@ impl<R: Rt> CompileCtx<R> {
             connect_targets: self.connect_targets.fork(),
             static_callees: self.static_callees.clone(),
             written_lets: self.written_lets.clone(),
+            module_writes: node::ModuleWrites::default(),
             block_typedefs: self.block_typedefs.clone(),
             builtin_bindings: self.builtin_bindings.fork(),
             rec_defs: self.rec_defs.clone(),
@@ -1743,6 +1747,7 @@ impl<R: Rt> CompileCtx<R> {
             connect_targets,
             static_callees: _,
             written_lets: _,
+            module_writes: _,
             block_typedefs: _,
             builtin_bindings,
             rec_defs: _,
@@ -2121,6 +2126,7 @@ impl<R: Rt> ExecState<R> {
                 connect_targets: TrackedSet::default(),
                 static_callees: Arc::new(StaticCallees::default()),
                 written_lets: Vec::new(),
+                module_writes: node::ModuleWrites::default(),
                 block_typedefs: Vec::new(),
                 builtin_bindings: TrackedMap::default(),
                 rec_defs: nohash::IntSet::default(),
@@ -2492,6 +2498,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             && self.instance_fn_params.is_empty()
             && self.fn_param_args.is_empty()
             && self.written_lets.is_empty()
+            && self.module_writes.is_empty()
             && self.block_typedefs.is_empty()
             && self.resolving_lambdas.lock().0.is_none()
             && self.defaults_in_check.is_empty()
@@ -2508,6 +2515,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         self.instance_fn_params.clear();
         self.fn_param_args.clear();
         self.written_lets.clear();
+        self.module_writes.clear();
         self.block_typedefs.clear();
         *self.resolving_lambdas.lock() = Resolving::default();
         self.defaults_in_check.clear();
@@ -3921,6 +3929,7 @@ impl Saved {
             connect_targets,
             static_callees: _,
             written_lets: _,
+            module_writes: _,
             block_typedefs: _,
             builtin_bindings,
             rec_defs: _,

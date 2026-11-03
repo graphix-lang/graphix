@@ -43,7 +43,7 @@ use smallvec::SmallVec;
 use std::{
     cell::Cell,
     collections::VecDeque,
-    iter,
+    iter, mem,
     sync::{
         OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -1062,7 +1062,8 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
     let package = ctx.env.package_root(&scope.lexical) == &**scope.lexical;
-    ctx.written_lets.push(written_lets(&exprs, package));
+    let written = written_lets(&exprs, package, &mut ctx.module_writes);
+    ctx.written_lets.push(written);
     let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);
@@ -1077,6 +1078,9 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         Ok::<_, anyhow::Error>(())
     });
     ctx.written_lets.pop();
+    if ctx.written_lets.is_empty() {
+        ctx.module_writes.clear()
+    }
     if declares_types {
         ctx.block_typedefs.pop();
     }
@@ -1115,24 +1119,53 @@ pub(crate) fn later_typedef<R: Rt>(ctx: &CompileCtx<R>, tr: &TypeRef) -> bool {
 /// of the name before it (its own let, for a `let rec`). A `package::`
 /// path names the block's lets where the block is the package root
 /// (`package`). Such a let is never generalized, whatever the order of its
-/// uses and writers.
+/// uses and writers. What a module in the block writes outside it comes
+/// from `known`, and what this walk finds goes there.
 pub(crate) fn written_lets(
     exprs: &[&Expr],
     package: bool,
-) -> AHashSet<(ExprId, CompactString)> {
-    let mut w = Writes { walk: Walk::Block { package }, ..Writes::default() };
+    known: &mut ModuleWrites,
+) -> LPooled<AHashSet<(ExprId, CompactString)>> {
+    let mut w = Writes::new(Walk::Block { package }, known);
     w.statements(exprs.iter().copied());
-    w.written
+    mem::take(&mut w.written)
 }
 
-/// The names outside a module that its body may write, each with where
-/// it lands: through a `super::` or `package::` path, through a name it
-/// imports from there (a glob importing each name the body does not
-/// bind), and through what its own modules write there.
-fn module_writes(exprs: &[Expr]) -> Vec<(Anchor, CompactString)> {
-    let mut w = Writes { walk: Walk::Module, ..Writes::default() };
+/// What each module statement walked writes outside it, by the
+/// statement's id: a function of the module's body alone, kept for the
+/// compile of the outermost block, so a module nested d blocks deep is
+/// walked once, not once for each block around it.
+#[derive(Default)]
+pub(crate) struct ModuleWrites(AHashMap<ExprId, Box<[(Anchor, CompactString)]>>);
+
+impl ModuleWrites {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        if !self.0.is_empty() {
+            self.0 = AHashMap::default()
+        }
+    }
+}
+
+/// The names outside the module `id` that its body `exprs` may write, each
+/// with where it lands: through a `super::` or `package::` path, through a
+/// name it imports from there (a glob importing each name the body does
+/// not bind), and through what its own modules write there. Taken out of
+/// `known`, the caller puts it back.
+fn module_writes(
+    id: ExprId,
+    exprs: &[Expr],
+    known: &mut ModuleWrites,
+) -> Box<[(Anchor, CompactString)]> {
+    if let Some(outer) = known.0.remove(&id) {
+        return outer;
+    }
+    let mut w = Writes::new(Walk::Module, known);
     w.statements(exprs.iter());
-    w.outer
+    Box::from_iter(w.outer.drain(..))
 }
 
 /// Where a name outside a module stands: `k` levels of `super` out, or
@@ -1177,11 +1210,10 @@ enum Walk {
     Module,
 }
 
-#[derive(Default)]
-struct Writes {
+struct Writes<'a> {
     walk: Walk,
     /// The walked statements' binding of each name at the walk's position.
-    declared: AHashMap<CompactString, Binding>,
+    declared: LPooled<AHashMap<CompactString, Binding>>,
     /// Each name's nearer bindings in scope at the walk's position,
     /// innermost last.
     shadow: LPooled<AHashMap<CompactString, SmallVec<[Binding; 1]>>>,
@@ -1191,14 +1223,42 @@ struct Writes {
     /// Where the walked module's globs import from.
     globs: SmallVec<[Anchor; 1]>,
     /// A block walk's written lets.
-    written: AHashSet<(ExprId, CompactString)>,
+    written: LPooled<AHashSet<(ExprId, CompactString)>>,
     /// A module walk's writes outside it.
-    outer: Vec<(Anchor, CompactString)>,
+    outer: LPooled<Vec<(Anchor, CompactString)>>,
+    /// The modules' writes outside them known so far.
+    known: &'a mut ModuleWrites,
 }
 
-impl Writes {
-    fn statements<'a>(&mut self, exprs: impl Iterator<Item = &'a Expr>) {
+#[cfg(test)]
+thread_local! {
+    static WRITES_STEPS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// A statement a writes walk visits, counted under test.
+#[inline(always)]
+fn writes_step() {
+    #[cfg(test)]
+    WRITES_STEPS.with(|n| n.set(n.get() + 1));
+}
+
+impl<'a> Writes<'a> {
+    fn new(walk: Walk, known: &'a mut ModuleWrites) -> Self {
+        Self {
+            walk,
+            declared: LPooled::take(),
+            shadow: LPooled::take(),
+            shadowed: LPooled::take(),
+            globs: SmallVec::new(),
+            written: LPooled::take(),
+            outer: LPooled::take(),
+            known,
+        }
+    }
+
+    fn statements<'e>(&mut self, exprs: impl Iterator<Item = &'e Expr>) {
         for e in exprs {
+            writes_step();
             match &e.kind {
                 ExprKind::Bind(b) if b.rec => {
                     self.declare(e.id, &b.pattern);
@@ -1307,7 +1367,7 @@ impl Writes {
         }
     }
 
-    // CR claude for claude: [perf/low] Each block's walk reads every module nested
+    // XCR claude for claude: [perf/low] Each block's walk reads every module nested
     // in it, so a chain of d file modules, each with a let before its `mod`, costs d^2
     // statement visits across the d blocks' compiles: `--check` instructions:u over
     // gen.py nested d, main bbb06c0c6 / lane: d=100 1.393G / 1.415G, d=400 1.927G /
@@ -1316,23 +1376,38 @@ impl Writes {
     // one block's walk) would make it linear. probe:
     // ~/ptmp/cr29/scratch/review-r8/G-r2-2/cost/gen.py (python3 -I gen.py nested 400;
     // cd n_400; MODE=--check ../m.sh base|lane main.gx) (module-walk-cost-01)
-    /// What a module written here writes outside it.
-    fn module(&mut self, exprs: &[Expr]) {
+    // 2026-11-03 claude: Each module statement's outer writes are kept by its id for
+    // the compile of the outermost block (node::ModuleWrites in CompileCtx, beside
+    // written_lets, cleared when that stack empties; a fork starts empty): a block's
+    // walk takes a module's writes from the walk of a block around it, and
+    // module_writes walks a body only when no walk did. JUDGED: the memo lives in the
+    // compile scratch, since a block's walk runs before its modules' nodes exist. The
+    // walk's declared, written and outer collections are pooled (written stays pooled
+    // on the written_lets stack). Pin node::test::nested_modules_walk_linear (the
+    // compile's block walks over a chain of d modules: 601 / 2401 statement visits at
+    // d=100 / 400, bound 7(d+1); with the lookup disabled 15352 / 241402: fails).
+    // --check instructions:u (GRAPHIX_PAR=off, one eval thread), gen.py nested
+    // d=100/200/400, base ec53d4846 1.415G/1.598G/2.183G, lane 1.401G/1.537G/1.931G.
+    // The rest of main's super-linear term is outside the walk.
+    /// What the module `id` written here writes outside it.
+    fn module(&mut self, id: ExprId, exprs: &[Expr]) {
         if let Walk::Block { .. } = self.walk
             && !self.declared.values().any(|b| matches!(b, Binding::Let(_)))
         {
             return;
         }
-        for (a, n) in module_writes(exprs) {
-            match a {
-                Anchor::Super(1) => self.write(&n),
+        let outer = module_writes(id, exprs, self.known);
+        for (a, n) in outer.iter() {
+            match *a {
+                Anchor::Super(1) => self.write(n),
                 Anchor::Super(k) => match self.walk {
-                    Walk::Module => self.outer.push((Anchor::Super(k - 1), n)),
+                    Walk::Module => self.outer.push((Anchor::Super(k - 1), n.clone())),
                     Walk::Block { .. } => (),
                 },
-                Anchor::Package => self.write_outer(a, &n),
+                Anchor::Package => self.write_outer(*a, n),
             }
         }
+        self.known.0.insert(id, outer);
     }
 
     fn nearer(&mut self, n: CompactString, b: Binding) {
@@ -1357,6 +1432,7 @@ impl Writes {
     fn block(&mut self, exprs: &[Expr]) {
         self.scoped(|w| {
             for e in exprs {
+                writes_step();
                 match &e.kind {
                     ExprKind::Use { names, .. } => {
                         for item in names.iter() {
@@ -1443,7 +1519,7 @@ impl Writes {
             }
             ExprKind::Module { value, .. } => {
                 if let ModuleKind::Resolved { exprs, .. } = &**value {
-                    self.module(exprs)
+                    self.module(e.id, exprs)
                 }
             }
             _ => e.for_each_child(&mut |c| self.expr(c)),
@@ -3757,5 +3833,95 @@ impl<R: Rt> Sample<R> {
         wrap!(self.arg.node, child(&mut self.arg.node, ctx))?;
         self.typ = self.banking.result_type(self.trigger.typ(), self.arg.node.typ());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{ModuleWrites, WRITES_STEPS, written_lets};
+    use crate::expr::{Expr, ExprKind, ModuleKind, Origin, Source, parser};
+    use arcstr::ArcStr;
+    use triomphe::Arc;
+
+    fn parse(text: &str) -> Arc<[Expr]> {
+        let ori = Origin {
+            parent: None,
+            source: Source::Unspecified,
+            text: ArcStr::from(text),
+        };
+        parser::parse(ori).expect("parses")
+    }
+
+    /// A chain of `d` modules, each holding a let, the next module and a
+    /// let reading it, as files would: the outermost block's statements.
+    fn nested(d: usize) -> Arc<[Expr]> {
+        let mut body = parse(&format!("let x = {d};\nlet y = x"));
+        for k in (0..d).rev() {
+            let stmts = parse(&format!(
+                "let x = {k};\nmod m{};\nlet y = m{}::y + x",
+                k + 1,
+                k + 1
+            ));
+            body = Arc::from_iter(stmts.iter().map(|e| match &e.kind {
+                ExprKind::Module { name, .. } => {
+                    let value = ModuleKind::Resolved {
+                        exprs: body.clone(),
+                        sig: None,
+                        from_interface: false,
+                    };
+                    let mut m =
+                        ExprKind::Module { name: name.clone(), value: Arc::new(value) }
+                            .to_expr(e.pos);
+                    m.id = e.id;
+                    m
+                }
+                _ => e.clone(),
+            }));
+        }
+        body
+    }
+
+    /// The statements the writes walks visit compiling `top` and each
+    /// module in it, block inside block, as `compile_block_children`
+    /// walks them, over one `known` (or a fresh one per block).
+    fn compile_steps(top: &Arc<[Expr]>, shared: bool) -> usize {
+        let mut known = ModuleWrites::default();
+        WRITES_STEPS.with(|n| n.set(0));
+        let mut block = top.clone();
+        loop {
+            if !shared {
+                known = ModuleWrites::default();
+            }
+            let exprs: Vec<&Expr> = block.iter().collect();
+            drop(written_lets(&exprs, false, &mut known));
+            let inner = block.iter().find_map(|e| match &e.kind {
+                ExprKind::Module { value, .. } => match &**value {
+                    ModuleKind::Resolved { exprs, .. } => Some(exprs.clone()),
+                    _ => None,
+                },
+                _ => None,
+            });
+            match inner {
+                Some(exprs) => block = exprs,
+                None => break,
+            }
+        }
+        WRITES_STEPS.with(|n| n.get())
+    }
+
+    // A chain of d modules, each with a let before its `mod`, is walked
+    // once in all: each block's walk takes what a module in it writes
+    // outside it from the walk of a block around it, never walking the
+    // module again (d^2 / 2 statement visits across the d blocks).
+    #[test]
+    fn nested_modules_walk_linear() {
+        for d in [100, 400] {
+            let top = nested(d);
+            let steps = compile_steps(&top, true);
+            assert!(steps <= 7 * (d + 1), "{d}: {steps}");
+            let apart = compile_steps(&top, false);
+            eprintln!("{d} modules: {steps} steps, {apart} with a walk per block");
+            assert!(apart > d * d, "{d}: {apart} steps with a walk per block");
+        }
     }
 }
