@@ -322,6 +322,22 @@ fn checked_default<R: Rt>(
     // lang::select::default_at_a_bind_declares_a_recursive_type fails in all four modes
     // without the seed (it logs default-typedef-outlived-01's 'outlived its definition'
     // line, as main does for d1j).
+    // 2026-11-02 claude: Narrowed after a probe comparison (lane G r8, base bbb06c0c6 vs
+    // lane over review-r6/B2-r1-1, E4-*, review-r7/B5-r3-1): typing a default from rows
+    // also moved the defaults that write a type name into the instance path's late fill of
+    // names, which finds the wrong definition or none: type M = string; let f = |#d = {
+    // type M = [i64, null]; let q: M = 3; q }, x: M| (d, x) crashed under fusion
+    // (misaligned pointer: the JIT read 3 as the outer string), as did a default naming a
+    // type the enclosing body declares over an outer one of that name. That is
+    // default-typedef-outlived-01's class (Eric's 'type names in a scope that ends'; an
+    // ordinary instance body crashes the same way on main: new CR scope-shadow-crash-01).
+    // So DefTable::record_defaults keeps no rows for a default any of whose rows holds a
+    // type name, and the bind checks that one in full as main does; the bind-time seeding
+    // of the previous note is gone. d_tuple d_ref d_field d_fn d_opt keep their fix (no
+    // names); the E4 shapes behave as on main. Pins
+    // default_at_a_bind_names_a_block_type_over_an_outer_one (crashes the test binary with
+    // every default on rows) and default_at_a_bind_declares_a_recursive_type pin the
+    // fallback.
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
@@ -339,8 +355,6 @@ fn checked_default<R: Rt>(
                 super::rechecking_instance(bind, || node.typecheck0(ctx))
             }
         };
-        // the types its blocks declare live in this environment alone
-        ctx.env.seed_typedef_refs_under(&f.scope.lexical);
         Ok::<_, anyhow::Error>((node, res))
     })?;
     let label = |ft: &FnType| -> Option<Type> {

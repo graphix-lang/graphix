@@ -639,13 +639,16 @@ gave it and never runs, and a reached arm's bind keeps its type (pins
 `default_at_a_bind_reads_an_unreached_arms_binds`,
 `default_at_a_bind_keeps_its_definitions_bind_types`). Those rows stay
 open at the definition's settle (`DefTable::settle_open` leaves them): the
-bind narrows them by its own view of the label. The types a default's
-blocks declare live only in the environment its compile restored, so the
-bind seeds their references there before it leaves it
-(`Env::seed_typedef_refs_under`; pin
-`default_at_a_bind_declares_a_recursive_type`). A definition with no rows
-(a builtin's, or under `GRAPHIX_NO_SUBST`) checks its default at the bind
-in full (`node::rechecking_instance`).
+bind narrows them by its own view of the label. A default typed with a
+type name keeps no rows: the names its compile at a bind writes resolve
+only in that compile's environment, which typing from rows never reaches,
+and a later fill finds the wrong definition or none (a block's type, or an
+outer one of the same name: the class of CR default-typedef-outlived-01),
+so the bind checks it in full as it did before rows, as it does a default
+with no rows at all (a builtin's, or under `GRAPHIX_NO_SUBST`;
+`node::rechecking_instance`; pins
+`default_at_a_bind_declares_a_recursive_type`,
+`default_at_a_bind_names_a_block_type_over_an_outer_one`).
 
 A signature finds its quantifiers by name (`FnType::quantifiers`). A
 parameter the body unifies with a declared quantifier (`x` in `'a:

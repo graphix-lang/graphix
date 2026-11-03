@@ -1114,7 +1114,9 @@ node graph IS the IR — there is no parallel typed IR
   hides, which the default narrows; compiled at a bind, it takes its
   types from its definition's check, as an instance's body does (the
   definition's `DefTable` holds the defaults' rows,
-  `InstanceTypes::of_default`). A default whose type holds an enclosing
+  `InstanceTypes::of_default`), except one typed with a type name, whose
+  names resolve only where the bind compiles it: that one is checked
+  again there (`DefTable::record_defaults`). A default whose type holds an enclosing
   definition's open cell requires a closed parameter type (annotate the
   factory's parameter or the defaulted parameter); an enclosing definition's
   declared variable is closed, as is a rank-2 formal's quantifier while a

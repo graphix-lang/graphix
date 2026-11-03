@@ -3490,6 +3490,19 @@ fn check_and_fuse_inner<R: Rt>(
     drop(p);
     info!("typecheck time {:?}", st.elapsed());
     let tail_loops = analysis::analyze(node, ctx)?;
+    // CR claude for eric: [bug/high] An instance body that names a type its block
+    // declares over an outer type of the same name crashes the process under fusion: `type
+    // L = string; let g = |z: i64| { type L = [i64, null]; let f = |x: i64| { let b: L =
+    // 3; (b, x) }; f(z) }; println(g(1))` aborts with "misaligned pointer dereference:
+    // address must be a multiple of 0x8 but is 0x3" (a non-unwinding panic: the kernel
+    // reads 3 as the outer string), main bbb06c0c6 alike; --no-fusion prints (3, 1) and
+    // --check passes; the body's own `type M` over an outer M does the same (d3b.gx). Not
+    // located: the instance's compile writes `L` afresh, takes its types from the
+    // definition's rows, and no check fills the fresh reference in the scope it was
+    // written in, so a later fill or fusion's freeze resolves the name where the block is
+    // gone. The class of default-typedef-outlived-01 (next-discuss 'type names in a scope
+    // that ends'); a labeled default took the same road under default-bind-coverage-01's
+    // first cut. probes: ~/ptmp/cr29/scratch/r8-G/i1/e3.gx, d3b.gx (scope-shadow-crash-01)
     ctx.env.seed_typedef_refs();
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();

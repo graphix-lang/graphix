@@ -256,15 +256,31 @@ impl DefTable {
     }
 
     /// The rows of the definition's labeled defaults as its check
-    /// compiled them, each with the environment it compiled in, where the
-    /// types its blocks declare are: a call's bind types its default from
-    /// them, as an instance types its body.
-    fn record_defaults<R: Rt>(&mut self, defaults: &[(Node<R>, Lexical)], checked: &Env) {
+    /// compiled them, in `def_env`: a call's bind types its default from
+    /// them, as an instance types its body. A default typed with a type
+    /// name keeps none: the names its compile at a bind writes resolve only
+    /// in that compile's scope, which typing it from rows never reaches
+    /// (default-typedef-outlived-01), so a bind checks it again.
+    fn record_defaults<R: Rt>(
+        &mut self,
+        defaults: &[Node<R>],
+        def_env: &Lexical,
+        checked: &Env,
+    ) {
         let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
         let mut seen: LPooled<AddrSet> = LPooled::take();
-        for (n, lexical) in defaults {
+        let env = Env { lexical: def_env.clone(), ..Env::default() };
+        for n in defaults {
             self.add_rows(n, checked, &mut |n| ids.push(n.spec().id));
-            let env = Env { lexical: lexical.clone(), ..Env::default() };
+            if ids.iter().any(|id| self.row_names_type(id)) {
+                for id in ids.drain(..) {
+                    self.types.remove(&id);
+                    self.ftypes.remove(&id);
+                    self.lambdas.remove(&id);
+                    self.aux.remove(&id);
+                }
+                continue;
+            }
             for id in ids.iter() {
                 let aux = self.aux.get(id).into_iter().flat_map(|ts| ts.iter());
                 for t in self.types.get(id).into_iter().chain(aux) {
@@ -279,6 +295,18 @@ impl DefTable {
             self.defaults.extend(ids.drain(..));
         }
         self.own_typedefs();
+    }
+
+    /// Whether a row of the node at `id` holds a type name.
+    fn row_names_type(&self, id: &ExprId) -> bool {
+        let seen = &mut LPooled::take();
+        let aux = self.aux.get(id).into_iter().flat_map(|ts| ts.iter());
+        self.types.get(id).into_iter().chain(aux).any(|t| names_type(t, seen))
+            || self.ftypes.get(id).is_some_and(|ft| {
+                let mut found = false;
+                ft.for_each_part(&mut |t, _| found = found || names_type(t, seen));
+                found
+            })
     }
 
     /// A row for each node of the tree at `root`, `visit`ing each; an id
@@ -2824,7 +2852,7 @@ fn check_defaults<R: Rt>(
     def: &LambdaDef<R>,
     scope: &Scope,
     captures: &mut AHashSet<(ModPath, CompactString)>,
-    checked: &mut Vec<(Node<R>, Lexical)>,
+    checked: &mut Vec<Node<R>>,
 ) -> Result<()> {
     let flags = match &def.origin {
         DefOrigin::Source { flags, .. } => {
@@ -2836,12 +2864,12 @@ fn check_defaults<R: Rt>(
     };
     for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
         let Some(expr) = arg.kind.default() else { continue };
-        let (node, res, lexical) = ctx.with_restored(def.env.clone(), |ctx| {
+        let (node, res) = ctx.with_restored(def.env.clone(), |ctx| {
             let mut node = def.in_signature(ctx, None, |ctx| {
                 compile(ctx, flags, expr.clone(), scope, ExprId::new())
             })?;
             let res = judge_default(ctx, def, at, &mut node);
-            Ok::<_, anyhow::Error>((node, res, ctx.env.lexical.clone()))
+            Ok::<_, anyhow::Error>((node, res))
         })?;
         if let Err(e) = res {
             let e = e.at(&node.spec());
@@ -2851,9 +2879,30 @@ fn check_defaults<R: Rt>(
         fusion::for_each_node(&node, &mut |n| {
             capture_names(n, &def.env, &ctx.env, captures);
         });
-        checked.push((node, lexical));
+        checked.push(node);
     }
     Ok(())
+}
+
+/// Whether `t` holds a type name, through bindings.
+fn names_type(t: &Type, seen: &mut AHashSet<usize>) -> bool {
+    ensure_sufficient(|| match t {
+        Type::Ref(_) => true,
+        Type::TVar(tv) => {
+            seen.insert(tv.cell_addr())
+                && tv.binding().is_some_and(|b| names_type(&b, seen))
+        }
+        Type::Fn(ft) => {
+            let mut found = false;
+            ft.for_each_part(&mut |t, _| found = found || names_type(t, seen));
+            found
+        }
+        t => {
+            let mut found = false;
+            t.for_each_child(&mut |c| found = found || names_type(c, seen));
+            found
+        }
+    })
 }
 
 /// The default `node` of the parameter `at` checked against it, in the
@@ -3018,7 +3067,7 @@ impl<R: Rt> Update<R> for Lambda {
             ftyp.throws.check_contains(&ctx.env, &inferred_throws).at(spec)?;
             Ok(())
         });
-        let mut defaults: LPooled<Vec<(Node<R>, Lexical)>> = LPooled::take();
+        let mut defaults: LPooled<Vec<Node<R>>> = LPooled::take();
         let res = res
             .and_then(|()| {
                 check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults)
@@ -3031,14 +3080,14 @@ impl<R: Rt> Update<R> for Lambda {
                 facts: *def.facts.lock(),
                 ..DefTable::default()
             });
-            table.record_defaults(&defaults, &ctx.env);
+            table.record_defaults(&defaults, &def.env, &ctx.env);
             table.captures = captures
                 .drain()
                 .map(|(scope, name)| Captured::new(&def.scope.lexical, scope, name))
                 .collect();
             def.table.set(Tables { table: SArc::new(table), outer: None });
         }
-        for (n, _) in defaults.drain(..) {
+        for n in defaults.drain(..) {
             ctx.discard(n)
         }
         gate.close(ctx, def.table.get().map(|t| (t.table.clone(), spec)));

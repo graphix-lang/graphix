@@ -5833,8 +5833,9 @@ run!(
     prints("[i64:5, i64:1, i64:5, i64:1, i64:5, i64:1, i64:5, i64:1]")
 );
 
-// A default whose block declares a recursive type is typed at the bind
-// from its definition's rows: the type it names resolves there too.
+// A default typed with a type name is checked again at the bind, where the
+// names it writes resolve: a recursive type its block declares, and a
+// block's type over an outer one of the same name.
 run!(
     default_at_a_bind_declares_a_recursive_type,
     r#"{
@@ -5847,6 +5848,20 @@ run!(
         (f(1), g(10))
     }"#,
     prints("[[i64:1, true], [i64:10, true]]")
+);
+
+run!(
+    default_at_a_bind_names_a_block_type_over_an_outer_one,
+    r#"{
+        type L = string;
+        let g = |z: i64| {
+            type L = [i64, null];
+            let f = |#d = { let b: L = 3; b }, x: i64| (d, x);
+            f(z)
+        };
+        g(1)
+    }"#,
+    prints("[i64:3, i64:1]")
 );
 
 // A reached arm's bind keeps the definition's type at the bind: `o` is
