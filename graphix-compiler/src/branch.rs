@@ -128,8 +128,12 @@ impl<R: Rt> ForkRt<R> {
         }
     }
 
-    /// Queue a write of `v` to `id` before everything this branch did.
+    /// Make this branch's delivery of `v` to `id`, which an earlier
+    /// sibling delivered first, a write queued before everything this
+    /// branch did, as serial evaluation queues it: the store keeps what
+    /// the earlier sibling delivered.
     pub(crate) fn queue_first(&mut self, id: BindId, v: Value) {
+        self.store.remove(&id);
         self.log.insert(0, RtOp::SetVar(id, v));
     }
 
