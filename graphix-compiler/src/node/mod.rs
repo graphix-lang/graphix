@@ -3699,8 +3699,23 @@ impl<R: Rt> Connect<R> {
         // Pins: graphix-shell rank2_escape a_binding_meets_a_nest_of_copies_once (6.88G over the 5G bound without it, 3.21G with), node::callsite
         // escape_walk_answers_a_copied_cell_a_function_type_quantifies (fails with the re-walk dropped). No program found reaches the re-walk (lang:: fixtures,
         // the review probes, rw1-rw4 under ~/ptmp/cr29/scratch/r9-R/fix2/).
-        let mut copied: LPooled<Vec<_>> = LPooled::take();
-        let written = &ctx.monomorphic_noting(self.node.typ(), &mut copied);
+        // 2026-11-03 claude: Lane R salvage (branch cr46-R2): the copied-cell mechanism the three notes above describe is withdrawn, as built on cr46-R by
+        // c82330ef5, 4841e0987, 5cce8189b and their share of 951b5fbcb: CompileCtx::monomorphic_noting, FnType::instantiate_noting, check_general's copied-cell
+        // index and stand-ins, callsite::general_as_copied, Sights, escapes_standing and Free's met/answered split are gone, and the escape walk asks the
+        // quantifiers alone, as on main ec53d4846. Why: three reviews in a row found it superlinear where main is not, each fix bringing the next shape: bindings
+        // x copied cells (R-r1-2: api3_2000 8.63G instructions to --check, main 5.95G), K^2 per binding over a K-deep nest of copies (R-r2-1, R-r2-2:
+        // nest_100_1000 25.04G, main 9.13G; deep4_50_1000 14.50G, main 6.59G), then K^3 per binding in the re-walk (R-r3-2: gen_kr kr_50_100 21.28G, main 14.65G;
+        // gen_kb kb_50_100 21.35G, main 14.86G; R-r3-1: gen_mk mk_50_400 15.44G, main 13.82G); and it closed only the copies CompileCtx::monomorphic makes, never
+        // a select's or an array's copy of lambda literals or a read of a let-bound lambda (the review r9 note above). Every shape this CR and its notes name
+        // passes --check again with main's verdict and message (map_conn and kin, map_let_w, app_undecl, the review r9 i2_*/k*/c*/h* probes; h5.txt and r3_h5 in
+        // the REPL). The pins the notes above give for the mechanism are removed with it (the six RANK2_*_THROUGH_* cases, graphix-shell rank2_escape
+        // a_repl_write_to_a_generic_binding_holds_its_copy_generally, a_copy_is_asked_once_for_every_binding, a_binding_meets_a_nest_of_copies_once,
+        // node::callsite escape_walk_answers_a_copied_cell_a_function_type_quantifies), and the last note's 'No program found reaches the re-walk' is moot
+        // (R-r3-1's mk_1_3.gx did reach it). lang::types::rank2_copied_value_keeps_its_callbacks_inside stays: no over-refusal, main runs it. The way that closes
+        // every copy shape is callback-generic-leak-01's root fix (its second option: lower a generic cell a non-generic binding reaches, so a copy shares it and
+        // check_general meets the quantifier through the outer binding). Generators: ~/ptmp/cr29/scratch/review-r9/R-r1-2/p/gen_api3.sh, R-r2-2/p/gen_nest.py,
+        // R-r2-1/p/gen_deep4.sh, R-r3-2/p/{gen_kr,gen_kb}.py, R-r3-1/p/gen_mk.py.
+        let written = &ctx.monomorphic(self.node.typ());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
@@ -3743,19 +3758,12 @@ impl<R: Rt> Connect<R> {
                 }
             })
         };
-        wrap!(
-            self,
-            callsite::contain_generally(ctx, &held, &self.node, &copied, contain)
-        )?;
+        wrap!(self, callsite::contain_generally(ctx, &held, &self.node, contain))?;
         // as general as the binding: the written value may not carry one of
         // its variables into the environment, as a function's parameter would
         let quantified: LPooled<Vec<(ArcStr, usize)>> =
             rigid.iter().map(|(n, tv)| (n.clone(), tv.cell_addr())).collect();
-        if generic
-            && (callsite::carried_out(&quantified, self.node.typ()).is_some()
-                || callsite::general_as_copied(ctx, &quantified, &copied, &self.node)
-                    .is_err())
-        {
+        if generic && callsite::carried_out(&quantified, self.node.typ()).is_some() {
             return format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
                 Err(anyhow!(
                     "{} is {}, made generic by an earlier compile, so what is written to \
@@ -3827,8 +3835,7 @@ impl<R: Rt> ConnectDeref<R> {
         if !check {
             return Ok(());
         }
-        let mut copied: LPooled<Vec<_>> = LPooled::take();
-        let rhs = &ctx.monomorphic_noting(self.rhs.typ(), &mut copied);
+        let rhs = &ctx.monomorphic(self.rhs.typ());
         let btyp = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),
@@ -3851,7 +3858,7 @@ impl<R: Rt> ConnectDeref<R> {
                     let contain = |t: &Type| t.check_contains(&ctx.env, rhs);
                     wrap!(
                         self,
-                        callsite::contain_generally(ctx, &t, &self.rhs, &copied, contain)
+                        callsite::contain_generally(ctx, &t, &self.rhs, contain)
                     )?;
                     wrap!(
                         self,

@@ -1078,23 +1078,14 @@ impl FnType {
     /// cell the copy holds more than once frozen, so it keeps its cell
     /// when it unifies with an unfrozen one.
     pub fn instantiate(&self, open: &IntSet<LambdaId>) -> Self {
-        self.instantiate_noting(open, &mut LPooled::take())
-    }
-
-    /// [`Self::instantiate`], `known` empty, left mapping each cell copied,
-    /// by its address, to its copy.
-    pub fn instantiate_noting(
-        &self,
-        open: &IntSet<LambdaId>,
-        known: &mut AHashMap<usize, TVar>,
-    ) -> Self {
+        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let how = Fresh::Instantiate(open);
         let walk = |c: &Type, known: &mut AHashMap<usize, TVar>| {
             c.reset_tvars_int(known, how).unwrap_or_else(|| c.clone())
         };
-        self.fresh_quantifiers(known, walk);
-        self.generic_inner_quantifiers(known, |tv| tv.level().copied_by(open), walk);
-        let fresh = self.reset_tvars_int(known, how);
+        self.fresh_quantifiers(&mut known, walk);
+        self.generic_inner_quantifiers(&mut known, |tv| tv.level().copied_by(open), walk);
+        let fresh = self.reset_tvars_int(&mut known, how);
         let copies: LPooled<AHashSet<usize>> =
             known.values().map(|tv| tv.cell_addr()).collect();
         let mut occurrences = super::tvar::Occurrences::default();

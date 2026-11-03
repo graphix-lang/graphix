@@ -2032,16 +2032,6 @@ impl<R: Rt> CompileCtx<R> {
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
-        self.monomorphic_noting(t, &mut LPooled::take())
-    }
-
-    /// [`Self::monomorphic`], pushing to `copied` each cell it copied, by
-    /// its address, with its copy.
-    pub(crate) fn monomorphic_noting(
-        &self,
-        t: &Type,
-        copied: &mut Vec<(usize, typ::TVar)>,
-    ) -> Type {
         /// A shared node rebuilds once and stays shared, unless a function
         /// type beneath it instantiated: each occurrence of one takes its
         /// own variables.
@@ -2049,7 +2039,6 @@ impl<R: Rt> CompileCtx<R> {
             open: &'a nohash::IntSet<LambdaId>,
             done: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
             fresh: bool,
-            copied: &'a mut Vec<(usize, typ::TVar)>,
         }
         fn instance(t: &Type, m: &mut Memo) -> Option<Type> {
             crate::stack::ensure_sufficient(|| {
@@ -2064,11 +2053,7 @@ impl<R: Rt> CompileCtx<R> {
                     Type::TVar(tv) => tv.binding().map(|b| instance(&b, m).unwrap_or(b)),
                     Type::Fn(ft) => {
                         m.fresh = true;
-                        let mut known: LPooled<AHashMap<usize, typ::TVar>> =
-                            LPooled::take();
-                        let copy = ft.instantiate_noting(m.open, &mut known);
-                        m.copied.extend(known.drain());
-                        Some(Type::Fn(Arc::new(copy)))
+                        Some(Type::Fn(Arc::new(ft.instantiate(m.open))))
                     }
                     t => t.cow_children(&mut |c| instance(c, m)),
                 };
@@ -2081,8 +2066,7 @@ impl<R: Rt> CompileCtx<R> {
                 r
             })
         }
-        let mut m =
-            Memo { open: &self.rec_defs, done: LPooled::take(), fresh: false, copied };
+        let mut m = Memo { open: &self.rec_defs, done: LPooled::take(), fresh: false };
         instance(t, &mut m).unwrap_or_else(|| t.clone())
     }
 

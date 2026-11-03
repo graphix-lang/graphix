@@ -301,21 +301,18 @@ quantifies it (`callsite::check_general`, `contain_generally`); a
 variable of the call an argument or an omitted labeled default is passed
 to, named in the call's signature, is not and reaches not the
 quantifier, under the formal included (`k: fn<'a: Any>(x: 'a) -> W<'c>`
-given `|x| W(x)`; `callsite::HeldIn`, one walk per call); a value contained
-as its monomorphic copy (a connect, `*r <-`, a written let) has each
-cell whose copy is or reaches the quantifier stand for it, so a binding
-a callback ties to its parameter carries it out (`f <- |x| { y <-
-array::map([x], |e| W(e)); x }`; `callsite::check_general`). Right
+given `|x| W(x)`; `callsite::HeldIn`, one walk per call). Right
 site: the value. Open: what the function whose result holds the
 quantifier shares across its own calls (a let of its body the function
 it makes captures), CR rank2-result-maker-01; a written holder's own
 variable beside the function type (`(fn<'a: Any>(x: 'a) -> W<'c>,
 W<'c>)` holding `(|x| W(x), W(1))`), CR rank2-holder-variable-01; a
-copy another step made, a select's or an array's of lambda literals or a
-read's of a generalized let, whose callback ties a binding outside to
-the original's generic cell (`f <- select c { true => |x| { y <-
-array::map([x], |e| W(e)); x }, false => |x| x }`, `f <- g` over such a
-`let g`), CR rank2-escape-hof-01 with callback-generic-leak-01.
+value contained as a copy of it, a connect's, `*r <-`'s or a written
+let's, a select's or an array's of lambda literals, a read's of a
+generalized let, whose callback ties a binding outside to the original's
+generic cell (`f <- |x| { y <- array::map([x], |e| W(e)); x }`, the same
+lambda in a select's arm, `f <- g` over such a `let g`), CR
+rank2-escape-hof-01 with callback-generic-leak-01.
 
 ## Labeled and optional arguments across the fuzzer
 

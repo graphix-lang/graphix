@@ -943,20 +943,17 @@ node graph IS the IR — there is no parallel typed IR
   outside, its lambdas' captures included, and no instance a call in it
   makes reaches `'b`, through bindings and an open cell's lower bounds
   and constraints, outside a function type there that quantifies `'b`
-  itself (`callsite::check_general`, `contain_generally`); a variable
-  of the call an argument or an omitted labeled default is
+  itself (`callsite::check_general`, `contain_generally`; not judged:
+  what the function whose result holds it shares across its own calls,
+  CR rank2-result-maker-01, a written holder's own variable beside the
+  function type, CR rank2-holder-variable-01, and a value contained as a
+  copy of it (a write's, a written `let`'s, a select's or an array's of
+  lambdas, a read's of a generalized binding) whose callback ties a
+  binding outside to the original's cell, CR rank2-escape-hof-01); a
+  variable of the call an argument or an omitted labeled default is
   passed to is one type for the call: none named in the call's signature
-  may be or reach `'b`, under the formal included
-  (`callsite::HeldIn`, one walk per call); a value contained as its
-  monomorphic copy (a write, a written `let`) has each cell whose copy is
-  or reaches `'b` stand for `'b`, judged where a binding reaches it
-  (`callsite::check_general`; not judged: what the function whose result
-  holds it shares across its own calls, CR rank2-result-maker-01, a
-  written holder's own variable beside the function type, CR
-  rank2-holder-variable-01, and a copy another step made, a select's or
-  an array's of lambdas or a read's of a generalized binding, whose
-  callback ties a binding outside to the original's cell, CR
-  rank2-escape-hof-01);
+  may be or reach `'b`, under the formal included (`callsite::HeldIn`,
+  one walk per call);
   while a call
   checks its argument against the
   formal, `'b` is one type, which no definition in the argument

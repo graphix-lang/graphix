@@ -776,6 +776,11 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 // again, readdressed to eric with this one. probes:
 // ~/ptmp/cr29/scratch/review-r9/R-r1-1/p/{ref1_arg,ref2_let,ref3_conn,c5_block,c4_sel,c4e_let,c4h_arr,a1_selarg,a3_appconn,e2_default_sel,c4b_norank2}.gx,
 // review-r9/R-r1-2/p/c1.gx
+// 2026-11-03 claude: Lane R salvage (branch cr46-R2): nothing refuses the rank-2 form now. The copied-cell walk is withdrawn for its cost
+// (rank2-escape-hof-01's note of today: CompileCtx::monomorphic_noting and callsite::stand_ins, later check_general's copied cells, are gone), so this
+// CR's 'Its rank-2 form is refused through callsite::stand_ins' and the note above's 'holds only where CompileCtx::monomorphic_noting made the copy' no
+// longer hold: every rank-2 copy shape, map_conn and kin as well as the review r9 select, array and read copies, passes --check with main ec53d4846's
+// verdict. This CR's second option remains the fix that closes them all.
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is

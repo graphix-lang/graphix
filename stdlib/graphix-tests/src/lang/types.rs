@@ -3015,60 +3015,6 @@ const RANK2_CALL_HIDDEN_DEFAULT: &str = r#"{
     w.0 + 1
 }"#;
 
-// A value written to a rank-2 holder is contained as its monomorphic
-// copy: a binding a callback ties to the value's own parameter carries the
-// quantifier out as a direct write would, through a collection's callback,
-// filter_map's, list::map's, a user HOF's, at a `*r <-` and a written let.
-const RANK2_CONNECT_THROUGH_A_COLLECTION_CALLBACK: &str = r#"{
-    type W<'t> = Abstract<'t>;
-    let y = never();
-    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
-    f <- |x| { y <- array::map([x], |e| W(e)); x };
-    (f(1), f("s"), select y { [w, ..] => w.0 + 1, _ => 0 })
-}"#;
-
-const RANK2_CONNECT_THROUGH_FILTER_MAP: &str = r#"{
-    type W<'t> = Abstract<'t>;
-    let y = never();
-    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
-    f <- |x| { y <- array::filter_map([x], |e| `Keep(W(e))); x };
-    (f(1), f("s"), select y { [w, ..] => w.0 + 1, _ => 0 })
-}"#;
-
-const RANK2_CONNECT_THROUGH_A_LIST_CALLBACK: &str = r#"{
-    type W<'t> = Abstract<'t>;
-    let y = never();
-    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
-    f <- |x| { y <- list::map([<x>], |e| W(e)); x };
-    (f(1), f("s"), select y { [<w, ..>] => w.0 + 1, _ => 0 })
-}"#;
-
-const RANK2_CONNECT_THROUGH_A_CALLBACK: &str = r#"{
-    type W<'t> = Abstract<'t>;
-    let app = |g: fn(v: 'p) -> 'q, v: 'p| -> 'q g(v);
-    let y = never();
-    let f: fn<'a: Any>(x: 'a) -> 'a = |x| x;
-    f <- |x| { y <- app(|e| W(e), x); x };
-    (f(1), f("s"), y.0 + 1)
-}"#;
-
-const RANK2_DEREF_THROUGH_A_COLLECTION_CALLBACK: &str = r#"{
-    type W<'t> = Abstract<'t>;
-    let y = never();
-    let s: {f: fn<'a: Any>(x: 'a) -> 'a} = {f: |x| x};
-    let rs = &mut s.f;
-    *rs <- |x| { y <- array::map([x], |e| W(e)); x };
-    (s.f(1), s.f("s"), select y { [w, ..] => w.0 + 1, _ => 0 })
-}"#;
-
-const RANK2_WRITTEN_LET_THROUGH_A_COLLECTION_CALLBACK: &str = r#"{
-    type W<'t> = Abstract<'t>;
-    let y = never();
-    let f: fn<'a: Any>(x: 'a) -> 'a = |x| { y <- array::map([x], |e| W(e)); x };
-    f <- |x| x;
-    (f(1), f("s"), select y { [w, ..] => w.0 + 1, _ => 0 })
-}"#;
-
 // A definition's declared variable a callee's bound ties to an outer
 // cell's constraint escapes it as a binding would.
 const DECLARED_CONSTRAINS_OUTER: &str = r#"{
@@ -3373,18 +3319,6 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (RANK2_CALL_OMITTED_DEFAULT, "not polymorphic in 'a: the call's signature"),
         (RANK2_CALL_OMITTED_DEFAULT_FIELD, "not polymorphic in 'a: the call's signature"),
         (RANK2_CALL_HIDDEN_DEFAULT, "not polymorphic in 'a: the call's signature"),
-        (
-            RANK2_CONNECT_THROUGH_A_COLLECTION_CALLBACK,
-            "the value is not polymorphic in 'a",
-        ),
-        (RANK2_CONNECT_THROUGH_FILTER_MAP, "the value is not polymorphic in 'a"),
-        (RANK2_CONNECT_THROUGH_A_LIST_CALLBACK, "the value is not polymorphic in 'a"),
-        (RANK2_CONNECT_THROUGH_A_CALLBACK, "the value is not polymorphic in 'a"),
-        (RANK2_DEREF_THROUGH_A_COLLECTION_CALLBACK, "the value is not polymorphic in 'a"),
-        (
-            RANK2_WRITTEN_LET_THROUGH_A_COLLECTION_CALLBACK,
-            "the value is not polymorphic in 'a",
-        ),
         (DECLARED_CONSTRAINS_OUTER, "'a escapes the definition"),
         (RIGID_BELOW_LET, "does not contain fn(x:"),
         (RIGID_BELOW_DECLARED, "does not contain fn(x:"),

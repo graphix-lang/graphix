@@ -422,7 +422,7 @@ fn checked_default<R: Rt>(
         Some(t) => {
             held_in.before(sig);
             let contain = |t: &Type| t.check_contains(&ctx.env, typ);
-            let quantified = held_generally(ctx, &t, &node, &[], contain)?;
+            let quantified = held_generally(ctx, &t, &node, contain)?;
             held_in.held(&ArgKey::Named(name.clone()), "the default", &quantified);
             Ok(())
         }
@@ -1115,7 +1115,7 @@ fn typecheck_arg<R: Rt>(
             }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
             let quantified = cells(&quantified);
-            check_general(ctx, &quantified, &[], n, "the argument")?;
+            check_general(ctx, &quantified, n, "the argument")?;
             Ok((ArgFit::Fits, quantified))
         }
     }
@@ -1125,10 +1125,7 @@ fn typecheck_arg<R: Rt>(
 /// holds quantified function types it is expanded to them, their
 /// quantifiers held rigid, for the containment (a mismatch shows
 /// `holder`), and the value must be general in each, as a call's argument
-/// must be in its formal's ([`check_general`]). A value contained as its
-/// copy ([`CompileCtx::monomorphic_noting`]) names the cells copied in
-/// `copied`: a cell of it whose copy is or reaches a quantifier stands for
-/// that quantifier ([`check_general`]).
+/// must be in its formal's ([`check_general`]).
 // CR claude for eric: [bug/medium] A written holder's own variable that stands both
 // under a quantified function type and beside it carries the quantifier out, and
 // nothing judges it: `type W<'t> = Abstract<'t>; let h: (fn<'a: Any>(x: 'a) -> W<'c>,
@@ -1150,10 +1147,9 @@ pub(crate) fn contain_generally<R: Rt>(
     ctx: &CompileCtx<R>,
     holder: &Type,
     n: &Node<R>,
-    copied: &[(usize, TVar)],
     contain: impl FnOnce(&Type) -> Result<()>,
 ) -> Result<()> {
-    held_generally(ctx, holder, n, copied, contain).map(|_| ())
+    held_generally(ctx, holder, n, contain).map(|_| ())
 }
 
 /// [`contain_generally`], answering the quantifiers the value was held
@@ -1163,7 +1159,6 @@ fn held_generally<R: Rt>(
     ctx: &CompileCtx<R>,
     holder: &Type,
     n: &Node<R>,
-    copied: &[(usize, TVar)],
     contain: impl FnOnce(&Type) -> Result<()>,
 ) -> Result<SmallVec<[(ArcStr, usize); 2]>> {
     match quantified_formal(&ctx.env, holder) {
@@ -1174,7 +1169,7 @@ fn held_generally<R: Rt>(
                 Err(e) => e,
             })?;
             let quantified = cells(&quantified);
-            check_general(ctx, &quantified, copied, n, "the value")?;
+            check_general(ctx, &quantified, n, "the value")?;
             Ok(quantified)
         }
     }
@@ -1209,15 +1204,10 @@ fn held_generally<R: Rt>(
 /// of them only if nothing outside it that lives on reaches one: a binding
 /// it reads or writes from outside (its lambdas' captures included), or the
 /// instance a call in it makes, whose signature types that instance's
-/// bindings. Its own cells (a literal's, a lambda's) live only in it. A
-/// value contained as its copy names the cells copied in `copied`, each by
-/// its address with its copy: one whose copy is or reaches a quantifier
-/// stands for it in the value, judged only where something outside
-/// reaches it.
+/// bindings. Its own cells (a literal's, a lambda's) live only in it.
 fn check_general<R: Rt>(
     ctx: &CompileCtx<R>,
     quantified: &[(ArcStr, usize)],
-    copied: &[(usize, TVar)],
     n: &Node<R>,
     what: &str,
 ) -> Result<()> {
@@ -1249,52 +1239,8 @@ fn check_general<R: Rt>(
         }
         _ => (),
     });
-    if free.is_empty() {
-        return Ok(());
-    }
-    // each cell copied is numbered after the quantifiers, once however
-    // often it was copied, and stands for the first quantifier one of its
-    // copies is or reaches, found when something reaches it
-    let q = quantified.len() as u32;
-    let mut index = self::asked(quantified);
-    let mut copies: SmallVec<[SmallVec<[&TVar; 1]>; 4]> = SmallVec::new();
-    for (addr, copy) in copied {
-        let next = q + copies.len() as u32;
-        let i = *index.entry(*addr).or_insert(next);
-        if i == next {
-            copies.push(SmallVec::new())
-        }
-        if let Some(j) = i.checked_sub(q) {
-            copies[j as usize].push(copy)
-        }
-    }
-    let only_quantified = self::asked(quantified);
-    let mut answered: SmallVec<[bool; 4]> = copies.iter().map(|_| false).collect();
-    let mut walk: Option<Free> = None;
-    let mut known: SmallVec<[Option<Option<u32>>; 4]> =
-        copies.iter().map(|_| None).collect();
-    let mut stands = |i: u32| match i.checked_sub(q) {
-        None => Some(i),
-        Some(j) => *known[j as usize].get_or_insert_with(|| {
-            let walk = walk.get_or_insert_with(|| Free::new(&only_quantified));
-            copies[j as usize].iter().find_map(|copy| {
-                walk.free(&Type::TVar((*copy).clone()), &mut |_, _| ()).first().copied()
-            })
-        }),
-    };
-    let mut sights = Sights::new(q as usize + copies.len());
     for (t, through) in free.iter() {
-        let escape = escapes_standing(
-            quantified,
-            &index,
-            &mut answered,
-            &mut sights,
-            t,
-            what,
-            through,
-            &mut stands,
-        );
-        wrap!(n, escape)?;
+        wrap!(n, escapes_through(quantified, t, what, through))?;
     }
     Ok(())
 }
@@ -1302,22 +1248,6 @@ fn check_general<R: Rt>(
 /// Each quantifier by name and cell address.
 fn cells(quantified: &Quantified) -> SmallVec<[(ArcStr, usize); 2]> {
     quantified.iter().map(|(name, tv)| (name.clone(), tv.cell_addr())).collect()
-}
-
-/// A value contained as its copy in a type whose cells `quantified` stand
-/// for its every instance (a binding an earlier compile generalized): no
-/// binding it reaches from outside, nor instance a call in it makes,
-/// reaches one of its cells whose copy is or reaches one of them.
-pub(crate) fn general_as_copied<R: Rt>(
-    ctx: &CompileCtx<R>,
-    quantified: &[(ArcStr, usize)],
-    copied: &[(usize, TVar)],
-    n: &Node<R>,
-) -> Result<()> {
-    match copied.is_empty() {
-        true => Ok(()),
-        false => check_general(ctx, quantified, copied, n, "the value"),
-    }
 }
 
 /// `f`'s signature as a call through `site` instantiates it to pass the
@@ -1368,105 +1298,39 @@ pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
 /// A binding the value reads or writes, or an instance it makes, of type
 /// `env`, holds none of the quantifiers outside a function type there that
 /// quantifies it: its cell would carry one out.
-#[cfg(test)]
 fn escapes_through(
     quantified: &[(ArcStr, usize)],
     env: &Type,
     what: &str,
     through: &str,
 ) -> Result<()> {
-    let index = asked(quantified);
-    let mut sights = Sights::new(quantified.len());
-    escapes_standing(
-        quantified,
-        &index,
-        &mut [],
-        &mut sights,
-        env,
-        what,
-        through,
-        &mut Some,
-    )
-}
-
-/// [`escapes_through`] asking the cells `asked`, each of which stands for
-/// the quantifier `stands` answers, if any. A cell numbered past the
-/// quantifiers is answered only once `answered` holds it, which it comes
-/// to hold when a function type the walk meets quantifies it; until then
-/// no function type binds it, so it is free wherever the walk meets it.
-fn escapes_standing(
-    quantified: &[(ArcStr, usize)],
-    asked: &AHashMap<usize, u32>,
-    answered: &mut [bool],
-    sights: &mut Sights,
-    env: &Type,
-    what: &str,
-    through: &str,
-    stands: &mut impl FnMut(u32) -> Option<u32>,
-) -> Result<()> {
-    let q = quantified.len() as u32;
-    let free = loop {
-        let mut walk = Free::answering(asked, q, answered);
-        let free = walk.free(env, &mut |i, tv| sights.see(i, tv));
-        let unanswered = mem::take(&mut walk.unanswered);
-        drop(walk);
-        if unanswered.is_empty() {
-            break free;
+    let asked = asked(quantified);
+    let mut first: SmallVec<[Option<(usize, TVar)>; 4]> =
+        quantified.iter().map(|_| None).collect();
+    let mut sights = 0;
+    let free = Free::new(&asked).free(env, &mut |i, tv| {
+        if first[i as usize].is_none() {
+            first[i as usize] = Some((sights, tv.clone()));
+            sights += 1
         }
-        for i in unanswered.iter() {
-            answered[(i - q) as usize] = true
-        }
-        sights.clear()
-    };
-    let reached = sights.met.iter().find_map(|(i, c)| {
-        let is_free = match i.checked_sub(q) {
-            Some(j) if !answered[j as usize] => true,
-            _ => free.binary_search(i).is_ok(),
-        };
-        is_free.then(|| stands(*i).map(|q| (q, c))).flatten()
     });
-    let escape = reached.map(|(i, c)| {
-        let q = &quantified[i as usize].0;
-        let named = match c.name == *q {
-            true => format_compact!(""),
-            false => format_compact!(", where {c} is '{q}"),
-        };
-        anyhow!(
-            "{what} is not polymorphic in '{q}: {through}, of type {}{named}, would \
-             carry '{q} out",
-            printed_deref(env)
-        )
-    });
-    sights.clear();
-    escape.map_or(Ok(()), Err)
-}
-
-/// The asked cells one walk met, in the order it first met each, kept
-/// for the next walk with only what this one set cleared.
-struct Sights {
-    /// Each asked cell's place in `met`, if met.
-    at: LPooled<Vec<Option<u32>>>,
-    met: LPooled<Vec<(u32, TVar)>>,
-}
-
-impl Sights {
-    fn new(asked: usize) -> Self {
-        let mut at: LPooled<Vec<Option<u32>>> = LPooled::take();
-        at.resize(asked, None);
-        Self { at, met: LPooled::take() }
-    }
-
-    fn see(&mut self, i: u32, tv: &TVar) {
-        let at = &mut self.at[i as usize];
-        if at.is_none() {
-            *at = Some(self.met.len() as u32);
-            self.met.push((i, tv.clone()))
-        }
-    }
-
-    fn clear(&mut self) {
-        for (i, _) in self.met.drain(..) {
-            self.at[i as usize] = None
+    let reached = free
+        .iter()
+        .filter_map(|i| first[*i as usize].as_ref().map(|(n, c)| (*n, *i, c)))
+        .min_by_key(|(n, _, _)| *n);
+    match reached {
+        None => Ok(()),
+        Some((_, i, c)) => {
+            let q = &quantified[i as usize].0;
+            let named = match c.name == *q {
+                true => format_compact!(""),
+                false => format_compact!(", where {c} is '{q}"),
+            };
+            bail!(
+                "{what} is not polymorphic in '{q}: {through}, of type {}{named}, would \
+                 carry '{q} out",
+                printed_deref(env)
+            )
         }
     }
 }
@@ -1687,15 +1551,9 @@ impl<T: Copy + Eq + std::hash::Hash> Interned<T> {
 /// node still on the walk's path: its answer misses what the cycle reaches
 /// there, so it is answered again where it is met again. Answers are
 /// interned, so a node whose children answer alike shares their answer,
-/// and a join of the same answers is made once. A cell numbered `from` or
-/// more is only handed to `met`, unless `answered` holds it (by its number
-/// less `from`); `unanswered` takes each other one a function type
-/// quantifies.
+/// and a join of the same answers is made once.
 struct Free<'a> {
     asked: &'a AHashMap<usize, u32>,
-    from: u32,
-    answered: &'a [bool],
-    unanswered: LPooled<Vec<u32>>,
     nodes: LPooled<AHashMap<usize, Met>>,
     /// The answers of two or more cells: their numbers, sorted.
     sets: Interned<u32>,
@@ -1711,19 +1569,8 @@ struct Free<'a> {
 
 impl<'a> Free<'a> {
     fn new(asked: &'a AHashMap<usize, u32>) -> Self {
-        Self::answering(asked, u32::MAX, &[])
-    }
-
-    fn answering(
-        asked: &'a AHashMap<usize, u32>,
-        from: u32,
-        answered: &'a [bool],
-    ) -> Self {
         Self {
             asked,
-            from,
-            answered,
-            unanswered: LPooled::take(),
             nodes: LPooled::take(),
             sets: Interned::new(),
             joins: Interned::new(),
@@ -1778,9 +1625,7 @@ impl<'a> Free<'a> {
                 Type::TVar(tv) => {
                     if let Some(i) = self.number(tv) {
                         met(i, tv);
-                        if self.answers(i) {
-                            child(self, (usize::MAX, Some(Ans::One(i))))
-                        }
+                        child(self, (usize::MAX, Some(Ans::One(i))))
                     }
                     match tv.binding() {
                         Some(b) => {
@@ -1802,14 +1647,7 @@ impl<'a> Free<'a> {
                         child(self, r)
                     });
                     if let Type::Fn(ft) = t {
-                        ft.each_quantifier(|_, q| {
-                            if let Some(i) = self.number(q) {
-                                match self.answers(i) {
-                                    true => own.push(i),
-                                    false => self.unanswered.push(i),
-                                }
-                            }
-                        });
+                        ft.each_quantifier(|_, q| own.extend(self.number(q)));
                         own.sort_unstable()
                     }
                 }
@@ -1839,11 +1677,6 @@ impl<'a> Free<'a> {
     fn number(&self, tv: &TVar) -> Option<u32> {
         rank2_step();
         self.asked.get(&tv.cell_addr()).copied()
-    }
-
-    /// Whether the cell numbered `i` is answered, not only met.
-    fn answers(&self, i: u32) -> bool {
-        i.checked_sub(self.from).is_none_or(|j| self.answered[j as usize])
     }
 
     /// The answer of a node whose children answered `stack[start..]`,
@@ -5492,45 +5325,6 @@ mod test {
         assert!(escapes_through(&q, &f, "v", "b").is_ok());
         let beside = Type::Tuple(TArc::from_iter([f, Type::TVar(y)]));
         assert!(escapes_through(&q, &beside, "v", "b").is_err());
-    }
-
-    // A copied cell standing for a quantifier is free only outside a
-    // function type that quantifies it: the walk that met it under one
-    // answers it from then on, and a nest of copied cells no function type
-    // quantifies is met, never answered.
-    #[test]
-    fn escape_walk_answers_a_copied_cell_a_function_type_quantifies() {
-        let (quantified, _) = asked_of(&parse_type("fn<'a: Any>(x: 'a) -> 'a").unwrap());
-        let f = parse_type("fn<'c: Any>(y: 'c) -> 'c").unwrap();
-        let (c, cells) = asked_of(&f);
-        let mut index = asked(&quantified);
-        index.insert(c[0].1, 1);
-        let check = |env: &Type| {
-            let (mut answered, mut sights) = ([false], Sights::new(2));
-            let r = escapes_standing(
-                &quantified,
-                &index,
-                &mut answered,
-                &mut sights,
-                env,
-                "v",
-                "b",
-                &mut |_| Some(0),
-            );
-            (r, answered[0])
-        };
-        assert!(matches!(check(&f), (Ok(()), true)));
-        let beside = Type::Tuple(TArc::from_iter([f, Type::TVar(cells[0].clone())]));
-        let (r, answered) = check(&beside);
-        assert!(answered);
-        let e = r.unwrap_err().to_string();
-        assert!(e.contains("where 'c is 'a"), "{e}");
-        let mut nest = Type::TVar(cells[0].clone());
-        for _ in 0..64 {
-            nest = Type::Tuple(TArc::from_iter([nest, Type::TVar(cells[0].clone())]));
-        }
-        let (r, answered) = check(&nest);
-        assert!(r.is_err() && !answered);
     }
 
     /// `n` levels over `i64`, each `(fn<'a: Any>(x: 'a) -> ('a, L),
