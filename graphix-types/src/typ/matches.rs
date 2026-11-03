@@ -222,6 +222,34 @@ impl DerefMut for MatchHist {
 }
 
 impl Type {
+    // CR claude for claude: [bug/low] could_match's node-pair cache (MatchHist::found,
+    // a NodePairs) keeps a true reached while a pair of names is in progress, which the
+    // walk assumes to overlap, and keeps it after that pair's own walk fails; a later
+    // question about the same node pair takes it. NodePairs keys nothing for its first
+    // NodePairs::EAGER (64) calls, so whether such a true is kept depends on how far the
+    // walk has gone, and a select arm that can match nothing is refused or accepted by
+    // the size of a type the arm does not decide. main bbb06c0c6 refuses fu12.gx (S0 =
+    // [Error<K0>, Error<L0>, Error<N0>], K0 a tuple of 12 `A and `X, L0 = (N0, `P), N0 =
+    // [Error<K0>, Error<L0>, `Y]; S1 the same over K1 (`Y last), L1 (`Q), N1 (`W); `let
+    // v: S1 = never(); select v { S0 as x => 1, _ => 2 }`) with "pattern [Error<K0>,
+    // Error<L0>, Error<N0>] will never match [Error<K1>, Error<L1>, Error<N1>]" and
+    // accepts it at 16 to 40 `A (fu16.gx .. fu40.gx), though no value of S1 is in S0;
+    // it refuses i4-3.gx and accepts i4-4.gx, whose unrelated union PY holds one tag
+    // more. A unit walk: could_match(S0, S1) over fu16's names is true. could_match
+    // also narrows binds and picks cast members (could_pass), where a stale true
+    // reaches too. The fix: keep a true in found only where its walk met no pair in
+    // progress (a flag set where a pair in progress answers true, saved and restored
+    // around each pair's walk, as DiffHist::cycled is), so found answers what the walk
+    // without it answers; it refuses the programs above that main accepts. With it,
+    // could_match can keep a refuted pair as diff keeps a finished one
+    // (DiffHist::done), which makes a select over a DAG of named unions beside a payload
+    // arm linear (callgrind --check, one eval thread, an empty program 1.31G: selp16,
+    // selp18, selp20 main 3.24G, 8.99G, -; diff's memo alone 1.65G, 2.65G, 6.62G; with
+    // such a memo too 1.34G, -, 1.33G); that memo, built for diff-dag-01, moved these
+    // verdicts against main's found and was dropped. The pair memo's differential
+    // test, typ::setops::tests::diff_and_could_match_memos_change_no_answer, holds the
+    // fu shape. probes: ~/ptmp/cr29/scratch/r8-X/found/ (fu*.gx, ft*.gx; i4-*.gx,
+    // c6-*.gx and their generators mk.py, mki.py, mkc.py) (found-assumed-true-01)
     pub(super) fn could_match_int(
         &self,
         env: &Env,

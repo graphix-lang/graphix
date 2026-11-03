@@ -15,6 +15,21 @@ use smallvec::{SmallVec, smallvec};
 use std::iter;
 use triomphe::Arc;
 
+// CR claude for claude: [bug/medium] matching_type's memo (MatchingTypes::memo) keeps
+// every pair for the walk, keyed by RefHist::ref_id, which keys an abstract type by
+// its parameters' address and an open cell by its cell's and holds neither: an
+// expansion's parameters (built anew by lookup_ref) die with its frame, and the next
+// instantiation's take their address and read the dead one's answer. main bbb06c0c6
+// refuses `type Box<'a> = Abstract<'a>; type W<'a> = [Box<'a>, `X]; let v: [Box<i64>,
+// Box<string>, `X] = Box("s"); select v { [W<i64>, W<string>] as b => select b {
+// Box<string> as s => 1, _ => 2 } }` with "pattern Box<string> will never match [`X,
+// Box<i64>]" in 11 runs of 12 (address reuse follows allocation order and AHash's
+// seeds, so the program is not a deterministic probe): the capture lost Box<string>.
+// With the members written (`[Box<i64>, Box<string>, `X] as b`) it prints 1. A unit
+// walk of matching_type([W<i64>, W<string>], [Box<i64>, Box<string>, `X]) gives [`X,
+// Box<i64>]; keeping each memoized pair's sides alive for the walk gives [`X,
+// Box<i64>, Box<string>]: pin the fix with that walk. Found by lane X (round 7).
+// probes: ~/ptmp/cr29/scratch/r8-X/mt1.gx, mt1b.gx (matching-type-pins-01)
 struct MatchingTypes {
     memo: RefHist<AHashMap<RefPair, Type>>,
     refs: LPooled<AHashSet<(Option<usize>, Option<usize>)>>,
@@ -633,6 +648,17 @@ impl Type {
     // difference, kept only where it assumed no pair in progress (as ContainsHist's
     // verdicts are), would make it linear. probes:
     // ~/ptmp/cr29/scratch/review-r6/E2-r1-2/sel16.gx, sel18.gx, sel20.gx (diff-dag-01)
+    // 2026-11-02 claude: Round 7 lane X built a memo of finished pairs (DiffHist::done)
+    // and one of refuted pairs in could_match; three review rounds each found it moving
+    // select verdicts against main: a hang through recursive Error payloads, address
+    // reuse, the refuted memo shifting where could_match's found cache starts
+    // (found-assumed-true-01), a bound cell keyed as its binding (diff-bound-cell-01),
+    // and a shared output node reaching found's stale trues. Not landed: branch cr45-X
+    // (cdcab0a9f, 326be068c, ca7f82513) keeps it; on it sel16-32 check flat at about
+    // 1.34G and selp16/18/20 at 1.65/2.65/6.62G (main 3.24/8.99G). Fix
+    // found-assumed-true-01 and diff-bound-cell-01 first; then the memo moves nothing
+    // (the lane measured selp linear with both memos once found keeps only trues no
+    // in-progress pair assumed).
     fn diff_inner(
         &self,
         env: &Env,
@@ -747,6 +773,17 @@ impl Type {
                     Ok(self.clone())
                 }
             }
+            // CR claude for claude: [bug/low] This arm, and the Fn, App and Abstract arms
+            // below, compare with Type `==`, which does not read a bound cell through, so
+            // coverage follows a cell's representation, not its type: `Error<Map<'k: i64,
+            // 'v: i64>>` is not taken out by `Error<S>` with `S = Map<i64, i64>`, and in
+            // bc2.gx an arm `[Error<S>, Array<S>] as x` covering the whole scrutinee leaves
+            // a later dead arm `Array<R<i64>>` accepted (main 4a886eb8f). Compare with
+            // bound cells read through (as same_resolved does). It also keeps any memo of
+            // diff from conflating `R<'c: i64>` with `R<i64>` (RefHist::ref_id keys them
+            // alike): lane X's memo for diff-dag-01 moved verdicts that way. Found by lane
+            // X's r8 review. probes ~/ptmp/cr29/scratch/review-r8/X-r3-1/bc/bc2.gx,
+            // bc2z.gx, bc5.gx (diff-bound-cell-01)
             (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
                 if k0 == k1 && v0 == v1 {
                     Ok(Type::Primitive(BitFlags::empty()))
