@@ -807,6 +807,10 @@ pub(crate) use report_ignored;
 // lang::errors::catch_reader_born_after_the_raise (times out in all four modes without
 // the change) and catch_repl_reader_born_after_the_raise (the cross-root half, passes on
 // main too). Firing change: needs a soak. Probes ~/ptmp/cr29/scratch/r9-N/catch/.
+// 2026-11-03 claude: Review r9 (low): a seq step's fresh frame keeps the binder's last
+// error, as it keeps a written let's value, so a handler arm a later run enters first
+// reads an earlier run's error (review probe fz/f_seq5.gx; f_seq8.gx shows a written let
+// alike on main). Said in design/catch.md; covered by the commit's soak.
 
 /// Deliver a `?`'s raw error payload `e`, a value of `raised`, to
 /// `handler` on behalf of the `?` at `spec` under `own_top`. The one handler path, shared by
