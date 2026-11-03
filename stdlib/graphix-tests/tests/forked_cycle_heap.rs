@@ -1,13 +1,14 @@
 //! The live heap bytes a program holds, every thread's, as it runs
-//! cycles that change nothing but a counter: a recursion through a
-//! collection that rebuilds the same tree each cycle, forked at every
-//! fork point over 16 eval workers and an 8-worker runtime, node-walked,
-//! fused and partly fused. Nodes run on the runtime's one thread and the
-//! eval workers, a set fixed by the first fork, and each keeps of what
-//! it frees a bounded amount, so once each holds its share the heap
-//! stops growing: between two late cycle counts it may grow
-//! `MAX_BYTES_PER_CYCLE` a cycle, a small part of the arrays a cycle
-//! builds.
+//! cycles whose state repeats, on an 8-worker runtime: a recursion
+//! through a collection that rebuilds the same tree each cycle, forked
+//! at every fork point over 16 eval workers, node-walked, fused and
+//! partly fused, and one whose collections shrink and grow each cycle,
+//! so its slots are made and deleted, node-walked serially. Nodes run on
+//! the runtime's one thread and the eval workers, a set fixed by the
+//! first fork, and each keeps of what it frees a bounded amount, so once
+//! each holds its share the heap stops growing: between two late cycle
+//! counts it may grow `MAX_BYTES_PER_CYCLE` a cycle, a small part of the
+//! arrays a cycle builds.
 
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -77,23 +78,36 @@ const FLAT_MAP: &str = "array::push(array::flat_map([rest, rest], t), h)";
 const JOIN: &str = "{\n      let join = |xs: Array<Array<i64>>, h: i64| array::push(array::flatten(xs), h);\n      \
                     join(array::map([rest, rest], t), h)\n    }";
 
-/// A tree of depth 5 whose 32 leaves read `n`, which counts cycles: 31
-/// arrays of 2 to 62 elements joined and 31 pushed onto them each cycle.
-fn program(leaf: &str, node: &str) -> CompactString {
+/// A node whose children number 1 or 2 as `n` counts.
+const SHRINK: &str =
+    "array::push(array::flat_map(array::init(1 + n % 2, |i| rest), t), h)";
+/// The fixed tree: depth 5, 32 leaves.
+const FIXED: &str = "[1, 2, 3, 4, 5]";
+/// Depth 1 to 5 as `n` counts: with `SHRINK`, 1 to 32 leaves.
+const SHRINKING: &str = "array::init(1 + n % 5, |i| i)";
+
+/// A tree rooted at `root` whose leaves read `n`, which counts cycles.
+/// Under `FIXED` and `FLAT_MAP` 31 arrays of 2 to 62 elements are joined
+/// and 31 pushed onto them each cycle.
+fn program(leaf: &str, node: &str, root: &str) -> CompactString {
     format_compact!(
         "{{\n  let n = 0;\n  n <- n + 1;\n  \
          let rec t = |a: Array<i64>| -> Array<i64> select a {{\n    \
          [] => [{leaf}],\n    \
          [h, rest..] => {node}\n  }};\n  \
-         let l = array::len(t([1, 2, 3, 4, 5]));\n  l ~ n\n}}"
+         let l = array::len(t({root}));\n  l ~ n\n}}"
     )
 }
 
 /// The live heap at `SETTLED` and `LATER` cycles, and what fused.
-async fn grow(program: CompactString, fused: bool) -> Result<(i64, i64, usize, usize)> {
+async fn grow(
+    program: CompactString,
+    fused: bool,
+    par: ParMode,
+) -> Result<(i64, i64, usize, usize)> {
     let (tx, mut rx) = mpsc::channel(1024);
     let cfg = testing::config(tx, REGISTER, vec![], |ctx| {
-        ctx.control.set_par_mode(ParMode::Force);
+        ctx.control.set_par_mode(par);
         ctx.control.set_prune_mode(PruneMode::On);
     })?;
     let flags = match fused {
@@ -123,16 +137,18 @@ fn assert_heap_settles(
     what: &str,
     leaf: &str,
     node: &str,
+    root: &str,
     fused: bool,
+    par: ParMode,
 ) -> (usize, usize) {
-    let program = program(leaf, node);
+    let program = program(leaf, node, root);
     let (settled, later, regions, failed) = thread::spawn(move || {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(RUNTIME_THREADS)
             .enable_all()
             .build()
             .unwrap()
-            .block_on(grow(program, fused))
+            .block_on(grow(program, fused, par))
             .unwrap()
     })
     .join()
@@ -155,9 +171,29 @@ fn assert_heap_settles(
 fn forked_heap_settles() {
     // SAFETY: nothing else runs in this binary yet.
     unsafe { std::env::set_var("GRAPHIX_EVAL_THREADS", EVAL_THREADS) };
-    assert_heap_settles("node-walk", "n", FLAT_MAP, false);
-    let (regions, _) = assert_heap_settles("fused", "n", FLAT_MAP, true);
+    use ParMode::{Force, Off};
+    assert_heap_settles("node-walk", "n", FLAT_MAP, FIXED, false, Force);
+    // CR claude for claude: [perf/low] The shrinking case runs serially
+    // because, forked over the 16 eval workers, its live heap still grows
+    // under the thread fix: with the runtime of option (c)
+    // (runtime-thread-spread-01) it grew 267 to 559 bytes a cycle between
+    // 6000 and 12000 cycles (6 runs, load 48 to 230) and 186 and 240 between
+    // 12000 and 24000; with netidx-value's lists bounded too, 198 and 216,
+    // and 5.3 MB from 3000 to 48000 cycles in windows of 16 to 256 bytes a
+    // cycle, not settled. Serially it is flat (29.21 to 29.22 MB from 3000
+    // to 48000 cycles under (c) and the bound), so the slots' own churn
+    // keeps nothing: some per-thread state of the eval workers grows with
+    // forked slot churn. Whether that is a bounded cache filling slowly (the
+    // bounded lists alone can hold 4 MB over 16 workers; poolshark's pools,
+    // `FastMemo`) or unbounded was not found. Main grows more on this case
+    // forked (833 to 1185 bytes a cycle), which hides it. Find what grows
+    // once runtime-thread-spread-01 lands, then fork this case. Probes:
+    // ~/ptmp/cr29/scratch/r10-M/r13/ (expc_toggles.diff, shrink_expc*.txt,
+    // final_expc*.txt, shrink_long_expc_bound*.txt). (forked-slot-churn-01)
+    assert_heap_settles("shrinking, serial", "n", SHRINK, SHRINKING, false, Off);
+    let (regions, _) = assert_heap_settles("fused", "n", FLAT_MAP, FIXED, true, Force);
     assert!(regions > 0, "nothing fused");
-    let (regions, failed) = assert_heap_settles("partly fused", "uniq(n)", JOIN, true);
+    let (regions, failed) =
+        assert_heap_settles("partly fused", "uniq(n)", JOIN, FIXED, true, Force);
     assert!(regions > 0 && failed > 0, "{regions} regions fused, {failed} failed");
 }

@@ -299,17 +299,21 @@ the state of a fix, and Graphix's side.
   bound the repro is flat at 37 MB. `bench/par_symbolic.gx`'s busiest
   list peaks at 65 KB, so with 256 KiB it still finds 99.8% of its 2M
   arrays on a list, serial and forked.
-- **Graphix's side.** Not fixed by the bound alone: the runtime
-  multiplies every per-thread cache by the threads its passes run on.
-  Each cycle's update pass runs in `block_in_place`, so a busy runtime's
-  passes land on many threads (35 to 209 seen in 5 minutes; tokio
-  allows 512), each keeping its own free lists, poolshark pools and
-  allocator arena, and nothing in Graphix bounds that count. So the
-  growth is not shown to stop short of exhausting memory: a partly
-  fused program on a 1 ms timer reached 1.9 GB in 15 minutes, and with
-  the lists bounded a recursion whose collections shrink and grow still
-  went from 178 to 623 MB in 10 minutes under `GRAPHIX_PAR=off`. The
-  fix is Graphix's: CR runtime-thread-spread-01, whose pins
+- **Graphix's side.** Not fixed by the bound alone. Each cycle's
+  update pass runs in `block_in_place`, so a busy runtime's passes move
+  from thread to thread (2000 passes of
+  `graphix-rt/tests/pass_thread.rs` ran on 5 to 24), each keeping its
+  own free lists and poolshark pools and allocating from its own malloc
+  arena, and nothing in Graphix bounds how many threads that is (tokio
+  allows 512 blocking threads). Without the bound a partly fused
+  program on a 1 ms timer reached 1.9 GB in 15 minutes (113 MB with
+  it), and that growth is not shown to stop short of exhausting memory.
+  With the bound, a recursion whose collections shrink and grow went
+  from 229 to 623 MB in 10 minutes under `GRAPHIX_PAR=off`, its process
+  at 35 or 36 threads throughout, and beside it with
+  `MALLOC_ARENA_MAX=1` from 103 to 120 MB: that growth is the malloc
+  arenas of the threads its passes ran on. The fix is Graphix's: CR
+  runtime-thread-spread-01, whose pins
   (`stdlib/graphix-tests/tests/forked_cycle_heap.rs`,
   `graphix-rt/tests/pass_thread.rs`) are ignored until it lands. This
   bound is still wanted then: it bounds what each eval worker keeps.

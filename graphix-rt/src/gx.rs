@@ -731,6 +731,36 @@ impl<X: GXExt> GX<X> {
         // runs 2000 passes on 9 to 24 threads; 1 with (b) or (c)) and
         // forked_cycle_heap.rs forked_heap_settles (main 4448 and 4902 bytes a
         // cycle; un-ignore it under slow-tests).
+        // 2026-11-03 claude: Round-13 corrections (review r10, round 2; evidence
+        // ~/ptmp/cr29/scratch/r10-M/r13/ and r12/). (1) The round-12 note's
+        // l_flat runs (70 MB, forced 72) say nothing of (b): main stayed flat on
+        // l_flat in that session too (73 to 74 MB, forced 97 to 100). There only
+        // s_shrink under GRAPHIX_PAR=off separates them (main 142 to 313 MB, (b)
+        // flat at 111); (b)'s forced partial_timer (flat at 81 to 82) had no main
+        // run beside it (review r10's main run, auto, went 384 to 815 MB in 5
+        // min). (2) (c) without the netidx bound still crept over 5 min: s_shrink
+        // 281 to 343 MB, under PAR=off 110 to 126, forced l_flat 74 to 99, forced
+        // partial_timer 84 to 110. With the bound they are flat over 10 min,
+        // except that s_shrink (auto) climbs 167 to 322 MB in 9.5 min before it
+        // holds (131 to 143 with MALLOC_ARENA_MAX=2: malloc arenas, not a leak);
+        // hence (c) is recommended with the bound. (3) 838c8ba86's commit message
+        // gives the wrong reason for forked_heap_settles' 1024 bytes a cycle: the
+        // -700 and -762 swings it cites came from (b) on main's netidx and were
+        // negative. The limit rests on (c) alone, the condition that un-ignores
+        // the pin: 17 runs at load 38 to 345 (review r10's 8, round 12's 2, 7
+        // now) read -180 to +23 bytes a cycle on the fixed tree, against main's
+        // 3940 to 4902. (4) forked_heap_settles gains a case whose collections
+        // shrink and grow each cycle, so its slots are made and deleted, which
+        // the fixed tree never does; it runs serially (forked-slot-churn-01 says
+        // why). Under (c), with every slot that node/collection.rs resize deletes
+        // forgotten (a leak injected for the measurement, expc_toggles.diff), the
+        // fixed tree read 0 bytes a cycle and the new case 4432; without the leak
+        // the new case reads 0 and -1 under (c), 0 under (c) with the bound, and
+        // -856, 44 and (with the bound) 23 on main: it guards the slots' churn,
+        // and only the fixed-tree cases tell main from the fix. (5) Without a fix
+        // the growth is not shown to stop short of exhausting memory (1.9 GB in
+        // 15 min on a 1 ms timer), so this reads as [perf/high]; the CR's text
+        // stays as written.
         if matches!(
             tokio::runtime::Handle::current().runtime_flavor(),
             tokio::runtime::RuntimeFlavor::CurrentThread
