@@ -987,7 +987,9 @@ pub(crate) struct Discovery<'n, R: Rt> {
 /// loop emits inline, from its body or a callback inline in it, calls
 /// that callback instance's kernel; where `root` is the body of `own`, a
 /// self-recursive instance, the root's other self-calls call `own`'s
-/// kernel, which runs the rest of the recursion.
+/// kernel, which runs the rest of the recursion. A loop whose callback is
+/// a recursion's bare name makes its prototype's call, through that name,
+/// recorded under the prototype's id.
 pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     root: &'n Node<R>,
     own: Option<&'n GXLambda<R>>,
@@ -1023,7 +1025,16 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
             let NodeView::CallSite(cs) = n.view() else {
                 return;
             };
-            let calls = |bind: BindId| matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == bind);
+            // a loop whose callback is a recursion's bare name makes, in
+            // each slot, its prototype's call of that recursion
+            let (cs, through) = match cs.recursion_callback() {
+                Some((call, name)) => (call, Some(name)),
+                None => match cs.fnode().view() {
+                    NodeView::Ref(r) => (cs, Some(r.id)),
+                    _ => (cs, None),
+                },
+            };
+            let calls = |bind: BindId| through == Some(bind);
             let holder = owners.iter().rev().find(|g| g.self_bind().is_some_and(calls));
             let (g, site_ftype) = match (cs.resolved_apply(), holder, &own) {
                 (Some(ApplyView::Lambda(g)), _, _) => match cs.resolved_ftype() {
@@ -1077,7 +1088,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
                 );
                 enqueue.push((g.body(), ptr));
             }
-            match local_sites.entry(n.spec().id) {
+            match local_sites.entry(cs.spec().id) {
                 Entry::Vacant(e) => {
                     e.insert(cached);
                 }

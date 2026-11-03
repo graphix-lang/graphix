@@ -2444,6 +2444,39 @@ impl<R: Rt> CallSite<R> {
         self.static_target.as_ref()
     }
 
+    /// Whether this is a self-call: its target is an instance that was
+    /// still checking where the call resolved, which it shares, holding
+    /// none of its own.
+    pub(crate) fn shares_instance(&self) -> bool {
+        self.static_target.is_some() && matches!(self.callee, Callee::DynamicUnbound)
+    }
+
+    /// Where this call runs a collection whose callback is the bare name
+    /// of a recursion still checking here (`array::map(xs, t)` in `t`):
+    /// the collection's prototype call, a self-call of that recursion,
+    /// and the binding this call names it by.
+    pub(crate) fn recursion_callback(&self) -> Option<(&CallSite<R>, BindId)> {
+        let Some(ApplyView::Lambda(g)) = self.resolved_apply() else { return None };
+        let prototype = match g.body().view() {
+            NodeView::MapQ(m) => &m.prototype,
+            NodeView::FoldQ(f) => &f.prototype,
+            _ => return None,
+        };
+        let NodeView::CallSite(call) = prototype.view() else { return None };
+        let NodeView::Ref(formal) = call.fnode().view() else { return None };
+        if !call.shares_instance() {
+            return None;
+        }
+        let key =
+            ArgKey::of_formals(&g.typ().args).zip(g.args()).find_map(|(key, pat)| {
+                (pat.single_bind_id() == Some(formal.id)).then_some(key)
+            })?;
+        match self.arg(&key)?.view() {
+            NodeView::Ref(r) => Some((call, r.id)),
+            _ => None,
+        }
+    }
+
     /// Whether this site's callee was bound at compile time and no rebind
     /// replaces it.
     pub(crate) fn bound_statically(&self) -> bool {

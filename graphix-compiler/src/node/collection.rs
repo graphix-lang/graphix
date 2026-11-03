@@ -20,9 +20,9 @@ use crate::{
         emit::{
             self, BodyCx, CompiledExpr,
             loops::{
-                FoldParts, callback_param, emit_filter_kind, emit_filter_map_kind,
-                emit_find_kind, emit_find_map_kind, emit_flat_map_kind, emit_fold_kind,
-                emit_init_kind, emit_map_kind,
+                CallbackParam, FoldParts, callback_param, emit_filter_kind,
+                emit_filter_map_kind, emit_find_kind, emit_find_map_kind,
+                emit_flat_map_kind, emit_fold_kind, emit_init_kind, emit_map_kind,
             },
         },
         share::{self, SlotShare},
@@ -837,9 +837,45 @@ impl<R: Rt> MapQBase<R> {
         let Some(source) = callsite.arg_positional(0) else {
             return Ok(None);
         };
+        // CR claude for claude: [perf/low] A collection call nested in its own
+        // callback with the same callback does not fuse: in `let rec k = |n: i64|
+        // -> i64 select n { 0 => 0, _ => n + array::fold(array::map([n - 1], k), 0,
+        // |a, x| a + x) }`, `#[native] array::map([1, 2, 4], k)` is refused
+        // "mutually recursive static call edge is not supported" (main 387c29e60
+        // the same). The inner `array::map` reaches the definition with the outer
+        // call's fn-arg identity while the outer instance is still checking, so it
+        // is that instance's self-call (`CallSite::shares_instance`), holds no
+        // instance and never reaches this loop emission. `list::map([<1, 2, 4>],
+        // k)` outside fuses (`bare_recursion_from_a_collection_callback`).
+        // Fusing it needs the inner call emitted as the outer collection's loop
+        // whose slots call the callback's kernel. probe:
+        // ~/ptmp/cr29/scratch/r10-J/probes/b_samecoll.gx (collection-self-identity-01)
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
-        let r = self.emit(source, &callsite.spec, cx);
+        let r = match callsite.recursion_callback() {
+            Some((call, name)) => self.emit_recursion(source, call, name, cx),
+            None => self.emit(source, &callsite.spec, cx),
+        };
         cx.swap_collection_site(prev);
+        r
+    }
+
+    /// The loop whose slots make the prototype's `call` of the recursion
+    /// the collection's call names `name` (`CallSite::recursion_callback`),
+    /// each over its element.
+    fn emit_recursion(
+        &self,
+        source: &Node<R>,
+        call: &CallSite<R>,
+        name: BindId,
+        cx: &mut BodyCx,
+    ) -> Result<Option<CompiledExpr>> {
+        if emit::node_is_bottom(source) || cx.recursion_kernel(call, name).is_none() {
+            return Ok(None);
+        }
+        let param = CallbackParam::bound(literal!("__elem"), self.prototype_id);
+        let prev = cx.swap_recursion_call(Some((call.spec().id, name)));
+        let r = self.emit_op(source, &self.prototype, &param, cx);
+        cx.swap_recursion_call(prev);
         r
     }
 
@@ -852,7 +888,7 @@ impl<R: Rt> MapQBase<R> {
         if emit::node_is_bottom(source) {
             return Ok(None);
         }
-        // CR claude for claude: [perf/low] A collection whose callback is the
+        // XCR claude for claude: [perf/low] A collection whose callback is the
         // recursive binding itself does not fuse: in `let rec t = |d: i64| -> i64
         // select d { 0 => 1, _ => 1 + array::fold(array::map([d - 1, 0, 0], t), 0,
         // |a, x| a + x) }`, `#[native] t(20)` is refused "lambda call site
@@ -864,21 +900,53 @@ impl<R: Rt> MapQBase<R> {
         // slot makes the enclosing kernel's self-call over the element, with no
         // callback body to emit; a fold's callback alike. probe:
         // ~/ptmp/cr29/scratch/r9-J/tmap_bare.gx (collection-self-callback-01)
+        // 2026-11-03 claude: Fixed: a collection call whose callback is a
+        // recursion's bare name (CallSite::recursion_callback: its prototype shares
+        // the instance still checking) emits its loop with the prototype call as the
+        // slot body (MapQBase/FoldQBase::emit_recursion), the element bound under
+        // the prototype's argument; BodyCx::own_call reads the prototype as named by
+        // the collection call's argument while the loop is built
+        // (LowerCtx::recursion_call), so each slot makes the holder kernel's
+        // self-call through a slot-root chain. mark_recursion takes that name as the
+        // self binding (recursion_names, the collection instance an inline holder);
+        // discovery records the prototype for a holder or own region. Node-walk
+        // unchanged. Pins (all fail with the compiler change reverted, 18 of 36
+        // runs):
+        // lib_tests::tree_recursion::bare_tree_recursion_through_{map,fold,filter,flat_map},
+        // bare_capturing_tree_recursion,
+        // bare_capturing_tree_recursion_through_nested_maps,
+        // bare_recursion_from_a_collection_callback (jit/jit_par),
+        // bare_recursion_sleeps_and_wakes, bare_recursion_children_deleted,
+        // bare_recursion_frees_deleted_slots,
+        // lang::image::program_image_restores_bare_recursion_loops; control
+        // bare_callback_naming_another_function fuses on both. The same collection
+        // nested in its own callback with the same callback stays unfused: new CR
+        // collection-self-identity-01.
         let Some(callback) = callback(&self.prototype) else { return Ok(None) };
         let Some(param) = callback_param(callback, 0, literal!("__elem"), spec)? else {
             return Ok(None);
         };
-        let (body, et, flavor) = (callback.body(), &self.element_type, self.flavor);
+        self.emit_op(source, callback.body(), &param, cx)
+    }
+
+    /// The loop of this traversal over `source`, each slot running `body`
+    /// with its element bound as `param`.
+    fn emit_op(
+        &self,
+        source: &Node<R>,
+        body: &Node<R>,
+        param: &CallbackParam,
+        cx: &mut BodyCx,
+    ) -> Result<Option<CompiledExpr>> {
+        let (et, flavor) = (&self.element_type, self.flavor);
         match self.op {
-            MapOp::Init => emit_init_kind(cx, source, body, &param, flavor),
-            MapOp::Map => emit_map_kind(cx, source, body, &param, et, flavor),
-            MapOp::Filter => emit_filter_kind(cx, source, body, &param, et, flavor),
-            MapOp::FilterMap => {
-                emit_filter_map_kind(cx, source, body, &param, et, flavor)
-            }
-            MapOp::FlatMap => emit_flat_map_kind(cx, source, body, &param, et, flavor),
-            MapOp::Find => emit_find_kind(cx, source, body, &param, et, flavor),
-            MapOp::FindMap => emit_find_map_kind(cx, source, body, &param, et, flavor),
+            MapOp::Init => emit_init_kind(cx, source, body, param, flavor),
+            MapOp::Map => emit_map_kind(cx, source, body, param, et, flavor),
+            MapOp::Filter => emit_filter_kind(cx, source, body, param, et, flavor),
+            MapOp::FilterMap => emit_filter_map_kind(cx, source, body, param, et, flavor),
+            MapOp::FlatMap => emit_flat_map_kind(cx, source, body, param, et, flavor),
+            MapOp::Find => emit_find_kind(cx, source, body, param, et, flavor),
+            MapOp::FindMap => emit_find_map_kind(cx, source, body, param, et, flavor),
         }
     }
 
@@ -1491,8 +1559,47 @@ impl<R: Rt> FoldQBase<R> {
             return Ok(None);
         };
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
-        let r = self.emit(source, init, &callsite.spec, cx);
+        let r = match callsite.recursion_callback() {
+            Some((call, name)) => self.emit_recursion(source, init, call, name, cx),
+            None => self.emit(source, init, &callsite.spec, cx),
+        };
         cx.swap_collection_site(prev);
+        r
+    }
+
+    /// The fold whose slots make the prototype's `call` of the recursion
+    /// the collection's call names `name` (`CallSite::recursion_callback`),
+    /// each over the accumulator and its element.
+    fn emit_recursion(
+        &self,
+        source: &Node<R>,
+        init: &Node<R>,
+        call: &CallSite<R>,
+        name: BindId,
+        cx: &mut BodyCx,
+    ) -> Result<Option<CompiledExpr>> {
+        if emit::node_is_bottom(source)
+            || emit::node_is_bottom(init)
+            || cx.recursion_kernel(call, name).is_none()
+        {
+            return Ok(None);
+        }
+        let Some(ftype) = call.resolved_ftype() else { return Ok(None) };
+        let [acc, element] = self.prototype_ids;
+        let acc = CallbackParam::bound(literal!("__acc"), acc);
+        let element = CallbackParam::bound(literal!("__elem"), element);
+        let fold =
+            FoldParts { init, body: &self.prototype, acc: &acc, element: &element };
+        let prev = cx.swap_recursion_call(Some((call.spec().id, name)));
+        let r = emit_fold_kind(
+            cx,
+            source,
+            fold,
+            &ftype.rtype,
+            &self.element_type,
+            self.flavor,
+        );
+        cx.swap_recursion_call(prev);
         r
     }
 

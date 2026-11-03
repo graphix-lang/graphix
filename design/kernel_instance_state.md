@@ -243,11 +243,27 @@ JIT's root word must be the slot's, never one shared by the slots.
   bindings its nodes read and the captures of every kernel a call there
   makes, which the call forwards. A self-call's callee is no node of the
   iteration, so its captures are named from the kernel's own
-  (`BodyCx::called_kernel`).
-
-A collection whose callback is the recursive binding itself
-(`array::map(children, t)` in `t`) has no statically resolved callback
-and does not fuse (collection-self-callback-01); `|c| t(c)` does.
+  (`BodyCx::called_kernel`), as are those of the kernel a nested loop's
+  slots call where its callback is a bare name.
+- **A bare callback.** A collection whose callback is the recursion's
+  own name (`array::map(children, t)` in `t`) has no callback instance:
+  its prototype is the recursion's self-call, sharing the instance still
+  checking where it resolved (`CallSite::shares_instance`). Its slots
+  make that call over their elements, as `|c| t(c)`'s do. The analysis
+  counts the collection's own instance as run inline in the holder of
+  its call (`inline_holders`) and takes the self binding from the
+  collection call's argument (`recursion_names`); discovery records the
+  prototype under its id where the recursion is a holder or the region's
+  own; emission binds the element under the prototype's argument and
+  emits the prototype call, which `BodyCx::own_call` reads as named by
+  that argument while the loop is built (`LowerCtx::recursion_call`).
+  The node-walk is untouched: its slots call the definition the
+  prototype resolved to (`CallKind::slot`).
+- **Not a bare callback.** A collection call nested in its own callback
+  with the same callback (`array::map([n - 1], k)` in `k` under
+  `array::map(xs, k)`) reaches the collection with the outer call's
+  identity: it is the outer collection instance's self-call, has no loop
+  of its own, and does not fuse (collection-self-identity-01).
 
 ## What this is not
 

@@ -192,3 +192,134 @@ async fn callback_recursion_frees_deleted_slots() -> Result<()> {
     }
     Ok(())
 }
+
+// A collection whose callback is the recursion's own name: each slot
+// makes the recursion's call over its element, as `|c| t(c)` does.
+run!(bare_tree_recursion_through_map, r#"
+{
+    let rec t = |d: i64| -> i64 select d {
+        0 => 1,
+        _ => 1 + array::fold(array::map([d - 1, 0, 0], t), 0, |a, x| a + x)
+    };
+    #[native] t(20)
+}
+"#, is(Value::I64(61)); FuseExpect::Jit);
+
+run!(bare_tree_recursion_through_fold, r#"
+{
+    let rec t = |a: i64, d: i64| -> i64 select d {
+        0 => a + 1,
+        _ => array::fold([d - 1, 0, 0], a + 1, t)
+    };
+    #[native] t(0, 20)
+}
+"#, is(Value::I64(61)); FuseExpect::Jit);
+
+run!(bare_tree_recursion_through_filter, r#"
+{
+    let rec t = |d: i64| -> bool select d {
+        0 => true,
+        _ => array::len(array::filter([d - 1, d - 1, 0], t)) != 3
+    };
+    #[native] [t(9), t(10)]
+}
+"#, prints("[false, true]"); FuseExpect::Jit);
+
+run!(bare_tree_recursion_through_flat_map, r#"
+{
+    let rec t = |d: i64| -> Array<i64> select d {
+        0 => [0],
+        1 => [1],
+        _ => array::flat_map([d - 1, d - 2], t)
+    };
+    #[native] t(5)
+}
+"#, prints("[i64:1, i64:0, i64:1, i64:1, i64:0, i64:1, i64:0, i64:1]"); FuseExpect::Jit);
+
+run!(bare_capturing_tree_recursion, r#"
+{
+    let y = 2;
+    let rec t = |d: i64| -> i64 select d {
+        0 => y,
+        _ => array::fold(array::map([d - 1, d - 1], t), 0, |a, x| a + x)
+    };
+    #[native] t(3)
+}
+"#, is(Value::I64(16)); FuseExpect::Jit);
+
+// the bare callback's loop is in the slots of a loop that runs as chunks,
+// which hands each the recursion's capture
+run!(bare_capturing_tree_recursion_through_nested_maps, r#"
+{
+    let y = 2;
+    let rec t = |d: i64| -> i64 select d {
+        0 => y,
+        _ => array::fold(
+            array::map([d - 1, d - 1], |c| array::fold(array::map([c], t), 0, |a, x| a + x)),
+            0,
+            |a, x| a + x
+        )
+    };
+    #[native] t(3)
+}
+"#, is(Value::I64(16)); FuseExpect::Jit);
+
+// the recursion is the callback of a loop the region runs inline: the
+// slots of the loop in its body call its kernel
+run!(bare_recursion_from_a_collection_callback, r#"
+{
+    let rec k = |n: i64| -> i64 select n {
+        0 => 0,
+        _ => n + array::fold(array::map([n - 1], k), 0, |a, x| a + x)
+    };
+    #[native] list::map([<1, 2, 4>], k)
+}
+"#, prints("[i64:1, i64:3, i64:10]"); FuseExpect::Jit);
+
+// a bare callback that names another function: an instance of its own
+run!(bare_callback_naming_another_function, r#"
+{
+    let g = |c: i64| -> i64 c * 2;
+    let rec t = |d: i64| -> i64 select d {
+        0 => 1,
+        _ => t(d - 1) + array::fold(array::map([d, 1], g), 0, |a, x| a + x)
+    };
+    #[native] t(4)
+}
+"#, is(Value::I64(29)); FuseExpect::Jit);
+
+/// The bare-callback recursion is under an arm that sleeps every other
+/// value.
+#[tokio::test(flavor = "current_thread")]
+async fn bare_recursion_sleeps_and_wakes() -> Result<()> {
+    let code = "{ let rec k = |n: i64| -> i64 select n { 0 => 0, _ => \
+                  n + array::fold(array::map([n - 1], k), 0, |a, x| a + x) }; \
+                let ticks = array::iter([0, 1, 2, 3, 4]); \
+                select ticks % 2 { 0 => #[native] k(ticks + 2), _ => 0 - 1 } }";
+    assert_stream(code, &[3, -1, 10, -1, 21]).await
+}
+
+/// The bare callback's slots root child activations, deleted and made
+/// again at every depth.
+const BARE_SHRINKING_CHILDREN: &str = "{ let rec f = |n: i64| -> i64 select n { 0 => 1, _ => \
+      1 + array::fold(array::map(array::filter([n - 1, n - 2], |c| c >= 0), f), 0, \
+      |a, c| a + c) }; \
+    let n = array::iter([NS]); \
+    #[native] f(n) }";
+
+#[tokio::test(flavor = "current_thread")]
+async fn bare_recursion_children_deleted() -> Result<()> {
+    let code = BARE_SHRINKING_CHILDREN.replace("NS", "5, 1, 5, 7, 2");
+    assert_stream(&code, &[20, 2, 20, 54, 4]).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bare_recursion_frees_deleted_slots() -> Result<()> {
+    let deep = collect_n_blocks(&BARE_SHRINKING_CHILDREN.replace("NS", "10"), 1).await?;
+    let shallow =
+        collect_n_blocks(&BARE_SHRINKING_CHILDREN.replace("NS", "10, 1"), 2).await?;
+    if deep[..] != [231] || shallow[1] != 1 {
+        bail!("live SelfBlocks {deep:?} then {shallow:?}, expected [231] then [_, 1]")
+    }
+    Ok(())
+}

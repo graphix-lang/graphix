@@ -176,6 +176,7 @@ pub(super) fn compile_into_function<'a>(
         in_flight_bufs: RefCell::new(Vec::new()),
         owned_input_stack: RefCell::new(Vec::new()),
         collection_site: Cell::new(None),
+        recursion_call: Cell::new(None),
         self_call_roots: RefCell::new(Vec::new()),
         child_roots,
         pending_exit: RefCell::new(None),
@@ -567,6 +568,10 @@ pub(crate) struct LowerCtx<'a> {
     /// The collection HOF callsite whose loop scaffold is under
     /// construction; keys a nested loop's prev-length word.
     pub(super) collection_site: Cell<Option<ExprId>>,
+    /// The prototype call, by id, of a loop under construction whose
+    /// callback is a recursion's bare name, with the binding the
+    /// collection's call names it by.
+    pub(super) recursion_call: Cell<Option<(ExprId, BindId)>>,
     /// Site-word byte offsets rooting self-call activation trees; the
     /// block size they describe is final only after emission.
     pub(super) self_call_roots: RefCell<Vec<i32>>,

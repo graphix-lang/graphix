@@ -1483,10 +1483,11 @@ where
 /// prev-length word) and of every cross-kernel lambda call (its
 /// first-call word), each of which claims one per-slot state chain (see
 /// [`BodyCx::open_slot_tables`]); and the bindings it reads from outside,
-/// the captures of every kernel it calls included (a self-call's callee
-/// has no node to read them from), which an outlined loop's chunk is
-/// handed. A nested callback body lives behind its own lambda def and
-/// anchors its sites in the chain its own loop opens.
+/// the captures of every kernel it calls included, a nested loop's slots'
+/// too (a self-call's callee has no node to read them from), which an
+/// outlined loop's chunk is handed. A nested callback body lives behind
+/// its own lambda def and anchors its sites in the chain its own loop
+/// opens.
 pub(crate) struct LoopBody {
     pub(super) sites: LPooled<Vec<ExprId>>,
     pub(super) reads: LPooled<IntSet<BindId>>,
@@ -1500,7 +1501,7 @@ pub(crate) fn loop_body<R: Rt>(cx: &BodyCx, node: &Node<R>) -> LoopBody {
             let collection = matches!(
                 cs.resolved_apply(),
                 Some(ApplyView::Lambda(l)) if l.inline_callback().is_some()
-            );
+            ) || cs.recursion_callback().is_some();
             if collection || cx.ctx.lambda_call_sites.contains_key(&id) {
                 sites.push(id);
             }

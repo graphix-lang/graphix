@@ -288,6 +288,7 @@ fn emit_chunk(
         in_flight_bufs: RefCell::new(Vec::new()),
         owned_input_stack: RefCell::new(Vec::new()),
         collection_site: Cell::new(p.collection_site.get()),
+        recursion_call: Cell::new(p.recursion_call.get()),
         self_call_roots: RefCell::new(Vec::new()),
         child_roots: p.child_roots,
         consts: &consts,

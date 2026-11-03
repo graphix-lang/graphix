@@ -303,6 +303,27 @@ let rec k = |n: i64| -> i64 select n { 0 => 0, _ => n + array::fold([n - 1], 0, 
     Ok(())
 }
 
+/// A recursion whose collections' callbacks are its own name: the image
+/// carries the loops whose slots call the recursion's kernel.
+#[tokio::test]
+async fn program_image_restores_bare_recursion_loops() -> Result<()> {
+    let values = kernels_restore(
+        r#"
+let rec t = |d: i64| -> i64 select d {
+    0 => 1,
+    _ => 1 + array::fold(array::map([d - 1, d - 1, 0], t), 0, |a, x| a + x)
+};
+let rec f = |a: i64, d: i64| -> i64 select d { 0 => a + 1, _ => array::fold([d - 1, 0], a + 1, f) };
+let rec k = |n: i64| -> i64 select n { 0 => 0, _ => n + array::fold(array::map([n - 1], k), 0, |a, x| a + x) };
+(#[native] t(5), #[native] f(0, 6), #[native] list::map([<1, 2, 4>], k))
+"#,
+    )
+    .await?;
+    let printed: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(printed, ["[i64:94, i64:13, [i64:1, i64:3, i64:10]]"]);
+    Ok(())
+}
+
 /// `program` compiled cold with fusion on and restored from its image
 /// produces the same values, the restored runtime running its kernels:
 /// the values.

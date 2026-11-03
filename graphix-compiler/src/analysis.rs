@@ -59,9 +59,15 @@ type Holder = Option<LambdaInstanceId>;
 struct StaticCallGraph<'a, R: Rt> {
     instances: LPooled<IntMap<LambdaInstanceId, &'a GXLambda<R>>>,
     edges: LPooled<Vec<StaticEdge<'a, R>>>,
-    /// Each collection callback a fused loop runs inline, by the holder
-    /// of its collection's call.
+    /// Each instance a fused loop runs inline, by the holder of its
+    /// collection's call: a collection callback's, and a collection's
+    /// own where its slots call a recursion by its bare name
+    /// (`recursion_names`).
     inline_holders: LPooled<IntMap<LambdaInstanceId, Holder>>,
+    /// The binding a collection's call names the recursion its slots call
+    /// by, for each collection whose callback is that bare name
+    /// (`CallSite::recursion_callback`), by the collection's instance.
+    recursion_names: LPooled<IntMap<LambdaInstanceId, BindId>>,
     self_binds: LPooled<IntMap<BindId, SmallVec<[LambdaInstanceId; 2]>>>,
     machines: LPooled<Vec<(&'a SeqMachine<R>, Holder)>>,
     /// Statement lists of two or more statements (a block's, a module's)
@@ -85,6 +91,7 @@ impl<'a, R: Rt> StaticCallGraph<'a, R> {
             instances: LPooled::take(),
             edges: LPooled::take(),
             inline_holders: LPooled::take(),
+            recursion_names: LPooled::take(),
             self_binds: LPooled::take(),
             machines: LPooled::take(),
             blocks: LPooled::take(),
@@ -102,8 +109,8 @@ impl<'a, R: Rt> StaticCallGraph<'a, R> {
     }
 
     /// Whether a call from `caller` to `callee` is `callee`'s call of
-    /// itself: `caller` is `callee`, or a collection callback run inline
-    /// in `callee`'s body, through any nesting of such callbacks.
+    /// itself: `caller` is `callee`, or an instance a loop runs inline in
+    /// `callee`'s body, through any nesting of such loops.
     fn calls_itself(&self, caller: LambdaInstanceId, callee: LambdaInstanceId) -> bool {
         let mut at = caller;
         for _ in 0..=self.inline_holders.len() {
@@ -194,6 +201,9 @@ fn walk_static_graph<'a, R: Rt>(
             };
             if let Some(callback) = g.inline_callback() {
                 graph.inline_holders.insert(callback.instance_id(), caller);
+            } else if let Some((_, name)) = site.recursion_callback() {
+                graph.inline_holders.insert(g.instance_id(), caller);
+                graph.recursion_names.insert(g.instance_id(), name);
             }
             let instance = g.instance_id();
             // a self-call binds an instance per activation; any other call
@@ -1337,12 +1347,18 @@ fn mark_recursion<R: Rt>(
     let mut self_info: LPooled<IntMap<LambdaInstanceId, Option<BindId>>> =
         LPooled::take();
     for edge in graph.edges.iter() {
-        if edge.caller.is_some_and(|c| graph.calls_itself(c, edge.callee)) {
+        if let Some(caller) = edge.caller
+            && graph.calls_itself(caller, edge.callee)
+        {
             let bind = self_info.entry(edge.callee).or_insert(None);
-            if bind.is_none()
-                && let NodeView::Ref(r) = edge.site.fnode().view()
-            {
-                *bind = Some(r.id);
+            if bind.is_none() {
+                *bind = match graph.recursion_names.get(&caller) {
+                    Some(name) => Some(*name),
+                    None => match edge.site.fnode().view() {
+                        NodeView::Ref(r) => Some(r.id),
+                        _ => None,
+                    },
+                };
             }
         }
     }

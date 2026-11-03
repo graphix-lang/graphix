@@ -748,6 +748,37 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.collection_site.get()
     }
 
+    /// Set the prototype call of the loop being emitted whose callback is
+    /// a recursion's bare name, with that name (see
+    /// [`LowerCtx::recursion_call`]), returning the previous value for
+    /// save/restore around the loop's emission.
+    pub(crate) fn swap_recursion_call(
+        &self,
+        call: Option<(ExprId, BindId)>,
+    ) -> Option<(ExprId, BindId)> {
+        self.ctx.recursion_call.replace(call)
+    }
+
+    /// The kernel the slots of a loop whose callback is a recursion's
+    /// bare name `name` call through its prototype `call`
+    /// (`CallSite::recursion_callback`): this body's own where `name` is
+    /// its self binding, else the one discovery found for `call`, where
+    /// that is the recursion `name` names.
+    pub(crate) fn recursion_kernel<R: Rt>(
+        &self,
+        call: &CallSite<R>,
+        name: BindId,
+    ) -> Option<&'c LambdaCallInfo> {
+        match self.ctx.self_call {
+            Some(own) if own.bind == name => Some(own.info),
+            _ => {
+                let sites: &'c nohash::IntMap<ExprId, LambdaCallInfo> =
+                    self.ctx.lambda_call_sites;
+                sites.get(&call.spec().id).filter(|info| info.self_call == Some(name))
+            }
+        }
+    }
+
     /// The [`SiteLayout`] of an already-DEFINED callee, by kernel
     /// identity ([`kernel_abi::kernel_key`]). `None` is a self-call
     /// (mutual recursion is refused at the call site), whose call site
@@ -804,23 +835,37 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     /// The kernel's own self-call when `cs` makes it, emitting a
-    /// self-recursive lambda body: a call site whose fnode Ref carries
-    /// the self binding calls the kernel's own FuncRef.
+    /// self-recursive lambda body: a call site that names the self binding
+    /// calls the kernel's own FuncRef. A call names a binding by its
+    /// function's Ref, and the prototype call of a loop under construction
+    /// whose callback is a recursion's bare name by that name.
     pub(crate) fn own_call<R: Rt>(&self, cs: &CallSite<R>) -> Option<OwnCall<'c>> {
-        self.ctx.self_call.filter(
-            |own| matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == own.bind),
-        )
+        let name = match self.ctx.recursion_call.get() {
+            Some((id, name)) if id == cs.spec().id && cs.shares_instance() => Some(name),
+            _ => match cs.fnode().view() {
+                NodeView::Ref(r) => Some(r.id),
+                _ => None,
+            },
+        };
+        self.ctx.self_call.filter(|own| Some(own.bind) == name)
     }
 
     /// The kernel `cs` calls, where emission makes the call: its
-    /// discovered callee's, else the kernel's own.
+    /// discovered callee's, else the kernel's own; for a collection whose
+    /// callback is a recursion's bare name, the kernel its slots call.
     pub(crate) fn called_kernel<R: Rt>(
         &self,
         cs: &CallSite<R>,
     ) -> Option<&'c LambdaCallInfo> {
         let sites: &'c nohash::IntMap<ExprId, LambdaCallInfo> =
             self.ctx.lambda_call_sites;
-        sites.get(&cs.spec().id).or_else(|| self.own_call(cs).map(|own| own.info))
+        sites
+            .get(&cs.spec().id)
+            .or_else(|| self.own_call(cs).map(|own| own.info))
+            .or_else(|| {
+                let (call, name) = cs.recursion_callback()?;
+                self.recursion_kernel(call, name)
+            })
     }
 
     /// The address of a value-shape constant, shared by equal values.

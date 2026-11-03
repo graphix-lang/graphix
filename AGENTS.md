@@ -1287,8 +1287,9 @@ self-calls calling its own kernel, wherever an instance's body fuses
 fuse as a region, and the loop a collection's callback, or a function
 value an assertion covers, binds at run time), a collection callback's
 call of the function whose body runs it inline being that function's
-self-call, each loop slot rooting its own activation (slot-root chains,
-`design/kernel_instance_state.md`). A subtree that does not fuse whole
+self-call, each loop slot rooting its own activation, and so a callback
+that is that function's bare name (`array::map(xs, t)` in `t`), whose
+slots make the call (slot-root chains, `design/kernel_instance_state.md`). A subtree that does not fuse whole
 descends: every part that calls a function (a lambda call, a collection
 operation) is tried as a region of its own, any other part only
 descends (`fusion::fuse_parts`); a lambda call whose argument does not

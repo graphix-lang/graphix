@@ -31,6 +31,12 @@ pub(crate) struct CallbackParam<'p> {
 }
 
 impl CallbackParam<'_> {
+    /// A parameter whose value the loop binds under `id`, which a
+    /// collection prototype's argument reads.
+    pub(crate) fn bound(name: ArcStr, id: BindId) -> Self {
+        Self { name, id: Some(id), binds: Vec::new(), pattern: None }
+    }
+
     /// The loop's element bind for this parameter.
     fn elem<'a>(
         &'a self,
