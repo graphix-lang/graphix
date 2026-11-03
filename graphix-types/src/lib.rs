@@ -2,9 +2,6 @@
 //! module resolution), the types and their checker, the environment
 //! the checker reads, and the image session that writes all of them.
 
-#![recursion_limit = "256"]
-#[macro_use]
-extern crate combine;
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]

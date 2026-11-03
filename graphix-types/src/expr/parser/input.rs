@@ -16,7 +16,12 @@ pub(super) struct Mark {
 }
 
 impl Mark {
-    fn step(&mut self, c: char) {
+    /// The start of a text.
+    pub(super) fn start() -> Self {
+        Self { off: 0, pos: SourcePosition::default(), after_cr: false, line_start: 0 }
+    }
+
+    pub(super) fn step(&mut self, c: char) {
         self.off += c.len_utf8();
         match c {
             '\n' if self.after_cr => self.line_start = self.off,
@@ -105,21 +110,11 @@ type EasyResult<'a, T> = ParseResult<T, easy::ParseError<&'a str>>;
 
 impl<'a> Input<'a> {
     pub(super) fn new(text: &'a str, mode: Mode, printed_data: bool) -> Self {
-        let pos = SourcePosition::default();
-        Self {
-            text,
-            at: Mark { off: 0, pos, after_cr: false, line_start: 0 },
-            printed_data,
-            g: State::new(mode),
-        }
+        Self { text, at: Mark::start(), printed_data, g: State::new(mode) }
     }
 
     pub(super) fn mark(&self) -> Mark {
         self.at
-    }
-
-    pub(super) fn reset(&mut self, m: Mark) {
-        self.at = m
     }
 
     pub(super) fn pos(&self) -> SourcePosition {
@@ -552,6 +547,9 @@ impl<'a> Input<'a> {
                         l.token = Some(None)
                     }
                     easy::Error::Unexpected(i) => l.unexpect(info(i)),
+                    easy::Error::Expected(easy::Info::Static(
+                        "whitespace" | "whitespaces",
+                    )) => (),
                     easy::Error::Expected(i) => l.expect(info(i)),
                     easy::Error::Message(i) => l.message(info(i)),
                     easy::Error::Other(e) => {

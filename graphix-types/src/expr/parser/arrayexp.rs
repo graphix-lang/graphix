@@ -1,77 +1,65 @@
-use crate::expr::{
-    Expr, ExprKind,
-    parser::{comma_items, expr, grow::because, spaces, spstring, sptoken},
+use super::{
+    comma_items, expr,
+    input::{Input, R},
 };
-use combine::{
-    ParseError, Parser, RangeStream, attempt, between,
-    error::StreamError,
-    many1, optional,
-    parser::char::{digit, string},
-    parser::combinator::recognize,
-    position,
-    stream::{Range, StreamErrorFor, position::SourcePosition},
-    token, value,
-};
-use compact_str::CompactString;
+use crate::expr::{Expr, ExprKind};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-pub(super) fn array<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        between(
-            token('['),
-            sptoken(']'),
-            comma_items(expr, || attempt(sptoken(']')), true).map(|(args, _)| args),
-        ),
-    )
-        .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
-            ExprKind::Array { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
-        })
+/// The items of a list literal before what `close` reads, none or more,
+/// and what closes it.
+fn items<T>(i: &mut Input, close: impl Fn(&mut Input) -> R<T>) -> R<LPooled<Vec<Expr>>> {
+    let term = |i: &mut Input| i.attempt(&close).map(drop);
+    let (args, _) = comma_items(i, &expr, &term, true)?;
+    close(i)?;
+    Ok(args)
+}
+
+pub(super) fn array(i: &mut Input) -> R<Expr> {
+    let pos = i.pos();
+    i.token('[')?;
+    let mut args = items(i, |i| i.sptoken(']'))?;
+    Ok(ExprKind::Array { args: Arc::from_iter(args.drain(..)) }.to_expr(pos))
 }
 
 /// A native list literal `[<e1, e2, ...>]`. The two-char open is
-/// attempt-wrapped so a plain array literal's `[` backtracks cleanly.
-pub(super) fn list_lit<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        between(
-            attempt(string("[<")),
-            spstring(">]"),
-            comma_items(expr, || attempt(spstring(">]")), true).map(|(args, _)| args),
-        ),
-    )
-        .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
-            ExprKind::List { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
-        })
+/// attempted so a plain array literal's `[` backtracks cleanly.
+pub(super) fn list_lit(i: &mut Input) -> R<Expr> {
+    let pos = i.pos();
+    i.attempt(|i| i.string("[<"))?;
+    let mut args = items(i, |i| i.spstring(">]"))?;
+    Ok(ExprKind::List { args: Arc::from_iter(args.drain(..)) }.to_expr(pos))
 }
 
-pub(super) fn idx<I>() -> impl Parser<I, Output = Value>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
+pub(super) fn idx(i: &mut Input) -> R<Value> {
     // the sign is part of the literal: i64::MIN's magnitude is no i64
-    recognize::<CompactString, _, _>((
-        optional(token('-')),
-        many1::<CompactString, _, _>(digit()),
-    ))
-    .then(|idx: CompactString| match idx.parse::<i64>() {
-        Ok(i) => value(Value::I64(i)).right(),
-        Err(_) => because("expected int").left(),
-    })
+    let m = i.mark();
+    i.optional(|i| i.token('-'))?;
+    i.take_while1(|c| c.is_ascii_digit())?;
+    match i.since(&m).parse::<i64>() {
+        Ok(n) => Ok(Value::I64(n)),
+        Err(_) => Err(i.because("expected int")),
+    }
+}
+
+/// The `[ idx ]` / `[ start..end ]` postfix suffix.
+pub(super) fn array_index_suffix(i: &mut Input) -> R<Index> {
+    let start = i.mark();
+    i.token('[')?;
+    i.spaces();
+    let first = i.optional(expr)?;
+    let range = i.optional(|i| {
+        i.attempt(|i| i.spstring(".."))?;
+        i.spaces();
+        i.optional(expr)
+    })?;
+    i.sptoken(']')?;
+    match (first, range) {
+        (Some(e), None) => Ok(Index::At(e)),
+        (first, Some(end)) => Ok(Index::Slice(first, end)),
+        (None, None) => Err(i.because_at(start, "expected an index")),
+    }
 }
 
 /// What `[..]` after an expression selects.
@@ -80,28 +68,4 @@ pub(super) enum Index {
     At(Expr),
     /// `[start..end]`, either bound optional
     Slice(Option<Expr>, Option<Expr>),
-}
-
-/// The `[ idx ]` / `[ start..end ]` postfix suffix.
-pub(super) fn array_index_suffix<I>() -> impl Parser<I, Output = Index>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    between(
-        token('['),
-        sptoken(']'),
-        (
-            spaces().with(optional(expr())),
-            optional(attempt(spstring("..")).with(spaces()).with(optional(expr()))),
-        ),
-    )
-    .and_then(|(start, range)| match (start, range) {
-        (Some(i), None) => Ok(Index::At(i)),
-        (start, Some(end)) => Ok(Index::Slice(start, end)),
-        (None, None) => {
-            Err(StreamErrorFor::<I>::message_static_message("expected an index"))
-        }
-    })
 }

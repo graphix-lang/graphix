@@ -1,188 +1,314 @@
 use super::{
-    COMMA_WHY, Commentable, commented, csep, decl_items, doc_comment, expr, fname,
-    grow::{grow, refusal},
-    leading_comments, modpath, sep_by1_tok, spaces, spname, spstring, sptoken,
+    COMMA_WHY, Commentable, choice, commented, decl_items, doc_comment, expr, fname,
+    input::{Input, R},
+    keyword, leading_comments, modpath, sep_by1_tok, spname,
     traitexp::{impl_sig, trait_decl},
-    typ, typedef, typname,
+    typexp::{typ, typedef},
+    typname,
 };
 use crate::expr::{
     BindSig, Comment, Comments, Eol, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox,
     Sig, SigItem, SigKind, UseComment, UseCommentKind, UseComments, UseItem, WrittenPath,
-    get_origin, parser::spaces1,
+    get_origin,
 };
-use arcstr::ArcStr;
-use combine::{
-    ParseError, Parser, RangeStream, attempt, between, choice,
-    error::StreamError,
-    optional,
-    parser::char::{space, string},
-    position,
-    stream::{Range, position::SourcePosition},
-    token,
-};
+use arcstr::{ArcStr, literal};
+use combine::stream::position::SourcePosition;
 use netidx_core::path::Path;
-use netidx_value::parser::not_prefix;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-parser! {
-    /// One interface item, with the `//` lines and then the `///` doc
-    /// lines above it.
-    pub(super) fn sig_item[I]()(I) -> SigItem
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        grow((
-            leading_comments(true),
-            doc_comment().skip(spaces()),
-            position(),
-            choice((
-                typedef().map(SigKind::TypeDef),
-                trait_decl(true).map(|t| SigKind::Trait(Arc::new(t))),
-                impl_sig().map(|i| SigKind::Impl(Arc::new(i))),
-                string("val")
-                    .with(space())
-                    .with((spname(), sptoken(':').with(typ())))
-                    .map(|(name, typ)| SigKind::Bind(BindSig { name, typ })),
-                (use_intro(), use_items())
-                    .map(|(reexport, names)| SigKind::Use { reexport, names }),
-                string("mod").with(space()).with(spname().skip(spaces())).map(SigKind::Module),
-            )),
-        )
-            .map(|(mut comments, doc, pos, kind)| SigItem {
-                comments: Comments::of(comments.drain(..)),
-                eol: Eol::default(),
-                doc,
-                kind,
-                pos,
-                ori: get_origin(),
-            }))
-    }
+/// `word` and the whitespace char after it.
+fn word_space(i: &mut Input, word: &'static str) -> R<()> {
+    i.string(word)?;
+    i.satisfy(char::is_whitespace).map(drop)
 }
 
-fn sig<I>() -> impl Parser<I, Output = Sig>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spstring("sig").with(spaces()).with(between(
-        token('{'),
-        sptoken('}'),
-        (position(), decl_items(sig_item, || token('}'), true)).and_then(
-            |(pos, (mut i, below)): (_, (LPooled<Vec<SigItem>>, _))| match i.is_empty() {
-                true => Err(refusal::<I>(pos, "a `sig` declares at least one item")),
-                false => {
-                    Ok(Sig { toplevel: false, items: Arc::from_iter(i.drain(..)), below })
-                }
+/// One interface item, with the `//` lines and then the `///` doc lines
+/// above it.
+pub(super) fn sig_item(i: &mut Input) -> R<SigItem> {
+    i.knot(|i| {
+        let mut comments = leading_comments(i, true)?;
+        let doc = doc_comment(i)?;
+        i.spaces();
+        let pos = i.pos();
+        let kind = choice!(
+            i,
+            |i| typedef(i).map(SigKind::TypeDef),
+            |i| trait_decl(i, true).map(|t| SigKind::Trait(Arc::new(t))),
+            |i| impl_sig(i).map(|h| SigKind::Impl(Arc::new(h))),
+            |i| {
+                word_space(i, "val")?;
+                let name = spname(i)?;
+                i.sptoken(':')?;
+                let typ = typ(i)?;
+                Ok(SigKind::Bind(BindSig { name, typ }))
             },
-        ),
-    ))
+            |i| {
+                let reexport = use_intro(i)?;
+                let names = use_items(i)?;
+                Ok(SigKind::Use { reexport, names })
+            },
+            |i| {
+                word_space(i, "mod")?;
+                let name = spname(i)?;
+                i.spaces();
+                Ok(SigKind::Module(name))
+            }
+        )?;
+        Ok(SigItem {
+            comments: Comments::of(comments.drain(..)),
+            eol: Eol::default(),
+            doc,
+            kind,
+            pos,
+            ori: get_origin(),
+        })
+    })
 }
 
-fn sandbox<I>() -> impl Parser<I, Output = Sandbox>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces().with(choice((
-        string("unrestricted").map(|_| Sandbox::Unrestricted),
-        string("blacklist").with(paths()).map(|mut l: LPooled<Vec<ModPath>>| {
-            Sandbox::Blacklist(Arc::from_iter(l.drain(..)))
-        }),
-        string("whitelist").with(paths()).map(|mut l: LPooled<Vec<ModPath>>| {
-            Sandbox::Whitelist(Arc::from_iter(l.drain(..)))
-        }),
-    )))
+fn sig(i: &mut Input) -> R<Sig> {
+    i.spstring("sig")?;
+    i.spaces();
+    i.token('{')?;
+    let start = i.mark();
+    let (mut items, below) = decl_items(i, &sig_item, &|i| i.token('}').map(drop), true)?;
+    if items.is_empty() {
+        return Err(i.refuse_from(
+            start,
+            start.pos,
+            "a `sig` declares at least one item",
+        ));
+    }
+    i.sptoken('}')?;
+    Ok(Sig { toplevel: false, items: Arc::from_iter(items.drain(..)), below })
+}
+
+fn sandbox(i: &mut Input) -> R<Sandbox> {
+    i.spaces();
+    choice!(
+        i,
+        |i| i.string("unrestricted").map(|_| Sandbox::Unrestricted),
+        |i| {
+            i.string("blacklist")?;
+            paths(i).map(|mut l| Sandbox::Blacklist(Arc::from_iter(l.drain(..))))
+        },
+        |i| {
+            i.string("whitelist")?;
+            paths(i).map(|mut l| Sandbox::Whitelist(Arc::from_iter(l.drain(..))))
+        }
+    )
 }
 
 /// `[a::b, c]`: a sandbox's module paths.
-fn paths<I>() -> impl Parser<I, Output = LPooled<Vec<ModPath>>>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    between(
-        sptoken('['),
-        sptoken(']'),
-        sep_by1_tok(spaces().with(modpath()), csep(), token(']')),
-    )
+fn paths(i: &mut Input) -> R<LPooled<Vec<ModPath>>> {
+    i.sptoken('[')?;
+    let paths = sep_by1_tok(
+        i,
+        &|i| {
+            i.spaces();
+            modpath(i)
+        },
+        &|i| i.token(']').map(drop),
+    )?;
+    i.sptoken(']')?;
+    Ok(paths)
 }
 
-pub(crate) fn dynamic_module<I>() -> impl Parser<I, Output = ModuleKind>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    attempt(spaces1().with(string("dynamic")))
-        .with(between(
-            sptoken('{'),
-            sptoken('}'),
-            (
-                spstring("sandbox").with(space()).with(sandbox()).skip(sptoken(';')),
-                sig().skip(sptoken(';')),
-                spstring("source")
-                    .with(space())
-                    .with(expr())
-                    .skip(spaces())
-                    .skip(optional(token(';'))),
-            ),
-        ))
-        .map(|(sandbox, sig, source)| ModuleKind::Dynamic {
-            sandbox,
-            sig,
-            source: Arc::new(source),
-        })
+fn dynamic_module(i: &mut Input) -> R<ModuleKind> {
+    i.attempt(|i| {
+        i.spaces1()?;
+        i.string("dynamic")
+    })?;
+    i.sptoken('{')?;
+    i.spaces();
+    word_space(i, "sandbox")?;
+    let sandbox = sandbox(i)?;
+    i.sptoken(';')?;
+    let sig = sig(i)?;
+    i.sptoken(';')?;
+    i.spaces();
+    word_space(i, "source")?;
+    let source = expr(i)?;
+    i.spaces();
+    i.optional(|i| i.token(';'))?;
+    i.sptoken('}')?;
+    Ok(ModuleKind::Dynamic { sandbox, sig, source: Arc::new(source) })
 }
 
-pub(super) fn module<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        attempt(string("mod").with(space())).with(spname()),
-        optional(dynamic_module())
-            .map(|m| m.unwrap_or(ModuleKind::Unresolved { from_interface: false })),
-    )
-        .map(|(pos, name, value)| {
-            ExprKind::Module { name, value: Arc::new(value) }.to_expr(pos)
-        })
+pub(super) fn module(i: &mut Input) -> R<Expr> {
+    let pos = i.pos();
+    i.attempt(|i| word_space(i, "mod"))?;
+    let name = spname(i)?;
+    let value = i
+        .optional(dynamic_module)?
+        .unwrap_or(ModuleKind::Unresolved { from_interface: false });
+    Ok(ExprKind::Module { name, value: Arc::new(value) }.to_expr(pos))
 }
 
 /// A use-tree path segment: an ordinary name or a path keyword
 /// (`self`/`super`/`package`); [`check_use_item`] enforces the keywords'
 /// positional rules on the assembled path.
-fn use_segment<I>() -> impl Parser<I, Output = Name>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        choice((
-            attempt(string("self").skip(not_prefix())).map(|_| arcstr::literal!("self")),
-            attempt(string("super").skip(not_prefix()))
-                .map(|_| arcstr::literal!("super")),
-            attempt(string("package").skip(not_prefix()))
-                .map(|_| arcstr::literal!("package")),
-            // A use imports every kind sharing the name, so both lowercase
-            // and uppercase segments are legal here.
-            fname(),
-            typname(),
+fn use_segment(i: &mut Input) -> R<Name> {
+    let pos = i.pos();
+    let seg = choice!(
+        i,
+        |i| keyword(i, "self").map(|_| literal!("self")),
+        |i| keyword(i, "super").map(|_| literal!("super")),
+        |i| keyword(i, "package").map(|_| literal!("package")),
+        // A use imports every kind sharing the name, so both lowercase
+        // and uppercase segments are legal here.
+        fname,
+        typname
+    )?;
+    Ok(Name::written(seg, pos))
+}
+
+/// The paths of one use tree: `seg` alone, renamed or not.
+fn one(seg: Option<Name>, rename: Option<Name>) -> UsePaths {
+    let mut paths = UsePaths(LPooled::take());
+    let mut segments: LPooled<Vec<Name>> = LPooled::take();
+    segments.extend(seg);
+    paths.0.push(UsePath { segments, rename, comments: LPooled::take() });
+    paths
+}
+
+fn use_group(i: &mut Input) -> R<UsePaths> {
+    let start = i.mark();
+    i.token('{')?;
+    let mut groups =
+        commented(i, &use_tree, ',', COMMA_WHY, &|i| i.token('}').map(drop), false)?;
+    i.sptoken('}')?;
+    let mut paths = UsePaths(LPooled::take());
+    for (_, group) in groups.slots.drain(..) {
+        if let Some(mut group) = group {
+            paths.0.extend(group.0.drain(..));
+        }
+    }
+    if paths.0.is_empty() {
+        return Err(i.because_at(start, "expected a use item"));
+    }
+    for c in groups.below.drain(..) {
+        paths.comment(UseCommentKind::Below, c);
+    }
+    Ok(paths)
+}
+
+fn use_path(i: &mut Input) -> R<UsePaths> {
+    let start = i.mark();
+    let seg = use_segment(i)?;
+    let tail = i.optional(|i| {
+        i.attempt(|i| {
+            i.spstring("::")?;
+            use_tree(i)
+        })
+    })?;
+    let rename = i.optional(|i| {
+        i.attempt(|i| {
+            i.spaces1()?;
+            i.string("as")?;
+            i.spaces1()?;
+            let pos = i.pos();
+            let n = choice!(i, fname, typname)?;
+            Ok(Name::written(n, pos))
+        })
+    })?;
+    let end = i.pos();
+    match (tail, rename) {
+        (Some(_), Some(_)) => Err(i.refuse_from(
+            start,
+            end,
+            "`as` renames a single imported name, not a group",
         )),
+        (None, rename) if seg.as_str() == "self" => Ok(one(None, rename)),
+        (None, rename) => Ok(one(Some(seg), rename)),
+        (Some(mut paths), None) => {
+            for path in paths.0.iter_mut() {
+                path.segments.push(seg.clone());
+                for c in path.comments.iter_mut() {
+                    c.depth += 1;
+                }
+            }
+            Ok(paths)
+        }
+    }
+}
+
+fn use_tree(i: &mut Input) -> R<UsePaths> {
+    i.knot(|i| {
+        let mut comments = leading_comments(i, false)?;
+        let mut paths = choice!(
+            i,
+            use_group,
+            |i| {
+                let pos = i.pos();
+                i.token('*')?;
+                Ok(one(Some(Name::written(literal!("*"), pos)), None))
+            },
+            use_path
+        )?;
+        for c in comments.drain(..) {
+            paths.comment(UseCommentKind::Above, c);
+        }
+        Ok(paths)
+    })
+}
+
+/// Parse a full use declaration's items (after the `use` keyword),
+/// enforcing the positional rules, and assemble [`UseItem`]s.
+fn use_items(i: &mut Input) -> R<Arc<[UseItem]>> {
+    let start = i.mark();
+    let mut paths = use_tree(i)?;
+    let end = i.pos();
+    for UsePath { segments: segs, rename, .. } in paths.0.iter_mut() {
+        segs.reverse();
+        if let Some(msg) = check_use_item(segs) {
+            return Err(i.refuse_from(start, end, msg));
+        }
+        if let Some(r) = rename
+            && segs.last().is_some_and(|s| capitalized(s) != capitalized(r))
+        {
+            return Err(i.refuse_from(
+                start,
+                r.at.0,
+                "a rename keeps its name's case: a capitalized name stays capitalized, a lowercase one lowercase",
+            ));
+        }
+    }
+    Ok(UseItem::sorted(paths.0.drain(..).map(
+        |UsePath { segments: segs, rename, mut comments }| UseItem {
+            comments: UseComments::of(comments.drain(..)),
+            at: WrittenPath(segs.iter().map(|s| s.at.0).collect()),
+            path: ModPath(Path::from_iter(segs.iter().map(|s| s.as_str()))),
+            rename,
+        },
+    )))
+}
+
+/// The `use` / `pub use` introducer. Yields the reexport flag.
+fn use_intro(i: &mut Input) -> R<bool> {
+    choice!(
+        i,
+        |i| i
+            .attempt(|i| {
+                i.string("pub")?;
+                i.spaces1()?;
+                word_space(i, "use")
+            })
+            .map(|_| true),
+        |i| i.attempt(|i| word_space(i, "use")).map(|_| false)
     )
-        .map(|(pos, seg)| Name::written(seg, pos))
+}
+
+pub(super) fn use_module(i: &mut Input) -> R<Expr> {
+    let pos = i.pos();
+    let reexport = use_intro(i)?;
+    let names = use_items(i)?;
+    Ok(ExprKind::Use { reexport, names }.to_expr(pos))
 }
 
 /// The positional rules for one assembled use path. Returns the refusal
 /// message, or None if legal.
-pub(super) fn check_use_item(segs: &[Name]) -> Option<&'static str> {
+fn check_use_item(segs: &[Name]) -> Option<&'static str> {
     if segs.is_empty() {
         return Some("`self` outside a use group");
     }
@@ -200,20 +326,20 @@ pub(super) fn check_use_item(segs: &[Name]) -> Option<&'static str> {
     None
 }
 
-pub(super) fn capitalized(n: &Name) -> bool {
+fn capitalized(n: &Name) -> bool {
     n.as_str().starts_with(char::is_uppercase)
 }
 
-pub(super) struct UsePath {
+struct UsePath {
     pub(super) segments: LPooled<Vec<Name>>,
     pub(super) rename: Option<Name>,
     pub(super) comments: LPooled<Vec<UseComment>>,
 }
 
-pub(super) struct UsePaths(pub(super) LPooled<Vec<UsePath>>);
+struct UsePaths(pub(super) LPooled<Vec<UsePath>>);
 
 impl UsePaths {
-    pub(super) fn comment(&mut self, kind: UseCommentKind, line: Comment) {
+    fn comment(&mut self, kind: UseCommentKind, line: Comment) {
         let single = self.0.len() == 1;
         if let Some(first) = self.0.first_mut() {
             let depth = if single && kind != UseCommentKind::Below {
@@ -230,122 +356,4 @@ impl Commentable for UsePaths {
     fn take_eol(&mut self, _at: SourcePosition, eol: ArcStr) {
         self.comment(UseCommentKind::Eol, Comment::line(eol));
     }
-}
-
-parser! {
-    fn use_tree[I]()(I) -> UsePaths
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        let one = |seg: Option<Name>, rename: Option<Name>| {
-            let mut paths = UsePaths(LPooled::take());
-            let mut segments: LPooled<Vec<Name>> = LPooled::take();
-            segments.extend(seg);
-            paths.0.push(UsePath { segments, rename, comments: LPooled::take() });
-            paths
-        };
-        grow((leading_comments(false), choice((
-            between(
-                token('{'),
-                sptoken('}'),
-                commented(use_tree, ',', COMMA_WHY, || token('}'), false),
-            )
-            .and_then(|mut groups| {
-                let mut paths = UsePaths(LPooled::take());
-                for (_, group) in groups.slots.drain(..) {
-                    if let Some(mut group) = group {
-                        paths.0.extend(group.0.drain(..));
-                    }
-                }
-                if paths.0.is_empty() {
-                    return Err(combine::stream::StreamErrorFor::<I>::message_static_message("expected a use item"));
-                }
-                for c in groups.below.drain(..) { paths.comment(UseCommentKind::Below, c); }
-                Ok(paths)
-            }),
-            (position(), token('*'))
-                .map(move |(pos, _)| one(Some(Name::written(arcstr::literal!("*"), pos)), None)),
-            (
-                use_segment(),
-                optional(attempt(spstring("::").with(use_tree()))),
-                optional(attempt(
-                    spaces1().with(string("as")).with(spaces1())
-                        .with((position(), choice((fname(), typname())))),
-                )),
-                position(),
-            ).and_then(move |(seg, tail, rename, end): (Name, Option<UsePaths>, _, _)| {
-                let rename = rename.map(|(pos, n)| Name::written(n, pos));
-                match (tail, rename) {
-                    (Some(_), Some(_)) => Err(refusal::<I>(end, "`as` renames a single imported name, not a group")),
-                    (None, rename) if seg.as_str() == "self" => Ok(one(None, rename)),
-                    (None, rename) => Ok(one(Some(seg), rename)),
-                    (Some(mut paths), None) => {
-                        for path in paths.0.iter_mut() {
-                            path.segments.push(seg.clone());
-                            for c in path.comments.iter_mut() { c.depth += 1; }
-                        }
-                        Ok(paths)
-                    }
-                }
-            }),
-        ))).map(|(mut comments, mut paths)| {
-            for c in comments.drain(..) { paths.comment(UseCommentKind::Above, c); }
-            paths
-        }))
-    }
-}
-
-/// Parse a full use declaration's items (after the `use` keyword),
-/// enforcing the positional rules, and assemble [`UseItem`]s.
-fn use_items<I>() -> impl Parser<I, Output = Arc<[UseItem]>>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (use_tree(), position()).and_then(|(mut paths, end): (UsePaths, _)| {
-        for UsePath { segments: segs, rename, .. } in paths.0.iter_mut() {
-            segs.reverse();
-            if let Some(msg) = check_use_item(segs) {
-                return Err(refusal::<I>(end, msg));
-            }
-            if let Some(r) = rename
-                && segs.last().is_some_and(|s| capitalized(s) != capitalized(r))
-            {
-                return Err(refusal::<I>(
-                    r.at.0,
-                    "a rename keeps its name's case: a capitalized name stays capitalized, a lowercase one lowercase",
-                ));
-            }
-        }
-        Ok(UseItem::sorted(paths.0.drain(..).map(|UsePath { segments: segs, rename, mut comments }| UseItem {
-            comments: UseComments::of(comments.drain(..)),
-            at: WrittenPath(segs.iter().map(|s| s.at.0).collect()),
-            path: ModPath(Path::from_iter(segs.iter().map(|s| s.as_str()))),
-            rename,
-        })))
-    })
-}
-
-/// The `use` / `pub use` introducer. Yields the reexport flag.
-fn use_intro<I>() -> impl Parser<I, Output = bool>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    choice((
-        attempt(string("pub").skip(spaces1()).skip(string("use")).skip(space()))
-            .map(|_| true),
-        attempt(string("use").with(space())).map(|_| false),
-    ))
-}
-
-pub(super) fn use_module<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), use_intro(), use_items())
-        .map(|(pos, reexport, names)| ExprKind::Use { reexport, names }.to_expr(pos))
 }

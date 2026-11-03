@@ -1,80 +1,74 @@
-use super::{Lines, lines};
-use crate::stack::ensure_sufficient;
-use combine::{
-    ErrorOffset, ParseError, Parser, Stream, StreamOnce,
-    error::{ParseResult, StreamError, Tracked},
-    parser::ParseMode,
-    stream::{
-        StreamErrorFor,
-        position::{Positioner, SourcePosition},
-    },
-};
+use super::{input::Mark, lines};
+use combine::stream::position::SourcePosition;
 use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
 use std::{
-    cell::{Cell, RefCell},
-    marker::PhantomData,
+    fmt::{self, Write},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-/// Default [`max_nesting`]. Counted in parser recursion knots and the
-/// levels an iterative fold adds under them, not source constructs: one
-/// level of `(1 + …)` costs four, three knots and its operator's fold.
-pub const DEFAULT_MAX_NESTING: usize = 1000;
-
-static MAX_NESTING: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_NESTING);
-
-/// How deeply a program may nest before the parser rejects it.
-pub fn max_nesting() -> usize {
-    MAX_NESTING.load(Ordering::Relaxed)
+/// What a pass of the parser keeps besides the parse.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mode {
+    /// The parse alone.
+    Quick,
+    /// The parse and what its failure needs reported: where it stopped
+    /// and why.
+    Diag,
+    /// [`Mode::Diag`], and what was expected at this offset.
+    Labels(usize),
 }
 
-/// Raise or lower [`max_nesting`]. Process-global. The limit bounds the
-/// depth of the AST, counted in parser knots and fold levels; types are
-/// not bounded by it, so every walk keeps its own stack guard. Raising it
-/// past what an unguarded walk survives trades an error for an abort.
-pub fn set_max_nesting(depth: usize) {
-    MAX_NESTING.store(depth, Ordering::Relaxed)
+/// Something the parse expected or met, as a report names it.
+#[derive(Clone, PartialEq)]
+pub(super) enum Info {
+    Token(char),
+    Text(CompactString),
 }
 
-thread_local! {
-    static DEPTH: Cell<usize> = const { Cell::new(0) };
-    /// How deep what the knot in progress built so far goes, in knots and
-    /// fold levels: the AST depth under it, bounded with [`DEPTH`] by
-    /// [`fold_fits`].
-    static BELOW: Cell<usize> = const { Cell::new(0) };
-    /// The furthest point a nesting refusal happened at. combine merges a
-    /// committed error into the surrounding alternatives' expectations, so
-    /// the refusal's own message is lost; [`parsing`] reads this instead.
-    static REFUSED: Cell<Option<SourcePosition>> = const { Cell::new(None) };
+impl Info {
+    pub(super) const fn text(s: &'static str) -> Self {
+        Info::Text(CompactString::const_new(s))
+    }
 }
 
-/// Record a nesting refusal at `pos`. Also called by the caps on the
-/// parser loops that build a nested AST iteratively, which `GrowStack`
-/// cannot see.
-pub(super) fn note_refused(pos: SourcePosition) {
-    REFUSED.with(|r| {
-        if r.get().is_none_or(|p| key(p) < key(pos)) {
-            r.set(Some(pos))
+impl fmt::Display for Info {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Info::Token(c) => write!(f, "`{c}`"),
+            Info::Text(s) => f.write_str(s),
         }
-    })
+    }
 }
 
-thread_local! {
-    /// The furthest reason a parser refused something it could name, with
-    /// its position and, for a refused token, its length. Reported when
-    /// the failure lies on its line (inside the token when one is given).
-    static REASON: RefCell<Option<Reason>> = const { RefCell::new(None) };
-    /// Where the parse failed, set by the entry point's error mapping
-    /// before [`parsing`] reports.
-    static ERROR_POS: Cell<Option<SourcePosition>> = const { Cell::new(None) };
-    /// The furthest point any branch of the parse reached. Every recursion
-    /// knot records its input position here, on success too, since combine
-    /// reports a failure at whichever alternative failed last.
-    static FURTHEST: Cell<Option<SourcePosition>> = const { Cell::new(None) };
-    /// The furthest point a knot parsed to. A failure's position is past
-    /// the token it rejected, so only a success got past a refusal.
-    static FURTHEST_OK: Cell<Option<SourcePosition>> = const { Cell::new(None) };
+/// What every failure at one point said: the token met there, what was
+/// expected instead, and the refusals' messages.
+#[derive(Default)]
+pub(super) struct Labels {
+    /// The token a failure there met, `Some(None)` the end of input.
+    pub(super) token: Option<Option<char>>,
+    pub(super) unexpected: LPooled<Vec<Info>>,
+    pub(super) expected: LPooled<Vec<Info>>,
+    pub(super) messages: LPooled<Vec<Info>>,
+}
+
+impl Labels {
+    pub(super) fn expect(&mut self, i: Info) {
+        self.expected.push(i)
+    }
+
+    pub(super) fn unexpect(&mut self, i: Info) {
+        self.unexpected.push(i)
+    }
+
+    pub(super) fn message(&mut self, i: Info) {
+        self.messages.push(i)
+    }
+}
+
+/// `v` without repeats, in the order each first appears.
+fn unique(v: &[Info]) -> impl Iterator<Item = &Info> {
+    v.iter().enumerate().filter(|(n, i)| !v[..*n].contains(i)).map(|(_, i)| i)
 }
 
 #[derive(Clone)]
@@ -85,7 +79,7 @@ struct Reason {
     span: Option<usize>,
     reason: CompactString,
     /// Where the parse failed, for a refusal of something read before
-    /// that point ([`refuse_read`]): a failure there is reported at `pos`.
+    /// that point: a failure there is reported at `pos`.
     failed_at: Option<SourcePosition>,
 }
 
@@ -107,119 +101,300 @@ fn key(p: SourcePosition) -> (i32, i32) {
     (p.line, p.column)
 }
 
-/// Record why something was refused at `pos`; a later refusal wins.
-/// `span` is the refused token's length when the reason explains a
-/// failure only inside that token.
-pub(super) fn note_reason(
-    pos: SourcePosition,
-    span: Option<usize>,
-    reason: CompactString,
-) {
-    note(Reason { pos, span, reason, failed_at: None })
+fn later(a: Option<SourcePosition>, b: SourcePosition) -> Option<SourcePosition> {
+    match a {
+        Some(a) if key(a) >= key(b) => Some(a),
+        _ => Some(b),
+    }
 }
 
-fn note(reason: Reason) {
-    let at = |r: &Reason| key(r.failed_at.unwrap_or(r.pos));
-    REASON.with(|r| {
-        let mut r = r.borrow_mut();
-        if r.as_ref().is_none_or(|p| at(p) <= at(&reason)) {
-            *r = Some(reason);
+/// A parse's nesting count and, outside [`Mode::Quick`], what its report
+/// needs.
+pub(super) struct State {
+    pub(super) mode: Mode,
+    /// Recursion knots entered and not left.
+    depth: usize,
+    /// How deep what the knot in progress built so far goes, in knots and
+    /// fold levels.
+    below: usize,
+    /// The furthest point a knot reached, by success or failure.
+    furthest: Option<SourcePosition>,
+    /// The furthest point a knot parsed to.
+    furthest_ok: Option<SourcePosition>,
+    /// Where the nesting limit stopped the parse.
+    refused: Option<SourcePosition>,
+    /// The furthest reason a rule refused something it could name.
+    reason: Option<Reason>,
+    /// Under [`Mode::Labels`], what the failures there said.
+    pub(super) labels: Labels,
+    /// Inside a `not_followed_by`, whose failures expect nothing.
+    pub(super) quiet: u32,
+}
+
+impl State {
+    pub(super) fn new(mode: Mode) -> Self {
+        Self {
+            mode,
+            depth: 0,
+            below: 0,
+            furthest: None,
+            furthest_ok: None,
+            refused: None,
+            reason: None,
+            labels: Labels::default(),
+            quiet: 0,
         }
-    })
-}
-
-/// [`refuse`] of something read before the point the parse stands at, a
-/// comment: a failure there is reported at `pos`.
-pub(super) fn refuse_read<I: Stream, T>(
-    pos: SourcePosition,
-    reason: &'static str,
-) -> RefuseRead<I, T> {
-    RefuseRead(pos, reason, PhantomData)
-}
-
-pub(super) struct RefuseRead<I, T>(SourcePosition, &'static str, PhantomData<fn(I) -> T>);
-
-impl<I, T> Parser<I> for RefuseRead<I, T>
-where
-    I: Stream<Position = SourcePosition>,
-{
-    type Output = T;
-    type PartialState = ();
-
-    fn parse_lazy(&mut self, input: &mut I) -> ParseResult<T, <I as StreamOnce>::Error> {
-        let failed_at = input.position();
-        let reason = CompactString::const_new(self.1);
-        note(Reason { pos: self.0, span: None, reason, failed_at: Some(failed_at) });
-        ParseResult::PeekErr(<I as StreamOnce>::Error::empty(failed_at).into())
     }
 
-    fn add_error(&mut self, errors: &mut Tracked<<I as StreamOnce>::Error>) {
-        errors.error.add(StreamError::message_static_message(self.1));
-    }
-}
-
-/// Refuse what was parsed up to `pos`, saying why: combine keeps a
-/// refusal's own message only when no other branch got further, so the
-/// reason is also noted for the report.
-pub(super) fn refuse<I, T>(
-    pos: SourcePosition,
-    reason: &'static str,
-) -> impl Parser<I, Output = T>
-where
-    I: Stream,
-{
-    note_reason(pos, None, CompactString::const_new(reason));
-    because(reason)
-}
-
-/// Always fails, consuming nothing, with `reason` as the error's message:
-/// a refusal, where `unexpected_any` names the token it met.
-pub(super) fn because<I: Stream, T>(reason: &'static str) -> Because<I, T> {
-    Because(reason, PhantomData)
-}
-
-pub(super) struct Because<I, T>(&'static str, PhantomData<fn(I) -> T>);
-
-impl<I: Stream, T> Parser<I> for Because<I, T> {
-    type Output = T;
-    type PartialState = ();
-
-    fn parse_lazy(&mut self, input: &mut I) -> ParseResult<T, <I as StreamOnce>::Error> {
-        ParseResult::PeekErr(<I as StreamOnce>::Error::empty(input.position()).into())
+    pub(super) fn diag(&self) -> bool {
+        self.mode != Mode::Quick
     }
 
-    fn add_error(&mut self, errors: &mut Tracked<<I as StreamOnce>::Error>) {
-        errors.error.add(StreamError::message_static_message(self.0));
+    /// Whether a failure at `off` is reported.
+    pub(super) fn labels_at(&self, off: usize) -> bool {
+        self.mode == Mode::Labels(off) && self.quiet == 0
     }
-}
 
-/// [`refuse`] as the error of an `and_then`.
-pub(super) fn refusal<I>(pos: SourcePosition, reason: &'static str) -> StreamErrorFor<I>
-where
-    I: StreamOnce,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-{
-    note_reason(pos, None, CompactString::const_new(reason));
-    StreamErrorFor::<I>::message_static_message(reason)
-}
-
-/// Whether a recorded reason explains a failure at `pos`.
-pub(super) fn reason_explains(pos: SourcePosition) -> bool {
-    REASON.with(|r| r.borrow().as_ref().is_some_and(|r| r.explains(pos)))
-}
-
-/// Record where the parse failed.
-pub(super) fn note_error_pos(pos: SourcePosition) {
-    ERROR_POS.with(|p| p.set(Some(pos)))
-}
-
-/// Record that the parse reached `pos`, for the report of a failure.
-pub(super) fn note_furthest(pos: SourcePosition) {
-    FURTHEST.with(|f| {
-        if f.get().is_none_or(|p| key(p) < key(pos)) {
-            f.set(Some(pos))
+    /// Enter a knot at `pos`; false past [`max_nesting`], noted.
+    pub(super) fn enter(&mut self, pos: SourcePosition) -> Result<usize, ()> {
+        self.depth += 1;
+        if self.depth > max_nesting() {
+            self.depth -= 1;
+            self.refuse(pos);
+            return Err(());
         }
-    })
+        Ok(std::mem::replace(&mut self.below, 0))
+    }
+
+    /// Leave the knot [`State::enter`] entered, which `above` was built
+    /// beside, having parsed to `end` (`ok`) or failed at `end`.
+    pub(super) fn leave(&mut self, above: usize, ok: bool, end: SourcePosition) {
+        self.depth -= 1;
+        let below = if ok { self.below + 1 } else { 0 };
+        self.below = above.max(below);
+        if self.diag() {
+            self.furthest = later(self.furthest, end);
+            if ok {
+                self.furthest_ok = later(self.furthest_ok, end);
+            }
+        }
+    }
+
+    /// Count a fold `n` levels deep over what the knot in progress parsed
+    /// against [`max_nesting`] with the knots above it; past the limit
+    /// the refusal is noted at `pos`.
+    pub(super) fn fold_fits(&mut self, n: usize, pos: SourcePosition) -> bool {
+        let below = self.below + n;
+        if self.depth + below > max_nesting() {
+            self.refuse(pos);
+            false
+        } else {
+            self.below = below;
+            true
+        }
+    }
+
+    fn refuse(&mut self, pos: SourcePosition) {
+        if self.refused.is_none_or(|p| key(p) < key(pos)) {
+            self.refused = Some(pos)
+        }
+    }
+
+    /// Record that the parse reached `pos`.
+    pub(super) fn note_furthest(&mut self, pos: SourcePosition) {
+        if self.diag() {
+            self.furthest = later(self.furthest, pos)
+        }
+    }
+
+    /// Record why something was refused at `pos`; a later refusal wins.
+    pub(super) fn note_reason(
+        &mut self,
+        pos: SourcePosition,
+        span: Option<usize>,
+        reason: impl FnOnce() -> CompactString,
+    ) {
+        self.note(pos, span, None, reason)
+    }
+
+    /// [`State::note_reason`] of something read before `failed_at`, where
+    /// the parse fails: a failure there is reported at `pos`.
+    pub(super) fn note_read(
+        &mut self,
+        pos: SourcePosition,
+        failed_at: SourcePosition,
+        reason: &'static str,
+    ) {
+        self.note(pos, None, Some(failed_at), || CompactString::const_new(reason))
+    }
+
+    fn note(
+        &mut self,
+        pos: SourcePosition,
+        span: Option<usize>,
+        failed_at: Option<SourcePosition>,
+        reason: impl FnOnce() -> CompactString,
+    ) {
+        if !self.diag() {
+            return;
+        }
+        let at = |r: &Reason| key(r.failed_at.unwrap_or(r.pos));
+        let new = key(failed_at.unwrap_or(pos));
+        if self.reason.as_ref().is_none_or(|r| at(r) <= new) {
+            self.reason = Some(Reason { pos, span, reason: reason(), failed_at });
+        }
+    }
+
+    fn reason_explains(&self, pos: SourcePosition) -> bool {
+        self.reason.as_ref().is_some_and(|r| r.explains(pos))
+    }
+
+    /// Where a parse that failed at `err` reports, and whether that report
+    /// names what was expected there.
+    pub(super) fn report_at(&self, err: SourcePosition) -> (SourcePosition, bool) {
+        if let Some(at) = self.nesting() {
+            return (at, false);
+        }
+        let furthest = self.furthest.unwrap_or(err);
+        let pos = if key(furthest) > key(err) { furthest } else { err };
+        let read = self.reason.as_ref().is_some_and(|r| r.failed_at == Some(pos));
+        (pos, pos == err && !read)
+    }
+
+    /// The nesting refusal that stopped the parse: one no knot parsed past.
+    fn nesting(&self) -> Option<SourcePosition> {
+        let passed = self.furthest_ok;
+        self.refused.filter(|r| passed.is_none_or(|p| key(*r) >= key(p)))
+    }
+
+    /// Report a parse of `text` that failed at `err`, with what failures
+    /// there said when [`State::report_at`] asked for them.
+    pub(super) fn report(
+        &self,
+        text: &str,
+        err: SourcePosition,
+        labels: Option<&Labels>,
+    ) -> ParseFailure {
+        if let Some(at) = self.nesting() {
+            let summary = format!(
+                "expression nesting too deep (limit {}, see \
+                 graphix_compiler::expr::parser::set_max_nesting)",
+                max_nesting()
+            );
+            let mut msg = format!(
+                "Parse error at line: {}, column: {}\n{summary}",
+                at.line, at.column
+            );
+            let snippet = snippet(text, at);
+            if !snippet.is_empty() {
+                msg.push('\n');
+                msg.push_str(&snippet);
+            }
+            return ParseFailure { pos: at, summary, msg };
+        }
+        let (mut pos, _) = self.report_at(err);
+        let read = self
+            .reason
+            .as_ref()
+            .filter(|r| r.failed_at == Some(pos))
+            .map(|r| (r.pos, r.reason.clone()));
+        let header = |p: SourcePosition| {
+            format!("Parse error at line: {}, column: {}", p.line, p.column)
+        };
+        let (mut msg, mut summary) = if let Some((at, reason)) = &read {
+            pos = *at;
+            (format!("{}\n{reason}", header(pos)), reason.to_string())
+        } else if let Some(labels) = labels.filter(|_| pos == err) {
+            let body = self.render(pos, labels);
+            (format!("{}\n{body}", header(pos)), body)
+        } else {
+            let summary = "the parser could not continue past this point".to_string();
+            (format!("{}\n{summary}", header(pos)), summary)
+        };
+        let snippet = snippet(text, pos);
+        if !snippet.is_empty() {
+            msg.push('\n');
+            msg.push_str(&snippet);
+        }
+        let reason = match read {
+            Some(_) => None,
+            None => self.reason.clone().filter(|r| r.explains(pos)),
+        };
+        let note = match reason {
+            Some(r) => Some((r.pos, r.reason)),
+            None => unclosed_at_end(text, pos)
+                .map(|(c, at)| (at, format_compact!("this `{c}` is not closed"))),
+        };
+        if let Some((at, reason)) = note {
+            msg.push_str(&format!(
+                "\n  note: at line: {}, column: {}: {reason}",
+                at.line, at.column
+            ));
+            summary.push_str(&format!("\nnote: {reason}"));
+        }
+        ParseFailure { pos, msg, summary }
+    }
+
+    /// What the failures at `pos` said: the token met there unless a
+    /// reason explains it or it is whitespace, what was expected, then
+    /// the refusals, each line ended.
+    fn render(&self, pos: SourcePosition, labels: &Labels) -> String {
+        let token = labels.token;
+        let explained = self.reason_explains(pos);
+        let noise = token.is_some_and(|t| match t {
+            Some(c) => explained || c.is_whitespace(),
+            None => false,
+        });
+        let rest = !labels.unexpected.is_empty()
+            || !labels.expected.is_empty()
+            || !labels.messages.is_empty();
+        let mut s = String::new();
+        match token {
+            Some(_) if noise && rest => (),
+            Some(Some(c)) => writeln!(s, "Unexpected `{c}`").unwrap(),
+            Some(None) => s.push_str("Unexpected end of input\n"),
+            None => (),
+        }
+        for u in unique(&labels.unexpected) {
+            writeln!(s, "Unexpected {u}").unwrap();
+        }
+        let n = unique(&labels.expected).count();
+        for (i, e) in unique(&labels.expected).enumerate() {
+            let sep = match i {
+                0 => "Expected",
+                _ if i + 1 < n => ",",
+                _ => " or",
+            };
+            write!(s, "{sep} {e}").unwrap();
+        }
+        if n > 0 {
+            s.push('\n');
+        }
+        for m in unique(&labels.messages) {
+            writeln!(s, "{m}").unwrap();
+        }
+        s
+    }
+}
+
+/// Default [`max_nesting`]. Counted in parser recursion knots and the
+/// levels an iterative fold adds under them, not source constructs: one
+/// level of `(1 + …)` costs four, three knots and its operator's fold.
+pub const DEFAULT_MAX_NESTING: usize = 1000;
+
+static MAX_NESTING: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_NESTING);
+
+/// How deeply a program may nest before the parser rejects it.
+pub fn max_nesting() -> usize {
+    MAX_NESTING.load(Ordering::Relaxed)
+}
+
+/// Raise or lower [`max_nesting`]. Process-global. The limit bounds the
+/// depth of the AST, counted in parser knots and fold levels; types are
+/// not bounded by it, so every walk keeps its own stack guard. Raising it
+/// past what an unguarded walk survives trades an error for an abort.
+pub fn set_max_nesting(depth: usize) {
+    MAX_NESTING.store(depth, Ordering::Relaxed)
 }
 
 /// How a parse failed: the position reported and the message,
@@ -242,10 +417,7 @@ impl std::fmt::Display for ParseFailure {
 /// Where `pos` is the end of `text`, the innermost bracket left open and
 /// where it opens. Comments and string contents are skipped, the
 /// expressions a string interpolates are not.
-pub(super) fn unclosed_at_end(
-    text: &str,
-    pos: SourcePosition,
-) -> Option<(char, SourcePosition)> {
+fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosition)> {
     #[derive(Clone, Copy)]
     enum Ctx {
         /// A bracket open in code.
@@ -258,13 +430,13 @@ pub(super) fn unclosed_at_end(
         Interp,
     }
     let mut stack: LPooled<Vec<Ctx>> = LPooled::take();
-    let mut at = Lines::default();
+    let mut at = Mark::start();
     let mut chars: LPooled<Vec<char>> = LPooled::take();
     chars.extend(text.chars());
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        let here = at.position();
+        let here = at.pos;
         let ahead = |k: usize| chars.get(i + k).copied();
         let mut advance = 1;
         match stack.last().copied() {
@@ -331,12 +503,12 @@ pub(super) fn unclosed_at_end(
         }
         for k in 0..advance {
             if let Some(c) = chars.get(i + k) {
-                at.update(c);
+                at.step(*c);
             }
         }
         i += advance;
     }
-    if at.position() != pos {
+    if at.pos != pos {
         return None;
     }
     stack.iter().rev().find_map(|c| match c {
@@ -348,7 +520,7 @@ pub(super) fn unclosed_at_end(
 /// The source line at `pos` with a caret under its column, the line
 /// windowed around the caret when it is long. Past the last line (the
 /// end of input) the caret follows the last line that holds anything.
-pub(super) fn snippet(text: &str, pos: SourcePosition) -> String {
+fn snippet(text: &str, pos: SourcePosition) -> String {
     // no line follows a final break
     let last = lines(text).count() - 1;
     let n = (pos.line.max(1) - 1) as usize;
@@ -371,285 +543,4 @@ pub(super) fn snippet(text: &str, pos: SourcePosition) -> String {
     let lead = if start > 0 { "…" } else { "" };
     let trail = if end < chars.len() { "…" } else { "" };
     format!("    {lead}{shown}{trail}\n    {}{pad}^", if start > 0 { " " } else { "" })
-}
-
-/// The nesting depth of the parse in progress, restored when it ends
-/// however it ends.
-struct DepthScope(usize, usize);
-
-thread_local! {
-    /// Under [`parsing`], the column of each line's first non-space
-    /// character, by line.
-    static FIRST_COLUMNS: RefCell<Option<LPooled<Vec<i32>>>> = const { RefCell::new(None) };
-}
-
-struct FirstColumnsScope(Option<LPooled<Vec<i32>>>);
-
-impl FirstColumnsScope {
-    fn enter(text: &str) -> Self {
-        let mut cols: LPooled<Vec<i32>> = LPooled::take();
-        cols.extend(lines(text).map(|line| {
-            let blank = line.chars().take_while(|c| c.is_whitespace()).count();
-            blank as i32 + 1
-        }));
-        Self(FIRST_COLUMNS.with_borrow_mut(|c| c.replace(cols)))
-    }
-}
-
-impl Drop for FirstColumnsScope {
-    fn drop(&mut self) {
-        FIRST_COLUMNS.with_borrow_mut(|c| *c = self.0.take())
-    }
-}
-
-/// Whether nothing precedes `pos` on its line; true outside [`parsing`].
-pub(super) fn starts_line(pos: SourcePosition) -> bool {
-    FIRST_COLUMNS.with_borrow(|c| match c {
-        None => true,
-        Some(cols) => usize::try_from(pos.line - 1)
-            .ok()
-            .and_then(|l| cols.get(l))
-            .is_none_or(|first| *first == pos.column),
-    })
-}
-
-impl DepthScope {
-    fn enter() -> Self {
-        Self(DEPTH.with(|d| d.replace(0)), BELOW.with(|b| b.replace(0)))
-    }
-}
-
-impl Drop for DepthScope {
-    fn drop(&mut self) {
-        DEPTH.with(|d| d.set(self.0));
-        BELOW.with(|b| b.set(self.1))
-    }
-}
-
-/// Count a fold `n` levels deep over what the knot in progress parsed,
-/// which an iterative loop builds out of `grow`'s sight, against
-/// [`max_nesting`] with the knots above it; past the limit the refusal is
-/// noted at `pos` and the fold is refused.
-pub(super) fn fold_fits(n: usize, pos: SourcePosition) -> bool {
-    let below = BELOW.with(|b| b.get()) + n;
-    if DEPTH.with(|d| d.get()) + below > max_nesting() {
-        note_refused(pos);
-        false
-    } else {
-        BELOW.with(|b| b.set(below));
-        true
-    }
-}
-
-/// Wrap a parse of `text`: clears the flags, then reports the nesting
-/// limit when that stopped the parse, otherwise the furthest point any
-/// branch reached with the source line, a caret and any recorded reason.
-pub(super) fn parsing<T, E: std::fmt::Display>(
-    text: &str,
-    f: impl FnOnce() -> Result<T, E>,
-) -> Result<T, ParseFailure> {
-    let _depth = DepthScope::enter();
-    let _first_columns = FirstColumnsScope::enter(text);
-    REFUSED.with(|r| r.set(None));
-    REASON.with(|r| *r.borrow_mut() = None);
-    ERROR_POS.with(|p| p.set(None));
-    FURTHEST.with(|p| p.set(None));
-    FURTHEST_OK.with(|p| p.set(None));
-    f().map_err(|e| {
-        let err_pos = ERROR_POS.with(|p| p.get()).unwrap_or_default();
-        let furthest = FURTHEST.with(|p| p.get()).unwrap_or(err_pos);
-        // a refusal is the failure only when no branch parsed past it
-        let passed = FURTHEST_OK.with(|p| p.get());
-        let refused = REFUSED.with(|r| r.get());
-        if let Some(at) = refused.filter(|r| passed.is_none_or(|p| key(*r) >= key(p))) {
-            let summary = format!(
-                "expression nesting too deep (limit {}, see \
-                 graphix_compiler::expr::parser::set_max_nesting)",
-                max_nesting()
-            );
-            let mut msg = format!(
-                "Parse error at line: {}, column: {}\n{summary}",
-                at.line, at.column
-            );
-            let snippet = snippet(text, at);
-            if !snippet.is_empty() {
-                msg.push('\n');
-                msg.push_str(&snippet);
-            }
-            return ParseFailure { pos: at, summary, msg };
-        }
-        let mut pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
-        let read = REASON.with(|r| {
-            r.borrow()
-                .as_ref()
-                .filter(|r| r.failed_at == Some(pos))
-                .map(|r| (r.pos, r.reason.clone()))
-        });
-        let (mut msg, mut summary) = if let Some((at, reason)) = &read {
-            pos = *at;
-            let summary = reason.to_string();
-            let at = format!("Parse error at line: {}, column: {}", pos.line, pos.column);
-            (format!("{at}\n{summary}"), summary)
-        } else if pos == err_pos {
-            // combine's rendering: its position line, then what it expected
-            let msg = format!("{e}");
-            let summary = msg.split_once('\n').map_or(&*msg, |(_, s)| s).to_string();
-            (msg, summary)
-        } else {
-            let summary = "the parser could not continue past this point".to_string();
-            let at = format!("Parse error at line: {}, column: {}", pos.line, pos.column);
-            (format!("{at}\n{summary}"), summary)
-        };
-        let snippet = snippet(text, pos);
-        if !snippet.is_empty() {
-            msg.push('\n');
-            msg.push_str(&snippet);
-        }
-        let reason = match read {
-            Some(_) => None,
-            None => REASON.with(|r| r.borrow().clone()).filter(|r| r.explains(pos)),
-        };
-        let note = match reason {
-            Some(r) => Some((r.pos, r.reason)),
-            None => unclosed_at_end(text, pos)
-                .map(|(c, at)| (at, format_compact!("this `{c}` is not closed"))),
-        };
-        if let Some((at, reason)) = note {
-            msg.push_str(&format!(
-                "\n  note: at line: {}, column: {}: {reason}",
-                at.line, at.column
-            ));
-            summary.push_str(&format!("\nnote: {reason}"));
-        }
-        ParseFailure { pos, msg, summary }
-    })
-}
-
-/// Run `p` under [`ensure_sufficient`] and count it against
-/// [`max_nesting`]. Wraps every recursion knot in the parser.
-pub(super) fn grow<P>(p: P) -> GrowStack<P> {
-    GrowStack(p)
-}
-
-pub(super) struct GrowStack<P>(P);
-
-impl<Input, P> Parser<Input> for GrowStack<P>
-where
-    Input: Stream<Position = SourcePosition>,
-    P: Parser<Input>,
-{
-    type Output = P::Output;
-    type PartialState = P::PartialState;
-
-    combine::parse_mode!(Input);
-
-    #[inline]
-    fn parse_mode_impl<M>(
-        &mut self,
-        mode: M,
-        input: &mut Input,
-        state: &mut Self::PartialState,
-    ) -> ParseResult<Self::Output, <Input as StreamOnce>::Error>
-    where
-        M: ParseMode,
-    {
-        let depth = DEPTH.with(|d| {
-            let n = d.get() + 1;
-            d.set(n);
-            n
-        });
-        let r = if depth > max_nesting() {
-            note_refused(input.position());
-            ParseResult::CommitErr(<Input as StreamOnce>::Error::from_error(
-                input.position(),
-                StreamError::message_static_message("expression nesting too deep"),
-            ))
-        } else {
-            let Self(p) = self;
-            let above = BELOW.with(|b| b.replace(0));
-            let r = ensure_sufficient(|| p.parse_mode(mode, input, state));
-            BELOW.with(|b| {
-                let below = match &r {
-                    ParseResult::CommitOk(_) | ParseResult::PeekOk(_) => b.get() + 1,
-                    ParseResult::CommitErr(_) | ParseResult::PeekErr(_) => 0,
-                };
-                b.set(above.max(below))
-            });
-            r
-        };
-        DEPTH.with(|d| d.set(d.get() - 1));
-        // A token matcher advances past the token it rejects before
-        // reporting a peek mismatch, so on failure the error's own
-        // position is the exact one; on success the input's is.
-        match &r {
-            ParseResult::CommitOk(_) | ParseResult::PeekOk(_) => {
-                note_furthest(input.position());
-                FURTHEST_OK.with(|f| {
-                    if f.get().is_none_or(|p| key(p) < key(input.position())) {
-                        f.set(Some(input.position()))
-                    }
-                })
-            }
-            ParseResult::CommitErr(e) => note_furthest(e.position()),
-            ParseResult::PeekErr(e) => note_furthest(e.error.position()),
-        }
-        r
-    }
-
-    #[inline]
-    fn add_error(&mut self, error: &mut Tracked<<Input as StreamOnce>::Error>) {
-        self.0.add_error(error)
-    }
-
-    #[inline]
-    fn add_committed_expected_error(
-        &mut self,
-        error: &mut Tracked<<Input as StreamOnce>::Error>,
-    ) {
-        self.0.add_committed_expected_error(error)
-    }
-
-    #[inline]
-    fn parser_count(&self) -> ErrorOffset {
-        self.0.parser_count()
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use combine::{
-        EasyParser, attempt, choice, easy, parser::char::string, position,
-        stream::position::Stream as Positioned,
-    };
-
-    type Input<'a> = easy::Stream<Positioned<&'a str, SourcePosition>>;
-
-    /// A refusal that another branch parsed past did not stop the parse.
-    #[test]
-    fn a_refusal_passed_by_another_branch_is_not_the_failure() {
-        let text = "aab";
-        let refused =
-            |(_, pos): (&str, SourcePosition)| -> Result<(), StreamErrorFor<Input>> {
-                note_refused(pos);
-                Err(StreamErrorFor::<Input>::message_static_message(
-                    "expression nesting too deep",
-                ))
-            };
-        let e = parsing(text, || {
-            choice((
-                attempt(grow((string("a"), position()).and_then(refused))),
-                grow(string("aa")).map(|_| ()),
-            ))
-            .skip(grow(string("c")))
-            .easy_parse(Positioned::new(text))
-            .map_err(|e| {
-                note_error_pos(e.position);
-                e
-            })
-        })
-        .unwrap_err();
-        assert!(!e.msg.contains("nesting too deep (limit"), "{}", e.msg);
-        assert_eq!(e.pos.column, 3, "{}", e.msg);
-    }
 }

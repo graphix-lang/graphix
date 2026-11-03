@@ -33,11 +33,11 @@ fn tref(name: &str) -> Type {
 }
 
 fn parse_doc(s: &str) -> anyhow::Result<Doc> {
-    parse_all!(s, text_origin(s), doc_comment())
+    parse_all(s, text_origin(s), false, doc_comment)
 }
 
 fn parse_structure_pattern(s: &str) -> anyhow::Result<StructurePattern> {
-    parse_all!(s, text_origin(s), structure_pattern())
+    parse_all(s, text_origin(s), false, patternexp::structure_pattern)
 }
 
 #[test]
@@ -983,7 +983,7 @@ select foo(b) {
 #[test]
 fn pattern0() {
     let s = r#"i64 as a if a < 10"#;
-    let p = parse_all!(s, text_origin(s), super::pattern()).unwrap();
+    let p = parse_all(s, text_origin(s), false, patternexp::pattern).unwrap();
     assert_eq!(p.type_predicate, Some(Type::Primitive(Typ::I64.into())));
     assert!(
         matches!(&p.structure_predicate, StructurePattern::Bind(n) if &*n.name == "a")
@@ -3008,7 +3008,7 @@ fn source_error_does_not_expect_printed_data() {
         message,
         r####"at line: 1, column: 9 in module /test: Parse error at line: 1, column: 9
 Unexpected `;`
-Expected mod, pub, use, catch, try, until, type, trait, impl, let, whitespaces, `&`, mut, `|`, `'`, `*`, `r`, [<, select, seqq, seq, cast, never, live, any, """, `"`, `{`, `-`, u8, u16, u32, i8, i16, i32, v32, z32, f32, f64, `0`, true, false, null, decimal, datetime, `:`, duration:, self, `!`, `[`, ```, `(` or #[
+Expected //, #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, u8, u16, u32, i8, i16, i32, v32, z32, f32, f64, `0`, true, false, null, decimal, datetime, u64, i64, v64, z64, bytes, abstract, error, duration or duration:
 
     let x = ;
             ^"####

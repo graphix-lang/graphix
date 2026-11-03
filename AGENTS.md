@@ -317,7 +317,10 @@ off-topic failure is discussed with Eric before it is fixed.
 
 ## Architecture
 
-**Pipeline.** Parse (`graphix-types/src/expr/parser/`) → `Expr` AST
+**Pipeline.** Parse (`graphix-types/src/expr/parser/`: recursive descent
+by hand over one cursor, `input::Input`; a rule that fails after
+consuming input commits unless `attempt`ed, and netidx-value's literal
+parsers run through `Input::bridge`) → `Expr` AST
 with positions → compile (`node/compiler.rs`) → `Node<R>` graph →
 typecheck (two passes, `typecheck0`/`typecheck1` on every node) → fuse
 (`fusion/`, when enabled). `typecheck0` also builds `ctx.bind_to_lambda`;
@@ -1748,7 +1751,8 @@ cycle, across workers; the compiler never pins threads.
   else in a type a comment is refused (`expr/parser/typexp.rs`). A blank
   line between two lines of one comment block stays, one for a run of
   them. Parse errors report the furthest point
-  reached with the source line and a caret, and a refusal its reason.
+  reached with the source line and a caret, what was expected there,
+  and a refusal its reason.
 - **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
   comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is
   left-associative (`8 / 2 * 2` is 8), and a lambda may be an operator's
@@ -1783,17 +1787,16 @@ cycle, across workers; the compiler never pins threads.
 
 Nesting depth is attacker-controlled and overflow aborts, so it is
 closed two ways: `crate::stack::ensure_sufficient` (stacker) wraps every
-program-driven recursion — parser knots (`GrowStack`), `compile`,
+program-driven recursion — parser knots (`Input::knot`), `compile`,
 `Display`, `fold`/`for_each_child`, type walks (`Eq`/`Ord`/`Hash`
 included), pattern walks, seq lowering, and the `Node`/`TVar`/`Expr`/
 `Type` destructors (explicit teardown inside the guard) — and
 `parser::DEFAULT_MAX_NESTING`, which bounds AST depth: it counts parser
 knots and the levels each iterative fold (an operator or postfix run)
-adds under them (`grow::fold_fits`). Type depth is not bounded by the
+adds under them (`Input::fold_fits`); reaching it ends the parse. Type depth is not bounded by the
 limit: `let x1 = [x0]; let x2 = [x1]; ..`, or a chain of typedefs,
 builds a type as deep as the program is long.
-Refusals set a thread-local (`note_refused`) because combine merges
-messages. Pins: `graphix-compiler/tests/deep_drop.rs`,
+Pins: `graphix-compiler/tests/deep_drop.rs`,
 `graphix-shell/tests/deep_nesting.rs` (add a case for a new recursive
 construct). netidx-value has the same treatment for bracket literals.
 A cast reads data at most `typ::cast::MAX_DATA_DEPTH` values deep and

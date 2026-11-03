@@ -1,73 +1,257 @@
-use crate::expr::{
-    ApplyExpr, BinOp, Expr, ExprKind, Name,
-    parser::{
-        ONE_TUPLE, any, apply_args, array, array_index_suffix,
-        arrayexp::Index,
-        brace, cast, comma_items, construct, expr, fldname,
-        grow::{fold_fits, grow, refuse},
-        interpolated,
-        lambdaexp::{any_lambda, lambda_ahead},
-        list_lit, literal, live_expr, never_expr, raw_string, reference, select, seq,
-        spaces, sptoken, variant,
-    },
+use super::{
+    ONE_TUPLE, any, arrayexp,
+    arrayexp::Index,
+    brace, cast, choice, comma_items, expr, fldname,
+    input::{Input, R},
+    interpolateexp::interpolated,
+    lambdaexp::{any_lambda, apply_args, lambda_ahead},
+    literal, live_expr, never_expr, not_prefix, raw_string, reference, select, seq,
+    variant,
 };
-use crate::typ::Mutability;
+use crate::{
+    expr::{ApplyExpr, BinOp, Expr, ExprKind, Name},
+    typ::Mutability,
+};
 use arcstr::ArcStr;
-use combine::{
-    ParseError, Parser, RangeStream, attempt, between, choice,
-    error::StreamError,
-    look_ahead, many, not_followed_by, optional,
-    parser::char::string,
-    position, satisfy,
-    stream::{Range, StreamErrorFor, position::SourcePosition},
-    token, unexpected_any, value,
-};
-use netidx_value::parser::{int, not_prefix};
+use combine::stream::position::SourcePosition;
+use netidx_value::parser::int;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
 /// A prefix operator: `&e`, `*e`, `-e`, `!e`. The operand is an
 /// `arith_term`, so a prefix binds looser than the postfix operators.
-fn prefix<I>(
-    op: char,
-    key: bool,
-    mk: fn(Arc<Expr>) -> ExprKind,
-) -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), token(op).with(arith_term(key)))
-        .map(move |(pos, e)| mk(Arc::new(e)).to_expr(pos))
+fn prefix(i: &mut Input, op: char, key: bool, mk: fn(Arc<Expr>) -> ExprKind) -> R<Expr> {
+    let pos = i.pos();
+    i.token(op)?;
+    let e = arith_term(i, key)?;
+    Ok(mk(Arc::new(e)).to_expr(pos))
 }
 
 /// `&e` or `&mut e`.
-fn byref<I>(key: bool) -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), token('&'), mutability(), arith_term(key))
-        .map(|(pos, _, m, e)| ExprKind::ByRef(m, Arc::new(e)).to_expr(pos))
+fn byref(i: &mut Input, key: bool) -> R<Expr> {
+    let pos = i.pos();
+    i.token('&')?;
+    let m = mutability(i)?;
+    let e = arith_term(i, key)?;
+    Ok(ExprKind::ByRef(m, Arc::new(e)).to_expr(pos))
 }
 
 /// The `mut` after a `&`, and the space after it.
-pub(super) fn mutability<I>() -> impl Parser<I, Output = Mutability>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    optional(attempt(string("mut").skip(not_prefix()).skip(spaces()))).map(|m| match m {
+pub(super) fn mutability(i: &mut Input) -> R<Mutability> {
+    let m = i.optional(|i| {
+        i.attempt(|i| {
+            i.string("mut")?;
+            not_prefix(i)?;
+            Ok(i.spaces())
+        })
+    })?;
+    Ok(match m {
         Some(_) => Mutability::Mut,
         None => Mutability::Shared,
     })
 }
 
+// Each alternative is attempted so a partial parse (the `{` of a map
+// access that is really a block) ends the postfix loop cleanly. `key`
+// admits `{k}`, written against its source like a call's `(`; the head of a
+// `seq` refuses it so that its body is not read as a map access of the
+// trigger.
+fn postfix_op(i: &mut Input, key: bool) -> R<Post> {
+    choice!(
+        i,
+        |i| i.attempt(|i| {
+            i.sptoken('.')?;
+            choice!(
+                i,
+                |i| i.attempt(|i| super::bridge!(i, int::<_, usize>())).map(Post::Index),
+                |i| {
+                    i.spaces();
+                    let pos = i.pos();
+                    fldname(i).map(|n| Post::Field(Name::written(n, pos)))
+                }
+            )
+        }),
+        // a `[` or `(` right after a term starts an index or a call and
+        // nothing else: a failure past it is that suffix's to report
+        |i| {
+            i.attempt(|i| i.look_ahead(|i| i.token('[')))?;
+            arrayexp::array_index_suffix(i).map(Post::Array)
+        },
+        |i| i.attempt(|i| match key {
+            true => {
+                i.token('{')?;
+                let k = expr(i)?;
+                i.sptoken('}')?;
+                Ok(Post::Key(k))
+            }
+            false => Err(i.unexpected("a seq trigger takes no map access")),
+        }),
+        |i| {
+            i.attempt(|i| i.look_ahead(|i| i.token('(')))?;
+            apply_args(i).map(Post::Call)
+        },
+        // `?`/`$` chain innermost first: `x?$` takes the errors off `x`,
+        // then the null
+        |i| i.attempt(|i| {
+            i.spaces();
+            choice!(i, |i| i.token('?').map(|_| Post::Qop), |i| i
+                .token('$')
+                .map(|_| Post::OrNever))
+        })
+    )
+}
+
+fn paren_group(i: &mut Input) -> R<(Expr, Option<Parenthesized>)> {
+    let pos = i.pos();
+    i.token('(')?;
+    let (mut exprs, trailing) =
+        comma_items(i, &expr, &|i| i.token(')').map(drop), false)?;
+    i.sptoken(')')?;
+    let end = i.pos();
+    Ok(match exprs.len() {
+        1 if trailing => return Err(i.refuse(end, ONE_TUPLE)),
+        1 => (exprs.pop().unwrap(), Some(Parenthesized)),
+        _ => {
+            (ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) }.to_expr(pos), None)
+        }
+    })
+}
+
+/// Where a literal may start, consuming nothing: never at a letter that
+/// begins no keyword value (`true`) or typed literal's prefix (`i64:`),
+/// so most references skip the value parser.
+fn literal_start(i: &mut Input) -> R<()> {
+    const LITERAL_LETTERS: &str = "abdefinutvz";
+    let printed = i.printed_data;
+    i.look_ahead(|i| {
+        i.satisfy(|c| {
+            !c.is_alphabetic() || LITERAL_LETTERS.contains(c) || (c == 'N' && printed)
+        })
+    })
+    .map(drop)
+}
+
+fn primary(i: &mut Input, key: bool) -> R<(Expr, Option<Parenthesized>)> {
+    let bare = |e: Expr| (e, None);
+    choice!(
+        i,
+        |i| prefix(i, '!', key, |expr| ExprKind::Not { expr }).map(bare),
+        |i| raw_string(i).map(bare),
+        |i| arrayexp::list_lit(i).map(bare),
+        |i| arrayexp::array(i).map(bare),
+        |i| byref(i, key).map(bare),
+        |i| prefix(i, '*', key, ExprKind::Deref).map(bare),
+        |i| select(i).map(bare),
+        |i| seq(i).map(bare),
+        |i| variant(i).map(bare),
+        |i| cast(i).map(bare),
+        |i| never_expr(i).map(bare),
+        |i| live_expr(i).map(bare),
+        |i| any(i).map(bare),
+        |i| interpolated(i).map(bare),
+        |i| brace(i).map(bare),
+        paren_group,
+        |i| i
+            .attempt(|i| {
+                literal_start(i)?;
+                literal(i)
+            })
+            .map(bare),
+        // after `literal()`, so that a signed numeric literal is a constant
+        |i| prefix(i, '-', key, ExprKind::Neg).map(bare),
+        |i| super::construct(i).map(bare),
+        |i| reference(i).map(bare)
+    )
+}
+
+pub(super) fn arith_term(i: &mut Input, key: bool) -> R<Expr> {
+    i.knot(|i| {
+        i.spaces();
+        let pos = i.pos();
+        let (base, paren) = primary(i, key)?;
+        let end = i.pos();
+        let mut ops: LPooled<Vec<(Post, SourcePosition)>> = LPooled::take();
+        i.many(
+            |i| {
+                let op = postfix_op(i, key)?;
+                Ok((op, i.pos()))
+            },
+            |op| ops.push(op),
+        )?;
+        let chain_end = i.pos();
+        let base = base.ending(end);
+        // `?`/`$` print their operand bare, so a parenthesized one keeps
+        // its parens
+        let keeps_parens = matches!(
+            (&paren, ops.first()),
+            (Some(Parenthesized), None | Some((Post::Qop | Post::OrNever, _)))
+        );
+        i.fold_fits(ops.len(), chain_end)?;
+        let base = match keeps_parens {
+            true => ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos).ending(end),
+            false => base,
+        };
+        Ok(ops
+            .drain(..)
+            .fold(base, |acc, (op, end)| apply_post(pos, acc, op).ending(end)))
+    })
+}
+
+/// A binary operator token.
+fn binop(i: &mut Input) -> R<BinOp> {
+    let mut best = None;
+    for op in BinOp::ALL {
+        let r = i.alt(&mut best, |i| {
+            i.attempt(|i| {
+                i.string(op.token())?;
+                i.not_followed_by(|i| i.satisfy(|c| op.not_before() == Some(c)))
+            })
+        })?;
+        if r.is_some() {
+            return Ok(op);
+        }
+    }
+    Err(best.unwrap())
+}
+
+/// An operator's right operand: a term, or a lambda, which is the last
+/// operand of its chain since its body takes the rest.
+fn operand(i: &mut Input, key: bool) -> R<Expr> {
+    choice!(
+        i,
+        |i| {
+            lambda_ahead(i)?;
+            any_lambda(i)
+        },
+        |i| arith_term(i, key)
+    )
+}
+
+pub(super) fn arith(i: &mut Input, key: bool) -> R<Expr> {
+    i.knot(|i| {
+        let e = arith_term(i, key)?;
+        let mut rest: LPooled<Vec<(BinOp, Expr)>> = LPooled::take();
+        i.many(
+            |i| {
+                let op = i.attempt(|i| {
+                    i.spaces();
+                    binop(i)
+                })?;
+                Ok((op, operand(i, key)?))
+            },
+            |o| rest.push(o),
+        )?;
+        let end = i.pos();
+        i.fold_fits(rest.len(), end)?;
+        Ok(match rest.is_empty() {
+            true => e,
+            false => shunting_yard(e, rest),
+        })
+    })
+}
+
 /// A postfix operator applied to a primary in `arith_term`'s postfix loop.
-pub(super) enum Post {
+enum Post {
     Field(Name),                                // `.name`  -> StructRef
     Index(usize),                               // `.0`     -> TupleRef
     Array(Index),                               // `[i]`/`[a..b]`
@@ -77,44 +261,7 @@ pub(super) enum Post {
     OrNever,                                    // `$`      -> OrNever
 }
 
-// Each alternative is `attempt`-wrapped so a partial parse (the `{` of a
-// map access that is really a block) ends the postfix loop cleanly.
-// `key` admits `{k}`, written against its source like a call's `(`; the
-// head of a `seq` refuses it so that its body is not read as a map access
-// of the trigger.
-fn postfix_op<I>(key: bool) -> impl Parser<I, Output = Post>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    choice((
-        attempt(
-            sptoken('.').with(choice((
-                attempt(int::<_, usize>()).map(Post::Index),
-                spaces()
-                    .with((position(), fldname()))
-                    .map(|(pos, n)| Post::Field(Name::written(n, pos))),
-            ))),
-        ),
-        // a `[` or `(` right after a term starts an index or a call and
-        // nothing else: a failure past it is that suffix's to report
-        attempt(look_ahead(token('['))).with(array_index_suffix()).map(Post::Array),
-        attempt(combine::value(()).then(move |()| match key {
-            true => between(token('{'), sptoken('}'), expr()).map(Post::Key).left(),
-            false => unexpected_any("a seq trigger takes no map access").right(),
-        })),
-        attempt(look_ahead(token('('))).with(apply_args()).map(Post::Call),
-        // `?`/`$` chain innermost first: `x?$` takes the errors off `x`,
-        // then the null
-        attempt(spaces().with(choice((
-            token('?').map(|_| Post::Qop),
-            token('$').map(|_| Post::OrNever),
-        )))),
-    ))
-}
-
-pub(super) fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
+fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
     match op {
         Post::Field(field) => {
             ExprKind::StructRef { source: Arc::new(src), field }.to_expr(pos)
@@ -147,131 +294,10 @@ pub(super) fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
 /// A single parenthesized expr: `ExplicitParens` if no postfix follows,
 /// else the bare postfix source.
 #[derive(Clone)]
-pub(super) struct Parenthesized;
-
-fn paren_group<I>() -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        between(token('('), sptoken(')'), comma_items(expr, || token(')'), false)),
-        position(),
-    )
-        .then(
-            |(pos, (mut exprs, trailing), end): (_, (LPooled<Vec<Expr>>, bool), _)| {
-                let kind = match exprs.len() {
-                    1 if trailing => return refuse(end, ONE_TUPLE).right(),
-                    1 => {
-                        return value((
-                            exprs.drain(..).next().unwrap(),
-                            Some(Parenthesized),
-                        ))
-                        .left();
-                    }
-                    _ => ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) },
-                };
-                value((kind.to_expr(pos), None)).left()
-            },
-        )
-}
-
-/// Where a literal may start, consuming nothing: never at a letter that
-/// begins no keyword value (`true`) or typed literal's prefix (`i64:`),
-/// so most references skip the value parser.
-fn literal_start<I>() -> impl Parser<I, Output = ()>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    const LITERAL_LETTERS: &str = "abdefinutvz";
-    look_ahead(satisfy(|c: char| {
-        !c.is_alphabetic()
-            || LITERAL_LETTERS.contains(c)
-            || (c == 'N' && super::PRINTED_DATA.get())
-    }))
-    .map(|_| ())
-}
-
-fn primary<I>(key: bool) -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    choice((
-        prefix('!', key, |expr| ExprKind::Not { expr }).map(|e| (e, None)),
-        raw_string().map(|e| (e, None)),
-        list_lit().map(|e| (e, None)),
-        array().map(|e| (e, None)),
-        byref(key).map(|e| (e, None)),
-        prefix('*', key, ExprKind::Deref).map(|e| (e, None)),
-        select().map(|e| (e, None)),
-        seq().map(|e| (e, None)),
-        variant().map(|e| (e, None)),
-        cast().map(|e| (e, None)),
-        never_expr().map(|e| (e, None)),
-        live_expr().map(|e| (e, None)),
-        any().map(|e| (e, None)),
-        interpolated().map(|e| (e, None)),
-        brace().map(|e| (e, None)),
-        paren_group(),
-        attempt(literal_start().with(literal())).map(|e| (e, None)),
-        // after `literal()`, so that a signed numeric literal is a constant
-        prefix('-', key, ExprKind::Neg).map(|e| (e, None)),
-        construct().map(|e| (e, None)),
-        reference().map(|e| (e, None)),
-    ))
-}
-
-parser! {
-    pub(crate) fn arith_term[I](key: bool)(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        grow(spaces()
-            .with(
-                (
-                    position(),
-                    primary(*key),
-                    position(),
-                    many::<LPooled<Vec<(Post, SourcePosition)>>, _, _>((
-                        postfix_op(*key),
-                        position(),
-                    )),
-                    position(),
-                )
-                    .and_then(|(pos, (base, paren), end, mut ops, chain_end)| {
-                        let base = base.ending(end);
-                        // `?`/`$` print their operand bare, so a
-                        // parenthesized one keeps its parens
-                        let keeps_parens = matches!(
-                            (&paren, ops.first()),
-                            (Some(Parenthesized), None | Some((Post::Qop | Post::OrNever, _)))
-                        );
-                        if !fold_fits(ops.len(), chain_end) {
-                            return Err(<StreamErrorFor<I>>::message_static_message(
-                                "expression nesting too deep",
-                            ));
-                        }
-                        let base = match keeps_parens {
-                            true => {
-                                ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos).ending(end)
-                            }
-                            false => base,
-                        };
-                        Ok(ops
-                            .drain(..)
-                            .fold(base, |acc, (op, end)| apply_post(pos, acc, op).ending(end)))
-                    }),
-            ))
-    }
-}
+struct Parenthesized;
 
 /// Shunting-yard: build the tree the operators' precedence says.
-pub(super) fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(BinOp, Expr)>>) -> Expr {
+fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(BinOp, Expr)>>) -> Expr {
     fn reduce(output: &mut Vec<Expr>, op: BinOp) {
         let rhs = output.pop().unwrap();
         let lhs = output.pop().unwrap();
@@ -299,54 +325,4 @@ pub(super) fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(BinOp, Expr)>>) 
         reduce(&mut output, op);
     }
     output.pop().unwrap()
-}
-
-/// A binary operator token.
-fn binop<I>() -> impl Parser<I, Output = BinOp>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    choice(BinOp::ALL.map(|op| {
-        attempt(
-            string(op.token())
-                .skip(not_followed_by(satisfy(move |c| op.not_before() == Some(c))))
-                .map(move |_| op),
-        )
-    }))
-}
-
-/// An operator's right operand: a term, or a lambda, which is the last
-/// operand of its chain since its body takes the rest.
-fn operand<I>(key: bool) -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    choice((lambda_ahead().with(any_lambda()), arith_term(key)))
-}
-
-parser! {
-    pub(crate) fn arith[I](key: bool)(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        grow((
-            arith_term(*key),
-            many((attempt(spaces().with(binop())), operand(*key))),
-            position(),
-        ).and_then(|(e, exprs, end): (Expr, LPooled<Vec<(BinOp, Expr)>>, _)| {
-            if !fold_fits(exprs.len(), end) {
-                return Err(<StreamErrorFor<I>>::message_static_message(
-                    "expression nesting too deep",
-                ));
-            }
-            Ok(if exprs.is_empty() {
-                e
-            } else {
-                shunting_yard(e, exprs)
-            })
-        }))
-    }
 }
