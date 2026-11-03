@@ -370,6 +370,15 @@ fn checked_default<R: Rt>(
     // graphix-types) and the kept rows seeded and their definitions owned as
     // DefTable::record does a body's; left for that change. The block class itself waits on
     // Eric's 'type names in a scope that ends'.
+    // 2026-11-02 claude: Landed from lane G (round 7): a default whose checked types name
+    // no type takes its definition's rows at a bind (c878ad6ad, c9eccf6db, eec7d0c59,
+    // 5b8d6008f; pins lang::select::default_at_a_bind_reads_an_unreached_arms_binds,
+    // default_at_a_bind_keeps_its_definitions_bind_types;
+    // graphix-shell/tests/default_check_cost.rs for the names test's cost). A default
+    // naming any type, a top-level typedef included, keeps no rows and is checked in full
+    // at the bind, so the bug stands for those (dnm4): rows for them need the type names to
+    // outlive the scope that wrote them, which is default-typedef-outlived-01's question
+    // (next-discuss: type names in a scope that ends).
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };

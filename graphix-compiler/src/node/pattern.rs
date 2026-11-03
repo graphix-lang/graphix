@@ -1075,7 +1075,7 @@ impl StructPatternNode {
                 ctx.env.retype(id, typ)
             }
             let env = &ctx.env;
-            // CR claude for claude: [bug/medium] Under a written type, a constructor
+            // CR claude for eric: [bug/medium] Under a written type, a constructor
             // pattern at a union position is told from the union's other members with open
             // cells benign, and the select arm's Told judgment tests the written type, which
             // covers what reaches it, so neither tells the constructor from a quantifier
@@ -1086,6 +1086,19 @@ impl StructPatternNode {
             // does the same. The inferred spellings are refused (keep-slice-told-01). A Told
             // judgment of (shape, rest) deferred from here would refuse them; this compile
             // does not know whether it is the definition's check. (keep-written-told-01)
+            // 2026-11-02 claude: Round 7 lane G built a Told judgment of written tests over
+            // three review rounds (ea1eb8726, d73b5b6a4, bcd6e1b54, 4e5a944c2, parked on
+            // branch cr45-G, reverted on the landing branch). Each round closed the last
+            // round's shapes and opened another, all around an open cell or a declared rigid
+            // variable at the test: judged against the whole written union it refused
+            // programs main runs (y4, u6); judged among what reaches the position it missed
+            // an open constructor's application (a4: the check passes, the value is not of
+            // its type); reading that as unknown refused correct programs over 'c<..> (c15)
+            // and over a declared 'b: Number (the written rest does not see the definition's
+            // variables); and an Any at the test's own position keeps the hole (ap23, main
+            // alike). Probes ~/ptmp/cr29/scratch/review-r8/G-r1-1 .. G-r3-2. How an open
+            // cell or a declared variable reads at a written test is the rule D3 and
+            // rigid-pattern-bind-01 decide, so this waits on them. Readdressed to eric.
             if let Ok(rest) = type_predicate.diff(env, &shape)
                 && node.footprint(env, &shape, false).rep_collision(env, &rest).is_some()
             {
