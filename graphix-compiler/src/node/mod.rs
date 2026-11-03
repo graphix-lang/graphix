@@ -1061,8 +1061,12 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
-    let package = ctx.env.package_root(&scope.lexical) == &**scope.lexical;
-    let written = written_lets(&exprs, package, &mut ctx.module_writes);
+    let lexical: &str = &scope.lexical;
+    let top = (crate::mod_root(lexical) == lexical).then(|| {
+        let below = &lexical[ctx.env.package_root(lexical).len()..];
+        CompactString::from(below.trim_start_matches('/'))
+    });
+    let written = written_lets(&exprs, top, &mut ctx.module_writes);
     ctx.written_lets.push(written);
     let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
         if matches!(e.kind, ExprKind::Catch(_)) {
@@ -1116,17 +1120,18 @@ pub(crate) fn later_typedef<R: Rt>(ctx: &CompileCtx<R>, tr: &TypeRef) -> bool {
 /// The lets among a block's statements that a `<-` or a `&mut` in the
 /// block writes, lambda bodies and modules included, each as its
 /// statement's id and the written name: a write names the nearest binding
-/// of the name before it (its own let, for a `let rec`). A `package::`
-/// path names the block's lets where the block is the package root
-/// (`package`). Such a let is never generalized, whatever the order of its
-/// uses and writers. What a module in the block writes outside it comes
-/// from `known`, and what this walk finds goes there.
+/// of the name before it (its own let, for a `let rec`). A `self::` path,
+/// and a `package::` path through the block's own module path, name the
+/// block's lets where the block is its module's top (`top`, that path below
+/// the package root). Such a let is never generalized, whatever the order
+/// of its uses and writers. What a module in the block writes outside it
+/// comes from `known`, and what this walk finds goes there.
 pub(crate) fn written_lets(
     exprs: &[&Expr],
-    package: bool,
+    top: Option<CompactString>,
     known: &mut ModuleWrites,
 ) -> LPooled<AHashSet<(ExprId, CompactString)>> {
-    let mut w = Writes::new(Walk::Block { package }, known);
+    let mut w = Writes::new(Walk::Block { top }, known);
     w.statements(exprs.iter().copied());
     mem::take(&mut w.written)
 }
@@ -1169,11 +1174,11 @@ fn module_writes(
 }
 
 /// Where a name outside a module stands: `k` levels of `super` out, or
-/// at the package root.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// in the module at a path below the package root (empty: the root).
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Anchor {
     Super(usize),
-    Package,
+    Package(CompactString),
 }
 
 impl Anchor {
@@ -1181,13 +1186,26 @@ impl Anchor {
     fn of<'a>(parts: &[&'a str]) -> Option<(Anchor, &'a str)> {
         let (n, lead) = parts.split_last()?;
         match lead {
-            ["package"] => Some((Anchor::Package, n)),
+            ["package", path @ ..] if !path.iter().any(|p| is_path_keyword(p)) => {
+                let mut at = CompactString::default();
+                for (i, p) in path.iter().enumerate() {
+                    if i > 0 {
+                        at.push('/')
+                    }
+                    at.push_str(p)
+                }
+                Some((Anchor::Package(at), n))
+            }
             [_, ..] if lead.iter().all(|p| *p == "super") => {
                 Some((Anchor::Super(lead.len()), n))
             }
             _ => None,
         }
     }
+}
+
+fn is_path_keyword(p: &str) -> bool {
+    matches!(p, "self" | "super" | "package")
 }
 
 /// What a name names at a point of the walk.
@@ -1201,12 +1219,12 @@ enum Binding {
     Other,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 enum Walk {
-    /// A block's statements, the package root's when `package`.
-    Block { package: bool },
+    /// A block's statements; `top`, the path below the package root of
+    /// the module whose top block it is.
+    Block { top: Option<CompactString> },
     /// A module's body.
-    #[default]
     Module,
 }
 
@@ -1311,7 +1329,7 @@ impl<'a> Writes<'a> {
         }
     }
 
-    // CR claude for claude: [bug/low] Anchor::of knows a write's path only by a
+    // XCR claude for claude: [bug/low] Anchor::of knows a write's path only by a
     // lead of `super`s or exactly `package`, and a block walk counts `package::` only
     // at the package root, so two spellings of a write to a holder `let` stay
     // order-dependent (main bbb06c0c6 the same): a module p below the root whose
@@ -1322,10 +1340,24 @@ impl<'a> Writes<'a> {
     // `self::` (the module's top block) and a `package::` path through the walked
     // module's own path would close both. probes: ~/ptmp/cr29/scratch/review-r8/G-r2-1/
     // i4/{pa,pb,sa,sb}/test.gx, i4/sc.gx (module-holder-write-02)
+    // 2026-11-03 claude: A block walk knows whether its block is its module's top block
+    // and that module's path below the package root (Walk::Block { top }, from
+    // compile_block_children's scope: mod_root(scope) == scope). A self::n write there,
+    // and in a module's walk, names the walked statements' binding of n past nearer
+    // ones; a package::<path>::n write, or import, anchors at Anchor::Package(path) and
+    // names the block's let where path is the block's own (package::n at the root as
+    // before). pa pb sa sb all run ("w", "z", 1); main refuses pa and sa. The other i4
+    // probes print as main. Pin graphix-shell
+    // script_scope::a_holder_written_through_self_or_its_package_path (both orders of
+    // both spellings; fails without the change: --check refuses the pa order).
     fn target(&mut self, name: &ModPath) {
         let parts: SmallVec<[&str; 4]> = Path::parts(&**name).collect();
         match &parts[..] {
-            [n] => self.write(n),
+            [n] => self.write(n, false),
+            ["self", n] => match self.walk {
+                Walk::Module | Walk::Block { top: Some(_) } => self.write(n, true),
+                Walk::Block { top: None } => (),
+            },
             parts => {
                 if let Some((a, n)) = Anchor::of(parts) {
                     self.write_outer(a, n)
@@ -1334,9 +1366,14 @@ impl<'a> Writes<'a> {
         }
     }
 
-    /// A write to `n` as it is named here.
-    fn write(&mut self, n: &str) {
-        let b = match self.shadow.get(n).and_then(|bs| bs.last()) {
+    /// A write to `n` as it is named here: the nearest binding of `n`, or,
+    /// `top`, the walked statements' own (a `self::` path).
+    fn write(&mut self, n: &str, top: bool) {
+        let nearer = match top {
+            true => None,
+            false => self.shadow.get(n).and_then(|bs| bs.last()),
+        };
+        let b = match nearer {
             Some(b) => Some(b),
             None => self.declared.get(n),
         };
@@ -1344,11 +1381,11 @@ impl<'a> Writes<'a> {
             Some(Binding::Let(id)) => {
                 self.written.insert((*id, n.into()));
             }
-            Some(Binding::Outer(a, m)) => self.outer.push((*a, m.clone())),
+            Some(Binding::Outer(a, m)) => self.outer.push((a.clone(), m.clone())),
             Some(Binding::Other) => (),
             None => {
                 for a in self.globs.iter() {
-                    self.outer.push((*a, n.into()))
+                    self.outer.push((a.clone(), n.into()))
                 }
             }
         }
@@ -1358,7 +1395,7 @@ impl<'a> Writes<'a> {
     fn write_outer(&mut self, a: Anchor, n: &str) {
         match (&self.walk, a) {
             (Walk::Module, a) => self.outer.push((a, n.into())),
-            (Walk::Block { package: true }, Anchor::Package) => {
+            (Walk::Block { top: Some(at) }, Anchor::Package(p)) if *at == p => {
                 if let Some(Binding::Let(id)) = self.declared.get(n) {
                     self.written.insert((*id, n.into()));
                 }
@@ -1398,13 +1435,13 @@ impl<'a> Writes<'a> {
         }
         let outer = module_writes(id, exprs, self.known);
         for (a, n) in outer.iter() {
-            match *a {
-                Anchor::Super(1) => self.write(n),
+            match a {
+                Anchor::Super(1) => self.write(n, false),
                 Anchor::Super(k) => match self.walk {
                     Walk::Module => self.outer.push((Anchor::Super(k - 1), n.clone())),
                     Walk::Block { .. } => (),
                 },
-                Anchor::Package => self.write_outer(*a, n),
+                Anchor::Package(_) => self.write_outer(a.clone(), n),
             }
         }
         self.known.0.insert(id, outer);
@@ -3893,7 +3930,7 @@ mod test {
                 known = ModuleWrites::default();
             }
             let exprs: Vec<&Expr> = block.iter().collect();
-            drop(written_lets(&exprs, false, &mut known));
+            drop(written_lets(&exprs, None, &mut known));
             let inner = block.iter().find_map(|e| match &e.kind {
                 ExprKind::Module { value, .. } => match &**value {
                     ModuleKind::Resolved { exprs, .. } => Some(exprs.clone()),

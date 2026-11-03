@@ -849,8 +849,9 @@ node graph IS the IR — there is no parallel typed IR
 - **`let rec` is monomorphic-recursive**, and a binding something writes
   (a `<-` target, a `&mut`'s referent; a writer anywhere in its block,
   a lambda body's included, and a module's in it through `super::`, a
-  name it imports from there or, at the package root, `package::`; a
-  write names the nearest binding before it, `node::written_lets`) is not generalized:
+  name it imports from there or a `package::` path through the block's
+  module; `self::` in a module's top block; a write names the nearest
+  binding before it, `node::written_lets`) is not generalized:
   its uses and writers share one instance of each function it holds (the
   value restriction, `CompileCtx::monomorphic`), except one an earlier compile
   generalized (a REPL input): it stays generic, a later write is held to

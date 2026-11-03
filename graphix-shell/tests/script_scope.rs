@@ -14,7 +14,11 @@ const EXIT: &str = "sys::exit(sys::time::after_idle(duration:100.ms, 0));\n";
 fn verdicts(main: &str, files: &[(&str, &str)]) -> [Result<String, String>; 2] {
     let dir = tempfile::tempdir().expect("tempdir");
     for (name, text) in files {
-        fs::write(dir.path().join(name), text).expect("write module");
+        let path = dir.path().join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("a dir for the module");
+        }
+        fs::write(path, text).expect("write module");
     }
     let go = |args: &[&str]| {
         let ran = graphix(dir.path(), main, args, &[]);
@@ -127,5 +131,29 @@ fn a_module_writes_a_holder_through_package() {
             let case = format!("{case}, reads after the module: {after}");
             accepted(&case, &main(after), &[("m.gx", m)], "w z 1");
         }
+    }
+}
+
+/// A module below the root whose child writes one of its holder names
+/// through `package::` and its path makes it written there, and so does a
+/// `self::` write in the holder's own block: the reads of the other name
+/// agree wherever they stand.
+#[test]
+fn a_holder_written_through_self_or_its_package_path() {
+    let holder = "let s = {f: |x| x};\nlet (a, b) = (s, s);\nlet w = b.f(\"w\");\n";
+    let reads = "let z = b.f(\"z\");\n";
+    let write = "never<{f: fn(x: i64) -> i64}>();\n";
+    let main = format!("mod p;\n{EXIT}println(p::out)\n");
+    let m = format!("package::p::a <- {write}let n = package::p::a.f(1)\n");
+    for after in [false, true] {
+        let (before, after_) = if after { ("", reads) } else { (reads, "") };
+        let p = format!("{holder}{before}mod m;\n{after_}let out = \"[w] [z] [m::n]\"\n");
+        let case = format!("package path, reads after the module: {after}");
+        accepted(&case, &main, &[("p.gx", &p), ("p/m.gx", &m)], "w z 1");
+        let main = format!(
+            "{holder}{before}self::a <- {write}{after_}{EXIT}println(\"[w] [z] [a.f(1)]\")\n"
+        );
+        let case = format!("self, reads after the write: {after}");
+        accepted(&case, &main, &[], "w z 1");
     }
 }
