@@ -2141,20 +2141,99 @@ impl TVar {
     }
 }
 
-/// A by-name substitution `known` as it reads under the function type
-/// `ft`: `ft`'s quantifiers shadow the names `known` gives, and each one a
-/// type substituted under `ft` holds is renamed, to a name nothing there
-/// holds, through a copy of its cell that `fresh` and the map give; with
-/// the renames, `(old, new)`. `None` when `known` reads as it is.
+/// A by-name substitution: the map, and every name its types hold, read
+/// once, when a quantified function type first asks.
+pub(super) struct Subst<'a> {
+    known: &'a AHashMap<ArcStr, Type>,
+    held: Option<LPooled<AHashSet<ArcStr>>>,
+}
+
+impl<'a> Subst<'a> {
+    pub(super) fn new(known: &'a AHashMap<ArcStr, Type>) -> Self {
+        Self { known, held: None }
+    }
+
+    fn held(&mut self) -> &AHashSet<ArcStr> {
+        let known = self.known;
+        self.held.get_or_insert_with(|| {
+            let mut held: LPooled<AHashSet<ArcStr>> = LPooled::take();
+            let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+            for t in known.values() {
+                t.names_held(&mut held, &mut seen)
+            }
+            held
+        })
+    }
+}
+
+/// The cells of `ft`'s quantifiers `names`, where a position names them
+/// (a nested function type quantifying a name hides it), else as
+/// [`FnType::each_quantifier`] finds them.
+fn quantifier_cells(ft: &FnType, names: &[ArcStr], out: &mut AHashMap<ArcStr, TVar>) {
+    fn go(
+        t: &Type,
+        names: &[ArcStr],
+        hidden: &mut SmallVec<[ArcStr; 4]>,
+        out: &mut AHashMap<ArcStr, TVar>,
+        seen: &mut AHashSet<usize>,
+    ) -> ControlFlow<()> {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if names.contains(&tv.name) && !hidden.contains(&tv.name) {
+                    out.entry(tv.name.clone()).or_insert_with(|| tv.clone());
+                }
+                match out.len() == names.len() {
+                    true => ControlFlow::Break(()),
+                    false => ControlFlow::Continue(()),
+                }
+            }
+            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => {
+                ControlFlow::Continue(())
+            }
+            Type::Fn(ft) => {
+                let depth = hidden.len();
+                hidden.extend(ft.quantifiers.iter().cloned());
+                let r = ft.try_for_each_type(&mut |c| go(c, names, hidden, out, seen));
+                hidden.truncate(depth);
+                r
+            }
+            t => t.try_for_each_child(&mut |c| go(c, names, hidden, out, seen)),
+        })
+    }
+    if names.is_empty() {
+        return;
+    }
+    let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+    let _ =
+        ft.try_for_each_type(&mut |t| go(t, names, &mut SmallVec::new(), out, &mut seen));
+    if out.len() < names.len() {
+        ft.each_quantifier(|q, tv| {
+            if names.contains(q) {
+                out.entry(q.clone()).or_insert_with(|| tv.clone());
+            }
+        })
+    }
+}
+
+/// A by-name substitution `s` as it reads under the function type `ft`:
+/// `ft`'s quantifiers shadow the names it gives, and each one a type
+/// substituted under `ft` holds is renamed, to a name nothing there holds,
+/// through a copy of its cell that `fresh` and the map give; with the
+/// renames, `(old, new)`. `None` when `s` reads as it is.
 fn under_quantifiers(
     ft: &FnType,
-    known: &AHashMap<ArcStr, Type>,
+    s: &mut Subst,
     fresh: &mut AHashMap<usize, TVar>,
 ) -> Option<(LPooled<AHashMap<ArcStr, Type>>, SmallVec<[(ArcStr, ArcStr); 2]>)> {
-    if ft.quantifiers.is_empty() {
+    let known = s.known;
+    if ft.quantifiers.is_empty() || known.is_empty() {
         return None;
     }
     let bound = |n: &ArcStr| ft.quantifiers.contains(n);
+    let shadowed = ft.quantifiers.iter().any(|q| known.contains_key(q));
+    if !shadowed && !ft.quantifiers.iter().any(|q| s.held().contains(q)) {
+        return None;
+    }
     let mut avoid: LPooled<AHashSet<ArcStr>> = LPooled::take();
     avoid.extend(ft.quantifiers.iter().cloned());
     let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
@@ -2168,7 +2247,7 @@ fn under_quantifiers(
     }
     let captured: SmallVec<[ArcStr; 2]> =
         ft.quantifiers.iter().filter(|q| held.contains(*q)).cloned().collect();
-    if captured.is_empty() && !ft.quantifiers.iter().any(|q| known.contains_key(q)) {
+    if captured.is_empty() && !shadowed {
         return None;
     }
     let mut inner: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
@@ -2177,9 +2256,7 @@ fn under_quantifiers(
     );
     avoid.extend(held.drain());
     let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    ft.each_quantifier(|q, tv| {
-        cells.insert(q.clone(), tv.clone());
-    });
+    quantifier_cells(ft, &captured, &mut cells);
     let mut renames: SmallVec<[(ArcStr, ArcStr); 2]> = SmallVec::new();
     let mut copies: SmallVec<[(TVar, TVar); 2]> = SmallVec::new();
     for q in captured {
@@ -2202,8 +2279,9 @@ fn under_quantifiers(
         }
         renames.push((q, name));
     }
+    let mut scoped = Subst::new(&inner);
     for (tv, copy) in copies {
-        tv.copy_into(&copy, fresh, &mut (), |t, f, ()| t.replace_tvars_int(&inner, f));
+        tv.copy_into(&copy, fresh, &mut scoped, |t, f, s| t.replace_tvars_int(s, f));
     }
     Some((inner, renames))
 }
@@ -3478,37 +3556,50 @@ impl Type {
     // twins named apart and typedef_argument_quantified_like_the_body hold the verdicts.
     // Binding resolution under a quantified fn type, the one site left, is
     // resolve-capture-01.
+    // 2026-11-03 claude: Review r10 of lane R (R-r1-2): the capture-avoidance also reaches
+    // a trait method's signature for its impl and a method value, at the function types
+    // the signature holds (main refused both); now pinned, failing with under_quantifiers
+    // disabled: lang::types::impl_signature_quantifier_named_like_its_variable,
+    // method_value_quantifier_named_like_its_variable, their 'q twins holding the verdict;
+    // CLAUDE.md and design/env_independent_typerefs.md name them. under_quantifiers
+    // returns at once when nothing is substituted, and walks the function type's names
+    // only where a substituted type holds a name of its quantifiers or a quantifier
+    // shadows a substituted name.
     /// A copy of self with every TVar named in `known` replaced by the
     /// corresponding type; any other TVar is freshened as
     /// [`Self::reset_tvars`] does, its conjuncts and binding rewritten
     /// the same way. TVar-free structure is returned shared. Capture
     /// avoiding under each function type it holds ([`under_quantifiers`]).
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Self>) -> Type {
-        self.replace_tvars_int(known, &mut LPooled::take())
+        self.replace_tvars_int(&mut Subst::new(known), &mut LPooled::take())
             .unwrap_or_else(|| self.clone())
     }
 
     /// `None` when no TVar is beneath.
     pub(super) fn replace_tvars_int(
         &self,
-        known: &AHashMap<ArcStr, Self>,
+        s: &mut Subst,
         fresh: &mut AHashMap<usize, TVar>,
     ) -> Option<Type> {
         ensure_sufficient(|| match self {
-            Type::TVar(tv) => Some(match known.get(&tv.name) {
-                Some(t) => t.clone(),
-                None => {
-                    Type::TVar(tv.freshen(fresh, &mut (), Fresh::Copy, |t, f, ()| {
-                        t.replace_tvars_int(known, f)
-                    }))
-                }
-            }),
+            Type::TVar(tv) => {
+                Some(match s.known.get(&tv.name) {
+                    Some(t) => t.clone(),
+                    None => Type::TVar(tv.freshen(fresh, s, Fresh::Copy, |t, f, s| {
+                        t.replace_tvars_int(s, f)
+                    })),
+                })
+            }
             // a nested fn type's lambda_ids is the copy's own
             Type::Fn(ft) => {
-                let scoped = under_quantifiers(ft, known, fresh);
-                let inner = scoped.as_ref().map_or(known, |(inner, _)| &**inner);
-                let mut f =
-                    ft.replace_tvars_int(inner, fresh).unwrap_or_else(|| (**ft).clone());
+                let scoped = under_quantifiers(ft, s, fresh);
+                let mut f = match &scoped {
+                    Some((inner, _)) => {
+                        ft.replace_tvars_int(&mut Subst::new(inner), fresh)
+                    }
+                    None => ft.replace_tvars_int(s, fresh),
+                }
+                .unwrap_or_else(|| (**ft).clone());
                 if let Some((_, renames)) = &scoped
                     && !renames.is_empty()
                 {
@@ -3524,9 +3615,9 @@ impl Type {
             }
             // a union substituted into a union is one union: unflattened, a
             // non-regular typedef's unfoldings nest without end
-            Type::Set(s) => Type::cow_slice(s, |c| c.replace_tvars_int(known, fresh))
-                .map(|s| Type::flatten_set(s.iter().cloned())),
-            t => t.cow_children(&mut |c| c.replace_tvars_int(known, fresh)),
+            Type::Set(set) => Type::cow_slice(set, |c| c.replace_tvars_int(s, fresh))
+                .map(|set| Type::flatten_set(set.iter().cloned())),
+            t => t.cow_children(&mut |c| c.replace_tvars_int(s, fresh)),
         })
     }
 

@@ -834,17 +834,17 @@ impl FnType {
     /// [`Type::replace_tvars`] over the signature: its own quantifiers are
     /// names like any other here, a function type it holds keeps its own.
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Type>) -> Self {
-        self.replace_tvars_int(known, &mut LPooled::take())
+        self.replace_tvars_int(&mut tvar::Subst::new(known), &mut LPooled::take())
             .unwrap_or_else(|| self.clone())
     }
 
     /// `None` when no TVar is beneath.
     pub(super) fn replace_tvars_int(
         &self,
-        known: &AHashMap<ArcStr, Type>,
+        s: &mut tvar::Subst,
         fresh: &mut AHashMap<usize, TVar>,
     ) -> Option<Self> {
-        self.cow_walk(|t| t.replace_tvars_int(known, fresh))
+        self.cow_walk(|t| t.replace_tvars_int(s, fresh))
     }
 
     /// Replace auto type variables (`'_23`) that carry one constraint

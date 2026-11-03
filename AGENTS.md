@@ -675,7 +675,8 @@ check's end (an instance elaborates under its definition's env) and
 again right before fusion in both modes. A bound's ref resolves the same way, its
 cell holding the trait (`Resolution::Trait`), filled by the seed walk at
 a definition's check. Substitution by name (`Type::replace_tvars`: a
-typedef's expansion, an abstract's representation) is capture-avoiding,
+typedef's expansion, an abstract's representation, a trait method's
+signature for an impl or a method value) is capture-avoiding,
 since a signature finds its quantifiers by name: under a function type
 its quantifiers shadow the names substituted, and one named like a
 variable a substituted type holds is renamed (`tvar::under_quantifiers`).

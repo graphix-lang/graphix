@@ -37,9 +37,14 @@ its own quantifiers shadow the names substituted (`type K<'a> =
 a quantifier named like a variable a substituted type holds is renamed to
 the first `'a1`, `'a2`, .. nothing there holds, through a copy of its cell:
 `K<'a>` over `type K<'p> = fn<'a: Any>(x: 'p) -> 'a` is `fn<'a1: Any>(x:
-'a) -> 'a1`. An abstract type's representation substitutes the same way.
-Pins: `lang::types::typedef_quantifier_named_like_its_argument` and the
-fixtures after it.
+'a) -> 'a1`. An abstract type's representation substitutes the same way,
+and so does a trait method's signature for its impl or a method value at a
+function type it holds (`impl<'a> T for Array<'a>` over a method taking
+`f: fn<'a: Any>(x: 'a, s: self) -> 'a`); the signature's own quantifiers
+there are names like any other. Pins:
+`lang::types::typedef_quantifier_named_like_its_argument` and the fixtures
+after it, `impl_signature_quantifier_named_like_its_variable`,
+`method_value_quantifier_named_like_its_variable`.
 
 - **Write-once.** Filled on the first successful `lookup_ref`, never
   overwritten: clones share the cell, and refilling would leak one

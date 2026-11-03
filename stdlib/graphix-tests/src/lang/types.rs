@@ -8379,6 +8379,50 @@ run!(
     FuseExpect::Jit
 );
 
+// A trait method's signature substituted for an impl, and named as a
+// value, keeps a function type's quantifier apart from the variable of
+// its name the substitution brings in.
+const IMPL_SIGNATURE_QUANTIFIER_NAMED_LIKE_ITS_VARIABLE: &str = r#"{
+  trait T { val m: fn(self, f: fn<'a: Any>(x: 'a, s: self) -> 'a) -> (i64, string) };
+  impl<'a> T for Array<'a> { let m = |s, f| (f(1, s), f("s", s)) };
+  T::m([1], |x, s| x)
+}"#;
+
+run!(
+    impl_signature_quantifier_named_like_its_variable,
+    IMPL_SIGNATURE_QUANTIFIER_NAMED_LIKE_ITS_VARIABLE,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    impl_signature_quantifier_named_apart_from_its_variable,
+    IMPL_SIGNATURE_QUANTIFIER_NAMED_LIKE_ITS_VARIABLE.replace("fn<'a: Any>(x: 'a, s: self) -> 'a", "fn<'q: Any>(x: 'q, s: self) -> 'q"),
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+const METHOD_VALUE_QUANTIFIER_NAMED_LIKE_ITS_VARIABLE: &str = r#"{
+  trait T { val m: fn(self, x: 'a, f: fn<'a: Any>(y: 'a) -> 'a) -> (i64, string, 'a) };
+  impl T for i64 { let m = |s, x, f| (f(s), f("s"), x) };
+  let g = T::m;
+  g(1, true, |y| y)
+}"#;
+
+run!(
+    method_value_quantifier_named_like_its_variable,
+    METHOD_VALUE_QUANTIFIER_NAMED_LIKE_ITS_VARIABLE,
+    prints(r#"[i64:1, "s", true]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    method_value_quantifier_named_apart_from_its_variable,
+    METHOD_VALUE_QUANTIFIER_NAMED_LIKE_ITS_VARIABLE.replace("fn<'a: Any>(y: 'a) -> 'a", "fn<'q: Any>(y: 'q) -> 'q"),
+    prints(r#"[i64:1, "s", true]"#);
+    FuseExpect::Jit
+);
+
 // A function type's quantifier shadows the typedef parameter of its name.
 const TYPEDEF_PARAMETER_SHADOWED_BY_A_QUANTIFIER: &str = r#"{
   type K<'a> = (Array<'a>, fn<'a: Any>(x: 'a) -> 'a);
