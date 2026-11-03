@@ -744,7 +744,7 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
     })
 }
 
-// CR claude for eric: [bug/medium] A collection HOF's callback can leave its generic
+// CR claude for claude: [bug/medium] A collection HOF's callback can leave its generic
 // cells in an outer binding's type, with no rank-2 type anywhere: `type W<'t> =
 // Abstract<'t>; let y = never(); let g = |x| { y <- array::map([x], |e| W(e)); x };
 // let b = g("s"); let n = select y { [w, ..] => w.0 + 1, _ => 0 }` passes --check and
@@ -781,6 +781,9 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 // CR's 'Its rank-2 form is refused through callsite::stand_ins' and the note above's 'holds only where CompileCtx::monomorphic_noting made the copy' no
 // longer hold: every rank-2 copy shape, map_conn and kin as well as the review r9 select, array and read copies, passes --check with main ec53d4846's
 // verdict. This CR's second option remains the fix that closes them all.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D14 (b) in ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an annotation, then a
+// --check census; back to him only if the stdlib, the book's examples or netidx-admin would need a new annotation): when a non-generic binding's type
+// reaches a generic variable no let names, that variable stops being generic (ML's level rule); census and the must-reject lane before landing.
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is

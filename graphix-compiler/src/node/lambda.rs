@@ -1833,120 +1833,6 @@ impl<R: Rt> GXLambda<R> {
         )
     }
 
-    // CR claude for eric: [perf/medium] Every node-walked call is a retained activation
-    // built here, and each one still holds about 10-12 KB after runtime-heap-01. A
-    // node-walked binary recursion therefore grows by GBs at modest depth. fib(20)
-    // under --no-fusion peaks at 273 MB against 58 MB fused. fib(25), about 243k calls,
-    // needs about 2.4 GB. With the default unlimited activation budget, nothing
-    // contains it. This hits any recursion that fusion refuses (an effect, state) and
-    // everything under --no-fusion. There are two levers. One: build an instance's
-    // nodes from its definition's types with no placeholder cells, and share the Ref
-    // and call-site structures (about 3 KB of type cells and Type values were left).
-    // Two: do not retain the nodes of a completed activation that has no state and no
-    // async, since re-reaching it is a fresh birth anyway. That would change the rule
-    // that instances are retained unconditionally. Decide whether the current cost is
-    // acceptable or which lever to take. (x-fix-nodes-03)
-    // 2026-10-27 claude: graphix-shell/tests/recursion_memory.rs
-    // MAX_BYTES_PER_ACTIVATION (12 KB) sits 5% above today's dev-profile cost (11652 B
-    // below 5000 deep, 11625 B above, measured with
-    // design/review-2026-10-26/repro/tests-shell-compiler-activation-cost.py), so a few
-    // hundred more bytes per activation fail the plain gate. Choose that ceiling with
-    // this decision (tests-shell-compiler-04).
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q68, Activation
-    // memory and depth churn):
-    // 2026-10-27 claude: Lever 3 (depth churn) is built, see x-perf-runtime-03. Lever 1
-    // (smaller activations: an instance's nodes built from its definition's types with no
-    // placeholder cells, shared Ref and call-site structures) is next; the per-activation
-    // cost and MAX_BYTES_PER_ACTIVATION are unchanged so far.
-    // 2026-10-28 codex: Lever 1 builds nodes from substituted definition types: 10603
-    // B/activation before, 9617-9815 after in the serial no-fusion recursion_memory probe
-    // (about 10%); retained binary recursion still grows to GBs, so this remains open.
-    // Signature construction is audited/profiled with bind context, its temporary map is
-    // consumed from Typing, and Select avoids the unused row lookup. Pins:
-    // deep_recursion_memory_is_linear (10240 B ceiling) and
-    // mistyped_function_value_reports_bind_context (four modes).
-    // 2026-10-29 claude: The ruling the 10-27 note left out (Eric in chat, 2026-10-27,
-    // D1): "lets try lever 1 and 3. for 3 I propose we do something like delete only 1%
-    // of the cells we could delete for a shorter activation, which saves a lot of work,
-    // but eventually cleans up after a transient large activation."
-    // 2026-11-01 claude: Lever 1 continued (lane E round 6): an activation of the
-    // recursion_memory program holds 5367 B of live heap, was 6055 (activation_heap,
-    // exact, -11%), and 9.0-9.4 KB of RSS, was 9.5-9.9 (recursion_memory;
-    // tests-shell-compiler-activation-cost.py: high 9896 -> 9515). Cut: a select's arms
-    // are built at their exact length (a collect through Result kept room for four, 704
-    // -> 336 B); a call's argument map is sized to its arguments (entries 192 -> 64 B); a
-    // call site's state for a bottom callee (Absent, about 200 B inline) is boxed; a
-    // select's per-arm flags and TrackedFires.ran are bit masks (ArmMask, now in
-    // wake.rs). Ceilings at 5% over the new costs, each failing at the old:
-    // activation_heap MAX_BYTES_PER_ACTIVATION 6200 -> 5640, MAX_BYTES_PER_SLOT 3300 ->
-    // 3140 (slots shrank too: 3186 -> 2986), recursion_memory 12288 -> 9850. What an
-    // activation still holds that its definition could share (DHAT, depth 100 against
-    // depth 1): about 1.3 KB of instantiated types, each made though the definition holds
-    // no open cell (the instance's FnType 176 B, each call site's ftype 176 B and its
-    // fresh LambdaIds 72 B, the fnode Ref's fn type 176 B, the self-call's static target
-    // 176 B, a fresh cell instance_sig makes, 256 B); FnType::instantiate_how always
-    // builds a new FnType and LambdaIds, so sharing them needs a rule for when an
-    // instance's LambdaIds may be its definition's. Also the argument map's table (52 B),
-    // the formal's env binding (136 B), a select's TrackedFires sets (about 400 B), and
-    // the node structs (CallSite 632 B, Select 544 B, Ref 88 B each).
-    // 2026-11-01 claude: Review E2-r1-2: 'each failing at the old' holds for
-    // activation_heap only. recursion_memory's slopes spread over about 500 B between
-    // runs (8.8-9.3 KB on this branch at load 290; 9.6-10.1 KB at the old cost), so the
-    // old cost passed its 9850 ceiling in one run of three; its doc now says it catches
-    // growth past the spread (1 KB) every run and leaves smaller growth to
-    // activation_heap.
-    // 2026-11-02 claude: Round 7 lane N, not cut: the measured program's definition is
-    // not closed. activation_heap at d0c85e540: 5399 B an activation, 3018 B a slot
-    // (ceilings unchanged). DHAT (depth 201 against 1, --no-fusion, serial; blocks per
-    // activation integral) puts the instantiated types at 1104 B: the instance's FnType
-    // (lambda::instance_type, 176 B), a fresh cell (TVar::freshen, 200+56 B), a table
-    // row's Fn copy (Type::instantiate_memo, 176 B, its LambdaIds 72 B), the call site's
-    // ftype (InstanceTypes::ftype, 176 B, LambdaIds 72 B), the self-call's static target
-    // (resolve_static_entered, 176 B, prepare_bind 64 B). The cell, the row copy and its
-    // LambdaIds come from the definition's throws cell, which `let rec f = |n: i64| ->
-    // i64 select ..` leaves open (nothing raises, nothing bounds it): the signature
-    // prints fn(n: i64) -> i64 yet has_unbound() holds, and every instantiation copies
-    // it. Written `-> i64 throws _` (closed), the same recursion costs 4895 B (504 B
-    // less) with no change to the compiler, and its remaining type allocations are
-    // instance_type 176, the call site's ftype 176+72 and the static target 176+64 (664
-    // B). Sharing a closed Fn row across instances
-    // (Type::instantiate_memo returning the row when no open cell is beneath) moved
-    // neither program: tried and reverted. The cut that reaches the benchmark is a typing
-    // rule, not a sharing one: settle a definition's throws cell that nothing bounds (no
-    // lower bound, no conjunct, no argument carries it) to bottom at its check, as
-    // CallSite::settle_unread does for a builtin's unread quantifier; that is a checker
-    // change (guicheck) and wants Eric's yes. After it, the closed-definition cuts
-    // (instance_type and the call site's ftype as the definition's Arc, which needs
-    // DefTable.ftypes to hold Arc<FnType>; the static target likewise) are about 600 B
-    // more, under one rule: an instance shares a function type of its definition's check
-    // that reaches no open cell, LambdaIds included, since an instance does not check and
-    // a link into a shared closed type adds only ids that are its own. DHAT recipe and
-    // the per-site diff script: ~/ptmp/cr29/scratch/r8-N/dhat/.
-    // 2026-11-02 claude: Readdressed to eric: the next cut that moves the measured cost
-    // is the throws-cell rule in the note above, a checker change; the closed-definition
-    // sharing beside it moves a closed definition alone.
-    // 2026-11-02 claude: Corrects the 11-02 lane N note above (review r8, N-r1-2).
-    // Closing the throws cell removes the fresh cell alone (TVar::freshen, 200+56 B):
-    // activation_heap's exact count gives 5143 B an activation for `-> i64 throws _`
-    // against 5399 B for the open definition (256 B), as DHAT's per-site diff and the
-    // LD_PRELOAD peak-heap slopes (about 260 B) say. The closed definition still copies,
-    // once per activation, the fnode Ref's table row (InstanceTypes::instance_of ->
-    // Type::instantiate_memo, 176 B) and its LambdaIds (72 B), on the open one's call
-    // chain, so it holds about 912 B of instantiated types (instance_type 176, the row
-    // copy 176+72, the call site's ftype 176+72, the static target 176+64), not 664. The
-    // 4895 B (504 B less) the note gave is 5143 less that row copy and its LambdaIds, so
-    // it was measured with the row share in place: that share does move a closed
-    // definition (248 B) and nothing in the open one, whose row holds the open cell;
-    // 'moved neither program' was wrong. The sharing rule the note proposed is withdrawn:
-    // LambdaIds::instantiate copies so that what later unifies with an instance lands on
-    // the copy and never reaches the definition's node (graphix-types typ/fntyp.rs), and
-    // a link a later unify makes into a shared node (a run-time bind's settle, a dynamic
-    // call, a later REPL input) would reach the definition and every other instance; I
-    // have no argument that none is made. So the throws-cell checker rule is worth 256 B
-    // an activation (about 5%), and sharing a closed definition's function types (up to
-    // about 850 B more: four Fn copies and two LambdaIds) waits on a LambdaIds rule
-    // someone can justify. Evidence: ~/ptmp/cr29/scratch/review-r8/N-r1-2/{dhat,shim};
-    // this measurement ~/ptmp/cr29/scratch/r8-N/activation_heap_closed.txt.
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
@@ -2805,7 +2691,7 @@ fn capture_names<R: Rt>(
 /// variable fits its parameter whole: a call instantiates no variable of
 /// the definitions around it, and an omitting site outside them sees
 /// their schemes (`callsite::Judge`).
-// CR claude for eric: [bug/low] A recursive typedef a labeled default's block declares
+// CR claude for claude: [bug/low] A recursive typedef a labeled default's block declares
 // outlives its definition: the default's check node, whose TypeDef node owns the
 // definition, is discarded here, while the parameter's type, which the default decided,
 // still names it. `{ let f = |#d = { type L<'a> = [`Nil, `Cons('a, L<'a>)]; let l:
@@ -2829,6 +2715,10 @@ fn capture_names<R: Rt>(
 // default ((0, 0), 1) where the body gives ((1, 0), 1)), and one engine divergence: a
 // default a struct field hides (r6-E/r6G2/h3.gx: interp produces nothing, jit answers).
 // See next-discuss.md 'type names in a scope that ends'. Readdressed to eric.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D10 (b) in ~/ptmp/cr-discuss.md: keep a
+// block's type definitions findable after the block while anything names them (they sit
+// under a scope unique to the block), so a late lookup finds the right definition and
+// every default can take its definition's types; a short design pass first, then a lane.
 fn check_defaults<R: Rt>(
     ctx: &mut CompileCtx<R>,
     def: &LambdaDef<R>,

@@ -1131,7 +1131,7 @@ fn held_generally<R: Rt>(
     }
 }
 
-// CR claude for eric: [bug/high] A quantified fn type in a function type's result
+// CR claude for claude: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing
 // checks that: check_general judges the bindings outside the outer value, so a let of
@@ -1163,6 +1163,16 @@ fn held_generally<R: Rt>(
 // ~/ptmp/cr29/scratch/discuss-merge/maker_crash.gx. The maker also gets through an
 // interface `val mk` (discuss-merge/val_maker/), so whatever rule is ruled must judge a
 // val's implementation too. Question D3 in ~/ptmp/cr-discuss.md.
+// 2026-11-03 claude: Eric ruled (2026-11-03): D3 (a) in ~/ptmp/cr-discuss.md, under his
+// rule for type holes (reject and require an annotation, then a --check census; back to
+// him only if the stdlib, the book's examples or netidx-admin would need a new
+// annotation): where a type says a function returns a generic function, the value must
+// be a lambda literal, its body checked as if that return type were written on it (the
+// check that already refuses the unsafe body under a written return type), or a value
+// whose own type already says so; anything else is refused "write its return type", at
+// every holder (a let's type, a parameter, a labeled default, a field, a connect, a
+// constructor's payload, an interface val). Census: no rank-2 result type outside the
+// pins. Explainer ~/ptmp/cr29/d3-explainer.md.
 /// A value checked against quantifiers held rigid holds for every choice
 /// of them only if nothing outside it that lives on reaches one: a binding
 /// it reads or writes from outside (its lambdas' captures included), or the
@@ -3237,7 +3247,7 @@ impl<R: Rt> CallSite<R> {
                 Self::unregister_fn_params(ctx, params);
                 res.map(|tail_loops| (defaults, tail_loops))
             })?;
-            // CR claude for eric: [perf/low] A run-time bind fuses only a collection
+            // CR claude for claude: [perf/low] A run-time bind fuses only a collection
             // slot's instance and one an assertion it reaches covers (`asserted`): a
             // function value called with no attribute in reach, `let g = select b {
             // true => fib, .. }; g(20)`, runs every level of its recursion in the
@@ -3248,6 +3258,11 @@ impl<R: Rt> CallSite<R> {
             // by definition and type, so a later bind of it takes the kernels). Should
             // every run-time bind fuse? probe:
             // ~/ptmp/cr29/scratch/review-r6/E2-r1-1/b8.gx (bound-bind-policy-01)
+            // 2026-11-03 claude: Eric ruled (2026-11-03): D20 (b) in
+            // ~/ptmp/cr-discuss.md: fuse every run-time bind, so a function value
+            // costs what a named call does (a JIT compile at the first bind of each
+            // new instance, cached by definition and type); measure the admin TUI's
+            // first-bind cost first and bring it back if it stalls visibly.
             if !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads

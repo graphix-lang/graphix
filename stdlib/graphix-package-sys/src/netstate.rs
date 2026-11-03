@@ -265,26 +265,6 @@ impl Drop for PendingRequest {
     }
 }
 
-// CR claude for eric: [style/low] RpcId writes its own AtomicU64 counter and
-// nohash::IsEnabled where atomic_id! gives both (this file's CallSerial uses it;
-// impl_no_pack! takes the macro's type). Also the refusal for an RpcId as data says
-// "implement Cast for it where it is defined", which no user can do for a Rust type in
-// sys::net. (RV2 finding 4) (rpcid-atomic-id-01)
-// 2026-11-01 claude: The refusal is fixed: uncastable_refusal tells a Graphix-minted
-// abstract (env.abstract_reps) from a Rust type, whose advice reads 'it is a Rust
-// type, which crosses data only where its package implements Cast for it'. Pins
-// lang::cast_trait::write_of_an_rpc_id_refused and db_tree_of_a_handle_refused (now
-// holding the advice). RpcId stays its own counter: atomic_id! implements Pack,
-// encoding the u64, which conflicts with impl_no_pack! (E0119) and would let a peer
-// send an RpcId; netidx-core has no pack-less form of the macro.
-// 2026-11-01 claude: Review E2-r1-2: half of the request is declined, so it stays a
-// CR. Done: the refusal advice (pinned by
-// lang::cast_trait::write_of_an_rpc_id_refused). Left: RpcId keeps its own AtomicU64
-// counter, since atomic_id! implements Pack (conflicting with impl_no_pack! and
-// letting a peer send one); taking the macro needs a pack-less form of atomic_id! in
-// netidx-core, which a lane cannot edit, or Eric accepting the hand-written counter.
-// 2026-11-02 claude: Waits on Eric (round6-report.md, Other items): a pack-less
-// atomic_id! in netidx-core, or accept the hand-written counter. Readdressed to eric.
 /// What `sys::net::call_id` mints and a call is known by, unique in the
 /// process. Its `Pack` refuses, so no peer can send one and it prints as
 /// `abstract:`.

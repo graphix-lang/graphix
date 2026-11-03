@@ -87,37 +87,6 @@ enum ValueReads {
     Shared,
     /// Each read a copy of its own: what a written name holds is decided by
     /// its uses, an annotated one's by the annotation.
-    // CR claude for eric: [perf/medium] A chain of lets each reading the last
-    // twice under Own reads checks in time exponential in its length, and the
-    // type it builds is that large by this rule: each read copies the last
-    // link's generalized cells, so link k holds 2^k independent instances
-    // (`let (x1, w1) = ((x0, x0), 0); w1 <- 1;` repeated, or `let x1: ('p, 'q)
-    // = (x0, x0);`). --check instructions:u at N=12/14/16/18, main ec53d4846:
-    // o-wtup 2.97/4.76/13.55/79.40G, o-annot 2.58/4.50/9.70/36.38G; after the
-    // monomorphic DAG fix (holder-mono-chain-01) the same (3.52/5.80/17.93/
-    // 92.83G, 2.36/3.54/11.69/40.76G), where the monomorphic chains are flat
-    // (~2G, the empty program's) to 18. Linear only under a read rule that
-    // shares one copy of a binding among an Own value's reads (as Shared does),
-    // which changes what holder_destructured_beside_a_written_name pins: a
-    // ruling on which reads copy (beside holder-block-select-01). probes
-    // ~/ptmp/cr29/scratch/r9-N/mono/ (o-wtup-N, o-annot-N; gen2.sh wtup|annot N)
-    // (holder-own-reads-01)
-    // 2026-11-03 claude: The counts above are scaled perf counts (no --no-scale,
-    // summed over the core types), 1.5-3x high, which is why the two rows read
-    // as different: unscaled --check instructions:u (--no-scale,
-    // GRAPHIX_PAR=off, one eval thread), main ec53d4846 / holder-mono-chain-01's
-    // commit c30722796 at N=10/14/18: o-wtup 1.47/1.47G, 3.86/3.89G,
-    // 42.36/42.93G; o-annot 1.37/1.38G, 2.45/2.45G, 19.73/19.71G; the empty
-    // program is 1.30G and the monomorphic chains stay at 1.31-1.33G to 18
-    // (review r9 of lane N,
-    // ~/ptmp/cr29/scratch/review-r9/N-r1-2/chains/res-10-14.txt, res-18.txt).
-    // The conclusion stands: that commit leaves these chains as main has them,
-    // and so does main's per-place rule if holder-mono-chain-01 is ruled that
-    // way.
-    // 2026-11-03 claude: c30722796's monomorphic walk (holder-mono-chain-01) is
-    // off cr46-N pending that CR's ruling, so the monomorphic chains are
-    // exponential again on this branch as on main; the counts for o-wtup and
-    // o-annot are main's column above.
     Own,
 }
 
@@ -756,7 +725,7 @@ impl<R: Rt> Update<R> for Bind<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         if woke {
-            // CR claude for eric: [bug/low] At a wake the write that landed during the
+            // CR claude for claude: [bug/low] At a wake the write that landed during the
             // sleep is re-raised here. The initializer then updates with its input's
             // catch-up fire and publishes over it, even when that input fired before
             // the write. Catch-up loses the order inside the sleep, so the let ends on
@@ -794,6 +763,11 @@ impl<R: Rt> Update<R> for Bind<R> {
             // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "c-bind-06 /
             // x-engine-firing-05 wake order" (~/ptmp/cr29/next-discuss.md). Readdressed to
             // eric until then.
+            // 2026-11-03 claude: Eric ruled (2026-11-03): D16 (b) in ~/ptmp/cr-discuss.md: no
+            // dating: at a wake, a write that landed during the sleep always stands over the
+            // initializer's catch-up (the write wins; replaces the 10-27 'later event wins');
+            // a write through a place stands as computed; cr34-W's wake pins reused with these
+            // answers, then the branch deleted.
             self.reraise_writes_while_asleep(ctx);
         }
         let tv = self.node.update(ctx);
@@ -802,7 +776,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         // initializer fired; otherwise a production publishes when it
         // fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
-        // CR claude for eric: [bug/medium] Two events missed during a sleep are applied
+        // CR claude for claude: [bug/medium] Two events missed during a sleep are applied
         // in the wrong order. The initializer input fired at c=4 and a write to this
         // target landed at c=5. At the wake the re-raised write is published first,
         // then the initializer's caught-up fire overwrites it, so x is 100 where an arm
@@ -838,6 +812,11 @@ impl<R: Rt> Update<R> for Bind<R> {
         // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "c-bind-06 /
         // x-engine-firing-05 wake order" (~/ptmp/cr29/next-discuss.md). Readdressed to
         // eric until then.
+        // 2026-11-03 claude: Eric ruled (2026-11-03): D16 (b) in ~/ptmp/cr-discuss.md: no
+        // dating: at a wake, a write that landed during the sleep always stands over the
+        // initializer's catch-up (the write wins; replaces the 10-27 'later event wins');
+        // a write through a place stands as computed; cr34-W's wake pins reused with
+        // these answers, then the branch deleted.
         if (woke || ctx.event.wake()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =

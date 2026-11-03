@@ -1891,7 +1891,7 @@ impl<R: Rt> CompileCtx<R> {
         }
     }
 
-    // CR claude for eric: [perf/low] The `<-`-target mark this puts on the outer outlives
+    // CR claude for claude: [perf/low] The `<-`-target mark this puts on the outer outlives
     // the body whose write caused it: Bind::delete removes only the old inner at a reload,
     // so a reloaded body that writes nothing has its calls through the val resolved
     // dynamically (GXDBG_RESOLVE: unstable=true; base 432e34ac6 static), and fusion may go
@@ -1904,6 +1904,12 @@ impl<R: Rt> CompileCtx<R> {
     // "iface-pair-one-var-01" (~/ptmp/cr29/next-discuss.md): with the pair one run-time
     // variable the mark has no outer to outlive; with the relays kept it needs cr37-W's
     // wake hold. Readdressed to eric until then.
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D18 (a) in ~/ptmp/cr-discuss.md: one
+    // variable by construction: from the join the interface pair is the val's one id at run
+    // time (one queue, one stored value, the body's let publishing to it) and the relays
+    // go, iface-reload-mark-01 with them; on a reload keep both: a replaced body's pending
+    // writes drop with its binding, a root write queued across the reload still lands; the
+    // shapes cr37-W broke (d6, lv) are its tests.
     /// Join `inner`, a body's binding implementing an interface `val`, with
     /// `outer`, the `val`'s ([`StaticCallees::join`]). From here on they are
     /// one `<-` target where either is, so a woken `let` keeps what was
@@ -3508,7 +3514,7 @@ fn check_and_fuse_inner<R: Rt>(
     drop(p);
     info!("typecheck time {:?}", st.elapsed());
     let tail_loops = analysis::analyze(node, ctx)?;
-    // CR claude for eric: [bug/high] An instance body that names a type its block
+    // CR claude for claude: [bug/high] An instance body that names a type its block
     // declares over an outer type of the same name crashes the process under fusion: `type
     // L = string; let g = |z: i64| { type L = [i64, null]; let f = |x: i64| { let b: L =
     // 3; (b, x) }; f(z) }; println(g(1))` aborts with "misaligned pointer dereference:
@@ -3540,6 +3546,11 @@ fn check_and_fuse_inner<R: Rt>(
     // 2026-11-03 claude: Eric ruled (2026-11-03): D2 (a) in ~/ptmp/cr-discuss.md: no
     // stopgap; this waits for D10 (type names in a scope that ends), whose ruling is the
     // real fix. Stays for eric until D10 is ruled.
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D10 (b) in ~/ptmp/cr-discuss.md: keep a
+    // block's type definitions findable after the block while anything names them (they
+    // sit under a scope unique to the block), so a late lookup finds the right definition
+    // and every default can take its definition's types; a short design pass first, then a
+    // lane.
     ctx.env.seed_typedef_refs();
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();

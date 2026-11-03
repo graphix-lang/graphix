@@ -1182,7 +1182,7 @@ struct SetAside<R: Rt> {
     runs: Runs,
 }
 
-// CR claude for eric: [structure/medium] An interface pair is two runtime variables (the
+// CR claude for claude: [structure/medium] An interface pair is two runtime variables (the
 // val's binding and the body's) kept in step by relays: the static-call mark carry, the seq
 // planner's joined pairs (StaticCallees::add_joined), this cycle-start delivery, the module
 // node's productions, a wake's re-raise. Each review round of iface-join-mark-01 and
@@ -1200,6 +1200,12 @@ struct SetAside<R: Rt> {
 // the old binding; a root write queued across the reload lands, d4). probes:
 // ~/ptmp/cr29/scratch/review-r6/W2-r2-1/{pp,ppn,ppctl}, W2-r3-2/cr37/p/{n7,n2,s1,s1ctl},
 // W2-r3-1/cr37/{d6,d2,d1,d4}, W2-r3-2/cr37/findings.sh (lv) (iface-pair-one-var-01)
+// 2026-11-03 claude: Eric ruled (2026-11-03): D18 (a) in ~/ptmp/cr-discuss.md: one variable
+// by construction: from the join the interface pair is the val's one id at run time (one
+// queue, one stored value, the body's let publishing to it) and the relays go,
+// iface-reload-mark-01 with them; on a reload keep both: a replaced body's pending writes
+// drop with its binding, a root write queued across the reload still lands; the shapes
+// cr37-W broke (d6, lv) are its tests.
 /// Deliver each write the cycle's start brought to one binding of an
 /// interface pair to the other too, before any node runs, so a reader of
 /// either sees it this cycle wherever it runs. Writes to both in one cycle

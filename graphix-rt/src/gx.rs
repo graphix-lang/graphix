@@ -522,7 +522,7 @@ impl<X: GXExt> GX<X> {
         Ok(())
     }
 
-    // CR claude for eric: [bug/medium] A production reaches only readers that run after it
+    // CR claude for claude: [bug/medium] A production reaches only readers that run after it
     // in its cycle, and nothing delivers it to one that ran before, so a reader holding a
     // function value from later in the program never sees what that function reads move.
     // A script: `let h: fn(x: i64) -> i64 = never(); let r = h(1); let t = timer(50.ms, 5);
@@ -540,6 +540,9 @@ impl<X: GXExt> GX<X> {
     // a write (a value a cycle late, and a second fire). Main a084f9887 and base 432e34ac6
     // alike. probe: ~/ptmp/cr29/scratch/r6-W/r38/{sc/main.gx, e4, e5} (wrepl.sh lane e5
     // e5/in.txt) (root-order-production-01)
+    // 2026-11-03 claude: Eric ruled (2026-11-03): D19 (b) in ~/ptmp/cr-discuss.md: a value
+    // made in a cycle reaches an earlier reader (one that ran before it in the root order)
+    // in the next cycle, as a write does; forward readers unchanged.
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {

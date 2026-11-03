@@ -88,10 +88,9 @@ bottom FreshBottom), stamped this cycle; a quiet production stands
 since nothing fired (a `let` republished at its wake, a stale
 scrutinee's binds, a module's val relayed quietly, a collection's
 element or a fold's accumulator delivered stale). A wake owes no fire
-for one that kept the value. Whether it owes one for a quiet production
-that changed the value, to a reader wake catch-up dates by write stamp
-(a callee bound at the wake), is not decided (CR quiet-change-owed-01);
-as built it owes none. Its `Notify` says whether a fire also
+for one, whether it kept the value or changed it, to any reader, one
+wake catch-up dates by write stamp (a callee bound at the wake)
+included. Its `Notify` says whether a fire also
 schedules the roots that read the binding (`Roots`: a let, a reference
 cell, a module's val, `pc`, a runtime write) or only the walk's readers
 (`Walk`: binds read inside their own root).

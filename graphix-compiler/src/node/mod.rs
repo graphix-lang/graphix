@@ -3612,7 +3612,7 @@ impl<R: Rt> Connect<R> {
         if !check {
             return Ok(());
         }
-        // CR claude for eric: [bug/medium] A value held through its monomorphic copy
+        // CR claude for claude: [bug/medium] A value held through its monomorphic copy
         // (CompileCtx::monomorphic: a connect, `*r <-`, a let of a binding something
         // writes, a REPL write to a generic binding) is contained by a written quantified
         // type as that copy, while callsite::check_general walks what the original reaches:
@@ -3715,6 +3715,9 @@ impl<R: Rt> Connect<R> {
         // every copy shape is callback-generic-leak-01's root fix (its second option: lower a generic cell a non-generic binding reaches, so a copy shares it and
         // check_general meets the quantifier through the outer binding). Generators: ~/ptmp/cr29/scratch/review-r9/R-r1-2/p/gen_api3.sh, R-r2-2/p/gen_nest.py,
         // R-r2-1/p/gen_deep4.sh, R-r3-2/p/{gen_kr,gen_kb}.py, R-r3-1/p/gen_mk.py.
+        // 2026-11-03 claude: Eric ruled (2026-11-03): D14 (b) in ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an annotation, then a
+        // --check census; back to him only if the stdlib, the book's examples or netidx-admin would need a new annotation): when a non-generic binding's type
+        // reaches a generic variable no let names, that variable stops being generic (ML's level rule); census and the must-reject lane before landing.
         let written = &ctx.monomorphic(self.node.typ());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),

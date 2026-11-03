@@ -406,8 +406,8 @@ cycle; several writes to one variable in a cycle queue for the next,
 except a level's (`Rt::set_level`), which replaces its pending write.
 A node's production to a binding is delivered through
 `ExecCtx::deliver`: into the event; a fire stored as delivered, stamped
-this cycle, a quiet production standing with its old stamp (whether a
-wake owes a fire for one that changed the value is open); `Notify`
+this cycle, a quiet production standing with its old stamp, so a wake
+owes no fire for one, whether or not it changed the value; `Notify`
 picks whether a fire schedules the roots that read it. A wake's
 re-raise, catch-up's inject, a priming from the store and a born
 callee's quiet arguments are fires in the event alone, never stored; an

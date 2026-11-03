@@ -2236,27 +2236,6 @@ impl<R: Rt> PatternNode<R> {
         Ok(Self::with(explicit, type_predicate, structure_predicate, guard))
     }
 
-    // CR claude for eric: [bug/low] A callee bound at a wake catches a capture up by its
-    // write stamp, so a capture whose value changed with no fire is owed nothing, and a
-    // fresh count over it in the callee never fires. In `select s { `A(x) if gd => { g
-    // <- select in3 { 0 => never(), _ => |v| x * 1000 + count(x) }; x }, _ => -1 }`, s
-    // fires `A(7) while gd is false (bind_tentative's fire is retracted), gd's flip
-    // rebinds x to 7 stale, and `select in2 { 0 => -7, _ => g(5) }` woken later gives
-    // bottom for good. bbb06c0c6 stamped the stale rebind and gave 7001; since
-    // x-dup-02 a quiet production stands with its old stamp, as a quiet let's
-    // republication already did on bbb06c0c6 (the same program through `let y = x`
-    // gives bottom on both). When s's change arrives as a fire (gd always true) both
-    // give 7001. Wake catch-up does not say whether a quiet production that changed
-    // the value owes a later-bound reader a fire: owe it (stamp a quiet production
-    // whose value differs, at a let and a pattern bind alike) or owe neither (as
-    // built). probe: ~/ptmp/cr29/scratch/r8-N/p/rebind_changed{,_ctl,_let}.gx, run
-    // with bin/both.sh (quiet-change-owed-01)
-    // 2026-11-03 claude: Main now gives bottom for rebind_changed.gx, not 7001 (that was
-    // before lane N landed). An unchanged capture also gives bottom for a callee first
-    // bound at a wake (~/ptmp/cr29/scratch/discuss-merge/qc_nochange.gx), where the
-    // program kept awake gives 1001 (qc_nochange_awake.gx); that case is pinned on
-    // purpose (lang::select::quiet_republish_is_owed_no_fire). Question D17 in
-    // ~/ptmp/cr-discuss.md, with an option (c) for the general fresh-callee rule.
 
     /// Deliver the scrutinee's destructured leaves to this arm's binds,
     /// carrying the scrutinee's production tag: a stale scrutinee binds

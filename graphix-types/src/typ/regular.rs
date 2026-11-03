@@ -77,7 +77,7 @@ impl Graph {
                 Some(b) => self.node(&b),
                 None => self.leaf(b'v', &[]),
             },
-            // CR claude for eric: [bug/low] A reference that does not expand here is
+            // CR claude for claude: [bug/low] A reference that does not expand here is
             // keyed by its written name, and a nested reference in an inline written
             // type argument reaches the key unresolved: with `type R<'a> = [`Nil,
             // `Cons('a, R<'a>)]; type B<'x> = Abstract<i64>`, `B<R<i64>>` and
@@ -100,6 +100,11 @@ impl Graph {
             // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "Type
             // names in a scope that ends" (~/ptmp/cr29/next-discuss.md). Readdressed to
             // eric until then.
+            // 2026-11-03 claude: Eric ruled (2026-11-03): D10 (b) in ~/ptmp/cr-discuss.md:
+            // keep a block's type definitions findable after the block while anything
+            // names them (they sit under a scope unique to the block), so a late lookup
+            // finds the right definition and every default can take its definition's
+            // types; a short design pass first, then a lane.
             Type::Ref(tr) => match Self::expand(t) {
                 None => {
                     let name = format_compact!("{}", tr.name);
