@@ -648,12 +648,14 @@ open at the definition's settle (`DefTable::settle_open` leaves them): the
 bind narrows them by its own view of the label. A default typed with a
 type name (in a node's own type, an arm's predicates and binds or a
 catch's binds; a callee's signature is its definition's and does not
-count, `lambda::names_type_anywhere`) keeps no rows: the names its compile at a bind writes resolve
-only in that compile's environment, which typing from rows never reaches,
-and a later fill finds the wrong definition or none (a block's type, or an
-outer one of the same name: the class of CR default-typedef-outlived-01),
-so the bind checks it in full as it did before rows, as it does a default
-with no rows at all (a builtin's, or under `GRAPHIX_NO_SUBST`;
+count, `lambda::names_type_anywhere`) keeps no rows, whatever the name: a
+name a block declares resolves only in the environment of the compile that
+declared it, which typing from rows never reaches, and a later fill finds
+the wrong definition or none (a block's type, or an outer one of the same
+name: the class of CR default-typedef-outlived-01), and the test does not
+tell such a name from a stable top-level typedef, which keeps no rows too
+(CR default-bind-coverage-01). The bind checks such a default in full, as
+it does a default with no rows at all (a builtin's, or under `GRAPHIX_NO_SUBST`;
 `node::rechecking_instance`; pins
 `default_at_a_bind_declares_a_recursive_type`,
 `default_at_a_bind_names_a_block_type_over_an_outer_one`).
