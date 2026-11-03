@@ -276,6 +276,37 @@ the state of a fix, and Graphix's side.
   payload as `i64` and range-check it
   (`stdlib/graphix-package-gui/src/types.rs`). Not reported.
 
+## netidx-value (ours): each thread keeps up to 187 MB of free arrays
+
+- **Bug.** `array.rs` keeps a dropped array (128 elements or fewer) on
+  its thread's free list for that length, up to `32 * (129 - len)`
+  arrays of each length: about 187 MB a thread when every length is
+  used. A thread that drops arrays other threads built fills its lists
+  and never empties them, while the builders' lists stay empty. Graphix's
+  parallel evaluation does this every cycle: a forked part builds a
+  value on one thread, and another thread drops it when the value is
+  replaced. Tuples, structs and variants are arrays too. Each thread that
+  drops values keeps them up to its caps, so the heap grows for tens of
+  thousands of cycles.
+- **Repro.** `--no-fusion`, `GRAPHIX_PAR=auto` (the default), a 1 ms
+  timer bumping `n`, and `let rec t = |a: Array<i64>| -> Array<i64>
+  select a { [] => [n], [h, rest..] => array::push(array::flat_map([rest,
+  rest], t), h) }; array::len(t([1, 2, 3, 4, 5, 6]))`. In-process, the live
+  heap went from 43 MB at 1000 cycles to 129 MB at 20000, then stayed
+  there (16 eval workers, a 16-worker runtime). The shell's RSS reached
+  842 MB in 5 minutes. With `GRAPHIX_PAR=off`, or with these lists off,
+  the heap is flat at 34 MB.
+- **Upstream fix.** Bound each thread's lists in bytes: a thread keeps
+  at most 256 KiB of free arrays, whatever their lengths. With that
+  bound the repro is flat at 37 MB. `bench/par_symbolic.gx`'s busiest
+  list peaks at 65 KB, so with 256 KiB it still finds 99.8% of its 2M
+  arrays on a list, serial and forked.
+- **Graphix's side.** Not worked around: the growth stops at its bound,
+  and nothing crashes, hangs or gives a wrong answer. The pin
+  `stdlib/graphix-tests/tests/forked_cycle_heap.rs` is ignored until the
+  fix lands. On main it measures 3.2 to 4.5 KB of growth a cycle; with
+  the bound, 0 to 126 bytes.
+
 ## iced_core 0.14: flex layout sums FillPortion weights in a u16
 
 - **Bug.** `iced_core::layout::flex` adds a row's or column's
