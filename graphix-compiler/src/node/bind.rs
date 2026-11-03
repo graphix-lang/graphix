@@ -77,6 +77,13 @@ enum ValueReads {
     // ~/ptmp/cr29/scratch/review-r8/xcr-self-arg/c/gen.sh selbind2 22 > s.gx;
     // perf stat --no-scale -e instructions:u graphix --no-cache --check s.gx
     // (found by review r9 of lane N) (holder-select-chain-01)
+    // 2026-11-03 claude: Checked in the round-6 discussion merge: this falls
+    // under none of the holder rulings (holder-block-select-01,
+    // holder-mono-chain-01, holder-own-reads-01; D11-D13 of
+    // ~/ptmp/cr-discuss.md), so the "may fall under" above does not hold. The
+    // chain is an unwritten holder whose reads already share one copy; the
+    // growth comes from the select's pattern bind rebuilding the type rather
+    // than keeping the shared copy. It stays claude's.
     Shared,
     /// Each read a copy of its own: what a written name holds is decided by
     /// its uses, an annotated one's by the annotation.

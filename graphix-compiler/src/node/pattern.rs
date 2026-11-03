@@ -2224,6 +2224,12 @@ impl<R: Rt> PatternNode<R> {
     // whose value differs, at a let and a pattern bind alike) or owe neither (as
     // built). probe: ~/ptmp/cr29/scratch/r8-N/p/rebind_changed{,_ctl,_let}.gx, run
     // with bin/both.sh (quiet-change-owed-01)
+    // 2026-11-03 claude: Main now gives bottom for rebind_changed.gx, not 7001 (that was
+    // before lane N landed). An unchanged capture also gives bottom for a callee first
+    // bound at a wake (~/ptmp/cr29/scratch/discuss-merge/qc_nochange.gx), where the
+    // program kept awake gives 1001 (qc_nochange_awake.gx); that case is pinned on
+    // purpose (lang::select::quiet_republish_is_owed_no_fire). Question D17 in
+    // ~/ptmp/cr-discuss.md, with an option (c) for the general fresh-callee rule.
 
     /// Deliver the scrutinee's destructured leaves to this arm's binds,
     /// carrying the scrutinee's production tag: a stale scrutinee binds

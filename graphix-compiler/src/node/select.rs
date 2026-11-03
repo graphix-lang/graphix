@@ -652,6 +652,12 @@ impl Reach {
     // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
     // (cr33-V)" (~/ptmp/cr29/next-discuss.md). Option (c) there is fixing this alone on
     // main now. Readdressed to eric until then.
+    // 2026-11-03 claude: Checked in the round-6 discussion merge: the D3 rule does not
+    // cover this, contrary to the text above. Eric's D3 ruling (cr-discuss.round5.md) lets
+    // a part only a name or `_` meets through at no cost, and z's part in p33 meets only
+    // `_`, so the settle itself must change. slice-bind-mismatch-01 has the same cause
+    // (Reach::new's settle pairing a bind's cell with one member). Question D1 in
+    // ~/ptmp/cr-discuss.md.
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.
@@ -1212,7 +1218,7 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
-// CR claude for eric: [bug/low] The pool does not join a tuple's bool heads with a
+// CR claude for claude: [bug/low] The pool does not join a tuple's bool heads with a
 // variant head at one payload position, so an exhaustive select is refused: over
 // `[`B([(bool, bool), `A((bool, bool))]), `C(i64)]` the arms `B((_, true)),
 // `B((_, false)), `B(`A(_)) and `C(_) cover every value, and the check says "no arm
@@ -1226,9 +1232,16 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
 // (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
 // to eric until then.
+// 2026-11-03 claude: Readdressed to claude in the round-6 discussion merge
+// (~/ptmp/cr-discuss.md): a safe false refusal with no undecided type in it, so
+// neither the D3 rebuild nor rigid-pattern-bind-01 decides it; an ordinary low fix
+// (the pool mixing a tuple position's bool values with a variant's tag). Still
+// refused on main 387c29e60 (~/ptmp/cr29/scratch/r7-B/r4/u5inl.gx); the pin
+// missing_cases_over_a_union_names_reach_leave_a_covered_member_out changes with the
+// fix.
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null` and variants.
-// CR claude for eric: [bug/high] heads takes a position's members by union_members,
+// CR claude for claude: [bug/high] heads takes a position's members by union_members,
 // which drops an unbound cell, so a declared variable beside null at a composite
 // pattern's position reads as null alone and a `null` arm completes the pool: `'b:
 // [i64, string] |x: (['b, null], i64)| select x { (7, n) => n, (null, n) => n * 2 }`
@@ -1243,6 +1256,12 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
 // (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
 // to eric until then.
+// 2026-11-03 claude: Readdressed to claude in the round-6 discussion merge
+// (~/ptmp/cr-discuss.md, "Dropped from the old files"): no ruling is needed. The
+// local fix this CR names (the pool reads a position holding a type variable as
+// having no finite set of heads, so `['b, null]` is not `null` alone) stands on its
+// own; it sat with D3 only because the pool work was parked with lane V. Still a hole
+// on main 387c29e60 (probes ~/ptmp/cr29/scratch/r6-E/r6F-fix2/{p4,p3}.gx).
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, t, &mut members)?;

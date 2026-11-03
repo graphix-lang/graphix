@@ -3514,6 +3514,13 @@ fn check_and_fuse_inner<R: Rt>(
     // bbb06c0c6 and the lane alike; --no-fusion prints (6, 6, 0). n1.gx is the same with a
     // default. probes: ~/ptmp/cr29/scratch/r8-G/fz/n1b.gx, n1.gx (graphix-fuzz check, or a
     // run without --no-fusion).
+    // 2026-11-03 claude: The outer type need not come first (main 387c29e60, round-6
+    // discussion merge): a `type L = string` declared after g also aborts under fusion
+    // (~/ptmp/cr29/scratch/discuss-merge/later.gx, later2.gx), and in the REPL g(1) prints
+    // (3, 1), then an input `type L = string`, then g(2) aborts (later_repl2.txt). A
+    // stopgap that refuses a shadowing block typedef must therefore judge later
+    // declarations too, at the check's end and against later REPL inputs. Question D2 in
+    // ~/ptmp/cr-discuss.md.
     ctx.env.seed_typedef_refs();
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();

@@ -1144,6 +1144,13 @@ fn held_generally<R: Rt>(
 // ~/ptmp/cr29/scratch/review-r6/B4-r2-1/s/{l1,l3,l10}.gx, B4-r2-2/n/{e1b,e4,e9,e11}.gx,
 // B4-r3-1/s/{ms15,ms20,ms1,st1}.gx, B4-r3-1/s/sib/main.gx, B4-r3-2/p/{s5b,s3a,s7a}.gx
 // (rank2-result-maker-01)
+// 2026-11-03 claude: Worse than the text says (main 387c29e60, round-6 discussion
+// merge): fed from a timer under fusion, a maker's returned function puts an i64 in a
+// kernel's string slot and fusion/kernel.rs's param check panics, so the runtime dies
+// ("graphix runtime is dead"), in every build; probe
+// ~/ptmp/cr29/scratch/discuss-merge/maker_crash.gx. The maker also gets through an
+// interface `val mk` (discuss-merge/val_maker/), so whatever rule is ruled must judge a
+// val's implementation too. Question D3 in ~/ptmp/cr-discuss.md.
 /// A value checked against quantifiers held rigid holds for every choice
 /// of them only if nothing outside it that lives on reaches one: a binding
 /// it reads or writes from outside (its lambdas' captures included), or the
