@@ -189,8 +189,8 @@ enum Step {
     Element {
         list: bool,
     },
-    /// An abstract type's payload.
-    Payload,
+    /// The payload of the abstract type `id`.
+    Payload(AbstractId),
 }
 
 /// A test a constructor pattern makes at a union position under a
@@ -214,9 +214,10 @@ impl WrittenTest {
     }
 }
 
-/// The type at `path` in `typ`: each member's part there, a member of
-/// another shape left out; `None` where a member on the way is an open
-/// cell or `Any`, or the path enters an abstract payload.
+/// The type at `path` in `typ`: each member's part there, a constructor
+/// of another shape left out; `None` where a member on the way is not a
+/// constructor (an open cell, `Any`, an application of an open
+/// constructor) or holds parts it does not name (a primitive `array`).
 fn type_at(env: &Env, typ: &Type, path: &[Step]) -> Option<Type> {
     crate::stack::ensure_sufficient(|| {
         let Some((step, path)) = path.split_first() else { return Some(typ.clone()) };
@@ -226,7 +227,6 @@ fn type_at(env: &Env, typ: &Type, path: &[Step]) -> Option<Type> {
         for m in members.iter() {
             let m = expand(env, m)?;
             let part = match (step, &m) {
-                (_, Type::Any) | (Step::Payload, _) => return None,
                 (Step::Tuple(i, n), Type::Tuple(ts)) if ts.len() == *n => ts[*i].clone(),
                 (Step::Variant(tag, i, n), Type::Variant(t, ts, _))
                     if t == tag && ts.len() == *n =>
@@ -241,7 +241,39 @@ fn type_at(env: &Env, typ: &Type, path: &[Step]) -> Option<Type> {
                 }
                 (Step::Element { list: false }, Type::Array(et))
                 | (Step::Element { list: true }, Type::List(et)) => (**et).clone(),
-                _ => continue,
+                (Step::Payload(id), Type::Abstract { id: t, params }) if t == id => {
+                    env.abstract_reps.get(id)?.instantiate_with(params)
+                }
+                (Step::Element { list: false }, Type::Primitive(p))
+                    if p.contains(Typ::Array) =>
+                {
+                    return None;
+                }
+                (
+                    _,
+                    Type::Bottom
+                    | Type::Primitive(_)
+                    | Type::Fn(_)
+                    | Type::Error(_)
+                    | Type::Array(_)
+                    | Type::List(_)
+                    | Type::ByRef(..)
+                    | Type::Tuple(_)
+                    | Type::Struct(_)
+                    | Type::Variant(..)
+                    | Type::Map { .. }
+                    | Type::Abstract { .. },
+                ) => continue,
+                (
+                    _,
+                    Type::Any
+                    | Type::App(..)
+                    | Type::TVar(_)
+                    | Type::Ref(_)
+                    | Type::Set(_)
+                    | Type::Hole
+                    | Type::Bound(_),
+                ) => return None,
             };
             parts.push(type_at(env, &part, path)?)
         }
@@ -1210,6 +1242,28 @@ impl StructPatternNode {
             // wk_variant2, k1b, k2b) are still refused. Pin
             // lang::select::written_test_told_among_what_reaches_it fails in all four modes
             // with the written rest.
+            // 2026-11-02 claude: Re-review r8 (lane G, two mediums), both fixed. (1)
+            // WrittenTest::rest_among's type_at left out a member of the reaching type that
+            // was no constructor it knew, an application of an open constructor ('c<..>)
+            // included, so under 'c: Collection |xs: 'c<['b, `Keep('b)]>| the written test
+            // [`Keep(r)] was told among nothing and the arm checked; g(v) at 'b = `Keep(i64)
+            // returned 5 where its type was [`Keep(i64), null] (review-r8/G-r2-1/i2 a4, a6
+            // List, a7 a field; main bbb06c0c6 the same, the lane before d73b5b6a4 refused).
+            // type_at now leaves out only a constructor of another shape and answers None
+            // (the written rest) for any other member: an open cell, Any, an application, a
+            // primitive array at a slice element. a4 a6 a7 are refused 'annotate it' as a5
+            // is. (2) Under an abstract pattern with no type test the payload compiles at
+            // parameters of the pattern's own, so its written test's rest was the
+            // representation at those fresh cells, never the scrutinee's, and type_at gave
+            // up at the payload: R(`Err(m)) over R<i64> with type R<'a> = Abstract<['a,
+            // `Err(string)]> was refused naming an internal cell (ab2, ab6; main prints 3 0
+            // and 4). Step::Payload carries the abstract's id, and type_at reads the payload
+            // at the parameters of the scrutinee's member (AbstractRep::instantiate_with, as
+            // member_rep does). Pins
+            // lang::select::written_test_under_a_constructor_application_refused and
+            // _under_a_field_constructor_application_refused (pass with an application left
+            // out), written_test_in_an_abstract_payload_told_at_its_parameters (refused with
+            // the payload given up): 12 failures across the four modes with both reverted.
             if let Ok(rest) = type_predicate.diff(env, &shape) {
                 let test = node.footprint(env, &shape, false);
                 if test.rep_collision(env, &rest).is_some() {
@@ -1463,7 +1517,7 @@ impl StructPatternNode {
                 let rep = own.unwrap_or(rep);
                 let rep_cx = PatCx { inferred: false, ..cx };
                 let bind = cx.at(
-                    || Step::Payload,
+                    || Step::Payload(id),
                     || Self::compile_int(ctx, rep_cx, &rep, bind, mode),
                 )?;
                 let bind = Box::new(bind);

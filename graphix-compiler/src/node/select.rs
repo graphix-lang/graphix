@@ -572,6 +572,29 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 // (keep-written-told-01); a declared 'b: Number shares no form with `Keep, so only
 // coverage can refuse this one, and coverage is D3's (Reach, the pool). probes:
 // ~/ptmp/cr29/scratch/r8-G/i2/k1c.gx, k1tup.gx, k1top.gx (written-nested-cover-01)
+// 2026-11-02 claude: Re-review r8 (lane G, low): the hole has a dual this CR does not
+// say. With the catch-all a correct program needs, the same arms are refused
+// 'unreachable arm: the earlier arms already cover the whole scrutinee':
+// review-r8/G-r2-2/i2/wc1.gx ('b: Number, {f: ['b, `Keep('b)]} as {f: `Keep(r)} => r, _
+// => null), and the undeclared-'b forms with a catch-all
+// (review-r8/G-r1-2/p/wk_struct.gx, wk_variant.gx), on main bbb06c0c6 and the lane
+// alike; the Told judgment refuses those only without the catch-all. So under a
+// declared 'b: Number a user can write neither the accepted holey arm nor the covering
+// one. The coverage of an abstract's payload has the same pair
+// (abstract-payload-cover-01).
+
+// CR claude for eric: [bug/low] Coverage counts an abstract pattern whose payload
+// tests the variant beside a parameter of the representation as covering the whole
+// scrutinee: `type R<'a> = Abstract<['a, `Err(string)]>; let v: [i64, `Err(string)] =
+// 5; select R(v) { R(`Err(m)) => str::len(m) }` passes the check, and the run logs
+// 'no arm matches abstract:..: a coverage hole in the check' (under
+// GRAPHIX_ABORT_ON_NO_MATCH=1 it aborts). The dual: the `_ => 0` arm a correct program
+// adds after it is refused 'unreachable arm: the earlier arms already cover the whole
+// scrutinee', over R<'z>, a let's R(v) and a declared 'a: Number alike, where the arm
+// is needed for the numbers. Main bbb06c0c6 and lane G the same. Coverage of a payload
+// is D3's (Reach, the pool), beside written-nested-cover-01. probes:
+// ~/ptmp/cr29/scratch/review-r8/G-r2-1/i2/ab8.gx (the hole), ab4.gx, ab7.gx, ab10.gx
+// (the refusals) (abstract-payload-cover-01)
 /// What reaches each arm of a select, walked arm by arm: the scrutinee
 /// less what the unguarded arms before it cover (irrefutable atoms,
 /// `null`, a true/false pair, a completed literal pool, a completed

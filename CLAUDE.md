@@ -1264,8 +1264,10 @@ cycle, across workers; the compiler never pins threads.
   (`Type::rep_collision_tested`). Each element of a slice pattern is a
   test of its own among the whole element type, whatever the rest covers
   (`StructPatternNode::element_tests`), and under a written type each
-  constructor at a union position among what reaches that position, the
-  rest of the written union where a member on the way is open
+  constructor at a union position among what reaches that position (an
+  abstract pattern's payload at the scrutinee's parameters), the rest of
+  the written union where a member on the way is no constructor (an open
+  cell, `Any`, an open constructor's application) or a primitive `array`
   (`PatternNode::written_tests`, `WrittenTest::rest_among`). A
   compared type (`==` and the orderings), a map key type and what the
   stdlib compares or hashes (`uniq`, `min`/`max`, the sorts, `dedup`,

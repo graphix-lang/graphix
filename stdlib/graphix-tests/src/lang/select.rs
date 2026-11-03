@@ -5198,6 +5198,36 @@ run!(
     prints("[i64:3, i64:0, i64:3, i64:0, i64:13, i64:0, i64:3]")
 );
 
+// An application of an open constructor names no shape, so what reaches a
+// written test under it is not known: the test is told from the rest of
+// the written union.
+run!(written_test_under_a_constructor_application_refused, r#"{
+  let f = 'c: Collection |xs: 'c<['b, `Keep('b)]>| -> ['b, null]
+    select xs { Array<['b, `Keep('b)]> as [`Keep(r)] => r, _ => null };
+  f([`Keep(1)])
+}"#, refused("isn't known here and may share `Keep("); FuseExpect::None);
+run!(written_test_under_a_field_constructor_application_refused, r#"{
+  let f = 'c: Collection |xs: {g: 'c<['b, `Keep('b)]>}| -> ['b, null]
+    select xs { {g: Array<['b, `Keep('b)]>} as {g: [`Keep(r)]} => r, _ => null };
+  f({g: [`Keep(1)]})
+}"#, refused("isn't known here and may share `Keep("); FuseExpect::None);
+
+// A test in an abstract pattern's payload is told among the payload at the
+// scrutinee's parameters, not at parameters of the pattern's own.
+run!(
+    written_test_in_an_abstract_payload_told_at_its_parameters,
+    r#"{
+  type R<'a> = Abstract<['a, `Err(string)]>;
+  type S<'a> = Abstract<{v: ['a, `Err(string)], n: i64}>;
+  let f = |x: R<i64>| -> i64 select x { R(`Err(m)) => str::len(m), _ => 0 };
+  let g = |x: S<string>| -> i64 select x { S({v: `Err(m), ..}) => str::len(m), _ => 0 };
+  let v: [i64, `Err(string)] = `Err("abc");
+  let w: [string, `Err(string)] = `Err("abcd");
+  (f(R(v)), f(R(5)), g(S({v: w, n: 1})))
+}"#,
+    prints("[i64:3, i64:0, i64:4]")
+);
+
 // An unannotated scrutinee's slice rest is a type variable too: an
 // instance may bind it to a `Keep.
 run!(unannotated_slice_element_telling_rest_from_keep_refused, r#"{

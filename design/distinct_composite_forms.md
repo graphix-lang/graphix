@@ -197,10 +197,13 @@ form another type shares is refused there too ("annotate it"). Under a
 written type the arm's own test is the written type, which covers what
 reaches it; a constructor at a union position of it is a test of its own,
 what its structure admits, judged so too among what reaches its position:
-the scrutinee's part there less the test, or the rest of the written union
-where a member on the way is an open cell, `Any` or an abstract payload
-(`PatternNode::written_tests`, which the pattern's compile records with
-each test's position; `WrittenTest::rest_among`):
+the scrutinee's part there less the test (an abstract pattern's payload at
+the parameters of the scrutinee's member, whatever parameters the
+pattern's own compile gave it), or the rest of the written union where a
+member on the way is no constructor (an open cell, `Any`, an application
+of an open constructor `'c<..>`) or a primitive `array`, whose parts no
+type names (`PatternNode::written_tests`, which the pattern's compile
+records with each test's position; `WrittenTest::rest_among`):
 `` ['b, `Keep('b)] as `Keep(r) `` over `` ['b, `Keep('b)] `` is refused as
 `` `Keep(r) `` is, at the top, inside a slice's element and inside a tuple,
 while `` Res<'a> as `Err(m) `` over `` [i64, `Err(string)] ``, where only the
