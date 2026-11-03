@@ -16,13 +16,19 @@ use combine::{
 use std::{cell::Cell, fmt};
 
 thread_local! {
+    /// Whether the errors made now are `easy`'s.
     static EXPLAINING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Run `f` with `easy` errors, which say what was expected.
-pub(super) fn explaining<R>(f: impl FnOnce() -> R) -> R {
+/// Run the parse `f` with `easy` errors, which say what was expected.
+pub(super) fn explaining<'a, T>(
+    f: impl FnOnce() -> Result<T, GxErrors<'a>>,
+) -> Result<T, EasyErrors<'a>> {
     let _explaining = crate::Restore::replace(&EXPLAINING, true);
-    f()
+    f().map_err(|e| match e {
+        GxErrors::Easy(e) => e,
+        GxErrors::Quiet(_) => mixed(),
+    })
 }
 
 fn is_explaining() -> bool {
@@ -32,8 +38,17 @@ fn is_explaining() -> bool {
 type EasyError<'a> = easy::Error<char, &'a str>;
 type EasyErrors<'a> = Errors<char, &'a str, SourcePosition>;
 
+/// Every error a parse makes is of the kind [`EXPLAINING`] gave as it
+/// began: the flag changes only around a whole parse ([`explaining`]) and
+/// is restored however that ends, a parse runs on one thread (a stack
+/// switch keeps it), and a parse nested in another makes its own errors,
+/// which leave it only as text.
+fn mixed() -> ! {
+    unreachable!("a parse made an error of the other kind")
+}
+
 /// One error: `Quiet`'s are the plain `&str` stream's, `Easy`'s
-/// [`explaining`]'s. A parse makes errors of one kind only.
+/// [`explaining`]'s.
 #[derive(Debug, PartialEq)]
 pub(super) enum GxError<'a> {
     Quiet(StringStreamError),
@@ -141,6 +156,15 @@ pub(super) enum GxErrors<'a> {
     Easy(EasyErrors<'a>),
 }
 
+impl<'a> GxErrors<'a> {
+    fn easy_mut(&mut self) -> &mut EasyErrors<'a> {
+        match self {
+            Self::Easy(e) => e,
+            Self::Quiet(_) => mixed(),
+        }
+    }
+}
+
 type Quiet = StringStreamError;
 
 impl<'a> ParseError<char, &'a str, SourcePosition> for GxErrors<'a> {
@@ -189,7 +213,7 @@ impl<'a> ParseError<char, &'a str, SourcePosition> for GxErrors<'a> {
                 Self::Quiet(ParseError::<char, &str, SourcePosition>::merge(a, b))
             }
             (Self::Easy(a), Self::Easy(b)) => Self::Easy(a.merge(b)),
-            (_, other) => other,
+            (Self::Quiet(_), Self::Easy(_)) | (Self::Easy(_), Self::Quiet(_)) => mixed(),
         }
     }
 
@@ -199,7 +223,9 @@ impl<'a> ParseError<char, &'a str, SourcePosition> for GxErrors<'a> {
                 ParseError::<char, &str, SourcePosition>::add(a, b)
             }
             (Self::Easy(a), GxError::Easy(b)) => ParseError::add(a, b),
-            _ => (),
+            (Self::Quiet(_), GxError::Easy(_)) | (Self::Easy(_), GxError::Quiet(_)) => {
+                mixed()
+            }
         }
     }
 
@@ -230,20 +256,20 @@ impl<'a> ParseError<char, &'a str, SourcePosition> for GxErrors<'a> {
         }
     }
 
-    // each kind's own: `easy` replaces the expected errors `f` added with
-    // `info`, the plain stream keeps `info` alone
     fn set_expected<F: FnOnce(&mut Tracked<Self>)>(
         self_: &mut Tracked<Self>,
         info: GxError<'a>,
         f: F,
     ) {
-        let start = match &self_.error {
-            Self::Quiet(_) => None,
-            Self::Easy(e) => Some(e.errors.len()),
-        };
-        f(self_);
-        match (&mut self_.error, info, start) {
-            (Self::Easy(e), GxError::Easy(info), Some(start)) => {
+        match info {
+            GxError::Quiet(info) => {
+                f(self_);
+                self_.error = Self::Quiet(info)
+            }
+            GxError::Easy(info) => {
+                let start = self_.error.easy_mut().errors.len();
+                f(self_);
+                let e = self_.error.easy_mut();
                 let mut i = 0;
                 e.errors.retain(|e| {
                     i += 1;
@@ -251,8 +277,6 @@ impl<'a> ParseError<char, &'a str, SourcePosition> for GxErrors<'a> {
                 });
                 e.add_error(info)
             }
-            (error, GxError::Quiet(info), None) => *error = Self::Quiet(info),
-            _ => (),
         }
     }
 
@@ -335,11 +359,12 @@ impl<'a> ResetStream for GxStream<'a> {
 
     #[inline]
     fn reset(&mut self, checkpoint: Self::Checkpoint) -> Result<(), GxErrors<'a>> {
-        self.0.reset(checkpoint).map_err(|e| match is_explaining() {
-            true => {
+        self.0.reset(checkpoint).map_err(|e| {
+            if is_explaining() {
                 GxErrors::Easy(ParseError::<char, &str, SourcePosition>::into_other(e))
+            } else {
+                GxErrors::Quiet(e)
             }
-            false => GxErrors::Quiet(e),
         })
     }
 }

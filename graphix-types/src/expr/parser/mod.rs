@@ -2046,10 +2046,10 @@ parser! {
 }
 
 /// Run the parser `$p` builds over all of `$text`, trailing whitespace
-/// allowed: first over the plain stream, whose errors cost nothing, and
-/// only when that fails again under `easy`, whose errors make the
-/// message (the passes share the grammar, so they agree). A failure is
-/// reported against `$ori()`.
+/// allowed: first with errors that cost nothing, and only when that fails
+/// again with `easy`'s, which make the message (the passes share the
+/// grammar and the stream, so they agree). A failure is reported against
+/// `$ori()`.
 macro_rules! parse_all {
     ($text:expr, $ori:expr, $p:expr) => {{
         let text: &str = $text;
@@ -2081,12 +2081,6 @@ where
     grow::parsing(text, || {
         stream::explaining(|| p.skip(spaces()).skip(eof()).parse(GxStream::new(text)))
             .map(|(r, _)| r)
-            .map_err(|e| match e {
-                stream::GxErrors::Easy(e) => e,
-                stream::GxErrors::Quiet(_) => {
-                    unreachable!("an explained parse's errors are easy")
-                }
-            })
             .map_err(|mut e| {
                 grow::note_error_pos(e.position);
                 // a whitespace token is never what went wrong, and a
