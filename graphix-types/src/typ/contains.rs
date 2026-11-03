@@ -3019,6 +3019,10 @@ impl Type {
     // graphix-tests lang::types a_named_union_member_distributes (tcA) and
     // a_named_union_member_distributes_a_tuple (tcB), refused without the fix;
     // written_union_members_distribute (tcC) the control.
+    // 2026-11-03 claude: Review r9: this change moves check verdicts (tcA and tcB, refused
+    // on main, now check) and its commit 5de9b70bd does not say so: it needs a soak, like
+    // items 2 and 3. The reviewer found no wrong acceptance (the extra candidates are
+    // members of the set; t5, d1-d6 alike on base and lane).
     fn set_covers_by_distribution_inner(
         flags: BitFlags<ContainsFlags>,
         env: &Env,

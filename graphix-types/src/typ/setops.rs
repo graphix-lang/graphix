@@ -1083,6 +1083,20 @@ impl Type {
         }
     }
 
+    // CR claude for claude: [perf/low] A select's check over a tuple DAG of names
+    // whose only way back is through Error grows two to three times per level from
+    // depth 14, on main as on cr46-X: Ti = (Ti+1, Ti+1), Tn = [Error<T0>, `Z], a twin
+    // S with `Y, `let v: S0 = never(); select v { T0 as x => 0, _ => 1 }`.
+    // --no-cache --check, one eval thread, perf instructions:u, main ec53d4846: rt14
+    // 5.3G, rt16 10.9G, rt18 29.7G, rt22 501G (an empty program 2.2G). Callgrind of
+    // rt16 on cr46-X (5.47G) puts the growth in contains_int under matching_type_int,
+    // through Select::typecheck0_with and Type::narrow_pattern (contains_dispatch
+    // 0.54G self, ContainsHist::assuming and its unfolding map's inserts next), not
+    // in could_match, which walks each pair of the family once since
+    // found-assumed-true-01. Found by lane X's r9 review (as main's own growth beside
+    // its item 2 finding). probes: ~/ptmp/cr29/scratch/r9-X/r9fix/r1/rt14.gx ..
+    // rt22.gx, written by ~/ptmp/cr29/scratch/review-r9/X-r1-1/perf/mkrt.py
+    // (matching-type-contains-dag-01)
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
         let mut walk = MatchingTypes { memo: RefHist::new(), refs: LPooled::take() };
         self.matching_type_int(env, &mut walk, reaching)
