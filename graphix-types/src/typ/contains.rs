@@ -859,6 +859,14 @@ fn conjuncts_admit(
 // this cause. 'c there is the call's instance of the callee's variable, an open cell,
 // and an explicit argument does the same with no default (r8-R/d6.gx); new CR
 // rank2-call-signature-01.
+// 2026-11-02 claude: Round 8 re-review (lane R): the worklist of 7aabbd2dc popped the
+// cells one merge absorbs last first, where 29145700c's recursion merged them first to
+// last; the order decides which of two absorbed cells that reach each other through a
+// constructor the occurs check refuses. TVar::merge_one now pushes them reversed, so
+// the worklist merges in the recursion's order. Pin:
+// typ::tvar::tests::cells_below_a_rigid_cell_merge_into_it_in_order (fails without the
+// reversal). No program found where the order changes a verdict (the builder's 384
+// probes, the census, p/tree1.gx of review R-r2-2).
 /// Whether the open cell `to` (as `tt`) admits the lower bounds of the
 /// open cell `from` its unification would merge in: its conjuncts
 /// contain each, and a rigid cell, which holds only itself, holds each.

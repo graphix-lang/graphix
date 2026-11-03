@@ -1539,8 +1539,8 @@ impl TVar {
     }
 
     /// One merge of [`Self::merge_into`]; each open cell it would move below
-    /// a rigid survivor goes to `absorbed`, with that survivor, to merge
-    /// into it next.
+    /// a rigid survivor goes on top of `absorbed`, the first on top, with
+    /// that survivor, to merge into it next.
     fn merge_one(
         &self,
         other: &Self,
@@ -1703,7 +1703,7 @@ impl TVar {
         for t in moved.iter() {
             lower(t, at)
         }
-        absorbed.extend(absorb.into_iter().map(|o| (o, other.clone())));
+        absorbed.extend(absorb.into_iter().rev().map(|o| (o, other.clone())));
     }
 
     /// [`Self::alias`] by an enclosing scope's same-named var: one a nested
@@ -3371,6 +3371,23 @@ mod tests {
             .expect("spawn")
             .join()
             .expect("the merges")
+    }
+
+    // Open cells below a merged cell go into the rigid survivor in their
+    // order there: `x ⊇ o1, o2` with `o1 ⊇ Array<o2>` merges o1 first, so o2,
+    // which the survivor then reaches through o1's bound, is refused by the
+    // occurs check and stays a lower bound.
+    #[test]
+    fn cells_below_a_rigid_cell_merge_into_it_in_order() {
+        let rigid = TVar::empty_named(literal!("c"));
+        let _gate = rigid.open_rigid();
+        let [x, o1, o2] = ["x", "o1", "o2"].map(|n| TVar::empty_named(n.into()));
+        o1.add_lower(Type::Array(Arc::new(Type::TVar(o2.clone()))));
+        x.add_lower(Type::TVar(o1.clone()));
+        x.add_lower(Type::TVar(o2.clone()));
+        x.alias_cells(&rigid);
+        assert!(x.same_cell(&rigid) && o1.same_cell(&rigid));
+        assert!(!o2.same_cell(&rigid));
     }
 
     #[test]
