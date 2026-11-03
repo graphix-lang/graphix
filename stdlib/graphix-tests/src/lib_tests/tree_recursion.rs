@@ -104,11 +104,11 @@ run!(capturing_tree_recursion_through_flat_map, r#"
     let y = 2;
     let rec t = |d: i64| -> i64 select d {
         0 => y,
-        _ => array::fold(array::flat_map([d - 1], |c| [t(c), 1]), 0, |a, x| a + x)
+        _ => array::fold(array::flat_map([d - 1, d - 1], |c| [t(c), 1]), 0, |a, x| a + x)
     };
     #[native] t(3)
 }
-"#, is(Value::I64(5)); FuseExpect::Jit);
+"#, is(Value::I64(30)); FuseExpect::Jit);
 
 // the self-call is in a loop the chunk's own callback runs
 run!(capturing_tree_recursion_through_nested_maps, r#"
