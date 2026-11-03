@@ -769,7 +769,7 @@ impl StructPatternNode {
     /// `matched`, when not empty, is the scrutinee's members this slice can
     /// match: an array or list member's elements are its own, not the
     /// predicate's cells, which stand for any other member (`Any`).
-    // CR claude for claude: [bug/low] An exact-length slice holding a bind and a literal
+    // CR claude for eric: [bug/low] An exact-length slice holding a bind and a literal
     // over an element type with an open member is refused with a type mismatch naming
     // a cell: `let f = |x: Array<['b, i64]>| select x { [h, 1] => h, _ => null }`
     // (and `[1, h]`) gives "type mismatch '_N: unbound does not contain [i64, 'b]";
@@ -793,6 +793,11 @@ impl StructPatternNode {
     // settle and in narrow_pattern. Both are parked for Eric (D3; rigid-pattern-bind-01),
     // so this waits on those rulings. Probes ~/ptmp/cr29/scratch/r8-G/i3/s1.gx (refused),
     // s3.gx ([h, 1] and [1, h] with values).
+    // 2026-11-02 claude: Readdressed to eric: the fix located lies in the pairing that
+    // select::Reach::new's settle and Type::narrow_pattern make, which wait on his
+    // rulings on D3 and rigid-pattern-bind-01 (next-discuss.md); this CR follows
+    // whichever rule those take, and a rule that leaves a slice element's bind cell
+    // unpaired with any single member (as the rest cell is) closes it.
     fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
