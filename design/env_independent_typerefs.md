@@ -29,6 +29,18 @@ recording survives cache hits). Substitution (`replace_tvars`), the
 arity check and constraint registration stay per call — pure given the
 snapshot.
 
+Substitution is by name and avoids capture (`typ::tvar::under_quantifiers`).
+A function type finds its quantifiers by name (`FnType::each_quantifier`,
+a call's fresh quantifiers, the constraint view), so under a function type
+its own quantifiers shadow the names substituted (`type K<'a> =
+(Array<'a>, fn<'a: Any>(x: 'a) -> 'a)` keeps the inner `'a` its own), and
+a quantifier named like a variable a substituted type holds is renamed to
+the first `'a1`, `'a2`, .. nothing there holds, through a copy of its cell:
+`K<'a>` over `type K<'p> = fn<'a: Any>(x: 'p) -> 'a` is `fn<'a1: Any>(x:
+'a) -> 'a1`. An abstract type's representation substitutes the same way.
+Pins: `lang::types::typedef_quantifier_named_like_its_argument` and the
+fixtures after it.
+
 - **Write-once.** Filled on the first successful `lookup_ref`, never
   overwritten: clones share the cell, and refilling would leak one
   context's view into every aliasing type. A name that means a trait (a

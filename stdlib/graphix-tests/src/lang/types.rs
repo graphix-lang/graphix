@@ -8265,3 +8265,142 @@ run!(
     prints("[false, true, [decimal:0.1000000000000000055511151231, f64:0.1], [decimal:0.1000000000000000055511151231, f64:0.1]]");
     FuseExpect::None
 );
+
+// A typedef's expansion is capture-avoiding: a function type's quantifiers
+// shadow the typedef's parameters, and one named like a variable its
+// argument holds is renamed, so `K<'a>` below means what `K<'a>` over the
+// body with its quantifier renamed `'b` means, quantifier by quantifier.
+const TYPEDEF_QUANTIFIER_NAMED_LIKE_ITS_ARGUMENT: &str = r#"{
+  type K<'p> = fn<'a: Any>(x: 'p, y: 'a) -> 'a;
+  let f = |v: 'a| {
+    let g: K<'a> = |x, y| y;
+    (g(v, 1), g(v, "s"))
+  };
+  f(true)
+}"#;
+
+run!(
+    typedef_quantifier_named_like_its_argument,
+    TYPEDEF_QUANTIFIER_NAMED_LIKE_ITS_ARGUMENT,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    typedef_quantifier_named_apart_from_its_argument,
+    TYPEDEF_QUANTIFIER_NAMED_LIKE_ITS_ARGUMENT.replace("'a: Any>(x: 'p, y: 'a) -> 'a", "'b: Any>(x: 'p, y: 'b) -> 'b"),
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+const TYPEDEF_ARGUMENT_CALLED_AT_TWO_TYPES: &str = r#"{
+  type K<'p> = fn<'a: Any>(x: 'p) -> 'a;
+  let f = |v: 'a| {
+    let g: K<'a> = |x| never();
+    let p = g(1);
+    let q = g("s");
+    v
+  };
+  f(true)
+}"#;
+
+run!(
+    typedef_argument_named_like_a_quantifier_stays_one_type,
+    TYPEDEF_ARGUMENT_CALLED_AT_TWO_TYPES,
+    refused("'a: unbound does not contain i64");
+    FuseExpect::None
+);
+
+run!(
+    typedef_argument_named_apart_from_a_quantifier_stays_one_type,
+    TYPEDEF_ARGUMENT_CALLED_AT_TWO_TYPES.replace("'a: Any>(x: 'p) -> 'a", "'b: Any>(x: 'p) -> 'b"),
+    refused("'a: unbound does not contain i64");
+    FuseExpect::None
+);
+
+const TYPEDEF_QUANTIFIER_BOUNDED_BY_ITS_ARGUMENT: &str = r#"{
+  type K<'p> = fn<'a: 'p>(x: 'a) -> 'a;
+  let f = |v: 'a| {
+    let g: K<'a> = |x| x;
+    (g(v), g(1))
+  };
+  f(true)
+}"#;
+
+run!(
+    typedef_quantifier_bounded_by_an_argument_named_alike,
+    TYPEDEF_QUANTIFIER_BOUNDED_BY_ITS_ARGUMENT,
+    refused("unbound within 'a: unbound does not contain i64");
+    FuseExpect::None
+);
+
+run!(
+    typedef_quantifier_bounded_by_an_argument_named_apart,
+    TYPEDEF_QUANTIFIER_BOUNDED_BY_ITS_ARGUMENT.replace("'a: 'p>(x: 'a) -> 'a", "'b: 'p>(x: 'b) -> 'b"),
+    refused("unbound within 'a: unbound does not contain i64");
+    FuseExpect::None
+);
+
+const TYPEDEF_ARGUMENT_ESCAPES_A_RANK2_ARGUMENT: &str = r#"{
+  type K<'p> = fn<'a: Any>(x: 'p) -> 'a;
+  let mk = |v: 'a| -> K<'a> |x| never();
+  let y = never();
+  let outer = |k: fn<'a: Any>(x: 'a) -> 'a| (k(1), k("s"));
+  let r = outer(|x| { y <- mk(x); x });
+  let z: i64 = y("s");
+  let w: i64 = y(2);
+  r
+}"#;
+
+run!(
+    typedef_argument_named_like_a_quantifier_escapes,
+    TYPEDEF_ARGUMENT_ESCAPES_A_RANK2_ARGUMENT,
+    refused("the argument is not polymorphic in 'a: a binding it reaches");
+    FuseExpect::None
+);
+
+run!(
+    typedef_argument_named_apart_from_a_quantifier_escapes,
+    TYPEDEF_ARGUMENT_ESCAPES_A_RANK2_ARGUMENT.replace("type K<'p> = fn<'a: Any>(x: 'p) -> 'a", "type K<'p> = fn<'b: Any>(x: 'p) -> 'b"),
+    refused("the argument is not polymorphic in 'a: a binding it reaches");
+    FuseExpect::None
+);
+
+// An argument that is itself a quantified function type keeps its own
+// quantifier beside the body's of the same name.
+run!(
+    typedef_argument_quantified_like_the_body,
+    r#"{
+  type K<'p> = fn<'a: Any>(k: 'p, y: 'a) -> ('a, i64, string);
+  let g: K<fn<'a: Any>(z: 'a) -> 'a> = |k: fn<'a: Any>(z: 'a) -> 'a, y| (y, k(1), k("s"));
+  (g(|z| z, true), g(|z| z, 2))
+}"#,
+    prints(r#"[[true, i64:1, "s"], [i64:2, i64:1, "s"]]"#);
+    FuseExpect::Jit
+);
+
+// A function type's quantifier shadows the typedef parameter of its name.
+const TYPEDEF_PARAMETER_SHADOWED_BY_A_QUANTIFIER: &str = r#"{
+  type K<'a> = (Array<'a>, fn<'a: Any>(x: 'a) -> 'a);
+  let p: K<i64> = ([1], |x| x);
+  let g = p.1;
+  (p.0, g(1), g("s"))
+}"#;
+
+run!(
+    typedef_parameter_shadowed_by_a_quantifier,
+    TYPEDEF_PARAMETER_SHADOWED_BY_A_QUANTIFIER,
+    prints(r#"[[i64:1], i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    typedef_parameter_shadowed_by_a_quantifier_takes_no_monomorphic_value,
+    r#"{
+  type K<'a> = (Array<'a>, fn<'a: Any>(x: 'a) -> 'a);
+  let p: K<i64> = ([1], |x| x + 1);
+  p.0
+}"#,
+    refused("K<i64> does not contain (Array<i64>, fn(x: i64) -> i64)");
+    FuseExpect::None
+);

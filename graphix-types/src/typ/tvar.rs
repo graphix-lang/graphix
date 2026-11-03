@@ -6,7 +6,7 @@ use crate::{
     image,
     stack::ensure_sufficient,
     typ::{
-        Bound, Mutability, PRINT_FLAGS, PrintFlag, RefKey, Type, node_addr,
+        Bound, FnType, Mutability, PRINT_FLAGS, PrintFlag, RefKey, Type, node_addr,
         setops::union_identical,
     },
 };
@@ -2111,7 +2111,20 @@ impl TVar {
                 return self.clone();
             }
         };
-        fresh.insert(addr, f.clone());
+        self.copy_into(&f, fresh, memo, walk);
+        f
+    }
+
+    /// Make the empty cell `f` this var's copy in `fresh`: the conjuncts,
+    /// lower bounds and binding rebuilt through `walk`, the facts kept.
+    fn copy_into<M>(
+        &self,
+        f: &TVar,
+        fresh: &mut AHashMap<usize, TVar>,
+        memo: &mut M,
+        walk: impl Fn(&Type, &mut AHashMap<usize, TVar>, &mut M) -> Option<Type>,
+    ) {
+        fresh.insert(self.cell_addr(), f.clone());
         for c in self.cell_constraints() {
             let c = walk(&c, fresh, memo).unwrap_or(c);
             f.add_cell_constraint(c);
@@ -2125,8 +2138,74 @@ impl TVar {
         if let Some(t) = self.binding() {
             f.bind(walk(&t, fresh, memo).unwrap_or(t));
         }
-        f
     }
+}
+
+/// A by-name substitution `known` as it reads under the function type
+/// `ft`: `ft`'s quantifiers shadow the names `known` gives, and each one a
+/// type substituted under `ft` holds is renamed, to a name nothing there
+/// holds, through a copy of its cell that `fresh` and the map give; with
+/// the renames, `(old, new)`. `None` when `known` reads as it is.
+fn under_quantifiers(
+    ft: &FnType,
+    known: &AHashMap<ArcStr, Type>,
+    fresh: &mut AHashMap<usize, TVar>,
+) -> Option<(LPooled<AHashMap<ArcStr, Type>>, SmallVec<[(ArcStr, ArcStr); 2]>)> {
+    if ft.quantifiers.is_empty() {
+        return None;
+    }
+    let bound = |n: &ArcStr| ft.quantifiers.contains(n);
+    let mut avoid: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    avoid.extend(ft.quantifiers.iter().cloned());
+    let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+    ft.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
+    let mut held: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    seen.clear();
+    for (n, t) in known.iter() {
+        if avoid.contains(n) && !bound(n) {
+            t.names_held(&mut held, &mut seen)
+        }
+    }
+    let captured: SmallVec<[ArcStr; 2]> =
+        ft.quantifiers.iter().filter(|q| held.contains(*q)).cloned().collect();
+    if captured.is_empty() && !ft.quantifiers.iter().any(|q| known.contains_key(q)) {
+        return None;
+    }
+    let mut inner: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
+    inner.extend(
+        known.iter().filter(|(n, _)| !bound(n)).map(|(n, t)| (n.clone(), t.clone())),
+    );
+    avoid.extend(held.drain());
+    let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    ft.each_quantifier(|q, tv| {
+        cells.insert(q.clone(), tv.clone());
+    });
+    let mut renames: SmallVec<[(ArcStr, ArcStr); 2]> = SmallVec::new();
+    let mut copies: SmallVec<[(TVar, TVar); 2]> = SmallVec::new();
+    for q in captured {
+        let name = (1u64..)
+            .map(|i| ArcStr::from(format_compact!("{q}{i}").as_str()))
+            .find(|n| !avoid.contains(n))
+            .unwrap();
+        avoid.insert(name.clone());
+        if let Some(tv) = cells.get(&q) {
+            let copy = match fresh.get(&tv.cell_addr()) {
+                Some(f) => f.renamed(name.clone()),
+                None => {
+                    let f = tv.fresh_copy().renamed(name.clone());
+                    fresh.insert(tv.cell_addr(), f.clone());
+                    copies.push((tv.clone(), f.clone()));
+                    f
+                }
+            };
+            inner.insert(q.clone(), Type::TVar(copy));
+        }
+        renames.push((q, name));
+    }
+    for (tv, copy) in copies {
+        tv.copy_into(&copy, fresh, &mut (), |t, f, ()| t.replace_tvars_int(&inner, f));
+    }
+    Some((inner, renames))
 }
 
 // Each walk below spells out only the arms whose policy differs from
@@ -2689,6 +2768,31 @@ impl Type {
         })
     }
 
+    /// Every variable name `self` holds, bound or free: its cells', their
+    /// conjuncts', lower bounds' and bindings', and its function types'
+    /// quantifiers. Each cell and shared node (`seen`) is walked once.
+    fn names_held(&self, out: &mut AHashSet<ArcStr>, seen: &mut AHashSet<usize>) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                out.insert(tv.name.clone());
+                if seen.insert(tv.cell_addr()) {
+                    for t in tv.cell_constraints().iter().chain(tv.cell_lower().iter()) {
+                        t.names_held(out, seen)
+                    }
+                    if let Some(b) = tv.binding() {
+                        b.names_held(out, seen)
+                    }
+                }
+            }
+            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
+            Type::Fn(ft) => {
+                out.extend(ft.quantifiers.iter().cloned());
+                ft.for_each_type(&mut |t| t.names_held(out, seen))
+            }
+            t => t.for_each_child(&mut |c| c.names_held(out, seen)),
+        })
+    }
+
     /// [`Self::collect_tvars`] over positions alone: a nested signature's
     /// cells by its own positions, never its conjuncts, each shared node
     /// (`seen`) walked once, so the walk is linear in the type.
@@ -3225,6 +3329,20 @@ impl Type {
         })
     }
 
+    // CR claude for claude: [risk/low] A walk that inlines a bound cell's binding under a
+    // quantified function type (instantiate_memo here, rename_memo, resolve_tvars) can
+    // put a cell named like that function type's quantifier inside it, which every
+    // by-name reading of the quantifier (FnType::each_quantifier, collect_tvars'
+    // first-seen pick) may take for the quantifier: the capture typedef-capture-01 closed
+    // for replace_tvars (under_quantifiers), by binding instead of by substitution. A
+    // forwarding binding keeps the occurrence's name (TVar::forwarded_as), so only a
+    // structured binding (`'_7 := Array<'a>` under `fn<'a: ..>`) brings the name in. Not
+    // reproduced: ~/ptmp/cr29/scratch/r10-R/{t_inst_a..d,t_res_c..h}.gx (a declared
+    // quantifier beside a parameter bound to an outer 'a, a body annotation's free
+    // variable, a callee instanced under a rank-2 argument) run alike with the
+    // quantifier named 'a and 'b, under GRAPHIX_NO_SUBST=1 too. If one shows: rename the
+    // quantifier as under_quantifiers does when an inlined binding holds its name.
+    // (resolve-capture-01)
     /// `None` when no TVar is beneath.
     /// The bindings resolved, each open cell freshened as `how` says.
     pub(super) fn instantiate_int(
@@ -3322,7 +3440,7 @@ impl Type {
         (!unwritable).then(|| t.normalize())
     }
 
-    // CR claude for claude: [bug/high] Substitution here goes by name and ignores the
+    // XCR claude for claude: [bug/high] Substitution here goes by name and ignores the
     // quantifiers of the function types it descends into, so a typedef's expansion
     // (Type::lookup_ref_by: `def_typ.replace_tvars(&known)`) captures an argument's
     // variable named like a quantifier in the body: `type K<'p> = fn<'a: Any>(x: 'p) ->
@@ -3342,10 +3460,29 @@ impl Type {
     // quantifiers' names alone, and rename a quantifier the substituted types name free.
     // probes: ~/ptmp/cr29/scratch/r9-R/{capture1,capture2,name_pick,name_pick2,name_pick4,
     // name_pick5}.gx (typedef-capture-01)
+    // 2026-11-03 claude: Type::replace_tvars_int's Fn arm now substitutes capture-avoiding
+    // (tvar::under_quantifiers): a function type's quantifiers shadow the names
+    // substituted, and one named like a variable a substituted type holds (its cells,
+    // conjuncts, lower bounds, bindings) is renamed to the first 'a1, 'a2, .. nothing in
+    // the function type or the substituted types holds, through a copy of its cell. Covers
+    // typedef expansion and abstract representations; FnType::replace_tvars at the top
+    // keeps substituting the signature's own quantifiers (its callers, eta and trait
+    // method signatures, rename them on purpose). capture1 now refuses at check and build
+    // alike, name_pick/name_pick4/name_pick5 refuse as name_pick2 does. Pins in
+    // lang::types, which fail with under_quantifiers disabled:
+    // typedef_quantifier_named_like_its_argument (refused before, runs (1, "s") as the 'b
+    // twin does), typedef_argument_named_like_a_quantifier_stays_one_type,
+    // typedef_quantifier_bounded_by_an_argument_named_alike,
+    // typedef_argument_named_like_a_quantifier_escapes,
+    // typedef_parameter_shadowed_by_a_quantifier and its _takes_no_monomorphic_value;
+    // twins named apart and typedef_argument_quantified_like_the_body hold the verdicts.
+    // Binding resolution under a quantified fn type, the one site left, is
+    // resolve-capture-01.
     /// A copy of self with every TVar named in `known` replaced by the
     /// corresponding type; any other TVar is freshened as
     /// [`Self::reset_tvars`] does, its conjuncts and binding rewritten
-    /// the same way. TVar-free structure is returned shared.
+    /// the same way. TVar-free structure is returned shared. Capture
+    /// avoiding under each function type it holds ([`under_quantifiers`]).
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Self>) -> Type {
         self.replace_tvars_int(known, &mut LPooled::take())
             .unwrap_or_else(|| self.clone())
@@ -3368,8 +3505,20 @@ impl Type {
             }),
             // a nested fn type's lambda_ids is the copy's own
             Type::Fn(ft) => {
+                let scoped = under_quantifiers(ft, known, fresh);
+                let inner = scoped.as_ref().map_or(known, |(inner, _)| &**inner);
                 let mut f =
-                    ft.replace_tvars_int(known, fresh).unwrap_or_else(|| (**ft).clone());
+                    ft.replace_tvars_int(inner, fresh).unwrap_or_else(|| (**ft).clone());
+                if let Some((_, renames)) = &scoped
+                    && !renames.is_empty()
+                {
+                    let renamed =
+                        |q: &ArcStr| match renames.iter().find(|(old, _)| old == q) {
+                            Some((_, new)) => new.clone(),
+                            None => q.clone(),
+                        };
+                    f.quantifiers = f.quantifiers.iter().map(renamed).collect();
+                }
                 f.lambda_ids = ft.lambda_ids.instantiate();
                 Some(Type::Fn(Arc::new(f)))
             }

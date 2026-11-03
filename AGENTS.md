@@ -674,7 +674,12 @@ labeled default compiled at a call outlives the env clone with:
 check's end (an instance elaborates under its definition's env) and
 again right before fusion in both modes. A bound's ref resolves the same way, its
 cell holding the trait (`Resolution::Trait`), filled by the seed walk at
-a definition's check. A trait method named as a value is its
+a definition's check. Substitution by name (`Type::replace_tvars`: a
+typedef's expansion, an abstract's representation) is capture-avoiding,
+since a signature finds its quantifiers by name: under a function type
+its quantifiers shadow the names substituted, and one named like a
+variable a substituted type holds is renamed (`tvar::under_quantifiers`).
+A trait method named as a value is its
 eta-expansion (`eta_dispatcher`); a dispatcher is only a call's own
 function. A typedef must be contractive: every
 self-reference sits under a constructor (`type T = [i64, T]` is refused

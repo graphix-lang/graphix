@@ -831,6 +831,8 @@ impl FnType {
         fresh
     }
 
+    /// [`Type::replace_tvars`] over the signature: its own quantifiers are
+    /// names like any other here, a function type it holds keeps its own.
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Type>) -> Self {
         self.replace_tvars_int(known, &mut LPooled::take())
             .unwrap_or_else(|| self.clone())
