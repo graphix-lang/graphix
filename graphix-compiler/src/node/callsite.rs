@@ -56,7 +56,7 @@ use indexmap::{IndexMap, map::Entry as ArgEntry};
 use log::warn;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
-use nohash::IntSet;
+use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
@@ -1441,22 +1441,35 @@ impl Reach {
 /// A node [`Free`] met: on the walk's path at a depth, or answered.
 enum Met {
     OnPath(usize),
-    Answered(Option<u32>),
+    Answered(Option<Ans>),
+}
+
+/// The asked cells free under a node: one, by its number, or two or more,
+/// a set of [`Free::sets`] by its id.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Ans {
+    One(u32),
+    Many(u32),
 }
 
 /// The cells [`Free`] is asked of, by address, each with its number.
 type Asked = LPooled<AHashMap<usize, u32>>;
 
-/// Runs of `u32` interned by content: equal runs share one id.
-#[derive(Default)]
-struct Interned {
-    data: LPooled<Vec<u32>>,
+/// Runs interned by content: equal runs share one id.
+struct Interned<T> {
+    data: LPooled<Vec<T>>,
     spans: LPooled<Vec<(u32, u32)>>,
-    by_hash: LPooled<AHashMap<u64, SmallVec<[u32; 1]>>>,
+    by_hash: LPooled<IntMap<u64, SmallVec<[u32; 1]>>>,
 }
 
-impl Interned {
-    fn get(&self, id: u32) -> &[u32] {
+const RUN_HASH: ahash::RandomState = ahash::RandomState::with_seeds(1, 2, 3, 4);
+
+impl<T: Copy + Eq + std::hash::Hash> Interned<T> {
+    fn new() -> Self {
+        Self { data: LPooled::take(), spans: LPooled::take(), by_hash: LPooled::take() }
+    }
+
+    fn get(&self, id: u32) -> &[T] {
         let (s, e) = self.spans[id as usize];
         &self.data[s as usize..e as usize]
     }
@@ -1468,8 +1481,7 @@ impl Interned {
         for _ in at..data.len() {
             rank2_step();
         }
-        let hash = by_hash.hasher().hash_one(&data[at..]);
-        let ids = by_hash.entry(hash).or_default();
+        let ids = by_hash.entry(RUN_HASH.hash_one(&data[at..])).or_default();
         for id in ids.iter() {
             let (s, e) = spans[*id as usize];
             for _ in s..e {
@@ -1498,16 +1510,15 @@ impl Interned {
 struct Free<'a> {
     asked: &'a AHashMap<usize, u32>,
     nodes: LPooled<AHashMap<usize, Met>>,
-    /// Every answer: the asked cells it holds, by number, sorted.
-    sets: Interned,
-    /// Every join made: the answers joined, sorted, then `u32::MAX` and
-    /// the cells the node binds where it binds any; `joined` holds what
-    /// each one answered.
-    joins: Interned,
-    joined: LPooled<Vec<Option<u32>>>,
+    /// The answers of two or more cells: their numbers, sorted.
+    sets: Interned<u32>,
+    /// Every join of answers made by a node that binds no asked cell: the
+    /// answers, sorted; `joined` holds what each one answered.
+    joins: Interned<Ans>,
+    joined: LPooled<Vec<Option<Ans>>>,
     /// The answers of the children of the nodes in progress, each node's
     /// the tail it pushed.
-    stack: LPooled<Vec<u32>>,
+    stack: LPooled<Vec<Ans>>,
     depth: usize,
 }
 
@@ -1522,22 +1533,24 @@ impl<'a> Free<'a> {
         let mut walk = Self {
             asked,
             nodes: LPooled::take(),
-            sets: Interned::default(),
-            joins: Interned::default(),
+            sets: Interned::new(),
+            joins: Interned::new(),
             joined: LPooled::take(),
             stack: LPooled::take(),
             depth: 0,
         };
         let mut free: LPooled<Vec<u32>> = LPooled::take();
-        if let (_, Some(a)) = walk.go(t, met) {
-            free.extend_from_slice(walk.sets.get(a))
+        match walk.go(t, met).1 {
+            None => (),
+            Some(Ans::One(i)) => free.push(i),
+            Some(Ans::Many(k)) => free.extend_from_slice(walk.sets.get(k)),
         }
         free
     }
 
     /// What is free under `t`, none for nothing; the shallowest depth on the
     /// path a cycle from `t` returned to, `usize::MAX` for none.
-    fn go(&mut self, t: &Type, met: &mut impl FnMut(u32, &TVar)) -> (usize, Option<u32>) {
+    fn go(&mut self, t: &Type, met: &mut impl FnMut(u32, &TVar)) -> (usize, Option<Ans>) {
         rank2_step();
         ensure_sufficient(|| {
             let key = t.shared_identity();
@@ -1554,7 +1567,7 @@ impl<'a> Free<'a> {
             self.depth += 1;
             let mut back = usize::MAX;
             let mut own: SmallVec<[u32; 2]> = SmallVec::new();
-            let mut child = |walk: &mut Self, (b, ans): (usize, Option<u32>)| {
+            let mut child = |walk: &mut Self, (b, ans): (usize, Option<Ans>)| {
                 back = back.min(b);
                 if let Some(a) = ans
                     && walk.stack[start..].last() != Some(&a)
@@ -1567,10 +1580,7 @@ impl<'a> Free<'a> {
                 Type::TVar(tv) => {
                     if let Some(i) = self.number(tv) {
                         met(i, tv);
-                        let at = self.sets.data.len();
-                        self.sets.data.push(i);
-                        let one = self.sets.seal(at).0;
-                        child(self, (usize::MAX, Some(one)))
+                        child(self, (usize::MAX, Some(Ans::One(i))))
                     }
                     match tv.binding() {
                         Some(b) => {
@@ -1598,7 +1608,11 @@ impl<'a> Free<'a> {
                 }
             }
             self.depth -= 1;
-            let held = self.join(start, &own);
+            let held = match self.stack.len() - start {
+                0 => None,
+                1 if own.is_empty() => self.stack.pop(),
+                _ => self.join(start, &own),
+            };
             if let Some(k) = key {
                 match back >= depth {
                     true => {
@@ -1622,55 +1636,63 @@ impl<'a> Free<'a> {
 
     /// The answer of a node whose children answered `stack[start..]`,
     /// taken off the stack, less the cells it binds, `bound`, sorted.
-    fn join(&mut self, start: usize, bound: &[u32]) -> Option<u32> {
+    fn join(&mut self, start: usize, bound: &[u32]) -> Option<Ans> {
         let parts = &mut self.stack[start..];
-        for _ in 0..parts.len() {
-            rank2_step();
-        }
-        parts.sort_unstable();
-        let mut n = 0;
-        for at in 0..parts.len() {
-            if n == 0 || parts[n - 1] != parts[at] {
-                parts[n] = parts[at];
-                n += 1
+        let mut n = parts.len();
+        if n > 1 {
+            for _ in 0..n {
+                rank2_step();
+            }
+            parts.sort_unstable();
+            n = 1;
+            for at in 1..parts.len() {
+                if parts[n - 1] != parts[at] {
+                    parts[n] = parts[at];
+                    n += 1
+                }
             }
         }
         let parts = &parts[..n];
         let r = match (parts, bound) {
             ([], _) => None,
             ([a], []) => Some(*a),
-            (parts, bound) => {
+            (parts, []) => {
                 let at = self.joins.data.len();
                 self.joins.data.extend_from_slice(parts);
-                if !bound.is_empty() {
-                    self.joins.data.push(u32::MAX);
-                    self.joins.data.extend_from_slice(bound)
-                }
                 match self.joins.seal(at) {
                     (k, false) => self.joined[k as usize],
                     (_, true) => {
-                        let r = union(&mut self.sets, parts, bound);
+                        let r = union(&mut self.sets, parts, &[]);
                         self.joined.push(r);
                         r
                     }
                 }
             }
+            (parts, bound) => union(&mut self.sets, parts, bound),
         };
         self.stack.truncate(start);
         r
     }
 }
 
-/// The interned union of the answers `parts` less the cells in `bound`,
-/// both sorted; none for nothing.
-fn union(sets: &mut Interned, parts: &[u32], bound: &[u32]) -> Option<u32> {
+/// The union of the answers `parts` less the cells in `bound`, both
+/// sorted; none for nothing.
+fn union(sets: &mut Interned<u32>, parts: &[Ans], bound: &[u32]) -> Option<Ans> {
     let at = sets.data.len();
     for p in parts {
-        let (s, e) = sets.spans[*p as usize];
-        for _ in s..e {
-            rank2_step();
+        match *p {
+            Ans::One(i) => {
+                rank2_step();
+                sets.data.push(i)
+            }
+            Ans::Many(k) => {
+                let (s, e) = sets.spans[k as usize];
+                for _ in s..e {
+                    rank2_step();
+                }
+                sets.data.extend_from_within(s as usize..e as usize)
+            }
         }
-        sets.data.extend_from_within(s as usize..e as usize)
     }
     if parts.len() > 1 {
         sets.data[at..].sort_unstable()
@@ -1689,7 +1711,11 @@ fn union(sets: &mut Interned, parts: &[u32], bound: &[u32]) -> Option<u32> {
         }
     }
     sets.data.truncate(kept);
-    (kept > at).then(|| sets.seal(at).0)
+    match kept - at {
+        0 => None,
+        1 => sets.data.pop().map(Ans::One),
+        _ => Some(Ans::Many(sets.seal(at).0)),
+    }
 }
 
 /// The first of the `quantified` cells (name, cell address) that a
@@ -5281,7 +5307,7 @@ mod test {
         let t = quantified_result_pairs(n);
         let (r, steps) = escape_steps(&t);
         assert!(r.is_ok());
-        assert!(steps <= 64 * n, "{steps}");
+        assert!(steps <= 32 * n, "{steps}");
         let (q, cells) = asked_of(&t);
         assert_eq!(q.len(), 2 * n);
         let beside = Type::Tuple(TArc::from_iter([t, Type::TVar(cells[0].clone())]));
@@ -5301,7 +5327,7 @@ mod test {
         let t = parse_type(&format!("{{{fields}}}")).unwrap();
         let (r, steps) = escape_steps(&t);
         assert!(r.is_ok());
-        assert!(steps <= 32 * n, "{steps}");
+        assert!(steps <= 16 * n, "{steps}");
     }
 
     // One function quantifying `n` variables, asked of every one: the walk
@@ -5319,7 +5345,7 @@ mod test {
         .unwrap();
         let (r, steps) = escape_steps(&t);
         assert!(r.is_ok());
-        assert!(steps <= 32 * n, "{steps}");
+        assert!(steps <= 16 * n, "{steps}");
     }
 
     // One function quantifying `n` variables whose parameter wraps their
@@ -5367,7 +5393,7 @@ mod test {
         for fields in [vec!["('c, 'd)"; m], alternating] {
             let (r, steps) = escape_steps(&binding_c_and_d(n, &fields));
             assert!(r.is_ok());
-            assert!(steps <= 32 * (n + m), "{} {steps}", fields[0]);
+            assert!(steps <= 16 * (n + m), "{} {steps}", fields[0]);
         }
     }
 
@@ -5386,7 +5412,7 @@ mod test {
         let t = parse_type(&format!("fn<{}>(x: {x}) -> i64", bounds.join(", "))).unwrap();
         let (r, steps) = escape_steps(&t);
         assert!(r.is_ok());
-        assert!(steps <= 32 * (n + d), "{steps}");
+        assert!(steps <= 16 * (n + d), "{steps}");
     }
 
     // A formal holding no quantified function is not walked, a chain of
