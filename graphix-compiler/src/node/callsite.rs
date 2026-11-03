@@ -1074,6 +1074,16 @@ enum ArgFit {
 // the new CR rank2-holder-variable-01 for eric, and its pin
 // RANK2_LET_HOLDER_SHARES_ITS_VARIABLE is gone with it. The call's signature judgment
 // (HeldIn) stands.
+// 2026-11-03 claude: Lane R salvage (branch cr46-R2): review R-r3-1's low stands as the
+// rule documented: an argument that makes a call's variable its formal's quantifier is
+// refused even where a later argument widens the variable (|#k: fn<'a: Any>(x: 'a) ->
+// 'c, d: 'c| passed #k: |x| x with an Any d; main runs it, R-r3-1/p/s/o06, o08-o11).
+// The refusal now names the fix: '... one type for the call; annotate the argument with
+// the type 'c is meant to be' (the default for an omitted one), and #k: |x| -> Any x
+// passes. Pins: lang::types::rank2_call_signature_refusal_names_the_annotation (fails
+// in all four modes without the hint), rank2_call_signature_annotated_argument_runs.
+// The copied-cell walk this lane also built (rank2-escape-hof-01) is withdrawn; HeldIn
+// and its pins stand.
 /// Check a call's argument node against its formal's type `typ` in the
 /// call's signature `site`, answering how it fit and the quantifiers it was
 /// held general in (`held_in` takes the call's variables first); an
@@ -1423,7 +1433,8 @@ impl HeldIn {
                 let site = Type::Fn(TArc::new(site.clone()));
                 let e = anyhow!(
                     "{what} is not polymorphic in '{q}: the call's signature, of type {}, \
-                     would carry '{q} out through {v}, one type for the call",
+                     would carry '{q} out through {v}, one type for the call; annotate \
+                     {what} with the type {v} is meant to be",
                     printed_deref(&site)
                 );
                 return Err((key.clone(), e));

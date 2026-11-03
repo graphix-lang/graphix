@@ -7908,6 +7908,31 @@ run!(
     FuseExpect::Jit
 );
 
+// A call's variable a later argument decides is still one type for the
+// call: an argument that would make it the formal's quantifier is refused,
+// naming the annotation that gives it a type of its own.
+run!(
+    rank2_call_signature_refusal_names_the_annotation,
+    r#"{
+  let z: Any = 0;
+  let outer = |#k: fn<'a: Any>(x: 'a) -> 'c, d: 'c| (k(1), k("s"), d);
+  outer(#k: |x| x, z)
+}"#,
+    refused("one type for the call; annotate the argument with the type 'c is meant to be");
+    FuseExpect::None
+);
+
+run!(
+    rank2_call_signature_annotated_argument_runs,
+    r#"{
+  let z: Any = 0;
+  let outer = |#k: fn<'a: Any>(x: 'a) -> 'c, d: 'c| (k(1), k("s"), d);
+  outer(#k: |x| -> Any x, z)
+}"#,
+    prints(r#"[i64:1, "s", i64:0]"#);
+    FuseExpect::None
+);
+
 // A value written to a rank-2 holder as its copy may hand its parameter
 // to a callback whose result stays inside it, and write an outer binding
 // a callback decides without the parameter.
