@@ -2397,7 +2397,8 @@ impl Env {
     }
 
     /// An env holding the typedefs `defs` at the root, each named `Name`
-    /// or `Name<'a, ..>`, and `t` there, every reference seeded. For tests.
+    /// or `Name<'a, ..>` (a body `Abstract<rep>` declares an abstract
+    /// type), and `t` there, every reference seeded. For tests.
     #[cfg(test)]
     pub fn typed_at_root(defs: &[(&str, &str)], t: &str) -> Result<(Env, Type)> {
         use crate::expr::parser::parse_type;
@@ -2413,7 +2414,10 @@ impl Env {
                 &root,
                 name,
                 params,
-                &TypeDefBody::Alias(parse_type(body)?),
+                &match body.strip_prefix("Abstract<").and_then(|b| b.strip_suffix('>')) {
+                    Some(rep) => TypeDefBody::Abstract(Some(parse_type(rep)?)),
+                    None => TypeDefBody::Alias(parse_type(body)?),
+                },
                 true,
                 None,
                 Default::default(),

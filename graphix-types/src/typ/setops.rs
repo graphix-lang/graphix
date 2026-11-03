@@ -15,7 +15,7 @@ use smallvec::{SmallVec, smallvec};
 use std::iter;
 use triomphe::Arc;
 
-// CR claude for claude: [bug/medium] matching_type's memo (MatchingTypes::memo) keeps
+// XCR claude for claude: [bug/medium] matching_type's memo (MatchingTypes::memo) keeps
 // every pair for the walk, keyed by RefHist::ref_id, which keys an abstract type by
 // its parameters' address and an open cell by its cell's and holds neither: an
 // expansion's parameters (built anew by lookup_ref) die with its frame, and the next
@@ -30,9 +30,22 @@ use triomphe::Arc;
 // Box<i64>]; keeping each memoized pair's sides alive for the walk gives [`X,
 // Box<i64>, Box<string>]: pin the fix with that walk. Found by lane X (round 7).
 // probes: ~/ptmp/cr29/scratch/r8-X/mt1.gx, mt1b.gx (matching-type-pins-01)
+// 2026-11-02 claude: MatchingTypes::memo now holds each pair's sides beside its
+// answer (Matched), so an address its key reads stays its node's for the walk. Pin:
+// graphix-types typ::setops::tests::matching_type_tells_fresh_instantiations_apart
+// (the unit walk named above; gives [`X, Box<i64>] without the fix, every run).
+// Env::typed_at_root now takes a body Abstract<rep> as an abstract typedef for such
+// tests.
 struct MatchingTypes {
-    memo: RefHist<AHashMap<RefPair, Type>>,
+    memo: RefHist<AHashMap<RefPair, Matched>>,
     refs: LPooled<AHashSet<(Option<usize>, Option<usize>)>>,
+}
+
+/// A pair's matching type, with the pair, which holds every address its
+/// key reads for the walk.
+struct Matched {
+    typ: Type,
+    _sides: (Type, Type),
 }
 
 fn is_empty_ty(t: &Type) -> bool {
@@ -950,11 +963,12 @@ impl Type {
     ) -> Result<Self> {
         ensure_sufficient(|| {
             let key = (walk.memo.ref_id(self, env), walk.memo.ref_id(reaching, env));
-            if let Some(t) = walk.memo.get(&key) {
-                return Ok(t.clone());
+            if let Some(m) = walk.memo.get(&key) {
+                return Ok(m.typ.clone());
             }
             let typ = self.matching_type_inner(env, walk, reaching)?;
-            walk.memo.insert(key, typ.clone());
+            let sides = (self.clone(), reaching.clone());
+            walk.memo.insert(key, Matched { typ: typ.clone(), _sides: sides });
             Ok(typ)
         })
     }
@@ -1087,6 +1101,35 @@ fn same_resolved<'a, 'b>(
                 }
             }
             _ => return false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        env::Env,
+        expr::{ModPath, parser::parse_type},
+        typ::{Type, cast::tests::typed},
+    };
+
+    fn ty(env: &Env, s: &str) -> Type {
+        let t = parse_type(s).unwrap().scope_refs(&ModPath::root());
+        t.seed_refs(env);
+        t
+    }
+
+    // Each instantiation of W expands to an abstract type built anew, so
+    // the walk meets Box<i64> and Box<string> at fresh addresses.
+    #[test]
+    fn matching_type_tells_fresh_instantiations_apart() {
+        let (env, _) =
+            typed(&[("Box<'a>", "Abstract<'a>"), ("W<'a>", "[Box<'a>, `X]")], "null");
+        let test = ty(&env, "[W<i64>, W<string>]");
+        let reaching = ty(&env, "[Box<i64>, Box<string>, `X]");
+        for _ in 0..16 {
+            let m = test.matching_type(&env, &reaching).unwrap().normalize();
+            assert_eq!(m.to_string(), "[`X, Box<i64>, Box<string>]");
         }
     }
 }
