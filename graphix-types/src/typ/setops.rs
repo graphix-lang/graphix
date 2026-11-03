@@ -812,6 +812,14 @@ impl Type {
             // fail without the fix. Moves main's verdicts: bc1 and bc2 (accepted) are
             // refused; bc1z, bc2z, bc3, bc4, bc5, bc6, bc7, bcA refuse with the uncovered
             // remainder read through.
+            // 2026-11-03 claude: A follow-up commit reads a cell bound to Any through where
+            // diff asks whether a part covers anything: same_resolved's Any test (a
+            // tuple's, struct's or variant's position) and the (Primitive, Map/Array/Error)
+            // arms, through is_any. Pin: graphix-types
+            // typ::setops::tests::diff_reads_a_cell_bound_to_any_as_any (each of its four
+            // cases fails without it). diff's memo of finished pairs (diff-dag-01) leans on
+            // diff reading every subtrahend part through, since a key reads a bound cell as
+            // its binding.
             (Type::Map { .. }, Type::Map { .. }) => {
                 if same_type(self, t) {
                     Ok(Type::Primitive(BitFlags::empty()))
@@ -827,7 +835,7 @@ impl Type {
                 }
             }
             (Type::Primitive(p), Type::Map { key, value }) => {
-                if **key == Type::Any && **value == Type::Any {
+                if is_any(key) && is_any(value) {
                     let mut p = *p;
                     p.remove(Typ::Map);
                     Ok(Type::Primitive(p))
@@ -877,7 +885,7 @@ impl Type {
                 }
             }
             (Type::Primitive(p), Type::Array(t)) => {
-                if &**t == &Type::Any {
+                if is_any(t) {
                     let mut s = *p;
                     s.remove(Typ::Array);
                     Ok(Type::Primitive(s))
@@ -900,7 +908,7 @@ impl Type {
                 Ok(Type::Primitive(s))
             }
             (Type::Primitive(p), Type::Error(e)) => {
-                if &**e == &Type::Any {
+                if is_any(e) {
                     let mut s = *p;
                     s.remove(Typ::Error);
                     Ok(Type::Primitive(s))
@@ -1095,6 +1103,11 @@ impl Type {
     }
 }
 
+/// `Any`, read through bound type variables.
+fn is_any(t: &Type) -> bool {
+    t.with_deref(|t| matches!(t, Some(Type::Any)))
+}
+
 /// Equality read through bound type variables.
 fn same_type(t0: &Type, t1: &Type) -> bool {
     t0 == t1 || t0.resolve_tvars().normalize() == t1.resolve_tvars().normalize()
@@ -1111,7 +1124,7 @@ fn same_resolved<'a, 'b>(
         match (t0.next(), t1.next()) {
             (None, None) => return true,
             (Some(a), Some(b)) => {
-                if *b != Type::Any && !same_type(a, b) {
+                if !is_any(b) && !same_type(a, b) {
                     return false;
                 }
             }
@@ -1171,6 +1184,31 @@ mod tests {
         ] {
             let d = t0.diff(&env, &t1).unwrap();
             assert!(d.is_uninhabited(), "{t0:?} - {t1:?} = {d:?}");
+        }
+    }
+
+    // A cell bound to Any is Any where diff asks whether a part covers
+    // anything: at a tuple's position and as a map's, an array's or an
+    // error's every value.
+    #[test]
+    fn diff_reads_a_cell_bound_to_any_as_any() {
+        let (env, _) = typed(&[], "null");
+        let any = |t: &str| {
+            let t = parsed(&env, t);
+            let mut cells = AHashMap::default();
+            t.collect_tvars(&mut cells);
+            cells.values().for_each(|c| c.bind(Type::Any));
+            t
+        };
+        let d = parsed(&env, "(i64, string)").diff(&env, &any("('c, string)")).unwrap();
+        assert_eq!(d.to_string(), "[]");
+        for (p, t) in [
+            (Typ::Array, "Array<'c>"),
+            (Typ::Map, "Map<'c, 'd>"),
+            (Typ::Error, "Error<'c>"),
+        ] {
+            let d = Type::Primitive(p | Typ::I64).diff(&env, &any(t)).unwrap();
+            assert_eq!(d.to_string(), "i64", "{p:?} - {t}");
         }
     }
 }
