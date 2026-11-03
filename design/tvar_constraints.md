@@ -290,7 +290,10 @@ the definition gates:
 A binding something writes is not generalized (the value restriction,
 `CompileCtx::mark_connect_target`): every function its value holds, a
 struct field's or a tuple element's included, is one instance its uses
-and writers share (`CompileCtx::monomorphic`). Its writers are known
+and writers share (`CompileCtx::monomorphic`); a node the value's type
+shares (two reads of one copy) is one instance wherever it stands, so the
+instance keeps the value's sharing and costs what its nodes do, not its
+paths (pin `monomorphic_tests::a_shared_node_is_one_instance`). Its writers are known
 before its uses are checked: a block collects the names its lets bind
 that a `<-` or `&mut` in it writes, lambda bodies included, where no
 nearer binding of the name stands between (`node::written_lets`), and

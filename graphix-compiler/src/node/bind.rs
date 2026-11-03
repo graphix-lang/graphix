@@ -67,6 +67,21 @@ enum ValueReads {
     Shared,
     /// Each read a copy of its own: what a written name holds is decided by
     /// its uses, an annotated one's by the annotation.
+    // CR claude for eric: [perf/medium] A chain of lets each reading the last
+    // twice under Own reads checks in time exponential in its length, and the
+    // type it builds is that large by this rule: each read copies the last
+    // link's generalized cells, so link k holds 2^k independent instances
+    // (`let (x1, w1) = ((x0, x0), 0); w1 <- 1;` repeated, or `let x1: ('p, 'q)
+    // = (x0, x0);`). --check instructions:u at N=12/14/16/18, main ec53d4846:
+    // o-wtup 2.97/4.76/13.55/79.40G, o-annot 2.58/4.50/9.70/36.38G; after the
+    // monomorphic DAG fix (holder-mono-chain-01) the same (3.52/5.80/17.93/
+    // 92.83G, 2.36/3.54/11.69/40.76G), where the monomorphic chains are flat
+    // (~2G, the empty program's) to 18. Linear only under a read rule that
+    // shares one copy of a binding among an Own value's reads (as Shared does),
+    // which changes what holder_destructured_beside_a_written_name pins: a
+    // ruling on which reads copy (beside holder-block-select-01). probes
+    // ~/ptmp/cr29/scratch/r9-N/mono/ (o-wtup-N, o-annot-N; gen2.sh wtup|annot N)
+    // (holder-own-reads-01)
     Own,
 }
 
@@ -1438,6 +1453,12 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // x][0]$ (main bbb06c0c6: check passes, the run-time bind is refused). Option (b)
 // covers every such shape; option (a) covers only what holds_function can see. probes
 // ~/ptmp/cr29/scratch/review-r8/xcr-self-arg/a/v1.gx, v2, w/w2 w3 w6 w7.
+// 2026-11-03 claude: Lane N round 8: the split reaches a written binding too. let x0
+// = (|x| x, 1); let (a1, w1) = (x0, 0); w1 <- 1; let r = a1.0("s"); a1 <- (|x: i64| x
+// + 1, 2) passes --check (the call instantiates the lambda's scheme, not a1's written
+// instance) and its run refuses the bind ('an instance at fn(x: string) -> string of
+// a definition typed fn(x: i64) -> i64'); main ec53d4846 the same. probes
+// ~/ptmp/cr29/scratch/r9-N/mono/snd1.gx, snd3.gx.
 /// Whether the value `node` builds holds a lambda literal or a generalized
 /// binding's value in a data literal (a struct, its update, a tuple, a
 /// variant, an array, a list or a map): a type that holds the definitions'

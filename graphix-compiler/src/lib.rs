@@ -1949,7 +1949,7 @@ impl<R: Rt> CompileCtx<R> {
         })
     }
 
-    // CR claude for claude: [perf/medium] A chain of lets holding functions, where each
+    // XCR claude for claude: [perf/medium] A chain of lets holding functions, where each
     // link binds a written name or carries an annotation, checks in time exponential in
     // its length: each occurrence of a shared node holding a function takes its own
     // copy here, so a DAG of holders becomes a tree. `let (a, w) = (x, 0); w <- 1; let
@@ -1961,45 +1961,32 @@ impl<R: Rt> CompileCtx<R> {
     // DAG. Found by the r8 re-review of self-arg-instance-01. probes
     // ~/ptmp/cr29/scratch/review-r8/xcr-self-arg/c/ (t-ownone-N, u-wsingle, o-wtup,
     // o-annot, o-apart2) (holder-mono-chain-01)
+    // 2026-11-03 claude: monomorphic now keeps the value's DAG: every shared node
+    // rebuilds once per call and each of its occurrences holds that one instance of
+    // each function beneath it (lib.rs fn monomorphic, the memo no longer skipped below
+    // an instantiated function). JUDGED: 'the instantiation they came from' is the
+    // monomorphic call, since the walk never enters a function type
+    // (FnType::instantiate copies one whole). Holder pins hold: lang::types, modules,
+    // functions 3519 ok; under GRAPHIX_NO_SUBST=1 lang::types fails only
+    // cast_of_a_reference_in_an_instance,
+    // cast_of_a_reference_beside_a_filled_application and
+    // union_bound_open_cell_accepts, before the change too and on main's binary alike
+    // (an instance recheck refuses at the build). The shared-instance probes share1-8
+    // (r9-N/mono) print as main. --check instructions:u (GRAPHIX_PAR=off, one eval
+    // thread; the empty program 2.0-2.5G), main ec53d4846 / lane at N=10/12/14/16/18:
+    // t-ownone 1.61/2.83/14.63G/killed/killed vs 1.51/1.59/1.66/2.57/2.62G; u-wsingle
+    // 2.34/2.56/6.60G/killed/killed vs 1.78/2.44/2.49/2.27/2.41G; o-apart2
+    // 3.14/3.31/21.08G/killed/killed vs 2.69/2.73/2.42/2.14/2.39G (killed: 300 s or
+    // 8G). o-wtup and o-annot stay exponential: their cost is the Own reads' copy at
+    // each read, which doubles the type at each link by rule (new CR
+    // holder-own-reads-01 for eric). Pin graphix-compiler
+    // monomorphic_tests::a_shared_node_is_one_instance (16 doubling pairs over a
+    // generic function: 34 nodes at most, the two parts one instance; the old walk
+    // 196607 nodes: fails).
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
-        /// A shared node rebuilds once and stays shared, unless a function
-        /// type beneath it instantiated: each occurrence of one takes its
-        /// own variables.
-        struct Memo<'a> {
-            open: &'a nohash::IntSet<LambdaId>,
-            done: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
-            fresh: bool,
-        }
-        fn instance(t: &Type, m: &mut Memo) -> Option<Type> {
-            crate::stack::ensure_sufficient(|| {
-                let key = t.shared_identity();
-                if let Some(k) = key
-                    && let Some((_, r)) = m.done.get(&k)
-                {
-                    return r.clone();
-                }
-                let outer = mem::replace(&mut m.fresh, false);
-                let r = match t {
-                    Type::TVar(tv) => tv.binding().map(|b| instance(&b, m).unwrap_or(b)),
-                    Type::Fn(ft) => {
-                        m.fresh = true;
-                        Some(Type::Fn(Arc::new(ft.instantiate(m.open))))
-                    }
-                    t => t.cow_children(&mut |c| instance(c, m)),
-                };
-                if let Some(k) = key
-                    && !m.fresh
-                {
-                    m.done.insert(k, (t.clone(), r.clone()));
-                }
-                m.fresh |= outer;
-                r
-            })
-        }
-        let mut m = Memo { open: &self.rec_defs, done: LPooled::take(), fresh: false };
-        instance(t, &mut m).unwrap_or_else(|| t.clone())
+        monomorphic(t, &self.rec_defs)
     }
 
     pub fn register_builtin<T: BuiltIn<R>>(&mut self) -> Result<()> {
@@ -4111,6 +4098,76 @@ fn abandon_stmt<R: Rt>(
     ctx.drop_deferred();
     saved.restore(ctx);
     e
+}
+
+/// [`CompileCtx::monomorphic`] under the definitions `open` being
+/// checked. A shared node rebuilds once and stays shared: every occurrence
+/// of it holds the one instance of each function beneath it.
+fn monomorphic(t: &Type, open: &IntSet<LambdaId>) -> Type {
+    /// Each entry keeps its node alive, so no other node takes its address.
+    type Done = AHashMap<usize, (Type, Option<Type>)>;
+    fn instance(t: &Type, open: &IntSet<LambdaId>, done: &mut Done) -> Option<Type> {
+        crate::stack::ensure_sufficient(|| {
+            let key = t.shared_identity();
+            if let Some(k) = key
+                && let Some((_, r)) = done.get(&k)
+            {
+                return r.clone();
+            }
+            let r = match t {
+                Type::TVar(tv) => {
+                    tv.binding().map(|b| instance(&b, open, done).unwrap_or(b))
+                }
+                Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate(open)))),
+                t => t.cow_children(&mut |c| instance(c, open, done)),
+            };
+            if let Some(k) = key {
+                done.insert(k, (t.clone(), r.clone()));
+            }
+            r
+        })
+    }
+    let mut done: LPooled<Done> = LPooled::take();
+    instance(t, open, &mut done).unwrap_or_else(|| t.clone())
+}
+
+#[cfg(test)]
+mod monomorphic_tests {
+    use super::*;
+    use crate::expr::parser::parse_type;
+    use netidx_value::Typ;
+
+    /// The tuple and function nodes `t` holds, one many paths share once.
+    fn nodes(t: &Type, seen: &mut AHashSet<usize>) {
+        if let Some(k) = t.shared_identity()
+            && !seen.insert(k)
+        {
+            return;
+        }
+        if let Type::Tuple(ts) = t {
+            ts.iter().for_each(|c| nodes(c, seen))
+        }
+    }
+
+    // A written binding's value of `DEPTH` pairs, each holding the last
+    // twice, down to a generic function: its instance stays a DAG of a few
+    // nodes a pair, the two parts of each pair one instance, where an
+    // instance at each occurrence makes 2^DEPTH.
+    #[test]
+    fn a_shared_node_is_one_instance() {
+        const DEPTH: usize = 16;
+        let f = parse_type("fn(x: 'a) -> 'a").expect("a function type");
+        let mut t = Type::Tuple(Arc::from_iter([f, Type::Primitive(Typ::I64.into())]));
+        for _ in 0..DEPTH {
+            t = Type::Tuple(Arc::from_iter([t.clone(), t.clone()]));
+        }
+        let m = monomorphic(&t, &IntSet::default());
+        let mut seen = AHashSet::default();
+        nodes(&m, &mut seen);
+        assert!(seen.len() <= 2 * (DEPTH + 1), "{} nodes", seen.len());
+        let Type::Tuple(parts) = &m else { panic!("{m}") };
+        assert_eq!(parts[0].shared_identity(), parts[1].shared_identity());
+    }
 }
 
 #[cfg(test)]
