@@ -2,8 +2,8 @@ use crate::{
     env::Env,
     stack::ensure_sufficient,
     typ::{
-        Bound, ContainsFlags, FnType, NodePairs, RefHist, RefPair, TVar, Type, TypeRef,
-        contains::on_copies, tvar::Level,
+        Bound, ContainsFlags, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar,
+        Type, TypeRef, contains::on_copies, tvar::Level,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -12,7 +12,7 @@ use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
-use std::iter;
+use std::{iter, mem, ops::ControlFlow};
 use triomphe::Arc;
 
 // XCR claude for claude: [bug/medium] matching_type's memo (MatchingTypes::memo) keeps
@@ -36,16 +36,47 @@ use triomphe::Arc;
 // (the unit walk named above; gives [`X, Box<i64>] without the fix, every run).
 // Env::typed_at_root now takes a body Abstract<rep> as an abstract typedef for such
 // tests.
+// 2026-11-03 claude: Matched is now Kept<A> (typ/mod.rs), shared by this memo, diff's
+// memo of finished pairs (DiffHist::done) and could_match's refuted memo
+// (diff-dag-01).
 struct MatchingTypes {
-    memo: RefHist<AHashMap<RefPair, Matched>>,
+    memo: RefHist<AHashMap<RefPair, Kept<Type>>>,
     refs: LPooled<AHashSet<(Option<usize>, Option<usize>)>>,
 }
 
-/// A pair's matching type, with the pair, which holds every address its
-/// key reads for the walk.
-struct Matched {
-    typ: Type,
-    _sides: (Type, Type),
+/// diff's walk state: each pair in progress with what it subtracts when
+/// met again inside its own difference (nothing), and the difference of
+/// each finished pair whose walk met no pair in progress and whose
+/// minuend, of which a difference is made, [`RefHist::ref_id`] keys
+/// exactly. A subtrahend keyed alike is read alike: diff reads every part
+/// of it through.
+struct DiffHist {
+    hist: RefHist<AHashMap<RefPair, Type>>,
+    done: Lazy<AHashMap<RefPair, Kept<Type>>>,
+    /// The current walk met a pair in progress.
+    cycled: bool,
+}
+
+impl DiffHist {
+    fn new() -> Self {
+        DiffHist { hist: RefHist::new(), done: Lazy::new(), cycled: false }
+    }
+}
+
+/// Whether [`RefHist::ref_id`] may key `t` alike with a type that prints
+/// apart: `t` holds a bound cell, keyed as its binding, or a cell in a
+/// function type, paired by position. A reference's parameters are read,
+/// its expansion is not.
+fn keyed_loosely(t: &Type) -> bool {
+    fn go(t: &Type, in_fn: bool) -> ControlFlow<()> {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) if in_fn || tv.binding().is_some() => ControlFlow::Break(()),
+            Type::TVar(_) => ControlFlow::Continue(()),
+            Type::Fn(_) => t.try_for_each_child(&mut |c| go(c, true)),
+            t => t.try_for_each_child(&mut |c| go(c, in_fn)),
+        })
+    }
+    go(t, false).is_break()
 }
 
 fn is_empty_ty(t: &Type) -> bool {
@@ -640,16 +671,28 @@ impl Type {
         Ok(out)
     }
 
-    fn diff_int(
-        &self,
-        env: &Env,
-        hist: &mut RefHist<AHashMap<RefPair, Type>>,
-        t: &Self,
-    ) -> Result<Self> {
+    // CR claude for claude: [bug/medium] diff does not end over some names that recur
+    // through Error payloads: main bbb06c0c6's --check of `type At = [Error<Bt>,
+    // Error<Ct>, `R]; type Bt = [Error<At>, `P]; type Ct = [Array<Ct>, Error<Bt>]; type H
+    // = [Error<Error<K>>, `Q]; type K = [Error<H>, Error<K>, `P]; let v: At = `R; select
+    // v { K as k => 0, _ => 1 }` is killed at 60 s, and a unit walk of diff(At, K) had
+    // not returned after 30 s. Of 1600 selects the review's generators write
+    // (review-r8/X-r1-1 gen_rnd.py, gen_cm1.py, seeds 1-1200 and 1-400), 53 time out
+    // at 30 s (six sampled, at 120 s too); rnd13's thread is deep in
+    // Select::typecheck0_with -> Type::diff -> diff_inner, normalize innermost. A pair
+    // met again is found by its sides' ids, and the (Set, Set) and (t, Set) arms
+    // subtract each next member from the difference so far, a type built anew with a
+    // new id, so a cycle through it may never meet a pair again (traced for the hang
+    // the round-7 memo of diff-dag-01 caused, not yet for this one). probes:
+    // ~/ptmp/cr29/scratch/r8-X/mainhang.gx, rnd13.gx (diff-cycle-hang-01)
+    // 2026-11-03 claude: Carried to main from the parked branch cr45-X (326be068c), where
+    // it was written. main ec53d4846 and lane cr46-X both still time out at 30 s on
+    // mainhang.gx and rnd13.gx (--no-cache --check).
+    fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
 
-    // CR claude for claude: [perf/low] diff takes a pair of a reference and the
+    // XCR claude for claude: [perf/low] diff takes a pair of a reference and the
     // subtrahend apart at every path that reaches it, so over a DAG of named unions
     // (cast.rs union_dag: Li = [Li-1, Mi-1], Mi = [Mi-1, Li-1]) a select's coverage
     // (Reach::cover and Select::typecheck0_with, both calling diff) walks 2^depth:
@@ -672,28 +715,62 @@ impl Type {
     // found-assumed-true-01 and diff-bound-cell-01 first; then the memo moves nothing
     // (the lane measured selp linear with both memos once found keeps only trues no
     // in-progress pair assumed).
-    fn diff_inner(
-        &self,
-        env: &Env,
-        hist: &mut RefHist<AHashMap<RefPair, Type>>,
-        t: &Self,
-    ) -> Result<Self> {
+    // 2026-11-03 claude: Built from cr45-X's memos, after found-assumed-true-01 and
+    // diff-bound-cell-01: diff keeps a finished pair's difference (DiffHist::done) and
+    // could_match a refuted pair (MatchHist::refuted) where the pair's walk met no pair
+    // in progress, each with its sides (Kept). diff keeps one only where ref_id keys
+    // its minuend exactly (keyed_loosely: no bound cell, no cell in a function type),
+    // since a difference is made of its minuend's parts; a subtrahend keyed alike reads
+    // alike because diff now reads every subtrahend part through (is_any in the
+    // follow-up of diff-bound-cell-01). callgrind --check, one eval thread, base
+    // ec53d4846 vs lane: empty 1.332G/1.327G, sel16 2.542G/1.345G, sel18 -/1.344G,
+    // sel20 -/1.339G, selp16 3.269G/1.345G, selp18 9.028G (lane linear like selp16).
+    // Pins: graphix-types
+    // typ::setops::tests::diff_and_could_match_take_each_name_of_a_union_dag_once (39
+    // diff pairs and 39 could_match pairs over L20; 2^20-1 with the memos off),
+    // diff_and_could_match_memos_change_no_answer (the four families of cr45-X, the
+    // K0/K1 shape at 16 and 24, a family of bound, open, function-type and Any-bound
+    // cells; fails with the minuend guard dropped, with the subtrahend's Any read as
+    // written, and with found-assumed-true-01 reverted),
+    // memos_change_no_composed_answer (could_match over diff's output, the round-8
+    // review's generator, 40 seeds; 1500 pass). Census of 3828 files: see the lane's
+    // report.
+    fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(tr0, tr1) => {
                 Ok(Type::Primitive(BitFlags::empty()))
             }
             (t0 @ Type::Ref(_), t1) | (t0, t1 @ Type::Ref(_)) => {
-                let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
-                if let Some(r) = hist.get(&key) {
+                let key = (hist.hist.ref_id(t0, env), hist.hist.ref_id(t1, env));
+                let kept = key.0.is_some() && key.1.is_some() && !keyed_loosely(self);
+                if kept
+                    && memo_on()
+                    && let Some(k) = hist.done.get().and_then(|m| m.get(&key))
+                {
+                    return Ok(k.answer.clone());
+                }
+                if let Some(r) = hist.hist.get(&key) {
+                    hist.cycled = true;
                     return Ok(r.clone());
                 }
+                #[cfg(test)]
+                DIFF_PAIRS.with(|n| n.set(n.get() + 1));
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
                 // a pair met again inside its own difference subtracts
                 // nothing: assuming it covered would drop what it did not
-                hist.insert(key, self.clone());
+                hist.hist.insert(key, self.clone());
+                let outer = mem::replace(&mut hist.cycled, false);
                 let r = t0.diff_int(env, hist, &t1);
-                hist.remove(&key);
+                hist.hist.remove(&key);
+                let cycled = mem::replace(&mut hist.cycled, outer);
+                hist.cycled |= cycled;
+                if kept
+                    && !cycled
+                    && let Ok(d) = &r
+                {
+                    hist.done.get_mut().insert(key, Kept::new(d.clone(), self, t));
+                }
                 r
             }
             (Type::App(c, a), t) if let Some(filled) = Type::app_filled(c, a) => {
@@ -986,11 +1063,10 @@ impl Type {
         ensure_sufficient(|| {
             let key = (walk.memo.ref_id(self, env), walk.memo.ref_id(reaching, env));
             if let Some(m) = walk.memo.get(&key) {
-                return Ok(m.typ.clone());
+                return Ok(m.answer.clone());
             }
             let typ = self.matching_type_inner(env, walk, reaching)?;
-            let sides = (self.clone(), reaching.clone());
-            walk.memo.insert(key, Matched { typ: typ.clone(), _sides: sides });
+            walk.memo.insert(key, Kept::new(typ.clone(), self, reaching));
             Ok(typ)
         })
     }
@@ -1098,7 +1174,7 @@ impl Type {
     }
 
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
-        let r = self.diff_int(env, &mut RefHist::new(), t)?;
+        let r = self.diff_int(env, &mut DiffHist::new(), t)?;
         if diff_already_normal(self, &r) { Ok(r) } else { Ok(r.normalize()) }
     }
 }
@@ -1134,13 +1210,45 @@ fn same_resolved<'a, 'b>(
 }
 
 #[cfg(test)]
+thread_local! {
+    pub(super) static DIFF_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static NO_MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether diff and could_match read their memos of finished pairs: a
+/// test compares their answers with the walks' without them.
+#[inline(always)]
+pub(super) fn memo_on() -> bool {
+    #[cfg(test)]
+    return !NO_MEMO.with(|m| m.get());
+    #[cfg(not(test))]
+    true
+}
+
+#[cfg(test)]
 mod tests {
-    use crate::typ::{
-        Type,
-        cast::tests::{parsed, typed},
+    use crate::{
+        PrintFlag,
+        env::Env,
+        format_with_flags,
+        typ::{
+            Type,
+            cast::tests::{parsed, typed, union_dag},
+            matches::MATCH_PAIRS,
+        },
     };
     use ahash::AHashMap;
     use netidx_value::Typ;
+    use triomphe::Arc;
+
+    /// `t` at the root of `env`, its variable 'c bound to i64.
+    fn bound(env: &Env, t: &str) -> Type {
+        let t = parsed(env, t);
+        let mut cells = AHashMap::default();
+        t.collect_tvars(&mut cells);
+        cells["c"].bind(Type::Primitive(Typ::I64.into()));
+        t
+    }
 
     // Each instantiation of W expands to an abstract type built anew, so
     // the walk meets Box<i64> and Box<string> at fresh addresses.
@@ -1163,13 +1271,7 @@ mod tests {
     fn diff_reads_bound_cells_through() {
         let (env, _) =
             typed(&[("S", "Map<i64, i64>"), ("Box<'a>", "Abstract<'a>")], "null");
-        let bound = |t: &str| {
-            let t = parsed(&env, t);
-            let mut cells = AHashMap::default();
-            t.collect_tvars(&mut cells);
-            cells["c"].bind(Type::Primitive(Typ::I64.into()));
-            t
-        };
+        let bound = |t: &str| bound(&env, t);
         let expanded = |t: Type| t.lookup_ref(&env).unwrap();
         for (t0, t1) in [
             (bound("Map<'c, i64>"), parsed(&env, "Map<i64, i64>")),
@@ -1210,5 +1312,254 @@ mod tests {
             let d = Type::Primitive(p | Typ::I64).diff(&env, &any(t)).unwrap();
             assert_eq!(d.to_string(), "i64", "{p:?} - {t}");
         }
+    }
+
+    /// Every difference of two of `pool` and could_match verdict of two,
+    /// and could_match of each of `pool` against each difference (the
+    /// question a select's next arm asks), bound cells printed.
+    fn memo_answers(env: &Env, pool: &[Type], memo: bool) -> Vec<String> {
+        super::NO_MEMO.with(|m| m.set(!memo));
+        let mut out = vec![];
+        format_with_flags(PrintFlag::DerefTVars, || {
+            for s in pool {
+                for t in pool {
+                    let d = s.diff(env, t).unwrap();
+                    out.push(format!(
+                        "{s} - {t} = {d}, {}",
+                        s.could_match(env, t).unwrap()
+                    ));
+                    for a in pool {
+                        out.push(format!(
+                            "{a} ~ {d}: {}",
+                            a.could_match(env, &d).unwrap()
+                        ));
+                    }
+                }
+            }
+        });
+        super::NO_MEMO.with(|m| m.set(false));
+        out
+    }
+
+    fn memos_agree(env: &Env, pool: &[Type]) {
+        let without = memo_answers(env, pool, false);
+        let with = memo_answers(env, pool, true);
+        for (a, b) in without.iter().zip(with.iter()) {
+            assert_eq!(a, b);
+        }
+    }
+
+    fn written_memos_agree(defs: &[(&str, &str)], pool: &[&str]) {
+        let (env, _) = typed(defs, "null");
+        let pool: Vec<Type> = pool.iter().map(|t| parsed(&env, t)).collect();
+        memos_agree(&env, &pool)
+    }
+
+    /// `` (`A, .. `A, last) ``, `n` `A.
+    fn long_tuple(n: usize, last: &str) -> String {
+        format!("({}{last})", "`A, ".repeat(n))
+    }
+
+    // Over names that recur through payloads (a pair met in progress
+    // subtracts nothing there, so where a cycle is cut decides what is
+    // left), over instantiations of an abstract type (built anew at each
+    // expansion), over a walk that grows past `NodePairs::EAGER` while a
+    // pair is in progress (K0, K1), and over cells (a key reads a bound
+    // one as its binding, and pairs a function type's by position), the
+    // memos change no answer.
+    #[test]
+    fn diff_and_could_match_memos_change_no_answer() {
+        written_memos_agree(
+            &[
+                ("At", "[Error<Bt>, Error<Ct>, `R]"),
+                ("Bt", "[Error<At>, `P]"),
+                ("Ct", "[Array<Ct>, Error<Bt>]"),
+            ],
+            &["At", "Bt", "Ct", "[At, Bt]", "[Bt, Ct]", "Error<Array<Ct>>", "`R"],
+        );
+        written_memos_agree(
+            &[
+                ("L", "[Error<M>, `A]"),
+                ("M", "[Error<L>, `B, `C]"),
+                ("X", "[Error<Y>, `A]"),
+                ("Y", "[Error<X>, `B]"),
+                ("Z", "[X, Y]"),
+            ],
+            &["L", "M", "X", "Y", "Z", "[L, M]"],
+        );
+        written_memos_agree(
+            &[("H", "[Error<Error<K>>, `Q]"), ("K", "[Error<H>, Error<K>, `P]")],
+            &["H", "K", "[H, K]", "Error<K>", "`Q"],
+        );
+        written_memos_agree(
+            &[("Box<'a>", "Abstract<'a>"), ("W<'a>", "[Box<'a>, `X]")],
+            &[
+                "Box<i64>",
+                "[Box<i64>, Box<string>]",
+                "W<i64>",
+                "W<string>",
+                "[W<i64>, W<f64>]",
+            ],
+        );
+        for n in [16, 24] {
+            let (k0, k1) = (long_tuple(n, "`X"), long_tuple(n, "`Y"));
+            written_memos_agree(
+                &[
+                    ("K0", &k0),
+                    ("K1", &k1),
+                    ("L0", "(N0, `P)"),
+                    ("L1", "(N1, `Q)"),
+                    ("N0", "[Error<K0>, Error<L0>, `Y]"),
+                    ("N1", "[Error<K1>, Error<L1>, `W]"),
+                ],
+                &[
+                    "[Error<K0>, Error<L0>, Error<N0>]",
+                    "[Error<K1>, Error<L1>, Error<N1>]",
+                    "Error<N0>",
+                    "Error<Error<L1>>",
+                    "[Error<K1>, Error<L1>, `Z]",
+                ],
+            );
+        }
+        let (env, _) = typed(
+            &[
+                ("R<'p>", "Map<'p, i64>"),
+                ("S", "Map<i64, i64>"),
+                ("Box<'a>", "Abstract<'a>"),
+                ("W<'a>", "[Box<'a>, `X]"),
+                ("E<'p>", "[Error<R<'p>>, Array<R<'p>>]"),
+                ("P", "[i64, (i64, `X)]"),
+            ],
+            "null",
+        );
+        let pool = [
+            bound(&env, "R<'c>"),
+            parsed(&env, "R<i64>"),
+            bound(&env, "[Error<R<'c>>, Array<R<i64>>]"),
+            bound(&env, "[Error<R<i64>>, Array<R<'c>>]"),
+            bound(&env, "[Error<R<'c>>, Error<R<i64>>]"),
+            bound(&env, "[R<'c>, R<i64>]"),
+            parsed(&env, "[Error<S>, Array<S>]"),
+            bound(&env, "W<'c>"),
+            parsed(&env, "W<i64>"),
+            bound(&env, "E<'c>"),
+            parsed(&env, "E<i64>"),
+            parsed(&env, "Error<R<i64>>"),
+            parsed(&env, "[Error<R<'x>>, Error<R<'y>>, `D('x)]"),
+            parsed(&env, "`D('z)"),
+            parsed(&env, "[Error<fn(x: 'a) -> 'a>, Error<fn(x: 'b) -> 'b>]"),
+            parsed(&env, "Error<fn(x: 'q) -> 'q>"),
+        ];
+        memos_agree(&env, &pool);
+        let any = |t: &str| {
+            let t = parsed(&env, t);
+            let mut cells = AHashMap::default();
+            t.collect_tvars(&mut cells);
+            cells.values().for_each(|c| c.bind(Type::Any));
+            t
+        };
+        let pool = [
+            parsed(&env, "[Error<R<i64>>, Array<i64>, (i64, `X)]"),
+            any("[Error<R<'c>>, Array<'d>, ('e, `X)]"),
+            any("[Error<R<'c>>, Error<R<Any>>]"),
+            parsed(&env, "[Error<R<Any>>, Array<Any>, (Any, `X)]"),
+            any("[Array<'c>, Array<Any>, ('d, `X), (Any, `X)]"),
+            parsed(&env, "[Error<S>, Array<i64>]"),
+            Type::Set(Arc::from_iter([
+                parsed(&env, "Error<P>"),
+                parsed(&env, "Error<Error<P>>"),
+            ])),
+            Type::Set(Arc::from_iter([
+                any("Error<('d, `X)>"),
+                parsed(&env, "Error<Error<(Any, `X)>>"),
+            ])),
+        ];
+        memos_agree(&env, &pool);
+    }
+
+    // Generated names over the K0/K1 shape, Error towers over them and
+    // unions of towers: a select's coverage composes could_match over
+    // diff's output, and the memos change none of it.
+    #[test]
+    fn memos_change_no_composed_answer() {
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, n: usize) -> usize {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                (self.0 % n as u64) as usize
+            }
+        }
+        let err =
+            |t: &str, k: usize| (0..k).fold(t.to_string(), |t, _| format!("Error<{t}>"));
+        let tags = ["`P", "`Q", "`W", "`Y", "`Z"];
+        for seed in 1..=40u64 {
+            let mut r = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
+            let n = [2, 8, 16, 24, 40][r.below(5)];
+            let mut defs: Vec<(String, String)> = vec![
+                ("K0".into(), long_tuple(n, "`X")),
+                ("K1".into(), long_tuple(n, "`Y")),
+                ("L0".into(), format!("(N0, {})", tags[r.below(5)])),
+                ("L1".into(), format!("(N1, {})", tags[r.below(5)])),
+                ("N0".into(), format!("[Error<K0>, Error<L0>, {}]", tags[r.below(5)])),
+                ("N1".into(), format!("[Error<K1>, Error<L1>, {}]", tags[r.below(5)])),
+            ];
+            let mut names: Vec<String> = defs.iter().map(|(n, _)| n.clone()).collect();
+            for i in 0..1 + r.below(3) {
+                let mut ms = std::collections::BTreeSet::from(["`Z".to_string()]);
+                for _ in 0..2 + r.below(3) {
+                    let m = match r.below(10) {
+                        0..5 => err(&names[r.below(names.len())], 1 + r.below(2)),
+                        5..7 => tags[r.below(5)].to_string(),
+                        _ => names[r.below(names.len())].clone(),
+                    };
+                    ms.insert(m);
+                }
+                let ms: Vec<String> = ms.into_iter().collect();
+                defs.push((format!("D{i}"), format!("[{}]", ms.join(", "))));
+                names.push(format!("D{i}"));
+            }
+            let mut pool: Vec<String> = vec![
+                "[Error<K0>, Error<L0>, Error<N0>]".into(),
+                "[Error<K1>, Error<L1>, Error<N1>]".into(),
+            ];
+            for _ in 0..6 {
+                pool.push(err(&names[r.below(names.len())], 1 + r.below(3)));
+            }
+            for _ in 0..4 {
+                let pivot = names[r.below(names.len())].clone();
+                let mut ms = std::collections::BTreeSet::from([
+                    err(&pivot, 1),
+                    err(&pivot, 2 + r.below(2)),
+                ]);
+                if r.below(2) == 0 {
+                    ms.insert(err(&names[r.below(names.len())], 1 + r.below(3)));
+                }
+                let ms: Vec<String> = ms.into_iter().collect();
+                pool.push(format!("[{}]", ms.join(", ")));
+            }
+            let defs: Vec<(&str, &str)> =
+                defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+            let pool: Vec<&str> = pool.iter().map(|t| &**t).collect();
+            written_memos_agree(&defs, &pool);
+        }
+    }
+
+    // A select over a DAG of named unions (Li = [Li-1, Mi-1], Mi = [Mi-1,
+    // Li-1]) takes an arm's test off each name once, and refutes a test
+    // nothing the names hold could match once per name, not once per path.
+    #[test]
+    fn diff_and_could_match_take_each_name_of_a_union_dag_once() {
+        let defs = union_dag(20);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "L20");
+        super::DIFF_PAIRS.with(|n| n.set(0));
+        let rest = t.diff(&env, &parsed(&env, "`A")).unwrap();
+        assert_eq!(rest.to_string(), "[`B, `C]");
+        assert_eq!(super::DIFF_PAIRS.with(|n| n.get()), 39);
+        MATCH_PAIRS.with(|n| n.set(0));
+        assert!(!parsed(&env, "`D(i64)").could_match(&env, &t).unwrap());
+        assert_eq!(MATCH_PAIRS.with(|n| n.get()), 39);
     }
 }

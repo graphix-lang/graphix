@@ -363,6 +363,19 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
 /// A relation's question about two types, by their [`RefHist::ref_id`]s.
 type RefPair = (Option<usize>, Option<usize>);
 
+/// A walk's answer for a pair of types, kept with the pair, which holds
+/// every address the pair's [`RefPair`] reads while the answer is kept.
+struct Kept<A> {
+    answer: A,
+    _sides: (Type, Type),
+}
+
+impl<A> Kept<A> {
+    fn new(answer: A, t0: &Type, t1: &Type) -> Self {
+        Kept { answer, _sides: (t0.clone(), t1.clone()) }
+    }
+}
+
 /// [`norm_key`] extended with `Variant`: a key may include the tag's
 /// allocation identity.
 fn probe_key(t: &Type) -> Option<NormKey> {

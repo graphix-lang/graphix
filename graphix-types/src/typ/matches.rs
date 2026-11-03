@@ -4,12 +4,12 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AndAc, Bound, FnType, NodePairs, RefHist, RefPair, Type,
+        AndAc, Bound, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, Type,
         contains::{ContainsHist, find_open_cell},
-        setops::strictly_identical,
+        setops::{memo_on, strictly_identical},
     },
 };
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Typ;
@@ -189,10 +189,17 @@ fn open_member(t: &Type) -> bool {
     matches!(t, Type::TVar(tv) if tv.binding().is_none())
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static MATCH_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// could_match's walk state: its pairs in progress (assumed to overlap),
-/// and a memo of its own for the containment questions it asks.
+/// the pairs refuted by walks that met none, and a memo of its own for
+/// the containment questions it asks.
 pub(super) struct MatchHist {
     pub(super) hist: RefHist<AHashSet<RefPair>>,
+    refuted: Lazy<AHashMap<RefPair, Kept<()>>>,
     contains: ContainsHist,
     /// The node pairs found to overlap by a walk that assumed no pair in
     /// progress, which overlap wherever they are asked.
@@ -205,6 +212,7 @@ impl MatchHist {
     pub(super) fn new() -> Self {
         MatchHist {
             hist: RefHist::new(),
+            refuted: Lazy::new(),
             contains: ContainsHist::new(),
             found: NodePairs::default(),
             assumed: false,
@@ -271,6 +279,11 @@ impl Type {
     // without the fix. Moves main's verdicts: fu16 to fu40, ft40 and the 34 of the
     // review's 108 generated programs main accepted (i4-4, c6-6, c6-8 among them) are
     // now refused, each a dead arm.
+    // 2026-11-03 claude: could_match's refuted memo (MatchHist::refuted) landed with
+    // diff-dag-01, kept by the same rule: a false whose walk met no pair in progress
+    // (MatchHist::assumed). Reverting this fix makes
+    // typ::setops::tests::diff_and_could_match_memos_change_no_answer and
+    // memos_change_no_composed_answer fail with the memos on.
     pub(super) fn could_match_int(
         &self,
         env: &Env,
@@ -326,15 +339,27 @@ impl Type {
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
+                if memo_on() && hist.refuted.get().is_some_and(|m| m.contains_key(&key)) {
+                    return Ok(false);
+                }
                 if hist.contains(&key) {
                     hist.assumed = true;
                     return Ok(true);
                 }
+                #[cfg(test)]
+                MATCH_PAIRS.with(|n| n.set(n.get() + 1));
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
                 hist.insert(key);
                 let r = t0.could_match_int(env, hist, &t1);
                 hist.remove(&key);
+                if let Ok(false) = r
+                    && !hist.assumed
+                    && key.0.is_some()
+                    && key.1.is_some()
+                {
+                    hist.refuted.get_mut().insert(key, Kept::new((), self, t));
+                }
                 r
             }
             (Type::App(c, a), t1) => {
