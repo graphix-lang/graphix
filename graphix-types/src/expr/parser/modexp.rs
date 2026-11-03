@@ -182,7 +182,7 @@ where
 
 /// The positional rules for one assembled use path. Returns the refusal
 /// message, or None if legal.
-fn check_use_item(segs: &[Name]) -> Option<&'static str> {
+pub(super) fn check_use_item(segs: &[Name]) -> Option<&'static str> {
     if segs.is_empty() {
         return Some("`self` outside a use group");
     }
@@ -200,20 +200,20 @@ fn check_use_item(segs: &[Name]) -> Option<&'static str> {
     None
 }
 
-fn capitalized(n: &Name) -> bool {
+pub(super) fn capitalized(n: &Name) -> bool {
     n.as_str().starts_with(char::is_uppercase)
 }
 
-struct UsePath {
-    segments: LPooled<Vec<Name>>,
-    rename: Option<Name>,
-    comments: LPooled<Vec<UseComment>>,
+pub(super) struct UsePath {
+    pub(super) segments: LPooled<Vec<Name>>,
+    pub(super) rename: Option<Name>,
+    pub(super) comments: LPooled<Vec<UseComment>>,
 }
 
-struct UsePaths(LPooled<Vec<UsePath>>);
+pub(super) struct UsePaths(pub(super) LPooled<Vec<UsePath>>);
 
 impl UsePaths {
-    fn comment(&mut self, kind: UseCommentKind, line: Comment) {
+    pub(super) fn comment(&mut self, kind: UseCommentKind, line: Comment) {
         let single = self.0.len() == 1;
         if let Some(first) = self.0.first_mut() {
             let depth = if single && kind != UseCommentKind::Below {

@@ -67,7 +67,7 @@ where
 }
 
 /// A postfix operator applied to a primary in `arith_term`'s postfix loop.
-enum Post {
+pub(super) enum Post {
     Field(Name),                                // `.name`  -> StructRef
     Index(usize),                               // `.0`     -> TupleRef
     Array(Index),                               // `[i]`/`[a..b]`
@@ -114,7 +114,7 @@ where
     ))
 }
 
-fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
+pub(super) fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
     match op {
         Post::Field(field) => {
             ExprKind::StructRef { source: Arc::new(src), field }.to_expr(pos)
@@ -147,7 +147,7 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
 /// A single parenthesized expr: `ExplicitParens` if no postfix follows,
 /// else the bare postfix source.
 #[derive(Clone)]
-struct Parenthesized;
+pub(super) struct Parenthesized;
 
 fn paren_group<I>() -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
 where
@@ -271,7 +271,7 @@ parser! {
 }
 
 /// Shunting-yard: build the tree the operators' precedence says.
-fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(BinOp, Expr)>>) -> Expr {
+pub(super) fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(BinOp, Expr)>>) -> Expr {
     fn reduce(output: &mut Vec<Expr>, op: BinOp) {
         let rhs = output.pop().unwrap();
         let lhs = output.pop().unwrap();

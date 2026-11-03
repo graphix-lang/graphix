@@ -1,0 +1,375 @@
+use super::super::grow::{ParseFailure, max_nesting, snippet, unclosed_at_end};
+use combine::stream::position::SourcePosition;
+use compact_str::{CompactString, format_compact};
+use poolshark::local::LPooled;
+use std::fmt::{self, Write};
+
+/// What a pass of the parser keeps besides the parse.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mode {
+    /// The parse alone.
+    Quick,
+    /// The parse and what its failure needs reported: where it stopped
+    /// and why.
+    Diag,
+    /// [`Mode::Diag`], and what was expected at this offset.
+    Labels(usize),
+}
+
+/// Something the parse expected or met, as a report names it.
+#[derive(Clone, PartialEq)]
+pub(super) enum Info {
+    Token(char),
+    Text(CompactString),
+}
+
+impl Info {
+    pub(super) const fn text(s: &'static str) -> Self {
+        Info::Text(CompactString::const_new(s))
+    }
+}
+
+impl fmt::Display for Info {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Info::Token(c) => write!(f, "`{c}`"),
+            Info::Text(s) => f.write_str(s),
+        }
+    }
+}
+
+/// What every failure at one point said: the token met there, what was
+/// expected instead, and the refusals' messages.
+#[derive(Default)]
+pub(super) struct Labels {
+    /// The token a failure there met, `Some(None)` the end of input.
+    pub(super) token: Option<Option<char>>,
+    pub(super) unexpected: LPooled<Vec<Info>>,
+    pub(super) expected: LPooled<Vec<Info>>,
+    pub(super) messages: LPooled<Vec<Info>>,
+}
+
+impl Labels {
+    pub(super) fn expect(&mut self, i: Info) {
+        self.expected.push(i)
+    }
+
+    pub(super) fn unexpect(&mut self, i: Info) {
+        self.unexpected.push(i)
+    }
+
+    pub(super) fn message(&mut self, i: Info) {
+        self.messages.push(i)
+    }
+}
+
+/// `v` without repeats, in the order each first appears.
+fn unique(v: &[Info]) -> impl Iterator<Item = &Info> {
+    v.iter().enumerate().filter(|(n, i)| !v[..*n].contains(i)).map(|(_, i)| i)
+}
+
+#[derive(Clone)]
+struct Reason {
+    pos: SourcePosition,
+    /// The refused token's length in chars, when the reason explains
+    /// a failure only inside that token.
+    span: Option<usize>,
+    reason: CompactString,
+    /// Where the parse failed, for a refusal of something read before
+    /// that point: a failure there is reported at `pos`.
+    failed_at: Option<SourcePosition>,
+}
+
+impl Reason {
+    fn explains(&self, failure: SourcePosition) -> bool {
+        self.failed_at == Some(failure)
+            || failure.line == self.pos.line
+                && match self.span {
+                    None => true,
+                    Some(n) => {
+                        self.pos.column <= failure.column
+                            && failure.column <= self.pos.column + n as i32
+                    }
+                }
+    }
+}
+
+fn key(p: SourcePosition) -> (i32, i32) {
+    (p.line, p.column)
+}
+
+fn later(a: Option<SourcePosition>, b: SourcePosition) -> Option<SourcePosition> {
+    match a {
+        Some(a) if key(a) >= key(b) => Some(a),
+        _ => Some(b),
+    }
+}
+
+/// A parse's nesting count and, outside [`Mode::Quick`], what its report
+/// needs.
+pub(super) struct State {
+    pub(super) mode: Mode,
+    /// Recursion knots entered and not left.
+    depth: usize,
+    /// How deep what the knot in progress built so far goes, in knots and
+    /// fold levels.
+    below: usize,
+    /// The furthest point a knot reached, by success or failure.
+    furthest: Option<SourcePosition>,
+    /// The furthest point a knot parsed to.
+    furthest_ok: Option<SourcePosition>,
+    /// Where the nesting limit stopped the parse.
+    refused: Option<SourcePosition>,
+    /// The furthest reason a rule refused something it could name.
+    reason: Option<Reason>,
+    /// Under [`Mode::Labels`], what the failures there said.
+    pub(super) labels: Labels,
+    /// Inside a `not_followed_by`, whose failures expect nothing.
+    pub(super) quiet: u32,
+}
+
+impl State {
+    pub(super) fn new(mode: Mode) -> Self {
+        Self {
+            mode,
+            depth: 0,
+            below: 0,
+            furthest: None,
+            furthest_ok: None,
+            refused: None,
+            reason: None,
+            labels: Labels::default(),
+            quiet: 0,
+        }
+    }
+
+    pub(super) fn diag(&self) -> bool {
+        self.mode != Mode::Quick
+    }
+
+    /// Whether a failure at `off` is reported.
+    pub(super) fn labels_at(&self, off: usize) -> bool {
+        self.mode == Mode::Labels(off) && self.quiet == 0
+    }
+
+    /// Enter a knot at `pos`; false past [`max_nesting`], noted.
+    pub(super) fn enter(&mut self, pos: SourcePosition) -> Result<usize, ()> {
+        self.depth += 1;
+        if self.depth > max_nesting() {
+            self.depth -= 1;
+            self.refuse(pos);
+            return Err(());
+        }
+        Ok(std::mem::replace(&mut self.below, 0))
+    }
+
+    /// Leave the knot [`State::enter`] entered, which `above` was built
+    /// beside, having parsed to `end` (`ok`) or failed at `end`.
+    pub(super) fn leave(&mut self, above: usize, ok: bool, end: SourcePosition) {
+        self.depth -= 1;
+        let below = if ok { self.below + 1 } else { 0 };
+        self.below = above.max(below);
+        if self.diag() {
+            self.furthest = later(self.furthest, end);
+            if ok {
+                self.furthest_ok = later(self.furthest_ok, end);
+            }
+        }
+    }
+
+    /// Count a fold `n` levels deep over what the knot in progress parsed
+    /// against [`max_nesting`] with the knots above it; past the limit
+    /// the refusal is noted at `pos`.
+    pub(super) fn fold_fits(&mut self, n: usize, pos: SourcePosition) -> bool {
+        let below = self.below + n;
+        if self.depth + below > max_nesting() {
+            self.refuse(pos);
+            false
+        } else {
+            self.below = below;
+            true
+        }
+    }
+
+    fn refuse(&mut self, pos: SourcePosition) {
+        if self.refused.is_none_or(|p| key(p) < key(pos)) {
+            self.refused = Some(pos)
+        }
+    }
+
+    /// Record that the parse reached `pos`.
+    pub(super) fn note_furthest(&mut self, pos: SourcePosition) {
+        if self.diag() {
+            self.furthest = later(self.furthest, pos)
+        }
+    }
+
+    /// Record why something was refused at `pos`; a later refusal wins.
+    pub(super) fn note_reason(
+        &mut self,
+        pos: SourcePosition,
+        span: Option<usize>,
+        reason: impl FnOnce() -> CompactString,
+    ) {
+        self.note(pos, span, None, reason)
+    }
+
+    /// [`State::note_reason`] of something read before `failed_at`, where
+    /// the parse fails: a failure there is reported at `pos`.
+    pub(super) fn note_read(
+        &mut self,
+        pos: SourcePosition,
+        failed_at: SourcePosition,
+        reason: &'static str,
+    ) {
+        self.note(pos, None, Some(failed_at), || CompactString::const_new(reason))
+    }
+
+    fn note(
+        &mut self,
+        pos: SourcePosition,
+        span: Option<usize>,
+        failed_at: Option<SourcePosition>,
+        reason: impl FnOnce() -> CompactString,
+    ) {
+        if !self.diag() {
+            return;
+        }
+        let at = |r: &Reason| key(r.failed_at.unwrap_or(r.pos));
+        let new = key(failed_at.unwrap_or(pos));
+        if self.reason.as_ref().is_none_or(|r| at(r) <= new) {
+            self.reason = Some(Reason { pos, span, reason: reason(), failed_at });
+        }
+    }
+
+    fn reason_explains(&self, pos: SourcePosition) -> bool {
+        self.reason.as_ref().is_some_and(|r| r.explains(pos))
+    }
+
+    /// Where a parse that failed at `err` reports, and whether that report
+    /// names what was expected there.
+    pub(super) fn report_at(&self, err: SourcePosition) -> (SourcePosition, bool) {
+        if let Some(at) = self.nesting() {
+            return (at, false);
+        }
+        let furthest = self.furthest.unwrap_or(err);
+        let pos = if key(furthest) > key(err) { furthest } else { err };
+        let read = self.reason.as_ref().is_some_and(|r| r.failed_at == Some(pos));
+        (pos, pos == err && !read)
+    }
+
+    /// The nesting refusal that stopped the parse: one no knot parsed past.
+    fn nesting(&self) -> Option<SourcePosition> {
+        let passed = self.furthest_ok;
+        self.refused.filter(|r| passed.is_none_or(|p| key(*r) >= key(p)))
+    }
+
+    /// Report a parse of `text` that failed at `err`, with what failures
+    /// there said when [`State::report_at`] asked for them.
+    pub(super) fn report(
+        &self,
+        text: &str,
+        err: SourcePosition,
+        labels: Option<&Labels>,
+    ) -> ParseFailure {
+        if let Some(at) = self.nesting() {
+            let summary = format!(
+                "expression nesting too deep (limit {}, see \
+                 graphix_compiler::expr::parser::set_max_nesting)",
+                max_nesting()
+            );
+            let mut msg = format!(
+                "Parse error at line: {}, column: {}\n{summary}",
+                at.line, at.column
+            );
+            let snippet = snippet(text, at);
+            if !snippet.is_empty() {
+                msg.push('\n');
+                msg.push_str(&snippet);
+            }
+            return ParseFailure { pos: at, summary, msg };
+        }
+        let (mut pos, _) = self.report_at(err);
+        let read = self
+            .reason
+            .as_ref()
+            .filter(|r| r.failed_at == Some(pos))
+            .map(|r| (r.pos, r.reason.clone()));
+        let header = |p: SourcePosition| {
+            format!("Parse error at line: {}, column: {}", p.line, p.column)
+        };
+        let (mut msg, mut summary) = if let Some((at, reason)) = &read {
+            pos = *at;
+            (format!("{}\n{reason}", header(pos)), reason.to_string())
+        } else if let Some(labels) = labels.filter(|_| pos == err) {
+            let body = self.render(pos, labels);
+            (format!("{}\n{body}", header(pos)), body)
+        } else {
+            let summary = "the parser could not continue past this point".to_string();
+            (format!("{}\n{summary}", header(pos)), summary)
+        };
+        let snippet = snippet(text, pos);
+        if !snippet.is_empty() {
+            msg.push('\n');
+            msg.push_str(&snippet);
+        }
+        let reason = match read {
+            Some(_) => None,
+            None => self.reason.clone().filter(|r| r.explains(pos)),
+        };
+        let note = match reason {
+            Some(r) => Some((r.pos, r.reason)),
+            None => unclosed_at_end(text, pos)
+                .map(|(c, at)| (at, format_compact!("this `{c}` is not closed"))),
+        };
+        if let Some((at, reason)) = note {
+            msg.push_str(&format!(
+                "\n  note: at line: {}, column: {}: {reason}",
+                at.line, at.column
+            ));
+            summary.push_str(&format!("\nnote: {reason}"));
+        }
+        ParseFailure { pos, msg, summary }
+    }
+
+    /// What the failures at `pos` said: the token met there unless a
+    /// reason explains it or it is whitespace, what was expected, then
+    /// the refusals, each line ended.
+    fn render(&self, pos: SourcePosition, labels: &Labels) -> String {
+        let token = labels.token;
+        let explained = self.reason_explains(pos);
+        let noise = token.is_some_and(|t| match t {
+            Some(c) => explained || c.is_whitespace(),
+            None => false,
+        });
+        let rest = !labels.unexpected.is_empty()
+            || !labels.expected.is_empty()
+            || !labels.messages.is_empty();
+        let mut s = String::new();
+        match token {
+            Some(_) if noise && rest => (),
+            Some(Some(c)) => writeln!(s, "Unexpected `{c}`").unwrap(),
+            Some(None) => s.push_str("Unexpected end of input\n"),
+            None => (),
+        }
+        for u in unique(&labels.unexpected) {
+            writeln!(s, "Unexpected {u}").unwrap();
+        }
+        let n = unique(&labels.expected).count();
+        for (i, e) in unique(&labels.expected).enumerate() {
+            let sep = match i {
+                0 => "Expected",
+                _ if i + 1 < n => ",",
+                _ => " or",
+            };
+            write!(s, "{sep} {e}").unwrap();
+        }
+        if n > 0 {
+            s.push('\n');
+        }
+        for m in unique(&labels.messages) {
+            writeln!(s, "{m}").unwrap();
+        }
+        s
+    }
+}

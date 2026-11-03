@@ -319,7 +319,7 @@ fn decorated(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Expr> 
     })
 }
 
-fn value() -> impl Strategy<Value = Value> {
+pub(super) fn value() -> impl Strategy<Value = Value> {
     let leaf = prop_oneof![
         any::<i8>().prop_map(Value::I8),
         any::<u8>().prop_map(Value::U8),
@@ -504,7 +504,7 @@ fn valid_modpath() -> impl Strategy<Value = ModPath> {
     })
 }
 
-fn modpath() -> impl Strategy<Value = ModPath> {
+pub(super) fn modpath() -> impl Strategy<Value = ModPath> {
     prop_oneof![random_modpath(), valid_modpath()]
 }
 
@@ -591,7 +591,7 @@ fn bound(inner: impl Strategy<Value = Type>) -> impl Strategy<Value = Type> {
     prop_oneof![6 => inner, 10 => bounds.prop_map(Type::Bound)]
 }
 
-fn typexp() -> impl Strategy<Value = Type> {
+pub(super) fn typexp() -> impl Strategy<Value = Type> {
     let leaf = prop_oneof![
         Just(Type::Bottom),
         Just(Type::Any),
@@ -987,7 +987,7 @@ fn typedef() -> impl Strategy<Value = Expr> {
 }
 
 /// A trait method signature: `fn(self, x: T, ..) -> R`.
-fn trait_method_sig() -> impl Strategy<Value = Arc<FnType>> {
+pub(super) fn trait_method_sig() -> impl Strategy<Value = Arc<FnType>> {
     (collection::vec((random_fname(), typexp()), 0..3), typexp()).prop_map(
         |(mut args, rtype)| {
             args.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -1573,7 +1573,7 @@ macro_rules! deref {
 }
 
 /// An interface: a file's when `toplevel`, else a `sig { .. }`.
-fn module_sig(toplevel: bool) -> impl Strategy<Value = Sig> {
+pub(super) fn module_sig(toplevel: bool) -> impl Strategy<Value = Sig> {
     (collection::vec(module_sigitem(), (1, 10)), trailers()).prop_map(
         move |(mut items, trailers)| {
             let below = trailers.on_decls(&mut items, |si| &mut si.eol);
@@ -1953,7 +1953,7 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
     .prop_map(add_parens)
 }
 
-fn expr() -> impl Strategy<Value = Expr> {
+pub(super) fn expr() -> impl Strategy<Value = Expr> {
     decorated(undecorated_expr())
 }
 

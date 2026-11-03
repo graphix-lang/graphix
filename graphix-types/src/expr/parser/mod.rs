@@ -75,6 +75,8 @@ use arithexp::arith;
 #[cfg(test)]
 mod test;
 
+pub(crate) mod rd;
+
 mod patternexp;
 use patternexp::{pattern, structure_pattern};
 

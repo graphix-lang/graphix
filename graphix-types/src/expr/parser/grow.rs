@@ -242,7 +242,10 @@ impl std::fmt::Display for ParseFailure {
 /// Where `pos` is the end of `text`, the innermost bracket left open and
 /// where it opens. Comments and string contents are skipped, the
 /// expressions a string interpolates are not.
-fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosition)> {
+pub(super) fn unclosed_at_end(
+    text: &str,
+    pos: SourcePosition,
+) -> Option<(char, SourcePosition)> {
     #[derive(Clone, Copy)]
     enum Ctx {
         /// A bracket open in code.
@@ -345,7 +348,7 @@ fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosit
 /// The source line at `pos` with a caret under its column, the line
 /// windowed around the caret when it is long. Past the last line (the
 /// end of input) the caret follows the last line that holds anything.
-fn snippet(text: &str, pos: SourcePosition) -> String {
+pub(super) fn snippet(text: &str, pos: SourcePosition) -> String {
     // no line follows a final break
     let last = lines(text).count() - 1;
     let n = (pos.line.max(1) - 1) as usize;

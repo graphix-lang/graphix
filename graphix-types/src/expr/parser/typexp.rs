@@ -330,7 +330,7 @@ where
 }
 
 /// A type with the notes of the lists in it that take comments.
-type Noted = (Type, LPooled<Vec<TypeNote>>);
+pub(super) type Noted = (Type, LPooled<Vec<TypeNote>>);
 
 /// Where a comment in a type may not stand.
 const TYPE_COMMENT: &str = "a comment in a type stands only in a type definition, beside a \
@@ -341,7 +341,7 @@ const MEMBER_COMMENT: &str =
 /// A struct type's field or a union's member as written: the comments
 /// above it, ending its line and, as the last, below it, and the notes of
 /// the lists inside it.
-struct ListItem<T> {
+pub(super) struct ListItem<T> {
     above: LPooled<Vec<Comment>>,
     eol: Option<ArcStr>,
     below: LPooled<Vec<Comment>>,
@@ -361,7 +361,7 @@ impl<T> Commentable for ListItem<T> {
 
 impl<T> ListItem<T> {
     /// `item` with the comments above it, which start at `at`.
-    fn new(
+    pub(super) fn new(
         at: SourcePosition,
         above: LPooled<Vec<Comment>>,
         item: T,
@@ -468,7 +468,7 @@ where
         .then(move |(listed, end)| parsed(struct_fields(listed, end, noted)))
 }
 
-fn struct_fields(
+pub(super) fn struct_fields(
     listed: Listed<ListItem<(SourcePosition, ArcStr, Type)>>,
     end: SourcePosition,
     noted: bool,
@@ -522,7 +522,7 @@ where
         .then(move |(listed, end)| parsed(union_members(listed, end, noted)))
 }
 
-fn union_members(
+pub(super) fn union_members(
     listed: Listed<ListItem<Type>>,
     end: SourcePosition,
     noted: bool,
