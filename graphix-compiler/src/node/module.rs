@@ -1913,6 +1913,9 @@ impl<R: Rt> Update<R> for Module<R> {
                 // all four modes without the join rule) and
                 // module_in_a_function_raising_to_it_refused (fails without the lowered-name
                 // rule). Probes ~/ptmp/cr29/scratch/r8-G/i5/{m1,m2,m2c,m4}.
+                // 2026-11-02 claude: Coordinator, after rebasing lane G onto lane N: the
+                // review r8 N shape above (~/ptmp/cr29/scratch/r8-N/faux, count(v) in an
+                // interface module inside a lambda) now checks too, under the same rule.
                 let res = self.check_body(ctx).and_then(|()| match writes.foreign() {
                     Some(w) => bail!(
                         "the check decides a type the code around the module \
