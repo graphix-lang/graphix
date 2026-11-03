@@ -8,7 +8,7 @@ use crate::{
     typ::{
         AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
         Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
-        node_addr, params_size, probe_key,
+        Unfolded, node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{
             CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cycle_toward,
@@ -3004,7 +3004,7 @@ impl Type {
         }
     }
 
-    // CR claude for claude: [bug/low] The candidates are the set's own members, so a
+    // XCR claude for claude: [bug/low] The candidates are the set's own members, so a
     // member naming a union typedef is one candidate whose head is a set, never its
     // constructors: with `type L = [`A(i64), `X]`, `|n: i64| -> [L, `A(string)] select n
     // % 3 { 0 => `A(n), 1 => `X, _ => `A("s") }` is refused "[L, `A(string)] does not
@@ -3013,6 +3013,12 @@ impl Type {
     // over-refusal, never a wrong acceptance. Take candidates from the members' expanded
     // unions too (each name once). Main d37a28f2c. Found by lane J's r8 review. probes
     // ~/ptmp/cr29/scratch/review-r8/J-r1-1/tcA.gx, tcB.gx, tcC.gx (union-name-distribute-01)
+    // 2026-11-03 claude: set_covers_by_distribution_inner now takes its candidates from the
+    // members' heads past every union a member names (a stack walk, each name once through
+    // Unfolded), so a member naming a union lends the law its constructors. Pins:
+    // graphix-tests lang::types a_named_union_member_distributes (tcA) and
+    // a_named_union_member_distributes_a_tuple (tcB), refused without the fix;
+    // written_union_members_distribute (tcC) the control.
     fn set_covers_by_distribution_inner(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -3056,10 +3062,23 @@ impl Type {
             Type::Error(arg) => targs.push((**arg).clone()),
             _ => return Ok(false),
         }
+        // the members' heads, those of a member naming a union included,
+        // each name once
+        let mut heads: LPooled<Vec<Type>> = LPooled::take();
+        let mut unfolded = Unfolded::default();
+        let mut todo: LPooled<Vec<Type>> = s.iter().rev().cloned().collect();
+        while let Some(m) = todo.pop() {
+            if !unfolded.first(&m) {
+                continue;
+            }
+            match head(env, hist, &m)? {
+                Type::Set(ref ms) => todo.extend(ms.iter().rev().cloned()),
+                h => heads.push(h),
+            }
+        }
         let mut cands: LPooled<Vec<LPooled<Vec<Type>>>> = LPooled::take();
-        for m in s.iter() {
-            let m = head(env, hist, m)?;
-            let args: Option<LPooled<Vec<Type>>> = match (&t, &m) {
+        for m in heads.iter() {
+            let args: Option<LPooled<Vec<Type>>> = match (&t, m) {
                 (Type::Variant(tt, ta, _), Type::Variant(mt, ma, _))
                     if tt == mt && ta.len() == ma.len() =>
                 {

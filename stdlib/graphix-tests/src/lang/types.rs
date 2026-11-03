@@ -7526,6 +7526,37 @@ run!(
     "#
 );
 
+// A member naming a union lends the law its constructors: `A(i64) in L
+// and `A(string) beside it cover `A([i64, string]), as written out.
+run!(
+    a_named_union_member_distributes,
+    prints(r#""`A(0) `X `A(\"s\")""#),
+    "/test.gx" => r#"
+        type L = [`A(i64), `X];
+        let mk = |n: i64| -> [L, `A(string)] select n % 3 { 0 => `A(n), 1 => `X, _ => `A("s") };
+        let result = "[mk(0)] [mk(1)] [mk(2)]"
+    "#
+);
+
+run!(
+    a_named_union_member_distributes_a_tuple,
+    prints(r#""(0, 0) `Z (2, 0.5)""#),
+    "/test.gx" => r#"
+        type L = [(i64, i64), `Z];
+        let mk = |n: i64| -> [L, (i64, f64)] select n % 3 { 0 => (n, n), 1 => `Z, _ => (n, 0.5) };
+        let result = "[mk(0)] [mk(1)] [mk(2)]"
+    "#
+);
+
+run!(
+    written_union_members_distribute,
+    prints(r#""`A(0) `X `A(\"s\")""#),
+    "/test.gx" => r#"
+        let mk = |n: i64| -> [`A(i64), `X, `A(string)] select n % 3 { 0 => `A(n), 1 => `X, _ => `A("s") };
+        let result = "[mk(0)] [mk(1)] [mk(2)]"
+    "#
+);
+
 run!(
     rigid_variable_is_no_concrete_payload,
     refused("does not contain `P([i64, string], 'a: unbound)"),
