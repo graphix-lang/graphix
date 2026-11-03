@@ -706,6 +706,16 @@ impl Reach {
     // Reviewer probes
     // ~/ptmp/cr29/scratch/review-r11/N-r1-1/{b12f,j01,j08r,k01,k04,d01,d03,d09,e03,l03,l04,l07,b12}.gx
     // now check as on base 30702808d; p33/s04/t11G still print x5,xs / k5,ks / x5,xs.
+    // 2026-11-03 claude: Review r11 round 2 (high, main 30702808d alike): this fix covers Reach::new's
+    // settle only. Where the arm matches every member, no settle runs, and a member's part at the name
+    // that is an open cell leaves the name typed from the closed members alone (narrow_per_member
+    // keeps the cell open): review-r11/N-r2-2/p/{n3e,w3,w5,w8}.gx find no arm, print a wrong value or
+    // crash the JIT. That is (narrow-open-part-01), a CR with a located one-line remedy and a clean
+    // census; the c97e1433c and f550b0abc binaries behave as main there. Review r11 round 2 also
+    // explained the message changes reviewer 1 listed (review-r11/N-r1-1/{b03,m01}.gx): both are now
+    // the messages base gives with z annotated, so the settle no longer distorts them; b03's refusal
+    // is array::len over a union of arrays (a call binding 'a to the first member, main alike) and
+    // m01's is (slice-array-union-cover-01).
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.
@@ -1026,6 +1036,16 @@ impl Reach {
             || !pat.type_predicate.could_match(env, &self.atype)?)
     }
 
+    // CR claude for claude: [bug/low] Over a union of arrays, a slice arm whose element
+    // test is irrefutable against one member's element type covers no length of that
+    // member: `let v: [Array<(`A, i64)>, Array<(`B, string)>] = [(`A, 5)]; select v {
+    // [(`A, x), ..] => "a[x]", [(`B, s), ..] => "b[s]", [] => "e" }` covers every value
+    // and is refused "no arm covers ... (the slice arms cover finitely many lengths of
+    // Array<(`A, i64)> — it also needs a rest pattern or a wildcard)", the hint false
+    // (both arms have a rest); with written type tests (`Array<(`A, i64)> as [(`A, x),
+    // ..]`) the same. Not located; the per-member ladder should take `[(`A, x), ..]` as
+    // Array<(`A, i64)>'s rest arm. Main 30702808d alike. probes:
+    // ~/ptmp/cr29/scratch/r11-N/r2/{m01d,m01e}.gx (slice-array-union-cover-01)
     /// Nothing reaches past the last arm: an unguarded arm matches
     /// anything, or what the arms cover leaves no case.
     fn exhausted(&self, env: &Env, scrut: &Type) -> Result<()> {
