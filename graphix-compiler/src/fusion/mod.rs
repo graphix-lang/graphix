@@ -1064,6 +1064,17 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     // (GRAPHIX_JIT_RELOCATE=every, cold and warm image),
     // activation_heap::fused_slot_activations_cost_linear_heap. The bare form
     // array::map(children, t) is collection-self-callback-01.
+    // 2026-11-03 claude: Review r9 (reviewer 1, medium): a recursion that captures a
+    // binding was still refused through map, filter, filter_map and flat_map ('capture y
+    // not in the calling kernel's env'): an outlined loop's chunk is handed only the
+    // locals scaffold::loop_body lists, and a self-call's callee is no node of the
+    // iteration, so its captures were missing. loop_body now adds the captures of every
+    // kernel a call in the iteration makes, nested callbacks included
+    // (BodyCx::called_kernel). Pins, jit and jit_par failing without it:
+    // lib_tests::tree_recursion::capturing_tree_recursion_through_{map,filter,filter_map,flat_map,nested_maps},
+    // capturing_tree_recursion_follows_its_capture. Also: claim_slot_roots de-fuses
+    // instead of asserting outside a callee body; activation_heap's fused slopes measure
+    // past the compile's peak (183/184 B) and can fail.
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();
