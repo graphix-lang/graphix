@@ -771,3 +771,36 @@ run!(select_named_union_mixed_members, r#"
     )
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[i64:1, i64:4, i64:0], [i64:-1, i64:9, i64:4], [i64:-1, i64:0, i64:5]]"); FuseExpect::Jit);
+
+// A written type test whose predicate is a union of variants, over a
+// union of variants, flat or named, with a payload, told by arity, beside
+// a null and in a loop.
+run!(select_variant_union_type_tests, r#"
+{
+    type L = [`A, `X];
+    let inner = |l: L| select l { `A => 10, `X => 40 };
+    let flat = |u: [`A, `X, `Y]| select u { [`A, `X] as l => inner(l), `Y => 5 };
+    let named = |u: [L, `Y]| select u { L as l => inner(l), `Y => 5 };
+    let pay = |u: [`A(i64), `X, `Y]| select u {
+        [`A(i64), `X] as l => select l { `A(n) => n, `X => 40 },
+        `Y => 5
+    };
+    let arity = |u: [`A, `A(i64), `Y]| select u {
+        [`A(i64), `Y] as l => select l { `A(n) => n, `Y => 5 },
+        `A => 0
+    };
+    let opt = |u: [`A, `X, `Y, null]| select u { [`A, `X] as l => inner(l), `Y => 5, null => 0 };
+    let optn = |u: [`A, `X, `Y, null]| select u {
+        [`A, null] as l => select l { `A => 10, null => 1 },
+        `Y => 5,
+        `X => 3
+    };
+    let arr = |xs: Array<[`A, `X, `Y]>| -> Array<i64> array::map(xs, |x| flat(x));
+    #[native] (
+        (flat(`A), flat(`X), flat(`Y), named(`A), named(`X), named(`Y)),
+        (pay(`A(7)), pay(`X), pay(`Y), arity(`A), arity(`A(3)), arity(`Y)),
+        (opt(`A), opt(`X), opt(`Y), opt(null), optn(`A), optn(`X), optn(`Y), optn(null)),
+        arr([`Y, `A, `X])
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[i64:10, i64:40, i64:5, i64:10, i64:40, i64:5], [i64:7, i64:40, i64:5, i64:0, i64:3, i64:5], [i64:10, i64:40, i64:5, i64:0, i64:10, i64:3, i64:5, i64:1], [i64:5, i64:10, i64:40]]"); FuseExpect::Jit);

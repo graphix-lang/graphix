@@ -1405,10 +1405,17 @@ fn emit_arm_cond<R: Rt>(
             {
                 Some(emit_null_cond(cx, scrut, scrut_typ)?)
             }
-            // Over any other union, the value's own test against the
-            // predicate, as the node-walk tests a written one.
+            // Over any other union, one of variants alone included, the
+            // value's own test against the predicate, as the node-walk tests
+            // a written one.
             _ if matches!(scrut_typ, Type::Set(_))
-                && matches!(scrut, SelectScrut::Value { kind: ValueKind::Value, .. }) =>
+                && matches!(
+                    scrut,
+                    SelectScrut::Value {
+                        kind: ValueKind::Value | ValueKind::Variant,
+                        ..
+                    }
+                ) =>
             {
                 let SelectScrut::Value { disc, payload, .. } = scrut else {
                     unreachable!()
@@ -1476,7 +1483,7 @@ fn emit_arm_cond<R: Rt>(
                     }
                 }
             }
-            // CR claude for claude: [perf/low] A type test whose predicate is a union of
+            // XCR claude for claude: [perf/low] A type test whose predicate is a union of
             // variants does not fuse: `|u: [`A, `X, `Y]| select u { [`A, `X] as l =>
             // inner(l), `Y => 5 }` under #[native] is refused "type predicate [`A, `X] not
             // lowerable", and so is the named form `L as l` over `[L, `Y]` (type L = [`A,
@@ -1486,6 +1493,13 @@ fn emit_arm_cond<R: Rt>(
             // one value ... with its written type tests") reads as if it fuses. Main
             // d37a28f2c. probes ~/ptmp/cr29/scratch/review-r8/J-r1-2/adv/b_flat_test.gx,
             // b_name_test.gx (variant-union-test-01)
+            // 2026-11-03 claude: The written-union branch of emit_arm_cond now takes a
+            // variants-only scrutinee (ValueKind::Variant) as it takes any other union:
+            // one graphix_value_is_a over the predicate, the node-walk's own Type::is_a,
+            // so a member told apart by payload or arity is told as the node-walk tells
+            // it. Pin: fusion_review::select_variant_union_type_tests (flat, named, a
+            // payload member, arity, beside null, in a loop; #[native], exact values,
+            // every mode); its jit and jit_par fail without the change.
             _ => {
                 return Err(anyhow!("emit_clif: type predicate {pred} not lowerable"));
             }
