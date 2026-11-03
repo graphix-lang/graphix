@@ -60,32 +60,6 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
 /// each call would lose the text unless a clipboard manager took it.
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
 
-// XCR claude for claude: [bug/medium] Every clipboard use goes through this one arboard
-// instance: the gui::clipboard builtins and each text input's copy/paste via the event
-// loop's iced Clipboard. arboard is built with default features, which on Linux is X11
-// only. On a Wayland session the window is a Wayland client while the clipboard goes
-// through XWayland, and with no XWayland (DISPLAY unset) there is no clipboard at all.
-// The event loop's Clipboard then drops the error (`.ok()`, `let _ =`), so paste does
-// nothing and copy is lost with no log. Options: enable arboard's
-// `wayland-data-control` feature (it falls back to X11 where the compositor lacks the
-// protocol, e.g. GNOME), and log the error in the iced Clipboard's read and write.
-// probe: design/review-2026-10-26/repro/gui-core-clipboard-x11-only.gx (gui-core-02)
-// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q52, The clipboard
-// on Wayland): We need a solution for wayland, is wayland-data-control that solution?
-// lets discuss.
-// 2026-11-02 claude: Eric ruled (11-02, next-discuss gui-core-02): option (a),
-// arboard's wayland-data-control feature, and log every clipboard error (iced
-// Clipboard read/write and the builtins).
-// 2026-11-02 claude: arboard is built with wayland-data-control (workspace Cargo.toml;
-// wl-clipboard-rs 0.9.3 and its deps added to Cargo.lock, no other version moved), so
-// with WAYLAND_DISPLAY set the clipboard uses the data-control protocol and falls back
-// to X11 where the compositor lacks it. The event loop's iced Clipboard logs every
-// failure but an empty clipboard under FAILURE_TARGET (clipboard::report), which the
-// shell shows on stderr; the builtins already answer theirs as a ClipboardError value.
-// Checked by hand on KDE Plasma (Wayland): env -u DISPLAY graphix --no-cache clip.gx
-// (gui::clipboard::read_text) reads the clipboard; main bbb06c0c6 answers "X11 server
-// connection timed out". No automated pin: it needs a compositor. probe
-// ~/ptmp/cr29/scratch/r8-M/clip.gx
 pub(crate) fn clipboard<T>(
     f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>,
 ) -> Result<T, arboard::Error> {
@@ -105,8 +79,10 @@ pub(crate) fn report(e: &arboard::Error) {
     }
 }
 
-/// Drop the clipboard: the last instance's drop hands its selection to
-/// the desktop's clipboard manager, so text copied survives the process.
+/// Drop the clipboard. On X11 the last instance's drop hands its selection
+/// to the desktop's clipboard manager, so text copied survives the process;
+/// under Wayland's data-control a thread of the process serves the copy,
+/// and it outlives the process only where a clipboard manager took it.
 pub(crate) fn release() {
     drop(CLIPBOARD.lock().take())
 }

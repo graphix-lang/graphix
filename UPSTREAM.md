@@ -393,3 +393,18 @@ the state of a fix, and Graphix's side.
   (`GXConfig::start`) then closes it and receives until it is empty, which
   waits for every send that passed the open check, so each request is
   dropped and its caller answered with the stop.
+
+## wl-clipboard-rs 0.9.3 (through arboard 3.7.0): a paste waits on the owner with no timeout
+
+- **Bug.** Under Wayland's data-control protocol, arboard reads the clipboard
+  through wl-clipboard-rs, which reads the owner's pipe with `read_to_end` and
+  no deadline. An owner that neither writes nor closes the pipe blocks the
+  read for good. arboard's X11 path gives up after 4 s.
+- **Repro.** Not run; found by reading (review r9 of gui-core-02). A client
+  that offers text and never answers the transfer would show it.
+- **Upstream fix.** A deadline on the read in wl-clipboard-rs, or arboard
+  bounding its Wayland read as it bounds the X11 one.
+- **Graphix's side.** Not worked around: no such owner has been seen. If one
+  turns up, a paste in the GUI blocks the window's thread while it holds the
+  process's one clipboard (`gui::clipboard`), and a `gui::clipboard` builtin's
+  call never answers.

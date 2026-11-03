@@ -68,7 +68,7 @@ impl clipboard::Clipboard for Clipboard {
                 cb.set().clipboard(arboard::LinuxClipboardKind::Primary).text(contents)
             }
             #[cfg(not(target_os = "linux"))]
-            clipboard::Kind::Primary => Ok(()),
+            clipboard::Kind::Primary => Err(arboard::Error::ClipboardNotSupported),
         });
         if let Err(e) = r {
             crate::clipboard::report(&e)
