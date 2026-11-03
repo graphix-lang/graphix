@@ -11,8 +11,8 @@ use crate::{
 use ahash::AHashMap;
 use arcstr::{ArcStr, literal};
 use combine::{
-    EasyParser, ParseError, Parser, RangeStream, StreamOnce, attempt, between, choice,
-    count_min_max, easy, eof,
+    ParseError, Parser, RangeStream, StreamOnce, attempt, between, choice, count_min_max,
+    easy, eof,
     error::{Commit, StreamError},
     look_ahead, many, many1, none_of, not_followed_by, optional,
     parser::{
@@ -26,7 +26,7 @@ use combine::{
     stream::StreamErrorFor,
     stream::{
         Range,
-        position::{self, Positioner, RangePositioner, SourcePosition},
+        position::{Positioner, RangePositioner, SourcePosition},
     },
     token, unexpected_any, value,
 };
@@ -46,7 +46,10 @@ use triomphe::Arc;
 
 mod grow;
 use grow::grow;
+
+mod stream;
 pub use grow::{DEFAULT_MAX_NESTING, ParseFailure, max_nesting, set_max_nesting};
+use stream::GxStream;
 
 mod interpolateexp;
 use interpolateexp::interpolated;
@@ -2055,10 +2058,7 @@ macro_rules! parse_all {
         let text = crlf_as_lf(text, &mut lf);
         let _profile = profile::phase(Phase::Parse);
         let quick = grow::parsing(text, || {
-            ($p).skip(spaces())
-                .skip(eof())
-                .parse(position::Stream::with_positioner(text, Lines::default()))
-                .map(|(r, _)| r)
+            ($p).skip(spaces()).skip(eof()).parse(GxStream::new(text)).map(|(r, _)| r)
         });
         match quick {
             Ok(r) => Ok(r),
@@ -2076,13 +2076,17 @@ fn explain<'a, T, P>(
     p: P,
 ) -> anyhow::Result<T>
 where
-    P: Parser<easy::Stream<position::Stream<&'a str, Lines>>, Output = T>,
+    P: Parser<GxStream<'a>, Output = T>,
 {
     grow::parsing(text, || {
-        p.skip(spaces())
-            .skip(eof())
-            .easy_parse(position::Stream::with_positioner(text, Lines::default()))
+        stream::explaining(|| p.skip(spaces()).skip(eof()).parse(GxStream::new(text)))
             .map(|(r, _)| r)
+            .map_err(|e| match e {
+                stream::GxErrors::Easy(e) => e,
+                stream::GxErrors::Quiet(_) => {
+                    unreachable!("an explained parse's errors are easy")
+                }
+            })
             .map_err(|mut e| {
                 grow::note_error_pos(e.position);
                 // a whitespace token is never what went wrong, and a
