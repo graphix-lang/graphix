@@ -697,6 +697,40 @@ impl<X: GXExt> GX<X> {
         // a cycle (not measured). Probes: ~/ptmp/cr29/scratch/r10-M/
         // (partial_timer.gx, l_flat_timer.gx, rss_long.sh, thread_use.sh).
         // (runtime-thread-spread-01)
+        // 2026-11-03 claude: Round-12 measurements (review r10 plus experiments;
+        // evidence and the not-for-landing experiment diff in
+        // ~/ptmp/cr29/scratch/r10-M/r12/). (a) is not a fix by itself: with
+        // netidx-value's lists bounded (r10-M/netidx-value-free-bytes.patch)
+        // s_shrink.gx, a recursion whose collection sources shrink and grow,
+        // still went 139 to 612 MB in 10 min under GRAPHIX_PAR=off, from
+        // poolshark tables and malloc arenas on every thread a pass lands on (the
+        // reviewers: flat near 120 MB with MALLOC_ARENA_MAX=1), and the bound is
+        // caps times up to 512 blocking threads. (b) built as a one-thread rayon
+        // pool entered with install() inside the block_in_place: RSS flat over 5
+        // min (l_flat --no-fusion 70 MB, forced 72; s_shrink 202, PAR=off 111;
+        // partial_timer forced 81), interrupt_wedge 9/9, both pins pass
+        // (forked_heap_settles -762 to 11 bytes a cycle), but every cycle pays
+        // two thread wakes on its critical path: a 100k-cycle self-loop
+        // (cycles100k.gx, PAR=off) took 3.7 to 9.5 s against main's 1.6 to 2.3 s,
+        // and forked_heap_settles 100 to 200 s against 12 to 16 s (host load 60
+        // to 270). (c), new: the runtime's task runs on a thread of its own,
+        // driven by the embedder's runtime through Handle::block_on (a
+        // multi-thread runtime only; a current-thread one keeps the task), and
+        // the pass runs inline there: no handoff a cycle, and a wedged pass holds
+        // no tokio worker. Measured: the self-loop 1.5 to 1.7 s, interrupt_wedge
+        // 9/9, every_pass_runs_on_one_thread passes, forked_heap_settles 0 to
+        // -154 bytes a cycle in 26 to 44 s; with the netidx bound too, 10 min:
+        // s_shrink 267 to 330 then flat at 305, PAR=off flat at 86 to 110,
+        // partial_timer forced flat at 48 to 75. Open for (c): a tokio runtime
+        // shut down while the thread is still in block_on panics there on a
+        // pending timer, so an embedder waits for GXHandle::ended before dropping
+        // its runtime; the handle's drop must wake the loop (it relied on the
+        // task's abort). Recommendation: (c) plus the netidx bound, which still
+        // bounds what each eval worker keeps. Pins, ignored until the fix:
+        // graphix-rt/tests/pass_thread.rs every_pass_runs_on_one_thread (main
+        // runs 2000 passes on 9 to 24 threads; 1 with (b) or (c)) and
+        // forked_cycle_heap.rs forked_heap_settles (main 4448 and 4902 bytes a
+        // cycle; un-ignore it under slow-tests).
         if matches!(
             tokio::runtime::Handle::current().runtime_flavor(),
             tokio::runtime::RuntimeFlavor::CurrentThread

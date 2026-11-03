@@ -281,37 +281,38 @@ the state of a fix, and Graphix's side.
 - **Bug.** `array.rs` keeps a dropped array (128 elements or fewer) on
   its thread's free list for that length, up to `32 * (129 - len)`
   arrays of each length: about 187 MB a thread when every length is
-  used. A thread that drops arrays other threads built fills its lists
-  and never empties them, while the builders' lists stay empty. Graphix's
-  parallel evaluation does this every cycle: a forked part builds a
-  value on one thread, and another thread drops it when the value is
-  replaced. Tuples, structs and variants are arrays too. Each thread that
-  drops values keeps them up to its caps, so the heap grows for tens of
-  thousands of cycles.
+  used. A thread that drops more arrays of a length than it builds fills
+  that length's list up to its cap and keeps them. Graphix's parallel
+  evaluation does this every cycle: a forked part builds a value on one
+  thread, and another thread drops it when the value is replaced.
+  Tuples, structs and variants are arrays too.
 - **Repro.** `--no-fusion`, `GRAPHIX_PAR=auto` (the default), a 1 ms
   timer bumping `n`, and `let rec t = |a: Array<i64>| -> Array<i64>
   select a { [] => [n], [h, rest..] => array::push(array::flat_map([rest,
-  rest], t), h) }; array::len(t([1, 2, 3, 4, 5, 6]))`. In-process, the live
-  heap went from 43 MB at 1000 cycles to 129 MB at 20000, then stayed
-  there (16 eval workers, a 16-worker runtime). The shell's RSS reached
-  842 MB in 5 minutes. With `GRAPHIX_PAR=off`, or with these lists off,
-  the heap is flat at 34 MB.
+  rest], t), h) }; array::len(t([1, 2, 3, 4, 5, 6]))`. In a test
+  harness's runtime (16 eval workers, 16 runtime workers) the live heap
+  went from 43 MB at 1000 cycles to 129 MB at 20000, then stayed there.
+  The shell's RSS reached 842 MB in 5 minutes. With `GRAPHIX_PAR=off`,
+  or with these lists off, the harness's heap is flat at 34 MB.
 - **Upstream fix.** Bound each thread's lists in bytes: a thread keeps
   at most 256 KiB of free arrays, whatever their lengths. With that
   bound the repro is flat at 37 MB. `bench/par_symbolic.gx`'s busiest
   list peaks at 65 KB, so with 256 KiB it still finds 99.8% of its 2M
   arrays on a list, serial and forked.
-- **Graphix's side.** The runtime multiplies the bound: each cycle's
-  update pass runs in `block_in_place`, so a busy runtime's passes land
-  on 100 or more threads, each dropping values and keeping its own lists
-  (CR runtime-thread-spread-01). With the pass run inline the repro is
-  flat with these lists as they are, but Ctrl-C then cannot stop a
-  wedged cycle. Not worked around: the growth stops at its bound, and
-  nothing crashes, hangs or gives a wrong answer. The pin
-  `stdlib/graphix-tests/tests/forked_cycle_heap.rs` is ignored until one
-  of the two is fixed. On main it measures 3.2 to 4.5 KB of growth a
-  cycle; with the bound, 0 to 126 bytes; with the pass inline, 0 or
-  less.
+- **Graphix's side.** Not fixed by the bound alone: the runtime
+  multiplies every per-thread cache by the threads its passes run on.
+  Each cycle's update pass runs in `block_in_place`, so a busy runtime's
+  passes land on many threads (35 to 209 seen in 5 minutes; tokio
+  allows 512), each keeping its own free lists, poolshark pools and
+  allocator arena, and nothing in Graphix bounds that count. So the
+  growth is not shown to stop short of exhausting memory: a partly
+  fused program on a 1 ms timer reached 1.9 GB in 15 minutes, and with
+  the lists bounded a recursion whose collections shrink and grow still
+  went from 178 to 623 MB in 10 minutes under `GRAPHIX_PAR=off`. The
+  fix is Graphix's: CR runtime-thread-spread-01, whose pins
+  (`stdlib/graphix-tests/tests/forked_cycle_heap.rs`,
+  `graphix-rt/tests/pass_thread.rs`) are ignored until it lands. This
+  bound is still wanted then: it bounds what each eval worker keeps.
 
 ## iced_core 0.14: flex layout sums FillPortion weights in a u16
 
