@@ -2563,6 +2563,17 @@ fn a_bound_reaching_its_own_variable_is_refused() {
     }
 }
 
+/// A refusal names the shortest path back, the first written: `'a` names
+/// itself before it reaches itself through `'b`.
+#[test]
+fn a_bound_cycle_is_refused_with_one_message() {
+    let src = "type F = fn<'a: [i64, ('a, 'b)], 'b: [i64, ('a, 'b)]>(x: 'a) -> i64";
+    for _ in 0..64 {
+        let msg = format!("{:#}", parse_one(src).unwrap_err());
+        assert!(msg.contains("'a's bound names 'a: a bound may not"), "{msg}");
+    }
+}
+
 /// A variable bounded by two others keeps both bounds, in print and in
 /// comparison, though equality is blind to an open variable's name.
 #[test]

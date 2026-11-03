@@ -29,6 +29,7 @@ use smallvec::SmallVec;
 use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,
+    collections::VecDeque,
     fmt::{self, Debug, Write},
     hash::{Hash, Hasher},
     ops::ControlFlow,
@@ -377,7 +378,7 @@ impl Drop for Walking {
     }
 }
 
-// CR claude for claude: [bug/low] check_bounds_acyclic's refusal depends on hash order:
+// XCR claude for claude: [bug/low] check_bounds_acyclic's refusal depends on hash order:
 // it drains `named` (an AHashMap) into `edges`, so the cycle it reports, and through which
 // variable, varies from run to run. design/review-2026-10-12/repro/t-image-01.gx (`'a:
 // [i64, ('a, 'b)], 'b: [i64, ('a, 'b)]`) is refused with "'a's bound names 'a" in some
@@ -385,6 +386,12 @@ impl Drop for Walking {
 // runs: both messages). The verdict holds; the message does not. Walking each bound's
 // names in a fixed order (sorted, or as written) makes it one message.
 // (bounds-acyclic-order-01)
+// 2026-11-03 claude: check_bounds_acyclic now sorts each variable's bound names and walks
+// them breadth first, so the refusal names the shortest path back (the first in name order
+// among equals) whatever the hash order: t-image-01.gx prints "'a's bound names 'a" in 20
+// of 20 --no-cache --check runs (main 3 of 8). Pin: graphix-types
+// expr::parser::test::a_bound_cycle_is_refused_with_one_message (64 parses of t-image-01's
+// signature; fails without the fix in 3 of 3 runs).
 /// Refuse a bound that reaches its own variable: directly (`'a: 'a`), under
 /// a constructor (`'a: Array<'a>`) or through another declared variable's
 /// bound (`'a: 'b, 'b: 'a`). A recursive bound is a recursive type.
@@ -393,14 +400,17 @@ pub fn check_bounds_acyclic(constraints: &[(TVar, Type)]) -> Result<()> {
         return Ok(());
     }
     let declared = |n: &ArcStr| constraints.iter().any(|(tv, _)| tv.name == *n);
-    // (variable, a declared variable one of its bounds names)
+    // (variable, a declared variable one of its bounds names), each
+    // variable's names sorted
     let mut edges: LPooled<Vec<(ArcStr, ArcStr)>> = LPooled::take();
     let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     for (tv, tc) in constraints {
         tc.collect_tvars(&mut named);
+        let from = edges.len();
         edges.extend(
             named.drain().filter(|(n, _)| declared(n)).map(|(n, _)| (tv.name.clone(), n)),
         );
+        edges[from..].sort_unstable();
     }
     fn named_by<'a>(
         edges: &'a [(ArcStr, ArcStr)],
@@ -409,13 +419,14 @@ pub fn check_bounds_acyclic(constraints: &[(TVar, Type)]) -> Result<()> {
         edges.iter().filter(move |(f, _)| f == from).map(|(_, to)| to.clone())
     }
     let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
-    // (variable reached, the variable q's own bound named on the way)
-    let mut todo: LPooled<Vec<(ArcStr, ArcStr)>> = LPooled::take();
+    // (variable reached, the variable q's own bound named on the way),
+    // breadth first: the first path back is the shortest
+    let mut todo: LPooled<VecDeque<(ArcStr, ArcStr)>> = LPooled::take();
     for (q, _) in constraints {
         let q = &q.name;
         seen.clear();
         todo.extend(named_by(&edges, q).map(|n| (n.clone(), n)));
-        while let Some((n, via)) = todo.pop() {
+        while let Some((n, via)) = todo.pop_front() {
             if n == *q {
                 let path = match via == *q {
                     true => format_compact!("'{q}'s bound names '{q}"),
