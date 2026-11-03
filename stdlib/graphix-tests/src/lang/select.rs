@@ -5327,7 +5327,7 @@ run!(
   [k(`A(null)), k(`A(4)), k(`B)]
 }"#,
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:4, i64:9]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(null_literal_alone_leaves_the_rest_open, r#"{

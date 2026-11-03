@@ -1500,6 +1500,12 @@ fn emit_arm_cond<R: Rt>(
             // it. Pin: fusion_review::select_variant_union_type_tests (flat, named, a
             // payload member, arity, beside null, in a loop; #[native], exact values,
             // every mode); its jit and jit_par fail without the change.
+            // 2026-11-03 claude: The branch takes any written predicate over a
+            // variants-only scrutinee, a single variant included:
+            // lang::select::null_literal_in_a_variant_covers_beside_a_type_test (`A(i64)
+            // as `A(n) over [`A([i64, null]), `B]) now fuses to the same values, its
+            // FuseExpect raised to Jit. Gate laneJ-gate-1103-005529: only that fixture
+            // failed, as FuseExpect::None; regress 559/0, outcome 0, fusion 0.
             _ => {
                 return Err(anyhow!("emit_clif: type predicate {pred} not lowerable"));
             }
