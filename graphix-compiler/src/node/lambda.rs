@@ -2869,14 +2869,13 @@ fn names_type_anywhere<R: Rt>(root: &Node<R>, checked: &Env) -> bool {
     found
 }
 
-/// Whether `t` holds a type name, through bindings.
-fn names_type(t: &Type, seen: &mut AHashSet<usize>) -> bool {
+/// Whether `t` holds a type name, through bindings, each shared node
+/// walked once.
+fn names_type(t: &Type, seen: &mut AddrSet) -> bool {
     ensure_sufficient(|| match t {
         Type::Ref(_) => true,
-        Type::TVar(tv) => {
-            seen.insert(tv.cell_addr())
-                && tv.binding().is_some_and(|b| names_type(&b, seen))
-        }
+        t if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
+        Type::TVar(tv) => tv.binding().is_some_and(|b| names_type(&b, seen)),
         Type::Fn(ft) => {
             let mut found = false;
             ft.for_each_part(&mut |t, _| found = found || names_type(t, seen));

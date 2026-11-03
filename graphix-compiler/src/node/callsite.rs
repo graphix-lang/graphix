@@ -344,6 +344,14 @@ fn checked_default<R: Rt>(
     // the kept rows, naming no type, are neither seeded nor owned. guicheck
     // (instructions:u, GUI examples --check): base bbb06c0c6 92.92G/92.95G, lane
     // 93.15G/93.08G (first cut 93.06G; rows tested after recording, 93.69G).
+    // 2026-11-02 claude: Cost (lane G r8 review): the names test walked every type as a
+    // tree, remembering only cells, so a default whose types share nodes (let a1 = (a0,
+    // a0), doubled d times) cost 2^d at the definition's check, --check and the LSP
+    // included (review-r8/G-r1-2 dbl2_22_0: 16.2G vs main 1.31G). lambda::names_type now
+    // walks each shared node once (Type::shared_identity, as seed_refs_seen does);
+    // dbl2_18_0 and dbl2_22_0 --check 1.31G on the lane as on main. Pin
+    // graphix-shell/tests/default_check_cost.rs (depth 20 against depth 2 under 0.3G more)
+    // fails without it (3.74G more).
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
