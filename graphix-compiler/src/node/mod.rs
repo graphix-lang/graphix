@@ -3691,6 +3691,14 @@ impl<R: Rt> Connect<R> {
         // a_repl_write_to_a_generic_binding_holds_its_copy_generally). probes:
         // ~/ptmp/cr29/scratch/review-r9/R-r1-1/p/{c4_sel,c4e_let,c4h_arr,c5_block,a1_selarg,a3_appconn,e2_default_sel,ref1_arg,ref2_let,ref3_conn,c4b_norank2}.gx
         // (R-r1-1/run2.sh audit <file>), review-r9/R-r1-2/p/c1.gx
+        // 2026-11-03 claude: Review r9 round 2 (R-r2-1 medium, R-r2-2 high): asking every copied cell in Free's answers made a binding that reaches a K-deep nest
+        // of copied cells cost O(K^2) per walk (gen_nest/gen_deep4: 100 bindings over 1000 cells 25.0G instructions to --check, main 9.1G). A copied cell is now
+        // only met by the walk, never answered, until a function type the walk meets quantifies it (Free::answering, escapes_standing re-walks that binding once
+        // with it answered): a cell no function type binds is free wherever it is met, so the verdicts and messages are those of c82330ef5, and the answer sets
+        // hold the quantifiers and the copied cells some function type quantifies, as on main. nest_400_1000 23.54G (main 23.32G), deep4_50_1000 6.30G (6.26G).
+        // Pins: graphix-shell rank2_escape a_binding_meets_a_nest_of_copies_once (6.88G over the 5G bound without it, 3.21G with), node::callsite
+        // escape_walk_answers_a_copied_cell_a_function_type_quantifies (fails with the re-walk dropped). No program found reaches the re-walk (lang:: fixtures,
+        // the review probes, rw1-rw4 under ~/ptmp/cr29/scratch/r9-R/fix2/).
         let mut copied: LPooled<Vec<_>> = LPooled::take();
         let written = &ctx.monomorphic_noting(self.node.typ(), &mut copied);
         let bind = match ctx.env.by_id.get(&self.id) {
