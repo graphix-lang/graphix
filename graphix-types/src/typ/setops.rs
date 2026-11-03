@@ -749,6 +749,17 @@ impl Type {
     // memos_change_no_composed_answer (could_match over diff's output, the round-8
     // review's generator, 40 seeds; 1500 pass). Census of 3828 files: see the lane's
     // report.
+    // 2026-11-03 claude: Review r9: the memos can answer more precisely than the walk
+    // without them where a cell is bound to a recursive name itself: over seed 305's
+    // names, with 'c0 bound to N5, [Error<'c0>, Error<N5>] - [N1, N2] is [] with the
+    // memo and a five-deep Error tower without it, since ref_id keys Error<'c0> as
+    // Error<N5> and the walk cuts at that pair in progress, where DiffHist::done
+    // answers exactly ([N1, N2] holds Error<N5>, so [] is right). A program binds a
+    // cell to a name's expansion, not to the name: there they agree.
+    // diff_and_could_match_memos_change_no_answer now holds that form too (seed 305's
+    // names, cells bound to N5's, N1's, N4's and N0's expansions). In tests memo_on()
+    // also turns could_match's found reads off (found-assumed-true-01), so the
+    // differentials compare against the walk with no memo at all.
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(tr0, tr1) => {
@@ -1394,8 +1405,9 @@ mod tests {
     // left), over instantiations of an abstract type (built anew at each
     // expansion), over a walk that grows past `NodePairs::EAGER` while a
     // pair is in progress (K0, K1), and over cells (a key reads a bound
-    // one as its binding, and pairs a function type's by position), the
-    // memos change no answer.
+    // one as its binding, and pairs a function type's by position), bound
+    // cells included as a program binds them, to a recursive name's
+    // expansion, the memos change no answer.
     #[test]
     fn diff_and_could_match_memos_change_no_answer() {
         written_memos_agree(
@@ -1502,6 +1514,37 @@ mod tests {
                 any("Error<('d, `X)>"),
                 parsed(&env, "Error<Error<(Any, `X)>>"),
             ])),
+        ];
+        memos_agree(&env, &pool);
+        let (env, _) = typed(
+            &[
+                ("Box<'a>", "Abstract<'a>"),
+                ("W<'a>", "[Box<'a>, `X]"),
+                ("N0", "[(N0, `U1), Error<N5>, `E]"),
+                ("N1", "[Error<N5>, Map<string, N0>]"),
+                ("N2", "[W<N0>, W<N1>]"),
+                ("N4", "[Box<i64>, Error<Error<N5>>, N1, `T0(N5)]"),
+                ("N5", "[(N4, `U0), N4]"),
+            ],
+            "null",
+        );
+        let expanded = |t: &str, name: &str| {
+            let t = parsed(&env, t);
+            let mut cells = AHashMap::default();
+            t.collect_tvars(&mut cells);
+            cells["c"].bind(parsed(&env, name).lookup_ref(&env).unwrap());
+            t
+        };
+        let pool = [
+            expanded("[Error<'c>, Error<N5>]", "N5"),
+            expanded("Error<'c>", "N1"),
+            expanded("`T0('c)", "N4"),
+            expanded("[Error<'c>, `T0(N5)]", "N5"),
+            expanded("W<'c>", "N0"),
+            parsed(&env, "[N1, N2]"),
+            parsed(&env, "Error<N5>"),
+            parsed(&env, "N4"),
+            parsed(&env, "N5"),
         ];
         memos_agree(&env, &pool);
     }
