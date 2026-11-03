@@ -850,6 +850,17 @@ impl<R: Rt> MapQBase<R> {
         // Fusing it needs the inner call emitted as the outer collection's loop
         // whose slots call the callback's kernel. probe:
         // ~/ptmp/cr29/scratch/r10-J/probes/b_samecoll.gx (collection-self-identity-01)
+        // 2026-11-03 claude: A sibling gap from lane J's round-9 review (R-r1-1, low):
+        // two different recursions (k and j), each with a bare `array::map(.., self)`
+        // in its body, held inline in one region collide, since discovery keys a bare
+        // loop's prototype call by cs.spec().id, which every instance of one
+        // collection definition shares (node/lambda.rs, the prototype id); `#[native]
+        // (list::map([<1, 2, 4>], k), list::map([<1, 2, 3>], j))` is refused "two
+        // instances in one region call this site's lambda apart", where the eta form
+        // fuses as one region. No wrong answer; each part fuses alone. Main refuses
+        // the bare program too (not discovered). probe:
+        // ~/ptmp/cr29/scratch/review-r10/J-r1-1/m_two_holders.gx (eta:
+        // m_two_holders_eta.gx).
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
         let r = match callsite.recursion_callback() {
             Some((call, name)) => self.emit_recursion(source, call, name, cx),
@@ -888,40 +899,6 @@ impl<R: Rt> MapQBase<R> {
         if emit::node_is_bottom(source) {
             return Ok(None);
         }
-        // XCR claude for claude: [perf/low] A collection whose callback is the
-        // recursive binding itself does not fuse: in `let rec t = |d: i64| -> i64
-        // select d { 0 => 1, _ => 1 + array::fold(array::map([d - 1, 0, 0], t), 0,
-        // |a, x| a + x) }`, `#[native] t(20)` is refused "lambda call site
-        // `array::map([d - 1, 0, 0], t)` not discovered": the prototype's call of
-        // `t` has no resolved callback (the binding is the one the body defines),
-        // so `callback` is None here and no loop is emitted (main ec53d4846 the
-        // same). `|c| t(c)` fuses through the slot-root chains
-        // (collection-closure-recursion-01). Fusing the bare form needs a loop whose
-        // slot makes the enclosing kernel's self-call over the element, with no
-        // callback body to emit; a fold's callback alike. probe:
-        // ~/ptmp/cr29/scratch/r9-J/tmap_bare.gx (collection-self-callback-01)
-        // 2026-11-03 claude: Fixed: a collection call whose callback is a
-        // recursion's bare name (CallSite::recursion_callback: its prototype shares
-        // the instance still checking) emits its loop with the prototype call as the
-        // slot body (MapQBase/FoldQBase::emit_recursion), the element bound under
-        // the prototype's argument; BodyCx::own_call reads the prototype as named by
-        // the collection call's argument while the loop is built
-        // (LowerCtx::recursion_call), so each slot makes the holder kernel's
-        // self-call through a slot-root chain. mark_recursion takes that name as the
-        // self binding (recursion_names, the collection instance an inline holder);
-        // discovery records the prototype for a holder or own region. Node-walk
-        // unchanged. Pins (all fail with the compiler change reverted, 18 of 36
-        // runs):
-        // lib_tests::tree_recursion::bare_tree_recursion_through_{map,fold,filter,flat_map},
-        // bare_capturing_tree_recursion,
-        // bare_capturing_tree_recursion_through_nested_maps,
-        // bare_recursion_from_a_collection_callback (jit/jit_par),
-        // bare_recursion_sleeps_and_wakes, bare_recursion_children_deleted,
-        // bare_recursion_frees_deleted_slots,
-        // lang::image::program_image_restores_bare_recursion_loops; control
-        // bare_callback_naming_another_function fuses on both. The same collection
-        // nested in its own callback with the same callback stays unfused: new CR
-        // collection-self-identity-01.
         let Some(callback) = callback(&self.prototype) else { return Ok(None) };
         let Some(param) = callback_param(callback, 0, literal!("__elem"), spec)? else {
             return Ok(None);
