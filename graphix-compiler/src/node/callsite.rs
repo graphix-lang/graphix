@@ -732,8 +732,7 @@ fn rank2_parts(
     expanding: &mut Expanding,
     out: &mut Quantified,
 ) -> Option<Type> {
-    #[cfg(test)]
-    RANK2_STEPS.with(|n| n.set(n.get() + 1));
+    rank2_step();
     ensure_sufficient(|| {
         // a node many paths share is walked once; one an expansion built
         // lives only while it is walked, so it has no identity
@@ -814,6 +813,13 @@ fn rank2_parts(
 #[cfg(test)]
 thread_local! {
     static RANK2_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A step of a rank-2 walk, counted under test.
+#[inline(always)]
+fn rank2_step() {
+    #[cfg(test)]
+    RANK2_STEPS.with(|n| n.set(n.get() + 1));
 }
 
 /// A rank-2 quantifier `q` keeps exactly the bounds its formal `declared`:
@@ -1153,6 +1159,26 @@ pub(crate) fn contain_generally<R: Rt>(
 // RANK2_CONNECT_TRANSPARENT_ITSELF_BESIDE_ITS_QUANTIFIER for another reason; the
 // positional rule is pinned by that case and the unit test
 // escapes_through_skips_a_quantifier_only_under_its_binder.
+// 2026-11-02 claude: Round 8 re-review (lane R), cost: escapes_through numbered an
+// asked cell by a scan of the quantifiers asked, once per quantifier each function
+// type in the walked type declares and twice per cell met, and Free::settle dropped a
+// function type's own quantifiers by a scan of them, so a rank-2 let over a type
+// holding Q quantified functions was quadratic in Q (gen_wide Q 1600 8:
+// escapes_through 315M, main 160M). Now the asked cells are a hash index
+// (callsite::Asked, as carried_out had), Free hands met only asked cells with their
+// number, and settle drops the bound cells by a merge with them sorted. Callgrind
+// escapes_through main / before / now at Q = 400, 800, 1600, 3200: 44/47/36M,
+// 82/116/74M, 160/315/135M, 317/996/266M; --check totals at Q=1600 main 2.321G, now
+// 2.326G; at Q=3200 main 3.478G, now 3.455G. Pins:
+// node::callsite::test::escape_walk_is_linear_in_a_record_of_binders (n now 256, each
+// lookup a step: 3329 steps, bound 4096; with the scan, a step per quantifier
+// compared, 68609) and escape_walk_is_linear_in_one_binder_of_many (2051 steps, bound
+// 4096; with settle's scan 33924). Left as it stands, from the same review (record
+// only): Free walks a node on a cycle again wherever it is met, so a dense strongly
+// connected set of cells costs a walk per simple path; no program builds one (the
+// merge's occurs check and cycle_toward keep such cycles out; both reviewers'
+// constraint and lower-bound ladders were refused or merged), and answering a cycle
+// at once needs a strongly-connected-components pass.
 // CR claude for eric: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing
@@ -1321,17 +1347,15 @@ fn escapes_through(
     what: &str,
     through: &str,
 ) -> Result<()> {
-    let asked = |c: &TVar| {
-        let addr = c.cell_addr();
-        quantified.iter().position(|(_, a)| *a == addr).map(|i| i as u32)
-    };
+    let mut asked: Asked = LPooled::take();
+    for (i, (_, a)) in quantified.iter().enumerate() {
+        asked.entry(*a).or_insert(i as u32);
+    }
     let mut first: SmallVec<[Option<(usize, TVar)>; 4]> =
         quantified.iter().map(|_| None).collect();
     let mut sights = 0;
-    let free = Free::of(env, asked, &mut |tv| {
-        if let Some(i) = asked(tv)
-            && first[i as usize].is_none()
-        {
+    let free = Free::of(env, &asked, &mut |i, tv| {
+        if first[i as usize].is_none() {
             first[i as usize] = Some((sights, tv.clone()));
             sights += 1
         }
@@ -1374,8 +1398,7 @@ impl Reach {
         cut: &mut impl FnMut(&Type) -> bool,
         f: &mut impl FnMut(&TVar) -> bool,
     ) -> bool {
-        #[cfg(test)]
-        RANK2_STEPS.with(|n| n.set(n.get() + 1));
+        rank2_step();
         ensure_sufficient(|| match t {
             Type::TVar(tv) => {
                 if !self.seen.insert(tv.cell_addr()) {
@@ -1410,14 +1433,17 @@ enum Met {
     Answered(u32, u32),
 }
 
-/// The asked cells, each by the number `asked` gives it, free under a type
-/// walked as [`Reach`] walks it: under a cell, itself if asked and those
-/// under what it reaches; under a function type, its children's less the
-/// cells it quantifies. A node is answered once, except one on a cycle back
-/// to a node still on the walk's path: its answer misses what the cycle
-/// reaches there, so it is answered again where it is met again.
-struct Free<A> {
-    asked: A,
+/// The cells [`Free`] is asked of, by address, each with its number.
+type Asked = LPooled<AHashMap<usize, u32>>;
+
+/// The asked cells, each by its number, free under a type walked as
+/// [`Reach`] walks it: under a cell, itself if asked and those under what
+/// it reaches; under a function type, its children's less the cells it
+/// quantifies. A node is answered once, except one on a cycle back to a
+/// node still on the walk's path: its answer misses what the cycle reaches
+/// there, so it is answered again where it is met again.
+struct Free<'a> {
+    asked: &'a AHashMap<usize, u32>,
     nodes: LPooled<AHashMap<usize, Met>>,
     sets: LPooled<Vec<u32>>,
     /// The answers in progress, each node's the tail it pushed.
@@ -1425,10 +1451,14 @@ struct Free<A> {
     depth: usize,
 }
 
-impl<A: Fn(&TVar) -> Option<u32>> Free<A> {
-    /// The asked cells free under `t`, in order; `met` is handed each cell
-    /// as the walk meets it.
-    fn of(t: &Type, asked: A, met: &mut impl FnMut(&TVar)) -> LPooled<Vec<u32>> {
+impl<'a> Free<'a> {
+    /// The asked cells free under `t`, in order; `met` is handed each asked
+    /// cell, with its number, as the walk meets it.
+    fn of(
+        t: &Type,
+        asked: &'a AHashMap<usize, u32>,
+        met: &mut impl FnMut(u32, &TVar),
+    ) -> LPooled<Vec<u32>> {
         let mut walk = Self {
             asked,
             nodes: LPooled::take(),
@@ -1442,9 +1472,8 @@ impl<A: Fn(&TVar) -> Option<u32>> Free<A> {
 
     /// Push what is free under `t`; the shallowest depth on the path a
     /// cycle from `t` returned to, `usize::MAX` for none.
-    fn go(&mut self, t: &Type, met: &mut impl FnMut(&TVar)) -> usize {
-        #[cfg(test)]
-        RANK2_STEPS.with(|n| n.set(n.get() + 1));
+    fn go(&mut self, t: &Type, met: &mut impl FnMut(u32, &TVar)) -> usize {
+        rank2_step();
         ensure_sufficient(|| {
             let key = t.shared_identity();
             if let Some(k) = key {
@@ -1466,8 +1495,8 @@ impl<A: Fn(&TVar) -> Option<u32>> Free<A> {
             let mut own: SmallVec<[u32; 2]> = SmallVec::new();
             match t {
                 Type::TVar(tv) => {
-                    met(tv);
-                    if let Some(i) = (self.asked)(tv) {
+                    if let Some(i) = self.number(tv) {
+                        met(i, tv);
                         self.stack.push(i)
                     }
                     match tv.binding() {
@@ -1483,7 +1512,8 @@ impl<A: Fn(&TVar) -> Option<u32>> Free<A> {
                 t => {
                     t.for_each_child(&mut |c| back = back.min(self.go(c, met)));
                     if let Type::Fn(ft) = t {
-                        ft.each_quantifier(|_, q| own.extend((self.asked)(q)))
+                        ft.each_quantifier(|_, q| own.extend(self.number(q)));
+                        own.sort_unstable()
                     }
                 }
             }
@@ -1506,16 +1536,28 @@ impl<A: Fn(&TVar) -> Option<u32>> Free<A> {
         })
     }
 
-    /// Sort and dedup the stack from `start`, dropping the cells in `bound`.
+    /// `tv`'s number, if it is asked.
+    fn number(&self, tv: &TVar) -> Option<u32> {
+        rank2_step();
+        self.asked.get(&tv.cell_addr()).copied()
+    }
+
+    /// Sort and dedup the stack from `start`, dropping the cells in `bound`,
+    /// which is sorted.
     fn settle(&mut self, start: usize, bound: &[u32]) {
         let tail = &mut self.stack[start..];
         if tail.len() > 1 {
             tail.sort_unstable();
         }
-        let mut kept = start;
+        let (mut kept, mut b) = (start, 0);
         for at in start..self.stack.len() {
             let i = self.stack[at];
-            if (kept == start || self.stack[kept - 1] != i) && !bound.contains(&i) {
+            while bound.get(b).is_some_and(|q| *q < i) {
+                rank2_step();
+                b += 1
+            }
+            rank2_step();
+            if (kept == start || self.stack[kept - 1] != i) && bound.get(b) != Some(&i) {
                 self.stack[kept] = i;
                 kept += 1
             }
@@ -1545,7 +1587,7 @@ pub(crate) fn carried_out(
     // a foreign cell some function type in `value` quantifies is asked of
     // [`Free`]; any other is free
     let mut foreign: SmallVec<[TVar; 4]> = SmallVec::new();
-    let mut index: LPooled<AHashMap<usize, u32>> = LPooled::take();
+    let mut index: Asked = LPooled::take();
     let mut note = |fnt: &Type| {
         if let Type::Fn(ft) = fnt {
             ft.each_quantifier(|_, tv| {
@@ -1564,7 +1606,7 @@ pub(crate) fn carried_out(
         false
     });
     if !index.is_empty() {
-        let free = Free::of(value, |tv| index.get(&tv.cell_addr()).copied(), &mut |_| ());
+        let free = Free::of(value, &index, &mut |_, _| ());
         foreign.retain(|tv| {
             index.get(&tv.cell_addr()).is_none_or(|i| free.binary_search(i).is_ok())
         });
@@ -5122,15 +5164,33 @@ mod test {
 
     // A record of `n` functions each quantifying its own variable, asked of
     // every one: the walk is linear in the record, not in the record times
-    // its quantifiers.
+    // its quantifiers, a lookup of an asked cell included.
     #[test]
     fn escape_walk_is_linear_in_a_record_of_binders() {
-        let n = 64;
+        let n = 256;
         let fields = (0..n)
             .map(|i| format!("f{i}: fn<'a{i}: Any>(x: 'a{i}) -> ('a{i}, i64)"))
             .collect::<Vec<_>>()
             .join(", ");
         let t = parse_type(&format!("{{{fields}}}")).unwrap();
+        let (r, steps) = escape_steps(&t);
+        assert!(r.is_ok());
+        assert!(steps <= 16 * n, "{steps}");
+    }
+
+    // One function quantifying `n` variables, asked of every one: the walk
+    // is linear in its quantifiers, dropping those it binds included.
+    #[test]
+    fn escape_walk_is_linear_in_one_binder_of_many() {
+        let n = 256;
+        let each =
+            |f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<Vec<_>>().join(", ");
+        let t = parse_type(&format!(
+            "fn<{}>(x: ({})) -> i64",
+            each(&|i| format!("'a{i}: Any")),
+            each(&|i| format!("'a{i}"))
+        ))
+        .unwrap();
         let (r, steps) = escape_steps(&t);
         assert!(r.is_ok());
         assert!(steps <= 16 * n, "{steps}");
