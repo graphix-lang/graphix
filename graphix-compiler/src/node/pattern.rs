@@ -2236,7 +2236,6 @@ impl<R: Rt> PatternNode<R> {
         Ok(Self::with(explicit, type_predicate, structure_predicate, guard))
     }
 
-
     /// Deliver the scrutinee's destructured leaves to this arm's binds,
     /// carrying the scrutinee's production tag: a stale scrutinee binds
     /// stale leaves, never fired ones.
