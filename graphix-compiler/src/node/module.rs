@@ -1803,50 +1803,6 @@ impl<R: Rt> Update<R> for Module<R> {
         self.clear_compiled(ctx);
     }
 
-    // XCR claude for claude: [bug/low] A module with no interface in a select arm: a
-    // write to its binding through `&mut a::v` while the arm sleeps is seen at the wake by
-    // the body's own reader (a::c, 4) but not by the arm's `count(a::v)` after the module
-    // statement, which stays 3. With a .gxi the select catches the val up and both read 4.
-    // main a084f9887 alike. probe: ~/ptmp/cr29/scratch/review-r6/W2-r3-1/cr37/{b2,b2n}
-    // (module-arm-wake-01)
-    // 2026-11-02 claude: Round 7 lane N: a module with no interface is a Block whose names
-    // the block around it reads, so it no longer takes back its lets' wake re-raises at
-    // its own end: the enclosing block does, after its last statement
-    // (Block::take_back_reraised walks the module blocks among its children, lets_of lists
-    // them; a Module node with an interface does it for the no-interface modules in its
-    // body). No relay involved. The arm's count(a::v) now sees the re-raise at the wake
-    // beside a::c (b2n at ep 9: r=(70, 70, 4, 4), fires outside still 5); b2 (with the
-    // gxi) is unchanged, its outside reader still counting the extra fire of
-    // iface-pair-one-var-01. Pin: lang::modules::module_let_reraises_to_the_arm_around_it
-    // (four modes; [[1, 2], 3] on bbb06c0c6 and at 463516534, [[2, 2], 3] now, its 3 the
-    // escaped reader seeing the write once). Needs a soak.
-    // 2026-11-02 claude: Round 7 lane N, after review r8: the take-back moved for a module
-    // with an interface too. A Module node no longer takes back for the modules in its
-    // body; the block around it does (lets_of lists Module nodes, node::take_back_reraised
-    // walks a Module's statements: its lets, its module blocks, its Modules). Review r8
-    // found two shapes: a no-interface submodule its parent's interface exposes (a.gxi
-    // says mod b): the arm's count(a::b::v) missed the re-raise a's own r saw, (1, 2)
-    // where the gxi-less twin gives (2, 2); and an interface module's private let written
-    // through an exported &mut, whose re-raise nothing took back, so the escaped reader
-    // outside counted the write twice (4 against the twin's 3; bbb06c0c6 alike). Both now
-    // match their twins. Pins (lang::modules, four modes):
-    // exposed_submodule_let_reraises_to_the_arm_around_it ([[1, 2], 3] at d0c85e540) and
-    // interface_module_private_let_reraises_once ([[2, 2], 4] at d0c85e540 and on
-    // bbb06c0c6), with module_let_reraises_to_the_arm_around_it. cr37/c1m now gives a::r
-    // and count(a::b::v) alike (4, 4 at ep 9; outside fires 5 as on bbb06c0c6). Needs a
-    // soak.
-    // 2026-11-02 claude: Round 7 lane N, after review r8 (2): the take-back walked every
-    // module's statements at each update of the block around it, even where the cycle
-    // skipped the module (about 224 instructions per module statement per cycle, 20x on a
-    // 3000-let module). A module now notes, as an update that walked it ends, whether a
-    // let of its own or a module in it holds a re-raise (Block::reraised,
-    // Module::reraised), and node::take_back_reraised descends only into the modules that
-    // noted one. Per-cycle cost back to bbb06c0c6's (review probes: i1000 45k/cycle on
-    // bbb06c0c6, 722k at 5d9a9d9bf, 46k now). Semantics unchanged: the review's probes
-    // (nested, ifacelet, two, two2, lam, cr37/c1m and the rest) give the 5d9a9d9bf
-    // outputs, under GRAPHIX_PAR=force GRAPHIX_PRUNE=audit too. Pin:
-    // graphix-shell/tests/idle_module_cost.rs (223.8 instructions per idle statement and
-    // cycle at 5d9a9d9bf, 0.0 now) with the three lang::modules pins.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.sleep(ctx);
@@ -1876,46 +1832,6 @@ impl<R: Rt> Update<R> for Module<R> {
                 let _task = InTask::enter(self.task);
                 let _module = profile::module(&self.scope.lexical);
                 let writes = OwnWrites::enter(self.task);
-                // XCR claude for claude: [bug/low] A file module inside a lambda whose body
-                // reads a timer or sys::time::after_idle is refused here with "the check
-                // decides a type the code around the module left open: annotate `faux`",
-                // naming a binding the program never wrote (a DefGate's). Shape: `let mk =
-                // |t: datetime| -> i64 { mod a; let fs = [a::f]; a::f(t ~ 1) + fs[0]$(t ~ 1)
-                // * 1000 }` over a.gx `let f = |x: i64| -> i64 x + 1; let go =
-                // sys::time::after_idle(duration:100.ms, null); f <- go ~ |x: i64| -> i64
-                // x + 100` and a.gxi `val f: fn(x: i64) -> i64`. Still refused on main
-                // cadc8fca6, after gate-foreign-mark-01's fix landed; main a084f9887 alike.
-                // Find which cell outside the module the body's check writes. probe:
-                // ~/ptmp/cr29/scratch/r6-W/r38/m1 (module-faux-mark-01)
-                // 2026-11-02 claude: Review r8 of lane N found a simpler shape, no timer:
-                // let f = |t: i64| { mod a; t + a::c } over a.gx 'let v = 1; let c =
-                // count(v)' and a.gxi 'val c: i64' is refused the same way (annotate faux),
-                // on bbb06c0c6 and cr45-N alike; with 'let c = 1' it checks. So a builtin
-                // call in an interface module inside a lambda body is enough. probe:
-                // ~/ptmp/cr29/scratch/r8-N/faux (graphix --check main.gx)
-                // 2026-11-02 claude: Found (lane G r8): the cell is the enclosing function's
-                // own throws, its DefGate's faux catch, and the write is
-                // node::error::join_raised from CallSite::raise_throws at a module
-                // statement's call that throws nothing (let go = sys::time::after_idle(..)):
-                // a raise of ⊥ bound the unbound catch cell to ⊥, a write to a cell created
-                // outside the module's task (GRAPHIX_TASK_AUDIT shows the backtrace). Not
-                // the interface pair's join. Fixed by the local rule 'a raise of nothing
-                // joins nothing' (join_raised returns before binding; a catch cell left
-                // unbound and one bound to ⊥ read alike, thrown() maps both to ⊥). m1 now
-                // runs (r=101101; main bbb06c0c6 refuses it naming faux). A real raise from
-                // such a module (m2: let v = g(1)? in a.gx) still writes the function's cell
-                // and is refused, now without naming it: the gate's binding is #faux, a
-                // lowered name, decided_binds never names a lowered binding, and the refusal
-                // says 'an error the module raises reaches the function around it, whose
-                // throws only its own check may decide: catch it inside the module' (a catch
-                // at the module's top makes m2 run). Pins
-                // lang::modules::module_in_a_function_calls_what_raises_nothing (fails in
-                // all four modes without the join rule) and
-                // module_in_a_function_raising_to_it_refused (fails without the lowered-name
-                // rule). Probes ~/ptmp/cr29/scratch/r8-G/i5/{m1,m2,m2c,m4}.
-                // 2026-11-02 claude: Coordinator, after rebasing lane G onto lane N: the
-                // review r8 N shape above (~/ptmp/cr29/scratch/r8-N/faux, count(v) in an
-                // interface module inside a lambda) now checks too, under the same rule.
                 let res = self.check_body(ctx).and_then(|()| match writes.foreign() {
                     Some(w) => bail!(
                         "the check decides a type the code around the module \

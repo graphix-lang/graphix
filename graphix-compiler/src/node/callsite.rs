@@ -1279,6 +1279,11 @@ pub(crate) fn contain_generally<R: Rt>(
 // steps against bounds 18432 and 10240). The soundness review's model
 // (review-r8/R-r3-1/model), ported, agrees with reachability on 1.1M random graphs,
 // hash collisions forced in 600k. Probes ~/ptmp/cr29/scratch/r8-R/r12/.
+// 2026-11-02 claude: Coordinator 11-03: kept as XCR. Its soundness held lane R's
+// final review; the walk was then rewritten for cost in fix round 3 (ea37b4e7e,
+// 32c560627: interned answers, One/Many) with no adversarial re-review, only my spot
+// checks and the fixer's model run (1.1M random graphs, hash collisions forced).
+// Review that rewrite, then delete.
 // CR claude for eric: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing
@@ -1396,48 +1401,6 @@ pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
     out
 }
 
-// XCR claude for claude: [bug/medium] A quantifier escapes into an outer cell's
-// constraint through a callee's bound, and nothing sees it: escapes_through's walk
-// (reaches_cell) follows bindings, never a cell's constraints, and
-// DefGate::check_declared_kept misses a rank-1 declared variable there (the cell's
-// level is not lowered). `let y = never(); let g = 'b: 'c, 'c: Any |p: 'b, q: 'c| q;
-// let f: fn<'a: Any>(x: 'a) -> 'a = |x| { let r = g(y, x); x }; let t = f("s"); y <-
-// 5; println(y + 1)` passes --check, and the build refuses f("s") ("an instance at
-// fn(x: string) -> string of a definition typed fn(x: i64) -> 'a: i64";
-// GRAPHIX_ELAB_AUDIT reports it). The same through a call's formal, where pre_unify
-// runs (k_constr3), a reference parameter (k_constr4) and a rank-1 `'a: Any |x: 'a|
-// -> 'a` (k_constr_r1); graphix-fuzz check fz_constr.gx: DIVERGENCE (the check
-// accepted what the build refused). Main 8beb0735a the same. Fix: the escape walk
-// follows an open cell's constraints as it follows a binding, and
-// check_declared_kept refuses a declared variable an outside cell's constraint
-// names. probes: ~/ptmp/cr29/scratch/review-r7/B5-r1-1/i1/{k_constr,k_constr3,
-// k_constr4,k_constr_r1}.gx, fz/fz_constr.gx (rank2-escape-constraint-01)
-// 2026-11-02 claude: Round 8 lane R: two causes, both fixed. (1) TVar::merge_into
-// moved the absorbed cell's conjuncts and lower bounds into the surviving cell
-// without lowering them to its level, so y's top-level cell held 'c (the call's
-// instance of g's bound) at the call's depth, and the merge of 'c with the declared
-// 'a lowered nothing: what a merge moves into the surviving cell is now claimed at
-// that cell's level (the rule design/tvar_constraints.md already stated), so
-// k_constr_r1 is refused by DefGate::check_declared_kept ("'a escapes the
-// definition"). (2) The escape walk (callsite::Reach) follows an open cell's
-// constraints as it follows its lower bounds, so the rank-2 forms are refused as not
-// polymorphic in 'a (k_constr let, k_constr3 call formal, k_constr4 reference
-// parameter, fz_constr). Pins: RANK2_LET_CONSTRAINS_OUTER,
-// RANK2_ARG_CONSTRAINS_OUTER, RANK2_LET_CONSTRAINS_OUTER_BY_REFERENCE and
-// DECLARED_CONSTRAINS_OUTER in lang::types::unsound_acceptances_are_refused (main
-// passes --check on all four),
-// node::callsite::test::escapes_through_follows_an_open_cells_constraints (fails
-// without the walk change).
-// 2026-11-02 claude: Round 8 review (lane R): following an open cell's constraints
-// is conservative where the quantifier sits inside a union constraint: with g = 'b:
-// ['c, i64], 'c: Any |p: 'b, q: 'c| q, the body |x| { let r = g(y, x); x } of a
-// written fn<'a: Any>(x: 'a) -> 'a over an outer let y = never() later written 5 is
-// refused ("a binding it reaches, of type '_N: unbound within [i64, 'c: 'a], would
-// carry 'a out"), while main runs it right (y within ['a, i64] holds for y: i64 at
-// every 'a). Left as it stands: it needs a written bound naming another variable,
-// which no stdlib bound does, and annotating y (let y: i64 = never()) checks and
-// runs on both binaries, a conservative rule plus an annotation. probes
-// ~/ptmp/cr29/scratch/r8-R/{o2_constraint_union,o2b_annotated}.gx
 /// A binding the value reads or writes, or an instance it makes, of type
 /// `env`, holds none of the quantifiers outside a function type there that
 /// quantifies it: its cell would carry one out.

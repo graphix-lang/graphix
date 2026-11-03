@@ -345,24 +345,6 @@ pub(super) struct ScrutDrop {
     mark: usize,
 }
 
-// XCR claude for claude: [perf/low] A select over a union that names a union
-// typedef does not fuse: `type L = [`A, `X]; let f = |u: [L, `Y]| select u { `A =>
-// 1, `X => 4, `Y => 5 }` node-walks, "select scrutinee type [L, `Y] doesn't freeze
-// concrete", where `|u: L|` and the written `[`A, `X, `Y]` fuse; a union of two such
-// names ([L, M]) alike. Main 8beb0735a the same. Fix: freeze_for_abi_normalized
-// freezes a union holding a name as the flat union of the members it expands to.
-// probes:
-// ~/ptmp/cr29/scratch/r7-B/fix/{nf,nf1,nf2,nf3}.gx (graphix --no-cache; each wraps
-// the block in #[native]) (select-named-union-freeze-01)
-// 2026-11-02 claude: Freeze's union arm splices a member that freezes to a union (a
-// name of a union typedef, as [L, `Y] or [L, M]) and normalizes the flat set, as the
-// written flat union is, so the select scrutinee, a kernel param, a return and an
-// element freeze; one with a nested set or bottom left still refuses. Pins fail
-// without it: fusion_review::select_named_union_members and
-// select_named_union_mixed_members (jit, jit_par: 'doesn't freeze concrete') and
-// kernel_abi::tests::union_of_named_unions_freezes_flat. The probes nf, nf1, nf2,
-// nf3 run under #[native] and agree in gxf check; regress 559/0, fusion manifest
-// unchanged.
 /// Classify and emit the read of a select scrutinee. An owned one is
 /// adopted as an env local, the returned [`ScrutDrop`]: every
 /// terminator drops the env, and a value-position select drops it at
