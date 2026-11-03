@@ -57,6 +57,85 @@ run!(full_tree_recursion, r#"
 }
 "#, is(Value::I64(1093)); FuseExpect::Jit);
 
+// The recursion reads a binding from outside it, which every self-call
+// in a loop's slot forwards: through each loop that runs as chunks.
+run!(capturing_tree_recursion_through_map, r#"
+{
+    let y = 2;
+    let rec t = |d: i64| -> i64 select d {
+        0 => y,
+        _ => array::fold(array::map([d - 1, d - 1], |c| t(c)), 0, |a, x| a + x)
+    };
+    #[native] t(3)
+}
+"#, is(Value::I64(16)); FuseExpect::Jit);
+
+run!(capturing_tree_recursion_through_filter, r#"
+{
+    let y = 2;
+    let rec t = |d: i64| -> i64 select d {
+        0 => y,
+        _ => d * y + array::len(array::filter([d - 1, d - 1], |c| t(c) > d))
+    };
+    #[native] t(3)
+}
+"#, is(Value::I64(8)); FuseExpect::Jit);
+
+run!(capturing_tree_recursion_through_filter_map, r#"
+{
+    let y = 2;
+    let rec t = |d: i64| -> i64 select d {
+        0 => y,
+        _ => array::fold(
+            array::filter_map([d - 1, d - 1, 0 - 1], |c| select c >= 0 {
+                true => `Keep(t(c)),
+                false => null
+            }),
+            0,
+            |a, x| a + x
+        )
+    };
+    #[native] t(3)
+}
+"#, is(Value::I64(16)); FuseExpect::Jit);
+
+run!(capturing_tree_recursion_through_flat_map, r#"
+{
+    let y = 2;
+    let rec t = |d: i64| -> i64 select d {
+        0 => y,
+        _ => array::fold(array::flat_map([d - 1], |c| [t(c), 1]), 0, |a, x| a + x)
+    };
+    #[native] t(3)
+}
+"#, is(Value::I64(5)); FuseExpect::Jit);
+
+// the self-call is in a loop the chunk's own callback runs
+run!(capturing_tree_recursion_through_nested_maps, r#"
+{
+    let y = 2;
+    let rec t = |d: i64| -> i64 select d {
+        0 => y,
+        _ => array::fold(
+            array::map([d - 1, d - 1], |c| array::fold(array::map([c], |e| t(e)), 0, |a, x| a + x)),
+            0,
+            |a, x| a + x
+        )
+    };
+    #[native] t(3)
+}
+"#, is(Value::I64(16)); FuseExpect::Jit);
+
+/// The captured binding fires: every activation reads its new value.
+#[tokio::test(flavor = "current_thread")]
+async fn capturing_tree_recursion_follows_its_capture() -> Result<()> {
+    let code = "{ let y = array::iter([1, 2, 3]); \
+                let rec t = |d: i64| -> i64 select d { 0 => y, _ => \
+                  array::fold(array::map([d - 1, d - 1], |c| t(c)), 0, |a, x| a + x) }; \
+                #[native] t(3) }";
+    assert_stream(code, &[8, 16, 24]).await
+}
+
 // the recursion's tail is a call of its own; the callback's is not
 run!(callback_self_call_beside_a_tail_call, r#"
 {

@@ -13,6 +13,7 @@ use crate::{
         kernel_abi::{self, AbiKind, KernelKey, PrimType},
         lowering::BuiltinCallSiteInfo,
     },
+    node::callsite::CallSite,
     typ::Type,
 };
 use anyhow::{Result, anyhow, bail};
@@ -799,11 +800,24 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.lambda_call_sites.get(&id)
     }
 
-    /// The kernel's own self-call when emitting a self-recursive lambda
-    /// body. A value-position call site whose fnode Ref carries its
-    /// binding calls the kernel's own FuncRef.
-    pub(crate) fn self_call(&self) -> Option<OwnCall<'c>> {
-        self.ctx.self_call
+    /// The kernel's own self-call when `cs` makes it, emitting a
+    /// self-recursive lambda body: a call site whose fnode Ref carries
+    /// the self binding calls the kernel's own FuncRef.
+    pub(crate) fn own_call<R: Rt>(&self, cs: &CallSite<R>) -> Option<OwnCall<'c>> {
+        self.ctx.self_call.filter(
+            |own| matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == own.bind),
+        )
+    }
+
+    /// The kernel `cs` calls, where emission makes the call: its
+    /// discovered callee's, else the kernel's own.
+    pub(crate) fn called_kernel<R: Rt>(
+        &self,
+        cs: &CallSite<R>,
+    ) -> Option<&'c LambdaCallInfo> {
+        let sites: &'c nohash::IntMap<ExprId, LambdaCallInfo> =
+            self.ctx.lambda_call_sites;
+        sites.get(&cs.spec().id).or_else(|| self.own_call(cs).map(|own| own.info))
     }
 
     /// The address of a value-shape constant, shared by equal values.

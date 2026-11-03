@@ -1483,9 +1483,10 @@ where
 /// prev-length word) and of every cross-kernel lambda call (its
 /// first-call word), each of which claims one per-slot state chain (see
 /// [`BodyCx::open_slot_tables`]); and the bindings it reads from outside,
-/// its callees' included, which an outlined loop's chunk is handed. A
-/// nested callback body lives behind its own lambda def and anchors its
-/// sites in the chain its own loop opens.
+/// the captures of every kernel it calls included (a self-call's callee
+/// has no node to read them from), which an outlined loop's chunk is
+/// handed. A nested callback body lives behind its own lambda def and
+/// anchors its sites in the chain its own loop opens.
 pub(crate) struct LoopBody {
     pub(super) sites: LPooled<Vec<ExprId>>,
     pub(super) reads: LPooled<IntSet<BindId>>,
@@ -1511,6 +1512,13 @@ pub(crate) fn loop_body<R: Rt>(cx: &BodyCx, node: &Node<R>) -> LoopBody {
     let mut reads: LPooled<IntSet<BindId>> = LPooled::take();
     refs.with_external_refs(|id| {
         reads.insert(id);
+    });
+    fusion::for_each_emitted_node(node, &mut |n| {
+        if let NodeView::CallSite(cs) = n.view()
+            && let Some(callee) = cx.called_kernel(cs)
+        {
+            reads.extend(callee.captures.iter().map(|c| c.bind_id));
+        }
     });
     LoopBody { sites, reads }
 }

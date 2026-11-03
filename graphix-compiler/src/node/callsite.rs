@@ -4881,11 +4881,8 @@ impl<R: Rt> CallSite<R> {
                 ));
             }
         }
-        // A value-position self-call: `self.callee` is unresolved here, so
-        // match by the self BindId and call the kernel's own FuncRef.
-        if let Some(own) = cx.self_call()
-            && matches!(self.fnode.view(), NodeView::Ref(r) if r.id == own.bind)
-        {
+        // A value-position self-call: `self.callee` is unresolved here.
+        if let Some(own) = cx.own_call(self) {
             return emit_lambda_call_node(cx, self, Called::Own(own));
         }
         if let Some(info) = cx.lambda_site(self.spec.id).cloned() {

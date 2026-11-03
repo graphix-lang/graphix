@@ -238,6 +238,12 @@ JIT's root word must be the slot's, never one shared by the slots.
 - **Images.** The child-roots leaf is a `SiteLeaf` like any other, its
   code constant and the callers' anchors one image object; the layout
   writes its `slot_roots` beside `slots`.
+- **Chunks.** A top-level map-family loop runs as chunks, each handed
+  the body's locals its iteration reads (`scaffold::loop_body`): the
+  bindings its nodes read and the captures of every kernel a call there
+  makes, which the call forwards. A self-call's callee is no node of the
+  iteration, so its captures are named from the kernel's own
+  (`BodyCx::called_kernel`).
 
 A collection whose callback is the recursive binding itself
 (`array::map(children, t)` in `t`) has no statically resolved callback
