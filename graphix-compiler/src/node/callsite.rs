@@ -413,17 +413,24 @@ fn checked_default<R: Rt>(
         Judge::Check | Judge::Bind => None,
     };
     let typ = copy.as_ref().unwrap_or(node.typ());
-    let res = res.and_then(|()| match site.and_then(label) {
-        Some(t) => t.check_contains(&ctx.env, typ),
+    // the default is held as a written argument is: general in each
+    // quantifier its label holds, in the signature the call sees it in
+    let held = |sig: &FnType| match label(sig) {
+        None => Ok(()),
+        Some(t) if !t.may_hold_quantified_fn(&ctx.env) => t.check_contains(&ctx.env, typ),
+        Some(t) => {
+            let vars = call_variables(sig);
+            let contain = |t: &Type| t.check_contains(&ctx.env, typ);
+            let quantified = held_generally(ctx, &t, &node, contain)?;
+            signature_holds_none(&quantified, &vars, sig, "the value")
+        }
+    };
+    let res = res.and_then(|()| match site.filter(|s| label(*s).is_some()) {
+        Some(site) => held(site),
         None => {
             let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-            for t in callee_param(ctx, f, name, site, &mut gates)
-                .into_iter()
-                .chain(value.and_then(label))
-            {
-                t.check_contains(&ctx.env, typ)?
-            }
-            Ok(())
+            held(&callee_instance(ctx, f, name, site, &mut gates))?;
+            value.map_or(Ok(()), held)
         }
     });
     node.refs(defaults);
@@ -1002,7 +1009,7 @@ enum ArgFit {
     Open,
 }
 
-// CR claude for claude: [bug/medium] A call's argument checked against a rank-2 formal
+// XCR claude for claude: [bug/medium] A call's argument checked against a rank-2 formal
 // can put the formal's quantifier below a cell the call's instance shares with its
 // other formals or its result, and nothing judges that: check_general walks the
 // bindings the argument reaches and the instances calls in it make, never the call's
@@ -1022,10 +1029,34 @@ enum ArgFit {
 // on the argument's path and the omitted default's. probes:
 // ~/ptmp/cr29/scratch/r8-R/{d6,d4,t6c,t9b,t14_default_field,t4d}.gx, fz_t4.gx
 // (rank2-call-signature-01)
-/// Check a call's argument node against its formal's type `typ`; an
-/// argument holding an undecided cell is [`ArgFit::Open`] when `waits`.
+// 2026-11-03 claude: Round 9 lane R: a call's variables are one type for the call, so
+// after a rank-2 argument's check none named in the call's signature may be or reach
+// the formal's quantifier, under the formal included (callsite::call_variables, taken
+// before the check, which may merge one into the quantifier: only_formal.gx, where 'c
+// appears only in the formal, merges and its build refused;
+// callsite::signature_holds_none). An omitted labeled default is held as a written
+// argument is (checked_default: held_generally, then the same judgment over the site's
+// signature, the hidden path's callee_instance and the value's). A written holder's
+// own variable reaches the quantifier only under the function type quantifying it
+// (held_generally's escapes_through over the expanded holder; let (fn<'a: Any>(x: 'a)
+// -> W<'c>, W<'c>) = (|x| W(x), W(1)) passed --check on main and its build refused
+// h.0("s")). d6 d4 t6c t9b t14_default_field direct_c2 hidden3 only_formal let_pair
+// now refused by the check (main: --check passes, the build refuses each); t4d still
+// runs (W(1), W("s"), W(1)); fz_t4 AGREE (reject), was DIVERGENCE. Pins: the
+// RANK2_CALL_SIGNATURE_RESULT, _PARAMETER, _FORMAL_ONLY, _BARE,
+// RANK2_CALL_OMITTED_DEFAULT, _FIELD, RANK2_CALL_HIDDEN_DEFAULT and
+// RANK2_LET_HOLDER_SHARES_ITS_VARIABLE cases of
+// lang::types::unsound_acceptances_are_refused (each passes main's check while its
+// build refuses, which eval_modes fails);
+// lang::types::rank2_call_signature_takes_general_arguments (no over-refusal: a 'c
+// decided without the quantifier, W<'a> under the formal, omitted, written and hidden
+// defaults). Pass under GRAPHIX_NO_SUBST=1. probes ~/ptmp/cr29/scratch/r9-R/.
+/// Check a call's argument node against its formal's type `typ` in the
+/// call's signature `site`; an argument holding an undecided cell is
+/// [`ArgFit::Open`] when `waits`.
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
+    site: &FnType,
     typ: &Type,
     hint: Option<&Type>,
     waits: bool,
@@ -1049,6 +1080,7 @@ fn typecheck_arg<R: Rt>(
             })
         }
         Some((formal, _rigid, quantified)) => {
+            let vars = call_variables(site);
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
             Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
@@ -1057,7 +1089,9 @@ fn typecheck_arg<R: Rt>(
                 wrap!(n, added_bound(&ctx.env, name, q, declared))?;
             }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
+            let quantified = cells(&quantified);
             check_general(ctx, &quantified, n, "the argument")?;
+            wrap!(n, signature_holds_none(&quantified, &vars, site, "the argument"))?;
             Ok(ArgFit::Fits)
         }
     }
@@ -1074,14 +1108,30 @@ pub(crate) fn contain_generally<R: Rt>(
     n: &Node<R>,
     contain: impl FnOnce(&Type) -> Result<()>,
 ) -> Result<()> {
+    held_generally(ctx, holder, n, contain).map(|_| ())
+}
+
+/// [`contain_generally`], answering the quantifiers the value was held
+/// general in, by name and cell; none where `holder` holds no quantified
+/// function type.
+fn held_generally<R: Rt>(
+    ctx: &CompileCtx<R>,
+    holder: &Type,
+    n: &Node<R>,
+    contain: impl FnOnce(&Type) -> Result<()>,
+) -> Result<SmallVec<[(ArcStr, usize); 2]>> {
     match quantified_formal(&ctx.env, holder) {
-        None => contain(holder),
+        None => contain(holder).map(|()| SmallVec::new()),
         Some((formal, _rigid, quantified)) => {
             contain(&formal).map_err(|e| match e.downcast::<TypeMismatch>() {
                 Ok(m) => anyhow::Error::new(m.shown_as(holder.clone())),
                 Err(e) => e,
             })?;
-            check_general(ctx, &quantified, n, "the value")
+            let quantified = cells(&quantified);
+            check_general(ctx, &quantified, n, "the value")?;
+            let holding = "the type holding it";
+            wrap!(n, escapes_through(&quantified, &formal, "the value", holding))?;
+            Ok(quantified)
         }
     }
 }
@@ -1321,12 +1371,10 @@ pub(crate) fn contain_generally<R: Rt>(
 /// bindings. Its own cells (a literal's, a lambda's) live only in it.
 fn check_general<R: Rt>(
     ctx: &CompileCtx<R>,
-    quantified: &Quantified,
+    quantified: &[(ArcStr, usize)],
     n: &Node<R>,
     what: &str,
 ) -> Result<()> {
-    let quantified: SmallVec<[(ArcStr, usize); 2]> =
-        quantified.iter().map(|(name, tv)| (name.clone(), tv.cell_addr())).collect();
     let mut refs = Refs::default();
     n.refs(&mut refs);
     let mut free: SmallVec<[(Type, &str); 4]> = SmallVec::new();
@@ -1356,23 +1404,28 @@ fn check_general<R: Rt>(
         _ => (),
     });
     for (t, through) in free.iter() {
-        wrap!(n, escapes_through(&quantified, t, what, through))?;
+        wrap!(n, escapes_through(quantified, t, what, through))?;
     }
     Ok(())
 }
 
-/// `f`'s parameter `name` as a call through `site` instantiates it: a
-/// fresh instance of `f`'s signature whose other parameters take the
+/// Each quantifier by name and cell address.
+fn cells(quantified: &Quantified) -> SmallVec<[(ArcStr, usize); 2]> {
+    quantified.iter().map(|(name, tv)| (name.clone(), tv.cell_addr())).collect()
+}
+
+/// `f`'s signature as a call through `site` instantiates it to pass the
+/// parameter `name`: a fresh instance whose other parameters take the
 /// arguments of a copy of the site's, and whose result and throws fit
 /// the copy's, so a variable the site fixes through another parameter,
-/// its result or its throws fixes this one.
-fn callee_param<R: Rt>(
+/// its result or its throws fixes `name`'s.
+fn callee_instance<R: Rt>(
     ctx: &CompileCtx<R>,
     f: &LambdaDef<R>,
     name: &ArcStr,
     site: Option<&FnType>,
     gates: &mut LPooled<Vec<RigidGate>>,
-) -> Option<Type> {
+) -> FnType {
     let inst = f.typ.instantiate(&ctx.rec_defs);
     if let Some(site) = site {
         // each argument the site passes fits the callee's parameter for it;
@@ -1394,7 +1447,7 @@ fn callee_param<R: Rt>(
         let _ = site.rtype.contains(&ctx.env, &inst.rtype);
         let _ = site.throws.contains(&ctx.env, &inst.throws);
     }
-    inst.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
+    inst
 }
 
 /// The cells of the quantifiers a function type under `t` binds.
@@ -1415,14 +1468,11 @@ fn escapes_through(
     what: &str,
     through: &str,
 ) -> Result<()> {
-    let mut asked: Asked = LPooled::take();
-    for (i, (_, a)) in quantified.iter().enumerate() {
-        asked.entry(*a).or_insert(i as u32);
-    }
+    let asked = asked(quantified);
     let mut first: SmallVec<[Option<(usize, TVar)>; 4]> =
         quantified.iter().map(|_| None).collect();
     let mut sights = 0;
-    let free = Free::of(env, &asked, &mut |i, tv| {
+    let free = Free::new(&asked).free(env, &mut |i, tv| {
         if first[i as usize].is_none() {
             first[i as usize] = Some((sights, tv.clone()));
             sights += 1
@@ -1447,6 +1497,80 @@ fn escapes_through(
             )
         }
     }
+}
+
+/// The cells `quantified` asks of [`Free`], each numbered by its first
+/// place there.
+fn asked(quantified: &[(ArcStr, usize)]) -> Asked {
+    let mut asked: Asked = LPooled::take();
+    for (i, (_, a)) in quantified.iter().enumerate() {
+        asked.entry(*a).or_insert(i as u32);
+    }
+    asked
+}
+
+/// The variables of the callee a call's signature names, as the call
+/// instantiates them: each cell written in it that no function type there
+/// quantifies. Taken before an argument's check, which may merge one into
+/// a formal's quantifier.
+fn call_variables(site: &FnType) -> LPooled<Vec<TVar>> {
+    fn go(
+        t: &Type,
+        seen: &mut AHashSet<usize>,
+        bound: &mut AHashSet<usize>,
+        vars: &mut Vec<TVar>,
+    ) {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if seen.insert(tv.cell_addr()) {
+                    vars.push(tv.clone())
+                }
+            }
+            t if t.shared_identity().is_some_and(|n| !seen.insert(n)) => (),
+            t => {
+                if let Type::Fn(ft) = t {
+                    ft.each_quantifier(|_, q| {
+                        bound.insert(q.cell_addr());
+                    })
+                }
+                t.for_each_child(&mut |c| go(c, seen, bound, vars))
+            }
+        })
+    }
+    let (mut seen, mut bound) = (LPooled::take(), LPooled::take());
+    let mut vars: LPooled<Vec<TVar>> = LPooled::take();
+    site.for_each_type(&mut |t| go(t, &mut seen, &mut bound, &mut vars));
+    vars.retain(|v| !bound.contains(&v.cell_addr()));
+    vars
+}
+
+/// A call's variables are one type for the call, so after an argument's
+/// check against a rank-2 formal none of them, `vars` of the call's
+/// signature `site`, may be or reach one of the formal's quantifiers,
+/// even where the formal itself holds it.
+fn signature_holds_none(
+    quantified: &[(ArcStr, usize)],
+    vars: &[TVar],
+    site: &FnType,
+    what: &str,
+) -> Result<()> {
+    if quantified.is_empty() {
+        return Ok(());
+    }
+    let asked = asked(quantified);
+    let mut walk = Free::new(&asked);
+    for v in vars {
+        if let Some(i) = walk.free(&Type::TVar(v.clone()), &mut |_, _| ()).first() {
+            let q = &quantified[*i as usize].0;
+            let site = Type::Fn(TArc::new(site.clone()));
+            bail!(
+                "{what} is not polymorphic in '{q}: the call's signature, of type {}, \
+                 would carry '{q} out through {v}, one type for the call",
+                printed_deref(&site)
+            )
+        }
+    }
+    Ok(())
 }
 
 /// A walk of the cells under a type, following bindings and an open
@@ -1579,14 +1703,8 @@ struct Free<'a> {
 }
 
 impl<'a> Free<'a> {
-    /// The asked cells free under `t`, in order; `met` is handed each asked
-    /// cell, with its number, as the walk meets it.
-    fn of(
-        t: &Type,
-        asked: &'a AHashMap<usize, u32>,
-        met: &mut impl FnMut(u32, &TVar),
-    ) -> LPooled<Vec<u32>> {
-        let mut walk = Self {
+    fn new(asked: &'a AHashMap<usize, u32>) -> Self {
+        Self {
             asked,
             nodes: LPooled::take(),
             sets: Interned::new(),
@@ -1594,12 +1712,18 @@ impl<'a> Free<'a> {
             joined: LPooled::take(),
             stack: LPooled::take(),
             depth: 0,
-        };
+        }
+    }
+
+    /// The asked cells free under `t`, in order; `met` is handed each asked
+    /// cell, with its number, as the walk meets it. A walk of another type
+    /// takes what this one answered.
+    fn free(&mut self, t: &Type, met: &mut impl FnMut(u32, &TVar)) -> LPooled<Vec<u32>> {
         let mut free: LPooled<Vec<u32>> = LPooled::take();
-        match walk.go(t, met).1 {
+        match self.go(t, met).1 {
             None => (),
             Some(Ans::One(i)) => free.push(i),
-            Some(Ans::Many(k)) => free.extend_from_slice(walk.sets.get(k)),
+            Some(Ans::Many(k)) => free.extend_from_slice(self.sets.get(k)),
         }
         free
     }
@@ -1814,7 +1938,7 @@ pub(crate) fn carried_out(
         false
     });
     if !index.is_empty() {
-        let free = Free::of(value, &index, &mut |_, _| ());
+        let free = Free::new(&index).free(value, &mut |_, _| ());
         foreign.retain(|tv| {
             index.get(&tv.cell_addr()).is_none_or(|i| free.binary_search(i).is_ok())
         });
@@ -4640,7 +4764,7 @@ impl<R: Rt> CallSite<R> {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
                 let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
                 let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
-                let fit = typecheck_arg(ctx, &farg.typ, hint.as_ref(), waits, n)?;
+                let fit = typecheck_arg(ctx, ftype, &farg.typ, hint.as_ref(), waits, n)?;
                 widening.fit(
                     &ctx.env,
                     self.fnode.typ(),
@@ -4659,7 +4783,7 @@ impl<R: Rt> CallSite<R> {
                 if let Some(n) = arg.node.as_mut() {
                     let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, typ);
                     let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, typ);
-                    let fit = typecheck_arg(ctx, typ, hint.as_ref(), waits, n)?;
+                    let fit = typecheck_arg(ctx, ftype, typ, hint.as_ref(), waits, n)?;
                     widening.fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)?;
                 }
             }

@@ -943,11 +943,14 @@ node graph IS the IR — there is no parallel typed IR
   outside, its lambdas' captures included, and no instance a call in it
   makes reaches `'b`, through bindings and an open cell's lower bounds
   and constraints, outside a function type there that quantifies `'b`
-  itself (`callsite::check_general`, `contain_generally`; not judged:
-  what the function whose result holds it shares across its own calls,
-  CR rank2-result-maker-01, a value contained as its monomorphic copy, CR
-  rank2-escape-hof-01, and a cell of a call's own signature its argument
-  puts `'b` below, CR rank2-call-signature-01);
+  itself (`callsite::check_general`, `contain_generally`); a written
+  holder's own variable reaches `'b` only under that function type, and
+  a variable of the call an argument or an omitted labeled default is
+  passed to is one type for the call: none named in the call's signature
+  may be or reach `'b`, under the formal included
+  (`callsite::signature_holds_none`; not judged: what the function whose
+  result holds it shares across its own calls, CR rank2-result-maker-01,
+  a value contained as its monomorphic copy, CR rank2-escape-hof-01);
   while a call
   checks its argument against the
   formal, `'b` is one type, which no definition in the argument

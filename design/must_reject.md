@@ -297,15 +297,18 @@ value that outlives it, a binding it reads or writes or a call's
 instance, reaches a quantifier, through bindings and an open cell's
 lower bounds (`y <- W(x)`) and constraints (a callee's bound `'b: 'c`
 tying the outer `y` to `x`), outside a function type there that
-quantifies it (`callsite::check_general`, `contain_generally`). Right
-site: the value. Open: what the function whose result holds the
-quantifier shares across its own calls (a let of its body the function
-it makes captures), CR rank2-result-maker-01; a value contained as its
-monomorphic copy (a connect whose collection HOF's callback constructs
-from the quantifier), CR rank2-escape-hof-01; a cell of a call's own
-signature the argument or an omitted labeled default puts the quantifier
-below (`k: fn<'a: Any>(x: 'a) -> W<'c>` given `|x| W(x)`), CR
-rank2-call-signature-01.
+quantifies it (`callsite::check_general`, `contain_generally`); a
+written holder's own variable reaches it only under that function type
+(`(fn<'a: Any>(x: 'a) -> W<'c>, W<'c>)` holding `(|x| W(x), W(1))`); a
+variable of the call an argument or an omitted labeled default is passed
+to, named in the call's signature, is not and reaches not the
+quantifier, under the formal included (`k: fn<'a: Any>(x: 'a) -> W<'c>`
+given `|x| W(x)`; `callsite::signature_holds_none`). Right site: the
+value. Open: what the function whose result holds the quantifier shares
+across its own calls (a let of its body the function it makes captures),
+CR rank2-result-maker-01; a value contained as its monomorphic copy (a
+connect whose collection HOF's callback constructs from the quantifier),
+CR rank2-escape-hof-01.
 
 ## Labeled and optional arguments across the fuzzer
 

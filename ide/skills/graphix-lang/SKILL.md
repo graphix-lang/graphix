@@ -296,7 +296,9 @@ another function type's result): `let h: fn<'a: Any>(x:
 'a) -> 'a = |x| { y <- x; x }` is refused, and so are `let mk: fn(z: i64)
 -> fn<'a: Any>(x: 'a) -> 'a = |z| |x| { y <- x; x }` and a function a call
 made whose instance holds `'a` (`mk(never())` over `|z| |x| { z <- x; z
-}`).
+}`). A parameter's other variables are one type per call: `|#k: fn<'a:
+Any>(x: 'a) -> W<'c>, n: i64| ..` takes no `|x| W(x)`, passed or as its
+default, since its `'c` would have to be every `'a`; write `W<'a>`.
 
 A `let` nothing writes that holds lambdas in a struct, tuple, array or
 other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`

@@ -2951,6 +2951,80 @@ const RANK2_LET_CONSTRAINS_OUTER_BY_REFERENCE: &str = r#"{
     (f(1), t, y + 1)
 }"#;
 
+// A call's variables are one type for the call: an argument held by a
+// rank-2 formal may not put the formal's quantifier into one, through the
+// call's result, another formal or the formal itself, written or omitted.
+const RANK2_CALL_SIGNATURE_RESULT: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let outer = |#k: fn<'a: Any>(x: 'a) -> W<'c>, n: i64| (k(n), k("s"));
+    let r = outer(#k: |x| W(x), 1);
+    let w: W<i64> = r.1;
+    w.0 + 1
+}"#;
+
+const RANK2_CALL_SIGNATURE_PARAMETER: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let outer = |#k: fn<'a: Any>(x: 'a) -> W<'c>, z: W<'c>| (k(1), k("s"), z);
+    let y = never();
+    let r = outer(#k: |x| W(x), y);
+    y <- W(1);
+    let w: W<i64> = r.1;
+    w.0 + 1
+}"#;
+
+const RANK2_CALL_SIGNATURE_FORMAL_ONLY: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let outer = |#k: fn<'a: Any>(x: 'a) -> W<'c>, n: i64| {
+        let a = k(n);
+        let b = k("s");
+        n
+    };
+    outer(#k: |x| W(x), 1)
+}"#;
+
+const RANK2_CALL_SIGNATURE_BARE: &str = r#"{
+    let outer = |#k: fn<'a: Any>(x: 'a) -> 'c, n: i64| (k(n), k("s"));
+    let r = outer(#k: |x| x, 1);
+    let q: (i64, i64) = r;
+    q.1 + 1
+}"#;
+
+const RANK2_CALL_OMITTED_DEFAULT: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let outer = |#k: fn<'a: Any>(x: 'a) -> W<'c> = |x| W(x), n: i64| (k(n), k("s"));
+    let r = outer(1);
+    let w: W<i64> = r.1;
+    w.0 + 1
+}"#;
+
+const RANK2_CALL_OMITTED_DEFAULT_FIELD: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let outer = |#k: {f: fn<'a: Any>(x: 'a) -> W<'c>} = {f: |x| W(x)}, z: W<'c>|
+        (k.f(1), k.f("s"), z);
+    let r = outer(W(1));
+    let w: W<i64> = r.1;
+    w.0 + 1
+}"#;
+
+const RANK2_CALL_HIDDEN_DEFAULT: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let f = |#k: fn<'a: Any>(x: 'a) -> W<'c> = |x| W(x), n: i64| (k(n), k("s"));
+    let app = |g: fn(n: i64) -> 'r| g(1);
+    let r = app(f);
+    let w: W<i64> = r.1;
+    w.0 + 1
+}"#;
+
+// A written variable of a rank-2 holder is generalized with the quantified
+// function type only where it stands under it: beside it, it carries the
+// quantifier out.
+const RANK2_LET_HOLDER_SHARES_ITS_VARIABLE: &str = r#"{
+    type W<'t> = Abstract<'t>;
+    let h: (fn<'a: Any>(x: 'a) -> W<'c>, W<'c>) = (|x| W(x), W(1));
+    let w: W<i64> = h.0("s");
+    w.0 + 1
+}"#;
+
 // A definition's declared variable a callee's bound ties to an outer
 // cell's constraint escapes it as a binding would.
 const DECLARED_CONSTRAINS_OUTER: &str = r#"{
@@ -3248,6 +3322,17 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (RANK2_LET_CONSTRAINS_OUTER, "the value is not polymorphic in 'a"),
         (RANK2_ARG_CONSTRAINS_OUTER, "the argument is not polymorphic in 'a"),
         (RANK2_LET_CONSTRAINS_OUTER_BY_REFERENCE, "the value is not polymorphic in 'a"),
+        (RANK2_CALL_SIGNATURE_RESULT, "not polymorphic in 'a: the call's signature"),
+        (RANK2_CALL_SIGNATURE_PARAMETER, "not polymorphic in 'a: the call's signature"),
+        (RANK2_CALL_SIGNATURE_FORMAL_ONLY, "not polymorphic in 'a: the call's signature"),
+        (RANK2_CALL_SIGNATURE_BARE, "not polymorphic in 'a: the call's signature"),
+        (RANK2_CALL_OMITTED_DEFAULT, "not polymorphic in 'a: the call's signature"),
+        (RANK2_CALL_OMITTED_DEFAULT_FIELD, "not polymorphic in 'a: the call's signature"),
+        (RANK2_CALL_HIDDEN_DEFAULT, "not polymorphic in 'a: the call's signature"),
+        (
+            RANK2_LET_HOLDER_SHARES_ITS_VARIABLE,
+            "not polymorphic in 'a: the type holding it",
+        ),
         (DECLARED_CONSTRAINS_OUTER, "'a escapes the definition"),
         (RIGID_BELOW_LET, "does not contain fn(x:"),
         (RIGID_BELOW_DECLARED, "does not contain fn(x:"),
@@ -7814,6 +7899,27 @@ run!(
 }"#,
     prints(r#"[i64:1, "s", i64:2, "t", i64:3, "v", i64:4, "w"]"#);
     FuseExpect::None
+);
+
+// A call's variable a rank-2 argument decides without the formal's
+// quantifier, and a quantifier its formal names where the call's variables
+// do not stand, take the argument, written, omitted or hidden.
+run!(
+    rank2_call_signature_takes_general_arguments,
+    r#"{
+  type W<'t> = Abstract<'t>;
+  let outer = |#k: fn<'a: Any>(x: 'a) -> W<'c>, n: i64| (k(n), k("s"));
+  let r = outer(#k: |x| W(2), 1);
+  let w: W<i64> = r.1;
+  let same = |#k: fn<'a: Any>(x: 'a) -> W<'a> = |x| W(x), n: i64| (k(n), k("s"));
+  let s = same(3);
+  let t = same(#k: |x| W(x), 4);
+  let id = |#k: fn<'a: Any>(x: 'a) -> 'a = |x| x, n: i64| (k(n), k("u"));
+  let app = |g: fn(n: i64) -> 'q| g(7);
+  (w.0, s.0.0, s.1.0, t.0.0, id(5), id(#k: |x| x, 6), app(id))
+}"#,
+    prints(r#"[i64:2, i64:3, "s", i64:4, [i64:5, "u"], [i64:6, "u"], [i64:7, "u"]]"#);
+    FuseExpect::Jit
 );
 
 // A payload that bounds an enclosing definition's variable makes the
