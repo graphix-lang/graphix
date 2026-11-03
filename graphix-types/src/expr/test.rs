@@ -2727,6 +2727,18 @@ proptest! {
         prop_assert!(same_positions(&e, &unpacked[0]), "{st}")
     }
 
+    // CR claude for claude: [test-gap/low] This fails at a rare seed: a generated
+    // quantifier bound holds one cell twice, `fn<'a: ['filter, 'filter]>`; one side
+    // of the round trip prints it `'filter` and the other `['filter, 'filter]`
+    // (unpack_sig decodes the two occurrences as cells of their own). The parser
+    // never builds such a union (`Type::flatten_set` collapses `['f, 'f]` to `'f`),
+    // so the generator writes a type no source can. Switching typexp's
+    // `Type::Set(Arc::from(t))` to `Type::flatten_set` alone did not make the seed
+    // pass: the shared cell comes from elsewhere in the generator. Decide whether
+    // the codec keeps one cell per name in a bound (as the parser's aliasing does)
+    // or the generator builds only what parses. Seed, its shrunk input in its
+    // comment: ~/ptmp/cr29/scratch/r9-J/review-fix/sig_pack_round_trip.seed.txt;
+    // seen in lane J's gate laneJ-gate-1103-022418 (sig-pack-dup-cell-01)
     /// The package codec hands back an interface as it prints.
     #[test]
     fn sig_pack_round_trip(sig in module_sig(true)) {
