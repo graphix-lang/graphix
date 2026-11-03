@@ -409,9 +409,10 @@ A node's production to a binding is delivered through
 this cycle, a quiet production standing with its old stamp (whether a
 wake owes a fire for one that changed the value is open); `Notify`
 picks whether a fire schedules the roots that read it. A wake's
-re-raise, catch-up's inject, a priming from the store, a born callee's
-quiet arguments and an error raised to a catch in its own root are
-fires in the event alone, never stored; a quiet formal's seed, a
+re-raise, catch-up's inject, a priming from the store and a born
+callee's quiet arguments are fires in the event alone, never stored; an
+error raised to a catch is stored as any write is, delivered the cycle
+it was raised in its handler's root, else a runtime write; a quiet formal's seed, a
 reference cell's quiet seed or its bottom where its place has no
 element, and a fold's quiet accumulator are written to the store alone
 (`design/dense_delivery.md`). A

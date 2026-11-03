@@ -87,10 +87,12 @@ flow — `design/seq_blocks.md` §7).
   scope.
 - Blocks and module bodies run catches LAST, INNERMOST FIRST, in update
   and in both typecheck passes, so same-cycle delivery (`deliver_error`'s
-  Vacant-insert, including an inner handler's rethrow) lands in the
+  `ExecCtx::deliver`, including an inner handler's rethrow) lands in the
   cycle the error was raised. Cross-top deliveries (a REPL catch in an
-  earlier input) take the `set_var` next-cycle path; the shell threads
-  a session scope so a toplevel catch covers later inputs.
+  earlier input) and a second raise to one handler in a cycle take the
+  `set_var` next-cycle path; the shell threads a session scope so a
+  toplevel catch covers later inputs. Either way the error is stored, so a
+  reader the handler builds after the raise reads it.
 - `catch(e: T)` ascribes `T` to `e` before checking the covered region.
   Each raised type is checked against `T` at its join, while a definition's
   declared variables are rigid. A declared error variable must carry a bound

@@ -96,15 +96,19 @@ schedules the roots that read the binding (`Roots`: a let, a reference
 cell, a module's val, `pc`, a runtime write) or only the walk's readers
 (`Walk`: binds read inside their own root).
 
-Five fires go into the event alone and are never stored: a `let`'s wake
+Four fires go into the event alone and are never stored: a `let`'s wake
 re-raise of a write the store already holds
 (`Bind::reraise_writes_while_asleep`), wake catch-up's inject of a
 standing value (`wake::inject`), a priming of a fresh body's reads from
-the store (a reloaded module's, a fresh bind's defaults), a born
+the store (a reloaded module's, a fresh bind's defaults), and a born
 callee's quiet arguments (`publish_production`'s
 `QuietAtRoot::Deliver`; a quiet formal's seed stands, `Stand`, as
-`ByRef`'s does), and an error raised to a catch in its own root
-(`error::deliver_error`; one in another root is a runtime write).
+`ByRef`'s does). An error raised to a catch is stored as any write is
+(`error::deliver_error`): delivered (`Walk`) the cycle it was raised
+where the handler is in the raise's root and nothing was delivered to it
+yet this cycle, else a runtime write, so a reader the handler builds
+after the raise reads it, and wake catch-up re-raises it to one that
+slept through it.
 
 Four writes go to the store alone and put nothing in the event: a
 quiet formal's seed (`publish_production`'s `QuietAtRoot::Stand`), a

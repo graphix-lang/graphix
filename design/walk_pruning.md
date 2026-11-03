@@ -291,7 +291,7 @@ what catches a node traversed outside its boundary.
 **Marks.** `RtView::mark_readers` marks the boundary of every reader of
 an id: on a stamped `store_insert`, on `notify_set`, and through
 `ExecCtx::publish`/`try_publish` for a write to the event alone (the
-call site's formals, a same-root raise, a module's prime). The root's
+call site's formals, a module's prime). The root's
 `wake_readers` marks for the cycle's deliveries. A fork also keeps the
 readers it registered this cycle, which the runtime learns only at the
 join, and marks them too (a core-trait hook site built in a branch and

@@ -392,10 +392,9 @@ run!(
     FuseExpect::None
 );
 
-/// A catch installed by one `GXHandle::compile` input covers later
-/// inputs; the `?`'s delivery crosses tops via `set_var`.
-#[tokio::test(flavor = "current_thread")]
-async fn catch_repl_cross_input() -> anyhow::Result<()> {
+/// Compile each of `inputs` as a REPL input, then `probe`, and wait for
+/// the probe to produce the string `want`.
+async fn repl_inputs_produce(inputs: &[&str], probe: &str, want: &str) -> Result<()> {
     use arcstr::ArcStr;
     use graphix_package_core::testing::init;
     use graphix_rt::GXEvent;
@@ -403,33 +402,84 @@ async fn catch_repl_cross_input() -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::channel(1000);
     let ctx = init(tx, crate::TEST_REGISTER).await?;
     // CompRes deletes its graph on Drop; hold every input's handle.
-    let _i1 = ctx.rt.compile(ArcStr::from("let tag = \"\"")).await?;
-    let _i2 = ctx
-        .rt
-        .compile(ArcStr::from(
-            "catch(e: Error<ErrChain<`ArrayIndexError(string)>>) tag <- e ~ \"caught\"",
-        ))
-        .await?;
-    let _i3 = ctx.rt.compile(ArcStr::from("let a = [1]")).await?;
-    let _i4 = ctx.rt.compile(ArcStr::from("a[9]?")).await?;
-    let probe = ctx
-        .rt
-        .compile(ArcStr::from("select tag { \"\" => never(\"\"), t => t }"))
-        .await?;
+    let mut held = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        held.push(ctx.rt.compile(ArcStr::from(*input)).await?);
+    }
+    let probe = ctx.rt.compile(ArcStr::from(probe)).await?;
     let id = probe.exprs[0].id;
-    // The probe emits on its init read or on tag's flip.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let batch = tokio::time::timeout_at(deadline, rx.recv()).await;
-        let Ok(Some(batch)) = batch else { anyhow::bail!("tag never became \"caught\"") };
+        let Ok(Some(batch)) = batch else {
+            anyhow::bail!("the probe never produced {want:?}")
+        };
         for ev in batch.iter() {
-            if let GXEvent::Updated(eid, netidx_value::Value::String(s)) = ev {
-                if *eid == id && &**s == "caught" {
-                    return Ok(());
-                }
+            if let GXEvent::Updated(eid, Value::String(s)) = ev
+                && *eid == id
+                && &**s == want
+            {
+                return Ok(());
             }
         }
     }
+}
+
+/// A catch installed by one `GXHandle::compile` input covers later
+/// inputs; the `?`'s delivery crosses tops via `set_var`.
+#[tokio::test(flavor = "current_thread")]
+async fn catch_repl_cross_input() -> Result<()> {
+    repl_inputs_produce(
+        &[
+            "let tag = \"\"",
+            "catch(e: Error<ErrChain<`ArrayIndexError(string)>>) tag <- e ~ \"caught\"",
+            "let a = [1]",
+            "a[9]?",
+        ],
+        "select tag { \"\" => never(\"\"), t => t }",
+        "caught",
+    )
+    .await
+}
+
+/// A raise is stored, in its handler's root or another's: a reader
+/// the handler builds after the raise reads it.
+const CATCH_READER_BORN_AFTER_THE_RAISE: &str = r#"{
+    let seen = false;
+    let out = "";
+    let r = {
+        catch(e) {
+            seen <- e ~ true;
+            out <- select seen { true => seen ~ "[e.0.error]", false => never() }
+        };
+        error(`Boom)?
+    };
+    select out { "" => never(), s => s }
+}"#;
+
+run!(
+    catch_reader_born_after_the_raise,
+    CATCH_READER_BORN_AFTER_THE_RAISE,
+    is(Value::String("`Boom".into()));
+    FuseExpect::Jit
+);
+
+#[tokio::test(flavor = "current_thread")]
+async fn catch_repl_reader_born_after_the_raise() -> Result<()> {
+    repl_inputs_produce(
+        &[
+            "let seen = false",
+            "let out = \"\"",
+            "catch(e: Error<ErrChain<`Boom>>) { \
+               seen <- e ~ true; \
+               out <- select seen { true => seen ~ \"[e.0.error]\", false => never() } \
+             }",
+            "error(`Boom)?",
+        ],
+        "select out { \"\" => never(\"\"), s => s }",
+        "`Boom",
+    )
+    .await
 }
 
 // A handler installed inside a recursive body belongs to its

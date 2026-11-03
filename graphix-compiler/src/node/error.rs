@@ -1,7 +1,7 @@
 use super::{VarRead, read_var, wake::FreshFrame};
 use crate::{
     BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, HandlerKind, Node, NodeView,
-    PrintFlag, Refs, Rt, Scope, Tag, TagValue, Update, View,
+    Notify, PrintFlag, Refs, Rt, Scope, Tag, TagValue, Update, View,
     compiler::compile,
     defetyp,
     env::Env,
@@ -788,7 +788,7 @@ macro_rules! report_ignored {
 }
 pub(crate) use report_ignored;
 
-// CR claude for claude: [bug/low] A raise to a catch in its own root is put in the event
+// XCR claude for claude: [bug/low] A raise to a catch in its own root is put in the event
 // alone (try_publish), never stored; one in another root is a runtime write
 // (rt.set_var), stored. So a reader in the handler born after the raise does not see
 // the error: `catch(e) out <- select ep { n if n >= 3 => ep ~ "[e.0.error]", _ =>
@@ -798,11 +798,21 @@ pub(crate) use report_ignored;
 // it through ExecCtx::deliver (Notify::Walk), keeping the queue for a second raise in
 // one cycle, so both roots store it, and pin both. Found by a probe for x-dup-02's
 // doc: ~/ptmp/cr29/scratch/r8-N/catch/{c0,c2}.gx (catch-binder-store-01)
+// 2026-11-03 claude: deliver_error delivers a raise in its handler's root through
+// ExecCtx::deliver (Notify::Walk), so the store holds it as it holds a cross-root
+// raise's runtime write; a second raise to one handler in a cycle still queues through
+// rt.set_var. A reader the handler builds after the raise reads the error, and wake
+// catch-up re-raises it to a handler arm that slept through it (probe w1.gx: lane 4
+// `Boom(1) where main never writes out). Pins:
+// lang::errors::catch_reader_born_after_the_raise (times out in all four modes without
+// the change) and catch_repl_reader_born_after_the_raise (the cross-root half, passes on
+// main too). Firing change: needs a soak. Probes ~/ptmp/cr29/scratch/r9-N/catch/.
 
 /// Deliver a `?`'s raw error payload `e`, a value of `raised`, to
 /// `handler` on behalf of the `?` at `spec` under `own_top`. The one handler path, shared by
-/// `Qop::update` and the fused kernel's delivery drain: same-top
-/// deliveries land in this cycle's event, cross-top ones go through
+/// `Qop::update` and the fused kernel's delivery drain. The error is
+/// stored as any write is: a same-top delivery lands in this cycle's
+/// event, a cross-top one or a second one this cycle goes through
 /// `rt.set_var`.
 pub(crate) fn deliver_error<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
@@ -816,12 +826,10 @@ pub(crate) fn deliver_error<R: Rt>(
     let (id, handler_top) = handler.id();
     let e = values.wrap_error(&ctx.env, raised, spec, e);
     let v = Value::Error(e.into());
-    if handler_top != own_top {
+    if handler_top != own_top || ctx.event.variables.contains_key(&id) {
         ctx.rt.set_var(id, v)
     } else {
-        if let Err(tv) = ctx.try_publish(id, TagValue::fired(v)) {
-            ctx.rt.set_var(id, tv.value())
-        }
+        ctx.deliver(id, TagValue::fired(v), Notify::Walk)
     }
 }
 
