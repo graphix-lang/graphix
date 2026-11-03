@@ -342,6 +342,14 @@ pub fn is_do_block(part: &str) -> bool {
     part.strip_prefix("#do").is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// True iff `part` is an impl's or a trait's default methods' scope
+/// component: a `let` directly in one binds a method.
+pub fn is_method_block(part: &str) -> bool {
+    ["#impl", "#trait"].iter().any(|kind| {
+        part.strip_prefix(kind).is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
 /// A lexical scope as the source names it: every generated block
 /// component dropped.
 pub fn written_scope(scope: &str) -> compact_str::CompactString {

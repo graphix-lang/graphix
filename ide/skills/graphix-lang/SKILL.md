@@ -300,7 +300,9 @@ made whose instance holds `'a` (`mk(never())` over `|z| |x| { z <- x; z
 fn<'a: 'c>(x: 'a) -> 'a, z: 'c|`, `type K<'p> = fn<'a: 'p>(x: 'a) -> 'a`
 and `fn<'q: Any>(k: fn<'a: 'q>(..), ..)` are refused (bound it by a
 written type, `fn<'a: i64>`); a sibling, `fn<'a: Any, 'b: ['a, null]>`,
-is fine, and so is any bound of a `.gxi` `val`'s own quantifiers. A
+is fine, and so is any bound of a `.gxi` `val`'s or a trait method's own
+quantifiers (`val m: fn<'a: ['b, null]>(self, x: 'a, y: 'b) -> 'a`); a
+trait method's parameter `fn<'a: [self, null]>` is refused. A
 parameter's other variables are one type per call: `|#k: fn<'a:
 Any>(x: 'a) -> W<'c>, n: i64| ..` takes no `|x| W(x)`, passed or as its
 default, since its `'c` would have to be every `'a`; write `W<'a>`. An

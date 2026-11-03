@@ -8777,3 +8777,71 @@ run!(
     refused("bound names 'b, which");
     FuseExpect::None
 );
+
+// self decides a constructor trait's element, and a labeled parameter
+// comes before self.
+run!(
+    rank2_bound_naming_a_ctor_traits_element_is_refused,
+    r#"{
+  trait C { val m: fn(#f: fn<'b: ['a, null]>(x: 'b) -> 'b, self<'a>) -> null };
+  impl C for Array<'_> { let m = |#f, s| f(null) };
+  C::m(#f: |x| x, [1])
+}"#,
+    refused("bound names 'a, which");
+    FuseExpect::None
+);
+
+run!(
+    rank2_bound_naming_self_is_refused,
+    r#"{
+  trait T { val m: fn(#k: fn<'a: [self, null]>(x: 'a) -> 'a, self) -> (self, null) };
+  impl T for i64 { let m = |#k, s| (k(s), k(null)) };
+  T::m(#k: |x| x, 1)
+}"#,
+    refused("bound names 'self, which");
+    FuseExpect::None
+);
+
+// A trait method's own quantifiers are its scheme's at each impl, as at
+// its declaration, whether the impl writes the method's type or not.
+run!(
+    a_trait_methods_own_bound_names_any_variable_at_its_impls,
+    r#"{
+  trait T { val m: fn<'a: ['b, null]>(#x: 'a, self, y: 'b) -> 'a };
+  impl T for i64 { let m = |#x, s, y| x };
+  impl<'e> T for Array<'e> { let m = |#x, s, y| x };
+  impl T for string {
+    let m: fn<'a: [null, 'b]>(#x: 'a, s: string, y: 'b) -> 'a = |#x, s, y| x
+  };
+  (T::m(#x: 2, 1, 3), T::m(#x: null, [1], "b"), T::m(#x: "a", "s", "c"))
+}"#,
+    prints(r#"[i64:2, null, "a"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_trait_methods_own_bound_names_any_variable_at_its_default,
+    r#"{
+  trait T { val m: fn<'a: ['b, null]>(#x: 'a, self, y: 'b) -> 'a = |#x, s, y| x };
+  impl T for i64 {};
+  impl<'e> T for Array<'e> {};
+  (T::m(#x: 2, 1, 3), T::m(#x: null, [1], "b"))
+}"#,
+    prints("[i64:2, null]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_ctor_trait_methods_own_bound_names_its_element_at_its_impls_and_default,
+    r#"{
+  trait C {
+    val m: fn<'b: ['a, null]>(#x: 'b, self<'a>) -> 'b;
+    val d: fn<'b: ['a, null]>(#x: 'b, self<'a>) -> 'b = |#x, s| x
+  };
+  impl C for Array<'_> { let m = |#x, s| x };
+  impl C for List<'_> { let m = |#x, s| x };
+  (C::m(#x: 2, [1]), C::m(#x: null, [<"t">]), C::d(#x: "s", ["t"]), C::d(#x: null, [<1>]))
+}"#,
+    prints(r#"[i64:2, null, "s", null]"#);
+    FuseExpect::Jit
+);

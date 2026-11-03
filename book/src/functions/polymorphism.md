@@ -151,7 +151,8 @@ error: ... a rank-2 quantifier's bound names 'c, which this function type does n
 
 A bound naming another variable of the same function type
 (`fn<'a: Any, 'b: ['a, null]>`) is fine, and so is any bound of an
-interface `val`'s own variables, which each use picks.
+interface `val`'s or a trait method's own variables, which each use
+picks.
 
 A third bound, `Discernible`, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type

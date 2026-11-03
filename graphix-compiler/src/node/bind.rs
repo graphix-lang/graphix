@@ -302,7 +302,13 @@ impl<R: Rt> Bind<R> {
         let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
         let annotation = match annotation {
             Some(t) => {
-                let t = t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?;
+                let t = t.scope_refs(&scope.lexical);
+                let declares_method = netidx_core::path::Path::basename(&*scope.lexical)
+                    .is_some_and(crate::is_method_block);
+                let t = match declares_method {
+                    true => t.rewrite_declared_args(&ctx.env)?,
+                    false => t.rewrite_trait_args(&ctx.env)?,
+                };
                 super::lambda::body_annotation(ctx, &t);
                 Some(t)
             }

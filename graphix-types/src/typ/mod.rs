@@ -3374,11 +3374,12 @@ impl Type {
                 tr.name
             ),
             Type::Fn(ft) => {
-                for (_, c) in ft.constraint_view().iter() {
+                let bounds = ft.constraint_view();
+                for (_, c) in bounds.iter() {
                     c.check_bound(env)?;
                 }
                 if !scheme {
-                    ft.check_bounds_closed()?;
+                    ft.check_bounds_closed(&bounds)?;
                 }
                 let mut quantifiers: LPooled<Vec<ArcStr>> =
                     ft.quantifiers.iter().cloned().collect();

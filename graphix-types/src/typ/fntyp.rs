@@ -964,12 +964,33 @@ impl FnType {
         }
     }
 
-    /// Refuse a bound of the type's own quantifiers naming a variable it
-    /// does not quantify. A rank-2 quantifier is held rigid at exactly its
-    /// bounds, which such a variable, decided elsewhere, does not say.
-    pub fn check_bounds_closed(&self) -> Result<()> {
+    // CR claude for eric: [bug/low] A trait method's parameter whose rank-2 bound names
+    // `self` or a constructor trait's element is refused here, as any variable its written
+    // type does not quantify is: `trait T { val m: fn(self, k: fn<'a: [self, null]>(x: 'a)
+    // -> 'a) -> (self, null) }` and `trait C { val m: fn(self<'a>, f: fn<'b: ['a,
+    // null]>(x: 'b) -> 'b) -> null }` ("a rank-2 quantifier's bound names 'self"). Main
+    // (387c29e60) runs every such method right in every mode where the rank-2 parameter is
+    // positional, so checked after `self`, which decides both: an impl, a generic impl, a
+    // default body (t7, t8, t9, t11, t12). A labeled parameter comes before `self`, and
+    // there it is the hole rank2-bound-instance-01 closes (`fn(#f: fn<'b: ['a, null]>(x:
+    // 'b) -> 'b, self<'a>)`: main's check passes, its build refuses every instance, s9,
+    // s10) or main's check refuses it (`#k: fn<'a: [self, null]>`, s7, s8). No annotation
+    // passes: the trait cannot write its impls' types. Options: (a) keep refusing, the
+    // one-line rule as it stands; (b) let a positional parameter's rank-2 bound name `self`
+    // and its element, a labeled one's not: one line, but the parameter's kind decides, and
+    // only what main runs argues that a positional parameter is always checked after
+    // `self`. Pins of the labeled shapes, which stay refused either way:
+    // lang::types::rank2_bound_naming_self_is_refused,
+    // rank2_bound_naming_a_ctor_traits_element_is_refused. probes:
+    // ~/ptmp/cr29/scratch/r11-R/r1fix/{t7_self_in_rank2,t8_self_in_rank2_generic,t9_ctor_elem_rank2,t11_self_rank2_default,t12_elem_rank2_default,s7_labeled_first,s8_labeled_first_default,s9_elem_labeled_first,s10_elem_labeled_first_default}.gx
+    // (rank2-self-bound-01)
+    /// Refuse a bound of the type's own quantifiers (`bounds`, its
+    /// [`Self::constraint_view`]) naming a variable it does not quantify.
+    /// A rank-2 quantifier is held rigid at exactly its bounds, which such
+    /// a variable, decided elsewhere, does not say.
+    pub fn check_bounds_closed(&self, bounds: &[(TVar, Type)]) -> Result<()> {
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        for (_, b) in self.constraint_view().iter() {
+        for (_, b) in bounds.iter() {
             b.collect_tvars(&mut named);
         }
         match named.keys().filter(|n| !self.quantifiers.contains(*n)).min() {

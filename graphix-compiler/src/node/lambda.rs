@@ -591,6 +591,26 @@ pub struct InstanceTypes {
 // repos has no verdict change. rank2-structured-bound-01 and
 // body-annotation-bound-quantifier-01 (round-9 CRs that never landed) are moot: their
 // shapes are refused.
+// 2026-11-03 claude: Review r11 fixes: an impl's method and a default body declare the
+// method, so their let annotation (the generated one, or one the impl writes) is
+// rewritten as a declared signature (Bind::compile, is_method_block): its own
+// quantifiers keep any bound, as at the trait's declaration; main runs all of these
+// right (t1, t3, t6, u1-u8). Pins that fail without it (12 of 12 runs):
+// lang::types::a_trait_methods_own_bound_names_any_variable_at_its_impls,
+// _at_its_default,
+// a_ctor_trait_methods_own_bound_names_its_element_at_its_impls_and_default. A bound
+// naming self or a constructor trait's element stays refused (a labeled parameter before
+// self is the hole, s9/s10): CR rank2-self-bound-01 for Eric; pins
+// rank2_bound_naming_self_is_refused and
+// rank2_bound_naming_a_ctor_traits_element_is_refused (8 of 8 runs fail without the
+// rule). Lost too, which main runs: a positional parameter's bound naming self or the
+// element (t7, t8, t9, t11, t12), a lambda's quantifier bounded by a written fn type
+// naming another variable ('k: fn<'a: 'c>(..) |#k: 'k, z: 'c|, e3-e3e), an interface val
+// returning such a type (v3), never<fn<'a: 'c>(..)> (never1), an abstract's
+// representation bounded by its parameter (abs1). Corrected: an enclosing written
+// quantifier (enc_q2) passes main's check and its build refuses it,
+// rank2-bound-instance-01's own class, not a main check refusal. probes:
+// ~/ptmp/cr29/scratch/r11-R/r1fix/.
 fn instance_sig<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,
