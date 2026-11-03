@@ -669,6 +669,34 @@ impl<X: GXExt> GX<X> {
                 }
             })
         };
+        // CR claude for eric: [perf/medium] Every cycle's update pass runs in
+        // `block_in_place`, which hands this worker's core to a blocking-pool
+        // thread, so a busy runtime's passes land on a different OS thread from
+        // cycle to cycle: a program on a 1 ms timer keeps 109 to 134
+        // tokio-rt-worker threads (61 on a 50 ms timer; 16 with the pass run
+        // inline). Every thread-local cache a pass touches is kept once per such
+        // thread: netidx-value's array free lists (UPSTREAM.md, "each thread
+        // keeps up to 187 MB of free arrays"), poolshark's local pools,
+        // `FastMemo` (their hit rates were not measured). Under parallel eval the
+        // eval pool builds the values and these threads drop them, so each fills
+        // its free lists. RSS on main's netidx, 30 s steps over 6 min: l_flat
+        // (--no-fusion) 197 to 359 MB, a partly fused recursion (fusion on) 332
+        // to 581 MB, 904 and 1396 MB in runs that kept 100 and 140 threads; with
+        // the pass run inline both are flat, at 71 and 82 MB. The pin
+        // forked_heap_settles (stdlib/graphix-tests/tests/forked_cycle_heap.rs,
+        // ignored) fails on main (4523 bytes a cycle) and passes with the pass
+        // run inline (-113 to 0), as it does with netidx-value's lists bounded to
+        // 256 KiB a thread. Running the pass inline is not the fix: 4 of
+        // graphix-shell/tests/interrupt_wedge.rs's 9 tests then failed (a later
+        // cycle's wedge was not interrupted). Options: (a) keep this, bound the
+        // caches per thread (the netidx patch: the partly fused probe at 155 to
+        // 158 MB), and accept 100 or more threads, each with its own caches; (b)
+        // one OS thread per runtime runs every pass while the task waits for it
+        // in `block_in_place`: only the waiter hops, the pass and its caches stay
+        // on one thread and the wedge guarantee holds, at a cross-thread handoff
+        // a cycle (not measured). Probes: ~/ptmp/cr29/scratch/r10-M/
+        // (partial_timer.gx, l_flat_timer.gx, rss_long.sh, thread_use.sh).
+        // (runtime-thread-spread-01)
         if matches!(
             tokio::runtime::Handle::current().runtime_flavor(),
             tokio::runtime::RuntimeFlavor::CurrentThread

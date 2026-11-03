@@ -301,11 +301,17 @@ the state of a fix, and Graphix's side.
   bound the repro is flat at 37 MB. `bench/par_symbolic.gx`'s busiest
   list peaks at 65 KB, so with 256 KiB it still finds 99.8% of its 2M
   arrays on a list, serial and forked.
-- **Graphix's side.** Not worked around: the growth stops at its bound,
-  and nothing crashes, hangs or gives a wrong answer. The pin
-  `stdlib/graphix-tests/tests/forked_cycle_heap.rs` is ignored until the
-  fix lands. On main it measures 3.2 to 4.5 KB of growth a cycle; with
-  the bound, 0 to 126 bytes.
+- **Graphix's side.** The runtime multiplies the bound: each cycle's
+  update pass runs in `block_in_place`, so a busy runtime's passes land
+  on 100 or more threads, each dropping values and keeping its own lists
+  (CR runtime-thread-spread-01). With the pass run inline the repro is
+  flat with these lists as they are, but Ctrl-C then cannot stop a
+  wedged cycle. Not worked around: the growth stops at its bound, and
+  nothing crashes, hangs or gives a wrong answer. The pin
+  `stdlib/graphix-tests/tests/forked_cycle_heap.rs` is ignored until one
+  of the two is fixed. On main it measures 3.2 to 4.5 KB of growth a
+  cycle; with the bound, 0 to 126 bytes; with the pass inline, 0 or
+  less.
 
 ## iced_core 0.14: flex layout sums FillPortion weights in a u16
 

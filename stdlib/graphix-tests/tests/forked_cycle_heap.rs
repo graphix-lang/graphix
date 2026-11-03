@@ -1,11 +1,12 @@
 //! The live heap bytes a program holds, every thread's, as it runs
 //! cycles that change nothing but a counter: a recursion through a
 //! collection that rebuilds the same tree each cycle, forked at every
-//! fork point over a fixed set of threads, node-walked, fused and partly
-//! fused. What a thread keeps of what it frees is bounded per thread, so
-//! once each holds its share the heap stops growing: between two late
-//! cycle counts it may grow `MAX_BYTES_PER_CYCLE` a cycle, a small part
-//! of the arrays a cycle builds.
+//! fork point over 16 eval workers and an 8-worker runtime, node-walked,
+//! fused and partly fused. What a thread keeps of what it frees is
+//! bounded per thread, so once each holds its share the heap stops
+//! growing: between two late cycle counts it may grow
+//! `MAX_BYTES_PER_CYCLE` a cycle, a small part of the arrays a cycle
+//! builds.
 
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -149,7 +150,7 @@ fn assert_heap_settles(
 
 /// One test, so the worker count is set before any runtime reads it.
 #[test]
-#[ignore = "netidx-value's per-thread free arrays (UPSTREAM.md)"]
+#[ignore = "per-thread free arrays: UPSTREAM.md, runtime-thread-spread-01"]
 fn forked_heap_settles() {
     // SAFETY: nothing else runs in this binary yet.
     unsafe { std::env::set_var("GRAPHIX_EVAL_THREADS", EVAL_THREADS) };
