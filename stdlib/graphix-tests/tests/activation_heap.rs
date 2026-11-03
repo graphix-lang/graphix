@@ -1,5 +1,6 @@
 //! The live heap bytes a call activation and a collection slot cost the
-//! node-walk, and a fused activation the JIT, serial and pruned as a
+//! node-walk, and a fused activation the JIT (the blocks and tables its
+//! layout fixes; the code is outside the heap), serial and pruned as a
 //! script runs: the same on every host,
 //! so the caps sit a few percent over them. The count is the runtime's
 //! thread's (a current-thread tokio runtime): the worker pools' own
@@ -89,6 +90,8 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 const SIZES: [i64; 3] = [1, 5_000, 20_000];
+/// Deep enough that the tree outweighs what compiling held at its peak.
+const FUSED_SIZES: [i64; 3] = [20_000, 80_000, 160_000];
 const MAX_BYTES_PER_ACTIVATION: i64 = 5_640;
 const MAX_BYTES_PER_SLOT: i64 = 3_140;
 const MAX_BYTES_PER_FUSED_ACTIVATION: i64 = 192;
@@ -135,40 +138,44 @@ async fn run(program: CompactString, expected: Value, fused: bool) -> Result<i64
     Ok(peak - base)
 }
 
+/// One `what` costs at most `ceiling` bytes, and about as much between
+/// the first two `sizes` as between the last two.
 fn assert_linear_cost(
     what: &str,
     ceiling: i64,
     fused: bool,
+    sizes: [i64; 3],
     program: impl Fn(i64) -> (CompactString, Value),
 ) {
-    let [base, mid, deep] = SIZES.map(|n| {
+    let [base, mid, deep] = sizes.map(|n| {
         let (text, expected) = program(n);
         peak_bytes(text, expected, fused)
     });
-    let low = (mid - base) / (SIZES[1] - SIZES[0]);
-    let high = (deep - mid) / (SIZES[2] - SIZES[1]);
+    let low = (mid - base) / (sizes[1] - sizes[0]);
+    let high = (deep - mid) / (sizes[2] - sizes[1]);
     eprintln!(
-        "{what}: peak live heap at {SIZES:?}: {base} {mid} {deep} bytes; \
+        "{what}: peak live heap at {sizes:?}: {base} {mid} {deep} bytes; \
          {low}/{high} bytes per {what}"
     );
     assert!(high <= ceiling, "one {what} costs {high} bytes, over {ceiling}");
+    let floor = ceiling / 4;
     assert!(
-        high <= 2 * low.max(1024) && low <= 2 * high.max(1024),
+        high <= 2 * low.max(floor) && low <= 2 * high.max(floor),
         "{what} cost {low} bytes below {} deep, {high} bytes above",
-        SIZES[1]
+        sizes[1]
     );
 }
 
 #[test]
 fn activations_and_slots_cost_linear_heap() {
-    assert_linear_cost("activation", MAX_BYTES_PER_ACTIVATION, false, |depth| {
+    assert_linear_cost("activation", MAX_BYTES_PER_ACTIVATION, false, SIZES, |depth| {
         let program = format_compact!(
             "{{\n  let rec f = |n: i64| -> i64 select n {{\n    0 => 0,\n    \
              _ => n + f(n - 1)\n  }};\n  f({depth})\n}}"
         );
         (program, Value::I64(depth * (depth + 1) / 2))
     });
-    assert_linear_cost("slot", MAX_BYTES_PER_SLOT, false, |n| {
+    assert_linear_cost("slot", MAX_BYTES_PER_SLOT, false, SIZES, |n| {
         let program = format_compact!(
             "{{\n  let values = array::init({n}, |i| i);\n  \
              (array::len(values), values[0]$, values[-1]$)\n}}"
@@ -186,6 +193,7 @@ fn fused_slot_activations_cost_linear_heap() {
         "fused activation",
         MAX_BYTES_PER_FUSED_ACTIVATION,
         true,
+        FUSED_SIZES,
         |depth| {
             let program = format_compact!(
                 "{{\n  let rec t = |d: i64| -> i64 select d {{\n    0 => 1,\n    \

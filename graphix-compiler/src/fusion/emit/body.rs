@@ -405,19 +405,22 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 
     /// Claim the anchor of a [`kernel_abi::SlotRoots`] chain of
     /// `own_levels` directory levels in this callee body's site channel:
-    /// the per-slot roots of a self-call in a loop.
+    /// the per-slot roots of a self-call in a loop. `None` outside a
+    /// callee body, which has no site channel.
     pub(crate) fn claim_slot_roots(
         &mut self,
         own_levels: u32,
-    ) -> (TruncAnchor, StateWord) {
-        assert_eq!(self.ctx.claims, Channel::Site, "a self-call is a callee body's");
+    ) -> Option<(TruncAnchor, StateWord)> {
+        if self.ctx.claims != Channel::Site {
+            return None;
+        }
         let off = self.ctx.site.claim();
         self.ctx
             .site
             .slot_roots
             .borrow_mut()
             .push(kernel_abi::SlotRoots { rel: (off / 8) as u32, own_levels });
-        (TruncAnchor::Site(off), self.claimed_word(off))
+        Some((TruncAnchor::Site(off), self.claimed_word(off)))
     }
 
     /// The leaf this body's code passes for its [`Self::claim_slot_roots`]

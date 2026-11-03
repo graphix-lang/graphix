@@ -494,7 +494,9 @@ fn claim_callee_block(
 /// [`kernel_abi::SlotRoots`] chain of this body, one root per slot.
 fn slot_root_word(cx: &mut BodyCx) -> Result<ClifValue> {
     let (idx, table) = in_loop_table(cx, |cx, dirs, leaf| {
-        let claim = cx.claim_slot_roots(dirs.len() as u32);
+        let claim = cx.claim_slot_roots(dirs.len() as u32).ok_or_else(|| {
+            anyhow!("emit_clif: no per-slot activation root for a self-call in a loop — de-fuse")
+        })?;
         let leaf_rt = cx.child_roots_leaf();
         chain_leaf(cx, 1, Some(leaf_rt), claim, dirs, leaf)
     })?;
