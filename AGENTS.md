@@ -1221,7 +1221,10 @@ node graph IS the IR — there is no parallel typed IR
   production whose STALE bit follows the same trigger fold as a value
   (`nodes::emit_bottom_placeholder` takes the governing disc); a node
   produces, placeholder included, the form its type FREEZES to, which is
-  how its readers take it (`BodyCx::node_kind`); kernel
+  how its readers take it (`BodyCx::node_kind`); a pattern reads a
+  value at its arm's predicate's type only where the value is known to
+  be of it (`SelectScrut::Composite`'s `exact`), else it tests the
+  value's words; kernel
   cache keys carry catch coverage and a resolution fingerprint; a pass
   the fusion gate owns must never change what the typechecker sees.
 - **JIT pipeline and memory** (`fusion/emit/jit.rs`): emission names

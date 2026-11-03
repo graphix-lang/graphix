@@ -226,6 +226,20 @@ each was obvious in hindsight and invisible in advance.
    aborts. A type that does not freeze de-fuses the region. Pins:
    `lang::fusion::*_select_over_bottom`.
 
+10. **A pattern reads a value at its own type.** An arm's predicate is
+   narrowed to what the arm matches (`(false, n)` types its first element
+   `bool`), and a shallow test admits a member by its outermost shape
+   alone, so a member the predicate does not hold whole (`([bool, null],
+   i64)`) reaches the arm's tests typed narrower than its values. A
+   composite read at such a type is not `exact` (`SelectScrut::Composite`,
+   `emit_inferred_guard_cond`): its literals test the value's words, never
+   a typed read (a null reads as `false`'s 0), and a composite inside it
+   is tested deeply (`graphix_inferred_type_matches`), as a variant's
+   payload, always typed by its predicate, is; an or-pattern of
+   composites there de-fuses, since its alternatives read the words as
+   the composite untested. Pins: `fusion_review::select_*_at_a_nullable_*`,
+   `select_composite_or_pattern_at_a_payload`.
+
 ## What was ruled out
 
 - **A central region planner** (the classic path): it lost the whole

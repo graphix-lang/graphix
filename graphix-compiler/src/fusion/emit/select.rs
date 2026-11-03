@@ -3,7 +3,8 @@
 
 use crate::{
     BindId, Node, NodeView, Refs, Rt, Update,
-    expr::ExprId,
+    env::Env,
+    expr::{ExprId, union_members},
     fusion::{
         self,
         kernel_abi::{self, AbiKind, PrimType},
@@ -88,9 +89,12 @@ pub(super) enum SelectScrut {
     },
     /// An array/tuple/struct scrutinee whose pointer stays live across
     /// the whole arm chain; structural patterns read elements through it.
+    /// `exact`: its static type is its value's, so an element's typed
+    /// read is faithful.
     Composite {
         disc: ClifValue,
         ptr: ClifValue,
+        exact: bool,
     },
 }
 
@@ -390,7 +394,7 @@ pub(super) fn emit_composite_binds(
     disc: ClifValue,
     ptr: ClifValue,
 ) -> Result<()> {
-    let scrut = SelectScrut::Composite { disc, ptr };
+    let scrut = SelectScrut::Composite { disc, ptr, exact: true };
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
     emit_structure_cond(cx, pattern, typ, false, scrut, typ, &mut binds)?;
     install_arm_binds(cx, &binds, scrut, None)
@@ -442,7 +446,7 @@ fn classify_scrutinee<R: Rt>(
             let s = emit_into_slot(cx, node, LocalKind::Composite)?;
             let owned = s.source == CompositeSource::Owned;
             adopt(cx, LocalKind::Composite, s.cv.disc, s.cv.payload, owned);
-            SelectScrut::Composite { disc: s.cv.disc, ptr: s.cv.payload }
+            SelectScrut::Composite { disc: s.cv.disc, ptr: s.cv.payload, exact: true }
         }
         // A string is a value whose read is always owned: the select
         // keeps it until the merge.
@@ -468,16 +472,18 @@ fn classify_scrutinee<R: Rt>(
 ///
 /// Element reads are total, so the condition is the AND of the length
 /// test and every leaf's own test ([`emit_leaf_cond`]), in one block. An
-/// array, tuple or struct `@` or rest bind lowers as a subslice.
+/// array, tuple or struct `@` or rest bind lowers as a subslice. `exact`:
+/// `scrut_typ` is the value's own type ([`SelectScrut::Composite`]).
 fn emit_composite_pattern_cond(
     cx: &mut BodyCx,
     ptr: ClifValue,
     scrut_typ: &Type,
     pat: &StructPatternNode,
+    exact: bool,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<ClifValue> {
     stack::ensure_sufficient(|| {
-        emit_composite_pattern_cond_inner(cx, ptr, scrut_typ, pat, binds)
+        emit_composite_pattern_cond_inner(cx, ptr, scrut_typ, pat, exact, binds)
     })
 }
 
@@ -486,6 +492,7 @@ fn emit_composite_pattern_cond_inner(
     ptr: ClifValue,
     scrut_typ: &Type,
     pat: &StructPatternNode,
+    exact: bool,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<ClifValue> {
     let call = cx.call_helper("graphix_valarray_len", &[ptr])?;
@@ -656,7 +663,7 @@ fn emit_composite_pattern_cond_inner(
     let mut cond = cx.b.ins().icmp(len_cc, len, n_c);
     for leaf in &leaves {
         let at = LeafAt::Elem { ptr, idx: leaf.idx };
-        if let Some(c) = emit_leaf_cond(cx, at, leaf.sub, &leaf.typ, binds)? {
+        if let Some(c) = emit_leaf_cond(cx, at, leaf.sub, &leaf.typ, exact, binds)? {
             cond = cx.b.ins().band(cond, c);
         }
     }
@@ -702,14 +709,18 @@ impl LeafAt {
 
     /// The value of the composite type `typ` as a borrowed array, the empty
     /// array where it is none, and the test that it is of `typ` where its
-    /// type does not say so. A payload's type is its arm's predicate's,
-    /// which another case of the same tag and arity may share.
+    /// type does not say so: a payload's type is its arm's predicate's,
+    /// which another case of the same tag and arity may share, and so is an
+    /// element's or a head's under a composite that is not `exact`.
     fn array(
         self,
         cx: &mut BodyCx,
         typ: &Type,
+        exact: bool,
     ) -> Result<(ClifValue, Option<ClifValue>)> {
-        if let LeafAt::Elem { ptr, idx } = self {
+        if let LeafAt::Elem { ptr, idx } = self
+            && exact
+        {
             let (read, idx_v) = elem_index(cx, idx);
             let helper = match read {
                 ElementRead::ArrayIndex => "graphix_valarray_get_array_borrowed",
@@ -718,35 +729,39 @@ impl LeafAt {
             return Ok((cx.call_helper(helper, &[ptr, idx_v])?[0], None));
         }
         let (disc, payload) = self.words(cx)?;
-        let test = match self {
-            LeafAt::Payload { .. } => {
+        let typed = exact && matches!(self, LeafAt::ListHead { .. });
+        let test = match typed {
+            false => {
                 let t = cx.interned_type(typ)?;
                 let call =
                     cx.call_helper("graphix_inferred_type_matches", &[disc, payload, t])?;
                 cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0)
             }
-            _ => {
+            true => {
                 let cd = clean_disc(cx.b, disc);
                 cx.b.ins().icmp_imm_s(IntCC::Equal, cd, value_disc::ARRAY)
             }
         };
         let empty = cx.call_helper("graphix_valarray_empty_borrowed", &[])?[0];
         let ptr = cx.b.ins().select(test, payload, empty);
-        Ok((ptr, matches!(self, LeafAt::Payload { .. }).then_some(test)))
+        Ok((ptr, (!typed).then_some(test)))
     }
 }
 
 /// The condition of the sub-pattern `sub` over the value of type `typ`
 /// at `at`, pushing its binds onto `binds`; `None` when every value
 /// matches. A tuple, array or struct pattern reads the value as an array.
+/// `exact`: `typ` is the value's own type, not its arm's predicate's,
+/// which may name one member of a union the value is any member of.
 fn emit_leaf_cond(
     cx: &mut BodyCx,
     at: LeafAt,
     sub: &StructPatternNode,
     typ: &Type,
+    exact: bool,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<Option<ClifValue>> {
-    stack::ensure_sufficient(|| emit_leaf_cond_inner(cx, at, sub, typ, binds))
+    stack::ensure_sufficient(|| emit_leaf_cond_inner(cx, at, sub, typ, exact, binds))
 }
 
 fn emit_leaf_cond_inner(
@@ -754,6 +769,7 @@ fn emit_leaf_cond_inner(
     at: LeafAt,
     sub: &StructPatternNode,
     typ: &Type,
+    exact: bool,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<Option<ClifValue>> {
     Ok(match sub {
@@ -769,11 +785,12 @@ fn emit_leaf_cond_inner(
             None
         }
         // The typed element read is total: a slot not of `prim`'s family
-        // reads as 0, which a `0` literal would match. Only the static
-        // type proves the read faithful; any other literal tests the
-        // value.
+        // reads as 0, which a `0` literal would match. Only the value's
+        // own static type proves the read faithful; any other literal
+        // tests the value.
         StructPatternNode::Literal(v)
             if let LeafAt::Elem { ptr, idx } = at
+                && exact
                 && let Some(prim) = kernel_abi::scalar_prim_of_value(v)
                 && kernel_abi::scalar_prim(typ) == Some(prim) =>
         {
@@ -783,11 +800,11 @@ fn emit_leaf_cond_inner(
         }
         StructPatternNode::Literal(_) => {
             let words = at.words(cx)?;
-            Some(emit_value_leaf_cond(cx, sub, typ, words)?)
+            Some(emit_value_leaf_cond(cx, sub, typ, exact, words)?)
         }
         StructPatternNode::Or { .. } if !binds_any(sub) => {
             let words = at.words(cx)?;
-            Some(emit_value_leaf_cond(cx, sub, typ, words)?)
+            Some(emit_value_leaf_cond(cx, sub, typ, exact, words)?)
         }
         StructPatternNode::Or { alts } => {
             let alts = alts
@@ -797,7 +814,7 @@ fn emit_leaf_cond_inner(
                         return Ok(None);
                     }
                     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-                    let c = emit_leaf_cond(cx, at, alt, typ, &mut binds)?;
+                    let c = emit_leaf_cond(cx, at, alt, typ, exact, &mut binds)?;
                     Ok(Some((c, binds)))
                 })
                 .collect::<Result<Box<[Option<AltMatch>]>>>()?;
@@ -816,15 +833,15 @@ fn emit_leaf_cond_inner(
         | StructPatternNode::SlicePrefix { list: true, .. } => {
             let words = at.words(cx)?;
             let whole = |id| at.bind(id, typ, LocalKind::Value);
-            Some(emit_list_pattern_cond(cx, sub, words, typ, whole, binds)?)
+            Some(emit_list_pattern_cond(cx, sub, words, typ, exact, whole, binds)?)
         }
         StructPatternNode::Slice { .. }
         | StructPatternNode::SlicePrefix { .. }
         | StructPatternNode::SliceSuffix { .. }
         | StructPatternNode::Struct { .. } => match kernel_abi::abi_kind(typ) {
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                let (ptr, test) = at.array(cx, typ)?;
-                let c = emit_composite_pattern_cond(cx, ptr, typ, sub, binds)?;
+                let (ptr, test) = at.array(cx, typ, exact)?;
+                let c = emit_composite_pattern_cond(cx, ptr, typ, sub, true, binds)?;
                 Some(match test {
                     Some(t) => cx.b.ins().band(t, c),
                     None => c,
@@ -872,10 +889,13 @@ fn binds_any(p: &StructPatternNode) -> bool {
 /// The test of a pattern that binds nothing (a literal of any type, an
 /// or-pattern of such) against borrowed Value words `v` of type `typ`:
 /// an element, a payload. The arm's own scrutinee tests run the same.
+/// A composite alternative reads `v` at `typ`, so only where `typ` is
+/// `exact` ([`emit_leaf_cond`]).
 fn emit_value_leaf_cond(
     cx: &mut BodyCx,
     sub: &StructPatternNode,
     typ: &Type,
+    exact: bool,
     v: (ClifValue, ClifValue),
 ) -> Result<ClifValue> {
     let kind = match kernel_abi::abi_kind(typ) {
@@ -894,6 +914,17 @@ fn emit_value_leaf_cond(
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
     let mut cond: Option<ClifValue> = None;
     for alt in alts.iter().filter(|a| a.may_pass(cx.ctx.type_env, typ)) {
+        if !exact
+            && matches!(
+                alt,
+                StructPatternNode::Slice { .. }
+                    | StructPatternNode::SlicePrefix { .. }
+                    | StructPatternNode::SliceSuffix { .. }
+                    | StructPatternNode::Struct { .. }
+            )
+        {
+            bail!("emit_clif: a composite alternative over a predicate's type {typ}")
+        }
         let c = match emit_structure_cond(cx, alt, typ, false, scrut, typ, &mut binds)? {
             Some(c) => c,
             None => cx.b.ins().iconst(types::I8, 1),
@@ -1312,17 +1343,30 @@ fn guard_is_pure_of_binds<R: Rt>(pat: &PatternNode<R>, guard: &Node<R>) -> bool 
     ok
 }
 
+/// The test of the inferred predicate `pred` over `scrut`, as the
+/// node-walk's shape test reads it (`None`: every value passes), and
+/// whether a value it admits is of `pred` whole. A shallow test admits a
+/// member by its outermost shape, and the predicate may be narrower than
+/// that member: `(false, n)` over `([bool, null], i64)` types its first
+/// element `bool`.
 fn emit_inferred_guard_cond(
     cx: &mut BodyCx,
     pred: &Type,
     scrut: SelectScrut,
     scrut_typ: &Type,
-) -> Result<Option<ClifValue>> {
+) -> Result<(Option<ClifValue>, bool)> {
     let pred = resolve_node_typ(cx.ctx, pred);
     if pred == *scrut_typ || matches!(pred, Type::Any) {
-        return Ok(None);
+        return Ok((None, true));
     }
-    let pred = pred.shallow_discriminant(cx.ctx.type_env, scrut_typ).unwrap_or(pred);
+    let env = cx.ctx.type_env;
+    let (pred, whole) = match pred.shallow_discriminant(env, scrut_typ) {
+        Some(shallow) => {
+            let whole = holds_what_it_meets(env, &pred, scrut_typ);
+            (shallow, whole)
+        }
+        None => (pred, true),
+    };
     let cond = match &pred {
         Type::Primitive(prims) => {
             let disc = clean_disc(cx.b, scrut.disc());
@@ -1333,7 +1377,7 @@ fn emit_inferred_guard_cond(
             }
             cond
         }
-        Type::Any => return Ok(None),
+        Type::Any => return Ok((None, whole)),
         _ => {
             let payload = match scrut {
                 SelectScrut::Scalar { value, prim, .. } => {
@@ -1349,7 +1393,27 @@ fn emit_inferred_guard_cond(
             )?[0]
         }
     };
-    Ok(Some(cond))
+    Ok((Some(cond), whole))
+}
+
+/// Whether `pred` holds the whole of every member of `scrut_typ` it could
+/// pass, so a value of one has `pred`'s types throughout.
+fn holds_what_it_meets(env: &Env, pred: &Type, scrut_typ: &Type) -> bool {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    if union_members(env, scrut_typ, &mut members).is_err() {
+        return false;
+    }
+    !members.is_empty()
+        && members.iter().all(|m| match pred.could_pass(env, m) {
+            Ok(false) => true,
+            Ok(true) => {
+                !m.has_unbound()
+                    && pred
+                        .contains_with_flags(BitFlags::empty(), env, m)
+                        .unwrap_or(false)
+            }
+            Err(_) => false,
+        })
 }
 
 /// Emit arm `pat`'s pattern condition against `scrut`: the type
@@ -1565,12 +1629,14 @@ fn mask_unmatched(
 /// `list`, of type `list_typ`: one `graphix_list_match` spine walk (`k`
 /// cells, `exact` requires nil after); head binds clone out by ABI kind;
 /// the rest bind is the k-th tail, shared; `whole` is the `@` bind of
-/// the list where it was read. Each head's own pattern is a leaf.
+/// the list where it was read. Each head's own pattern is a leaf, its
+/// type the value's own where `typed` ([`emit_leaf_cond`]'s `exact`).
 fn emit_list_pattern_cond(
     cx: &mut BodyCx,
     pat: &StructPatternNode,
     list: (ClifValue, ClifValue),
     list_typ: &Type,
+    typed: bool,
     whole: impl FnOnce(BindId) -> SelectArmBind,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<ClifValue> {
@@ -1598,7 +1664,7 @@ fn emit_list_pattern_cond(
     let mut cond = cx.call_helper("graphix_list_match", &[list.0, list.1, kc, ex])?[0];
     for (idx, sub) in elems.iter().enumerate() {
         if let Some(c) =
-            emit_leaf_cond(cx, LeafAt::ListHead { list, idx }, sub, &et, binds)?
+            emit_leaf_cond(cx, LeafAt::ListHead { list, idx }, sub, &et, typed, binds)?
         {
             cond = cx.b.ins().band(cond, c);
         }
@@ -2073,20 +2139,28 @@ fn emit_structure_cond(
                 bail!("emit_clif: list pattern over a non-value scrutinee {scrut_typ}")
             };
             let whole = |id| SelectArmBind::Value { id, kind: LocalKind::Value };
-            Some(emit_list_pattern_cond(cx, p, (disc, payload), scrut_typ, whole, binds)?)
+            Some(emit_list_pattern_cond(
+                cx,
+                p,
+                (disc, payload),
+                scrut_typ,
+                true,
+                whole,
+                binds,
+            )?)
         }
         p @ (StructPatternNode::Slice { .. }
         | StructPatternNode::SlicePrefix { .. }
         | StructPatternNode::SliceSuffix { .. }
         | StructPatternNode::Struct { .. }) => match scrut {
-            SelectScrut::Composite { ptr, .. } => {
+            SelectScrut::Composite { ptr, exact, .. } => {
                 if has_tcond {
                     return Err(anyhow!(
                         "emit_clif: explicit type predicate on a \
                              structural composite pattern not lowerable"
                     ));
                 }
-                Some(emit_composite_pattern_cond(cx, ptr, scrut_typ, p, binds)?)
+                Some(emit_composite_pattern_cond(cx, ptr, scrut_typ, p, exact, binds)?)
             }
             _ => {
                 let member = match has_tcond {
@@ -2144,30 +2218,31 @@ fn emit_member_cond(
         )
     };
     let pred = freeze_node_typ(cx.ctx, pred_typ).filter(composite);
-    let (test, member) =
+    let (test, member, exact) =
         match (kernel_abi::nullable_inner(scrut_typ).filter(composite), pred) {
             (Some(inner), pred) if !written || pred.as_ref() == Some(&inner) => {
                 let cd = clean_disc(cx.b, disc);
-                (cx.b.ins().icmp_imm_s(IntCC::Equal, cd, value_disc::ARRAY), inner)
+                (cx.b.ins().icmp_imm_s(IntCC::Equal, cd, value_disc::ARRAY), inner, true)
             }
             (_, Some(pred)) if written => {
                 let typ = cx.interned_type(&pred_typ.resolve_tvars())?;
                 let call = cx.call_helper("graphix_value_is_a", &[typ, disc, payload])?;
-                (cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0), pred)
+                (cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0), pred, true)
             }
             (_, Some(pred)) => {
-                let test = match emit_inferred_guard_cond(cx, pred_typ, scrut, scrut_typ)?
-                {
+                let (test, exact) =
+                    emit_inferred_guard_cond(cx, pred_typ, scrut, scrut_typ)?;
+                let test = match test {
                     Some(test) => test,
                     None => cx.b.ins().iconst(types::I8, 1),
                 };
-                (test, pred)
+                (test, pred, exact)
             }
             (_, None) => return Ok(None),
         };
     let empty = cx.call_helper("graphix_valarray_empty_borrowed", &[])?[0];
     let ptr = cx.b.ins().select(test, payload, empty);
-    let member_scrut = SelectScrut::Composite { disc, ptr };
+    let member_scrut = SelectScrut::Composite { disc, ptr, exact };
     let c = emit_structure_cond(cx, sp, pred_typ, false, member_scrut, &member, binds)?;
     Ok(Some((test, c)))
 }
@@ -2211,7 +2286,8 @@ fn emit_variant_cond(
     let call = cx.call_helper("graphix_variant_tag_eq", &[v.0, v.1, tag_ptr, arity])?;
     let mut cond = call[0];
     for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
-        if let Some(c) = emit_leaf_cond(cx, LeafAt::Payload { v, idx }, sub, elt, binds)?
+        if let Some(c) =
+            emit_leaf_cond(cx, LeafAt::Payload { v, idx }, sub, elt, false, binds)?
         {
             cond = cx.b.ins().band(cond, c);
         }

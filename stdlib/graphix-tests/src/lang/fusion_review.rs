@@ -1,7 +1,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, is},
+    testing::{FuseExpect, as_i64s, is},
 };
 use netidx_value::Value;
 
@@ -804,3 +804,180 @@ run!(select_variant_union_type_tests, r#"
     )
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[i64:10, i64:40, i64:5, i64:10, i64:40, i64:5], [i64:7, i64:40, i64:5, i64:0, i64:3, i64:5], [i64:10, i64:40, i64:5, i64:0, i64:10, i64:3, i64:5, i64:1], [i64:5, i64:10, i64:40]]"); FuseExpect::Jit);
+
+// A literal at an element of a tuple member of a union tests the element's
+// value: its arm's predicate types the element by the literal alone
+// (`bool`), and a null there is not `false`.
+run!(
+    select_false_at_a_nullable_element,
+    r#"{
+  let u = |x: [([bool, null], i64), bool]| select x { (false, n) => 0, _ => 3 };
+  [u((null, 1)), u((false, 1)), u(true)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_true_at_a_nullable_element,
+    r#"{
+  let u = |x: [([bool, null], i64), bool]| select x { (true, n) => 0, _ => 3 };
+  [u((null, 1)), u((false, 1)), u((true, 1)), u(true)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 3, 0, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_false_at_a_nullable_element_of_an_option,
+    r#"{
+  let u = |x: [([bool, null], i64), null]| select x { (false, n) => 0, _ => 3 };
+  [u((null, 1)), u((true, 1)), u(null)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_false_at_a_nullable_element_beside_an_integer,
+    r#"{
+  let u = |x: [([bool, null], i64), i64]| select x { (false, n) => 0, _ => 3 };
+  [u((null, 1)), u((true, 1)), u(5)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_false_at_an_element_holding_a_variant,
+    r#"{
+  let u = |x: [([bool, `C], i64), bool]| select x { (false, n) => 0, _ => 3 };
+  [u((`C, 1)), u((true, 1)), u(true)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_false_at_a_nullable_element_beside_a_variant,
+    r#"{
+  let u = |x: [([bool, null], i64), `Z]| select x { (false, n) => 0, _ => 3 };
+  [u((null, 1)), u((true, 1)), u(`Z)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_null_at_a_nullable_element,
+    r#"{
+  let u = |x: [([bool, null], i64), bool]| select x { (null, n) => 0, _ => 3 };
+  [u((null, 1)), u((false, 1)), u(false)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_false_at_a_bool_element_of_an_option,
+    r#"{
+  let u = |x: [(bool, i64), null]| select x { (false, n) => 0, _ => 3 };
+  [u((true, 1)), u(null)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_zero_at_a_nullable_element,
+    r#"{
+  let u = |x: [([i64, null], i64), bool]| select x { (0, n) => 0, _ => 3 };
+  [u((null, 1)), u((5, 1)), u(true)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_u8_zero_at_a_nullable_element,
+    r#"{
+  let u = |x: [([u8, null], i64), bool]| select x { (u8:0, n) => 0, _ => 3 };
+  [u((null, 1)), u((u8:0, 1)), u(true)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_float_zero_at_a_nullable_element,
+    r#"{
+  let u = |x: [([f64, null], i64), bool]| select x { (0.0, n) => 0, _ => 3 };
+  [u((null, 1)), u((0.0, 1)), u(true)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3]);
+    FuseExpect::Jit
+);
+
+// And so at a struct field, a nested tuple's element, a slice's element and
+// a variant's payload.
+run!(
+    select_false_at_a_nullable_struct_field,
+    r#"{
+  let u = |x: [{a: [bool, null], b: i64}, i64]| select x { {a: false, b} => b, _ => 3 };
+  [u({a: null, b: 1}), u({a: false, b: 1}), u({a: true, b: 1}), u(5)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_false_at_a_nullable_field_of_a_partial_struct,
+    r#"{
+  let u = |x: [{a: [bool, null], b: i64}, i64]| select x { {a: false, ..} => 0, _ => 3 };
+  [u({a: null, b: 1}), u({a: false, b: 1}), u(5)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_false_at_a_nested_nullable_element,
+    r#"{
+  let u = |x: [(([bool, null], i64), i64), i64]| select x { ((false, n), m) => n + m, _ => 3 };
+  [u(((null, 1), 1)), u(((false, 1), 1)), u(5)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 2, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_false_at_a_nullable_slice_element,
+    r#"{
+  let u = |x: [Array<[bool, null]>, i64]| select x { [false, ..] => 0, _ => 3 };
+  [u([null]), u([false]), u([true]), u(5)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_false_at_a_nullable_payload,
+    r#"{
+  let u = |x: [`A([bool, null], i64), i64]| select x { `A(false, n) => n, _ => 3 };
+  [u(`A(null, 1)), u(`A(false, 1)), u(5)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1, 3]);
+    FuseExpect::Jit
+);
+
+// An or-pattern of tuples at a payload reads the payload as the tuple only
+// where it is one: a value whose tag differs has no payload to read.
+run!(
+    select_composite_or_pattern_at_a_payload,
+    r#"{
+  let u = |x: [`A((bool, bool)), i64]| select x { `A((false, _) | (true, true)) => 0, _ => 3 };
+  [u(`A((false, true))), u(`A((true, false))), u(5)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 3, 3]);
+    FuseExpect::None
+);
