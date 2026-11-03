@@ -295,12 +295,18 @@ before its uses are checked: a block collects the names its lets bind
 that a `<-` or `&mut` in it writes, lambda bodies included, where no
 nearer binding of the name stands between (`node::written_lets`), and
 such a let is a `<-` target from its binding on. A module in the block is
-read for the names it may write there (`node::module_writes`): a `super::`
-path that reaches the block, a name it imports from it (a glob imports
-every name the module writes), at any depth of nested modules; a name the
-module declares over an import still counts. So the block's reads of a
-holder a module writes copy at each read whether they stand before or
-after the `mod` statement (pins `lang::modules::module_writes_a_holder_name_*`). A binding an earlier
+read for the names it may write there (`node::module_writes`, one walk of
+each module's body, its own modules' writes folded in as it meets them):
+a `super::` path that reaches the block, a name it imports from it (a glob
+imports each name the module does not bind itself), and, where the block
+is the package root (a script's top level), a `package::` path or import.
+A module's write names the nearest binding before it as a block's does, so
+its own `let` of a name it imports writes nothing outside. So the block's
+reads of a holder a module writes copy at each read whether they stand
+before or after the `mod` statement (pins
+`lang::modules::module_writes_a_holder_name_*`,
+`module_writing_its_own_let_over_*`, the shell's
+`script_scope::a_module_writes_a_holder_through_package`). A binding an earlier
 compile already generalized, which only a later input to the same
 runtime can see (the REPL, `GXHandle::compile`), had its uses checked
 against the scheme, so it stays one: a write is checked against a copy

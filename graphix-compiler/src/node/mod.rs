@@ -1006,7 +1006,8 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
-    ctx.written_lets.push(written_lets(&exprs));
+    let package = ctx.env.package_root(&scope.lexical) == &**scope.lexical;
+    ctx.written_lets.push(written_lets(&exprs, package));
     let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);
@@ -1055,60 +1056,208 @@ pub(crate) fn later_typedef<R: Rt>(ctx: &CompileCtx<R>, tr: &TypeRef) -> bool {
 
 /// The lets among a block's statements that a `<-` or a `&mut` in the
 /// block writes, lambda bodies and modules included, each as its
-/// statement's id and the written name: a write names the latest let of
-/// the name before it (its own, for a `let rec`), where no nearer binding
-/// stands between. Such a let is never generalized, whatever the order of
-/// its uses and writers.
-pub(crate) fn written_lets(exprs: &[&Expr]) -> AHashSet<(ExprId, CompactString)> {
-    let mut w = Writes::default();
-    for e in exprs {
-        let ExprKind::Bind(b) = &e.kind else {
-            w.expr(e);
-            continue;
-        };
-        if b.rec {
-            w.declare(e.id, &b.pattern);
-            w.expr(&b.value);
-        } else {
-            w.expr(&b.value);
-            w.declare(e.id, &b.pattern);
+/// statement's id and the written name: a write names the nearest binding
+/// of the name before it (its own let, for a `let rec`). A `package::`
+/// path names the block's lets where the block is the package root
+/// (`package`). Such a let is never generalized, whatever the order of its
+/// uses and writers.
+pub(crate) fn written_lets(
+    exprs: &[&Expr],
+    package: bool,
+) -> AHashSet<(ExprId, CompactString)> {
+    let mut w = Writes { walk: Walk::Block { package }, ..Writes::default() };
+    w.statements(exprs.iter().copied());
+    w.written
+}
+
+/// The names outside a module that its body may write, each with where
+/// it lands: through a `super::` or `package::` path, through a name it
+/// imports from there (a glob importing each name the body does not
+/// bind), and through what its own modules write there.
+fn module_writes(exprs: &[Expr]) -> Vec<(Anchor, CompactString)> {
+    let mut w = Writes { walk: Walk::Module, ..Writes::default() };
+    w.statements(exprs.iter());
+    w.outer
+}
+
+/// Where a name outside a module stands: `k` levels of `super` out, or
+/// at the package root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    Super(usize),
+    Package,
+}
+
+impl Anchor {
+    /// The anchor `parts` leads with and the one name after it.
+    fn of<'a>(parts: &[&'a str]) -> Option<(Anchor, &'a str)> {
+        let (n, lead) = parts.split_last()?;
+        match lead {
+            ["package"] => Some((Anchor::Package, n)),
+            [_, ..] if lead.iter().all(|p| *p == "super") => {
+                Some((Anchor::Super(lead.len()), n))
+            }
+            _ => None,
         }
     }
-    w.written
+}
+
+/// What a name names at a point of the walk.
+#[derive(Debug, Clone)]
+enum Binding {
+    /// A let of the walked block.
+    Let(ExprId),
+    /// A name a module imports from outside it.
+    Outer(Anchor, CompactString),
+    /// Any other binding.
+    Other,
+}
+
+#[derive(Debug, Default)]
+enum Walk {
+    /// A block's statements, the package root's when `package`.
+    Block { package: bool },
+    /// A module's body.
+    #[default]
+    Module,
 }
 
 #[derive(Default)]
 struct Writes {
-    /// The block's let of each name in scope at the walk's position.
-    declared: AHashMap<CompactString, ExprId>,
-    /// The nearer bindings in scope at the walk's position.
-    shadow: Vec<ArcStr>,
+    walk: Walk,
+    /// The walked statements' binding of each name at the walk's position.
+    declared: AHashMap<CompactString, Binding>,
+    /// The nearer bindings in scope at the walk's position, innermost last.
+    shadow: Vec<(CompactString, Binding)>,
+    /// Where the walked module's globs import from.
+    globs: SmallVec<[Anchor; 1]>,
+    /// A block walk's written lets.
     written: AHashSet<(ExprId, CompactString)>,
+    /// A module walk's writes outside it.
+    outer: Vec<(Anchor, CompactString)>,
 }
 
 impl Writes {
+    fn statements<'a>(&mut self, exprs: impl Iterator<Item = &'a Expr>) {
+        for e in exprs {
+            match &e.kind {
+                ExprKind::Bind(b) if b.rec => {
+                    self.declare(e.id, &b.pattern);
+                    self.expr(&b.value)
+                }
+                ExprKind::Bind(b) => {
+                    self.expr(&b.value);
+                    self.declare(e.id, &b.pattern)
+                }
+                ExprKind::Use { names, .. } => {
+                    for item in names.iter() {
+                        if let Some((n, b)) = self.imported(item) {
+                            self.declared.insert(n, b);
+                        }
+                    }
+                }
+                _ => self.expr(e),
+            }
+        }
+    }
+
     fn declare(&mut self, id: ExprId, p: &expr::StructurePattern) {
+        let b = match self.walk {
+            Walk::Block { .. } => Binding::Let(id),
+            Walk::Module => Binding::Other,
+        };
         p.with_names(&mut |n| {
-            self.declared.insert(n.as_str().into(), id);
+            self.declared.insert(n.as_str().into(), b.clone());
         });
     }
 
-    fn target(&mut self, name: &ModPath) {
-        let mut parts = Path::parts(&**name);
-        let (Some(n), None) = (parts.next(), parts.next()) else { return };
-        self.written_name(n)
+    /// The name `item` binds and what it names; a glob from outside a
+    /// module is noted instead.
+    fn imported(&mut self, item: &expr::UseItem) -> Option<(CompactString, Binding)> {
+        let parts: SmallVec<[&str; 4]> = Path::parts(&*item.path.0).collect();
+        let outer = match self.walk {
+            Walk::Module => Anchor::of(&parts),
+            Walk::Block { .. } => None,
+        };
+        match (item.bound_name(), outer) {
+            (None, Some((a, _))) => {
+                self.globs.push(a);
+                None
+            }
+            (None, None) => None,
+            (Some(local), Some((a, n))) => {
+                Some((local.into(), Binding::Outer(a, n.into())))
+            }
+            (Some(local), None) => Some((local.into(), Binding::Other)),
+        }
     }
 
-    fn written_name(&mut self, n: &str) {
-        if let Some(id) = self.declared.get(n)
-            && !self.shadow.iter().any(|s| s == n)
+    fn target(&mut self, name: &ModPath) {
+        let parts: SmallVec<[&str; 4]> = Path::parts(&**name).collect();
+        match &parts[..] {
+            [n] => self.write(n),
+            parts => {
+                if let Some((a, n)) = Anchor::of(parts) {
+                    self.write_outer(a, n)
+                }
+            }
+        }
+    }
+
+    /// A write to `n` as it is named here.
+    fn write(&mut self, n: &str) {
+        let b = match self.shadow.iter().rev().find(|(s, _)| s == n) {
+            Some((_, b)) => Some(b),
+            None => self.declared.get(n),
+        };
+        match b {
+            Some(Binding::Let(id)) => {
+                self.written.insert((*id, n.into()));
+            }
+            Some(Binding::Outer(a, m)) => self.outer.push((*a, m.clone())),
+            Some(Binding::Other) => (),
+            None => {
+                for a in self.globs.iter() {
+                    self.outer.push((*a, n.into()))
+                }
+            }
+        }
+    }
+
+    /// A write to `n` at `a` from here.
+    fn write_outer(&mut self, a: Anchor, n: &str) {
+        match (&self.walk, a) {
+            (Walk::Module, a) => self.outer.push((a, n.into())),
+            (Walk::Block { package: true }, Anchor::Package) => {
+                if let Some(Binding::Let(id)) = self.declared.get(n) {
+                    self.written.insert((*id, n.into()));
+                }
+            }
+            (Walk::Block { .. }, _) => (),
+        }
+    }
+
+    /// What a module written here writes outside it.
+    fn module(&mut self, exprs: &[Expr]) {
+        if let Walk::Block { .. } = self.walk
+            && !self.declared.values().any(|b| matches!(b, Binding::Let(_)))
         {
-            self.written.insert((*id, n.into()));
+            return;
+        }
+        for (a, n) in module_writes(exprs) {
+            match a {
+                Anchor::Super(1) => self.write(&n),
+                Anchor::Super(k) => match self.walk {
+                    Walk::Module => self.outer.push((Anchor::Super(k - 1), n)),
+                    Walk::Block { .. } => (),
+                },
+                Anchor::Package => self.write_outer(a, &n),
+            }
         }
     }
 
     fn bound(&mut self, p: &expr::StructurePattern) {
-        p.with_names(&mut |n| self.shadow.push(n.clone()));
+        p.with_names(&mut |n| self.shadow.push((n.as_str().into(), Binding::Other)));
     }
 
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
@@ -1120,9 +1269,19 @@ impl Writes {
     fn block(&mut self, exprs: &[Expr]) {
         self.scoped(|w| {
             for e in exprs {
-                w.expr(e);
-                if let ExprKind::Bind(b) = &e.kind {
-                    w.bound(&b.pattern)
+                match &e.kind {
+                    ExprKind::Use { names, .. } => {
+                        for item in names.iter() {
+                            if let Some(b) = w.imported(item) {
+                                w.shadow.push(b)
+                            }
+                        }
+                    }
+                    ExprKind::Bind(b) => {
+                        w.expr(e);
+                        w.bound(&b.pattern)
+                    }
+                    _ => w.expr(e),
                 }
             }
         })
@@ -1168,13 +1327,13 @@ impl Writes {
                 }
             }
             ExprKind::Catch(c) => self.scoped(|w| {
-                w.shadow.push(c.bind.name.clone());
+                w.shadow.push((c.bind.name.as_str().into(), Binding::Other));
                 w.expr(&c.handler)
             }),
             ExprKind::TryWith(t) => {
                 self.block(&t.body);
                 self.scoped(|w| {
-                    w.shadow.push(t.bind.name.clone());
+                    w.shadow.push((t.bind.name.as_str().into(), Binding::Other));
                     w.block(&t.handler)
                 })
             }
@@ -1195,102 +1354,11 @@ impl Writes {
                 })
             }
             ExprKind::Module { value, .. } => {
-                if let ModuleKind::Resolved { exprs, .. } = &**value
-                    && !self.declared.is_empty()
-                {
-                    let mut names: LPooled<Vec<CompactString>> = LPooled::take();
-                    module_writes(exprs, 1, &mut names);
-                    for n in names.iter() {
-                        self.written_name(n)
-                    }
+                if let ModuleKind::Resolved { exprs, .. } = &**value {
+                    self.module(exprs)
                 }
             }
             _ => e.for_each_child(&mut |c| self.expr(c)),
-        })
-    }
-}
-
-/// The names of the block `depth` modules out that a module's body may
-/// write: through a `super::` path, or through a name it imports from
-/// there, a glob importing every name it writes. A name the body declares
-/// over an import still counts.
-fn module_writes(exprs: &[Expr], depth: usize, out: &mut Vec<CompactString>) {
-    let mut w = ModuleWrites { depth, ..ModuleWrites::default() };
-    for e in exprs {
-        w.expr(e, out)
-    }
-    for t in w.targets.iter() {
-        let parts: SmallVec<[&str; 4]> = Path::parts(&**t).collect();
-        match w.outer(&parts) {
-            Some(n) => out.push(n.into()),
-            None => match &parts[..] {
-                [n] if w.glob => out.push((*n).into()),
-                [n] => out.extend(w.imports.get(*n).cloned()),
-                _ => (),
-            },
-        }
-    }
-}
-
-#[derive(Default)]
-struct ModuleWrites {
-    depth: usize,
-    /// Each name imported from the block `depth` out, by the name it
-    /// binds here.
-    imports: AHashMap<CompactString, CompactString>,
-    glob: bool,
-    targets: Vec<ModPath>,
-}
-
-impl ModuleWrites {
-    /// The name `parts` reaches in the block `depth` out, by `super::`.
-    fn outer<'a>(&self, parts: &[&'a str]) -> Option<&'a str> {
-        match parts.split_last() {
-            Some((n, supers))
-                if supers.len() == self.depth && supers.iter().all(|p| *p == "super") =>
-            {
-                Some(n)
-            }
-            _ => None,
-        }
-    }
-
-    fn expr(&mut self, e: &Expr, out: &mut Vec<CompactString>) {
-        crate::stack::ensure_sufficient(|| match &e.kind {
-            ExprKind::Use { names, .. } => {
-                for item in names.iter() {
-                    let parts: SmallVec<[&str; 4]> = Path::parts(&*item.path.0).collect();
-                    let Some(n) = self.outer(&parts) else { continue };
-                    match item.bound_name() {
-                        None => self.glob = true,
-                        Some(local) => {
-                            self.imports.insert(local.into(), n.into());
-                        }
-                    }
-                }
-            }
-            ExprKind::Connect { name, value, deref, .. } => {
-                if !deref {
-                    self.targets.push(name.clone())
-                }
-                self.expr(value, out)
-            }
-            ExprKind::ByRef(Mutability::Mut, inner) => {
-                let root = match inner.unparen().place() {
-                    Some((root, _)) => root,
-                    None => inner.unparen(),
-                };
-                if let ExprKind::Ref { name } = &root.unparen().kind {
-                    self.targets.push(name.clone())
-                }
-                self.expr(inner, out)
-            }
-            ExprKind::Module { value, .. } => {
-                if let ModuleKind::Resolved { exprs, .. } = &**value {
-                    module_writes(exprs, self.depth + 1, out)
-                }
-            }
-            _ => e.for_each_child(&mut |c| self.expr(c, out)),
         })
     }
 }

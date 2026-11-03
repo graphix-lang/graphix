@@ -446,6 +446,30 @@ impl<R: Rt> Bind<R> {
         // walk off; module_writes_a_holder_name_reads_before_the_module and
         // module_writes_an_outer_holder_name hold. A dynamic module's body is not read
         // (it loads at run time).
+        // 2026-11-02 claude: Review r8 (lane G): two holes in the fix above, both
+        // closed. (1, medium) A module's own let of a name it imports or a glob brings
+        // counted as writing the parent's name, so the parent's holder lost its
+        // generalization and valid programs were refused (review-r8/G-r1-2 mg1, mg2;
+        // G-r1-1 imp_shadow, glob_shadow; main runs them). (2, low) A write through
+        // package:: (a path or use package::a) was not read, so the order dependence
+        // stood for that spelling (mpk, mpk2, pkg_after refused, mpb runs).
+        // node::written_lets and node::module_writes are now one walk (node::Writes,
+        // Walk::Block or Walk::Module): a write names the nearest binding before it, a
+        // module's own let included, an import from outside the module is
+        // Binding::Outer with its Anchor (super levels or the package root), a glob
+        // covers the names the module does not bind, a nested module's writes fold in
+        // as the walk meets them, and a package:: write names the block's lets where
+        // the block is the package root (compile_block_children passes
+        // Env::package_root's verdict). mg1 mg2 imp_shadow glob_shadow print as on
+        // main; mpk mpk2 pkg_after print w z 1 as mpb does. Pins
+        // lang::modules::module_writing_its_own_let_over_a_glob_keeps_the_holder_generic
+        // and _over_an_import_ fail in all four modes with a module's own lets left out
+        // of the walk; graphix-shell
+        // script_scope::a_module_writes_a_holder_through_package fails without the
+        // package anchor. Left (low): a block walk still reads each nested module's
+        // body, so a chain of d file modules with lets before each mod costs d^2
+        // statement visits across the d blocks' compiles (review: +2.4% at d=400);
+        // computing it once needs a memo that outlives one block's walk.
 
         // a name holding a function, which nothing writes, is a scheme of the
         // definitions it holds: each read copies their signatures. The reads

@@ -1055,8 +1055,9 @@ node graph IS the IR — there is no parallel typed IR
   `lang::functions::closure_outlives_collection_slot*`, `lang::orphans`.
 - **`let rec` is monomorphic-recursive**, and a binding something writes
   (a `<-` target, a `&mut`'s referent; a writer anywhere in its block,
-  a lambda body's included, and a module's in it through `super::` or a
-  name it imports from there, `node::written_lets`) is not generalized:
+  a lambda body's included, and a module's in it through `super::`, a
+  name it imports from there or, at the package root, `package::`; a
+  write names the nearest binding before it, `node::written_lets`) is not generalized:
   its uses and writers share one instance of each function it holds (the
   value restriction, `CompileCtx::monomorphic`), except one an earlier compile
   generalized (a REPL input): it stays generic, a later write is held to

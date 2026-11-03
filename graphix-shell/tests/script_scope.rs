@@ -104,3 +104,28 @@ fn a_root_duplicate_names_the_top_level() {
     let e = check.expect_err("--check accepted a duplicate type");
     assert!(e.contains("T is already defined at the top level"), "{e}");
 }
+
+/// A module that writes a holder name of the script's top level through
+/// `package::` makes it written there, so the top level's reads of the
+/// other name agree whether they stand before or after `mod m`.
+#[test]
+fn a_module_writes_a_holder_through_package() {
+    let main = |after: bool| {
+        let reads = "let z = b.f(\"z\");\n";
+        let (before, after) = if after { ("", reads) } else { (reads, "") };
+        format!(
+            "let s = {{f: |x| x}};\nlet (a, b) = (s, s);\nlet w = b.f(\"w\");\n{before}\
+             mod m;\n{after}{EXIT}println(\"[w] [z] [m::n]\")\n"
+        )
+    };
+    let by_path = "package::a <- never<{f: fn(x: i64) -> i64}>();\n\
+                   let n = package::a.f(1)\n";
+    let by_use = "use package::a;\na <- never<{f: fn(x: i64) -> i64}>();\n\
+                  let n = a.f(1)\n";
+    for (case, m) in [("path", by_path), ("use", by_use)] {
+        for after in [false, true] {
+            let case = format!("{case}, reads after the module: {after}");
+            accepted(&case, &main(after), &[("m.gx", m)], "w z 1");
+        }
+    }
+}

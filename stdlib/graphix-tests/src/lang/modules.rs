@@ -1064,6 +1064,46 @@ run!(
     "#
 );
 
+// A module's own let of a name it imports, or a glob brings, is the
+// binding its writes of that name write: the parent's holder stays
+// generic.
+run!(
+    module_writing_its_own_let_over_a_glob_keeps_the_holder_generic,
+    prints(r#"["w", i64:1, i64:0]"#),
+    "/test.gx" => r#"
+        let s = {f: |x| x};
+        let w = s.f("w");
+        mod m;
+        let z = s.f(1);
+        let result = (w, z, m::n)
+    "#,
+    "/test/m.gx" => r#"
+        use super::*;
+        let s = 0;
+        s <- 1;
+        let n = s
+    "#
+);
+
+run!(
+    module_writing_its_own_let_over_an_import_keeps_the_holder_generic,
+    prints(r#"["w", i64:1, i64:2]"#),
+    "/test.gx" => r#"
+        let s = {f: |x| x};
+        let w = s.f("w");
+        mod m;
+        let z = s.f(1);
+        let result = (w, z, m::n)
+    "#,
+    "/test/m.gx" => r#"
+        use super::s;
+        let k = s.f(2);
+        let s = 0;
+        s <- 1;
+        let n = s + k
+    "#
+);
+
 // A call that raises nothing joins nothing into the handler around it:
 // a module checked on its own inside a function writes nothing of the
 // function's throws.
