@@ -558,6 +558,17 @@ pub struct InstanceTypes {
 /// it: each open cell copied under its name into `known` and bound to the
 /// instance's type. `None` when the instance's signature does not hold
 /// the definition's.
+// CR claude for claude: [bug/medium] A rank-2 formal whose quantifier is bounded by a
+// variable of its definition fails every instance here, so the check accepts what the
+// build refuses: `let outer = |#k: fn<'a: 'c>(x: 'a) -> 'a, z: 'c| z; println(outer(#k:
+// |x| x, 1))` passes --check and the build refuses the call's instance ("an instance at
+// fn(#k: fn<'a: i64>(x: 'a) -> 'a, z: i64) -> i64 of a definition typed fn(#k: fn<'a:
+// 'c>(x: 'a) -> 'a, z: 'c) -> '_N"); GRAPHIX_ELAB_AUDIT=1 reports instance-signature,
+// and under GRAPHIX_NO_SUBST=1 it runs and prints 1. The same with the formal called
+// (o10, o10b) and with 'c declared ('c: Any, o10d); main ec53d4846 the same. Not traced:
+// the copy instantiate_owned makes of the formal's bound, or check_contains holding the
+// formal's bounds exactly, are where to look. Found by review r9 of lane R (R-r1-2).
+// probes: ~/ptmp/cr29/scratch/r9-R/{o10,o10b,o10c,o10d}.gx (rank2-bound-instance-01)
 fn instance_sig<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,

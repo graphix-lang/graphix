@@ -310,7 +310,12 @@ site: the value. Open: what the function whose result holds the
 quantifier shares across its own calls (a let of its body the function
 it makes captures), CR rank2-result-maker-01; a written holder's own
 variable beside the function type (`(fn<'a: Any>(x: 'a) -> W<'c>,
-W<'c>)` holding `(|x| W(x), W(1))`), CR rank2-holder-variable-01.
+W<'c>)` holding `(|x| W(x), W(1))`), CR rank2-holder-variable-01; a
+copy another step made, a select's or an array's of lambda literals or a
+read's of a generalized let, whose callback ties a binding outside to
+the original's generic cell (`f <- select c { true => |x| { y <-
+array::map([x], |e| W(e)); x }, false => |x| x }`, `f <- g` over such a
+`let g`), CR rank2-escape-hof-01 with callback-generic-leak-01.
 
 ## Labeled and optional arguments across the fuzzer
 

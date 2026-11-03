@@ -3612,7 +3612,7 @@ impl<R: Rt> Connect<R> {
         if !check {
             return Ok(());
         }
-        // XCR claude for claude: [bug/medium] A value held through its monomorphic copy
+        // CR claude for eric: [bug/medium] A value held through its monomorphic copy
         // (CompileCtx::monomorphic: a connect, `*r <-`, a let of a binding something
         // writes, a REPL write to a generic binding) is contained by a written quantified
         // type as that copy, while callsite::check_general walks what the original reaches:
@@ -3666,6 +3666,31 @@ impl<R: Rt> Connect<R> {
         // value nothing outside reaches walks nothing more: tk14 3.894G (main 3.891G), tr14
         // 3.894G (3.887G), rcself12 5.203G (5.181G), dq_1000_900 1.784G (1.782G).
         // callsite::stand_ins is folded into check_general; the pins hold.
+        // 2026-11-03 claude: Review r9 (R-r1-1, medium) found the fix holds only where
+        // CompileCtx::monomorphic_noting made the copy. A copy another step made still
+        // passes --check, and the build or the run-time bind refuses f("s") ('an instance
+        // at fn(x: string) -> string of a definition typed fn(x: i64) -> i64'): a select or
+        // array of lambda literals, whose type contains copies into its result cell
+        // (connected: c4_sel, a3_appconn; an unwritten let annotation: c4e_let, c4h_arr; a
+        // rank-2 call argument: a1_selarg; an omitted labeled default: e2_default_sel), a
+        // read of a let-bound lambda, which copies its signature (ref1_arg, ref2_let,
+        // ref3_conn, R-r1-2's c1), and a block whose value is such a read (c5_block); main
+        // ec53d4846 the same. In each the outer binding holds the callback's generic cell,
+        // which reaches the original lambda's generic parameter cell, and nothing records
+        // the copy the containment merged into the quantifier. The non-rank-2 analog of the
+        // select shapes (c4b_norank2) is refused, of the read shapes it is
+        // callback-generic-leak-01 itself. Two ways out, neither in lane R's brief: the
+        // root, callback-generic-leak-01's second option (lower a generic cell a
+        // non-generic binding reaches, so a copy shares it and check_general's walk meets
+        // the quantifier), which closes every shape here and leaves monomorphic_noting's
+        // record moot; or a copy record at every copy site (contains' left copy, a read's
+        // instantiation), a new mechanism. Readdressed to eric with
+        // callback-generic-leak-01. What c82330ef5 refuses stays pinned (the
+        // RANK2_*_THROUGH_A_* cases of lang::types::unsound_acceptances_are_refused,
+        // graphix-shell rank2_escape
+        // a_repl_write_to_a_generic_binding_holds_its_copy_generally). probes:
+        // ~/ptmp/cr29/scratch/review-r9/R-r1-1/p/{c4_sel,c4e_let,c4h_arr,c5_block,a1_selarg,a3_appconn,e2_default_sel,ref1_arg,ref2_let,ref3_conn,c4b_norank2}.gx
+        // (R-r1-1/run2.sh audit <file>), review-r9/R-r1-2/p/c1.gx
         let mut copied: LPooled<Vec<_>> = LPooled::take();
         let written = &ctx.monomorphic_noting(self.node.typ(), &mut copied);
         let bind = match ctx.env.by_id.get(&self.id) {

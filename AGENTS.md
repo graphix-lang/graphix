@@ -1159,9 +1159,12 @@ node graph IS the IR — there is no parallel typed IR
   monomorphic copy (a write, a written `let`) has each cell whose copy is
   or reaches `'b` stand for `'b`, judged where a binding reaches it
   (`callsite::check_general`; not judged: what the function whose result
-  holds it shares across its own calls, CR rank2-result-maker-01, and a
+  holds it shares across its own calls, CR rank2-result-maker-01, a
   written holder's own variable beside the function type, CR
-  rank2-holder-variable-01);
+  rank2-holder-variable-01, and a copy another step made, a select's or
+  an array's of lambdas or a read's of a generalized binding, whose
+  callback ties a binding outside to the original's cell, CR
+  rank2-escape-hof-01);
   while a call
   checks its argument against the
   formal, `'b` is one type, which no definition in the argument

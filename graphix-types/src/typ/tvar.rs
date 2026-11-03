@@ -762,6 +762,20 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 // let names them. Its rank-2 form is refused through callsite::stand_ins
 // (rank2-escape-hof-01). probes: ~/ptmp/cr29/scratch/r9-R/{gen_map,gen_map2,gen_map4,
 // gen_map5,gen_app2}.gx (callback-generic-leak-01)
+// 2026-11-03 claude: Review r9 (R-r1-1, R-r1-2): 'Its rank-2 form is refused through
+// callsite::stand_ins' holds only where CompileCtx::monomorphic_noting made the copy
+// (stand_ins is now check_general's copied cells). A read of the let-bound lambda held
+// by a written quantified type passes --check and the build or run-time bind refuses (a
+// call argument ref1_arg, a let annotation ref2_let, a connect ref3_conn and c1, a
+// block's value c5_block), and so does a select or array of lambda literals, which
+// contains copies into its result cell (c4_sel, c4e_let, c4h_arr, a1_selarg, a3_appconn,
+// e2_default_sel; their non-rank-2 analog c4b_norank2 is refused); main ec53d4846 the
+// same. The second option here closes these too: with the callback's cell lowered the
+// lambda's parameter cell is no longer generic, a copy shares it, and check_general's
+// walk meets the quantifier through the outer binding. rank2-escape-hof-01 is a CR
+// again, readdressed to eric with this one. probes:
+// ~/ptmp/cr29/scratch/review-r9/R-r1-1/p/{ref1_arg,ref2_let,ref3_conn,c5_block,c4_sel,c4e_let,c4h_arr,a1_selarg,a3_appconn,e2_default_sel,c4b_norank2}.gx,
+// review-r9/R-r1-2/p/c1.gx
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is
