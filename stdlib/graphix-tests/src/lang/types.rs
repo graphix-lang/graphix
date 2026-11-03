@@ -877,6 +877,38 @@ run!(
     )
 );
 
+// Integer text too long for every integer type parses as the decimal it
+// names, else the nearest f64, so a member holding it exactly comes first
+// and an infinity stays the last resort; text keeps its own class first.
+const CAST_LONG_INTEGER_TEXT: &str = r#"
+{
+  let big = "350000000000000000000000000000000000000";
+  let dec = "12345678901234567890123";
+  let parsed: [f32, decimal] = str::parse(dec)$;
+  let which = |v: [f32, f64]| select v {
+    f64 as f => f == 3.5e38 || f == -3.5e38,
+    f32 as _ => false
+  };
+  (
+    which(cast<[f32, f64]>(big)$),
+    which(cast<[f32, f64]>("-[big]")$),
+    cast<[f32, decimal]>(dec)$,
+    cast<[f64, decimal]>("-[dec]")$,
+    cast<[f32, string]>(dec)$,
+    cast<f32>(big)$,
+    parsed
+  )
+}
+"#;
+
+run!(
+    cast_long_integer_text,
+    CAST_LONG_INTEGER_TEXT,
+    prints(
+        r#"[true, true, decimal:12345678901234567890123., decimal:-12345678901234567890123., "12345678901234567890123", f32:inf, decimal:12345678901234567890123.]"#
+    )
+);
+
 // A float casts to the decimal its shortest text names, all seventeen
 // significant digits of it, an f32 by its own shortest text.
 run!(

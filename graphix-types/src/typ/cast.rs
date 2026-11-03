@@ -167,6 +167,9 @@ struct CastCx {
     /// How much of a value a conversion may lose: a union tries its
     /// members at each in turn, the least first.
     holds: Holds,
+    /// Whether the cast turned a conversion down as an overflow
+    /// (`overflowed`): only then can the last pass read anything.
+    overflow_refused: bool,
     /// How the reading so far took the numbers it met.
     nums: NumReads,
     /// The last text the walk parsed and the scalar it parses as, the
@@ -302,6 +305,7 @@ impl CastCx {
             at: 0,
             depth: 0,
             holds: Holds::Overflowed,
+            overflow_refused: false,
             nums: NumReads::default(),
             text: None,
             input,
@@ -953,6 +957,7 @@ impl Type {
                 };
                 let kind = || NumKind::of(Typ::get(like));
                 let to = |t| convert_text(v.clone(), t, |_| parsed.clone());
+                let mut refused = false;
                 let read = [own, as_parsed, !own & !as_parsed]
                     .into_iter()
                     .find_map(|class| {
@@ -976,44 +981,14 @@ impl Type {
                                     })
                                     .flatten()
                             })
-                            // XCR claude for claude: [design/low] Class first across the
-                            // rounds (D2 ruling 3) lets an infinity a finite value
-                            // overflows to beat an exact member of another class: this
-                            // round takes any conversion, so cast<[f32, string]>(1e300)
-                            // is f32 inf and -1e300 -inf (main: the string), though
-                            // holds_rounded refuses such an infinity as a rounding. The
-                            // whole value is lost, not a fraction. Options: keep it; or
-                            // an infinity reached from a finite value is a last resort,
-                            // tried after every group, so cast<f32>(1e300) and
-                            // cast<[f32, i64]>(1e300) stay inf and [f32, string] reads
-                            // the string. Probes: ~/ptmp/cr29/scratch/r6-B/realord.gx,
-                            // ~/ptmp/cr29/scratch/review-r6/B-r1-1/p07_inf.gx
-                            // (class-first-overflow-01)
-                            // 2026-11-02 claude: Eric ruled (11-02, next-discuss Lane B
-                            // item 1): the recommendation. An infinity reached from a
-                            // finite value is a last resort after every group:
-                            // cast<f32>(1e300) stays inf, cast<[f32, string]>(1e300)
-                            // reads the string.
-                            // 2026-11-02 claude: Holds::Overflowed: a finite number
-                            // read as an infinity is a loss level of its own, tried
-                            // only after every group of a union (cast_member's last
-                            // pass) and every class of a primitive set (cast_inner's
-                            // Primitive arm) failed at Exactly, Rounded and Partly;
-                            // overflowed() is the test holds_rounded shares. cast<[f32,
-                            // string]>(1e300) is now the string (main bbb06c0c6: f32
-                            // inf); cast<f32>(1e300), [f32, i64], [f32, null], and
-                            // [f32, A] (A a variant) from text stay inf. Pin
-                            // lang::types::cast_overflow_is_a_last_resort (a primitive
-                            // set, a union with a variant, an element, a computed inf,
-                            // the single-member and no-holder cases); main's binary
-                            // gives inf for the first five. Docs: CLAUDE.md, book
-                            // core/fundamental_types.md, the skill copy. Needs a soak.
                             .or_else(|| {
                                 (cx.holds >= Holds::Partly)
                                     .then(|| {
                                         members.clone().find_map(|t| {
                                             to(t).filter(|c| {
-                                                !overflowed(v, parsed.as_ref(), c)
+                                                let o = overflowed(v, parsed.as_ref(), c);
+                                                refused |= o;
+                                                !o
                                             })
                                         })
                                     })
@@ -1021,7 +996,7 @@ impl Type {
                             })
                     })
                     .or_else(|| {
-                        (cx.holds == Holds::Overflowed)
+                        (refused && cx.holds == Holds::Overflowed)
                             .then(|| {
                                 [own, as_parsed, !own & !as_parsed].into_iter().find_map(
                                     |class| {
@@ -1035,6 +1010,7 @@ impl Type {
                             })
                             .flatten()
                     });
+                cx.overflow_refused |= refused;
                 match read {
                     Some(c) => {
                         if cx.in_union {
@@ -1597,7 +1573,9 @@ impl Type {
         let none = SmallVec::new();
         let arrays = if converts { &arrays } else { &none };
         let last = [arrays, &tuples, &structs, &own, &as_parsed, &rest];
-        if let Ok(r) = self.tier(env, cx, src, v, &last, true, &[Holds::Overflowed]) {
+        if cx.overflow_refused
+            && let Ok(r) = self.tier(env, cx, src, v, &last, true, &[Holds::Overflowed])
+        {
             return Ok(r);
         }
         Err(self.cast_fail("no member admits it", v))
@@ -3383,7 +3361,23 @@ fn overflowed(v: &Value, parsed: Option<&Value>, c: &Value) -> bool {
 /// The scalar the text `s` parses as: a number, a bool, a datetime or a
 /// duration; `None` for anything else.
 fn parsed_scalar(s: &str) -> Option<Value> {
-    literal(s).ok().filter(|p| text_scalars().contains(Typ::get(p)))
+    literal(s)
+        .ok()
+        .filter(|p| text_scalars().contains(Typ::get(p)))
+        .or_else(|| long_integer(s))
+}
+
+/// Integer text too long for every integer type: the decimal it names
+/// where a decimal holds it exactly, else the f64 nearest it.
+fn long_integer(s: &str) -> Option<Value> {
+    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    match rust_decimal::Decimal::from_str_exact(s) {
+        Ok(d) => Some(Value::Decimal(Arc::new(d))),
+        Err(_) => s.parse().ok().map(Value::F64),
+    }
 }
 
 #[cfg(test)]
