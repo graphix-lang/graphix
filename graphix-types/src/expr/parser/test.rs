@@ -3362,6 +3362,32 @@ fn a_remembered_expression_parses_as_read_again() {
     }
 }
 
+// Reading an expression once puts the nesting limit where reading it again
+// does: in a string pattern's splice the probe read at more knots a level
+// than the arm reads it.
+#[test]
+fn a_remembered_expression_meets_the_limit_where_read_again() {
+    let read_again = |text: &str| {
+        input::FORGET.set(true);
+        let o = outcome(text);
+        input::FORGET.set(false);
+        o
+    };
+    for (open, close) in STRING_PATTERNS {
+        let mut refused = 0;
+        for n in (200..340).step_by(3) {
+            let inner = format!("{}x{}", "(".repeat(n), ")".repeat(n));
+            let text =
+                format!("let x = 1;\nlet y = {}", string_pattern_nest(open, close, 1))
+                    .replace("1]", &format!("{inner}]"));
+            let o = outcome(&text);
+            refused += o.contains("nesting too deep") as usize;
+            assert_eq!(o, read_again(&text), "{open}: {n}");
+        }
+        assert!(refused > 0 && refused < 47, "{open}: {refused}");
+    }
+}
+
 // a type definition's fields and members take comments, at any depth of
 // fields and members, and the parse keeps each beside what it describes
 #[test]
