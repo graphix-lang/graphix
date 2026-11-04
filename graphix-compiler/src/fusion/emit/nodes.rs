@@ -306,7 +306,7 @@ struct ValueOperand {
     owned: Option<LocalKind>,
 }
 
-// CR claude for claude: [perf/low] Interpolating a payload bind under a
+// XCR claude for claude: [perf/low] Interpolating a payload bind under a
 // definition's declared type variable does not fuse: `let g = 'b: [`A(i64),
 // `B(i64)] |x: 'b| #[native] select x { `A(z) => "ga [z]", _ => "gn" }; g(`A(3))`
 // is refused "emit_clif: value operand has unexpected type Some(Unit)", so the
@@ -332,6 +332,11 @@ struct ValueOperand {
 // value keeps the variable (about 30 pinned definitions in lang/select.rs get a
 // written test; the graphix-lang skill's line on selects over a declared variable
 // changes).
+// 2026-11-04 claude: Settled by D6 (b) (rigid-pattern-bind-01): the unwritten
+// form is refused by the rule, and the written twin `A(i64) as `A(z) => "ga [z]"
+// fuses under #[native] (z typed i64). Pins:
+// lang::select::interpolated_bind_inside_a_declared_variable_{refused,written};
+// the refusal fails without the rule.
 fn emit_value_operand_node<R: Rt>(
     cx: &mut BodyCx,
     node: &Node<R>,

@@ -117,6 +117,25 @@ error: ... 'a is declared but the signature does not hold it: write it on a para
 A written function type follows the same rule: `fn<'a: Number>(x: i64)
 -> i64` is refused too.
 
+In the body a declared variable is whatever type a call picks, so a
+`select` may not look inside a value of it on its own: a pattern that
+tests or binds inside one needs a written type test (see
+[Select](../core/select.md)), which types what it binds. A name or `_`
+over the whole value keeps the variable,
+
+```graphix
+〉let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(z) => z + 1, _ => 0 }
+error: ... `A(z) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, ``A(i64) as `A(z)`
+〉let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(i64) as `A(z) => z + 1, _ => 0 }
+〉g(`A(3))
+-: i64
+4
+〉let same = 'b: [`A(i64), `B(i64)] |x: 'b| -> 'b select x { v => v }
+```
+
+A destructuring `let` over such a value takes an annotation the same way
+(`let {x, y}: {x: i64, y: i64} = p`).
+
 A bound may not reach its own variable, directly (`'a: 'a`), inside
 another type (`'a: Array<'a>`) or through the bound of another variable
 (`'a: 'b, 'b: 'a`); a definition, a written function type and an impl

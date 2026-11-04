@@ -330,7 +330,8 @@ trace	review-fusion-oct2026/01_lazy_guard_fires.gx
 trace	review-fusion-oct2026/02_slot_birth_reads_standing.gx
 trace	review-fusion-oct2026/03_fed_arg_raise_order.gx
 trace	review-oct2026/01_defaulted_label_handler.gx
-trace	rigid-bottom-read-nov2026/00_null_arm_under_a_predicate_bound.gx
+reject	N: (null, n) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `T as (null, n)`, or bound 'b	rigid-bottom-read-nov2026/00_null_arm_under_a_predicate_bound.gx
+trace	rigid-bottom-read-nov2026/01_null_arm_under_a_written_test.gx
 reject	N: type mismatch 'a: iN does not contain [iN, 'r: unbound]	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
 reject	N: type mismatch fn(x: 'a: string) -> 'a: string does not contain fn(s: string) -> bytes	rigid-commit-sep2026/01_annotation_variable_split.gx
 reject	N: cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx

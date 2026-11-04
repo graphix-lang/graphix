@@ -31,6 +31,7 @@ use triomphe::Arc;
 pub enum Family {
     MonoReuse,
     RigidVar,
+    RigidPattern,
     SharedVar,
     WidenConsumer,
     WidenHop,
@@ -47,9 +48,10 @@ pub enum Family {
 }
 
 impl Family {
-    pub const ALL: [Family; 15] = [
+    pub const ALL: [Family; 16] = [
         Family::MonoReuse,
         Family::RigidVar,
+        Family::RigidPattern,
         Family::SharedVar,
         Family::LabelUnknown,
         Family::LabelMissing,
@@ -74,6 +76,7 @@ impl Family {
         let says: &[&str] = match self {
             Family::MonoReuse => &["does not contain fn("],
             Family::RigidVar => &["unbound"],
+            Family::RigidPattern => &["tests inside a value of"],
             Family::SharedVar | Family::AbstractParam => &["does not contain"],
             Family::LabelUnknown => &["unknown labeled argument"],
             Family::LabelMissing => &["missing required argument"],
@@ -111,6 +114,7 @@ impl std::fmt::Display for Family {
         f.write_str(match self {
             Family::MonoReuse => "mono-reuse",
             Family::RigidVar => "rigid-var",
+            Family::RigidPattern => "rigid-pattern",
             Family::SharedVar => "shared-var",
             Family::LabelUnknown => "label-unknown",
             Family::LabelMissing => "label-missing",
@@ -347,6 +351,7 @@ pub fn probes(
     let mut out = Vec::new();
     mono_reuse(&root, &pre, types, cap, &mut out);
     rigid_var(&root, cap, &mut out);
+    rigid_pattern(&root, cap, &mut out);
     shared_var(&root, &pre, types, cap, &mut out);
     labels(&root, &pre, types, cap, &mut out);
     widen_consumer(&root, &pre, types, modules, cap, &mut out);
@@ -957,11 +962,58 @@ fn rigid_probe(l: &LambdaExpr, bottom: bool) -> Option<(Expr, Option<Type>)> {
     })
 }
 
+/// A first statement that tests a parameter `x: 'a` with a pattern
+/// inside `'a`: `select x { null => 0, _ => 1 }`.
+fn rigid_pattern_probe(l: &LambdaExpr) -> Option<(Expr, Option<Type>)> {
+    let int = |i| ExprKind::Constant(netidx_value::Value::I64(i)).to_expr_nopos();
+    l.args.iter().filter(|a| !a.kind.is_labeled()).find_map(|a| {
+        let StructurePattern::Bind(x) = &a.pattern else { return None };
+        let Type::TVar(_) = a.constraint.as_ref()? else { return None };
+        let null = StructurePattern::literal(netidx_value::Value::Null);
+        let sel = ExprKind::Select(SelectExpr {
+            arg: Arc::new(
+                ExprKind::Ref { name: ModPath::from([x.name.as_str()]) }.to_expr_nopos(),
+            ),
+            arms: Arc::from_iter([
+                (plain_arm(null), int(0)),
+                (plain_arm(StructurePattern::Ignore), int(1)),
+            ]),
+        });
+        Some((sel.to_expr_nopos(), None))
+    })
+}
+
 /// Family 2. A lambda with a parameter over a declared variable `'a`
 /// gets a first statement fixing `'a` to `i64` or to `_`
 /// ([`rigid_probe`], alternately): a def's declared variables are rigid
 /// in its body, so `'a` can become neither. Right site: the definition.
 fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
+    with_first_statement(root, cap, Family::RigidVar, out, |l, taken| {
+        rigid_probe(l, taken % 2 == 1)
+    })
+}
+
+/// Family 13. A lambda with a parameter `x: 'a` gets a first statement
+/// testing `x` with a literal pattern ([`rigid_pattern_probe`]): a
+/// pattern that tests or binds inside a value of a variable its
+/// definition holds rigid needs a written test. Right site: the
+/// definition.
+fn rigid_pattern(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
+    with_first_statement(root, cap, Family::RigidPattern, out, |l, _| {
+        rigid_pattern_probe(l)
+    })
+}
+
+/// Each top-level `let` of a lambda `probe` gives a first statement for
+/// (its value and annotation, bound to `tm__0`), as a `family` mutant,
+/// up to `cap`; `probe` is told how many were taken.
+fn with_first_statement(
+    root: &Expr,
+    cap: usize,
+    family: Family,
+    out: &mut Vec<RejectProbe>,
+    probe: impl Fn(&LambdaExpr, usize) -> Option<(Expr, Option<Type>)>,
+) {
     let sizes = mutate::sizes(root);
     let stmts = mutate::top_statements(root, &sizes);
     let mut taken = 0usize;
@@ -973,7 +1025,7 @@ fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
         let ExprKind::Bind(b) = &stmt.kind else { continue };
         let ExprKind::Lambda(l) = &b.value.kind else { continue };
         let LambdaBody::Expr(body) = &l.body else { continue };
-        let Some((test, typ)) = rigid_probe(l, taken % 2 == 1) else { continue };
+        let Some((test, typ)) = probe(l, taken) else { continue };
         let body = ExprKind::Block {
             exprs: Arc::from_iter([
                 ExprKind::Bind(Arc::new(BindExpr {
@@ -993,7 +1045,7 @@ fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
         }))
         .to_expr_nopos();
         let cand = mutate::replace(root, at + 1, &lambda);
-        out.extend(finish(Family::RigidVar, at, &cand, |back, _| {
+        out.extend(finish(family, at, &cand, |back, _| {
             vec![nth_stmt(back, si).and_then(span)]
         }));
         taken += 1;
@@ -1663,9 +1715,14 @@ fn only_variants(t: &Type) -> bool {
 }
 
 fn bool_arm(b: bool) -> Pattern {
+    plain_arm(StructurePattern::literal(netidx_value::Value::Bool(b)))
+}
+
+/// An arm's pattern of `structure_predicate` alone.
+fn plain_arm(structure_predicate: StructurePattern) -> Pattern {
     Pattern {
         type_predicate: None,
-        structure_predicate: StructurePattern::literal(netidx_value::Value::Bool(b)),
+        structure_predicate,
         guard: None,
         pos: WrittenAt::NOWHERE,
         end: WrittenAt::NOWHERE,

@@ -3456,7 +3456,10 @@ run!(
     a_settled_bound_keeps_its_live_cells,
     refused("Array<i64> does not contain Array<string>"),
     "/test.gx" => r#"
-        let f = 'b: Array<'a> |x: 'a| -> fn(v: 'b) -> 'a |v: 'b| select v { [h, ..] => h, _ => x };
+        let f = 'b: Array<'a> |x: 'a| -> fn(v: 'b) -> 'a |v: 'b| select v {
+          Array<'a> as [h, ..] => h,
+          _ => x
+        };
         let g = |y| {
           let k = f(y);
           let z: i64 = y;

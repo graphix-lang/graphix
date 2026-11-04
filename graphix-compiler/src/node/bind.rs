@@ -3,7 +3,7 @@ use super::{
     coretraits::with_hooks,
     data::{struct_field_types, tuple_field_types},
     lambda::{DefBody, DefOrigin, LambdaDef},
-    pattern::StructPatternNode,
+    pattern::{Holder, StructPatternNode, rigid_refusal},
     place::{self, Path, RefPath},
     read_var, standing_view,
 };
@@ -345,6 +345,12 @@ impl<R: Rt> Bind<R> {
             (node, pattern, typ)
         } else {
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
+            refuse_inside_rigid(
+                &ctx.env,
+                &spec,
+                pat,
+                annotation.as_ref().unwrap_or(node.typ()),
+            )?;
             let typ = match annotation {
                 Some(typ) => typ,
                 None => {
@@ -923,6 +929,9 @@ impl<R: Rt> Update<R> for Bind<R> {
         }
         let node = &mut self.node;
         self.reads.within(ctx, |ctx| wrap!(node, node.typecheck0(ctx)))?;
+        if let ExprKind::Bind(b) = &self.spec.kind {
+            refuse_inside_rigid(&ctx.env, &self.spec, &b.pattern, &self.typ)?;
+        }
         self.check_value(ctx)?;
         self.complete_deferred(ctx)?;
         self.publish(ctx);
@@ -1140,6 +1149,21 @@ impl Ref {
                 Ok(Self::with_signature(ctx, bind_id, typ, signature, top_id, spec))
             }
         }
+    }
+}
+
+/// Refuse a `let` whose pattern tests or binds inside a value of a type
+/// variable its definition holds rigid
+/// ([`expr::StructurePattern::meets_rigid`]).
+fn refuse_inside_rigid(
+    env: &Env,
+    spec: &Expr,
+    pat: &expr::StructurePattern,
+    typ: &Type,
+) -> Result<()> {
+    match pat.meets_rigid(env, typ)? {
+        None => Ok(()),
+        Some(tv) => Err(rigid_refusal(env, pat, typ, &tv, Holder::Let)).at(spec),
     }
 }
 

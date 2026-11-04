@@ -7,11 +7,12 @@ use crate::{
     format_with_flags,
     node::{Held, compiler, list},
     rep,
-    typ::{AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, Type},
+    typ::{AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, TVar, Type},
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint, varint_len};
 use netidx_value::{Typ, Value};
@@ -296,6 +297,92 @@ fn merge_leaves(
         out.push(Leaf { id, typ, fresh })
     }
     Ok(())
+}
+
+/// What holds a pattern that meets a type variable held rigid.
+#[derive(Clone, Copy)]
+pub(super) enum Holder {
+    Arm,
+    Let,
+}
+
+/// The refusal of `pat`, over a value of `typ`, testing or binding inside
+/// a value of `tv`, a type variable its definition holds rigid
+/// ([`StructurePattern::meets_rigid`]), told as the type to write.
+pub(super) fn rigid_refusal(
+    env: &Env,
+    pat: &StructurePattern,
+    typ: &Type,
+    tv: &TVar,
+    holder: Holder,
+) -> anyhow::Error {
+    let named = tv.written_open().is_some();
+    let var = match named {
+        true => format_compact!("'{}", tv.name),
+        false => format_compact!("the variable"),
+    };
+    let what = match named {
+        true => format_compact!(
+            "a value of {var}, a type variable of the definition, which types none of \
+             its parts"
+        ),
+        false => format_compact!(
+            "a value of a type variable of the definition, which types none of its \
+             parts"
+        ),
+    };
+    match (holder, rigid_written(env, pat, typ, tv)) {
+        (Holder::Arm, Some(t)) if t.holds_fn(env) => anyhow!(
+            "{pat} tests inside {what}, and no type test holds its function type: \
+             declare no {var}, writing its bound in its place"
+        ),
+        (Holder::Arm, Some(t)) => {
+            anyhow!("{pat} tests inside {what}: write the type it tests, `{t} as {pat}`")
+        }
+        (Holder::Arm, None) => anyhow!(
+            "{pat} tests inside {what}: write the type it tests, `T as {pat}`, or \
+             bound {var}"
+        ),
+        (Holder::Let, Some(t)) => anyhow!(
+            "the pattern {pat} binds inside {what}: annotate the binding, `let {pat}: \
+             {t} = ..`"
+        ),
+        (Holder::Let, None) => anyhow!(
+            "the pattern {pat} binds inside {what}: annotate the binding with the type \
+             it binds, `let {pat}: T = ..`, or bound {var}"
+        ),
+    }
+}
+
+/// The type `pat` tests written out: `typ` with `tv` at its one typed
+/// bound, or, where `typ` is `tv` alone, at that bound's members `pat` may
+/// hold. `None` where `tv` has no one typed bound.
+fn rigid_written(
+    env: &Env,
+    pat: &StructurePattern,
+    typ: &Type,
+    tv: &TVar,
+) -> Option<Type> {
+    let bounds = tv.typed_bounds(env);
+    let [bound] = &bounds[..] else { return None };
+    let is_tv = |t: &TVar| t.open_cell().is_some_and(|c| c.same_cell(tv));
+    let at = match typ {
+        Type::TVar(t) if is_tv(t) => {
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            union_members(env, bound, &mut members).ok()?;
+            let held: SmallVec<[Type; 8]> = members
+                .iter()
+                .filter(|m| pat.may_hold(env, m).unwrap_or(true))
+                .cloned()
+                .collect();
+            match held.is_empty() || held.len() == members.len() {
+                true => bound.clone(),
+                false => Type::Set(Arc::from_iter(held)),
+            }
+        }
+        _ => bound.clone(),
+    };
+    typ.written_form(&mut |t| is_tv(t).then(|| at.clone()))
 }
 
 impl StructPatternNode {
@@ -617,7 +704,7 @@ impl StructPatternNode {
             }
             return merge_leaves(env, all, out);
         };
-        // CR claude for claude: [bug/low] A whole capture shared by or-alternatives over a
+        // XCR claude for claude: [bug/low] A whole capture shared by or-alternatives over a
         // declared variable held rigid is typed as the bound's members the alternatives
         // match, not the variable, though one alternative's capture (`a@ `A(_) => a`)
         // keeps the variable: `'b: [`A(i64), `B(i64)] |x: 'b| -> 'b select x { a@ `A(_) |
@@ -636,6 +723,16 @@ impl StructPatternNode {
         // value keeps the variable (about 30 pinned definitions in lang/select.rs get a
         // written test; the graphix-lang skill's line on selects over a declared variable
         // changes).
+        // 2026-11-04 claude: Settled by D6 (b) (rigid-pattern-bind-01) as a refusal: the
+        // alternatives test inside 'b, so the or form is refused, as each arm of the
+        // two-arm form now is (main ran the two-arm form), with the same message naming
+        // the written test. A written test types the capture as it does on main (the
+        // test's type, not 'b), so a body that must return 'b returns the scrutinee;
+        // written or-arms now lower in the JIT (fusion/emit/select.rs or_arm), so the
+        // written twin fuses. Pins:
+        // lang::select::or_capture_inside_a_declared_variable_{refused,written},
+        // capture_arms_inside_a_declared_variable_refused; the refusals fail without the
+        // rule.
         let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
         let ts: SmallVec<[Type; 4]> = ts.into_iter().flatten().map(|(t, _)| t).collect();
         if checking {
@@ -769,7 +866,7 @@ impl StructPatternNode {
     /// `matched`, when not empty, is the scrutinee's members this slice can
     /// match: an array or list member's elements are its own, not the
     /// predicate's cells, which stand for any other member (`Any`).
-    // CR claude for claude: [bug/low] An exact-length slice holding a bind and a literal
+    // XCR claude for claude: [bug/low] An exact-length slice holding a bind and a literal
     // over an element type with an open member is refused with a type mismatch naming
     // a cell: `let f = |x: Array<['b, i64]>| select x { [h, 1] => h, _ => null }`
     // (and `[1, h]`) gives "type mismatch '_N: unbound does not contain [i64, 'b]";
@@ -814,6 +911,17 @@ impl StructPatternNode {
     // gone, but the probes ~/ptmp/cr29/scratch/r8-G/i3/{s1,s3}.gx are still refused with
     // the same mismatch ('_N does not contain [i64, 'b]): Type::narrow_pattern makes the
     // merge of the element's bind cell with 'b, the half that waits on D6.
+    // 2026-11-04 claude: D6 half: [h, 1] over Array<['b, i64]> with 'b unbounded is
+    // refused by the D6 rule (1 may be a value of 'b), naming 'or bound 'b'. Bounded
+    // apart ('b: string) it checks with h over the whole element type: a slice's element
+    // set narrows one element at a time over a union element type (Type::needs_split),
+    // and Reach::new's settle no longer makes a copy a rigid cell took its pattern's cell
+    // again (Type::contains_through_copy). The same split fixes the concrete sibling [h,
+    // 1] over Array<[i64, `Keep(i64)]>, refused on main. Pins:
+    // lang::select::slice_literal_inside_an_unbounded_variable_refused,
+    // slice_bind_beside_a_literal_over_a_bounded_variable (fails without the split and
+    // without the settle change), generic_slice_binds_beside_keep_check (its lit fails
+    // without the split).
     fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
@@ -1131,6 +1239,15 @@ impl StructPatternNode {
             // ("annotate it"), a part only a name or `_` meets passes; written tests by the
             // same rule; census first; built as its own lane after the settle fix
             // (settle-commits-name-01) and D6.
+            // 2026-11-04 claude: Lane B r14 (D6 b): a select's written test now names the
+            // definition's variables as a let's annotation does (PatternNode::compile
+            // calls lambda::body_annotation), so the D6 rule sees the declared or
+            // signature-named variable in it: this CR's two shapes (kw1,
+            // ~/ptmp/cr29/scratch/discuss-merge/d3rigid/kw1.gx, and the Array form) and
+            // the declared form ('b: Any, ~/ptmp/cr29/scratch/r14-B/kw3.gx) are refused
+            // "`Keep(r) tests inside a value of 'b"; on main they print 5. Pin:
+            // lang::select::written_test_naming_a_declared_variable_refused. What an open
+            // cell in a written test means (the review-r8 G probes) stays D5's.
             if let Ok(rest) = type_predicate.diff(env, &shape)
                 && node.footprint(env, &shape, false).rep_collision(env, &rest).is_some()
             {
@@ -2180,7 +2297,11 @@ impl<R: Rt> PatternNode<R> {
         ori: Arc<Origin>,
     ) -> Result<Self> {
         let (explicit, type_predicate) = match &spec.type_predicate {
-            Some(t) => (true, t.scope_refs(&scope.lexical).lookup_ref(&ctx.env)?),
+            Some(t) => {
+                let t = t.scope_refs(&scope.lexical);
+                super::lambda::body_annotation(ctx, &t);
+                (true, t.lookup_ref(&ctx.env)?)
+            }
             None => {
                 let typ = spec
                     .structure_predicate

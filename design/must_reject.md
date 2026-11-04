@@ -322,6 +322,15 @@ written type alone, so no inference can repair around a mutant: the
 shallow kind the principle above leaves to its pins
 (`lang::types::rank2_bound_*_is_refused`).
 
+**13. Patterns inside a rigid variable.** Site: a lambda with a
+parameter `x: 'a`, as family 2's. Mutation: a first statement `let tm__0
+= select x { null => 0, _ => 1 }`. Rule: a pattern that tests or binds
+inside a value of a type variable its definition holds rigid needs a
+written test; a name or `_` over the whole value keeps the variable
+(`StructurePattern::meets_rigid`, checked in `Select::typecheck0_with`
+and a destructuring `let`). Built (`rigid-pattern`), right site the
+definition.
+
 ## Labeled and optional arguments across the fuzzer
 
 Family 7 needs call sites to work on, and today the generators have

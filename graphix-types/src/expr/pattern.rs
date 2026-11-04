@@ -9,6 +9,7 @@ use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
+use netidx_core::path::Path;
 use netidx_derive::Pack;
 use netidx_value::Value;
 use poolshark::local::LPooled;
@@ -594,6 +595,150 @@ impl Undecided {
     }
 }
 
+impl StructurePattern {
+    /// The first type variable a definition holds rigid whose value this
+    /// pattern, over a value of `typ`, tests or binds inside. Nothing
+    /// types the parts of such a value, so only a name or `_` stands over
+    /// it. At a union holding the variable beside other members, a part
+    /// meets it where it may hold one of its values ([`Self::may_hold`]).
+    pub fn meets_rigid(&self, env: &Env, typ: &Type) -> Result<Option<TVar>> {
+        crate::stack::ensure_sufficient(|| match self {
+            Self::Ignore | Self::Bind(_) => Ok(None),
+            Self::Or(alts) => {
+                for a in alts.iter() {
+                    if let Some(tv) = a.meets_rigid(env, typ)? {
+                        return Ok(Some(tv));
+                    }
+                }
+                Ok(None)
+            }
+            _ => {
+                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                let mut rigid: SmallVec<[TVar; 2]> = SmallVec::new();
+                union_members_with(env, typ, &mut members, &mut |tv| {
+                    if let Some(c) = tv.open_cell().filter(|c| c.is_rigid()) {
+                        rigid.push(c)
+                    }
+                })?;
+                for tv in rigid {
+                    if members.is_empty() || self.may_hold_value_of(env, &tv)? {
+                        return Ok(Some(tv));
+                    }
+                }
+                for m in members.iter() {
+                    for (p, t) in self.parts_over(env, m).into_iter().flatten() {
+                        if let Some(tv) = p.meets_rigid(env, &t)? {
+                            return Ok(Some(tv));
+                        }
+                    }
+                }
+                Ok(None)
+            }
+        })
+    }
+
+    /// Whether a value of `typ` may pass this pattern: false only where no
+    /// member of `typ` has the constructor, tag, arity or fields it tests,
+    /// or the type of a literal it tests, here or below.
+    pub fn may_hold(&self, env: &Env, typ: &Type) -> Result<bool> {
+        crate::stack::ensure_sufficient(|| match self {
+            Self::Ignore | Self::Bind(_) => Ok(true),
+            Self::Literal(v, _) => Type::of_literal(v)?.could_match(env, typ),
+            Self::Or(alts) => {
+                for a in alts.iter() {
+                    if a.may_hold(env, typ)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => {
+                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                if union_members_open(env, typ, &mut members)? {
+                    return Ok(true);
+                }
+                'members: for m in members.iter() {
+                    if let Type::Any = m {
+                        return Ok(true);
+                    }
+                    let Some(parts) = self.parts_over(env, m) else { continue };
+                    for (p, t) in parts {
+                        if !p.may_hold(env, &t)? {
+                            continue 'members;
+                        }
+                    }
+                    return Ok(true);
+                }
+                Ok(false)
+            }
+        })
+    }
+
+    /// Whether a value of `tv`, an open cell, may pass this pattern: a
+    /// value of each of its typed bounds may, or it has none.
+    fn may_hold_value_of(&self, env: &Env, tv: &TVar) -> Result<bool> {
+        for b in tv.typed_bounds(env).iter() {
+            if !self.may_hold(env, b)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Each sub-pattern with the part of `m`, a member of a type (a
+    /// constructor at its head), it stands over; `None` where `m` is not
+    /// of this pattern's shape. An abstract pattern is taken to name the
+    /// abstract type of its name.
+    fn parts_over<'a>(
+        &'a self,
+        env: &Env,
+        m: &Type,
+    ) -> Option<SmallVec<[(&'a Self, Type); 8]>> {
+        type Parts<'a> = SmallVec<[(&'a StructurePattern, Type); 8]>;
+        fn each<'a>(ps: &'a [StructurePattern], ts: &[Type]) -> Option<Parts<'a>> {
+            (ps.len() == ts.len()).then(|| ps.iter().zip(ts.iter().cloned()).collect())
+        }
+        fn elems<'a>(
+            ps: &'a [StructurePattern],
+            list: bool,
+            m: &Type,
+        ) -> Option<Parts<'a>> {
+            let et = match (list, m) {
+                (false, Type::Array(et)) | (true, Type::List(et)) => (**et).clone(),
+                _ => return None,
+            };
+            Some(ps.iter().map(|p| (p, et.clone())).collect())
+        }
+        match (self, m) {
+            (Self::Tuple { binds, .. }, Type::Tuple(ts)) => each(binds, ts),
+            (Self::Variant { tag, binds, .. }, Type::Variant(t, ts, _)) if t == tag => {
+                each(binds, ts)
+            }
+            (Self::Struct { exhaustive, binds, .. }, Type::Struct(fs))
+                if !*exhaustive || fs.len() == binds.len() =>
+            {
+                binds
+                    .iter()
+                    .map(|(n, p, _)| {
+                        fs.iter().find(|(f, _, _)| f == n).map(|(_, t, _)| (p, t.clone()))
+                    })
+                    .collect()
+            }
+            (Self::Slice { list, binds, .. }, _)
+            | (Self::SlicePrefix { list, prefix: binds, .. }, _) => {
+                elems(binds, *list, m)
+            }
+            (Self::SliceSuffix { suffix, .. }, _) => elems(suffix, false, m),
+            (Self::Abstract { name, bind, .. }, Type::Abstract { id, params }) => {
+                let rep = env.abstract_reps.get(id)?;
+                (Path::basename(&*name.0) == Some(&*rep.name))
+                    .then(|| smallvec![(&**bind, rep.instantiate_with(params))])
+            }
+            _ => None,
+        }
+    }
+}
+
 fn slice_type(list: bool, elem: Type) -> Type {
     if list { Type::List(Arc::new(elem)) } else { Type::Array(Arc::new(elem)) }
 }
@@ -615,16 +760,31 @@ pub fn union_members_open(
     t: &Type,
     out: &mut SmallVec<[Type; 8]>,
 ) -> Result<bool> {
+    let mut open = false;
+    union_members_with(env, t, out, &mut |_| open = true)?;
+    Ok(open)
+}
+
+/// [`union_members`], handing each unbound tvar among them to `open`.
+#[doc(hidden)]
+pub fn union_members_with(
+    env: &Env,
+    t: &Type,
+    out: &mut SmallVec<[Type; 8]>,
+    open: &mut dyn FnMut(&TVar),
+) -> Result<()> {
     fn go(
         env: &Env,
         t: &Type,
         out: &mut SmallVec<[Type; 8]>,
         unfolded: &mut Unfolded,
-        open: &mut bool,
+        open: &mut dyn FnMut(&TVar),
     ) -> Result<()> {
         crate::stack::ensure_sufficient(|| match t.deref_cloned() {
             None => {
-                *open = true;
+                if let Type::TVar(tv) = t {
+                    open(tv)
+                }
                 Ok(())
             }
             Some(t) => match &t {
@@ -645,9 +805,7 @@ pub fn union_members_open(
             },
         })
     }
-    let mut open = false;
-    go(env, t, out, &mut Unfolded::default(), &mut open)?;
-    Ok(open)
+    go(env, t, out, &mut Unfolded::default(), open)
 }
 
 /// A struct pattern's fields in the order they print (as written when

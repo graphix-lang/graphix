@@ -2971,7 +2971,7 @@ impl Type {
     /// an open cell is open. `Ref` params are walked (`Alias<'b>` with
     /// 'b open is open), expansions are not.
     pub fn has_unbound(&self) -> bool {
-        self.open_beneath(true)
+        self.open_beneath(&|_| true)
     }
 
     /// The lower bounds of the open cell `self` ends in, if it is one.
@@ -2985,23 +2985,33 @@ impl Type {
     /// [`Self::has_unbound`] less the rigid cells: a declared variable in
     /// its own body never binds, so it stands as a constant.
     pub fn has_free(&self) -> bool {
-        self.open_beneath(false)
+        self.open_beneath(&|tv| !tv.is_rigid())
     }
 
-    fn open_beneath(&self, rigid: bool) -> bool {
-        fn go(t: &Type, rigid: bool, seen: &mut AHashSet<usize>) -> bool {
+    /// An open cell held rigid anywhere beneath, through bindings.
+    pub fn has_rigid(&self) -> bool {
+        self.open_beneath(&|tv| tv.is_rigid())
+    }
+
+    /// An open cell `counts` anywhere beneath, through bindings.
+    fn open_beneath(&self, counts: &dyn Fn(&TVar) -> bool) -> bool {
+        fn go(
+            t: &Type,
+            counts: &dyn Fn(&TVar) -> bool,
+            seen: &mut AHashSet<usize>,
+        ) -> bool {
             ensure_sufficient(|| match t {
                 Type::TVar(tv) => {
                     seen.insert(tv.cell_addr())
                         && match tv.binding() {
-                            Some(b) => go(&b, rigid, seen),
-                            None => rigid || !tv.is_rigid(),
+                            Some(b) => go(&b, counts, seen),
+                            None => counts(tv),
                         }
                 }
                 t if node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
                 t => t
                     .try_for_each_child(&mut |c| {
-                        if go(c, rigid, seen) {
+                        if go(c, counts, seen) {
                             ControlFlow::Break(())
                         } else {
                             ControlFlow::Continue(())
@@ -3010,13 +3020,13 @@ impl Type {
                     .is_break(),
             })
         }
-        go(self, rigid, &mut LPooled::take())
+        go(self, counts, &mut LPooled::take())
     }
 
     /// `self ⊇ pred` for a pattern's predicate over what reaches it: over
     /// a union, by member ([`Self::narrow_per_member`]). Whether some
     /// member, or `self`, contains it.
-    // CR claude for claude: [bug/high] A pattern that tests a value at a definition's
+    // XCR claude for claude: [bug/high] A pattern that tests a value at a definition's
     // declared variable held rigid binds nothing there: containing the pattern in the
     // variable decides none of its cells, so the arm's binds stay open, ⊥ in every
     // instance, and the body may read them at any type, which the run-time test then
@@ -3042,6 +3052,21 @@ impl Type {
     // value needs a written test; a name or `_` over the whole value keeps the variable
     // (about 30 pinned definitions in lang/select.rs get a written test; the graphix-lang
     // skill's line on selects over a declared variable changes).
+    // 2026-11-04 claude: Built D6 (b): a pattern that tests or binds inside a value of a
+    // type variable its definition holds rigid needs a written test, and a name or _ over
+    // the whole value keeps the variable (StructurePattern::meets_rigid, checked at the
+    // top of Select::typecheck0_with and in a destructuring let's compile and typecheck0;
+    // the refusal names the variable and the type test to write). At a union holding the
+    // variable beside other members a part meets it where it may hold one of its values
+    // by its typed bounds, any value without one. The probe e1.gx and the sibling (null,
+    // n) over ('b, i64) are refused; their written twins check and fuse. Pins (each
+    // refusal fails without the rule):
+    // lang::select::pattern_inside_a_declared_variable_{refused,written,written_types_the_bind,let_refused,nested_let_refused,let_written,payload_refused,field_refused,slice_element_refused,tuple_element_refused,or_alternative_refused,guarded_refused,nested_written},
+    // name_over_a_declared_variable_keeps_it, literal_beside_*,
+    // pattern_beside_a_declared_variable_*, function_inside_a_declared_variable_refused;
+    // must-reject family rigid-pattern (graphix-fuzz
+    // must_reject_families_are_refused_where_their_rules_say). The fuzz pin
+    // rigid-bottom-read-nov2026/00 now expects a reject, 01 is its written twin.
     pub fn narrow_pattern(&self, env: &Env, pred: &Type) -> Result<bool> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         crate::expr::union_members(env, self, &mut members)?;
@@ -3187,8 +3212,18 @@ impl Type {
             (Type::Struct(fs), Type::Struct(pfs)) => {
                 any(&mut fs.iter().zip(pfs.iter()).map(|((_, t, _), (_, p, _))| (t, p)))
             }
+            // each of a slice's elements stands over the whole of a union
+            // element type, where containment would pair it with a member
             (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
-                e.needs_split_int(env, pe, apart)
+                let union = match e.deref_cloned() {
+                    Some(t @ Type::Ref(_)) => matches!(t.lookup_ref(env)?, Type::Set(_)),
+                    Some(t) => matches!(t, Type::Set(_)),
+                    None => false,
+                };
+                match pe.deref_cloned() {
+                    Some(Type::Set(_)) if union => Ok(true),
+                    _ => e.needs_split_int(env, pe, apart),
+                }
             }
             _ => Ok(false),
         }
@@ -3361,7 +3396,8 @@ impl Type {
     /// `self ⊇ t` over a copy of self's cells but those `known` maps
     /// already (to themselves), so binding a copy to a part of `t` binds
     /// none of self's cells; a copy still open after, a part an open cell
-    /// of `t` took, is its source cell again. `false` when one cannot be.
+    /// of `t` took, is its source cell again, unless that cell is held
+    /// rigid, which no pattern decides. `false` when one cannot be.
     #[doc(hidden)]
     pub fn contains_through_copy(
         &self,
@@ -3382,7 +3418,9 @@ impl Type {
             .collect();
         pairs.sort_by_key(|(_, c)| c.read().id);
         let _ = copy.contains(env, t);
-        for (s, c) in pairs.iter().filter(|(_, c)| c.open_cell().is_some()) {
+        for (s, c) in
+            pairs.iter().filter(|(_, c)| c.open_cell().is_some_and(|o| !o.is_rigid()))
+        {
             if !Type::TVar(s.clone()).contains(env, &Type::TVar(c.clone()))? {
                 return Ok(false);
             }

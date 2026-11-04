@@ -1100,15 +1100,6 @@ impl Type {
                 Ok(Self::flatten_set(matched.drain(..)))
             }
             (p, t) => {
-                if !p.has_unbound() && p.contains_with_flags(BitFlags::empty(), env, t)? {
-                    return Ok(t.clone());
-                }
-                if !t.has_unbound() && t.contains_with_flags(BitFlags::empty(), env, p)? {
-                    return Ok(p.clone());
-                }
-                if !p.could_match(env, t)? {
-                    return Ok(Self::Bottom);
-                }
                 let same_shape = match (p, t) {
                     (Self::Array(_), Self::Array(_))
                     | (Self::List(_), Self::List(_))
@@ -1124,6 +1115,21 @@ impl Type {
                     }
                     _ => false,
                 };
+                // a written part types what reaches it inside a rigid cell,
+                // which no pattern decides
+                let rigid_inside = same_shape && t.has_rigid();
+                if !rigid_inside
+                    && !p.has_unbound()
+                    && p.contains_with_flags(BitFlags::empty(), env, t)?
+                {
+                    return Ok(t.clone());
+                }
+                if !t.has_unbound() && t.contains_with_flags(BitFlags::empty(), env, p)? {
+                    return Ok(p.clone());
+                }
+                if !p.could_match(env, t)? {
+                    return Ok(Self::Bottom);
+                }
                 if !same_shape {
                     return Ok(p.clone());
                 }

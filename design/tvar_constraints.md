@@ -116,6 +116,23 @@ of a cell with lower bounds is their union, so every settle binds it
 there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
 included; a probe of a trait bound reads it so, and a commit settles it.
 
+No pattern decides a cell held rigid. A pattern that tests or binds
+inside a value of one (a definition's declared variable, a variable its
+signature names, an impl's parameter, a rank-2 formal's quantifier)
+needs a written test, which types its binds, and a name or `_` over the
+whole value keeps the variable (`StructurePattern::meets_rigid`, judged
+as a select or a destructuring `let` is checked, before any narrowing).
+A written test names the definition's variables as a `let`'s annotation
+does, and types what reaches it inside a rigid cell by its own parts
+(`Type::matching_type`).
+At a union holding the cell beside other members a part meets it where
+it may hold one of its values, by its typed bounds, any value without
+one. A part that may not, a literal beside it, leaves a name beside it
+over the whole union: the settle's copy is never a rigid cell's pattern
+cell again (`Type::contains_through_copy`), and a slice's elements
+narrow one by one over a union element type, never paired with one of
+its members (`Type::needs_split`).
+
 A select's arms decide a payload's open parameter as they decide an
 inferred scrutinee: the settle binds the cell to a copy of their
 patterns (`Reach::new`, `Type::contains_through_copy`; only an open-cell

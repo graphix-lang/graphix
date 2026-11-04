@@ -1,0 +1,6 @@
+// The written twin of 00: `(null, i64) as (null, n)` types `n`, so the null
+// arm's outputs (cycles 0, 3, 6) agree in both engines.
+{let step = i64:0; step <- select step {s if s < i64:6 => s + i64:1, _ => never()};
+ let g = 'b: Concrete |x: ('b, i64)| select x { (null, i64) as (null, n) => n, (_, n) => n + i64:1 };
+ let o: [`A(i64), `B(i64), null] = select step % i64:3 { i64:0 => null, i64:1 => `B(step), _ => `A(step) };
+ g((o, step))}

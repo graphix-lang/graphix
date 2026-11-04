@@ -420,9 +420,15 @@ across a bottom cycle).
 - A written type test narrows its binds to the values reaching it:
   `Number as n` over `[i64, string]` gives `n: i64`; `Array<Number> as ns`
   over `Array<[i64, string]>` gives `ns: Array<i64>`.
-- A select over a declared variable covers its bound's members: under
-  `'a: [{a: i64, b: string}, i64]`, `{a, ..} => a` covers the struct only,
-  and an `i64 as n` arm (or a catch-all) must follow.
+- A pattern that tests or binds inside a value of a declared type
+  variable needs a written type test; a name or `_` over the whole value
+  keeps the variable. Under `'a: [{a: i64, b: string}, i64]`, `{a, ..} =>
+  a` is refused, naming the test: write `{a: i64, b: string} as {a, ..}
+  => a`, which covers the struct only, so an `i64 as n` arm (or a
+  catch-all) must follow. So too `null` over `['a, null]` (write `null as
+  _`), a literal or constructor at an element of `Array<['a, i64]>` that
+  `'a` may hold (bound `'a` apart), and a destructuring `let` (annotate
+  it: `let {x, y}: {x: i64, y: i64} = p`).
 - A partial struct pattern over members whose left-out fields differ
   only in types decided later (a `never()` let written after the select,
   a function's parameters) takes them for one member, and is refused once

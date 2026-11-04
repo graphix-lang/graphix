@@ -1098,7 +1098,8 @@ node graph IS the IR — there is no parallel typed IR
   holder gives each name a copy of its own beside a written one; two
   lambda literals in one array or list meet, one type; a type written
   in a body (a `let`
-  annotation, `never<T>`, a nested lambda's signature) names one
+  annotation, `never<T>`, a select arm's type test, a nested lambda's
+  signature) names one
   variable per name, and a name a definition around it declares, and
   the written place does not declare itself, is that definition's
   variable, any other the written type's own: generic until a cell of
@@ -1464,8 +1465,9 @@ cycle, across workers; the compiler never pins threads.
   heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
   positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over
-  a scrutinee its shape covers (a declared variable held rigid: every
-  member of its bound); set coverage distributes over product
+  a scrutinee its shape covers, and a written test covers a declared
+  variable held rigid where it covers every member of its bound; set
+  coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
   same scrutinee ref claims nothing on re-entry. A partial struct
   pattern completes against the one member it can match
@@ -1484,6 +1486,15 @@ cycle, across workers; the compiler never pins threads.
   written type (a type test, a `let`, an abstract payload) one at a union
   position narrows to its member and is refutable; a written-union atom
   covers each member it covers; the pool reads an abstract's payload.
+- **Patterns inside a declared variable**: a pattern that tests or binds
+  inside a value of a type variable its definition holds rigid needs a
+  written test (`` `A(i64) as `A(z) ``, a destructuring `let`'s
+  annotation); only a name or `_` stands over such a value, and keeps the
+  variable. At a union holding the variable beside other members a part
+  meets it where it may hold one of its values, by its typed bounds, any
+  value without one (`StructurePattern::meets_rigid`, judged as the select
+  or the `let` is checked); a name there takes the whole union. A written
+  test types the binds inside the variable (`Type::matching_type`).
 - **Composite forms** (`graphix-types/src/rep.rs`,
   `design/distinct_composite_forms.md`): a tuple, struct, variant (bare
   included) and list cell is an array whose element 0 is its kind's

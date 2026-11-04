@@ -1,7 +1,9 @@
 use super::{
     Held, Holders, WakeBit,
     compiler::compile,
-    pattern::{ArmMatch, PatternNode, SliceKind, StructPatternNode},
+    pattern::{
+        ArmMatch, Holder, PatternNode, SliceKind, StructPatternNode, rigid_refusal,
+    },
     wake::{ArmMask, TrackedFires},
 };
 use crate::{
@@ -1316,6 +1318,20 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // trailing `_` passes both (r11-N/r2/{pp3u,d4u}.gx). Probe directories under
 // ~/ptmp/cr29/scratch/: review-r11/{N-r1-1,N-r1-2,N-r2-1,N-r2-2,N-r3-1,N-r3-2},
 // r11-N/{,r1fix,r2}; log ~/ptmp/cr29/log.md (lane N r11 entries).
+// 2026-11-04 claude: Lane B r14 (D6 b, rigid-pattern-bind-01): the probes in this CR's
+// notes, run on the D6 build: refused by the D6 rule (a part that may hold a value of
+// 'b): p3, p4 (the (7, n) shape, pin
+// lang::select::literal_inside_a_variable_beside_null_refused), d4, d4u, v2, v5, v6, v7,
+// q3, q11, q15, r11, s2, ab4, ab4b; right, as on main: q1, q5, k2, and the refusals g04,
+// h3, h4, h0, r1, r2, pp3, pp3c, pp3u. Still holes, with a declared variable and no part
+// that may hold its values (so not D5's open-cell half): g01, g03, h1, h2, h5, h6, h8,
+// m2c, m2f, t4, t5, e.g. h1 'b: [i64, string] |x: `B(['b, (bool, bool)])| select x {
+// `B((true, _)) => 1, `B((false, _)) => 2 } checks and finds no arm for `B(7): heads
+// reads ['b, (bool, bool)] as (bool, bool) alone, as this CR says. Left open. D6 now
+// refuses every probe that refuted round 11's two fixes (d4 and the v*/q* bound-split
+// programs, ab4), so heads/children by union_members_open with no finite heads at an
+// open member, and covers_by_parts reading a rigid cell as a member only a name or _
+// covers, can be rebuilt on it. Probes copied to ~/ptmp/cr29/scratch/r14-B/pool/.
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     let open = union_members_open(env, t, &mut members)?;
@@ -2389,6 +2405,20 @@ impl<R: Rt> Select<R> {
         checking: bool,
     ) -> Result<()> {
         wrap!(self.arg.node, child(&mut self.arg.node, ctx))?;
+        if checking && let ExprKind::Select(se) = &self.spec.kind {
+            let scrut = self.arg.node.typ();
+            for ((pat, n), (spec_pat, _)) in self.arms.iter().zip(se.arms.iter()) {
+                let over = match pat.explicit_type_predicate {
+                    true => &pat.type_predicate,
+                    false => scrut,
+                };
+                let sp = &spec_pat.structure_predicate;
+                if let Some(tv) = sp.meets_rigid(&ctx.env, over)? {
+                    let e = rigid_refusal(&ctx.env, sp, over, &tv, Holder::Arm);
+                    return Err(e).at(&pattern_site(spec_pat, n.spec()));
+                }
+            }
+        }
         // A partial struct pattern infers only its named fields;
         // complete each inferred predicate against the typed scrutinee
         // before coverage or dispatch reads it. One the scrutinee leaves

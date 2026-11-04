@@ -6033,6 +6033,7 @@ mod tests {
             // the hop: the widened `a` reaches `+` through `w`'s let
             ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-hop#"),
             ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-var#"),
+            ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-pattern#"),
             ("{ let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y; g(1, 2) }", "shared-var#"),
             (
                 "{ let g = |x: 'a, y: 'a, z: 'a| -> 'a x; let r = g(1, 2, 3); r }",

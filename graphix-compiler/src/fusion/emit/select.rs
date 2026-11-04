@@ -25,6 +25,7 @@ use cranelift_codegen::ir::{
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
+use triomphe::Arc;
 
 use super::{
     abi::{
@@ -1021,25 +1022,22 @@ fn emit_arm_condition<R: Rt>(
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<Option<ClifValue>> {
     if let StructPatternNode::Or { alts } = &pat.structure_predicate {
-        if pat.explicit_type_predicate {
-            bail!(
-                "emit_clif: explicit type predicate on an or-pattern arm not lowerable"
-            );
-        }
-        let mut pre = pre;
         if pre.as_ref().is_some_and(|m| m.len() != alts.len()) {
             bail!("emit_clif: an or-chain's tests are not its alternatives'")
         }
+        let mut source = match pre {
+            Some(m) => AltSource::Emitted(m),
+            None => AltSource::Arm(or_arm(cx, pat, alts, scrut, scrut_typ)?),
+        };
         let pred = &pat.type_predicate;
-        let alt_types = set_members(pred, alts.len());
         let nomatch = match nomatch {
             Some(b) => NoMatch::Fail(b),
             None => NoMatch::Placeholders(cx.b.ins().iconst(types::I64, STALE)),
         };
-        let mut alt = |cx: &mut BodyCx, k: usize| match pre.as_mut() {
-            Some(m) => Ok(std::mem::take(&mut m[k])),
-            None => {
-                emit_alt_match(cx, alts, k, alt_types.as_deref(), pred, scrut, scrut_typ)
+        let mut alt = |cx: &mut BodyCx, k: usize| match &mut source {
+            AltSource::Emitted(m) => Ok(std::mem::take(&mut m[k])),
+            AltSource::Arm(arm) => {
+                emit_alt_match(cx, alts, k, arm, pred, scrut, scrut_typ)
             }
         };
         let m = emit_or_chain(cx, alts.len(), &mut alt, scrut, nomatch, mask)?;
@@ -1123,13 +1121,7 @@ pub(super) fn emit_select_arms<R: Rt>(
             // chain's
             let (cond, t) = match &pat.structure_predicate {
                 StructPatternNode::Or { alts } => {
-                    let m = emit_alt_matches(
-                        cx,
-                        alts,
-                        &pat.type_predicate,
-                        scrut,
-                        scrut_typ,
-                    )?;
+                    let m = emit_alt_matches(cx, pat, alts, scrut, scrut_typ)?;
                     (or_of_alts(cx, m.iter().map(Option::as_ref)), Tested::Or(m))
                 }
                 _ => {
@@ -1469,9 +1461,28 @@ fn emit_arm_cond<R: Rt>(
     {
         return Ok((Some(m.0), m.1));
     }
-    let tcond: Option<ClifValue> = if !pat.explicit_type_predicate
-        || type_test_is_trivial(cx, pat, scrut_typ)
-    {
+    let tcond = emit_type_test(cx, pat, scrut, scrut_typ)?;
+    let scond = emit_structure_cond(
+        cx,
+        &pat.structure_predicate,
+        &pat.type_predicate,
+        tcond.is_some(),
+        scrut,
+        scrut_typ,
+        binds,
+    )?;
+    Ok((tcond, scond))
+}
+
+/// An arm's written type test against `scrut`: `None` for an inferred
+/// predicate, or one every value of the scrutinee's type passes.
+fn emit_type_test<R: Rt>(
+    cx: &mut BodyCx,
+    pat: &PatternNode<R>,
+    scrut: SelectScrut,
+    scrut_typ: &Type,
+) -> Result<Option<ClifValue>> {
+    Ok(if !pat.explicit_type_predicate || type_test_is_trivial(cx, pat, scrut_typ) {
         None
     } else {
         let pred = freeze_node_typ(cx.ctx, &pat.type_predicate).ok_or_else(|| {
@@ -1591,17 +1602,7 @@ fn emit_arm_cond<R: Rt>(
                 return Err(anyhow!("emit_clif: type predicate {pred} not lowerable"));
             }
         }
-    };
-    let scond = emit_structure_cond(
-        cx,
-        &pat.structure_predicate,
-        &pat.type_predicate,
-        tcond.is_some(),
-        scrut,
-        scrut_typ,
-        binds,
-    )?;
-    Ok((tcond, scond))
+    })
 }
 
 /// Whether every value of the scrutinee's type passes an arm's written
@@ -2356,21 +2357,68 @@ enum NoMatch {
 /// every value) and its bind specs.
 type AltMatch = (Option<ClifValue>, SmallVec<[SelectArmBind; 8]>);
 
-/// Alternative `k`'s [`AltMatch`]: it tests against its own member of
-/// the arm's inferred Set (`alt_types`); a non-Set predicate applies
-/// whole. `None` where no value of the scrutinee passes that member: its
-/// pattern need not fit the scrutinee's layout, as a whole arm's need not
-/// in [`emit_select_arms`].
+/// What an or-arm's alternatives test against: each its own member of the
+/// arm's inferred Set, or under a written test the members of the written
+/// type it may pass, with the written test, which every alternative's
+/// condition holds; a non-Set predicate applies whole.
+struct OrArm {
+    alt_types: Option<Arc<[Type]>>,
+    test: Option<ClifValue>,
+}
+
+/// Where an or-chain takes its alternatives' matches from: emitted by a
+/// block dominating it, or emitted as the chain reaches each.
+enum AltSource {
+    Emitted(SmallVec<[Option<AltMatch>; 4]>),
+    Arm(OrArm),
+}
+
+/// The [`OrArm`] of the or-pattern arm `pat`, whose alternatives are
+/// `alts`; its written test, if any, is emitted here.
+fn or_arm<R: Rt>(
+    cx: &mut BodyCx,
+    pat: &PatternNode<R>,
+    alts: &[StructPatternNode],
+    scrut: SelectScrut,
+    scrut_typ: &Type,
+) -> Result<OrArm> {
+    let pred = &pat.type_predicate;
+    if !pat.explicit_type_predicate {
+        return Ok(OrArm { alt_types: set_members(pred, alts.len()), test: None });
+    }
+    let env = cx.ctx.type_env;
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members(env, pred, &mut members)?;
+    let alt_types = alts
+        .iter()
+        .map(|a| {
+            let held: SmallVec<[Type; 4]> =
+                members.iter().filter(|m| a.may_pass(env, m)).cloned().collect();
+            match &held[..] {
+                [] => pred.clone(),
+                [m] => m.clone(),
+                _ => Type::Set(Arc::from_iter(held)),
+            }
+        })
+        .collect();
+    let test = emit_type_test(cx, pat, scrut, scrut_typ)?;
+    Ok(OrArm { alt_types: Some(alt_types), test })
+}
+
+/// Alternative `k`'s [`AltMatch`]: it tests against its type in `arm`,
+/// with `arm`'s written test. `None` where no value of the scrutinee
+/// passes that type: its pattern need not fit the scrutinee's layout, as
+/// a whole arm's need not in [`emit_select_arms`].
 fn emit_alt_match(
     cx: &mut BodyCx,
     alts: &[StructPatternNode],
     k: usize,
-    alt_types: Option<&[Type]>,
+    arm: &OrArm,
     pred_typ: &Type,
     scrut: SelectScrut,
     scrut_typ: &Type,
 ) -> Result<Option<AltMatch>> {
-    let at = alt_types.map_or(pred_typ, |ts| &ts[k]);
+    let at = arm.alt_types.as_deref().map_or(pred_typ, |ts| &ts[k]);
     if !resolve_node_typ(cx.ctx, at)
         .could_pass(cx.ctx.type_env, scrut_typ)
         .unwrap_or(true)
@@ -2378,24 +2426,28 @@ fn emit_alt_match(
         return Ok(None);
     }
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-    let c = emit_structure_cond(cx, &alts[k], at, false, scrut, scrut_typ, &mut binds)?;
+    let typed = arm.test.is_some();
+    let c = emit_structure_cond(cx, &alts[k], at, typed, scrut, scrut_typ, &mut binds)?;
+    let c = match (arm.test, c) {
+        (Some(t), Some(c)) => Some(cx.b.ins().band(t, c)),
+        (t, c) => t.or(c),
+    };
     Ok(Some((c, binds)))
 }
 
-/// Every alternative's [`AltMatch`], all emitted in the current block:
-/// a structure test's reads are total.
-fn emit_alt_matches(
+/// Every alternative's [`AltMatch`] of the or-pattern arm `pat`, all
+/// emitted in the current block: a structure test's reads are total.
+fn emit_alt_matches<R: Rt>(
     cx: &mut BodyCx,
+    pat: &PatternNode<R>,
     alts: &[StructPatternNode],
-    pred_typ: &Type,
     scrut: SelectScrut,
     scrut_typ: &Type,
 ) -> Result<SmallVec<[Option<AltMatch>; 4]>> {
-    let alt_types = set_members(pred_typ, alts.len());
+    let arm = or_arm(cx, pat, alts, scrut, scrut_typ)?;
+    let pred = &pat.type_predicate;
     (0..alts.len())
-        .map(|k| {
-            emit_alt_match(cx, alts, k, alt_types.as_deref(), pred_typ, scrut, scrut_typ)
-        })
+        .map(|k| emit_alt_match(cx, alts, k, &arm, pred, scrut, scrut_typ))
         .collect()
 }
 
