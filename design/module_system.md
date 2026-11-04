@@ -221,12 +221,13 @@ instantiate the variables standing inside function types. A variable
 outside every function type (`val v: Array<'a>`) no use copies, so a
 write at one type and a read at another would share one cell: the
 module's check refuses such a val, "declare the val at one type"
-(`module.rs::check_val_variables` over the written type,
-`Type::variable_outside_functions`: a typedef as its expansion, an
-abstract type's parameters and an unresolved name's arguments outside,
-a typedef met inside itself over grown parameters counting its
-arguments outside). A dynamic module's `sig` is held to it at the
-program's check, a script's interface at `check_script_sig`.
+(`module.rs::check_val_variables` over the val's binding, a variable
+counted whatever a use has bound it to, so a sibling's check decides
+nothing here; `Type::variable_outside_functions`: a typedef as its
+expansion, an abstract type's parameters and an unresolved name's
+arguments outside, a typedef met inside itself over grown parameters
+counting its arguments outside). A dynamic module's `sig` is held to it
+at the program's check, a script's interface at `check_script_sig`.
 
 `Type::sig_matches` pairs each open implementation cell with the
 declaration's type at its place (`SigMatch::paired`). A cell no use of
