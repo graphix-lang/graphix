@@ -924,43 +924,6 @@ impl StructPatternNode {
             }
             return merge_leaves(env, all, out);
         };
-        // XCR claude for claude: [bug/low] A whole capture shared by or-alternatives over a
-        // declared variable held rigid is typed as the bound's members the alternatives
-        // match, not the variable, though one alternative's capture (`a@ `A(_) => a`)
-        // keeps the variable: `'b: [`A(i64), `B(i64)] |x: 'b| -> 'b select x { a@ `A(_) |
-        // a@ `B(_) => a }` is refused "'b ... does not contain [`A(i64), `B(i64)]" where
-        // the same as two arms checks (main a084f9887 refuses it too). probe:
-        // ~/ptmp/cr29/scratch/review-r6/E2-r1-1/r2/c8.gx (or-capture-rigid-01)
-        // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
-        // "rigid-pattern-bind-01" (~/ptmp/cr29/next-discuss.md). A pattern over a rigid
-        // declared variable; option (b) there decides this shape too. Readdressed to eric
-        // until then.
-        // 2026-11-03 claude: Eric ruled (2026-11-03): D6 b in ~/ptmp/cr-discuss.md, under
-        // his rule for type holes (reject and require an annotation, then a --check
-        // census: it comes back to him only if the stdlib, the book's examples or
-        // netidx-admin would need a new annotation): a pattern that tests or binds inside
-        // a declared variable's value needs a written test; a name or `_` over the whole
-        // value keeps the variable (about 30 pinned definitions in lang/select.rs get a
-        // written test; the graphix-lang skill's line on selects over a declared variable
-        // changes).
-        // 2026-11-04 claude: Settled by D6 (b) (rigid-pattern-bind-01) as a refusal: the
-        // alternatives test inside 'b, so the or form is refused, as each arm of the
-        // two-arm form now is (main ran the two-arm form), with the same message naming
-        // the written test. A written test types the capture as it does on main (the
-        // test's type, not 'b), so a body that must return 'b returns the scrutinee;
-        // written or-arms now lower in the JIT (fusion/emit/select.rs or_arm), so the
-        // written twin fuses. Pins:
-        // lang::select::or_capture_inside_a_declared_variable_{refused,written},
-        // capture_arms_inside_a_declared_variable_refused; the refusals fail without the
-        // rule.
-        // 2026-11-04 claude: Review r14 (B-r1-1, low) asks Eric to confirm the judgement:
-        // the ruling's text says the or-capture keeps the variable; built, the or form and
-        // the two-arm form (main ran the two-arm form, rp3) are both refused, and a written
-        // test over the variable's own position types the capture by the test, as main
-        // does, so a body that must return 'b returns the scrutinee. Since this round a
-        // name under a written test over a value holding 'b at a nested position keeps 'b
-        // (PatternNode::type_inside_rigid); at the top position the test's type stays, as
-        // on main, since that is how a written test takes a value out of the variable.
         let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
         let ts: SmallVec<[Type; 4]> = ts.into_iter().flatten().map(|(t, _)| t).collect();
         if checking {
@@ -1094,62 +1057,6 @@ impl StructPatternNode {
     /// `matched`, when not empty, is the scrutinee's members this slice can
     /// match: an array or list member's elements are its own, not the
     /// predicate's cells, which stand for any other member (`Any`).
-    // XCR claude for claude: [bug/low] An exact-length slice holding a bind and a literal
-    // over an element type with an open member is refused with a type mismatch naming
-    // a cell: `let f = |x: Array<['b, i64]>| select x { [h, 1] => h, _ => null }`
-    // (and `[1, h]`) gives "type mismatch '_N: unbound does not contain [i64, 'b]";
-    // `[h, ..]` over it, and `[h, 1]` over Array<[string, i64]> or Array<['b,
-    // `Keep('b)]>, check. GRAPHIX_DBG_BIND shows `CHK-CONTAINS '_N >= [i64, 'b] ->
-    // false`, `'_N` the bind's cell in the predicate's Set [i64, '_N], after `SET-T [i64,
-    // '_N] >= i64`; whether this check or bind_narrowed's makes it is not located. Main
-    // (a3d9a2d7c) refuses it too. (slice-bind-mismatch-01)
-    // 2026-11-02 claude: Located (lane G r8), not fixed: the refusal is
-    // hold_slice_members's check_contains (this function), and it is right: h may hold an
-    // i64 (x = [5, 1] at 'b = string), so its cell must contain [i64, 'b]. The cell
-    // can't, because two steps before it have merged it with 'b, which the gate holds
-    // rigid: select::Reach::new's settle (itype.contains(scrut), run since the scrutinee
-    // has_unbound) pairs the predicate's element Set ['_h, i64] with ['b, i64], i64 with
-    // i64 and '_h with 'b (CELL-MERGE via place_members/contains_tvars); with that settle
-    // skipped, Type::narrow_pattern (narrow_member) makes the same merge. Over
-    // Array<[string, i64]> the same pairing binds '_h to [i64, string] whole, so it
-    // checks; over ['b, `Keep('b)] no member pairs with the literal. The fix is in the
-    // pairing: an exact-length slice element's bind cell stands for every member at its
-    // position (as the rest cell does) and must pair with no single member, in Reach's
-    // settle and in narrow_pattern. Both are parked for Eric (D3; rigid-pattern-bind-01),
-    // so this waits on those rulings. Probes ~/ptmp/cr29/scratch/r8-G/i3/s1.gx (refused),
-    // s3.gx ([h, 1] and [1, h] with values).
-    // 2026-11-02 claude: Readdressed to eric: the fix located lies in the pairing that
-    // select::Reach::new's settle and Type::narrow_pattern make, which wait on his
-    // rulings on D3 and rigid-pattern-bind-01 (next-discuss.md); this CR follows
-    // whichever rule those take, and a rule that leaves a slice element's bind cell
-    // unpaired with any single member (as the rest cell is) closes it.
-    // 2026-11-03 claude: Round-6 discussion merge: the Reach::new settle half goes with
-    // settle-commits-name-01 (readdressed to claude, a local fix under the 10-31 ruling);
-    // the narrow_pattern half follows rigid-pattern-bind-01, D6 in ~/ptmp/cr-discuss.md,
-    // so this stays for eric until D6 is ruled.
-    // 2026-11-03 claude: Eric ruled (2026-11-03): D6 b in ~/ptmp/cr-discuss.md, under his
-    // rule for type holes (reject and require an annotation, then a --check census: it
-    // comes back to him only if the stdlib, the book's examples or netidx-admin would
-    // need a new annotation): a pattern that tests or binds inside a declared variable's
-    // value needs a written test; a name or `_` over the whole value keeps the variable
-    // (about 30 pinned definitions in lang/select.rs get a written test; the graphix-lang
-    // skill's line on selects over a declared variable changes).
-    // 2026-11-03 claude: Lane N r11 changed Reach::new's settle (settle-commits-name-01):
-    // over a non-open scrutinee it no longer binds an arm's cells, so its settle half is
-    // gone, but the probes ~/ptmp/cr29/scratch/r8-G/i3/{s1,s3}.gx are still refused with
-    // the same mismatch ('_N does not contain [i64, 'b]): Type::narrow_pattern makes the
-    // merge of the element's bind cell with 'b, the half that waits on D6.
-    // 2026-11-04 claude: D6 half: [h, 1] over Array<['b, i64]> with 'b unbounded is
-    // refused by the D6 rule (1 may be a value of 'b), naming 'or bound 'b'. Bounded
-    // apart ('b: string) it checks with h over the whole element type: a slice's element
-    // set narrows one element at a time over a union element type (Type::needs_split),
-    // and Reach::new's settle no longer makes a copy a rigid cell took its pattern's cell
-    // again (Type::contains_through_copy). The same split fixes the concrete sibling [h,
-    // 1] over Array<[i64, `Keep(i64)]>, refused on main. Pins:
-    // lang::select::slice_literal_inside_an_unbounded_variable_refused,
-    // slice_bind_beside_a_literal_over_a_bounded_variable (fails without the split and
-    // without the settle change), generic_slice_binds_beside_keep_check (its lit fails
-    // without the split).
     fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };

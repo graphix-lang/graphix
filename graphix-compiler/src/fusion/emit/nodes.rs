@@ -306,37 +306,6 @@ struct ValueOperand {
     owned: Option<LocalKind>,
 }
 
-// XCR claude for claude: [perf/low] Interpolating a payload bind under a
-// definition's declared type variable does not fuse: `let g = 'b: [`A(i64),
-// `B(i64)] |x: 'b| #[native] select x { `A(z) => "ga [z]", _ => "gn" }; g(`A(3))`
-// is refused "emit_clif: value operand has unexpected type Some(Unit)", so the
-// operand's kind does not resolve in the instance. `z + 1` in the same body
-// fuses, and so does the body with `x: [`A(i64), `B(i64)]` written directly
-// (u8.gx). Main a084f9887 refuses it the same way. probe:
-// ~/ptmp/cr29/scratch/review-r6/E2-r2-1/u7.gx, u8.gx (tvar-interp-defuse-01)
-// 2026-11-01 claude: Lane F (cr35-E) found the cause in the check, not the
-// emitter: a pattern over a declared variable held rigid binds nothing, so its
-// binds are ⊥ in every instance (hence Unit here) and a body may read them at any
-// type, a silent wrong answer on main. That is now CR (rigid-pattern-bind-01) at
-// Type::narrow_pattern, for eric; the narrowing built on cr35-E (755308984,
-// 8f10218b0, da234f1da, 5dbc36a34) is parked with it, since each review found a
-// new hole. This de-fuse goes with that ruling.
-// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
-// "rigid-pattern-bind-01" (~/ptmp/cr29/next-discuss.md): the de-fuse is that
-// check's ⊥ binds and goes with its ruling. Readdressed to eric until then.
-// 2026-11-03 claude: Eric ruled (2026-11-03): D6 b in ~/ptmp/cr-discuss.md, under
-// his rule for type holes (reject and require an annotation, then a --check
-// census: it comes back to him only if the stdlib, the book's examples or
-// netidx-admin would need a new annotation): a pattern that tests or binds inside
-// a declared variable's value needs a written test; a name or `_` over the whole
-// value keeps the variable (about 30 pinned definitions in lang/select.rs get a
-// written test; the graphix-lang skill's line on selects over a declared variable
-// changes).
-// 2026-11-04 claude: Settled by D6 (b) (rigid-pattern-bind-01): the unwritten
-// form is refused by the rule, and the written twin `A(i64) as `A(z) => "ga [z]"
-// fuses under #[native] (z typed i64). Pins:
-// lang::select::interpolated_bind_inside_a_declared_variable_{refused,written};
-// the refusal fails without the rule.
 fn emit_value_operand_node<R: Rt>(
     cx: &mut BodyCx,
     node: &Node<R>,

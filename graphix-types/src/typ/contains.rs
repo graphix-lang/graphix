@@ -3354,67 +3354,6 @@ impl Type {
         }
     }
 
-    // XCR claude for claude: [bug/medium] Plain containment drops a rigid cell at a split
-    // position: covers_by_parts splits the position by union_members, which leaves an
-    // unbound cell out, so a declared variable beside null reads as null alone and an
-    // annotation or a return type accepts a value of the wrong type. Under `'b: [i64,
-    // string] |x: ([`A, `B], ['b, null])|`, `let y: [(`A, ['b, null]), (`B, null)] = x`
-    // (s1.gx) and the same as the function's return type (s3.gx, k1.gx) pass the check,
-    // and `(`B, "w")` then reaches a select over y with no arm for it ("no arm matches: a
-    // coverage hole in the check" on base 30702808d); k3.gx returns (`B, 7) typed (`B,
-    // null). It reaches every containment, not only a select's patterns, so it is not
-    // D5 (b) / D6 (b)'s rebuild (~/ptmp/cr-discuss.md); it needs a --check census of
-    // both repos before it is built. The reviewers' rule (review r11 round 3): at a split
-    // position a rigid cell reads as its bound's members, and as a member of its own only
-    // where it has no bound. A prototype of it on cr48-N2 over the 55 probes of
-    // ~/ptmp/cr29/scratch/review-r11/{N-r3-2/q,N-r3-1/p} against base 30702808d refuses
-    // the holes s1, s3, k1, k3 and accepts q4 and v4 (correct, refused by base for
-    // missing cases), but refuses s2 and k2, correct programs base accepts: a candidate
-    // holding the cell itself (`(`B, ['b, null])`) no longer picks the bound's members.
-    // Refined, each bound member also picked by a candidate holding the cell: the same
-    // four refused, q4, v4 and k6 accepted, s2 and k2 kept, no other verdict changed.
-    // Prototype and results: ~/ptmp/cr29/scratch/r13-N/covers/{proto2.patch,
-    // proto-rule.txt, proto-rule2.txt}. probes: ~/ptmp/cr29/scratch/review-r11/N-r3-2/q/
-    // {s1,s2,s3}.gx, N-r3-1/p/{k1,k2,k3,k6}.gx (covers-by-parts-rigid-01)
-    // 2026-11-04 claude: Lane B r14: built as the reviewers' refined rule.
-    // covers_by_parts collects the rigid cells at the position it splits
-    // (union_members_with); one with one typed bound is its bound's members, each also
-    // picked by a candidate holding the cell itself, one with none a member of its own; a
-    // cell not held rigid is left out as before (D5's). On the r11 probes
-    // (~/ptmp/cr29/scratch/review-r11/{N-r3-2/q,N-r3-1/p}) s1, s3, k1, k3 are refused, k6
-    // is accepted, k2 and s2 keep their values (s2 also needed
-    // StructurePattern::meets_rigid to skip a member the whole pattern cannot hold), q4
-    // and v4 are now D6 refusals. Census of both repos unchanged. Pins:
-    // lang::select::containment_variable_beside_null_is_its_bound (s1; fails without the
-    // bound split), containment_variable_split_by_its_bound (k6; fails without the split
-    // and without the holding-cell pick),
-    // containment_variable_kept_whole_by_a_member_holding_it (k2; fails without the
-    // holding-cell pick), pattern_beside_a_variable_at_a_member_it_cannot_match (s2;
-    // fails without the pick and without meets_rigid's skip).
-    // 2026-11-04 claude: Review r14 (B-r1-1, medium): a rigid cell the bound holds ('a:
-    // Any or string, 'b: ['a, `X]) was dropped by union_members, so the strings at a 'b
-    // position read as `X alone and an annotation or written tests over [`X, null] passed
-    // with a coverage hole. covers_by_parts now splits through split_members: a rigid
-    // cell in a bound splits by its own one typed bound (else is a member of its own),
-    // its members taken also by a part holding any cell it was split from. Pins:
-    // lang::select::containment_variable_its_bound_names_is_split and
-    // written_tests_over_a_variable_its_bound_names_cover_it (both fail with the inner
-    // cell left out), containment_variable_its_bound_names_held and
-    // written_tests_over_a_variable_its_bound_names_covered (the covering twins). Probes
-    // ~/ptmp/cr29/scratch/review-r14/B-r1-1/d/.
-    // 2026-11-04 claude: Review r14 round 2 (B-r2-2, medium): split_members dropped an
-    // open cell a rigid cell's bound names ('a in 'a: [i64, string], 'c: ['a, null], 'b:
-    // ['c, `X], which main does not hold rigid: bound-chain-rigid-01), so the strings at
-    // a 'b position read as `X and null and c5/c14/c15 passed with a coverage hole.
-    // Inside a rigid cell's bound an open cell is a variable of the same definition:
-    // split_members now holds it rigid (a RigidGate covers_by_parts keeps while it
-    // probes) and splits it as any rigid cell. c5, c14, c15 refused as on main; c3
-    // (main's hole, a bool beside 'b) refused too. Pins:
-    // lang::select::containment_variable_a_bound_of_a_bound_names_is_split,
-    // containment_variable_any_a_bound_of_a_bound_names_is_split (both pass the check on
-    // 5ae1f18eb and find no arm at run time),
-    // containment_variable_a_bound_of_a_bound_names_held (the covering twin). This item
-    // has now failed review twice in new ways.
     /// Do the candidates' argument lists cover `targs` together? The first
     /// position splits into its members, and each member's candidates
     /// must cover the positions after it. A rigid cell there is its typed
