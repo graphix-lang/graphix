@@ -1,5 +1,5 @@
 use super::{
-    GRAPHIX_ESC, GRAPHIX_MUST_ESC, choice, expr,
+    GRAPHIX_STRINGS, choice, expr,
     input::{Input, R},
 };
 use crate::{
@@ -105,9 +105,7 @@ fn bracket_note(i: &mut Input) -> R<Intp> {
 
 fn chunk_part(i: &mut Input) -> R<Intp> {
     let pos = i.pos();
-    let s = i.value_part(|s| {
-        value_parser::escaped_string(s, &GRAPHIX_MUST_ESC, &GRAPHIX_ESC)
-    })?;
+    let s = i.value_part(|s| value_parser::escaped_string(s, &GRAPHIX_STRINGS))?;
     let end = i.pos();
     match s.is_empty() {
         true => Err(i.unexpected("empty string")),

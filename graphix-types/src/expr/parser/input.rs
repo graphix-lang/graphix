@@ -665,9 +665,9 @@ impl<'a> Input<'a> {
             Expected::OneOf(items) => {
                 self.labels(at.off, true, |l| items.iter().for_each(|i| expect(l, *i)))
             }
-            Expected::Escape(must_esc, esc) => self.labels(at.off, true, |l| {
-                escapes(must_esc, esc).for_each(|c| expect(l, Item::Char(c)))
-            }),
+            Expected::Escape(syntax) => {
+                self.labels(at.off, true, |l| escapes(syntax).for_each(|i| expect(l, i)))
+            }
             Expected::Refused(why) => {
                 self.labels(at.off, false, |l| l.message(Info::text(why)))
             }

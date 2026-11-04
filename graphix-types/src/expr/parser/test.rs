@@ -3381,3 +3381,20 @@ fn a_comment_elsewhere_in_a_type_is_refused() {
         assert!(msg.contains(note), "{src}: {msg}");
     }
 }
+
+/// A value literal's strings read netidx's `\u{hex}`; graphix's own strings
+/// do not.
+#[test]
+fn unicode_escape_reads_in_value_literals_alone() {
+    let error = |s: &str| ExprKind::Constant(Value::error(arcstr::ArcStr::from(s)));
+    assert_eq!(parse_one(r#"error:"\u{41}""#).unwrap(), error("A").to_expr_nopos());
+    assert_eq!(parse_one(r#"error:"\u{1}""#).unwrap(), error("\u{1}").to_expr_nopos());
+    let msg = |s: &str| format!("{:#}", parse_one(s).unwrap_err());
+    let own = msg(r#""\u{41}""#);
+    let want = "column: 3\nUnexpected `u`\n\
+                Expected `n`, `r`, `t`, `0`, `\"`, `\\`, `[` or `]`\n";
+    assert!(own.contains(want), "{own}");
+    for s in [r#"error:"\u{d800}""#, r#"error:"\u{4g}""#, r#"error:"\u41""#] {
+        assert!(parse_one(s).is_err(), "{s}")
+    }
+}

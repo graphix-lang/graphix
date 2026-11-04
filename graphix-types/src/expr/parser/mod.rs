@@ -16,7 +16,7 @@ use escaping::Escape;
 use netidx_core::path::Path;
 use netidx_value::{
     Value,
-    parser::{self as value_parser, duration_of},
+    parser::{self as value_parser, StringSyntax, duration_of},
 };
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -1537,9 +1537,16 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
     Escape::new('\\', &esc, &NAMED, None).unwrap()
 });
 
+/// The strings of graphix source: [`GRAPHIX_ESC`], no `\u{..}`.
+static GRAPHIX_STRINGS: LazyLock<StringSyntax> = LazyLock::new(|| StringSyntax {
+    must_esc: &GRAPHIX_MUST_ESC,
+    esc: &GRAPHIX_ESC,
+    unicode: false,
+});
+
 /// The escape for strings nested in a value literal (`error:"..."`):
-/// netidx's, whose generic `\u{..}` arm its own parser cannot read back,
-/// so other control characters print raw.
+/// netidx's without its generic `\u{..}` arm, so other control characters
+/// print raw, as in graphix's own strings; netidx's parser reads both.
 pub static VALUE_ESC: LazyLock<Escape> = LazyLock::new(|| {
     const NAMED: [(char, &str); 4] = [('\n', "n"), ('\r', "r"), ('\t', "t"), ('\0', "0")];
     Escape::new('\\', &['\\', '"', '\n', '\r', '\0', '\t'], &NAMED, None).unwrap()
