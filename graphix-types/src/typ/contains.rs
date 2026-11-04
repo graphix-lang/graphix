@@ -3186,7 +3186,7 @@ impl Type {
         }
     }
 
-    // CR claude for claude: [bug/low] A select is refused for missing cases over a
+    // XCR claude for claude: [bug/low] A select is refused for missing cases over a
     // product holding a union whose members share an undecided cell, which every arm
     // meets with `_` alone: `let w = (1, v)` over `v` built from `(`A, 5, z)` and `(`B,
     // "s", z)`, z a `never()` let written after, with `(_, (`A, _, _)) => "a"` and `(_,
@@ -3197,6 +3197,11 @@ impl Type {
     // a name or `_` meets costs nothing, so the program passes; the D3 rebuild (D5 in
     // ~/ptmp/cr-discuss.md) may cover it. Main 30702808d alike. probes:
     // ~/ptmp/cr29/scratch/r11-N/{n1,n4}.gx (n1c.gx closed) (distribution-open-cell-01)
+    // 2026-11-04 claude: Reach::exhausted first judges the cover with the undecided
+    // cells held rigid on copies (Type::contains_holding), where a rigid cell is a
+    // constant to the distribution law; n1 and n4 check and run (xs / a). Pins:
+    // lang::select_undecided::undecided_part_only_wildcards_meet_distributes,
+    // undecided_part_beside_a_bool_head_distributes (main: missing match cases).
     /// The distribution law for product heads: a set whose members
     /// split one argument position of a constructor across same-shaped
     /// alternatives covers the pooled constructor —

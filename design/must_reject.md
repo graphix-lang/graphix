@@ -343,6 +343,23 @@ whose part over the variable holds `_` or an undeclared variable
 (`StructurePattern::meets_rigid_written`, the same message): the
 mutation writes no test; pins `lang::select::written_test_holding_*`.
 
+**14. Undecided parts at a select.** Site: a select over a concrete
+scrutinee `s` whose arms bind no name and have no guard or type test,
+one of them testing (not `_` or a name). Mutation: `{ let tm__z =
+never(); select (select true { true => s, false => tm__z }) { arms, _ =>
+last } }`, the last arm's body repeated under a `_` (a union scrutinee
+beside a wildcard is one the arms' settle does not decide). Rule: an
+open cell the scrutinee held before the arms, still open at the select's
+end, that an arm tests is refused (`Select::check_undecided`,
+`StructurePattern::meets_undecided`). Built (`undecided-part`), right
+site the select. Not generated: a name over the open part, typed beside
+the members' others (`TVar::narrow_per_member`), whose refusal comes at
+a later write (pins `lang::select_undecided::name_over_an_undecided_*`);
+a written test's own open variable (pins
+`lang::select_undecided::written_*_open_variable_refused`); and members
+told apart only by undecided cells under a partial struct pattern
+(`UndecidedMembers`; pins `lang::select::partial_struct_*_two_members`).
+
 **Interface vals.** Not generated: the module generator writes every
 `val` at one type. A val's variable outside a function type is refused
 by a rule that reads the written type alone (`Type::

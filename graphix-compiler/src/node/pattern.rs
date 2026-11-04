@@ -1308,13 +1308,7 @@ impl StructPatternNode {
             let shape = spec.infer_type_predicate(env, &cx.scope.lexical)?;
             // the written type is the run-time test: the completion shapes
             // only the binds
-            let undecided = &mut Vec::new();
-            let shape = match spec.complete_type_predicate(
-                env,
-                &shape,
-                type_predicate,
-                undecided,
-            )? {
+            let shape = match spec.complete_type_predicate(env, &shape, type_predicate)? {
                 Some(t) => t,
                 None => shape,
             };
@@ -1342,7 +1336,7 @@ impl StructPatternNode {
                 ctx.env.retype(id, typ)
             }
             let env = &ctx.env;
-            // CR claude for claude: [bug/medium] Under a written type, a constructor
+            // XCR claude for claude: [bug/medium] Under a written type, a constructor
             // pattern at a union position is told from the union's other members with open
             // cells benign, and the select arm's Told judgment tests the written type, which
             // covers what reaches it, so neither tells the constructor from a quantifier
@@ -1383,6 +1377,14 @@ impl StructPatternNode {
             // "`Keep(r) tests inside a value of 'b"; on main they print 5. Pin:
             // lang::select::written_test_naming_a_declared_variable_refused. What an open
             // cell in a written test means (the review-r8 G probes) stays D5's.
+            // 2026-11-04 claude: D5 (b): an open cell of a written test that its structure
+            // tests is refused ('tests a value of 'b, a type variable its type test ..
+            // leaves open: write the type it tests'); the declared and signature-named forms
+            // (kw1, kw3, y4, a4, ap23) are D6's refusal on main. u6 and c15 (an undeclared
+            // variable in the test) ran on main and are refused now. Pins:
+            // lang::select_undecided::written_test_with_an_open_variable_refused,
+            // written_collection_test_with_an_open_variable_refused (main prints [3, 0]);
+            // twin written_test_closed.
             if let Ok(rest) = type_predicate.diff(env, &shape)
                 && node.footprint(env, &shape, false).rep_collision(env, &rest).is_some()
             {
@@ -1967,6 +1969,16 @@ impl StructPatternNode {
     // are refused now. probes: ~/ptmp/cr29/scratch/r14-B/fix1/{q10t,q10r,q10p}.gx,
     // r14-B/r2/q10c.gx, ~/ptmp/cr29/scratch/review-r11/N-r3-2/q/q10.gx
     // (bool-beside-null-cover-01)
+    // 2026-11-04 claude: Partly fixed: the pool reads a primitive member beside bool and
+    // null as a head only a name or _ admits (Head::Rest), so q10t and q10r check and run
+    // ([1, 2, 1] and [0, 1, 1]); pins
+    // lang::select_undecided::bool_heads_beside_a_null_arm_cover,
+    // bool_heads_after_a_null_head_cover, rest_head_left_uncovered_refused. The
+    // written-test forms (q10p, q10c, q10 under 'b: [i64, string]) stay refused 'missing
+    // match cases': a written test whose type does not hold the whole member pools nothing
+    // (LiteralPool::claim skips a member the test does not contain) and matched_part
+    // answers None for a bool literal; covering them needs the pool to read a written test
+    // as the member's part it holds, a change to how written tests pool, not this rule's.
     /// The part of `typ` this pattern covers when its only refutable parts
     /// are `null` literals and constructors: `typ` with `null` at each
     /// `null` and, where a constructor stands over a union, the members
@@ -2219,6 +2231,19 @@ impl StructPatternNode {
             }
         };
         if all_cover && typed { self.array_len_range() } else { None }
+    }
+
+    /// Whether this slice pattern's elements each cover the element type
+    /// of `m`, an array or list type: it claims its lengths of `m` though
+    /// its elements test what another member's may not hold.
+    pub(super) fn elements_cover(&self, env: &Env, m: &Type) -> bool {
+        self.array_len_range().is_some()
+            && self.child_types(env, m, false).is_some_and(|ts| {
+                self.children()
+                    .into_iter()
+                    .zip(ts)
+                    .all(|(c, t)| t.is_some_and(|(t, _)| c.covers(env, &t, false)))
+            })
     }
 
     fn matches_anything_inner(&self) -> bool {

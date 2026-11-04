@@ -4841,8 +4841,8 @@ run!(
     prints("[i64:1]")
 );
 
-// Bounds a probe admits apart but no binding holds together refuse the
-// select's binding whole: `x` is left to its write.
+// Bounds a probe admits apart but no binding holds together decide
+// nothing: `x` is still undecided where the arm tests it.
 run!(
     payload_bounds_refused_together_bind_nothing,
     r#"{
@@ -4854,7 +4854,7 @@ run!(
     x <- t ~ "s";
     (b.0, v)
 }"#,
-    prints(r#"[["s", "s"], i64:1]"#)
+    refused("(1, \"a\") tests a value whose type is not decided at this select")
 );
 
 // A type test over the element: `[i64, Array<i64>]` holds `x` and

@@ -45,10 +45,11 @@ pub enum Family {
     RefWiden,
     SameForm,
     AbstractParam,
+    UndecidedPart,
 }
 
 impl Family {
-    pub const ALL: [Family; 16] = [
+    pub const ALL: [Family; 17] = [
         Family::MonoReuse,
         Family::RigidVar,
         Family::RigidPattern,
@@ -65,6 +66,7 @@ impl Family {
         Family::RefWiden,
         Family::SameForm,
         Family::AbstractParam,
+        Family::UndecidedPart,
     ];
 }
 
@@ -104,6 +106,7 @@ impl Family {
             Family::RefWrite => &["read-only reference", "does not contain &"],
             Family::RefWiden => &["does not contain &mut"],
             Family::SameForm => &["the same runtime form"],
+            Family::UndecidedPart => &["a type not decided at this select"],
         };
         says.iter().any(|s| head.contains(s))
     }
@@ -128,6 +131,7 @@ impl std::fmt::Display for Family {
             Family::RefWiden => "ref-widen",
             Family::SameForm => "same-form",
             Family::AbstractParam => "abstract-param",
+            Family::UndecidedPart => "undecided-part",
         })
     }
 }
@@ -362,6 +366,7 @@ pub fn probes(
     references(&root, types, cap, &mut out);
     same_form(&root, &pre, types, cap, &mut out);
     abstract_param(&root, &pre, types, cap, &mut out);
+    undecided_part(&root, &pre, types, cap, &mut out);
     // at most `cap` of each family's, each id its own
     let mut kept: Vec<RejectProbe> = Vec::with_capacity(out.len());
     for mut p in out {
@@ -436,6 +441,98 @@ fn same_form(
         .to_expr(e.pos);
         let cand = mutate::replace(root, i, &sel);
         out.extend(finish(Family::SameForm, i, &cand, |_, pre| {
+            vec![pre.get(i).and_then(span)]
+        }));
+        taken += 1;
+    }
+}
+
+/// Family 14. A select over a concrete scrutinee `s` whose arms bind no
+/// name, an arm testing it, becomes `{ let tm__z = never(); select (select
+/// true { true => s, false => tm__z }) { arms, _ => last } }`, `last` the
+/// last arm's body: `tm__z`'s type is not decided where the arms test it,
+/// so a later use could decide it apart from what they assume. The `_`
+/// arm keeps the arms from deciding it (a union scrutinee beside a
+/// wildcard settles nothing). Right site: the replaced select.
+fn undecided_part(
+    root: &Expr,
+    pre: &[Expr],
+    types: &TypeMap,
+    cap: usize,
+    out: &mut Vec<RejectProbe>,
+) {
+    const Z: &str = "tm__z";
+    let mut taken = 0usize;
+    for i in spread(pre.len()) {
+        if taken >= cap {
+            break;
+        }
+        let e = &pre[i];
+        let ExprKind::Select(se) = &e.kind else { continue };
+        let Some(t) = types.of(&se.arg).first() else { continue };
+        if !concrete(t) || typemorph::leaks_binds(&se.arg) {
+            continue;
+        }
+        let binds = |p: &Pattern| {
+            let mut any = false;
+            p.structure_predicate.with_names(&mut |_| any = true);
+            any || p.guard.is_some() || p.type_predicate.is_some()
+        };
+        let tests = |p: &Pattern| {
+            !matches!(
+                p.structure_predicate,
+                StructurePattern::Ignore | StructurePattern::Bind(_)
+            )
+        };
+        if se.arms.iter().any(|(p, _)| binds(p)) || !se.arms.iter().any(|(p, _)| tests(p))
+        {
+            continue;
+        }
+        let lit = |b: bool| Pattern {
+            type_predicate: None,
+            structure_predicate: StructurePattern::literal(netidx_value::Value::Bool(b)),
+            guard: None,
+            pos: WrittenAt::NOWHERE,
+            end: WrittenAt::NOWHERE,
+        };
+        let z = ExprKind::Ref { name: ModPath::from([Z]) }.to_expr_nopos();
+        let union = ExprKind::Select(SelectExpr {
+            arg: Arc::new(
+                ExprKind::Constant(netidx_value::Value::Bool(true)).to_expr_nopos(),
+            ),
+            arms: Arc::from_iter([(lit(true), (*se.arg).clone()), (lit(false), z)]),
+        })
+        .to_expr_nopos();
+        let mut arms = se.arms.to_vec();
+        if let Some((p, last)) = arms.last()
+            && !matches!(p.structure_predicate, StructurePattern::Ignore)
+        {
+            let ignore =
+                Pattern { structure_predicate: StructurePattern::Ignore, ..lit(true) };
+            arms.push((ignore, last.clone()))
+        }
+        let sel = ExprKind::Select(SelectExpr {
+            arg: Arc::new(union),
+            arms: Arc::from_iter(arms),
+        })
+        .to_expr_nopos();
+        let never =
+            ExprKind::Never { typ: None, args: Arc::from_iter([]) }.to_expr_nopos();
+        let block = ExprKind::Block {
+            exprs: Arc::from_iter([
+                ExprKind::Bind(Arc::new(BindExpr {
+                    rec: false,
+                    pattern: StructurePattern::Bind(Name::from(Z)),
+                    typ: None,
+                    value: never,
+                }))
+                .to_expr_nopos(),
+                sel,
+            ]),
+        }
+        .to_expr(e.pos);
+        let cand = mutate::replace(root, i, &block);
+        out.extend(finish(Family::UndecidedPart, i, &cand, |_, pre| {
             vec![pre.get(i).and_then(span)]
         }));
         taken += 1;

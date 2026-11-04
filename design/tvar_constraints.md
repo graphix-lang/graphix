@@ -507,29 +507,7 @@ An image carries each cell's level and each definition's depth.
   callers' to pick.
 - The check decides every cell it creates: the drain runs the site
   settles, then the operator operand and `let`-over-⊥ settles, then the
-  rules judged over them (`PendingSettle`), and last the completions a
-  partial struct pattern took for one member while cells not decided
-  yet told them apart (`PendingSettle::OneMember`): refused unless an
-  earlier arm's cover holds the other member or the two completions are
-  one type once the check has decided (`setops::settled_identical`).
-  That is the verdict `==` gives cells decided before the select, so a
-  run-time test that would admit both members (a slice element, a
-  function type) does not save the pair. Only a cell that holds no value
-  is any type there, and the judgment is directional. ⊥ and a top-level
-  cell still open (nothing decides it) are any type on either side. A
-  definition's open cell its calls may still bind is only itself in the
-  arm's completion, which is its run-time test and which a caller may
-  name; in the other member it is any type unless a caller can hand it
-  a value, which the enclosing definitions' signatures say
-  (`FnType::input_cells`: what a parameter reaches, and what the result
-  reaches under a `&mut`, a nominal type, a constructor application or a
-  returned function's parameter). So an empty
-  `[]` a definition returns is apart from nothing beside its other
-  members, and one it returns as the test is apart from a parameter's
-  values. Under `GRAPHIX_NO_SUBST` an instance's own check judges the
-  types its caller chose, so it refuses such an empty `[]` a caller
-  names apart, which the definition's check accepted. It reads the cells
-  and decides none, so it comes after every rule that may. Elaboration never settles
+  rules judged over them (`PendingSettle`). Elaboration never settles
   a cell an earlier compile task created (`tvar::earlier_task`): what
   the check left open, it decided open. An open quantifier of such a
   function type (a generic function value in `m: Array<fn<'a: Number>
@@ -615,6 +593,44 @@ An image carries each cell's level and each definition's depth.
   `g(true) + g(false)` is. The `CallSite::typecheck0` eager settle takes
   only the witness (`settle_witness`): the cell's writers are not
   checked yet.
+
+### Undecided types at a select
+
+A select's coverage and its arms' run-time tests are decided where the
+select is checked, so a type still open there (a `never()` let written
+after it, a parameter nothing has bound yet) is one unknown type, equal
+only to itself, whatever the program decides later (Eric, 10-31 and
+11-03, D5 (b)). Once the arms have decided what they will (Reach::new's
+settle, the narrowing, the bodies), `Select::check_undecided` walks each
+arm's pattern over the scrutinee with `StructurePattern::meets_undecided`,
+the walk the declared-variable rule takes (`meets`, met over open cells
+instead of rigid ones): a pattern other than a name or `_` standing over
+a value of such a cell is refused, naming the binding whose type it is
+(`Holders`). The cells counted are those the scrutinee's type held
+before the arms ran (`settle::position_cells`), still open at the end:
+a cell an arm's own pattern brought, a bind's or a `_`'s, which the
+arms' settle put into an open scrutinee, is the arms' decision and not
+counted. A written test is judged over its own type, where any open
+cell is its own variable nothing declares. The cost is one walk per arm,
+linear in the arms.
+
+What only names and `_` meet passes, and stays sound two ways. A name
+over a union position where one member's part is an open cell takes
+that cell beside the other members' parts (`TVar::narrow_per_member`:
+a copy the narrowing left open took the member's cell), so a body that
+decides the name decides the cell, and a later write to it apart is
+refused at the write. And exhaustiveness is judged first with the
+undecided cells held rigid on copies (`Type::contains_holding`), where
+the product distribution law applies, since a rigid cell is a constant
+to it; only where that fails does the committing cover run, which may
+decide them as the arms need.
+
+A partial struct pattern's completion is the arm's run-time test, so
+members its left-out fields tell apart only by undecided cells are two
+members (`strictly_identical`), refused as any ambiguous completion is,
+unless what reaches the arm leaves one: annotate the cells, the member,
+or name every field; a program whose cells end up equal is refused
+until annotated.
 
 ### The occurs check
 

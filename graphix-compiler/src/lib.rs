@@ -75,7 +75,7 @@ use poolshark::{
 use smallvec::SmallVec;
 use std::{
     any::Any,
-    cell::{Cell, OnceCell},
+    cell::Cell,
     collections::{VecDeque, hash_map::Entry},
     fmt::{Debug, Write as _},
     mem,
@@ -2751,18 +2751,6 @@ pub(crate) enum PendingSettle {
     /// members with one runtime form, open cells read as any type they
     /// may yet bind.
     Told { test: Type, rest: Type, spec: Arc<Expr> },
-    /// The completions a partial struct pattern took for one member,
-    /// after arms covering `covered`: refused where the check decided them
-    /// apart. Judged after every other rule: it reads the cells as they
-    /// end up.
-    OneMember {
-        pairs: Vec<expr::Undecided>,
-        covered: Vec<Type>,
-        /// The signatures of the enclosing definitions: a cell of theirs
-        /// holds a value only where a caller can hand it one.
-        sigs: SmallVec<[triomphe::Arc<FnType>; 1]>,
-        spec: Arc<Expr>,
-    },
 }
 
 /// What a [`PendingSettle::Discernible`] judges.
@@ -2896,29 +2884,6 @@ impl PendingSettle {
             };
             if let (Err(e), spec) = res {
                 on_err(spec, e)?
-            }
-        }
-        for s in frame.iter() {
-            if let PendingSettle::OneMember { pairs, covered, sigs, spec } = s {
-                let inputs: OnceCell<LPooled<AHashMap<usize, typ::TVar>>> =
-                    OnceCell::new();
-                let input = |tv: &typ::TVar| {
-                    sigs.is_empty()
-                        || inputs
-                            .get_or_init(|| {
-                                let mut cells = LPooled::take();
-                                for sig in sigs.iter() {
-                                    sig.input_cells(env, &mut cells)
-                                }
-                                cells
-                            })
-                            .contains_key(&tv.cell_addr())
-                };
-                for pair in pairs {
-                    if let Err(e) = pair.judge(env, covered, &input) {
-                        on_err(spec, e)?
-                    }
-                }
             }
         }
         Ok(())

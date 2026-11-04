@@ -3,18 +3,12 @@ use crate::{
     PrintFlag,
     env::Env,
     format_with_flags, print_as_written,
-    typ::{
-        AbstractId, TVar, Type, Unfolded, settled_identical, strictly_identical,
-        tvar::Level,
-    },
+    typ::{AbstractId, TVar, Type, Unfolded, strictly_identical},
 };
-use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use enumflags2::BitFlags;
 use netidx_derive::Pack;
 use netidx_value::Value;
-use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
 use std::fmt;
 use triomphe::Arc;
@@ -274,52 +268,26 @@ impl StructurePattern {
     /// `{x: 'a}`) against the scrutinee: the member the pattern can match,
     /// with the named fields replaced by the pattern's. Recurses through
     /// composites. `None` if unchanged; an error when the pattern can
-    /// match more than one member. Members told apart only by cells not
-    /// decided yet complete alike, so they count as one: each such pair
-    /// goes to `undecided`, for the check's end to judge
-    /// ([`Undecided::judge`]).
+    /// match more than one member, members told apart only by cells not
+    /// decided yet included: each is one type, equal only to itself.
     pub fn complete_type_predicate(
         &self,
         env: &Env,
         ptype: &Type,
         scrutinee: &Type,
-        undecided: &mut Vec<Undecided>,
     ) -> Result<Option<Type>> {
         crate::stack::ensure_sufficient(|| {
-            self.complete_type_predicate_inner(env, ptype, scrutinee, undecided)
+            self.complete_type_predicate_inner(env, ptype, scrutinee)
         })
     }
 
     /// `pt` completed against the scrutinee position `st`, and whether
     /// that changed it.
-    fn complete_at(
-        &self,
-        env: &Env,
-        pt: &Type,
-        st: &Type,
-        undecided: &mut Vec<Undecided>,
-    ) -> Result<(bool, Type)> {
-        Ok(match self.complete_type_predicate(env, pt, st, undecided)? {
+    fn complete_at(&self, env: &Env, pt: &Type, st: &Type) -> Result<(bool, Type)> {
+        Ok(match self.complete_type_predicate(env, pt, st)? {
             Some(t) => (true, t),
             None => (false, pt.clone()),
         })
-    }
-
-    /// [`Self::complete_at`] a position inside the scrutinee's members,
-    /// whose values reach the arm as their member's do.
-    fn complete_sub(
-        &self,
-        env: &Env,
-        pt: &Type,
-        st: &Type,
-        undecided: &mut Vec<Undecided>,
-    ) -> Result<(bool, Type)> {
-        let noted = undecided.len();
-        let r = self.complete_at(env, pt, st, undecided)?;
-        for u in &mut undecided[noted..] {
-            u.member = None
-        }
-        Ok(r)
     }
 
     /// Complete element patterns position by position.
@@ -328,12 +296,11 @@ impl StructurePattern {
         elems: &[Self],
         pts: &[Type],
         sts: &[Type],
-        undecided: &mut Vec<Undecided>,
     ) -> Result<Option<Arc<[Type]>>> {
         let mut changed = false;
         let mut out: SmallVec<[Type; 8]> = SmallVec::new();
         for ((p, pt), st) in elems.iter().zip(pts).zip(sts) {
-            let (c, t) = p.complete_sub(env, pt, st, undecided)?;
+            let (c, t) = p.complete_at(env, pt, st)?;
             changed |= c;
             out.push(t)
         }
@@ -346,8 +313,7 @@ impl StructurePattern {
         &self,
         env: &Env,
         scrutinee: &Type,
-        undecided: &mut Vec<Undecided>,
-        mut complete: impl FnMut(&Type, &mut Vec<Undecided>) -> Result<Option<Type>>,
+        mut complete: impl FnMut(&Type) -> Result<Option<Type>>,
     ) -> Result<Option<Type>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         // an open scrutinee completes against its bound, whose values it holds
@@ -355,36 +321,30 @@ impl StructurePattern {
             Some(bound) => union_members(env, &bound, &mut members)?,
             None => union_members(env, scrutinee, &mut members)?,
         }
-        let mut found: Option<Type> = None;
+        let mut found: Option<(Type, &Type)> = None;
         for m in members.iter() {
-            let noted = undecided.len();
-            let t = match complete(m, undecided)? {
+            let t = match complete(m)? {
                 Some(t) if t.could_match(env, m)? => t,
-                _ => {
-                    undecided.truncate(noted);
-                    continue;
-                }
+                _ => continue,
             };
             match &found {
-                None => found = Some(t),
-                Some(f) if *f == t => {
-                    if !strictly_identical(f, &t) {
-                        undecided.push(Undecided {
-                            pattern: self.clone(),
-                            scrutinee: scrutinee.clone(),
-                            first: f.clone(),
-                            other: t,
-                            member: Some(m.clone()),
-                        })
-                    }
+                None => found = Some((t, m)),
+                Some((f, _)) if strictly_identical(f, &t) => (),
+                Some((f, first)) if *f == t => {
+                    let members = [(*first).clone(), m.clone()];
+                    return Err(
+                        UndecidedMembers { pattern: self.clone(), members }.into()
+                    );
                 }
-                Some(_) => bail!(
-                    "the pattern {self} matches more than one member of {scrutinee}; \
-                     annotate the member you mean, e.g. `T as {self}`"
-                ),
+                Some(_) => format_with_flags(PrintFlag::DerefTVars, || {
+                    bail!(
+                        "the pattern {self} matches more than one member of {scrutinee}; \
+                         annotate the member you mean, e.g. `T as {self}`"
+                    )
+                })?,
             }
         }
-        Ok(found)
+        Ok(found.map(|(t, _)| t))
     }
 
     fn complete_type_predicate_inner(
@@ -392,12 +352,11 @@ impl StructurePattern {
         env: &Env,
         ptype: &Type,
         scrutinee: &Type,
-        undecided: &mut Vec<Undecided>,
     ) -> Result<Option<Type>> {
         match self {
             Self::Struct { all: _, exhaustive, binds } => {
                 let Type::Struct(pfields) = ptype else { return Ok(None) };
-                self.unique_completion(env, scrutinee, undecided, |m, undecided| {
+                self.unique_completion(env, scrutinee, |m| {
                     let Type::Struct(sf) = m else { return Ok(None) };
                     let named = |n: &ArcStr| binds.iter().find(|(bn, _, _)| bn == n);
                     let fits = if *exhaustive {
@@ -421,7 +380,7 @@ impl StructurePattern {
                                     .find(|(pn, _, _)| pn == sn)
                                     .map(|(_, pt, _)| pt)
                                     .expect("inferred field missing");
-                                let (c, t) = p.complete_sub(env, pt, st, undecided)?;
+                                let (c, t) = p.complete_at(env, pt, st)?;
                                 changed |= c;
                                 t
                             }
@@ -433,43 +392,29 @@ impl StructurePattern {
             }
             Self::Tuple { all: _, binds } => {
                 let Type::Tuple(pts) = ptype else { return Ok(None) };
-                self.unique_completion(
-                    env,
-                    scrutinee,
-                    undecided,
-                    |m, undecided| match m {
-                        Type::Tuple(sts) if sts.len() == binds.len() => {
-                            Ok(Self::complete_elems(env, binds, pts, sts, undecided)?
-                                .map(Type::Tuple))
-                        }
-                        _ => Ok(None),
-                    },
-                )
+                self.unique_completion(env, scrutinee, |m| match m {
+                    Type::Tuple(sts) if sts.len() == binds.len() => {
+                        Ok(Self::complete_elems(env, binds, pts, sts)?.map(Type::Tuple))
+                    }
+                    _ => Ok(None),
+                })
             }
             Self::Variant { all: _, tag, binds } => {
                 let Type::Variant(_, pts, at) = ptype else { return Ok(None) };
-                self.unique_completion(
-                    env,
-                    scrutinee,
-                    undecided,
-                    |m, undecided| match m {
-                        Type::Variant(t, sts, _)
-                            if t == tag && sts.len() == binds.len() =>
-                        {
-                            let ts =
-                                Self::complete_elems(env, binds, pts, sts, undecided)?;
-                            Ok(ts.map(|ts| Type::Variant(tag.clone(), ts, *at)))
-                        }
-                        _ => Ok(None),
-                    },
-                )
+                self.unique_completion(env, scrutinee, |m| match m {
+                    Type::Variant(t, sts, _) if t == tag && sts.len() == binds.len() => {
+                        let ts = Self::complete_elems(env, binds, pts, sts)?;
+                        Ok(ts.map(|ts| Type::Variant(tag.clone(), ts, *at)))
+                    }
+                    _ => Ok(None),
+                })
             }
             Self::Slice { list, all: _, binds }
             | Self::SlicePrefix { list, all: _, prefix: binds, tail: _ } => {
-                self.complete_slice(env, ptype, scrutinee, *list, binds, undecided)
+                self.complete_slice(env, ptype, scrutinee, *list, binds)
             }
             Self::SliceSuffix { all: _, head: _, suffix } => {
-                self.complete_slice(env, ptype, scrutinee, false, suffix, undecided)
+                self.complete_slice(env, ptype, scrutinee, false, suffix)
             }
             Self::Or(alts) => {
                 let Type::Set(pts) = ptype else { return Ok(None) };
@@ -479,7 +424,7 @@ impl StructurePattern {
                 let mut changed = false;
                 let mut out: SmallVec<[Type; 8]> = SmallVec::new();
                 for (p, pt) in alts.iter().zip(pts.iter()) {
-                    let (c, t) = p.complete_at(env, pt, scrutinee, undecided)?;
+                    let (c, t) = p.complete_at(env, pt, scrutinee)?;
                     changed |= c;
                     out.push(t)
                 }
@@ -500,7 +445,6 @@ impl StructurePattern {
         scrutinee: &Type,
         list: bool,
         elems: &[Self],
-        undecided: &mut Vec<Undecided>,
     ) -> Result<Option<Type>> {
         let elem = |t: &Type| match (list, t) {
             (true, Type::List(t)) | (false, Type::Array(t)) => Some(t.clone()),
@@ -510,7 +454,7 @@ impl StructurePattern {
             Some(Type::Set(pts)) if pts.len() >= elems.len() => pts.clone(),
             _ => return Ok(None),
         };
-        self.unique_completion(env, scrutinee, undecided, |m, undecided| {
+        self.unique_completion(env, scrutinee, |m| {
             let Some(st) = elem(m) else { return Ok(None) };
             let mut changed = false;
             let mut ts: SmallVec<[Type; 8]> = SmallVec::new();
@@ -518,7 +462,7 @@ impl StructurePattern {
                 match elems.get(i) {
                     None => ts.push(pt.clone()),
                     Some(p) => {
-                        let (c, t) = p.complete_sub(env, pt, &st, undecided)?;
+                        let (c, t) = p.complete_at(env, pt, &st)?;
                         changed |= c;
                         ts.push(t)
                     }
@@ -529,73 +473,29 @@ impl StructurePattern {
     }
 }
 
-/// Two completions of a partial struct pattern that `==` took for one
-/// member of `scrutinee` while cells not decided yet told them apart.
+/// A partial struct pattern's two members told apart only by cells not
+/// decided where it is completed.
 #[derive(Debug)]
-pub struct Undecided {
-    pattern: StructurePattern,
-    scrutinee: Type,
-    first: Type,
-    other: Type,
-    /// The member `other` completes, when it is one of the arm's
-    /// scrutinee's, whose values an earlier arm may take.
-    member: Option<Type>,
+pub struct UndecidedMembers {
+    pub pattern: StructurePattern,
+    pub members: [Type; 2],
 }
 
-impl Undecided {
-    /// Refused unless the two completions are one type once the check has
-    /// decided what it will ([`settled_identical`]) or an earlier arm,
-    /// covering `covered`, takes every value of the other member. `input` says whether a
-    /// caller of an enclosing definition can hand an unbound cell a value
-    /// ([`crate::typ::FnType::input_cells`]), every cell outside any
-    /// definition; no other cell of theirs holds one. It reads the cells
-    /// and decides none.
-    pub fn judge(
-        &self,
-        env: &Env,
-        covered: &[Type],
-        input: &dyn Fn(&TVar) -> bool,
-    ) -> Result<()> {
-        if settled_identical(&self.first, &self.other, input)
-            || self.taken(env, covered)?
-        {
-            return Ok(());
-        }
-        let Self { pattern, scrutinee, .. } = self;
-        let apart = match self.open_in_a_definition() {
-            true => "whose cells its calls may decide apart",
-            false => "once its cells are decided",
-        };
+impl fmt::Display for UndecidedMembers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { pattern, members: [a, b] } = self;
         format_with_flags(PrintFlag::DerefTVars, || {
-            bail!(
-                "the pattern {pattern} matches more than one member of {scrutinee} \
-                 {apart}; annotate the member you mean, e.g. `T as {pattern}`, or name \
-                 every field"
+            write!(
+                f,
+                "the pattern {pattern} matches two members, {a} and {b}, told apart by \
+                 types not decided at this select; annotate those types, or the member \
+                 you mean, e.g. `T as {pattern}`, or name every field"
             )
         })
     }
-
-    /// Whether a completion still holds a definition's open cell.
-    fn open_in_a_definition(&self) -> bool {
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.first.reached_cells(&mut cells);
-        self.other.reached_cells(&mut cells);
-        cells.values().any(|tv| !tv.is_bound() && tv.level() != Level::TOP)
-    }
-
-    /// Whether one of `covered` holds the other member, both closed.
-    fn taken(&self, env: &Env, covered: &[Type]) -> Result<bool> {
-        let Some(m) = self.member.as_ref().filter(|m| !m.has_unbound()) else {
-            return Ok(false);
-        };
-        for c in covered {
-            if !c.has_unbound() && c.contains_with_flags(BitFlags::empty(), env, m)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
 }
+
+impl std::error::Error for UndecidedMembers {}
 
 /// The abstract type each abstract pattern of a pattern names, as the
 /// pattern's compile resolved it.
@@ -629,7 +529,21 @@ impl StructurePattern {
         ids: &AbstractOf,
         typ: &Type,
     ) -> Result<Option<TVar>> {
-        Ok(self.meets(env, ids, typ, None)?.map(|(tv, _)| tv))
+        Ok(self.meets(env, ids, typ, None, Met::Rigid)?.map(|(tv, _)| tv))
+    }
+
+    /// The first open cell `undecided` admits, never one held rigid, whose
+    /// value this pattern, over a value of `typ`, tests or binds inside,
+    /// met as [`Self::meets_rigid`] meets a rigid one.
+    pub fn meets_undecided(
+        &self,
+        env: &Env,
+        ids: &AbstractOf,
+        typ: &Type,
+        undecided: &dyn Fn(&TVar) -> bool,
+    ) -> Result<Option<TVar>> {
+        let met = Met::Undecided(undecided);
+        Ok(self.meets(env, ids, typ, None, met)?.map(|(tv, _)| tv))
     }
 
     /// [`Self::meets_rigid`] under `written`, the written test over a value
@@ -644,7 +558,7 @@ impl StructurePattern {
         written: &Type,
     ) -> Result<Option<(TVar, Type)>> {
         Ok(self
-            .meets(env, ids, typ, Some(written))?
+            .meets(env, ids, typ, Some(written), Met::Rigid)?
             .and_then(|(tv, w)| w.map(|w| (tv, w))))
     }
 
@@ -671,12 +585,13 @@ impl StructurePattern {
         ids: &AbstractOf,
         typ: &Type,
         written: Option<&Type>,
+        met: Met,
     ) -> Result<Option<(TVar, Option<Type>)>> {
         crate::stack::ensure_sufficient(|| match self {
             Self::Ignore | Self::Bind(_) => Ok(None),
             Self::Or(alts) => {
                 for a in alts.iter() {
-                    if let Some(r) = a.meets(env, ids, typ, written)? {
+                    if let Some(r) = a.meets(env, ids, typ, written, met)? {
                         return Ok(Some(r));
                     }
                 }
@@ -686,7 +601,7 @@ impl StructurePattern {
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
                 let mut rigid: SmallVec<[TVar; 2]> = SmallVec::new();
                 union_members_with(env, typ, &mut members, &mut |tv| {
-                    if let Some(c) = tv.open_cell().filter(|c| c.is_rigid()) {
+                    if let Some(c) = tv.open_cell().filter(|c| met.counts(c)) {
                         rigid.push(c)
                     }
                 })?;
@@ -715,7 +630,7 @@ impl StructurePattern {
                     };
                     for (i, (p, t)) in parts.iter().enumerate() {
                         let w = ws.as_ref().map(|ws| &ws[i]);
-                        if let Some(r) = p.meets(env, ids, t, w)? {
+                        if let Some(r) = p.meets(env, ids, t, w, met)? {
                             return Ok(Some(r));
                         }
                     }
@@ -877,6 +792,22 @@ impl StructurePattern {
                 Some(smallvec![(&**bind, rep.instantiate_with(params))])
             }
             _ => None,
+        }
+    }
+}
+
+/// Which open cells [`StructurePattern::meets`] meets.
+#[derive(Clone, Copy)]
+enum Met<'a> {
+    Rigid,
+    Undecided(&'a dyn Fn(&TVar) -> bool),
+}
+
+impl Met<'_> {
+    fn counts(self, c: &TVar) -> bool {
+        match self {
+            Self::Rigid => c.is_rigid(),
+            Self::Undecided(f) => !c.is_rigid() && f(c),
         }
     }
 }

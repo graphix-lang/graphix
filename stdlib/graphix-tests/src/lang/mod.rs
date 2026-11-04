@@ -30,6 +30,7 @@ mod printing;
 mod prune;
 mod repl_inputs;
 mod select;
+mod select_undecided;
 mod seq;
 mod seq_abort;
 mod seq_calls;

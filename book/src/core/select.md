@@ -406,11 +406,43 @@ S as {x, ..} if (x < 10) || (x > 50) => `VWall
 Any type in scope (or an inline structural type,
 `{x: i64, y: i64} as {x, ..}`) works as the annotation.
 
-Two members whose left-out fields differ only in types the program has
-not decided yet, where the pattern is checked, look alike, and the
-pattern takes them for one member. Once the whole program (or REPL
-input) is checked, the pattern is refused the same way if they turned
-out different:
+A type the program has not decided yet where a select is checked, such
+as a `never()` binding written after it or a function's unannotated
+parameter, is one unknown type there, equal only to itself, whatever
+the program decides later. An arm that tests a value of such a type is
+refused, since a later decision could make the test match what the
+arms assumed it would not, and the refusal names the binding to
+annotate:
+
+```graphix,refused
+let b = true;
+let z = never();
+let v = select b { true => {a: [1], c: 1}, false => z };
+let r = select v { {a, ..} => "[a]" };
+// z is decided here, after the select
+z <- {a: ["s"], c: "w"};
+r
+```
+
+```
+$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 4, column: 1 in file test.gx, in: let r = select v { { a, .. } => "[a]" ..
+    1: at: line: 4, column: 9 in file test.gx, in: select v { { a, .. } => "[a]" }
+    2: at: line: 4, column: 20 in file test.gx
+    3: { a, .. } tests a value of 'z, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'z the type of `z` (line 2, column 5)
+```
+
+A part that only a name or `_` meets passes, and a name there holds that
+type beside the other members' parts: over `` [(`A, z), (`B, "s")] ``,
+`(_, x) => str::len(x)` makes `z` a string, so a later `z <- 5` is
+refused where it is written.
+
+For the same reason, two members whose left-out fields differ only in
+types not decided yet are two members, and a partial pattern over both
+is refused:
 
 ```graphix,refused
 let b = true;
@@ -420,7 +452,7 @@ let v = select b { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
 let r = select v { {a, ..} => "[a]" };
 // x and y are decided here, after the select
 x <- 1;
-y <- "w";
+y <- 2;
 r
 ```
 
@@ -429,19 +461,13 @@ $ graphix test.gx
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 5, column: 20 in file test.gx
-    1: the pattern { a, .. } matches more than one member of [{ a: Array<i64>, c: i64 }, { a: Array<string>, c: string }] once its cells are decided; annotate the member you mean, e.g. `T as { a, .. }`, or name every field
+    0: at: line: 5, column: 1 in file test.gx, in: let r = select v { { a, .. } => "[a]" ..
+    1: at: line: 5, column: 9 in file test.gx, in: select v { { a, .. } => "[a]" }
+    2: at: line: 5, column: 20 in file test.gx
+    3: the pattern { a, .. } matches two members, { a: Array<i64>, c: 'x } and { a: Array<string>, c: 'y }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for 'x the type of `x` (line 2, column 5) and for 'y the type of `y` (line 3, column 5)
 ```
 
-Inside a function, a type its callers decide counts as different from
-every other, since two calls may decide them apart: a type whose values
-a caller passes in, as a parameter's are, or can put in later (under a
-`&mut`, or as a parameter of a function it returns). A type that holds
-no value, such as the element type of an empty `[]` nothing else
-decides, differs from none, even when the function returns it. The
-first member is what the arm tests at run time, though, so an empty
-`[]` there that the function returns, whose element a caller may name,
-still differs from a type in another member that holds values. Naming
+Annotating `x` and `y` (`let x: i64 = never()`) decides them, and naming
 every field, `{a, c: _}`, matches both members as they are.
 
 ### Variant Patterns

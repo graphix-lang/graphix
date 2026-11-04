@@ -13,8 +13,8 @@ use netidx_core::{pack::PackError, path::Path};
 use netidx_derive::Pack;
 use netidx_value::{ValArray, Value};
 pub use pattern::{
-    AbstractOf, Pattern, StructurePattern, Undecided, union_members, union_members_open,
-    union_members_with,
+    AbstractOf, Pattern, StructurePattern, UndecidedMembers, union_members,
+    union_members_open, union_members_with,
 };
 use poolshark::local::LPooled;
 pub use resolver::{

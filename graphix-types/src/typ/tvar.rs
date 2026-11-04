@@ -3488,7 +3488,7 @@ impl Type {
         })
     }
 
-    // CR claude for claude: [bug/high] A name over a union scrutinee is typed from the
+    // XCR claude for claude: [bug/high] A name over a union scrutinee is typed from the
     // closed members alone where one member's part at it is an open cell (a never() let
     // written later, an unannotated parameter): the copy of the name's cell stays open
     // against that part, so the cell "stays open" here, the body decides it alone, and
@@ -3510,6 +3510,15 @@ impl Type {
     // meets passes" typed right, so it may go with D5's rebuild (~/ptmp/cr-discuss.md).
     // probes: ~/ptmp/cr29/scratch/review-r11/N-r2-2/p/{n3e,w3,w5,w8}.gx,
     // review-r11/N-r2-1/n/n07b.gx (narrow-open-part-01)
+    // 2026-11-04 claude: TVar::narrow_per_member: a copy the narrowing left open that took
+    // an open cell of the member's part (the member reaches it) is that part, so the name
+    // holds it beside the other members' parts; the CR's experiment, restricted to a copy
+    // the member reaches. n3e, w3, w5, n07b refused at the write ('z is string, inferred
+    // from an earlier use'), w8 at the call. lang:: runs in about a minute (the
+    // experiment's hang did not reproduce). Pins:
+    // lang::select_undecided::name_over_an_undecided_part_written_apart_refused, _field_,
+    // _guarded_part_, _slice_part_, _parameter_part_called_apart_refused (main: no arm, a
+    // wrong value, or a JIT abort), name_over_an_undecided_part_decides_it.
     /// `members ⊇ self` for a select arm's predicate over what reaches the
     /// arm, `members` being the members of that union it can match: each
     /// open cell of self takes the union of its parts over every member and
@@ -3551,10 +3560,17 @@ impl Type {
                 if !m.narrow_member(env, &copy)? {
                     continue;
                 }
+                // a copy left open took an open cell of the member's part,
+                // whose values reach the arm as the member's others do
+                let mut taken: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                super::settle::position_cells(m, &mut taken);
                 for (c, p) in cells.iter().zip(parts.iter_mut()) {
                     let Some(f) = known.get(&c.cell_addr()) else { continue };
                     match (f.binding(), p.as_mut()) {
                         (Some(t), Some(p)) => p.push(t.resolve_tvars()),
+                        (None, Some(p)) if taken.contains_key(&f.cell_addr()) => {
+                            p.push(Type::TVar(f.clone()))
+                        }
                         (None, _) => *p = None,
                         (Some(_), None) => (),
                     }
@@ -3578,6 +3594,30 @@ impl Type {
     pub fn reset_tvars(&self) -> Type {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Copy)
             .unwrap_or_else(|| self.clone())
+    }
+
+    /// `self ⊇ t` with each of `held`, open cells, one type equal only to
+    /// itself, whatever it becomes: over copies of both, each of `held`
+    /// copied to one fresh cell held rigid, so it decides no cell.
+    #[doc(hidden)]
+    pub fn contains_holding(&self, env: &Env, t: &Type, held: &[TVar]) -> Result<bool> {
+        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let gates: SmallVec<[RigidGate; 4]> = held
+            .iter()
+            .map(|tv| {
+                let c = TVar::empty_named(tv.name.clone());
+                let gate = c.open_rigid();
+                known.insert(tv.cell_addr(), c);
+                gate
+            })
+            .collect();
+        let outer = self.reset_tvars_int(&mut known, Fresh::Copy);
+        let inner = t.reset_tvars_int(&mut known, Fresh::Copy);
+        let outer = outer.as_ref().unwrap_or(self);
+        let inner = inner.as_ref().unwrap_or(t);
+        let r = outer.contains(env, inner);
+        drop(gates);
+        r
     }
 
     /// `self ⊇ t` over a copy of self's cells but those `known` maps

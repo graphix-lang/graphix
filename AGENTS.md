@@ -1486,8 +1486,9 @@ cycle, across workers; the compiler never pins threads.
   first member's), an arm that can match none of
   it, or that tests what an earlier unguarded arm tests, is dead, and the
   select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern
-  length ladders count as coverage, one ladder per array or list member,
-  and exact-length slice arms pool their elements' heads per length
+  length ladders count as coverage, one ladder per array or list member
+  (a slice arm claims its lengths of each member whose element type its
+  elements cover), and exact-length slice arms pool their elements' heads per length
   (`[true]` with `[false]` claims length 1); a `null` literal covers `null`, a
   constructor at a union position the members it takes, and a written test
   over a closed type the part of it its structure takes
@@ -1503,7 +1504,8 @@ cycle, across workers; the compiler never pins threads.
   tuple or struct member holding no open cell is a head beside them, its
   own positions counted under that head alone; an open cell at the
   position, a declared variable included, is a head of its own that only
-  a name or `_` there admits, `Head::Open`), and an arm under
+  a name or `_` there admits, `Head::Open`, as is a primitive member's
+  value but `bool` and `null`, `Head::Rest`), and an arm under
   a type test pools only a member the test holds; a group whose combinations of
   heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
   positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per
@@ -1516,17 +1518,23 @@ cycle, across workers; the compiler never pins threads.
   each also taken by a part holding the cell, else a member of its own,
   and one in that bound splits the same way, an open cell there held
   rigid while it probes (`Type::covers_by_parts`); a probe in progress for the
-  same scrutinee ref claims nothing on re-entry. A partial struct
-  pattern completes against the one member it can match
+  same scrutinee ref claims nothing on re-entry. **A type still
+  undecided at a select's end is one unknown type, equal only to itself**
+  (`Select::check_undecided`): once the arms have decided what they will,
+  an open cell the scrutinee held before them (never one their own
+  patterns brought: a bind's, a `_`'s) that an arm tests, a
+  pattern other than a name or `_` standing over its values, is refused,
+  naming the binding to annotate (`StructurePattern::meets_undecided`,
+  the walk the declared-variable rule below takes), and so is any open
+  cell of a written test that its structure tests; a name over it takes
+  the open part beside the members' others (`TVar::narrow_per_member`).
+  Exhaustiveness holds those cells rigid on copies first
+  (`Type::contains_holding`), so a part only names and `_` meet covers
+  whatever it becomes, else where the cover decides them. A partial
+  struct pattern completes against the one member it can match
   (`StructurePattern::complete_type_predicate`); members told apart only
-  by cells not decided yet complete alike and count as one, and the
-  check's end refuses such a pair decided apart, as `==` refuses cells
-  decided before the select, unless an earlier arm takes the other
-  member (`PendingSettle::OneMember`, judged last, reading the cells).
-  Only a cell that holds no value is any type there: ⊥, a top-level
-  cell still open, and, in the other member, a definition's open cell
-  no caller can hand a value (`FnType::input_cells`); any other open
-  cell of a definition is only itself, since its calls may decide it.
+  by undecided cells are two members, refused unless what reaches the
+  arm leaves one: annotate the cells or name every field.
   Refutability is judged
   against a type (`StructPatternNode::covers`): a constructor pattern
   covers only a position whose type is that constructor, so under a

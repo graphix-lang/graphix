@@ -3,7 +3,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Bound, ContainsFlags, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar,
-        Type, TypeRef, contains::on_copies, node_addr, tvar::Level,
+        Type, TypeRef, contains::on_copies, node_addr,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -122,40 +122,18 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
 /// binding, and inside a function type the cells pair consistently
 /// (`fn('a) -> 'a` is `fn('b) -> 'b`, not `fn('a) -> 'b`).
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::<_, false>::new(false, every_input).same(t0, t1)
+    Identity::new(false).same(t0, t1)
 }
 
 /// [`union_identical`] with every unbound cell by identity, inside a
 /// function type too: one signature's variables are its own.
 pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::<_, false>::new(true, every_input).same(t0, t1)
+    Identity::new(true).same(t0, t1)
 }
 
-/// The input predicate of an unsettled [`Identity`], which reads none.
-fn every_input(_: &TVar) -> bool {
-    true
-}
-
-/// [`union_identical`] of an arm's completion `test` and another member's
-/// completion `other` once the check has decided what it will, but for
-/// the cells that hold no value, which are any type: ⊥ on either side, an
-/// unbound top-level cell (nothing decides it later) on either side, and
-/// an unbound cell of `other` where `input` says no caller can hand it
-/// one. Any other unbound cell is only itself.
-pub(crate) fn settled_identical(
-    test: &Type,
-    other: &Type,
-    input: &dyn Fn(&TVar) -> bool,
-) -> bool {
-    Identity::<_, true>::new(false, input).same(test, other)
-}
-
-/// Identity of `t0` and `t1`; `SETTLED`, as [`settled_identical`] judges
-/// an arm's completion `t0` and another member's `t1`.
-struct Identity<I, const SETTLED: bool> {
+/// Identity of `t0` and `t1`.
+struct Identity {
     strict: bool,
-    /// `SETTLED`: whether a caller can hand an unbound cell a value.
-    input: I,
     /// Inside a function type: the cells paired so far, by address.
     pairs: Option<SmallVec<[(usize, usize); 4]>>,
     /// The nodes found identical outside a function type.
@@ -165,11 +143,10 @@ struct Identity<I, const SETTLED: bool> {
     found_in_fn: NodePairs,
 }
 
-impl<I: Fn(&TVar) -> bool, const SETTLED: bool> Identity<I, SETTLED> {
-    fn new(strict: bool, input: I) -> Self {
+impl Identity {
+    fn new(strict: bool) -> Self {
         Self {
             strict,
-            input,
             pairs: None,
             found: NodePairs::default(),
             found_in_fn: NodePairs::default(),
@@ -203,7 +180,7 @@ impl<I: Fn(&TVar) -> bool, const SETTLED: bool> Identity<I, SETTLED> {
     }
 
     fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
-        if a.same_cell(b) || self.passes_any(a) || self.holds_none(b) {
+        if a.same_cell(b) {
             return true;
         }
         let (x, y) = (a.cell_addr(), b.cell_addr());
@@ -218,45 +195,17 @@ impl<I: Fn(&TVar) -> bool, const SETTLED: bool> Identity<I, SETTLED> {
         }
     }
 
-    /// Whether the unbound test cell `a` passes any value: `SETTLED` and
-    /// top-level.
-    fn passes_any(&self, a: &TVar) -> bool {
-        SETTLED && a.level() == Level::TOP
-    }
-
-    /// Whether the unbound cell `b` of the tested values holds none. In
-    /// a function type, whose values one runtime form tests alike, a
-    /// definition's cell pairs as [`union_identical`]'s do.
-    fn holds_none(&self, b: &TVar) -> bool {
-        SETTLED && (b.level() == Level::TOP || (self.pairs.is_none() && !(self.input)(b)))
-    }
-
-    /// Whether `SETTLED` and `t` is ⊥, which passes any value and holds
-    /// none.
-    fn settled_bottom(&self, t: &Type) -> bool {
-        SETTLED && t.with_deref(|t| matches!(t, Some(Type::Bottom)))
-    }
-
     #[inline(never)]
     fn same_inner(&mut self, t0: &Type, t1: &Type) -> bool {
         match (t0, t1) {
             (Type::TVar(a), Type::TVar(b)) => match (a.binding(), b.binding()) {
                 (Some(x), Some(y)) => a.same_cell(b) || self.same(&x, &y),
                 (None, None) => self.cells(a, b),
-                (None, Some(t)) => self.passes_any(a) || self.settled_bottom(&t),
-                (Some(t), None) => self.settled_bottom(&t) || self.holds_none(b),
+                (None, Some(_)) | (Some(_), None) => false,
             },
-            (Type::TVar(a), t) | (t, Type::TVar(a)) if !SETTLED => {
+            (Type::TVar(a), t) | (t, Type::TVar(a)) => {
                 a.binding().is_some_and(|x| self.same(&x, t))
             }
-            (Type::TVar(a), t) => match a.binding() {
-                Some(x) => self.same(&x, t),
-                None => self.passes_any(a) || self.settled_bottom(t),
-            },
-            (t, Type::TVar(b)) => match b.binding() {
-                Some(y) => self.same(t, &y),
-                None => self.settled_bottom(t) || self.holds_none(b),
-            },
             (Type::Bottom, Type::Bottom)
             | (Type::Any, Type::Any)
             | (Type::Hole, Type::Hole)
@@ -324,7 +273,6 @@ impl<I: Fn(&TVar) -> bool, const SETTLED: bool> Identity<I, SETTLED> {
                 }
                 r
             }
-            (Type::Bottom, _) | (_, Type::Bottom) => SETTLED,
             _ => false,
         }
     }

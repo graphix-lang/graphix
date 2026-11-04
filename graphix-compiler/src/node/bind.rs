@@ -379,9 +379,8 @@ impl<R: Rt> Bind<R> {
                         let ptyp = pat.infer_type_predicate(&ctx.env, &scope.lexical)?;
                         // a let's pattern is irrefutable, so it never takes
                         // two members for one
-                        let undecided = &mut Vec::new();
                         match pat
-                            .complete_type_predicate(&ctx.env, &ptyp, &typ, undecided)
+                            .complete_type_predicate(&ctx.env, &ptyp, &typ)
                             .at(&spec)?
                         {
                             Some(t) => (t, true),
@@ -594,11 +593,7 @@ impl<R: Rt> Bind<R> {
         let ExprKind::Bind(b) = &self.spec.kind else { return Ok(()) };
         let spec = &self.spec;
         // irrefutable, it never takes two members for one
-        let undecided = &mut Vec::new();
-        let t = b
-            .pattern
-            .complete_type_predicate(&ctx.env, &ptyp, &self.typ, undecided)
-            .at(spec)?;
+        let t = b.pattern.complete_type_predicate(&ctx.env, &ptyp, &self.typ).at(spec)?;
         let Some(t) = t else {
             if self.typ.with_deref(|t| t.is_none()) {
                 bailat!(spec, "non exhaustive struct matches require type annotations")

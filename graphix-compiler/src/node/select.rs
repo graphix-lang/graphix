@@ -12,7 +12,7 @@ use crate::{
     TagValue, Update, View, bailat,
     env::Env,
     expr::{
-        At, Expr, ExprId, ExprKind, Origin, Pattern, StructurePattern, Undecided,
+        At, Expr, ExprId, ExprKind, Origin, Pattern, StructurePattern, UndecidedMembers,
         union_members, union_members_open,
     },
     format_with_flags,
@@ -47,29 +47,6 @@ fn pattern_site(pat: &Pattern, body: &Expr) -> Expr {
             site
         }
         _ => body.clone(),
-    }
-}
-
-/// Leave the completions an arm after `reach`'s arms took for one member
-/// to the check's end, which refuses them decided apart.
-fn defer_one_member<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    pairs: Vec<Undecided>,
-    reach: &Reach,
-    site: &Expr,
-) {
-    if !pairs.is_empty() {
-        let covered = reach.covered.to_vec();
-        let spec = Arc::new(site.clone());
-        super::defer_judgment(
-            ctx,
-            crate::PendingSettle::OneMember {
-                pairs,
-                covered,
-                sigs: SmallVec::new(),
-                spec,
-            },
-        )
     }
 }
 
@@ -567,7 +544,7 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
     Ok(())
 }
 
-// CR claude for claude: [bug/low] A written type test whose structure tests a constructor
+// XCR claude for claude: [bug/low] A written type test whose structure tests a constructor
 // at a nested union position holding a declared variable counts as covering the whole
 // scrutinee: `let g = 'b: Number |x: {f: ['b, `Keep('b)]}| -> ['b, null] select x { {f:
 // ['b, `Keep('b)]} as {f: `Keep(r)} => r }` passes the check, and g({f: 5}) under
@@ -597,8 +574,13 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 // an undecided part an arm tests is refused ("annotate it"), a part only a name or `_`
 // meets passes; written tests by the same rule; census first; built as its own lane
 // after the settle fix (settle-commits-name-01) and D6.
+// 2026-11-04 claude: On main eb0989d33 (D6) both halves are right: k1c is refused
+// 'missing match cases' and wc1 (the catch-all) runs, printing null; the D5 rule adds
+// nothing here, a declared 'b being rigid. Pinned:
+// lang::select_undecided::written_nested_constructor_covers_its_member_alone (refused),
+// written_nested_constructor_beside_a_catch_all ('null 4').
 
-// CR claude for claude: [bug/low] Coverage counts an abstract pattern whose payload
+// XCR claude for claude: [bug/low] Coverage counts an abstract pattern whose payload
 // tests the variant beside a parameter of the representation as covering the whole
 // scrutinee: `type R<'a> = Abstract<['a, `Err(string)]>; let v: [i64, `Err(string)] =
 // 5; select R(v) { R(`Err(m)) => str::len(m) }` passes the check, and the run logs
@@ -623,6 +605,25 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 // W(`A(n)) beside W<..> as W(`B(n)), are refused 'missing match cases: no arm covers
 // W<'b>', main the same). probes:
 // ~/ptmp/cr29/scratch/review-r14/B-r2-1/n/{y1,y2,y3,y6,y7}.gx
+// 2026-11-04 claude: On main eb0989d33 both halves of the CR's text are right: ab8 is
+// refused 'missing match cases: no arm covers R<i64>' and ab7/ab10 (the catch-all)
+// run, 3 and 3 0. With the parameter still open at the select (select R(v) in a block)
+// the D5 rule refuses the payload test first. Pinned:
+// lang::select_undecided::abstract_payload_variant_covers_its_member_alone,
+// abstract_payload_variant_beside_a_catch_all,
+// abstract_payload_parameter_undecided_refused. The 11-04 note's written tests over
+// W<'b> (y2, y6: W<T> as W(..) covering a declared variable's bound under an abstract
+// parameter) are D6's coverage, not this rule's: moved to abstract-written-cover-01.
+
+// CR claude for claude: [bug/low] A written test over an abstract parameter that is a
+// declared variable covers nothing of it: `'b: (i64, string) |x: W<'b>| select x {
+// W<(i64, string)> as W((n, s)) => n }` over `type W<'a> = Abstract<'a>` is refused
+// "missing match cases: no arm covers W<'b>", as is `'b: [`A(i64), `B(i64)]` with the
+// two tests `W<[`A(i64), `B(i64)]> as W(`A(n))` and `.. as W(`B(n))`; a catch-all
+// passes and runs. D6 tells a pattern inside W<'b> to write such a test, and a written
+// test covers a declared variable where it covers every member of its bound, but not
+// under an abstract type's (invariant) parameter. Main eb0989d33 alike. probes:
+// ~/ptmp/cr29/scratch/review-r14/B-r2-1/n/{y2,y3,y6,y7}.gx (abstract-written-cover-01)
 /// What reaches each arm of a select, walked arm by arm: the scrutinee
 /// less what the unguarded arms before it cover (irrefutable atoms,
 /// `null`, a true/false pair, a completed literal pool, a completed
@@ -669,7 +670,7 @@ impl Reach {
     /// typed only where its arm narrows: its part of every member the arm
     /// can match. A copy the settle leaves open, the part an open cell
     /// inside the scrutinee took, is the arm's own cell again.
-    // CR claude for claude: [bug/medium] Over a composite scrutinee holding an open cell,
+    // XCR claude for claude: [bug/medium] Over a composite scrutinee holding an open cell,
     // a name an arm binds at the cell's part is typed by its own cell while another arm's
     // literal widens that part, so the name is typed narrower than the values that reach
     // it: `let f = |v| select (v, 0) { ([x, ..], _) => str::len(x), ([1, ..], _) => 5,
@@ -683,6 +684,12 @@ impl Reach {
     // likely covers it, since the `[1, ..]` arm tests v's undecided element. probes:
     // ~/ptmp/cr29/scratch/review-r11/N-r1-1/r13/{t11,t11r,t01,t13}.gx
     // (settle-open-part-widened-01)
+    // 2026-11-04 claude: Main eb0989d33 already types x over the whole element: t11/t11r
+    // refused 'string does not contain [i64, ..]', t01/t13 'cannot compute [bool, ..] +
+    // i64'; the D5 walk would refuse the [1, ..] arm too if the element stayed open, but
+    // the body refuses first. Pinned:
+    // lang::select_undecided::widened_open_element_refused, twin
+    // widened_open_element_annotated.
     fn new<R: Rt>(
         env: &Env,
         scrut: &Type,
@@ -893,10 +900,12 @@ impl Reach {
                     )?
                 }
                 let explicit = pat.explicit_type_predicate.then_some(at);
-                if unguarded && sp.array_len_coverage(env, explicit).is_some() {
+                if unguarded {
+                    let any_member = sp.array_len_coverage(env, explicit).is_some();
                     let mut done: SmallVec<[Type; 2]> = SmallVec::new();
                     for l in self.ladders.iter_mut() {
                         if !l.complete()
+                            && (any_member || sp.elements_cover(env, &l.member))
                             && at.contains_with_flags(probe, env, &l.member)?
                             && l.claim(k, exact)
                         {
@@ -996,7 +1005,7 @@ impl Reach {
             || !pat.type_predicate.could_match(env, &self.atype)?)
     }
 
-    // CR claude for claude: [bug/low] Over a union of arrays, a slice arm whose element
+    // XCR claude for claude: [bug/low] Over a union of arrays, a slice arm whose element
     // test is irrefutable against one member's element type covers no length of that
     // member: `let v: [Array<(`A, i64)>, Array<(`B, string)>] = [(`A, 5)]; select v {
     // [(`A, x), ..] => "a[x]", [(`B, s), ..] => "b[s]", [] => "e" }` covers every value
@@ -1006,15 +1015,26 @@ impl Reach {
     // ..]`) the same. Not located; the per-member ladder should take `[(`A, x), ..]` as
     // Array<(`A, i64)>'s rest arm. Main 30702808d alike. probes:
     // ~/ptmp/cr29/scratch/r11-N/r2/{m01d,m01e}.gx (slice-array-union-cover-01)
+    // 2026-11-04 claude: Reach::arm: a slice arm claims its lengths of each ladder
+    // member whose element type its elements cover (StructPatternNode::elements_cover),
+    // not only when its elements match anything. m01d/m01e check and run. Pins:
+    // lang::select_undecided::slice_arm_claims_the_member_it_covers,
+    // written_slice_arm_claims_the_member_it_covers (main: missing match cases).
     /// Nothing reaches past the last arm: an unguarded arm matches
-    /// anything, or what the arms cover leaves no case.
-    fn exhausted(&self, env: &Env, scrut: &Type) -> Result<()> {
+    /// anything, or what the arms cover leaves no case, each of
+    /// `undecided` one type whatever it becomes, else where the cover
+    /// decides them.
+    fn exhausted(&self, env: &Env, scrut: &Type, undecided: &[TVar]) -> Result<()> {
         let empty = Type::Primitive(BitFlags::empty());
         if self.wildcard || self.atype == empty {
             return Ok(());
         }
         let covered: LPooled<Vec<&Type>> = self.covered.iter().collect();
-        if Type::union_exact(env, &covered)?.contains(env, scrut)? {
+        let covered = Type::union_exact(env, &covered)?;
+        if !undecided.is_empty() && covered.contains_holding(env, scrut, undecided)? {
+            return Ok(());
+        }
+        if covered.contains(env, scrut)? {
             return Ok(());
         }
         // the hint names a ladder slice arms claimed, whose member still
@@ -1210,6 +1230,9 @@ enum Head {
     /// A value of an open cell the position holds, which only a name or
     /// `_` there matches.
     Open,
+    /// A value of a primitive member but `bool` and `null`, which only a
+    /// name or `_` there matches.
+    Rest,
 }
 
 /// One position of a composite pattern, keyed by its path into the
@@ -1282,7 +1305,8 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants, at most one tuple or struct holding no open
-/// cell, and [`Head::Open`] for the open cells among them.
+/// cell, [`Head::Rest`] for its other primitives and [`Head::Open`] for
+/// the open cells among them.
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     let open = union_members_open(env, t, &mut members)?;
@@ -1303,7 +1327,8 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
                     match typ {
                         Typ::Bool => out.extend([Head::Bool(true), Head::Bool(false)]),
                         Typ::Null => out.push(Head::Null),
-                        _ => return Ok(None),
+                        _ if out.contains(&Head::Rest) => (),
+                        _ => out.push(Head::Rest),
                     }
                 }
             }
@@ -2294,7 +2319,7 @@ impl<R: Rt> Select<R> {
         Ok(())
     }
 
-    // CR claude for claude: [bug/medium] A scrutinee member that is an open cell decided
+    // XCR claude for claude: [bug/medium] A scrutinee member that is an open cell decided
     // after the select counts as covered by a struct arm: `let z = never(); let v =
     // select b { true => {a: [1], c: 1}, false => z }` read by `{a, ..} => "[a]"` (the
     // full `{a, c}` alike) with `z <- {a: ["s"], c: "w"}` after it passes the check,
@@ -2322,7 +2347,16 @@ impl<R: Rt> Select<R> {
     // select's end an undecided part an arm tests is refused ("annotate it"), a part only
     // a name or `_` meets passes; written tests by the same rule; census first; built as
     // its own lane after the settle fix (settle-commits-name-01) and D6.
-    // CR claude for claude: [bug/medium] A pattern over a variant whose payload is a
+    // 2026-11-04 claude: D5 (b) built: Select::check_undecided refuses an arm that tests
+    // a cell the scrutinee held before the arms and still open at the select's end,
+    // naming the binding (StructurePattern::meets_undecided, the D6 walk over open
+    // cells). om1/om3 refused 'tests a value of 'z, a type not decided at this select'.
+    // PendingSettle::OneMember and Undecided are deleted. Pins (refused on this branch,
+    // accepted on main): lang::select_undecided::undecided_member_tested_refused,
+    // undecided_member_tested_whole_refused, undecided_member_beside_a_literal_refused,
+    // undecided_parameter_tested_refused; twins undecided_member_annotated,
+    // undecided_parameter_annotated; must-reject family undecided-part.
+    // XCR claude for claude: [bug/medium] A pattern over a variant whose payload is a
     // union of structs told apart only by cells decided after the select covers only
     // the payload's first member: `let v = select b { true => `P({a: [1], c: x}), false
     // => `P({a: ["s"], c: y}) }` read by `` `P({a, ..}) => "[a]", _ => "other" `` with `x
@@ -2353,6 +2387,14 @@ impl<R: Rt> Select<R> {
     // select's end an undecided part an arm tests is refused ("annotate it"), a part only
     // a name or `_` meets passes; written tests by the same rule; census first; built as
     // its own lane after the settle fix (settle-commits-name-01) and D6.
+    // 2026-11-04 claude: D5 (b): a partial struct pattern's completion now takes members
+    // told apart only by cells not decided at the select for two (strictly_identical),
+    // refused as UndecidedMembers naming the cells' bindings; the late OneMember judgment
+    // is deleted. pay2_alike refused; twin with x, y annotated reaches the arm for both
+    // members. Pins: lang::select_undecided::undecided_payload_members_refused (main
+    // prints [1]), annotated_payload_members_reach_the_arm;
+    // lang::select::partial_struct_*_two_members (messages now 'told apart by types not
+    // decided at this select').
     /// `checking`: the definition's check, which also judges coverage,
     /// dead arms and guards; an instance does only what they decide.
     fn typecheck0_with(
@@ -2362,6 +2404,11 @@ impl<R: Rt> Select<R> {
         checking: bool,
     ) -> Result<()> {
         wrap!(self.arg.node, child(&mut self.arg.node, ctx))?;
+        // the cells the scrutinee holds before the arms decide any
+        let mut outer: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        if checking {
+            crate::typ::settle::position_cells(self.arg.node.typ(), &mut outer)
+        }
         if checking && let ExprKind::Select(se) = &self.spec.kind {
             let scrut = self.arg.node.typ();
             for ((pat, n), (spec_pat, _)) in self.arms.iter().zip(se.arms.iter()) {
@@ -2392,25 +2439,16 @@ impl<R: Rt> Select<R> {
         // before coverage or dispatch reads it. One the scrutinee leaves
         // ambiguous is completed again against what reaches its arm.
         let mut deferred: SmallVec<[bool; 16]> = smallvec![false; self.arms.len()];
-        // an arm completed here that took members told apart only by cells
-        // not decided yet for one: its inferred predicate and those pairs
-        let mut undecided_arms: Vec<(usize, Type, Vec<Undecided>)> = Vec::new();
         if let ExprKind::Select(se) = &self.spec.kind {
             let scrut = self.arg.node.typ().clone();
-            for (i, (((pat, _), (spec_pat, _)), d)) in self
-                .arms
-                .iter_mut()
-                .zip(se.arms.iter())
-                .zip(deferred.iter_mut())
-                .enumerate()
+            for (((pat, _), (spec_pat, _)), d) in
+                self.arms.iter_mut().zip(se.arms.iter()).zip(deferred.iter_mut())
             {
                 if !pat.explicit_type_predicate {
-                    let mut undecided = Vec::new();
                     match spec_pat.structure_predicate.complete_type_predicate(
                         &ctx.env,
                         &pat.type_predicate,
                         &scrut,
-                        &mut undecided,
                     ) {
                         Err(_) => *d = true,
                         // a partial struct, here or nested, over a scrutinee
@@ -2432,10 +2470,7 @@ impl<R: Rt> Select<R> {
                         Ok(None) => (),
                         Ok(Some(t)) => {
                             pat.structure_predicate.realign(&ctx.env, &t)?;
-                            let inferred = mem::replace(&mut pat.type_predicate, t);
-                            if checking && !undecided.is_empty() {
-                                undecided_arms.push((i, inferred, undecided))
-                            }
+                            pat.type_predicate = t;
                         }
                     }
                 }
@@ -2460,41 +2495,15 @@ impl<R: Rt> Select<R> {
             if deferred[i]
                 && let Some((spec_pat, _)) = spec_pats.get(i)
             {
-                let mut undecided = Vec::new();
                 let t = spec_pat
                     .structure_predicate
-                    .complete_type_predicate(
-                        &ctx.env,
-                        &pat.type_predicate,
-                        &reach.atype,
-                        &mut undecided,
-                    )
+                    .complete_type_predicate(&ctx.env, &pat.type_predicate, &reach.atype)
+                    .map_err(|e| undecided_members(&ctx.env, e, &self.spec.ori))
                     .at(&site)?;
                 if let Some(t) = t {
                     pat.structure_predicate.realign(&ctx.env, &t)?;
                     pat.type_predicate = t;
-                    if checking {
-                        defer_one_member(ctx, undecided, &reach, &site)
-                    }
                 }
-            } else if let Some(k) = undecided_arms.iter().position(|(j, ..)| *j == i)
-                && let Some((spec_pat, _)) = spec_pats.get(i)
-            {
-                // judged over what reaches the arm, as a deferred arm's
-                // completion is: a member an earlier arm took does not count
-                let (_, inferred, whole) = undecided_arms.swap_remove(k);
-                let mut reaching = Vec::new();
-                let undecided =
-                    match spec_pat.structure_predicate.complete_type_predicate(
-                        &ctx.env,
-                        &inferred,
-                        &reach.atype,
-                        &mut reaching,
-                    ) {
-                        Ok(_) => reaching,
-                        Err(_) => whole,
-                    };
-                defer_one_member(ctx, undecided, &reach, &site)
             }
             // The arm's binds alias against what reaches it. The
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the
@@ -2573,10 +2582,110 @@ impl<R: Rt> Select<R> {
         drop(rtypes);
         match checking {
             true => {
+                let mut undecided: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                for tv in outer.values() {
+                    if let Some(c) = tv.open_cell().filter(|c| !c.is_rigid()) {
+                        undecided.insert(c.cell_addr(), c);
+                    }
+                }
+                self.check_undecided(&ctx.env, &undecided)?;
                 check_repeats(&ctx.env, &self.arms)?;
-                reach.exhausted(&ctx.env, &scrut).at(&self.spec)
+                let undecided: LPooled<Vec<TVar>> =
+                    undecided.drain().map(|(_, c)| c).collect();
+                reach.exhausted(&ctx.env, &scrut, &undecided).at(&self.spec)
             }
             false => Ok(()),
         }
+    }
+
+    /// Refuse an arm whose pattern tests a part whose type is still not
+    /// decided once the arms have decided what they will, a later decision
+    /// could make the test match what its coverage and its binds assumed it
+    /// would not: one of `undecided`, the cells the scrutinee held before
+    /// the arms ran (never one the arms' own patterns brought), or any open
+    /// cell of a written test.
+    fn check_undecided(
+        &self,
+        env: &Env,
+        undecided: &AHashMap<usize, TVar>,
+    ) -> Result<()> {
+        let ExprKind::Select(se) = &self.spec.kind else { return Ok(()) };
+        let scrut = self.arg.node.typ();
+        let held = |tv: &TVar| undecided.contains_key(&tv.cell_addr());
+        for ((pat, n), (spec_pat, _)) in self.arms.iter().zip(se.arms.iter()) {
+            let sp = &spec_pat.structure_predicate;
+            let ids = CompiledAbstracts::new(&pat.structure_predicate, sp);
+            let ids = |p: &StructurePattern| ids.get(p);
+            let e = match pat.explicit_type_predicate {
+                true => {
+                    let t = &pat.type_predicate;
+                    sp.meets_undecided(env, &ids, t, &|_| true)?.map(|tv| {
+                        format_with_flags(PrintFlag::DerefTVars, || {
+                            anyhow!(
+                                "{sp} tests a value of '{}, a type variable its type test \
+                                 {t} leaves open: write the type it tests",
+                                tv.name
+                            )
+                        })
+                    })
+                }
+                false => sp
+                    .meets_undecided(env, &ids, scrut, &held)?
+                    .map(|tv| undecided_refusal(env, sp, &tv, &self.spec.ori)),
+            };
+            if let Some(e) = e {
+                return Err(e).at(&pattern_site(spec_pat, n.spec()));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An [`UndecidedMembers`] refusal told with the bindings whose types
+/// the undecided cells are.
+fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
+    let Some(u) = e.downcast_ref::<UndecidedMembers>() else { return e };
+    let mut holders = Holders::new(env, None);
+    let mut written = |t: &Type| {
+        t.written_form(&mut |tv| match tv.is_bound() {
+            true => None,
+            false => holders.name_cell(tv).or_else(|| tv.written_open()),
+        })
+    };
+    let (Some(a), Some(b)) = (written(&u.members[0]), written(&u.members[1])) else {
+        return e;
+    };
+    let pat = &u.pattern;
+    let meanings = holders.meanings(at);
+    anyhow!(
+        "the pattern {pat} matches two members, {a} and {b}, told apart by types not \
+         decided at this select; annotate those types, or the member you mean, e.g. `T \
+         as {pat}`, or name every field{meanings}"
+    )
+}
+
+/// The refusal of `pat`, which tests a value of `tv`, a cell not decided
+/// at its select, naming the binding whose type it is.
+fn undecided_refusal(
+    env: &Env,
+    pat: &StructurePattern,
+    tv: &TVar,
+    at: &Origin,
+) -> anyhow::Error {
+    let mut holders = Holders::new(env, None);
+    match holders.name_cell(tv) {
+        Some(name) => {
+            let meanings = holders.meanings(at);
+            anyhow!(
+                "{pat} tests a value of {name}, a type not decided at this select, which \
+                 a later use could decide apart from what the arms test: annotate it\
+                 {meanings}"
+            )
+        }
+        None => anyhow!(
+            "{pat} tests a value whose type is not decided at this select, which a \
+             later use could decide apart from what the arms test: annotate the \
+             scrutinee's type where it is built"
+        ),
     }
 }

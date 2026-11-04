@@ -462,12 +462,20 @@ across a bottom cycle).
   variable's values are covered by a name or `_` at its position, or by
   written tests that split its bound: `(false, null)` leaves `(false, v)`
   needing an arm of its own.
+- A type not decided yet where a select is checked (a `never()` let
+  written after it, a function's unannotated parameter) is one unknown
+  type there, equal only to itself. An arm that tests a value of it is
+  refused, naming the binding: over `let v = select b { true => {a: [1],
+  c: 1}, false => z }`, `{a, ..} => ..` is refused until `z` is annotated.
+  A part only a name or `_` meets passes, and a name there holds that
+  type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
+  `str::len(x)` makes `z` a string. A written test is closed: `` ['b,
+  `A(i64)] as `A(n) `` with `'b` declared nowhere is refused.
 - A partial struct pattern over members whose left-out fields differ
-  only in types decided later (a `never()` let written after the select,
-  a function's parameters) takes them for one member, and is refused once
-  the program is checked if they differ: `{a, ..}` over `{a: [1], c: x}`
-  and `{a: ["s"], c: y}` with `x <- 1; y <- "w"` later. Name every field
-  (`{a, c: _}`) or annotate the member.
+  only in types not decided at the select takes them for two members and
+  is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,
+  `x` and `y` written later. Name every field (`{a, c: _}`), annotate the
+  member, or annotate `x` and `y`.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   Everything else is told apart: a string from a bare variant, an array

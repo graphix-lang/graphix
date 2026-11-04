@@ -6075,6 +6075,11 @@ mod tests {
                 "ref-write#",
             ),
             ("{ let x = 1; let r = &mut x; let y = 2; *r <- 5; x + y }", "ref-widen#"),
+            ("{ let v = 3; select v { 1 => \"a\", _ => \"b\" } }", "undecided-part#"),
+            (
+                "{ let v: [`A, `B] = `B; select v { `A => 1, `B => 2 } }",
+                "undecided-part#",
+            ),
             (
                 "{ let s: [string, null] = \"a\"; select s { null as _ => 0, string as v => 1 } }",
                 "same-form#",
