@@ -618,7 +618,7 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared` ([`hold_paired`]); `generalized` says its binding is
 /// generic in the cells its own definitions own, and `captured` gives the
-/// types of the bindings its value's lambda captures.
+/// cells the bindings its value's lambda captures reach.
 fn check_val(
     env: &Env,
     open: &IntSet<LambdaId>,
@@ -626,7 +626,7 @@ fn check_val(
     declared: &Type,
     typ: &Type,
     generalized: bool,
-    captured: impl Fn() -> LPooled<Vec<Type>>,
+    captured: impl Fn() -> LPooled<AHashMap<usize, TVar>>,
 ) -> Result<()> {
     // XCR claude for claude: [bug/medium] An interface val's written quantified fn type
     // lets its quantifier escape through the implementation, as a let annotation did
@@ -687,7 +687,7 @@ fn check_val(
                 ", that of a binding outside its let: declare the val at one type, or \
                  give that binding a type that holds every {v}"
             )
-        } else if holds_cell(&captured(), tv) {
+        } else if captured().contains_key(&tv.cell_addr()) {
             format_compact!(
                 ", that of a binding outside its let: declare the val at one type"
             )
@@ -752,30 +752,23 @@ fn free_variable(t: &Type) -> Option<TVar> {
         .cloned()
 }
 
-/// Whether one of `types` reaches the cell of `tv`.
-pub(crate) fn holds_cell(types: &[Type], tv: &TVar) -> bool {
-    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    types.iter().for_each(|t| t.reached_cells(&mut cells));
-    cells.contains_key(&tv.cell_addr())
-}
-
-/// The types of the bindings the lambda the binding `id` holds, if it
-/// holds one, captures.
-pub(crate) fn captured_types<R: Rt>(
+/// Every cell the types of the bindings captured by the lambda the binding
+/// `id` holds, if it holds one, reach.
+pub(crate) fn captured_cells<R: Rt>(
     ctx: &CompileCtx<R>,
     id: BindId,
-) -> LPooled<Vec<Type>> {
-    let mut types: LPooled<Vec<Type>> = LPooled::take();
+) -> LPooled<AHashMap<usize, TVar>> {
+    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
     if let Some(def) =
         ctx.bind_to_lambda.get(&id).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
     {
         def.captured_ids(&mut |id| {
             if let Some(b) = ctx.env.by_id.get(&id) {
-                types.push(b.typ.clone())
+                b.typ.reached_cells(&mut cells)
             }
         })
     }
-    types
+    cells
 }
 
 /// Whether the implementation's binding `id` is generic in the cells its
@@ -797,14 +790,20 @@ fn check_val_variable(env: &Env, name: &str, typ: &Type) -> Result<()> {
     }
 }
 
-/// [`check_val_variable`] for each `val` of `sig`, as written.
-fn check_val_variables(env: &Env, scope: &ModPath, sig: &Sig) -> Result<()> {
+/// [`check_val_variable`] for each `val` of `sig`, whose binding is
+/// among `sig_binds`.
+fn check_val_variables(
+    env: &Env,
+    sig: &Sig,
+    sig_binds: &Map<CompactString, BindId>,
+) -> Result<()> {
     for si in sig.items.iter() {
-        let SigKind::Bind(BindSig { name, typ }) = &si.kind else { continue };
-        typ.scope_refs(scope)
-            .rewrite_declared_args(env)
-            .and_then(|typ| check_val_variable(env, &name.name, &typ))
-            .placed(&si.ori, si.pos)?
+        let SigKind::Bind(BindSig { name, .. }) = &si.kind else { continue };
+        if let Some(b) =
+            sig_binds.get(name.name.as_str()).and_then(|id| env.by_id.get(id))
+        {
+            check_val_variable(env, &name.name, &b.typ).placed(&si.ori, si.pos)?
+        }
     }
     Ok(())
 }
@@ -1104,7 +1103,7 @@ fn check_sig_items<R: Rt>(
 ) -> Result<()> {
     // the interface's types and traits first: a val's type names them
     let view = interface_env(&ctx.env, &scope.lexical, sig)?;
-    check_val_variables(&ctx.env, &scope.lexical, sig)?;
+    check_val_variables(&ctx.env, sig, sig_binds)?;
     for si in sig.items.iter() {
         let val = match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => sig_binds
@@ -1140,7 +1139,7 @@ fn check_sig_items<R: Rt>(
                 &proxy_bind.typ,
                 typ,
                 generalized_impl(ctx, id),
-                || captured_types(ctx, id),
+                || captured_cells(ctx, id),
             )?;
             if ctx.connect_targets.contains(&proxy_id) {
                 ctx.check_val_written(&inner.name, &proxy_bind.typ, typ)?
@@ -1279,7 +1278,7 @@ pub fn check_script_sig<R: Rt>(
                     &declared,
                     &bind.typ,
                     generalized_impl(ctx, bind.id),
-                    || captured_types(ctx, bind.id),
+                    || captured_cells(ctx, bind.id),
                 )
                 .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
                 // the language server sees the val as a module's: a binding
@@ -2116,7 +2115,7 @@ impl<R: Rt> Update<R> for Module<R> {
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         match &mut self.body {
             Body::Dynamic { source, .. } => {
-                check_val_variables(&ctx.env, &self.scope.lexical, &self.sig)
+                check_val_variables(&ctx.env, &self.sig, &self.sig_binds)
                     .at(&self.spec)?;
                 wrap!(source, source.typecheck0(ctx))?;
                 let t = Type::Primitive(Typ::String | Typ::Error);

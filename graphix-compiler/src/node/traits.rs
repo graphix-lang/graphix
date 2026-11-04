@@ -131,13 +131,12 @@ fn implements<R: Rt>(
         bail!("{implemented} is not a function")
     };
     let pairs = declared.sig_matches(&ctx.env, &ft)?;
-    let captured = OnceCell::new();
+    let captured: OnceCell<LPooled<AHashMap<usize, TVar>>> = OnceCell::new();
     let shared = |tv: &TVar| {
         !tv.level().copied_by(&ctx.rec_defs)
-            && module::holds_cell(
-                captured.get_or_init(|| module::captured_types(ctx, id)),
-                tv,
-            )
+            && captured
+                .get_or_init(|| module::captured_cells(ctx, id))
+                .contains_key(&tv.cell_addr())
     };
     module::hold_paired(&ctx.env, "method", &pairs, shared, |_, v| {
         format_compact!(

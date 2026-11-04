@@ -492,11 +492,12 @@ impl Type {
         reached_cells(self, out)
     }
 
-    /// The open cell, first by name, that stands in this type outside
-    /// every function type: through bindings, a typedef as its expansion
-    /// and an abstract type's parameters. A typedef met again inside
-    /// itself over other parameters, or one that does not resolve, stands
-    /// its parameters there.
+    /// The type variable, first by name, that stands in this type outside
+    /// every function type, bound or not (a declaration's variable, whatever
+    /// a use has bound it to): a typedef as its expansion, an abstract
+    /// type's parameters included. A typedef met again inside itself over
+    /// other parameters, or one that does not resolve, stands its
+    /// parameters there.
     #[doc(hidden)]
     pub fn variable_outside_functions(&self, env: &Env) -> Option<TVar> {
         let mut out: LPooled<AHashMap<usize, TVar>> = LPooled::take();
@@ -537,8 +538,7 @@ impl Expanding {
     }
 }
 
-/// [`Type::variable_outside_functions`]' walk: each cell and shared
-/// composite once.
+/// [`Type::variable_outside_functions`]' walk: each shared composite once.
 struct OutsideFunctions<'a> {
     env: &'a Env,
     expanding: Expanding,
@@ -549,14 +549,7 @@ impl OutsideFunctions<'_> {
     fn walk(&mut self, t: &Type, out: &mut AHashMap<usize, TVar>) {
         crate::stack::ensure_sufficient(|| match t {
             Type::TVar(tv) => {
-                if self.nodes.insert(tv.cell_addr()) {
-                    match tv.binding() {
-                        Some(b) => self.walk(&b, out),
-                        None => {
-                            out.insert(tv.cell_addr(), tv.clone());
-                        }
-                    }
-                }
+                out.insert(tv.cell_addr(), tv.clone());
             }
             t if t.shared_identity().is_some_and(|n| !self.nodes.insert(n)) => (),
             Type::Fn(_) => (),
