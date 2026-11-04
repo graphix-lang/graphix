@@ -235,10 +235,13 @@ each was obvious in hindsight and invisible in advance.
    `emit_inferred_guard_cond`): its literals test the value's words, never
    a typed read (a null reads as `false`'s 0), and a composite inside it
    is tested deeply (`graphix_inferred_type_matches`), as a variant's
-   payload, always typed by its predicate, is; an or-pattern of
-   composites there de-fuses, since its alternatives read the words as
-   the composite untested. Pins: the `fusion_review::select_*_at_*`
-   fixtures (`select_false_at_a_nullable_element` and its kin).
+   payload, always typed by its predicate, is. An or-pattern of
+   composites reads its words as the composite only once they are one
+   (`value_array`): by their disc where its type is exact, else deeply,
+   since the words may be none (an element past the length, a payload of
+   no variant) or of another member. Pins: the `fusion_review::select_*_at_*`
+   fixtures (`select_false_at_a_nullable_element`,
+   `select_composite_or_pattern_at_a_slice_element` and their kin).
 
 ## What was ruled out
 

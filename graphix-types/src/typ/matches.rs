@@ -648,6 +648,28 @@ impl Type {
         }
     }
 
+    /// Whether the predicate `self` holds the whole of every one of
+    /// `members` that `meets` (`could_match`, `could_pass`) says it may
+    /// meet, so a value it admits is of `self` throughout.
+    pub fn holds_what_it_meets(
+        &self,
+        env: &Env,
+        members: &[Type],
+        meets: fn(&Type, &Env, &Type) -> Result<bool>,
+    ) -> bool {
+        !members.is_empty()
+            && members.iter().all(|m| match meets(self, env, m) {
+                Ok(false) => true,
+                Ok(true) => {
+                    !m.has_unbound()
+                        && self
+                            .contains_with_flags(BitFlags::empty(), env, m)
+                            .unwrap_or(false)
+                }
+                Err(_) => false,
+            })
+    }
+
     pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<()> {
         let (mut pairs, mut hist) = (SigPairs::default(), RefHist::new());
         self.sig_matches_int(env, impl_type, &mut pairs, &mut hist)?;

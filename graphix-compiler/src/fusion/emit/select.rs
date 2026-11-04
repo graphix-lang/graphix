@@ -728,24 +728,37 @@ impl LeafAt {
             };
             return Ok((cx.call_helper(helper, &[ptr, idx_v])?[0], None));
         }
-        let (disc, payload) = self.words(cx)?;
         let typed = exact && matches!(self, LeafAt::ListHead { .. });
-        let test = match typed {
-            false => {
-                let t = cx.interned_type(typ)?;
-                let call =
-                    cx.call_helper("graphix_inferred_type_matches", &[disc, payload, t])?;
-                cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0)
-            }
-            true => {
-                let cd = clean_disc(cx.b, disc);
-                cx.b.ins().icmp_imm_s(IntCC::Equal, cd, value_disc::ARRAY)
-            }
-        };
-        let empty = cx.call_helper("graphix_valarray_empty_borrowed", &[])?[0];
-        let ptr = cx.b.ins().select(test, payload, empty);
+        let words = self.words(cx)?;
+        let (ptr, test) = value_array(cx, words, typ, typed)?;
         Ok((ptr, (!typed).then_some(test)))
     }
+}
+
+/// The borrowed words `v` of a value of the composite type `typ` as a
+/// borrowed array, the empty array where they are none (an element past
+/// the length, a payload of no variant) or, unless `exact`, of another
+/// type; and the test that they are of `typ`.
+fn value_array(
+    cx: &mut BodyCx,
+    (disc, payload): (ClifValue, ClifValue),
+    typ: &Type,
+    exact: bool,
+) -> Result<(ClifValue, ClifValue)> {
+    let test = match exact {
+        false => {
+            let t = cx.interned_type(typ)?;
+            let call =
+                cx.call_helper("graphix_inferred_type_matches", &[disc, payload, t])?;
+            cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0)
+        }
+        true => {
+            let cd = clean_disc(cx.b, disc);
+            cx.b.ins().icmp_imm_s(IntCC::Equal, cd, value_disc::ARRAY)
+        }
+    };
+    let empty = cx.call_helper("graphix_valarray_empty_borrowed", &[])?[0];
+    Ok((cx.b.ins().select(test, payload, empty), test))
 }
 
 /// The condition of the sub-pattern `sub` over the value of type `typ`
@@ -886,11 +899,34 @@ fn binds_any(p: &StructPatternNode) -> bool {
     any
 }
 
+/// Whether a pattern reads its value as an array: a tuple, array or
+/// struct pattern, not a list's.
+fn is_composite_pattern(p: &StructPatternNode) -> bool {
+    match p {
+        StructPatternNode::Slice { kind: SliceKind::List, .. }
+        | StructPatternNode::SlicePrefix { list: true, .. } => false,
+        StructPatternNode::Slice { .. }
+        | StructPatternNode::SlicePrefix { .. }
+        | StructPatternNode::SliceSuffix { .. }
+        | StructPatternNode::Struct { .. } => true,
+        _ => false,
+    }
+}
+
+/// Whether values of `t` are arrays the kernel reads by element.
+fn is_composite(t: &Type) -> bool {
+    matches!(
+        kernel_abi::abi_kind(t),
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
+    )
+}
+
 /// The test of a pattern that binds nothing (a literal of any type, an
 /// or-pattern of such) against borrowed Value words `v` of type `typ`:
 /// an element, a payload. The arm's own scrutinee tests run the same.
-/// A composite alternative reads `v` at `typ`, so only where `typ` is
-/// `exact` ([`emit_leaf_cond`]).
+/// A composite alternative reads `v` as `typ`'s composite member only
+/// where it is that member ([`value_array`]): the words may be none, and,
+/// unless `typ` is `exact` ([`emit_leaf_cond`]), of another type.
 fn emit_value_leaf_cond(
     cx: &mut BodyCx,
     sub: &StructPatternNode,
@@ -905,6 +941,9 @@ fn emit_value_leaf_cond(
         _ => ValueKind::Value,
     };
     let scrut = SelectScrut::Value { kind, disc: v.0, payload: v.1 };
+    let member = kernel_abi::nullable_inner(typ)
+        .filter(is_composite)
+        .or_else(|| freeze_node_typ(cx.ctx, typ).filter(is_composite));
     // every alternative a value of the type may pass tests the whole
     // type; the reads are total, so their tests OR in one block
     let alts = match sub {
@@ -914,18 +953,21 @@ fn emit_value_leaf_cond(
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
     let mut cond: Option<ClifValue> = None;
     for alt in alts.iter().filter(|a| a.may_pass(cx.ctx.type_env, typ)) {
-        if !exact
-            && matches!(
-                alt,
-                StructPatternNode::Slice { .. }
-                    | StructPatternNode::SlicePrefix { .. }
-                    | StructPatternNode::SliceSuffix { .. }
-                    | StructPatternNode::Struct { .. }
-            )
-        {
-            bail!("emit_clif: a composite alternative over a predicate's type {typ}")
-        }
-        let c = match emit_structure_cond(cx, alt, typ, false, scrut, typ, &mut binds)? {
+        let c = match is_composite_pattern(alt) {
+            true => {
+                let Some(member) = &member else {
+                    bail!(
+                        "emit_clif: slice/tuple/struct select pattern over {typ} not lowerable"
+                    )
+                };
+                let (ptr, test) = value_array(cx, v, member, exact)?;
+                let c =
+                    emit_composite_pattern_cond(cx, ptr, member, alt, true, &mut binds)?;
+                Some(cx.b.ins().band(test, c))
+            }
+            false => emit_structure_cond(cx, alt, typ, false, scrut, typ, &mut binds)?,
+        };
+        let c = match c {
             Some(c) => c,
             None => cx.b.ins().iconst(types::I8, 1),
         };
@@ -1400,20 +1442,8 @@ fn emit_inferred_guard_cond(
 /// pass, so a value of one has `pred`'s types throughout.
 fn holds_what_it_meets(env: &Env, pred: &Type, scrut_typ: &Type) -> bool {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-    if union_members(env, scrut_typ, &mut members).is_err() {
-        return false;
-    }
-    !members.is_empty()
-        && members.iter().all(|m| match pred.could_pass(env, m) {
-            Ok(false) => true,
-            Ok(true) => {
-                !m.has_unbound()
-                    && pred
-                        .contains_with_flags(BitFlags::empty(), env, m)
-                        .unwrap_or(false)
-            }
-            Err(_) => false,
-        })
+    union_members(env, scrut_typ, &mut members).is_ok()
+        && pred.holds_what_it_meets(env, &members, Type::could_pass)
 }
 
 /// Emit arm `pat`'s pattern condition against `scrut`: the type
@@ -2211,15 +2241,9 @@ fn emit_member_cond(
     else {
         return Ok(None);
     };
-    let composite = |t: &Type| {
-        matches!(
-            kernel_abi::abi_kind(t),
-            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
-        )
-    };
-    let pred = freeze_node_typ(cx.ctx, pred_typ).filter(composite);
+    let pred = freeze_node_typ(cx.ctx, pred_typ).filter(is_composite);
     let (test, member, exact) =
-        match (kernel_abi::nullable_inner(scrut_typ).filter(composite), pred) {
+        match (kernel_abi::nullable_inner(scrut_typ).filter(is_composite), pred) {
             (Some(inner), pred) if !written || pred.as_ref() == Some(&inner) => {
                 let cd = clean_disc(cx.b, disc);
                 (cx.b.ins().icmp_imm_s(IntCC::Equal, cd, value_disc::ARRAY), inner, true)

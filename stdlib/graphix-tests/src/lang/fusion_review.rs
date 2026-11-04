@@ -970,14 +970,136 @@ run!(
     FuseExpect::Jit
 );
 
-// An or-pattern of tuples at a payload reads the payload as the tuple only
-// where it is one: a value whose tag differs has no payload to read.
+// An or-pattern of tuples or structs reads its words as the composite only
+// where they are one: a value whose tag differs has no payload, an element
+// past the length or of a member the arm does not take is none, and a
+// payload or an element typed by the arm's predicate may be of another type.
 run!(
     select_composite_or_pattern_at_a_payload,
     r#"{
-  let u = |x: [`A((bool, bool)), i64]| select x { `A((false, _) | (true, true)) => 0, _ => 3 };
+  let u = |x: [`A((bool, bool)), i64]| #[native] select x { `A((false, _) | (true, true)) => 0, _ => 3 };
   [u(`A((false, true))), u(`A((true, false))), u(5)]
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 3, 3]);
-    FuseExpect::None
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_a_nullable_payload,
+    r#"{
+  let u = |x: [`A([(bool, bool), null]), i64]| #[native] select x { `A((false, _) | (true, true)) => 0, _ => 3 };
+  [u(`A(null)), u(`A((false, true))), u(`A((true, false))), u(5)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_a_payload_beside_a_variant,
+    r#"{
+  let u = |x: [`A((bool, i64)), `B]| #[native] select x { `A((false, 1) | (true, 2)) => 1, _ => 3 };
+  [u(`A((false, 1))), u(`A((true, 1))), u(`B)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_a_nullable_element,
+    r#"{
+  let u = |x: [(([bool, null], i64), i64), bool]| #[native] select x { ((false, 1) | (true, 2), n) => n, _ => 3 };
+  [u(((null, 1), 1)), u(((false, 1), 1)), u(((true, 2), 1)), u(((null, 2), 1)), u(true)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1, 1, 3, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_an_element_of_an_option,
+    r#"{
+  let u = |x: [((bool, i64), i64), null]| #[native] select x { ((false, 1) | (true, 2), n) => n, _ => 0 };
+  [u(null), u(((false, 1), 5)), u(((true, 1), 5))]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 5, 0]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_an_element_beside_a_bool,
+    r#"{
+  let u = |x: [((bool, i64), i64), bool]| #[native] select x { ((false, 1) | (true, 2), n) => n, _ => 0 };
+  [u(true), u(((false, 1), 5)), u(((true, 1), 5))]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 5, 0]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_a_field_of_an_option,
+    r#"{
+  let u = |x: [{a: (bool, i64), b: i64}, null]| #[native] select x { {a: (false, 1) | (true, 2), b} => b, _ => 0 };
+  [u(null), u({a: (false, 1), b: 5}), u({a: (true, 1), b: 5})]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 5, 0]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_a_slice_element,
+    r#"{
+  let u = |xs: Array<(i64, i64)>| #[native] select xs { [(1, _) | (2, _), ..] => 1, _ => 0 };
+  [u([]), u([(1, 5)]), u([(3, 5)]), u([(2, 5), (1, 1)])]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 0, 1]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_a_slice_suffix,
+    r#"{
+  let u = |xs: Array<(i64, i64)>| #[native] select xs { [.., (1, _) | (2, _)] => 1, _ => 0 };
+  [u([]), u([(1, 5)]), u([(3, 5)]), u([(1, 1), (2, 5)])]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 0, 1]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_an_exact_slice_element,
+    r#"{
+  let u = |xs: Array<(i64, i64)>| #[native] select xs { [(1, _) | (2, _)] => 1, _ => 0 };
+  [u([]), u([(1, 5)]), u([(3, 5)]), u([(2, 5), (1, 1)])]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 0, 0]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_struct_or_pattern_at_a_slice_element,
+    r#"{
+  let u = |xs: Array<{a: bool, b: i64}>| #[native] select xs { [{a: false, b: 1} | {a: true, b: 2}, ..] => 1, _ => 0 };
+  [u([]), u([{a: false, b: 1}]), u([{a: true, b: 1}])]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 0]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_a_list_head,
+    r#"{
+  let u = |xs: List<(bool, i64)>| #[native] select xs { [<(false, 1) | (true, 2), ..>] => 1, _ => 0 };
+  [u([<>]), u([<(false, 1)>]), u([<(true, 1)>])]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 0]);
+    FuseExpect::Jit
+);
+
+run!(
+    select_composite_or_pattern_at_a_payload_another_case_shares,
+    r#"{
+  let u = |x: [`A((bool, i64)), `A((i64, i64)), i64]| #[native] select x { `A((false, 1) | (true, 2)) => 1, _ => 3 };
+  [u(`A((false, 1))), u(`A((0, 1))), u(`A((true, 1))), u(5)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 3, 3, 3]);
+    FuseExpect::Jit
 );

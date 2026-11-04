@@ -2324,21 +2324,9 @@ impl<R: Rt> PatternNode<R> {
     /// `scrutinee` it could match, so telling the members apart decides
     /// it: `Array<i64> as a` over `Array<[i64, string]>` tests elements.
     fn covers_what_it_meets(&self, env: &Env, scrutinee: &ShallowScrutinee) -> bool {
-        let Some(members) = scrutinee.members(env) else {
-            return false;
-        };
-        let pred = &self.type_predicate;
-        !members.is_empty()
-            && members.iter().all(|m| match pred.could_match(env, m) {
-                Ok(false) => true,
-                Ok(true) => {
-                    !m.has_unbound()
-                        && pred
-                            .contains_with_flags(BitFlags::empty(), env, m)
-                            .unwrap_or(false)
-                }
-                Err(_) => false,
-            })
+        scrutinee.members(env).is_some_and(|members| {
+            self.type_predicate.holds_what_it_meets(env, members, Type::could_match)
+        })
     }
 
     /// Whether the arm's type and structure predicates admit `v`, given
