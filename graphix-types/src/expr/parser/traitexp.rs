@@ -37,8 +37,8 @@ fn trait_method(i: &mut Input, sig: bool) -> R<TraitMethod> {
         |a| attrs.push(a),
     )?;
     i.attempt(|i| {
-        i.string("val")?;
-        i.spaces1()
+        i.word_space("val")?;
+        Ok(i.spaces())
     })?;
     let name = name(i)?;
     i.sptoken(':')?;
@@ -75,8 +75,8 @@ fn trait_method(i: &mut Input, sig: bool) -> R<TraitMethod> {
 /// A trait declaration; `sig` in an interface, where methods carry docs.
 pub(super) fn trait_decl(i: &mut Input, sig: bool) -> R<TraitExpr> {
     i.attempt(|i| {
-        i.string("trait")?;
-        i.spaces1()
+        i.word_space("trait")?;
+        Ok(i.spaces())
     })?;
     let at = i.pos();
     let name = Name::written(typname(i)?, at);
@@ -105,8 +105,8 @@ fn impl_head(i: &mut Input) -> R<ImplHead> {
     let at_params = i.pos();
     let (trait_name, trait_at) = typath(i)?;
     i.spaces1()?;
-    i.string("for")?;
-    i.spaces1()?;
+    i.word_space("for")?;
+    i.spaces();
     let target = typ(i)?;
     let mut params = params.unwrap_or_else(LPooled::take);
     let tvs: Arc<[TVar]> = Arc::from_iter(params.iter().map(|(tv, _)| tv.clone()));

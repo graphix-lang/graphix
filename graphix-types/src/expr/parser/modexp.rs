@@ -18,11 +18,6 @@ use poolshark::local::LPooled;
 use triomphe::Arc;
 
 /// `word` and the whitespace char after it.
-fn word_space(i: &mut Input, word: &'static str) -> R<()> {
-    i.string(word)?;
-    i.satisfy(char::is_whitespace).map(drop)
-}
-
 /// One interface item, with the `//` lines and then the `///` doc lines
 /// above it.
 pub(super) fn sig_item(i: &mut Input) -> R<SigItem> {
@@ -37,7 +32,7 @@ pub(super) fn sig_item(i: &mut Input) -> R<SigItem> {
             |i| trait_decl(i, true).map(|t| SigKind::Trait(Arc::new(t))),
             |i| impl_sig(i).map(|h| SigKind::Impl(Arc::new(h))),
             |i| {
-                word_space(i, "val")?;
+                i.word_space("val")?;
                 let name = spname(i)?;
                 i.sptoken(':')?;
                 let typ = typ(i)?;
@@ -49,7 +44,7 @@ pub(super) fn sig_item(i: &mut Input) -> R<SigItem> {
                 Ok(SigKind::Use { reexport, names })
             },
             |i| {
-                word_space(i, "mod")?;
+                i.word_space("mod")?;
                 let name = spname(i)?;
                 i.spaces();
                 Ok(SigKind::Module(name))
@@ -121,13 +116,13 @@ fn dynamic_module(i: &mut Input) -> R<ModuleKind> {
     })?;
     i.sptoken('{')?;
     i.spaces();
-    word_space(i, "sandbox")?;
+    i.word_space("sandbox")?;
     let sandbox = sandbox(i)?;
     i.sptoken(';')?;
     let sig = sig(i)?;
     i.sptoken(';')?;
     i.spaces();
-    word_space(i, "source")?;
+    i.word_space("source")?;
     let source = expr(i)?;
     i.spaces();
     i.optional(|i| i.token(';'))?;
@@ -137,7 +132,7 @@ fn dynamic_module(i: &mut Input) -> R<ModuleKind> {
 
 pub(super) fn module(i: &mut Input) -> R<Expr> {
     let pos = i.pos();
-    i.attempt(|i| word_space(i, "mod"))?;
+    i.attempt(|i| i.word_space("mod"))?;
     let name = spname(i)?;
     let value = i
         .optional(dynamic_module)?
@@ -205,8 +200,8 @@ fn use_path(i: &mut Input) -> R<UsePaths> {
     let rename = i.optional(|i| {
         i.attempt(|i| {
             i.spaces1()?;
-            i.string("as")?;
-            i.spaces1()?;
+            i.word_space("as")?;
+            i.spaces();
             let pos = i.pos();
             let n = choice!(i, fname, typname)?;
             Ok(Name::written(n, pos))
@@ -290,12 +285,12 @@ fn use_intro(i: &mut Input) -> R<bool> {
         i,
         |i| i
             .attempt(|i| {
-                i.string("pub")?;
-                i.spaces1()?;
-                word_space(i, "use")
+                i.word_space("pub")?;
+                i.spaces();
+                i.word_space("use")
             })
             .map(|_| true),
-        |i| i.attempt(|i| word_space(i, "use")).map(|_| false)
+        |i| i.attempt(|i| i.word_space("use")).map(|_| false)
     )
 }
 

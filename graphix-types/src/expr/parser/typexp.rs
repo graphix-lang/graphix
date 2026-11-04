@@ -207,7 +207,8 @@ pub(super) fn fntype(i: &mut Input) -> R<FnType> {
             i.spaces1()?;
             i.string("throws")
         })?;
-        i.spaces1()?;
+        i.word_end()?;
+        i.spaces();
         typ(i)
     })?;
     let end = i.pos();
@@ -459,8 +460,8 @@ fn typedef_params(i: &mut Input) -> R<Arc<[(TVar, Option<Type>)]>> {
 
 pub(super) fn typedef(i: &mut Input) -> R<TypeDefExpr> {
     i.attempt(|i| {
-        i.string("type")?;
-        i.spaces1()
+        i.word_space("type")?;
+        Ok(i.spaces())
     })?;
     let at = i.pos();
     let name = Name::written(typname(i)?, at);

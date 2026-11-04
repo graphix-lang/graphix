@@ -170,8 +170,8 @@ pub(super) fn lambda(i: &mut Input) -> R<Expr> {
     let throws = i.optional(|i| {
         i.attempt(|i| {
             i.spaces1()?;
-            i.string("throws")?;
-            i.spaces1()?;
+            i.word_space("throws")?;
+            i.spaces();
             typ(i)
         })
     })?;

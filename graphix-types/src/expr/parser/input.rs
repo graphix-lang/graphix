@@ -378,6 +378,24 @@ impl<'a> Input<'a> {
         Ok(self.spaces())
     }
 
+    /// The whitespace char a word read just now needs after it, which a
+    /// failure names.
+    pub(super) fn word_end(&mut self) -> R<()> {
+        match self.peek() {
+            Some(c) if c.is_whitespace() => {
+                self.at.step(c);
+                Ok(())
+            }
+            _ => Err(self.expect(Info::text("whitespace"))),
+        }
+    }
+
+    /// The word `w` and the whitespace char after it.
+    pub(super) fn word_space(&mut self, w: &'static str) -> R<()> {
+        self.string(w)?;
+        self.word_end()
+    }
+
     /// `t` after any whitespace.
     pub(super) fn sptoken(&mut self, t: char) -> R<char> {
         self.spaces();

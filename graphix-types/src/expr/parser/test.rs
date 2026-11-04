@@ -3035,12 +3035,28 @@ fn a_failure_after_a_whole_word_names_what_follows() {
         ("let x = 1;\nselect x { 0if true => 1, _ => 2 }", 'i'),
         ("let x = 1;\nselect x { 1.5x => 1, _ => 0 }", 'x'),
         ("seq { try { 1 } withx(e) { 2 } }", 'x'),
+        ("type A;\nval-1make: fn(x: i64) -> A", 'm'),
     ] {
         let s = summary(parse(vfs(src)));
         assert!(s.starts_with(&format!("Unexpected `{c}`\n")), "{src}: {s}");
     }
     let s = summary(parse_fn_type("fnx(x: i64) -> i64"));
     assert!(s.starts_with("Unexpected `x`\n"), "{s}");
+}
+
+// A word that needs whitespace after it, run into what follows, says so.
+#[test]
+fn a_word_run_into_what_follows_expects_whitespace() {
+    for (src, c) in [
+        ("traitCast {\n    val x: fn(self) -> i64\n}", 'C'),
+        ("valx: i64", 'x'),
+        ("typeT = i64", 'T'),
+        ("pub usea", 'a'),
+        ("type T = i64;\nimpl Show for. T", '.'),
+    ] {
+        let s = summary(parse_sig(Origin::unspecified(src)));
+        assert_eq!(s, format!("Unexpected `{c}`\nExpected whitespace\n"), "{src}");
+    }
 }
 
 // A failure at a point where nothing was said still says something.

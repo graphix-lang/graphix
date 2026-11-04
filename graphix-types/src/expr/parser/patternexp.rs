@@ -287,8 +287,8 @@ pub(super) fn pattern(i: &mut Input) -> R<Pattern> {
         i.attempt(|i| {
             let t = typ(i)?;
             i.spaces1()?;
-            i.string("as")?;
-            i.spaces1()?;
+            i.word_space("as")?;
+            i.spaces();
             Ok(t)
         })
     })?;
@@ -297,8 +297,8 @@ pub(super) fn pattern(i: &mut Input) -> R<Pattern> {
     let guard = i.optional(|i| {
         i.attempt(|i| {
             i.spaces1()?;
-            i.string("if")?;
-            i.spaces1()?;
+            i.word_space("if")?;
+            i.spaces();
             expr(i)
         })
     })?;

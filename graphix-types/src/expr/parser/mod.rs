@@ -652,14 +652,14 @@ fn any(i: &mut Input) -> R<Expr> {
 /// the full `expr()` for a binding, the head form for a seq trigger.
 fn letbind_with(i: &mut Input, value: impl FnOnce(&mut Input) -> R<Expr>) -> R<BindExpr> {
     i.attempt(|i| {
-        i.string("let")?;
-        i.spaces1()
+        i.word_space("let")?;
+        Ok(i.spaces())
     })?;
     let rec = i
         .optional(|i| {
             i.attempt(|i| {
-                i.string("rec")?;
-                i.spaces1()
+                i.word_space("rec")?;
+                Ok(i.spaces())
             })
         })?
         .is_some();
@@ -811,6 +811,23 @@ fn literal(i: &mut Input) -> R<Expr> {
     )
 }
 
+/// The integer types a literal's prefix may name, and whether an integer's
+/// text fits each; an unprefixed literal is the first's.
+const INT_TYPES: [(&str, fn(&str) -> bool); 12] = [
+    ("i64", |s| s.parse::<i64>().is_ok()),
+    ("z64", |s| s.parse::<i64>().is_ok()),
+    ("i32", |s| s.parse::<i32>().is_ok()),
+    ("z32", |s| s.parse::<i32>().is_ok()),
+    ("i16", |s| s.parse::<i16>().is_ok()),
+    ("i8", |s| s.parse::<i8>().is_ok()),
+    ("u64", |s| s.parse::<u64>().is_ok()),
+    ("v64", |s| s.parse::<u64>().is_ok()),
+    ("u32", |s| s.parse::<u32>().is_ok()),
+    ("v32", |s| s.parse::<u32>().is_ok()),
+    ("u16", |s| s.parse::<u16>().is_ok()),
+    ("u8", |s| s.parse::<u8>().is_ok()),
+];
+
 /// A diagnostic arm behind the literal parser: an integer literal out of
 /// its type's range names the type, since the value parser fails without
 /// a reason.
@@ -819,8 +836,11 @@ fn int_range_note<O>(i: &mut Input) -> R<O> {
     let typ = i.optional(|i| {
         i.attempt(|i| {
             let t = i.take_while1(|c| c.is_ascii_alphanumeric())?;
+            let Some(typ) = INT_TYPES.iter().find(|(n, _)| *n == t) else {
+                return Err(i.mismatch());
+            };
             i.token(':')?;
-            Ok(t)
+            Ok(typ)
         })
     })?;
     let m = i.mark();
@@ -828,20 +848,9 @@ fn int_range_note<O>(i: &mut Input) -> R<O> {
     i.take_while1(|c| c.is_ascii_digit())?;
     let int = i.since(&m);
     i.not_followed_by(|i| i.token('.'))?;
-    let name = typ.unwrap_or("i64");
-    let fits = match name {
-        "i8" => int.parse::<i8>().is_ok(),
-        "i16" => int.parse::<i16>().is_ok(),
-        "i32" | "z32" => int.parse::<i32>().is_ok(),
-        "i64" | "z64" => int.parse::<i64>().is_ok(),
-        "u8" => int.parse::<u8>().is_ok(),
-        "u16" => int.parse::<u16>().is_ok(),
-        "u32" | "v32" => int.parse::<u32>().is_ok(),
-        "u64" | "v64" => int.parse::<u64>().is_ok(),
-        _ => true,
-    };
-    if !fits {
-        let len = typ.map_or(0, |t| t.len() + 1) + int.len();
+    let (name, fits) = typ.unwrap_or(&INT_TYPES[0]);
+    if !fits(int) {
+        let len = typ.map_or(0, |(t, _)| t.len() + 1) + int.len();
         i.g.note_reason(pos, Some(len), || {
             format_compact!("`{int}` is out of the range of {name}")
         });
@@ -1196,8 +1205,7 @@ fn brace_tail(i: &mut Input) -> R<Tail> {
         |i| {
             i.attempt(|i| {
                 i.spaces1()?;
-                i.string("with")?;
-                i.satisfy(char::is_whitespace)
+                i.word_space("with")
             })?;
             struct_fields(i).map(Tail::With)
         },
