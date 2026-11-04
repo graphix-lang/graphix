@@ -831,20 +831,29 @@ const INT_TYPES: [(&str, fn(&str) -> bool); 12] = [
     ("u8", |s| s.parse::<u8>().is_ok()),
 ];
 
+// CR claude for claude: [bug/low] The range note is said where the text is
+// no literal: `let s = {u8:300` (a struct whose first field is named u8,
+// left open) reports "`300` is out of the range of u8" at the field, where
+// "this `{` is not closed" is the right note; the struct reading parsed `300`
+// to the point the report stands at, so the integer is one reading of
+// several there. State::report says a value literal's failure only where no
+// other reading failed at its point (value-literal-labels-01); a reason has
+// no such test, and this arm notes one whenever the text reads as an
+// out-of-range literal. Main 968fa9bc0 says the same. Found by review r14 of
+// lane K (round 3). probe: ~/ptmp/cr29/scratch/r14-K/r3/u8tight.gx under
+// `graphix fmt --stdout` (int-range-field-01)
 /// A diagnostic arm behind the literal parser: an integer literal out of
-/// its type's range names the type, which the value parser's refusal does
-/// not; whitespace stands around the `:` as the value parser reads it.
+/// its type's range names the type, since the value parser fails without
+/// a reason.
 fn int_range_note<O>(i: &mut Input) -> R<O> {
-    let start = i.mark();
+    let pos = i.pos();
     let typ = i.optional(|i| {
         i.attempt(|i| {
             let t = i.take_while1(|c| c.is_ascii_alphanumeric())?;
             let Some(typ) = INT_TYPES.iter().find(|(n, _)| *n == t) else {
                 return Err(i.mismatch());
             };
-            i.spaces();
             i.token(':')?;
-            i.spaces();
             Ok(typ)
         })
     })?;
@@ -855,8 +864,8 @@ fn int_range_note<O>(i: &mut Input) -> R<O> {
     i.not_followed_by(|i| i.token('.'))?;
     let (name, fits) = typ.unwrap_or(&INT_TYPES[0]);
     if !fits(int) {
-        let len = i.since(&start).chars().count();
-        i.g.note_reason(start.pos, Some(len), || {
+        let len = typ.map_or(0, |(t, _)| t.len() + 1) + int.len();
+        i.g.note_reason(pos, Some(len), || {
             format_compact!("`{int}` is out of the range of {name}")
         });
     }

@@ -179,11 +179,12 @@ impl<'a> Input<'a> {
         &self.text[m.off..self.at.off]
     }
 
-    pub(super) fn fail_at(&self, at: Mark) -> Fail {
+    pub(super) fn fail_at(&mut self, at: Mark) -> Fail {
+        self.g.note_failed(at.pos);
         Fail { at, fatal: false }
     }
 
-    pub(super) fn fail(&self) -> Fail {
+    pub(super) fn fail(&mut self) -> Fail {
         self.fail_at(self.at)
     }
 
@@ -599,6 +600,10 @@ impl<'a> Input<'a> {
     // leaves; no text is known to reach such a tie, so it is pinned at State:
     // expr::parser::test::a_replay_notes_its_reason_and_literal_failure_again (fails
     // without it). The cost left near the nesting limit: probe-limit-cost-01.
+    // 2026-11-04 claude: Review r14 round 3: a replay re-notes the reason alone now;
+    // a value literal's failure needs none (value-literal-labels-01's note), so
+    // Effects carries the depth and the reason. Pin:
+    // expr::parser::test::a_replay_notes_its_reason_again.
     /// `f`, a parse that what follows it may read again.
     fn speculate<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         self.speculating += 1;
@@ -741,14 +746,33 @@ impl<'a> Input<'a> {
         // a_value_literal_failure_says_what_was_expected. A literal in a pattern
         // or an index: literal-pattern-labels-01; the duration note's exponent:
         // duration-exponent-note-01.
+        // 2026-11-04 claude: Review r14 round 3: a literal's failure was said
+        // where it was one reading of several, so a struct whose first field is
+        // named like a literal's prefix ({duration: 5, {bytes: 1), {f64: 1), { a:
+        // duration, {u8:\n300) reported the literal's failure, and {datetime:
+        // "\q"} netidx's escapes for what is a graphix string. State::report now
+        // says a literal's failure only where no other failure met its point
+        // (State::failed: every Input::fail_at in a diag pass, and a second
+        // literal failing at the same point saying something else); each of those
+        // reads as on main again. int_range_note is main's again (no whitespace
+        // around the colon), so {u8: 300 keeps main's 'this { is not closed'; u8:
+        // 256 and u8:\n256 say the value parser's 'invalid unsigned integer'. The
+        // literal is no longer replayed from the memo: kept positions only grow
+        // and a tie is noted when it happens, so a replay changed nothing. Pins:
+        // expr::parser::test::a_value_literal_failure_is_said_only_where_it_alone_failed
+        // (fails without State::failed, and on {datetime: "\q"} without the tie)
+        // and an_out_of_range_integer_literal_names_its_range (fails with the
+        // spaced int_range_note). Main's own phantom range note at {u8:300:
+        // int-range-field-01.
         let at = self.mark_at(self.at.off + f.offset);
         let token = !matches!(f.expected, Expected::Refused(_));
         self.labels(at.off, token, |l| l.read(f.expected));
-        if f.offset > 0 {
-            let met = self.text[at.off..].chars().next();
-            self.g.note_literal(at.pos, met, f.expected);
-            self.at = at
+        if f.offset == 0 {
+            return Err(self.fail_at(at));
         }
-        Err(self.fail_at(at))
+        let met = self.text[at.off..].chars().next();
+        self.g.note_literal(at.pos, met, f.expected);
+        self.at = at;
+        Err(Fail { at, fatal: false })
     }
 }

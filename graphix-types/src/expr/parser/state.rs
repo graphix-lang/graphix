@@ -92,6 +92,17 @@ struct Literal {
 }
 
 impl Literal {
+    /// Whether `o`, a failure at the same point, says what this says.
+    fn same(&self, o: &Literal) -> bool {
+        self.met == o.met
+            && match (self.expected, o.expected) {
+                (Expected::OneOf(a), Expected::OneOf(b)) => a == b,
+                (Expected::Escape(a), Expected::Escape(b)) => std::ptr::eq(a, b),
+                (Expected::Refused(a), Expected::Refused(b)) => a == b,
+                _ => false,
+            }
+    }
+
     /// What its failure said, as the failures at a reported point say.
     fn labels(&self) -> Labels {
         let mut l = Labels::default();
@@ -169,8 +180,11 @@ pub(super) struct State {
     reason: Option<Reason>,
     /// The furthest value literal's failure past its start, which a
     /// lookahead or another alternative may roll back: what a report at
-    /// its point says when nothing else does.
+    /// its point says when nothing else does and nothing else failed there.
     literal: Option<Literal>,
+    /// The furthest point another failure met: one no value literal's, or
+    /// a literal's saying something else at the kept one's point.
+    failed: Option<SourcePosition>,
     /// Under [`Mode::Labels`], what the failures there said.
     pub(super) labels: Labels,
     /// Inside a `not_followed_by`, whose failures expect nothing.
@@ -186,17 +200,15 @@ pub(super) struct Measure {
     reach: usize,
     limited: bool,
     reason: Option<Reason>,
-    literal: Option<Literal>,
 }
 
 /// What a measured parse did to the state, which a replay of it does
-/// again: its depth, and the reason and literal failure it would leave
-/// noted were none noted before it (a later one wins, so these alone
-/// decide what it leaves noted after any).
+/// again: its depth, and the reason it would leave noted were none noted
+/// before it (a later one wins, so this alone decides what it leaves
+/// noted after any).
 pub(super) struct Effects {
     pub(super) depth: Depth,
     reason: Option<Reason>,
-    literal: Option<Literal>,
 }
 
 /// What a measured parse did to the depth bookkeeping.
@@ -224,6 +236,7 @@ impl State {
             refused: None,
             reason: None,
             literal: None,
+            failed: None,
             labels: Labels::default(),
             quiet: 0,
             #[cfg(test)]
@@ -292,7 +305,6 @@ impl State {
             reach: std::mem::replace(&mut self.reach, self.depth),
             limited: std::mem::take(&mut self.limited),
             reason: self.reason.take(),
-            literal: self.literal.take(),
         }
     }
 
@@ -303,11 +315,8 @@ impl State {
             reach: self.reach - self.depth,
             limited: self.limited,
         };
-        let effects = Effects {
-            depth,
-            reason: std::mem::replace(&mut self.reason, m.reason),
-            literal: std::mem::replace(&mut self.literal, m.literal),
-        };
+        let effects =
+            Effects { depth, reason: std::mem::replace(&mut self.reason, m.reason) };
         self.below = m.below;
         self.reach = m.reach;
         self.limited = m.limited;
@@ -334,9 +343,6 @@ impl State {
         self.limited |= d.limited;
         if let Some(r) = &e.reason {
             self.keep_reason(r.clone())
-        }
-        if let Some(l) = e.literal {
-            self.keep_literal(l)
         }
     }
 
@@ -396,22 +402,32 @@ impl State {
     }
 
     /// Record a value literal's failure past its start at `pos`, where it
-    /// met `met`; a later one wins.
+    /// met `met`: a later one wins, and one saying something else at the
+    /// same point is another failure there.
     pub(super) fn note_literal(
         &mut self,
         pos: SourcePosition,
         met: Option<char>,
         expected: Expected,
     ) {
-        if self.diag() {
-            self.keep_literal(Literal { pos, met, expected })
+        if !self.diag() {
+            return;
+        }
+        let l = Literal { pos, met, expected };
+        match self.literal {
+            Some(kept) if key(kept.pos) > key(pos) => (),
+            Some(kept) if key(kept.pos) == key(pos) && !kept.same(&l) => {
+                self.note_failed(pos);
+                self.literal = Some(l)
+            }
+            _ => self.literal = Some(l),
         }
     }
 
-    /// Keep `l` unless the literal failure kept stands later.
-    fn keep_literal(&mut self, l: Literal) {
-        if self.literal.is_none_or(|kept| key(kept.pos) <= key(l.pos)) {
-            self.literal = Some(l)
+    /// Record a failure at `pos`.
+    pub(super) fn note_failed(&mut self, pos: SourcePosition) {
+        if self.diag() {
+            self.failed = later(self.failed, pos)
         }
     }
 
@@ -475,6 +491,7 @@ impl State {
         let literal = || {
             self.literal
                 .filter(|l| l.pos == pos && !self.reason_explains(pos))
+                .filter(|_| self.failed.is_none_or(|f| key(f) < key(pos)))
                 .and_then(|l| render(&l.labels()))
         };
         let body = match read {

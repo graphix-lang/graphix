@@ -192,47 +192,76 @@ fn a_value_literal_failure_says_what_was_expected() {
     }
 }
 
-// An integer literal out of its type's range is told by its note alone,
-// whitespace around its `:` or not.
+// An integer literal out of its type's range is told by its note, and
+// written with spaces around its `:` by the value parser's refusal.
 #[test]
 fn an_out_of_range_integer_literal_names_its_range() {
-    for (src, at) in [
-        ("let a = u8:256;\na", 15),
-        ("let a = u8: 256;\na", 16),
-        ("let a = u8 :256;\na", 16),
-    ] {
-        let msg = parse_program(src);
-        let said = format!(
-            "Parse error at line: 1, column: {at}\n\
+    let msg = parse_program("let a = u8:256;\na");
+    assert!(
+        msg.contains(
+            "Parse error at line: 1, column: 15\n\
              the parser could not continue past this point\n"
+        ),
+        "{msg}"
+    );
+    assert!(msg.contains("note: at line: 1, column: 9: `256` is out of the range of u8"));
+    for (src, at) in [("let a = u8: 256;\na", 16), ("let a = u8:\n256;\na", 4)] {
+        let msg = parse_program(src);
+        let line = if at == 4 { 2 } else { 1 };
+        let said = format!(
+            "Parse error at line: {line}, column: {at}\ninvalid unsigned integer\n"
         );
         assert!(msg.contains(&said), "{src}: {msg}");
-        let note = "note: at line: 1, column: 9: `256` is out of the range of u8";
-        assert!(msg.contains(note), "{src}: {msg}");
+        assert!(!msg.contains("note:"), "{src}: {msg}");
+    }
+}
+
+// A value literal's failure is said only where no other reading of the
+// text failed at its point: a struct's first field named like a literal's
+// prefix is a field there, so the report says what it says without the
+// literal, as do two literals that fail at one point saying different
+// things.
+#[test]
+fn a_value_literal_failure_is_said_only_where_it_alone_failed() {
+    let generic = "the parser could not continue past this point\n";
+    let unclosed = |line, col| {
+        format!("note: at line: {line}, column: {col}: this `{{` is not closed")
+    };
+    for (src, note) in [
+        ("let s = {duration: 5", Some(unclosed(1, 9))),
+        ("let s = {bytes: 1)", None),
+        ("let n = 3;\nlet s = {bytes: n", Some(unclosed(2, 9))),
+        ("let s = {f64: 1)", None),
+        ("let duration = 5;\nlet y = { a: duration", Some(unclosed(2, 9))),
+        ("let s = {u8:\n300", Some(unclosed(1, 9))),
+        ("let s = {u8: 300", Some(unclosed(1, 9))),
+        ("let s = {u8: 300)", None),
+        ("let s = {datetime: \"\\q\"}", None),
+    ] {
+        let msg = parse_program(src);
+        let body = msg.split_once('\n').map(|(_, b)| b).unwrap_or("");
+        assert!(body.starts_with(generic), "{src}: {msg}");
+        match note {
+            Some(note) => assert!(msg.contains(&note), "{src}: {msg}"),
+            None => assert!(!msg.contains("note:"), "{src}: {msg}"),
+        }
     }
 }
 
 // A replay of a remembered parse leaves noted what reading it again
-// would: its reason, and its literal failure, wins a tie with one noted
-// at the same point since.
+// would: its reason wins a tie with one noted at the same point since.
 #[test]
-fn a_replay_notes_its_reason_and_literal_failure_again() {
+fn a_replay_notes_its_reason_again() {
     use super::state::{Mode, State};
-    use netidx_value::parser::Expected;
     let at = SourcePosition { line: 1, column: 3 };
-    let replayed = |note: &mut dyn FnMut(&mut State, &'static str)| {
-        let mut g = State::new(Mode::Diag);
-        let m = g.measure();
-        note(&mut g, "first");
-        let effects = g.measured(m);
-        note(&mut g, "since");
-        g.replay(&effects);
-        g.report("abcd", at, None).msg
-    };
-    let msg = replayed(&mut |g, why| g.note_reason(at, None, || why.into()));
+    let mut g = State::new(Mode::Diag);
+    let m = g.measure();
+    g.note_reason(at, None, || "first".into());
+    let effects = g.measured(m);
+    g.note_reason(at, None, || "since".into());
+    g.replay(&effects);
+    let msg = g.report("abcd", at, None).msg;
     assert!(msg.contains("note: at line: 1, column: 3: first"), "{msg}");
-    let msg = replayed(&mut |g, why| g.note_literal(at, None, Expected::Refused(why)));
-    assert!(msg.contains("column: 3\nfirst\n"), "{msg}");
 }
 
 // A string's splice prints on the string's line, so no comment stands
