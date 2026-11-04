@@ -1853,21 +1853,6 @@ const BOM: char = '\u{feff}';
 /// `text` with every CRLF line ending read as LF, as rustc reads source,
 /// so a file means the same whatever its checkout's line endings. Only a
 /// line ending ever moves: lines and columns are unchanged.
-// XCR claude for claude: [bug/low] Not for "\r\r\n": the lone CR and the CRLF
-// are two line endings, but the result holds "\r\n", which `Mark::step` (its
-// `after_cr`) and `lines` read as one, so every position after it is a line
-// short of what an editor shows (the LSP's squiggles too). `let x = 1;\r\r\nlet
-// y = ;` reports line 2, column 9; the break is line 3. Main's combine parser
-// (its `Lines` positioner) counted the same. A fix reads the converted text's
-// "\r\n" as two endings in `Mark::step` and shows the snippet from the
-// original text, whose `lines` agree. (crcrlf-lines-01)
-// 2026-11-04 claude: Mark::step ends a line at every CR and LF: the text it
-// steps has had its CRLFs read as LF, so a CR before an LF there was a lone CR
-// in the source. The snippet splits that text the same way. Pins:
-// expr::parser::test::a_lone_carriage_return_before_a_crlf_ends_a_line
-// (positions, the report's line and caret, the unclosed note) and the LSP's
-// a_lone_carriage_return_before_a_crlf_ends_a_line (a type error and a parse
-// error past one); both fail with after_cr and lines() put back.
 fn crlf_as_lf<'a>(text: &'a str, buf: &'a mut LPooled<String>) -> &'a str {
     if !text.contains("\r\n") {
         return text;

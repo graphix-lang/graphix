@@ -287,52 +287,6 @@ fn program(shape: &str, d: usize) -> String {
         }
         // A chain of bounds as long as the program, every cell a position
         // of one signature: the call's settle orders them all.
-        // XCR claude for claude: [bug/medium] chainbounds at CHAIN_DEPTH never
-        // finishes its check, so deep_nesting_does_not_overflow (slow-tests)
-        // hangs. `graphix --check --no-cache` of this program costs, net of
-        // the stdlib's 1.36 G instructions, 0.5 / 4.0 / 31.4 / 162.6 G at
-        // depth 250 / 500 / 1000 / 2000 on main 30702808d (base-r10), and the
-        // same at 250-1000 on base-r9: about cubic. At 10000 neither base-r10
-        // nor 3ced2aa37 plus the one-stream parser finished in 900 s, where
-        // `graphix fmt` of it takes 1.9 G. 56e48357c made a chain of bounds
-        // settle in linear time (t-tvar-03); something since made it
-        // superlinear again. The test passes with this case left out (lane
-        // Z, 11-03). probe:
-        // ~/ptmp/cr29/scratch/r11-Z/cb{250,500,1000,2000}.gx under `perf stat
-        // -e instructions:u` (chainbounds-cubic-01)
-        // 2026-11-04 claude: Linear now. The cubic part was
-        // check_bounds_acyclic (48469f409): a breadth-first walk from each
-        // quantifier, each step scanning every edge; it is Tarjan's components
-        // over an index graph, then one walk from the first variable on a cycle
-        // for the message (pin:
-        // typ::fntyp::tests::a_bound_cycle_is_the_first_a_walk_from_each_variable_finds,
-        // against that walk on 4000 random graphs). Four walks were quadratic
-        // in the chain: the witness's cycle check (now tvar::would_cycle_open:
-        // a type that reaches no open cell is walked once, its bound cells
-        // marked ground), FnType::collect_tvars normalizing each conjunct apart
-        // (one NormCx now; 4e9e14cf0), FnType::each_quantifier scanning the
-        // quantifiers per cell (182a6297a; a lookup now, in declaration order)
-        // and Lambda::compile's ctor-quantifier scan (reads the bound's own
-        // conjunct first). --check net of the stdlib: 0.77 / 1.60 / 3.15 G
-        // instructions (callgrind) at 4000 / 8000 / 16000 links. Pins:
-        // deep_nesting a_chain_of_bounds_checks_in_linear_time (30000 links
-        // under 14 G, 7.3 G now; each of the five fixes reverted alone retires
-        // 14 G and fails) and the slow deep_nesting_does_not_overflow at
-        // CHAIN_DEPTH, which passes.
-        // 2026-11-04 claude: Review r14: the chain declared last link first was still
-        // quadratic (37.7 G net at 8000 links): seed_conjuncts aliased each conjunct's
-        // variables after its successors' conjuncts were seeded, so each alias's occurs
-        // check (merge_one's would_cycle_inner) walked the tail. It aliases every
-        // conjunct's variables before seeding any now: 0.20 / 0.80 / 1.58 / 3.17 G net
-        // at 1000 / 4000 / 8000 / 16000 links, as the declared order. Pin: deep_nesting
-        // a_chain_of_bounds_declared_last_link_first_checks_in_linear_time (30000 links
-        // under 14 G; without the change it retires 14.0 G and fails). Other shapes are
-        // still quadratic: chainbounds-neighbours-01, open-cell-chain-01.
-        // 2026-11-04 claude: Review r14 round 3: linear is the check's (--check,
-        // CheckOnly), which is all this case and its pins run. Elaborating the same
-        // chain, which every run, build and --expand does, is still cubic, as on main:
-        // chainbounds-elab-01 (typedef and union neighbours:
-        // chainbounds-elab-neighbours-01).
         "chainbounds" | "chainboundsreversed" => {
             let mut bounds = (0..d)
                 .map(|i| format!("'a{i}: Array<'a{}>", i + 1))

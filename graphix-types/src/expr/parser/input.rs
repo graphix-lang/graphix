@@ -558,52 +558,6 @@ impl<'a> Input<'a> {
         }
     }
 
-    // XCR claude for claude: [perf/medium] The arms of a select read again
-    // what the map-access probe in postfix_op (`select x{` read as `x{ k }`)
-    // already parsed, and this memo covers only attributes, so another way
-    // back into expressions is still exponential: a string pattern parses
-    // its whole `"[..]"` or `"""\[..]"""` splice through `interpolated`
-    // and refuses only after. `select x{ "[` nested N deep: 13.5G
-    // instructions at N=16, 54G at N=18 (398 bytes), doubling a level; the
-    // same text as runtime data through `str::parse` (parse_literal_value)
-    // costs 15.4G at N=16, so a short untrusted string stalls the evaluator,
-    // the formatter and the LSP. Main (combine) has it too, about 7x slower.
-    // Fix the cause: remember what the probe parsed, by offset and depth,
-    // so the arms replay it (it would replace this attribute-only memo and
-    // its `AttrKey`, whose `Option<usize>` repeats `Remembered.depth.limited`);
-    // or narrowly, refuse a string pattern at its first unescaped `[` (a
-    // template's `\[`) before parsing the splice. Pin under a knot budget at
-    // N=18. Found by review r3 of lane J. probes:
-    // ~/ptmp/cr29/scratch/review-rd/r3-2/strpat/{sp_14,sp_16,sps_100,tp_14,rt_16}.gx,
-    // RESULTS.txt (probe-reread-01)
-    // 2026-11-04 claude: Fixed at the cause: Input::remembered keeps every expression
-    // a lookahead or a probe parses (Input::speculate counts them), by where it
-    // starts, and replays one an expr() reads again there: its end, its effects
-    // (depth, and now the reason and literal failure it would leave noted, which
-    // State::measure sets aside so a replay re-notes them; the attribute memo dropped
-    // those) and what its failures said. It replaces the attribute memo and AttrKey:
-    // an attribute's arguments are expressions a struct's lookahead or a probe read
-    // first. The key is the offset alone; an entry the limit cut short holds at its
-    // starting depth (Remembered.from). Exact over both repos: graphix fmt --stdout
-    // of all 2941 .gx/.gxi, base-r14 against this, differs only in
-    // t-parser-a-int-overflow-diag.gx's message (value-literal-labels-01); the gxfmt
-    // harness and expr_spans pass. sp_18 costs 0.021 G instructions (base-r14 56 G),
-    // rt_16 through str::parse 1.40 G with the stdlib (15.8 G). fmt of the corpus in
-    // one process: 16.45 G against 16.53 G. Pins:
-    // expr::parser::test::string_patterns_after_a_probe_parse_once (270 knots at
-    // N=18, as source and as data; with FORGET 4980735) and
-    // a_remembered_expression_parses_as_read_again (FORGET against the memo on every
-    // cut, deletion and stray closer).
-    // 2026-11-04 claude: Review r14: the replay's re-noting of the reason and the
-    // literal failure changes the state only on a tie at one point (notes only grow
-    // and a later one wins a tie), where it leaves what reading the expression again
-    // leaves; no text is known to reach such a tie, so it is pinned at State:
-    // expr::parser::test::a_replay_notes_its_reason_and_literal_failure_again (fails
-    // without it). The cost left near the nesting limit: probe-limit-cost-01.
-    // 2026-11-04 claude: Review r14 round 3: a replay re-notes the reason alone now;
-    // a value literal's failure needs none (value-literal-labels-01's note), so
-    // Effects carries the depth and the reason. Pin:
-    // expr::parser::test::a_replay_notes_its_reason_again.
     /// `f`, a parse that what follows it may read again.
     fn speculate<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         self.speculating += 1;
@@ -712,58 +666,6 @@ impl<'a> Input<'a> {
             }
             Err(f) => f,
         };
-        // XCR claude for claude: [bug/low] The labels this gives a value
-        // literal's failure never reach a user: `let a = error:"\q";`,
-        // `error:"\u{4g}"` and `error:"\u{d800}"` report only "the parser could
-        // not continue past this point", at the right column, where a graphix
-        // string's `"\q"` names the escapes it expected, so netidx's expected
-        // lists and its surrogate and past-10FFFF reasons are lost. State::report
-        // renders labels only where its position is `err`, which looks like the
-        // filter that drops them. Pre-existing: base-r10 and base-r11 print the
-        // same. probe: ~/ptmp/cr29/scratch/r11-Y/uescape-r2/gx/{q,u4g,usur}.gx
-        // under `graphix --check` (value-literal-labels-01)
-        // 2026-11-04 claude: The labels were said, but a later alternative's
-        // success dropped them (primary's choice takes error as a reference, the
-        // parse then fails at the colon) and the report sits at the furthest
-        // point, where it gathers none. value_part now also notes a failure past
-        // a literal's start in State (note_literal, the furthest kept like a
-        // reason), and State::report says it where nothing else does:
-        // Labels::read is the one rendering of netidx's Expected, for both.
-        // error:"\q" reports Unexpected q and the escapes, u{4g} a hex digit or
-        // }, u{d800} the surrogate and u{110000} the past-10FFFF reason. Also
-        // changes an out-of-range integer literal's body from could-not-continue
-        // to netidx's invalid unsigned integer, its note unchanged (u8:256). Pin:
-        // expr::parser::test::a_value_literal_failure_says_what_was_expected
-        // (failed before the change).
-        // 2026-11-04 claude: Review r14: a literal's failure is now the report's
-        // body only where no note explains the point, so u8:256, i8:-200, u8:-1
-        // and duration:1e300y read as on main (could not continue, then the range
-        // or unit note) and the census has no message change left; int_range_note
-        // takes whitespace around the colon as the value parser does, so u8: 256
-        // and u8 :256 name the range too. Pins:
-        // expr::parser::test::an_out_of_range_integer_literal_names_its_range
-        // (fails without either change) and a map access's string in
-        // a_value_literal_failure_says_what_was_expected. A literal in a pattern
-        // or an index: literal-pattern-labels-01; the duration note's exponent:
-        // duration-exponent-note-01.
-        // 2026-11-04 claude: Review r14 round 3: a literal's failure was said
-        // where it was one reading of several, so a struct whose first field is
-        // named like a literal's prefix ({duration: 5, {bytes: 1), {f64: 1), { a:
-        // duration, {u8:\n300) reported the literal's failure, and {datetime:
-        // "\q"} netidx's escapes for what is a graphix string. State::report now
-        // says a literal's failure only where no other failure met its point
-        // (State::failed: every Input::fail_at in a diag pass, and a second
-        // literal failing at the same point saying something else); each of those
-        // reads as on main again. int_range_note is main's again (no whitespace
-        // around the colon), so {u8: 300 keeps main's 'this { is not closed'; u8:
-        // 256 and u8:\n256 say the value parser's 'invalid unsigned integer'. The
-        // literal is no longer replayed from the memo: kept positions only grow
-        // and a tie is noted when it happens, so a replay changed nothing. Pins:
-        // expr::parser::test::a_value_literal_failure_is_said_only_where_it_alone_failed
-        // (fails without State::failed, and on {datetime: "\q"} without the tie)
-        // and an_out_of_range_integer_literal_names_its_range (fails with the
-        // spaced int_range_note). Main's own phantom range note at {u8:300:
-        // int-range-field-01.
         // CR claude for claude: [bug/low] A literal's failure is said where its
         // reading is the only one that gets that far, though the text names no
         // literal: `{datetime: "\u{41}\q", b: 1}` reports netidx's escape list at
