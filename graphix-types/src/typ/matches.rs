@@ -193,6 +193,7 @@ fn open_member(t: &Type) -> bool {
 thread_local! {
     pub(super) static MATCH_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static REST_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static MATCH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// could_match's walk state: its pairs in progress (assumed to overlap),
@@ -210,6 +211,9 @@ pub(super) struct MatchHist {
     /// The node pairs found to overlap resting on no pair in progress,
     /// which overlap wherever they are asked.
     found: NodePairs,
+    /// The node pairs found apart, wherever they were found, as `refuted`'s
+    /// pairs of names are.
+    apart: NodePairs,
     rests: Rests,
 }
 
@@ -220,6 +224,7 @@ impl MatchHist {
             refuted: Lazy::new(),
             contains: ContainsHist::new(),
             found: NodePairs::default(),
+            apart: NodePairs::default(),
             rests: Rests::new(),
         }
     }
@@ -247,6 +252,21 @@ const NO_NODE: u32 = u32::MAX;
 // cost about 5% over main (rg40 68.25G / 72.16G). probes:
 // ~/ptmp/cr29/scratch/review-r9/X-r3-1/nest/mknest.py, X-r3-2/p/mkq.py
 // (could-match-rests-cost-01)
+// 2026-11-03 claude: The CR's direction is taken (cr48-X): MatchHist::apart keeps every
+// node pair found apart and could_match_int reads it where it reads found, sound by
+// refuted's argument (could_match is monotone: every rule is an and or an or of its
+// parts' answers, and a pair in progress answers true, so a false found under
+// assumptions is the false of the walk without them). could_match_int calls, P998
+// against Q998 over nested_pairs(n, 32): n=64 318061 -> 66124, n=128 2303181 -> 246924.
+// Callgrind --check, base 30702808d / lane: nest128 6.31G / 3.60G, nest256 32.39G /
+// 9.99G, q800 8.38G / 7.56G (main before Rests: 2.81G, 7.00G, 4.56G). Pins:
+// typ::matches::tests::could_match_keeps_the_node_pairs_found_apart (66124 calls;
+// 318061 without the read); the memo differentials
+// (diff_and_could_match_memos_change_no_answer, memos_change_no_composed_answer, run by
+// hand over 400 seeds) read apart only with the memos on. What remains: still
+// superlinear (about 3.7 times the calls per doubling of n): the chain's trues read the
+// failing level's pair (its last union reaches it), so Rests rightly drops them and the
+// level above walks the chain again. Stays a CR for that.
 /// What could_match's trues rest on. Each pair of names entered and each
 /// node pair found to overlap by assuming a pair in progress is a node,
 /// which rests on the nodes its walk read true. A pair whose walk fails
@@ -389,10 +409,15 @@ impl Type {
         hist: &mut MatchHist,
         t: &Self,
     ) -> Result<bool> {
+        #[cfg(test)]
+        MATCH_CALLS.with(|n| n.set(n.get() + 1));
         let pair = hist.found.key(self, t);
         if let Some(pair) = pair.filter(|_| memo_on()) {
             if hist.found.contains(pair) {
                 return Ok(true);
+            }
+            if hist.apart.contains(pair) {
+                return Ok(false);
             }
             if let Some(node) = hist.rests.standing(pair) {
                 hist.rests.read(node);
@@ -412,6 +437,10 @@ impl Type {
                     hist.rests.resting.get_mut().insert(pair, Kept::new(node, self, t));
                 }
             },
+            (Ok(false), Some(pair)) => {
+                hist.rests.unread(mark);
+                hist.apart.insert(pair, self, t)
+            }
             (Ok(false) | Err(_), _) => hist.rests.unread(mark),
         }
         could
@@ -902,7 +931,7 @@ impl Type {
 
 #[cfg(test)]
 mod tests {
-    use super::{MATCH_PAIRS, REST_STEPS};
+    use super::{MATCH_CALLS, MATCH_PAIRS, REST_STEPS};
     use crate::typ::cast::tests::{parsed, typed};
 
     fn could_match(defs: &[(&str, String)], t0: &str, t1: &str) -> bool {
@@ -997,6 +1026,47 @@ mod tests {
         MATCH_PAIRS.with(|n| n.set(0));
         let could = t0.could_match(&env, &t1).unwrap();
         (could, MATCH_PAIRS.with(|n| n.get()))
+    }
+
+    /// `P_k = ([Error<P_k+1>, `K], C1, `A)` for k up to `n`, over a
+    /// chain `C1 .. Cm` whose last union holds an error of every `P_k`,
+    /// and a twin `Q_k` over `D1 .. Dm` with `B. `P_k` is written
+    /// `P<999 - k>`, so a union scan meets the innermost pair first.
+    fn nested_pairs(n: usize, m: usize) -> Vec<(String, String)> {
+        let mut defs = vec![];
+        for (chain, name, tag) in [("C", "P", "`A"), ("D", "Q", "`B")] {
+            let named = |k: usize| format!("{name}{}", 999 - k);
+            for j in 1..m {
+                defs.push((
+                    format!("{chain}{j}"),
+                    format!("[({chain}{}, `Cc), `X]", j + 1),
+                ));
+            }
+            let errs: Vec<String> =
+                (1..=n).map(|k| format!("Error<{}>", named(k))).collect();
+            defs.push((format!("{chain}{m}"), format!("[{}]", errs.join(", "))));
+            for k in 1..n {
+                let body = format!("([Error<{}>, `K], {chain}1, {tag})", named(k + 1));
+                defs.push((named(k), body));
+            }
+            defs.push((named(n), format!("({chain}1, {tag})")));
+        }
+        defs
+    }
+
+    // Each P_k fails at its tag and takes back the trues of the chain,
+    // which rest on it, so the level above walks the chain again; the
+    // node pairs that walk found apart stay apart, as a pair of names
+    // found apart does.
+    #[test]
+    fn could_match_keeps_the_node_pairs_found_apart() {
+        let defs = nested_pairs(64, 32);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, _) = typed(&defs, "null");
+        let (p, q) = (parsed(&env, "P998"), parsed(&env, "Q998"));
+        MATCH_CALLS.with(|n| n.set(0));
+        assert!(!p.could_match(&env, &q).unwrap());
+        assert_eq!(MATCH_CALLS.with(|n| n.get()), 66124);
     }
 
     // Where every overlap rests on a pair in progress, the walk takes each
