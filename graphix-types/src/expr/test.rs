@@ -2656,6 +2656,48 @@ fn generated_trees_are_often_undecorated() {
     assert!(bare >= 120, "{bare} of 400 trees undecorated");
 }
 
+/// The package codec hands back the parsed tree as it prints, and at its
+/// positions; a decoded type's same-named variables are the typechecker's to
+/// alias.
+fn pack_round_trip(s: &Expr) -> Result<(), TestCaseError> {
+    use crate::expr::serialize::{pack_module, unpack_module};
+    let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(80));
+    let e = parse_one(st.as_str()).unwrap();
+    let packed = pack_module(std::slice::from_ref(&e)).unwrap();
+    let unpacked = unpack_module(&packed, Arc::new(Origin::unspecified(""))).unwrap();
+    prop_assert_eq!(unpacked.len(), 1);
+    let print = |e: &Expr| format_with_flags(BitFlags::empty(), || e.to_string());
+    prop_assert_eq!(print(&e), print(&unpacked[0]));
+    prop_assert_eq!(decorations_of(&e), decorations_of(&unpacked[0]), "{}", st);
+    prop_assert!(same_positions(&e, &unpacked[0]), "{st}");
+    Ok(())
+}
+
+// the cases split over four tests, so they run side by side
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn pack_round_trip_0(s in expr()) {
+        pack_round_trip(&s)?
+    }
+
+    #[test]
+    fn pack_round_trip_1(s in expr()) {
+        pack_round_trip(&s)?
+    }
+
+    #[test]
+    fn pack_round_trip_2(s in expr()) {
+        pack_round_trip(&s)?
+    }
+
+    #[test]
+    fn pack_round_trip_3(s in expr()) {
+        pack_round_trip(&s)?
+    }
+}
+
 /// `s` printed at `width` parses back to itself, string forms included.
 fn pp_round_trip(s: &Expr, width: usize) -> Result<(), TestCaseError> {
     let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(width));
@@ -2723,23 +2765,6 @@ proptest! {
             }
         });
         prop_assert!(disagree.is_none(), "{disagree:?}")
-    }
-
-    /// The package codec hands back the parsed tree as it prints, and at
-    /// its positions; a decoded type's same-named variables are the
-    /// typechecker's to alias.
-    #[test]
-    fn pack_round_trip(s in expr()) {
-        use crate::expr::serialize::{pack_module, unpack_module};
-        let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(80));
-        let e = parse_one(st.as_str()).unwrap();
-        let packed = pack_module(std::slice::from_ref(&e)).unwrap();
-        let unpacked = unpack_module(&packed, Arc::new(Origin::unspecified(""))).unwrap();
-        prop_assert_eq!(unpacked.len(), 1);
-        let print = |e: &Expr| format_with_flags(BitFlags::empty(), || e.to_string());
-        prop_assert_eq!(print(&e), print(&unpacked[0]));
-        prop_assert_eq!(decorations_of(&e), decorations_of(&unpacked[0]), "{}", st);
-        prop_assert!(same_positions(&e, &unpacked[0]), "{st}")
     }
 
     /// The package codec hands back an interface as it prints.

@@ -6,8 +6,7 @@ use netidx_value::{ValArray, Value};
 use std::time::Duration;
 use tokio::time::Instant;
 
-const TEST_REGISTER: &[&dyn graphix_package::Package<graphix_rt::NoExt>] =
-    graphix_package::package_refs!();
+use crate::TEST_REGISTER;
 
 #[tokio::test]
 async fn idle_slots_do_not_enter_their_call_sites() -> Result<()> {

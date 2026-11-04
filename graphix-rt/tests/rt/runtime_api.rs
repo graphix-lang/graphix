@@ -197,14 +197,15 @@ async fn a_check_panicking_in_a_definition_leaves_none_open() -> Result<()> {
     Ok(())
 }
 
-/// What `id` produced since the receiver was last drained.
+/// What `id` produced, from the receiver's last drain until the runtime
+/// settles.
 async fn produced(
+    gx: &GXHandle<NoExt>,
     rx: &mut mpsc::Receiver<Batch>,
     id: graphix_compiler::expr::ExprId,
 ) -> Vec<Value> {
-    tokio::time::sleep(Duration::from_millis(500)).await;
     let mut seen = vec![];
-    while let Ok(mut b) = rx.try_recv() {
+    let mut take = |mut b: Batch| {
         for e in b.drain(..) {
             if let GXEvent::Updated(i, v) = e
                 && i == id
@@ -212,6 +213,23 @@ async fn produced(
                 seen.push(v)
             }
         }
+    };
+    let settled = timeout(Duration::from_secs(30), gx.wait_settled());
+    tokio::pin!(settled);
+    loop {
+        tokio::select! {
+            r = &mut settled => {
+                r.expect("the runtime settles").expect("the runtime lives");
+                break;
+            }
+            b = rx.recv() => match b {
+                Some(b) => take(b),
+                None => break,
+            },
+        }
+    }
+    while let Ok(b) = rx.try_recv() {
+        take(b)
     }
     seen
 }
@@ -226,15 +244,15 @@ async fn wrong_typed_set(flags: BitFlags<CFlag>) -> Result<()> {
         ))
         .await?;
     let out = m.exprs.last().context("no result")?.id;
-    produced(&mut rx, out).await;
+    produced(&gx, &mut rx, out).await;
     let env = gx.get_env().await?;
     let x = gx.compile_ref_by_name(&env, &Scope::root(), &ModPath::from(["x"])).await?;
     let y = gx.compile_ref_by_name(&env, &Scope::root(), &ModPath::from(["y"])).await?;
     gx.set(x.bid, Value::from("hello"))?;
     gx.set_many([(y.bid, Value::I64(10)), (x.bid, Value::from("hello"))])?;
-    assert_eq!(produced(&mut rx, out).await, vec![], "a wrong-typed write landed");
+    assert_eq!(produced(&gx, &mut rx, out).await, vec![], "a wrong-typed write landed");
     gx.set(x.bid, Value::I64(3))?;
-    assert_eq!(produced(&mut rx, out).await, vec![Value::I64(7)]);
+    assert_eq!(produced(&gx, &mut rx, out).await, vec![Value::I64(7)]);
     Ok(())
 }
 
@@ -254,27 +272,27 @@ async fn a_wrong_typed_set_deref_is_refused() -> Result<()> {
     let (gx, mut rx) = start(BitFlags::empty()).await?;
     let m = gx.compile(literal!("let s = {a: 1, b: 2}; let r = &mut s.a; s")).await?;
     let sid = m.exprs[2].id;
-    produced(&mut rx, sid).await;
+    produced(&gx, &mut rx, sid).await;
     let env = gx.get_env().await?;
     let r = gx.compile_ref_by_name(&env, &Scope::root(), &ModPath::from(["r"])).await?;
     let cell = r.last.clone().context("r has no value")?.cast_to::<BindId>()?;
     gx.set_deref(cell, Value::from("hello"))?;
-    assert_eq!(produced(&mut rx, sid).await, vec![], "a wrong-typed patch landed");
+    assert_eq!(produced(&gx, &mut rx, sid).await, vec![], "a wrong-typed patch landed");
     gx.set_deref(cell, Value::I64(5))?;
     let st =
         rep::structure([(literal!("a"), Value::I64(5)), (literal!("b"), Value::I64(2))]);
-    assert_eq!(produced(&mut rx, sid).await, vec![st]);
+    assert_eq!(produced(&gx, &mut rx, sid).await, vec![st]);
     // a writable reference to an expression is its own cell, of its own type
     let m = gx.compile(literal!("let c = &mut 0; let y = *c; y")).await?;
     let yid = m.exprs[2].id;
-    produced(&mut rx, yid).await;
+    produced(&gx, &mut rx, yid).await;
     let env = gx.get_env().await?;
     let c = gx.compile_ref_by_name(&env, &Scope::root(), &ModPath::from(["c"])).await?;
     let cell = c.last.clone().context("c has no value")?.cast_to::<BindId>()?;
     gx.set_deref(cell, Value::from("hello"))?;
-    assert_eq!(produced(&mut rx, yid).await, vec![], "a wrong-typed write landed");
+    assert_eq!(produced(&gx, &mut rx, yid).await, vec![], "a wrong-typed write landed");
     gx.set_deref(cell, Value::I64(5))?;
-    assert_eq!(produced(&mut rx, yid).await, vec![Value::I64(5)]);
+    assert_eq!(produced(&gx, &mut rx, yid).await, vec![Value::I64(5)]);
     Ok(())
 }
 
@@ -285,7 +303,7 @@ async fn a_write_through_a_dropped_ref_lands() -> Result<()> {
     let (gx, mut rx) = start(BitFlags::empty()).await?;
     let m = gx.compile(literal!("let x: i64 = 0; x")).await?;
     let out = m.exprs.last().context("no result")?.id;
-    produced(&mut rx, out).await;
+    produced(&gx, &mut rx, out).await;
     let env = gx.get_env().await?;
     let bid =
         gx.compile_ref_by_name(&env, &Scope::root(), &ModPath::from(["x"])).await?.bid;

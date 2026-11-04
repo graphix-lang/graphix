@@ -7701,7 +7701,8 @@ mod trace_probes {
         let code = "{ let rec lp = |n: i64| -> i64 \
                     select n { i64:0 => i64:0, _ => lp(n - i64:1) }; \
                     lp(i64:9000000000000000000) }";
-        let budget = Duration::from_secs(10);
+        // the loop never ends: any budget past the cold compile shows the stall
+        let budget = Duration::from_secs(4);
         let o = Oracle::new(code, OracleTier::Exact, budget, None);
         let cold =
             Run { mode: Mode::Jit, route: Route::InLanguage, session: Session::Cold };

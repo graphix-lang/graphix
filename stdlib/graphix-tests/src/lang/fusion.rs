@@ -993,46 +993,79 @@ fn body_strategy() -> impl proptest::strategy::Strategy<Value = String> {
     })
 }
 
+/// The node-walk, the pure native loop and the impure callback agree on
+/// `body` over the same inputs.
+fn impure_matches_pure(body: &str) -> Result<(), proptest::test_runner::TestCaseError> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (walked, reference, cloned) = rt
+        .block_on(async {
+            let w = load_node_walked(&pure_map_program(&body)).await?;
+            let r = pure_map(&body).await?;
+            let c = impure_run(&body).await?.value;
+            anyhow::Ok((w, r, c))
+        })
+        .map_err(|e| {
+            proptest::test_runner::TestCaseError::fail(format!(
+                "runtime error for body `{body}`: {e}"
+            ))
+        })?;
+    proptest::prop_assert_eq!(
+        &walked,
+        &reference,
+        "body `{}`: node-walk {:?} != fused {:?}",
+        body,
+        walked,
+        reference
+    );
+    proptest::prop_assert_eq!(
+        &reference,
+        &cloned,
+        "body `{}`: reference {:?} != clone {:?}",
+        body,
+        reference,
+        cloned
+    );
+    Ok(())
+}
+
+// the cases split over eight tests, so they run side by side
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig {
-        cases: 128,
+        cases: 16,
         max_shrink_iters: 256,
         ..proptest::prelude::ProptestConfig::default()
     })]
     #[test]
-    fn impure_matches_pure(body in body_strategy()) {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (walked, reference, cloned) = rt
-            .block_on(async {
-                let w = load_node_walked(&pure_map_program(&body)).await?;
-                let r = pure_map(&body).await?;
-                let c = impure_run(&body).await?.value;
-                anyhow::Ok((w, r, c))
-            })
-            .map_err(|e| {
-                proptest::test_runner::TestCaseError::fail(format!(
-                    "runtime error for body `{body}`: {e}"
-                ))
-            })?;
-        proptest::prop_assert_eq!(
-            &walked,
-            &reference,
-            "body `{}`: node-walk {:?} != fused {:?}",
-            body,
-            walked,
-            reference
-        );
-        proptest::prop_assert_eq!(
-            &reference,
-            &cloned,
-            "body `{}`: reference {:?} != clone {:?}",
-            body,
-            reference,
-            cloned
-        );
+    fn impure_matches_pure_0(body in body_strategy()) {
+        impure_matches_pure(&body)?
+    }
+    #[test]
+    fn impure_matches_pure_1(body in body_strategy()) {
+        impure_matches_pure(&body)?
+    }
+    #[test]
+    fn impure_matches_pure_2(body in body_strategy()) {
+        impure_matches_pure(&body)?
+    }
+    #[test]
+    fn impure_matches_pure_3(body in body_strategy()) {
+        impure_matches_pure(&body)?
+    }
+    #[test]
+    fn impure_matches_pure_4(body in body_strategy()) {
+        impure_matches_pure(&body)?
+    }
+    #[test]
+    fn impure_matches_pure_5(body in body_strategy()) {
+        impure_matches_pure(&body)?
+    }
+    #[test]
+    fn impure_matches_pure_6(body in body_strategy()) {
+        impure_matches_pure(&body)?
+    }
+    #[test]
+    fn impure_matches_pure_7(body in body_strategy()) {
+        impure_matches_pure(&body)?
     }
 }
 

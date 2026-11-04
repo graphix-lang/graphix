@@ -311,14 +311,15 @@ plain `cargo test` skips them (they show as ignored), the release gate
 runs them. Never gate a language-semantics test. A test that re-executes
 its own binary must pass `--include-ignored` to the child.
 
-**Integration tests share a binary.** graphix-shell's and graphix-rt's
-integration tests are one target each (`tests/shell/main.rs`,
-`tests/rt/main.rs`, a module per file), so they run side by side; a test
-that needs a process of its own (it sets process-wide state: an env var,
-a panic hook, the global thread pool; it re-executes its binary; it reads
-a child's peak RSS, which counts the parent's at the fork; it times itself
-against the wall clock) is a `tests/*.rs` target beside them. A
-new test file goes into the shared one unless it needs its own.
+**Integration tests share a binary.** graphix-shell's, graphix-rt's and
+graphix-tests' integration tests are one target each
+(`tests/shell/main.rs`, `tests/rt/main.rs`, `tests/shared/main.rs`, a
+module per file), so they run side by side; a test that needs a process
+of its own (it sets process-wide state: an env var, a panic hook, the
+global thread pool; it re-executes its binary; it reads a child's peak
+RSS, which counts the parent's at the fork; it times itself against the
+wall clock) is a `tests/*.rs` target beside them. A new test file goes
+into the shared one unless it needs its own.
 
 **Tests exist to find bugs**, not to pass. A failure is the good case:
 find out why. Never work around a failure in a test that should pass; an

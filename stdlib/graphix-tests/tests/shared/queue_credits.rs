@@ -2,9 +2,6 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx_value::Value;
 
-const TEST_REGISTER: &[&dyn graphix_package::Package<graphix_rt::NoExt>] =
-    graphix_package::package_refs!();
-
 run!(queuefn_banks_idle_permits, r#"{
     let phase = 0;
     phase <- select phase { n if n < 6 => n + 1, _ => never() };

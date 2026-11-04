@@ -7,7 +7,6 @@
 //! with its own.
 #![cfg(unix)]
 
-use parking_lot::Mutex;
 use std::{
     fs,
     process::{Child, Command, ExitStatus, Stdio},
@@ -30,9 +29,6 @@ const LATER_CYCLE_WEDGE: &str = "{ let x = i64:0; \
 /// 0.5 GB/s: one that has grown past this is wedged, and is signalled
 /// then rather than at its deadline.
 const GROWN: u64 = 512 << 20;
-
-/// The node-walk wedges run one at a time, so their growth never adds up.
-static NODE_WALK: Mutex<()> = Mutex::new(());
 
 /// The resident size of `child`, where the host reports it.
 fn rss(child: &Child) -> Option<u64> {
@@ -84,7 +80,6 @@ fn signal_frees_process(
     sig: libc::c_int,
     code: i32,
 ) {
-    let _serial = no_fusion.then(|| NODE_WALK.lock());
     let dir =
         std::env::temp_dir().join(format!("gx-wedge-{}-{}", std::process::id(), label));
     fs::create_dir_all(&dir).expect("tempdir");
