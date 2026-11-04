@@ -5,7 +5,11 @@
 //! the last run first, and the doc tests with `cargo test --doc` beside them;
 //! it prints each binary's result as it ends, then the whole output of every
 //! one that failed, and exits 1 when any did. `XTEST_JOBS` sets how many run
-//! at once (a quarter of the cores by default, at least two).
+//! at once (a quarter of the cores by default, at least two). Each test
+//! process, and every `graphix` it starts, gets [`EVAL_THREADS`] evaluation
+//! workers a runtime unless `GRAPHIX_EVAL_THREADS` says otherwise: the
+//! suite runs dozens of runtimes at once, and a pool a core each spends a
+//! third of the run on idle workers.
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value as Json;
@@ -19,6 +23,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+/// The evaluation workers a test runtime gets: enough that every forked
+/// mode really runs in parallel.
+const EVAL_THREADS: &str = "4";
 
 /// One test binary, or the doc tests, and how to run it.
 struct Job {
@@ -94,6 +102,11 @@ fn main() -> Result<ExitCode> {
     jobs.sort_by(|(a, _), (b, _)| {
         b.unwrap_or(f64::MAX).total_cmp(&a.unwrap_or(f64::MAX))
     });
+    if env::var_os("GRAPHIX_EVAL_THREADS").is_none() {
+        for (_, job) in jobs.iter_mut() {
+            job.command.env("GRAPHIX_EVAL_THREADS", EVAL_THREADS);
+        }
+    }
     let started = Instant::now();
     let done = run(jobs.into_iter().map(|(_, j)| j).collect(), job_limit());
     let mut times = last;

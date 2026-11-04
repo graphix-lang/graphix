@@ -133,10 +133,28 @@ the state of a fix, and Graphix's side.
 - **Upstream fix.** An iterative template walk, or a depth limit the
   registry enforces at parse with an error.
 - **Graphix's side.** Worked around (a template from data aborts the
-  process): `shallow` in `stdlib/graphix-package-hbs/src/lib.rs` scans the
-  source and refuses nesting past a bound, which tracks the handlebars
-  grammar by hand (else-chain links, comments, raw blocks, string
-  literals). Not reported.
+  process): `compile` in `stdlib/graphix-package-hbs/src/lib.rs` parses,
+  builds and drops a template on a stack grown by the brackets in its text
+  (stacker), then refuses blocks and subexpressions nesting past
+  `MAX_BLOCK_DEPTH`, measured on the template handlebars built. Not
+  reported.
+
+## handlebars-rust 6.4 / pest 2.9: compiling a template is quadratic in its length
+
+- **Bug.** `Template::compile` records where each element starts through
+  pest's `Position::line_col`, which counts lines from the start of the
+  text at every call, so a compile costs the text's length times its
+  elements: a template of a few thousand blocks (tens of KB) takes seconds.
+  A profile of the whole test suite (`cargo xtest`, 2026-11) spends 7% of
+  its CPU there, nearly all in `hbs_block_nesting_refused` and
+  `hbs_text_nesting_refused`'s 5000-level templates.
+- **Repro.** `hbs::render` of `{{#if a}}` × 5000, `x`, `{{/if}}` × 5000;
+  `perf record` shows `pest::position::Position::line_col` under
+  `handlebars::template::Template::compile2`.
+- **Upstream fix.** Track line and column as the parse advances (or index
+  the line starts once) instead of rescanning from the start.
+- **Graphix's side.** Not worked around: it costs time, never an answer,
+  and a compiled template is cached per thread (`FastMemo`). Not reported.
 
 ## sled 0.34.7: a dropped reservation never wakes its subscriber
 
