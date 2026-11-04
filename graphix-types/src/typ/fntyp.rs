@@ -499,14 +499,18 @@ fn on_cycles(start: &[usize], edges: &[(usize, usize)]) -> LPooled<Vec<bool>> {
     cyclic
 }
 
-/// Seed each conjunct on its quantifier's cell in `known`, aliasing the
-/// conjunct's own variables onto the quantifiers first.
+/// Seed each conjunct on its quantifier's cell in `known`, aliasing every
+/// conjunct's own variables onto the quantifiers before any cell holds a
+/// conjunct, so no alias's occurs check walks a chain of bounds.
 pub fn seed_conjuncts<'a>(
     known: &mut AHashMap<ArcStr, TVar>,
     constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
 ) {
-    for (tv, tc) in constraints {
+    let constraints: LPooled<Vec<(&TVar, Type)>> = constraints.into_iter().collect();
+    for (_, tc) in constraints.iter() {
         tc.alias_tvars(known);
+    }
+    for (tv, tc) in constraints.iter() {
         known[&tv.name].add_cell_constraint(tc.normalize());
     }
 }

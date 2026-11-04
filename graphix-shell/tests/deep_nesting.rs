@@ -319,12 +319,24 @@ fn program(shape: &str, d: usize) -> String {
         // under 14 G, 7.3 G now; each of the five fixes reverted alone retires
         // 14 G and fails) and the slow deep_nesting_does_not_overflow at
         // CHAIN_DEPTH, which passes.
-        "chainbounds" => {
-            let bounds = (0..d)
+        // 2026-11-04 claude: Review r14: the chain declared last link first was still
+        // quadratic (37.7 G net at 8000 links): seed_conjuncts aliased each conjunct's
+        // variables after its successors' conjuncts were seeded, so each alias's occurs
+        // check (merge_one's would_cycle_inner) walked the tail. It aliases every
+        // conjunct's variables before seeding any now: 0.20 / 0.80 / 1.58 / 3.17 G net
+        // at 1000 / 4000 / 8000 / 16000 links, as the declared order. Pin: deep_nesting
+        // a_chain_of_bounds_declared_last_link_first_checks_in_linear_time (30000 links
+        // under 14 G; without the change it retires 14.0 G and fails). Other shapes are
+        // still quadratic: chainbounds-neighbours-01, open-cell-chain-01.
+        "chainbounds" | "chainboundsreversed" => {
+            let mut bounds = (0..d)
                 .map(|i| format!("'a{i}: Array<'a{}>", i + 1))
                 .chain([format!("'a{d}: Number")])
-                .collect::<Vec<_>>()
-                .join(", ");
+                .collect::<Vec<_>>();
+            if shape == "chainboundsreversed" {
+                bounds.reverse()
+            }
+            let bounds = bounds.join(", ");
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
             format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
         }
@@ -684,6 +696,35 @@ fn flat_type_chain_checks_in_linear_time() {
 #[cfg(target_os = "linux")]
 fn a_chain_of_bounds_checks_in_linear_time() {
     checks_within(&program("chainbounds", 3 * CHAIN_DEPTH), 14 * BILLION)
+}
+
+// CR claude for claude: [perf/medium] Bound chains of other shapes still
+// check in quadratic time, and these pins cover only the Array chain. Net
+// of the stdlib, at 1000 / 2000 / 4000 / 8000 links: through function types
+// ('a{i}: fn(x: 'a{i+1}) -> i64, or the next variable as the result) 14.4 /
+// 61.8 / 270.8 / 1145 G instructions, about 1.8 T at CHAIN_DEPTH, a hang; a
+// call passing values ('a{i}: ['a{i+1}, null], f((1, 1, ..))) 6.2 / 24.1 /
+// 94.8 / 376 G; a second conjunct (Array<'a{i+1}> + Discernible) 1.7 / 6.4 /
+// 24.3 / 94.3 G; the chain as a formal's written fn<..> type 0.9 / 2.3 / 8.9
+// / 37.6 G. Main 968fa9bc0 is cubic on each, so none is new. The walks
+// callgrind names, each about 4x a doubling: settle::reached_cells,
+// FnType::collect_tvars_seen, DefGate::close and
+// FnType::check_quantifiers_held (function types); CallSite::typecheck_arg
+// -> Type::pre_unify_arg -> contains::cell_constraints_ok / conjuncts_admit
+// -> commit_cell_bounds (the valued call); drain_pending_settles ->
+// Type::indiscernible -> cast::rep_ambiguity, and settle_witness (the
+// second conjunct); Type::collect_position_tvars and FnType::collect_tvars
+// from CallSite::typecheck0 (rank 2). Each wants its walk made once a chain,
+// not once a cell, and a shape here that pins it. Found by review r14 of
+// lane K. probes: ~/ptmp/cr29/scratch/review-r14/K-r1-1/p/{fnchain,fnret,
+// valued,twoconj,rank2}_*.gx (gen.py SHAPE N OUT), lane_sweep.txt,
+// callgrind/ (chainbounds-neighbours-01)
+/// The same chain declared last link first: seeding a conjunct walks no
+/// chain its successors' conjuncts already hold.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_declared_last_link_first_checks_in_linear_time() {
+    checks_within(&program("chainboundsreversed", 3 * CHAIN_DEPTH), 14 * BILLION)
 }
 
 /// A let chain that wraps the last value in any constructor, or in an

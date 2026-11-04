@@ -1353,6 +1353,19 @@ impl TVar {
         self.read().cell.read().binding.is_some()
     }
 
+    // CR claude for claude: [perf/low] A chain of bounds naming the next
+    // variable itself ('a{i}: 'a{i+1}) settles in quadratic time: the settle
+    // binds 'a0 -> 'a1 -> .. cell to cell, then TVar::freshen (Type::reset_memo
+    // in TVar::witness, from FnType::settle_terminal) asks this of every cell,
+    // and each call walks the chain to its end, with no path compression.
+    // 0.22 / 0.57 / 1.62 / 5.19 G instructions net of the stdlib at 1000 /
+    // 2000 / 4000 / 8000 links, about 70 G at 30000; this walk is 960 M of
+    // 2.96 G at 4000. Main 968fa9bc0 has it under its cubic part. A walk that
+    // stops at a cell it already resolved, or compressing the chain where a
+    // forward link may be rewritten, would make it linear. Found by review
+    // r14 of lane K. probe: ~/ptmp/cr29/scratch/review-r14/K-r1-1/p/direct_8000.gx
+    // (gen.py direct N OUT), profile callgrind/cg_direct4000.out.gz
+    // (open-cell-chain-01)
     /// The open cell this var stands for: its own, or the end of a chain
     /// of bindings to vars (a merged cell's forward link); `None` when
     /// the chain ends bound.
