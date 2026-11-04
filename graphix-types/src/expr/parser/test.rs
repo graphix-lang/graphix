@@ -181,10 +181,58 @@ fn a_value_literal_failure_says_what_was_expected() {
             "let a = error:\"\\u{110000}\";\na",
             "line: 1, column: 26\ninvalid unicode escape: past 10FFFF, the last character\n",
         ),
+        (
+            "let a = x{\"\\q\"};\na",
+            "line: 1, column: 13\nUnexpected `q`\n\
+             Expected `n`, `r`, `t`, `0`, `\"`, `\\`, `[` or `]`\n",
+        ),
     ] {
         let msg = parse_program(src);
         assert!(msg.contains(&format!("Parse error at {said}")), "{src}: {msg}");
     }
+}
+
+// An integer literal out of its type's range is told by its note alone,
+// whitespace around its `:` or not.
+#[test]
+fn an_out_of_range_integer_literal_names_its_range() {
+    for (src, at) in [
+        ("let a = u8:256;\na", 15),
+        ("let a = u8: 256;\na", 16),
+        ("let a = u8 :256;\na", 16),
+    ] {
+        let msg = parse_program(src);
+        let said = format!(
+            "Parse error at line: 1, column: {at}\n\
+             the parser could not continue past this point\n"
+        );
+        assert!(msg.contains(&said), "{src}: {msg}");
+        let note = "note: at line: 1, column: 9: `256` is out of the range of u8";
+        assert!(msg.contains(note), "{src}: {msg}");
+    }
+}
+
+// A replay of a remembered parse leaves noted what reading it again
+// would: its reason, and its literal failure, wins a tie with one noted
+// at the same point since.
+#[test]
+fn a_replay_notes_its_reason_and_literal_failure_again() {
+    use super::state::{Mode, State};
+    use netidx_value::parser::Expected;
+    let at = SourcePosition { line: 1, column: 3 };
+    let replayed = |note: &mut dyn FnMut(&mut State, &'static str)| {
+        let mut g = State::new(Mode::Diag);
+        let m = g.measure();
+        note(&mut g, "first");
+        let effects = g.measured(m);
+        note(&mut g, "since");
+        g.replay(&effects);
+        g.report("abcd", at, None).msg
+    };
+    let msg = replayed(&mut |g, why| g.note_reason(at, None, || why.into()));
+    assert!(msg.contains("note: at line: 1, column: 3: first"), "{msg}");
+    let msg = replayed(&mut |g, why| g.note_literal(at, None, Expected::Refused(why)));
+    assert!(msg.contains("column: 3\nfirst\n"), "{msg}");
 }
 
 // A string's splice prints on the string's line, so no comment stands

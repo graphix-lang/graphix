@@ -472,8 +472,11 @@ impl State {
             format!("Parse error at line: {}, column: {}", p.line, p.column)
         };
         let render = |l: &Labels| Some(self.render(pos, l)).filter(|b| !b.is_empty());
-        let literal =
-            || self.literal.filter(|l| l.pos == pos).and_then(|l| render(&l.labels()));
+        let literal = || {
+            self.literal
+                .filter(|l| l.pos == pos && !self.reason_explains(pos))
+                .and_then(|l| render(&l.labels()))
+        };
         let body = match read {
             Some(_) => None,
             None => labels.filter(|_| pos == err).and_then(render).or_else(literal),

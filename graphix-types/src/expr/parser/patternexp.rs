@@ -201,6 +201,16 @@ fn string_pattern(i: &mut Input) -> R<(Value, WrittenForm)> {
     }
 }
 
+// CR claude for claude: [bug/low] A value literal failing inside a pattern
+// or an index still loses what its parser said: `select x { error:"\q" =>
+// 1, _ => 0 }` reports "Unexpected `:` Expected `|` or =>" at the colon, and
+// `x.99999999999999999999999` "Unexpected `.`", where the expression
+// `error:"\q"` names the escapes (value-literal-labels-01). The report stands
+// short of the literal's failure, so State's literal fallback never meets
+// it; unlike the expression's, this value_part is in no knot, which may be
+// why. Main 968fa9bc0 says the same. Found by review r14 of lane K. probes:
+// ~/ptmp/cr29/scratch/review-r14/K-r1-2/pat_errq.gx, lit/idx_big.gx
+// (literal-pattern-labels-01)
 fn literal_pattern(i: &mut Input) -> R<StructurePattern> {
     choice!(
         i,

@@ -129,6 +129,14 @@ fn line_text<'a>(i: &mut Input<'a>) -> &'a str {
     i.take_while(|c| c != '\r' && c != '\n')
 }
 
+// CR claude for claude: [bug/low] A blank line lone CRs make is lost: this
+// counts only '\n', so `// a\r\r// b` formats as two comment lines with no
+// blank between, where an editor and Mark (crcrlf-lines-01) see one, and the
+// same text with LFs keeps it. Counting every '\r' and '\n' of the text,
+// whose CRLFs read as LF, would agree with Mark. Main 968fa9bc0 drops it
+// too. Found by review r14 of lane K. probe:
+// ~/ptmp/cr29/scratch/review-r14/K-r1-2/crlf2/blank_cr.gx against blank_lf.gx
+// (lone-cr-blank-01)
 /// Whitespace, and whether it holds a blank line.
 fn spaces_blank(i: &mut Input) -> bool {
     i.take_while(char::is_whitespace).chars().filter(|c| *c == '\n').count() > 1
@@ -824,17 +832,19 @@ const INT_TYPES: [(&str, fn(&str) -> bool); 12] = [
 ];
 
 /// A diagnostic arm behind the literal parser: an integer literal out of
-/// its type's range names the type, since the value parser fails without
-/// a reason.
+/// its type's range names the type, which the value parser's refusal does
+/// not; whitespace stands around the `:` as the value parser reads it.
 fn int_range_note<O>(i: &mut Input) -> R<O> {
-    let pos = i.pos();
+    let start = i.mark();
     let typ = i.optional(|i| {
         i.attempt(|i| {
             let t = i.take_while1(|c| c.is_ascii_alphanumeric())?;
             let Some(typ) = INT_TYPES.iter().find(|(n, _)| *n == t) else {
                 return Err(i.mismatch());
             };
+            i.spaces();
             i.token(':')?;
+            i.spaces();
             Ok(typ)
         })
     })?;
@@ -845,8 +855,8 @@ fn int_range_note<O>(i: &mut Input) -> R<O> {
     i.not_followed_by(|i| i.token('.'))?;
     let (name, fits) = typ.unwrap_or(&INT_TYPES[0]);
     if !fits(int) {
-        let len = typ.map_or(0, |(t, _)| t.len() + 1) + int.len();
-        i.g.note_reason(pos, Some(len), || {
+        let len = i.since(&start).chars().count();
+        i.g.note_reason(start.pos, Some(len), || {
             format_compact!("`{int}` is out of the range of {name}")
         });
     }
@@ -876,6 +886,13 @@ fn finite(i: &mut Input, start: Mark, v: Value) -> R<Value> {
     }
 }
 
+// CR claude for claude: [bug/low] An exponent reads as a unit:
+// `duration:1e300y` notes "`e` is not a duration unit", where the value
+// parser reads 1e300 years and refuses them as too long; `n` here stops at
+// the `e`. Reading an exponent into `n` would note "`1e300y` is negative or
+// longer than the longest duration". Main 968fa9bc0 says the same. Found by
+// review r14 of lane K. probe:
+// ~/ptmp/cr29/scratch/review-r14/K-r1-2/lit/dur_huge.gx (duration-exponent-note-01)
 /// A diagnostic arm behind the literal parser: a `duration:` literal with
 /// an unknown unit names the unit, since the value parser accepts the
 /// longest known prefix and fails after it, and one no duration holds

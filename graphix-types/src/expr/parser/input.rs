@@ -593,6 +593,12 @@ impl<'a> Input<'a> {
     // N=18, as source and as data; with FORGET 4980735) and
     // a_remembered_expression_parses_as_read_again (FORGET against the memo on every
     // cut, deletion and stray closer).
+    // 2026-11-04 claude: Review r14: the replay's re-noting of the reason and the
+    // literal failure changes the state only on a tie at one point (notes only grow
+    // and a later one wins a tie), where it leaves what reading the expression again
+    // leaves; no text is known to reach such a tie, so it is pinned at State:
+    // expr::parser::test::a_replay_notes_its_reason_and_literal_failure_again (fails
+    // without it). The cost left near the nesting limit: probe-limit-cost-01.
     /// `f`, a parse that what follows it may read again.
     fn speculate<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         self.speculating += 1;
@@ -601,6 +607,20 @@ impl<'a> Input<'a> {
         r
     }
 
+    // CR claude for claude: [perf/low] Near the nesting limit a remembered
+    // parse is still superlinear, bounded by the limit: an entry the limit
+    // cut short replays only at the depth it started at, and `select x{ "[`
+    // nested near the limit reaches each inner offset at about 50 depths, a
+    // parse each (fsp_150: 22896 offset-depth pairs over 449 offsets).
+    // `graphix fmt --stdout` costs 34M / 50M / 202M / 345M / 1.20G / 1.56G
+    // instructions at N = 95 / 100 / 105 / 110 / 150 / 195, level past 190; the
+    // template form 1.90G at 150 and 2.46G at 195, on 3.9 KB; str::parse of
+    // the ftp_150 text about 1.2G above N=20. Main 968fa9bc0 is exponential
+    // there. Replaying a cut entry at another depth needs a rule for where a
+    // deeper start is cut that is exact without the parse; until then such
+    // a string costs about a second, not a stall. Found by review r14 of lane
+    // K. probes: ~/ptmp/cr29/scratch/review-r14/K-r1-2/deep/{fsp,ftp}_*.gx,
+    // rt_tp_150.gx (probe-limit-cost-01)
     /// `f`, an expression, parsed once where it starts when a lookahead or
     /// a probe parses it first: what follows them reads it again (a block,
     /// the arguments of an attribute a struct's lookahead read; a select's
@@ -710,6 +730,17 @@ impl<'a> Input<'a> {
         // to netidx's invalid unsigned integer, its note unchanged (u8:256). Pin:
         // expr::parser::test::a_value_literal_failure_says_what_was_expected
         // (failed before the change).
+        // 2026-11-04 claude: Review r14: a literal's failure is now the report's
+        // body only where no note explains the point, so u8:256, i8:-200, u8:-1
+        // and duration:1e300y read as on main (could not continue, then the range
+        // or unit note) and the census has no message change left; int_range_note
+        // takes whitespace around the colon as the value parser does, so u8: 256
+        // and u8 :256 name the range too. Pins:
+        // expr::parser::test::an_out_of_range_integer_literal_names_its_range
+        // (fails without either change) and a map access's string in
+        // a_value_literal_failure_says_what_was_expected. A literal in a pattern
+        // or an index: literal-pattern-labels-01; the duration note's exponent:
+        // duration-exponent-note-01.
         let at = self.mark_at(self.at.off + f.offset);
         let token = !matches!(f.expected, Expected::Refused(_));
         self.labels(at.off, token, |l| l.read(f.expected));
