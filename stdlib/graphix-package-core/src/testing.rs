@@ -176,19 +176,23 @@ impl Root {
     }
 }
 
-/// Start `cfg`, whose root is `root` (`register`'s), that root compiled
-/// or restored as `how` says. A root meant to restore that compiles
-/// instead fails the start.
+/// Start [`config`]'s runtime under `flags`, its root compiled or
+/// restored as `how` says. A root meant to restore that compiles instead
+/// fails the start.
 async fn start_rooted(
-    cfg: GXConfigBuilder<NoExt>,
-    root: &ArcStr,
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
+    resolvers: Vec<ResolverRef>,
+    setup: impl FnOnce(&mut TestState),
+    flags: BitFlags<CFlag>,
     how: Root,
 ) -> Result<TestCtx> {
+    let (cfg, root) = configure(sub, register, resolvers, setup)?;
+    let cfg = cfg.flags(flags);
     match how.chosen() {
         Root::Compiled => TestCtx::start(cfg).await,
         Root::Restored => {
-            let image = root_image(root, register).await?;
+            let image = root_image(&root, register).await?;
             let ctx =
                 TestCtx::start(cfg.registration(RegistrationImage::load(image))).await?;
             if !ctx.rt.env_stats().await?.restored {
@@ -233,8 +237,7 @@ pub async fn init(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
 ) -> Result<TestCtx> {
-    let (cfg, root) = configure(sub, register, vec![], |_| {})?;
-    start_rooted(cfg, &root, register, Root::Restored).await
+    start_rooted(sub, register, vec![], |_| {}, BitFlags::empty(), Root::Restored).await
 }
 
 pub type Events = mpsc::Receiver<GPooled<Vec<GXEvent>>>;
@@ -337,12 +340,14 @@ where
     let tbl = ahash::AHashMap::from_iter(
         files.into_iter().map(|(path, entry)| (Path::from(ArcStr::from(path)), entry)),
     );
-    let (cfg, root) = configure(tx, register, vec![VfsResolver::new(tbl)], |ctx| {
+    let resolvers = vec![VfsResolver::new(tbl)];
+    let setup = |ctx: &mut TestState| {
         ctx.control.set_par_mode(mode.par());
         ctx.control.set_prune_mode(mode.fixture_prune());
         setup(ctx)
-    })?;
-    let ctx = start_rooted(cfg.flags(mode.flags()), &root, register, mode.root()).await?;
+    };
+    let ctx =
+        start_rooted(tx, register, resolvers, setup, mode.flags(), mode.root()).await?;
     Ok((ctx, rx))
 }
 
@@ -576,8 +581,10 @@ pub async fn compile_error(
             (Path::from(ArcStr::from(*p)), VfsEntry::from(ArcStr::from(*t)))
         }));
     let (tx, _rx) = mpsc::channel(10);
-    let (cfg, root) = configure(tx, register, vec![VfsResolver::new(tbl)], |_| {})?;
-    let ctx = start_rooted(cfg, &root, register, Root::Restored).await?;
+    let resolvers = vec![VfsResolver::new(tbl)];
+    let ctx =
+        start_rooted(tx, register, resolvers, |_| {}, BitFlags::empty(), Root::Restored)
+            .await?;
     let e = ctx.rt.compile(ArcStr::from(text)).await.err();
     ctx.shutdown().await;
     e.ok_or_else(|| anyhow::anyhow!("{text} compiled"))
@@ -649,8 +656,15 @@ impl Fixture {
             VfsEntry::from(ArcStr::from(code)),
         )]);
         let resolvers = vec![VfsResolver::new(vfs)];
-        let (cfg, root) = configure(tx, register, resolvers, setup)?;
-        let ctx = start_rooted(cfg, &root, register, Root::Restored).await?;
+        let ctx = start_rooted(
+            tx,
+            register,
+            resolvers,
+            setup,
+            BitFlags::empty(),
+            Root::Restored,
+        )
+        .await?;
         let gx = ctx.rt.clone();
         let compiled = gx
             .compile(arcstr::literal!("{ mod test; test::result }"))

@@ -30,7 +30,8 @@ fn show(t: &Type) -> String {
 #[tokio::test]
 async fn environment_round_trips() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
+    let ctx = TestCtx::start(config(tx, TEST_REGISTER, vec![], |_| {})?).await?;
+    assert!(!ctx.rt.env_stats().await?.restored, "the root compiled from source");
     let env = ctx
         .rt
         .compile(literal!(
@@ -1422,7 +1423,7 @@ async fn a_restored_closure_outlives_its_slot() -> Result<()> {
 /// of it in every mode but `interp`, which compiles it.
 async fn fixtures_restore_their_root_outside_interp(mode: Mode) -> Result<()> {
     let (ctx, _rx) = fixture_runtime([], TEST_REGISTER, mode, |_| {}).await?;
-    let restores = mode.root().chosen() == Root::Restored;
+    let restores = mode != Mode::Interp && Root::Restored.chosen() == Root::Restored;
     assert_eq!(ctx.rt.env_stats().await?.restored, restores, "{mode:?}");
     ctx.shutdown().await;
     Ok(())

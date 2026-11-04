@@ -1189,10 +1189,10 @@ cycle, across workers; the compiler never pins threads.
   WHETHER anything fuses, bidirectionally; `#[native]` asserts that an
   expression does. `interp` compiles the package root from source, as
   `--check` and the server do; every other mode, `testing::init`, the
-  `eval*` helpers and `Fixture` restore it from the image the process
-  compiled once per root, as a warm shell start does, and fail where it
-  does not restore (`testing::Mode::root`; `GRAPHIX_TEST_ROOT=compile`
-  compiles every one).
+  `eval*` helpers, `compile_error` and `Fixture` restore it from the
+  image the process compiled once per root, as a warm shell start does,
+  and fail where it does not restore (`testing::Mode::root`;
+  `GRAPHIX_TEST_ROOT=compile` compiles every one).
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit,
   and in the forced modes a `PARAUDIT-NOFORK` line for each fixture that
   forked nothing (a finding where the fixture has fork points).
