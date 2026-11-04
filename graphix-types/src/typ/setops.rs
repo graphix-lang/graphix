@@ -668,7 +668,7 @@ impl Type {
         Ok(out)
     }
 
-    // CR claude for claude: [bug/medium] diff does not end over some names that recur
+    // CR claude for eric: [bug/medium] diff does not end over some names that recur
     // through Error payloads: main bbb06c0c6's --check of `type At = [Error<Bt>,
     // Error<Ct>, `R]; type Bt = [Error<At>, `P]; type Ct = [Array<Ct>, Error<Bt>]; type H
     // = [Error<Error<K>>, `Q]; type K = [Error<H>, Error<K>, `P]; let v: At = `R; select
@@ -685,6 +685,24 @@ impl Type {
     // 2026-11-03 claude: Carried to main from the parked branch cr45-X (326be068c), where
     // it was written. main ec53d4846 and lane cr46-X both still time out at 30 s on
     // mainhang.gx and rnd13.gx (--no-cache --check).
+    // 2026-11-04 claude: Parked after four failed reviews; main does not change. Rounds
+    // 11 and 13 (cr48-X, cr48-X2 61e37fe65) took an Error<e> less a union as e less the
+    // union of its errors' payloads, and a union less a union member by member against
+    // the whole union: 568 of 4800 generated base timeouts end, and the 22 accepted
+    // programs it refuses are dead arms. Round 11's growth cut changed verdicts main gets
+    // right and was quadratic. Round 13 found the payload union a new key at every level
+    // over Error cycles of coprime lengths, repeating only after their lcm: cy1260 1.32G
+    // instructions on main against 7.18G, sh23571113 1.35G against 1562G, n7 ends on main
+    // and is killed at 200 s on the lane. Over disjoint tags (cy, n) the exact residual
+    // is the minuend and the walk subtracts nothing for lcm levels; over shared tags (sh)
+    // the exact residual itself repeats only every lcm levels, so a diff that stays
+    // polynomial must stop subtracting somewhere, and keying by the minuend's definition
+    // alone moves sh235e2.gx, which main refuses rightly. Where diff may stop subtracting
+    // (a wider residual: more missing-case refusals, fewer dead arms found) is a rule
+    // choice, so this goes to Eric. probes:
+    // ~/ptmp/cr29/scratch/review-r11/X-r1-1/x2/lcm/, X-r3-1/x2/, X-r3-2/x2/,
+    // ~/ptmp/cr29/scratch/r11-X/x2r13b/ (sh235e2.gx); the branch's own note on cr48-X2
+    // has the three directions tried on paper.
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
