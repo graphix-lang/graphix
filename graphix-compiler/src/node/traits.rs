@@ -75,66 +75,6 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
-// XCR claude for claude: [bug/medium] A trait method's val is not held to what an interface
-// val is (module::check_val, iface-generic-written-01): with `trait Put { val put:
-// fn(self, x: 'a) -> 'a }`, `let y = never(); impl Put for C { let put = |s, x| { y <- x;
-// x } }` pairs the method's 'a with y's cell, which no use copies, and passes. Beside a
-// reader `y + 1`, `Put::put(c, t ~ 1)` and `Put::put(c, t ~ "s")` pass --check and the
-// build refuses the second ("an instance at fn(self: C, x: string) -> string of a
-// definition typed fn(s: C, x: 'a: i64) -> 'a: i64", tr2, GRAPHIX_ELAB_AUDIT reports it);
-// without the reader it runs with y written at two types (tr1); a trait and impl declared
-// in a .gxi alike (tr4). Main 8beb0735a alike. The fix is whatever rule
-// iface-generic-written-01 takes, applied here: an implementation cell no use copies
-// refused under a variable each use picks (branch cr44-E's check_val has it for vals).
-// probes: ~/ptmp/cr29/scratch/review-r7/E5-r1-1/{tr1,tr2,tr4},
-// review-r7/E5-r1-2/p/{g1_trait_written,g2_trait_written_read} (trait-generic-written-01)
-// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "Interface val type
-// variables" (~/ptmp/cr29/next-discuss.md). Its fix is the rule iface-generic-written-01
-// takes. Readdressed to eric until then.
-// 2026-11-03 claude: Eric ruled (2026-11-03): D4 a in ~/ptmp/cr-discuss.md, under his
-// rule for type holes (reject and require an annotation, then a --check census: it comes
-// back to him only if the stdlib, the book's examples or netidx-admin would need a new
-// annotation): refuse a val whose type variable stands anywhere outside a function type
-// ("declare the val at one type"); inside function types refuse a variable the
-// implementation ties to a type no use copies, trait methods too (lane I's item 1); then
-// item 2, the val deciding its implementation's open types at concrete types only
-// (iface-open-param-01); a write through a val narrower than its implementation is held
-// to the implementation's type, and mut-ref-poly-01 follows. Rebuild from cr44-E.
-// 2026-11-04 claude: Built on cr49-A (d4b7d5e47): traits.rs implements holds a cell of an
-// impl's or a default's body that a binding it captures holds as hold_paired holds a
-// val's, so tr1, tr2, tr4, g1 and g2 are refused at the impl. Judged by capture, not by
-// level alone: an impl's let is annotated with the method's signature, which claims its
-// cells at the top level though each call substitutes them
-// (lang::types::a_trait_methods_own_bound_names_any_variable_at_its_impls failed under the
-// level test). Pins that fail without it:
-// lang::traits::method_over_an_outer_binding_refused (tr1),
-// default_method_over_an_outer_binding_refused,
-// declared_method_over_an_outer_binding_refused (tr4). Controls:
-// method_over_an_outer_binding_of_every_type,
-// an_impl_annotation_keeps_the_method_variables_per_call.
-// 2026-11-04 claude: Review r14 (A-r1-1) found a method whose value is no lambda ((store,
-// 1).0, select 1 { _ => store }, a default alike, in a module with an interface too, and
-// mk(0)) escaping the capture test, which reads only a LambdaDef's captures: the fused run
-// killed the runtime and the node-walk printed a string as an i64 (tr8, tr10, tr12; tr11
-// failed at the run-time bind). implements now judges a method with no LambdaDef by level,
-// as a val's implementation is (module::captured_cells answers None without a lambda); a
-// lambda keeps the capture test. (|s, x| x, 1).0, (id, 1).0, a select over a lambda and
-// aliases to a val, a holder's field or an alias chain still run at two types. The refusal
-// names the binding a lambda captures (module::Holder), else says to make the method a
-// lambda. Pins that fail without it:
-// lang::traits::method_value_no_lambda_over_an_outer_binding_refused (tr8),
-// default_method_value_no_lambda_over_an_outer_binding_refused (tr10/tr12's select),
-// method_made_by_a_call_refused (a maker, which main's build refuses at the run-time bind),
-// method_over_an_outer_binding_refused (now names y); control
-// method_value_no_lambda_is_generic_per_call. probes
-// ~/ptmp/cr29/scratch/r14-A/fix1/{tr8,tr10,tr11,tr12,n1,n3,n4,al1,al2,al3}
-// 2026-11-04 claude: Review r14 round 2 (A-r2-1 low, A-r2-2 low): the refusal named a
-// helper function the method's lambda captures (store, keep), whose annotation cannot make
-// the program pass. module::Holder::of now follows the lambdas the implementation's lambda
-// captures to the nearest binding that holds no lambda (y), else names none. Pin:
-// lang::traits::method_over_a_helper_names_what_the_helper_writes (rm1 and t3 now name y).
-// A non-lambda method under a quantifier bounded by a free variable is over-refused by the
-// level test: new CR trait-nolambda-bound-01.
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface

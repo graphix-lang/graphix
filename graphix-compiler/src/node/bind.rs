@@ -1950,64 +1950,6 @@ impl<R: Rt> ByRef<R> {
                 Referent::Channel(c) => ((&**c as &dyn Any).downcast_ref::<Ref>(), false),
             };
             if let Some(r) = named {
-                // XCR claude for claude: [bug/low] `&mut a::f` over `val f: fn(x: i64) -> i64`
-                // is refused with "a::f was made generic by an earlier compile, and a
-                // writable reference to it would let a write narrow it", though the type
-                // holds no variable and `a::f <- ..` is accepted: membership in poly_binds
-                // is not generality. mark_connect_target asks generalized_earlier, which
-                // reads the type's cells; this refusal likely should too. Main a084f9887
-                // alike. probe: ~/ptmp/cr29/scratch/r6-W/r38/rf2 (mut-ref-poly-01)
-                // 2026-11-02 claude: Lane I (cr44-E) fixed this in 535c0c322 and held it back
-                // in 3d7b6bca7: a `&mut` in the same compile sees only the val's type, so
-                // ca2/rb2 (refused here at the check) passed the check and failed at run
-                // time. Waits on iface-narrow-write-01 (for eric). probes
-                // ~/ptmp/cr29/scratch/review-r7/E5-r1-1/{ca2,rb2}
-                // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
-                // "Interface val type variables" (~/ptmp/cr29/next-discuss.md). It waits on
-                // iface-narrow-write-01, decided there. Readdressed to eric until then.
-                // 2026-11-03 claude: Eric ruled (2026-11-03): D4 a in ~/ptmp/cr-discuss.md,
-                // under his rule for type holes (reject and require an annotation, then a
-                // --check census: it comes back to him only if the stdlib, the book's
-                // examples or netidx-admin would need a new annotation): refuse a val whose
-                // type variable stands anywhere outside a function type ("declare the val at
-                // one type"); inside function types refuse a variable the implementation ties
-                // to a type no use copies, trait methods too (lane I's item 1); then item 2,
-                // the val deciding its implementation's open types at concrete types only
-                // (iface-open-param-01); a write through a val narrower than its
-                // implementation is held to the implementation's type, and mut-ref-poly-01
-                // follows. Rebuild from cr44-E.
-                // 2026-11-04 claude: Built on cr49-A (d4b7d5e47): &mut of a binding is
-                // refused only where poly_binds holds it and CompileCtx::generalized_earlier
-                // finds it generic; a val at one type takes a &mut, held to its
-                // implementation by check_val_written (iface-narrow-write-01). rf2 runs
-                // (r=101). Pins that fail without it:
-                // lang::interfaces::mut_ref_to_a_val_at_one_type (rf2),
-                // lang::modules::a_load_takes_a_writable_reference_through_a_val_at_its_type.
-                // mut_ref_to_a_val_at_one_type_over_a_generic_body_refused (ca2) and
-                // a_load_cannot_take_a_writable_reference_through_a_val_to_a_generic_body
-                // hold the unsound case refused; mut_ref_to_a_generic_val_refused keeps
-                // main's refusal and message.
-                // 2026-11-04 claude: Review r14 (A-r1-1, mr5) found &mut of a val written with
-                // its own quantifiers (val f: fn<'a: Any>(x: 'a) -> 'a) allowed, and a write
-                // through it narrowing the generic body (check passed, the run refused at the
-                // run-time bind): generalized_earlier skipped every function type's own
-                // quantifiers, though a declared signature's own are its scheme's, which each
-                // read copies. It now skips only a rank-2 type's (CellFact::FormalQuantifier),
-                // so the refusal here is main's again for such a val. Pin that fails without
-                // it: lang::interfaces::mut_ref_to_a_quantified_val_refused (base's message);
-                // control mut_ref_to_a_val_holding_a_quantified_function (a rank-2 type in a
-                // val's data takes a &mut). A val whose function types sit in data or behind a
-                // typedef (val c: {f: fn(x: 'a) -> 'a}) is now generic too
-                // (iface-val-data-var-01's note):
-                // mut_ref_to_a_struct_of_functions_val_refused.
-                // 2026-11-04 claude: Review r14 round 2 (A-r2-2 low): with every generic val
-                // in poly_binds, &mut m::c.n over val c: {f: fn(x: 'a) -> 'a, n: i64} was
-                // refused by the root's generality (pl2, pl4; main runs both). A place
-                // reference is now judged at its check by the place's type
-                // (crate::holds_generic over Place::elem_type); a channel reference by its
-                // binding, as before. Pins:
-                // lang::interfaces::mut_ref_to_a_plain_field_of_a_generic_val (fails without
-                // it), mut_ref_to_a_function_field_of_a_generic_val_refused.
                 if !place && narrows_generic(ctx, r) {
                     return Err(narrowing_refusal(r).at(&spec));
                 }
