@@ -267,6 +267,12 @@ const NO_NODE: u32 = u32::MAX;
 // superlinear (about 3.7 times the calls per doubling of n): the chain's trues read the
 // failing level's pair (its last union reaches it), so Rests rightly drops them and the
 // level above walks the chain again. Stays a CR for that.
+// 2026-11-04 claude: On cr48-X2 (e75db15e3 carried unchanged onto main 8814f118b as
+// c8e6f0b87), measured against base-r11 (main 8814f118b): perf instructions, --no-cache
+// --check, one eval thread, base-r11 / cr48-X2 at f2c3b7a88, nest128 6.13G / 3.43G,
+// nest256 32.24G / 9.84G, q800 8.08G / 7.25G, rg40 72.42G / 72.43G, rg30 7.95G / 7.95G.
+// The conclusion above holds: still superlinear (nest256 over nest128 is 2.9 times
+// here, 5.3 on base-r11), so it stays a CR.
 /// What could_match's trues rest on. Each pair of names entered and each
 /// node pair found to overlap by assuming a pair in progress is a node,
 /// which rests on the nodes its walk read true. A pair whose walk fails
