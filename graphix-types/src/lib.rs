@@ -42,7 +42,8 @@ use std::{
 };
 pub use uuid::Uuid;
 
-/// A place in a source text: its line and its column, each counted from 1.
+/// A place in a source text: its line and its column, each counted from 1;
+/// line 0, column 0 is no place ([`expr::WrittenAt::NOWHERE`]).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub struct SourcePosition {
     pub line: i32,
