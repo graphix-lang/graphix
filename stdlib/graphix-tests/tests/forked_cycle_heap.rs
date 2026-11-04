@@ -201,6 +201,10 @@ fn forked_heap_settles() {
     // the forced growth is glibc's per-thread arenas over the eval workers, not
     // live data. Probes: ~/ptmp/cr29/scratch/r11-M/ (forked_churn.txt,
     // rss_s_shrink.txt, rss_arena.txt).
+    // 2026-11-03 claude: runtime-thread-spread-01, which this CR waits on, has
+    // landed as option (c) (a65acf104) and its XCR is deleted; netidx
+    // 09c5f584's bound is in too. What is left is this CR's own question: find
+    // what the eval workers keep under forked slot churn, then fork the case.
     assert_heap_settles("shrinking, serial", "n", SHRINK, SHRINKING, false, Off);
     let (regions, _) = assert_heap_settles("fused", "n", FLAT_MAP, FIXED, true, Force);
     assert!(regions > 0, "nothing fused");
