@@ -14,7 +14,9 @@ use graphix_compiler::{
     image::{DecodeImage, EncodeImage, ImageBuf, ImageDecoder, ImageEncoder},
     typ::Type,
 };
-use graphix_package_core::testing::{TestCtx, config};
+use graphix_package_core::testing::{
+    self, Mode, PackageRef, Root, TestCtx, config, fixture_runtime,
+};
 use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
 use netidx::publisher::Value;
 use netidx_core::pack::Pack;
@@ -1413,5 +1415,39 @@ async fn a_restored_closure_outlives_its_slot() -> Result<()> {
         cold_and_warm(super::functions::CLOSURE_OUTLIVES_SLOT).await?;
     assert_eq!(cold.last(), Some(&Value::I64(80)));
     assert_eq!(warm, cold);
+    Ok(())
+}
+
+/// A fixture's runtime restores its package root from the process's image
+/// of it in every mode but `interp`, which compiles it.
+async fn fixtures_restore_their_root_outside_interp(mode: Mode) -> Result<()> {
+    let (ctx, _rx) = fixture_runtime([], TEST_REGISTER, mode, |_| {}).await?;
+    let restores = mode.root().chosen() == Root::Restored;
+    assert_eq!(ctx.rt.env_stats().await?.restored, restores, "{mode:?}");
+    ctx.shutdown().await;
+    Ok(())
+}
+
+modes!(fixtures_restore_their_root_outside_interp);
+
+/// Each package root restores an image of its own: a runtime of core
+/// alone restored no other package.
+#[tokio::test(flavor = "current_thread")]
+async fn each_package_root_restores_its_own_image() -> Result<()> {
+    let core: &[PackageRef] = &[&graphix_package_core::P];
+    let (tx, _rx) = mpsc::channel(10);
+    let all = init(tx.clone()).await?;
+    let only_core = testing::init(tx, core).await?;
+    let restores = Root::Restored.chosen() == Root::Restored;
+    assert_eq!(all.rt.env_stats().await?.restored, restores);
+    assert_eq!(only_core.rt.env_stats().await?.restored, restores);
+    let len = literal!("array::len([1, 2])");
+    let compiled = all.rt.compile(len.clone()).await?;
+    let refused = only_core.rt.compile(len).await.err().map(|e| format!("{e:#}"));
+    drop(compiled);
+    all.shutdown().await;
+    only_core.shutdown().await;
+    let undefined = |e: &str| e.contains("array::len not defined");
+    assert!(refused.as_deref().is_some_and(undefined), "{refused:?}");
     Ok(())
 }

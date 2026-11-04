@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
+use bytes::Bytes;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use graphix_compiler::{
@@ -11,12 +12,17 @@ use graphix_compiler::{
 };
 use graphix_rt::{
     Callable, CompRes, GXConfig, GXConfigBuilder, GXEvent, GXHandle, GXRt, NoExt, Ref,
+    RegistrationImage,
 };
 use netidx::publisher::Value;
 use netidx_core::path::Path;
+use parking_lot::Mutex;
 use poolshark::global::GPooled;
-use std::time::Duration;
-use tokio::{sync::mpsc, time::Instant};
+use std::{sync::LazyLock, time::Duration};
+use tokio::{
+    sync::{OnceCell, mpsc, oneshot},
+    time::Instant,
+};
 
 pub struct TestCtx {
     pub rt: GXHandle<NoExt>,
@@ -105,13 +111,25 @@ pub type PackageRef = &'static dyn graphix_package::Package<NoExt>;
 /// `setup` run over the context, their root and `resolvers` (after the
 /// packages') set. Chain what else it needs (flags, a registration
 /// image, a program, a trace, lsp_mode) and run it with
-/// [`TestCtx::start`].
+/// [`TestCtx::start`], which compiles the root unless a registration
+/// image restores it.
 pub fn config(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
     resolvers: Vec<ResolverRef>,
     setup: impl FnOnce(&mut TestState),
 ) -> Result<GXConfigBuilder<NoExt>> {
+    Ok(configure(sub, register, resolvers, setup)?.0)
+}
+
+/// [`config`], and the root it compiles: the text naming `register`'s
+/// packages.
+fn configure(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[PackageRef],
+    resolvers: Vec<ResolverRef>,
+    setup: impl FnOnce(&mut TestState),
+) -> Result<(GXConfigBuilder<NoExt>, ArcStr)> {
     let _ = env_logger::try_init();
     // A fixture that recurses without end must abort instead of
     // eating the box; an explicit GRAPHIX_STACK_BUDGET still wins.
@@ -131,15 +149,92 @@ pub fn config(
     setup(&mut ctx);
     let mut all_resolvers = vec![modules];
     all_resolvers.extend(resolvers);
-    Ok(GXConfig::builder(ctx, sub).root(root).resolvers(all_resolvers))
+    let cfg = GXConfig::builder(ctx, sub).root(root.clone()).resolvers(all_resolvers);
+    Ok((cfg, root))
 }
 
-/// A runtime with `register`'s packages and nothing else.
+/// Where a test runtime's package root comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Root {
+    /// Compiled from source at the start, as `--no-cache`, `--check` and
+    /// the language server compile it.
+    Compiled,
+    /// Restored from the image of that root this process compiled once,
+    /// as a warm shell start restores it.
+    Restored,
+}
+
+impl Root {
+    /// `self`, unless `GRAPHIX_TEST_ROOT=compile` has every start compile
+    /// its root.
+    pub fn chosen(self) -> Root {
+        match std::env::var("GRAPHIX_TEST_ROOT") {
+            Err(_) => self,
+            Ok(v) if v == "compile" => Root::Compiled,
+            Ok(v) => panic!("GRAPHIX_TEST_ROOT={v}: its one value is `compile`"),
+        }
+    }
+}
+
+/// Start `cfg`, whose root is `root` (`register`'s), that root compiled
+/// or restored as `how` says. A root meant to restore that compiles
+/// instead fails the start.
+async fn start_rooted(
+    cfg: GXConfigBuilder<NoExt>,
+    root: &ArcStr,
+    register: &[PackageRef],
+    how: Root,
+) -> Result<TestCtx> {
+    match how.chosen() {
+        Root::Compiled => TestCtx::start(cfg).await,
+        Root::Restored => {
+            let image = root_image(root, register).await?;
+            let ctx =
+                TestCtx::start(cfg.registration(RegistrationImage::load(image))).await?;
+            if !ctx.rt.env_stats().await?.restored {
+                bail!(
+                    "the package root's image did not restore, so the root compiled \
+                     (RUST_LOG=graphix_rt=warn says why)"
+                )
+            }
+            Ok(ctx)
+        }
+    }
+}
+
+/// The image of the package root `root`, which `register` registers. Its
+/// flags are fixed, so the image is a function of the root: one is
+/// compiled per root per process, by the first start that asks, the
+/// others waiting for it. A build that fails is not kept: the next start
+/// builds again.
+async fn root_image(root: &ArcStr, register: &[PackageRef]) -> Result<Bytes> {
+    static IMAGES: LazyLock<
+        Mutex<ahash::AHashMap<ArcStr, triomphe::Arc<OnceCell<Bytes>>>>,
+    > = LazyLock::new(|| Mutex::new(ahash::AHashMap::default()));
+    let cell = IMAGES.lock().entry(root.clone()).or_default().clone();
+    let image = cell
+        .get_or_try_init(|| async {
+            let (tx, _rx) = mpsc::channel(1);
+            let (image_tx, image_rx) = oneshot::channel();
+            let (cfg, _) = configure(tx, register, vec![], |_| {})?;
+            cfg.registration(RegistrationImage::save(image_tx))
+                .build()?
+                .compile()
+                .await?;
+            image_rx.await.context("the root's compile sent no image")?
+        })
+        .await?;
+    Ok(image.clone())
+}
+
+/// A runtime with `register`'s packages and nothing else, its root
+/// restored.
 pub async fn init(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
 ) -> Result<TestCtx> {
-    TestCtx::start(config(sub, register, vec![], |_| {})?).await
+    let (cfg, root) = configure(sub, register, vec![], |_| {})?;
+    start_rooted(cfg, &root, register, Root::Restored).await
 }
 
 pub type Events = mpsc::Receiver<GPooled<Vec<GXEvent>>>;
@@ -194,6 +289,15 @@ impl Mode {
         }
     }
 
+    /// The node-walk's serial mode compiles the package root, so every
+    /// fixture runs once over a compiled root; the others restore it.
+    pub fn root(self) -> Root {
+        match self {
+            Mode::Interp => Root::Compiled,
+            Mode::Jit | Mode::Par | Mode::JitPar | Mode::Unpruned => Root::Restored,
+        }
+    }
+
     /// The serial modes fork nothing unless `GRAPHIX_PAR` says otherwise.
     pub fn par(self) -> ParMode {
         match self {
@@ -233,15 +337,12 @@ where
     let tbl = ahash::AHashMap::from_iter(
         files.into_iter().map(|(path, entry)| (Path::from(ArcStr::from(path)), entry)),
     );
-    let ctx = TestCtx::start(
-        config(tx, register, vec![VfsResolver::new(tbl)], |ctx| {
-            ctx.control.set_par_mode(mode.par());
-            ctx.control.set_prune_mode(mode.fixture_prune());
-            setup(ctx)
-        })?
-        .flags(mode.flags()),
-    )
-    .await?;
+    let (cfg, root) = configure(tx, register, vec![VfsResolver::new(tbl)], |ctx| {
+        ctx.control.set_par_mode(mode.par());
+        ctx.control.set_prune_mode(mode.fixture_prune());
+        setup(ctx)
+    })?;
+    let ctx = start_rooted(cfg.flags(mode.flags()), &root, register, mode.root()).await?;
     Ok((ctx, rx))
 }
 
@@ -475,8 +576,8 @@ pub async fn compile_error(
             (Path::from(ArcStr::from(*p)), VfsEntry::from(ArcStr::from(*t)))
         }));
     let (tx, _rx) = mpsc::channel(10);
-    let ctx = TestCtx::start(config(tx, register, vec![VfsResolver::new(tbl)], |_| {})?)
-        .await?;
+    let (cfg, root) = configure(tx, register, vec![VfsResolver::new(tbl)], |_| {})?;
+    let ctx = start_rooted(cfg, &root, register, Root::Restored).await?;
     let e = ctx.rt.compile(ArcStr::from(text)).await.err();
     ctx.shutdown().await;
     e.ok_or_else(|| anyhow::anyhow!("{text} compiled"))
@@ -534,8 +635,9 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// Compile `code` as `/test.gx` under `register`, `setup` run on the
-    /// state first; the fixture and `test::result`'s first value.
+    /// Compile `code` as `/test.gx` under `register`, its root restored,
+    /// `setup` run on the state first; the fixture and `test::result`'s
+    /// first value.
     pub async fn new(
         code: &str,
         register: &[PackageRef],
@@ -547,7 +649,8 @@ impl Fixture {
             VfsEntry::from(ArcStr::from(code)),
         )]);
         let resolvers = vec![VfsResolver::new(vfs)];
-        let ctx = TestCtx::start(config(tx, register, resolvers, setup)?).await?;
+        let (cfg, root) = configure(tx, register, resolvers, setup)?;
+        let ctx = start_rooted(cfg, &root, register, Root::Restored).await?;
         let gx = ctx.rt.clone();
         let compiled = gx
             .compile(arcstr::literal!("{ mod test; test::result }"))

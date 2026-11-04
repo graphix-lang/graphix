@@ -1395,7 +1395,12 @@ cycle, across workers; the compiler never pins threads.
   (`; build_only` exempts a refusal only a build makes: `#[native]`,
   `#[parallel]`, the definition assertions). `FuseExpect::{Jit, None}` asserts
   WHETHER anything fuses, bidirectionally; `#[native]` asserts that an
-  expression does.
+  expression does. `interp` compiles the package root from source, as
+  `--check` and the server do; every other mode, `testing::init`, the
+  `eval*` helpers and `Fixture` restore it from the image the process
+  compiled once per root, as a warm shell start does, and fail where it
+  does not restore (`testing::Mode::root`; `GRAPHIX_TEST_ROOT=compile`
+  compiles every one).
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit,
   and in the forced modes a `PARAUDIT-NOFORK` line for each fixture that
   forked nothing (a finding where the fixture has fork points).
@@ -1921,6 +1926,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_JIT_RELOCATE=every` | every cycle's start moves every live kernel into a fresh JIT generation (stress for relocation) |
 | `GRAPHIX_JIT_ARENA=<bytes>` | the arena a JIT generation reserves (256MB by default; outside a page..2GiB, fusion is unavailable) |
 | `GRAPHIX_DISABLE_PACKED_AST=1` | module resolution parses source even where a packed AST is available |
+| `GRAPHIX_TEST_ROOT=compile` | every test runtime compiles its package root from source instead of restoring the process's image of it (A/B for the restore) |
 | `GRAPHIX_FUSION_DISCOVERY=1` | `run!` asserts no `FuseExpect` and prints each fixture's observed level (`FUSEMAP`) |
 | `GXDBG_SLOT=1` | per-slot production tags and the collection fold decision |
 | `GXDBG_SHALLOW=1` | each select arm's shallow discriminator |
