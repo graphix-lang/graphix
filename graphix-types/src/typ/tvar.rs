@@ -6,8 +6,8 @@ use crate::{
     image,
     stack::ensure_sufficient,
     typ::{
-        Bound, FnType, Mutability, PRINT_FLAGS, PrintFlag, RefKey, Type, node_addr,
-        setops::union_identical,
+        Bound, FnType, Mutability, NodePairs, PRINT_FLAGS, PrintFlag, RefKey, Type,
+        node_addr, setops::union_identical,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -38,6 +38,8 @@ image_id!(TVarId);
 #[cfg(test)]
 thread_local! {
     pub(crate) static MAY_BE_ERROR_NAMES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(super) static SPLIT_STEPS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
@@ -3099,41 +3101,70 @@ impl Type {
     /// list element), which containment would commit to its first member
     /// that holds the constructor.
     fn needs_split(&self, env: &Env, pred: &Type) -> Result<bool> {
+        self.needs_split_int(env, pred, &mut NodePairs::default())
+    }
+
+    /// [`Self::needs_split`], each pair of shared nodes that needs none
+    /// (`apart`) walked once.
+    fn needs_split_int(
+        &self,
+        env: &Env,
+        pred: &Type,
+        apart: &mut NodePairs,
+    ) -> Result<bool> {
         ensure_sufficient(|| {
-            let Some(p) = pred.deref_cloned() else { return Ok(false) };
-            if let Type::Set(qs) = &p {
-                for q in qs.iter() {
-                    if self.needs_split(env, q)? {
-                        return Ok(true);
-                    }
-                }
+            let key = apart.key(self, pred);
+            if key.is_some_and(|k| apart.contains(k)) {
                 return Ok(false);
             }
-            let Some(t) = self.shape_under(env, &p)? else { return Ok(false) };
-            let any = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
-                for (t, p) in parts {
-                    if t.needs_split(env, p)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            };
-            match (&t, &p) {
-                (Type::Set(_), _) => Ok(true),
-                (Type::Tuple(ts), Type::Tuple(ps))
-                | (Type::Variant(_, ts, _), Type::Variant(_, ps, _)) => {
-                    any(&mut ts.iter().zip(ps.iter()))
-                }
-                (Type::Struct(fs), Type::Struct(pfs)) => any(&mut fs
-                    .iter()
-                    .zip(pfs.iter())
-                    .map(|((_, t, _), (_, p, _))| (t, p))),
-                (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
-                    e.needs_split(env, pe)
-                }
-                _ => Ok(false),
+            let split = self.needs_split_inner(env, pred, apart)?;
+            if let Some(k) = key.filter(|_| !split) {
+                apart.insert(k, self, pred)
             }
+            Ok(split)
         })
+    }
+
+    fn needs_split_inner(
+        &self,
+        env: &Env,
+        pred: &Type,
+        apart: &mut NodePairs,
+    ) -> Result<bool> {
+        #[cfg(test)]
+        SPLIT_STEPS.with(|n| n.set(n.get() + 1));
+        let Some(p) = pred.deref_cloned() else { return Ok(false) };
+        if let Type::Set(qs) = &p {
+            for q in qs.iter() {
+                if self.needs_split_int(env, q, apart)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        let Some(t) = self.shape_under(env, &p)? else { return Ok(false) };
+        let mut any = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
+            for (t, p) in parts {
+                if t.needs_split_int(env, p, apart)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
+        match (&t, &p) {
+            (Type::Set(_), _) => Ok(true),
+            (Type::Tuple(ts), Type::Tuple(ps))
+            | (Type::Variant(_, ts, _), Type::Variant(_, ps, _)) => {
+                any(&mut ts.iter().zip(ps.iter()))
+            }
+            (Type::Struct(fs), Type::Struct(pfs)) => {
+                any(&mut fs.iter().zip(pfs.iter()).map(|((_, t, _), (_, p, _))| (t, p)))
+            }
+            (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
+                e.needs_split_int(env, pe, apart)
+            }
+            _ => Ok(false),
+        }
     }
 
     /// `self` looked through (bindings, a typedef) where `pred` is the

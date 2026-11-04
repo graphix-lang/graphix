@@ -983,6 +983,30 @@ impl Type {
     // its item 2 finding). probes: ~/ptmp/cr29/scratch/r9-X/r9fix/r1/rt14.gx ..
     // rt22.gx, written by ~/ptmp/cr29/scratch/review-r9/X-r1-1/perf/mkrt.py
     // (matching-type-contains-dag-01)
+    // 2026-11-03 claude: cr48-X2 (from main 8814f118b): Type::needs_split keeps the
+    // pairs of shared nodes it found to need no split (NodePairs; exact, since
+    // needs_split is a pure test of the pair and a true ends the walk), so narrowing
+    // S0 to what T0 takes of it asks each pair once: 174 split steps at depth 12,
+    // 16382 without the memo (pin
+    // typ::setops::tests::narrowing_over_a_tuple_dag_takes_each_pair_once). Still
+    // open: each containment probe of matching_type starts a fresh ContainsHist,
+    // whose memo keeps only verdicts that assumed no pair in progress, and (Ti+1,
+    // Ti+1) against (Si+1, Si+1) meets its own pair again at Tn's Error<T0>, so every
+    // true below it is walked once per path. Perf instructions, --no-cache --check,
+    // one eval thread, base-r11 (8814f118b) / cr48-X2: rt14 2.35G / 2.18G, rt16 5.48G
+    // / 4.79G, rt18 17.94G / 15.20G. A shared walk across the probes (cr48-X
+    // ce6523c7c) was tried and found inexact by review r11: contains' verdict for a
+    // pair depends on where the walk entered its cycle (a distribution question met
+    // again answers false, a pair of names true), and the probes it skipped had
+    // filled the TypeRef cells same_definition and def_key read
+    // (same-definition-fill-01), so a capture type depended on the statements before
+    // the select (X-r1-1 t/m830c.gx; X-r1-2 rgt/v5order.gx, v5ann.gx; pin
+    // lang::select::a_capture_type_is_the_same_at_every_select). An exact shared walk
+    // needs verdicts that do not depend on where a cycle was entered (one assumption
+    // for a question met again, or trues held as resting on the pairs and questions
+    // in progress, as could_match's Rests holds them) and walks that do not read
+    // which cells earlier walks filled. Evidence:
+    // ~/ptmp/cr29/scratch/review-r11/X-r1-1/, X-r1-2/, X-r2-1/.
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
         let mut walk = MatchingTypes { memo: RefHist::new(), refs: LPooled::take() };
         self.matching_type_int(env, &mut walk, reaching)
@@ -1516,6 +1540,35 @@ mod tests {
             let pool: Vec<&str> = pool.iter().map(|t| &**t).collect();
             written_memos_agree(&defs, &pool);
         }
+    }
+
+    /// `Ti = (Ti+1, Ti+1)` down to `Tn = [Error<T0>, leaf]`, and its
+    /// twin `Si` with another leaf.
+    fn tuple_dag(n: usize) -> Vec<(String, String)> {
+        let mut defs = vec![];
+        for (p, leaf) in [("T", "`Z"), ("S", "`Y")] {
+            for i in 0..n {
+                defs.push((format!("{p}{i}"), format!("({p}{}, {p}{})", i + 1, i + 1)));
+            }
+            defs.push((format!("{p}{n}"), format!("[Error<{p}0>, {leaf}]")));
+        }
+        defs
+    }
+
+    // Narrowing S0 to what a test of T0 takes of it, over a tuple DAG
+    // whose only way back is through Error, asks each pair of shared
+    // nodes once whether a union stands under a constructor.
+    #[test]
+    fn narrowing_over_a_tuple_dag_takes_each_pair_once() {
+        use crate::typ::tvar::SPLIT_STEPS;
+        let defs = tuple_dag(12);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "T0");
+        let s = parsed(&env, "S0");
+        let m = t.matching_type(&env, &s).unwrap();
+        SPLIT_STEPS.with(|n| n.set(0));
+        assert!(!s.narrow_pattern(&env, &m).unwrap());
+        assert_eq!(SPLIT_STEPS.with(|n| n.get()), 174);
     }
 
     // A select over a DAG of named unions (Li = [Li-1, Mi-1], Mi = [Mi-1,

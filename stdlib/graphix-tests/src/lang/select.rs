@@ -4893,6 +4893,32 @@ run!(
     "#
 ; FuseExpect::None);
 
+// What `K(T0) takes of `K(U0) is the same for every select that asks,
+// whatever was asked before it: a capture narrower than the annotation
+// is refused at the first of two identical selects.
+run!(
+    a_capture_type_is_the_same_at_every_select,
+    refused(
+        "in: y: type mismatch `K([([([([(T0, T2), `K(T1)], T1), `K(T2)], T0), `K([([(T0, T2), \
+         `K(T1)], T1), `K(T2)])], T0), `K(T0)]) does not contain `K([([([([(T0, T2), `K(T1)], \
+         T1), `K(T2)], T0), `K(T2)], T0), `K(T0)])"
+    ),
+    "/test.gx" => r#"
+        type T0 = [(T1, T0), `K(T0), `TNil];
+        type T1 = [(T2, T0), `K(T2), `TNil];
+        type T2 = [(T3, T1), `K(T2), `TNil];
+        type T3 = [(T0, T2), `K(T1), `TNil];
+        type U0 = [(U1, U0), `K(U0), `UNil];
+        type U1 = [(U2, U0), `K(U2), `UNil];
+        type U2 = [(U3, U1), `K(U2), `UNil];
+        type U3 = [(U0, U2), `K(U1), `UNil];
+        let w: `K(U0) = never();
+        let c = select w { `K(T0) as y => { let z: `K([([([([(T0, T2), `K(T1)], T1), `K(T2)], T0), `K([([(T0, T2), `K(T1)], T1), `K(T2)])], T0), `K(T0)]) = y; 0 }, _ => 1 };
+        let v: `K(U0) = never();
+        let result = select v { `K(T0) as x => { let z: `K([([([([(T0, T2), `K(T1)], T1), `K(T2)], T0), `K([([(T0, T2), `K(T1)], T1), `K(T2)])], T0), `K(T0)]) = x; 0 }, _ => 1 }
+    "#
+; FuseExpect::None);
+
 // Coverage reads a bound cell as its binding: a map literal's key and
 // value cells bound to i64, or a generic call's 'a bound to i64, are
 // i64, so `[Error<S>, Array<S>]` covers the whole scrutinee and a later
