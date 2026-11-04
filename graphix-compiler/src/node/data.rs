@@ -1270,51 +1270,6 @@ impl<R: Rt> Construct<R> {
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {
                 if let Type::TVar(tv) = p {
-                    // XCR claude for claude: [bug/medium] In the REPL a constructed
-                    // abstract value's parameter that its input leaves open is decided
-                    // by a later input, after the value was built at ⊥: with `type
-                    // B<'x> = Abstract<i64>; type R<'a> = [`Nil, `Cons('a, R<'a>)]`,
-                    // the inputs `let t = B(1)` and then `let q = select t {
-                    // B<[`Nil, `Cons(i64, R<i64>)]> as _ => 1 }` both check, and the
-                    // select logs "no arm matches abstract:..: a coverage hole in the
-                    // check" at run time, since t's value carries B<⊥> while its static
-                    // type is the tested one; `let v = B(1)` and then `v <-
-                    // never<B<..>>()` leave v unequal to an annotated `let c: B<R<i64>>
-                    // = B(1)`. One script holding the same statements is right: its
-                    // values are built after the whole check. The Operand settle
-                    // (`TVar::settle`) leaves a cell no bound decides open, and an
-                    // input's end fixes the values built at it: settle such a cell to ⊥
-                    // when its input ends (the later type test is then a dead arm), or
-                    // refuse a later input that decides a cell an earlier input's values
-                    // were built at. Compare repl-bottom-settle-01 (lane B, cr39-B).
-                    // Main a084f9887 and lane E (cr40-E) alike. probe:
-                    // ~/ptmp/cr29/scratch/review-r6/E4-r2-2/repl3.txt
-                    // (repl-abstract-param-01)
-                    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
-                    // "REPL inputs and the open types an earlier input left"
-                    // (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
-                    // 2026-11-03 claude: Eric ruled (2026-11-03): D9 a in
-                    // ~/ptmp/cr-discuss.md, under his rule for type holes (reject and
-                    // require an annotation, then a --check census: it comes back to him
-                    // only if the stdlib, the book's examples or netidx-admin would need
-                    // a new annotation): at a REPL input's end every cell it leaves open
-                    // settles to bottom, and a later input that would decide one is
-                    // refused ("annotate it", naming the binding); a refused input's
-                    // cell writes are undone; a function's write to an earlier input's
-                    // binding is held to that binding's type.
-                    // 2026-11-04 claude: Closed by the input-end settle (D9 a, cr49-D):
-                    // t = B(1)'s parameter is bottom from its input's end, so select t {
-                    // B<i64> as _ => 1 } is refused at its check (missing match cases:
-                    // no arm covers B<_>) and v <- never<B<..>>() is told to declare v:
-                    // B<..>. Pin that fails without it:
-                    // lang::repl_inputs::abstract_parameter_settles_at_its_input; twin
-                    // annotated_abstract_parameter_is_tested.
-                    // 2026-11-04 claude: Review r14 (cr49-D): the select's refusal now
-                    // names t (missing match cases: no arm covers B<_>: it holds the
-                    // type of t ...), and f(t) over |x: B<i64>| does too; pin
-                    // abstract_parameter_settles_at_its_input fails without either note
-                    // (select's settled_note, TypeMismatch over both sides); twin
-                    // annotated_abstract_parameter_is_tested.
                     super::defer_settle(ctx, || crate::PendingSettle::Operand {
                         tv: tv.clone(),
                         spec: self.spec.clone(),

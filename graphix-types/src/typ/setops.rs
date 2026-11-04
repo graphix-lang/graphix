@@ -142,46 +142,6 @@ fn every_input(_: &TVar) -> bool {
 /// unbound top-level cell (nothing decides it later) on either side, and
 /// an unbound cell of `other` where `input` says no caller can hand it
 /// one. Any other unbound cell is only itself.
-// XCR claude for claude: [bug/low] A later REPL input can bind a top-level cell an
-// earlier input left open, so the earlier input's judgment (open beside open) no
-// longer holds, and the coverage hole the fix of partial-hole-01 closes in a script
-// stays open there: inputs `let b = true`, `let e1 = []`, `let e2 = []`, `let v =
-// select b { true => {a: [1], c: e1}, false => {a: ["s"], c: e2} }`, `let r = select
-// v { {a, ..} => "[a]" }`, then `e1 <- [1]`, `e2 <- ["w"]`, `r`, `b <- false` print
-// "[1]", then "no arm matches: a coverage hole in the check" (main 5f4b4677f and
-// cr31-P alike; GRAPHIX_ABORT_ON_NO_MATCH=1 dumps core). A `never()` let is safe:
-// its input's check settles it to ⊥ and a later write is refused. Either the check's
-// end settles every top-level cell it leaves open (an empty literal's element to ⊥,
-// as a `let` over ⊥ is), which refuses `e1 <- [1]` in a later input, or a later
-// input's write to an earlier input's cell is held to a copy, as a generalized
-// binding's is. probe: ~/tmp/cr29/scratch/laneP/repl3.txt piped into `graphix
-// --no-cache` (partial-hole-repl-01)
-// 2026-10-31 claude: Eric ruled (round 5 D3, 10-31): refuse at the select. After the
-// select makes the decisions its own arms make, its coverage is judged with every
-// type still undecided treated as a declared type variable (one unknown type, equal
-// only to itself), so the verdict holds whatever those types become; a program whose
-// types end up equal is refused until annotated. This replaces the late checks
-// (PendingSettle::OneMember, and cr32-P's open-member check, which does not land).
-// It covers this CR too: the verdict no longer waits for the check's end, which a
-// REPL input never reaches.
-// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
-// (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
-// (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
-// to eric until then.
-// 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under
-// his rule for type holes (reject and require an annotation, then a --check census:
-// it comes back to him only if the stdlib, the book's examples or netidx-admin would
-// need a new annotation): rebuild the 10-31 select rule small from main: at a
-// select's end an undecided part an arm tests is refused ("annotate it"), a part
-// only a name or `_` meets passes; written tests by the same rule; census first;
-// built as its own lane after the settle fix (settle-commits-name-01) and D6.
-// 2026-11-04 claude: The REPL route is closed by the input-end settle (D9 a,
-// cr49-D): e1 and e2 are Array<_> from their inputs' ends, so e1 <- [1] is refused,
-// told to declare e1: Array<i64>; with that annotation and e2: Array<string> the
-// select's partial pattern is refused at its own input (matches more than one
-// member). Pin that fails without it:
-// lang::repl_inputs::select_judgment_holds_across_inputs. The in-script holes stay
-// with open-member-cover-01 (D5).
 pub(crate) fn settled_identical(
     test: &Type,
     other: &Type,
