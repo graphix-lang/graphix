@@ -2881,6 +2881,15 @@ mod tree_sitter_compat {
                  the checkout's: bump the rev to the latest commit that changed the grammar"
             );
         }
+        let in_history = std::process::Command::new("git")
+            .args(["-C", root, "merge-base", "--is-ancestor", rev, "HEAD"])
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(
+            in_history,
+            "ide/editors/zed/extension.toml pins {rev}, which is not in this branch's \
+             history (a rebase replaced it): pin the commit that replaced it"
+        );
     }
 
     /// The tree-sitter queries embedded in the emacs mode: the form after
