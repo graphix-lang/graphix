@@ -1580,3 +1580,458 @@ run!(
     "/test/m.gxi" => "type L<'a> = [`N, `C(fn(x: 'a) -> 'a, L<'a>)]; val l: L<'a>",
     "/test/m.gx" => "let l: L<'q> = `C(|x| x, `N)"
 ; FuseExpect::None);
+
+// A val's type variable outside every function type would be one type all
+// its uses share, which a val may not leave open: declare it at one type.
+run!(
+    val_variable_outside_a_function_type_refused,
+    refused("val v has its type variable 'a outside a function type, one type all its uses share: declare the val at one type"),
+    "/test.gx" => r#"
+        mod m;
+        let wr = |x| { m::v <- x; x };
+        let rd = |u| u ~ m::v;
+        let w = wr([1]);
+        let a: Array<string> = rd(null);
+        let result = a
+    "#,
+    "/test/m.gxi" => "val v: Array<'a>",
+    "/test/m.gx" => "let v = never()"
+);
+
+run!(
+    val_at_one_type_written_and_read,
+    prints("[i64:1]"),
+    "/test.gx" => r#"
+        mod m;
+        let wr = |x| { m::v <- x; x };
+        let rd = |u| u ~ m::v;
+        let w = wr([1]);
+        let result = rd(w)
+    "#,
+    "/test/m.gxi" => "val v: Array<i64>",
+    "/test/m.gx" => "let v = never()"
+; FuseExpect::None);
+
+run!(
+    val_variable_outside_a_function_type_under_a_sibling_refused,
+    refused("val v has its type variable 'a outside a function type"),
+    "/test.gx" => r#"
+        mod a;
+        mod b;
+        let w = b::set([1]);
+        let r: Array<string> = b::k(null);
+        let result = r
+    "#,
+    "/test/a.gxi" => "val v: Array<'a>",
+    "/test/a.gx" => "let v = never()",
+    "/test/b.gxi" => "val set: fn(x: Array<'a>) -> Array<'a>; val k: fn(u: Any) -> Array<'a>",
+    "/test/b.gx" => "let set = |x| { super::a::v <- x; x }; let k = |u| u ~ super::a::v"
+);
+
+run!(
+    val_variable_outside_a_function_type_beside_generic_vals_refused,
+    refused("val v has its type variable 'a outside a function type"),
+    "/test.gx" => r#"
+        mod m;
+        let w = m::set([1]);
+        let a: Array<string> = m::k(null);
+        let result = a
+    "#,
+    "/test/m.gxi" => r#"
+        val v: Array<'a>;
+        val set: fn(x: Array<'a>) -> Array<'a>;
+        val k: fn(u: Any) -> Array<'a>
+    "#,
+    "/test/m.gx" => "let v = never(); let set = |x| { v <- x; x }; let k = |u| u ~ v"
+);
+
+// One standing both in a function type and beside it is outside one.
+run!(
+    val_variable_in_a_function_type_and_in_data_refused,
+    refused("val c has its type variable 'a outside a function type"),
+    "/test.gx" => r#"
+        mod m;
+        let save = |x| { m::c <- x; x };
+        let w = save({show: |x| "[x]", last: 1});
+        let peek = |u| (u ~ m::c).last;
+        let l: [string, null] = peek(null);
+        let result = l
+    "#,
+    "/test/m.gxi" => r#"
+        type Codec<'a> = {show: fn(x: 'a) -> string, last: ['a, null]};
+        val c: Codec<'a>
+    "#,
+    "/test/m.gx" => "let c = {show: |x| \"[x]\", last: never<['a, null]>()}"
+);
+
+run!(
+    val_variable_in_a_struct_of_function_and_data_refused,
+    refused("val p has its type variable 'a outside a function type"),
+    "/test.gx" => "mod m; let result = m::p.f(1)",
+    "/test/m.gxi" => "val p: {f: fn(x: 'a) -> 'a, d: Array<'a>}",
+    "/test/m.gx" => "let p = {f: |x| x, d: never<Array<'a>>()}"
+);
+
+// An abstract type's parameter, and a typedef that grows its parameters
+// as it recurses, stand outside function types.
+run!(
+    val_variable_as_an_abstract_parameter_refused,
+    refused("val w has its type variable 'a outside a function type"),
+    "/test.gx" => "mod m; let result = m::w.0.f(1)",
+    "/test/m.gxi" => "type W<'a> = Abstract<{f: fn(x: 'a) -> 'a}>; val w: W<'a>",
+    "/test/m.gx" => "let w = W({f: |x| x})"
+);
+
+run!(
+    val_variable_under_a_growing_typedef_refused,
+    refused("val t has its type variable 'a outside a function type"),
+    "/test.gx" => "mod m; let x: m::T<i64> = m::t; m::t <- null; let result = x",
+    "/test/m.gxi" => "type T<'a> = [null, ('a, T<Array<'a>>)]; val t: T<'a>",
+    "/test/m.gx" => "let t = never()"
+);
+
+// A dynamic module's sig is held to it at the program's check.
+run!(
+    dynamic_sig_variable_outside_a_function_type_refused,
+    refused("val v has its type variable 'a outside a function type"),
+    "/test.gx" => r#"
+        let st = mod d dynamic {
+            sandbox unrestricted;
+            sig { val v: Array<'a>; val set: fn(x: Array<string>) -> null };
+            source "let v = never(); let set = |x| { v <- x; null }"
+        };
+        let w = d::set(["hello"]);
+        let a: Array<i64> = d::v;
+        let result = a
+    "#
+);
+
+// Inside function types each use picks a val's variable: a struct of
+// functions, an alias of a function type (the alias defined after the
+// module included) and a recursive typedef of functions.
+run!(
+    struct_of_functions_val_is_generic_per_use,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::s.f(1), m::s.f(\"s\"))",
+    "/test/m.gxi" => "val s: {f: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let s = {f: |x| x}"
+; FuseExpect::None);
+
+run!(
+    aliased_function_val_is_generic_per_use,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val f: F<'a>",
+    "/test/m.gx" => "let f = |x| x"
+);
+
+run!(
+    alias_defined_after_the_module_is_generic_per_use,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => r#"
+        mod a;
+        type F<'a> = fn(x: 'a) -> 'a;
+        let result = (a::id(1), a::id("s"))
+    "#,
+    "/test/a.gxi" => "val id: super::F<'a>",
+    "/test/a.gx" => "let id = |x| x"
+);
+
+// A val's variable is each use's to pick: where the implementation has one
+// type all uses share (a written let's, an outer binding's), it does not
+// implement the val, a rank-2 variable included. Declared at one type, it
+// does.
+run!(
+    generic_val_over_a_written_let_refused,
+    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let f = |x| x; f <- |x| x"
+);
+
+run!(
+    val_at_one_type_over_a_written_let,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64",
+    "/test/m.gx" => "let f = |x| x; f <- |x| x"
+; FuseExpect::None);
+
+run!(
+    generic_val_whose_argument_a_written_let_holds_refused,
+    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    "/test.gx" => "mod m; let result = m::set(|x: i64| -> i64 x + 100)",
+    "/test/m.gxi" => "val set: fn(g: fn(x: 'a) -> 'a) -> null",
+    "/test/m.gx" => "let f = |x| x; let set = |g| { f <- g; null }"
+);
+
+run!(
+    rank2_val_over_an_outer_binding_refused,
+    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    "/test.gx" => "mod m; let result = (m::h(1), m::h(\"s\"))",
+    "/test/m.gxi" => "val h: fn<'a: Any>(x: 'a) -> 'a",
+    "/test/m.gx" => "let y = never(); let h = |x| { y <- x; x }"
+);
+
+run!(
+    rank2_val_result_over_an_outer_binding_refused,
+    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    "/test.gx" => "mod m; let k = m::mk(0); let result = (k(1), k(\"s\"))",
+    "/test/m.gxi" => "val mk: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a",
+    "/test/m.gx" => "let y = never(); let mk = |z| |x| { y <- x; x }"
+);
+
+run!(
+    rank2_val_result_over_its_own_variable,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let k = m::mk(0); let result = (k(1), k(\"s\"))",
+    "/test/m.gxi" => "val mk: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = |z| |x| x"
+; FuseExpect::None);
+
+run!(
+    struct_of_functions_val_over_an_outer_binding_refused,
+    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    "/test.gx" => r#"
+        mod m;
+        let a = m::s.f(1);
+        let b = m::s.f("s");
+        let v: i64 = m::s.g(null);
+        let result = v + 1
+    "#,
+    "/test/m.gxi" => "val s: {f: fn(x: 'a) -> 'a, g: fn(t: Any) -> 'a}",
+    "/test/m.gx" => "let y = never(); let s = {f: |x| { y <- x; x }, g: |t| t ~ y}"
+);
+
+run!(
+    aliased_function_val_over_an_outer_binding_refused,
+    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val f: F<'a>",
+    "/test/m.gx" => "let y = never(); let f = |x| { y <- x; x }"
+);
+
+// The refusal names the way out: the outer binding's type where the
+// implementation is generic in its own cells, the val at one type where a
+// written let's lambda writes the outer binding, else a quantified
+// annotation on the let.
+run!(
+    val_over_an_outer_binding_names_its_type,
+    refused("that of a binding outside its let: declare the val at one type, or give that binding a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let y = never(); let f = |x| { y <- x; x }"
+);
+
+run!(
+    val_over_an_outer_binding_of_every_type,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let y: Any = never(); let f = |x| { y <- x; x }"
+; FuseExpect::None);
+
+run!(
+    written_val_over_an_outer_binding_names_one_type,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").ends_with(
+        "the implementation has one type all uses share, that of a binding outside \
+         its let: declare the val at one type"
+    )),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let y = never(); let f = |x| { y <- x; x }; f <- |x| { y <- x; x }"
+);
+
+run!(
+    rank2_val_over_a_written_let_names_the_annotation,
+    refused("annotate the implementation's let with a quantified type (fn<'a: ..>)"),
+    "/test.gx" => "mod m; let result = (m::h(1), m::h(\"s\"))",
+    "/test/m.gxi" => "val h: fn<'a: Any>(x: 'a) -> 'a",
+    "/test/m.gx" => "let h = |x| x; h <- |x| x"
+);
+
+run!(
+    rank2_val_over_a_written_let_at_its_quantified_type,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::h(1), m::h(\"s\"))",
+    "/test/m.gxi" => "val h: fn<'a: Any>(x: 'a) -> 'a",
+    "/test/m.gx" => "let h: fn<'a: Any>(x: 'a) -> 'a = |x| x; h <- |x| x"
+; FuseExpect::None);
+
+// The refusal names the variable first by name, whichever the walk met.
+run!(
+    val_over_an_open_let_names_its_first_variable,
+    refused("whose 'a each use picks"),
+    "/test.gx" => "mod m; let result = m::f(1, 2)",
+    "/test/m.gxi" => "val f: fn(x: 'a, y: 'b) -> ('a, 'b)",
+    "/test/m.gx" => "let f = never()"
+);
+
+// A val decides what its implementation leaves open where no use copies
+// it, as an annotation on the let would: the value is built at the
+// declared type.
+run!(
+    val_decides_an_open_parameter,
+    is(Value::Bool(true)),
+    "/test.gx" => "mod m; let result = m::e == m::i",
+    "/test/m.gxi" => "type B<'x>; val e: B<i64>; val i: B<i64>",
+    "/test/m.gx" => "type B<'x> = Abstract<i64>; let e = B(1); let i: B<i64> = B(1)"
+);
+
+run!(
+    val_decides_an_open_parameter_map_key,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let result = map::len(map::insert(map::insert({}, m::e, 1), m::i, 2))",
+    "/test/m.gxi" => "type B<'x>; val e: B<i64>; val i: B<i64>",
+    "/test/m.gx" => "type B<'x> = Abstract<i64>; let e = B(1); let i: B<i64> = B(1)"
+);
+
+run!(
+    val_decides_an_open_parameter_dedup,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let result = array::len(array::dedup([m::e, m::i]))",
+    "/test/m.gxi" => "type B<'x>; val e: B<i64>; val i: B<i64>",
+    "/test/m.gx" => "type B<'x> = Abstract<i64>; let e = B(1); let i: B<i64> = B(1)"
+);
+
+run!(
+    val_decides_an_open_parameter_through_an_alias,
+    is(Value::Bool(true)),
+    "/test.gx" => "mod m; let result = m::e == m::c",
+    "/test/m.gxi" => r#"
+        type B<'x>;
+        type R<'a> = [`Nil, `Cons('a, R<'a>)];
+        type E = [`Nil, `Cons(i64, R<i64>)];
+        val c: B<R<i64>>;
+        val e: B<E>
+    "#,
+    "/test/m.gx" => "type B<'x> = Abstract<i64>; let c: B<R<i64>> = B(1); let e = B(1)"
+);
+
+// Two vals over one open cell decide it once.
+run!(
+    two_vals_over_one_open_cell_at_two_types_refused,
+    refused("val b is declared B<string> but implemented B<i64>"),
+    "/test.gx" => "mod m; let result = (m::a, m::b)",
+    "/test/m.gxi" => "type B<'x>; val a: B<i64>; val b: B<string>",
+    "/test/m.gx" => "type B<'x> = Abstract<i64>; let a = B(1); let b = a"
+);
+
+// A parameter its payload bounds from below takes only a type holding it.
+run!(
+    val_below_its_open_parameter_bound_refused,
+    refused("val w is declared W<string> but implemented W<i64>"),
+    "/test.gx" => "mod m; let result = m::w",
+    "/test/m.gxi" => "type W<'x>; val w: W<string>",
+    "/test/m.gx" => "type W<'x> = Abstract<'x>; let w = W(1)"
+);
+
+// A val that would decide a cell the code around the module left open is
+// refused for an annotation there: the module's check writes no cell it
+// did not create.
+run!(
+    val_over_an_outer_open_cell_refused,
+    refused("the check decides a type the code around the module left open: annotate `z`"),
+    "/test.gx" => "let z = never(); mod m; z <- \"s\"; let result = m::e",
+    "/test/m.gxi" => "val e: i64",
+    "/test/m.gx" => "let e = super::z"
+);
+
+run!(
+    val_over_an_annotated_outer_cell,
+    is(Value::I64(3)),
+    "/test.gx" => "let z: i64 = never(); mod m; z <- 3; let result = m::e",
+    "/test/m.gxi" => "val e: i64",
+    "/test/m.gx" => "let e = super::z"
+; FuseExpect::None);
+
+// A function type in a val quantifies its own variables: one standing
+// whole where the implementation has a cell no use copies is decided there.
+run!(
+    rank2_val_over_an_open_let,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; m::e <- |x| x; let result = (m::e(1), m::e(\"s\"))",
+    "/test/m.gxi" => "val e: fn<'a: Any>(x: 'a) -> 'a",
+    "/test/m.gx" => "let e = never()"
+; FuseExpect::None);
+
+run!(
+    rank2_val_parameter_over_a_written_let,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let result = m::app(|x| x)",
+    "/test/m.gxi" => "val app: fn(f: fn<'a: Any>(x: 'a) -> 'a) -> i64",
+    "/test/m.gx" => "let g = never(); let app = |f| { g <- f; 1 }"
+; FuseExpect::None);
+
+// What is written through a val lands on its implementation, which every
+// use takes at its own types: the val must fit it, its bounds included.
+run!(
+    narrow_write_through_a_val_refused,
+    refused("val f is written, and what is written lands on its implementation"),
+    "/test.gx" => r#"
+        mod m;
+        m::f <- |x: i64| -> i64 x + 100;
+        let result = m::g(null)
+    "#,
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64; val g: fn(t: Any) -> string",
+    "/test/m.gx" => "let f = |x| x; let g = |t| f(t ~ \"s\")"
+);
+
+run!(
+    write_through_a_val_over_an_implementation_at_its_type,
+    is(Value::I64(101)),
+    "/test.gx" => r#"
+        mod m;
+        m::f <- |x: i64| -> i64 x + 100;
+        let result = select m::g(null) { n if n > 2 => n, _ => never() }
+    "#,
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64; val g: fn(t: Any) -> i64",
+    "/test/m.gx" => "let f: fn(x: i64) -> i64 = |x| x; let g = |t| f(t ~ 1)");
+
+run!(
+    bounded_write_through_a_val_refused,
+    refused("val f is written, and what is written lands on its implementation"),
+    "/test.gx" => r#"
+        mod m;
+        m::f <- |x| x * x;
+        let result = m::g(null)
+    "#,
+    "/test/m.gxi" => "val f: fn<'a: Number + Singleton>(x: 'a) -> 'a; val g: fn(t: Any) -> string",
+    "/test/m.gx" => "let f = |x| x; let g = |t| f(t ~ \"s\")"
+);
+
+// A writable reference to a val at one type is a write through it.
+run!(
+    mut_ref_to_a_val_at_one_type,
+    is(Value::I64(101)),
+    "/test.gx" => r#"
+        mod a;
+        let rf = &mut a::f;
+        *rf <- |x: i64| -> i64 x + 100;
+        let result = select a::f(1) { n if n > 2 => n, _ => never() }
+    "#,
+    "/test/a.gxi" => "val f: fn(x: i64) -> i64",
+    "/test/a.gx" => "let f = |x: i64| -> i64 x + 1");
+
+run!(
+    mut_ref_to_a_val_at_one_type_over_a_generic_body_refused,
+    refused("val f is written, and what is written lands on its implementation"),
+    "/test.gx" => r#"
+        mod m;
+        let rf = &mut m::f;
+        *rf <- |x: i64| -> i64 x + 100;
+        let result = m::g(null)
+    "#,
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64; val g: fn(t: Any) -> string",
+    "/test/m.gx" => "let f = |x| x; let g = |t| f(t ~ \"s\")"
+);
+
+// A writable reference to a generic val, which uses have taken at their
+// own types, is refused.
+run!(
+    mut_ref_to_a_generic_val_refused,
+    refused("a::f was made generic by an earlier compile, and a writable reference to it would let a write narrow it"),
+    "/test.gx" => "mod a; let rf = &mut a::f; let result = a::f(1)",
+    "/test/a.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/a.gx" => "let f = |x| x"
+);

@@ -364,6 +364,15 @@ A `val` in a `.gxi` declares exactly the type its implementation has:
 but implemented i64`). When a use needs the wider type, annotate the
 binding (`let x: [i64, null] = 3`); every module then sees the declared
 type, so the others take the null off with `a::x$`.
+A `val`'s type variable stands only inside a function type, where each
+use picks it: `val v: Array<'a>` is refused (declare it at one type,
+`Array<i64>`), and so is `val c: {f: fn(x: 'a) -> string, last: ['a,
+null]}`. The implementation must be as general as the val: under `val f:
+fn(x: 'a) -> 'a`, `let f = |x| { y <- x; x }` over an outer `let y =
+never()` is refused (`let y: Any`, or the val at one type). A val that
+something writes (`m::f <- ..`, `&mut m::f`) must fit its
+implementation: `val f: fn(x: i64) -> i64` over a generic `let f = |x|
+x` takes no write until the `let` is annotated `fn(x: i64) -> i64`.
 
 No currying: a call supplies every required argument, and `add(1)` on a
 two-argument `add` is refused (`missing required argument`), not a

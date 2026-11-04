@@ -10,7 +10,7 @@ use crate::{
         Bound, Mutability, TVar, Type,
         contains::{ContainsFlags, ContainsHist},
         key_text,
-        matches::{MatchHist, SigPairs},
+        matches::{MatchHist, SigMatch, SigPairs},
         tvar::{self, Fresh, Level, RigidGate},
     },
 };
@@ -1546,10 +1546,10 @@ impl FnType {
         Ok(())
     }
 
-    pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<()> {
+    pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<SigMatch> {
         let (mut pairs, mut hist) = (SigPairs::default(), super::RefHist::new());
         self.sig_matches_int(env, impl_fn, &mut pairs, &mut hist)?;
-        pairs.finish(env, &mut hist)
+        pairs.finished(env, &mut hist)
     }
 
     pub(super) fn sig_matches_int(
@@ -1695,7 +1695,7 @@ impl FnType {
             let mut matched: LPooled<Vec<&TVar>> = impl_cells
                 .iter()
                 .filter(|(_, tv)| {
-                    matches!(tvar_map.cells.get(&tv.cell_addr()), Some(Type::TVar(s)) if s.cell_addr() == sig_addr)
+                    matches!(tvar_map.sig_type(tv.cell_addr()), Some(Type::TVar(s)) if s.cell_addr() == sig_addr)
                 })
                 .map(|(_, tv)| tv)
                 .collect();
@@ -1732,7 +1732,7 @@ impl FnType {
             }
             // the conjunct in the signature's terms, whose variables are
             // each caller's to pick
-            let in_sig = impl_tc.swap_cells(&|a| tvar_map.cells.get(&a).cloned());
+            let in_sig = impl_tc.swap_cells(&|a| tvar_map.sig_type(a).cloned());
             let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
             self.for_each_part(&mut |t, _| super::contains::hold_rigid(t, &mut gates));
             for s in sig_tcs.iter() {
@@ -1772,7 +1772,7 @@ impl FnType {
             let impl_tcs: LPooled<Vec<Type>> = impl_tv
                 .cell_constraints()
                 .iter()
-                .map(|c| c.swap_cells(&|a| tvar_map.cells.get(&a).cloned()))
+                .map(|c| c.swap_cells(&|a| tvar_map.sig_type(a).cloned()))
                 .collect();
             for sig_tc in sig_tv.cell_constraints().iter() {
                 if *sig_tc == Type::Any {
@@ -1798,7 +1798,7 @@ impl FnType {
         for (_, tv) in impl_cells.iter() {
             let addr = tv.cell_addr();
             if impl_q.contains_key(&addr) {
-                match tvar_map.cells.get(&addr) {
+                match tvar_map.sig_type(addr) {
                     Some(Type::TVar(s)) if sig_q.contains_key(&s.cell_addr()) => (),
                     None => (),
                     Some(t) => bail!(
@@ -1810,7 +1810,7 @@ impl FnType {
             if nested_q.contains_key(&addr) {
                 continue;
             }
-            match tvar_map.cells.get(&addr) {
+            match tvar_map.sig_type(addr) {
                 None => (),
                 Some(Type::TVar(sig_tv)) if handed_q.contains(&addr) => {
                     held_to(sig_tv, tv)?

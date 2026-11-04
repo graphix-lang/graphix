@@ -341,6 +341,20 @@ whose part over the variable holds `_` or an undeclared variable
 (`StructurePattern::meets_rigid_written`, the same message): the
 mutation writes no test; pins `lang::select::written_test_holding_*`.
 
+**Interface vals.** Not generated: the module generator writes every
+`val` at one type. A val's variable outside a function type is refused
+by a rule that reads the written type alone (`Type::
+variable_outside_functions`), the shallow kind left to its pins
+(`lang::interfaces::val_variable_*`). The rules that hold an
+implementation cell no use copies under a val's variable
+(`module.rs::hold_paired`, trait methods included) and a written val to
+its implementation (`CompileCtx::check_val_written`) need a generated val
+with a variable, or a write through a val over a generic body, which the
+generator does not write; their pins are
+`lang::interfaces::*_over_an_outer_binding_refused`,
+`narrow_write_through_a_val_refused`, `bounded_write_through_a_val_refused`
+and `lang::traits::*method_over_an_outer_binding_refused`.
+
 ## Labeled and optional arguments across the fuzzer
 
 Family 7 needs call sites to work on, and today the generators have

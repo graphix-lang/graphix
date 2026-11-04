@@ -411,7 +411,7 @@ impl FnType {
         }
         let mut outputs = Outputs {
             env,
-            expanding: SmallVec::new(),
+            expanding: Expanding::default(),
             cells: LPooled::take(),
             nodes: LPooled::take(),
         };
@@ -425,8 +425,7 @@ impl FnType {
 /// beneath it adds every cell it reaches to `inputs`.
 struct Outputs<'a> {
     env: &'a Env,
-    /// The typedefs being expanded, by key, with their parameters.
-    expanding: SmallVec<[(usize, triomphe::Arc<[Type]>); 4]>,
+    expanding: Expanding,
     cells: LPooled<AddrSet>,
     nodes: LPooled<AddrSet>,
 }
@@ -457,19 +456,13 @@ impl Outputs<'_> {
             }
             t if t.shared_identity().is_some_and(|n| !self.nodes.insert(n)) => (),
             Type::Ref(tr) if let Some((key, whole)) = t.lookup_ref_probe(self.env) => {
-                match self.expanding.iter().find(|(k, _)| *k == key) {
-                    // a recursive typedef met again over its own parameters
-                    Some((_, params))
-                        if params.len() == tr.params.len()
-                            && params
-                                .iter()
-                                .zip(tr.params.iter())
-                                .all(|(p, q)| strictly_identical(p, q)) => {}
-                    Some(_) => reached(t, inputs, in_nodes),
-                    None => {
-                        self.expanding.push((key, tr.params.clone()));
+                match self.expanding.meets(key, &tr.params) {
+                    Meeting::Again => (),
+                    Meeting::Grown => reached(t, inputs, in_nodes),
+                    Meeting::Fresh => {
+                        self.expanding.0.push((key, tr.params.clone()));
                         self.walk(&whole, inputs, in_nodes);
-                        self.expanding.pop();
+                        self.expanding.0.pop();
                     }
                 }
             }
@@ -497,6 +490,90 @@ impl Type {
     #[doc(hidden)]
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         reached_cells(self, out)
+    }
+
+    /// The open cell, first by name, that stands in this type outside
+    /// every function type: through bindings, a typedef as its expansion
+    /// and an abstract type's parameters. A typedef met again inside
+    /// itself over other parameters, or one that does not resolve, stands
+    /// its parameters there.
+    #[doc(hidden)]
+    pub fn variable_outside_functions(&self, env: &Env) -> Option<TVar> {
+        let mut out: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        OutsideFunctions { env, expanding: Expanding::default(), nodes: LPooled::take() }
+            .walk(self, &mut out);
+        out.values().min_by(|a, b| a.name.cmp(&b.name)).cloned()
+    }
+}
+
+/// The typedefs a walk is expanding, by key, with their parameters.
+#[derive(Default)]
+struct Expanding(SmallVec<[(usize, triomphe::Arc<[Type]>); 4]>);
+
+/// How a walk meets a reference to a typedef ([`Expanding::meets`]).
+enum Meeting {
+    /// Not being expanded.
+    Fresh,
+    /// Inside its own expansion over its own parameters.
+    Again,
+    /// Inside its own expansion over other parameters.
+    Grown,
+}
+
+impl Expanding {
+    fn meets(&self, key: usize, params: &[Type]) -> Meeting {
+        match self.0.iter().find(|(k, _)| *k == key) {
+            None => Meeting::Fresh,
+            Some((_, p))
+                if p.len() == params.len()
+                    && p.iter()
+                        .zip(params.iter())
+                        .all(|(p, q)| strictly_identical(p, q)) =>
+            {
+                Meeting::Again
+            }
+            Some(_) => Meeting::Grown,
+        }
+    }
+}
+
+/// [`Type::variable_outside_functions`]' walk: each cell and shared
+/// composite once.
+struct OutsideFunctions<'a> {
+    env: &'a Env,
+    expanding: Expanding,
+    nodes: LPooled<AddrSet>,
+}
+
+impl OutsideFunctions<'_> {
+    fn walk(&mut self, t: &Type, out: &mut AHashMap<usize, TVar>) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if self.nodes.insert(tv.cell_addr()) {
+                    match tv.binding() {
+                        Some(b) => self.walk(&b, out),
+                        None => {
+                            out.insert(tv.cell_addr(), tv.clone());
+                        }
+                    }
+                }
+            }
+            t if t.shared_identity().is_some_and(|n| !self.nodes.insert(n)) => (),
+            Type::Fn(_) => (),
+            Type::Ref(tr) => match t.lookup_ref_probe(self.env) {
+                Some((key, whole)) => match self.expanding.meets(key, &tr.params) {
+                    Meeting::Again => (),
+                    Meeting::Grown => tr.params.iter().for_each(|p| self.walk(p, out)),
+                    Meeting::Fresh => {
+                        self.expanding.0.push((key, tr.params.clone()));
+                        self.walk(&whole, out);
+                        self.expanding.0.pop();
+                    }
+                },
+                None => tr.params.iter().for_each(|p| self.walk(p, out)),
+            },
+            t => t.for_each_child(&mut |c| self.walk(c, out)),
+        })
     }
 }
 

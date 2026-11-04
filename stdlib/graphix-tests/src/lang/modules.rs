@@ -1740,22 +1740,8 @@ run!(
     "/test.gx" => ROOT_WRITE_BEFORE_A_LOAD; FuseExpect::None
 );
 
-// A write's typing is the binding's it names: a generic `val` stays
-// generic outside and in the body whichever binding is written, and a
-// write to the implementation is held to its generality.
-run!(
-    a_body_write_keeps_a_generic_interface_generic,
-    is(Value::String("1 s".into())),
-    "/test.gx" => r#"
-        mod a;
-        let x = a::f(1);
-        let y = a::f("s");
-        let result = "[x] [y]"
-    "#,
-    "/test/a.gxi" => "val f: fn(x: 'a) -> 'a",
-    "/test/a.gx" => "let f = |x| x; f <- |x| x"; FuseExpect::Jit
-);
-
+// A write's typing is the binding's it names: a write through a generic
+// `val` keeps the body generic, held to its generality.
 run!(
     a_write_through_a_generic_interface_keeps_the_body_generic,
     is(Value::String("1 s".into())),
@@ -1788,6 +1774,57 @@ run!(
             source "super::f <- |x: i64| -> i64 x + 100; let v = 1"
         }
     "#; FuseExpect::Jit
+);
+
+// A val and the binding implementing it are one variable: what a later
+// compile writes through a val at one type, or through a writable
+// reference to it, lands on a generic body, so the load is refused.
+run!(
+    a_load_cannot_write_through_a_val_to_a_generic_body,
+    load_refused("val f is written, and what is written lands on its implementation"),
+    "/test.gx" => r#"
+        mod a;
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val v: i64 };
+            source "super::a::f <- |x: i64| -> i64 x + 100; let v = 1"
+        };
+        let result = select s { error as e => e, null as _ => "accepted" }
+    "#,
+    "/test/a.gxi" => "val f: fn(x: i64) -> i64",
+    "/test/a.gx" => "let f = |x| x"
+);
+
+run!(
+    a_load_cannot_take_a_writable_reference_through_a_val_to_a_generic_body,
+    load_refused("val f is written, and what is written lands on its implementation"),
+    "/test.gx" => r#"
+        mod a;
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val v: i64 };
+            source "let rf = &mut super::a::f; *rf <- |x: i64| -> i64 x + 100; let v = 1"
+        };
+        let result = select s { error as e => e, null as _ => "accepted" }
+    "#,
+    "/test/a.gxi" => "val f: fn(x: i64) -> i64",
+    "/test/a.gx" => "let f = |x| x"
+);
+
+run!(
+    a_load_takes_a_writable_reference_through_a_val_at_its_type,
+    prints("\"accepted\""),
+    "/test.gx" => r#"
+        mod a;
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val v: i64 };
+            source "let rf = &mut super::a::f; *rf <- |x: i64| -> i64 x + 100; let v = 1"
+        };
+        let result = select s { error as e => e, null as _ => "accepted" }
+    "#,
+    "/test/a.gxi" => "val f: fn(x: i64) -> i64",
+    "/test/a.gx" => "let f = |x: i64| -> i64 x"
 );
 
 // A reload may write what an instance of the body it replaces still

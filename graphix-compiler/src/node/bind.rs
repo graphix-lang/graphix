@@ -1961,7 +1961,7 @@ impl<R: Rt> ByRef<R> {
                 // (iface-open-param-01); a write through a val narrower than its
                 // implementation is held to the implementation's type, and mut-ref-poly-01
                 // follows. Rebuild from cr44-E.
-                if ctx.env.poly_binds.contains(&r.id) {
+                if ctx.env.poly_binds.contains(&r.id) && ctx.generalized_earlier(r.id) {
                     bailat!(
                         spec,
                         "{} was made generic by an earlier compile, and a writable \

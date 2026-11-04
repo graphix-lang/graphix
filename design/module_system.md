@@ -213,6 +213,47 @@ root-order-production-01). Each is a `<-` target where the other is
 made through the `val`, and a seq's plan counts the pair one variable
 (`design/dependency_summaries.md` §3).
 
+### A `val`'s type variables
+
+A `val` is a scheme its uses copy: a read of a function-typed val
+(`Env::poly_binds`) and a call through a function type a val holds
+instantiate the variables standing inside function types. A variable
+outside every function type (`val v: Array<'a>`) no use copies, so a
+write at one type and a read at another would share one cell: the
+module's check refuses such a val, "declare the val at one type"
+(`module.rs::check_val_variables` over the written type,
+`Type::variable_outside_functions`: a typedef as its expansion, an
+abstract type's parameters and an unresolved name's arguments outside,
+a typedef met inside itself over grown parameters counting its
+arguments outside). A dynamic module's `sig` is held to it at the
+program's check, a script's interface at `check_script_sig`.
+
+`Type::sig_matches` pairs each open implementation cell with the
+declaration's type at its place (`SigMatch::paired`). A cell no use of
+the implementation copies (a written `let`'s, an outer binding's) is one
+type: paired with a type holding a variable a use picks it is refused,
+naming the way out (the outer binding's type, the val at one type, or a
+quantified annotation on the `let`); paired with a type holding none, a
+concrete type or a whole quantified function type, the declaration
+decides it (`module.rs::hold_paired`), so `val e: B<i64>` over `let e =
+B(1)` builds `e` at `B<i64>`. A trait method's body, an impl's and a
+default, is held the same way (`traits.rs::implements`).
+
+What is written through a val lands on the implementation, the pair
+being one variable, and every use takes the implementation's generic
+variables at its own types; so a val something writes must fit its
+implementation: a copy of the val's type contained in the
+implementation's, the implementation's variables rigid, none taking a
+bound its own bounds do not imply (`CompileCtx::check_val_written`).
+Within one compile every `<-` and `&mut` compiles before the module
+checks, so the module's check asks it of a val that is a `<-` target;
+a later compile's write or `&mut` through a val already joined asks it
+as it marks the target (`CompileCtx::mark_connect_target`). The val as a
+whole is held, not each value written: `m::f <- |x| x` over `val f:
+fn(x: i64) -> i64` and a generic implementation is refused too. A
+writable reference to a val is refused only where the val's own type is
+generic (`CompileCtx::generalized_earlier`).
+
 ## Resolution
 
 ### The table

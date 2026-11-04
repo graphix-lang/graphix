@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, Node, Notify, PendingImport, PrintFlag, Refs, Rt,
-    Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
+    BindId, CFlag, CompileCtx, ExecCtx, LambdaId, Node, Notify, PendingImport, PrintFlag,
+    Refs, Rt, Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
     env::{Env, Glob, ImplDef, ImportEntry, Lexical, Map, UseAnchor, scope_params},
     errf,
@@ -15,11 +15,11 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    node::{self, Nop, Runs, bind::Bind, traits},
+    node::{self, Nop, Runs, bind::Bind, lambda::LambdaDef, traits},
     profile::{self, Phase},
     shared_map::SharedMap,
     typ::{
-        Brief, FnArgKind, FnArgType, FnType, TVar, Type,
+        Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
         tvar::{AtLevel, ForeignWrite, InTask, Level, OwnWrites, TaskId, new_task},
     },
     wrap,
@@ -34,6 +34,7 @@ use netidx_core::{
     path::Path,
 };
 use netidx_value::{Typ, Value};
+use nohash::IntSet;
 use poolshark::local::LPooled;
 use std::{fmt::Write, mem, sync::LazyLock};
 use triomphe::Arc;
@@ -554,8 +555,18 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // (iface-open-param-01); a write through a val narrower than its implementation is held to
 // the implementation's type, and mut-ref-poly-01 follows. Rebuild from cr44-E.
 /// Refuse an implementation of `val name` whose type `typ` is not the
-/// declared `declared`.
-fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
+/// declared `declared` ([`hold_paired`]); `generalized` says its binding is
+/// generic in the cells its own definitions own, and `captured` gives the
+/// types of the bindings its value's lambda captures.
+fn check_val(
+    env: &Env,
+    open: &IntSet<LambdaId>,
+    name: &str,
+    declared: &Type,
+    typ: &Type,
+    generalized: bool,
+    captured: impl Fn() -> LPooled<Vec<Type>>,
+) -> Result<()> {
     // CR claude for claude: [bug/medium] An interface val's written quantified fn type
     // lets its quantifier escape through the implementation, as a let annotation did
     // before rank2-escape-01: `val h: fn<'a: Any>(x: 'a) -> 'a; val y: i64` over `let y
@@ -591,12 +602,140 @@ fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     // types at concrete types only (iface-open-param-01); a write through a val
     // narrower than its implementation is held to the implementation's type, and
     // mut-ref-poly-01 follows. Rebuild from cr44-E.
-    declared.sig_matches(env, typ).map_err(|e| {
+    let refused = |e: anyhow::Error| {
         let typ = format_with_flags(PrintFlag::DerefTVars, || {
             format_compact!("{}", Brief(typ))
         });
         anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}")
+    };
+    let pairs = declared.sig_matches(env, typ).map_err(refused)?;
+    let shared = |tv: &TVar| !tv.level().copied_by(open);
+    hold_paired(env, "val", &pairs, shared, |tv, v| {
+        if generalized {
+            format_compact!(
+                ", that of a binding outside its let: declare the val at one type, or \
+                 give that binding a type that holds every {v}"
+            )
+        } else if holds_cell(&captured(), tv) {
+            format_compact!(
+                ", that of a binding outside its let: declare the val at one type"
+            )
+        } else {
+            format_compact!(
+                ": declare the val at one type, or annotate the implementation's let \
+                 with a quantified type (fn<{v}: ..>)"
+            )
+        }
     })
+    .map_err(refused)
+}
+
+/// Hold an implementation to the declaration (a `val`, or a trait
+/// method's, `what`) that `pairs` matched it with. A cell of the
+/// implementation that is `shared`, one type all its uses share, may not
+/// stand where the declaration has a variable each use picks (`remedy`
+/// names the way out, given the cell and the variable); else the
+/// declaration decides it, as an annotation on the implementation's `let`
+/// would.
+pub(crate) fn hold_paired(
+    env: &Env,
+    what: &str,
+    pairs: &SigMatch,
+    shared: impl Fn(&TVar) -> bool,
+    remedy: impl Fn(&TVar, &TVar) -> CompactString,
+) -> Result<()> {
+    for (tv, sig) in pairs.paired() {
+        if tv.is_bound() || !shared(tv) {
+            continue;
+        }
+        if let Some(v) = free_variable(sig) {
+            let at = match sig {
+                Type::TVar(s) if s.same_cell(&v) => format_compact!("{v}, a type"),
+                sig => format_compact!("{sig}, whose {v}"),
+            };
+            bail!(
+                "where the {what} declares {at} each use picks, the implementation has \
+                 one type all uses share{}",
+                remedy(tv, &v)
+            )
+        }
+        let cell = Type::TVar(tv.clone());
+        sig.check_contains(env, &cell).and_then(|()| cell.check_contains(env, sig))?
+    }
+    Ok(())
+}
+
+/// The open cell of `t`, first by name, that no function type in `t`
+/// quantifies.
+fn free_variable(t: &Type) -> Option<TVar> {
+    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    t.reached_cells(&mut cells);
+    let mut quantified: LPooled<AHashSet<usize>> = LPooled::take();
+    t.each_quantifier(&mut |_, tv| {
+        quantified.insert(tv.cell_addr());
+    });
+    cells
+        .values()
+        .filter(|tv| !tv.is_bound() && !quantified.contains(&tv.cell_addr()))
+        .min_by(|a, b| a.name.cmp(&b.name))
+        .cloned()
+}
+
+/// Whether one of `types` reaches the cell of `tv`.
+pub(crate) fn holds_cell(types: &[Type], tv: &TVar) -> bool {
+    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    types.iter().for_each(|t| t.reached_cells(&mut cells));
+    cells.contains_key(&tv.cell_addr())
+}
+
+/// The types of the bindings the lambda the binding `id` holds, if it
+/// holds one, captures.
+pub(crate) fn captured_types<R: Rt>(
+    ctx: &CompileCtx<R>,
+    id: BindId,
+) -> LPooled<Vec<Type>> {
+    let mut types: LPooled<Vec<Type>> = LPooled::take();
+    if let Some(def) =
+        ctx.bind_to_lambda.get(&id).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
+    {
+        def.captured_ids(&mut |id| {
+            if let Some(b) = ctx.env.by_id.get(&id) {
+                types.push(b.typ.clone())
+            }
+        })
+    }
+    types
+}
+
+/// Whether the implementation's binding `id` is generic in the cells its
+/// own definitions own: a generalized binding nothing writes.
+fn generalized_impl<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> bool {
+    ctx.env.poly_binds.contains(&id) && !ctx.connect_targets.contains(&id)
+}
+
+/// Refuse `val name: typ` where its type variable stands outside every
+/// function type ([`Type::variable_outside_functions`]): that is one type
+/// all the val's uses share, which no declaration may leave open.
+fn check_val_variable(env: &Env, name: &str, typ: &Type) -> Result<()> {
+    match typ.variable_outside_functions(env) {
+        None => Ok(()),
+        Some(v) => bail!(
+            "val {name} has its type variable {v} outside a function type, one type \
+             all its uses share: declare the val at one type"
+        ),
+    }
+}
+
+/// [`check_val_variable`] for each `val` of `sig`, as written.
+fn check_val_variables(env: &Env, scope: &ModPath, sig: &Sig) -> Result<()> {
+    for si in sig.items.iter() {
+        let SigKind::Bind(BindSig { name, typ }) = &si.kind else { continue };
+        typ.scope_refs(scope)
+            .rewrite_declared_args(env)
+            .and_then(|typ| check_val_variable(env, &name.name, &typ))
+            .placed(&si.ori, si.pos)?
+    }
+    Ok(())
 }
 
 /// Refuse `implemented`, the implementation of the declared impl
@@ -609,7 +748,7 @@ fn check_impl_head(
     declared: &FnType,
     implemented: &ImplDef,
 ) -> Result<()> {
-    declared.sig_matches(env, &head_sig(implemented)).map_err(|e| {
+    declared.sig_matches(env, &head_sig(implemented)).map(drop).map_err(|e| {
         anyhow!(
             "impl {trait_name} for {} does not implement the declared impl \
              {trait_name} for {target}: {e:#}",
@@ -894,6 +1033,7 @@ fn check_sig_items<R: Rt>(
 ) -> Result<()> {
     // the interface's types and traits first: a val's type names them
     let view = interface_env(&ctx.env, &scope.lexical, sig)?;
+    check_val_variables(&ctx.env, &scope.lexical, sig)?;
     for si in sig.items.iter() {
         let val = match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => sig_binds
@@ -922,7 +1062,18 @@ fn check_sig_items<R: Rt>(
                 None => &inner.typ,
             };
             proxy_bind.typ.unbind_tvars();
-            check_val(&ctx.env, &inner.name, &proxy_bind.typ, typ)?;
+            check_val(
+                &ctx.env,
+                &ctx.rec_defs,
+                &inner.name,
+                &proxy_bind.typ,
+                typ,
+                generalized_impl(ctx, id),
+                || captured_types(ctx, id),
+            )?;
+            if ctx.connect_targets.contains(&proxy_id) {
+                ctx.check_val_written(&inner.name, &proxy_bind.typ, typ)?
+            }
             Ok(inner.name.clone())
         };
         let name = checked().at(n.spec())?;
@@ -1045,12 +1196,21 @@ pub fn check_script_sig<R: Rt>(
                     .scope_refs(scope)
                     .rewrite_declared_args(&ctx.env)
                     .map_err(at)?;
+                check_val_variable(&ctx.env, &name.name, &declared).map_err(at)?;
                 if let Type::Fn(ft) = &declared {
                     ft.generalize(0)
                 }
                 check_interface_names(&view, scope, si, Some(&declared)).map_err(at)?;
-                check_val(&ctx.env, name.name.as_str(), &declared, &bind.typ)
-                    .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
+                check_val(
+                    &ctx.env,
+                    &ctx.rec_defs,
+                    name.name.as_str(),
+                    &declared,
+                    &bind.typ,
+                    generalized_impl(ctx, bind.id),
+                    || captured_types(ctx, bind.id),
+                )
+                .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
                 // the language server sees the val as a module's: a binding
                 // of its own, with its doc, linked to the script's
                 if ctx.env.ide.is_lsp() {
@@ -1885,6 +2045,8 @@ impl<R: Rt> Update<R> for Module<R> {
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         match &mut self.body {
             Body::Dynamic { source, .. } => {
+                check_val_variables(&ctx.env, &self.scope.lexical, &self.sig)
+                    .at(&self.spec)?;
                 wrap!(source, source.typecheck0(ctx))?;
                 let t = Type::Primitive(Typ::String | Typ::Error);
                 wrap!(source, t.check_contains(&ctx.env, source.typ()))?;

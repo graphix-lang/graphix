@@ -1874,6 +1874,15 @@ impl<R: Rt> CompileCtx<R> {
                 call.pos
             )
         }
+        let mut pairs: LPooled<Vec<(BindId, BindId)>> = LPooled::take();
+        self.static_callees.pairs_of(std::iter::once(id), &mut pairs);
+        for (inner, outer) in pairs.iter().filter(|(_, outer)| *outer == id) {
+            if let (Some(i), Some(o)) =
+                (self.env.by_id.get(inner), self.env.by_id.get(outer))
+            {
+                self.check_val_written(&o.name, &o.typ, &i.typ)?
+            }
+        }
         for id in ids {
             self.batch_connect_targets.insert(id);
             self.connect_targets.insert(id);
@@ -1882,6 +1891,49 @@ impl<R: Rt> CompileCtx<R> {
             }
         }
         Ok(())
+    }
+
+    /// Refuse writes through the `val` `name`, declared `val`, that the
+    /// binding implementing it, of type `imp`, would not take: what is
+    /// written through the val is of the val's type, which must fit the
+    /// implementation's with each variable held rigid, every use having
+    /// taken those at its own types.
+    pub(crate) fn check_val_written(
+        &self,
+        name: &str,
+        val: &Type,
+        imp: &Type,
+    ) -> Result<()> {
+        let held = self.monomorphic(imp);
+        let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
+        held.reached_cells(&mut cells);
+        let rigid: LPooled<Vec<(typ::TVar, SmallVec<[Type; 1]>)>> = cells
+            .values()
+            .filter(|tv| !tv.is_bound())
+            .map(|tv| (tv.clone(), tv.cell_constraints()))
+            .collect();
+        let _gates: LPooled<Vec<_>> =
+            rigid.iter().map(|(tv, _)| tv.open_rigid()).collect();
+        // a rigid cell takes on the bounds of the open cells merged into
+        // it: a bound its own do not imply narrows it
+        let fits = held.check_contains(&self.env, &self.monomorphic(val)).is_ok()
+            && rigid.iter().all(|(tv, own)| {
+                tv.cell_constraints().iter().all(|c| {
+                    *c == Type::Any
+                        || own.iter().any(|q| q.implies(&self.env, c).unwrap_or(false))
+                })
+            });
+        match fits {
+            true => Ok(()),
+            false => format_with_flags(PrintFlag::DerefTVars, || {
+                bail!(
+                    "val {name} is written, and what is written lands on its \
+                     implementation, of type {}, which the val's {val} does not fit: \
+                     annotate the implementation's let with the val's type",
+                    typ::Brief(imp)
+                )
+            }),
+        }
     }
 
     /// Where `a` or `b`, one variable, is a `<-` target, a static call

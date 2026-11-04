@@ -209,7 +209,22 @@ val fold: fn(a: Array<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> '
 ```
 
 Type variables (like `'a`, `'b`, `'e`) work the same as in regular type
-annotations.
+annotations: each use of `map` picks its own `'a` and `'b`. A variable
+stands only inside a function type, where each use can pick it. One
+outside every function type, as in `val v: Array<'a>`, would be one type
+that every use shares, so it is refused: declare the val at one type,
+`val v: Array<i64>`.
+
+The implementation must be as general as its `val`. Under `val f: fn(x:
+'a) -> 'a`, an implementation that keeps its argument in a binding
+outside it, `let y = never(); let f = |x| { y <- x; x }`, has one type
+for every call, and is refused: give `y` a type that holds every `'a`
+(`let y: Any = never()`), or declare `f` at one type. A `val` declared at
+one type over a generic implementation can be called, but what is
+written through it (`m::f <- ..`, or through `&mut m::f`) lands on the
+implementation, which other uses take at other types, so a `val`
+something writes must fit its implementation: annotate the
+implementation's `let` with the val's type.
 
 ## Module Hierarchies
 

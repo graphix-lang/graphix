@@ -428,7 +428,8 @@ impl Level {
     /// Does a call copy a cell at this level? A generic cell, and one a
     /// definition owns whose gate is not open: the definition's scheme.
     /// A top-level cell, and an open gate's, is shared.
-    pub(super) fn copied_by(&self, open: &IntSet<LambdaId>) -> bool {
+    #[doc(hidden)]
+    pub fn copied_by(&self, open: &IntSet<LambdaId>) -> bool {
         match self {
             Self::Generic | Self::Written => true,
             Self::Def { owner, .. } => !open.contains(owner),

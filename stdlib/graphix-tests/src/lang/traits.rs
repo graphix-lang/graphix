@@ -2951,3 +2951,85 @@ run!(
 }"#,
     is(Value::I64(1))
 );
+
+// A method's variable is each call's to pick: an implementation that ties
+// it to a binding outside, which no call copies, does not implement it.
+run!(
+    method_over_an_outer_binding_refused,
+    r#"{
+    type C = Abstract<i64>;
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    let y = never();
+    impl Put for C { let put = |s, x| { y <- x; x } };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused(
+        "where the method declares 'a, a type each use picks, the implementation has one type all uses share, that of a binding outside its let: give that binding a type that holds every 'a"
+    )
+);
+
+run!(
+    method_over_an_outer_binding_of_every_type,
+    r#"{
+    type C = Abstract<i64>;
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    let y: Any = never();
+    impl Put for C { let put = |s, x| { y <- x; x } };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    prints("[i64:1, \"s\"]")
+);
+
+run!(
+    default_method_over_an_outer_binding_refused,
+    r#"{
+    type C = Abstract<i64>;
+    let y = never();
+    trait Put { val put: fn(self, x: 'a) -> 'a = |s, x| { y <- x; x } };
+    impl Put for C {};
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused("where the method declares 'a, a type each use picks")
+);
+
+run!(
+    declared_method_over_an_outer_binding_refused,
+    refused("where the method declares 'a, a type each use picks"),
+    "/test.gx" => r#"
+        mod m;
+        use m::Put;
+        let result = (Put::put(m::c, 1), Put::put(m::c, "s"), m::n(1))
+    "#,
+    "/test/m.gxi" => r#"
+        type C;
+        trait Put { val put: fn(self, x: 'a) -> 'a };
+        impl Put for C;
+        val c: C;
+        val n: fn(u: i64) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        type C = Abstract<i64>;
+        let y = never();
+        impl Put for C { let put = |s, x| { y <- x; x } };
+        let c = C(1);
+        let n = |u| u + y
+    "#
+);
+
+// An impl's own written annotation of the method names the method's
+// variables, which each call picks.
+run!(
+    an_impl_annotation_keeps_the_method_variables_per_call,
+    r#"{
+    trait T { val m: fn<'a: ['b, null]>(#x: 'a, self, y: 'b) -> 'a };
+    impl T for string {
+      let m: fn<'a: [null, 'b]>(#x: 'a, s: string, y: 'b) -> 'a = |#x, s, y| x
+    };
+    (T::m(#x: "a", "s", "c"), T::m(#x: 1, "s", 2))
+}"#,
+    prints(r#"["a", i64:1]"#);
+    FuseExpect::Jit
+);

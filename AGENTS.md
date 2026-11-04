@@ -1648,7 +1648,17 @@ cycle, across workers; the compiler never pins threads.
   in a join runs jobs stolen from any of its compiles (`branch::Live`,
   `check_in_tasks`, `fusion::fuse_each`). Every cell of an interface
   `val`'s function type is generic, a constructor trait's element
-  included: a call copies it.
+  included: a call copies it. A `val`'s type variable stands only
+  inside function types (a typedef as its expansion; an abstract
+  type's parameter is outside), else it is refused: declare the val at
+  one type (`Type::variable_outside_functions`). An implementation cell
+  no use copies (a written `let`'s, an outer binding's) may not stand
+  where the val, or a trait method's declaration, has a variable a use
+  picks; else the declaration decides it, as an annotation on the
+  `let` would (`module::hold_paired`). A val something writes (`<-`,
+  `&mut`, in any compile) must fit its implementation, whose variables
+  are held rigid with their bounds (`CompileCtx::check_val_written`); a
+  `&mut` of a val is refused only where the val itself is generic.
 - **References** (`design/place_references.md`): `&e` is read-only
   (`&T`, covariant); `&mut e` is writable (`&mut T`, invariant) and
   `*r <- v` requires it of every reference `r` may hold. A read through a

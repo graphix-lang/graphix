@@ -14,6 +14,7 @@ use super::{
     coretraits::method_ftype,
     genn::SynthCall,
     lambda::LambdaDef,
+    module,
 };
 use crate::{
     BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope,
@@ -44,6 +45,7 @@ use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
+use std::cell::OnceCell;
 use triomphe::Arc;
 
 /// The declared signature of a trait method, scoped to the declaring
@@ -101,15 +103,36 @@ pub(crate) fn method_sig(
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface
-/// `val` is checked).
-fn implements(env: &Env, declared: &FnType, implemented: &Type) -> Result<()> {
-    match implemented.with_deref(|t| match t {
+/// `val` is checked); and a cell of the body that a binding it captures
+/// holds is held as an interface `val`'s is ([`module::hold_paired`]).
+/// `id` is the body's binding.
+fn implements<R: Rt>(
+    ctx: &CompileCtx<R>,
+    declared: &FnType,
+    implemented: &Type,
+    id: BindId,
+) -> Result<()> {
+    let Some(ft) = implemented.with_deref(|t| match t {
         Some(Type::Fn(ft)) => Some(ft.clone()),
         _ => None,
-    }) {
-        Some(ft) => declared.sig_matches(env, &ft),
-        None => bail!("{implemented} is not a function"),
-    }
+    }) else {
+        bail!("{implemented} is not a function")
+    };
+    let pairs = declared.sig_matches(&ctx.env, &ft)?;
+    let captured = OnceCell::new();
+    let shared = |tv: &TVar| {
+        !tv.level().copied_by(&ctx.rec_defs)
+            && module::holds_cell(
+                captured.get_or_init(|| module::captured_types(ctx, id)),
+                tv,
+            )
+    };
+    module::hold_paired(&ctx.env, "method", &pairs, shared, |_, v| {
+        format_compact!(
+            ", that of a binding outside its let: give that binding a type that holds \
+             every {v}"
+        )
+    })
 }
 
 /// A trait method as the trait declares it: its signature
@@ -453,7 +476,7 @@ impl<R: Rt> Update<R> for Trait<R> {
             let Some(id) = m.default else { continue };
             let Some(bind) = ctx.env.by_id.get(&id) else { continue };
             let declared = m.typ.reset_tvars();
-            implements(&ctx.env, &declared, &bind.typ).with_context(|| {
+            implements(ctx, &declared, &bind.typ, id).with_context(|| {
                 format!(
                     "the default {} of trait {} does not implement the declared {declared}",
                     m.name, self.def.name
@@ -1001,7 +1024,7 @@ impl<R: Rt> Update<R> for Impl<R> {
                 )
             })?;
             let declared = method_sig_at(&d.typ.reset_tvars(), &self.def.target);
-            implements(&ctx.env, &declared, &bind.typ).with_context(|| {
+            implements(ctx, &declared, &bind.typ, *id).with_context(|| {
                 format!(
                     "method {} of impl {} for {} does not implement the declared {}",
                     d.name,

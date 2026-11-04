@@ -1,10 +1,11 @@
 use crate::{
-    AddrMap, AddrSet, PrintFlag,
+    AddrSet, PrintFlag,
     env::Env,
     format_with_flags,
+    ids::AddrHasher,
     stack::ensure_sufficient,
     typ::{
-        AndAc, Bound, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, Type,
+        AndAc, Bound, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar, Type,
         contains::{ContainsHist, find_open_cell},
         setops::{memo_on, strictly_identical},
     },
@@ -12,10 +13,12 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use enumflags2::BitFlags;
+use indexmap::IndexMap;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
+    hash::BuildHasherDefault,
     mem,
     ops::{Deref, DerefMut},
 };
@@ -25,7 +28,9 @@ use std::{
 /// waits until the rest of the signature has paired what it can.
 #[derive(Debug, Default, Clone)]
 pub(super) struct SigPairs {
-    pub(super) cells: AddrMap<Type>,
+    /// Each open implementation cell paired, by address in the order the
+    /// walk met it, with the signature's type at its place.
+    cells: IndexMap<usize, (TVar, Type), BuildHasherDefault<AddrHasher>>,
     /// The unions whose pairing waits.
     deferred: Vec<DeferredUnion>,
     /// Each function type paired, signature and implementation, whose
@@ -49,11 +54,37 @@ struct DeferredUnion {
     within: SmallVec<[RefPair; 2]>,
 }
 
+/// A finished signature match ([`Type::sig_matches`]).
+pub struct SigMatch(SigPairs);
+
+impl SigMatch {
+    /// Each open implementation cell the match paired, in the order the
+    /// walk met it, with the signature's type at its place.
+    pub fn paired(&self) -> impl Iterator<Item = (&TVar, &Type)> {
+        self.0.cells.values().map(|(tv, t)| (tv, t))
+    }
+}
+
 /// The most members an open union's pairing searches over; a larger one
 /// pairs in stored order.
 const MAX_PAIRED_MEMBERS: usize = 6;
 
 impl SigPairs {
+    /// The signature's type paired with the implementation cell at `addr`.
+    pub(super) fn sig_type(&self, addr: usize) -> Option<&Type> {
+        self.cells.get(&addr).map(|(_, t)| t)
+    }
+
+    /// End a signature match ([`Self::finish`]) and give what it paired.
+    pub(super) fn finished(
+        mut self,
+        env: &Env,
+        hist: &mut RefHist<AHashSet<RefPair>>,
+    ) -> Result<SigMatch> {
+        self.finish(env, hist)?;
+        Ok(SigMatch(self))
+    }
+
     /// End a signature match: pair the deferred unions, then judge every
     /// paired function type's bounds over the finished pairing.
     pub(super) fn finish(
@@ -705,10 +736,10 @@ impl Type {
             })
     }
 
-    pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<()> {
+    pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<SigMatch> {
         let (mut pairs, mut hist) = (SigPairs::default(), RefHist::new());
         self.sig_matches_int(env, impl_type, &mut pairs, &mut hist)?;
-        pairs.finish(env, &mut hist)
+        pairs.finished(env, &mut hist)
     }
 
     pub(super) fn sig_matches_int(
@@ -887,7 +918,7 @@ impl Type {
                 if let Some(b) = impl_tv.binding() {
                     return sig_type.sig_matches_int(env, &b, tvar_map, hist);
                 }
-                match tvar_map.cells.get(&impl_tv.cell_addr()) {
+                match tvar_map.sig_type(impl_tv.cell_addr()) {
                     Some(prev_sig_type) => {
                         let matches = match (sig_type, prev_sig_type) {
                             (Type::TVar(tv0), Type::TVar(tv1)) => tv0.same_cell(tv1),
@@ -904,7 +935,10 @@ impl Type {
                         }
                     }
                     None => {
-                        tvar_map.cells.insert(impl_tv.cell_addr(), sig_type.clone());
+                        tvar_map.cells.insert(
+                            impl_tv.cell_addr(),
+                            (impl_tv.clone(), sig_type.clone()),
+                        );
                         Ok(())
                     }
                 }

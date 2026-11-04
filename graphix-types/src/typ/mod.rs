@@ -42,6 +42,7 @@ pub(crate) use contains::find_impl;
 pub use contains::{InfiniteType, TypeMismatch};
 pub mod fntyp;
 mod matches;
+pub use matches::SigMatch;
 mod normalize;
 pub use normalize::{NormKey, norm_key};
 mod print;
