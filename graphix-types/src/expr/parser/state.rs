@@ -1,5 +1,5 @@
 use super::{input::Mark, lines};
-use combine::stream::position::SourcePosition;
+use crate::SourcePosition;
 use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
 use std::{

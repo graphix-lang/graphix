@@ -1,5 +1,5 @@
 use crate::{
-    PrintFlag,
+    PrintFlag, SourcePosition,
     expr::{
         At, CouldNotResolve, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin,
         Sig, SigItem, SigKind, Source, UseItem, parser, serialize,
@@ -10,7 +10,6 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
-use combine::stream::position::SourcePosition;
 use compact_str::{CompactString, format_compact};
 use futures::future::{Future, join_all};
 use log::{info, warn};

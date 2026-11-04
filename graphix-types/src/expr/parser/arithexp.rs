@@ -9,12 +9,12 @@ use super::{
     variant,
 };
 use crate::{
+    SourcePosition,
     expr::{ApplyExpr, BinOp, Expr, ExprKind, Name},
     typ::Mutability,
 };
 use arcstr::ArcStr;
-use combine::stream::position::SourcePosition;
-use netidx_value::parser::rd;
+use netidx_value::parser as value_parser;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -63,7 +63,9 @@ fn postfix_op(i: &mut Input, key: bool) -> R<Post> {
             i.sptoken('.')?;
             choice!(
                 i,
-                |i| i.attempt(|i| i.value_part(rd::int::<usize>)).map(Post::Index),
+                |i| i
+                    .attempt(|i| i.value_part(value_parser::int::<usize>))
+                    .map(Post::Index),
                 |i| {
                     i.spaces();
                     let pos = i.pos();

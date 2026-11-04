@@ -1,5 +1,5 @@
 use crate::{
-    PRINT_FLAGS, PrintFlag,
+    PRINT_FLAGS, PrintFlag, SourcePosition,
     expr::{
         TypeNote, TypeNotes, WrittenAt,
         print::{PrettyBuf, PrettyDisplay, item_end, item_sep, write_comments},
@@ -8,7 +8,6 @@ use crate::{
     typ::{Bound, Mutability, Type, TypeRef, setops::union_identical},
 };
 use arcstr::ArcStr;
-use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::Typ;

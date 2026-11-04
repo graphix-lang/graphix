@@ -1,4 +1,5 @@
 use crate::{
+    SourcePosition,
     expr::{
         Attr, BindExpr, CatchExpr, CatchRole, Comment, Comments, Decorations, Doc, Eol,
         Expr, ExprKind, ModPath, Name, Origin, OriginScope, ParserContext, Pattern,
@@ -10,13 +11,12 @@ use crate::{
 };
 use ahash::AHashMap;
 use arcstr::{ArcStr, literal};
-use combine::stream::position::SourcePosition;
 use compact_str::{CompactString, format_compact};
 use escaping::Escape;
 use netidx_core::path::Path;
 use netidx_value::{
     Value,
-    parser::{duration_of, rd},
+    parser::{self as value_parser, duration_of},
 };
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -770,7 +770,7 @@ fn printed_scalar(i: &mut Input) -> R<Value> {
         i,
         |i| i.attempt(printed_datetime),
         |i| i.attempt(|i| {
-            i.value_part(rd::duration).map(|d| Value::Duration(Arc::new(d)))
+            i.value_part(value_parser::duration).map(|d| Value::Duration(Arc::new(d)))
         }),
         |i| i.attempt(printed_nonfinite),
         printed_large_integer
@@ -800,7 +800,7 @@ fn literal(i: &mut Input) -> R<Expr> {
             let start = i.mark();
             let v = i.knot(|i| {
                 i.not_followed_by(|i| i.token('"'))?;
-                let v = i.value_part(rd::value)?;
+                let v = i.value_part(value_parser::value)?;
                 not_prefix(i)?;
                 Ok(v)
             })?;

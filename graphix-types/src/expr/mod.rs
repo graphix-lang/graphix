@@ -1,12 +1,11 @@
 use crate::{
-    PRINT_FLAGS, PrintFlag,
+    PRINT_FLAGS, PrintFlag, SourcePosition,
     expr::print::{PrettyBuf, PrettyDisplay},
     list, rep,
     typ::{FnType, Mutability, TVar, Type},
 };
 use arcstr::{ArcStr, literal};
 pub use binop::BinOp;
-use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
 pub use context::{At, ErrorContext, ErrorSite, ParserContext};
 pub use modpath::ModPath;

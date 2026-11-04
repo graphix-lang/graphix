@@ -21,7 +21,6 @@ anyhow = { workspace = true }
 arcstr = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-combine = { workspace = true }
 compact_str = { workspace = true }
 derive_builder = { workspace = true }
 dirs = { workspace = true }

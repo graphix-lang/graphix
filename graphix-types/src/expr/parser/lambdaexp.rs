@@ -9,12 +9,14 @@ use super::{
     typexp::flatten_bounds,
     typexp::{tvar_bound, typ},
 };
-use crate::expr::{
-    Arg, ArgKind, Comments, Eol, Expr, ExprKind, ItemComments, LambdaBody, LambdaExpr,
-    Name, StructurePattern, WrittenAt,
+use crate::{
+    SourcePosition,
+    expr::{
+        Arg, ArgKind, Comments, Eol, Expr, ExprKind, ItemComments, LambdaBody,
+        LambdaExpr, Name, StructurePattern, WrittenAt,
+    },
 };
 use arcstr::{ArcStr, literal};
-use combine::stream::position::SourcePosition;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 

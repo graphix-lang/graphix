@@ -25,7 +25,6 @@ pub mod stack;
 pub mod tracked;
 pub mod typ;
 
-pub use combine::stream::position::SourcePosition;
 pub use stack::set_stack_budget;
 
 use ahash::AHashMap;
@@ -37,10 +36,30 @@ use parking_lot::Mutex;
 use std::{
     any::{Any, TypeId},
     cell::Cell,
+    fmt,
     sync::LazyLock,
     thread::LocalKey,
 };
 pub use uuid::Uuid;
+
+/// A place in a source text: its line and its column, each counted from 1.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
+pub struct SourcePosition {
+    pub line: i32,
+    pub column: i32,
+}
+
+impl Default for SourcePosition {
+    fn default() -> Self {
+        SourcePosition { line: 1, column: 1 }
+    }
+}
+
+impl fmt::Display for SourcePosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line: {}, column: {}", self.line, self.column)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 #[bitflags]

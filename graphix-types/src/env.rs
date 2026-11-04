@@ -1,5 +1,5 @@
 use crate::{
-    AddrSet, BindId, CFlag,
+    AddrSet, BindId, CFlag, SourcePosition,
     expr::{At, Expr, ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
         FieldRefSite, Ide, IdeMode, Lowered, ModuleRefSite, ReferenceSite, ScopeMapEntry,
@@ -17,7 +17,6 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use combine::stream::position::SourcePosition;
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::{

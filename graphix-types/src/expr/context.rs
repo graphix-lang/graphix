@@ -1,7 +1,9 @@
 //! Where an error arose and what it passed through on its way out.
 
-use crate::expr::{Expr, Origin, Source, parser, print::Bare};
-use combine::stream::position::SourcePosition;
+use crate::{
+    SourcePosition,
+    expr::{Expr, Origin, Source, parser, print::Bare},
+};
 use poolshark::local::LPooled;
 use std::fmt::{self, Write};
 use triomphe::Arc;

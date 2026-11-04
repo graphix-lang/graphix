@@ -2,14 +2,16 @@ use super::{
     GRAPHIX_ESC, GRAPHIX_MUST_ESC, choice, expr,
     input::{Input, R},
 };
-use crate::expr::{
-    Expr, ExprKind, StrForm,
-    ornament::{holds_attr, holds_comment},
+use crate::{
+    SourcePosition,
+    expr::{
+        Expr, ExprKind, StrForm,
+        ornament::{holds_attr, holds_comment},
+    },
 };
 use arcstr::ArcStr;
-use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
-use netidx_value::{Value, parser::rd};
+use netidx_value::{Value, parser as value_parser};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -103,7 +105,9 @@ fn bracket_note(i: &mut Input) -> R<Intp> {
 
 fn chunk_part(i: &mut Input) -> R<Intp> {
     let pos = i.pos();
-    let s = i.value_part(|s| rd::escaped_string(s, &GRAPHIX_MUST_ESC, &GRAPHIX_ESC))?;
+    let s = i.value_part(|s| {
+        value_parser::escaped_string(s, &GRAPHIX_MUST_ESC, &GRAPHIX_ESC)
+    })?;
     let end = i.pos();
     match s.is_empty() {
         true => Err(i.unexpected("empty string")),

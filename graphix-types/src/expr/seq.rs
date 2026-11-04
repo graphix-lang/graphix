@@ -15,7 +15,7 @@ use super::{
     StructurePattern, TryWithExpr, WrittenAt,
 };
 use crate::{
-    BindId,
+    BindId, SourcePosition,
     env::Env,
     expr::{At, Name, Origin, OriginScope},
     ide::Lowered,
@@ -25,7 +25,6 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
-use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use indexmap::IndexMap;
 use netidx_core::path::Path;

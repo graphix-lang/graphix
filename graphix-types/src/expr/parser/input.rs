@@ -1,9 +1,8 @@
 use super::state::{Depth, Info, Labels, Mode, State};
-use crate::{expr::Attr, stack::ensure_sufficient};
+use crate::{SourcePosition, expr::Attr, stack::ensure_sufficient};
 use ahash::AHashMap;
-use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
-use netidx_value::parser::rd::{self, Expected, Item};
+use netidx_value::parser::{Expected, Failure, Item, escapes};
 use poolshark::local::LPooled;
 
 /// A point in the text: its byte offset, its position as an editor counts
@@ -648,7 +647,7 @@ impl<'a> Input<'a> {
     /// the start consumed the text before it.
     pub(super) fn value_part<T>(
         &mut self,
-        p: impl FnOnce(&'a str) -> Result<(T, usize), rd::Failure>,
+        p: impl FnOnce(&'a str) -> Result<(T, usize), Failure>,
     ) -> R<T> {
         let f = match p(self.rest()) {
             Ok((v, used)) => {
@@ -667,7 +666,7 @@ impl<'a> Input<'a> {
                 self.labels(at.off, true, |l| items.iter().for_each(|i| expect(l, *i)))
             }
             Expected::Escape(must_esc, esc) => self.labels(at.off, true, |l| {
-                rd::escapes(must_esc, esc).for_each(|c| expect(l, Item::Char(c)))
+                escapes(must_esc, esc).for_each(|c| expect(l, Item::Char(c)))
             }),
             Expected::Refused(why) => {
                 self.labels(at.off, false, |l| l.message(Info::text(why)))

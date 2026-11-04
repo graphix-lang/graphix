@@ -11,7 +11,7 @@ use crate::expr::{
     Expr, ExprKind, Name, Pattern, StructurePattern, WrittenAt, WrittenForm,
 };
 use arcstr::ArcStr;
-use netidx_value::{Value, parser::rd};
+use netidx_value::{Value, parser as value_parser};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -207,7 +207,7 @@ fn literal_pattern(i: &mut Input) -> R<StructurePattern> {
         |i| {
             let start = i.mark();
             let (v, form) = choice!(i, string_pattern, |i| {
-                i.attempt(|i| i.value_part(rd::value))
+                i.attempt(|i| i.value_part(value_parser::value))
                     .map(|v| (v, WrittenForm::default()))
             })?;
             not_prefix(i)?;

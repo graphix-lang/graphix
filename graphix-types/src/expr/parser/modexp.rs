@@ -6,13 +6,15 @@ use super::{
     typexp::{typ, typedef},
     typname,
 };
-use crate::expr::{
-    BindSig, Comment, Comments, Eol, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox,
-    Sig, SigItem, SigKind, UseComment, UseCommentKind, UseComments, UseItem, WrittenPath,
-    get_origin,
+use crate::{
+    SourcePosition,
+    expr::{
+        BindSig, Comment, Comments, Eol, Expr, ExprKind, ModPath, ModuleKind, Name,
+        Sandbox, Sig, SigItem, SigKind, UseComment, UseCommentKind, UseComments, UseItem,
+        WrittenPath, get_origin,
+    },
 };
 use arcstr::{ArcStr, literal};
-use combine::stream::position::SourcePosition;
 use netidx_core::path::Path;
 use poolshark::local::LPooled;
 use triomphe::Arc;

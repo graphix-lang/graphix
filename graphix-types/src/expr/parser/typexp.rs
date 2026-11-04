@@ -9,6 +9,7 @@ use super::{
     sep_by1_tok_trailing, sort_unique, typname,
 };
 use crate::{
+    SourcePosition,
     expr::{
         Comment, Comments, Eol, ItemComments, ModPath, Name, TypeDefBody, TypeDefExpr,
         TypeNote, TypeNotes, WrittenAt, WrittenPath, get_origin, noted_items,
@@ -18,7 +19,6 @@ use crate::{
     },
 };
 use arcstr::{ArcStr, literal};
-use combine::stream::position::SourcePosition;
 use compact_str::{CompactString, format_compact};
 use netidx_core::utils::Either;
 use netidx_value::Typ;
