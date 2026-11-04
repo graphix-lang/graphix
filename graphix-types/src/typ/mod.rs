@@ -297,6 +297,15 @@ pub(super) struct NodePairs {
 impl NodePairs {
     const EAGER: u32 = 64;
 
+    // CR claude for claude: [risk/low] A variant's key is its payload's allocation
+    // (node_addr), which leaves out the tag: two variants of different tags over one
+    // payload allocation share a key, so what one walk found for `A(p) against a node
+    // answers for `B(p) too, where every user reads the tag (contains' Link::equal,
+    // could_match's found and apart, Identity::same's found, needs_split's apart). No
+    // production path builds two tags over one payload today; only a test does
+    // (contains' a_param_key_tells_apart_variants_over_one_payload, which param_key
+    // tells apart by folding the tag in). A direction: key a variant by its payload and
+    // its tag. (node-pairs-variant-tag-01)
     /// The key of the node pair `t0`, `t1`, when both are shared
     /// composites and the walk has grown past `EAGER`.
     #[inline]
@@ -1175,6 +1184,27 @@ impl TypeRef {
         self.resolved().map(|r| r.def_key())
     }
 
+    // CR claude for claude: [risk/medium] same_definition and def_key read only the
+    // resolution cell: two references to one definition, one cell filled and one open,
+    // are two definitions here, so a walk that fills cells (resolve_in, through ref_id
+    // and lookup_ref) changes what a later walk's shortcuts read (could_match's and
+    // contains' (Ref, Ref) arms, diff's same_ref, the keys def_key gives). Review r11
+    // (X-r1-2) found it through cr48-X's shared containment walk (ce6523c7c), which
+    // skipped probes that had filled cells: rgt/v5order.gx typed two identical selects
+    // apart, and an extra probe whose answer was thrown away, or an earlier select over
+    // the same names (v5twice.gx), gave main's capture type back (the reviewer's
+    // attribution, not traced further). Not shown on main, whose walks fill the cells
+    // they read; any memo that skips a walk can expose it. A direction: resolve an open
+    // cell where these read it (they would need the env). probes:
+    // ~/ptmp/cr29/scratch/review-r11/X-r1-2/rgt/ (same-definition-fill-01)
+    // 2026-11-03 claude: The shared containment walk that exposed it is removed from
+    // cr48-X. The other memos that skip a walk (diff's done, could_match's refuted and
+    // apart, needs_split's NodePairs) remain, as main's diff and could_match memos do;
+    // none has shown it.
+    // 2026-11-03 claude: cr48-X2 carries this CR to main; the shared containment walk
+    // never came, and every memo the note above lists is there (diff's done,
+    // could_match's refuted and apart, needs_split's NodePairs). Unchanged: not shown
+    // on main.
     /// Whether two references name one definition: two filled cells by
     /// the definition, two open ones by the written scope and name.
     pub(crate) fn same_definition(&self, other: &Self) -> bool {

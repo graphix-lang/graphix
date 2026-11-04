@@ -149,6 +149,40 @@ pub(super) struct ContainsHist {
     trial: bool,
 }
 
+// CR claude for claude: [bug/medium] contains' growth bound counts the expansions of
+// a definition on a side that grew one after another, and an expansion that does not
+// grow starts the count again, so a definition beside a non-growing application of
+// itself, or two growing on alternate steps, may never be cut: `type G<'a> =
+// [Error<G<Array<'a>>>, Error<G<'a>>, `X]`, H alike with `Y, `let v: G<i64> =
+// never(); select v { H<i64> as x => 0, _ => 1 }` (grow3.gx; grow2.gx alike) does
+// not end its --check in 60 s on cr48-X, in matching_type's contains under
+// set_covers_by_distribution; main hangs earlier, in could_match. diff and
+// could_match (PathApps), rep_collision, regular and textdata cut where
+// cast::grows_on does (a path holding MAX_GROWTH applications of the definition
+// with smaller parameters), which ends every walk; contains could take that rule
+// too. probes: ~/ptmp/cr29/scratch/r11-X/fix/grow2.gx, grow3.gx
+// (contains-growth-reset-01)
+// 2026-11-03 claude: grow2.gx ended on cr48-X 7d0551cac, whose matching_type probes
+// shared one ContainsHist; with that walk removed (matching-type-contains-dag-01)
+// grow2 hangs here again (gdb: contains_int frames only), in matching_type's
+// contains under set_covers_by_distribution, as grow3 does and as main does
+// (earlier, in could_match). Review r11 round 2's cap15.gx (mkcap.py 15: G applied
+// to a parameter of 2^15 leaves) hangs here too: this bound reads params_size, which
+// stops counting at PARAMS_CAP (grows-on-counts-all-01). PathApps now counts only
+// definitions ResolvedRef::grows takes, each unfolding once, and a size past
+// PARAMS_CAP as larger than every other: contains could take that rule.
+// 2026-11-03 claude: cr48-X2 carries this CR to main without cr48-X's growth cut,
+// and it stands there: on base-r11 (main 8814f118b) and cr48-X2 alike grow2.gx and
+// grow3.gx are killed at 60 s here (gdb: Select::typecheck0_with ->
+// PatternNode::capture_type -> Type::matching_type -> contains_int under set_commit;
+// main now reaches contains before could_match), and an annotation alone reaches it:
+// `type G<'a> = [Error<G<Array<'a>>>, Error<G<'a>>, `X]`, H the same, `let v: G<i64>
+// = never(); let w: H<i64> = v` (cg1.gx) is killed at 60 s in Bind::check_value ->
+// Type::check_contains -> contains_int on both (G against G ends at same_ref).
+// PathApps, ResolvedRef::grows and PARAMS_CAP named above are cr48-X's, parked
+// (diff-cycle-hang-01): here diff and could_match have no growth bound and
+// params_size stops at 1 << 16. probes: ~/ptmp/cr29/scratch/r11-X/x2/ (cg1.gx,
+// grow3.gx, grow3.base.gdb)
 /// How many expansions of one typedef in a row may take larger params. A
 /// pair met again ends a walk, so params that keep growing are a walk
 /// that never ends (`type N<'a> = [null, ('a, N<Array<'a>>)]`); nested
@@ -1999,6 +2033,39 @@ impl Type {
         {
             return Ok(r);
         }
+        // CR claude for claude: [perf/low] A probe keeps a verdict only where its walk
+        // assumed no pair from further out, so over names that recur through error
+        // payloads one containment walk can be exponential: generated p1088.gx (gen_rnd.py
+        // seed 1088) and err4.gx (mkerr.py 4: X_i = [Error<X_i+1>, Error<X_k>,
+        // Error<Error<X_i+2>>, `P], a Y twin with `Q, `select v: [X0, Y0] { Y0 as y => 0, _
+        // => 1 }`) time out at 60 s, on main and on cr48-X with diff-cycle-hang-01 and
+        // matching-type-contains-dag-01 fixed, in Select::typecheck0_with ->
+        // PatternNode::capture_type -> Type::matching_type -> contains_int under
+        // set_covers_by_distribution. Keeping also a false found while pairs in progress
+        // were assumed, where no question answered by assumption (tainted), ends p1088 in
+        // 0.5 s (refused, an experiment, not landed): sound by could_match's refuted
+        // argument (assuming pairs in progress contained only adds containments) if no
+        // rule of contains reads a false as a reason for a true, which nobody has checked.
+        // err4 still times out with it: its falses rest on distribution questions in
+        // progress, its trues on pairs in progress (could_match's Rests is the direction).
+        // probes: ~/ptmp/cr29/scratch/r11-X/{p1088.gx, err4.gx, mkerr.py}
+        // (contains-probe-falses-01)
+        // 2026-11-03 claude: Review r11 round 2 (X-r2-2) adds a shape: mkgd.py N, a DAG T_i
+        // = [`L(T_i+1), `R(T_i+1)] over a G whose parameters grow (grow5's), a twin S over
+        // P. Its --check ends on cr48-X (main hangs earlier, in diff) but doubles per
+        // level: gd6 2.19G, gd8 4.14G, gd10 11.68G instructions (one eval thread, perf), so
+        // gd20 would not end. The reviewer's callgrind of gd8 (7d0551cac) put 2.49G of
+        // 3.85G in narrow_pattern's contains (setops Identity::same), not in diff or
+        // PathApps. probe: ~/ptmp/cr29/scratch/review-r11/X-r2-2/mkgd.py
+        // 2026-11-03 claude: cr48-X2 (main 8814f118b with the union fix, without cr48-X's
+        // growth cut): p1088.gx and err4.gx are still killed at 60 s on base-r11 and
+        // cr48-X2. The gd shape above now ends on main too, refused by rep_collision's
+        // growth reason (which names P, not G: growth-reason-name-01), at the same cost on
+        // both: perf instructions, one eval thread, base-r11 / cr48-X2, gd6 2.19G / 2.19G,
+        // gd8 4.14G / 4.14G, gd10 11.68G / 11.67G, so it doubles per level on main as well;
+        // 'main hangs earlier, in diff' held for base-r10. probes:
+        // ~/ptmp/cr29/scratch/r11-X/x2/ (p1088.gx, err4.gx, gd6.gx)
+
         // Only a verdict that assumed no pair from further out holds
         // outside this call.
         let (height, outer, outer_taint) = hist.enter_verdict();

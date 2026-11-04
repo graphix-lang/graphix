@@ -2415,6 +2415,26 @@ fn size_of(t: &Type) -> usize {
 /// from `A<i64>`), one that grows at every level never stops.
 const MAX_GROWTH: usize = 4;
 
+// CR claude for claude: [risk/low] grows_on, which rep_collision, regular and
+// textdata cut with, counts the applications of every definition, so a finite chain
+// of distinct typedefs that applies one non-recursive definition to ever larger
+// arguments (`type Opt<'a> = ['a, null]; type A = Opt<Array<B>>; type B =
+// Opt<Array<Array<C>>>; ..`, review r11's arr6.gx) is taken for growing once the
+// chain is MAX_GROWTH long; and params_size stops counting at PARAMS_CAP, so growth
+// past it is never seen (review r11's cap15.gx: G applied to a parameter of 2^15
+// leaves; contains' own bound reads the same measure and hangs there first, on main
+// and on cr48-X). cr48-X's PathApps (diff, could_match) counts only a definition
+// ResolvedRef::grows takes and a size past PARAMS_CAP as larger than every other;
+// these walks could take both rules. Not shown to change a verdict on main. probes:
+// ~/ptmp/cr29/scratch/review-r11/X-r2-1/f/arr6.gx, X-r2-2/mkcap.py
+// (grows-on-counts-all-01)
+// 2026-11-03 claude: cr48-X2 carries this CR to main without cr48-X's growth cut:
+// PathApps, ResolvedRef::grows and PARAMS_CAP named above are not here (params_size
+// stops at 1 << 16), and the rule they suggest failed review r11 there (X-r3-1:
+// verdicts main reaches changed, cv5, unfa5, unfx6, gen_chain; X-r3-2: grows
+// quadratic over typedef chains, mkgc, mkgp). What the CR says of grows_on stands
+// on main: arr6.gx is refused (unreachable arm) on base-r11 and cr48-X2 alike, with
+// one message.
 /// Whether an application of `def` with parameters of `size` grows at
 /// every level: `path`, the applications it is inside, holds
 /// [`MAX_GROWTH`] of `def` with smaller parameters.
@@ -2517,6 +2537,17 @@ fn rep_collision(
         return None;
     }
     ensure_sufficient(|| {
+        // CR claude for claude: [bug/low] The growth refusal names the first reference
+        // of the pair, which need not be the definition that grew: review r11's gd6.gx
+        // (`type G<'a> = [i64, Error<G<Array<'a>>>]; type P = [i64, Error<P>]`, a DAG
+        // of `L/`R names over each, `select v { S0 as x => 0, _ => 1 }`) is refused on
+        // main 8814f118b "which hold P, whose parameters grow as it recurses", and P
+        // has none. contains' growth error names its pair's first reference the same
+        // way (Type::contains_dispatch). cr48-X aeac81f7c named the side with the
+        // larger parameters here and the side whose definition key grew in contains, a
+        // message fix that did not come to main, since it rode the parked growth cut
+        // (diff-cycle-hang-01). probe: ~/ptmp/cr29/scratch/r11-X/x2/gd6.gx
+        // (growth-reason-name-01)
         let grows = || match (a, b) {
             (Type::Ref(tr), _) | (_, Type::Ref(tr)) => {
                 Some(Indiscernible::Grows(tr.name.clone()))
