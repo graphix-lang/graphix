@@ -648,6 +648,23 @@ impl StructurePattern {
             .and_then(|(tv, w)| w.map(|w| (tv, w))))
     }
 
+    // CR claude for claude: [bug/high] The closed-written-test rule judges the test's
+    // spelling: meets refuses a written part over the variable only when `has_free() ||
+    // has_bottom()`, and neither looks inside a typedef's body (a `Type::Ref`'s children
+    // are its parameters), while the pattern compile expands only the written type's top.
+    // So `type BotA = `A(_)` (or `type Bot = _`) and `(BotA, i64) as (`A(z), n) => z + 1.5`
+    // over `'b: [`A(i64), `B(i64)] |x: ('b, i64)|` passes: matching_parts types z as ⊥,
+    // the JIT panics ("kernel param `z`: runtime I64(3) does not match the compiled
+    // Scalar(F64) slot") and the node-walk prints 4.5; `-> 'b .. => z` returns 3 typed 'b
+    // and the caller's select finds no arm. A typedef at the top (`BotA as `A(z)`) and a
+    // typedef parameter (`Wr<_>`) are refused. Main (968fa9bc0) is the same (round 1's
+    // high, which the closedness rule was meant to close); CLAUDE.md, the skill and
+    // design/tvar_constraints.md say a written test holding `_` is refused. Fix: judge
+    // what matching_parts gives each bind inside the rigid cell (refuse ⊥ or an open
+    // cell), which catches any spelling, or walk the written part with typedefs expanded;
+    // pin t1c, t13, a2, a3, a6, a10 with closed twins. Review r14 B-r3-1, B-r3-2. probe:
+    // ~/ptmp/cr29/scratch/review-r14/B-r3-1/a/{t1,t1c,t12,t13}.gx,
+    // ~/ptmp/cr29/scratch/review-r14/B-r3-2/td/{a2,a3,a6,a7,a10}.gx (d6-typedef-bottom-01)
     fn meets(
         &self,
         env: &Env,
@@ -794,6 +811,20 @@ impl StructurePattern {
         Ok(true)
     }
 
+    // CR claude for claude: [bug/high] D6 misses a pattern inside the element of a
+    // constructor-variable collection: parts_over has no case for an unfilled
+    // `Type::App` ('c<'b>, or the element quantifier of a `c: Collection` parameter), so
+    // may_hold is false for that member, meets skips it and nothing inside the element is
+    // judged. `|c: Collection| -> [string, null] select c { [`A(z), ..] => z, _ => null }`
+    // over `[`A(3)]` prints "a string of length 0" fused and logs "no arm matches" with
+    // --no-fusion (graphix-fuzz check: DIVERGENCE); `[`A(z), ..] => z + 1.5` panics the JIT
+    // link fused and prints 4.5 node-walked; a list pattern and a tuple element do the
+    // same. The written twin `Array<[`A(i64), `B(i64)]> as [`A(z), ..]` works. Main
+    // (968fa9bc0) is the same. Fix: in parts_over, may_hold and written_parts, read an
+    // unfilled App's argument as a slice pattern's element type, so the walk reaches the
+    // rigid element; pin ct4 and ct13 with the written twin. Review r14 B-r3-1. probe:
+    // ~/ptmp/cr29/scratch/review-r14/B-r3-1/i/{ct1,ct4,ct7,ct8,ct13,ct11}.gx
+    // (d6-collection-element-01)
     /// Each sub-pattern with the part of `m`, a member of a type (a
     /// constructor at its head), it stands over; `None` where `m` is not
     /// of this pattern's shape. An abstract pattern holds the type `ids`

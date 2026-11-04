@@ -310,6 +310,26 @@ pub(super) enum Holder {
     Formal,
 }
 
+// CR claude for claude: [readability/low] D6's advice, from review r14's final lows; no
+// soundness. (1) Over a nullable scrutinee it sends a fused form to one that does not
+// fuse: `'b: [`A(i64), `B(i64)] |x: ['b, null]| -> i64 #[native] select x { null => 0,
+// `A(z) => z, `B(z) => z }` fuses on main; the advised `` `A(i64) as `A(z) `` does not
+// ("type predicate `A(i64) not lowerable"), while a test holding the whole scrutinee,
+// `[`A(i64), `B(i64), null] as `A(z)`, fuses: advise that form (or lower the case,
+// written-composite-test-fuse-01). (2) A let's advice through an abstract type in a
+// struct field names an annotation that is refused (`in_abstract_param` uses
+// deref_cloned, which does not expand `W<'b>` inside the struct; a direct `x: W<'b>` is
+// told "declare no 'b"). (3) Wording: "`T as `Z`, or bound 'b" for a 'b already bound
+// (k11; the working twin is `` `Z as `Z ``); tr3 tells 'b: 'a to "bound 'b"; a6, s4, p4,
+// p7, p8 say "a type variable of the definition" without its name (p4's is a rank-2
+// formal's quantifier); written_refusal says "'c holds `_`" when the part is the
+// undeclared 'c itself. (4) The advice for a bound naming an unbounded variable
+// (`'b: ['c, `X]`) suggests a test the rule then refuses: say "bound 'c" there. (5) The
+// docs' "a name keeps the variable under a written test" sentence does not cover the top
+// position, where a test over the variable itself types the name (CLAUDE.md,
+// design/tvar_constraints.md, the skill). probes:
+// ~/ptmp/cr29/scratch/review-r14/B-r3-1/{f/u10*,c/a7*,b/k11*,i/tr3,c/a6,g/s4,a/p4}.gx,
+// ~/ptmp/cr29/scratch/review-r14/B-r3-2/{sm/u3*,w/t1-t4}.gx (d6-advice-01)
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
 /// a value of `tv`, a type variable its definition holds rigid
 /// ([`StructurePattern::meets_rigid`]), told as the type to write.
