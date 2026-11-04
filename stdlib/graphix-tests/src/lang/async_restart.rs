@@ -109,10 +109,20 @@ async fn seq_io(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// An idle wait the arm's re-entry fires again restarts: tick 1 issues one and
+// it answers, tick 2 sleeps the arm, tick 3 wakes it with its argument fired
+// and the restarted wait answers 3. Each tick follows from the event before
+// it, so no timer races another.
 async fn select_restarts_timer(mode: Mode) -> Result<()> {
     let code = r#"{
-        let tick = count(sys::time::timer(duration:100.ms, 4)?);
+        let tick = 1;
         let issued = never<i64>();
+        tick <- select tick {
+            1 => issued ~ 2,
+            2 => sys::time::after_idle(duration:30.ms, 3),
+            3 => issued ~ 4,
+            _ => never()
+        };
         select tick {
             1 | 3 => select sys::time::after_idle(duration:30.ms, tick) {
                 reply => issued <- reply

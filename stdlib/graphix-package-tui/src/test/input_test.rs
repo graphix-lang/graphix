@@ -427,7 +427,8 @@ let result = browser(#cursor, #selected_row: &mut sel, #size: {width: 40, height
 }
 
 /// A scroll by one row resubscribes only the row that enters: no row that
-/// stays on screen blanks to #SUB, so no frame shows more than one.
+/// stays on screen blanks to #SUB, so a step taken once the frame has no
+/// row subscribing never shows more than one.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_browser_scroll_keeps_the_rows_that_stay() -> Result<()> {
     let mut h = TuiTestHarness::with_viewport(
@@ -446,14 +447,15 @@ let progress = select b {
 };
 let loaded = false;
 loaded <- select (loaded, progress) { (false, (3, 0)) => true, _ => never() };
-let i = 0;
-let tick = select loaded { true => sys::time::timer(duration:100.ms, 10), false => never() };
-i <- tick ~ i + 1;
-cur <- select i { x if x >= 1 && x <= 6 => i ~ `Down(1), _ => never() };
-let after_load = select loaded { true => progress.1, false => never() };
+let pending = progress.1;
+let tick = select loaded { true => sys::time::timer(duration:100.ms, 100), false => never() };
+let steps = 0;
+steps <- tick ~ select (steps, pending) { (s, 0) if s < 6 => s + 1, _ => never() };
+cur <- select steps { x if x >= 1 => steps ~ `Down(1), _ => never() };
+let after_load = select loaded { true => pending, false => never() };
 let worst = 0;
 worst <- after_load ~ max(worst, after_load);
-let answer = select i { 10 => worst, _ => never() };
+let answer = select (steps, pending) { (6, 0) => worst, _ => never() };
 let result = b
 "##,
         40,

@@ -207,7 +207,8 @@ run!(tcp_accept_replaced_listener, TCP_ACCEPT_REPLACED_LISTENER, |v: Result<&Val
 }; FuseExpect::Jit);
 
 // A deleted slot aborts its pending accept, which drops the listener and
-// frees the port.
+// frees the port. The drop is the tokio runtime's, after the abort: a
+// connect is tried every 100 ms until one is refused.
 const TCP_ACCEPT_DELETED: &str = r#"
 {
   let addrs = ["127.0.0.1:0"];
@@ -220,7 +221,11 @@ const TCP_ACCEPT_DELETED: &str = r#"
   first <- once(las[0]$);
   addrs <- first ~ [];
   let settled = sys::time::after_idle(duration:300.ms, array::len(las));
-  is_err(sys::tcp::connect(settled ~ first))
+  let attempt = never();
+  attempt <- settled ~ 0;
+  let refused = is_err(sys::tcp::connect(attempt ~ first));
+  attempt <- select refused { false => sys::time::after_idle(duration:100.ms, attempt + 1), true => never() };
+  select (refused, attempt) { (true, _) => true, (false, n) if n >= 50 => false, _ => never() }
 }
 "#;
 

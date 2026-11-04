@@ -80,10 +80,10 @@ the fastest way through a full `cargo test`.
 cargo build                              # debug
 cargo build -p graphix-shell             # one crate
 cargo build --profile quick -p graphix-shell   # near-release speed, 1/3 the build
-cargo test                               # THE gate: whole workspace, from the root
-cargo xtest                              # the same tests, every test binary side by side (xtask/)
+cargo xtest                              # THE gate: every test binary side by side (xtask/)
+cargo test                               # the same tests, one binary at a time
 cargo test -p graphix-tests              # one crate while iterating
-cargo test --workspace --features slow-tests   # the release gate
+cargo xtest --features slow-tests        # the release gate
 cargo run --bin graphix -- file.gx       # run
 cargo run --bin graphix -- --check file.gx     # compile + typecheck only
 cargo run --bin graphix -- --expand file.gx    # check + print each seq's lowered machine
@@ -91,7 +91,10 @@ cargo run --bin graphix -- fmt file.gx         # format in place (--check, --std
 ```
 
 Tests run in parallel by design (the compiler supports many instances
-per process); never rely on `--test-threads=1`. The whole workspace is
+per process); never rely on `--test-threads=1`. `cargo xtest` runs the
+test binaries side by side too, so a test passes under the whole suite's
+load: one that fails there is fixed so each event follows from the one
+before it, never serialized or given a longer wait. The whole workspace is
 formatted: `cargo fmt --all` before a commit, stable toolchain.
 Formatting: `rustfmt.toml`; `snake_case` / `CamelCase` /
 `SCREAMING_SNAKE_CASE`; Rust edition 2024; `triomphe::Arc` unless a
@@ -100,7 +103,7 @@ Formatting: `rustfmt.toml`; `snake_case` / `CamelCase` /
 **slow-tests.** Tests that are slow AND cover something that rarely
 moves (package builds, stack-depth guards, a network download) are
 `#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]`; a
-plain `cargo test` skips them (they show as ignored), the release gate
+plain `cargo xtest` skips them (they show as ignored), the release gate
 runs them. Never gate a language-semantics test. A test that re-executes
 its own binary must pass `--include-ignored` to the child.
 
