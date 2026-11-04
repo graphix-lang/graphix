@@ -15,6 +15,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
+use futures::FutureExt;
 use graphix_compiler::{
     BindId, CFlag, Control, ExecState, FusionStats, LambdaId, ParMode, Scope, StopCause,
     WORKER_STACK, cost,
@@ -33,7 +34,7 @@ use parking_lot::Mutex;
 use poolshark::global::GPooled;
 use serde_derive::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
-use std::{fmt, future, path::PathBuf, sync::Arc};
+use std::{fmt, future, panic::AssertUnwindSafe, path::PathBuf, sync::Arc};
 use tokio::{
     runtime::RuntimeFlavor,
     select,
@@ -602,13 +603,18 @@ impl RuntimeThread {
             .name("graphix-runtime".into())
             .stack_size(WORKER_STACK)
             .spawn(move || {
-                handle.block_on(async move {
-                    select! {
-                        biased;
-                        _ = stopped => (),
-                        () = run => (),
-                    }
-                });
+                // a pass's panic ends the loop here, and the loop is
+                // dropped once the unwind is over, as a tokio task's is
+                let _ = handle.block_on(
+                    AssertUnwindSafe(async move {
+                        select! {
+                            biased;
+                            _ = stopped => (),
+                            () = run => (),
+                        }
+                    })
+                    .catch_unwind(),
+                );
                 drop(finished)
             })
             .context("starting the runtime's thread")?;
@@ -654,7 +660,7 @@ impl<X: GXExt> Clone for GXHandle<X> {
 }
 
 impl<X: GXExt> GXHandle<X> {
-    /// Run `f` with the runtime's `ExecState` on the runtime task and
+    /// Run `f` with the runtime's `ExecState` on the runtime's thread and
     /// return its result; the accessor for handle-side consumers of
     /// `ctx.libstate`.
     pub async fn with_ctx<T, F>(&self, f: F) -> Result<T>

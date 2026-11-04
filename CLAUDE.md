@@ -197,8 +197,9 @@ runtime a runtime runs on a thread of its own, driven through
 `Handle::block_on`, every update pass inline there, so a pass's
 per-thread caches are one thread's and a wedged pass holds no tokio
 worker; a task of the tokio runtime keeps the thread, and its drop at
-the tokio runtime's shutdown stops the runtime and waits for the thread
-before the timer driver stops (`RuntimeThread`). The last handle's drop
+the tokio runtime's shutdown stops the runtime (a compile in progress
+runs to its end first) and waits for the thread before the timer
+driver stops (`RuntimeThread`). The last handle's drop
 stops it too. On a current-thread tokio runtime it is a task. Event
 processing is batched: all simultaneous events form one `Event`
 delivered in one cycle; several writes to one variable in a cycle queue

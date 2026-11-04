@@ -321,7 +321,7 @@ async fn main() -> Result<ExitCode> {
     args.retain(|a| a != "--reactive");
     // A subcommand that runs subjects in this process (a check child, a
     // gate, an interactive check) aborts on a panic and runs in a sandbox
-    // cwd: a panic on a subject's runtime thread is caught by tokio and both
+    // cwd: a panic on a subject's runtime thread is caught by the runtime and both
     // engines then fail alike, which a verdict reads as AGREE, and a
     // generated program writes files at arbitrary paths. One that only
     // spawns children leaves both to them.

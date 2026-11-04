@@ -778,7 +778,7 @@ pub fn interrupted() -> bool {
 /// Runs `f` with `graphix_interrupted` pointed at a runtime's
 /// [`Control`] on this thread, as while its cycle's nodes run; the
 /// enclosing runtime's is back when `f` returns or unwinds. Run it on
-/// the thread that runs the nodes, before the task can migrate.
+/// the thread that runs the nodes.
 pub fn with_control<T>(control: &Control, f: impl FnOnce() -> T) -> T {
     let _restore = crate::Restore::replace(&CURRENT, control as *const Control);
     f()
