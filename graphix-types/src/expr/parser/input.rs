@@ -764,6 +764,18 @@ impl<'a> Input<'a> {
         // and an_out_of_range_integer_literal_names_its_range (fails with the
         // spaced int_range_note). Main's own phantom range note at {u8:300:
         // int-range-field-01.
+        // CR claude for claude: [bug/low] A literal's failure is said where its
+        // reading is the only one that gets that far, though the text names no
+        // literal: `{datetime: "\u{41}\q", b: 1}` reports netidx's escape list at
+        // the q for a graphix string field (field a reports the u), `{error:
+        // "\u{41}\u{d800}"}` the surrogate, `f(bytes: x)` (a labeled argument
+        // missing its #) and `x{bytes: n}` "base64 decode failed", `f(duration:
+        // 5)` an expected . or e, `[u8: x]` an expected digit. Main 968fa9bc0
+        // says "the parser could not continue past this point" at the same
+        // positions. Each text is invalid on every reading. Found by review r14
+        // of lane K (final). probes: ~/ptmp/cr29/scratch/review-r14/K-r3-2/p/
+        // {st_dt_u41q,st_err_u41sur,call_bytes,mapkey_bytes,call_dur,arr_u8}.gx
+        // (show2.sh; residual.txt) (literal-reach-labels-01)
         let at = self.mark_at(self.at.off + f.offset);
         let token = !matches!(f.expected, Expected::Refused(_));
         self.labels(at.off, token, |l| l.read(f.expected));

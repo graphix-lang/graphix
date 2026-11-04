@@ -1815,6 +1815,18 @@ impl<R: Rt> GXLambda<R> {
     ) -> Result<Self> {
         let origin = body.ori.clone();
         let instance_id = LambdaInstanceId::new();
+        // CR claude for claude: [bug/medium] A DAG of union bounds checks and its
+        // build refuses the instance's signature: `let f = 'a0: [Array<'a1>,
+        // Array<'a2>, null], 'a1: [Array<'a2>, Array<'a3>, null], 'a2:
+        // [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number
+        // |x: ('a0, 'a1, 'a2, 'a3, 'a4)| x; f(never())` passes `graphix --check
+        // --no-cache` and `--expand` refuses "an instance at fn(x: (...)) of
+        // definition typed fn(...)", GRAPHIX_ELAB_AUDIT reporting
+        // instance-signature. Three links (udag_3) pass, four fail; taking only
+        // 'a0, or dropping it, passes. Main 968fa9bc0 is the same. Found by
+        // review r14 of lane K (final). probes:
+        // ~/ptmp/cr29/scratch/review-r14/K-r3-1/m/u4.gx, p/udag_4.gx, udag4.err
+        // (union-dag-elab-01)
         let types = {
             let mut p = profile::phase(Phase::InstanceCheck);
             profile::instance(&mut p, instance_id, id, &body);

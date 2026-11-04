@@ -527,6 +527,26 @@ fn exact(t: &Type) -> bool {
     })
 }
 
+// CR claude for claude: [perf/medium] A type shaped like a DAG under a bound
+// elaborates in exponential time, though it checks flat. A value DAG (`let
+// x{i+1} = (x{i}, x{i})`, then `'a: Array<'b> |x: 'a, y: 'b| 0` called with
+// `[]` and x{N}) costs 0.06 / 0.22 / 0.81 / 2.91 / 11.5 G instructions net of
+// the stdlib under `graphix --expand --no-cache` at N = 16 / 20 / 22 / 24 /
+// 26, and a run costs the same; with no bound (`|x: Array<'b>|`) it is flat.
+// Callgrind at 22: `exact` is called 8.4M times (2^23), recursing through
+// bindings and for_each_child with no memo, from commit_cell_bounds; a memo
+// keyed by node and cell address, as reaches_no_open_cell keeps, would fix
+// that shape. A chain of Map bounds (`'a{i}: Map<'a{i+1}, 'a{i+1}>`) is
+// worse: 0.99 / 15.7 / 62.9 / 251.6 G at 16 / 20 / 22 / 24, through
+// fntyp::position_cells (collect_position_tvars, collect_tvars_seen),
+// ContainsHist::closed and would_cycle_inner too, so each walk needs a
+// node-identity memo. Bound DAGs of tuples (`('a{i+1}, 'a{i+1})`: 21.9 G at
+// 26), skip-two tuples (6.39 G at 34) and structs (5.36 G at 24) likewise.
+// Main 968fa9bc0 costs the same. The chain: chainbounds-elab-01. Found by
+// review r14 of lane K (final). probes:
+// ~/ptmp/cr29/scratch/review-r14/K-r3-1/p/{vdag_26,map_24,dup_26,skip2_34}.gx
+// (gen.py, genv.py; sweep.txt; cg/{vdag_22,dup_22,map_16}.out.gz)
+// (bound-dag-elab-01)
 // CR claude for claude: [perf/medium] Elaborating a chain of bounds is cubic
 // in its length, where its check is linear (chainbounds-cubic-01): `graphix
 // --expand --no-cache` of deep_nesting's chainbounds program costs, net of
