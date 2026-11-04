@@ -282,9 +282,10 @@ impl Unfolded {
     }
 }
 
-/// The pairs of shared composites a conjunctive walk over two types
-/// found to agree, so a DAG is walked once per pair of nodes rather than
-/// once per path; a pair found once agrees for the rest of the walk.
+/// The pairs of shared composites a walk over two types found to give
+/// one answer that holds for the rest of the walk (a conjunctive walk's
+/// agreements, a disjunctive walk's falses), so a DAG is walked once per
+/// pair of nodes rather than once per path.
 /// A walk remembers nothing for its first `NodePairs::EAGER` nodes,
 /// which is every walk of a small type. Each pair is held for the walk,
 /// so an address stays its node's.

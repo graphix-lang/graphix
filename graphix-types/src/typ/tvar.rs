@@ -3105,7 +3105,8 @@ impl Type {
     }
 
     /// [`Self::needs_split`], each pair of shared nodes that needs none
-    /// (`apart`) walked once.
+    /// (`apart`) walked once. Exact: the walk assumes no pair in progress,
+    /// so a pair's false holds wherever it is met, and a true ends it.
     fn needs_split_int(
         &self,
         env: &Env,
