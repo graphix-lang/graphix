@@ -117,7 +117,7 @@ the state of a fix, and Graphix's side.
   workspace builds crossterm without `event-stream`. Pins:
   `stdlib/graphix-package-tui/src/test/terminal_test.rs`
   `a_display_ending_beside_another_reader_leaves_the_terminal`,
-  `graphix-shell/tests/repl_interrupt.rs`
+  `graphix-shell/tests/shell/repl_interrupt.rs`
   `tui_displays_ending_at_once_give_the_prompt_back`. Not reported.
 
 ## handlebars-rust 6.4: template depth recurses without a bound
@@ -380,7 +380,7 @@ the state of a fix, and Graphix's side.
   in the channel until the last sender drops. A message holding a
   `oneshot::Sender` leaves its receiver waiting that long, forever where a
   sender outlives the wait.
-- **Repro.** `graphix-rt/tests/stop_race.rs`
+- **Repro.** `graphix-rt/tests/rt/stop_race.rs`
   `a_request_racing_the_stop_is_answered`: eight callers loop
   `GXHandle::get_env` while the runtime is aborted, 3000 trials. Against a
   run loop that drops its receiver it hung in 3 of 4 runs at 1000 trials.

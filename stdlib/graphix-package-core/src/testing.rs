@@ -292,15 +292,6 @@ impl Mode {
         }
     }
 
-    /// The node-walk's serial mode compiles the package root, so every
-    /// fixture runs once over a compiled root; the others restore it.
-    pub fn root(self) -> Root {
-        match self {
-            Mode::Interp => Root::Compiled,
-            Mode::Jit | Mode::Par | Mode::JitPar | Mode::Unpruned => Root::Restored,
-        }
-    }
-
     /// The serial modes fork nothing unless `GRAPHIX_PAR` says otherwise.
     pub fn par(self) -> ParMode {
         match self {
@@ -346,9 +337,197 @@ where
         ctx.control.set_prune_mode(mode.fixture_prune());
         setup(ctx)
     };
-    let ctx =
-        start_rooted(tx, register, resolvers, setup, mode.flags(), mode.root()).await?;
+    let ctx = start_rooted(tx, register, resolvers, setup, mode.flags(), Root::Restored)
+        .await?;
     Ok((ctx, rx))
+}
+
+/// One [`run!`] fixture: its program's files, the predicate its value or
+/// refusal must satisfy, and what its jit run must fuse.
+pub struct RunFixture {
+    pub name: &'static str,
+    pub files: Vec<(&'static str, ArcStr)>,
+    pub pred: Box<dyn Fn(Result<&Value>) -> bool>,
+    pub timeout: u64,
+    pub expect: FuseExpect,
+    pub shape: Option<graphix_compiler::node_shape::NodeShape>,
+    pub register: &'static [PackageRef],
+}
+
+/// `f` as a [`RunFixture`]'s predicate.
+pub fn predicate(
+    f: impl Fn(Result<&Value>) -> bool + 'static,
+) -> Box<dyn Fn(Result<&Value>) -> bool> {
+    Box::new(f)
+}
+
+/// Run `f` in `mode` on a runtime of its own; the node-walk also holds
+/// the check to the build when `check`.
+pub fn run_fixture(f: RunFixture, mode: Mode, check: bool) -> Result<()> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(fixture_test(&f, mode, check))
+}
+
+async fn fixture_test(f: &RunFixture, mode: Mode, check: bool) -> Result<()> {
+    if mode != Mode::Jit {
+        return fixture_mode(f, mode, false, false, check).await.map(|_| ());
+    }
+    // GRAPHIX_FUSION_DISCOVERY: run without asserting and print the
+    // observed level (`FUSEMAP <path> <level>`).
+    #[cfg(debug_assertions)]
+    if std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
+        let observed = fixture_mode(f, Mode::Jit, true, false, false).await?;
+        let (_, jit) = observed.runs;
+        eprintln!(
+            "FUSEMAPF\t{}\t{}",
+            f.name,
+            if observed.regions.unwrap_or(0) > 0 { "Fuses" } else { "None" },
+        );
+        eprintln!("FUSEMAPJ\t{}\t{}", f.name, if jit > 0 { "Jit" } else { "NoJit" });
+        return Ok(());
+    }
+    // GRAPHIX_FUSE_AUDIT: report the observed fusion level against the
+    // annotation (`FUSEAUDIT` lines) instead of asserting it.
+    #[cfg(debug_assertions)]
+    if std::env::var("GRAPHIX_FUSE_AUDIT").is_ok() {
+        let regions =
+            fixture_mode(f, Mode::Jit, true, false, false).await?.regions.unwrap_or(0);
+        let observed = if regions > 0 { FuseExpect::Jit } else { FuseExpect::None };
+        eprintln!(
+            "FUSEAUDIT\t{}\t{:?}\t{:?}\t{}",
+            f.name,
+            f.expect,
+            observed,
+            if f.expect == observed { "OK" } else { "MISMATCH" },
+        );
+        return Ok(());
+    }
+    let _invocations = fixture_mode(f, Mode::Jit, true, true, false).await?;
+    #[cfg(debug_assertions)]
+    check_fuse_expectation(_invocations, f.expect);
+    Ok(())
+}
+
+async fn fixture_mode(
+    f: &RunFixture,
+    mode: Mode,
+    reset_counters_after_init: bool,
+    check_shape: bool,
+    check: bool,
+) -> Result<FuseObserved> {
+    let pred = &f.pred;
+    let (ctx, mut rx) = fixture_runtime(
+        f.files.iter().map(|(path, code)| (*path, VfsEntry::from(code.clone()))),
+        f.register,
+        mode,
+        |_| {},
+    )
+    .await?;
+    // only the fixture's own runs count
+    if reset_counters_after_init {
+        ctx.rt.control().reset_invocations();
+    }
+    let checked = if check { Some(check_fixture(&ctx).await) } else { None };
+    // the stdlib root's own cycles fork too: count the fixture's
+    let forks_before = ctx.rt.control().forks();
+    let built = compile_result(&ctx).await;
+    let check_refusal = match checked {
+        Some(checked) => verdicts_agree(checked, built.as_ref().map(|_| ()))?,
+        None => None,
+    };
+    let regions = match &built {
+        Ok(_) => ctx.fusion_stats().await.ok().map(|s| s.fused),
+        Err(_) => None,
+    };
+    match built {
+        Err(e) => {
+            if let Err(dead) = ctx.rt.get_env().await {
+                bail!("the runtime died compiling the fixture ({dead:#}): {e:#}")
+            }
+            if let Some(c) = check_refusal {
+                assert!(pred(dbg!(Err(c))), "the check's refusal")
+            }
+            assert!(pred(dbg!(Err(e))))
+        }
+        Ok(res) => {
+            let eid = res.exprs[0].id;
+            if check_shape {
+                if let Some(spec) = f.shape.clone() {
+                    ctx.rt.match_shape(eid, spec).await?;
+                }
+            }
+            let deadline = Instant::now() + Duration::from_secs(f.timeout);
+            let v = next_update_raw(&mut rx, eid, deadline).await?;
+            let v = observed(&ctx, &res.exprs[0].typ, v).await?;
+            eprintln!("{v}");
+            assert!(pred(Ok(&v)));
+        }
+    }
+    let invocations = ctx.rt.control().invocations();
+    #[cfg(debug_assertions)]
+    assert!(
+        !mode.node_walk() || invocations == (0, 0),
+        "{mode:?} ran fused code: (kernel runs, JIT entries) = {invocations:?}"
+    );
+    // The blocker list includes stdlib-root noise (stats are per-ExecCtx).
+    if std::env::var("GRAPHIX_FUSE_AUDIT").is_ok()
+        && !mode.flags().contains(CFlag::FusionDisabled)
+    {
+        if let Ok(stats) = ctx.fusion_stats().await {
+            for failure in stats.failed.iter() {
+                eprintln!(
+                    "FUSEAUDIT-BLOCKER\t{}\t{:?}\t{}",
+                    f.name, failure.id, failure.reason
+                );
+            }
+        }
+    }
+    // a forced mode that forked nothing: a finding when the fixture has
+    // fork points
+    if std::env::var("GRAPHIX_FUSE_AUDIT").is_ok()
+        && matches!(mode, Mode::Par | Mode::JitPar)
+        && ctx.rt.control().forks() == forks_before
+    {
+        eprintln!("PARAUDIT-NOFORK\t{}\t{mode:?}", f.name);
+    }
+    ctx.shutdown().await;
+    Ok(FuseObserved { regions, runs: invocations })
+}
+
+/// A [`run_with_tempdir!`] fixture's program, `code` inside `let result =
+/// ..`, run in `mode`; its value, held to its type, goes to `expect`. The
+/// node-walk also holds the check to the build. An error the program raises
+/// and does not catch is printed, so a failing operation names itself
+/// beside a timeout.
+pub async fn run_tempdir_fixture(
+    code: &str,
+    register: &[PackageRef],
+    mode: Mode,
+    expect: &dyn Fn(Value) -> Result<()>,
+) -> Result<()> {
+    let code =
+        format_compact!("let result = {{ catch(e) println(\"uncaught: [e]\"); {code} }}");
+    let entry = VfsEntry::from(ArcStr::from(code.as_str()));
+    let (ctx, mut rx) =
+        fixture_runtime([("/test.gx", entry)], register, mode, |_| {}).await?;
+    let checked = match mode {
+        Mode::Interp => Some(check_fixture(&ctx).await),
+        _ => None,
+    };
+    let built = compile_result(&ctx).await;
+    if let Some(checked) = checked {
+        verdicts_agree(checked, built.as_ref().map(|_| ()))?;
+    }
+    // the fixture's expression lives as long as `built`
+    let built = built?;
+    let eid = built.exprs[0].id;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let v = next_update_raw(&mut rx, eid, deadline).await?;
+    expect(observed(&ctx, &built.exprs[0].typ, v).await?)?;
+    ctx.shutdown().await;
+    Ok(())
 }
 
 /// Compile `{ mod test; test::result }`, the expression a fixture's
@@ -1022,180 +1201,38 @@ macro_rules! run {
         mod $name {
             use super::*;
 
-            /// The optional `NodeShape` spec to check against the
-            /// compiled graph.
-            #[allow(dead_code)]
-            fn shape_spec(
-            ) -> ::std::option::Option<::graphix_compiler::node_shape::NodeShape> {
-                $shape
-            }
-
-            async fn run_mode(
-                mode: $crate::testing::Mode,
-                reset_counters_after_init: bool,
-                check_shape: bool,
-                check: bool,
-            ) -> ::anyhow::Result<$crate::testing::FuseObserved> {
-                let pred = $pred;
-                let (ctx, mut rx) = $crate::testing::fixture_runtime(
-                    [$(($path, ::graphix_compiler::expr::VfsEntry::from(::arcstr::ArcStr::from($code)))),+],
-                    &crate::TEST_REGISTER,
-                    mode,
-                    |_| {},
-                ).await?;
-                // Init compiles the stdlib root and may fuse there;
-                // only the fixture's own compile should count.
-                if reset_counters_after_init {
-                    ctx.rt.control().reset_invocations();
+            fn fixture() -> $crate::testing::RunFixture {
+                $crate::testing::RunFixture {
+                    name: module_path!(),
+                    files: ::std::vec![$(($path, ::arcstr::ArcStr::from($code))),+],
+                    pred: $crate::testing::predicate($pred),
+                    timeout: $timeout,
+                    expect: $fexpect,
+                    shape: $shape,
+                    register: &crate::TEST_REGISTER,
                 }
-                let checked = if check {
-                    ::std::option::Option::Some($crate::testing::check_fixture(&ctx).await)
-                } else {
-                    ::std::option::Option::None
-                };
-                // the stdlib root's own cycles fork too: count the fixture's
-                let forks_before = ctx.rt.control().forks();
-                let built = $crate::testing::compile_result(&ctx).await;
-                let check_refusal = match checked {
-                    ::std::option::Option::Some(checked) => {
-                        $crate::testing::verdicts_agree(checked, built.as_ref().map(|_| ()))?
-                    }
-                    ::std::option::Option::None => ::std::option::Option::None,
-                };
-                let regions = match &built {
-                    Ok(_) => ctx.fusion_stats().await.ok().map(|s| s.fused),
-                    Err(_) => ::std::option::Option::None,
-                };
-                match built {
-                    Err(e) => {
-                        if let ::std::result::Result::Err(dead) = ctx.rt.get_env().await {
-                            ::anyhow::bail!("the runtime died compiling the fixture ({dead:#}): {e:#}")
-                        }
-                        if let ::std::option::Option::Some(c) = check_refusal {
-                            assert!(pred(dbg!(Err(c))), "the check's refusal")
-                        }
-                        assert!(pred(dbg!(Err(e))))
-                    }
-                    Ok(res) => {
-                        let eid = res.exprs[0].id;
-                        if check_shape {
-                            if let ::std::option::Option::Some(spec) = shape_spec() {
-                                ctx.rt.match_shape(eid, spec).await?;
-                            }
-                        }
-                        let deadline = ::tokio::time::Instant::now()
-                            + ::std::time::Duration::from_secs($timeout);
-                        let v = $crate::testing::next_update_raw(&mut rx, eid, deadline).await?;
-                        let v = $crate::testing::observed(&ctx, &res.exprs[0].typ, v).await?;
-                        eprintln!("{v}");
-                        assert!(pred(Ok(&v)));
-                    }
-                }
-                let invocations = ctx.rt.control().invocations();
-                #[cfg(debug_assertions)]
-                assert!(
-                    !mode.node_walk() || invocations == (0, 0),
-                    "{mode:?} ran fused code: (kernel runs, JIT entries) = {invocations:?}"
-                );
-                // The blocker list includes stdlib-root noise (stats
-                // are per-ExecCtx).
-                if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok()
-                    && !mode.flags().contains(::graphix_compiler::CFlag::FusionDisabled)
-                {
-                    if let ::std::result::Result::Ok(stats) = ctx.fusion_stats().await {
-                        for failure in stats.failed.iter() {
-                            eprintln!(
-                                "FUSEAUDIT-BLOCKER\t{}\t{:?}\t{}",
-                                module_path!(),
-                                failure.id,
-                                failure.reason
-                            );
-                        }
-                    }
-                }
-                // a forced mode that forked nothing: a finding when the
-                // fixture has fork points
-                if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok()
-                    && matches!(
-                        mode,
-                        $crate::testing::Mode::Par | $crate::testing::Mode::JitPar
-                    )
-                    && ctx.rt.control().forks() == forks_before
-                {
-                    eprintln!("PARAUDIT-NOFORK\t{}\t{mode:?}", module_path!());
-                }
-                ctx.shutdown().await;
-                Ok($crate::testing::FuseObserved { regions, runs: invocations })
             }
 
             #[$interp]
-            #[::tokio::test(flavor = "current_thread")]
-            async fn interp() -> ::anyhow::Result<()> {
-                run_mode($crate::testing::Mode::Interp, false, false, $check).await.map(|_| ())
+            #[test]
+            fn interp() -> ::anyhow::Result<()> {
+                $crate::testing::run_fixture(fixture(), $crate::testing::Mode::Interp, $check)
             }
 
             #[$interp]
-            #[::tokio::test(flavor = "current_thread")]
-            async fn par() -> ::anyhow::Result<()> {
-                run_mode($crate::testing::Mode::Par, false, false, false).await.map(|_| ())
+            #[test]
+            fn par() -> ::anyhow::Result<()> {
+                $crate::testing::run_fixture(fixture(), $crate::testing::Mode::Par, false)
             }
 
-            #[::tokio::test(flavor = "current_thread")]
-            async fn jit() -> ::anyhow::Result<()> {
-                // GRAPHIX_FUSION_DISCOVERY: run without asserting and
-                // print the observed level (`FUSEMAP <path> <level>`).
-                #[cfg(debug_assertions)]
-                if ::std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
-                    let observed =
-                        run_mode($crate::testing::Mode::Jit, true, false, false).await?;
-                    let (_, jit) = observed.runs;
-                    eprintln!(
-                        "FUSEMAPF\t{}\t{}",
-                        module_path!(),
-                        if observed.regions.unwrap_or(0) > 0 { "Fuses" } else { "None" },
-                    );
-                    eprintln!(
-                        "FUSEMAPJ\t{}\t{}",
-                        module_path!(),
-                        if jit > 0 { "Jit" } else { "NoJit" },
-                    );
-                    return Ok(());
-                }
-                // GRAPHIX_FUSE_AUDIT: report the observed fusion level
-                // against the annotation (`FUSEAUDIT` lines) instead
-                // of asserting it.
-                #[cfg(debug_assertions)]
-                if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok() {
-                    let regions = run_mode($crate::testing::Mode::Jit, true, false, false)
-                        .await?
-                        .regions
-                        .unwrap_or(0);
-                    let expected = $fexpect;
-                    let observed = if regions > 0 {
-                        $crate::testing::FuseExpect::Jit
-                    } else {
-                        $crate::testing::FuseExpect::None
-                    };
-                    eprintln!(
-                        "FUSEAUDIT\t{}\t{:?}\t{:?}\t{}",
-                        module_path!(),
-                        expected,
-                        observed,
-                        if expected == observed { "OK" } else { "MISMATCH" },
-                    );
-                    return Ok(());
-                }
-                let _invocations = run_mode($crate::testing::Mode::Jit, true, true, false).await?;
-                #[cfg(debug_assertions)]
-                $crate::testing::check_fuse_expectation(_invocations, $fexpect);
-                Ok(())
+            #[test]
+            fn jit() -> ::anyhow::Result<()> {
+                $crate::testing::run_fixture(fixture(), $crate::testing::Mode::Jit, false)
             }
 
-            /// Fused, with every fork point forked, kernel loops' slots
-            /// included.
-            #[::tokio::test(flavor = "current_thread")]
-            async fn jit_par() -> ::anyhow::Result<()> {
-                run_mode($crate::testing::Mode::JitPar, false, false, false).await.map(|_| ())
+            #[test]
+            fn jit_par() -> ::anyhow::Result<()> {
+                $crate::testing::run_fixture(fixture(), $crate::testing::Mode::JitPar, false)
             }
         }
     };
@@ -1261,43 +1298,17 @@ macro_rules! run_with_tempdir {
                     $code,
                     $crate::testing::escape_path(test_file.display())
                 );
-                // an error the fixture raises and does not catch is printed, so a
-                // failing operation names itself beside the timeout
-                let code = format!(
-                    "let result = {{ catch(e) println(\"uncaught: [e]\"); {code} }}"
-                );
-                let (ctx, mut rx) = $crate::testing::fixture_runtime(
-                    [(
-                        "/test.gx",
-                        ::graphix_compiler::expr::VfsEntry::from(::arcstr::ArcStr::from(code)),
-                    )],
+                $crate::testing::run_tempdir_fixture(
+                    &code,
                     &crate::TEST_REGISTER,
                     mode,
-                    |_| {},
+                    &$expect_payload,
                 )
                 .await?;
-                let checked = if mode == $crate::testing::Mode::Interp {
-                    ::std::option::Option::Some($crate::testing::check_fixture(&ctx).await)
-                } else {
-                    ::std::option::Option::None
-                };
-                let built = $crate::testing::compile_result(&ctx).await;
-                if let ::std::option::Option::Some(checked) = checked {
-                    $crate::testing::verdicts_agree(checked, built.as_ref().map(|_| ()))?;
-                }
-                // the fixture's expression lives as long as `built`
-                let built = built?;
-                let eid = built.exprs[0].id;
-                let deadline =
-                    ::tokio::time::Instant::now() + ::std::time::Duration::from_secs(10);
-                let v = $crate::testing::next_update_raw(&mut rx, eid, deadline).await?;
-                let v = $crate::testing::observed(&ctx, &built.exprs[0].typ, v).await?;
-                ($expect_payload)(v)?;
                 $(
                     let $verify_dir = &$temp_dir;
                     $verify
                 )?
-                ctx.shutdown().await;
                 Ok(())
             }
 

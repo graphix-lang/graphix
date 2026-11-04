@@ -1,7 +1,7 @@
 # The core is network-free: netidx lives in `sys::net`
 
 Status: built 2026-07
-Pins: `stdlib/graphix-tests/src/lib_tests/net.rs` (`net_rpc0`, `net_subscribe_arm_rewake`, `net_publish_arm_rewake`), `graphix-shell/tests/examples_compile.rs`, `stdlib/graphix-package-gui/src/widgets/data_table/`
+Pins: `stdlib/graphix-tests/src/lib_tests/net.rs` (`net_rpc0`, `net_subscribe_arm_rewake`, `net_publish_arm_rewake`), `graphix-shell/tests/shell/examples_compile.rs`, `stdlib/graphix-package-gui/src/widgets/data_table/`
 
 ## The rule
 

@@ -18,7 +18,7 @@ Pins: `lang/functions.rs` (`tail_stateful_per_iteration`,
 `fused_recursion_sheds_unreached_blocks`),
 `stdlib/graphix-tests/tests/activation_heap.rs`,
 `graphix-shell/tests/recursion_memory.rs`,
-`graphix-shell/tests/check_leaves_assertions_to_the_build.rs`,
+`graphix-shell/tests/shell/check_leaves_assertions_to_the_build.rs`,
 `bench/collection/README.md`
 Supersedes: transient_recursion, interp_lazy_bind_cost
 

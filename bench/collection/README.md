@@ -33,7 +33,7 @@ rows, 10k for the rows quadratic by representation (`map_push`,
 `lfold_rec`.
 
 Every bench asserts `#[native]` on its timed expressions, so the corpus
-build in `graphix-shell/tests/examples_compile.rs` fails when one stops
+build in `graphix-shell/tests/shell/examples_compile.rs` fails when one stops
 fusing.
 
 `collection_bodies_*` in `stdlib/graphix-tests/src/lang/collection.rs`

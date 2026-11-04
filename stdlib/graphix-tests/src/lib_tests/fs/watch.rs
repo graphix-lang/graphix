@@ -52,7 +52,7 @@ macro_rules! watch_test {
                     $action
                 }
             },
-            until: false,
+            until: $expect && _event_count > 1,
             verify: {
                 assert!(_event_count >= 1, "the watch never established");
                 let got_event = _event_count > 1;
@@ -233,7 +233,7 @@ watch_test! {
             *got_create = true;
         }
     },
-    until: false,
+    until: got_create,
     verify: {
         assert!(got_create, "Did not receive create event for non-existent file");
     }
@@ -334,7 +334,7 @@ watch_test! {
             *got_create = true;
         }
     },
-    until: false,
+    until: got_create,
     verify: {
         assert!(got_create, "Did not receive create event for deep file");
     }
@@ -369,7 +369,7 @@ watch_test! {
             *got_delete = true;
         }
     },
-    until: false,
+    until: got_delete,
     verify: {
         assert!(got_delete, "Did not receive delete event after deep parent rename");
     }
@@ -399,7 +399,7 @@ watch_test! {
             *got_delete = true;
         }
     },
-    until: false,
+    until: got_delete,
     verify: {
         assert!(got_delete, "Did not receive delete event after parent tree deletion");
     }
@@ -443,7 +443,7 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     let mut created_file = false;
     let mut got_create = false;
 
-    loop {
+    'events: loop {
         tokio::select! {
             _ = &mut timeout => break,
             Some(mut batch) = rx.recv() => {
@@ -462,6 +462,7 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
                                 && e.contains("file2.txt")
                             {
                                 got_create = true;
+                                break 'events;
                             }
                         }
                     }
@@ -509,6 +510,12 @@ async fn test_watch_simultaneous_events_all_delivered() -> Result<()> {
                         && id == eid
                     {
                         paths.push(graphix_package_core::testing::data(v));
+                        // a third event, if one comes, comes with the two
+                        if paths.len() == 2 {
+                            timeout
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + Duration::from_millis(500));
+                        }
                     }
                 }
             }
@@ -608,7 +615,7 @@ watch_test! {
             *got_event = true;
         }
     },
-    until: false,
+    until: got_event,
     verify: {
         assert!(got_event, "Did not receive event when symlink target was created");
     }

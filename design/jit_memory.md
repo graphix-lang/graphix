@@ -1,8 +1,8 @@
 # JIT memory
 
 Status: eviction and relocation built 2026-10-22 (f-jit-04)
-Pins: `graphix-rt/tests/jit_retention.rs`,
-`graphix-shell/tests/jit_arena_rotation.rs`
+Pins: `graphix-rt/tests/rt/jit_retention.rs`,
+`graphix-shell/tests/shell/jit_arena_rotation.rs`
 
 A runtime's JIT holds what it compiled for as long as something can
 still run it or ask for it again. This document says what that is, when

@@ -6412,7 +6412,8 @@ mod tests {
     /// the oracle records nothing.
     #[tokio::test(flavor = "multi_thread")]
     async fn tail_recursive_loop_is_the_jits() {
-        let budget = Some(ACTIVATION_BUDGET);
+        // any budget stops the runaway; a small one stops it soon
+        let budget = Some(2_000);
         let hang_guard = Duration::from_secs(300);
         for code in [
             "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \

@@ -3,8 +3,8 @@
 Status: current principle (ruled 2026-08-15; the interrupt final,
 2026-10-29)
 Pins: `stdlib/graphix-tests/src/lib_tests/interrupt.rs`,
-`graphix-shell/tests/interrupt_wedge.rs`,
-`graphix-shell/tests/repl_interrupt.rs`
+`graphix-shell/tests/shell/interrupt_wedge.rs`,
+`graphix-shell/tests/shell/repl_interrupt.rs`
 
 ## The rule
 

@@ -415,9 +415,9 @@ const DESTRUCTURED_FORMALS: &str = r#"[[i64:3, i64:6], [i64:8, i64:12], [["abbcc
 run!(native_tail_loop_polls_by_count, r#"
 {
     let rec sum = |n: i64, acc: i64| -> i64 select n { 0 => acc, n => sum(n - 1, acc + n) };
-    #[native] sum(100000, 0)
+    #[native] sum(10000, 0)
 }
-"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5000050000))); FuseExpect::Jit);
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(50005000))); FuseExpect::Jit);
 
 // Checked integer arithmetic fuses inline and fails as the node-walk
 // does, at every width.

@@ -104,10 +104,11 @@ indistinguishable from a cold compile: the cached path is the shipped
 path, so the test suite and the fuzzer run it (see IDs below for why
 that is possible), and a warm-versus-cold differential is the pin for
 every cache here. A test runtime restores its package root from the
-image its process compiled once per root, except in `interp`, which
-compiles it as `--check` does, so each fixture runs over both
-(`testing::Mode::root`; `GRAPHIX_TEST_ROOT=compile` compiles every
-one). A miss is the documented cold path, not a silent
+image its process compiled once per root, in every mode, as a warm
+shell start does; building that image is the compiled path, and
+`GRAPHIX_TEST_ROOT=compile` has every start compile instead (a start
+through `testing::config` always compiles: the fuzzer's sessions, the
+image tests). A miss is the documented cold path, not a silent
 fallback. `--warm` runs the cold path, writes every entry and exits,
 for deployment pipelines that want the first run fast too.
 

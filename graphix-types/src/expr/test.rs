@@ -2656,6 +2656,15 @@ fn generated_trees_are_often_undecorated() {
     assert!(bare >= 120, "{bare} of 400 trees undecorated");
 }
 
+/// `s` printed at `width` parses back to itself, string forms included.
+fn pp_round_trip(s: &Expr, width: usize) -> Result<(), TestCaseError> {
+    let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(width));
+    let e = parse_one(st.as_str()).unwrap_or_else(|e| panic!("{e:#}\n{st}"));
+    prop_assert!(check(s, &e), "width {width}\n{st}\n{s:?}\n{e:?}");
+    prop_assert!(same_str_forms(s, &e), "width {width}\n{st}\n{s:?}\n{e:?}");
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2048))]
 
@@ -2679,15 +2688,21 @@ proptest! {
         prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
     }
 
+    // every layout, each its own test: all broken, the usual width, and
+    // anywhere between
     #[test]
-    fn expr_pp_round_trip(s in expr(), width in 0usize..120) {
-        // every layout: all broken, the usual width, and anywhere between
-        for w in [0, 80, width] {
-            let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(w));
-            let e = parse_one(st.as_str()).unwrap_or_else(|e| panic!("{e:#}\n{st}"));
-            prop_assert!(check(&s, &e), "width {w}\n{st}\n{s:?}\n{e:?}");
-            prop_assert!(same_str_forms(&s, &e), "width {w}\n{st}\n{s:?}\n{e:?}")
-        }
+    fn expr_pp_round_trip_broken(s in expr()) {
+        pp_round_trip(&s, 0)?
+    }
+
+    #[test]
+    fn expr_pp_round_trip_usual(s in expr()) {
+        pp_round_trip(&s, 80)?
+    }
+
+    #[test]
+    fn expr_pp_round_trip_any(s in expr(), width in 0usize..120) {
+        pp_round_trip(&s, width)?
     }
 
     /// `map_children` rebuilds from exactly the children `for_each_child`

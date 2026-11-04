@@ -103,6 +103,15 @@ plain `cargo test` skips them (they show as ignored), the release gate
 runs them. Never gate a language-semantics test. A test that re-executes
 its own binary must pass `--include-ignored` to the child.
 
+**Integration tests share a binary.** graphix-shell's and graphix-rt's
+integration tests are one target each (`tests/shell/main.rs`,
+`tests/rt/main.rs`, a module per file), so they run side by side; a test
+that needs a process of its own (it sets process-wide state: an env var,
+a panic hook, the global thread pool; it re-executes its binary; it reads
+a child's peak RSS, which counts the parent's at the fork; it times itself
+against the wall clock) is a `tests/*.rs` target beside them. A
+new test file goes into the shared one unless it needs its own.
+
 **Tests exist to find bugs**, not to pass. A failure is the good case:
 find out why. Never work around a failure in a test that should pass; an
 off-topic failure is discussed with Eric before it is fixed.
@@ -1089,8 +1098,8 @@ size while a fresh one cannot hold the batch; a
   its record and its entry repointed, so the old module drops. No JIT
   code runs outside a cycle's update pass, and a kernel reads its entry
   at each call (`design/jit_memory.md`). Pins:
-  `graphix-rt/tests/jit_retention.rs`, `jit_arena_rotation.rs`. Pin:
-  `graphix-shell/tests/jit_arena_rotation.rs`. A two-word value never
+  `graphix-rt/tests/rt/jit_retention.rs`, `jit_arena_rotation.rs`. Pin:
+  `graphix-shell/tests/shell/jit_arena_rotation.rs`. A two-word value never
   crosses the helper seam by value: a pointer in, an out-pointer back,
   through `HelperRefs::call` alone (`design/helper_abi_portability.md`),
   so fusion runs on every host Cranelift supports, Windows included.
@@ -1187,12 +1196,13 @@ cycle, across workers; the compiler never pins threads.
   (`; build_only` exempts a refusal only a build makes: `#[native]`,
   `#[parallel]`, the definition assertions). `FuseExpect::{Jit, None}` asserts
   WHETHER anything fuses, bidirectionally; `#[native]` asserts that an
-  expression does. `interp` compiles the package root from source, as
-  `--check` and the server do; every other mode, `testing::init`, the
-  `eval*` helpers, `compile_error` and `Fixture` restore it from the
-  image the process compiled once per root, as a warm shell start does,
-  and fail where it does not restore (`testing::Mode::root`;
-  `GRAPHIX_TEST_ROOT=compile` compiles every one).
+  expression does. Every mode, `testing::init`, the `eval*` helpers,
+  `compile_error` and `Fixture` restore the package root from the image
+  the process compiled once per root, as a warm shell start does, and
+  fail where it does not restore; a start through `testing::config`
+  compiles it, and `GRAPHIX_TEST_ROOT=compile` compiles every one. A
+  `run!` fixture is a `testing::RunFixture` value its four tests hand to
+  `testing::run_fixture`, compiled once, never a driver per fixture.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit,
   and in the forced modes a `PARAUDIT-NOFORK` line for each fixture that
   forked nothing (a finding where the fixture has fork points).
@@ -1737,7 +1747,7 @@ test is a result.
 - PRs carry a concise summary, testing notes and related issues. Rebuild
   the book when docs or examples change.
 - Examples in `book/src/examples/` are documentation and test corpus at
-  once: each is included by a book page, and `graphix-shell/tests/
+  once: each is included by a book page, and `graphix-shell/tests/shell/
   examples_compile.rs` builds every one (check, elaboration, fusion, as
   `graphix --expand` does) in the plain gate, and checks every inline
   ```` ```graphix ```` fence as a script. REPL transcripts are checked in

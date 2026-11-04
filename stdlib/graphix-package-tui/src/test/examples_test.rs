@@ -5,6 +5,7 @@ use super::{ch, key};
 use crate::testing::TuiTestHarness;
 use anyhow::{Context, Result, bail};
 use crossterm::event::{Event, KeyCode};
+use futures::{StreamExt, stream};
 use ratatui::style::Color;
 use std::{
     fs,
@@ -35,6 +36,30 @@ fn shows(h: &mut TuiTestHarness, text: &str) -> Result<bool> {
 /// timer or a netidx listing.
 const FIRST_FRAME: Duration = Duration::from_secs(10);
 
+/// `name` draws a first frame within [`FIRST_FRAME`], after a few cycles.
+async fn renders(name: &str) -> Result<()> {
+    let mut h = harness(name).await?;
+    h.drain().await?;
+    h.render()?;
+    for _ in 0..3 {
+        if !h.next_update(Duration::from_millis(10)).await? {
+            break;
+        }
+        h.render()?;
+    }
+    let deadline = Instant::now() + FIRST_FRAME;
+    while h.render_lines()?.iter().all(|l| l.trim().is_empty()) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || !h.next_update(left).await? {
+            bail!("draws nothing")
+        }
+        h.render()?;
+    }
+    Ok(())
+}
+
+/// Every example renders, several at once: each runtime runs on a thread of
+/// its own.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_example_renders() -> Result<()> {
     let mut names = vec![];
@@ -44,35 +69,16 @@ async fn every_example_renders() -> Result<()> {
             names.push(p.file_stem().unwrap().to_string_lossy().into_owned())
         }
     }
-    names.sort();
     assert!(names.len() >= 60, "examples dir looks wrong: {} files", names.len());
-    let mut failures = vec![];
-    for name in names {
-        let r: Result<()> = async {
-            let mut h = harness(&name).await?;
-            h.drain().await?;
-            h.render()?;
-            for _ in 0..3 {
-                if !h.next_update(Duration::from_millis(10)).await? {
-                    break;
-                }
-                h.render()?;
-            }
-            let deadline = Instant::now() + FIRST_FRAME;
-            while h.render_lines()?.iter().all(|l| l.trim().is_empty()) {
-                let left = deadline.saturating_duration_since(Instant::now());
-                if left.is_zero() || !h.next_update(left).await? {
-                    bail!("draws nothing")
-                }
-                h.render()?;
-            }
-            Ok(())
-        }
+    let mut failures: Vec<String> = stream::iter(names)
+        .map(|name| async move {
+            renders(&name).await.err().map(|e| format!("{name}: {e:#}"))
+        })
+        .buffer_unordered(8)
+        .filter_map(|failed| async move { failed })
+        .collect()
         .await;
-        if let Err(e) = r {
-            failures.push(format!("{name}: {e:#}"))
-        }
-    }
+    failures.sort();
     if !failures.is_empty() {
         bail!("{} example(s) failed:\n{}", failures.len(), failures.join("\n"))
     }

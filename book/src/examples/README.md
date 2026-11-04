@@ -12,7 +12,7 @@ change to the documentation.
 
 ## The gate
 
-`graphix-shell/tests/examples_compile.rs` builds every example (check,
+`graphix-shell/tests/shell/examples_compile.rs` builds every example (check,
 elaboration and fusion) against the full shell environment in the plain
 `cargo test`, as `graphix --expand` does, so an example must build, not
 only parse: a `#[native]` in one is verified there. The same test

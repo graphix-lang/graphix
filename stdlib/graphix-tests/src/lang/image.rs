@@ -3,7 +3,7 @@
 // restored into fresh cells, ids and maps.
 
 use crate::{TEST_REGISTER, init};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use graphix_compiler::{
@@ -17,7 +17,7 @@ use graphix_compiler::{
 use graphix_package_core::testing::{
     self, Mode, PackageRef, Root, TestCtx, config, fixture_runtime,
 };
-use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
+use graphix_rt::{CompRes, GXEvent, GXHandle, NoExt, RegistrationImage};
 use netidx::publisher::Value;
 use netidx_core::pack::Pack;
 use poolshark::global::GPooled;
@@ -31,7 +31,10 @@ fn show(t: &Type) -> String {
 async fn environment_round_trips() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let ctx = TestCtx::start(config(tx, TEST_REGISTER, vec![], |_| {})?).await?;
-    assert!(!ctx.rt.env_stats().await?.restored, "the root compiled from source");
+    assert!(
+        !ctx.rt.env_stats().await?.restored,
+        "the root was restored, where this test round-trips a compiled one"
+    );
     let env = ctx
         .rt
         .compile(literal!(
@@ -214,27 +217,39 @@ async fn registration_timing() -> Result<()> {
     Ok(())
 }
 
-/// Every root value the runtime produces until it goes quiet, in
-/// order; ids are relocated by the image, so the values are compared.
-async fn first_values(rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>) -> Vec<Value> {
+/// Every root value the runtime produces until it settles, in order;
+/// ids are relocated by the image, so the values are compared.
+async fn first_values(
+    rt: &GXHandle<NoExt>,
+    rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+) -> Result<Vec<Value>> {
     let mut out = Vec::new();
-    loop {
-        let idle = tokio::time::sleep(std::time::Duration::from_millis(500));
-        tokio::pin!(idle);
-        tokio::select! {
-            _ = &mut idle => return out,
-            batch = rx.recv() => match batch {
-                None => return out,
-                Some(mut batch) => {
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(_, v) = e {
-                            out.push(graphix_package_core::testing::data(v));
-                        }
-                    }
-                }
+    let mut take = |mut batch: GPooled<Vec<GXEvent>>| {
+        for e in batch.drain(..) {
+            if let GXEvent::Updated(_, v) = e {
+                out.push(graphix_package_core::testing::data(v));
             }
         }
+    };
+    let settled =
+        tokio::time::timeout(std::time::Duration::from_secs(60), rt.wait_settled());
+    tokio::pin!(settled);
+    loop {
+        tokio::select! {
+            r = &mut settled => {
+                r.context("the program did not settle in 60 s")??;
+                break;
+            }
+            batch = rx.recv() => match batch {
+                None => break,
+                Some(batch) => take(batch),
+            },
+        }
     }
+    while let Ok(batch) = rx.try_recv() {
+        take(batch)
+    }
+    Ok(out)
 }
 
 /// A program of the node kinds package modules never produce at top
@@ -345,7 +360,7 @@ async fn kernels_restore(program: &str) -> Result<Vec<Value>> {
     let image = prog_rx.await??.image;
     let stats = cold.rt.fusion_stats().await?;
     assert!(stats.fused > 0, "the program must fuse something: {stats:?}");
-    let cold_values = first_values(&mut cold_rx).await;
+    let cold_values = first_values(&cold.rt, &mut cold_rx).await?;
     cold.shutdown().await;
     let (tx, mut warm_rx) = mpsc::channel(10);
     let warm = TestCtx::start(
@@ -356,7 +371,7 @@ async fn kernels_restore(program: &str) -> Result<Vec<Value>> {
     .await?;
     // the root's owner; dropping it deletes the program
     let _program = warm.rt.program().await?.expect("the program restored");
-    let warm_values = first_values(&mut warm_rx).await;
+    let warm_values = first_values(&warm.rt, &mut warm_rx).await?;
     assert_eq!(cold_values, warm_values);
     #[cfg(debug_assertions)]
     assert!(
@@ -437,7 +452,7 @@ async fn session_with(
         Err(_) => None,
     };
     let compiled = ctx.rt.program().await?.expect("the program compiled or restored");
-    let values = first_values(&mut rx).await;
+    let values = first_values(&ctx.rt, &mut rx).await?;
     let stats = ctx.rt.env_stats().await?;
     let forks = ctx.rt.control().forks();
     ctx.shutdown().await;
@@ -967,7 +982,7 @@ async fn program_image_restores_builtins() -> Result<()> {
     )
     .await?;
     let image = prog_rx.await??.image;
-    let cold_values = first_values(&mut cold_rx).await;
+    let cold_values = first_values(&cold.rt, &mut cold_rx).await?;
     let last = cold_values.last().expect("the program produced its tuple");
     assert_eq!(
         format!("{last}"),
@@ -983,7 +998,7 @@ async fn program_image_restores_builtins() -> Result<()> {
     .await?;
     // the root's owner; dropping it deletes the program
     let _program = warm.rt.program().await?.expect("the program restored");
-    let warm_values = first_values(&mut warm_rx).await;
+    let warm_values = first_values(&warm.rt, &mut warm_rx).await?;
     assert_eq!(cold_values, warm_values);
     cold.shutdown().await;
     warm.shutdown().await;
@@ -1068,7 +1083,7 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
     )
     .await?;
     let image = prog_rx.await??.image;
-    let cold_values = first_values(&mut cold_rx).await;
+    let cold_values = first_values(&cold.rt, &mut cold_rx).await?;
     assert_eq!(cold_values.last(), Some(&Value::I64(31)), "{cold_values:?}");
     cold.shutdown().await;
     let (tx, mut warm_rx) = mpsc::channel(10);
@@ -1080,7 +1095,7 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
     .await?;
     // the root's owner; dropping it deletes the program
     let _program = warm.rt.program().await?.expect("the program restored");
-    assert_eq!(cold_values, first_values(&mut warm_rx).await);
+    assert_eq!(cold_values, first_values(&warm.rt, &mut warm_rx).await?);
     warm.shutdown().await;
     Ok(())
 }
@@ -1129,7 +1144,11 @@ async fn a_restored_interface_pair_calls_what_was_written() -> Result<()> {
         )
         .await?;
         let image = prog_rx.await??.image;
-        assert_eq!(first_values(&mut cold_rx).await, [expected.clone()], "{root} cold");
+        assert_eq!(
+            first_values(&cold.rt, &mut cold_rx).await?,
+            [expected.clone()],
+            "{root} cold"
+        );
         cold.shutdown().await;
         let (tx, mut warm_rx) = mpsc::channel(10);
         let warm = TestCtx::start(
@@ -1144,7 +1163,11 @@ async fn a_restored_interface_pair_calls_what_was_written() -> Result<()> {
         );
         // the root's owner; dropping it deletes the program
         let _program = warm.rt.program().await?.expect("the program restored");
-        assert_eq!(first_values(&mut warm_rx).await, [expected.clone()], "{root} warm");
+        assert_eq!(
+            first_values(&warm.rt, &mut warm_rx).await?,
+            [expected.clone()],
+            "{root} warm"
+        );
         warm.shutdown().await;
     }
     Ok(())
@@ -1358,7 +1381,7 @@ async fn nested_sample_argument_slots_restore_fusion() -> Result<()> {
     )
     .await?;
     let _program = warm.rt.program().await?.expect("the program restored");
-    let values = first_values(&mut rx).await;
+    let values = first_values(&warm.rt, &mut rx).await?;
     assert!(
         matches!(&values[..], [Value::Array(a)] if a[..] == [Value::I64(2), Value::I64(3), Value::I64(4)])
     );
@@ -1420,16 +1443,19 @@ async fn a_restored_closure_outlives_its_slot() -> Result<()> {
 }
 
 /// A fixture's runtime restores its package root from the process's image
-/// of it in every mode but `interp`, which compiles it.
-async fn fixtures_restore_their_root_outside_interp(mode: Mode) -> Result<()> {
-    let (ctx, _rx) = fixture_runtime([], TEST_REGISTER, mode, |_| {}).await?;
-    let restores = mode != Mode::Interp && Root::Restored.chosen() == Root::Restored;
-    assert_eq!(ctx.rt.env_stats().await?.restored, restores, "{mode:?}");
-    ctx.shutdown().await;
+/// of it in every mode, `Unpruned` included, unless `GRAPHIX_TEST_ROOT`
+/// has it compile.
+async fn fixtures_restore_their_root(mode: Mode) -> Result<()> {
+    let restores = Root::Restored.chosen() == Root::Restored;
+    for mode in [mode, Mode::Unpruned] {
+        let (ctx, _rx) = fixture_runtime([], TEST_REGISTER, mode, |_| {}).await?;
+        assert_eq!(ctx.rt.env_stats().await?.restored, restores, "{mode:?}");
+        ctx.shutdown().await;
+    }
     Ok(())
 }
 
-modes!(fixtures_restore_their_root_outside_interp);
+modes!(fixtures_restore_their_root);
 
 /// Each package root restores an image of its own: a runtime of core
 /// alone restored no other package.

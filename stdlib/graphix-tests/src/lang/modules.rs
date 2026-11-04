@@ -808,7 +808,7 @@ let result = a + f(1) + map::len(m) + map::get_or(m, 2, 3)
     ; FuseExpect::Jit);
 
 // A module inside a module of its own name is another module, not an
-// import cycle (graphix-shell/tests/import_cycle.rs: two files naming
+// import cycle (graphix-shell/tests/shell/import_cycle.rs: two files naming
 // each other are not one either; a directory linking into itself is).
 run!(
     nested_module_of_its_own_name,
