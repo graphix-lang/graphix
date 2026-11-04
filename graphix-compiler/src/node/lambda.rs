@@ -1941,17 +1941,13 @@ impl<R: Rt> GXLambda<R> {
         let binds = ctx.env.lexical.binds.clone();
         let mut argpats: LPooled<Vec<StructPatternNode>> = LPooled::take();
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
-            let lexical = &scope.lexical;
-            if let Some(tv) = a.pattern.meets_rigid(&ctx.env, lexical, &atyp.typ)? {
-                let (pat, typ) = (&a.pattern, &atyp.typ);
-                return Err(rigid_refusal(
-                    &ctx.env,
-                    lexical,
-                    pat,
-                    typ,
-                    &tv,
-                    Holder::Formal,
-                ));
+            {
+                let ids = expr::StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
+                if let Some(tv) = a.pattern.meets_rigid(&ctx.env, &ids, &atyp.typ)? {
+                    let (pat, typ) = (&a.pattern, &atyp.typ);
+                    let e = rigid_refusal(&ctx.env, &ids, pat, typ, &tv, Holder::Formal);
+                    return Err(e);
+                }
             }
             let pattern = StructPatternNode::compile(
                 ctx,
@@ -2628,6 +2624,19 @@ impl<R: Rt> DefGate<R> {
         );
         let scope = def.scope.with_catch((faux_id, ExprId::new()), HandlerKind::Catch);
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        // CR claude for claude: [bug/low] A declared variable that only the bound of a
+        // bound names is not held rigid in the definition's check, so the body decides it:
+        // `'a: [i64, string], 'c: ['a, null], 'b: ['c, `X] |x: 'b| -> [`X, null, i64] x`
+        // checks and binds the declared 'a to i64, and a call with "str" is then refused
+        // against 'a: i64 (with 'a: Any and a return of [`X, null], 'c's bound collapses
+        // to null). Two levels ('a: [i64, string], 'b: ['a, null]) are held and refused.
+        // It breaks "a def's declared tvars are rigid in its body check"; the effect is a
+        // narrowed signature, not a wrong answer. Likely `named` here collects a
+        // variable's bounds one level deep (FnType::collect_tvars); every declared
+        // quantifier reached through bounds should be gated. Type::covers_by_parts holds
+        // such a cell rigid while it probes (split_members), the coverage half of it.
+        // probes: ~/ptmp/cr29/scratch/review-r14/B-r2-2/lt/{c10,c11,c16,c17,c18}.gx
+        // (bound-chain-rigid-01)
         def.typ.collect_tvars(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
         // a rank-2 formal's own quantifiers are held too: a use of the

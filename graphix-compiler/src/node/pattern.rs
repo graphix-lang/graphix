@@ -4,7 +4,7 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
     env::Env,
     expr::{
-        ExprId, ModPath, Name, Origin, Pattern, StructurePattern, WrittenAt,
+        AbstractOf, ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt,
         union_members,
     },
     format_with_flags,
@@ -315,7 +315,7 @@ pub(super) enum Holder {
 /// ([`StructurePattern::meets_rigid`]), told as the type to write.
 pub(super) fn rigid_refusal(
     env: &Env,
-    scope: &ModPath,
+    ids: &AbstractOf,
     pat: &StructurePattern,
     typ: &Type,
     tv: &TVar,
@@ -341,7 +341,7 @@ pub(super) fn rigid_refusal(
     let bounds = tv.typed_bounds(env);
     if alone
         && let Some(b) =
-            bounds.iter().find(|b| !pat.may_hold(env, scope, b).unwrap_or(true))
+            bounds.iter().find(|b| !pat.may_hold(env, ids, b).unwrap_or(true))
     {
         let what = format_compact!("{pat} matches no value of {var}, whose bound is {b}");
         return match holder {
@@ -349,7 +349,7 @@ pub(super) fn rigid_refusal(
             Holder::Let | Holder::Formal => anyhow!("{what}"),
         };
     }
-    match (holder, rigid_written(env, scope, pat, typ, tv)) {
+    match (holder, rigid_written(env, ids, pat, typ, tv)) {
         (Holder::Arm, Some(t)) if t.holds_fn(env) => anyhow!(
             "{pat} tests inside {what}, and no type test holds its function type: \
              declare no {var}, writing its bound in its place"
@@ -364,6 +364,11 @@ pub(super) fn rigid_refusal(
         (Holder::Arm, None) => anyhow!(
             "{pat} tests inside {what}: write the type it tests, `T as {pat}`, or \
              bound {var}"
+        ),
+        (Holder::Let, _) if in_abstract_param(typ, tv) => anyhow!(
+            "the pattern {pat} binds inside {what}; an abstract type's parameter holds \
+             the variable, which no annotation widens: declare no {var}, writing the type \
+             it binds in its place"
         ),
         (Holder::Let, Some(t)) => anyhow!(
             "the pattern {pat} binds inside {what}: annotate the binding, `let {pat}: \
@@ -388,37 +393,87 @@ pub(super) fn rigid_refusal(
     }
 }
 
+/// The refusal of `pat`, under a type test over a value of `typ`, testing
+/// or binding inside a value of `tv`, a type variable its definition holds
+/// rigid, where the test's part over it, `part`, holds `_` or an open cell
+/// ([`StructurePattern::meets_rigid_written`]).
+pub(super) fn written_refusal(
+    env: &Env,
+    ids: &AbstractOf,
+    pat: &StructurePattern,
+    typ: &Type,
+    tv: &TVar,
+    part: &Type,
+) -> anyhow::Error {
+    let var = match tv.written_open().is_some() {
+        true => format_compact!("'{}", tv.name),
+        false => format_compact!("the variable"),
+    };
+    let fix = match rigid_written(env, ids, pat, typ, tv) {
+        Some(t) => format_compact!("write the type it tests, `{t} as {pat}`"),
+        None => format_compact!("write the type it tests, `T as {pat}`, or bound {var}"),
+    };
+    anyhow!(
+        "{pat} tests inside a value of {var}, a type variable of the definition, and its \
+         type test types none of it: {part} holds `_`, which is bottom, or a type \
+         variable nothing declares; {fix}"
+    )
+}
+
 /// The type `pat` tests written out: `typ` with `tv` at its one typed
-/// bound, or, where `typ` is `tv` alone, at that bound's members `pat` may
-/// hold. `None` where `tv` has no one typed bound.
+/// bound, only the members of that union `pat` may hold. `None` where
+/// `tv` has no one typed bound.
 fn rigid_written(
     env: &Env,
-    scope: &ModPath,
+    ids: &AbstractOf,
     pat: &StructurePattern,
     typ: &Type,
     tv: &TVar,
 ) -> Option<Type> {
     let bounds = tv.typed_bounds(env);
     let [bound] = &bounds[..] else { return None };
-    let bound = &rigid_as_bounds(env, bound)?;
+    let bound = rigid_as_bounds(env, bound)?;
     let is_tv = |t: &TVar| t.open_cell().is_some_and(|c| c.same_cell(tv));
-    let at = match typ {
-        Type::TVar(t) if is_tv(t) => {
-            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-            union_members(env, bound, &mut members).ok()?;
-            let held: SmallVec<[Type; 8]> = members
-                .iter()
-                .filter(|m| pat.may_hold(env, scope, m).unwrap_or(true))
-                .cloned()
-                .collect();
-            match held.is_empty() || held.len() == members.len() {
-                true => bound.clone(),
-                false => Type::Set(Arc::from_iter(held)),
+    let t = typ.written_form(&mut |t| is_tv(t).then(|| bound.clone()))?;
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members(env, &t, &mut members).ok()?;
+    let held: SmallVec<[Type; 8]> = members
+        .iter()
+        .filter(|m| pat.may_hold(env, ids, m).unwrap_or(true))
+        .cloned()
+        .collect();
+    Some(match &held[..] {
+        [] => t,
+        _ if held.len() == members.len() => t,
+        [m] => m.clone(),
+        _ => Type::Set(Arc::from_iter(held)),
+    })
+}
+
+/// Whether `t` holds `tv` in an abstract type's parameter, which no
+/// annotation widens.
+fn in_abstract_param(t: &Type, tv: &TVar) -> bool {
+    fn holds(t: &Type, tv: &TVar) -> bool {
+        crate::stack::ensure_sufficient(|| match t.deref_cloned() {
+            None => {
+                matches!(t, Type::TVar(c) if c.open_cell().is_some_and(|c| c.same_cell(tv)))
             }
+            Some(t) => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found = found || holds(c, tv));
+                found
+            }
+        })
+    }
+    crate::stack::ensure_sufficient(|| match t.deref_cloned() {
+        None => false,
+        Some(Type::Abstract { ref params, .. }) => params.iter().any(|p| holds(p, tv)),
+        Some(t) => {
+            let mut found = false;
+            t.for_each_child(&mut |c| found = found || in_abstract_param(c, tv));
+            found
         }
-        _ => bound.clone(),
-    };
-    typ.written_form(&mut |t| is_tv(t).then(|| at.clone()))
+    })
 }
 
 /// `t` as a program writes it, each type variable a definition holds
@@ -436,7 +491,101 @@ fn rigid_as_bounds(env: &Env, t: &Type) -> Option<Type> {
     })
 }
 
+/// Each abstract pattern of a pattern paired with the type its compile
+/// resolved it to: a name looked up again at the check could find a type a
+/// later statement declares.
+pub(super) struct CompiledAbstracts<'a>(
+    SmallVec<[(&'a StructurePattern, AbstractId); 2]>,
+);
+
+impl<'a> CompiledAbstracts<'a> {
+    /// The pairs of `spec` and `node`, the pattern compiled from it.
+    pub(super) fn new(node: &StructPatternNode, spec: &'a StructurePattern) -> Self {
+        let mut pairs = SmallVec::new();
+        node.pair_abstracts(spec, &mut pairs);
+        Self(pairs)
+    }
+
+    pub(super) fn get(&self, p: &StructurePattern) -> Option<AbstractId> {
+        self.0.iter().find(|(q, _)| std::ptr::eq(*q, p)).map(|(_, id)| *id)
+    }
+}
+
 impl StructPatternNode {
+    /// Each name beneath a part of this pattern that tests inside a value
+    /// of a rigid cell `typ` holds at that part's position, in any
+    /// alternative or member.
+    fn binds_inside_rigid(
+        &self,
+        env: &Env,
+        typ: &Type,
+        out: &mut SmallVec<[BindId; 4]>,
+    ) -> Result<()> {
+        crate::stack::ensure_sufficient(|| match self {
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) => Ok(()),
+            Self::Or { alts } => {
+                alts.iter().try_for_each(|a| a.binds_inside_rigid(env, typ, out))
+            }
+            _ => {
+                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                let mut rigid = false;
+                crate::expr::union_members_with(env, typ, &mut members, &mut |tv| {
+                    rigid |= tv.open_cell().is_some_and(|c| c.is_rigid())
+                })?;
+                if rigid {
+                    for c in self.children() {
+                        c.ids(&mut |id| out.push(id))
+                    }
+                }
+                for (_, ts) in self.member_parts(env, typ, false) {
+                    for (c, t) in self.children().into_iter().zip(ts) {
+                        if let Some((t, _)) = t {
+                            c.binds_inside_rigid(env, &t, out)?
+                        }
+                    }
+                }
+                Ok(())
+            }
+        })
+    }
+
+    fn pair_abstracts<'a>(
+        &self,
+        spec: &'a StructurePattern,
+        out: &mut SmallVec<[(&'a StructurePattern, AbstractId); 2]>,
+    ) {
+        use StructurePattern as P;
+        let zip = |ns: &[Self], ss: &'a [StructurePattern], out: &mut SmallVec<_>| {
+            for (n, s) in ns.iter().zip(ss.iter()) {
+                n.pair_abstracts(s, out)
+            }
+        };
+        crate::stack::ensure_sufficient(|| match (self, spec) {
+            (Self::Abstract { id, bind, .. }, P::Abstract { bind: sb, .. }) => {
+                out.push((spec, *id));
+                bind.pair_abstracts(sb, out)
+            }
+            (Self::Or { alts }, P::Or(sa)) => zip(alts, sa, out),
+            (Self::Variant { binds, .. }, P::Variant { binds: sb, .. })
+            | (Self::Slice { binds, .. }, P::Tuple { binds: sb, .. })
+            | (Self::Slice { binds, .. }, P::Slice { binds: sb, .. })
+            | (
+                Self::SlicePrefix { prefix: binds, .. },
+                P::SlicePrefix { prefix: sb, .. },
+            )
+            | (
+                Self::SliceSuffix { suffix: binds, .. },
+                P::SliceSuffix { suffix: sb, .. },
+            ) => zip(binds, sb, out),
+            (Self::Struct { binds, .. }, P::Struct { binds: sb, .. }) => {
+                for ((_, _, n), (_, s, _)) in binds.iter().zip(sb.iter()) {
+                    n.pair_abstracts(s, out)
+                }
+            }
+            _ => (),
+        })
+    }
+
     /// This pattern's children, in the order [`Self::child_types`]
     /// gives their types.
     fn children(&self) -> SmallVec<[&Self; 8]> {
@@ -2363,8 +2512,13 @@ impl<R: Rt> PatternNode<R> {
         let parts = self.type_predicate.matching_parts(env, scrut)?;
         let mut inside: SmallVec<[Leaf; 4]> = SmallVec::new();
         self.structure_predicate.leaves(env, &parts, false, false, &mut inside)?;
+        let mut within: SmallVec<[BindId; 4]> = SmallVec::new();
+        self.structure_predicate.binds_inside_rigid(env, scrut, &mut within)?;
         for l in inside {
             match leaves.iter_mut().find(|k| k.id == l.id) {
+                Some(k) if k.typ.has_rigid() && within.contains(&l.id) => {
+                    k.typ = Type::union(env, &[&k.typ, &l.typ])?
+                }
                 Some(k) if k.typ.has_rigid() => (),
                 Some(k) => *k = l,
                 None => leaves.push(l),
@@ -2457,18 +2611,12 @@ impl<R: Rt> PatternNode<R> {
             | Type::Ref(_) => (),
         }
         let sp = &spec.structure_predicate;
-        if explicit
-            && let Some(tv) = sp.meets_rigid(&ctx.env, &scope.lexical, &type_predicate)?
-        {
-            let lexical = &scope.lexical;
-            return Err(rigid_refusal(
-                &ctx.env,
-                lexical,
-                sp,
-                &type_predicate,
-                &tv,
-                Holder::Arm,
-            ));
+        if explicit {
+            let ids = StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
+            if let Some(tv) = sp.meets_rigid(&ctx.env, &ids, &type_predicate)? {
+                let tp = &type_predicate;
+                return Err(rigid_refusal(&ctx.env, &ids, sp, tp, &tv, Holder::Arm));
+            }
         }
         let cx = PatCx { scope, pos, ori: &ori, inferred: !explicit };
         let structure_predicate = StructPatternNode::compile_with(

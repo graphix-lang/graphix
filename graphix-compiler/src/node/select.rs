@@ -2,7 +2,8 @@ use super::{
     Held, Holders, WakeBit,
     compiler::compile,
     pattern::{
-        ArmMatch, Holder, PatternNode, SliceKind, StructPatternNode, rigid_refusal,
+        ArmMatch, CompiledAbstracts, Holder, PatternNode, SliceKind, StructPatternNode,
+        rigid_refusal, written_refusal,
     },
     wake::{ArmMask, TrackedFires},
 };
@@ -11,8 +12,8 @@ use crate::{
     TagValue, Update, View, bailat,
     env::Env,
     expr::{
-        At, Expr, ExprId, ExprKind, ModPath, Origin, Pattern, Undecided, union_members,
-        union_members_open,
+        At, Expr, ExprId, ExprKind, Origin, Pattern, StructurePattern, Undecided,
+        union_members, union_members_open,
     },
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -92,8 +93,6 @@ pub struct Select<R: Rt> {
     discriminants: Option<Arc<ArmDiscriminants>>,
     /// The compile's flags, for the definition check's warnings.
     flags: BitFlags<CFlag>,
-    /// Where the select is written, which its patterns' names resolve in.
-    scope: ModPath,
 }
 
 /// Facts about the arms that need the sealed scrutinee type or the
@@ -292,7 +291,6 @@ impl<R: Rt> Select<R> {
         typ: Type,
         spec: Arc<Expr>,
         flags: BitFlags<CFlag>,
-        scope: ModPath,
     ) -> Node<R> {
         Node::new(Self {
             selected: None,
@@ -306,7 +304,6 @@ impl<R: Rt> Select<R> {
             arm_facts: None,
             discriminants: None,
             flags,
-            scope,
         })
     }
 
@@ -328,8 +325,7 @@ impl<R: Rt> Select<R> {
             true => CFlag::RunEvent.into(),
             false => BitFlags::empty(),
         };
-        let scope = ModPath::decode(buf)?;
-        Ok(Self::new(arg, arms, typ, spec, flags, scope))
+        Ok(Self::new(arg, arms, typ, spec, flags))
     }
 
     pub(crate) fn compile(
@@ -368,8 +364,7 @@ impl<R: Rt> Select<R> {
             .at(&spec)?;
             built.push((pat, n));
         }
-        let scope = scope.lexical.clone();
-        Ok(Self::new(arg, built, Type::empty_tvar(), spec, flags | own, scope))
+        Ok(Self::new(arg, built, Type::empty_tvar(), spec, flags | own))
     }
 }
 
@@ -622,6 +617,12 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 // an undecided part an arm tests is refused ("annotate it"), a part only a name or `_`
 // meets passes; written tests by the same rule; census first; built as its own lane
 // after the settle fix (settle-commits-name-01) and D6.
+// 2026-11-04 claude: Review r14 round 2 (B-r2-1, low): D6 now tells a pattern inside
+// an abstract payload over W<'b> to write W<T> as W(..), and those written tests still
+// need a catch-all (W<(i64, string)> as W((n, s)) alone, or W<[`A(i64), `B(i64)]> as
+// W(`A(n)) beside W<..> as W(`B(n)), are refused 'missing match cases: no arm covers
+// W<'b>', main the same). probes:
+// ~/ptmp/cr29/scratch/review-r14/B-r2-1/n/{y1,y2,y3,y6,y7}.gx
 /// What reaches each arm of a select, walked arm by arm: the scrutinee
 /// less what the unguarded arms before it cover (irrefutable atoms,
 /// `null`, a true/false pair, a completed literal pool, a completed
@@ -1861,8 +1862,7 @@ impl<R: Rt> Update<R> for Select<R> {
         }
         self.typ.encode(buf)?;
         self.spec.encode(buf)?;
-        self.flags.contains(CFlag::RunEvent).encode(buf)?;
-        self.scope.encode(buf)
+        self.flags.contains(CFlag::RunEvent).encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -1887,7 +1887,6 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts,
             discriminants: _,
             flags,
-            scope: _,
         } = self;
         let LazyArmFacts {
             tracked,
@@ -2177,7 +2176,6 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts: _,
             discriminants: _,
             flags: _,
-            scope: _,
         } = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
@@ -2199,7 +2197,6 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts,
             discriminants: _,
             flags: _,
-            scope: _,
         } = self;
         slept.set();
         if let Some(facts) = arm_facts {
@@ -2228,7 +2225,6 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts: _,
             discriminants: _,
             flags: _,
-            scope: _,
         } = self;
         arg.node.refs(refs);
         for arm in arms {
@@ -2454,15 +2450,25 @@ impl<R: Rt> Select<R> {
         if checking && let ExprKind::Select(se) = &self.spec.kind {
             let scrut = self.arg.node.typ();
             for ((pat, n), (spec_pat, _)) in self.arms.iter().zip(se.arms.iter()) {
+                let sp = &spec_pat.structure_predicate;
+                let ids = CompiledAbstracts::new(&pat.structure_predicate, sp);
+                let ids = |p: &StructurePattern| ids.get(p);
+                let site = || pattern_site(spec_pat, n.spec());
                 let over = match pat.explicit_type_predicate {
                     true => &pat.type_predicate,
                     false => scrut,
                 };
-                let sp = &spec_pat.structure_predicate;
-                if let Some(tv) = sp.meets_rigid(&ctx.env, &self.scope, over)? {
-                    let e =
-                        rigid_refusal(&ctx.env, &self.scope, sp, over, &tv, Holder::Arm);
-                    return Err(e).at(&pattern_site(spec_pat, n.spec()));
+                if let Some(tv) = sp.meets_rigid(&ctx.env, &ids, over)? {
+                    let e = rigid_refusal(&ctx.env, &ids, sp, over, &tv, Holder::Arm);
+                    return Err(e).at(&site());
+                }
+                if pat.explicit_type_predicate
+                    && scrut.has_rigid()
+                    && let Some((tv, part)) =
+                        sp.meets_rigid_written(&ctx.env, &ids, scrut, over)?
+                {
+                    let e = written_refusal(&ctx.env, &ids, sp, scrut, &tv, &part);
+                    return Err(e).at(&site());
                 }
             }
         }

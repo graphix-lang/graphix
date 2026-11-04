@@ -3861,7 +3861,7 @@ run!(
 
 run!(
     abstract_alias_let_inside_a_declared_variable_refused,
-    refused("the pattern V((n, s)) binds inside a value of 'b"),
+    refused("the pattern V((n, s)) binds inside a value of 'b, a type variable of the definition, which types none of its parts; an abstract type's parameter holds the variable, which no annotation widens: declare no 'b, writing the type it binds in its place"),
     "/test.gx" => r#"
         type W<'a> = Abstract<'a>;
         use self::W as V;
@@ -7150,4 +7150,239 @@ run!(
         [u((`A, null)), u((`B, w)), u((`B, null))]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 2, 3])
+);
+
+// A written test types the binds inside a declared variable only by a
+// closed part: `_` is bottom and an undeclared variable any type.
+run!(
+    written_test_holding_bottom_inside_a_declared_variable_refused,
+    r#"{
+        let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x {
+            `A(_) as `A(z) => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        g(o)
+    }"#,
+    refused("`A(z) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: `A(_) holds `_`, which is bottom, or a type variable nothing declares; write the type it tests, ``A(i64) as `A(z)`");
+    FuseExpect::None
+);
+
+run!(
+    written_test_holding_an_undeclared_variable_inside_a_declared_variable_refused,
+    r#"{
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| select x {
+            ('c, i64) as (`A(z), n) => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        g((o, 1))
+    }"#,
+    refused("(`A(z), n) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: 'c holds `_`, which is bottom, or a type variable nothing declares; write the type it tests, `([`A(i64), `B(i64)], i64) as (`A(z), n)`");
+    FuseExpect::None
+);
+
+run!(
+    written_test_closed_inside_a_declared_variable,
+    r#"{
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| select x {
+            ([`A(i64), `B(i64)], i64) as (`A(z), n) => z + n,
+            _ => 0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        g((o, 1))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4)));
+    FuseExpect::Jit
+);
+
+run!(
+    written_test_variable_in_an_abstract_payload_refused,
+    refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: 'c holds `_`"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| select x {
+            W<'c> as W(`A(z)) => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(W(o))
+    "#;
+    FuseExpect::None
+);
+
+// An abstract pattern holds the type its compile resolved, not one a
+// later statement of its block declares under the name.
+run!(
+    abstract_pattern_renamed_by_a_later_typedef_refused,
+    refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `W<[`A(i64), `B(i64)]> as W(`A(z))`"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {
+            let r = select x { W(`A(z)) => z + 1.5, _ => 0.0 };
+            type W = i64;
+            r
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(W(o))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_pattern_renamed_by_a_later_typedef_written,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {
+            let r = select x { W<[`A(i64), `B(i64)]> as W(`A(z)) => z + 1, _ => 0 };
+            type W = i64;
+            r
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(W(o))
+    "#;
+    FuseExpect::Jit
+);
+
+// Under a written test a name that stands inside the variable in one
+// alternative or member and over a whole value of it in another holds
+// both.
+run!(
+    written_test_bind_inside_and_over_a_declared_variable_refused,
+    r#"{
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, 'b)| -> 'b select x {
+            ([`A(i64), `B(i64)], [`A(i64), `B(i64)]) as (`A(z), _) | (`B(_), z) => z
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        g((o, o))
+    }"#,
+    refused("does not contain [i64, 'b: unbound within [`A(i64), `B(i64)], `A(i64), `B(i64)]");
+    FuseExpect::None
+);
+
+run!(
+    written_test_bind_inside_and_over_a_declared_variable,
+    r#"{
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, 'b)| -> [i64, `A(i64), `B(i64)] select x {
+            ([`A(i64), `B(i64)], [`A(i64), `B(i64)]) as (`A(z), _) | (`B(_), z) => z
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let p: [`A(i64), `B(i64)] = `B(4);
+        [g((o, o)), g((p, o))]
+    }"#,
+    prints(r#"[i64:3, ["A", i64:3]]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    written_test_bind_inside_a_member_and_over_another_refused,
+    r#"{
+        let g = 'b: [`C(i64), `B(i64)] |x: Array<['b, `C('b)]>| -> 'b select x {
+            Array<[`C([`C(i64), `B(i64), i64]), `B(i64)]> as [`C(z), ..] => z,
+            _ => never()
+        };
+        let o: [`C(i64), `B(i64)] = `C(3);
+        g([o])
+    }"#,
+    refused("does not contain [i64, 'b: unbound within [`B(i64), `C(i64)], `B(i64), `C(i64)]");
+    FuseExpect::None
+);
+
+run!(
+    written_test_bind_inside_a_member_and_over_another,
+    r#"{
+        let g = 'b: [`C(i64), `B(i64)] |x: Array<['b, `C('b)]>| -> [i64, `B(i64), `C(i64)] select x {
+            Array<[`C([`C(i64), `B(i64), i64]), `B(i64)]> as [`C(z), ..] => z,
+            _ => 0
+        };
+        let o: [`C(i64), `B(i64)] = `C(3);
+        g([o])
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3)));
+    FuseExpect::Jit
+);
+
+// A variable a bound's bound names is the definition's: the split holds it
+// rigid while it probes.
+run!(
+    containment_variable_a_bound_of_a_bound_names_is_split,
+    r#"{
+        let f = 'a: [i64, string], 'c: ['a, null], 'b: ['c, `X] |x: ('b, [`A, `B])|
+            -> [(`X, `A), (`X, `B), (null, [`A, `B]), (i64, `A), (i64, `B)] x;
+        let r = f(("str", `A));
+        select r { (`X, _) => "x", (null, _) => "null", (i64, [`A, `B]) as _ => "i" }
+    }"#,
+    refused("type mismatch [(i64, `A), (i64, `B), (null, [`A, `B]), (`X, `A), (`X, `B)] does not contain ('b: unbound within ['c: unbound within [null, 'a: unbound within [i64, string]], `X], [`A, `B])");
+    FuseExpect::None
+);
+
+run!(
+    containment_variable_any_a_bound_of_a_bound_names_is_split,
+    r#"{
+        let f = 'a: Any, 'c: ['a, null], 'b: ['c, `X] |x: ('b, [`A, `B])|
+            -> [(`X, `A), (`X, `B), (null, [`A, `B])] x;
+        let r = f((42, `A));
+        select r { (`X, _) => "x", (null, _) => "null" }
+    }"#,
+    refused("type mismatch [(null, [`A, `B]), (`X, `A), (`X, `B)] does not contain");
+    FuseExpect::None
+);
+
+run!(
+    containment_variable_a_bound_of_a_bound_names_held,
+    r#"{
+        let f = 'a: [i64, string], 'c: ['a, null], 'b: ['c, `X] |x: ('b, [`A, `B])|
+            -> [(`X, `A), (`X, `B), (null, [`A, `B]), (i64, `A), (i64, `B), (string, [`A, `B])] x;
+        let r = f(("str", `A));
+        select r { (`X, _) => "x", (null, _) => "null", (i64, [`A, `B]) as _ => "i", (s, _) => s }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "str");
+    FuseExpect::Jit
+);
+
+// The advice names a test that checks: the abstract member alone beside
+// the variable, and no annotation where an abstract parameter holds it.
+run!(
+    abstract_pattern_beside_a_declared_variable_advice,
+    refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `W<[`A(i64), `B(i64)]> as W(`A(z))`"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: ['b, W<'b>]| select x {
+            W(`A(z)) => z + 1,
+            _ => 0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(W(o))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_pattern_beside_a_declared_variable_written,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: ['b, W<'b>]| select x {
+            W<[`A(i64), `B(i64)]> as W(`A(z)) => z + 1,
+            _ => 0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(W(o))
+    "#;
+    FuseExpect::Jit
+);
+
+run!(
+    abstract_alias_let_over_a_written_parameter,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        use self::W as V;
+        let id = |v| v;
+        let g = |x: W<(i64, string)>| { let V((n, s)) = id(x); n };
+        let o: (i64, string) = (1, "a");
+        let result = g(W(o))
+    "#;
+    FuseExpect::Jit
 );

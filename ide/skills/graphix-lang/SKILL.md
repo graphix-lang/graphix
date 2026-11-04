@@ -430,9 +430,14 @@ across a bottom cycle).
   `'a` may hold (bound `'a` apart), and a destructuring `let` (annotate
   it: `let {x, y}: {x: i64, y: i64} = p`, or a parameter, `|(n, s):
   (i64, string)|`). A variable with no bound is bounded first (`'a:
-  (bool, i64)`, then `(bool, i64) as (true, k)`). Under a written test a
-  name over the variable's value keeps it: `([`A(i64), `B(i64)], i64) as
-  (v, n)` over `('b, i64)` gives `v: 'b`. Beside other members (`(bool,
+  (bool, i64)`, then `(bool, i64) as (true, k)`). The test is a closed
+  type: `` `A(_) as `A(z) `` (`_` is bottom) and `` 'c as `A(z) `` (an
+  undeclared variable) are refused. Under a written test a name over the
+  variable's value keeps it where the test holds the scrutinee around it:
+  `([`A(i64), `B(i64)], i64) as (v, n)` over `('b, i64)` gives `v: 'b`.
+  An abstract type's parameter takes no annotation wider than the
+  variable: over `W<'b>`, select with a written test (`W<(i64, string)>
+  as W((n, s))`) or declare no `'b`. Beside other members (`(bool,
   ['b, null])`, `'b: [i64, string]`) the
   variable's values are covered by a name or `_` at its position, or by
   written tests that split its bound: `(false, null)` leaves `(false, v)`

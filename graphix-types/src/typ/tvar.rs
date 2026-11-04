@@ -3089,6 +3089,34 @@ impl Type {
     // pattern_inside_an_unbounded_variable_{refused,bounded},
     // let_inside_an_unbounded_variable_refused,
     // pattern_inside_a_variable_its_bound_names_{refused,written}.
+    // 2026-11-04 claude: Review r14 round 2 (B-r2-1, B-r2-2) fixes. (1) A written test
+    // whose part over the variable holds _ or an undeclared variable typed nothing
+    // inside it (`A(_) as `A(z) panicked the JIT; 'c as `A(z) printed 0.0):
+    // StructurePattern::meets_rigid_written walks the written test beside the scrutinee
+    // and refuses such a part, naming the closed test. (2) An abstract pattern's name
+    // looked up again at the check found a type a later statement of the block declares
+    // (s13): the check now takes each abstract pattern's id from its compiled
+    // StructPatternNode (CompiledAbstracts); Select and Bind keep no scope,
+    // REGISTRATION_FORMAT is main's again. (3) A name inside the variable in one
+    // alternative or member and over a whole value of it in another was typed 'b alone
+    // (m1x, q6): StructPatternNode::binds_inside_rigid finds it and type_inside_rigid
+    // unions both types. (4) The advice writes only the members of a union the pattern
+    // may hold (W<..> as W(..) beside 'b) and, for a let where an abstract type's
+    // parameter holds the variable, says to declare no variable. Pins (each refusal
+    // accepted or told otherwise by 5ae1f18eb):
+    // lang::select::written_test_holding_bottom_inside_a_declared_variable_refused,
+    // written_test_holding_an_undeclared_variable_inside_a_declared_variable_refused,
+    // written_test_variable_in_an_abstract_payload_refused,
+    // abstract_pattern_renamed_by_a_later_typedef_refused,
+    // written_test_bind_inside_and_over_a_declared_variable_refused,
+    // written_test_bind_inside_a_member_and_over_another_refused,
+    // abstract_pattern_beside_a_declared_variable_advice,
+    // abstract_alias_let_inside_a_declared_variable_refused; twins *_written,
+    // written_test_closed_inside_a_declared_variable, written_test_bind_inside_*,
+    // abstract_alias_let_over_a_written_parameter. Not done: k10 (a name under a
+    // written test that narrows a sibling takes the test's type, main's behaviour; the
+    // docs now say so) and judging a closed written test that matches no value of the
+    // bound as dead. The D6 item has now failed review twice in new ways.
     pub fn narrow_pattern(&self, env: &Env, pred: &Type) -> Result<bool> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         crate::expr::union_members(env, self, &mut members)?;

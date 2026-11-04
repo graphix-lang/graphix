@@ -3,7 +3,7 @@ use super::{
     coretraits::with_hooks,
     data::{struct_field_types, tuple_field_types},
     lambda::{DefBody, DefOrigin, LambdaDef},
-    pattern::{Holder, StructPatternNode, rigid_refusal},
+    pattern::{CompiledAbstracts, Holder, StructPatternNode, rigid_refusal},
     place::{self, Path, RefPath},
     read_var, standing_view,
 };
@@ -146,8 +146,6 @@ pub struct Bind<R: Rt> {
     pub(crate) around: Option<super::Lets>,
     /// The binding an alias (`let h = f`) binds statically.
     static_hold: Option<StaticHold>,
-    /// Where the `let` is written, which its pattern's names resolve in.
-    scope: ModPath,
 }
 
 /// Rewrite a node into a block: each already-compiled operand becomes a
@@ -193,7 +191,6 @@ pub(crate) fn lower_over_operands<R: Rt>(
             node,
             None,
             ValueReads::Inherit,
-            scope.lexical.clone(),
         ));
     }
     let mut body = compile(ctx, flags, body, &scope, top_id)?;
@@ -239,7 +236,6 @@ impl<R: Rt> Bind<R> {
         node: Node<R>,
         deferred: Option<Deferred>,
         reads: ValueReads,
-        scope: ModPath,
     ) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
@@ -254,7 +250,6 @@ impl<R: Rt> Bind<R> {
             reraised: SmallVec::new(),
             around: None,
             static_hold: None,
-            scope,
         })
     }
 
@@ -350,13 +345,11 @@ impl<R: Rt> Bind<R> {
             (node, pattern, typ)
         } else {
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
-            refuse_inside_rigid(
-                &ctx.env,
-                &scope.lexical,
-                &spec,
-                pat,
-                annotation.as_ref().unwrap_or(node.typ()),
-            )?;
+            {
+                let ids = expr::StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
+                let vtyp = annotation.as_ref().unwrap_or(node.typ());
+                refuse_inside_rigid(&ctx.env, &ids, &spec, pat, vtyp)?;
+            }
             let typ = match annotation {
                 Some(typ) => typ,
                 None => {
@@ -507,8 +500,7 @@ impl<R: Rt> Bind<R> {
                 }
             }
         });
-        let scope = scope.lexical.clone();
-        Ok(Self::with(spec, typ, pattern, node, deferred, reads, scope))
+        Ok(Self::with(spec, typ, pattern, node, deferred, reads))
     }
 
     /// Fit the pattern to the value's type, which must be known by now.
@@ -715,9 +707,7 @@ impl<R: Rt> Bind<R> {
         let node = decode_node(ctx, buf)?;
         let held = Option::<BindId>::decode(buf)?;
         let static_hold = held.map(|id| ctx.hold_static(id, &spec));
-        let scope = ModPath::decode(buf)?;
-        let reads = ValueReads::Inherit;
-        let mut bind = Self::with(spec, typ, pattern, node, None, reads, scope);
+        let mut bind = Self::with(spec, typ, pattern, node, None, ValueReads::Inherit);
         if let Some(b) = bind.downcast_mut::<Self>() {
             b.static_hold = static_hold;
         }
@@ -740,8 +730,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         self.typ.encode(buf)?;
         self.pattern.encode(buf)?;
         self.node.image_encode(buf)?;
-        self.static_hold.as_ref().map(|h| h.id).encode(buf)?;
-        self.scope.encode(buf)
+        self.static_hold.as_ref().map(|h| h.id).encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -940,13 +929,9 @@ impl<R: Rt> Update<R> for Bind<R> {
         let node = &mut self.node;
         self.reads.within(ctx, |ctx| wrap!(node, node.typecheck0(ctx)))?;
         if let ExprKind::Bind(b) = &self.spec.kind {
-            refuse_inside_rigid(
-                &ctx.env,
-                &self.scope,
-                &self.spec,
-                &b.pattern,
-                &self.typ,
-            )?;
+            let ids = CompiledAbstracts::new(&self.pattern, &b.pattern);
+            let ids = |p: &expr::StructurePattern| ids.get(p);
+            refuse_inside_rigid(&ctx.env, &ids, &self.spec, &b.pattern, &self.typ)?;
         }
         self.check_value(ctx)?;
         self.complete_deferred(ctx)?;
@@ -1173,14 +1158,14 @@ impl Ref {
 /// ([`expr::StructurePattern::meets_rigid`]).
 fn refuse_inside_rigid(
     env: &Env,
-    scope: &ModPath,
+    ids: &expr::AbstractOf,
     spec: &Expr,
     pat: &expr::StructurePattern,
     typ: &Type,
 ) -> Result<()> {
-    match pat.meets_rigid(env, scope, typ)? {
+    match pat.meets_rigid(env, ids, typ)? {
         None => Ok(()),
-        Some(tv) => Err(rigid_refusal(env, scope, pat, typ, &tv, Holder::Let)).at(spec),
+        Some(tv) => Err(rigid_refusal(env, ids, pat, typ, &tv, Holder::Let)).at(spec),
     }
 }
 

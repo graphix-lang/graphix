@@ -1268,8 +1268,8 @@ cycle, across workers; the compiler never pins threads.
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``), and in every containment a
   rigid cell at the position it splits is its one typed bound's members,
   each also taken by a part holding the cell, else a member of its own,
-  and one in that bound splits the same way
-  (`Type::covers_by_parts`); a probe in progress for the
+  and one in that bound splits the same way, an open cell there held
+  rigid while it probes (`Type::covers_by_parts`); a probe in progress for the
   same scrutinee ref claims nothing on re-entry. A partial struct
   pattern completes against the one member it can match
   (`StructurePattern::complete_type_predicate`); members told apart only
@@ -1297,10 +1297,15 @@ cycle, across workers; the compiler never pins threads.
   (`StructurePattern::meets_rigid`, judged as the select, the `let` or a
   destructuring parameter is checked, a test written over the variable
   itself as the arm compiles; an abstract pattern names the type its
-  name resolves to); a name there takes the whole union. Under a written
-  test a bind inside the variable takes the test's part
-  (`Type::matching_parts`) and a name over a value holding it keeps the
-  variable (`PatternNode::type_inside_rigid`).
+  compile resolved, `CompiledAbstracts`); a name there takes the whole
+  union. A written test's part over the variable must be closed: one
+  holding `_` or an undeclared variable is refused
+  (`StructurePattern::meets_rigid_written`). Under a written test a bind
+  inside the variable takes the test's part (`Type::matching_parts`); a
+  name over a value holding it keeps the variable where a part of the test
+  around it holds the scrutinee's part there
+  (`PatternNode::type_inside_rigid`), and one that stands inside it in
+  another alternative or member takes both.
 - **Composite forms** (`graphix-types/src/rep.rs`,
   `design/distinct_composite_forms.md`): a tuple, struct, variant (bare
   included) and list cell is an array whose element 0 is its kind's

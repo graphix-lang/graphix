@@ -3,7 +3,10 @@ use crate::{
     PrintFlag,
     env::Env,
     format_with_flags, print_as_written,
-    typ::{TVar, Type, Unfolded, settled_identical, strictly_identical, tvar::Level},
+    typ::{
+        AbstractId, TVar, Type, Unfolded, settled_identical, strictly_identical,
+        tvar::Level,
+    },
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
@@ -594,25 +597,70 @@ impl Undecided {
     }
 }
 
+/// The abstract type each abstract pattern of a pattern names, as the
+/// pattern's compile resolved it.
+pub type AbstractOf<'a> = dyn Fn(&StructurePattern) -> Option<AbstractId> + 'a;
+
 impl StructurePattern {
+    /// [`AbstractOf`] by a lookup of each name at `scope`, which agrees
+    /// with a compile at `scope` only while the env is the compile's.
+    pub fn abstracts_at<'a>(
+        env: &'a Env,
+        scope: &'a ModPath,
+    ) -> impl Fn(&StructurePattern) -> Option<AbstractId> + 'a {
+        move |p| {
+            let Self::Abstract { name, .. } = p else { return None };
+            match env.lookup_typedef(scope, name).ok().flatten()?.typ() {
+                Type::Abstract { id, .. } => Some(*id),
+                _ => None,
+            }
+        }
+    }
+
     /// The first type variable a definition holds rigid whose value this
-    /// pattern, written at `scope`, over a value of `typ`, tests or binds
-    /// inside. Nothing types the parts of such a value, so only a name or
-    /// `_` stands over it. At a union holding the variable beside other
-    /// members, a part meets it where it may hold one of its values
-    /// ([`Self::may_hold`]), inside a member the whole pattern may hold.
+    /// pattern, over a value of `typ`, tests or binds inside. Nothing
+    /// types the parts of such a value, so only a name or `_` stands over
+    /// it. At a union holding the variable beside other members, a part
+    /// meets it where it may hold one of its values ([`Self::may_hold`]),
+    /// inside a member the whole pattern may hold.
     pub fn meets_rigid(
         &self,
         env: &Env,
-        scope: &ModPath,
+        ids: &AbstractOf,
         typ: &Type,
     ) -> Result<Option<TVar>> {
+        Ok(self.meets(env, ids, typ, None)?.map(|(tv, _)| tv))
+    }
+
+    /// [`Self::meets_rigid`] under `written`, the written test over a value
+    /// of `typ`: the first variable met where the test's part over it,
+    /// returned with it, holds `_` or an open cell, so types nothing
+    /// inside it.
+    pub fn meets_rigid_written(
+        &self,
+        env: &Env,
+        ids: &AbstractOf,
+        typ: &Type,
+        written: &Type,
+    ) -> Result<Option<(TVar, Type)>> {
+        Ok(self
+            .meets(env, ids, typ, Some(written))?
+            .and_then(|(tv, w)| w.map(|w| (tv, w))))
+    }
+
+    fn meets(
+        &self,
+        env: &Env,
+        ids: &AbstractOf,
+        typ: &Type,
+        written: Option<&Type>,
+    ) -> Result<Option<(TVar, Option<Type>)>> {
         crate::stack::ensure_sufficient(|| match self {
             Self::Ignore | Self::Bind(_) => Ok(None),
             Self::Or(alts) => {
                 for a in alts.iter() {
-                    if let Some(tv) = a.meets_rigid(env, scope, typ)? {
-                        return Ok(Some(tv));
+                    if let Some(r) = a.meets(env, ids, typ, written)? {
+                        return Ok(Some(r));
                     }
                 }
                 Ok(None)
@@ -626,17 +674,32 @@ impl StructurePattern {
                     }
                 })?;
                 for tv in rigid {
-                    if members.is_empty() || self.may_hold_value_of(env, scope, &tv)? {
-                        return Ok(Some(tv));
+                    if members.is_empty() || self.may_hold_value_of(env, ids, &tv)? {
+                        match written {
+                            None => return Ok(Some((tv, None))),
+                            Some(w) if w.has_free() || w.has_bottom() => {
+                                return Ok(Some((tv, Some(w.clone()))));
+                            }
+                            Some(_) => (),
+                        }
                     }
                 }
                 for m in members.iter() {
-                    if !self.may_hold(env, scope, m)? {
+                    if !self.may_hold(env, ids, m)? {
                         continue;
                     }
-                    for (p, t) in self.parts_over(env, scope, m).into_iter().flatten() {
-                        if let Some(tv) = p.meets_rigid(env, scope, &t)? {
-                            return Ok(Some(tv));
+                    let Some(parts) = self.parts_over(env, ids, m) else { continue };
+                    let ws = match written {
+                        None => None,
+                        Some(w) => match self.written_parts(env, ids, w, parts.len())? {
+                            Some(ws) => Some(ws),
+                            None => continue,
+                        },
+                    };
+                    for (i, (p, t)) in parts.iter().enumerate() {
+                        let w = ws.as_ref().map(|ws| &ws[i]);
+                        if let Some(r) = p.meets(env, ids, t, w)? {
+                            return Ok(Some(r));
                         }
                     }
                 }
@@ -645,17 +708,54 @@ impl StructurePattern {
         })
     }
 
-    /// Whether a value of `typ` may pass this pattern, written at `scope`:
-    /// false only where no member of `typ` has the constructor, tag, arity
-    /// or fields it tests, or the type of a literal it tests, here or
-    /// below.
-    pub fn may_hold(&self, env: &Env, scope: &ModPath, typ: &Type) -> Result<bool> {
+    /// The part of `written`, a written test, each of this pattern's `n`
+    /// sub-patterns stands over: the union of its parts over each member
+    /// of this pattern's shape; `written` itself for each where it holds
+    /// an open cell or no member; `None` where no member is of the shape.
+    fn written_parts(
+        &self,
+        env: &Env,
+        ids: &AbstractOf,
+        written: &Type,
+        n: usize,
+    ) -> Result<Option<SmallVec<[Type; 8]>>> {
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        if union_members_open(env, written, &mut members)? || members.is_empty() {
+            return Ok(Some((0..n).map(|_| written.clone()).collect()));
+        }
+        let mut parts: SmallVec<[SmallVec<[Type; 2]>; 8]> =
+            (0..n).map(|_| SmallVec::new()).collect();
+        let mut any = false;
+        for m in members.iter() {
+            let Some(ps) = self.parts_over(env, ids, m) else { continue };
+            any = true;
+            for (i, (_, t)) in ps.into_iter().enumerate() {
+                parts[i].push(t)
+            }
+        }
+        if !any {
+            return Ok(None);
+        }
+        let parts = parts
+            .into_iter()
+            .map(|ts| match &ts[..] {
+                [t] => Ok(t.clone()),
+                ts => Type::union(env, &ts.iter().collect::<SmallVec<[&Type; 2]>>()),
+            })
+            .collect::<Result<_>>()?;
+        Ok(Some(parts))
+    }
+
+    /// Whether a value of `typ` may pass this pattern: false only where no
+    /// member of `typ` has the constructor, tag, arity or fields it tests,
+    /// or the type of a literal it tests, here or below.
+    pub fn may_hold(&self, env: &Env, ids: &AbstractOf, typ: &Type) -> Result<bool> {
         crate::stack::ensure_sufficient(|| match self {
             Self::Ignore | Self::Bind(_) => Ok(true),
             Self::Literal(v, _) => Type::of_literal(v)?.could_match(env, typ),
             Self::Or(alts) => {
                 for a in alts.iter() {
-                    if a.may_hold(env, scope, typ)? {
+                    if a.may_hold(env, ids, typ)? {
                         return Ok(true);
                     }
                 }
@@ -670,9 +770,9 @@ impl StructurePattern {
                     if let Type::Any = m {
                         return Ok(true);
                     }
-                    let Some(parts) = self.parts_over(env, scope, m) else { continue };
+                    let Some(parts) = self.parts_over(env, ids, m) else { continue };
                     for (p, t) in parts {
-                        if !p.may_hold(env, scope, &t)? {
+                        if !p.may_hold(env, ids, &t)? {
                             continue 'members;
                         }
                     }
@@ -685,9 +785,9 @@ impl StructurePattern {
 
     /// Whether a value of `tv`, an open cell, may pass this pattern: a
     /// value of each of its typed bounds may, or it has none.
-    fn may_hold_value_of(&self, env: &Env, scope: &ModPath, tv: &TVar) -> Result<bool> {
+    fn may_hold_value_of(&self, env: &Env, ids: &AbstractOf, tv: &TVar) -> Result<bool> {
         for b in tv.typed_bounds(env).iter() {
-            if !self.may_hold(env, scope, b)? {
+            if !self.may_hold(env, ids, b)? {
                 return Ok(false);
             }
         }
@@ -696,13 +796,12 @@ impl StructurePattern {
 
     /// Each sub-pattern with the part of `m`, a member of a type (a
     /// constructor at its head), it stands over; `None` where `m` is not
-    /// of this pattern's shape. An abstract pattern's name resolves at
-    /// `scope` as its compile resolves it; one that names no abstract type
-    /// holds nothing, and its compile refuses it.
+    /// of this pattern's shape. An abstract pattern holds the type `ids`
+    /// gives it.
     fn parts_over<'a>(
         &'a self,
         env: &Env,
-        scope: &ModPath,
+        ids: &AbstractOf,
         m: &Type,
     ) -> Option<SmallVec<[(&'a Self, Type); 8]>> {
         type Parts<'a> = SmallVec<[(&'a StructurePattern, Type); 8]>;
@@ -740,10 +839,10 @@ impl StructurePattern {
                 elems(binds, *list, m)
             }
             (Self::SliceSuffix { suffix, .. }, _) => elems(suffix, false, m),
-            (Self::Abstract { name, bind, .. }, Type::Abstract { id, params }) => {
-                let named = env.lookup_typedef(scope, name).ok().flatten()?;
-                let Type::Abstract { id: named, .. } = named.typ() else { return None };
-                let rep = env.abstract_reps.get(id).filter(|_| named == id)?;
+            (Self::Abstract { bind, .. }, Type::Abstract { id, params })
+                if ids(self) == Some(*id) =>
+            {
+                let rep = env.abstract_reps.get(id)?;
                 Some(smallvec![(&**bind, rep.instantiate_with(params))])
             }
             _ => None,

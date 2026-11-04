@@ -1288,21 +1288,29 @@ type Split = (Type, SmallVec<[TVar; 2]>);
 
 /// The members of `t`, each with `holders`: a rigid cell with one typed
 /// bound is that bound's members, holding the cell too, one with none a
-/// member of its own; a cell not held rigid is left out.
+/// member of its own; a cell not held rigid is left out, except in a rigid
+/// cell's bound, where it is a variable of the same definition and is held
+/// rigid while `gates` live.
 fn split_members(
     env: &Env,
     t: &Type,
     holders: &SmallVec<[TVar; 2]>,
+    gates: &mut Vec<RigidGate>,
     out: &mut SmallVec<[Split; 8]>,
 ) -> Result<()> {
     ensure_sufficient(|| {
         let mut found: SmallVec<[Type; 8]> = SmallVec::new();
         let mut rigid: SmallVec<[TVar; 2]> = SmallVec::new();
         crate::expr::union_members_with(env, t, &mut found, &mut |tv| {
-            if let Some(c) = tv.open_cell().filter(|c| c.is_rigid()) {
+            if let Some(c) = tv.open_cell()
+                && (c.is_rigid() || !holders.is_empty())
+            {
                 rigid.push(c)
             }
         })?;
+        for c in rigid.iter().filter(|c| !c.is_rigid()) {
+            gates.push(c.open_rigid())
+        }
         for m in found {
             match m {
                 Type::Primitive(p) => out.extend(
@@ -1319,7 +1327,7 @@ fn split_members(
                 [b] => {
                     let mut inner = holders.clone();
                     inner.push(cell.clone());
-                    split_members(env, b, &inner, out)?
+                    split_members(env, b, &inner, gates, out)?
                 }
                 _ => out.push((Type::TVar(cell), holders.clone())),
             }
@@ -3394,6 +3402,19 @@ impl Type {
     // cell left out), containment_variable_its_bound_names_held and
     // written_tests_over_a_variable_its_bound_names_covered (the covering twins). Probes
     // ~/ptmp/cr29/scratch/review-r14/B-r1-1/d/.
+    // 2026-11-04 claude: Review r14 round 2 (B-r2-2, medium): split_members dropped an
+    // open cell a rigid cell's bound names ('a in 'a: [i64, string], 'c: ['a, null], 'b:
+    // ['c, `X], which main does not hold rigid: bound-chain-rigid-01), so the strings at
+    // a 'b position read as `X and null and c5/c14/c15 passed with a coverage hole.
+    // Inside a rigid cell's bound an open cell is a variable of the same definition:
+    // split_members now holds it rigid (a RigidGate covers_by_parts keeps while it
+    // probes) and splits it as any rigid cell. c5, c14, c15 refused as on main; c3
+    // (main's hole, a bool beside 'b) refused too. Pins:
+    // lang::select::containment_variable_a_bound_of_a_bound_names_is_split,
+    // containment_variable_any_a_bound_of_a_bound_names_is_split (both pass the check on
+    // 5ae1f18eb and find no arm at run time),
+    // containment_variable_a_bound_of_a_bound_names_held (the covering twin). This item
+    // has now failed review twice in new ways.
     /// Do the candidates' argument lists cover `targs` together? The first
     /// position splits into its members, and each member's candidates
     /// must cover the positions after it. A rigid cell there is its typed
@@ -3411,7 +3432,8 @@ impl Type {
                 return Ok(!cands.is_empty());
             };
             let mut members: SmallVec<[Split; 8]> = SmallVec::new();
-            split_members(env, first, &SmallVec::new(), &mut members)?;
+            let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+            split_members(env, first, &SmallVec::new(), &mut gates, &mut members)?;
             if members.is_empty() {
                 members.push((first.clone(), SmallVec::new()))
             }

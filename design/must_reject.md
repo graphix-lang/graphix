@@ -336,7 +336,10 @@ arm at `['a, null]` leaves the variable's values to a name or `_`,
 `Type::covers_by_parts`): the generated declared variables are
 unbounded, where a head test beside one meets it and this family's rule
 refuses first; pins `lang::select::pool_variable_*`,
-`distribution_variable_*`, `containment_variable_*`.
+`distribution_variable_*`, `containment_variable_*`. Nor a written test
+whose part over the variable holds `_` or an undeclared variable
+(`StructurePattern::meets_rigid_written`, the same message): the
+mutation writes no test; pins `lang::select::written_test_holding_*`.
 
 ## Labeled and optional arguments across the fuzzer
 

@@ -126,13 +126,23 @@ checked, before any narrowing, and a test written over the variable
 itself as its arm compiles).
 A written test names the definition's variables as a `let`'s annotation
 does, and types a bind inside a rigid cell by its own part
-(`Type::matching_parts`), while a name over a value holding the cell
-keeps it, as on the same test with no variable inside
+(`Type::matching_parts`), so that part must be closed: a test whose part
+over the cell holds `_` (bottom, which types nothing) or a variable no
+definition declares (which the arm's body would decide) is refused,
+naming the closed test to write (`StructurePattern::meets_rigid_written`,
+which walks the written test beside the scrutinee). A name over a value
+holding the cell keeps it where a part of the test around the name holds
+the scrutinee's part there, as on the same test with no variable inside
 (`Type::matching_type`, `PatternNode::type_inside_rigid`): under `'b:
 [`A(i64), `B(i64)]`, `` ([`A(i64), `B(i64)], [`A(i64), `B(i64)]) as
-(`A(z), v) `` over `('b, 'b)` types `z` as `i64` and `v` as `'b`. An
-abstract pattern names the type its name resolves to where it is
-written, an alias's included.
+(`A(z), v) `` over `('b, 'b)` types `z` as `i64` and `v` as `'b`, while
+`` ([`A(i64), `B(i64)], `X) as (v, `X) `` over `` ('b, [`X, `Y]) `` types
+`v` by the test. A name that stands inside the cell in one alternative or
+member and over a whole value of it in another
+(`StructPatternNode::binds_inside_rigid`) is the union of both types. An
+abstract pattern names the type its compile resolved, an alias's
+included (`CompiledAbstracts`: a lookup at the check would find a type a
+later statement of the block declares under the name).
 At a union holding the cell beside other members a part meets it where
 it may hold one of its values, by its typed bounds, any value without
 one, inside a member the whole pattern may hold (a pattern that cannot
@@ -152,7 +162,9 @@ set coverage and every annotation reach) a rigid cell at the position
 the distribution splits is its one typed bound's members, each also
 taken by a part holding the cell itself, and with no one typed bound a
 member of its own; a rigid cell that bound holds splits the same way, its
-members taken also by a part holding either cell, so under `'a: string,
+members taken also by a part holding either cell, and an open cell there,
+which a bound names only as a variable of the same definition, is held
+rigid while the split probes, so under `'a: string,
 'b: ['a, `X]` the strings at a `'b` position are a member none of
 `` [`X, null] `` covers: `[(`A, `X), (`A, `Y), (`B, 'b)] ⊇ ([`A, `B], 'b)`
 under `'b: [`X, `Y]`, while `(`B, null)` covers no member of `'b`
