@@ -3,7 +3,7 @@ use super::{
     callsite::{CallSite, Feeds, QuietAtRoot, publish_production},
     collection::CollectionIntrinsic,
     compiler::compile,
-    pattern::StructPatternNode,
+    pattern::{Holder, StructPatternNode, rigid_refusal},
     produce_constant,
     select::ArmDiscriminants,
 };
@@ -1941,6 +1941,11 @@ impl<R: Rt> GXLambda<R> {
         let binds = ctx.env.lexical.binds.clone();
         let mut argpats: LPooled<Vec<StructPatternNode>> = LPooled::take();
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
+            if let Some(tv) = a.pattern.meets_rigid(&ctx.env, &atyp.typ)? {
+                let e =
+                    rigid_refusal(&ctx.env, &a.pattern, &atyp.typ, &tv, Holder::Formal);
+                return Err(e);
+            }
             let pattern = StructPatternNode::compile(
                 ctx,
                 &atyp.typ,

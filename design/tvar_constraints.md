@@ -121,17 +121,35 @@ inside a value of one (a definition's declared variable, a variable its
 signature names, an impl's parameter, a rank-2 formal's quantifier)
 needs a written test, which types its binds, and a name or `_` over the
 whole value keeps the variable (`StructurePattern::meets_rigid`, judged
-as a select or a destructuring `let` is checked, before any narrowing).
+as a select, a destructuring `let` or a destructuring parameter is
+checked, before any narrowing, and a test written over the variable
+itself as its arm compiles).
 A written test names the definition's variables as a `let`'s annotation
 does, and types what reaches it inside a rigid cell by its own parts
 (`Type::matching_type`).
 At a union holding the cell beside other members a part meets it where
 it may hold one of its values, by its typed bounds, any value without
-one. A part that may not, a literal beside it, leaves a name beside it
+one, inside a member the whole pattern may hold (a pattern that cannot
+match a member tests nothing in it). A part that may not, a literal beside it, leaves a name beside it
 over the whole union: the settle's copy is never a rigid cell's pattern
 cell again (`Type::contains_through_copy`), and a slice's elements
 narrow one by one over a union element type, never paired with one of
 its members (`Type::needs_split`).
+
+Coverage counts a rigid cell's values apart from its neighbours'. In the
+literal pool a position holding an open cell has a head of its own,
+`Head::Open`, which only a name or `_` there admits, so `(true, _)`,
+`(false, null)` over `(bool, ['b, null])` leave `(false, v)` for an arm
+of its own, and a tuple or struct member beside the cell is never the
+position's only shape. In containment (`Type::covers_by_parts`, which
+set coverage and every annotation reach) a rigid cell at the position
+the distribution splits is its one typed bound's members, each also
+taken by a part holding the cell itself, and with no one typed bound a
+member of its own: `[(`A, `X), (`A, `Y), (`B, 'b)] ⊇ ([`A, `B], 'b)`
+under `'b: [`X, `Y]`, while `(`B, null)` covers no member of `'b`
+beside the null. A written test over a closed type covers the part of
+it its structure takes (`StructPatternNode::matched_part`), so tests
+that split the bound between them cover the variable.
 
 A select's arms decide a payload's open parameter as they decide an
 inferred scrutinee: the settle binds the cell to a copy of their

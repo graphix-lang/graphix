@@ -304,6 +304,7 @@ fn merge_leaves(
 pub(super) enum Holder {
     Arm,
     Let,
+    Formal,
 }
 
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
@@ -350,6 +351,14 @@ pub(super) fn rigid_refusal(
         (Holder::Let, None) => anyhow!(
             "the pattern {pat} binds inside {what}: annotate the binding with the type \
              it binds, `let {pat}: T = ..`, or bound {var}"
+        ),
+        (Holder::Formal, Some(t)) => anyhow!(
+            "the parameter {pat} binds inside {what}: annotate it with the type it \
+             binds, `{pat}: {t}`"
+        ),
+        (Holder::Formal, None) => anyhow!(
+            "the parameter {pat} binds inside {what}: annotate it with the type it \
+             binds, `{pat}: T`, or bound {var}"
         ),
     }
 }
@@ -1819,16 +1828,18 @@ impl StructPatternNode {
     }
 
     /// The part of `typ` this pattern covers when its only refutable parts
-    /// are `null` literals: `typ` with `null` at each of them, so `{a: null}`
-    /// over `{a: [i64, null]}` covers `{a: null}`. `None` for any other
-    /// pattern, or a position whose type holds no `null`.
-    pub(super) fn null_narrowed(&self, env: &Env, typ: &Type) -> Option<Type> {
+    /// are `null` literals and constructors: `typ` with `null` at each
+    /// `null` and, where a constructor stands over a union, the members
+    /// it takes, so `{a: null}` over `{a: [i64, null]}` covers `{a: null}`
+    /// and `` (`B, n) `` over `` ([`A, `B], i64) `` covers `` (`B, i64) ``.
+    /// `None` for any other pattern, or where no member passes.
+    pub(super) fn matched_part(&self, env: &Env, typ: &Type) -> Option<Type> {
         let parts = |binds: &[Self], ts: &[Type]| {
             (ts.len() == binds.len()).then_some(())?;
             let parts = binds
                 .iter()
                 .zip(ts.iter())
-                .map(|(b, t)| b.null_narrowed(env, t))
+                .map(|(b, t)| b.matched_part(env, t))
                 .collect::<Option<SmallVec<[Type; 8]>>>()?;
             Some(Arc::from_iter(parts))
         };
@@ -1839,33 +1850,48 @@ impl StructPatternNode {
                 null.could_match(env, typ).unwrap_or(false).then_some(null)
             }
             Self::Slice { kind: SliceKind::Tuple, binds, all: _ } => {
-                let Some(Type::Tuple(ref ts)) = expand(env, typ) else { return None };
-                Some(Type::Tuple(parts(binds, ts)?))
+                match &expand(env, typ)? {
+                    Type::Tuple(ts) => Some(Type::Tuple(parts(binds, ts)?)),
+                    t => self.members_part(env, t),
+                }
             }
-            Self::Variant { tag, binds, all: _ } => {
-                let Some(Type::Variant(ref t, ref ts, at)) = expand(env, typ) else {
-                    return None;
-                };
-                (t == tag).then_some(())?;
-                Some(Type::Variant(t.clone(), parts(binds, ts)?, at))
-            }
-            Self::Struct { binds, width, all: _ } => {
-                let Some(Type::Struct(ref fs)) = expand(env, typ) else { return None };
-                width.admits(fs.len()).then_some(())?;
-                let fields = fs
-                    .iter()
-                    .map(|(n, t, at)| {
-                        let t = match binds.iter().find(|(m, _, _)| m == n) {
-                            Some((_, _, p)) => p.null_narrowed(env, t)?,
-                            None => t.clone(),
-                        };
-                        Some((n.clone(), t, *at))
-                    })
-                    .collect::<Option<SmallVec<[_; 8]>>>()?;
-                Some(Type::Struct(Arc::from_iter(fields)))
-            }
+            Self::Variant { tag, binds, all: _ } => match &expand(env, typ)? {
+                Type::Variant(t, ts, at) if t == tag => {
+                    Some(Type::Variant(t.clone(), parts(binds, ts)?, *at))
+                }
+                t => self.members_part(env, t),
+            },
+            Self::Struct { binds, width, all: _ } => match &expand(env, typ)? {
+                Type::Struct(fs) => {
+                    width.admits(fs.len()).then_some(())?;
+                    let fields = fs
+                        .iter()
+                        .map(|(n, t, at)| {
+                            let t = match binds.iter().find(|(m, _, _)| m == n) {
+                                Some((_, _, p)) => p.matched_part(env, t)?,
+                                None => t.clone(),
+                            };
+                            Some((n.clone(), t, *at))
+                        })
+                        .collect::<Option<SmallVec<[_; 8]>>>()?;
+                    Some(Type::Struct(Arc::from_iter(fields)))
+                }
+                t => self.members_part(env, t),
+            },
             _ => None,
         })
+    }
+
+    /// [`Self::matched_part`] over `t`, a union: the parts of its members.
+    fn members_part(&self, env: &Env, t: &Type) -> Option<Type> {
+        let Type::Set(ms) = t else { return None };
+        let mut parts: SmallVec<[Type; 4]> =
+            ms.iter().filter_map(|m| self.matched_part(env, m)).collect();
+        match parts.len() {
+            0 => None,
+            1 => parts.pop(),
+            _ => Some(Type::Set(Arc::from_iter(parts)).normalize()),
+        }
     }
 
     /// Whether every value of `typ` passes this pattern's structure:
@@ -2339,6 +2365,10 @@ impl<R: Rt> PatternNode<R> {
             | Type::Variant(_, _, _)
             | Type::Struct(_)
             | Type::Ref(_) => (),
+        }
+        let sp = &spec.structure_predicate;
+        if explicit && let Some(tv) = sp.meets_rigid(&ctx.env, &type_predicate)? {
+            return Err(rigid_refusal(&ctx.env, sp, &type_predicate, &tv, Holder::Arm));
         }
         let cx = PatCx { scope, pos, ori: &ori, inferred: !explicit };
         let structure_predicate = StructPatternNode::compile_with(

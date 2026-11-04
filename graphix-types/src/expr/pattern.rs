@@ -600,7 +600,8 @@ impl StructurePattern {
     /// pattern, over a value of `typ`, tests or binds inside. Nothing
     /// types the parts of such a value, so only a name or `_` stands over
     /// it. At a union holding the variable beside other members, a part
-    /// meets it where it may hold one of its values ([`Self::may_hold`]).
+    /// meets it where it may hold one of its values ([`Self::may_hold`]),
+    /// inside a member the whole pattern may hold.
     pub fn meets_rigid(&self, env: &Env, typ: &Type) -> Result<Option<TVar>> {
         crate::stack::ensure_sufficient(|| match self {
             Self::Ignore | Self::Bind(_) => Ok(None),
@@ -626,6 +627,9 @@ impl StructurePattern {
                     }
                 }
                 for m in members.iter() {
+                    if !self.may_hold(env, m)? {
+                        continue;
+                    }
                     for (p, t) in self.parts_over(env, m).into_iter().flatten() {
                         if let Some(tv) = p.meets_rigid(env, &t)? {
                             return Ok(Some(tv));

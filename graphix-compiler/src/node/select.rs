@@ -955,9 +955,10 @@ impl Reach {
                     false => self.cover(env, at.clone())?,
                 }
             } else {
-                // a null literal covers its position's null
-                if !pat.explicit_type_predicate
-                    && let Some(t) = sp.null_narrowed(env, at)
+                // a null literal covers its position's null, a constructor
+                // its members of a union; under a written type only a closed one
+                if (!pat.explicit_type_predicate || !at.has_unbound())
+                    && let Some(t) = sp.matched_part(env, at)
                 {
                     self.cover(env, t)?
                 }
@@ -1195,6 +1196,9 @@ enum Head {
     /// A union's one tuple or struct member, whose own positions count
     /// only under this head.
     Composite,
+    /// A value of an open cell the position holds, which only a name or
+    /// `_` there matches.
+    Open,
 }
 
 /// One position of a composite pattern, keyed by its path into the
@@ -1237,12 +1241,12 @@ fn may_be_any(env: &Env, t: &Type) -> Result<bool> {
     Ok(members.iter().any(|m| matches!(m, Type::Any)))
 }
 
-/// Whether a value of `t` may have head `h`, one [`head_of`] gives: an
-/// open position may.
+/// Whether a value of `t` may have head `h`, one [`head_of`] gives: a
+/// position holding an open cell may.
 fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-    union_members(env, t, &mut members)?;
-    Ok(members.is_empty()
+    Ok(union_members_open(env, t, &mut members)?
+        || members.is_empty()
         || members.iter().any(|m| match (h, m) {
             (Head::Bool(_), Type::Primitive(p)) => p.contains(Typ::Bool),
             (Head::Null, Type::Primitive(p)) => p.contains(Typ::Null),
@@ -1266,9 +1270,9 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 }
 
 /// The heads `t` admits when it is a finite set of them: a union of
-/// `bool`, `null`, variants and, where no member is an open cell, at most
-/// one tuple or struct holding no open cell.
-// CR claude for claude: [bug/high] heads takes a position's members by union_members,
+/// `bool`, `null`, variants, at most one tuple or struct holding no open
+/// cell, and [`Head::Open`] for the open cells among them.
+// XCR claude for claude: [bug/high] heads takes a position's members by union_members,
 // which drops an unbound cell, so a declared variable beside null at a composite
 // pattern's position reads as null alone and a `null` arm completes the pool: `'b:
 // [i64, string] |x: (['b, null], i64)| select x { (7, n) => n, (null, n) => n * 2 }`
@@ -1332,6 +1336,31 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // programs, ab4), so heads/children by union_members_open with no finite heads at an
 // open member, and covers_by_parts reading a rigid cell as a member only a name or _
 // covers, can be rebuilt on it. Probes copied to ~/ptmp/cr29/scratch/r14-B/pool/.
+// 2026-11-04 claude: Lane B r14, second commit: the pool reads an open cell at a
+// position as a head of its own (Head::Open, admitted only by a name or _ there: heads,
+// children, may_hold, leaf), set coverage splits a rigid cell at a distributed position
+// into its one typed bound's members, each also taken by a part holding the cell, or a
+// member of its own with no one bound (Type::covers_by_parts, which also closes
+// covers-by-parts-rigid-01), and a written test over a closed type covers the part of it
+// its structure takes (StructPatternNode::matched_part, so q1/q5's written tests that
+// split the bound still cover it). Every probe in this CR's notes is now refused or
+// right: g01, g03, h1, h2, h5, h6, h8, h0, r1, r2, m2c, m2f, t4, t5 refused 'missing
+// match cases'; g04, h3, pp3, pp3c (false refusals on main), q1, q5, k2 run right;
+// pp3u's trailing _ is unreachable for the right reason; the rest are D6 refusals.
+// Census of both repos unchanged against the D6 commit. Pins, each failing in all four
+// modes without its fix:
+// lang::select::pool_variable_beside_a_tuple_is_a_head_of_its_own,
+// pool_variable_beside_a_tuple_takes_a_catch_all,
+// pool_variable_beside_a_struct_is_a_head_of_its_own,
+// pool_variable_beside_a_tuple_in_a_payload,
+// pool_variable_beside_a_tuple_in_a_slice_element,
+// pool_null_beside_a_variable_leaves_its_values (Head::Open);
+// distribution_variable_beside_null_is_its_bound,
+// distribution_variable_beside_a_variant_is_its_bound (covers_by_parts);
+// distribution_variable_beside_null_takes_a_name (Head::Open);
+// distribution_variable_split_by_written_tests,
+// written_test_covers_the_part_its_structure_takes (matched_part). Probe results:
+// ~/ptmp/cr29/scratch/r14-B/pool-r2.txt
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     let open = union_members_open(env, t, &mut members)?;
@@ -1343,9 +1372,7 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     for m in members.iter() {
         match m {
             Type::Variant(tag, ts, _) => out.push(Head::Tag(tag.clone(), ts.len())),
-            Type::Tuple(_) | Type::Struct(_)
-                if !open && !composite && !m.has_unbound() =>
-            {
+            Type::Tuple(_) | Type::Struct(_) if !composite && !m.has_unbound() => {
                 composite = true;
                 out.push(Head::Composite)
             }
@@ -1360,6 +1387,9 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
             }
             _ => return Ok(None),
         }
+    }
+    if open {
+        out.push(Head::Open)
     }
     Ok(Some(out))
 }
@@ -1419,6 +1449,11 @@ fn pooled_leaves(
         let domain = heads(env, t)?;
         if let Some(hs) = &admitted {
             let held = match &domain {
+                Some(d)
+                    if d.contains(&Head::Open) && !hs.iter().any(|h| d.contains(h)) =>
+                {
+                    return Ok(Some(Miss::Unread));
+                }
                 Some(d) => hs.iter().any(|h| d.contains(h)),
                 None => {
                     let mut held = false;
@@ -1445,8 +1480,8 @@ fn pooled_leaves(
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         let open = union_members_open(env, t, &mut members)?;
         let m = match &members[..] {
-            [m] => m,
-            _ if open => return Ok(Some(Miss::Unread)),
+            [m] if !open => m,
+            [] if open => return Ok(Some(Miss::Unread)),
             ms => {
                 let Some(shape) = Shape::of(sp) else { return Ok(Some(Miss::Unread)) };
                 let mut fit = ms.iter().filter(|m| shape.fits(m));

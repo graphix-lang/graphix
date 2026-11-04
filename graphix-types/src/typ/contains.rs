@@ -3300,7 +3300,7 @@ impl Type {
         }
     }
 
-    // CR claude for claude: [bug/medium] Plain containment drops a rigid cell at a split
+    // XCR claude for claude: [bug/medium] Plain containment drops a rigid cell at a split
     // position: covers_by_parts splits the position by union_members, which leaves an
     // unbound cell out, so a declared variable beside null reads as null alone and an
     // annotation or a return type accepts a value of the wrong type. Under `'b: [i64,
@@ -3322,9 +3322,26 @@ impl Type {
     // Prototype and results: ~/ptmp/cr29/scratch/r13-N/covers/{proto2.patch,
     // proto-rule.txt, proto-rule2.txt}. probes: ~/ptmp/cr29/scratch/review-r11/N-r3-2/q/
     // {s1,s2,s3}.gx, N-r3-1/p/{k1,k2,k3,k6}.gx (covers-by-parts-rigid-01)
+    // 2026-11-04 claude: Lane B r14: built as the reviewers' refined rule.
+    // covers_by_parts collects the rigid cells at the position it splits
+    // (union_members_with); one with one typed bound is its bound's members, each also
+    // picked by a candidate holding the cell itself, one with none a member of its own; a
+    // cell not held rigid is left out as before (D5's). On the r11 probes
+    // (~/ptmp/cr29/scratch/review-r11/{N-r3-2/q,N-r3-1/p}) s1, s3, k1, k3 are refused, k6
+    // is accepted, k2 and s2 keep their values (s2 also needed
+    // StructurePattern::meets_rigid to skip a member the whole pattern cannot hold), q4
+    // and v4 are now D6 refusals. Census of both repos unchanged. Pins:
+    // lang::select::containment_variable_beside_null_is_its_bound (s1; fails without the
+    // bound split), containment_variable_split_by_its_bound (k6; fails without the split
+    // and without the holding-cell pick),
+    // containment_variable_kept_whole_by_a_member_holding_it (k2; fails without the
+    // holding-cell pick), pattern_beside_a_variable_at_a_member_it_cannot_match (s2;
+    // fails without the pick and without meets_rigid's skip).
     /// Do the candidates' argument lists cover `targs` together? The first
     /// position splits into its members, and each member's candidates
-    /// must cover the positions after it. A probe.
+    /// must cover the positions after it. A rigid cell there is its typed
+    /// bound's members, each also picked by a candidate holding the cell,
+    /// or, with no one bound, a member of its own. A probe.
     fn covers_by_parts(
         env: &Env,
         hist: &mut ContainsHist,
@@ -3336,31 +3353,48 @@ impl Type {
                 return Ok(!cands.is_empty());
             };
             let mut found: SmallVec<[Type; 8]> = SmallVec::new();
-            crate::expr::union_members(env, first, &mut found)?;
-            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-            for m in found.drain(..) {
-                match m {
-                    Type::Primitive(p) => {
-                        members.extend(p.iter().map(|b| Type::Primitive(b.into())))
+            let mut rigid: SmallVec<[Type; 2]> = SmallVec::new();
+            crate::expr::union_members_with(env, first, &mut found, &mut |tv| {
+                if let Some(c) = tv.open_cell().filter(|c| c.is_rigid()) {
+                    rigid.push(Type::TVar(c))
+                }
+            })?;
+            // each member with the rigid cell whose bound it is a member of
+            let mut split: SmallVec<[(Type, Option<&Type>); 8]> =
+                found.into_iter().map(|m| (m, None)).collect();
+            for cell in rigid.iter() {
+                match cell.open_bound(env) {
+                    None => split.push((cell.clone(), None)),
+                    Some(b) => {
+                        let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
+                        crate::expr::union_members(env, &b, &mut ms)?;
+                        split.extend(ms.into_iter().map(|m| (m, Some(cell))));
                     }
-                    m => members.push(m),
+                }
+            }
+            let mut members: SmallVec<[(Type, Option<&Type>); 8]> = SmallVec::new();
+            for (m, cell) in split {
+                match m {
+                    Type::Primitive(p) => members
+                        .extend(p.iter().map(|b| (Type::Primitive(b.into()), cell))),
+                    m => members.push((m, cell)),
                 }
             }
             if members.is_empty() {
-                members.push(first.clone())
+                members.push((first.clone(), None))
             }
             // members that select the same candidates ask the same question
             // of the rest: it is asked once
             let mut asked: SmallVec<[SmallVec<[usize; 8]>; 4]> = SmallVec::new();
-            for m in members.iter() {
+            let flags = ContainsFlags::RigidCheck.into();
+            for (m, cell) in members.iter() {
                 let mut picked: SmallVec<[usize; 8]> = SmallVec::new();
                 for (i, c) in cands.iter().enumerate() {
-                    if c[0].contains_int(
-                        ContainsFlags::RigidCheck.into(),
-                        env,
-                        hist,
-                        m,
-                    )? {
+                    let by_cell = |hist: &mut ContainsHist| match cell {
+                        Some(cell) => c[0].contains_int(flags, env, hist, cell),
+                        None => Ok(false),
+                    };
+                    if c[0].contains_int(flags, env, hist, m)? || by_cell(hist)? {
                         picked.push(i)
                     }
                 }

@@ -1450,7 +1450,11 @@ cycle, across workers; the compiler never pins threads.
   select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member,
   and exact-length slice arms pool their elements' heads per length
-  (`[true]` with `[false]` claims length 1); a `null` literal covers `null`; a collection type test (`Array<T> as`)
+  (`[true]` with `[false]` claims length 1); a `null` literal covers `null`, a
+  constructor at a union position the members it takes, and a written test
+  over a closed type the part of it its structure takes
+  (`StructPatternNode::matched_part`: `` ([`A, `B], i64) as (`B, n) ``
+  covers `` (`B, i64) ``); a collection type test (`Array<T> as`)
   narrows later arms only of collections whose every element it
   covers, since a mixed one that fails it may still hold a `T`;
   bool literals, variant heads
@@ -1458,9 +1462,10 @@ cycle, across workers; the compiler never pins threads.
   inside composite patterns, keyed by path (a partial struct pattern
   against the one member holding its fields, the rest any value; an open
   scrutinee's members are its structural bound's; a union position's one
-  tuple or struct member, where neither the union nor that member holds an
-  open cell, is a head beside them, its own positions counted under that
-  head alone), and an arm under
+  tuple or struct member holding no open cell is a head beside them, its
+  own positions counted under that head alone; an open cell at the
+  position, a declared variable included, is a head of its own that only
+  a name or `_` there admits, `Head::Open`), and an arm under
   a type test pools only a member the test holds; a group whose combinations of
   heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
   positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per
@@ -1468,7 +1473,10 @@ cycle, across workers; the compiler never pins threads.
   a scrutinee its shape covers, and a written test covers a declared
   variable held rigid where it covers every member of its bound; set
   coverage distributes over product
-  heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
+  heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``), and in every containment a
+  rigid cell at the position it splits is its one typed bound's members,
+  each also taken by a part holding the cell, else a member of its own
+  (`Type::covers_by_parts`); a probe in progress for the
   same scrutinee ref claims nothing on re-entry. A partial struct
   pattern completes against the one member it can match
   (`StructurePattern::complete_type_predicate`); members told apart only
@@ -1492,8 +1500,10 @@ cycle, across workers; the compiler never pins threads.
   annotation); only a name or `_` stands over such a value, and keeps the
   variable. At a union holding the variable beside other members a part
   meets it where it may hold one of its values, by its typed bounds, any
-  value without one (`StructurePattern::meets_rigid`, judged as the select
-  or the `let` is checked); a name there takes the whole union. A written
+  value without one, inside a member the whole pattern may hold
+  (`StructurePattern::meets_rigid`, judged as the select, the `let` or a
+  destructuring parameter is checked, a test written over the variable
+  itself as the arm compiles); a name there takes the whole union. A written
   test types the binds inside the variable (`Type::matching_type`).
 - **Composite forms** (`graphix-types/src/rep.rs`,
   `design/distinct_composite_forms.md`): a tuple, struct, variant (bare

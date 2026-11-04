@@ -1598,6 +1598,14 @@ fn emit_type_test<R: Rt>(
                     }
                 }
             }
+            // CR claude for claude: [perf/low] A written composite test that does not hold
+            // the scrutinee's type has no lowering: `|x: ([`A, `B], [i64, string, null])|
+            // #[native] select x { ([`A, `B], [i64, string]) as (b, n) => 1, _ => 0 }` is
+            // refused "did not fully fuse" (main 968fa9bc0 alike), the blocker "type
+            // predicate ([`A, `B], [i64, string]) not lowerable". The test is a walk of the
+            // value's parts against the predicate's, as a pattern's structure is. Pin:
+            // lang::select::written_test_covers_the_part_its_structure_takes (FuseExpect::None)
+            // (written-composite-test-fuse-01)
             _ => {
                 return Err(anyhow!("emit_clif: type predicate {pred} not lowerable"));
             }

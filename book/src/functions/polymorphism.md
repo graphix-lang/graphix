@@ -133,8 +133,16 @@ error: ... `A(z) tests inside a value of 'b, a type variable of the definition, 
 〉let same = 'b: [`A(i64), `B(i64)] |x: 'b| -> 'b select x { v => v }
 ```
 
-A destructuring `let` over such a value takes an annotation the same way
-(`let {x, y}: {x: i64, y: i64} = p`).
+A destructuring `let` or parameter over such a value takes an annotation
+the same way (`let {x, y}: {x: i64, y: i64} = p`, `|{x, y}: {x: i64, y:
+i64}|`). Beside other members, the variable's values are covered only by
+a name or `_` at its position, or by written tests that split its bound:
+
+```graphix
+〉let h = 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 1, (false, null) => 2 }
+error: ... missing match cases: no arm covers (bool, [null, 'b: unbound within [i64, string]])
+〉let h = 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 1, (false, null) => 2, (false, v) => 3 }
+```
 
 A bound may not reach its own variable, directly (`'a: 'a`), inside
 another type (`'a: Array<'a>`) or through the bound of another variable

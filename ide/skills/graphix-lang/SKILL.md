@@ -428,7 +428,11 @@ across a bottom cycle).
   catch-all) must follow. So too `null` over `['a, null]` (write `null as
   _`), a literal or constructor at an element of `Array<['a, i64]>` that
   `'a` may hold (bound `'a` apart), and a destructuring `let` (annotate
-  it: `let {x, y}: {x: i64, y: i64} = p`).
+  it: `let {x, y}: {x: i64, y: i64} = p`, or a parameter, `|(n, s):
+  (i64, string)|`). Beside other members (`(bool, ['b, null])`, `'b: [i64, string]`) the
+  variable's values are covered by a name or `_` at its position, or by
+  written tests that split its bound: `(false, null)` leaves `(false, v)`
+  needing an arm of its own.
 - A partial struct pattern over members whose left-out fields differ
   only in types decided later (a `never()` let written after the select,
   a function's parameters) takes them for one member, and is refused once

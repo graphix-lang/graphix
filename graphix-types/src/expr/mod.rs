@@ -14,6 +14,7 @@ use netidx_derive::Pack;
 use netidx_value::{ValArray, Value};
 pub use pattern::{
     Pattern, StructurePattern, Undecided, union_members, union_members_open,
+    union_members_with,
 };
 use poolshark::local::LPooled;
 pub use resolver::{

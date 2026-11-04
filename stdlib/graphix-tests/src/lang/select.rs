@@ -3805,7 +3805,23 @@ run!(written_test_naming_a_declared_variable_refused, r#"{
 run!(written_test_of_a_declared_variable_alone_refused, r#"{
   let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { 'b as `A(z) => z + 1.5, _ => 0.0 };
   g(`A(3))
-}"#, refused("does not contain `A("); FuseExpect::None);
+}"#, refused("`A(z) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, ``A(i64) as `A(z)`"); FuseExpect::None);
+
+// A destructuring parameter over the variable binds inside it: the
+// parameter's own annotation is its written test.
+run!(formal_pattern_inside_a_variable_refused, r#"{
+  let f = 'b: (i64, string) |(n, s): 'b| n + 1;
+  f((1, "a"))
+}"#, refused("the parameter (n, s) binds inside a value of 'b, a type variable of the definition, which types none of its parts: annotate it with the type it binds, `(n, s): (i64, string)`"); FuseExpect::None);
+
+run!(
+    formal_pattern_under_its_written_type,
+    r#"{
+  let f = |(n, s): (i64, string)| n + 1;
+  f((1, "a"))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);
 
 // pool-open-member-01: a literal at a union holding the variable that may be
 // one of its values tests inside it.
@@ -6706,4 +6722,229 @@ run!(
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7, 8]);
     FuseExpect::None
+);
+
+// A position holding a declared variable beside other members has a head of
+// its own for the variable's values, which only a name or `_` there covers:
+// the tuple member's arms leave it uncovered.
+run!(
+    pool_variable_beside_a_tuple_is_a_head_of_its_own,
+    r#"{
+        let u = 'b: [i64, string] |x: (['b, (bool, i64)], i64)| select x {
+            ((true, k), n) => n + k,
+            ((false, k), n) => n * 2
+        };
+        let v: [i64, string] = 7;
+        u((v, 3))
+    }"#,
+    refused(
+        "missing match cases: no arm covers (['b: unbound within [i64, string], (bool, i64)], i64)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    pool_variable_beside_a_tuple_takes_a_catch_all,
+    r#"{
+        let u = 'b: [i64, string] |x: (['b, (bool, i64)], i64)| select x {
+            ((true, k), n) => n + k,
+            ((false, k), n) => n * 2,
+            (_, n) => n
+        };
+        let (v0, v1): ([i64, string], [i64, string]) = (7, "w");
+        [u((v0, 3)), u((v1, 3)), u(((true, 1), 3)), u(((false, 1), 3))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 3, 4, 6])
+);
+
+run!(
+    pool_variable_beside_a_struct_is_a_head_of_its_own,
+    r#"{
+        let u = 'b: [i64, string] |x: (['b, {a: bool, b: i64}], i64)| select x {
+            ({a: true, b}, n) => n + b,
+            ({a: false, b: _}, n) => n * 2
+        };
+        let v: [i64, string] = "w";
+        u((v, 3))
+    }"#,
+    refused(
+        "missing match cases: no arm covers (['b: unbound within [i64, string], { a: bool, b: i64 }], i64)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    pool_variable_beside_a_tuple_in_a_payload,
+    r#"{
+        let u = 'b: [i64, string] |x: `B(['b, (bool, bool)])| select x {
+            `B((true, _)) => 1,
+            `B((false, _)) => 2
+        };
+        let w: [i64, string] = 7;
+        u(`B(w))
+    }"#,
+    refused(
+        "missing match cases: no arm covers `B(['b: unbound within [i64, string], (bool, bool)])"
+    );
+    FuseExpect::None
+);
+
+run!(
+    pool_variable_beside_a_tuple_in_a_slice_element,
+    r#"{
+        let u = 'b: [i64, string] |x: Array<['b, (bool, bool)]>| select x {
+            [] => 0,
+            [(true, _)] => 1,
+            [(false, _)] => 2,
+            [_, _, ..] => 3
+        };
+        let w: [i64, string] = 7;
+        u([w])
+    }"#,
+    refused(
+        "missing match cases: no arm covers Array<['b: unbound within [i64, string], (bool, bool)]>"
+    );
+    FuseExpect::None
+);
+
+// A `null` arm beside the variable covers the null alone, so the arm a
+// value of the variable needs after it is reachable.
+run!(
+    pool_null_beside_a_variable_leaves_its_values,
+    r#"{
+        let u = 'b: [i64, string] |x: (bool, ['b, null])| select x {
+            (true, _) => 1,
+            (false, null) => 2,
+            (false, _) => 3
+        };
+        let (v0, v1): ([i64, string], [i64, string]) = (7, "w");
+        [u((true, v0)), u((false, null)), u((false, v1))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3])
+);
+
+// Set coverage splits a position holding a declared variable into its
+// bound's members: an arm for the null beside it covers none of them.
+run!(
+    distribution_variable_beside_null_is_its_bound,
+    r#"{
+        let u = 'b: [i64, string] |x: ([`A, `B], ['b, null])| select x {
+            (`A, _) => 0,
+            (`B, null) => 1
+        };
+        let w: [i64, string] = 7;
+        [u((`A, null)), u((`B, w))]
+    }"#,
+    refused("missing match cases: no arm covers ([`A, `B], [null, 'b: unbound within [i64, string]])");
+    FuseExpect::None
+);
+
+run!(
+    distribution_variable_beside_a_variant_is_its_bound,
+    r#"{
+        let u = 'b: [i64, string] |x: ([`A, `B], ['b, `C(bool)])| select x {
+            (`A, _) => 0,
+            (`B, `C(_)) => 1
+        };
+        let w: [i64, string] = 7;
+        [u((`A, `C(true))), u((`B, w))]
+    }"#,
+    refused(
+        "missing match cases: no arm covers ([`A, `B], ['b: unbound within [i64, string], `C(bool)])"
+    );
+    FuseExpect::None
+);
+
+run!(
+    distribution_variable_beside_null_takes_a_name,
+    r#"{
+        let u = 'b: [i64, string] |x: ([`A, `B], ['b, null])| select x {
+            (`A, _) => 0,
+            (`B, null) => 1,
+            (`B, v) => 2
+        };
+        let w: [i64, string] = 7;
+        [u((`A, null)), u((`B, w)), u((`B, null))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 2, 1])
+);
+
+// Written tests that split the bound between them cover the variable: each
+// covers the part of its type its structure takes.
+run!(
+    distribution_variable_split_by_written_tests,
+    r#"{
+        let u = 'b: [i64, string] |x: ([`A, `B], ['b, null])| select x {
+            (`A, _) => 0,
+            ([`A, `B], i64) as (`B, n) => n,
+            ([`A, `B], string) as (`B, s) => str::len(s),
+            (`B, null) => 3
+        };
+        let (w0, w1): ([i64, string], [i64, string]) = (7, "four");
+        [u((`A, null)), u((`B, w0)), u((`B, w1)), u((`B, null))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 7, 4, 3])
+);
+
+run!(
+    written_test_covers_the_part_its_structure_takes,
+    r#"{
+        let u = |x: ([`A, `B], [i64, string, null])| select x {
+            (`A, _) => 0,
+            ([`A, `B], [i64, string]) as (`B, n) => 1,
+            (`B, null) => 3
+        };
+        [u((`A, null)), u((`B, 7)), u((`B, "w")), u((`B, null))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 1, 3]);
+    FuseExpect::None
+);
+
+// Plain containment splits a declared variable by its bound the same way.
+run!(
+    containment_variable_beside_null_is_its_bound,
+    r#"{
+        let u = 'b: [i64, string] |x: ([`A, `B], ['b, null])| {
+            let y: [(`A, ['b, null]), (`B, null)] = x;
+            y
+        };
+        let w: [i64, string] = "w";
+        u((`B, w))
+    }"#,
+    refused("type mismatch [(`A, [null, 'b: unbound within [i64, string]]), (`B, null)] does not contain ([`A, `B], [null, 'b: unbound within [i64, string]])");
+    FuseExpect::None
+);
+
+run!(
+    containment_variable_split_by_its_bound,
+    r#"{
+        let f = 'b: [`X, `Y] |x: ([`A, `B], 'b)| -> [(`A, `X), (`A, `Y), (`B, 'b)] x;
+        let w: [`X, `Y] = `Y;
+        select f((`A, w)) { (`A, `X) => 1, (`A, `Y) => 2, (`B, _) => 3 }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);
+
+run!(
+    containment_variable_kept_whole_by_a_member_holding_it,
+    r#"{
+        let f = 'b: [`X, `Y] |x: ([`A, `B], ['b, null])| -> [(`A, `X), (`A, `Y), (`A, null), (`B, ['b, null])] x;
+        let w: [`X, `Y] = `Y;
+        select f((`A, w)) { (`A, `X) => 1, (`A, `Y) => 2, (`A, null) => 3, (`B, _) => 4 }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);
+
+// A pattern tests nothing inside the variable at a member it cannot match.
+run!(
+    pattern_beside_a_variable_at_a_member_it_cannot_match,
+    r#"{
+        let u = 'b: [`X, `Y] |x: ([`A, `B], ['b, null])| {
+            let y: [(`A, ['b, null]), (`B, `X), (`B, `Y), (`B, null)] = x;
+            select y { (`A, _) => 0, (`B, `X) => 1, (`B, `Y) => 2, (`B, null) => 3 }
+        };
+        let w: [`X, `Y] = `Y;
+        [u((`A, null)), u((`B, w)), u((`B, null))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 2, 3])
 );
