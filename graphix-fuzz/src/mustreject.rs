@@ -76,7 +76,7 @@ impl Family {
         let says: &[&str] = match self {
             Family::MonoReuse => &["does not contain fn("],
             Family::RigidVar => &["unbound"],
-            Family::RigidPattern => &["tests inside a value of"],
+            Family::RigidPattern => &["tests inside a value of", "matches no value of"],
             Family::SharedVar | Family::AbstractParam => &["does not contain"],
             Family::LabelUnknown => &["unknown labeled argument"],
             Family::LabelMissing => &["missing required argument"],

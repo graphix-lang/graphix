@@ -1941,10 +1941,17 @@ impl<R: Rt> GXLambda<R> {
         let binds = ctx.env.lexical.binds.clone();
         let mut argpats: LPooled<Vec<StructPatternNode>> = LPooled::take();
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
-            if let Some(tv) = a.pattern.meets_rigid(&ctx.env, &atyp.typ)? {
-                let e =
-                    rigid_refusal(&ctx.env, &a.pattern, &atyp.typ, &tv, Holder::Formal);
-                return Err(e);
+            let lexical = &scope.lexical;
+            if let Some(tv) = a.pattern.meets_rigid(&ctx.env, lexical, &atyp.typ)? {
+                let (pat, typ) = (&a.pattern, &atyp.typ);
+                return Err(rigid_refusal(
+                    &ctx.env,
+                    lexical,
+                    pat,
+                    typ,
+                    &tv,
+                    Holder::Formal,
+                ));
             }
             let pattern = StructPatternNode::compile(
                 ctx,

@@ -3,7 +3,10 @@ use crate::image::ImageBuf;
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
     env::Env,
-    expr::{ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt, union_members},
+    expr::{
+        ExprId, ModPath, Name, Origin, Pattern, StructurePattern, WrittenAt,
+        union_members,
+    },
     format_with_flags,
     node::{Held, compiler, list},
     rep,
@@ -312,6 +315,7 @@ pub(super) enum Holder {
 /// ([`StructurePattern::meets_rigid`]), told as the type to write.
 pub(super) fn rigid_refusal(
     env: &Env,
+    scope: &ModPath,
     pat: &StructurePattern,
     typ: &Type,
     tv: &TVar,
@@ -332,7 +336,20 @@ pub(super) fn rigid_refusal(
              parts"
         ),
     };
-    match (holder, rigid_written(env, pat, typ, tv)) {
+    let alone =
+        matches!(typ, Type::TVar(t) if t.open_cell().is_some_and(|c| c.same_cell(tv)));
+    let bounds = tv.typed_bounds(env);
+    if alone
+        && let Some(b) =
+            bounds.iter().find(|b| !pat.may_hold(env, scope, b).unwrap_or(true))
+    {
+        let what = format_compact!("{pat} matches no value of {var}, whose bound is {b}");
+        return match holder {
+            Holder::Arm => anyhow!("unreachable arm: {what}, unused match cases"),
+            Holder::Let | Holder::Formal => anyhow!("{what}"),
+        };
+    }
+    match (holder, rigid_written(env, scope, pat, typ, tv)) {
         (Holder::Arm, Some(t)) if t.holds_fn(env) => anyhow!(
             "{pat} tests inside {what}, and no type test holds its function type: \
              declare no {var}, writing its bound in its place"
@@ -340,6 +357,10 @@ pub(super) fn rigid_refusal(
         (Holder::Arm, Some(t)) => {
             anyhow!("{pat} tests inside {what}: write the type it tests, `{t} as {pat}`")
         }
+        (Holder::Arm, None) if alone && bounds.is_empty() => anyhow!(
+            "{pat} tests inside {what}: bound {var} by the type it tests, `{var}: T`, \
+             and write that type, `T as {pat}`"
+        ),
         (Holder::Arm, None) => anyhow!(
             "{pat} tests inside {what}: write the type it tests, `T as {pat}`, or \
              bound {var}"
@@ -347,6 +368,10 @@ pub(super) fn rigid_refusal(
         (Holder::Let, Some(t)) => anyhow!(
             "the pattern {pat} binds inside {what}: annotate the binding, `let {pat}: \
              {t} = ..`"
+        ),
+        (Holder::Let, None) if alone && bounds.is_empty() => anyhow!(
+            "the pattern {pat} binds inside {what}: bound {var} by the type it binds, \
+             `{var}: T`, and annotate the binding with it, `let {pat}: T = ..`"
         ),
         (Holder::Let, None) => anyhow!(
             "the pattern {pat} binds inside {what}: annotate the binding with the type \
@@ -358,7 +383,7 @@ pub(super) fn rigid_refusal(
         ),
         (Holder::Formal, None) => anyhow!(
             "the parameter {pat} binds inside {what}: annotate it with the type it \
-             binds, `{pat}: T`, or bound {var}"
+             binds, `{pat}: T`"
         ),
     }
 }
@@ -368,12 +393,14 @@ pub(super) fn rigid_refusal(
 /// hold. `None` where `tv` has no one typed bound.
 fn rigid_written(
     env: &Env,
+    scope: &ModPath,
     pat: &StructurePattern,
     typ: &Type,
     tv: &TVar,
 ) -> Option<Type> {
     let bounds = tv.typed_bounds(env);
     let [bound] = &bounds[..] else { return None };
+    let bound = &rigid_as_bounds(env, bound)?;
     let is_tv = |t: &TVar| t.open_cell().is_some_and(|c| c.same_cell(tv));
     let at = match typ {
         Type::TVar(t) if is_tv(t) => {
@@ -381,7 +408,7 @@ fn rigid_written(
             union_members(env, bound, &mut members).ok()?;
             let held: SmallVec<[Type; 8]> = members
                 .iter()
-                .filter(|m| pat.may_hold(env, m).unwrap_or(true))
+                .filter(|m| pat.may_hold(env, scope, m).unwrap_or(true))
                 .cloned()
                 .collect();
             match held.is_empty() || held.len() == members.len() {
@@ -392,6 +419,21 @@ fn rigid_written(
         _ => bound.clone(),
     };
     typ.written_form(&mut |t| is_tv(t).then(|| at.clone()))
+}
+
+/// `t` as a program writes it, each type variable a definition holds
+/// rigid with one typed bound written as that bound, whose values a test
+/// over a value of it meets.
+fn rigid_as_bounds(env: &Env, t: &Type) -> Option<Type> {
+    crate::stack::ensure_sufficient(|| {
+        t.written_form(&mut |tv| {
+            let c = tv.open_cell().filter(|c| c.is_rigid())?;
+            match &c.typed_bounds(env)[..] {
+                [b] => rigid_as_bounds(env, b),
+                _ => None,
+            }
+        })
+    })
 }
 
 impl StructPatternNode {
@@ -742,6 +784,14 @@ impl StructPatternNode {
         // lang::select::or_capture_inside_a_declared_variable_{refused,written},
         // capture_arms_inside_a_declared_variable_refused; the refusals fail without the
         // rule.
+        // 2026-11-04 claude: Review r14 (B-r1-1, low) asks Eric to confirm the judgement:
+        // the ruling's text says the or-capture keeps the variable; built, the or form and
+        // the two-arm form (main ran the two-arm form, rp3) are both refused, and a written
+        // test over the variable's own position types the capture by the test, as main
+        // does, so a body that must return 'b returns the scrutinee. Since this round a
+        // name under a written test over a value holding 'b at a nested position keeps 'b
+        // (PatternNode::type_inside_rigid); at the top position the test's type stays, as
+        // on main, since that is how a written test takes a value out of the variable.
         let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
         let ts: SmallVec<[Type; 4]> = ts.into_iter().flatten().map(|(t, _)| t).collect();
         if checking {
@@ -1827,6 +1877,20 @@ impl StructPatternNode {
         }
     }
 
+    // CR claude for claude: [bug/low] Bool literals in a tuple beside an arm that takes a
+    // `null` at another position cover nothing: over `x: (bool, [i64, null])`, `select x {
+    // (_, null) => 1, (true, _) => 0, (false, _) => 2 }` and `{ (true, null) => 0, (true,
+    // _) => 2, (false, _) => 1 }` are refused "missing match cases: no arm covers (bool,
+    // [i64, null])" on main (968fa9bc0) as on cr49-B, where `{ (true, _) => 0, (false, _)
+    // => 1 }` runs. A written test meets it too, since matched_part answers None for any
+    // literal but `null`: `(true, _) => 0, (bool, i64) as (false, n) => n, (bool, null) as
+    // (false, _) => 1` is refused alike. D6 (b) sends a pattern inside a declared
+    // variable to a written test, so the shape is met more often: under `'b: [i64,
+    // string]`, `(true, _)`, `(bool, i64) as (false, n)`, `(bool, string) as (false, s)`
+    // and `(false, null)` over `(bool, ['b, null])` ran on main through the D6 hole and
+    // are refused now. probes: ~/ptmp/cr29/scratch/r14-B/fix1/{q10t,q10r,q10p}.gx,
+    // r14-B/r2/q10c.gx, ~/ptmp/cr29/scratch/review-r11/N-r3-2/q/q10.gx
+    // (bool-beside-null-cover-01)
     /// The part of `typ` this pattern covers when its only refutable parts
     /// are `null` literals and constructors: `typ` with `null` at each
     /// `null` and, where a constructor stands over a union, the members
@@ -2264,6 +2328,9 @@ impl<R: Rt> PatternNode<R> {
             checking,
             &mut leaves,
         )?;
+        if self.explicit_type_predicate && scrut.has_rigid() {
+            self.type_inside_rigid(env, scrut, &mut leaves)?
+        }
         if !wholes.is_empty() {
             self.wholes_by_member(env, &wholes, &mut leaves)?;
         }
@@ -2278,6 +2345,29 @@ impl<R: Rt> PatternNode<R> {
         for l in leaves.iter().filter(|l| l.fresh || self.explicit_type_predicate) {
             if let Some(b) = env.by_id.get(&l.id) {
                 b.typ.check_contains(env, &l.typ)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Under a written test, each bind in `leaves`, typed over what passes
+    /// the test among `scrut`'s values, typed instead by the test's part
+    /// where it stands inside a rigid cell `scrut` holds, whose values no
+    /// pattern takes apart; a name over a value holding the cell keeps it.
+    fn type_inside_rigid(
+        &self,
+        env: &Env,
+        scrut: &Type,
+        leaves: &mut SmallVec<[Leaf; 4]>,
+    ) -> Result<()> {
+        let parts = self.type_predicate.matching_parts(env, scrut)?;
+        let mut inside: SmallVec<[Leaf; 4]> = SmallVec::new();
+        self.structure_predicate.leaves(env, &parts, false, false, &mut inside)?;
+        for l in inside {
+            match leaves.iter_mut().find(|k| k.id == l.id) {
+                Some(k) if k.typ.has_rigid() => (),
+                Some(k) => *k = l,
+                None => leaves.push(l),
             }
         }
         Ok(())
@@ -2367,8 +2457,18 @@ impl<R: Rt> PatternNode<R> {
             | Type::Ref(_) => (),
         }
         let sp = &spec.structure_predicate;
-        if explicit && let Some(tv) = sp.meets_rigid(&ctx.env, &type_predicate)? {
-            return Err(rigid_refusal(&ctx.env, sp, &type_predicate, &tv, Holder::Arm));
+        if explicit
+            && let Some(tv) = sp.meets_rigid(&ctx.env, &scope.lexical, &type_predicate)?
+        {
+            let lexical = &scope.lexical;
+            return Err(rigid_refusal(
+                &ctx.env,
+                lexical,
+                sp,
+                &type_predicate,
+                &tv,
+                Holder::Arm,
+            ));
         }
         let cx = PatCx { scope, pos, ori: &ori, inferred: !explicit };
         let structure_predicate = StructPatternNode::compile_with(

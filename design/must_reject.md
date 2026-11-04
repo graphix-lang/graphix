@@ -328,8 +328,9 @@ parameter `x: 'a`, as family 2's. Mutation: a first statement `let tm__0
 inside a value of a type variable its definition holds rigid needs a
 written test; a name or `_` over the whole value keeps the variable
 (`StructurePattern::meets_rigid`, checked in `Select::typecheck0_with`
-and a destructuring `let`). Built (`rigid-pattern`), right site the
-definition. Not generated: coverage beside a bounded variable (a head
+and a destructuring `let`), and an arm that can match no value of a
+bounded variable is told as unreachable. Built (`rigid-pattern`), right
+site the definition. Not generated: coverage beside a bounded variable (a head
 arm at `['a, null]` leaves the variable's values to a name or `_`,
 `Head::Open`; containment splits `'a` by its bound,
 `Type::covers_by_parts`): the generated declared variables are

@@ -18,6 +18,9 @@ use triomphe::Arc;
 struct MatchingTypes {
     memo: RefHist<AHashMap<RefPair, Kept<Type>>>,
     refs: LPooled<AHashSet<(Option<usize>, Option<usize>)>>,
+    /// Type a part holding a rigid cell by the written test's part
+    /// ([`Type::matching_parts`]).
+    inside: bool,
 }
 
 /// diff's walk state: each pair in progress with what it subtracts when
@@ -1026,7 +1029,17 @@ impl Type {
     // which cells earlier walks filled. Evidence:
     // ~/ptmp/cr29/scratch/review-r11/X-r1-1/, X-r1-2/, X-r2-1/.
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
-        let mut walk = MatchingTypes { memo: RefHist::new(), refs: LPooled::take() };
+        let refs = LPooled::take();
+        let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: false };
+        self.matching_type_int(env, &mut walk, reaching)
+    }
+
+    /// [`Self::matching_type`], where a part of `reaching` holding a rigid
+    /// cell, whose values no pattern takes apart, is this test's part: the
+    /// types of the binds inside it.
+    pub fn matching_parts(&self, env: &Env, reaching: &Self) -> Result<Self> {
+        let refs = LPooled::take();
+        let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: true };
         self.matching_type_int(env, &mut walk, reaching)
     }
 
@@ -1115,9 +1128,7 @@ impl Type {
                     }
                     _ => false,
                 };
-                // a written part types what reaches it inside a rigid cell,
-                // which no pattern decides
-                let rigid_inside = same_shape && t.has_rigid();
+                let rigid_inside = walk.inside && same_shape && t.has_rigid();
                 if !rigid_inside
                     && !p.has_unbound()
                     && p.contains_with_flags(BitFlags::empty(), env, t)?

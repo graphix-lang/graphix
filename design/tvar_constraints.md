@@ -125,8 +125,14 @@ as a select, a destructuring `let` or a destructuring parameter is
 checked, before any narrowing, and a test written over the variable
 itself as its arm compiles).
 A written test names the definition's variables as a `let`'s annotation
-does, and types what reaches it inside a rigid cell by its own parts
-(`Type::matching_type`).
+does, and types a bind inside a rigid cell by its own part
+(`Type::matching_parts`), while a name over a value holding the cell
+keeps it, as on the same test with no variable inside
+(`Type::matching_type`, `PatternNode::type_inside_rigid`): under `'b:
+[`A(i64), `B(i64)]`, `` ([`A(i64), `B(i64)], [`A(i64), `B(i64)]) as
+(`A(z), v) `` over `('b, 'b)` types `z` as `i64` and `v` as `'b`. An
+abstract pattern names the type its name resolves to where it is
+written, an alias's included.
 At a union holding the cell beside other members a part meets it where
 it may hold one of its values, by its typed bounds, any value without
 one, inside a member the whole pattern may hold (a pattern that cannot
@@ -145,7 +151,10 @@ position's only shape. In containment (`Type::covers_by_parts`, which
 set coverage and every annotation reach) a rigid cell at the position
 the distribution splits is its one typed bound's members, each also
 taken by a part holding the cell itself, and with no one typed bound a
-member of its own: `[(`A, `X), (`A, `Y), (`B, 'b)] ⊇ ([`A, `B], 'b)`
+member of its own; a rigid cell that bound holds splits the same way, its
+members taken also by a part holding either cell, so under `'a: string,
+'b: ['a, `X]` the strings at a `'b` position are a member none of
+`` [`X, null] `` covers: `[(`A, `X), (`A, `Y), (`B, 'b)] ⊇ ([`A, `B], 'b)`
 under `'b: [`X, `Y]`, while `(`B, null)` covers no member of `'b`
 beside the null. A written test over a closed type covers the part of
 it its structure takes (`StructPatternNode::matched_part`), so tests

@@ -429,7 +429,11 @@ across a bottom cycle).
   _`), a literal or constructor at an element of `Array<['a, i64]>` that
   `'a` may hold (bound `'a` apart), and a destructuring `let` (annotate
   it: `let {x, y}: {x: i64, y: i64} = p`, or a parameter, `|(n, s):
-  (i64, string)|`). Beside other members (`(bool, ['b, null])`, `'b: [i64, string]`) the
+  (i64, string)|`). A variable with no bound is bounded first (`'a:
+  (bool, i64)`, then `(bool, i64) as (true, k)`). Under a written test a
+  name over the variable's value keeps it: `([`A(i64), `B(i64)], i64) as
+  (v, n)` over `('b, i64)` gives `v: 'b`. Beside other members (`(bool,
+  ['b, null])`, `'b: [i64, string]`) the
   variable's values are covered by a name or `_` at its position, or by
   written tests that split its bound: `(false, null)` leaves `(false, v)`
   needing an arm of its own.

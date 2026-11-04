@@ -3067,6 +3067,28 @@ impl Type {
     // must-reject family rigid-pattern (graphix-fuzz
     // must_reject_families_are_refused_where_their_rules_say). The fuzz pin
     // rigid-bottom-read-nov2026/00 now expects a reject, 01 is its written twin.
+    // 2026-11-04 claude: Review r14 (B-r1-1) fixes. (1) An abstract pattern under an alias
+    // (use self::W as V; V(`A(z)) over W<'b>) got past the rule:
+    // StructurePattern::parts_over matched the pattern's basename against the type's name;
+    // it now resolves the name at the pattern's scope as the compile does (Select and Bind
+    // keep their lexical scope for the check) and compares ids; a name that resolves to no
+    // abstract type holds nothing, the compile refusing it. (2) A written test's names: a
+    // bind inside the rigid cell takes the test's part (Type::matching_parts) while a name
+    // over a value holding the cell keeps it, as main's matching_type does
+    // (PatternNode::type_inside_rigid), so ([`A(i64), `B(i64)], i64) as (v, n) over ('b,
+    // i64) returning v as 'b runs again (main's k3), and the refusal's own suggestion for
+    // (`A(z), v) over ('b, 'b) runs. (3) The refusal says an arm that matches no value of
+    // a bounded variable is unreachable, tells an unbounded variable alone to be bounded
+    // first, and writes a variable the bound names as its own bound. Pins:
+    // lang::select::abstract_alias_{pattern_inside,pattern_beside,let_inside}_a_declared_variable_refused
+    // (fail with the basename match), abstract_alias_pattern_written_or_apart,
+    // written_test_name_over_a_declared_variable_keeps_it (fails with the inside typing
+    // alone), written_test_name_and_bind_inside_a_declared_variable and the nested written
+    // pins (fail with main's matching_type alone),
+    // arm_matching_no_value_of_a_declared_variable_refused,
+    // pattern_inside_an_unbounded_variable_{refused,bounded},
+    // let_inside_an_unbounded_variable_refused,
+    // pattern_inside_a_variable_its_bound_names_{refused,written}.
     pub fn narrow_pattern(&self, env: &Env, pred: &Type) -> Result<bool> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         crate::expr::union_members(env, self, &mut members)?;

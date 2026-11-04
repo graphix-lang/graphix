@@ -3831,6 +3831,139 @@ run!(literal_inside_a_variable_beside_null_refused, r#"{
   f((w, 3))
 }"#, refused("(7, n) tests inside a value of 'b"); FuseExpect::None);
 
+// An abstract pattern names the type its name resolves to, an alias's
+// included.
+run!(
+    abstract_alias_pattern_inside_a_declared_variable_refused,
+    refused("V(`A(z)) tests inside a value of 'b"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        use self::W as V;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| select x { V(`A(z)) => z + 1.5, _ => 0.0 };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(W(o))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_alias_pattern_beside_a_declared_variable_refused,
+    refused("V(s) tests inside a value of 'b"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        use self::W as V;
+        let g = 'b: W<i64> |x: ['b, W<string>]| select x { V(s) => [s, "t"], _ => [] };
+        let w: W<i64> = W(3);
+        let result = g(w)
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_alias_let_inside_a_declared_variable_refused,
+    refused("the pattern V((n, s)) binds inside a value of 'b"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        use self::W as V;
+        let id = |v| v;
+        let g = 'b: (i64, string) |x: W<'b>| { let V((n, s)) = id(x); n };
+        let o: (i64, string) = (1, "a");
+        let result = g(W(o))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_alias_pattern_written_or_apart,
+    prints(r#"[i64:4, i64:0, "t", "u"]"#),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        type U<'a> = Abstract<'a>;
+        use self::W as V;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| select x {
+            W<[`A(i64), `B(i64)]> as V(`A(z)) => z + 1,
+            _ => 0
+        };
+        let h = 'b: U<i64> |x: ['b, W<string>]| select x { V(s) => s, _ => "u" };
+        let (o, p): ([`A(i64), `B(i64)], [`A(i64), `B(i64)]) = (`A(3), `B(1));
+        let u: U<i64> = U(1);
+        let result = (g(W(o)), g(W(p)), h(W("t")), h(u))
+    "#;
+    FuseExpect::Jit
+);
+
+// The refusal tells what to write: an arm that can match no value of the
+// variable is dead; a variable with no bound is bounded first, since a test
+// beside an unbounded variable may share its runtime form; a variable its
+// bound names is written as its own bound.
+run!(arm_matching_no_value_of_a_declared_variable_refused, r#"{
+  let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `C(z) => z, _ => 0 };
+  let h = 'a: Number |x: 'a| select x { null => 1, _ => 2 };
+  (g(`A(1)), h(3))
+}"#, refused("unreachable arm: `C(z) matches no value of 'b, whose bound is [`A(i64), `B(i64)], unused match cases"); FuseExpect::None);
+
+run!(pattern_inside_an_unbounded_variable_refused, r#"{
+  let g = |x: 'a| select x { (true, k) => k, _ => 0 };
+  g((true, 3))
+}"#, refused("(true, k) tests inside a value of 'a, a type variable of the definition, which types none of its parts: bound 'a by the type it tests, `'a: T`, and write that type, `T as (true, k)`"); FuseExpect::None);
+
+run!(pattern_inside_an_unbounded_variable_bounded, r#"{
+  let g = 'a: (bool, i64) |x: 'a| select x { (bool, i64) as (true, k) => k, _ => 0 };
+  let h = 'a: (i64, string) |x: 'a| { let (n, s): (i64, string) = x; n };
+  (g((true, 3)), h((1, "a")))
+}"#, prints("[i64:3, i64:1]"); FuseExpect::Jit);
+
+run!(let_inside_an_unbounded_variable_refused, r#"{
+  let g = |x: 'a| { let (n, s) = x; n };
+  g((1, "a"))
+}"#, refused("the pattern (n, s) binds inside a value of 'a, a type variable of the definition, which types none of its parts: bound 'a by the type it binds, `'a: T`, and annotate the binding with it, `let (n, s): T = ..`"); FuseExpect::None);
+
+run!(pattern_inside_a_variable_its_bound_names_refused, r#"{
+  let g = 'a: [`A(i64), `B(i64)], 'b: ['a, null] |x: ('b, i64)| select x { (`A(z), _) => z + 1, _ => 0 };
+  let o: [`A(i64), `B(i64), null] = `A(3);
+  g((o, 1))
+}"#, refused("(`A(z), _) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `([null, `A(i64), `B(i64)], i64) as (`A(z), _)`"); FuseExpect::None);
+
+run!(pattern_inside_a_variable_its_bound_names_written, r#"{
+  let g = 'a: [`A(i64), `B(i64)], 'b: ['a, null] |x: ('b, i64)| select x {
+    ([null, `A(i64), `B(i64)], i64) as (`A(z), _) => z + 1,
+    _ => 0
+  };
+  let o: [`A(i64), `B(i64), null] = `A(3);
+  let p: [`A(i64), `B(i64), null] = null;
+  (g((o, 1)), g((p, 1)))
+}"#, prints("[i64:4, i64:0]"); FuseExpect::Jit);
+
+// Under a written test a name over a value holding the variable keeps it,
+// and a bind inside the variable takes the test's part.
+run!(written_test_name_over_a_declared_variable_keeps_it, r#"{
+  let arr = 'b: [`A(i64), `B(i64)] |x: Array<'b>| -> Array<'b> select x {
+    Array<[`A(i64), `B(i64)]> as v => v
+  };
+  let tup = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| -> 'b select x {
+    ([`A(i64), `B(i64)], i64) as (v, n) => v
+  };
+  let opt = 'b: [`A(i64), `B(i64)] |x: (['b, null], i64)| -> ['b, null] select x {
+    ([`A(i64), `B(i64), null], i64) as (v, 1) => v,
+    _ => null
+  };
+  let both = 'b: [`A(i64), `B(i64)] |x: ('b, 'b)| -> 'b select x {
+    ([`A(i64), `B(i64)], [`A(i64), `B(i64)]) as (`A(z), v) => v,
+    (_, v) => v
+  };
+  let (a, b): ([`A(i64), `B(i64)], [`A(i64), `B(i64)]) = (`A(1), `B(2));
+  (arr([a]), tup((a, 1)), opt((b, 1)), both((a, b)))
+}"#, prints(r#"[[["A", i64:1]], ["A", i64:1], ["B", i64:2], ["B", i64:2]]"#); FuseExpect::Jit);
+
+run!(written_test_name_and_bind_inside_a_declared_variable, r#"{
+  let g = 'b: [`A(i64), `B(i64)] |x: ('b, 'b)| select x {
+    ([`A(i64), `B(i64)], [`A(i64), `B(i64)]) as (`A(z), v) => z + 1.5,
+    _ => 0.0
+  };
+  let (a, b): ([`A(i64), `B(i64)], [`A(i64), `B(i64)]) = (`A(1), `B(2));
+  g((a, b))
+}"#, refused("cannot compute i64 + f64"); FuseExpect::None);
+
 // A result's success type is never an error (`NoError`), so its error arm
 // tells it apart.
 run!(open_result_success_told_from_its_error, r#"{
@@ -5586,13 +5719,28 @@ run!(unannotated_slice_element_telling_rest_from_keep_refused, r#"{
 run!(generic_slice_binds_beside_keep_check, r#"{
   let first = |x: Array<['b, `Keep('b)]>| -> ['b, `Keep('b), null]
     select x { [h, ..] => h, _ => null };
-  let lit = |x: Array<[i64, `Keep(i64)]>| -> [i64, `Keep(i64), null]
-    select x { [h, 1] => h, _ => null };
   let snd = |x: List<['b, `Keep('b)]>| -> ['b, `Keep('b), null]
     select x { [<_, h, ..>] => h, _ => null };
-  (first([2, `Keep(1)]), lit([`Keep(3), 1]), snd([<2, `Keep(1)>]))
+  (first([2, `Keep(1)]), snd([<2, `Keep(1)>]))
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(v) if v.to_string() == r#"[i64:2, ["Keep", i64:3], ["Keep", i64:1]]"#)
+    matches!(v, Ok(v) if v.to_string() == r#"[i64:2, ["Keep", i64:1]]"#)
+}; FuseExpect::Jit);
+
+// A literal element tests inside the variable, which may hold it.
+run!(generic_slice_literal_beside_keep_refused, r#"{
+  let lit = |x: Array<['b, `Keep('b)]>| -> ['b, `Keep('b), null]
+    select x { [h, 1] => h, _ => null };
+  lit([`Keep(3), 1])
+}"#, refused("[h, 1] tests inside a value of 'b"); FuseExpect::None);
+
+// Over a union element type each element narrows on its own: the literal
+// takes `i64`, the bind beside it the whole element type.
+run!(slice_literal_beside_keep_binds_the_element_type, r#"{
+  let lit = |x: Array<[i64, `Keep(i64)]>| -> [i64, `Keep(i64), null]
+    select x { [h, 1] => h, _ => null };
+  lit([`Keep(3), 1])
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["Keep", i64:3]"#)
 }; FuseExpect::Jit);
 
 // Under a written union a slice pattern narrows to the member it can
@@ -6933,6 +7081,61 @@ run!(
         select f((`A, w)) { (`A, `X) => 1, (`A, `Y) => 2, (`A, null) => 3, (`B, _) => 4 }
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);
+
+// A variable the bound names splits by its own bound.
+run!(
+    containment_variable_its_bound_names_is_split,
+    r#"{
+        let f = 'a: string, 'b: ['a, `X] |x: (['b, null], [`A, `B])|
+            -> [(`X, `A), (`X, `B), (null, `A), (null, `B)] x;
+        let r = f(("str", `A));
+        select r { (`X, _) => "x", (null, _) => "null" }
+    }"#,
+    refused("type mismatch [(null, `A), (null, `B), (`X, `A), (`X, `B)] does not contain ([null, 'b: unbound within ['a: unbound within string, `X]], [`A, `B])");
+    FuseExpect::None
+);
+
+run!(
+    containment_variable_its_bound_names_held,
+    r#"{
+        let f = 'a: string, 'b: ['a, `X] |x: (['b, null], [`A, `B])|
+            -> [(['a, `X], `A), (['a, `X], `B), (null, `A), (null, `B)] x;
+        let g = 'a: string, 'b: ['a, `X] |x: (['b, null], [`A, `B])|
+            -> [(string, `A), (string, `B), (`X, `A), (`X, `B), (null, `A), (null, `B)] x;
+        let r = f(("str", `B));
+        let q = g(("str", `A));
+        (select r { (`X, _) => "x", (null, _) => "null", (_, _) => "a" },
+         select q { (`X, _) => "x", (null, _) => "null", (s, _) => s })
+    }"#,
+    prints(r#"["a", "str"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    written_tests_over_a_variable_its_bound_names_cover_it,
+    r#"{
+        let g = 'a: string, 'b: ['a, `X] |x: (['b, null], [`A, `B])| select x {
+            ([`X, null], `A) as (_, _) => "xa",
+            ([`X, null], `B) as (_, _) => "xb"
+        };
+        g(("str", `A))
+    }"#,
+    refused("missing match cases: no arm covers ([null, 'b: unbound within ['a: unbound within string, `X]], [`A, `B])");
+    FuseExpect::None
+);
+
+run!(
+    written_tests_over_a_variable_its_bound_names_covered,
+    r#"{
+        let g = 'a: string, 'b: ['a, `X] |x: (['b, null], [`A, `B])| select x {
+            ([`X, null, string], `A) as (_, _) => "a",
+            ([`X, null, string], `B) as (_, _) => "b"
+        };
+        g(("str", `B))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "b");
+    FuseExpect::None
 );
 
 // A pattern tests nothing inside the variable at a member it cannot match.

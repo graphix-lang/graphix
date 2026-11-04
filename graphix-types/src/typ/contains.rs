@@ -1282,6 +1282,52 @@ fn positional_arity(t: &Type) -> Option<usize> {
     })
 }
 
+/// A member of a position [`Type::covers_by_parts`] splits, with the
+/// rigid cells whose values it stands for.
+type Split = (Type, SmallVec<[TVar; 2]>);
+
+/// The members of `t`, each with `holders`: a rigid cell with one typed
+/// bound is that bound's members, holding the cell too, one with none a
+/// member of its own; a cell not held rigid is left out.
+fn split_members(
+    env: &Env,
+    t: &Type,
+    holders: &SmallVec<[TVar; 2]>,
+    out: &mut SmallVec<[Split; 8]>,
+) -> Result<()> {
+    ensure_sufficient(|| {
+        let mut found: SmallVec<[Type; 8]> = SmallVec::new();
+        let mut rigid: SmallVec<[TVar; 2]> = SmallVec::new();
+        crate::expr::union_members_with(env, t, &mut found, &mut |tv| {
+            if let Some(c) = tv.open_cell().filter(|c| c.is_rigid()) {
+                rigid.push(c)
+            }
+        })?;
+        for m in found {
+            match m {
+                Type::Primitive(p) => out.extend(
+                    p.iter().map(|b| (Type::Primitive(b.into()), holders.clone())),
+                ),
+                m => out.push((m, holders.clone())),
+            }
+        }
+        for cell in rigid {
+            if holders.iter().any(|h| h.same_cell(&cell)) {
+                continue;
+            }
+            match &cell.typed_bounds(env)[..] {
+                [b] => {
+                    let mut inner = holders.clone();
+                    inner.push(cell.clone());
+                    split_members(env, b, &inner, out)?
+                }
+                _ => out.push((Type::TVar(cell), holders.clone())),
+            }
+        }
+        Ok(())
+    })
+}
+
 /// `t` with its bindings and named types followed to its head.
 fn named_head(env: &Env, t: &Type) -> Type {
     let mut t = t.with_deref(|d| d.cloned()).unwrap_or_else(|| t.clone());
@@ -3337,11 +3383,23 @@ impl Type {
     // containment_variable_kept_whole_by_a_member_holding_it (k2; fails without the
     // holding-cell pick), pattern_beside_a_variable_at_a_member_it_cannot_match (s2;
     // fails without the pick and without meets_rigid's skip).
+    // 2026-11-04 claude: Review r14 (B-r1-1, medium): a rigid cell the bound holds ('a:
+    // Any or string, 'b: ['a, `X]) was dropped by union_members, so the strings at a 'b
+    // position read as `X alone and an annotation or written tests over [`X, null] passed
+    // with a coverage hole. covers_by_parts now splits through split_members: a rigid
+    // cell in a bound splits by its own one typed bound (else is a member of its own),
+    // its members taken also by a part holding any cell it was split from. Pins:
+    // lang::select::containment_variable_its_bound_names_is_split and
+    // written_tests_over_a_variable_its_bound_names_cover_it (both fail with the inner
+    // cell left out), containment_variable_its_bound_names_held and
+    // written_tests_over_a_variable_its_bound_names_covered (the covering twins). Probes
+    // ~/ptmp/cr29/scratch/review-r14/B-r1-1/d/.
     /// Do the candidates' argument lists cover `targs` together? The first
     /// position splits into its members, and each member's candidates
     /// must cover the positions after it. A rigid cell there is its typed
     /// bound's members, each also picked by a candidate holding the cell,
-    /// or, with no one bound, a member of its own. A probe.
+    /// or, with no one bound, a member of its own; a rigid cell its bound
+    /// holds splits the same way. A probe.
     fn covers_by_parts(
         env: &Env,
         hist: &mut ContainsHist,
@@ -3352,49 +3410,27 @@ impl Type {
             let Some((first, rest)) = targs.split_first() else {
                 return Ok(!cands.is_empty());
             };
-            let mut found: SmallVec<[Type; 8]> = SmallVec::new();
-            let mut rigid: SmallVec<[Type; 2]> = SmallVec::new();
-            crate::expr::union_members_with(env, first, &mut found, &mut |tv| {
-                if let Some(c) = tv.open_cell().filter(|c| c.is_rigid()) {
-                    rigid.push(Type::TVar(c))
-                }
-            })?;
-            // each member with the rigid cell whose bound it is a member of
-            let mut split: SmallVec<[(Type, Option<&Type>); 8]> =
-                found.into_iter().map(|m| (m, None)).collect();
-            for cell in rigid.iter() {
-                match cell.open_bound(env) {
-                    None => split.push((cell.clone(), None)),
-                    Some(b) => {
-                        let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
-                        crate::expr::union_members(env, &b, &mut ms)?;
-                        split.extend(ms.into_iter().map(|m| (m, Some(cell))));
-                    }
-                }
-            }
-            let mut members: SmallVec<[(Type, Option<&Type>); 8]> = SmallVec::new();
-            for (m, cell) in split {
-                match m {
-                    Type::Primitive(p) => members
-                        .extend(p.iter().map(|b| (Type::Primitive(b.into()), cell))),
-                    m => members.push((m, cell)),
-                }
-            }
+            let mut members: SmallVec<[Split; 8]> = SmallVec::new();
+            split_members(env, first, &SmallVec::new(), &mut members)?;
             if members.is_empty() {
-                members.push((first.clone(), None))
+                members.push((first.clone(), SmallVec::new()))
             }
             // members that select the same candidates ask the same question
             // of the rest: it is asked once
             let mut asked: SmallVec<[SmallVec<[usize; 8]>; 4]> = SmallVec::new();
             let flags = ContainsFlags::RigidCheck.into();
-            for (m, cell) in members.iter() {
+            for (m, cells) in members.iter() {
                 let mut picked: SmallVec<[usize; 8]> = SmallVec::new();
                 for (i, c) in cands.iter().enumerate() {
-                    let by_cell = |hist: &mut ContainsHist| match cell {
-                        Some(cell) => c[0].contains_int(flags, env, hist, cell),
-                        None => Ok(false),
-                    };
-                    if c[0].contains_int(flags, env, hist, m)? || by_cell(hist)? {
+                    let mut holds = c[0].contains_int(flags, env, hist, m)?;
+                    for cell in cells.iter() {
+                        if holds {
+                            break;
+                        }
+                        let cell = Type::TVar(cell.clone());
+                        holds = c[0].contains_int(flags, env, hist, &cell)?;
+                    }
+                    if holds {
                         picked.push(i)
                     }
                 }

@@ -11,7 +11,7 @@ use crate::{
     TagValue, Update, View, bailat,
     env::Env,
     expr::{
-        At, Expr, ExprId, ExprKind, Origin, Pattern, Undecided, union_members,
+        At, Expr, ExprId, ExprKind, ModPath, Origin, Pattern, Undecided, union_members,
         union_members_open,
     },
     format_with_flags,
@@ -92,6 +92,8 @@ pub struct Select<R: Rt> {
     discriminants: Option<Arc<ArmDiscriminants>>,
     /// The compile's flags, for the definition check's warnings.
     flags: BitFlags<CFlag>,
+    /// Where the select is written, which its patterns' names resolve in.
+    scope: ModPath,
 }
 
 /// Facts about the arms that need the sealed scrutinee type or the
@@ -290,6 +292,7 @@ impl<R: Rt> Select<R> {
         typ: Type,
         spec: Arc<Expr>,
         flags: BitFlags<CFlag>,
+        scope: ModPath,
     ) -> Node<R> {
         Node::new(Self {
             selected: None,
@@ -303,6 +306,7 @@ impl<R: Rt> Select<R> {
             arm_facts: None,
             discriminants: None,
             flags,
+            scope,
         })
     }
 
@@ -324,7 +328,8 @@ impl<R: Rt> Select<R> {
             true => CFlag::RunEvent.into(),
             false => BitFlags::empty(),
         };
-        Ok(Self::new(arg, arms, typ, spec, flags))
+        let scope = ModPath::decode(buf)?;
+        Ok(Self::new(arg, arms, typ, spec, flags, scope))
     }
 
     pub(crate) fn compile(
@@ -363,7 +368,8 @@ impl<R: Rt> Select<R> {
             .at(&spec)?;
             built.push((pat, n));
         }
-        Ok(Self::new(arg, built, Type::empty_tvar(), spec, flags | own))
+        let scope = scope.lexical.clone();
+        Ok(Self::new(arg, built, Type::empty_tvar(), spec, flags | own, scope))
     }
 }
 
@@ -1855,7 +1861,8 @@ impl<R: Rt> Update<R> for Select<R> {
         }
         self.typ.encode(buf)?;
         self.spec.encode(buf)?;
-        self.flags.contains(CFlag::RunEvent).encode(buf)
+        self.flags.contains(CFlag::RunEvent).encode(buf)?;
+        self.scope.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -1880,6 +1887,7 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts,
             discriminants: _,
             flags,
+            scope: _,
         } = self;
         let LazyArmFacts {
             tracked,
@@ -2169,6 +2177,7 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts: _,
             discriminants: _,
             flags: _,
+            scope: _,
         } = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
@@ -2190,6 +2199,7 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts,
             discriminants: _,
             flags: _,
+            scope: _,
         } = self;
         slept.set();
         if let Some(facts) = arm_facts {
@@ -2218,6 +2228,7 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts: _,
             discriminants: _,
             flags: _,
+            scope: _,
         } = self;
         arg.node.refs(refs);
         for arm in arms {
@@ -2448,8 +2459,9 @@ impl<R: Rt> Select<R> {
                     false => scrut,
                 };
                 let sp = &spec_pat.structure_predicate;
-                if let Some(tv) = sp.meets_rigid(&ctx.env, over)? {
-                    let e = rigid_refusal(&ctx.env, sp, over, &tv, Holder::Arm);
+                if let Some(tv) = sp.meets_rigid(&ctx.env, &self.scope, over)? {
+                    let e =
+                        rigid_refusal(&ctx.env, &self.scope, sp, over, &tv, Holder::Arm);
                     return Err(e).at(&pattern_site(spec_pat, n.spec()));
                 }
             }

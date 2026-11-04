@@ -1267,7 +1267,8 @@ cycle, across workers; the compiler never pins threads.
   coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``), and in every containment a
   rigid cell at the position it splits is its one typed bound's members,
-  each also taken by a part holding the cell, else a member of its own
+  each also taken by a part holding the cell, else a member of its own,
+  and one in that bound splits the same way
   (`Type::covers_by_parts`); a probe in progress for the
   same scrutinee ref claims nothing on re-entry. A partial struct
   pattern completes against the one member it can match
@@ -1295,8 +1296,11 @@ cycle, across workers; the compiler never pins threads.
   value without one, inside a member the whole pattern may hold
   (`StructurePattern::meets_rigid`, judged as the select, the `let` or a
   destructuring parameter is checked, a test written over the variable
-  itself as the arm compiles); a name there takes the whole union. A written
-  test types the binds inside the variable (`Type::matching_type`).
+  itself as the arm compiles; an abstract pattern names the type its
+  name resolves to); a name there takes the whole union. Under a written
+  test a bind inside the variable takes the test's part
+  (`Type::matching_parts`) and a name over a value holding it keeps the
+  variable (`PatternNode::type_inside_rigid`).
 - **Composite forms** (`graphix-types/src/rep.rs`,
   `design/distinct_composite_forms.md`): a tuple, struct, variant (bare
   included) and list cell is an array whose element 0 is its kind's
