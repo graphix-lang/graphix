@@ -3804,6 +3804,20 @@ impl<R: Rt> Connect<R> {
     }
 }
 
+// CR claude for claude: [bug/low] A write is refused where the held copy has a cell bounded
+// only from below by a held cell: `type B<'p> = Abstract<'p>; let f = |x| B(x)` is `fn(x:
+// 'x) -> B<'c>` with 'c >= 'x, and held_cells (and check_val_written's reached_cells) hold
+// 'c rigid without that lower bound, so `f <- t ~ |x| B(x)` in a later REPL input is refused
+// ("f is fn(x: '_7809) -> B<'_7809>, made generic by an earlier compile, so what is written
+// to it must be as general, and fn(x: '_7815) -> B<'_7815> is not": the same type twice, no
+// annotation named), and `val f: fn(x: 'a) -> B<'a>` over `let f = |x| B(x)` written `m::f
+// <- t ~ |x| m::B(x)` is told to annotate the implementation as the val, which it already
+// matches. Main (968fa9bc0) runs both. The annotation `|x: 'a| -> B<'a>` passes. Fix: a
+// rigid gate takes a held cell's lower bounds as it takes its constraints, or a cell bounded
+// only below by held cells is not held apart. The refusal's printed cell ids also vary
+// between runs (the verdict never does). Review r14 A-r4-1. probe:
+// ~/ptmp/cr29/scratch/review-r14/A-r4-1/{repl/lw6.txt,lw2,lw3,lw4,p/vw1,p/vw1b}
+// (held-lower-bound-01)
 /// The open cells `held`, a generic binding's copy, reaches, a bound's
 /// included, by address, but a function type's own quantifiers, which its
 /// containment holds: two of one name are two cells where the copy took

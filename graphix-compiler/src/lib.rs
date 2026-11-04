@@ -1879,6 +1879,12 @@ impl<R: Rt> CompileCtx<R> {
         // construction (iface-pair-one-var-01) should take it; else the pair's join must be
         // seen by a task only as its fork saw it. probe: ~/ptmp/cr29/scratch/r14-A/fix3/p/nw6t
         // (iface-sibling-join-01)
+        // 2026-11-04 claude: Review r14 A-r4-1 found a second shape, main's too: sx14, val
+        // fn(x: 'a) -> 'a over let f = |x| x with f(1) and f("s") in a, sibling w writing
+        // super::a::f <- t ~ k from a lambda with a rank-2 parameter (no narrow write):
+        // --check passes 16/16 on base and lane, the build refuses "f cannot be written: an
+        // earlier compile calls it as a fixed function at f(1)" in 7/16 runs on base, 5/16 on
+        // the lane. probe ~/ptmp/cr29/scratch/review-r14/A-r4-1/.
         let ids = self.static_callees.variable(id);
         if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
             let name =
