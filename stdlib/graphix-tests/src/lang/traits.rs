@@ -2969,6 +2969,22 @@ run!(
     )
 );
 
+// Through a helper lambda the method calls, the binding named is the one
+// the helper writes: an annotation on the helper cannot widen it.
+run!(
+    method_over_a_helper_names_what_the_helper_writes,
+    r#"{
+    type C = Abstract<i64>;
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    let y = never();
+    let keep = |x| { y <- x; x };
+    impl Put for C { let put = |s, x| keep(x) };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused("that of y, a binding outside its let: give y a type that holds every 'a")
+);
+
 // A method whose value is no lambda keeps the types its value holds, which
 // no call copies: a variable each call picks may not stand on one of them,
 // a binding's outside or a call's result's.

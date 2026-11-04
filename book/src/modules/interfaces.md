@@ -226,9 +226,18 @@ type, `let f: fn<'a: Any>(x: 'a) -> 'a = |x| x`.
 
 A `val` whose type holds a variable is generic wherever its function
 types stand: in a struct (`val c: {f: fn(x: 'a) -> 'a}`), an array or a
-type alias, and with its own quantifiers written (`fn<'a: Any>(..)`) or
-not. What is written through it must be as general as it is (`m::c <-
-{f: |x| x}`, not `{f: |x: i64| -> i64 x}`), and `&mut m::c` is refused.
+type alias, and with its own quantifiers written (`val f: fn<'a:
+Any>(..)`) or not; each use takes it at its own types. What is written
+through it must be as general as it is (`m::c <- {f: |x| x}`, not `{f:
+|x: i64| -> i64 x}`), each of its function types on its own, and a
+writable reference to it is refused where the referenced place holds
+one of its variables: `&mut m::c` and `&mut m::c.f` are, `&mut m::c.n`
+over a field `n: i64` is not. A function type with quantifiers of its
+own inside the val's data, `val c: {f: fn<'b: Any>(x: 'b) -> 'b}`, is
+one type, so such a val is one type too, and takes a `&mut`. A name
+that copies a generic `val` and is written, `let g = m::c; g <- ..`, is
+one instance of it: what is written decides its type for every use of
+`g`.
 
 A `val` declared at one type over a generic implementation can be
 called, but what is written through it (`m::f <- ..`, or through `&mut

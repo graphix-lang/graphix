@@ -354,13 +354,23 @@ impl<R: Rt> Bind<R> {
                 Some(typ) => typ,
                 None => {
                     // A ⊥ initializer seeds a fresh cell its writers
-                    // refine, settled to ⊥ in typecheck1 if none do.
-                    let typ =
-                        if node.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
-                            Type::empty_tvar()
-                        } else {
-                            node.typ().clone()
-                        };
+                    // refine, settled to ⊥ in typecheck1 if none do; a
+                    // name its block writes over a generalized binding
+                    // holds an instance of it, its own, which the check
+                    // takes from the value.
+                    let own_instance = forwards(&ctx.env, b, &node)
+                        && pat.single_bind().is_some_and(|n| {
+                            ctx.written.innermost().is_some_and(|w| {
+                                w.contains(&(spec.id, CompactString::from(n.as_str())))
+                            })
+                        });
+                    let typ = if own_instance
+                        || node.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
+                    {
+                        Type::empty_tvar()
+                    } else {
+                        node.typ().clone()
+                    };
                     // a shape check: its cells lower nothing they bind; a
                     // partial struct pattern completes against the value, as
                     // a select arm's does against its scrutinee
@@ -564,15 +574,18 @@ impl<R: Rt> Bind<R> {
         Ok(())
     }
 
-    /// Whether the binding forwards its value's scheme (`let g = f`).
-    fn forwards(&self, env: &Env) -> bool {
-        matches!(&self.spec.kind, ExprKind::Bind(b) if forwards(env, b, &self.node))
+    /// Whether the binding forwards its value's scheme (`let g = f`): a
+    /// single name something writes holds an instance of its own instead.
+    fn forwards(&self, ctx: &CompileCtx<R>) -> bool {
+        matches!(&self.spec.kind, ExprKind::Bind(b)
+            if forwards(&ctx.env, b, &self.node)
+                && !(b.pattern.single_bind().is_some() && written(ctx, &self.pattern)))
     }
 
     /// Whether the names a forwarded scheme binds each take a copy of their
     /// own: beside a written name, whose uses decide only what it holds.
     fn apart(&self, ctx: &CompileCtx<R>) -> bool {
-        self.forwards(&ctx.env) && written(ctx, &self.pattern)
+        self.forwards(ctx) && written(ctx, &self.pattern)
     }
 
     /// Complete a pattern that leaves struct fields out against the
@@ -617,7 +630,7 @@ impl<R: Rt> Bind<R> {
     /// annotation holds it generally
     /// ([`super::callsite::contain_generally`]).
     fn check_value(&self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        if !self.forwards(&ctx.env) {
+        if !self.forwards(ctx) {
             let value = match written(ctx, &self.pattern) {
                 true => ctx.monomorphic(self.node.typ()),
                 false => self.node.typ().clone(),
@@ -1930,9 +1943,11 @@ impl<R: Rt> ByRef<R> {
         // a binding a writable reference names is written as a `<-` target
         // is: a wake keeps its last write, and a call through it dispatches
         if let Mutability::Mut = mutability {
-            let named = match &referent {
-                Referent::Place(p) => (&*p.root as &dyn Any).downcast_ref::<Ref>(),
-                Referent::Channel(c) => (&**c as &dyn Any).downcast_ref::<Ref>(),
+            let (named, place) = match &referent {
+                Referent::Place(p) => {
+                    ((&*p.root as &dyn Any).downcast_ref::<Ref>(), true)
+                }
+                Referent::Channel(c) => ((&**c as &dyn Any).downcast_ref::<Ref>(), false),
             };
             if let Some(r) = named {
                 // XCR claude for claude: [bug/low] `&mut a::f` over `val f: fn(x: i64) -> i64`
@@ -1985,13 +2000,16 @@ impl<R: Rt> ByRef<R> {
                 // typedef (val c: {f: fn(x: 'a) -> 'a}) is now generic too
                 // (iface-val-data-var-01's note):
                 // mut_ref_to_a_struct_of_functions_val_refused.
-                if ctx.env.poly_binds.contains(&r.id) && ctx.generalized_earlier(r.id) {
-                    bailat!(
-                        spec,
-                        "{} was made generic by an earlier compile, and a writable \
-                         reference to it would let a write narrow it: write it with <-",
-                        r.spec
-                    );
+                // 2026-11-04 claude: Review r14 round 2 (A-r2-2 low): with every generic val
+                // in poly_binds, &mut m::c.n over val c: {f: fn(x: 'a) -> 'a, n: i64} was
+                // refused by the root's generality (pl2, pl4; main runs both). A place
+                // reference is now judged at its check by the place's type
+                // (crate::holds_generic over Place::elem_type); a channel reference by its
+                // binding, as before. Pins:
+                // lang::interfaces::mut_ref_to_a_plain_field_of_a_generic_val (fails without
+                // it), mut_ref_to_a_function_field_of_a_generic_val_refused.
+                if !place && narrows_generic(ctx, r) {
+                    return Err(narrowing_refusal(r).at(&spec));
                 }
                 ctx.mark_connect_target(r.id).map_err(|e| e.at(&spec))?;
             }
@@ -2460,6 +2478,20 @@ impl<R: Rt> Update<R> for Deref<R> {
     }
 }
 
+/// Whether a writable reference to `r` could narrow a binding an earlier
+/// compile generalized.
+fn narrows_generic<R: Rt>(ctx: &CompileCtx<R>, r: &Ref) -> bool {
+    ctx.env.poly_binds.contains(&r.id) && ctx.generalized_earlier(r.id)
+}
+
+fn narrowing_refusal(r: &Ref) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{} was made generic by an earlier compile, and a writable reference to it \
+         would let a write narrow it: write it with <-",
+        r.spec
+    )
+}
+
 impl<R: Rt> ByRef<R> {
     fn typecheck0_with(
         &mut self,
@@ -2506,7 +2538,18 @@ impl<R: Rt> ByRef<R> {
                         Type::ByRef(Mutability::Mut, Arc::new(Type::empty_tvar()));
                     wrap!(self, through.check_contains(&ctx.env, d.child.typ()))?;
                 }
-                wrap!(self, p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut))?
+                let t = wrap!(
+                    self,
+                    p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut)
+                )?;
+                if *mutability == Mutability::Mut
+                    && let Some(r) = (&*p.root as &dyn Any).downcast_ref::<Ref>()
+                    && narrows_generic(ctx, r)
+                    && crate::holds_generic(&t)
+                {
+                    return Err(narrowing_refusal(r).at(&*self.spec));
+                }
+                t
             }
         };
         if cell.shares_content(&t) || super::array::bind_element(cell, &t) {

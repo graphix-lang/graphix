@@ -1080,10 +1080,13 @@ node graph IS the IR — there is no parallel typed IR
   module; `self::` in a module's top block; a write names the nearest
   binding before it, `node::written_lets`) is not generalized:
   its uses and writers share one instance of each function it holds (the
-  value restriction, `CompileCtx::monomorphic`), except one an earlier compile
-  generalized (a REPL input): it stays generic, a later write is held to
-  a copy of its type with the variables rigid, and a later `&mut` of it
-  is refused (`Env::poly_binds`); a `let` nothing writes whose value
+  value restriction, `CompileCtx::monomorphic`; a name aliasing a
+  generalized binding, `let g = f`, holds an instance of its own), except
+  one an earlier compile generalized (a REPL input): it stays generic, a
+  later write is held to a copy of its type with the variables rigid, each
+  function type's apart whatever their names, and a later `&mut` of it,
+  or of a place whose type holds one of them, is refused
+  (`Env::poly_binds`); a `let` nothing writes whose value
   holds a lambda or a generalized binding's value in a data literal (a
   struct, its update, a tuple, a variant, an array, a list, a map:
   `bind::holds_function`) is generalized too: each read copies the
@@ -1659,8 +1662,10 @@ cycle, across workers; the compiler never pins threads.
   method that is a lambda is judged by the bindings it captures, any
   other method and a val's implementation by level). A val whose type
   holds a variable, its own quantifiers and a typedef's arguments
-  included, is generic (`Env::poly_binds`): a write through it must be
-  as general, and a `&mut` of it is refused. A val something writes
+  included, is generic (`Env::poly_binds`): each read copies it, a
+  typedef's arguments as its function types (`Type::scheme_read`), and
+  it is held as an earlier compile's generalized binding is above (a
+  rank-2 type's quantifiers are not its variables). A val something writes
   (`<-`, `&mut`, in any compile) must fit its implementation, whose
   variables are held rigid with their bounds
   (`CompileCtx::check_val_written`).

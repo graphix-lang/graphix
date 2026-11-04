@@ -2396,7 +2396,8 @@ impl Type {
     /// gates are closed (a lambda held in a struct, tuple or array): each such
     /// function type copied as a read of a generalized binding copies its
     /// scheme ([`FnType::scheme`]), through one cell map, all but those `keep`
-    /// shares. `None` when it holds none.
+    /// shares, and each typedef application whose arguments hold such a cell
+    /// ([`Type::copied_outside_functions`]) alike. `None` when it holds none.
     #[doc(hidden)]
     pub fn scheme_read(
         &self,
@@ -2456,7 +2457,11 @@ impl ReadWalk<'_> {
                     self.copies.memo.insert(tv.cell_addr(), (t.clone(), None));
                     self.go(&b).map(|r| tv.forwarded_as(r))
                 }
-                Type::Fn(ft) if (self.keep)(ft) || !copied_beneath(t, self.open) => None,
+                Type::Fn(ft)
+                    if (self.keep)(ft) || !copied_beneath(t, self.open, true) =>
+                {
+                    None
+                }
                 Type::Fn(ft) => {
                     let fresh = ft.reset_tvars_int(
                         &mut self.copies.known,
@@ -2464,6 +2469,13 @@ impl ReadWalk<'_> {
                     );
                     fresh.alias_tvars(&mut LPooled::take());
                     Some(Type::Fn(Arc::new(fresh)))
+                }
+                Type::Ref(_) if t.copied_outside_functions(self.open) => {
+                    let fresh = t
+                        .reset_tvars_int(&mut self.copies.known, Fresh::Scheme(self.open))
+                        .unwrap_or_else(|| t.clone());
+                    fresh.alias_tvars(&mut LPooled::take());
+                    Some(fresh)
                 }
                 t => t.cow_children(&mut |c| self.go(c)),
             };
@@ -2480,26 +2492,42 @@ impl ReadWalk<'_> {
     }
 }
 
+impl Type {
+    /// Whether this type holds, outside every function type, an open cell
+    /// a scheme's copy under the open gates `open` copies: a typedef's
+    /// arguments, which stand for what its body holds.
+    #[doc(hidden)]
+    pub fn copied_outside_functions(&self, open: &IntSet<LambdaId>) -> bool {
+        copied_beneath(self, open, false)
+    }
+}
+
 /// Whether `t` reaches an open cell a scheme's copy under the open gates
-/// `open` copies.
-fn copied_beneath(t: &Type, open: &IntSet<LambdaId>) -> bool {
-    fn go(t: &Type, open: &IntSet<LambdaId>, seen: &mut AHashSet<usize>) -> bool {
+/// `open` copies; inside a function type only where `functions`.
+fn copied_beneath(t: &Type, open: &IntSet<LambdaId>, functions: bool) -> bool {
+    fn go(
+        t: &Type,
+        open: &IntSet<LambdaId>,
+        functions: bool,
+        seen: &mut AHashSet<usize>,
+    ) -> bool {
         crate::stack::ensure_sufficient(|| match t {
             Type::TVar(tv) => {
                 seen.insert(tv.cell_addr())
                     && match tv.binding() {
-                        Some(b) => go(&b, open, seen),
+                        Some(b) => go(&b, open, functions, seen),
                         None => !tv.is_quantifier_rigid() && tv.level().copied_by(open),
                     }
             }
+            Type::Fn(_) if !functions => false,
             t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
             t => t
-                .try_for_each_child(&mut |c| match go(c, open, seen) {
+                .try_for_each_child(&mut |c| match go(c, open, functions, seen) {
                     true => ControlFlow::Break(()),
                     false => ControlFlow::Continue(()),
                 })
                 .is_break(),
         })
     }
-    go(t, open, &mut LPooled::take())
+    go(t, open, functions, &mut LPooled::take())
 }

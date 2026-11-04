@@ -74,7 +74,9 @@ as a VALUE (a reference that is not a call's callee) at two uses whose
 instances the map shows taking different primitive first parameters.
 Mutation: wrap the lambda so the binding is not generalized, `let f = {
 let tm__0 = null; |..| .. }`. Rule: only a `let` of a lambda, a
-`let` forwarding a generalized binding, or a `let` nothing writes that
+`let` forwarding a generalized binding (a single name something writes
+holds an instance of its own, `Bind::forwards`, pinned by
+`lang::interfaces::written_alias_of_*`), or a `let` nothing writes that
 holds either in a data literal (`bind::holds_function`; a block's value
 and a select's arms are not data literals, CR holder-block-select-01)
 generalizes, and a value reference to a binding that is not generalized
@@ -353,7 +355,9 @@ with a variable, or a write through a val over a generic body, which the
 generator does not write; their pins are
 `lang::interfaces::*_over_an_outer_binding_refused`,
 `narrow_write_through_a_val_refused`, `bounded_write_through_a_val_refused`,
-`write_through_a_*_val_refused`, `mut_ref_to_a_*_val_refused`
+`write_through_a_*_val_refused`, `*_alike_named_*_refused`,
+`mut_ref_to_a_*_val_refused`, `mut_ref_to_a_function_field_of_a_generic_val_refused`,
+`write_through_a_typedef_val_after_*_refused`
 and `lang::traits::*method_over_an_outer_binding_refused`,
 `*method_value_no_lambda_*_refused`, `method_made_by_a_call_refused`.
 

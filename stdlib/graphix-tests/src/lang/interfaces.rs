@@ -1853,6 +1853,16 @@ run!(
     "/test/m.gx" => "let mk = |u: i64| |x| x; let f = mk(0)"
 );
 
+// A val whose type is no function, implemented by no literal of lambdas,
+// is told to be one.
+run!(
+    data_val_over_no_literal_names_a_literal_of_lambdas,
+    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a literal of lambdas over variables of their own"),
+    "/test.gx" => "mod m; let result = m::v",
+    "/test/m.gxi" => "val v: Array<fn(x: 'a) -> 'a>",
+    "/test/m.gx" => "let v = never()"
+);
+
 run!(
     rank2_val_over_a_written_let_names_the_annotation,
     refused("annotate the implementation's let with a quantified type (fn<'a: ..>)"),
@@ -2146,4 +2156,186 @@ run!(
     "#,
     "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
     "/test/m.gx" => "let c = {f: |x| x}"
+);
+
+// Two function types of one val that name their variable alike are two
+// schemes: a write is held to each, whatever their names.
+run!(
+    write_through_a_val_of_alike_named_functions_refused,
+    refused("it holds a type variable of the code around the write"),
+    "/test.gx" => r#"
+        mod m;
+        let y = never();
+        let store = |x| { y <- x; y };
+        m::c <- {f: |x| x, g: store};
+        let result = (m::c.g(1), m::c.g("s"))
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+);
+
+run!(
+    write_through_a_val_of_alike_named_typedefs_refused,
+    refused("it holds a type variable of the code around the write"),
+    "/test.gx" => r#"
+        mod m;
+        let y = never();
+        let store = |x| { y <- x; y };
+        m::c <- {f: |x| x, g: store};
+        let result = (m::c.g(1), m::c.g("s"))
+    "#,
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val c: {f: F<'a>, g: F<'a>}",
+    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+);
+
+run!(
+    narrow_write_through_a_val_of_alike_named_functions_refused,
+    refused("g: fn(x: 'a: unbound) -> 'a: unbound }, made generic by an earlier compile, so what is written to it must be as general"),
+    "/test.gx" => r#"
+        mod m;
+        m::c <- {f: |x| x, g: |x: i64| -> i64 x + 100};
+        let result = m::c.g("s")
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+);
+
+// A name that aliases a generic val and is written holds one instance of
+// the val, its own: what is written decides it, for every use.
+run!(
+    written_alias_of_a_struct_of_functions_val_is_one_instance,
+    refused("type mismatch"),
+    "/test.gx" => r#"
+        mod m;
+        let g = m::c;
+        let h = |v| { g <- v; v };
+        let w = h({f: |x: i64| -> i64 x + 100});
+        let result: string = g.f("s")
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let c = {f: |x| x}"
+);
+
+run!(
+    written_alias_of_a_struct_of_functions_val_holds_its_writes,
+    refused("type mismatch"),
+    "/test.gx" => r#"
+        mod m;
+        let y = never();
+        let g = m::c;
+        g <- {f: |x| { y <- x; x }};
+        let result = (g.f("s"), g.f(1))
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let c = {f: |x| x}"
+);
+
+run!(
+    written_alias_of_a_struct_of_functions_val_at_one_type,
+    is(Value::I64(1)),
+    "/test.gx" => r#"
+        mod m;
+        let g = m::c;
+        g <- {f: |x: i64| -> i64 x};
+        let result = g.f(1)
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let c = {f: |x| x}"
+; FuseExpect::None);
+
+run!(
+    written_alias_of_a_function_val_is_one_instance,
+    refused("type mismatch"),
+    "/test.gx" => r#"
+        mod m;
+        let g = m::f;
+        let h = |v| { g <- v; v };
+        let w = h(|x: i64| -> i64 x + 100);
+        let result: string = g("s")
+    "#,
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let f = |x| x"
+);
+
+// A val typed by a typedef of a function type is generic per use as a val
+// typed by the function type is: each read copies it.
+run!(
+    typedef_val_annotated_read_decides_nothing,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => r#"
+        mod m;
+        let g: fn(x: i64) -> i64 = m::f;
+        let result = (g(1), m::f("s"))
+    "#,
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val f: F<'a>",
+    "/test/m.gx" => "let f = |x| x"
+; FuseExpect::Jit);
+
+run!(
+    write_through_a_typedef_val_after_an_annotated_read_refused,
+    refused("f is F<'a: unbound>, made generic by an earlier compile, so what is written to it must be as general"),
+    "/test.gx" => r#"
+        mod m;
+        let s: string = m::f("s");
+        let g: fn(x: i64) -> i64 = m::f;
+        m::f <- |x: i64| -> i64 x + 1;
+        let result = (g(1), s)
+    "#,
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val f: F<'a>",
+    "/test/m.gx" => "let f = |x| x"
+);
+
+run!(
+    write_through_a_typedef_val_after_a_call_takes_it_refused,
+    refused("f is F<'a: unbound>, made generic by an earlier compile, so what is written to it must be as general"),
+    "/test.gx" => r#"
+        mod m;
+        let s: string = m::f("s");
+        let app = |h: fn(x: i64) -> i64, v| h(v);
+        let k = app(m::f, 1);
+        m::f <- |x: i64| -> i64 x + 1;
+        let result = (k, s)
+    "#,
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val f: F<'a>",
+    "/test/m.gx" => "let f = |x| x"
+);
+
+run!(
+    struct_of_typedef_val_annotated_read_decides_nothing,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => r#"
+        mod m;
+        let g: {f: fn(x: i64) -> i64} = m::c;
+        let result = (g.f(1), m::c.f("s"))
+    "#,
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val c: {f: F<'a>}",
+    "/test/m.gx" => "let c = {f: |x| x}"
+; FuseExpect::None);
+
+// A writable reference to a place of a generic val is refused only where
+// the place's type holds one of the val's variables.
+run!(
+    mut_ref_to_a_plain_field_of_a_generic_val,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => r#"
+        mod m;
+        let r = &mut m::c.n;
+        *r <- 5;
+        let result = (m::c.f(1), m::c.f("s"))
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, n: i64}",
+    "/test/m.gx" => "let c = {f: |x| x, n: 0}"
+; FuseExpect::None);
+
+run!(
+    mut_ref_to_a_function_field_of_a_generic_val_refused,
+    refused("m::c was made generic by an earlier compile, and a writable reference to it would let a write narrow it"),
+    "/test.gx" => r#"
+        mod m;
+        let r = &mut m::c.f;
+        *r <- |x: i64| -> i64 x + 100;
+        let result = m::c.f("s")
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, n: i64}",
+    "/test/m.gx" => "let c = {f: |x| x, n: 0}"
 );

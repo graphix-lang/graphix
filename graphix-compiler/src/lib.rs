@@ -1995,26 +1995,7 @@ impl<R: Rt> CompileCtx<R> {
     /// Whether `id` is a binding an earlier compile generalized: its
     /// check already made variables of a function it holds generic.
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
-        self.env.by_id.get(&id).is_some_and(|b| {
-            let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
-            b.typ.reached_cells(&mut cells);
-            let mut generic = cells
-                .iter()
-                .filter(|(_, tv)| tv.level().is_generic() && !tv.is_quantifier_rigid())
-                .peekable();
-            if generic.peek().is_none() {
-                return false;
-            }
-            // a rank-2 type's quantifiers are generic whatever compiled it; a
-            // declared signature's own are its scheme's, which each read copies
-            let mut quantified: LPooled<AHashSet<usize>> = LPooled::take();
-            b.typ.each_quantifier(&mut |_, tv| {
-                if tv.is_formal_quantifier() {
-                    quantified.insert(tv.cell_addr());
-                }
-            });
-            generic.any(|(addr, _)| !quantified.contains(addr))
-        })
+        self.env.by_id.get(&id).is_some_and(|b| holds_generic(&b.typ))
     }
 
     // CR claude for claude: [perf/medium] A chain of lets holding functions, where each
@@ -2138,7 +2119,7 @@ impl<R: Rt> CompileCtx<R> {
                     }
                     // a typedef's arguments stand for what its body holds:
                     // instantiated as one, as the functions they name would be
-                    Type::Ref(_) if copies(t, m.open) => {
+                    Type::Ref(_) if t.copied_outside_functions(m.open) => {
                         m.fresh = true;
                         Some(t.instantiate_with(&mut LPooled::take(), m.open))
                     }
@@ -2151,22 +2132,6 @@ impl<R: Rt> CompileCtx<R> {
                 }
                 m.fresh |= outer;
                 r
-            })
-        }
-        /// Whether `t` holds, outside every function type, an open cell a
-        /// copy takes fresh.
-        fn copies(t: &Type, open: &nohash::IntSet<LambdaId>) -> bool {
-            crate::stack::ensure_sufficient(|| match t {
-                Type::Fn(_) => false,
-                Type::TVar(tv) => match tv.binding() {
-                    Some(b) => copies(&b, open),
-                    None => !tv.is_quantifier_rigid() && tv.level().copied_by(open),
-                },
-                t => {
-                    let mut found = false;
-                    t.for_each_child(&mut |c| found = found || copies(c, open));
-                    found
-                }
             })
         }
         let mut m = Memo { open: &self.rec_defs, done: LPooled::take(), fresh: false };
@@ -2891,6 +2856,15 @@ impl PendingSettle {
                 // it", naming the binding); a refused input's cell writes are undone; a
                 // function's write to an earlier input's binding is held to that binding's
                 // type.
+                // 2026-11-04 claude: Review r14 (A-r2-1, repl/r7.txt): a REPL holder
+                // written with a lambda that writes an earlier input's let y = never()
+                // (let c = {f: |x| x, g: |x| x}; c <- t ~ {f: |x| x, g: store}; c.g(1);
+                // c.g("s")) passes and the fused run dies (kernel param slot mismatch);
+                // base the same. The written value's cell is y's, from an earlier compile
+                // task, which the Connect hold's containment never writes, so carried_out
+                // finds nothing; the same as a script is refused. D9 (a)'s settle at an
+                // input's end should refuse it. probe
+                // ~/ptmp/cr29/scratch/r14-A/fix2/r7b.txt
                 PendingSettle::LetOverBottom { tv, init, spec } => {
                     let bottom = init.with_deref(|t| matches!(t, Some(Type::Bottom)));
                     (if bottom { tv.settle_or_bottom(env) } else { Ok(()) }, spec)
@@ -4309,6 +4283,28 @@ fn abandon_stmt<R: Rt>(
     ctx.drop_deferred();
     saved.restore(ctx);
     e
+}
+
+/// Whether `t` holds a generic cell, a variable of a function it holds that
+/// a read copies: not a rank-2 type's quantifier, generic whatever compiled
+/// it, but a declared signature's own, its scheme's.
+pub(crate) fn holds_generic(t: &Type) -> bool {
+    let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
+    t.reached_cells(&mut cells);
+    let mut generic = cells
+        .iter()
+        .filter(|(_, tv)| tv.level().is_generic() && !tv.is_quantifier_rigid())
+        .peekable();
+    if generic.peek().is_none() {
+        return false;
+    }
+    let mut quantified: LPooled<AHashSet<usize>> = LPooled::take();
+    t.each_quantifier(&mut |_, tv| {
+        if tv.is_formal_quantifier() {
+            quantified.insert(tv.cell_addr());
+        }
+    });
+    generic.any(|(addr, _)| !quantified.contains(addr))
 }
 
 #[cfg(test)]

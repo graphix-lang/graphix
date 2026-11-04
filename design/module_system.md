@@ -234,8 +234,12 @@ at the program's check, a script's interface at `check_script_sig`.
 declaration's type at its place (`SigMatch::paired`). A cell no use of
 the implementation copies (a written `let`'s, an outer binding's) is one
 type: paired with a type holding a variable a use picks it is refused,
-naming the way out (the outer binding's type, the val at one type, or a
-quantified annotation on the `let`); paired with a type holding none, a
+naming the way out (the outer binding's type, the val at one type, a
+quantified annotation on the `let`, or, for an implementation that is no
+lambda, a lambda, or a literal of lambdas for a val that is no function;
+the binding named is the nearest the implementation's lambda reaches
+through the lambdas it captures that holds no lambda,
+`module::Holder::of`); paired with a type holding none, a
 concrete type or a whole quantified function type, the declaration
 decides it (`module.rs::hold_paired`), so `val e: B<i64>` over `let e =
 B(1)` builds `e` at `B<i64>`. A trait method's body, an impl's and a
@@ -262,15 +266,23 @@ fn(x: i64) -> i64` and a generic implementation is refused too.
 
 A val generic in a variable, wherever its function types stand (a
 struct, an array, a typedef's arguments) and whether it writes its own
-quantifiers (`fn<'a: ..>`) or not, holds a write through it as any
-generalized binding does: the value written must fit a copy of the
-val's type with its variables rigid and carry none of them out
+quantifiers (`fn<'a: ..>`) or not, is read as a copy
+(`Type::scheme_read`, which copies a typedef application whose arguments
+hold a cell a copy takes, `Type::copied_outside_functions`, as it copies
+a function type), and holds a write through it as any generalized
+binding does: the value written must fit a copy of the val's type with
+its variables rigid, held by cell (two function types the copy took
+apart name their variables alike), and carry none of them out
 (`Connect::typecheck0_with`). `CompileCtx::monomorphic`, which makes that
 copy, instantiates a typedef's arguments as one, since they stand for
 what its body holds. A writable reference to a val is refused where the
 val is generic (`CompileCtx::generalized_earlier`, which counts a
 declared signature's own quantifiers, its scheme's, and skips a rank-2
-type's, `CellFact::FormalQuantifier`).
+type's, `CellFact::FormalQuantifier`), and one to a place of it where
+the place's type holds such a cell (`crate::holds_generic`, at the
+reference's check). A name that aliases a generalized binding and is
+written (`let g = m::c; g <- ..`) holds an instance of its own, the
+value restriction (`Bind::forwards`).
 
 ## Resolution
 

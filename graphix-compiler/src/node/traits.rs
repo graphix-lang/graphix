@@ -128,6 +128,13 @@ pub(crate) fn method_sig(
 // method_over_an_outer_binding_refused (now names y); control
 // method_value_no_lambda_is_generic_per_call. probes
 // ~/ptmp/cr29/scratch/r14-A/fix1/{tr8,tr10,tr11,tr12,n1,n3,n4,al1,al2,al3}
+// 2026-11-04 claude: Review r14 round 2 (A-r2-1 low, A-r2-2 low): the refusal named a
+// helper function the method's lambda captures (store, keep), whose annotation cannot make
+// the program pass. module::Holder::of now follows the lambdas the implementation's lambda
+// captures to the nearest binding that holds no lambda (y), else names none. Pin:
+// lang::traits::method_over_a_helper_names_what_the_helper_writes (rm1 and t3 now name y).
+// A non-lambda method under a quantifier bounded by a free variable is over-refused by the
+// level test: new CR trait-nolambda-bound-01.
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface
@@ -151,6 +158,19 @@ fn implements<R: Rt>(
     let pairs = declared.sig_matches(&ctx.env, &ft)?;
     let captured: OnceCell<Option<LPooled<AHashMap<usize, TVar>>>> = OnceCell::new();
     let captured = || captured.get_or_init(|| module::captured_cells(ctx, id));
+    // CR claude for claude: [bug/low] A method whose value is no lambda is judged by level,
+    // and the impl's let annotation claims at the top level a free variable a declared
+    // quantifier's bound names, so `trait T { val m: fn<'a: ['b, null]>(#x: 'a, self, y:
+    // 'b) -> 'a }; impl T for i64 { let m = (|#x, s, y| x, 1).0 }` (or `(id, 1).0`) is
+    // refused, "where the method declares 'b ... its value is no lambda", though both run
+    // at two types; main 968fa9bc0 runs them (`2 null`). Over-refusal only, introduced by
+    // cf39b8d82's level test for non-lambda methods; the way out the message names (a
+    // lambda) passes, as do the same values under fn(self, x: 'a) -> 'a, an unbounded
+    // free 'b, or a val (vq1). Telling the annotation's own claim from a binding outside
+    // needs what claimed the cell, which the level does not record; the XCR
+    // trait-generic-written-01 notes the same claim for lambdas. No census file has the
+    // shape. probes ~/ptmp/cr29/scratch/review-r14/A-r2-2/p/{tq1,tq1b} (controls tq1d,
+    // tq1e, tq1f, vq1) (trait-nolambda-bound-01)
     let shared = |tv: &TVar| {
         !tv.level().copied_by(&ctx.rec_defs)
             && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))

@@ -3730,9 +3730,9 @@ impl<R: Rt> Connect<R> {
             true => ctx.monomorphic(&bind.typ),
             false => bind.typ.clone(),
         };
-        let mut rigid: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        let mut rigid: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         if generic {
-            held.collect_tvars(&mut rigid);
+            held_cells(&held, &mut rigid);
         }
         let _gates: LPooled<Vec<_>> = rigid.values().map(|tv| tv.open_rigid()).collect();
         let contain = |t: &Type| {
@@ -3765,7 +3765,7 @@ impl<R: Rt> Connect<R> {
         // as general as the binding: the written value may not carry one of
         // its variables into the environment, as a function's parameter would
         let quantified: LPooled<Vec<(ArcStr, usize)>> =
-            rigid.iter().map(|(n, tv)| (n.clone(), tv.cell_addr())).collect();
+            rigid.iter().map(|(addr, tv)| (tv.name.clone(), *addr)).collect();
         if generic && callsite::carried_out(&quantified, self.node.typ()).is_some() {
             return format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
                 Err(anyhow!(
@@ -3792,6 +3792,19 @@ impl<R: Rt> Connect<R> {
             )
         )
     }
+}
+
+/// The open cells `held`, a generic binding's copy, holds as positions, by
+/// address, but a function type's own quantifiers, which its containment
+/// holds: two of one name are two cells where the copy took each function
+/// type apart.
+fn held_cells(held: &Type, out: &mut AHashMap<usize, TVar>) {
+    crate::typ::settle::position_cells(held, out);
+    let mut own: LPooled<AHashSet<usize>> = LPooled::take();
+    held.each_quantifier(&mut |_, tv| {
+        own.insert(tv.cell_addr());
+    });
+    out.retain(|addr, tv| !tv.is_bound() && !own.contains(addr));
 }
 
 fn reference_targets(

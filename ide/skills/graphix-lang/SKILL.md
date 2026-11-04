@@ -379,7 +379,11 @@ something writes (`m::f <- ..`, `&mut m::f`) must fit its
 implementation: `val f: fn(x: i64) -> i64` over a generic `let f = |x|
 x` takes no write until the `let` is annotated `fn(x: i64) -> i64`. A
 val generic in a variable (`val c: {f: fn(x: 'a) -> 'a}`, `val g:
-fn<'a: Any>(..)`) takes only a write as general as it, and no `&mut`.
+fn<'a: Any>(..)`, `val h: F<'a>` over `type F<'a> = fn(x: 'a) -> 'a`)
+is copied by each use, takes only a write as general as it, and no
+`&mut` of it or of a place holding its variable (`&mut m::c.f`; `&mut
+m::c.n` over `n: i64` is fine). `let g = m::c; g <- ..` makes `g` one
+instance of the val, which the write decides for every use of `g`.
 
 No currying: a call supplies every required argument, and `add(1)` on a
 two-argument `add` is refused (`missing required argument`), not a

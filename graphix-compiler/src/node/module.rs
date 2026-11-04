@@ -36,6 +36,7 @@ use netidx_core::{
 use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{fmt::Write, mem, sync::LazyLock};
 use triomphe::Arc;
 
@@ -337,6 +338,36 @@ fn bind_sig_item(
             // write_through_a_typedef_val_as_general, which main refuses (its write decided
             // the val's 'a at i64). probes
             // ~/ptmp/cr29/scratch/r14-A/fix1/{td2,sf4,af2,mr1,rk8,dyn3,tw1,tw2}
+            // 2026-11-04 claude: Review r14 round 2 (A-r2-1 high, A-r2-2 medium x2). (1)
+            // Connect::typecheck0_with held a generic binding's copy rigid by name
+            // (collect_tvars), and CompileCtx::monomorphic copies each function type apart,
+            // so in val c: {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a} only one copy of 'a was
+            // rigid: a write of {f: |x| x, g: store} over an outer y passed the check and
+            // the fused run killed the runtime (k8, k9, k15; narrow writes k1, k4, k6, k7
+            // failed at the run-time bind; the same through a dynamic load, dy3). The hold
+            // is now by cell (node::held_cells: position_cells but a function type's own
+            // quantifiers, which its containment holds). Pins:
+            // lang::interfaces::write_through_a_val_of_alike_named_functions_refused,
+            // write_through_a_val_of_alike_named_typedefs_refused,
+            // narrow_write_through_a_val_of_alike_named_functions_refused. (2) A read of a
+            // val typed by a typedef application (val f: F<'a>, val c: {f: F<'a>}) was not
+            // copied, so an annotated read or a HOF argument decided the val's 'a for every
+            // use and a narrow write then passed (tdr6, tdr9; tdr1 over-refused):
+            // Type::scheme_read copies a typedef application whose arguments hold a cell a
+            // copy takes (Type::copied_outside_functions, now shared with
+            // CompileCtx::monomorphic). Pins: typedef_val_annotated_read_decides_nothing,
+            // struct_of_typedef_val_annotated_read_decides_nothing,
+            // write_through_a_typedef_val_after_an_annotated_read_refused,
+            // write_through_a_typedef_val_after_a_call_takes_it_refused. (3) With every
+            // generic val in poly_binds, let g = m::c forwarded the val's scheme, and once g
+            // was written its uses still copied it (fa5, fa5b, fa5c, fa7; main's class for
+            // fn vals and plain lets, fa8-fa12): a single name its block writes over a
+            // generalized binding now holds an instance of its own (Bind::forwards,
+            // Bind::compile's own_instance), the value restriction; destructuring keeps
+            // Bind::apart. Pins: written_alias_of_a_struct_of_functions_val_is_one_instance,
+            // _holds_its_writes, written_alias_of_a_function_val_is_one_instance; twin
+            // written_alias_of_a_struct_of_functions_val_at_one_type. probes
+            // ~/ptmp/cr29/scratch/r14-A/fix2/
             let poly = matches!(typ, Type::Fn(_)) || {
                 let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                 typ.reached_cells(&mut cells);
@@ -565,6 +596,13 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // val_over_a_call_result_names_a_lambda. The book and the skill now carry the
 // written-let refusal (val f: fn(x: 'a) -> 'a over let f = |x| x; f <- |x| x) and its
 // two ways out.
+// 2026-11-04 claude: Review r14 round 2 (A-r2-1 low): for a val whose type is no
+// function implemented by no lambda (val v: Array<fn(x: 'a) -> 'a> over let v =
+// never(), af1) the refusal said to make the implementation a lambda; it now says a
+// literal of lambdas over variables of their own. Pin:
+// lang::interfaces::data_val_over_no_literal_names_a_literal_of_lambdas. The anonymous
+// cell names in 'declared X but implemented Y' ('_7804: unbound) are main's printer,
+// left.
 // XCR claude for claude: [bug/low] An implementation binding's open cell is not decided by
 // the val it implements: with `type B<'x>; val e: B<i64>; val i: B<i64>;` in m.gxi and
 // `type B<'x> = Abstract<i64>; let e = B(1); let i: B<i64> = B(1)` in m.gx, e's parameter
@@ -714,6 +752,7 @@ fn check_val(
     };
     let pairs = declared.sig_matches(env, typ).map_err(refused)?;
     let shared = |tv: &TVar| !tv.level().copied_by(open);
+    let is_function = declared.with_deref(|t| matches!(t, Some(Type::Fn(_))));
     hold_paired(env, "val", &pairs, shared, |tv, v| match (generalized, holder(tv)) {
         (true, Holder::Captured(b)) => format_compact!(
             ", that of {b}, a binding outside its let: declare the val at one type, or \
@@ -730,9 +769,13 @@ fn check_val(
             ": declare the val at one type, or annotate the implementation's let with \
              a quantified type (fn<{v}: ..>)"
         ),
-        (false, Holder::NoLambda) => format_compact!(
+        (false, Holder::NoLambda) if is_function => format_compact!(
             ": declare the val at one type, or make the implementation a lambda over \
              variables of its own"
+        ),
+        (false, Holder::NoLambda) => format_compact!(
+            ": declare the val at one type, or make the implementation a literal of \
+             lambdas over variables of their own"
         ),
     })
     .map_err(refused)
@@ -749,28 +792,39 @@ pub(crate) enum Holder {
 }
 
 impl Holder {
-    /// What holds `tv` for the implementation's binding `id`: the first
-    /// binding its lambda captures whose type reaches the cell, one whose
-    /// type is no function first.
+    /// What holds `tv` for the implementation's binding `id`: the nearest
+    /// binding its lambda captures, or a lambda it captures captures, whose
+    /// type reaches the cell and which holds no lambda, the binding an
+    /// annotation can widen.
     pub(crate) fn of<R: Rt>(ctx: &CompileCtx<R>, id: BindId, tv: &TVar) -> Self {
         let Some(def) = held_lambda(ctx, id) else { return Self::NoLambda };
-        let (mut data, mut function) = (None, None);
-        def.captured_ids(&mut |id| {
-            let Some(b) = ctx.env.by_id.get(&id) else { return };
-            let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            b.typ.reached_cells(&mut cells);
-            if cells.contains_key(&tv.cell_addr()) {
-                let slot = match b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
-                    true => &mut function,
-                    false => &mut data,
-                };
-                slot.get_or_insert_with(|| b.name.clone());
+        let mut seen: LPooled<AHashSet<BindId>> = LPooled::take();
+        let mut level: SmallVec<[&LambdaDef<R>; 4]> = smallvec::smallvec![def];
+        let mut next: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
+        while !level.is_empty() {
+            let mut found = None;
+            for def in level.drain(..) {
+                def.captured_ids(&mut |id| {
+                    let Some(b) = ctx.env.by_id.get(&id) else { return };
+                    if found.is_some() || !seen.insert(id) {
+                        return;
+                    }
+                    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                    b.typ.reached_cells(&mut cells);
+                    if cells.contains_key(&tv.cell_addr()) {
+                        match held_lambda(ctx, id) {
+                            Some(def) => next.push(def),
+                            None => found = Some(b.name.clone()),
+                        }
+                    }
+                });
             }
-        });
-        match data.or(function) {
-            Some(name) => Self::Captured(name),
-            None => Self::Lambda,
+            if let Some(name) = found {
+                return Self::Captured(name);
+            }
+            mem::swap(&mut level, &mut next);
         }
+        Self::Lambda
     }
 }
 
