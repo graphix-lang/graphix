@@ -1,4 +1,4 @@
-use super::state::{Info, Labels, Mode, State};
+use super::state::{Depth, Info, Labels, Mode, State};
 use crate::{expr::Attr, stack::ensure_sufficient};
 use ahash::AHashMap;
 use combine::{
@@ -58,17 +58,19 @@ pub(super) struct Held {
     messages: usize,
 }
 
-/// An attribute's parse where it starts, for [`Input::remembered`].
+/// An attribute's parse, for [`Input::remembered`].
 struct Remembered {
     r: R<Attr>,
     end: Mark,
-    /// What it added to the depth below the knot in progress.
-    below: usize,
-    /// How far past its starting depth its knots and folds went.
-    reach: usize,
+    depth: Depth,
     /// What its failures at the reported point said, if any did.
     said: Option<Labels>,
 }
+
+/// Where an attribute starts and, for a parse the nesting limit refused
+/// something in, the depth it started at: a parse that met the limit
+/// holds at that depth alone.
+type AttrKey = (usize, Option<usize>);
 
 #[cfg(test)]
 thread_local! {
@@ -84,7 +86,7 @@ pub(super) struct Input<'a> {
     /// Printed data (`NaN`, a printed datetime) reads as a literal.
     pub(super) printed_data: bool,
     pub(super) g: State,
-    attrs: LPooled<AHashMap<usize, Remembered>>,
+    attrs: LPooled<AHashMap<AttrKey, Remembered>>,
 }
 
 /// The first alternative that does not fail without consuming input; a
@@ -558,9 +560,10 @@ impl<'a> Input<'a> {
     /// arguments are whole expressions that a lookahead may read before
     /// the rule that keeps them, so nested attributes would be read again
     /// at every level. A parse that starts here ends alike at any depth
-    /// where it stays within the nesting limit, so where it did it is
-    /// replayed: its end, what it added below the knot in progress, and
-    /// what its failures at the reported point said.
+    /// where the nesting limit refuses nothing in it, and a parse the
+    /// limit refused something in ends alike at the same depth, so where
+    /// one did it is replayed: its end, what it did to the depth, and what
+    /// its failures at the reported point said.
     pub(super) fn remembered(&mut self, f: impl FnOnce(&mut Self) -> R<Attr>) -> R<Attr> {
         let start = self.at.off;
         #[cfg(test)]
@@ -570,11 +573,14 @@ impl<'a> Input<'a> {
         if self.g.quiet > 0 {
             return f(self);
         }
-        if let Some(m) = self.attrs.get(&start)
-            && self.g.fits(m.reach)
-        {
+        let depth = self.g.depth();
+        let hit = match self.attrs.get(&(start, None)) {
+            Some(m) if self.g.fits(m.depth) => Some(m),
+            _ => self.attrs.get(&(start, Some(depth))),
+        };
+        if let Some(m) = hit {
             self.at = m.end;
-            self.g.add_below(m.below);
+            self.g.replay(m.depth);
             if let Some(said) = &m.said {
                 let l = &mut self.g.labels;
                 l.token = said.token.or(l.token);
@@ -588,13 +594,10 @@ impl<'a> Input<'a> {
         let token = self.g.labels.token.take();
         let measure = self.g.measure();
         let r = f(self);
-        let (below, reach) = self.g.measured(measure);
+        let d = self.g.measured(measure);
         let l = &mut self.g.labels;
         let met = l.token;
         l.token = met.or(token);
-        if r.as_ref().is_err_and(|e| e.fatal) {
-            return r;
-        }
         let said = held
             .filter(|h| {
                 met.is_some()
@@ -615,8 +618,8 @@ impl<'a> Input<'a> {
                     messages: tail(&l.messages, h.messages),
                 }
             });
-        let m = Remembered { r: r.clone(), end: self.at, below, reach, said };
-        self.attrs.insert(start, m);
+        let m = Remembered { r: r.clone(), end: self.at, depth: d, said };
+        self.attrs.insert((start, d.limited.then_some(depth)), m);
         r
     }
 

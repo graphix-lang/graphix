@@ -119,6 +119,9 @@ pub(super) struct State {
     below: usize,
     /// The deepest any knot or fold went, counted as the limit counts.
     reach: usize,
+    /// Whether the limit refused a knot or fold since the measure in
+    /// progress began.
+    limited: bool,
     /// The furthest point a knot reached, by success or failure.
     furthest: Option<SourcePosition>,
     /// The furthest point a knot parsed to.
@@ -140,6 +143,19 @@ pub(super) struct State {
 pub(super) struct Measure {
     below: usize,
     reach: usize,
+    limited: bool,
+}
+
+/// What a measured parse did to the depth bookkeeping.
+#[derive(Clone, Copy)]
+pub(super) struct Depth {
+    /// What it added to the depth below the knot in progress.
+    below: usize,
+    /// How far past its starting depth its knots and folds went.
+    reach: usize,
+    /// Whether the limit refused a knot or fold in it, which makes the
+    /// parse one of its starting depth alone.
+    pub(super) limited: bool,
 }
 
 impl State {
@@ -149,6 +165,7 @@ impl State {
             depth: 0,
             below: 0,
             reach: 0,
+            limited: false,
             furthest: None,
             furthest_ok: None,
             refused: None,
@@ -219,29 +236,44 @@ impl State {
         Measure {
             below: std::mem::take(&mut self.below),
             reach: std::mem::replace(&mut self.reach, self.depth),
+            limited: std::mem::take(&mut self.limited),
         }
     }
 
-    /// What the parse [`State::measure`] started added to the depth below
-    /// the knot in progress, and how far past its starting depth it went.
-    pub(super) fn measured(&mut self, m: Measure) -> (usize, usize) {
-        let added = (self.below, self.reach - self.depth);
-        self.below = m.below.max(self.below);
-        self.reach = m.reach.max(self.reach);
-        added
+    /// What the parse [`State::measure`] started did to the depth.
+    pub(super) fn measured(&mut self, m: Measure) -> Depth {
+        let d = Depth {
+            below: self.below,
+            reach: self.reach - self.depth,
+            limited: self.limited,
+        };
+        self.below = m.below;
+        self.reach = m.reach;
+        self.limited = m.limited;
+        self.replay(d);
+        d
     }
 
-    /// Whether a parse that went `reach` past its starting depth fits here.
-    pub(super) fn fits(&self, reach: usize) -> bool {
-        self.depth + reach <= max_nesting()
+    /// Whether a parse the limit refused nothing in, which did `d`, fits
+    /// here.
+    pub(super) fn fits(&self, d: Depth) -> bool {
+        self.depth + d.reach <= max_nesting()
     }
 
-    /// Add to the depth below the knot in progress what a parse added.
-    pub(super) fn add_below(&mut self, below: usize) {
-        self.below = self.below.max(below)
+    /// Recursion knots entered and not left.
+    pub(super) fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Do to the depth what a parse that did `d` does here.
+    pub(super) fn replay(&mut self, d: Depth) {
+        self.below = self.below.max(d.below);
+        self.reach = self.reach.max(self.depth + d.reach);
+        self.limited |= d.limited;
     }
 
     fn refuse(&mut self, pos: SourcePosition) {
+        self.limited = true;
         if self.refused.is_none_or(|p| key(p) < key(pos)) {
             self.refused = Some(pos)
         }

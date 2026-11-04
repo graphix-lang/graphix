@@ -3162,6 +3162,66 @@ fn an_attribute_read_once_counts_as_deep_as_where_it_stands() {
     assert!(msg.contains("Parse error at line: 1, column: 684\n"), "{msg}");
 }
 
+// Reading an attribute once puts the nesting limit where reading it again
+// does: in an attribute a block reads after a lookahead did, and where a
+// map access's probe met the limit in an attribute the arm reads again.
+#[test]
+fn a_remembered_attribute_meets_the_limit_where_read_again() {
+    let shapes = [
+        ("let x = 1;\nlet y = { #[a({ #[b(", "(", "-x", ")", ")] x; z })] y; w }"),
+        ("let x = 1;\nlet m = 1;\nselect x{ #[a(m{ ", "[", "1", "]", " })] _ => 1 }"),
+        ("let x = 1;\nlet m = 1;\nselect x{ #[a(m{ ", "(", "1", ")", " })] _ => 1 }"),
+    ];
+    let read_again = |text: &str| {
+        input::FORGET.set(true);
+        let o = outcome(text);
+        input::FORGET.set(false);
+        o
+    };
+    for (head, open, inner, close, tail) in shapes {
+        let text = |n: usize| {
+            format!("{head}{}{inner}{}{tail}", open.repeat(n), close.repeat(n))
+        };
+        let parses = |n: usize| {
+            input::FORGET.set(true);
+            let ok = parse(vfs(&text(n))).is_ok();
+            input::FORGET.set(false);
+            ok
+        };
+        let (mut deepest, mut refused) = (1, max_nesting());
+        while deepest + 1 < refused {
+            let n = (deepest + refused) / 2;
+            match parses(n) {
+                true => deepest = n,
+                false => refused = n,
+            }
+        }
+        assert!(deepest > 100, "{head}: {deepest}");
+        for n in [deepest, refused] {
+            assert_eq!(outcome(&text(n)), read_again(&text(n)), "{head}: {n}");
+        }
+    }
+}
+
+// Where a map access's probe meets the limit inside nested attributes, the
+// arms read them again at a shallower depth, each once a depth: past the
+// probe's limit (about 145 levels) the cost stays polynomial.
+#[test]
+fn nested_attributes_past_a_probes_limit_are_read_once_a_depth() {
+    let nest = |n: usize| {
+        format!(
+            "let x = 1;\nlet s = {}1{}",
+            "select x{ #[a(".repeat(n),
+            ")] _ => 1 }".repeat(n)
+        )
+    };
+    for n in [160, 300] {
+        let k = knots(&nest(n));
+        assert!(k < 1_000_000, "{n}: {k} knots");
+        assert!(parse(vfs(&nest(n))).is_ok(), "{n}");
+    }
+}
+
 // A map access's probe reads a select's arms as expressions, at more knots
 // a level than the patterns they are; the probe's nesting refusal leaves
 // the arms to the select.
