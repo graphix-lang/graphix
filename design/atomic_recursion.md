@@ -107,10 +107,10 @@ stops nothing: it leaves the value display (or the line) and keeps the
 session, and while an input waits on a busy runtime it names the
 interrupt. The shell reads no key while a display shows or an input runs:
 the terminal sends both keys as signals then, and at its prompt the line
-editor, as a TUI display does, reads them as keys. Ctrl-D exits. The shell `abort()`s on the way out;
-without the stop the tokio runtime's shutdown waits forever on the
-`block_in_place` section the cycle runs in, and only SIGKILL could end
-the process. An embedder watchdog is buildable today (arm `interrupt()`
+editor, as a TUI display does, reads them as keys. Ctrl-D exits. The shell `abort()`s on the way out,
+and a tokio runtime's shutdown stops a runtime still running under it,
+wedged or not, and waits for its thread (`graphix-rt`'s
+`RuntimeThread`). An embedder watchdog is buildable today (arm `interrupt()`
 on a wall-clock timer, then start a new runtime); it is deliberately not
 built into the engine, because a default timeout would be a credit
 system wearing a hat.

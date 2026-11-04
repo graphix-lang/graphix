@@ -64,7 +64,6 @@ impl<R: Rt> Apply<R> for PassThread {
 const CYCLES: i64 = 2000;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "until a runtime runs every pass on one thread: runtime-thread-spread-01"]
 async fn every_pass_runs_on_one_thread() -> Result<()> {
     let ctx = GXRt::<NoExt>::new_state()?;
     ctx.control.set_par_mode(ParMode::Off);

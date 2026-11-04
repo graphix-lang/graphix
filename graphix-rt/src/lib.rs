@@ -6,9 +6,10 @@
 //!
 //! This module implements a generic graphix runtime suitable for most
 //! applications, including applications that implement custom graphix
-//! builtins. The graphix interperter is run in a background task, and
-//! can be interacted with via a handle. All features of the standard
-//! library are supported by this runtime.
+//! builtins. The graphix interperter runs on a thread of its own (on a
+//! current-thread tokio runtime, in a task), and can be interacted with
+//! via a handle. All features of the standard library are supported by
+//! this runtime.
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
@@ -16,7 +17,7 @@ use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
     BindId, CFlag, Control, ExecState, FusionStats, LambdaId, ParMode, Scope, StopCause,
-    cost,
+    WORKER_STACK, cost,
     env::Env,
     expr::{BufferOverrides, ExprId, Load, ModPath, Probe, ResolverFactory, ResolverRef},
     ide::Ide,
@@ -34,6 +35,8 @@ use serde_derive::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use std::{fmt, future, path::PathBuf, sync::Arc};
 use tokio::{
+    runtime::RuntimeFlavor,
+    select,
     sync::{
         Notify,
         mpsc::{self as tmpsc},
@@ -553,31 +556,89 @@ pub struct EnvStats {
 
 struct GXHandleInner<X: GXExt> {
     tx: tmpsc::UnboundedSender<ToGX<X>>,
-    /// `None` once a waiter has taken it, which leaves the drop no
-    /// `JoinHandle` to abort with: the abort flag is all there is then.
-    /// See [`GXHandle::ended`].
+    /// The task that ends when the runtime has; `None` once a waiter has
+    /// taken it. See [`GXHandle::ended`].
     task: Mutex<Option<JoinHandle<()>>>,
     /// Shared (cloned from `ctx.control`) interrupt/abort control. See
     /// [`GXHandle::interrupt`] / [`GXHandle::abort`].
     control: triomphe::Arc<Control>,
     /// Wakes the run loop to see an abort.
     aborted: triomphe::Arc<Notify>,
+    /// Dropped with the last handle: the run loop is dropped at its next
+    /// await.
+    _gone: oneshot::Sender<()>,
 }
 
 impl<X: GXExt> Drop for GXHandleInner<X> {
     fn drop(&mut self) {
-        // Signal abort first so a wedged `do_cycle` loop breaks;
-        // `task.abort()` alone cannot interrupt a sync loop.
+        // a pass still running stops at the flag, not at an await
         self.control.abort();
-        if let Some(task) = self.task.lock().as_ref() {
-            task.abort()
+    }
+}
+
+/// The thread a runtime runs on under a multi-thread tokio runtime,
+/// driven through `Handle::block_on`: every pass runs there, and a wedged
+/// one holds no tokio worker. A task of the tokio runtime keeps it, and
+/// that task's drop at the tokio runtime's shutdown, which comes before
+/// the timer driver stops, ends the run loop and waits for the thread,
+/// so the loop never polls a timer whose driver has stopped.
+struct RuntimeThread {
+    control: triomphe::Arc<Control>,
+    /// Dropped to drop the run loop at its next await.
+    stop: Option<oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RuntimeThread {
+    /// Run `run` on a thread of its own; the task returned ends with it.
+    fn spawn(
+        run: impl Future<Output = ()> + Send + 'static,
+        control: triomphe::Arc<Control>,
+    ) -> Result<JoinHandle<()>> {
+        let handle = tokio::runtime::Handle::current();
+        let (stop, stopped) = oneshot::channel::<()>();
+        let (finished, done) = oneshot::channel::<()>();
+        let thread = std::thread::Builder::new()
+            .name("graphix-runtime".into())
+            .stack_size(WORKER_STACK)
+            .spawn(move || {
+                handle.block_on(async move {
+                    select! {
+                        biased;
+                        _ = stopped => (),
+                        () = run => (),
+                    }
+                });
+                drop(finished)
+            })
+            .context("starting the runtime's thread")?;
+        let mut keep = RuntimeThread { control, stop: Some(stop), thread: Some(thread) };
+        Ok(task::spawn(async move {
+            let _ = done.await;
+            keep.join()
+        }))
+    }
+
+    fn join(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for RuntimeThread {
+    fn drop(&mut self) {
+        if self.thread.is_some() {
+            self.control.abort();
+            self.stop.take();
+            self.join()
         }
     }
 }
 
 /// A handle to a running GX instance.
 ///
-/// Drop the handle to shutdown the associated background tasks.
+/// Dropping the last handle shuts the runtime down.
 pub struct GXHandle<X: GXExt>(Arc<GXHandleInner<X>>);
 
 impl<X: GXExt> fmt::Debug for GXHandle<X> {
@@ -664,12 +725,13 @@ impl<X: GXExt> GXHandle<X> {
         self.0.aborted.notify_one()
     }
 
-    /// Wait for the runtime's task to end, which the caller must have asked
-    /// for with [`GXHandle::abort`] or by dropping the last handle. The
-    /// session gives up what it holds as that task ends, so work a last drop
-    /// starts belongs to the caller's runtime and it must still be up to run
-    /// it. The wait is unbounded: a runtime that cannot end holds it forever.
-    /// One waiter at a time; a call while another waits returns at once.
+    /// Wait for the runtime to end, which the caller must have asked for
+    /// with [`GXHandle::abort`] or by dropping the last handle. The session
+    /// gives up what it holds as the runtime ends, so work a last drop
+    /// starts belongs to the caller's tokio runtime and it must still be up
+    /// to run it. The wait is unbounded: a runtime that cannot end holds it
+    /// forever. One waiter at a time; a call while another waits returns at
+    /// once.
     pub async fn ended(&self) {
         if let Some(task) = self.0.task.lock().take() {
             let _ = task.await;
@@ -1161,27 +1223,40 @@ impl<X: GXExt> GXConfig<X> {
         let aborted = triomphe::Arc::new(Notify::new());
         let (init_tx, init_rx) = oneshot::channel();
         let (tx, rx) = tmpsc::unbounded_channel();
-        let task = task::spawn({
+        let (gone_tx, gone) = oneshot::channel::<()>();
+        let run = {
             let aborted = aborted.clone();
             async move {
                 let mut rx = rx;
-                match GX::new(self).await {
-                    Ok(bs) => {
-                        let _ = init_tx.send(Ok(()));
-                        if let Err(e) = bs.run(&mut rx, &aborted).await {
-                            error!("run loop exited with error {e:?}")
+                let run = async {
+                    match GX::new(self).await {
+                        Ok(bs) => {
+                            let _ = init_tx.send(Ok(()));
+                            if let Err(e) = bs.run(&mut rx, &aborted).await {
+                                error!("run loop exited with error {e:?}")
+                            }
                         }
-                    }
-                    Err(e) => {
-                        let _ = init_tx.send(Err(e));
-                    }
+                        Err(e) => {
+                            let _ = init_tx.send(Err(e));
+                        }
+                    };
+                    // every request sent before the close is received and
+                    // dropped, which answers its caller: dropping the
+                    // receiver can miss one
+                    rx.close();
+                    while rx.recv().await.is_some() {}
                 };
-                // every request sent before the close is received and dropped,
-                // which answers its caller: dropping the receiver can miss one
-                rx.close();
-                while rx.recv().await.is_some() {}
+                select! {
+                    biased;
+                    _ = gone => (),
+                    () = run => (),
+                }
             }
-        });
+        };
+        let task = match tokio::runtime::Handle::current().runtime_flavor() {
+            RuntimeFlavor::CurrentThread => task::spawn(run),
+            _ => RuntimeThread::spawn(run, control.clone())?,
+        };
         let st = std::time::Instant::now();
         init_rx.await??;
         log::info!("runtime start wait: {:?}", st.elapsed());
@@ -1190,6 +1265,7 @@ impl<X: GXExt> GXConfig<X> {
             task: Mutex::new(Some(task)),
             control,
             aborted,
+            _gone: gone_tx,
         })))
     }
 }

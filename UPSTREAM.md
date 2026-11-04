@@ -276,48 +276,6 @@ the state of a fix, and Graphix's side.
   payload as `i64` and range-check it
   (`stdlib/graphix-package-gui/src/types.rs`). Not reported.
 
-## netidx-value (ours): each thread keeps up to 187 MB of free arrays
-
-- **Bug.** `array.rs` keeps a dropped array (128 elements or fewer) on
-  its thread's free list for that length, up to `32 * (129 - len)`
-  arrays of each length: about 187 MB a thread when every length is
-  used. A thread that drops more arrays of a length than it builds fills
-  that length's list up to its cap and keeps them. Graphix's parallel
-  evaluation does this every cycle: a forked part builds a value on one
-  thread, and another thread drops it when the value is replaced.
-  Tuples, structs and variants are arrays too.
-- **Repro.** `--no-fusion`, `GRAPHIX_PAR=auto` (the default), a 1 ms
-  timer bumping `n`, and `let rec t = |a: Array<i64>| -> Array<i64>
-  select a { [] => [n], [h, rest..] => array::push(array::flat_map([rest,
-  rest], t), h) }; array::len(t([1, 2, 3, 4, 5, 6]))`. In a test
-  harness's runtime (16 eval workers, 16 runtime workers) the live heap
-  went from 43 MB at 1000 cycles to 129 MB at 20000, then stayed there.
-  The shell's RSS reached 842 MB in 5 minutes. With `GRAPHIX_PAR=off`,
-  or with these lists off, the harness's heap is flat at 34 MB.
-- **Upstream fix.** Bound each thread's lists in bytes: a thread keeps
-  at most 256 KiB of free arrays, whatever their lengths. With that
-  bound the repro is flat at 37 MB. `bench/par_symbolic.gx`'s busiest
-  list peaks at 65 KB, so with 256 KiB it still finds 99.8% of its 2M
-  arrays on a list, serial and forked.
-- **Graphix's side.** Not fixed by the bound alone. Each cycle's
-  update pass runs in `block_in_place`, so a busy runtime's passes move
-  from thread to thread (2000 passes of
-  `graphix-rt/tests/pass_thread.rs` ran on 5 to 24), each keeping its
-  own free lists and poolshark pools and allocating from its own malloc
-  arena, and nothing in Graphix bounds how many threads that is (tokio
-  allows 512 blocking threads). Without the bound a partly fused
-  program on a 1 ms timer reached 1.9 GB in 15 minutes (113 MB with
-  it), and that growth is not shown to stop short of exhausting memory.
-  With the bound, a recursion whose collections shrink and grow went
-  from 229 to 623 MB in 10 minutes under `GRAPHIX_PAR=off`, its process
-  at 35 or 36 threads throughout, and beside it with
-  `MALLOC_ARENA_MAX=1` from 103 to 120 MB: that growth is the malloc
-  arenas of the threads its passes ran on. The fix is Graphix's: CR
-  runtime-thread-spread-01, whose pins
-  (`stdlib/graphix-tests/tests/forked_cycle_heap.rs`,
-  `graphix-rt/tests/pass_thread.rs`) are ignored until it lands. This
-  bound is still wanted then: it bounds what each eval worker keeps.
-
 ## iced_core 0.14: flex layout sums FillPortion weights in a u16
 
 - **Bug.** `iced_core::layout::flex` adds a row's or column's

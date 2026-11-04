@@ -641,34 +641,6 @@ impl<X: GXExt> GX<X> {
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
             || !self.ctx.event.custom.lock().is_empty();
-        // `block_in_place` keeps a wedged node from starving the IO tasks
-        // and the caller that would `interrupt()`/`abort()` it; on
-        // `current_thread` there is nowhere to migrate, so run inline.
-        let control = self.ctx.control.clone();
-        let mut run_nodes = || {
-            // On the thread that runs the nodes: the task may migrate
-            // between cycles.
-            graphix_compiler::with_control(&control, || {
-                self.update_nodes(&mut batch);
-                for (answer, v) in self.held_answers.drain(..) {
-                    batch.push(GXEvent::Updated(answer, v))
-                }
-                let writes_queued = !self.ctx.rt.var_updates.is_empty();
-                for (expr, answer) in answering.drain(..) {
-                    let v = batch
-                        .iter()
-                        .find_map(|e| match e {
-                            GXEvent::Updated(id, v) if *id == expr => Some(v.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or(Value::Null);
-                    match writes_queued {
-                        true => self.held_answers.push((answer, v)),
-                        false => batch.push(GXEvent::Updated(answer, v)),
-                    }
-                }
-            })
-        };
         // CR claude for eric: [perf/medium] Every cycle's update pass runs in
         // `block_in_place`, which hands this worker's core to a blocking-pool
         // thread, so a busy runtime's passes land on a different OS thread from
@@ -761,14 +733,27 @@ impl<X: GXExt> GX<X> {
         // the growth is not shown to stop short of exhausting memory (1.9 GB in
         // 15 min on a 1 ms timer), so this reads as [perf/high]; the CR's text
         // stays as written.
-        if matches!(
-            tokio::runtime::Handle::current().runtime_flavor(),
-            tokio::runtime::RuntimeFlavor::CurrentThread
-        ) {
-            run_nodes();
-        } else {
-            tokio::task::block_in_place(run_nodes);
-        }
+        let control = self.ctx.control.clone();
+        graphix_compiler::with_control(&control, || {
+            self.update_nodes(&mut batch);
+            for (answer, v) in self.held_answers.drain(..) {
+                batch.push(GXEvent::Updated(answer, v))
+            }
+            let writes_queued = !self.ctx.rt.var_updates.is_empty();
+            for (expr, answer) in answering.drain(..) {
+                let v = batch
+                    .iter()
+                    .find_map(|e| match e {
+                        GXEvent::Updated(id, v) if *id == expr => Some(v.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or(Value::Null);
+                match writes_queued {
+                    true => self.held_answers.push((answer, v)),
+                    false => batch.push(GXEvent::Updated(answer, v)),
+                }
+            }
+        });
         // before the send loop, which may compile roots for the next cycle
         self.ctx.event.clear();
         self.ctx.rt.updated.clear();

@@ -43,7 +43,7 @@ your application. Then you can:
 - inject events into Graphix pipelines
 - call Graphix functions
 
-The runtime uses tokio and runs in a background task so it integrates well into
-a normal async workflow.
+The runtime uses tokio and runs on a thread of its own, driven by your tokio
+runtime, so it integrates well into a normal async workflow.
 
 See [Using Graphix as Embedded Scripting](./rt.md) for details.

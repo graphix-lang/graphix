@@ -242,6 +242,10 @@ pub fn record_self_blocks(n: i64) {
     }
 }
 
+/// The stack a thread a runtime starts for its nodes begins with: its
+/// own thread and each evaluation worker.
+pub const WORKER_STACK: usize = 16 << 20;
+
 /// `GRAPHIX_EVAL_THREADS`, else one worker a core: the workers an
 /// evaluation pool is built with.
 pub fn eval_threads() -> usize {
@@ -517,7 +521,7 @@ impl Control {
         self.eval_pool_with(|t| {
             std::thread::Builder::new()
                 .name(format!("graphix-eval-{}", t.index()))
-                .stack_size(16 << 20)
+                .stack_size(WORKER_STACK)
                 .spawn(|| t.run())
         })
     }

@@ -32,7 +32,9 @@ pub(crate) mod perfdbg;
 pub mod prune;
 
 pub use node::{WriteTarget, error::diagnostic_site, module::check_script_sig};
-pub use stack::{Control, CtlFlag, ParMode, PruneMode, StopCause, with_control};
+pub use stack::{
+    Control, CtlFlag, ParMode, PruneMode, StopCause, WORKER_STACK, with_control,
+};
 pub use stack::{set_activation_budget, set_stack_budget};
 pub mod tval;
 

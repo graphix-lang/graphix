@@ -5,8 +5,8 @@
 //! run restored from an image, run as a called lambda's body (which fuses)
 //! and formatted.
 //!
-//! Each case runs in a child process on a small worker stack (an
-//! overflow aborts, so it cannot be caught in-process). The child
+//! Each case runs in a child process on a small stack (an overflow
+//! aborts, so it cannot be caught in-process). The child
 //! invocation passes `--include-ignored`; without it the child would
 //! skip the test and exit 0, which reads as success.
 
@@ -485,42 +485,56 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
     if mode != "check" {
         fs::write(&file, format!("{text};\nsys::exit(0)")).expect("write");
     }
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .thread_stack_size(STACK)
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let r = rt.block_on(async {
-        let shell = |cache| {
-            ShellBuilder::<NoExt>::default()
-                .cache(cache)
-                .enable_flags(match mode {
-                    "nofusion" => CFlag::FusionDisabled.into(),
-                    _ => BitFlags::empty(),
+    // a current-thread runtime runs the graphix runtime on the thread that
+    // drives it
+    let r = thread::scope(|s| {
+        thread::Builder::new()
+            .stack_size(STACK)
+            .spawn_scoped(s, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                rt.block_on(async {
+                    let shell = |cache| {
+                        ShellBuilder::<NoExt>::default()
+                            .cache(cache)
+                            .enable_flags(match mode {
+                                "nofusion" => CFlag::FusionDisabled.into(),
+                                _ => BitFlags::empty(),
+                            })
+                            .mode(match mode {
+                                "check" => Mode::Check(Load::File(file.clone())),
+                                _ => Mode::Script(Load::File(file.clone())),
+                            })
+                            .build()
+                            .expect("building shell")
+                    };
+                    match mode {
+                        "check" => shell(CacheMode::Off).check().await,
+                        // compiled and written, then restored: a restored program
+                        // writes nothing
+                        "image" => {
+                            shell(CacheMode::Warm).run(MainThreadHandle::new().0).await?;
+                            let written = cache_entries();
+                            shell(CacheMode::On).run(MainThreadHandle::new().0).await?;
+                            if cache_entries() != written {
+                                anyhow::bail!(
+                                    "the second run did not restore the program image"
+                                )
+                            }
+                            Ok(())
+                        }
+                        _ => shell(CacheMode::Off)
+                            .run(MainThreadHandle::new().0)
+                            .await
+                            .map(|_| ()),
+                    }
                 })
-                .mode(match mode {
-                    "check" => Mode::Check(Load::File(file.clone())),
-                    _ => Mode::Script(Load::File(file.clone())),
-                })
-                .build()
-                .expect("building shell")
-        };
-        match mode {
-            "check" => shell(CacheMode::Off).check().await,
-            // compiled and written, then restored: a restored program
-            // writes nothing
-            "image" => {
-                shell(CacheMode::Warm).run(MainThreadHandle::new().0).await?;
-                let written = cache_entries();
-                shell(CacheMode::On).run(MainThreadHandle::new().0).await?;
-                if cache_entries() != written {
-                    anyhow::bail!("the second run did not restore the program image")
-                }
-                Ok(())
-            }
-            _ => shell(CacheMode::Off).run(MainThreadHandle::new().0).await.map(|_| ()),
-        }
+            })
+            .expect("spawn")
+            .join()
+            .expect("join")
     });
     let _ = fs::remove_dir_all(&dir);
     if let Err(e) = r {

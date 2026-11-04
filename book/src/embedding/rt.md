@@ -8,11 +8,14 @@ runtime.
 
 ## Tokio
 
-`graphix-rt` uses tokio internally. It will run the compiler and run loop in
-its own tokio task. You interface with this task via a
+`graphix-rt` uses tokio internally. It runs the compiler and run loop on a
+thread of its own, driven by your tokio runtime (on a current-thread runtime,
+in a task of it). You interface with it via a
 [`GXHandle`](https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html).
 As a result, all operations on Graphix objects are async, and the compiler/run
-loop will run in parallel with your application.
+loop will run in parallel with your application. Dropping the last handle stops
+the runtime, and so does shutting your tokio runtime down, which waits for the
+runtime's thread to end.
 
 ## Setting it up
 

@@ -490,7 +490,7 @@ struct Limits {
 /// Start `subj` under `mode` over its VFS, with a print sink, an exit
 /// request and the fuzzer's fork policy. The program compiles (or
 /// restores) at construction under `timeout`; a construction abandoned
-/// at the deadline finishes on its own task and exits, its handle gone.
+/// at the deadline ends on its own thread, its handle gone.
 async fn start_session(
     subj: &Subject,
     mode: Mode,

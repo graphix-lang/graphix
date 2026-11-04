@@ -37,8 +37,8 @@ Rust workspace:
 - **graphix-compiler**: compiler (`Expr` → node graph), elaboration,
   fusion/JIT; re-exports graphix-types' modules (`graphix_compiler::
   {expr, typ, env}`). Entry point `compile()` in `lib.rs`.
-- **graphix-rt**: the runtime that executes node graphs in a background
-  task, driven through `GXHandle`; embedder extensions via `GXExt`.
+- **graphix-rt**: the runtime that executes node graphs on a thread of
+  its own, driven through `GXHandle`; embedder extensions via `GXExt`.
 - **graphix-package**: package manager (loading, vendoring, standalone
   builds). **graphix-derive**: proc macros (`defpackage!`).
 - **graphix-shell**: REPL and CLI; the binary is `graphix`.
@@ -192,11 +192,18 @@ replacement (`design/program_image.md`).
 
 **Runtime.** `graphix-rt` implements `Rt`: variables, timers, spawned
 tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`)
-that packages use to feed external events in. Event processing is
-batched: all simultaneous events form one `Event` delivered in one
-cycle; several writes to one variable in a cycle queue for the next,
-except a level's (`Rt::set_level`), which replaces its pending write.
-A node's production to a binding is delivered through
+that packages use to feed external events in. On a multi-thread tokio
+runtime a runtime runs on a thread of its own, driven through
+`Handle::block_on`, every update pass inline there, so a pass's
+per-thread caches are one thread's and a wedged pass holds no tokio
+worker; a task of the tokio runtime keeps the thread, and its drop at
+the tokio runtime's shutdown stops the runtime and waits for the thread
+before the timer driver stops (`RuntimeThread`). The last handle's drop
+stops it too. On a current-thread tokio runtime it is a task. Event
+processing is batched: all simultaneous events form one `Event`
+delivered in one cycle; several writes to one variable in a cycle queue
+for the next, except a level's (`Rt::set_level`), which replaces its
+pending write. A node's production to a binding is delivered through
 `ExecCtx::deliver`: into the event; a fire stored as delivered, stamped
 this cycle, a quiet production standing with its old stamp, so a wake
 owes no fire for one, whether or not it changed the value; `Notify`

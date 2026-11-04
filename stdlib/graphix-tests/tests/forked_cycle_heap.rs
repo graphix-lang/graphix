@@ -167,7 +167,7 @@ fn assert_heap_settles(
 
 /// One test, so the worker count is set before any runtime reads it.
 #[test]
-#[ignore = "until a runtime runs every pass on one thread: runtime-thread-spread-01"]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 fn forked_heap_settles() {
     // SAFETY: nothing else runs in this binary yet.
     unsafe { std::env::set_var("GRAPHIX_EVAL_THREADS", EVAL_THREADS) };

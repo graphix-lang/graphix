@@ -1,9 +1,9 @@
 //! `GXHandle::interrupt()` stops a runtime for good, wedged or idle, and
 //! `abort()` shuts one down. These run on a `multi_thread` runtime: the
-//! wedged `do_cycle` blocks one worker while the test fires the control
-//! flag from another. The sync tail loop wedges: fused it is a native loop
-//! in constant memory; node-walked every call is a retained activation,
-//! so its memory grows until the interrupt lands.
+//! wedged `do_cycle` blocks the runtime's own thread while the test fires
+//! the control flag from a worker. The sync tail loop wedges: fused it is
+//! a native loop in constant memory; node-walked every call is a retained
+//! activation, so its memory grows until the interrupt lands.
 
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
