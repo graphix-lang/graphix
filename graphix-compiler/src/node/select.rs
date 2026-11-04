@@ -735,6 +735,20 @@ impl Reach {
     /// typed only where its arm narrows: its part of every member the arm
     /// can match. A copy the settle leaves open, the part an open cell
     /// inside the scrutinee took, is the arm's own cell again.
+    // CR claude for claude: [bug/medium] Over a composite scrutinee holding an open cell,
+    // a name an arm binds at the cell's part is typed by its own cell while another arm's
+    // literal widens that part, so the name is typed narrower than the values that reach
+    // it: `let f = |v| select (v, 0) { ([x, ..], _) => str::len(x), ([1, ..], _) => 5,
+    // (_, _) => 0 }; [f(["ab"]), f([1])]` passes the check with v: Array<[string, i64]>
+    // and x: string, and f([1]) sends 1 to the first arm: the JIT aborts (a misaligned
+    // pointer in arcstr) and the node-walk yields nothing. With `x + 1` and `[true, ..]`
+    // (v: Array<[bool, i64]>) both engines return 2 for [true]. Main 429f61c96 (base
+    // 30702808d) alike: an open cell's parts take the arms' own cells there as here, the
+    // part (settle-commits-name-01) leaves as it was. Eric's D5 (b) ruling
+    // (~/ptmp/cr-discuss.md: an undecided part an arm tests is refused, "annotate it")
+    // likely covers it, since the `[1, ..]` arm tests v's undecided element. probes:
+    // ~/ptmp/cr29/scratch/review-r11/N-r1-1/r13/{t11,t11r,t01,t13}.gx
+    // (settle-open-part-widened-01)
     fn new<R: Rt>(
         env: &Env,
         scrut: &Type,
@@ -1393,9 +1407,31 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // pool_composite_beside_an_undecided_cell_takes_a_catch_all (without it: refused as
 // dead arms). probes: ~/ptmp/cr29/scratch/r13-N/g/{g1,g2,g5,g6,h2}.gx. The composite
 // pins listed above fail in all four modes on main's pool code here too.
+// 2026-11-03 claude: Review r13 (cr48-N2), high: the open-cell gate covered only the
+// composite's own position; the pool then read the member's own positions, where
+// heads takes a primitive union holding a variable by its primitives alone, so ['b,
+// bool] read as bool: review-r11/N-r1-1/r13/{p01,p04,p06,p07,p08,p09}.gx passed the
+// check and found no arm at run time (base 30702808d refuses them, missing cases) and
+// p12, a correct program base runs ([9, 5, 7, 8]), was refused as an unreachable arm.
+// Fixed in heads: the composite head is given only where the member holds no open
+// cell at any position either (Type::has_unbound, a declared variable counted), so
+// such a pattern is unpooled, as main judges it; all seven probes now check and run
+// as on base. Pins failing in all four modes without it:
+// lang::select::pool_takes_no_composite_head_holding_a_variable,
+// _holding_a_variable_beside_variants, _holding_a_variable_in_a_field,
+// _holding_a_variable_in_a_tuple, _holding_an_undeclared_variable,
+// pool_composite_holding_a_variable_takes_its_arm. Left (low): a composite arm can
+// push a group main completed past MAX_POOL_COMBINATIONS
+// (review-r11/N-r1-1/r13/c01.gx: nine bool positions and a composite arm first; base
+// prints [9, 100, 3], the lane refuses it for missing cases; a trailing _ passes it);
+// the overflow appears only once later arms join, so keeping it would mean evicting
+// composite arms from a group at the cap, a mechanism the brief does not state, for a
+// synthetic shape. Also left (low, kept by the brief): the composite head's cubic
+// cost on a tuple beside variants (review-r11/N-r1-2/r13/cost1.txt: 500 arms 3.46G on
+// base, 9.51G here; main's bool pool 8.13G).
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants and, where no member is an open cell, at most
-/// one tuple or struct.
+/// one tuple or struct holding no open cell.
 // CR claude for claude: [bug/high] heads takes a position's members by union_members,
 // which drops an unbound cell, so a declared variable beside null at a composite
 // pattern's position reads as null alone and a `null` arm completes the pool: `'b:
@@ -1457,7 +1493,9 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     for m in members.iter() {
         match m {
             Type::Variant(tag, ts, _) => out.push(Head::Tag(tag.clone(), ts.len())),
-            Type::Tuple(_) | Type::Struct(_) if !open && !composite => {
+            Type::Tuple(_) | Type::Struct(_)
+                if !open && !composite && !m.has_unbound() =>
+            {
                 composite = true;
                 out.push(Head::Composite)
             }

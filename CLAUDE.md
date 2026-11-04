@@ -1236,8 +1236,9 @@ cycle, across workers; the compiler never pins threads.
   inside composite patterns, keyed by path (a partial struct pattern
   against the one member holding its fields, the rest any value; an open
   scrutinee's members are its structural bound's; a union position's one
-  tuple or struct member, where no member is an open cell, is a head beside
-  them, its own positions counted under that head alone), and an arm under
+  tuple or struct member, where neither the union nor that member holds an
+  open cell, is a head beside them, its own positions counted under that
+  head alone), and an arm under
   a type test pools only a member the test holds; a group whose combinations of
   heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
   positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per

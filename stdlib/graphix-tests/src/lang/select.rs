@@ -6315,3 +6315,91 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(9)));
     FuseExpect::Jit
 );
+
+// A union position's tuple or struct member holding an open cell at any of
+// its own positions has no composite head either: the pool would read that
+// position by its other members alone.
+run!(
+    pool_takes_no_composite_head_holding_a_variable,
+    r#"{
+        let u = 'b: [i64, string] |x: [`B([(bool, ['b, bool]), `A]), `C]| select x {
+            `B((_, true)) => 5, `B((_, false)) => 6, `B(`A) => 7, `C => 8
+        };
+        let w: [i64, string] = 5;
+        [u(`B((true, w))), u(`C)]
+    }"#,
+    refused(
+        "missing match cases: no arm covers `B([(bool, [bool, 'b: unbound within [i64, string]]), `A])"
+    );
+    FuseExpect::None
+);
+
+run!(
+    pool_takes_no_composite_head_holding_a_variable_beside_variants,
+    r#"{
+        let u = 'b: [i64, string] |x: [`B([(bool, ['b, `X, `Y]), `A]), `C]| select x {
+            `B((_, `X)) => 5, `B((_, `Y)) => 6, `B(`A) => 7, `C => 8
+        };
+        let w: [i64, string] = 5;
+        [u(`B((true, w))), u(`C)]
+    }"#,
+    refused(
+        "missing match cases: no arm covers `B([(bool, ['b: unbound within [i64, string], `X, `Y]), `A])"
+    );
+    FuseExpect::None
+);
+
+run!(
+    pool_takes_no_composite_head_holding_a_variable_in_a_field,
+    r#"{
+        let u = 'b: [i64, string] |x: [`B([{a: bool, c: ['b, bool]}, `A]), `C]| select x {
+            `B({c: true, ..}) => 5, `B({c: false, ..}) => 6, `B(`A) => 7, `C => 8
+        };
+        let w: [i64, string] = 5;
+        [u(`B({a: true, c: w})), u(`C)]
+    }"#,
+    refused(
+        "missing match cases: no arm covers `B([{ a: bool, c: [bool, 'b: unbound within [i64, string]] }, `A])"
+    );
+    FuseExpect::None
+);
+
+run!(
+    pool_takes_no_composite_head_holding_a_variable_in_a_tuple,
+    r#"{
+        let u = 'b: [i64, string] |x: (bool, [(bool, ['b, null]), `A])| select x {
+            (_, (_, null)) => 5, (_, `A) => 7
+        };
+        let w: [i64, string] = 5;
+        u((true, (true, w)))
+    }"#,
+    refused(
+        "missing match cases: no arm covers (bool, [(bool, [null, 'b: unbound within [i64, string]]), `A])"
+    );
+    FuseExpect::None
+);
+
+run!(
+    pool_takes_no_composite_head_holding_an_undeclared_variable,
+    r#"{
+        let u = |x: [`B([(bool, ['q, bool]), `A]), `C]| select x {
+            `B((_, true)) => 5, `B((_, false)) => 6, `B(`A) => 7, `C => 8
+        };
+        [u(`B((true, 5))), u(`C)]
+    }"#,
+    refused("missing match cases: no arm covers `B([(bool, [bool, 'q: unbound]), `A])");
+    FuseExpect::None
+);
+
+run!(
+    pool_composite_holding_a_variable_takes_its_arm,
+    r#"{
+        let u = 'b: [i64, string] |x: [`B([(bool, ['b, bool]), `A]), `C]| select x {
+            `B((_, true)) => 5, `B((_, false)) => 6, `B((_, y)) => 9, `B(`A) => 7, `C => 8
+        };
+        let w: [i64, string] = 5;
+        [u(`B((true, w))), u(`B((true, true))), u(`B(`A)), u(`C)]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7, 8]);
+    FuseExpect::None
+);
