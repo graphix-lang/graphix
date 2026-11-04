@@ -6499,6 +6499,26 @@ async fn written_after_generalized_is_held_to_it() -> Result<()> {
     Ok(())
 }
 
+/// A variable standing only in a quantifier's bound is held rigid
+/// against a later write as the others are.
+#[tokio::test(flavor = "current_thread")]
+async fn written_after_generalized_holds_a_bound_variable() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let f = "let f = 'b: ['a, null] |x: 'b| -> i64 0";
+    let _f = ctx.rt.compile(ArcStr::from(f)).await?;
+    let w = "f <- |x: [i64, null]| -> i64 x$ + 1";
+    let narrow = ctx.rt.compile(ArcStr::from(w)).await.unwrap_err();
+    let narrow = format!("{narrow:#}");
+    assert!(narrow.contains("what is written to it must be as general"), "{narrow}");
+    let _w = ctx.rt.compile(ArcStr::from("f <- |x| 0")).await?;
+    let _b = ctx.rt.compile(ArcStr::from("let b = (f(1), f(\"s\"))")).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
 /// A later input's `<-` to a function an earlier input calls statically
 /// is refused, naming the call, which keeps the definition it bound; one
 /// no call fixed takes the write.

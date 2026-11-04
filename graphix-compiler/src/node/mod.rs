@@ -1769,7 +1769,9 @@ pub(crate) fn typecheck_in_order<R: Rt>(
 /// before it: a body reaches its siblings only through their
 /// interfaces (an impl a sibling's body adds undeclared is hidden from
 /// it, `Env::hidden_impls`), so no module's check reads another's. The
-/// tasks join in order; the first error in order is the block's.
+/// tasks join in order; the first error in order is the block's. A
+/// sibling's write through a module's `val` is judged once all are
+/// checked (`Module::check_written_vals`).
 pub(crate) fn typecheck0_statements<R: Rt>(
     ctx: &mut CompileCtx<R>,
     nodes: &mut [Node<R>],
@@ -1815,6 +1817,14 @@ pub(crate) fn typecheck0_statements<R: Rt>(
             ctx.env.hidden_impls = prev;
             statement_result(r, n, module)?;
             at += 1;
+        }
+    }
+    drop(slots);
+    if siblings.len() >= 2 {
+        for n in nodes.iter() {
+            if let NodeView::Module(m) = n.view() {
+                statement_result(m.check_written_vals(ctx), n, module)?
+            }
         }
     }
     Ok(())
@@ -3794,12 +3804,12 @@ impl<R: Rt> Connect<R> {
     }
 }
 
-/// The open cells `held`, a generic binding's copy, holds as positions, by
-/// address, but a function type's own quantifiers, which its containment
-/// holds: two of one name are two cells where the copy took each function
-/// type apart.
+/// The open cells `held`, a generic binding's copy, reaches, a bound's
+/// included, by address, but a function type's own quantifiers, which its
+/// containment holds: two of one name are two cells where the copy took
+/// each function type apart.
 fn held_cells(held: &Type, out: &mut AHashMap<usize, TVar>) {
-    crate::typ::settle::position_cells(held, out);
+    held.reached_cells(out);
     let mut own: LPooled<AHashSet<usize>> = LPooled::take();
     held.each_quantifier(&mut |_, tv| {
         own.insert(tv.cell_addr());

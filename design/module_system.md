@@ -257,10 +257,18 @@ variables at its own types; so a val something writes must fit its
 implementation: a copy of the val's type contained in the
 implementation's, the implementation's variables rigid, none taking a
 bound its own bounds do not imply (`CompileCtx::check_val_written`).
-Within one compile every `<-` and `&mut` compiles before the module
-checks, so the module's check asks it of a val that is a `<-` target;
-a later compile's write or `&mut` through a val already joined asks it
-as it marks the target (`CompileCtx::mark_connect_target`). The val as a
+Within one compile a `<-` or `&mut` among a block's statements compiles
+before the module checks, so the module's check asks it of a val that
+is a `<-` target; a later compile's write or `&mut` through a val
+already joined asks it as it marks the target
+(`CompileCtx::mark_connect_target`). One in a lambda body compiles at
+its definition's check, and in a sibling module that check may run
+beside the val's module's own: a write there through a sibling's val
+(`Env::in_sibling`) is not judged as it marks the target, and once a
+block's statements are checked each of its static modules, and the
+static modules in them, asks it again of every val a write reached
+(`Module::check_written_vals`), so the verdict and its message do not
+depend on which check ran first. The val as a
 whole is held, not each value written: `m::f <- |x| x` over `val f:
 fn(x: i64) -> i64` and a generic implementation is refused too.
 
@@ -272,7 +280,8 @@ hold a cell a copy takes, `Type::copied_outside_functions`, as it copies
 a function type), and holds a write through it as any generalized
 binding does: the value written must fit a copy of the val's type with
 its variables rigid, held by cell (two function types the copy took
-apart name their variables alike), and carry none of them out
+apart name their variables alike), a variable that stands only in a
+quantifier's bound included, and carry none of them out
 (`Connect::typecheck0_with`). `CompileCtx::monomorphic`, which makes that
 copy, instantiates a typedef's arguments as one, since they stand for
 what its body holds. A writable reference to a val is refused where the

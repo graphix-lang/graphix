@@ -368,6 +368,20 @@ fn bind_sig_item(
             // _holds_its_writes, written_alias_of_a_function_val_is_one_instance; twin
             // written_alias_of_a_struct_of_functions_val_at_one_type. probes
             // ~/ptmp/cr29/scratch/r14-A/fix2/
+            // 2026-11-04 claude: Review r14 round 3 (A-r3-1 medium, a regression of
+            // a0903a2f5): node::held_cells took position_cells, which skips a function
+            // type's bounds, so a variable that stands only in a quantifier's bound (val f:
+            // fn<'b: ['a, null]>(x: 'b) -> i64) stayed open in the held copy and a write
+            // decided it: m::f <- |x: [i64, null]| -> i64 x$ + 1 passed the check and
+            // m::f("s") failed at the run-time bind (bq5, bq8, bq9, bq10; a plain
+            // generalized REPL let, repl/bq.txt). held_cells now takes every open cell the
+            // copy reaches, bounds included (reached_cells), less the function types' own
+            // quantifiers; all are refused at the check again, as on base. Pins that fail
+            // without it:
+            // lang::interfaces::write_through_a_val_deciding_a_bound_variable_refused,
+            // lang::types::written_after_generalized_holds_a_bound_variable; twin
+            // write_through_a_val_with_a_bound_variable_as_general (bq6). probes
+            // ~/ptmp/cr29/scratch/r14-A/fix3/p/{bq5,bq6,bq8,bq9,bq10}
             let poly = matches!(typ, Type::Fn(_)) || {
                 let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                 typ.reached_cells(&mut cells);
@@ -686,6 +700,23 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // lang::modules::a_load_cannot_write_through_a_val_to_a_generic_body (dyn2b),
 // a_load_cannot_take_a_writable_reference_through_a_val_to_a_generic_body (dyn2, now this
 // rule's message); control write_through_a_val_over_an_implementation_at_its_type.
+// 2026-11-04 claude: Review r14 round 3 (A-r3-1 medium): a narrow write, or a &mut, through
+// a val from a lambda in a sibling module with an interface got a --check verdict by
+// schedule (nw4, nw6, nw7, nw10, sib1 passed or were refused; the build always refused),
+// since the sibling's compile task saw the val's pair joined or not (StaticCallees is
+// shared; check_sig joins in the module's own task). mark_connect_target now skips a pair
+// whose val stands in a sibling module (Env::in_sibling, over the siblings Env::hidden_impls
+// lists), and once a block's statements are checked each of its static modules, the static
+// modules in them included, asks check_val_written of every val a write reached
+// (Module::check_written_vals): the refusal is the val's, at its implementation's let,
+// whichever check ran first. Pins that fail without it (all four modes, three runs each):
+// lang::interfaces::narrow_write_from_a_sibling_lambda_refused_at_the_val (nw6),
+// mut_ref_from_a_sibling_lambda_refused_at_the_val (nw7),
+// narrow_write_from_a_sibling_into_a_submodule_refused_at_the_val (a submodule's val, ns1);
+// control write_from_a_sibling_lambda_over_an_implementation_at_its_type. What stays racy is
+// main's: the pair's join decides by schedule whether the implementation's static calls bind
+// (iface-sibling-join-01). probes
+// ~/ptmp/cr29/scratch/r14-A/fix3/p/{nw4,nw6,nw7,nw10,sib1,ns1,nw6a}
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared` ([`hold_paired`]); `generalized` says its binding is
 /// generic in the cells its own definitions own, and `holder` what holds a
@@ -751,6 +782,18 @@ fn check_val(
         anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}")
     };
     let pairs = declared.sig_matches(env, typ).map_err(refused)?;
+    // CR claude for claude: [bug/low] A val implemented by a select over lambdas is
+    // refused by this level test, though each use copies its lambdas: `val f: fn(x: 'a)
+    // -> 'a` over `let f = select true { true => |x| x, false => |x| x }` is told "the
+    // implementation has one type all uses share: declare the val at one type, or make
+    // the implementation a lambda over variables of its own" (cr49-A since 5d12f43ae),
+    // where main 968fa9bc0 runs m::f(1) and m::f("s") (a=1 b=s). A let of a select is not
+    // generalized (holder-block-select-01), so its cells sit at a level no use copies; a
+    // trait method implemented by the same select is refused alike (traits::implements,
+    // by level; se1t), main runs it too. Over-refusal only; the remedy works and no census
+    // file has the shape. Deciding it goes with holder-block-select-01's ruling on lets of
+    // blocks and selects. probes: ~/ptmp/cr29/scratch/r14-A/fix3/p/{se1,se1t}
+    // (iface-select-impl-01)
     let shared = |tv: &TVar| !tv.level().copied_by(open);
     let is_function = declared.with_deref(|t| matches!(t, Some(Type::Fn(_))));
     hold_paired(env, "val", &pairs, shared, |tv, v| match (generalized, holder(tv)) {
@@ -792,6 +835,19 @@ pub(crate) enum Holder {
 }
 
 impl Holder {
+    // CR claude for claude: [readability/low] A refusal over a holder of a capturing
+    // helper names no binding, or the holder rather than the binding to annotate, since
+    // this follows only a LambdaDef's captures: `val c: {f: fn(x: 'a) -> 'a, g: fn(x:
+    // 'a) -> 'a}` over `let y = never(); let store = |x| { y <- x; y }; let c = {f: |x|
+    // x, g: store}` ends "that of a binding outside its let: declare the val at one type,
+    // or give that binding a type that holds every 'a", naming none (a struct value has
+    // no captures to follow; k12); a trait method `|s, x| st.k(x)` over `let st = {k: |x|
+    // { y <- x; y }}` (tr1), or `{k}` over a named helper k (tr2), is told to "give st a
+    // type that holds every 'a", where the binding a reader would annotate is y. Each is
+    // refused correctly; only the wording is off. Following a holder's field values (a
+    // data literal's lambdas, and through a binding that holds one) to the captured
+    // binding would name y. probes: ~/ptmp/cr29/scratch/r14-A/fix3/p/{k12,tr1,tr2}
+    // (iface-holder-name-01)
     /// What holds `tv` for the implementation's binding `id`: the nearest
     /// binding its lambda captures, or a lambda it captures captures, whose
     /// type reaches the cell and which holds no lambda, the binding an
@@ -1183,6 +1239,18 @@ fn implemented_vals<R: Rt>(
     vals
 }
 
+/// The type of `inner`, a binding of the `let` `bind` implementing a
+/// `val`: a single name's type is the whole pattern's.
+fn implementation_type<'a, R: Rt>(
+    bind: &'a Bind<R>,
+    inner: &'a crate::env::Bind,
+) -> &'a Type {
+    match bind.pattern.single_bind_id() {
+        Some(_) => bind.typ(),
+        None => &inner.typ,
+    }
+}
+
 /// [`CompileCtx::carry_static_mark`] over each implemented `val`, before
 /// the body's check resolves anything through either binding: a `<-` is
 /// marked as it compiles, which may be before [`check_sig`] joins them.
@@ -1255,11 +1323,7 @@ fn check_sig_items<R: Rt>(
             else {
                 bail!("BUG: an implemented val's binding is gone")
             };
-            // a single name's type is the whole pattern's
-            let typ = match bind.pattern.single_bind_id() {
-                Some(_) => bind.typ(),
-                None => &inner.typ,
-            };
+            let typ = implementation_type(bind, inner);
             proxy_bind.typ.unbind_tvars();
             check_val(
                 &ctx.env,
@@ -1961,6 +2025,40 @@ impl<R: Rt> Module<R> {
                 ctx.bind_to_lambda.insert(*outer, fv);
             }
         }
+    }
+
+    /// Refuse a write through a `val` of this static module, or of a
+    /// static module in it, that its implementation would not take
+    /// ([`CompileCtx::check_val_written`]), once the statements of the
+    /// block it stands in are checked: a sibling module's check, which
+    /// may have run beside this one's, writes it by then.
+    pub(crate) fn check_written_vals(&self, ctx: &CompileCtx<R>) -> Result<()> {
+        if let Body::Dynamic { .. } = self.body {
+            return Ok(());
+        }
+        let vals = implemented_vals(&ctx.env, &self.sig_binds, &self.nodes);
+        let written = || -> Result<()> {
+            for (i, id, outer) in
+                vals.iter().filter(|v| ctx.connect_targets.contains(&v.2))
+            {
+                let n = &self.nodes[*i];
+                let bind = n.downcast_ref::<Bind<R>>().expect("an implemented val's let");
+                if let (Some(inner), Some(val)) =
+                    (ctx.env.by_id.get(id), ctx.env.by_id.get(outer))
+                {
+                    let typ = implementation_type(bind, inner);
+                    ctx.check_val_written(&inner.name, &val.typ, typ).at(n.spec())?
+                }
+            }
+            for n in self.nodes.iter() {
+                if let crate::NodeView::Module(m) = n.view() {
+                    wrap!(n, m.check_written_vals(ctx))?
+                }
+            }
+            Ok(())
+        };
+        written()
+            .with_context(|| format_compact!("compiling module {}", self.scope.lexical))
     }
 
     /// Run the children's `typecheck1` under the module's private env,

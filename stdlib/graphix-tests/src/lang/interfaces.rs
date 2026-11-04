@@ -2047,6 +2047,69 @@ run!(
     "/test/m.gx" => "let f = |x| x; let g = |t| f(t ~ \"s\")"
 );
 
+// A write a sibling module's lambda makes through a val is judged at the
+// val's implementation once the siblings are checked, whichever check ran
+// first.
+run!(
+    narrow_write_from_a_sibling_lambda_refused_at_the_val,
+    refused("in: let f = |x| x: val f is written, and what is written lands on its implementation"),
+    "/test.gx" => "mod a; mod w; let result = (a::g(null), w::z)",
+    "/test/a.gxi" => "val f: fn(x: i64) -> i64; val g: fn(t: Any) -> string",
+    "/test/a.gx" => "let f = |x| x; let g = |t| f(t ~ \"s\")",
+    "/test/w.gxi" => "val z: null",
+    "/test/w.gx" => "let set = |v| { super::a::f <- v; null }; let z = set(|x: i64| -> i64 x + 100)"
+);
+
+run!(
+    mut_ref_from_a_sibling_lambda_refused_at_the_val,
+    refused("in: let f = |x| x: val f is written, and what is written lands on its implementation"),
+    "/test.gx" => "mod a; mod w; let result = (a::g(null), w::z)",
+    "/test/a.gxi" => "val f: fn(x: i64) -> i64; val g: fn(t: Any) -> string",
+    "/test/a.gx" => "let f = |x| x; let g = |t| f(t ~ \"s\")",
+    "/test/w.gxi" => "val z: null",
+    "/test/w.gx" => "let set = |v| { let r = &mut super::a::f; *r <- v; null }; let z = set(|x: i64| -> i64 x + 100)"
+);
+
+run!(
+    narrow_write_from_a_sibling_into_a_submodule_refused_at_the_val,
+    refused("a::s: at: line: 1, column: 1 in module /test/a/s, in: let f = |x| x: val f is written"),
+    "/test.gx" => "mod a; mod w; let result = (a::s::g(null), w::z)",
+    "/test/a.gxi" => "mod s",
+    "/test/a.gx" => "null",
+    "/test/a/s.gxi" => "val f: fn(x: i64) -> i64; val g: fn(t: Any) -> string",
+    "/test/a/s.gx" => "let f = |x| x; let g = |t| f(t ~ \"s\")",
+    "/test/w.gxi" => "val z: null",
+    "/test/w.gx" => "let set = |v| { super::a::s::f <- v; null }; let z = set(|x: i64| -> i64 x + 100)"
+);
+
+run!(
+    write_from_a_sibling_lambda_over_an_implementation_at_its_type,
+    is(Value::I64(101)),
+    "/test.gx" => "mod a; mod w; let result = select a::f(w::z ~ 1) { n if n > 2 => n, _ => never() }",
+    "/test/a.gxi" => "val f: fn(x: i64) -> i64",
+    "/test/a.gx" => "let f: fn(x: i64) -> i64 = |x| x",
+    "/test/w.gxi" => "val z: null",
+    "/test/w.gx" => "let set = |v| { super::a::f <- v; null }; let z = set(|x: i64| -> i64 x + 100)"
+; FuseExpect::Jit);
+
+// A variable standing only in a quantifier's bound is the val's too, held
+// rigid against what is written.
+run!(
+    write_through_a_val_deciding_a_bound_variable_refused,
+    refused("made generic by an earlier compile, so what is written to it must be as general, and fn(x: [i64, null]) -> i64 is not"),
+    "/test.gx" => "mod m; m::f <- |x: [i64, null]| -> i64 x$ + 1; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn<'b: ['a, null]>(x: 'b) -> i64",
+    "/test/m.gx" => "let f = 'b: ['a, null] |x: 'b| -> i64 0"
+);
+
+run!(
+    write_through_a_val_with_a_bound_variable_as_general,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; m::f <- |x| 0; let result = m::f(1) + m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'b: ['a, null]>(x: 'b) -> i64",
+    "/test/m.gx" => "let f = 'b: ['a, null] |x: 'b| -> i64 0"
+; FuseExpect::None);
+
 // A writable reference to a generic val, which uses have taken at their
 // own types, is refused.
 run!(

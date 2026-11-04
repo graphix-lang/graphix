@@ -1864,6 +1864,21 @@ impl<R: Rt> CompileCtx<R> {
     /// The bindings `id` is one variable with ([`StaticCallees::join`]),
     /// each a target with it.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
+        // CR claude for claude: [bug/medium] A sibling module's compile task sees another's
+        // interface pair joined or not by schedule (StaticCallees is shared by every task;
+        // check_sig joins in the module's own task), so a write from a sibling's lambda
+        // through a val marks the implementing binding a `<-` target only where the join
+        // came first, and the implementation's static calls bind or not by schedule: in
+        // nw6t (a: `val f: fn(x: i64) -> i64` over `let f: fn(x: i64) -> i64 = |x| x`, `let g
+        // = |t| f(t ~ 1)`; w: `let set = |v| { super::a::f <- v; null }; let z = set(t ~
+        // |x: i64| -> i64 x + 100)`) base 968fa9bc0 in 20 runs printed a::g's last value 101
+        // (9), 1 (5: the write never reaches g's static call), or refused the build (6: "f
+        // cannot be written: an earlier compile calls it as a fixed function"); cr49-A the
+        // same (6/8/6). The narrow-write judgment skips a sibling's pair for this reason
+        // (Module::check_written_vals judges it after). D18 (a)'s one variable by
+        // construction (iface-pair-one-var-01) should take it; else the pair's join must be
+        // seen by a task only as its fork saw it. probe: ~/ptmp/cr29/scratch/r14-A/fix3/p/nw6t
+        // (iface-sibling-join-01)
         let ids = self.static_callees.variable(id);
         if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
             let name =
@@ -1877,8 +1892,11 @@ impl<R: Rt> CompileCtx<R> {
         let mut pairs: LPooled<Vec<(BindId, BindId)>> = LPooled::take();
         self.static_callees.pairs_of(std::iter::once(id), &mut pairs);
         for (inner, outer) in pairs.iter().filter(|(_, outer)| *outer == id) {
+            // a sibling module's val is judged once the siblings' checks
+            // end (`Module::check_written_vals`)
             if let (Some(i), Some(o)) =
                 (self.env.by_id.get(inner), self.env.by_id.get(outer))
+                && !self.env.in_sibling(&o.scope)
             {
                 self.check_val_written(&o.name, &o.typ, &i.typ)?
             }
@@ -2119,6 +2137,29 @@ impl<R: Rt> CompileCtx<R> {
                     }
                     // a typedef's arguments stand for what its body holds:
                     // instantiated as one, as the functions they name would be
+                    // CR claude for claude: [bug/low] A typedef application is copied as
+                    // one here, where its expansion would be copied per function type, so a
+                    // val typed by a typedef whose body names its parameter in two function
+                    // types is narrower in check_val_written (and the Connect hold) than the
+                    // same type written out: `type S<'a> = {f: fn(x: 'a) -> 'a, g: fn(x:
+                    // 'a) -> 'a}; val c: S<'a>` over `let c = {f: |x| x, g: |x| x}`, written
+                    // `m::c <- t ~ {f: |x| x, g: |x| x}`, is refused "val c is written, and
+                    // what is written lands on its implementation, of type { f: .., g: .. },
+                    // which the val's S<'a> does not fit" (sw8; sw6 over `{f: F<'a>, g:
+                    // F<'a>}` alike), where `val c: {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a}`
+                    // (sw1) and `{f: F<'a>, g: F<'a>}` (sw7) run "1 2", as main 968fa9bc0
+                    // runs all four (cr49-A since 5d12f43ae). It contradicts the book's
+                    // interface page ("each of its function types on its own") and
+                    // CLAUDE.md ("each function type's apart whatever their names").
+                    // Over-refusal only: `let c: S<'a> = ..` passes (sw6b). Copying the
+                    // expansion needs a guard for a recursive typedef, whose expansion holds
+                    // its own application, and prints the Connect hold's copy expanded
+                    // (lang::interfaces::write_through_a_typedef_val_refused names F<'a>),
+                    // unless only an application whose body names a parameter in two
+                    // function types expands; a read (Type::scheme_read) copies through one
+                    // cell map, written out or not, and is not concerned. probes:
+                    // ~/ptmp/cr29/scratch/r14-A/fix3/p/sw-{sw1,sw6,sw6b,sw7,sw8}
+                    // (iface-typedef-copy-01)
                     Type::Ref(_) if t.copied_outside_functions(m.open) => {
                         m.fresh = true;
                         Some(t.instantiate_with(&mut LPooled::take(), m.open))

@@ -875,9 +875,10 @@ node graph IS the IR — there is no parallel typed IR
   value restriction, `CompileCtx::monomorphic`; a name aliasing a
   generalized binding, `let g = f`, holds an instance of its own), except
   one an earlier compile generalized (a REPL input): it stays generic, a
-  later write is held to a copy of its type with the variables rigid, each
-  function type's apart whatever their names, and a later `&mut` of it,
-  or of a place whose type holds one of them, is refused
+  later write is held to a copy of its type with the variables rigid, a
+  bound's included, each function type's apart whatever their names, and
+  a later `&mut` of it, or of a place whose type holds one of them, is
+  refused
   (`Env::poly_binds`); a `let` nothing writes whose value
   holds a lambda or a generalized binding's value in a data literal (a
   struct, its update, a tuple, a variant, an array, a list, a map:
@@ -1430,7 +1431,9 @@ cycle, across workers; the compiler never pins threads.
   of its own; a run of them checks in parallel, after the statements
   before it. Siblings reach each other only through interfaces: an impl
   a body adds undeclared is hidden from its siblings' checks
-  (`Env::hidden_impls`) and seen after them, and a module's check that
+  (`Env::hidden_impls`) and seen after them, a write through a sibling's
+  `val` is judged against its implementation once all are checked
+  (`Module::check_written_vals`), and a module's check that
   would write a cell created outside the module is refused and the
   write not made (`tvar::decided`; annotate the binding it would
   decide; `design/parallel_compile.md`); a raise of nothing joins no

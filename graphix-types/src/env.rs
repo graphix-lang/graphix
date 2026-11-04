@@ -1502,8 +1502,13 @@ impl Env {
     /// An impl a sibling module's body added undeclared, hidden from the
     /// other siblings' checks.
     pub(crate) fn impl_hidden(&self, im: &ImplDef) -> bool {
-        !im.declared
-            && self.hidden_impls.iter().any(|m| scope_is_under(&im.scope.0, &m.0))
+        !im.declared && self.in_sibling(&im.scope)
+    }
+
+    /// Whether `scope` is in a sibling module of the one this task checks
+    /// ([`Self::hidden_impls`]), whose check this one does not read.
+    pub fn in_sibling(&self, scope: &ModPath) -> bool {
+        self.hidden_impls.iter().any(|m| scope_is_under(&scope.0, &m.0))
     }
 
     /// The registered impl whose head names the same types as
