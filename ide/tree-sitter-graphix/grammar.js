@@ -970,7 +970,7 @@ module.exports = grammar({
       $.array_slice,
       $.map_ref,
       // Apply is a postfix-chain base too, so `f(x).field`, `f(x)[i]`,
-      // `f(x){k}`, and `f(x)(y)` chain like the combine parser folds them,
+      // `f(x){k}`, and `f(x)(y)` chain like the compiler's parser folds them,
       // as do the other forms its primary holds.
       $.apply,
       $.select,
@@ -1213,7 +1213,7 @@ module.exports = grammar({
       ']',
     ),
 
-    // The `{` is adjacent to its base, as the combine parser reads it: a
+    // The `{` is adjacent to its base, as the compiler's parser reads it: a
     // spaced `{` opens what follows (`select |x| 'a { arms }`).
     map_ref: $ => seq(
       $._primary_expression,

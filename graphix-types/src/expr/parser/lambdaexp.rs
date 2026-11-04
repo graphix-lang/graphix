@@ -3,7 +3,7 @@ use super::{
     arithexp::mutability,
     choice, comma_items, commented, decorate, expr, fname,
     input::{Input, R},
-    leading_comments, leading_decorations, name, not_prefix,
+    keyword, leading_comments, leading_decorations, name,
     patternexp::structure_pattern,
     sep_by_tok,
     typexp::flatten_bounds,
@@ -82,10 +82,7 @@ fn lambda_arg(i: &mut Input) -> R<Arg> {
         },
         |i| {
             let pos = i.pos();
-            i.attempt(|i| {
-                i.string("self")?;
-                not_prefix(i)
-            })?;
+            keyword(i, "self")?;
             Ok((false, StructurePattern::Bind(Name::written(literal!("self"), pos))))
         },
         |i| structure_pattern(i).map(|p| (false, p))

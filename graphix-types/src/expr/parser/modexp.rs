@@ -17,7 +17,6 @@ use netidx_core::path::Path;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-/// `word` and the whitespace char after it.
 /// One interface item, with the `//` lines and then the `///` doc lines
 /// above it.
 pub(super) fn sig_item(i: &mut Input) -> R<SigItem> {

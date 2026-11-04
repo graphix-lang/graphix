@@ -558,6 +558,24 @@ impl<'a> Input<'a> {
         }
     }
 
+    // CR claude for claude: [perf/medium] The arms of a select read again
+    // what the map-access probe in postfix_op (`select x{` read as `x{ k }`)
+    // already parsed, and this memo covers only attributes, so another way
+    // back into expressions is still exponential: a string pattern parses
+    // its whole `"[..]"` or `"""\[..]"""` splice through `interpolated`
+    // and refuses only after. `select x{ "[` nested N deep: 13.5G
+    // instructions at N=16, 54G at N=18 (398 bytes), doubling a level; the
+    // same text as runtime data through `str::parse` (parse_literal_value)
+    // costs 15.4G at N=16, so a short untrusted string stalls the evaluator,
+    // the formatter and the LSP. Main (combine) has it too, about 7x slower.
+    // Fix the cause: remember what the probe parsed, by offset and depth,
+    // so the arms replay it (it would replace this attribute-only memo and
+    // its `AttrKey`, whose `Option<usize>` repeats `Remembered.depth.limited`);
+    // or narrowly, refuse a string pattern at its first unescaped `[` (a
+    // template's `\[`) before parsing the splice. Pin under a knot budget at
+    // N=18. Found by review r3 of lane J. probes:
+    // ~/ptmp/cr29/scratch/review-rd/r3-2/strpat/{sp_14,sp_16,sps_100,tp_14,rt_16}.gx,
+    // RESULTS.txt (probe-reread-01)
     /// `f`, the rest of an attribute, parsed once where it starts. Its
     /// arguments are whole expressions that a lookahead may read before
     /// the rule that keeps them, so nested attributes would be read again
