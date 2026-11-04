@@ -1323,6 +1323,13 @@ impl<R: Rt> CallSite<R> {
     // Found by review r13 of lane R. probes:
     // ~/ptmp/cr29/scratch/review-r11/R-r3-1/t/{a6_union_any_rank2,a8_union_any_rank2_positional,a7_mono_any_rank2}.gx,
     // R-r3-2/y/{y1c_union_written_bound,y1d_union_any_bound}.gx (union-self-rank2-01)
+    // 2026-11-04 claude: Lane F round 14 traced the cause, unfixed: lower_trait_union passes each operand through
+    // bind::lower_over_operands, which binds it to a synthesized let (#k) that is never checked as a let, so a
+    // lambda-literal argument is not generalized as a written let k = |x| x is; each arm's Ref then hands the rank-2
+    // formal the definition's own cells, the first arm's containment binds them, and check_general on the next arm
+    // finds the binding reaching 'a. The hand-written select checks and runs (~/ptmp/cr29/scratch/r14-F/u/u1.gx). Fix:
+    // give an operand binding the read-copy treatment a checked let of a lambda gets, or pass a lambda-literal operand
+    // to each arm as its own literal.
     fn lower_trait_union(
         &mut self,
         ctx: &mut CompileCtx<R>,

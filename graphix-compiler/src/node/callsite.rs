@@ -1099,6 +1099,14 @@ fn typecheck_arg<R: Rt>(
 // book's examples or netidx-admin would need a new annotation): refuse a written type
 // (typedefs expanded) whose own variable stands both inside a quantified function type
 // and outside it, "name a type for 'c".
+// 2026-11-04 claude: D15 (b) is built on the parked branch cr49-F
+// (callsite::check_written_apart: a let annotation, written formals and return type,
+// never<T>, an abstract typedef's representation and an interface val; a variable the
+// enclosing definition declares is not refused) and held both final reviews with no
+// D15 finding; one shape stays (rank2-written-two-fns-01 on the branch: a variable
+// under two quantified function types and nowhere else, no wrong value). It is
+// interleaved with D3 (a)'s commits, so it waits to be extracted onto main alone,
+// after lane A's interface-val work lands.
 pub(crate) fn contain_generally<R: Rt>(
     ctx: &CompileCtx<R>,
     holder: &Type,
@@ -1131,7 +1139,7 @@ fn held_generally<R: Rt>(
     }
 }
 
-// CR claude for claude: [bug/high] A quantified fn type in a function type's result
+// CR claude for eric: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing
 // checks that: check_general judges the bindings outside the outer value, so a let of
@@ -1185,6 +1193,67 @@ fn held_generally<R: Rt>(
 // not cover val_bad). A safe and an unsafe let-bound maker infer the same type
 // (rd_types), which is why (a) asks for the return type at the definition rather than
 // reading it.
+// 2026-11-04 claude: D3 (a) built in round 14 on branch cr49-F (b83037266, not landed)
+// and parked after failing review twice, each time on new routes. Round 1 found a maker
+// quantified at the outer function, a HOF-fed callback, an abstract representation
+// through a typedef and a written val implementation; round 2 found places under
+// parameters, container literal arguments and typedef'd callbacks; the final review
+// found an annotated let rec (the brief's own crash program checks: the let's
+// compile-time contains runs before the judge), a data-literal argument where the maker
+// stands under parameters, and invariant positions (&mut, an abstract parameter). The
+// build also added a cost about cubic in nested quantified function types (140 G
+// against base 28.5 G at 200 levels; exponential on a typedef DAG) and refused safe
+// data-literal arguments main runs (a lambda in the literal lost the formal's parameter
+// types). Routes no holder sees (rank2-maker-no-holder-01 on the branch: an open
+// abstract parameter or &mut of a literal decided by ==, a generic call or a write)
+// need a rule at the source. Plain rank-2 values leak too, with no maker:
+// rank2-under-params-01, rank2-invariant-view-01, rank2-recursive-holder-01,
+// rank2-param-subsumed-01. The corpus outside test fixtures and repro files writes no
+// nested rank-2 type. Back to eric as a D3 follow-up in the next discuss round. Probes:
+// ~/ptmp/cr29/scratch/r14-F/review/, ~/ptmp/cr29/scratch/review-r14/F-r3-{1,2}/.
+// CR claude for eric: [bug/high] A plain rank-2 quantifier (at a function type's top,
+// not in a result) under an even number of parameters is never judged: `let drive:
+// fn(cb: fn(g: fn<'a: Any>(x: 'a) -> 'a) -> string) -> string = drive0` over `drive0
+// = 'q: Any |cb: fn(g: fn(x: 'q) -> 'q) -> string| { let y = never(); cb(|x| { y <-
+// x; y }) }` passes --check, and `drive(|g| ..g("s")..g(1)..)` shares one y:
+// --no-fusion prints `n = s, s = s` and fusion kills the runtime. rank2_parts holds
+// rigid only the quantifiers on a path of results, so check_general never asks the
+// value to be generic at a place under its parameters. Main 968fa9bc0 and 1b74df102.
+// Found by review r14 of lane F (D3 (a), parked on cr49-F). probe:
+// ~/ptmp/cr29/scratch/r14-F/review/r3/n42b_pp_plain_inner_state.gx
+// (rank2-under-params-01)
+// CR claude for eric: [bug/high] An invariant position lets a generic value be viewed,
+// then written, at a monomorphic type: `let g: fn<'a: Any>(x: 'a) -> 'a = |x| x; let
+// r: &mut fn(x: 'q) -> 'q = &mut g; *r <- { let y = never(); |x| { y <- x; y } }`
+// passes --check and g then shares one y (`n = s, s = s` under --no-fusion; fusion
+// kills the runtime). `&mut T`'s reverse containment runs as a plain contains, not a
+// generality check. The same through a formal (`|rr: &mut fn(..)| *rr <- bad`), a
+// struct field, an array, and an abstract type's parameter that its representation
+// puts under a parameter (`type A<'t> = Abstract<fn(f: 't) -> string>`, an `A<Mk>`
+// held as `A<fn(z: i64) -> fn(x: 'q) -> 'q>`). Main the same. Found by review r14 of
+// lane F (final). probes: ~/ptmp/cr29/scratch/review-r14/F-r3-1/p/
+// {t15c_mutref_plain_rank2,t15b_mutref_let,t15_mutref_view,t15e_mutref_struct_field,
+// t15h_mutref_array,t23_abstract_param_handed,t23b_abstract_param_let}.gx
+// (rank2-invariant-view-01)
+// CR claude for eric: [bug/high] A recursive typedef holding a quantified function type
+// is judged only at its first unfolding: `type R = [`End, `More(fn<'a: Any>(x: 'a) ->
+// 'a, R)]` holding `|x| { y <- x; y }` at depth two passes --check and the read
+// function shares one y (`n = s, s = s`); makers leak the same way one level down.
+// rank2_parts expands a typedef in progress once, so only the first unfolding's
+// quantifiers are held rigid and asked of the value. Main the same. Found by review r14
+// of lane F. probes: ~/ptmp/cr29/scratch/r14-F/review/r3/rec/n89_rec_plain_rank2.gx,
+// n80..n88; ~/ptmp/cr29/scratch/review-r14/F-r3-2/p/r03_rec_lit_bad_d3.gx
+// (rank2-recursive-holder-01)
+// CR claude for eric: [bug/medium] A function whose parameter is a plain rank-2 formal
+// is handed whatever its holder's parameter admits when a function type whose
+// parameter is not rank-2 holds it: `let f = |g: fn<'a: Any>(x: 'a) -> 'a| ..; let k:
+// fn(g: fn(x: 'q) -> 'q) -> string = f; k(|x| { y <- x; y })` passes --check and the
+// build refuses ('an instance at fn(g: fn(x: _) -> _) -> string of a definition typed
+// fn(g: fn<'a: Any>...)'), as does `array::map([|x| { y <- x; y }], |g: fn<'a: Any>(x:
+// 'a) -> 'a| ..)`: the check accepts what elaboration refuses, no wrong value. Main the
+// same. Found by review r14 of lane F. probes:
+// ~/ptmp/cr29/scratch/r14-F/review/r1/{d03_subsume_plain,c05_hof_plain_rank2}.gx
+// (rank2-param-subsumed-01)
 /// A value checked against quantifiers held rigid holds for every choice
 /// of them only if nothing outside it that lives on reaches one: a binding
 /// it reads or writes from outside (its lambdas' captures included), or the
