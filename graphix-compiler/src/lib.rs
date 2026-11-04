@@ -1965,6 +1965,13 @@ impl<R: Rt> CompileCtx<R> {
     // go, iface-reload-mark-01 with them; on a reload keep both: a replaced body's pending
     // writes drop with its binding, a root write queued across the reload still lands; the
     // shapes cr37-W broke (d6, lv) are its tests.
+    // 2026-11-04 claude: Since cr49-A's check_val_written (iface-narrow-write-01) the mark
+    // also holds a reloaded body to the val: a dynamic module whose first body writes its
+    // own let (let f = |x: i64| -> i64 x; f <- ..) leaves the outer a <- target, so a
+    // reload whose body is generic under a narrower val (val f: fn(x: i64) -> i64 over let
+    // f = |x| x) is refused as written through the val, where nothing writes it any more;
+    // main reloads it. probe ~/ptmp/cr29/scratch/r14-A/q4. D18 (a)'s one-variable rebuild,
+    // keeping a replaced body's writes with its binding, should take the mark with it.
     /// Join `inner`, a body's binding implementing an interface `val`, with
     /// `outer`, the `val`'s ([`StaticCallees::join`]). From here on they are
     /// one `<-` target where either is, so a woken `let` keeps what was
