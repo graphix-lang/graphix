@@ -1,6 +1,5 @@
 use super::{
-    ONE_TUPLE, bridge, choice, duration_unit_note, expr, finite, fldname, fname_noting,
-    ident,
+    ONE_TUPLE, choice, duration_unit_note, expr, finite, fldname, fname_noting, ident,
     input::{Input, R},
     int_range_note,
     interpolateexp::interpolated,
@@ -12,10 +11,7 @@ use crate::expr::{
     Expr, ExprKind, Name, Pattern, StructurePattern, WrittenAt, WrittenForm,
 };
 use arcstr::ArcStr;
-use netidx_value::{
-    Value,
-    parser::{VAL_ESC, VAL_MUST_ESC, value as parse_value},
-};
+use netidx_value::{Value, parser::rd};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -211,7 +207,7 @@ fn literal_pattern(i: &mut Input) -> R<StructurePattern> {
         |i| {
             let start = i.mark();
             let (v, form) = choice!(i, string_pattern, |i| {
-                i.attempt(|i| bridge!(i, parse_value(&VAL_MUST_ESC, &VAL_ESC)))
+                i.attempt(|i| i.value_part(rd::value))
                     .map(|v| (v, WrittenForm::default()))
             })?;
             not_prefix(i)?;

@@ -1,10 +1,9 @@
 use super::state::{Depth, Info, Labels, Mode, State};
 use crate::{expr::Attr, stack::ensure_sufficient};
 use ahash::AHashMap;
-use combine::{
-    ParseResult, easy, error::StringStreamError, stream::position::SourcePosition,
-};
-use compact_str::{CompactString, format_compact};
+use combine::stream::position::SourcePosition;
+use compact_str::CompactString;
+use netidx_value::parser::rd::{self, Expected, Item};
 use poolshark::local::LPooled;
 
 /// A point in the text: its byte offset, its position as an editor counts
@@ -116,21 +115,6 @@ macro_rules! choice {
     }};
 }
 pub(super) use choice;
-
-/// Run one of netidx-value's combine parsers on the rest of the text: over
-/// a plain `&str` in a quick pass, over `easy` where the failure is
-/// reported.
-macro_rules! bridge {
-    ($inp:expr, $p:expr) => {
-        $inp.bridge(
-            |s| combine::Parser::parse_stream(&mut $p, s),
-            |s| combine::Parser::parse_stream(&mut $p, s),
-        )
-    };
-}
-pub(super) use bridge;
-
-type EasyResult<'a, T> = ParseResult<T, easy::ParseError<&'a str>>;
 
 impl<'a> Input<'a> {
     pub(super) fn new(text: &'a str, mode: Mode, printed_data: bool) -> Self {
@@ -623,75 +607,39 @@ impl<'a> Input<'a> {
         r
     }
 
-    /// Run a parser of netidx-value on the rest of the text.
-    pub(super) fn bridge<T>(
+    /// Run one of netidx-value's parsers on the rest of the text: what it
+    /// read, or where it stopped and what it expected there. A failure past
+    /// the start consumed the text before it.
+    pub(super) fn value_part<T>(
         &mut self,
-        quick: impl FnOnce(&mut &'a str) -> ParseResult<T, StringStreamError>,
-        explain: impl FnOnce(&mut easy::Stream<&'a str>) -> EasyResult<'a, T>,
+        p: impl FnOnce(&'a str) -> Result<(T, usize), rd::Failure>,
     ) -> R<T> {
-        let rest = self.rest();
-        if self.g.mode == Mode::Quick {
-            let mut s = rest;
-            let r = quick(&mut s);
-            let used = rest.len() - s.len();
-            return match r {
-                ParseResult::CommitOk(v) | ParseResult::PeekOk(v) => {
-                    self.advance(used);
-                    Ok(v)
-                }
-                ParseResult::PeekErr(_) => Err(self.fail()),
-                ParseResult::CommitErr(_) => {
-                    self.advance(used);
-                    Err(self.fail())
-                }
-            };
-        }
-        let mut s = easy::Stream(rest);
-        let r = explain(&mut s);
-        let used = rest.len() - s.0.len();
-        let (errors, commit) = match r {
-            ParseResult::CommitOk(v) | ParseResult::PeekOk(v) => {
+        let f = match p(self.rest()) {
+            Ok((v, used)) => {
                 self.advance(used);
                 return Ok(v);
             }
-            ParseResult::PeekErr(e) => (e.error, false),
-            ParseResult::CommitErr(e) => (e, true),
+            Err(f) => f,
         };
-        let at = self.mark_at(self.at.off + errors.position.translate_position(rest));
-        if self.g.labels_at(at.off) {
-            for e in errors.errors {
-                let l = &mut self.g.labels;
-                match e {
-                    easy::Error::Unexpected(easy::Info::Token(c)) => {
-                        l.token = Some(Some(c))
-                    }
-                    easy::Error::Unexpected(easy::Info::Static("end of input")) => {
-                        l.token = Some(None)
-                    }
-                    easy::Error::Unexpected(i) => l.unexpect(info(i)),
-                    easy::Error::Expected(easy::Info::Static(
-                        "whitespace" | "whitespaces",
-                    )) => (),
-                    easy::Error::Expected(i) => l.expect(info(i)),
-                    easy::Error::Message(i) => l.message(info(i)),
-                    easy::Error::Other(e) => {
-                        l.message(Info::Text(format_compact!("{e}")))
-                    }
-                }
+        let at = self.mark_at(self.at.off + f.offset);
+        let expect = |l: &mut Labels, i: Item| match i {
+            Item::Char(c) => l.expect(Info::Token(c)),
+            Item::Text(s) => l.expect(Info::text(s)),
+        };
+        match f.expected {
+            Expected::OneOf(items) => {
+                self.labels(at.off, true, |l| items.iter().for_each(|i| expect(l, *i)))
+            }
+            Expected::Escape(must_esc, esc) => self.labels(at.off, true, |l| {
+                rd::escapes(must_esc, esc).for_each(|c| expect(l, Item::Char(c)))
+            }),
+            Expected::Refused(why) => {
+                self.labels(at.off, false, |l| l.message(Info::text(why)))
             }
         }
-        if commit {
-            self.advance(used)
+        if f.offset > 0 {
+            self.at = at
         }
         Err(self.fail_at(at))
-    }
-}
-
-fn info(i: easy::Info<char, &str>) -> Info {
-    match i {
-        easy::Info::Token(c) => Info::Token(c),
-        easy::Info::Range(r) => Info::Text(format_compact!("`{r}`")),
-        easy::Info::Owned(s) => Info::Text(s.into()),
-        easy::Info::Static(s) => Info::text(s),
     }
 }

@@ -111,8 +111,8 @@ off-topic failure is discussed with Eric before it is fixed.
 
 **Pipeline.** Parse (`graphix-types/src/expr/parser/`: recursive descent
 by hand over one cursor, `input::Input`; a rule that fails after
-consuming input commits unless `attempt`ed, and netidx-value's literal
-parsers run through `Input::bridge`) → `Expr` AST
+consuming input commits unless `attempt`ed, and netidx-value's literals
+are read by its `parser::rd` through `Input::value_part`) → `Expr` AST
 with positions → compile (`node/compiler.rs`) → `Node<R>` graph →
 typecheck (two passes, `typecheck0`/`typecheck1` on every node) → fuse
 (`fusion/`, when enabled). `typecheck0` also builds `ctx.bind_to_lambda`;

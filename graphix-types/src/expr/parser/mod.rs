@@ -16,7 +16,7 @@ use escaping::Escape;
 use netidx_core::path::Path;
 use netidx_value::{
     Value,
-    parser::{VAL_ESC, VAL_MUST_ESC, duration_of, value as parse_value},
+    parser::{duration_of, rd},
 };
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -39,7 +39,7 @@ mod test;
 
 pub use state::{DEFAULT_MAX_NESTING, ParseFailure, max_nesting, set_max_nesting};
 
-use input::{Input, Mark, R, bridge, choice};
+use input::{Input, Mark, R, choice};
 use state::Mode;
 
 /// A list item's parser.
@@ -770,8 +770,7 @@ fn printed_scalar(i: &mut Input) -> R<Value> {
         i,
         |i| i.attempt(printed_datetime),
         |i| i.attempt(|i| {
-            bridge!(i, netidx_value::parser::duration())
-                .map(|d| Value::Duration(Arc::new(d)))
+            i.value_part(rd::duration).map(|d| Value::Duration(Arc::new(d)))
         }),
         |i| i.attempt(printed_nonfinite),
         printed_large_integer
@@ -801,7 +800,7 @@ fn literal(i: &mut Input) -> R<Expr> {
             let start = i.mark();
             let v = i.knot(|i| {
                 i.not_followed_by(|i| i.token('"'))?;
-                let v = bridge!(i, parse_value(&VAL_MUST_ESC, &VAL_ESC))?;
+                let v = i.value_part(rd::value)?;
                 not_prefix(i)?;
                 Ok(v)
             })?;

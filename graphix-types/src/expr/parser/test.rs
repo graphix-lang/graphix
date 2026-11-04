@@ -3018,7 +3018,7 @@ fn source_error_does_not_expect_printed_data() {
         message,
         r####"at line: 1, column: 9 in module /test: Parse error at line: 1, column: 9
 Unexpected `;`
-Expected #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, u8, u16, u32, i8, i16, i32, v32, z32, f32, f64, `0`, true, false, null, decimal, datetime, u64, i64, v64, z64, bytes, abstract, error, duration or duration:
+Expected #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, a value or duration:
 
     let x = ;
             ^"####

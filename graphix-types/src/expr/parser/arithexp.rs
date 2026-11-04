@@ -14,7 +14,7 @@ use crate::{
 };
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
-use netidx_value::parser::int;
+use netidx_value::parser::rd;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -63,7 +63,7 @@ fn postfix_op(i: &mut Input, key: bool) -> R<Post> {
             i.sptoken('.')?;
             choice!(
                 i,
-                |i| i.attempt(|i| super::bridge!(i, int::<_, usize>())).map(Post::Index),
+                |i| i.attempt(|i| i.value_part(rd::int::<usize>)).map(Post::Index),
                 |i| {
                     i.spaces();
                     let pos = i.pos();
