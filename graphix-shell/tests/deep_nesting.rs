@@ -287,7 +287,7 @@ fn program(shape: &str, d: usize) -> String {
         }
         // A chain of bounds as long as the program, every cell a position
         // of one signature: the call's settle orders them all.
-        // CR claude for claude: [bug/medium] chainbounds at CHAIN_DEPTH never
+        // XCR claude for claude: [bug/medium] chainbounds at CHAIN_DEPTH never
         // finishes its check, so deep_nesting_does_not_overflow (slow-tests)
         // hangs. `graphix --check --no-cache` of this program costs, net of
         // the stdlib's 1.36 G instructions, 0.5 / 4.0 / 31.4 / 162.6 G at
@@ -300,6 +300,25 @@ fn program(shape: &str, d: usize) -> String {
         // Z, 11-03). probe:
         // ~/ptmp/cr29/scratch/r11-Z/cb{250,500,1000,2000}.gx under `perf stat
         // -e instructions:u` (chainbounds-cubic-01)
+        // 2026-11-04 claude: Linear now. The cubic part was
+        // check_bounds_acyclic (48469f409): a breadth-first walk from each
+        // quantifier, each step scanning every edge; it is Tarjan's components
+        // over an index graph, then one walk from the first variable on a cycle
+        // for the message (pin:
+        // typ::fntyp::tests::a_bound_cycle_is_the_first_a_walk_from_each_variable_finds,
+        // against that walk on 4000 random graphs). Four walks were quadratic
+        // in the chain: the witness's cycle check (now tvar::would_cycle_open:
+        // a type that reaches no open cell is walked once, its bound cells
+        // marked ground), FnType::collect_tvars normalizing each conjunct apart
+        // (one NormCx now; 4e9e14cf0), FnType::each_quantifier scanning the
+        // quantifiers per cell (182a6297a; a lookup now, in declaration order)
+        // and Lambda::compile's ctor-quantifier scan (reads the bound's own
+        // conjunct first). --check net of the stdlib: 0.77 / 1.60 / 3.15 G
+        // instructions (callgrind) at 4000 / 8000 / 16000 links. Pins:
+        // deep_nesting a_chain_of_bounds_checks_in_linear_time (30000 links
+        // under 14 G, 7.3 G now; each of the five fixes reverted alone retires
+        // 14 G and fails) and the slow deep_nesting_does_not_overflow at
+        // CHAIN_DEPTH, which passes.
         "chainbounds" => {
             let bounds = (0..d)
                 .map(|i| format!("'a{i}: Array<'a{}>", i + 1))
@@ -655,6 +674,16 @@ fn nested_trys_check_in_time() {
 #[cfg(target_os = "linux")]
 fn flat_type_chain_checks_in_linear_time() {
     checks_within(&program("flattype", 8 * FLAT_DEPTH), 30 * BILLION)
+}
+
+/// A chain of bounds three times `CHAIN_DEPTH` long checks in time linear in
+/// its length: its acyclicity, the quantifiers of its signature, the
+/// call's settle of each cell and the site's bounds each walk the chain
+/// once, not once a cell.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_checks_in_linear_time() {
+    checks_within(&program("chainbounds", 3 * CHAIN_DEPTH), 14 * BILLION)
 }
 
 /// A let chain that wraps the last value in any constructor, or in an

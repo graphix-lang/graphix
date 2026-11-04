@@ -2338,12 +2338,14 @@ impl Lambda {
         // a quantifier bounded by constructor traits alone stands for a
         // constructor applied: each occurrence is `'c<'c#elem>`
         let mut ctors: LPooled<Vec<(ArcStr, Type)>> = LPooled::take();
-        for (tv, _) in l.constraints.iter() {
+        let ctor_bound = |tc: &Type| {
+            Type::is_ctor_trait_bound(&ctx.env, &tc.scope_refs(&scope.lexical))
+        };
+        for (tv, tc) in l.constraints.iter() {
             let bounds = || l.constraints.iter().filter(|(t, _)| t.name == tv.name);
-            if ctors.iter().any(|(n, _)| *n == tv.name)
-                || !bounds().all(|(_, tc)| {
-                    Type::is_ctor_trait_bound(&ctx.env, &tc.scope_refs(&scope.lexical))
-                })
+            if !ctor_bound(tc)
+                || ctors.iter().any(|(n, _)| *n == tv.name)
+                || !bounds().all(|(_, tc)| ctor_bound(tc))
             {
                 continue;
             }

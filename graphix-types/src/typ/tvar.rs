@@ -133,6 +133,19 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
     CycleWalk::new(addr, false).go(t, Toward::Any, false).is_break()
 }
 
+/// [`would_cycle_inner`] toward the open cell at `addr`: false at once
+/// for a type that reaches no open cell, which its bound cells remember,
+/// so a chain of bound cells is walked once however many cells ask.
+pub(super) fn would_cycle_open(addr: usize, t: &Type) -> bool {
+    let epoch = ground_epoch();
+    let mut walked: LPooled<Vec<CellRef>> = LPooled::take();
+    if reaches_no_open_cell(t, epoch, &mut LPooled::take(), &mut walked) {
+        mark_ground(&mut walked, epoch);
+        return false;
+    }
+    would_cycle_inner(addr, t)
+}
+
 /// How a type reaches a cell ([`cycle_toward`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Cycle {

@@ -11,7 +11,7 @@ use crate::{
         Bound, FnType, Mutability, TVar, Type,
         contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
-        tvar::{CellFact, Fresh, would_cycle_inner},
+        tvar::{CellFact, Fresh, would_cycle_open},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -71,7 +71,7 @@ impl TVar {
         };
         let addr = self.cell_addr();
         if !below.is_empty() {
-            if below.iter().any(|l| would_cycle_inner(addr, l)) {
+            if below.iter().any(|l| would_cycle_open(addr, l)) {
                 return Ok(Err(false));
             }
             let below: LPooled<Vec<&Type>> = below.iter().collect();
@@ -89,7 +89,7 @@ impl TVar {
         'cand: for c in cons.iter() {
             // A trait conjunct is a predicate, not a binding, and a
             // conjunct reaching this cell has no finite witness.
-            if c.is_predicate() || c.is_trait_ref(env) || would_cycle_inner(addr, c) {
+            if c.is_predicate() || c.is_trait_ref(env) || would_cycle_open(addr, c) {
                 continue;
             }
             candidates = true;

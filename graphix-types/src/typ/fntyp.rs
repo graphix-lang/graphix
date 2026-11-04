@@ -382,53 +382,121 @@ impl Drop for Walking {
 /// a constructor (`'a: Array<'a>`) or through another declared variable's
 /// bound (`'a: 'b, 'b: 'a`). A recursive bound is a recursive type.
 pub fn check_bounds_acyclic(constraints: &[(TVar, Type)]) -> Result<()> {
-    if constraints.is_empty() {
-        return Ok(());
+    // each declared variable's node, numbered in the order first declared
+    let mut node: LPooled<AHashMap<&ArcStr, usize>> = LPooled::take();
+    let mut names: LPooled<Vec<&ArcStr>> = LPooled::take();
+    for (tv, _) in constraints {
+        node.entry(&tv.name).or_insert_with(|| {
+            names.push(&tv.name);
+            names.len() - 1
+        });
     }
-    let declared = |n: &ArcStr| constraints.iter().any(|(tv, _)| tv.name == *n);
-    // (variable, a declared variable one of its bounds names), each
-    // variable's names sorted
-    let mut edges: LPooled<Vec<(ArcStr, ArcStr)>> = LPooled::take();
+    // (variable, a declared variable one of its bounds names): each bound's
+    // names sorted, the bounds in the order written, grouped by variable
+    let mut edges: LPooled<Vec<(usize, usize)>> = LPooled::take();
     let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    let mut to: LPooled<Vec<ArcStr>> = LPooled::take();
     for (tv, tc) in constraints {
         tc.collect_tvars(&mut named);
-        let from = edges.len();
-        edges.extend(
-            named.drain().filter(|(n, _)| declared(n)).map(|(n, _)| (tv.name.clone(), n)),
-        );
-        edges[from..].sort_unstable();
+        to.extend(named.drain().map(|(n, _)| n).filter(|n| node.contains_key(n)));
+        to.sort_unstable();
+        let from = node[&tv.name];
+        edges.extend(to.drain(..).map(|n| (from, node[&n])));
     }
-    fn named_by<'a>(
-        edges: &'a [(ArcStr, ArcStr)],
-        from: &'a ArcStr,
-    ) -> impl Iterator<Item = ArcStr> + 'a {
-        edges.iter().filter(move |(f, _)| f == from).map(|(_, to)| to.clone())
-    }
-    let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    edges.sort_by_key(|(from, _)| *from);
+    let mut start: LPooled<Vec<usize>> = LPooled::take();
+    start.extend((0..=names.len()).map(|v| edges.partition_point(|(f, _)| *f < v)));
+    let named_by = |v: usize| edges[start[v]..start[v + 1]].iter().map(|(_, to)| *to);
+    let cyclic = on_cycles(&start, &edges);
+    let Some(q) = constraints.iter().map(|(tv, _)| node[&tv.name]).find(|q| cyclic[*q])
+    else {
+        return Ok(());
+    };
+    let mut seen: LPooled<Vec<bool>> = LPooled::take();
+    seen.resize(names.len(), false);
     // (variable reached, the variable q's own bound named on the way),
     // breadth first: the first path back is the shortest
-    let mut todo: LPooled<VecDeque<(ArcStr, ArcStr)>> = LPooled::take();
-    for (q, _) in constraints {
-        let q = &q.name;
-        seen.clear();
-        todo.extend(named_by(&edges, q).map(|n| (n.clone(), n)));
-        while let Some((n, via)) = todo.pop_front() {
-            if n == *q {
-                let path = match via == *q {
-                    true => format_compact!("'{q}'s bound names '{q}"),
-                    false => format_compact!("'{q}'s bound reaches '{q} through '{via}"),
-                };
-                bail!(
-                    "{path}: a bound may not reach its own variable; a recursive \
-                     bound is a recursive type (`type T = [i64, Array<T>]`, `'{q}: T`)"
-                )
+    let mut todo: LPooled<VecDeque<(usize, usize)>> = LPooled::take();
+    todo.extend(named_by(q).map(|n| (n, n)));
+    while let Some((n, via)) = todo.pop_front() {
+        if n == q {
+            let (q, via) = (names[q], names[via]);
+            let path = match via == q {
+                true => format_compact!("'{q}'s bound names '{q}"),
+                false => format_compact!("'{q}'s bound reaches '{q} through '{via}"),
+            };
+            bail!(
+                "{path}: a bound may not reach its own variable; a recursive \
+                 bound is a recursive type (`type T = [i64, Array<T>]`, `'{q}: T`)"
+            )
+        }
+        if !std::mem::replace(&mut seen[n], true) {
+            todo.extend(named_by(n).map(|m| (m, via)));
+        }
+    }
+    unreachable!("'{} lies on a cycle of bounds", names[q])
+}
+
+/// Which nodes lie on a cycle of `edges`, (source, target) pairs grouped
+/// by source, the edges out of node `v` at `start[v]..start[v + 1]`: the
+/// members of a strongly connected component of two or more, and a node
+/// with an edge to itself (Tarjan's algorithm, iterative).
+fn on_cycles(start: &[usize], edges: &[(usize, usize)]) -> LPooled<Vec<bool>> {
+    const UNSEEN: usize = usize::MAX;
+    let n = start.len() - 1;
+    let mut cyclic: LPooled<Vec<bool>> = LPooled::take();
+    cyclic.resize(n, false);
+    // (visit number, lowest visit number reachable) per node
+    let mut num: LPooled<Vec<(usize, usize)>> = LPooled::take();
+    num.resize(n, (UNSEEN, UNSEEN));
+    let mut on_stack: LPooled<Vec<bool>> = LPooled::take();
+    on_stack.resize(n, false);
+    let mut stack: LPooled<Vec<usize>> = LPooled::take();
+    // (node, its next edge to follow)
+    let mut calls: LPooled<Vec<(usize, usize)>> = LPooled::take();
+    let mut count = 0;
+    for root in 0..n {
+        if num[root].0 != UNSEEN {
+            continue;
+        }
+        let mut enter = Some(root);
+        loop {
+            if let Some(v) = enter.take() {
+                num[v] = (count, count);
+                count += 1;
+                on_stack[v] = true;
+                stack.push(v);
+                calls.push((v, start[v]));
             }
-            if seen.insert(n.clone()) {
-                todo.extend(named_by(&edges, &n).map(|m| (m, via.clone())));
+            let Some((v, e)) = calls.last_mut() else { break };
+            let v = *v;
+            if *e < start[v + 1] {
+                let w = edges[*e].1;
+                *e += 1;
+                cyclic[v] |= w == v;
+                if num[w].0 == UNSEEN {
+                    enter = Some(w)
+                } else if on_stack[w] {
+                    num[v].1 = num[v].1.min(num[w].0)
+                }
+                continue;
+            }
+            calls.pop();
+            if let Some((u, _)) = calls.last() {
+                num[*u].1 = num[*u].1.min(num[v].1)
+            }
+            if num[v].0 == num[v].1 {
+                let at = stack.iter().rposition(|w| *w == v).unwrap();
+                let component = &stack[at..];
+                for w in component {
+                    on_stack[*w] = false;
+                    cyclic[*w] |= component.len() > 1;
+                }
+                stack.truncate(at);
             }
         }
     }
-    Ok(())
+    cyclic
 }
 
 /// Seed each conjunct on its quantifier's cell in `known`, aliasing the
@@ -925,9 +993,9 @@ impl FnType {
         }
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut named);
-        for (name, tv) in named.iter() {
-            if self.quantifiers.contains(name) {
-                f(name, tv)
+        for q in self.quantifiers.iter() {
+            if let Some(tv) = named.get(q) {
+                f(q, tv)
             }
         }
     }
@@ -1205,12 +1273,15 @@ impl FnType {
         known: &mut AHashMap<ArcStr, TVar>,
         seen: &mut AHashMap<usize, Type>,
     ) {
-        self.for_each_part(&mut |t, constraint| {
-            if constraint {
-                t.normalize().collect_tvars_seen(known, seen)
-            } else {
-                t.collect_tvars_seen(known, seen)
-            }
+        // one normal form for every conjunct: a cell its conjuncts share is
+        // normalized once
+        let mut cx = super::normalize::NormCx::take();
+        self.for_each_part(&mut |t, constraint| match constraint {
+            true => match t.normalize_int(&mut cx) {
+                Some(n) => n.collect_tvars_seen(known, seen),
+                None => t.collect_tvars_seen(known, seen),
+            },
+            false => t.collect_tvars_seen(known, seen),
         })
     }
 
@@ -2032,6 +2103,91 @@ impl FnType {
 mod tests {
     use crate::expr::parser::parse_fn_type;
     use poolshark::local::LPooled;
+
+    /// The refusal names the first variable declared whose bound reaches
+    /// it, by the shortest path back its bounds' names lead to first:
+    /// what a breadth-first walk from each variable in turn finds.
+    #[test]
+    fn a_bound_cycle_is_the_first_a_walk_from_each_variable_finds() {
+        use super::check_bounds_acyclic;
+        use crate::typ::{TVar, Type};
+        use std::collections::VecDeque;
+        let name = |v: usize| format!("v{v}");
+        // (variable, the variables its bound names), as declared
+        let first_cycle = |decls: &[(usize, Vec<usize>)]| {
+            let named_by = |v: usize| {
+                let mut out = vec![];
+                for (_, to) in decls.iter().filter(|(f, _)| *f == v) {
+                    let mut to: Vec<usize> = to
+                        .iter()
+                        .copied()
+                        .filter(|t| decls.iter().any(|(d, _)| d == t))
+                        .collect();
+                    to.sort_by_key(|t| name(*t));
+                    to.dedup();
+                    out.extend(to)
+                }
+                out
+            };
+            for (q, _) in decls {
+                let mut seen = vec![];
+                let mut todo: VecDeque<(usize, usize)> =
+                    named_by(*q).into_iter().map(|n| (n, n)).collect();
+                while let Some((n, via)) = todo.pop_front() {
+                    if n == *q {
+                        return Some((n, via));
+                    }
+                    if !seen.contains(&n) {
+                        seen.push(n);
+                        todo.extend(named_by(n).into_iter().map(|m| (m, via)));
+                    }
+                }
+            }
+            None
+        };
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rand = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        // the cases met: no cycle, a bound naming its variable, a cycle
+        // through another
+        let mut met = [0; 3];
+        for _ in 0..4000 {
+            let vars = 1 + rand(12);
+            let decls: Vec<(usize, Vec<usize>)> = (0..1 + rand(14))
+                .map(|_| (rand(vars), (0..rand(4)).map(|_| rand(vars + 2)).collect()))
+                .collect();
+            let constraints: Vec<(TVar, Type)> = decls
+                .iter()
+                .map(|(v, to)| {
+                    let tv = |v: usize| TVar::empty_named(name(v).into());
+                    let parts = to.iter().map(|t| Type::TVar(tv(*t)));
+                    (tv(*v), Type::Tuple(parts.chain([Type::Bottom]).collect()))
+                })
+                .collect();
+            let got = check_bounds_acyclic(&constraints).map_err(|e| e.to_string());
+            match first_cycle(&decls) {
+                None => {
+                    met[0] += 1;
+                    assert!(got.is_ok(), "{decls:?}: {got:?}")
+                }
+                Some((q, via)) => {
+                    met[1 + (q != via) as usize] += 1;
+                    let (q, via) = (name(q), name(via));
+                    let want = match q == via {
+                        true => format!("'{q}'s bound names '{q}:"),
+                        false => format!("'{q}'s bound reaches '{q} through '{via}:"),
+                    };
+                    let got = got.unwrap_err();
+                    assert!(got.starts_with(&want), "{decls:?}: {got}, want {want}");
+                }
+            }
+        }
+        assert!(met.iter().all(|n| *n > 400), "{met:?}");
+    }
 
     /// The pretty pipeline keeps the user-written `'a` on both
     /// occurrences of a polymorphic sig.
