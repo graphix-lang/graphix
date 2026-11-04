@@ -101,6 +101,9 @@ version.md
 version.ml
 version.texi
 .cargo
+!/.cargo/
+/.cargo/*
+!/.cargo/config.toml
 /vendor/
 !src/vendor/**
 /src/target/

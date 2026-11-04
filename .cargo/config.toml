@@ -1,0 +1,3 @@
+[alias]
+# the workspace's tests, every test binary side by side (xtask/src/main.rs)
+xtest = "run --quiet --package xtask -- test"

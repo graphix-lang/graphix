@@ -184,5 +184,6 @@ members = [
     "stdlib/graphix-package-sqlite",
     "stdlib/graphix-package-hbs",
     "stdlib/graphix-tests",
-    "ide/tree-sitter-graphix"
+    "ide/tree-sitter-graphix",
+    "xtask"
 ]

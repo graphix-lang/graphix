@@ -821,17 +821,17 @@ impl<X: GXExt> Shell<X> {
             return self.warm().await.map(|()| None);
         }
         let (keys_tx, mut keys) = mpsc::unbounded_channel();
-        let mut session = self.start(&keys_tx).await?;
+        // heard from before the program compiles, which can take a while: one
+        // that arrives meanwhile ends the shell with its code, not the
+        // process with its default action
+        let mut terminated = Terminated::new()?;
+        let mut session = tokio::select! {
+            session = self.start(&keys_tx) => session?,
+            code = terminated.recv() => return Ok(code),
+        };
         let script = self.mode.file_mode();
         let mut input = InputReader::new();
         let mut output = if script { Output::EmptyScript } else { Output::None };
-        let mut terminated = match Terminated::new() {
-            Ok(terminated) => terminated,
-            Err(e) => {
-                session.finish(&mut output).await;
-                return Err(e);
-            }
-        };
         let mut newenv = None;
         let mut exprs = vec![];
         let mut greeted = script;

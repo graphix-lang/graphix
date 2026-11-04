@@ -81,6 +81,7 @@ cargo build                              # debug
 cargo build -p graphix-shell             # one crate
 cargo build --profile quick -p graphix-shell   # near-release speed, 1/3 the build
 cargo test                               # THE gate: whole workspace, from the root
+cargo xtest                              # the same tests, every test binary side by side (xtask/)
 cargo test -p graphix-tests              # one crate while iterating
 cargo test --workspace --features slow-tests   # the release gate
 cargo run --bin graphix -- file.gx       # run
