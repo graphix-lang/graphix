@@ -23,7 +23,9 @@ use crate::{
     },
     typ::{
         CastInput, Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
-        tvar::{AtLevel, InTask, Level, TaskContext, TaskId, current_task, new_task},
+        tvar::{
+            AtLevel, BoundAt, InTask, Level, TaskContext, TaskId, current_task, new_task,
+        },
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -2456,16 +2458,11 @@ impl<'a> Holders<'a> {
                 0 => ", writing for ",
                 _ => " and for ",
             };
-            let file = match *b.ori == *at {
-                true => format_compact!(""),
-                false => format_compact!(" {}", b.ori),
-            };
             out.push_str(&format_compact!(
-                "{sep}'{} the type of `{}` (line {}, column {}{file})",
+                "{sep}'{} the type of `{}` ({})",
                 name.name,
                 b.name,
-                b.pos.line,
-                b.pos.column
+                BoundAt(b, Some(at))
             ));
         }
         out
@@ -2563,14 +2560,20 @@ fn write_mismatch(
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
     let (held, written) = (deref(&bind.typ), deref(written));
     let infinite = held.meets_itself(&written);
+    // what an earlier input left open was settled to ⊥ at its end: the
+    // declaration writes the type there
+    let settled = bind.typ.fill_settled(&written).filter(|t| {
+        t.contains_with_flags(BitFlags::empty(), env, &written).unwrap_or(false)
+    });
     let inferred = match &bind.typ {
+        _ if settled.is_some() => ", settled when its input ended,",
         Type::TVar(tv) if tv.bottom_fed() => ", inferred from an earlier use,",
         _ => "",
     };
-    let (name, line, col) = (&bind.name, bind.pos.line, bind.pos.column);
+    let name = &bind.name;
     // a type variable is declared, and no declaration widens it; nor does
     // one widen what holds a function, as two function types share a
-    // runtime form
+    // runtime form; what was settled is declared as what is written
     fn holds_fn(t: &Type) -> bool {
         crate::stack::ensure_sufficient(|| match t {
             Type::Fn(_) => true,
@@ -2583,6 +2586,7 @@ fn write_mismatch(
         })
     }
     if !infinite
+        && settled.is_none()
         && (matches!(held, Type::TVar(_)) || holds_fn(&held) || holds_fn(&written))
     {
         return format_with_flags(
@@ -2590,16 +2594,12 @@ fn write_mismatch(
             || anyhow!("{name} is {held} and cannot hold {}", lower_shown(&written)),
         );
     }
-    let file = match bind.ori == *at {
-        true => format_compact!(""),
-        false => format_compact!(" {}", bind.ori),
-    };
     let refusal = |declare: &str, meanings: &str| {
         format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
             format_compact!(
-                "{name} is {held}{inferred} and cannot hold {}; {declare} \
-                 (line {line}, column {col}{file}){meanings}",
-                lower_shown(&written)
+                "{name} is {held}{inferred} and cannot hold {}; {declare} ({}){meanings}",
+                lower_shown(&written),
+                BoundAt(bind, Some(at))
             )
         })
     };
@@ -2630,17 +2630,23 @@ fn write_mismatch(
                 t.written_form(&mut |tv| holders.name_open(tv))
             };
             // a parameter decided apart is held by no union of parameters
-            let both = match params_union(env, &held, &written)
-                .and_then(|t| write(&t, &mut holders))
-            {
-                Some(t) if held.written_form(&mut |_| None).is_none_or(|h| h != t) => {
+            let both = match settled.as_ref().and_then(|t| write(t, &mut holders)) {
+                Some(t) => Some(t),
+                None => match params_union(env, &held, &written)
+                    .and_then(|t| write(&t, &mut holders))
+                {
                     Some(t)
-                }
-                _ => {
-                    holders.named.clear();
-                    let both = Type::Set(Arc::from_iter([held.clone(), written.clone()]));
-                    write(&both, &mut holders)
-                }
+                        if held.written_form(&mut |_| None).is_none_or(|h| h != t) =>
+                    {
+                        Some(t)
+                    }
+                    _ => {
+                        holders.named.clear();
+                        let both =
+                            Type::Set(Arc::from_iter([held.clone(), written.clone()]));
+                        write(&both, &mut holders)
+                    }
+                },
             };
             if both.is_none() {
                 holders.named.clear()

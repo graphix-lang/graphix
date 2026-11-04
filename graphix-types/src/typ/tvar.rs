@@ -1,8 +1,8 @@
 use crate::{
     AddrSet, LambdaId,
     dbgenv::graphix_dbg_bind,
-    env::Env,
-    expr::{ModPath, TypeDefBody},
+    env::{Bind, Env},
+    expr::{ModPath, Origin, TypeDefBody},
     image,
     stack::ensure_sufficient,
     typ::{
@@ -14,7 +14,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Error, Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::{BitFlags, bitflags};
 use netidx_core::pack::{self, Pack, PackError};
 use nohash::IntSet;
@@ -477,8 +477,8 @@ thread_local! {
     static LEVEL: std::cell::Cell<Level> = const { std::cell::Cell::new(Level::GENERIC) };
     static TASK: std::cell::Cell<TaskId> = const { std::cell::Cell::new(TaskId::OUTSIDE) };
     /// The compile task whose foreign writes this thread records
-    /// ([`OwnWrites`]), and the first it made.
-    static OWN_WRITES: std::cell::Cell<Option<(TaskId, Option<ForeignWrite>)>> =
+    /// ([`OwnWrites`]).
+    static OWN_WRITES: std::cell::Cell<Option<Record>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -578,7 +578,7 @@ impl TaskContext {
 pub struct InContext {
     task: TaskId,
     level: Level,
-    own: Option<(TaskId, Option<ForeignWrite>)>,
+    own: Option<Record>,
 }
 
 impl Drop for InContext {
@@ -603,6 +603,16 @@ pub(super) fn written(cell: &TCell) {
     written_of(cell.task, "cell", Some(cell_addr(cell)))
 }
 
+/// A rigid gate opened or closed on `cell` by the running task, reported
+/// as [`written`] is, except by a top-level input's own check: inputs run
+/// one at a time, so its hold of an earlier input's cell for one
+/// comparison is seen by no other task.
+fn gated(cell: &TCell) {
+    if !in_input() {
+        written(cell)
+    }
+}
+
 /// A cell's identity while it lives, for naming what a write reached.
 fn cell_addr(cell: &TCell) -> usize {
     cell as *const TCell as usize
@@ -622,7 +632,7 @@ fn decided_of(owner: TaskId, what: &str, cell: Option<usize>) -> bool {
         return true;
     }
     foreign_write(owner, what, cell);
-    !OWN_WRITES.get().is_some_and(|(task, _)| task == TASK.get())
+    !OWN_WRITES.get().is_some_and(|r| r.task == TASK.get())
 }
 
 fn written_of(owner: TaskId, what: &str, cell: Option<usize>) {
@@ -631,24 +641,49 @@ fn written_of(owner: TaskId, what: &str, cell: Option<usize>) {
     }
 }
 
+/// A compile task's record of its writes outside itself ([`OwnWrites`]).
+#[derive(Clone, Copy)]
+struct Record {
+    task: TaskId,
+    /// The task is a top-level input's ([`OwnWrites::enter_input`]).
+    input: bool,
+    /// The first write it made outside itself.
+    first: Option<ForeignWrite>,
+}
+
 /// While this lives, record whether the running compile task changes a
 /// cell or var an earlier task created. A task runs whole on one
 /// thread, and a task run while it waits keeps its own record.
 #[must_use]
 #[doc(hidden)]
-pub struct OwnWrites(Option<(TaskId, Option<ForeignWrite>)>);
+pub struct OwnWrites(Option<Record>);
 
 impl OwnWrites {
     #[doc(hidden)]
     pub fn enter(task: TaskId) -> Self {
-        Self(OWN_WRITES.replace(Some((task, None))))
+        Self(OWN_WRITES.replace(Some(Record { task, input: false, first: None })))
+    }
+
+    /// [`Self::enter`] for a top-level input's task (a REPL input, a
+    /// script, a dynamic load): see [`in_input`].
+    #[doc(hidden)]
+    pub fn enter_input(task: TaskId) -> Self {
+        Self(OWN_WRITES.replace(Some(Record { task, input: true, first: None })))
     }
 
     /// The first write the task made outside itself.
     #[doc(hidden)]
-    pub fn foreign(self) -> Option<ForeignWrite> {
-        OWN_WRITES.get().and_then(|(_, w)| w)
+    pub fn foreign(&self) -> Option<ForeignWrite> {
+        OWN_WRITES.get().and_then(|r| r.first)
     }
+}
+
+/// Whether the running task is a top-level input's own check. There what
+/// an earlier input left open, a function type's own quantifier included,
+/// is one type, compared as itself and never as a fresh copy, so a
+/// decision about it is recorded and not made.
+pub(super) fn in_input() -> bool {
+    OWN_WRITES.get().is_some_and(|r| r.input && r.task == TASK.get())
 }
 
 /// A compile task's write to what an earlier task created: the cell, when
@@ -675,11 +710,11 @@ impl Drop for OwnWrites {
 
 #[cold]
 fn foreign_write(owner: TaskId, what: &str, cell: Option<usize>) {
-    if let Some((task, first)) = OWN_WRITES.get()
-        && task == TASK.get()
-        && first.is_none_or(|f| f.cell.is_none() && cell.is_some())
+    if let Some(r) = OWN_WRITES.get()
+        && r.task == TASK.get()
+        && r.first.is_none_or(|f| f.cell.is_none() && cell.is_some())
     {
-        OWN_WRITES.set(Some((task, Some(ForeignWrite { cell }))))
+        OWN_WRITES.set(Some(Record { first: Some(ForeignWrite { cell }), ..r }))
     }
     if crate::dbgenv::graphix_task_audit() {
         eprintln!(
@@ -800,6 +835,28 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 // 2026-11-03 claude: Eric ruled (2026-11-03): D14 (b) in ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an annotation, then a
 // --check census; back to him only if the stdlib, the book's examples or netidx-admin would need a new annotation): when a non-generic binding's type
 // reaches a generic variable no let names, that variable stops being generic (ML's level rule); census and the must-reject lane before landing.
+// 2026-11-04 claude: Review r14 D-r2-1 (cr49-D) found that this leak computes wrong values, not only late refusals, wherever no run-time bind stands
+// between the leaked cell and its reader: in the REPL, p = { let y = never(); let g = |x| { y <- array::map([x], |e| W(e)); x }; (g, &y) }, then
+// p.0("abc"), let k = |u| *p.1, let w: fn(u: i64) -> Array<W<i64>> = k makes w(0)[0]$.0 an i64 holding "abc" (+ 1 gives 1; d14k, d14i); through a function
+// type alone, let h = { ..; let a = g0("abc"); |u| y0 } then let w: fn(u: i64) -> Array<W<i64>> = h gives the same (~/ptmp/cr29/scratch/r14-D/r3/h1.txt);
+// and in a plain script, a static module whose .gxi says val k: fn(u: i64) -> Array<super::W<'b>> over the leak computes str::len of an i64 as 0 (D-r2-1
+// sm3; dl3 its dynamic twin). main 968fa9bc0 and cr49-D alike. D9 (a)'s input-end settle settles top-level cells only, and the leaked cell is the
+// callback's generic one, which each read copies: settling the open cells a binding's type holds outside function types would close d14k and d14i but not
+// h1, so this CR's ruled fix, D14 (b) (lowering the cell to the top level, where the input-end settle then settles it), is the one that closes all three.
+// probes ~/ptmp/cr29/scratch/review-r14/D-r2-1/{d14k,d14i}.txt, sm3/, dl3/.
+// 2026-11-04 claude: Correction to the 2026-11-04 note above (review r14 final, D-r3-2): on cr49-D the REPL routes are refused, not computed: d14k and
+// d14i are refused naming y, g and p, and h1 naming h (this input would decide a type of an earlier input), and since fix round 3 so are the load routes
+// that read the program's leaked cell (ld3, dl6, dl4/main2: the load is an input under OwnWrites). Still computing wrong values on cr49-D as on main: the
+// script route sm3, and dl3, where the leak is inside the loaded body and the program decides its val's 'b.
+// 2026-11-04 claude: Pins for the previous note's claims: later_input_decides_no_leaked_callback_cell (the REPL route: d14k, d14i, h1) and
+// load_decides_no_type_the_program_left_open (the load route: ld3, dl6, dl4/main2), both in lang::repl_inputs. Those cover the d14k family only. Review
+// r14 D-r4-1 found a route still open, main's too (968fa9bc0 behaves the same): an unannotated writer of an earlier input's generic-function binding. With
+// `let s = {g: |x| x}` and `let j = s.g`, then `let w2 = |f| { j <- f; null }` and `w2(|x: i64| -> i64 x + 1)` (mm3), or the same writer in a dynamic
+// load's body (mm4) or in a later input's `mod m` with an interface (mm1, whose module task compares j's quantifier as a fresh copy since in_input is
+// false there), writes a monomorphic function into j while j stays fn(x: 'C) -> 'C. `j("s")` then passes the check and fails its run-time bind naming no
+// binding (no wrong value: the bind is the backstop). The direct `j <- |x: i64| -> i64 x + 1` and an annotated writer (mm2) are refused. It goes through
+// because a call copies the earlier quantifier the writer's parameter type holds. probe:
+// ~/ptmp/cr29/scratch/review-r14/D-r4-1/new/mm/{mm1,mm2,mm3,mm4}.txt (GRAPHIX_MODPATH=$PWD ../../r.sh lane FILE).
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is
@@ -915,6 +972,11 @@ pub(crate) enum CellFact {
     /// passed on, in a definition's check or an instance's elaboration,
     /// it is any instance of itself, copied fresh for each use.
     FormalQuantifier,
+    /// The end of the input that made the cell settled it
+    /// ([`settle_input`](super::settle::settle_input)): what it holds is
+    /// decided, so a ⊥ it holds is required of whatever a later input sends
+    /// into it, and a dynamic load reopens nothing of it.
+    Settled,
 }
 
 impl Default for TCell {
@@ -946,7 +1008,7 @@ pub struct RigidGate {
 impl Drop for RigidGate {
     fn drop(&mut self) {
         let mut cell = self.cell.write();
-        written(&cell);
+        gated(&cell);
         cell.rigid_gates = cell.rigid_gates.saturating_sub(1);
         if self.quantifier {
             cell.quantifier_gates = cell.quantifier_gates.saturating_sub(1);
@@ -981,6 +1043,155 @@ impl TCell {
     pub(crate) fn add_constraint(&mut self, c: Type) {
         if !self.constraints.iter().any(|e| union_identical(e, &c)) {
             self.constraints.push(c)
+        }
+    }
+}
+
+/// The note a refusal over `types` ends with where they reach a cell an
+/// input's end settled to ⊥: the binding a later input can name that
+/// holds the cell, made first, to declare.
+pub fn settled_note(env: &Env, types: &[&Type]) -> Option<CompactString> {
+    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    for t in types {
+        t.reached_cells(&mut cells);
+    }
+    let settled: SmallVec<[usize; 4]> = cells
+        .values()
+        .filter(|tv| tv.settled_bottom())
+        .map(|tv| tv.cell_addr())
+        .collect();
+    if settled.is_empty() {
+        return None;
+    }
+    let b = (&env.lexical.binds)
+        .into_iter()
+        .flat_map(|(_, names)| names.into_iter().map(|(_, id)| *id))
+        .filter_map(|id| env.by_id.get(&id))
+        .filter(|b| {
+            !crate::is_lowered(&b.name) && settled.iter().any(|c| b.typ.holds_cell(*c))
+        })
+        .min_by_key(|b| b.id)?;
+    Some(format_compact!(
+        "it holds the type of `{}` ({}), settled when its input ended; declare {}'s \
+         type where it is bound",
+        b.name,
+        BoundAt(b, None),
+        b.name
+    ))
+}
+
+/// [`settled_note`] for a refusal of `container` to hold `contained`,
+/// where a settled ⊥ is its cause ([`settled_cause`]); `exact` where the
+/// two must be one type.
+pub fn settled_cause_note(
+    env: &Env,
+    container: &Type,
+    contained: &Type,
+    exact: bool,
+) -> Option<CompactString> {
+    match settled_cause(container, contained, exact) {
+        true => settled_note(env, &[container, contained]),
+        false => None,
+    }
+}
+
+/// Whether a ⊥ an input's end settled is where `container` fails to hold
+/// `contained`: a settled part of the container where the other has a
+/// value, or a settled part of either where the two must be one type (a
+/// `&mut`'s referent, an abstract type's parameter, everywhere when
+/// `exact`). A refusal elsewhere is not the settled ⊥'s, and declaring
+/// its binding would not lift it. Through a union or a named type every
+/// settled part counts.
+fn settled_cause(container: &Type, contained: &Type, exact: bool) -> bool {
+    ensure_sufficient(|| {
+        let settled = |t: &Type| matches!(t, Type::TVar(tv) if tv.settled_bottom());
+        match (settled(container), settled(contained)) {
+            (true, true) => return false,
+            (true, false) => {
+                return contained.with_deref(|t| !matches!(t, Some(Type::Bottom)));
+            }
+            (false, true) => return exact,
+            (false, false) => (),
+        }
+        if let Type::TVar(tv) = container {
+            return tv.binding().is_some_and(|c| settled_cause(&c, contained, exact));
+        }
+        if let Type::TVar(tv) = contained {
+            return tv.binding().is_some_and(|d| settled_cause(container, &d, exact));
+        }
+        let pairs = |a: &[Type], b: &[Type], exact: bool| {
+            a.len() == b.len()
+                && a.iter().zip(b.iter()).any(|(a, b)| settled_cause(a, b, exact))
+        };
+        match (container, contained) {
+            (Type::Array(a), Type::Array(b))
+            | (Type::List(a), Type::List(b))
+            | (Type::Error(a), Type::Error(b)) => settled_cause(a, b, exact),
+            (Type::ByRef(m, a), Type::ByRef(_, b)) => {
+                settled_cause(a, b, exact || *m == Mutability::Mut)
+            }
+            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+                settled_cause(k0, k1, exact) || settled_cause(v0, v1, exact)
+            }
+            (Type::Tuple(a), Type::Tuple(b)) => pairs(a, b, exact),
+            (Type::Variant(t0, a, _), Type::Variant(t1, b, _)) => {
+                t0 == t1 && pairs(a, b, exact)
+            }
+            (Type::Struct(a), Type::Struct(b)) => {
+                a.len() == b.len()
+                    && a.iter().zip(b.iter()).any(|((n0, a, _), (n1, b, _))| {
+                        n0 == n1 && settled_cause(a, b, exact)
+                    })
+            }
+            (
+                Type::Abstract { id: i0, params: a },
+                Type::Abstract { id: i1, params: b },
+            ) => i0 == i1 && pairs(a, b, true),
+            (Type::Fn(f), Type::Fn(g)) => {
+                let (args, aligned) = f.align(g);
+                aligned
+                    && (args.iter().any(|(s, t)| settled_cause(&t.typ, &s.typ, exact))
+                        || settled_cause(&f.rtype, &g.rtype, exact)
+                        || settled_cause(&f.throws, &g.throws, exact))
+            }
+            (Type::Set(_) | Type::Ref(_) | Type::App(..), _)
+            | (_, Type::Set(_) | Type::Ref(_) | Type::App(..)) => {
+                let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                container.reached_cells(&mut cells);
+                contained.reached_cells(&mut cells);
+                cells.values().any(|tv| tv.settled_bottom())
+            }
+            _ => false,
+        }
+    })
+}
+
+/// Where a binding is declared, for a refusal that names it: the line and
+/// column, and, unless it is the origin given, where they are: a file, a
+/// module or the text of a REPL input.
+pub struct BoundAt<'a>(pub &'a Bind, pub Option<&'a Origin>);
+
+impl fmt::Display for BoundAt<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::expr::Source;
+        let Bind { pos, ori, .. } = self.0;
+        write!(f, "line {}, column {}", pos.line, pos.column)?;
+        if self.1.is_some_and(|at| *at == **ori) {
+            return Ok(());
+        }
+        match &ori.source {
+            Source::Unspecified => {
+                let line = usize::try_from(pos.line - 1).ok();
+                match line.and_then(|i| ori.text.lines().nth(i)).map(str::trim) {
+                    Some(l) if l.chars().count() > 40 => {
+                        let l: String = l.chars().take(40).collect();
+                        write!(f, " in `{l}..`")
+                    }
+                    Some(l) => write!(f, " in `{l}`"),
+                    None => Ok(()),
+                }
+            }
+            s => write!(f, " in {s}"),
         }
     }
 }
@@ -1952,7 +2163,7 @@ impl TVar {
         };
         {
             let mut c = cell.write();
-            written(&c);
+            gated(&c);
             c.rigid_gates += 1;
             if quantifier {
                 c.quantifier_gates += 1;
@@ -1986,6 +2197,22 @@ impl TVar {
         let mut c = cell.write();
         if decided(&c) {
             c.facts |= CellFact::BottomRequired;
+        }
+    }
+
+    /// Whether the cell holds ⊥ as its input's end settled it.
+    pub(super) fn settled_bottom(&self) -> bool {
+        let cell = self.cell();
+        let c = cell.read();
+        matches!(c.binding, Some(Type::Bottom)) && c.facts.contains(CellFact::Settled)
+    }
+
+    /// Mark the cell settled by its input's end; see [`CellFact::Settled`].
+    pub(super) fn mark_settled(&self) {
+        let cell = self.cell();
+        let mut c = cell.write();
+        if !c.facts.contains(CellFact::Settled) && decided(&c) {
+            c.facts |= CellFact::Settled;
         }
     }
 
@@ -3684,14 +3911,49 @@ impl Type {
         })
     }
 
-    /// Unbind any bound tvars, but do not unalias them.
+    /// Unbind any bound tvars, but do not unalias them. A cell its input's
+    /// end settled stays as it was decided.
     #[doc(hidden)]
     pub fn unbind_tvars(&self) {
         ensure_sufficient(|| match self {
+            Type::TVar(tv) if tv.cell().read().facts.contains(CellFact::Settled) => (),
             Type::TVar(tv) => tv.unbind(),
             // Sig-level Ref params are concrete or rigid: nothing to unbind.
             Type::Ref(_) => (),
             t => t.for_each_child(&mut |c| c.unbind_tvars()),
+        })
+    }
+
+    /// This type with each ⊥ its input's end settled ([`CellFact::Settled`])
+    /// replaced by the part of `written` at its place, children paired in
+    /// order; `None` where it holds no such ⊥ or the two differ in arity on
+    /// the way to one.
+    #[doc(hidden)]
+    pub fn fill_settled(&self, written: &Type) -> Option<Type> {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                let (binding, settled) = {
+                    let cell = tv.cell();
+                    let c = cell.read();
+                    (c.binding.clone(), c.facts.contains(CellFact::Settled))
+                };
+                match binding? {
+                    Type::Bottom if settled => Some(written.clone()),
+                    b => b.fill_settled(written),
+                }
+            }
+            held => {
+                let written = written.deref_cloned()?;
+                let mut parts: SmallVec<[Type; 4]> = SmallVec::new();
+                written.for_each_child(&mut |c| parts.push(c.clone()));
+                let mut n = 0;
+                held.for_each_child(&mut |_| n += 1);
+                if n != parts.len() {
+                    return None;
+                }
+                let mut parts = parts.iter();
+                held.cow_children(&mut |c| c.fill_settled(parts.next()?))
+            }
         })
     }
 
@@ -3795,6 +4057,7 @@ mod tests {
         let writes = OwnWrites::enter(module);
         older.bind(Type::Bottom);
         let w = writes.foreign().expect("an earlier task's cell, decided by the module");
+        assert!(!older.is_bound(), "a decision about an earlier task's cell is not made");
         assert!(w.held_by(&Type::Tuple(Arc::from_iter([Type::TVar(older.clone())]))));
         assert!(!w.held_by(&Type::TVar(old.clone())), "the write names its own cell");
     }
@@ -3810,6 +4073,24 @@ mod tests {
         let Type::TVar(copy) = &copy else { panic!() };
         assert!(!copy.same_cell(&tv));
         assert_eq!(copy.cell().read().facts, all);
+    }
+
+    /// A load's reopening of its signature's cells leaves what an
+    /// input's end settled as it was decided.
+    #[test]
+    fn unbinding_leaves_a_settled_cell() {
+        let i64 = Type::Primitive(netidx_value::Typ::I64.into());
+        let [settled, open] = ["s", "o"].map(|n| TVar::empty_named(n.into()));
+        settled.bind(i64.clone());
+        settled.mark_settled();
+        open.bind(i64.clone());
+        let t = Type::Tuple(Arc::from_iter([
+            Type::TVar(settled.clone()),
+            Type::TVar(open.clone()),
+        ]));
+        t.unbind_tvars();
+        assert_eq!(settled.binding(), Some(i64));
+        assert!(!open.is_bound());
     }
 
     /// A union's cells print as what they hold, so two cells bound to one

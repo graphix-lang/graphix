@@ -20,7 +20,7 @@ use crate::{
     shared_map::SharedMap,
     typ::{
         Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
-        tvar::{AtLevel, ForeignWrite, InTask, Level, OwnWrites, TaskId, new_task},
+        tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
     },
     wrap,
 };
@@ -449,10 +449,14 @@ fn check_val(
     holder: impl Fn(&TVar) -> Holder,
 ) -> Result<()> {
     let refused = |e: anyhow::Error| {
+        let settled = match settled_note(env, &[typ]) {
+            Some(n) => format_compact!(": {n}"),
+            None => format_compact!(""),
+        };
         let typ = format_with_flags(PrintFlag::DerefTVars, || {
             format_compact!("{}", Brief(typ))
         });
-        anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}")
+        anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}{settled}")
     };
     let pairs = declared.sig_matches(env, typ).map_err(refused)?;
     // CR claude for claude: [bug/low] A val implemented by a select over lambdas is
@@ -1563,14 +1567,21 @@ impl<R: Rt> Module<R> {
         let pending = mem::take(&mut ctx.pending_imports);
         let names = mem::take(&mut ctx.pending_names);
         let census = ctx.attr_census.lock().len();
-        // the body is a program of its own: top-level cells, and a check
-        // that settles what it deferred before it elaborates
-        let _level = AtLevel::enter(Level::TOP);
+        // the body is an input of its own, after the program that loads
+        // it, with a check that settles what it deferred before it
+        // elaborates
+        let input = crate::Input::enter();
         ctx.pending_settles.push(crate::SettleFrame::default());
-        let res = self.compile_inner(ctx, &exprs).and_then(|()| {
-            crate::check_pending_imports(ctx)?;
-            self.nodes.iter().try_for_each(|n| crate::analysis::analyze(n, ctx).map(drop))
-        });
+        let res = self
+            .compile_inner(ctx, &exprs)
+            .and_then(|()| {
+                crate::check_pending_imports(ctx)?;
+                self.nodes
+                    .iter()
+                    .try_for_each(|n| crate::analysis::analyze(n, ctx).map(drop))
+            })
+            .map_err(|e| input.refused(ctx, e))
+            .and_then(|()| input.end(ctx, &self.env, None));
         ctx.pending_settles.pop().expect("load settle frame");
         ctx.attr_census.lock().truncate(census);
         ctx.pending_imports = pending;

@@ -16,7 +16,10 @@ use crate::{
     },
     node::error::{diagnostic_site, report_failure},
     stack::ensure_sufficient,
-    typ::{Bound, ContainsFlags, Type, tvar::require_bounds},
+    typ::{
+        Bound, ContainsFlags, Type,
+        tvar::{require_bounds, settled_cause_note},
+    },
     wrap,
 };
 use anyhow::{Context, Result, bail};
@@ -338,9 +341,15 @@ macro_rules! compare_op {
                     None => wrap!(
                         self,
                         $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
+                            let settled = settled_cause_note(&ctx.env, lt, rt, true);
+                            let settled = match &settled {
+                                Some(n) => format_compact!(": {n}"),
+                                None => format_compact!(""),
+                            };
                             bail!(
                                 "cannot compare {lt} with {rt}: comparison is \
-                                 fn('a, 'a) -> bool — both operands must be one type"
+                                 fn('a, 'a) -> bool — both operands must be one \
+                                 type{settled}"
                             )
                         })
                     ),

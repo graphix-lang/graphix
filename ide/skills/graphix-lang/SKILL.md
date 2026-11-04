@@ -1005,6 +1005,16 @@ away the element it had in hand. Build the final row there:
   problem: `select b { true => x, false => 1 }` is `['a, i64]`, and `[]`
   against `[1]` is `Array<i64>`.
 - Labeled arguments are never positional, even without a default.
+- Each REPL statement, a script and a dynamic module's load is checked
+  alone, and what it leaves undecided is `_` from its end: after `let e
+  = []`, a later `e <- [1]` is refused (write `let e: Array<i64> = []`),
+  and a later function writing `e` takes only `_`. Lambdas that meet in
+  one array or select settle the same way (`let fs = [|x| x, |y| y]`
+  takes no later `fs[0]$(1)`: annotate `fs`). A generic function it
+  leaves in a binding (`let j = s.g`) is called at any type, but a later
+  use that would decide its type (`app(j)` over `app: fn(f: fn(x: i64) ->
+  i64)`) is refused, naming the binding: declare it at the type the use
+  needs (`let j: fn(x: i64) -> i64 = s.g`).
 - `--check` a witness before arguing about a semantics question.
 
 ## Line reader retries

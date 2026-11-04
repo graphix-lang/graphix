@@ -137,7 +137,20 @@ writes, a typedef body's included, must name something by the check's
 end, expanded or not (`design/env_independent_typerefs.md`). A pattern
 naming a type a later statement of its block declares binds at that
 type as the block ends, and one that tests or takes such a type apart
-is refused (`node::later_typedef`).
+is refused (`node::later_typedef`). A top-level input (a REPL input, each
+statement of its line one; a script; a dynamic module's load) is checked
+and run alone, as a compile task of its own (`Input`): at its end every
+open top-level cell its bindings' and value's types reach settles, ⊥
+where nothing bounds it, and is `CellFact::Settled`
+(`typ::settle::settle_input`); what an earlier input left open, a
+function type's own quantifier included (a call still copies that), is
+one type to a later input, whose decision about it is refused and not
+made, naming the bindings that hold it (`OwnWrites::enter_input`,
+`tvar::in_input`); a cell below a settled ⊥ is linked to it, so a later
+function's write to an earlier binding is held to its type, and a
+refusal a settled ⊥ causes names the binding that holds it
+(`typ::tvar::settled_note`); a load reopens nothing settled
+(`design/tvar_constraints.md`, Settling).
 
 Key types: `Expr`/`ExprKind` (immutable AST; `Expr::for_each_child` /
 `map_children` are the ONE child enumeration — `fold`, the seq rewrite and
@@ -995,7 +1008,8 @@ node graph IS the IR — there is no parallel typed IR
   is a quantifier an earlier compile
   task left open, which a later task's `contains` compares as a fresh
   copy on either side and never writes (`FnType::has_earlier_quantifier`:
-  parallel elaborations share the check's cells), and an open quantifier
+  parallel elaborations share the check's cells; not in a top-level
+  input's own check, to which an earlier input's is one type), and an open quantifier
   never binds to its bound, no site's settle decides it; a copy of a type
   keeps each written variable name, so a parameter merged into a declared
   quantifier still names it (`TVar::named_as`), and a name whose cell a

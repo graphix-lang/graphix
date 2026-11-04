@@ -27,6 +27,7 @@ mod par_attrs;
 mod par_loops;
 mod printing;
 mod prune;
+mod repl_inputs;
 mod select;
 mod seq;
 mod seq_abort;

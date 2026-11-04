@@ -142,7 +142,7 @@ fn every_input(_: &TVar) -> bool {
 /// unbound top-level cell (nothing decides it later) on either side, and
 /// an unbound cell of `other` where `input` says no caller can hand it
 /// one. Any other unbound cell is only itself.
-// CR claude for claude: [bug/low] A later REPL input can bind a top-level cell an
+// XCR claude for claude: [bug/low] A later REPL input can bind a top-level cell an
 // earlier input left open, so the earlier input's judgment (open beside open) no
 // longer holds, and the coverage hole the fix of partial-hole-01 closes in a script
 // stays open there: inputs `let b = true`, `let e1 = []`, `let e2 = []`, `let v =
@@ -175,6 +175,13 @@ fn every_input(_: &TVar) -> bool {
 // select's end an undecided part an arm tests is refused ("annotate it"), a part
 // only a name or `_` meets passes; written tests by the same rule; census first;
 // built as its own lane after the settle fix (settle-commits-name-01) and D6.
+// 2026-11-04 claude: The REPL route is closed by the input-end settle (D9 a,
+// cr49-D): e1 and e2 are Array<_> from their inputs' ends, so e1 <- [1] is refused,
+// told to declare e1: Array<i64>; with that annotation and e2: Array<string> the
+// select's partial pattern is refused at its own input (matches more than one
+// member). Pin that fails without it:
+// lang::repl_inputs::select_judgment_holds_across_inputs. The in-script holes stay
+// with open-member-cover-01 (D5).
 pub(crate) fn settled_identical(
     test: &Type,
     other: &Type,

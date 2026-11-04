@@ -17,6 +17,25 @@ graphix
 In REPL mode:
 - Input is read line by line from the user
 - Each line is compiled and executed immediately
+- Each statement is checked alone, those of one line one after another,
+  so a type a statement leaves undecided is decided when it ends: `_`
+  where nothing says otherwise (`let e = []` is `Array<_>`, `let y =
+  never()` is `_`). A later statement, on the same line or a later one,
+  that would decide it otherwise is refused, naming the binding to
+  annotate: after `let e = []`, `e <- [1]` asks for `let e: Array<i64> =
+  []`. A function a later statement writes such a binding from is held to
+  its type: after `let y = never()`, `let p = |x| { y <- x; x }` takes
+  only `_`, so `p(1)` is refused. Lambdas that meet as one type, in an
+  array or a select's arms, are one function type whose parameters were
+  decided by nothing, so they settle too: after `let fs = [|x| x, |y|
+  y]`, `fs[0]$(1)` is refused; write `let fs: Array<fn(x: i64) -> i64> =
+  ..`. A generic function a statement leaves in a binding (`let j = s.g`,
+  `s` a struct of functions) is called at any type, but a later
+  statement that would decide its type is refused, naming the binding:
+  after `let app = |f: fn(x: i64) -> i64| f(1)`, `app(j)` is refused,
+  naming `j`, and passes once `j` is declared at the type the use needs,
+  `let j: fn(x: i64) -> i64 = s.g`. A dynamic module's load is checked the same
+  way, after the statements before it
 - Completion is available via the Tab key
 - The value and type of output expressions are
     - built into TUIs if they are of type Tui

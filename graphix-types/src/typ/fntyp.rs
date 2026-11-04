@@ -983,8 +983,13 @@ impl FnType {
 
     /// A quantifier an earlier compile task left open: the check decided
     /// it open, so a later task compares the type as any instance of
-    /// itself and never writes the cell (`tvar::earlier_task`).
+    /// itself and never writes the cell (`tvar::earlier_task`), except an
+    /// input's own check, to which an earlier input's is one type
+    /// (`tvar::in_input`).
     fn has_earlier_quantifier(&self) -> bool {
+        if super::tvar::in_input() {
+            return false;
+        }
         let mut any = false;
         self.open_quantifiers(|_, open| any |= open.earlier_task());
         any
@@ -1299,7 +1304,7 @@ impl FnType {
     /// by index. The pairs cover what aligns; the flag says whether the
     /// shapes align in full: no label of `self` absent from `t`, no
     /// required label of `t` absent from `self`, as many positionals.
-    fn align<'a>(
+    pub(super) fn align<'a>(
         &'a self,
         t: &'a Self,
     ) -> (SmallVec<[(&'a FnArgType, &'a FnArgType); 8]>, bool) {

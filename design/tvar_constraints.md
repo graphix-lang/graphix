@@ -536,9 +536,59 @@ An image carries each cell's level and each definition's depth.
   (..)>`) is any instance of itself to a later task: `FnType::
   contains_int` compares it as a fresh copy, held rigid on self's side
   and instantiated on t's, so neither side links it to the task's own
-  cells. A block's statements elaborate in parallel tasks that all read
+  cells; a top-level input's own check is the exception (below). A block's statements elaborate in parallel tasks that all read
   the check's cells, and a link made by one is seen by the others at
   whatever point they have reached.
+- An input's end settles what the input leaves open. A REPL input (each
+  statement of a line is one), a statement-at-a-time driver's statement,
+  a script and a dynamic module's load are each checked and run alone,
+  so their values are built at the types their end decides: every open
+  top-level cell that the types of the bindings the input made a later
+  input can name (its scope's, a lowering's excluded) and of its value
+  reach settles as the terminal walk settles one (the lower bounds'
+  witness, else ⊥, nothing of it having been built), and every top-level
+  cell they reach is `CellFact::Settled` (`settle_input` in
+  `compile_top` and `Module::compile_source`;
+  `typ::settle::settle_input`, one walk over all the types). A scheme's
+  cells stay open, as do a function type's own quantifiers and what
+  their bounds reach: a call copies them. A binding inside a
+  definition's body or an instance is reached only through what names
+  it: an instance's own cells are its run-time binds'. Each top-level
+  input, a load included, is a compile task of its own under `OwnWrites`
+  (`Input` in `compile_top` and `Module::compile_source`), as a module's
+  check is: a decision about a cell an earlier input made is refused and
+  not made, so a refused input leaves every earlier cell as it was, and
+  the refusal names the earlier bindings that hold the cell (a check
+  that fails after trying one is told that first, `Input::refused`: the
+  decision not made may be what it missed). What an earlier input left
+  open, a function type's own quantifier included, is one type to the
+  input's own check (`tvar::in_input`): `contains` compares no earlier
+  quantifier there as a fresh copy (`FnType::has_earlier_quantifier`), so
+  a value use that would decide one is refused (`let j = s.g`, `s` a
+  holder, then `app(j)` over `app: fn(f: fn(x: i64) -> i64)` or
+  `setf(&mut j)`; the refusal names `j`, not a type: declare `let j:
+  fn(x: i64) -> i64 = s.g`), while a call copies the quantifier as always; a rigid gate it
+  holds on an earlier input's cell records no write (`tvar::gated`:
+  inputs run one at a time), so a write as general as the binding
+  decides nothing. A cell
+  below a settled ⊥ is linked to the settled cell (`contains`' right
+  copy, `TVar::settled_bottom`): a function a later input defines that
+  writes an earlier binding is held to the binding's type, so `let y =
+  never()`, then `let p = |x| { y <- x; x }` makes `p` take `_` and
+  refuses `p(1)`. A refusal a settled ⊥ causes, on either side (a type
+  mismatch or a comparison's operands where the settled part is what
+  fails, `typ::tvar::settled_cause`; a select's coverage, a load's val
+  check), names the binding a later input can name that holds it, the
+  first made, with where it is declared (`typ::tvar::settled_note`). A write the binding cannot hold is told the declaration that
+  holds it, the binding's type with each settled ⊥ written as what the
+  write puts there (`Type::fill_settled`: `let e = []`, then `e <- [1]`,
+  is told `declare e: Array<i64>`). A load's check of its signature
+  reopens no settled cell (`Type::unbind_tvars`), and one that would
+  reopen any other cell of the program's is refused, as any decision is.
+  A declaration site
+  a refusal names is printed one way (`typ::tvar::BoundAt`): the line and
+  column, and the file, module or REPL input's text where that is not
+  the refused input's. Pins: `lang::repl_inputs`.
 - ⊥ never binds a cell: the `(TVar-unbound, ⊥)` arm of `contains` is
   no-bind (⊥ is contained by whatever the cell may become, so binding
   gains nothing and forecloses the cell's writers), and `flatten_set`

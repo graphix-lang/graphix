@@ -2867,7 +2867,7 @@ impl PendingSettle {
         for s in frame.iter() {
             let res = match s {
                 PendingSettle::Operand { tv, spec } => (tv.settle(env), spec),
-                // CR claude for claude: [bug/high] In the REPL a `let` over ⊥ that a
+                // XCR claude for claude: [bug/high] In the REPL a `let` over ⊥ that a
                 // lambda writes is ⊥ for the inputs after it, and the lambda keeps cells
                 // of its own, so a later input calls it at any type and the binding holds
                 // a value of each: inputs `let y = never()`, `let p = |x| { y <- x; x }`,
@@ -2912,6 +2912,104 @@ impl PendingSettle {
                 // finds nothing; the same as a script is refused. D9 (a)'s settle at an
                 // input's end should refuse it. probe
                 // ~/ptmp/cr29/scratch/r14-A/fix2/r7b.txt
+                // 2026-11-04 claude: Built D9 (a) on cr49-D: each top-level input (a REPL
+                // statement, a script, a dynamic load: compile_top,
+                // Module::compile_source) settles at its end every open top-level cell the
+                // types of the bindings a later input can name and of its value reach
+                // (typ::settle::settle_input: lower bounds' witness, else bottom;
+                // CellFact::Settled), and contains' right copy below a settled bottom
+                // links the cell to it (TVar::held_bottom), so p's parameter is bottom and
+                // p(1) is refused, the TypeMismatch naming y. rp5, rp10, rp11 and the
+                // dynamic-module dm8/dm2 are refused (dm8: val h is declared fn(x: 'a) ->
+                // 'a but implemented fn(x: _)). Pins that fail without it:
+                // lang::repl_inputs::function_write_is_held_to_an_earlier_binding,
+                // bottom_let_settles_at_its_input,
+                // generic_annotation_over_a_held_write_is_refused,
+                // load_write_is_held_to_the_program_binding (twins
+                // annotated_binding_takes_a_function_write,
+                // load_write_to_an_annotated_binding). Needs a soak.
+                // 2026-11-04 claude: Review r14 fixes (cr49-D): a refusal over a settled
+                // bottom names the binding on either side of a mismatch, in a comparison,
+                // a select's coverage and a load's val check (typ::tvar::settled_note,
+                // which reads the bindings a later input can name, so a cell a non-place
+                // &mut made is told as its let); the link below a settled bottom is
+                // TVar::settled_bottom, the required-bottom arm dropped (no program
+                // changed by it). Correction to the note above:
+                // bottom_let_settles_at_its_input fails without the fix by its message
+                // alone, since main refuses y <- 1 too (inferred from an earlier use). A
+                // binding whose type still holds a scheme's cells at its input's end is
+                // generic to later inputs (Env::poly_binds), so a function read out of a
+                // holder is copied at every use. Pins that fail without these:
+                // lang::repl_inputs::refusals_over_a_settled_value_name_the_binding,
+                // generic_annotation_over_a_held_write_is_refused,
+                // load_write_is_held_to_the_program_binding,
+                // earlier_generic_value_is_copied_at_each_use,
+                // write_as_general_into_a_settled_generic_binding (twins
+                // annotated_values_pass_where_a_settled_one_is_named,
+                // annotated_earlier_value_takes_a_writable_reference,
+                // annotated_generic_binding_takes_a_write).
+                // 2026-11-04 claude: Review r14 round 2 fixes (cr49-D): the input-end
+                // generalization made a binding generic that a write reaches (D-r2-1 m10,
+                // m9, m7: let (j, r) = { let j0 = s.g; (j0, &mut j0) }, then setf(r)
+                // decided only a copy and j("s") passed the check, refused by its run-time
+                // bind; D-r2-2 o4: j = k2, k2 a <- target), against main and the script
+                // form. It now skips a binding holding a cell a read copies that a <-
+                // target's type holds (a &mut's referent is one) or that a type the input
+                // made holds beneath a &mut (lib.rs written_cells): those cells stay the
+                // earlier input's, and a later decision is refused by OwnWrites, naming
+                // them. A write into a binding whose type holds a settled bottom, or no
+                // variable, is told by write_mismatch (settled, declare), not as one into
+                // a generic binding; declaration sites print one way (typ::tvar::BoundAt).
+                // Pins that fail without these:
+                // lang::repl_inputs::written_value_is_generic_to_no_later_input (without
+                // the <- target cells: setf(r) accepted; without the &mut walk: setf(q)
+                // accepted; without the annotatable filter: names &mut {..} first),
+                // refused_input_decides_no_earlier_open_cell (let z = m::j accepted),
+                // write_as_general_into_a_settled_generic_binding (the settled message),
+                // empty_literal_settles_at_its_input (the site); twin
+                // annotated_written_value_takes_a_write.
+                // 2026-11-04 claude: Review r14 final (fix round 3, cr49-D): the input-end
+                // generalization the notes above describe (poly_binds at an input's end,
+                // Type::copied_by_read, copied_cells, written_cells, Connect's general and
+                // its gate filter; 048841818, c14f110aa) is removed: it went beyond the
+                // ruling and failed review twice (a write through &mut or <-, then a &mut
+                // under an abstract type, decided only a copy). In its place what an
+                // earlier input left open, a function type's own quantifier included, is
+                // one type to a later input's own check (OwnWrites::enter_input,
+                // tvar::in_input: FnType::has_earlier_quantifier compares no earlier
+                // quantifier as a fresh copy there; tvar::gated: a rigid gate the input
+                // holds on an earlier input's cell records no write), so a later value use
+                // that would decide it is refused naming the binding (let j = s.g, then
+                // app(j), [j, |x: i64| -> i64 x], a select arm, setf(&mut j); h6's
+                // setf(h.0) over H(&mut {..})), while a call still copies it;
+                // Input::refused tells a refusal of an input that tried such a decision so
+                // first. A dynamic load is an input of its own under OwnWrites (Input,
+                // entered by Module::compile_source): dl6, dl4/main2, dl7, dl8, ld1, ld3,
+                // ld4 are refused naming the bindings, and a refused load decides nothing.
+                // The settled note goes only on a refusal a settled bottom causes
+                // (settled_cause_note; sn1). Pins that fail without these:
+                // lang::repl_inputs::load_decides_no_earlier_open_cell and
+                // load_decides_no_type_the_program_left_open (the load compiled untasked:
+                // loaded), earlier_value_is_decided_by_no_later_use (in_input dropped: [j,
+                // ..] accepted; Input::refused dropped: setf(&mut j) names nothing),
+                // write_as_general_decides_nothing (gated dropped: j <- s.g refused),
+                // settled_note_goes_where_the_settled_part_refuses (the note on u's
+                // mismatch); c14f110aa's generalization accepts what
+                // earlier_value_is_decided_by_no_later_use and
+                // write_through_a_reference_decides_no_earlier_type refuse (REPL probes
+                // z6, h6). Twins: annotated_earlier_value_takes_a_later_use,
+                // annotated_written_value_takes_a_write,
+                // load_takes_an_annotated_earlier_binding,
+                // load_reads_an_annotated_program_binding. Pins the notes above name that
+                // are gone or renamed: earlier_generic_value_is_copied_at_each_use,
+                // annotated_earlier_value_takes_a_writable_reference and
+                // annotated_earlier_quantifier_takes_a_later_annotation (now
+                // earlier_value_is_decided_by_no_later_use and its twin),
+                // written_value_is_generic_to_no_later_input
+                // (write_through_a_reference_decides_no_earlier_type),
+                // write_as_general_into_a_settled_generic_binding and
+                // annotated_generic_binding_takes_a_write (now ..._settled_binding). Needs
+                // a soak.
                 PendingSettle::LetOverBottom { tv, init, spec } => {
                     let bottom = init.with_deref(|t| matches!(t, Some(Type::Bottom)));
                     (if bottom { tv.settle_or_bottom(env) } else { Ok(()) }, spec)
@@ -4211,7 +4309,7 @@ fn compile_top<R: Rt>(
     build: impl FnOnce(&mut ExecCtx<'_, R>, &Expr, ExprId) -> Result<(Node<R>, Scope)>,
 ) -> Result<(Node<R>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
-    let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
+    let input = Input::enter();
     let top_id = spec.id;
     ctx.open_compile_frame(top_id);
     let saved = Saved::take(ctx);
@@ -4222,6 +4320,7 @@ fn compile_top<R: Rt>(
     let (mut node, out_scope) = match compiled {
         Ok(n) => n,
         Err(e) => {
+            let e = input.refused(ctx, e);
             ctx.drop_deferred();
             saved.restore(ctx);
             return Err(e);
@@ -4229,9 +4328,11 @@ fn compile_top<R: Rt>(
     };
     info!("compile time {:?}", st.elapsed());
     if let Err(err) = check_pending_imports(ctx) {
+        let err = input.refused(ctx, err);
         return Err(abandon_stmt(ctx, node, saved, err));
     }
     if let Err(e) = check_and_fuse_inner(ctx, flags, &mut node, verify) {
+        let e = input.refused(ctx, e);
         return Err(abandon_stmt(ctx, node, saved, e));
     }
     ctx.apply_deferred();
@@ -4241,7 +4342,150 @@ fn compile_top<R: Rt>(
     {
         return Err(abandon_stmt(ctx, node, saved, e));
     }
+    if let Err(e) = input.end(ctx, &ctx.env.lexical, Some(node.typ())) {
+        return Err(abandon_stmt(ctx, node, saved, expr::At::at(e, &spec)));
+    }
     Ok((node, out_scope))
+}
+
+// CR claude for claude: [readability/low] An input's refusal over an earlier input's cell
+// names bindings but never the type to declare ("this input would decide a type of an
+// earlier input: annotate `j` (line 1, column 5 in `let j = s.g`)"): OwnWrites records only
+// the cell that would be decided, not what it would have become. It also names bindings
+// whose annotation cannot lift the refusal (`r` from `let r = &j`, g1; `w`, ld0 and n2), and
+// a refused load names only the first binding it tried to decide (rl1 names j; its check
+// then fails on fs too). Fix: record the would-be type beside the cell in OwnWrites and print
+// it as the declaration, and name only bindings whose written type holds the cell. Review
+// r14 D-r4-1. probe: ~/ptmp/cr29/scratch/review-r14/D-r4-1/{all/review-r14_D-r2-1__g1.txt,
+// new/rl1.txt} (./r.sh lane FILE) (input-refusal-type-01)
+/// A top-level input while it compiles: a REPL input, a script or a
+/// dynamic module's load. It is a compile task of its own: what an
+/// earlier input made reads as decided, and a decision about it is not
+/// made.
+pub(crate) struct Input {
+    since: BindId,
+    writes: typ::tvar::OwnWrites,
+    _task: typ::tvar::InTask,
+    _level: typ::tvar::AtLevel,
+}
+
+impl Input {
+    pub(crate) fn enter() -> Self {
+        use typ::tvar::{AtLevel, InTask, Level, OwnWrites, new_task};
+        let _level = AtLevel::enter(Level::TOP);
+        let task = new_task();
+        let _task = InTask::enter(task);
+        let writes = OwnWrites::enter_input(task);
+        Self { since: BindId::new(), writes, _task, _level }
+    }
+
+    /// The end of the input, once its checks pass: what it leaves open
+    /// in the types of the bindings `named` names that it made, and of its
+    /// value `typ`, settles ([`settle_input`]); a decision it would have
+    /// made about an earlier input's type refuses it, naming the bindings
+    /// that hold the type.
+    pub(crate) fn end<R: Rt>(
+        &self,
+        ctx: &CompileCtx<R>,
+        named: &env::Lexical,
+        typ: Option<&Type>,
+    ) -> Result<()> {
+        settle_input(ctx, named, self.since, typ)?;
+        match self.earlier_decision(ctx) {
+            None => Ok(()),
+            Some(m) => bail!("{m}"),
+        }
+    }
+
+    /// `e`, a refusal of the input, first told as the decision about an
+    /// earlier input's type it would have made, where it tried one: not
+    /// made, it may be what the check then missed.
+    pub(crate) fn refused<R: Rt>(
+        &self,
+        ctx: &CompileCtx<R>,
+        e: anyhow::Error,
+    ) -> anyhow::Error {
+        match self.earlier_decision(ctx) {
+            None => e,
+            Some(m) => e.context(m),
+        }
+    }
+
+    fn earlier_decision<R: Rt>(&self, ctx: &CompileCtx<R>) -> Option<CompactString> {
+        let w = self.writes.foreign()?;
+        Some(format_compact!(
+            "this input would decide a type of an earlier input: {}",
+            earlier_binds(ctx, self.since, &w)
+        ))
+    }
+}
+
+/// The bindings an earlier input made (ids below `since`) whose types
+/// hold what `w` wrote, as the declarations to annotate.
+fn earlier_binds<R: Rt>(
+    ctx: &CompileCtx<R>,
+    since: BindId,
+    w: &typ::tvar::ForeignWrite,
+) -> CompactString {
+    use std::fmt::Write;
+    let mut held: LPooled<Vec<&Arc<env::Bind>>> = ctx
+        .env
+        .by_id
+        .iter()
+        .map(|(_, b)| b)
+        .filter(|b| b.id < since && annotatable(b) && w.held_by(&b.typ))
+        .collect();
+    held.sort_unstable_by_key(|b| b.id);
+    let mut out = CompactString::new("");
+    for (i, b) in held.iter().take(3).enumerate() {
+        let sep = if i == 0 { "annotate " } else { ", " };
+        let _ = write!(out, "{sep}`{}` ({})", b.name, typ::tvar::BoundAt(b, None));
+    }
+    if out.is_empty() {
+        out.push_str("annotate the binding it decides");
+    }
+    out
+}
+
+/// Whether a refusal may ask for `b` to be annotated: a lowering's binding
+/// may not, nor the cell a reference to an unnamed expression binds,
+/// which is named by its text (`&mut never()`).
+fn annotatable(b: &env::Bind) -> bool {
+    !is_lowered(&b.name) && !b.name.starts_with('&')
+}
+
+/// Settle what an input leaves open in the types of the bindings it made
+/// (ids from `since`) that `named` names, where a later input can reach
+/// them, and of its value `typ`, so a later input reads it as decided
+/// ([`typ::settle::settle_input`]). A binding inside a definition's body
+/// or an instance, and one a lowering made, is reached only through what
+/// names it.
+fn settle_input<R: Rt>(
+    ctx: &CompileCtx<R>,
+    named: &env::Lexical,
+    since: BindId,
+    typ: Option<&Type>,
+) -> Result<()> {
+    let mut made: LPooled<Vec<&Arc<env::Bind>>> = named
+        .binds
+        .into_iter()
+        .flat_map(|(_, names)| names.into_iter().map(|(_, id)| *id))
+        .filter(|id| *id >= since)
+        .filter_map(|id| ctx.env.by_id.get(&id))
+        .filter(|b| !is_lowered(&b.name))
+        .collect();
+    made.sort_unstable_by_key(|b| b.id);
+    made.dedup_by_key(|b| b.id);
+    let mut types: LPooled<Vec<&Type>> = made.iter().map(|b| &b.typ).collect();
+    types.extend(typ);
+    typ::settle::settle_input(&ctx.env, &types).map_err(|(i, e)| match made.get(i) {
+        Some(b) => e.context(format_compact!(
+            "settling the type of `{}` ({})",
+            b.name,
+            typ::tvar::BoundAt(b, None)
+        )),
+        None => e,
+    })
 }
 
 pub(crate) fn check_attribute_census<R: Rt>(ctx: &CompileCtx<R>) -> Result<()> {
@@ -4296,7 +4540,7 @@ pub(crate) fn with_attribute_frame<R: Rt, T>(
     result
 }
 
-// CR claude for claude: [bug/low] A REPL input its check refuses keeps what the
+// XCR claude for claude: [bug/low] A REPL input its check refuses keeps what the
 // check wrote into the cells of earlier inputs' bindings: inputs `let y = []`, `let p:
 // fn<'b: Any>(x: 'b) -> 'b = |x| { y <- [x]; x }` (refused, rightly: the escape check
 // runs after the containment, which bound y's element cell to the quantifier), then
@@ -4317,6 +4561,50 @@ pub(crate) fn with_attribute_frame<R: Rt, T>(
 // bottom, and a later input that would decide one is refused ("annotate it", naming
 // the binding); a refused input's cell writes are undone; a function's write to an
 // earlier input's binding is held to that binding's type.
+// 2026-11-04 claude: Built on cr49-D: each top-level input is a compile task of its
+// own under OwnWrites (compile_top), so a decision about an earlier input's cell is
+// not made and refuses the input, naming the earlier bindings that hold it; and the
+// input-end settle leaves no top-level cell of an earlier input open. rq_b3 and rq_b6
+// now leave y Array<_> (y <- [1] is told to declare y: Array<i64>). Pins that fail
+// without it: lang::repl_inputs::refused_input_leaves_earlier_types (without the
+// settle), later_annotation_of_an_earlier_quantifier_is_refused (without OwnWrites:
+// the refused annotation decided z's quantifier and z(1.5, 2.5) was refused).
+// 2026-11-04 claude: Correction to the note above: without OwnWrites the annotation
+// let v: fn(x: i64, y: i64) -> i64 = z was accepted, deciding z's quantifier, not
+// refused. That pin is gone: z now leaves its input generic (Env::poly_binds), so the
+// annotation copies it and z(1.5, 2.5) still gives 4.0
+// (lang::repl_inputs::earlier_generic_value_is_copied_at_each_use). No REPL shape
+// found after that reaches OwnWrites, the net; that a decision about an earlier task's
+// cell is not made is pinned by
+// typ::tvar::tests::a_stolen_job_runs_under_its_spawners_context, and
+// refused_input_leaves_earlier_types pins the settle side.
+// 2026-11-04 claude: Review r14 round 2 (D-r2-1, D-r2-2): correction to the note
+// above: REPL shapes do reach OwnWrites, and it is what keeps them from main's wrong
+// values: a refused input that would decide a module's <-target's scheme cell (D-r2-2
+// o3: without OwnWrites the refused input decides k at i64 and m::k("s") is refused),
+// a later input deciding a callback's cell an earlier input left in a value (D-r2-1
+// d14b-f: main computes str::len of an i64 as 0), and a write through an earlier &mut
+// (m1/m5/m6, m9/m10 since this round). Pins that fail without OwnWrites (its enter
+// dropped and foreign() None in compile_top):
+// lang::repl_inputs::refused_input_decides_no_earlier_open_cell,
+// later_input_decides_no_leaked_callback_cell,
+// written_value_is_generic_to_no_later_input; twins
+// annotated_module_binding_takes_a_later_use,
+// annotated_callback_result_takes_a_later_use, annotated_written_value_takes_a_write.
+// 2026-11-04 claude: Review r14 final (fix round 3, cr49-D): a refused dynamic load
+// decides nothing either: the load is a compile task under OwnWrites (Input, entered
+// by Module::compile_source), so dl7's load, refused for let bad: string = 1 after
+// deciding m::k's cell, leaves m::k as it was (m::k("s") still gives "s"). Pin that
+// fails without it: lang::repl_inputs::load_decides_no_earlier_open_cell. The
+// OwnWrites pin the last note names written_value_is_generic_to_no_later_input is now
+// write_through_a_reference_decides_no_earlier_type, with h6's &mut under an abstract
+// type.
+// 2026-11-04 claude: Correction (review r14 D-r4-2): the earlier note saying z now
+// leaves its input generic (Env::poly_binds) and that
+// lang::repl_inputs::earlier_generic_value_is_copied_at_each_use pins it describes the
+// input-end generalization, removed in fix round 3 (8140b9369). At HEAD the annotation
+// `let v: fn(x: i64, y: i64) -> i64 = z` is refused, naming fs and z; that pin is
+// gone, and earlier_value_is_decided_by_no_later_use pins the refusal.
 /// Unwind a statement that was built but failed its checks: delete what
 /// it registered (runtime refs, lambda and `<-` target entries), then
 /// restore the environment it started from.

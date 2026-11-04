@@ -1054,8 +1054,12 @@ impl Reach {
                 true => " (a guarded slice arm cannot establish length coverage)",
                 false => "",
             };
+            let settled = match crate::typ::tvar::settled_note(env, &[scrut]) {
+                Some(n) => format_compact!(": {n}"),
+                None => format_compact!(""),
+            };
             Err(anyhow!(
-                "missing match cases: no arm covers {}{gap}{refutable}{guarded}",
+                "missing match cases: no arm covers {}{gap}{refutable}{guarded}{settled}",
                 self.atype
             ))
         })

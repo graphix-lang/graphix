@@ -6483,7 +6483,7 @@ async fn written_after_generalized_is_held_to_it() -> Result<()> {
     let (tx, _rx) = tokio::sync::mpsc::channel(1000);
     let ctx = init(tx, crate::TEST_REGISTER).await?;
     let _f = ctx.rt.compile(ArcStr::from("let f = |x| x")).await?;
-    let g = "let g = select true { true => f, false => f }; let s = g(\"s\")";
+    let g = "let s = { let g = select true { true => f, false => f }; g(\"s\") }";
     let _s = ctx.rt.compile(ArcStr::from(g)).await?;
     let narrow = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 1")).await.unwrap_err();
     let narrow = format!("{narrow:#}");

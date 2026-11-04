@@ -11,7 +11,7 @@ use crate::{
         Bound, FnType, Mutability, TVar, Type,
         contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
-        tvar::{CellFact, Fresh, would_cycle_open},
+        tvar::{CellFact, Fresh, Level, would_cycle_open},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -170,6 +170,29 @@ impl TVar {
             self.settle(env)?;
         }
         self.settle_bottom()
+    }
+
+    /// Bind an open cell whose values are all built: to what bounds it
+    /// from below, else to its conjunction's witness, else to ⊥, since
+    /// nothing of it was built ([`settle_input`]).
+    fn settle_built(&self, env: &Env) -> Result<()> {
+        let fed = self.cell().read().facts.contains(CellFact::BottomFed)
+            && self
+                .cell_lower()
+                .iter()
+                .all(|l| l.with_deref(|l| matches!(l, Some(Type::Bottom))));
+        if !fed && let Ok(w) = self.witness(env)? {
+            self.bind(w);
+            return Ok(());
+        }
+        if self.cell().read().facts.contains(CellFact::CycleRefused) {
+            bail!(InfiniteType)
+        }
+        if graphix_dbg_bind() {
+            eprintln!("SETTLE-BUILT '{}({:x})", self.name, self.cell_addr());
+        }
+        self.bind(Type::Bottom);
+        Ok(())
     }
 
     fn not_concrete(&self) -> anyhow::Error {
@@ -483,6 +506,82 @@ impl Outputs<'_> {
             t => t.for_each_child(&mut |c| self.walk(c, inputs, in_nodes)),
         })
     }
+}
+
+/// The end of the check of an input (a REPL input, a script, a dynamic
+/// load), over `types`, the types of what it made that a later input can
+/// reach: every open top-level cell of the input's own they reach settles
+/// as a terminal settle does, to ⊥ where nothing bounds it, and is
+/// [`CellFact::Settled`]. A scheme's cells stay open, as do a quantifier of
+/// a function type they hold and what its bound reaches: each use copies
+/// them. Each part is walked once, whichever type reaches it first; a
+/// refusal comes with the index of that type.
+pub fn settle_input(
+    env: &Env,
+    types: &[&Type],
+) -> std::result::Result<(), (usize, anyhow::Error)> {
+    let mut seen: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    let mut nodes: LPooled<AddrSet> = LPooled::take();
+    let mut reached: LPooled<Vec<(usize, TVar)>> = LPooled::take();
+    let mut walked: LPooled<AHashSet<usize>> = LPooled::take();
+    let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    for (i, t) in types.iter().enumerate() {
+        reach_new(t, i, &mut seen, &mut nodes, &mut reached);
+        t.quantifiers_seen(&mut walked, &mut |_, tv| {
+            if let Some(open) = tv.open_cell() {
+                quantifiers.insert(open.cell_addr(), open);
+            }
+        });
+    }
+    let owned: LPooled<Vec<TVar>> = quantifiers.values().cloned().collect();
+    for tv in owned.iter() {
+        for c in tv.cell_constraints().iter() {
+            reached_cells(c, &mut quantifiers)
+        }
+    }
+    let top = |tv: &TVar| {
+        tv.level() == Level::Top
+            && !tv.earlier_task()
+            && !tv.is_formal_quantifier()
+            && !quantifiers.contains_key(&tv.cell_addr())
+    };
+    for (i, tv) in reached.iter().filter(|(_, tv)| top(tv)) {
+        if !tv.is_bound() && !tv.is_rigid() {
+            tv.settle_built(env).map_err(|e| (*i, e))?
+        }
+    }
+    reached.iter().filter(|(_, tv)| top(tv)).for_each(|(_, tv)| tv.mark_settled());
+    Ok(())
+}
+
+/// [`reached`], each cell met for the first time pushed with `owner`.
+fn reach_new(
+    t: &Type,
+    owner: usize,
+    seen: &mut AHashMap<usize, TVar>,
+    nodes: &mut AddrSet,
+    out: &mut Vec<(usize, TVar)>,
+) {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            if seen.insert(tv.cell_addr(), tv.clone()).is_none() {
+                out.push((owner, tv.clone()));
+                let (bound, cons, below) = {
+                    let cell = tv.cell();
+                    let cell = cell.read();
+                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
+                };
+                for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
+                    reach_new(t, owner, seen, nodes, out)
+                }
+            }
+        }
+        t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
+        Type::Fn(ft) => {
+            ft.for_each_part(&mut |t, _| reach_new(t, owner, seen, nodes, out))
+        }
+        t => t.for_each_child(&mut |c| reach_new(c, owner, seen, nodes, out)),
+    })
 }
 
 impl Type {

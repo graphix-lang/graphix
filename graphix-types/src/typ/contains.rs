@@ -12,14 +12,14 @@ use crate::{
         setops::{strictly_identical, union_identical},
         tvar::{
             CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cycle_toward,
-            would_cycle_inner,
+            settled_cause_note, would_cycle_inner,
         },
     },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use arcstr::ArcStr;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::{BitFlags, bitflags};
 use netidx_value::Typ;
 use nohash::IntMap;
@@ -1393,6 +1393,8 @@ pub struct TypeMismatch {
     /// A cycle under a constructor refused a pair of cells on the way: no
     /// finite type holds both.
     infinite: bool,
+    /// [`settled_cause_note`] of the two sides.
+    settled: Option<CompactString>,
 }
 
 impl TypeMismatch {
@@ -1439,6 +1441,9 @@ impl std::fmt::Display for TypeMismatch {
                     f,
                     ": the two {name} are different definitions, at {p0} and {p1}"
                 )?;
+            }
+            if let Some(note) = &self.settled {
+                write!(f, ": {note}")?;
             }
             Ok(())
         })
@@ -1937,6 +1942,7 @@ impl Type {
             apart: same_name_apart(self, t),
             kept_bare: kept_bare(env, self, t),
             infinite: false,
+            settled: settled_cause_note(env, self, t, false),
         })
     }
 
@@ -3052,7 +3058,13 @@ impl Type {
                     if !commit_cell_bounds(t1, flags, env, hist, &b0)? {
                         return Ok(false);
                     }
-                    t1.copy(t0, b0);
+                    // below a ⊥ its input settled the cell can be nothing
+                    // else: linked, so a refusal over it finds the binding
+                    // that holds the settled cell
+                    match t0.settled_bottom() {
+                        true => t1.copy(t0, tt0.clone()),
+                        false => t1.copy(t0, b0),
+                    }
                 }
                 Ok(true)
             }

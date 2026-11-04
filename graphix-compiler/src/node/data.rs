@@ -1270,7 +1270,7 @@ impl<R: Rt> Construct<R> {
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {
                 if let Type::TVar(tv) = p {
-                    // CR claude for claude: [bug/medium] In the REPL a constructed
+                    // XCR claude for claude: [bug/medium] In the REPL a constructed
                     // abstract value's parameter that its input leaves open is decided
                     // by a later input, after the value was built at ⊥: with `type
                     // B<'x> = Abstract<i64>; type R<'a> = [`Nil, `Cons('a, R<'a>)]`,
@@ -1302,6 +1302,19 @@ impl<R: Rt> Construct<R> {
                     // refused ("annotate it", naming the binding); a refused input's
                     // cell writes are undone; a function's write to an earlier input's
                     // binding is held to that binding's type.
+                    // 2026-11-04 claude: Closed by the input-end settle (D9 a, cr49-D):
+                    // t = B(1)'s parameter is bottom from its input's end, so select t {
+                    // B<i64> as _ => 1 } is refused at its check (missing match cases:
+                    // no arm covers B<_>) and v <- never<B<..>>() is told to declare v:
+                    // B<..>. Pin that fails without it:
+                    // lang::repl_inputs::abstract_parameter_settles_at_its_input; twin
+                    // annotated_abstract_parameter_is_tested.
+                    // 2026-11-04 claude: Review r14 (cr49-D): the select's refusal now
+                    // names t (missing match cases: no arm covers B<_>: it holds the
+                    // type of t ...), and f(t) over |x: B<i64>| does too; pin
+                    // abstract_parameter_settles_at_its_input fails without either note
+                    // (select's settled_note, TypeMismatch over both sides); twin
+                    // annotated_abstract_parameter_is_tested.
                     super::defer_settle(ctx, || crate::PendingSettle::Operand {
                         tv: tv.clone(),
                         spec: self.spec.clone(),
