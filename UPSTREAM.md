@@ -153,8 +153,13 @@ the state of a fix, and Graphix's side.
   `handlebars::template::Template::compile2`.
 - **Upstream fix.** Track line and column as the parse advances (or index
   the line starts once) instead of rescanning from the start.
-- **Graphix's side.** Not worked around: it costs time, never an answer,
-  and a compiled template is cached per thread (`FastMemo`). Not reported.
+- **Graphix's side.** Worked around where it met the depth bound:
+  `surely_deeper` in `stdlib/graphix-package-hbs/src/lib.rs` reads the text
+  by the grammar and refuses one surely nested past `MAX_BLOCK_DEPTH` before
+  handlebars compiles it (it gives up on what it cannot read, and the
+  compile measures). A long template within the bound still compiles in
+  quadratic time; a compiled template is cached per thread (`FastMemo`).
+  Not reported.
 
 ## sled 0.34.7: a dropped reservation never wakes its subscriber
 
