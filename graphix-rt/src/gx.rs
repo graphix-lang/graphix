@@ -641,7 +641,7 @@ impl<X: GXExt> GX<X> {
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
             || !self.ctx.event.custom.lock().is_empty();
-        // CR claude for eric: [perf/medium] Every cycle's update pass runs in
+        // XCR claude for eric: [perf/medium] Every cycle's update pass runs in
         // `block_in_place`, which hands this worker's core to a blocking-pool
         // thread, so a busy runtime's passes land on a different OS thread from
         // cycle to cycle: a program on a 1 ms timer keeps 109 to 134
@@ -733,6 +733,34 @@ impl<X: GXExt> GX<X> {
         // the growth is not shown to stop short of exhausting memory (1.9 GB in
         // 15 min on a 1 ms timer), so this reads as [perf/high]; the CR's text
         // stays as written.
+        // 2026-11-03 claude: Option (c), Eric's ruling, built in a65acf104: on a
+        // multi-thread tokio runtime the run loop runs on a thread of its own
+        // (graphix-runtime, WORKER_STACK) through Handle::block_on and every pass
+        // runs inline there; a current-thread tokio runtime keeps the task. A
+        // task of the tokio runtime keeps the thread (graphix-rt RuntimeThread):
+        // its drop, which tokio makes at shutdown before the timer driver stops,
+        // aborts the control, drops the loop at its next await and joins the
+        // thread, so a dropped tokio runtime ends a live runtime, wedged or not,
+        // without the timer panic and with no contract for the embedder; the last
+        // handle's drop aborts the control and drops a oneshot that drops the
+        // loop at its next await. Pins: graphix-rt/tests/pass_thread.rs
+        // every_pass_runs_on_one_thread (main's code: 2000 passes on 2 threads),
+        // graphix-rt/tests/runtime_thread.rs (on main's code a tokio runtime
+        // dropped under a wedged runtime hangs in its drop; with the keeper's
+        // drop disabled the runtime's thread panics 'A Tokio 1.x context was
+        // found, but it is being shutdown' and outlives the tokio runtime), and
+        // forked_heap_settles under slow-tests, which with netidx 09c5f584's
+        // bound passes on main's code too (0 to 98 bytes a cycle against 0 to
+        // 40). Measured against fe2cdbcde's runtime on the same netidx, 5 min at
+        // a 1 ms timer: l_flat_timer and partial_timer flat at 64 to 75 MB in all
+        // six fusion and GRAPHIX_PAR settings, main 71 to 142 MB on 82 to 178
+        // threads against 35; s_shrink --no-fusion PAR=off flat at 111 MB against
+        // main's 240 to 455, auto 202 to 318 (flat the last 2.5 min) against 226
+        // to 407, force 336 to 458 against 356 to 470 (forked-slot-churn-01). The
+        // 100k-cycle self-loop costs 0.8% more user instructions (4.89 G against
+        // 4.85) and less CPU time (765 to 785 ms against 799 to 844);
+        // par_symbolic, a 1 ms timer probe and startup are unchanged. Probes and
+        // figures: ~/ptmp/cr29/scratch/r11-M/.
         let control = self.ctx.control.clone();
         graphix_compiler::with_control(&control, || {
             self.update_nodes(&mut batch);

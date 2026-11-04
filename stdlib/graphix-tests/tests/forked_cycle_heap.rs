@@ -190,6 +190,17 @@ fn forked_heap_settles() {
     // once runtime-thread-spread-01 lands, then fork this case. Probes:
     // ~/ptmp/cr29/scratch/r10-M/r13/ (expc_toggles.diff, shrink_expc*.txt,
     // final_expc*.txt, shrink_long_expc_bound*.txt). (forked-slot-churn-01)
+    // 2026-11-03 claude: Measured under (c) as built (a65acf104) with netidx
+    // 09c5f584's bound: this shrinking case forked (Force, 16 eval workers; a
+    // CHURN_ONLY variant of the test) read 176 and 251 bytes a cycle between
+    // 6000 and 12000 cycles (load 82 and 43), under the 1024 limit but not
+    // shown to settle. In the shell, s_shrink.gx --no-fusion GRAPHIX_PAR=force
+    // went 336 to 458 MB RSS in 5 min under (c) and 356 to 470 on fe2cdbcde's
+    // runtime, so the runtime thread does not move it; beside it under (c) with
+    // MALLOC_ARENA_MAX=2 it held at 156 to 167 MB (373 to 454 without): most of
+    // the forced growth is glibc's per-thread arenas over the eval workers, not
+    // live data. Probes: ~/ptmp/cr29/scratch/r11-M/ (forked_churn.txt,
+    // rss_s_shrink.txt, rss_arena.txt).
     assert_heap_settles("shrinking, serial", "n", SHRINK, SHRINKING, false, Off);
     let (regions, _) = assert_heap_settles("fused", "n", FLAT_MAP, FIXED, true, Force);
     assert!(regions > 0, "nothing fused");
