@@ -328,6 +328,11 @@ fn program(shape: &str, d: usize) -> String {
         // a_chain_of_bounds_declared_last_link_first_checks_in_linear_time (30000 links
         // under 14 G; without the change it retires 14.0 G and fails). Other shapes are
         // still quadratic: chainbounds-neighbours-01, open-cell-chain-01.
+        // 2026-11-04 claude: Review r14 round 3: linear is the check's (--check,
+        // CheckOnly), which is all this case and its pins run. Elaborating the same
+        // chain, which every run, build and --expand does, is still cubic, as on main:
+        // chainbounds-elab-01 (typedef and union neighbours:
+        // chainbounds-elab-neighbours-01).
         "chainbounds" | "chainboundsreversed" => {
             let mut bounds = (0..d)
                 .map(|i| format!("'a{i}: Array<'a{}>", i + 1))
@@ -719,6 +724,21 @@ fn a_chain_of_bounds_checks_in_linear_time() {
 // lane K. probes: ~/ptmp/cr29/scratch/review-r14/K-r1-1/p/{fnchain,fnret,
 // valued,twoconj,rank2}_*.gx (gen.py SHAPE N OUT), lane_sweep.txt,
 // callgrind/ (chainbounds-neighbours-01)
+// 2026-11-04 claude: Review r14 round 3: two more shapes check in quadratic
+// time. An impl head carrying the chain (impl<'a0: Array<'a1>, .., 'aN: Number>
+// Tr for ('a0, .., 'aN)): 1.09 / 4.40 / 17.9 / 71.8 G net at 250 / 500 / 1000 /
+// 2000 links, either order (main 1.5 / 7.9 / 48.0 G at 250-1000), through
+// traits::implements -> FnType::sig_matches -> SigPairs::finish ->
+// FnType::sig_bounds -> contains -> TVar::merge_one's would_cycle_inner and
+// contains::hold_rigid -> find_open_cell. An interface val with the chain (val
+// f: fn<chain>(x: (..)) -> (..) over an implementation with the same chain):
+// 0.40 / 1.41 / 5.50 G at 250 / 500 / 1000 (main 1.3 / 8.9 / 66.4 G), through
+// module::check_val -> Type::sig_matches -> the same sig_bounds -> hold_rigid /
+// find_open_cell. probes:
+// ~/ptmp/cr29/scratch/review-r14/K-r2-1/p/impl_{500,1000}.gx, mod_{500,1000}/
+// (gen.py impl[:rev] N OUT, genmod.py N DIR), lane_sweep1.txt, base_sweep1.txt,
+// cg/impl_*, cg/mod_*. Elaboration of the chain and of its typedef and union
+// neighbours: chainbounds-elab-01, chainbounds-elab-neighbours-01.
 /// The same chain declared last link first: seeding a conjunct walks no
 /// chain its successors' conjuncts already hold.
 #[test]

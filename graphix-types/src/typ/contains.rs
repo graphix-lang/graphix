@@ -527,6 +527,29 @@ fn exact(t: &Type) -> bool {
     })
 }
 
+// CR claude for claude: [perf/medium] Elaborating a chain of bounds is cubic
+// in its length, where its check is linear (chainbounds-cubic-01): `graphix
+// --expand --no-cache` of deep_nesting's chainbounds program costs, net of
+// the stdlib, 0.76 / 5.29 / 40.3 / 381 / 3520 G instructions at 250 / 500 /
+// 1000 / 2000 / 4000 links, declared in either order, and running it costs
+// the same (every run and build elaborates): about 50 T at CHAIN_DEPTH, a
+// hang. Main 968fa9bc0 is cubic too (1.29 / 9.26 / 73.0 G at 250 / 500 /
+// 1000). Callgrind at 500 links: GXLambda::new -> lambda::instance_sig ->
+// FnType::check_contains binds the signature's copy to the instance's
+// types, expanded trees that hold no cell (Array<Array<..Number>>); binding
+// 'a0 commits its conjunct Array<'a1> here and through cell_constraints_ok
+// / conjuncts_admit down the chain, and contains_dispatch's arms for an
+// open cell against a type run the occurs check (would_cycle_inner, 130,777
+// calls, about N²/2) over the type below each cell: CycleWalk::go is 4.75 G
+// of the 5.3 G net. A type that holds no cell reaches none, so those walks
+// answer nothing; making the count of walks and each walk's length small
+// needs what these walks lack (knowing a node holds no cell without walking
+// it, or a conjunct probed once a chain). Its fix gets a pin that elaborates
+// the chain at two depths (deep_nesting's checks_within under --expand).
+// Found by review r14 of lane K (round 3). probes:
+// ~/ptmp/cr29/scratch/review-r14/K-r2-1/p/{chainbounds_250,chainbounds_500,run_rev_500}.gx
+// (gen.py chainbounds[:rev] N OUT), expand_sweep.txt, cg/exp_{250,500}.out.gz
+// (chainbounds-elab-01)
 /// Give the open cells inside `t`, about to be bound into the cell, their
 /// part of each exact structural conjunct (`Array<i64> ⊇ Array<'y>` binds
 /// `'y`), each trait conjunct (every member of a union implements the
@@ -577,6 +600,23 @@ fn commit_cell_bounds(
     Ok(true)
 }
 
+// CR claude for claude: [perf/medium] Two neighbours of the chain of bounds
+// elaborate superlinearly, though each checks in linear time. A chain
+// through a typedef's parameter (`type T<'x> = Array<'x>`, `'a{i}:
+// T<'a{i+1}>`) costs 0.97 / 8.8 / 126 / 1951 G instructions net of the
+// stdlib under `graphix --expand --no-cache` at 60 / 125 / 250 / 500 links,
+// about N^4 (15x a doubling); a chain through a union (`'a{i}:
+// [Array<'a{i+1}>, null]`) 2.23 / 14.65 G at 250 / 500, cubic. Main
+// 968fa9bc0 costs the same (typedef 0.92 / 8.8 / 126.7 G at 60 / 125 / 250,
+// union 3.07 / 20.07 G). Callgrind for the typedef (60 against 125):
+// FnType::contains -> commit_cell_bounds -> here -> setops::union_identical
+// -> Identity::same / same_inner / all -> TypeRef::same_definition, 0.50 ->
+// 8.0 G. The direct, tree, formals, held-by-bound and uncalled shapes are
+// near linear under --expand. The chain itself: chainbounds-elab-01. Found
+// by review r14 of lane K (round 3). probes:
+// ~/ptmp/cr29/scratch/review-r14/K-r2-1/p/{typedef_125,typedef_250,union_500}.gx
+// (gen.py typedef|union N OUT), expand_sweep.txt, cg/td_{60,125}.out.gz
+// (chainbounds-elab-neighbours-01)
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int

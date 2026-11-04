@@ -1904,6 +1904,17 @@ fn is_self_param(a: &FnArgType) -> bool {
         }
 }
 
+// CR claude for claude: [perf/low] Nested rank-2 function types print in
+// time quadratic in their nesting: `let y: fn<'a: Any>(x: fn<'a: Any>(x: ..)
+// -> 'a) -> 'a = never()` N levels deep costs 0.037 / 0.143 / 0.446 / 1.56 /
+// 5.82 G instructions under `graphix fmt --stdout` at N = 14 / 40 / 80 / 160
+// / 320. format::layout, format::guard and this call FnType::constraint_view
+// at every level, and each call is collect_tvars over the whole subtree (80%
+// of the run at 160). The nesting limit bounds it near 10-15 G; it is the
+// only one of 70 nested-syntax shapes the review measured that is not flat.
+// Main 968fa9bc0 the same. Found by review r14 of lane K (round 3). probe:
+// ~/ptmp/cr29/scratch/review-r14/K-r2-1/q/fnqtyp_320.gx (genq.py fnqtyp N
+// OUT), cg/fnq_160.out.gz (rank2-print-01)
 /// The quantifiers a signature prints: the declared ones, minus the
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those
