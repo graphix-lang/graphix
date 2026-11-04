@@ -319,7 +319,29 @@ fn bind_sig_item(
             // alias_defined_after_the_module_is_generic_per_use (fw3; fr1 runs too). A
             // dynamic load deciding a cell an earlier compile left open (repl2, dm8) is D9's
             // route (repl-bottom-settle-01), unchanged here.
-            let poly = matches!(typ, Type::Fn(_));
+            // 2026-11-04 claude: Review r14 (A-r1-1) found what this CR's text names, a
+            // write through a generic val other than one typed fn(..) held to nothing, still
+            // open: val f: F<'a> (a typedef), {f: fn(x: 'a) -> 'a}, Array<fn(..)>, a &mut of
+            // one and a dynamic sig's (td2, sf4, af2, mr1, rk8, dyn3) passed the check and
+            // failed at the run-time bind. bind_sig_item now puts every val whose type holds
+            // a variable in poly_binds, so the Connect hold and the &mut refusal apply, and
+            // CompileCtx::monomorphic instantiates a typedef reference whose arguments hold,
+            // outside function types, a cell a copy takes, so F<'a>'s write is held too.
+            // Pins that fail without it:
+            // lang::interfaces::write_through_a_typedef_val_refused (td2),
+            // write_through_a_struct_of_functions_val_refused (sf4),
+            // write_through_an_array_of_functions_val_refused (af2),
+            // mut_ref_to_a_struct_of_functions_val_refused (mr1),
+            // lang::modules::a_write_through_a_dynamic_struct_of_functions_val_refused
+            // (dyn3); twins write_through_a_struct_of_functions_val_as_general and
+            // write_through_a_typedef_val_as_general, which main refuses (its write decided
+            // the val's 'a at i64). probes
+            // ~/ptmp/cr29/scratch/r14-A/fix1/{td2,sf4,af2,mr1,rk8,dyn3,tw1,tw2}
+            let poly = matches!(typ, Type::Fn(_)) || {
+                let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                typ.reached_cells(&mut cells);
+                cells.values().any(|tv| !tv.is_bound())
+            };
             let bind = env.bind_variable(
                 &scope.lexical,
                 name,
@@ -532,6 +554,17 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // struct_of_functions_val_is_generic_per_use, aliased_function_val_is_generic_per_use.
 // lang::modules::a_body_write_keeps_a_generic_interface_generic (p1 running) is
 // dropped.
+// 2026-11-04 claude: Review r14 (A-r1-1, A-r1-2 lows): the refusal now names the
+// binding the implementation's lambda captures (module::Holder, one whose type is no
+// function first: 'that of y, a binding outside its let ... give y a type that holds
+// every 'a'), and an implementation that is no lambda (a call's result, (store, 1).0)
+// is told to be a lambda, where it was told to take a quantified annotation it would
+// not fit (vt1, fm1). Pins that fail without it:
+// lang::interfaces::val_over_an_outer_binding_names_its_type,
+// written_val_over_an_outer_binding_names_one_type,
+// val_over_a_call_result_names_a_lambda. The book and the skill now carry the
+// written-let refusal (val f: fn(x: 'a) -> 'a over let f = |x| x; f <- |x| x) and its
+// two ways out.
 // XCR claude for claude: [bug/low] An implementation binding's open cell is not decided by
 // the val it implements: with `type B<'x>; val e: B<i64>; val i: B<i64>;` in m.gxi and
 // `type B<'x> = Abstract<i64>; let e = B(1); let i: B<i64> = B(1)` in m.gx, e's parameter
@@ -617,8 +650,8 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // rule's message); control write_through_a_val_over_an_implementation_at_its_type.
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared` ([`hold_paired`]); `generalized` says its binding is
-/// generic in the cells its own definitions own, and `captured` gives the
-/// cells the bindings its value's lambda captures reach.
+/// generic in the cells its own definitions own, and `holder` what holds a
+/// cell of it ([`Holder::of`]).
 fn check_val(
     env: &Env,
     open: &IntSet<LambdaId>,
@@ -626,7 +659,7 @@ fn check_val(
     declared: &Type,
     typ: &Type,
     generalized: bool,
-    captured: impl Fn() -> LPooled<AHashMap<usize, TVar>>,
+    holder: impl Fn(&TVar) -> Holder,
 ) -> Result<()> {
     // XCR claude for claude: [bug/medium] An interface val's written quantified fn type
     // lets its quantifier escape through the implementation, as a let annotation did
@@ -681,24 +714,64 @@ fn check_val(
     };
     let pairs = declared.sig_matches(env, typ).map_err(refused)?;
     let shared = |tv: &TVar| !tv.level().copied_by(open);
-    hold_paired(env, "val", &pairs, shared, |tv, v| {
-        if generalized {
-            format_compact!(
-                ", that of a binding outside its let: declare the val at one type, or \
-                 give that binding a type that holds every {v}"
-            )
-        } else if captured().contains_key(&tv.cell_addr()) {
-            format_compact!(
-                ", that of a binding outside its let: declare the val at one type"
-            )
-        } else {
-            format_compact!(
-                ": declare the val at one type, or annotate the implementation's let \
-                 with a quantified type (fn<{v}: ..>)"
-            )
-        }
+    hold_paired(env, "val", &pairs, shared, |tv, v| match (generalized, holder(tv)) {
+        (true, Holder::Captured(b)) => format_compact!(
+            ", that of {b}, a binding outside its let: declare the val at one type, or \
+             give {b} a type that holds every {v}"
+        ),
+        (true, _) => format_compact!(
+            ", that of a binding outside its let: declare the val at one type, or give \
+             that binding a type that holds every {v}"
+        ),
+        (false, Holder::Captured(b)) => format_compact!(
+            ", that of {b}, a binding outside its let: declare the val at one type"
+        ),
+        (false, Holder::Lambda) => format_compact!(
+            ": declare the val at one type, or annotate the implementation's let with \
+             a quantified type (fn<{v}: ..>)"
+        ),
+        (false, Holder::NoLambda) => format_compact!(
+            ": declare the val at one type, or make the implementation a lambda over \
+             variables of its own"
+        ),
     })
     .map_err(refused)
+}
+
+/// What holds a cell of an implementation's binding outside its value.
+pub(crate) enum Holder {
+    /// A binding the lambda the implementation holds captures, by name.
+    Captured(CompactString),
+    /// No binding the lambda the implementation holds captures.
+    Lambda,
+    /// The implementation holds no lambda.
+    NoLambda,
+}
+
+impl Holder {
+    /// What holds `tv` for the implementation's binding `id`: the first
+    /// binding its lambda captures whose type reaches the cell, one whose
+    /// type is no function first.
+    pub(crate) fn of<R: Rt>(ctx: &CompileCtx<R>, id: BindId, tv: &TVar) -> Self {
+        let Some(def) = held_lambda(ctx, id) else { return Self::NoLambda };
+        let (mut data, mut function) = (None, None);
+        def.captured_ids(&mut |id| {
+            let Some(b) = ctx.env.by_id.get(&id) else { return };
+            let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            b.typ.reached_cells(&mut cells);
+            if cells.contains_key(&tv.cell_addr()) {
+                let slot = match b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
+                    true => &mut function,
+                    false => &mut data,
+                };
+                slot.get_or_insert_with(|| b.name.clone());
+            }
+        });
+        match data.or(function) {
+            Some(name) => Self::Captured(name),
+            None => Self::Lambda,
+        }
+    }
 }
 
 /// Hold an implementation to the declaration (a `val`, or a trait
@@ -752,23 +825,25 @@ fn free_variable(t: &Type) -> Option<TVar> {
         .cloned()
 }
 
+/// The lambda the binding `id` holds, if it holds one.
+fn held_lambda<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> Option<&LambdaDef<R>> {
+    ctx.bind_to_lambda.get(&id).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
+}
+
 /// Every cell the types of the bindings captured by the lambda the binding
-/// `id` holds, if it holds one, reach.
+/// `id` holds reach; `None` where it holds no lambda.
 pub(crate) fn captured_cells<R: Rt>(
     ctx: &CompileCtx<R>,
     id: BindId,
-) -> LPooled<AHashMap<usize, TVar>> {
+) -> Option<LPooled<AHashMap<usize, TVar>>> {
+    let def = held_lambda(ctx, id)?;
     let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    if let Some(def) =
-        ctx.bind_to_lambda.get(&id).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
-    {
-        def.captured_ids(&mut |id| {
-            if let Some(b) = ctx.env.by_id.get(&id) {
-                b.typ.reached_cells(&mut cells)
-            }
-        })
-    }
-    cells
+    def.captured_ids(&mut |id| {
+        if let Some(b) = ctx.env.by_id.get(&id) {
+            b.typ.reached_cells(&mut cells)
+        }
+    });
+    Some(cells)
 }
 
 /// Whether the implementation's binding `id` is generic in the cells its
@@ -1139,8 +1214,19 @@ fn check_sig_items<R: Rt>(
                 &proxy_bind.typ,
                 typ,
                 generalized_impl(ctx, id),
-                || captured_cells(ctx, id),
+                |tv| Holder::of(ctx, id, tv),
             )?;
+            // CR claude for claude: [bug/low] A reload is held to a write the body it replaces
+            // made: a dynamic module whose first body writes its own let (`let f = |x: i64| ->
+            // i64 x; f <- |x: i64| -> i64 x + 1`) leaves the val a `<-` target for good, so a
+            // reload whose body is generic under a narrower val (`val f: fn(x: i64) -> i64`
+            // over `let f = |x| x`) is refused here, "val f is written, and what is written
+            // lands on its implementation", though nothing writes the val any more (a replaced
+            // body's pending writes drop with its binding); main 968fa9bc0 reloads it (n=1).
+            // Over-refusal only; annotating the let passes. The mark is the pair's, which
+            // iface-reload-mark-01 already keeps past a reload; D18 (a)'s one-variable rebuild,
+            // dropping a replaced body's writes with its binding, should drop this hold with
+            // it. probe: ~/ptmp/cr29/scratch/r14-A/q4 (iface-reload-written-01)
             if ctx.connect_targets.contains(&proxy_id) {
                 ctx.check_val_written(&inner.name, &proxy_bind.typ, typ)?
             }
@@ -1278,7 +1364,7 @@ pub fn check_script_sig<R: Rt>(
                     &declared,
                     &bind.typ,
                     generalized_impl(ctx, bind.id),
-                    || captured_cells(ctx, bind.id),
+                    |tv| Holder::of(ctx, bind.id, tv),
                 )
                 .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
                 // the language server sees the val as a module's: a binding

@@ -369,10 +369,17 @@ use picks it: `val v: Array<'a>` is refused (declare it at one type,
 `Array<i64>`), and so is `val c: {f: fn(x: 'a) -> string, last: ['a,
 null]}`. The implementation must be as general as the val: under `val f:
 fn(x: 'a) -> 'a`, `let f = |x| { y <- x; x }` over an outer `let y =
-never()` is refused (`let y: Any`, or the val at one type). A val that
+never()` is refused (`let y: Any`, or the val at one type), and so is a
+written `let f = |x| x; f <- |x| x` (the val at one type, or `let f:
+fn<'a: Any>(x: 'a) -> 'a`). A trait method alike: one that writes an
+outer binding, or whose value is no lambda and has a type its value
+fixed (`(store, 1).0` over a writer of an outer binding, `mk(0)`), is
+refused under a variable each call picks: write it as a lambda. A val that
 something writes (`m::f <- ..`, `&mut m::f`) must fit its
 implementation: `val f: fn(x: i64) -> i64` over a generic `let f = |x|
-x` takes no write until the `let` is annotated `fn(x: i64) -> i64`.
+x` takes no write until the `let` is annotated `fn(x: i64) -> i64`. A
+val generic in a variable (`val c: {f: fn(x: 'a) -> 'a}`, `val g:
+fn<'a: Any>(..)`) takes only a write as general as it, and no `&mut`.
 
 No currying: a call supplies every required argument, and `add(1)` on a
 two-argument `add` is refused (`missing required argument`), not a

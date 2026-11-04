@@ -14,7 +14,7 @@ use super::{
     coretraits::method_ftype,
     genn::SynthCall,
     lambda::LambdaDef,
-    module,
+    module::{self, Holder},
 };
 use crate::{
     BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope,
@@ -112,12 +112,30 @@ pub(crate) fn method_sig(
 // declared_method_over_an_outer_binding_refused (tr4). Controls:
 // method_over_an_outer_binding_of_every_type,
 // an_impl_annotation_keeps_the_method_variables_per_call.
+// 2026-11-04 claude: Review r14 (A-r1-1) found a method whose value is no lambda ((store,
+// 1).0, select 1 { _ => store }, a default alike, in a module with an interface too, and
+// mk(0)) escaping the capture test, which reads only a LambdaDef's captures: the fused run
+// killed the runtime and the node-walk printed a string as an i64 (tr8, tr10, tr12; tr11
+// failed at the run-time bind). implements now judges a method with no LambdaDef by level,
+// as a val's implementation is (module::captured_cells answers None without a lambda); a
+// lambda keeps the capture test. (|s, x| x, 1).0, (id, 1).0, a select over a lambda and
+// aliases to a val, a holder's field or an alias chain still run at two types. The refusal
+// names the binding a lambda captures (module::Holder), else says to make the method a
+// lambda. Pins that fail without it:
+// lang::traits::method_value_no_lambda_over_an_outer_binding_refused (tr8),
+// default_method_value_no_lambda_over_an_outer_binding_refused (tr10/tr12's select),
+// method_made_by_a_call_refused (a maker, which main's build refuses at the run-time bind),
+// method_over_an_outer_binding_refused (now names y); control
+// method_value_no_lambda_is_generic_per_call. probes
+// ~/ptmp/cr29/scratch/r14-A/fix1/{tr8,tr10,tr11,tr12,n1,n3,n4,al1,al2,al3}
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface
-/// `val` is checked); and a cell of the body that a binding it captures
-/// holds is held as an interface `val`'s is ([`module::hold_paired`]).
-/// `id` is the body's binding.
+/// `val` is checked); and a cell of the body no use copies is held as an
+/// interface `val`'s is ([`module::hold_paired`]). `id` is the body's
+/// binding. A body that is a lambda has its cells copied by each call but
+/// those a binding it captures holds; any other body's are judged by their
+/// level, as a `val`'s implementation's are.
 fn implements<R: Rt>(
     ctx: &CompileCtx<R>,
     declared: &FnType,
@@ -131,18 +149,27 @@ fn implements<R: Rt>(
         bail!("{implemented} is not a function")
     };
     let pairs = declared.sig_matches(&ctx.env, &ft)?;
-    let captured: OnceCell<LPooled<AHashMap<usize, TVar>>> = OnceCell::new();
+    let captured: OnceCell<Option<LPooled<AHashMap<usize, TVar>>>> = OnceCell::new();
+    let captured = || captured.get_or_init(|| module::captured_cells(ctx, id));
     let shared = |tv: &TVar| {
         !tv.level().copied_by(&ctx.rec_defs)
-            && captured
-                .get_or_init(|| module::captured_cells(ctx, id))
-                .contains_key(&tv.cell_addr())
+            && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
     };
-    module::hold_paired(&ctx.env, "method", &pairs, shared, |_, v| {
-        format_compact!(
-            ", that of a binding outside its let: give that binding a type that holds \
-             every {v}"
-        )
+    module::hold_paired(&ctx.env, "method", &pairs, shared, |tv, v| {
+        match Holder::of(ctx, id, tv) {
+            Holder::Captured(b) => format_compact!(
+                ", that of {b}, a binding outside its let: give {b} a type that holds \
+                 every {v}"
+            ),
+            Holder::Lambda => format_compact!(
+                ", that of a binding outside its let: give that binding a type that \
+                 holds every {v}"
+            ),
+            Holder::NoLambda => format_compact!(
+                ": its value is no lambda, so no call copies its types; make the \
+                 method a lambda over variables of its own"
+            ),
+        }
     })
 }
 

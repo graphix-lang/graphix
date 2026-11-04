@@ -2005,8 +2005,14 @@ impl<R: Rt> CompileCtx<R> {
             if generic.peek().is_none() {
                 return false;
             }
-            // a function type's own quantifiers are generic whatever compiled it
-            let quantified = node::callsite::bound_quantifiers(&b.typ);
+            // a rank-2 type's quantifiers are generic whatever compiled it; a
+            // declared signature's own are its scheme's, which each read copies
+            let mut quantified: LPooled<AHashSet<usize>> = LPooled::take();
+            b.typ.each_quantifier(&mut |_, tv| {
+                if tv.is_formal_quantifier() {
+                    quantified.insert(tv.cell_addr());
+                }
+            });
             generic.any(|(addr, _)| !quantified.contains(addr))
         })
     }
@@ -2130,6 +2136,12 @@ impl<R: Rt> CompileCtx<R> {
                         m.fresh = true;
                         Some(Type::Fn(Arc::new(ft.instantiate(m.open))))
                     }
+                    // a typedef's arguments stand for what its body holds:
+                    // instantiated as one, as the functions they name would be
+                    Type::Ref(_) if copies(t, m.open) => {
+                        m.fresh = true;
+                        Some(t.instantiate_with(&mut LPooled::take(), m.open))
+                    }
                     t => t.cow_children(&mut |c| instance(c, m)),
                 };
                 if let Some(k) = key
@@ -2139,6 +2151,22 @@ impl<R: Rt> CompileCtx<R> {
                 }
                 m.fresh |= outer;
                 r
+            })
+        }
+        /// Whether `t` holds, outside every function type, an open cell a
+        /// copy takes fresh.
+        fn copies(t: &Type, open: &nohash::IntSet<LambdaId>) -> bool {
+            crate::stack::ensure_sufficient(|| match t {
+                Type::Fn(_) => false,
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => copies(&b, open),
+                    None => !tv.is_quantifier_rigid() && tv.level().copied_by(open),
+                },
+                t => {
+                    let mut found = false;
+                    t.for_each_child(&mut |c| found = found || copies(c, open));
+                    found
+                }
             })
         }
         let mut m = Memo { open: &self.rec_defs, done: LPooled::take(), fresh: false };

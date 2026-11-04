@@ -1776,6 +1776,23 @@ run!(
     "#; FuseExpect::Jit
 );
 
+// A dynamic module's val whose type holds a variable is generic wherever
+// its function types stand: what the program writes through it must be as
+// general.
+run!(
+    a_write_through_a_dynamic_struct_of_functions_val_refused,
+    refused("c is { f: fn(x: 'a: unbound) -> 'a: unbound }, made generic by an earlier compile, so what is written to it must be as general"),
+    "/test.gx" => r#"
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val c: {f: fn(x: 'a) -> 'a}; val g: fn(t: Any) -> string };
+            source "let c = {f: |x| x}; let g = |t| c.f(t ~ \"s\")"
+        };
+        d::c <- {f: |x: i64| -> i64 x + 100};
+        let result = d::g(s)
+    "#
+);
+
 // A val and the binding implementing it are one variable: what a later
 // compile writes through a val at one type, or through a writable
 // reference to it, lands on a generic body, so the load is refused.

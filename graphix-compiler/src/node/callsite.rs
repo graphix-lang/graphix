@@ -1340,15 +1340,6 @@ fn callee_instance<R: Rt>(
     inst
 }
 
-/// The cells of the quantifiers a function type under `t` binds.
-pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
-    let mut out = AHashSet::new();
-    t.each_quantifier(&mut |_, tv| {
-        out.insert(tv.cell_addr());
-    });
-    out
-}
-
 /// A binding the value reads or writes, or an instance it makes, of type
 /// `env`, holds none of the quantifiers outside a function type there that
 /// quantifies it: its cell would carry one out.

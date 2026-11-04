@@ -352,8 +352,10 @@ its implementation (`CompileCtx::check_val_written`) need a generated val
 with a variable, or a write through a val over a generic body, which the
 generator does not write; their pins are
 `lang::interfaces::*_over_an_outer_binding_refused`,
-`narrow_write_through_a_val_refused`, `bounded_write_through_a_val_refused`
-and `lang::traits::*method_over_an_outer_binding_refused`.
+`narrow_write_through_a_val_refused`, `bounded_write_through_a_val_refused`,
+`write_through_a_*_val_refused`, `mut_ref_to_a_*_val_refused`
+and `lang::traits::*method_over_an_outer_binding_refused`,
+`*method_value_no_lambda_*_refused`, `method_made_by_a_call_refused`.
 
 ## Labeled and optional arguments across the fuzzer
 

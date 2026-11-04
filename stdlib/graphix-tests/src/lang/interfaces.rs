@@ -1817,7 +1817,7 @@ run!(
 // annotation on the let.
 run!(
     val_over_an_outer_binding_names_its_type,
-    refused("that of a binding outside its let: declare the val at one type, or give that binding a type that holds every 'a"),
+    refused("that of y, a binding outside its let: declare the val at one type, or give y a type that holds every 'a"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let y = never(); let f = |x| { y <- x; x }"
@@ -1834,12 +1834,23 @@ run!(
 run!(
     written_val_over_an_outer_binding_names_one_type,
     |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").ends_with(
-        "the implementation has one type all uses share, that of a binding outside \
-         its let: declare the val at one type"
+        "the implementation has one type all uses share, that of y, a binding \
+         outside its let: declare the val at one type"
     )),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let y = never(); let f = |x| { y <- x; x }; f <- |x| { y <- x; x }"
+);
+
+// An implementation that is no lambda (a call's result) has the types its
+// value fixed: the way out is a lambda, not a quantified annotation, which
+// the value would not fit.
+run!(
+    val_over_a_call_result_names_a_lambda,
+    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a lambda over variables of its own"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = |u: i64| |x| x; let f = mk(0)"
 );
 
 run!(
@@ -2034,4 +2045,105 @@ run!(
     "/test.gx" => "mod a; let rf = &mut a::f; let result = a::f(1)",
     "/test/a.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/a.gx" => "let f = |x| x"
+);
+
+// A val's own quantifiers are its scheme's, which each use copies, as an
+// unquantified val's variables are.
+run!(
+    mut_ref_to_a_quantified_val_refused,
+    refused("a::f was made generic by an earlier compile, and a writable reference to it would let a write narrow it"),
+    "/test.gx" => r#"
+        mod a;
+        let set = |r: &mut fn(x: i64) -> i64, v| { *r <- v; null };
+        let z = set(&mut a::f, |x: i64| -> i64 x + 100);
+        let result = a::f("s")
+    "#,
+    "/test/a.gxi" => "val f: fn<'b: Any>(x: 'b) -> 'b",
+    "/test/a.gx" => "let f = |x| x"
+);
+
+// A rank-2 function type in a val's data is one type, which a writable
+// reference holds whole.
+run!(
+    mut_ref_to_a_val_holding_a_quantified_function,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => r#"
+        mod a;
+        let set = |r: &mut {f: fn<'b: Any>(x: 'b) -> 'b}, v| { *r <- v; null };
+        let z = set(&mut a::c, {f: |x| x});
+        let result = (a::c.f(1), a::c.f("s"))
+    "#,
+    "/test/a.gxi" => "val c: {f: fn<'b: Any>(x: 'b) -> 'b}",
+    "/test/a.gx" => "let c: {f: fn<'b: Any>(x: 'b) -> 'b} = {f: |x| x}"
+; FuseExpect::None);
+
+// A val whose type holds a variable is generic wherever its function types
+// stand (a typedef, a struct, an array): what is written through it must
+// be as general, and a writable reference to it is refused.
+run!(
+    write_through_a_typedef_val_refused,
+    refused("f is F<'a: unbound>, made generic by an earlier compile, so what is written to it must be as general"),
+    "/test.gx" => r#"
+        mod m;
+        let wr = |x| { m::f <- x; x };
+        let w = wr(|x: i64| -> i64 x + 100);
+        let result = m::f("s")
+    "#,
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val f: F<'a>",
+    "/test/m.gx" => "let f = |x| x"
+);
+
+run!(
+    write_through_a_typedef_val_as_general,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; m::f <- |x| x; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val f: F<'a>",
+    "/test/m.gx" => "let f = |x| x"
+; FuseExpect::None);
+
+run!(
+    write_through_a_struct_of_functions_val_refused,
+    refused("made generic by an earlier compile, so what is written to it must be as general, and { f: fn(x: 'a: unbound) -> 'a: unbound } is not"),
+    "/test.gx" => r#"
+        mod m;
+        let wr = |x| { m::c <- x; x };
+        let w = wr({f: |x: i64| -> i64 x + 100});
+        let result = m::c.f("s")
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let c = {f: |x| x}"
+);
+
+run!(
+    write_through_a_struct_of_functions_val_as_general,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; m::c <- {f: |x| x}; let result = (m::c.f(1), m::c.f(\"s\"))",
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let c = {f: |x| x}"
+; FuseExpect::None);
+
+run!(
+    write_through_an_array_of_functions_val_refused,
+    refused("v is Array<fn(x: 'a: unbound) -> 'a: unbound>, made generic by an earlier compile, so what is written to it must be as general"),
+    "/test.gx" => r#"
+        mod m;
+        let wr = |x| { m::v <- x; x };
+        let w = wr([|x: i64| -> i64 x + 100]);
+        let result = m::v[0]$("s")
+    "#,
+    "/test/m.gxi" => "val v: Array<fn(x: 'a) -> 'a>",
+    "/test/m.gx" => "let v = [|x| x]"
+);
+
+run!(
+    mut_ref_to_a_struct_of_functions_val_refused,
+    refused("m::c was made generic by an earlier compile, and a writable reference to it would let a write narrow it"),
+    "/test.gx" => r#"
+        mod m;
+        let wr = |x| { let r = &mut m::c; *r <- x; x };
+        let w = wr({f: |x: i64| -> i64 x + 100});
+        let result = m::c.f("s")
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let c = {f: |x| x}"
 );

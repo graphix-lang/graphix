@@ -1972,6 +1972,19 @@ impl<R: Rt> ByRef<R> {
                 // a_load_cannot_take_a_writable_reference_through_a_val_to_a_generic_body
                 // hold the unsound case refused; mut_ref_to_a_generic_val_refused keeps
                 // main's refusal and message.
+                // 2026-11-04 claude: Review r14 (A-r1-1, mr5) found &mut of a val written with
+                // its own quantifiers (val f: fn<'a: Any>(x: 'a) -> 'a) allowed, and a write
+                // through it narrowing the generic body (check passed, the run refused at the
+                // run-time bind): generalized_earlier skipped every function type's own
+                // quantifiers, though a declared signature's own are its scheme's, which each
+                // read copies. It now skips only a rank-2 type's (CellFact::FormalQuantifier),
+                // so the refusal here is main's again for such a val. Pin that fails without
+                // it: lang::interfaces::mut_ref_to_a_quantified_val_refused (base's message);
+                // control mut_ref_to_a_val_holding_a_quantified_function (a rank-2 type in a
+                // val's data takes a &mut). A val whose function types sit in data or behind a
+                // typedef (val c: {f: fn(x: 'a) -> 'a}) is now generic too
+                // (iface-val-data-var-01's note):
+                // mut_ref_to_a_struct_of_functions_val_refused.
                 if ctx.env.poly_binds.contains(&r.id) && ctx.generalized_earlier(r.id) {
                     bailat!(
                         spec,

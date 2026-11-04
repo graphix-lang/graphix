@@ -83,6 +83,17 @@ annotations. A required method left out is a compile error; a method
 the trait does not declare is too. The trait's methods are visible
 bare inside the block, so one method may call another.
 
+A method's type variables are each call's to pick, so a method must be
+as general as its declaration, a default included. Under `val put:
+fn(self, x: 'a) -> 'a`, a method that keeps its argument in a binding
+outside it, `let y = never(); impl Put for C { let put = |s, x| { y <-
+x; x } }`, would have one type for every call, and is refused: give `y`
+a type that holds every `'a` (`let y: Any = never()`). A method whose
+value is not a lambda (`(f, 1).0`, a call's result) keeps the types its
+value has, and no call copies one its value fixed (a type an outer
+binding shares, the type a call made): under such a variable it is
+refused, and the way out is to write the method as a lambda.
+
 `impl Trait for Target;` (no body) implements a trait whose methods
 all have defaults, and is the form an interface file uses to declare
 that the implementation provides the impl (see below).

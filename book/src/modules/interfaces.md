@@ -219,12 +219,22 @@ The implementation must be as general as its `val`. Under `val f: fn(x:
 'a) -> 'a`, an implementation that keeps its argument in a binding
 outside it, `let y = never(); let f = |x| { y <- x; x }`, has one type
 for every call, and is refused: give `y` a type that holds every `'a`
-(`let y: Any = never()`), or declare `f` at one type. A `val` declared at
-one type over a generic implementation can be called, but what is
-written through it (`m::f <- ..`, or through `&mut m::f`) lands on the
-implementation, which other uses take at other types, so a `val`
-something writes must fit its implementation: annotate the
-implementation's `let` with the val's type.
+(`let y: Any = never()`), or declare `f` at one type. So is one that
+something writes, `let f = |x| x; f <- |x| x`, whose writers share one
+type: declare `f` at one type, or annotate the `let` with a quantified
+type, `let f: fn<'a: Any>(x: 'a) -> 'a = |x| x`.
+
+A `val` whose type holds a variable is generic wherever its function
+types stand: in a struct (`val c: {f: fn(x: 'a) -> 'a}`), an array or a
+type alias, and with its own quantifiers written (`fn<'a: Any>(..)`) or
+not. What is written through it must be as general as it is (`m::c <-
+{f: |x| x}`, not `{f: |x: i64| -> i64 x}`), and `&mut m::c` is refused.
+
+A `val` declared at one type over a generic implementation can be
+called, but what is written through it (`m::f <- ..`, or through `&mut
+m::f`) lands on the implementation, which other uses take at other
+types, so a `val` something writes must fit its implementation:
+annotate the implementation's `let` with the val's type.
 
 ## Module Hierarchies
 

@@ -1444,13 +1444,18 @@ cycle, across workers; the compiler never pins threads.
   inside function types (a typedef as its expansion; an abstract
   type's parameter is outside), else it is refused: declare the val at
   one type (`Type::variable_outside_functions`). An implementation cell
-  no use copies (a written `let`'s, an outer binding's) may not stand
-  where the val, or a trait method's declaration, has a variable a use
-  picks; else the declaration decides it, as an annotation on the
-  `let` would (`module::hold_paired`). A val something writes (`<-`,
-  `&mut`, in any compile) must fit its implementation, whose variables
-  are held rigid with their bounds (`CompileCtx::check_val_written`); a
-  `&mut` of a val is refused only where the val itself is generic.
+  no use copies (a written `let`'s, an outer binding's, a call's
+  result's) may not stand where the val, or a trait method's
+  declaration, has a variable a use picks; else the declaration decides
+  it, as an annotation on the `let` would (`module::hold_paired`; a
+  method that is a lambda is judged by the bindings it captures, any
+  other method and a val's implementation by level). A val whose type
+  holds a variable, its own quantifiers and a typedef's arguments
+  included, is generic (`Env::poly_binds`): a write through it must be
+  as general, and a `&mut` of it is refused. A val something writes
+  (`<-`, `&mut`, in any compile) must fit its implementation, whose
+  variables are held rigid with their bounds
+  (`CompileCtx::check_val_written`).
 - **References** (`design/place_references.md`): `&e` is read-only
   (`&T`, covariant); `&mut e` is writable (`&mut T`, invariant) and
   `*r <- v` requires it of every reference `r` may hold. A read through a

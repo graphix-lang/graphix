@@ -2965,8 +2965,70 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "where the method declares 'a, a type each use picks, the implementation has one type all uses share, that of a binding outside its let: give that binding a type that holds every 'a"
+        "where the method declares 'a, a type each use picks, the implementation has one type all uses share, that of y, a binding outside its let: give y a type that holds every 'a"
     )
+);
+
+// A method whose value is no lambda keeps the types its value holds, which
+// no call copies: a variable each call picks may not stand on one of them,
+// a binding's outside or a call's result's.
+run!(
+    method_value_no_lambda_over_an_outer_binding_refused,
+    r#"{
+    type C = Abstract<i64>;
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    let y = never();
+    let store = |s, x| { y <- x; y };
+    impl Put for C { let put = (store, 1).0 };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused(
+        "the implementation has one type all uses share: its value is no lambda, so no call copies its types; make the method a lambda over variables of its own"
+    )
+);
+
+run!(
+    default_method_value_no_lambda_over_an_outer_binding_refused,
+    r#"{
+    type C = Abstract<i64>;
+    let y = never();
+    let store = |s, x| { y <- x; y };
+    trait Put { val put: fn(self, x: 'a) -> 'a = select 1 { _ => store } };
+    impl Put for C {};
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused("its value is no lambda, so no call copies its types")
+);
+
+run!(
+    method_made_by_a_call_refused,
+    r#"{
+    type C = Abstract<i64>;
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    let mk = |z| |s, x| x;
+    impl Put for C { let put = mk(0) };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused("its value is no lambda, so no call copies its types")
+);
+
+run!(
+    method_value_no_lambda_is_generic_per_call,
+    r#"{
+    type C = Abstract<i64>;
+    let id = |s, x| x;
+    trait Put {
+      val put: fn(self, x: 'a) -> 'a;
+      val get: fn(self, x: 'a) -> 'a = select 1 { _ => |s, x| x }
+    };
+    impl Put for C { let put = (id, 1).0 };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"), Put::get(c, 2), Put::get(c, "t"))
+}"#,
+    prints(r#"[i64:1, "s", i64:2, "t"]"#)
 );
 
 run!(

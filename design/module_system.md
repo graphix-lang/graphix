@@ -215,10 +215,11 @@ made through the `val`, and a seq's plan counts the pair one variable
 
 ### A `val`'s type variables
 
-A `val` is a scheme its uses copy: a read of a function-typed val
-(`Env::poly_binds`) and a call through a function type a val holds
-instantiate the variables standing inside function types. A variable
-outside every function type (`val v: Array<'a>`) no use copies, so a
+A `val` is a scheme its uses copy: every val whose type holds a variable
+is generalized (`Env::poly_binds`), and a read of a function-typed val
+and a call through a function type a val holds instantiate the
+variables standing inside function types. A variable outside every
+function type (`val v: Array<'a>`) no use copies, so a
 write at one type and a read at another would share one cell: the
 module's check refuses such a val, "declare the val at one type"
 (`module.rs::check_val_variables` over the val's binding, a variable
@@ -238,7 +239,13 @@ quantified annotation on the `let`); paired with a type holding none, a
 concrete type or a whole quantified function type, the declaration
 decides it (`module.rs::hold_paired`), so `val e: B<i64>` over `let e =
 B(1)` builds `e` at `B<i64>`. A trait method's body, an impl's and a
-default, is held the same way (`traits.rs::implements`).
+default, is held the same way (`traits.rs::implements`). A method that
+is a lambda has the cells its definition owns copied by each call, but
+an impl's `let` is annotated with the method's signature, which claims
+them at the top level; so its cell is one type only where a binding it
+captures reaches it. A method whose value is no lambda (`(f, 1).0`, a
+select, a call's result) keeps its value's types, which no call copies,
+and its cells are judged by level, as a val's implementation's are.
 
 What is written through a val lands on the implementation, the pair
 being one variable, and every use takes the implementation's generic
@@ -251,9 +258,19 @@ checks, so the module's check asks it of a val that is a `<-` target;
 a later compile's write or `&mut` through a val already joined asks it
 as it marks the target (`CompileCtx::mark_connect_target`). The val as a
 whole is held, not each value written: `m::f <- |x| x` over `val f:
-fn(x: i64) -> i64` and a generic implementation is refused too. A
-writable reference to a val is refused only where the val's own type is
-generic (`CompileCtx::generalized_earlier`).
+fn(x: i64) -> i64` and a generic implementation is refused too.
+
+A val generic in a variable, wherever its function types stand (a
+struct, an array, a typedef's arguments) and whether it writes its own
+quantifiers (`fn<'a: ..>`) or not, holds a write through it as any
+generalized binding does: the value written must fit a copy of the
+val's type with its variables rigid and carry none of them out
+(`Connect::typecheck0_with`). `CompileCtx::monomorphic`, which makes that
+copy, instantiates a typedef's arguments as one, since they stand for
+what its body holds. A writable reference to a val is refused where the
+val is generic (`CompileCtx::generalized_earlier`, which counts a
+declared signature's own quantifiers, its scheme's, and skips a rank-2
+type's, `CellFact::FormalQuantifier`).
 
 ## Resolution
 
