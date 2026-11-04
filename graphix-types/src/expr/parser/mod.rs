@@ -187,25 +187,22 @@ fn leading_comments(i: &mut Input, docs: bool) -> R<LPooled<Vec<Comment>>> {
 // call arg `#name` from colliding.
 fn attribute(i: &mut Input) -> R<Attr> {
     i.attempt(|i| i.string("#["))?;
-    i.remembered(|i| {
-        i.spaces();
-        let name = fname(i)?;
-        i.spaces();
-        let args = i.optional(|i| {
-            i.token('(')?;
-            let args =
-                sep_by_tok(i, &expr, &|i| i.attempt(|i| i.sptoken(')')).map(drop))?;
-            i.sptoken(')')?;
-            Ok(args)
-        })?;
-        let end = i.pos();
-        i.sptoken(']')?;
-        let mut args = args.unwrap_or_else(LPooled::take);
-        match args.iter().any(holds_comment) {
-            true => Err(i.refuse(end, "a comment cannot stand inside an attribute")),
-            false => Ok(Attr { name, args: Arc::from_iter(args.drain(..)) }),
-        }
-    })
+    i.spaces();
+    let name = fname(i)?;
+    i.spaces();
+    let args = i.optional(|i| {
+        i.token('(')?;
+        let args = sep_by_tok(i, &expr, &|i| i.attempt(|i| i.sptoken(')')).map(drop))?;
+        i.sptoken(')')?;
+        Ok(args)
+    })?;
+    let end = i.pos();
+    i.sptoken(']')?;
+    let mut args = args.unwrap_or_else(LPooled::take);
+    match args.iter().any(holds_comment) {
+        true => Err(i.refuse(end, "a comment cannot stand inside an attribute")),
+        false => Ok(Attr { name, args: Arc::from_iter(args.drain(..)) }),
+    }
 }
 
 // The own-line `//` comments and `#[..]` attributes directly above an
@@ -1397,6 +1394,10 @@ fn try_with(i: &mut Input) -> R<Expr> {
 }
 
 fn expr(i: &mut Input) -> R<Expr> {
+    i.remembered(|i| expr_knot(i))
+}
+
+fn expr_knot(i: &mut Input) -> R<Expr> {
     i.knot(|i| {
         let dec = leading_decorations(i)?;
         let e = choice!(
@@ -1826,7 +1827,7 @@ const BOM: char = '\u{feff}';
 /// `text` with every CRLF line ending read as LF, as rustc reads source,
 /// so a file means the same whatever its checkout's line endings. Only a
 /// line ending ever moves: lines and columns are unchanged.
-// CR claude for claude: [bug/low] Not for "\r\r\n": the lone CR and the CRLF
+// XCR claude for claude: [bug/low] Not for "\r\r\n": the lone CR and the CRLF
 // are two line endings, but the result holds "\r\n", which `Mark::step` (its
 // `after_cr`) and `lines` read as one, so every position after it is a line
 // short of what an editor shows (the LSP's squiggles too). `let x = 1;\r\r\nlet
@@ -1834,6 +1835,13 @@ const BOM: char = '\u{feff}';
 // (its `Lines` positioner) counted the same. A fix reads the converted text's
 // "\r\n" as two endings in `Mark::step` and shows the snippet from the
 // original text, whose `lines` agree. (crcrlf-lines-01)
+// 2026-11-04 claude: Mark::step ends a line at every CR and LF: the text it
+// steps has had its CRLFs read as LF, so a CR before an LF there was a lone CR
+// in the source. The snippet splits that text the same way. Pins:
+// expr::parser::test::a_lone_carriage_return_before_a_crlf_ends_a_line
+// (positions, the report's line and caret, the unclosed note) and the LSP's
+// a_lone_carriage_return_before_a_crlf_ends_a_line (a type error and a parse
+// error past one); both fail with after_cr and lines() put back.
 fn crlf_as_lf<'a>(text: &'a str, buf: &'a mut LPooled<String>) -> &'a str {
     if !text.contains("\r\n") {
         return text;

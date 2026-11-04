@@ -1797,8 +1797,8 @@ included), pattern walks, seq lowering, and the `Node`/`TVar`/`Expr`/
 knots and the levels each iterative fold (an operator or postfix run)
 adds under them (`Input::fold_fits`); reaching it ends the parse, except
 under a map access's probe (`Input::probe`), whose text a select's arms
-read again. An attribute's arguments are parsed once where they start,
-or once a depth where the limit cut their parse short
+read again. An expression a lookahead or a probe parsed is parsed once
+where it starts, or once a depth where the limit cut its parse short
 (`Input::remembered`). Type depth is not bounded by the
 limit: `let x1 = [x0]; let x2 = [x1]; ..`, or a chain of typedefs,
 builds a type as deep as the program is long.

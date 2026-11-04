@@ -1212,6 +1212,22 @@ fn lone_carriage_returns_end_lines() {
     assert_eq!(c.completions("main.gx", "println(#|"), ["#dest"]);
 }
 
+/// A lone "\r" before a CRLF is two line endings for the compiler as for
+/// the client: an error and a parse error past one stand where the client
+/// sees them.
+#[test]
+fn a_lone_carriage_return_before_a_crlf_ends_a_line() {
+    let mut c = Client::start(&[
+        ("bad.gx", "let a = 1;\r\r\nlet c = a + nope;\r\nc\r\n"),
+        ("unparsed.gx", "let a = 1;\r\r\nlet b = ;\r\na\r\n"),
+    ]);
+    c.open("bad.gx");
+    assert_eq!(c.diagnostics("bad.gx"), [(2, 12, "nope not defined".to_string())]);
+    c.open("unparsed.gx");
+    let d = c.diagnostics("unparsed.gx");
+    assert_eq!(d.iter().map(|(l, c, _)| (*l, *c)).collect::<Vec<_>>(), [(2, 8)], "{d:?}");
+}
+
 /// Completion offers no name a lowering made: no source can write one.
 #[test]
 fn completion_offers_no_lowered_name() {

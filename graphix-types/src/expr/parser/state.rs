@@ -1,6 +1,7 @@
-use super::{input::Mark, lines};
+use super::input::Mark;
 use crate::SourcePosition;
 use compact_str::{CompactString, format_compact};
+use netidx_value::parser::{Expected, Item, escapes};
 use poolshark::local::LPooled;
 use std::{
     fmt::{self, Write},
@@ -63,6 +64,42 @@ impl Labels {
 
     pub(super) fn message(&mut self, i: Info) {
         self.messages.push(i)
+    }
+
+    /// What one of netidx-value's parsers expected, or why it refused.
+    pub(super) fn read(&mut self, e: Expected) {
+        let info = |i: Item| match i {
+            Item::Char(c) => Info::Token(c),
+            Item::Text(s) => Info::text(s),
+        };
+        match e {
+            Expected::OneOf(items) => items.iter().for_each(|i| self.expect(info(*i))),
+            Expected::Escape(syntax) => {
+                escapes(syntax).for_each(|i| self.expect(info(i)))
+            }
+            Expected::Refused(why) => self.message(Info::text(why)),
+        }
+    }
+}
+
+/// A value literal's failure past its start: where, the char met there
+/// (`None` at the end of input), and what its parser expected.
+#[derive(Clone, Copy)]
+struct Literal {
+    pos: SourcePosition,
+    met: Option<char>,
+    expected: Expected,
+}
+
+impl Literal {
+    /// What its failure said, as the failures at a reported point say.
+    fn labels(&self) -> Labels {
+        let mut l = Labels::default();
+        if !matches!(self.expected, Expected::Refused(_)) {
+            l.token = Some(self.met);
+        }
+        l.read(self.expected);
+        l
     }
 }
 
@@ -130,6 +167,10 @@ pub(super) struct State {
     refused: Option<SourcePosition>,
     /// The furthest reason a rule refused something it could name.
     reason: Option<Reason>,
+    /// The furthest value literal's failure past its start, which a
+    /// lookahead or another alternative may roll back: what a report at
+    /// its point says when nothing else does.
+    literal: Option<Literal>,
     /// Under [`Mode::Labels`], what the failures there said.
     pub(super) labels: Labels,
     /// Inside a `not_followed_by`, whose failures expect nothing.
@@ -139,11 +180,23 @@ pub(super) struct State {
     pub(super) knots: usize,
 }
 
-/// The depth bookkeeping a measured parse set aside.
+/// The state a measured parse set aside.
 pub(super) struct Measure {
     below: usize,
     reach: usize,
     limited: bool,
+    reason: Option<Reason>,
+    literal: Option<Literal>,
+}
+
+/// What a measured parse did to the state, which a replay of it does
+/// again: its depth, and the reason and literal failure it would leave
+/// noted were none noted before it (a later one wins, so these alone
+/// decide what it leaves noted after any).
+pub(super) struct Effects {
+    pub(super) depth: Depth,
+    reason: Option<Reason>,
+    literal: Option<Literal>,
 }
 
 /// What a measured parse did to the depth bookkeeping.
@@ -170,6 +223,7 @@ impl State {
             furthest_ok: None,
             refused: None,
             reason: None,
+            literal: None,
             labels: Labels::default(),
             quiet: 0,
             #[cfg(test)]
@@ -231,27 +285,34 @@ impl State {
         }
     }
 
-    /// Start a parse whose depth [`State::measured`] tells.
+    /// Start a parse whose effects [`State::measured`] tells.
     pub(super) fn measure(&mut self) -> Measure {
         Measure {
             below: std::mem::take(&mut self.below),
             reach: std::mem::replace(&mut self.reach, self.depth),
             limited: std::mem::take(&mut self.limited),
+            reason: self.reason.take(),
+            literal: self.literal.take(),
         }
     }
 
-    /// What the parse [`State::measure`] started did to the depth.
-    pub(super) fn measured(&mut self, m: Measure) -> Depth {
-        let d = Depth {
+    /// What the parse [`State::measure`] started did to the state.
+    pub(super) fn measured(&mut self, m: Measure) -> Effects {
+        let depth = Depth {
             below: self.below,
             reach: self.reach - self.depth,
             limited: self.limited,
         };
+        let effects = Effects {
+            depth,
+            reason: std::mem::replace(&mut self.reason, m.reason),
+            literal: std::mem::replace(&mut self.literal, m.literal),
+        };
         self.below = m.below;
         self.reach = m.reach;
         self.limited = m.limited;
-        self.replay(d);
-        d
+        self.replay(&effects);
+        effects
     }
 
     /// Whether a parse the limit refused nothing in, which did `d`, fits
@@ -265,11 +326,18 @@ impl State {
         self.depth
     }
 
-    /// Do to the depth what a parse that did `d` does here.
-    pub(super) fn replay(&mut self, d: Depth) {
+    /// Do to the state what a parse that did `e` does here.
+    pub(super) fn replay(&mut self, e: &Effects) {
+        let d = e.depth;
         self.below = self.below.max(d.below);
         self.reach = self.reach.max(self.depth + d.reach);
         self.limited |= d.limited;
+        if let Some(r) = &e.reason {
+            self.keep_reason(r.clone())
+        }
+        if let Some(l) = e.literal {
+            self.keep_literal(l)
+        }
     }
 
     fn refuse(&mut self, pos: SourcePosition) {
@@ -314,13 +382,36 @@ impl State {
         failed_at: Option<SourcePosition>,
         reason: impl FnOnce() -> CompactString,
     ) {
-        if !self.diag() {
-            return;
+        if self.diag() {
+            self.keep_reason(Reason { pos, span, reason: reason(), failed_at })
         }
+    }
+
+    /// Keep `r` unless the reason kept stands later.
+    fn keep_reason(&mut self, r: Reason) {
         let at = |r: &Reason| key(r.failed_at.unwrap_or(r.pos));
-        let new = key(failed_at.unwrap_or(pos));
-        if self.reason.as_ref().is_none_or(|r| at(r) <= new) {
-            self.reason = Some(Reason { pos, span, reason: reason(), failed_at });
+        if self.reason.as_ref().is_none_or(|kept| at(kept) <= at(&r)) {
+            self.reason = Some(r);
+        }
+    }
+
+    /// Record a value literal's failure past its start at `pos`, where it
+    /// met `met`; a later one wins.
+    pub(super) fn note_literal(
+        &mut self,
+        pos: SourcePosition,
+        met: Option<char>,
+        expected: Expected,
+    ) {
+        if self.diag() {
+            self.keep_literal(Literal { pos, met, expected })
+        }
+    }
+
+    /// Keep `l` unless the literal failure kept stands later.
+    fn keep_literal(&mut self, l: Literal) {
+        if self.literal.is_none_or(|kept| key(kept.pos) <= key(l.pos)) {
+            self.literal = Some(l)
         }
     }
 
@@ -380,10 +471,13 @@ impl State {
         let header = |p: SourcePosition| {
             format!("Parse error at line: {}, column: {}", p.line, p.column)
         };
-        let body = labels
-            .filter(|_| pos == err && read.is_none())
-            .map(|labels| self.render(pos, labels))
-            .filter(|body| !body.is_empty());
+        let render = |l: &Labels| Some(self.render(pos, l)).filter(|b| !b.is_empty());
+        let literal =
+            || self.literal.filter(|l| l.pos == pos).and_then(|l| render(&l.labels()));
+        let body = match read {
+            Some(_) => None,
+            None => labels.filter(|_| pos == err).and_then(render).or_else(literal),
+        };
         let (mut msg, mut summary) = if let Some((at, reason)) = &read {
             pos = *at;
             (format!("{}\n{reason}", header(pos)), reason.to_string())
@@ -602,13 +696,15 @@ fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosit
 /// The source line at `pos` with a caret under its column, the line
 /// windowed around the caret when it is long. Past the last line (the
 /// end of input) the caret follows the last line that holds anything.
+/// `text`'s CRLFs were read as LF, so each "\r" and "\n" ends a line.
 fn snippet(text: &str, pos: SourcePosition) -> String {
+    let lines = || text.split(['\r', '\n']);
     // no line follows a final break
-    let last = lines(text).count() - 1;
+    let last = lines().count() - 1;
     let n = (pos.line.max(1) - 1) as usize;
-    let (line, col) = match lines(text).nth(n).filter(|l| n < last || !l.is_empty()) {
+    let (line, col) = match lines().nth(n).filter(|l| n < last || !l.is_empty()) {
         Some(line) => (line, (pos.column.max(1) - 1) as usize),
-        None => match lines(text).filter(|l| !l.trim().is_empty()).last() {
+        None => match lines().filter(|l| !l.trim().is_empty()).last() {
             Some(line) => (line, line.chars().count()),
             None => return String::new(),
         },

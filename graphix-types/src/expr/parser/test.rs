@@ -145,6 +145,48 @@ fn a_lone_carriage_return_ends_a_line() {
     assert_eq!((exprs[1].pos.line, exprs[1].pos.column), (3, 1));
 }
 
+// A lone "\r" before a CRLF is two line endings, as an editor counts them.
+#[test]
+fn a_lone_carriage_return_before_a_crlf_ends_a_line() {
+    let exprs =
+        parse(Origin::unspecified("let x = 1;\r\r\n  let y = x;\r\r\ny")).unwrap();
+    let at: Vec<_> = exprs.iter().map(|e| (e.pos.line, e.pos.column)).collect();
+    assert_eq!(at, [(1, 1), (3, 3), (5, 1)]);
+    let msg = parse_program("let x = 1;\r\r\nlet y = ;\r\nx");
+    assert!(msg.contains("line: 3, column: 9"), "{msg}");
+    assert!(msg.contains("\n    let y = ;\n            ^"), "{msg}");
+    let msg = parse_program("let x = 1;\r\r\nlet y = (2");
+    assert!(msg.contains("note: at line: 3, column: 9"), "{msg}");
+}
+
+// A value literal that fails inside says what its parser expected there,
+// or why it refused what it read, as a graphix string does.
+#[test]
+fn a_value_literal_failure_says_what_was_expected() {
+    for (src, said) in [
+        (
+            "let a = error:\"\\q\";\na",
+            "line: 1, column: 17\nUnexpected `q`\n\
+             Expected `n`, `r`, `t`, `0`, `u{`, `\\` or `\"`\n",
+        ),
+        (
+            "let a = error:\"\\u{4g}\";\na",
+            "line: 1, column: 20\nUnexpected `g`\nExpected a hex digit or `}`\n",
+        ),
+        (
+            "let a = error:\"\\u{d800}\";\na",
+            "line: 1, column: 24\ninvalid unicode escape: a surrogate, not a character\n",
+        ),
+        (
+            "let a = error:\"\\u{110000}\";\na",
+            "line: 1, column: 26\ninvalid unicode escape: past 10FFFF, the last character\n",
+        ),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(&format!("Parse error at {said}")), "{src}: {msg}");
+    }
+}
+
 // A string's splice prints on the string's line, so no comment stands
 // inside one, at its top or deeper.
 #[test]
@@ -3247,6 +3289,76 @@ fn a_deep_pattern_after_an_unspaced_select_brace_parses() {
     for brace in ["v{", "v {"] {
         let src = format!("let v = 1;\nselect {brace} {p} => 1, _ => 0 }}");
         assert!(parse(vfs(&src)).is_ok(), "{brace}");
+    }
+}
+
+/// `n` selects, each after a map access's probe, the next in the splice of
+/// the string pattern of its first arm: `open` and `close` around each.
+fn string_pattern_nest(open: &str, close: &str, n: usize) -> String {
+    format!("{}1{}", open.repeat(n), close.repeat(n))
+}
+
+const STRING_PATTERNS: [(&str, &str); 2] =
+    [("select x{ \"[", "]\" => 1 }"), ("select x{ \"\"\"\\[", "]\"\"\" => 1 }")];
+
+// A select's arms read a string pattern's splice once, though the probe of
+// a map access read it first: selects nested in the splices of their
+// patterns cost what nesting anything else does, as source and as the data
+// `str::parse` reads.
+#[test]
+fn string_patterns_after_a_probe_parse_once() {
+    let data_knots = |text: &str| {
+        let mut i = Input::new(text, Mode::Quick, true);
+        let _ = expr(&mut i);
+        i.g.knots
+    };
+    for (open, close) in STRING_PATTERNS {
+        let source =
+            |n| format!("let x = 1;\nlet y = {}", string_pattern_nest(open, close, n));
+        let (small, large) = (knots(&source(9)), knots(&source(18)));
+        assert!(large < 3 * small, "{open}: {small} knots at 9, {large} at 18");
+        assert!(large < 2_000, "{open}: {large} knots at 18");
+        let data = |n| string_pattern_nest(open, close, n);
+        let (small, large) = (data_knots(&data(9)), data_knots(&data(18)));
+        assert!(large < 3 * small, "{open}: {small} data knots at 9, {large} at 18");
+        assert!(large < 2_000, "{open}: {large} data knots at 18");
+    }
+}
+
+// Reading an expression once decides and reports what reading it again
+// does: every cut, deletion and stray closer of programs whose string
+// patterns and attributes a probe read first.
+#[test]
+fn a_remembered_expression_parses_as_read_again() {
+    let mut programs: Vec<String> = STRING_PATTERNS
+        .iter()
+        .map(|(open, close)| {
+            format!("let x = 1;\nlet y = {}", string_pattern_nest(open, close, 3))
+        })
+        .collect();
+    programs.extend([
+        "let x = 1;\nlet m = 1;\nlet y = select x{ \"[m{\"[x]\"}]\" => 1, _ => 0 }"
+            .to_string(),
+        "let x = 1;\nlet y = select x{ #[a(\"[x]\")] \"[#[b] 1]\" => 1 }".to_string(),
+        "let x = 1;\nlet y = select x{ \"[{ #[a(1)] x: 1 }]\" if x => 1 }".to_string(),
+    ]);
+    let both = |text: &str| {
+        let remembered = outcome(text);
+        input::FORGET.set(true);
+        let read_again = outcome(text);
+        input::FORGET.set(false);
+        assert_eq!(remembered, read_again, "{text}");
+    };
+    for p in &programs {
+        let at: Vec<usize> = p.char_indices().map(|(n, _)| n).collect();
+        for &n in &at {
+            both(&p[..n]);
+            let next = p[n..].chars().next().unwrap().len_utf8();
+            both(&format!("{}{}", &p[..n], &p[n + next..]));
+            for c in [")", "}", "]", "+", "\""] {
+                both(&format!("{}{c}{}", &p[..n], &p[n..]));
+            }
+        }
     }
 }
 

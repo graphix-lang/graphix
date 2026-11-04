@@ -1,37 +1,34 @@
-use super::state::{Depth, Info, Labels, Mode, State};
-use crate::{SourcePosition, expr::Attr, stack::ensure_sufficient};
-use ahash::AHashMap;
+use super::state::{Effects, Info, Labels, Mode, State};
+use crate::{AddrMap, SourcePosition, expr::Expr, stack::ensure_sufficient};
 use compact_str::CompactString;
-use netidx_value::parser::{Expected, Failure, Item, escapes};
+use netidx_value::parser::{Expected, Failure};
 use poolshark::local::LPooled;
 
-/// A point in the text: its byte offset, its position as an editor counts
-/// lines (a line ends at "\r\n", "\r" or "\n"), and where its line starts.
+/// A point in a text whose CRLFs were read as LF: its byte offset, its
+/// position as an editor counts lines of the text as written (there every
+/// "\r" and "\n" ends one), and where its line starts.
 #[derive(Clone, Copy)]
 pub(super) struct Mark {
     pub(super) off: usize,
     pub(super) pos: SourcePosition,
-    after_cr: bool,
     line_start: usize,
 }
 
 impl Mark {
     /// The start of a text.
     pub(super) fn start() -> Self {
-        Self { off: 0, pos: SourcePosition::default(), after_cr: false, line_start: 0 }
+        Self { off: 0, pos: SourcePosition::default(), line_start: 0 }
     }
 
     pub(super) fn step(&mut self, c: char) {
         self.off += c.len_utf8();
         match c {
-            '\n' if self.after_cr => self.line_start = self.off,
             '\r' | '\n' => {
                 self.pos = SourcePosition { line: self.pos.line + 1, column: 1 };
                 self.line_start = self.off
             }
             _ => self.pos.column += 1,
         }
-        self.after_cr = c == '\r';
     }
 }
 
@@ -56,23 +53,21 @@ pub(super) struct Held {
     messages: usize,
 }
 
-/// An attribute's parse, for [`Input::remembered`].
+/// An expression's parse, for [`Input::remembered`].
 struct Remembered {
-    r: R<Attr>,
+    r: R<Expr>,
     end: Mark,
-    depth: Depth,
+    /// The depth it started at, where alone a parse the nesting limit
+    /// refused something in holds.
+    from: usize,
+    effects: Effects,
     /// What its failures at the reported point said, if any did.
     said: Option<Labels>,
 }
 
-/// Where an attribute starts and, for a parse the nesting limit refused
-/// something in, the depth it started at: a parse that met the limit
-/// holds at that depth alone.
-type AttrKey = (usize, Option<usize>);
-
 #[cfg(test)]
 thread_local! {
-    /// Under test, read every attribute again, as a parse without
+    /// Under test, read every expression again, as a parse without
     /// [`Input::remembered`] would.
     pub(super) static FORGET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -84,7 +79,11 @@ pub(super) struct Input<'a> {
     /// Printed data (`NaN`, a printed datetime) reads as a literal.
     pub(super) printed_data: bool,
     pub(super) g: State,
-    attrs: LPooled<AHashMap<AttrKey, Remembered>>,
+    /// Lookaheads and probes in progress, whose expressions what follows
+    /// them may read again.
+    speculating: u32,
+    /// The expressions they parsed, by where each starts.
+    memo: LPooled<AddrMap<Remembered>>,
 }
 
 /// The first alternative that does not fail without consuming input; a
@@ -122,7 +121,8 @@ impl<'a> Input<'a> {
             at: Mark::start(),
             printed_data,
             g: State::new(mode),
-            attrs: LPooled::take(),
+            speculating: 0,
+            memo: LPooled::take(),
         }
     }
 
@@ -425,7 +425,7 @@ impl<'a> Input<'a> {
     /// patterns a map access's probe read as expressions.
     pub(super) fn probe<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         let m = self.at;
-        f(self).map_err(|e| {
+        self.speculate(f).map_err(|e| {
             self.at = m;
             Fail { fatal: false, ..e }
         })
@@ -499,7 +499,7 @@ impl<'a> Input<'a> {
     pub(super) fn look_ahead<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         let m = self.at;
         let held = self.hold();
-        let r = f(self);
+        let r = self.speculate(f);
         if r.is_ok() {
             self.drop_since(held)
         }
@@ -557,7 +557,7 @@ impl<'a> Input<'a> {
         }
     }
 
-    // CR claude for claude: [perf/medium] The arms of a select read again
+    // XCR claude for claude: [perf/medium] The arms of a select read again
     // what the map-access probe in postfix_op (`select x{` read as `x{ k }`)
     // already parsed, and this memo covers only attributes, so another way
     // back into expressions is still exponential: a string pattern parses
@@ -575,31 +575,59 @@ impl<'a> Input<'a> {
     // N=18. Found by review r3 of lane J. probes:
     // ~/ptmp/cr29/scratch/review-rd/r3-2/strpat/{sp_14,sp_16,sps_100,tp_14,rt_16}.gx,
     // RESULTS.txt (probe-reread-01)
-    /// `f`, the rest of an attribute, parsed once where it starts. Its
-    /// arguments are whole expressions that a lookahead may read before
-    /// the rule that keeps them, so nested attributes would be read again
-    /// at every level. A parse that starts here ends alike at any depth
-    /// where the nesting limit refuses nothing in it, and a parse the
-    /// limit refused something in ends alike at the same depth, so where
-    /// one did it is replayed: its end, what it did to the depth, and what
-    /// its failures at the reported point said.
-    pub(super) fn remembered(&mut self, f: impl FnOnce(&mut Self) -> R<Attr>) -> R<Attr> {
-        let start = self.at.off;
+    // 2026-11-04 claude: Fixed at the cause: Input::remembered keeps every expression
+    // a lookahead or a probe parses (Input::speculate counts them), by where it
+    // starts, and replays one an expr() reads again there: its end, its effects
+    // (depth, and now the reason and literal failure it would leave noted, which
+    // State::measure sets aside so a replay re-notes them; the attribute memo dropped
+    // those) and what its failures said. It replaces the attribute memo and AttrKey:
+    // an attribute's arguments are expressions a struct's lookahead or a probe read
+    // first. The key is the offset alone; an entry the limit cut short holds at its
+    // starting depth (Remembered.from). Exact over both repos: graphix fmt --stdout
+    // of all 2941 .gx/.gxi, base-r14 against this, differs only in
+    // t-parser-a-int-overflow-diag.gx's message (value-literal-labels-01); the gxfmt
+    // harness and expr_spans pass. sp_18 costs 0.021 G instructions (base-r14 56 G),
+    // rt_16 through str::parse 1.40 G with the stdlib (15.8 G). fmt of the corpus in
+    // one process: 16.45 G against 16.53 G. Pins:
+    // expr::parser::test::string_patterns_after_a_probe_parse_once (270 knots at
+    // N=18, as source and as data; with FORGET 4980735) and
+    // a_remembered_expression_parses_as_read_again (FORGET against the memo on every
+    // cut, deletion and stray closer).
+    /// `f`, a parse that what follows it may read again.
+    fn speculate<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.speculating += 1;
+        let r = f(self);
+        self.speculating -= 1;
+        r
+    }
+
+    /// `f`, an expression, parsed once where it starts when a lookahead or
+    /// a probe parses it first: what follows them reads it again (a block,
+    /// the arguments of an attribute a struct's lookahead read; a select's
+    /// arms, the splices of the string patterns a map access's probe read),
+    /// so nested ones would be read again at every level. A parse that
+    /// starts here ends alike at any depth where the nesting limit refuses
+    /// nothing in it, and a parse the limit refused something in ends
+    /// alike at the same depth, so where one did it is replayed: its end,
+    /// what it did to the state, and what its failures at the reported
+    /// point said.
+    pub(super) fn remembered(&mut self, f: impl FnOnce(&mut Self) -> R<Expr>) -> R<Expr> {
         #[cfg(test)]
         if FORGET.get() {
             return f(self);
         }
-        if self.g.quiet > 0 {
+        if self.g.quiet > 0 || (self.speculating == 0 && self.memo.is_empty()) {
             return f(self);
         }
+        let start = self.at.off;
         let depth = self.g.depth();
-        let hit = match self.attrs.get(&(start, None)) {
-            Some(m) if self.g.fits(m.depth) => Some(m),
-            _ => self.attrs.get(&(start, Some(depth))),
-        };
+        let hit = self.memo.get(&start).filter(|m| match m.effects.depth.limited {
+            true => m.from == depth,
+            false => self.g.fits(m.effects.depth),
+        });
         if let Some(m) = hit {
             self.at = m.end;
-            self.g.replay(m.depth);
+            self.g.replay(&m.effects);
             if let Some(said) = &m.said {
                 let l = &mut self.g.labels;
                 l.token = said.token.or(l.token);
@@ -609,11 +637,14 @@ impl<'a> Input<'a> {
             }
             return m.r.clone();
         }
+        if self.speculating == 0 {
+            return f(self);
+        }
         let held = self.hold();
         let token = self.g.labels.token.take();
         let measure = self.g.measure();
         let r = f(self);
-        let d = self.g.measured(measure);
+        let effects = self.g.measured(measure);
         let l = &mut self.g.labels;
         let met = l.token;
         l.token = met.or(token);
@@ -637,8 +668,8 @@ impl<'a> Input<'a> {
                     messages: tail(&l.messages, h.messages),
                 }
             });
-        let m = Remembered { r: r.clone(), end: self.at, depth: d, said };
-        self.attrs.insert((start, d.limited.then_some(depth)), m);
+        let m = Remembered { r: r.clone(), end: self.at, from: depth, effects, said };
+        self.memo.insert(start, m);
         r
     }
 
@@ -656,7 +687,7 @@ impl<'a> Input<'a> {
             }
             Err(f) => f,
         };
-        // CR claude for claude: [bug/low] The labels this gives a value
+        // XCR claude for claude: [bug/low] The labels this gives a value
         // literal's failure never reach a user: `let a = error:"\q";`,
         // `error:"\u{4g}"` and `error:"\u{d800}"` report only "the parser could
         // not continue past this point", at the right column, where a graphix
@@ -666,23 +697,25 @@ impl<'a> Input<'a> {
         // filter that drops them. Pre-existing: base-r10 and base-r11 print the
         // same. probe: ~/ptmp/cr29/scratch/r11-Y/uescape-r2/gx/{q,u4g,usur}.gx
         // under `graphix --check` (value-literal-labels-01)
+        // 2026-11-04 claude: The labels were said, but a later alternative's
+        // success dropped them (primary's choice takes error as a reference, the
+        // parse then fails at the colon) and the report sits at the furthest
+        // point, where it gathers none. value_part now also notes a failure past
+        // a literal's start in State (note_literal, the furthest kept like a
+        // reason), and State::report says it where nothing else does:
+        // Labels::read is the one rendering of netidx's Expected, for both.
+        // error:"\q" reports Unexpected q and the escapes, u{4g} a hex digit or
+        // }, u{d800} the surrogate and u{110000} the past-10FFFF reason. Also
+        // changes an out-of-range integer literal's body from could-not-continue
+        // to netidx's invalid unsigned integer, its note unchanged (u8:256). Pin:
+        // expr::parser::test::a_value_literal_failure_says_what_was_expected
+        // (failed before the change).
         let at = self.mark_at(self.at.off + f.offset);
-        let expect = |l: &mut Labels, i: Item| match i {
-            Item::Char(c) => l.expect(Info::Token(c)),
-            Item::Text(s) => l.expect(Info::text(s)),
-        };
-        match f.expected {
-            Expected::OneOf(items) => {
-                self.labels(at.off, true, |l| items.iter().for_each(|i| expect(l, *i)))
-            }
-            Expected::Escape(syntax) => {
-                self.labels(at.off, true, |l| escapes(syntax).for_each(|i| expect(l, i)))
-            }
-            Expected::Refused(why) => {
-                self.labels(at.off, false, |l| l.message(Info::text(why)))
-            }
-        }
+        let token = !matches!(f.expected, Expected::Refused(_));
+        self.labels(at.off, token, |l| l.read(f.expected));
         if f.offset > 0 {
+            let met = self.text[at.off..].chars().next();
+            self.g.note_literal(at.pos, met, f.expected);
             self.at = at
         }
         Err(self.fail_at(at))
