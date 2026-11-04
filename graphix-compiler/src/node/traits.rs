@@ -75,7 +75,7 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
-// CR claude for claude: [bug/medium] A trait method's val is not held to what an interface
+// XCR claude for claude: [bug/medium] A trait method's val is not held to what an interface
 // val is (module::check_val, iface-generic-written-01): with `trait Put { val put:
 // fn(self, x: 'a) -> 'a }`, `let y = never(); impl Put for C { let put = |s, x| { y <- x;
 // x } }` pairs the method's 'a with y's cell, which no use copies, and passes. Beside a
@@ -100,6 +100,18 @@ pub(crate) fn method_sig(
 // item 2, the val deciding its implementation's open types at concrete types only
 // (iface-open-param-01); a write through a val narrower than its implementation is held
 // to the implementation's type, and mut-ref-poly-01 follows. Rebuild from cr44-E.
+// 2026-11-04 claude: Built on cr49-A (d4b7d5e47): traits.rs implements holds a cell of an
+// impl's or a default's body that a binding it captures holds as hold_paired holds a
+// val's, so tr1, tr2, tr4, g1 and g2 are refused at the impl. Judged by capture, not by
+// level alone: an impl's let is annotated with the method's signature, which claims its
+// cells at the top level though each call substitutes them
+// (lang::types::a_trait_methods_own_bound_names_any_variable_at_its_impls failed under the
+// level test). Pins that fail without it:
+// lang::traits::method_over_an_outer_binding_refused (tr1),
+// default_method_over_an_outer_binding_refused,
+// declared_method_over_an_outer_binding_refused (tr4). Controls:
+// method_over_an_outer_binding_of_every_type,
+// an_impl_annotation_keeps_the_method_variables_per_call.
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface

@@ -270,7 +270,7 @@ fn bind_sig_item(
             if env.ide.is_lsp() {
                 typ.record_ide_refs(env, &scope.lexical);
             }
-            // CR claude for claude: [bug/critical] A val's type variable outside a function
+            // XCR claude for claude: [bug/critical] A val's type variable outside a function
             // type is never claimed at the top level, so a definition outside the module
             // copies it: with `val v: Array<'a>` over `let v = never()`, the main program's
             // `let wr = |x| { m::v <- x; x }; let rd = |u| u ~ m::v` write v at Array<i64>
@@ -300,6 +300,25 @@ fn bind_sig_item(
             // its implementation's open types at concrete types only (iface-open-param-01);
             // a write through a val narrower than its implementation is held to the
             // implementation's type, and mut-ref-poly-01 follows. Rebuild from cr44-E.
+            // 2026-11-04 claude: Eric's D4 (a) built (cr49-A, d4b7d5e47): a val whose type
+            // variable stands outside every function type is refused at the module's check,
+            // 'declare the val at one type' (module.rs check_val_variables over the written
+            // type, Type::variable_outside_functions: typedefs expanded, an abstract type's
+            // parameters outside); a dynamic module's sig at the program's check, a script's
+            // interface at check_script_sig. b2, e1, hw17, hw12, a9, a9b, d1 and dl2 are
+            // refused at the val; e2 now names val v. Pins that fail without it:
+            // lang::interfaces::val_variable_outside_a_function_type_refused (b2),
+            // val_variable_outside_a_function_type_under_a_sibling_refused (e1),
+            // val_variable_in_a_function_type_and_in_data_refused (hw17),
+            // val_variable_in_a_struct_of_function_and_data_refused (hw12),
+            // val_variable_outside_a_function_type_beside_generic_vals_refused (a9b),
+            // dynamic_sig_variable_outside_a_function_type_refused (dl2),
+            // val_variable_as_an_abstract_parameter_refused (ab2),
+            // val_variable_under_a_growing_typedef_refused (gr1). Twins:
+            // val_at_one_type_written_and_read,
+            // alias_defined_after_the_module_is_generic_per_use (fw3; fr1 runs too). A
+            // dynamic load deciding a cell an earlier compile left open (repl2, dm8) is D9's
+            // route (repl-bottom-settle-01), unchanged here.
             let poly = matches!(typ, Type::Fn(_));
             let bind = env.bind_variable(
                 &scope.lexical,
@@ -460,7 +479,7 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     }
 }
 
-// CR claude for claude: [bug/medium] A generic `val` passes over an implementation
+// XCR claude for claude: [bug/medium] A generic `val` passes over an implementation
 // with one type: `val f: fn(x: 'a) -> 'a` over `let f = |x| x; f <- |x| x` (a written
 // `let`, so monomorphic) and `val set: fn(g: fn(x: 'a) -> 'a) -> null` over `let set =
 // |g| { f <- g; null }` (g shares f's cell) both match, so a write that narrows f is
@@ -497,7 +516,23 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // types only (iface-open-param-01); a write through a val narrower than its
 // implementation is held to the implementation's type, and mut-ref-poly-01 follows.
 // Rebuild from cr44-E.
-// CR claude for claude: [bug/low] An implementation binding's open cell is not decided by
+// 2026-11-04 claude: Built on cr49-A (d4b7d5e47): Type::sig_matches returns its pairing
+// (SigMatch::paired) and module.rs hold_paired refuses an implementation cell no use
+// copies where the val has a variable each use picks, naming the way out (the outer
+// binding's type, the val at one type, or a quantified annotation on the let). u2, u4,
+// u4i and p1 are refused at val f. Pins that fail without it:
+// lang::interfaces::generic_val_over_a_written_let_refused (p1, u2),
+// generic_val_whose_argument_a_written_let_holds_refused (u4),
+// struct_of_functions_val_over_an_outer_binding_refused,
+// aliased_function_val_over_an_outer_binding_refused,
+// val_over_an_outer_binding_names_its_type,
+// written_val_over_an_outer_binding_names_one_type,
+// val_over_an_open_let_names_its_first_variable. Controls:
+// val_at_one_type_over_a_written_let, val_over_an_outer_binding_of_every_type,
+// struct_of_functions_val_is_generic_per_use, aliased_function_val_is_generic_per_use.
+// lang::modules::a_body_write_keeps_a_generic_interface_generic (p1 running) is
+// dropped.
+// XCR claude for claude: [bug/low] An implementation binding's open cell is not decided by
 // the val it implements: with `type B<'x>; val e: B<i64>; val i: B<i64>;` in m.gxi and
 // `type B<'x> = Abstract<i64>; let e = B(1); let i: B<i64> = B(1)` in m.gx, e's parameter
 // stays open past the check, its value is built at B<⊥>, and `m::e == m::i` is false
@@ -526,7 +561,18 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // item 2, the val deciding its implementation's open types at concrete types only
 // (iface-open-param-01); a write through a val narrower than its implementation is held
 // to the implementation's type, and mut-ref-poly-01 follows. Rebuild from cr44-E.
-// CR claude for claude: [bug/medium] A write through a val narrower than its implementation
+// 2026-11-04 claude: Built on cr49-A (d4b7d5e47): hold_paired decides an implementation
+// cell no use copies at the val's type where that holds no variable a use picks (after
+// rule (a) only a concrete type or a whole quantified function type), as an annotation on
+// the let would. modv prints 'static e==i true', modu 'e==a true map 1 dedup 1', modt all
+// true but e==i (B<E> against B<i64>), as on cr44-E. Pins that fail without it:
+// lang::interfaces::val_decides_an_open_parameter, _map_key, _dedup, _through_an_alias,
+// two_vals_over_one_open_cell_at_two_types_refused,
+// val_below_its_open_parameter_bound_refused, val_over_an_outer_open_cell_refused,
+// rank2_val_parameter_over_a_written_let; control val_over_an_annotated_outer_cell. A
+// dynamic load's unbind_tvars on the val's type is D9's (lane D); rule (a) leaves no data
+// variable for it to reopen.
+// XCR claude for claude: [bug/medium] A write through a val narrower than its implementation
 // reaches the implementation at the val's type alone: with `val f: fn(x: i64) -> i64; val
 // g: fn(t: Any) -> string` over `let f = |x| x; let g = |t| f(t ~ "s")`, the main
 // program's `m::f <- t ~ |x: i64| -> i64 x + 100` passes --check, held to the val's type,
@@ -554,6 +600,21 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // item 2, the val deciding its implementation's open types at concrete types only
 // (iface-open-param-01); a write through a val narrower than its implementation is held to
 // the implementation's type, and mut-ref-poly-01 follows. Rebuild from cr44-E.
+// 2026-11-04 claude: Built on cr49-A (d4b7d5e47): a val something writes must fit its
+// implementation (CompileCtx::check_val_written: a copy of the val's type contained in the
+// implementation's, the implementation's cells rigid, none taking a bound its own bounds do
+// not imply). The module's check asks it of a val that is a <- target, which every <- and
+// &mut of the same compile is by then; a later compile asks it as it marks the target
+// (mark_connect_target, the pair joined). Judged: the val is held whole, not each value
+// written (m::f <- |x| x over a generic body is refused too), since a per-write hold in
+// Connect would see a sibling module's join or not by scheduling. ca1, rb1, ca2, rb2, dyn2
+// and dyn2b are refused; rf2 runs (r=101). Pins that fail without it:
+// lang::interfaces::narrow_write_through_a_val_refused (ca1),
+// bounded_write_through_a_val_refused (rb1),
+// mut_ref_to_a_val_at_one_type_over_a_generic_body_refused (ca2),
+// lang::modules::a_load_cannot_write_through_a_val_to_a_generic_body (dyn2b),
+// a_load_cannot_take_a_writable_reference_through_a_val_to_a_generic_body (dyn2, now this
+// rule's message); control write_through_a_val_over_an_implementation_at_its_type.
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared` ([`hold_paired`]); `generalized` says its binding is
 /// generic in the cells its own definitions own, and `captured` gives the
@@ -567,7 +628,7 @@ fn check_val(
     generalized: bool,
     captured: impl Fn() -> LPooled<Vec<Type>>,
 ) -> Result<()> {
-    // CR claude for claude: [bug/medium] An interface val's written quantified fn type
+    // XCR claude for claude: [bug/medium] An interface val's written quantified fn type
     // lets its quantifier escape through the implementation, as a let annotation did
     // before rank2-escape-01: `val h: fn<'a: Any>(x: 'a) -> 'a; val y: i64` over `let y
     // = never(); let h = |x| { y <- x; x }` (if1) and `val mk: fn(z: i64) -> fn<'a:
@@ -602,6 +663,16 @@ fn check_val(
     // types at concrete types only (iface-open-param-01); a write through a val
     // narrower than its implementation is held to the implementation's type, and
     // mut-ref-poly-01 follows. Rebuild from cr44-E.
+    // 2026-11-04 claude: Built on cr49-A (d4b7d5e47) by hold_paired
+    // (iface-generic-written-01): a rank-2 val's variable paired with an outer
+    // binding's cell is refused at the val (if1, if3); if4 runs. Pins that fail without
+    // it: lang::interfaces::rank2_val_over_an_outer_binding_refused,
+    // rank2_val_result_over_an_outer_binding_refused,
+    // rank2_val_over_a_written_let_names_the_annotation. Controls:
+    // rank2_val_result_over_its_own_variable,
+    // rank2_val_over_a_written_let_at_its_quantified_type, rank2_val_over_an_open_let.
+    // The maker shape (val mk over a function that makes |x| { v <- x; v } over its own
+    // let) stays rank2-result-maker-01's.
     let refused = |e: anyhow::Error| {
         let typ = format_with_flags(PrintFlag::DerefTVars, || {
             format_compact!("{}", Brief(typ))

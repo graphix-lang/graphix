@@ -1935,7 +1935,7 @@ impl<R: Rt> ByRef<R> {
                 Referent::Channel(c) => (&**c as &dyn Any).downcast_ref::<Ref>(),
             };
             if let Some(r) = named {
-                // CR claude for claude: [bug/low] `&mut a::f` over `val f: fn(x: i64) -> i64`
+                // XCR claude for claude: [bug/low] `&mut a::f` over `val f: fn(x: i64) -> i64`
                 // is refused with "a::f was made generic by an earlier compile, and a
                 // writable reference to it would let a write narrow it", though the type
                 // holds no variable and `a::f <- ..` is accepted: membership in poly_binds
@@ -1961,6 +1961,17 @@ impl<R: Rt> ByRef<R> {
                 // (iface-open-param-01); a write through a val narrower than its
                 // implementation is held to the implementation's type, and mut-ref-poly-01
                 // follows. Rebuild from cr44-E.
+                // 2026-11-04 claude: Built on cr49-A (d4b7d5e47): &mut of a binding is
+                // refused only where poly_binds holds it and CompileCtx::generalized_earlier
+                // finds it generic; a val at one type takes a &mut, held to its
+                // implementation by check_val_written (iface-narrow-write-01). rf2 runs
+                // (r=101). Pins that fail without it:
+                // lang::interfaces::mut_ref_to_a_val_at_one_type (rf2),
+                // lang::modules::a_load_takes_a_writable_reference_through_a_val_at_its_type.
+                // mut_ref_to_a_val_at_one_type_over_a_generic_body_refused (ca2) and
+                // a_load_cannot_take_a_writable_reference_through_a_val_to_a_generic_body
+                // hold the unsound case refused; mut_ref_to_a_generic_val_refused keeps
+                // main's refusal and message.
                 if ctx.env.poly_binds.contains(&r.id) && ctx.generalized_earlier(r.id) {
                     bailat!(
                         spec,
