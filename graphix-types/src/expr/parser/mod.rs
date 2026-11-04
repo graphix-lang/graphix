@@ -12,14 +12,12 @@ use crate::{
 use ahash::AHashMap;
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
-use escaping::Escape;
 use netidx_core::path::Path;
 use netidx_value::{
     Value,
     parser::{self as value_parser, StringSyntax, duration_of},
 };
 use poolshark::local::LPooled;
-use smallvec::SmallVec;
 use std::sync::LazyLock;
 use triomphe::Arc;
 
@@ -1528,28 +1526,11 @@ pub(super) fn parse_path(s: &str) -> anyhow::Result<ModPath> {
 
 pub const GRAPHIX_MUST_ESC: [char; 4] = ['"', '\\', '[', ']'];
 
-pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
+/// The strings of graphix source: no `\u{..}`, so a control character
+/// with no name prints raw and reads verbatim.
+pub static GRAPHIX_STRINGS: LazyLock<StringSyntax> = LazyLock::new(|| {
     const NAMED: [(char, &str); 4] = [('\n', "n"), ('\r', "r"), ('\t', "t"), ('\0', "0")];
-    let esc: SmallVec<[char; 8]> =
-        GRAPHIX_MUST_ESC.into_iter().chain(NAMED.map(|(c, _)| c)).collect();
-    // other control characters print raw: the string parser reads them
-    // verbatim and knows no `\u{..}` escape
-    Escape::new('\\', &esc, &NAMED, None).unwrap()
-});
-
-/// The strings of graphix source: [`GRAPHIX_ESC`], no `\u{..}`.
-static GRAPHIX_STRINGS: LazyLock<StringSyntax> = LazyLock::new(|| StringSyntax {
-    must_esc: &GRAPHIX_MUST_ESC,
-    esc: &GRAPHIX_ESC,
-    unicode: false,
-});
-
-/// The escape for strings nested in a value literal (`error:"..."`):
-/// netidx's without its generic `\u{..}` arm, so other control characters
-/// print raw, as in graphix's own strings; netidx's parser reads both.
-pub static VALUE_ESC: LazyLock<Escape> = LazyLock::new(|| {
-    const NAMED: [(char, &str); 4] = [('\n', "n"), ('\r', "r"), ('\t', "t"), ('\0', "0")];
-    Escape::new('\\', &['\\', '"', '\n', '\r', '\0', '\t'], &NAMED, None).unwrap()
+    StringSyntax::new('\\', &GRAPHIX_MUST_ESC, &NAMED, None).unwrap()
 });
 
 /// How a reserved word may be used.

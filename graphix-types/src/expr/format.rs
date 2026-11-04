@@ -774,6 +774,17 @@ mod tests {
         );
     }
 
+    // a value literal's string prints as netidx prints it, a graphix
+    // string's control characters raw
+    #[test]
+    fn a_value_literals_strings_print_as_netidx_prints_them() {
+        use SourceKind::Program;
+        let escaped = "[error:\"\\u{1}x\\u{9f}\\n\", \"\u{1}\"]\n";
+        formats_to(Program, escaped, escaped);
+        formats_to(Program, "[error:\"\u{1}x\u{9f}\\n\", \"\u{1}\"]", escaped);
+        formats_to(Program, "error:\"\\u{41}\"", "error:\"A\"\n");
+    }
+
     #[test]
     fn struct_literal_fields_keep_their_order() {
         use SourceKind::Program;

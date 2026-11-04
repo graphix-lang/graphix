@@ -6138,6 +6138,15 @@
                   "type": "ALIAS",
                   "content": {
                     "type": "SYMBOL",
+                    "name": "_unicode_escape"
+                  },
+                  "named": true,
+                  "value": "escape_sequence"
+                },
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
                     "name": "_string_content"
                   },
                   "named": true,
@@ -6173,6 +6182,22 @@
           {
             "type": "PATTERN",
             "value": "[\\\\\\\"nrt0\\[\\]]"
+          }
+        ]
+      }
+    },
+    "_unicode_escape": {
+      "type": "IMMEDIATE_TOKEN",
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "\\"
+          },
+          {
+            "type": "PATTERN",
+            "value": "u\\{[0-9a-fA-F]{1,6}\\}"
           }
         ]
       }

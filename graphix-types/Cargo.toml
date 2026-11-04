@@ -20,7 +20,6 @@ compact_str = { workspace = true }
 crc32fast = { workspace = true }
 dirs = { workspace = true }
 enumflags2 = { workspace = true }
-escaping = { workspace = true }
 futures = { workspace = true }
 nohash = { workspace = true }
 ahash = { workspace = true }

@@ -1032,11 +1032,13 @@ module.exports = grammar({
     // Uses the SAME external content token as string (so the lexer produces one
     // token that both GLR branches can accept). The difference: value_string
     // also accepts literal '[' as a parser token, while string treats '[' as
-    // interpolation start. This lets the parser handle the distinction.
+    // interpolation start. This lets the parser handle the distinction. It
+    // also reads netidx's `\u{hex}`, which a graphix string refuses.
     value_string: $ => prec.dynamic(-1, seq(
       '"',
       repeat(choice(
         $.escape_sequence,
+        alias($._unicode_escape, $.escape_sequence),
         alias($._string_content, $.value_string_content),
         '[',
         ']',
@@ -1045,6 +1047,8 @@ module.exports = grammar({
     )),
 
     escape_sequence: $ => token.immediate(seq('\\', /[\\\"nrt0\[\]]/)),
+
+    _unicode_escape: $ => token.immediate(seq('\\', /u\{[0-9a-fA-F]{1,6}\}/)),
 
     interpolation: $ => seq(
       '[',

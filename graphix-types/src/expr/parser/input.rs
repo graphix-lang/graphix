@@ -656,6 +656,16 @@ impl<'a> Input<'a> {
             }
             Err(f) => f,
         };
+        // CR claude for claude: [bug/low] The labels this gives a value
+        // literal's failure never reach a user: `let a = error:"\q";`,
+        // `error:"\u{4g}"` and `error:"\u{d800}"` report only "the parser could
+        // not continue past this point", at the right column, where a graphix
+        // string's `"\q"` names the escapes it expected, so netidx's expected
+        // lists and its surrogate and past-10FFFF reasons are lost. State::report
+        // renders labels only where its position is `err`, which looks like the
+        // filter that drops them. Pre-existing: base-r10 and base-r11 print the
+        // same. probe: ~/ptmp/cr29/scratch/r11-Y/uescape-r2/gx/{q,u4g,usur}.gx
+        // under `graphix --check` (value-literal-labels-01)
         let at = self.mark_at(self.at.off + f.offset);
         let expect = |l: &mut Labels, i: Item| match i {
             Item::Char(c) => l.expect(Info::Token(c)),

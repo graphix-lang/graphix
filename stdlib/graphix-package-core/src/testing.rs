@@ -826,7 +826,7 @@ pub async fn eval_packed(
     Ok((data(v), ctx))
 }
 
-pub use graphix_compiler::expr::parser::GRAPHIX_ESC;
+use graphix_compiler::expr::parser::GRAPHIX_STRINGS;
 pub use poolshark::local::LPooled;
 
 pub fn escape_path(path: std::path::Display) -> LPooled<String> {
@@ -834,7 +834,7 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
     let mut buf: LPooled<String> = LPooled::take();
     let mut res: LPooled<String> = LPooled::take();
     write!(buf, "{path}").unwrap();
-    GRAPHIX_ESC.escape_to(&*buf, &mut res);
+    GRAPHIX_STRINGS.escape().escape_to(&*buf, &mut res);
     res
 }
 

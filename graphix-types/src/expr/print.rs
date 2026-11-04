@@ -18,7 +18,7 @@ use crate::{
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use netidx_core::path::Path;
-use netidx_value::Value;
+use netidx_value::{Value, parser::VAL_STRINGS};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
@@ -725,7 +725,8 @@ fn sig_item_decorated(si: &SigItem) -> bool {
 /// A literal as source text: `i64` and `f64`, the types an unprefixed
 /// number reads as, print bare, an `f64` always with a point or an
 /// exponent, an `f32` in its shortest form; a string escapes as an
-/// expression's does.
+/// expression's does, and one inside another value as netidx's printer
+/// writes it.
 pub(crate) struct Literal<'a>(pub &'a Value);
 
 impl fmt::Display for Literal<'_> {
@@ -734,8 +735,8 @@ impl fmt::Display for Literal<'_> {
             Value::I64(v) => write!(f, "{v}"),
             Value::F64(v) if v.is_finite() => write!(f, "{v:?}"),
             Value::F32(v) if v.is_finite() => write!(f, "f32:{v:?}"),
-            v @ Value::String(_) => v.fmt_ext(f, &parser::GRAPHIX_ESC, true),
-            v => v.fmt_ext(f, &parser::VALUE_ESC, true),
+            v @ Value::String(_) => v.fmt_ext(f, parser::GRAPHIX_STRINGS.escape(), true),
+            v => v.fmt_ext(f, VAL_STRINGS.escape(), true),
         }
     }
 }
@@ -2727,7 +2728,9 @@ fn str_constant_pieces(
     match form {
         StrForm::Raw => write_raw(f, s),
         StrForm::Template => write_template(f, std::iter::once(StrPart::Text(s))),
-        StrForm::Quoted | StrForm::Text => v.fmt_ext(f, &parser::GRAPHIX_ESC, true),
+        StrForm::Quoted | StrForm::Text => {
+            v.fmt_ext(f, parser::GRAPHIX_STRINGS.escape(), true)
+        }
     }
 }
 
@@ -2749,7 +2752,9 @@ fn interpolation_pieces(
     write!(f, "\"")?;
     for part in parts {
         match part {
-            StrPart::Text(s) => write!(f, "{}", parser::GRAPHIX_ESC.escape(s))?,
+            StrPart::Text(s) => {
+                write!(f, "{}", parser::GRAPHIX_STRINGS.escape().escape(s))?
+            }
             StrPart::Splice(e) => write!(f, "[{e}]")?,
         }
     }
