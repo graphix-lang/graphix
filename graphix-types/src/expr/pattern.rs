@@ -866,7 +866,7 @@ impl StructurePattern {
         Ok(true)
     }
 
-    // CR claude for claude: [bug/high] D6 misses a pattern inside the element of a
+    // XCR claude for claude: [bug/high] D6 misses a pattern inside the element of a
     // constructor-variable collection: parts_over has no case for an unfilled
     // `Type::App` ('c<'b>, or the element quantifier of a `c: Collection` parameter), so
     // may_hold is false for that member, meets skips it and nothing inside the element is
@@ -880,10 +880,28 @@ impl StructurePattern {
     // rigid element; pin ct4 and ct13 with the written twin. Review r14 B-r3-1. probe:
     // ~/ptmp/cr29/scratch/review-r14/B-r3-1/i/{ct1,ct4,ct7,ct8,ct13,ct11}.gx
     // (d6-collection-element-01)
+    // 2026-11-05 claude: parts_over reads an open constructor's application ('c<'b>, c:
+    // Collection's element) as a slice's collection of its argument, so D6 (meets,
+    // may_hold, written_parts) reaches the element: ct1/ct7/ct8 are refused naming the
+    // written test, ct4/ct13 by the undecided-type rule (whose written twin base refuses
+    // too). The advice writes the application as the slice's collection (slices_written in
+    // node/pattern.rs: Array<..>/List<..>, never the unmatchable 'c<..>), and
+    // Type::matching_type reads it the same way under a written test, so the binds of the
+    // advised twin take the test's part: before, `Array<(i64, i64)> as [(a, b), ..] => {
+    // let q: string = a; q }` over 'c<'b> checked and aborted the JIT test process. Pins in
+    // lang::select: collection_variable_element_pattern_refused,
+    // collection_variable_list_element_pattern_refused,
+    // collection_variable_tuple_element_pattern_refused,
+    // collection_parameter_element_pattern_refused,
+    // collection_parameter_element_pattern_arith_refused,
+    // collection_variable_element_written_test_types_binds (all fail without the fix, the
+    // last by SIGABRT), twin collection_variable_element_written_test. A name over the
+    // element (`[h, ..]`) is still not typed 'b: collection-element-bind-01.
     /// Each sub-pattern with the part of `m`, a member of a type (a
     /// constructor at its head), it stands over; `None` where `m` is not
     /// of this pattern's shape. An abstract pattern holds the type `ids`
-    /// gives it.
+    /// gives it; a slice's elements stand over an open constructor's
+    /// argument (`'c<'b>`).
     fn parts_over<'a>(
         &'a self,
         env: &Env,
@@ -900,7 +918,9 @@ impl StructurePattern {
             m: &Type,
         ) -> Option<Parts<'a>> {
             let et = match (list, m) {
-                (false, Type::Array(et)) | (true, Type::List(et)) => (**et).clone(),
+                (false, Type::Array(et))
+                | (true, Type::List(et))
+                | (_, Type::App(_, et)) => (**et).clone(),
                 _ => return None,
             };
             Some(ps.iter().map(|p| (p, et.clone())).collect())

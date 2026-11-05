@@ -1284,6 +1284,12 @@ impl Type {
                 }
                 None => Ok(p.clone()),
             },
+            (p @ Self::Array(_), Self::App(c, a)) if Self::app_filled(c, a).is_none() => {
+                p.matching_type_int(env, walk, &Self::Array(a.clone()))
+            }
+            (p @ Self::List(_), Self::App(c, a)) if Self::app_filled(c, a).is_none() => {
+                p.matching_type_int(env, walk, &Self::List(a.clone()))
+            }
             (p @ Self::Ref(_), t) | (p, t @ Self::Ref(_)) => {
                 let definition = |t: &Type| match t {
                     Self::Ref(tr) => tr.resolve_in(env).map(|r| r.def_key()),

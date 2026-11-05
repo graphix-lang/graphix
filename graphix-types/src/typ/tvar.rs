@@ -3197,6 +3197,20 @@ impl Type {
         go(self, counts, &mut LPooled::take())
     }
 
+    // CR claude for claude: [bug/high] A slice's binds over an application of a
+    // constructor variable are not typed by its argument: `self ⊇ pred` for 'c<'b> ⊇
+    // Array<['h, 'r]> narrows nothing, so 'h stays a cell of its own. `'c: Collection,
+    // 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string
+    // = h; q }, _ => null }` checks, and over `[(3, 4)]` the arm's test (now of strings)
+    // fails, so it answers null; the twin over `Array<'b>` is refused. Reading the
+    // application as `Array<'b>` in narrow_pattern alone (as Type::matching_type does
+    // for a written test) was tried: h1 still answered null (capture_type and
+    // bind_narrowed see the application too), and over `c: Collection`'s element cell
+    // the arm then decided the cell while the walks that refuse a pattern over a cell
+    // not decided at the select still saw the application whole, so `[`A(z), ..] => z`
+    // passed with a string z. Fix: read the application as the collection in the
+    // narrowing, the bind typing and those walks together.
+    // probe: ~/ptmp/cr29/scratch/r17-o1/h1.gx, twin h1t.gx (collection-element-bind-01)
     /// `self ⊇ pred` for a pattern's predicate over what reaches it: over
     /// a union, by member ([`Self::narrow_per_member`]). Whether some
     /// member, or `self`, contains it.

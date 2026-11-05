@@ -7538,6 +7538,104 @@ run!(
 );
 
 run!(
+    collection_variable_element_pattern_refused,
+    refused("[`A(z), ..] tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `Array<[`A(i64), `B(i64)]> as [`A(z), ..]`"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: [`A(i64), `B(i64)] |x: 'c<'b>| select x {
+            [`A(z), ..] => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g([o])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_variable_list_element_pattern_refused,
+    refused("[<`A(z), ..>] tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `List<[`A(i64), `B(i64)]> as [<`A(z), ..>]`"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: [`A(i64), `B(i64)] |x: 'c<'b>| -> f64 select x {
+            [<`A(z), ..>] => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g([<o>])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_variable_tuple_element_pattern_refused,
+    refused("[(a, b), ..] tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `Array<(i64, i64)> as [(a, b), ..]`"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> f64 select x {
+            [(a, b), ..] => a + 1.5,
+            _ => 0.0
+        };
+        let result = g([(3, 4)])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_parameter_element_pattern_refused,
+    refused("[`A(z), ..] tests a value whose type is not decided at this select"),
+    "/test.gx" => r#"
+        let h = |c: Collection| -> [string, null] select c { [`A(z), ..] => z, _ => null };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = h([o])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_parameter_element_pattern_arith_refused,
+    refused("[`A(z), ..] tests a value whose type is not decided at this select"),
+    "/test.gx" => r#"
+        let h = |c: Collection| select c { [`A(z), ..] => z + 1.5, _ => 0.0 };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = h([o])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_variable_element_written_test,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0, 0, 4, 8, 0]),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: [`A(i64), `B(i64)] |x: 'c<'b>| select x {
+            Array<[`A(i64), `B(i64)]> as [`A(z), ..] => z + 1,
+            _ => 0
+        };
+        let l = 'c: Collection, 'b: [`A(i64), `B(i64)] |x: 'c<'b>| select x {
+            List<[`A(i64), `B(i64)]> as [<`A(z), ..>] => z + 1,
+            _ => 0
+        };
+        let t = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| select x {
+            Array<(i64, i64)> as [(a, b), ..] => a + b + 1,
+            _ => 0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = [g([o]), g([<o>]), l([o]), l([<o>]), t([(3, 4)]), t([<(3, 4)>])]
+    "#;
+    FuseExpect::Jit
+);
+
+run!(
+    collection_variable_element_written_test_types_binds,
+    refused("type mismatch string does not contain i64"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x {
+            Array<(i64, i64)> as [(a, b), ..] => { let q: string = a; q },
+            _ => null
+        };
+        let result = g([(3, 4)])
+    "#;
+    FuseExpect::None
+);
+
+run!(
     written_test_closed_inside_a_declared_variable,
     r#"{
         let g = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| select x {
