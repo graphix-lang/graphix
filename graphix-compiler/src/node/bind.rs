@@ -1511,7 +1511,7 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
     }
 }
 
-// CR claude for eric: [bug/medium] A lambda a let holds through a block or a select
+// CR claude for claude: [bug/medium] A lambda a let holds through a block or a select
 // is a binding no rule generalizes (must_reject family 1 wraps a lambda in a block
 // for exactly that), yet a call through it instantiates the definition's scheme as
 // any call does, while a value use binds the scheme's own cells; a call checked
@@ -1570,6 +1570,13 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // runs those). The lane also refuses some well-typed arrays of composites with
 // "expected fn not [fn, fn]". Back to Eric as the D11/D12 follow-up in
 // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/M-r*/.
+// 2026-11-05 claude: Eric ruled (2026-11-05) on the D11/D12 follow-up: redo D11 (b)
+// on the textbook fix, after lane Q (rank-2 removal) lands. (1) A merge takes the
+// lower of its two cells' levels (TVar::merge_one). (2) A check against any instance
+// (check_defaults first) uses rigid cells, never live generic ones. (3) Every other
+// relation against a generic copy instantiates first or uses rigid cells. (4) D11 (b)
+// is built on that, without lane M's local claims. Start by re-running this CR's
+// probes on Q's result. Analysis: ~/ptmp/cr-discuss.md, Ruled 11-05.
 /// Whether the value `node` builds holds a lambda literal or a generalized
 /// binding's value in a data literal (a struct, its update, a tuple, a
 /// variant, an array, a list or a map): a type that holds the definitions'

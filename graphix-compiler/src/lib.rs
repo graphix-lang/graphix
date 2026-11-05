@@ -2022,7 +2022,7 @@ impl<R: Rt> CompileCtx<R> {
         self.env.by_id.get(&id).is_some_and(|b| holds_generic(&b.typ))
     }
 
-    // CR claude for eric: [perf/medium] A chain of lets holding functions, where each
+    // CR claude for claude: [perf/medium] A chain of lets holding functions, where each
     // link binds a written name or carries an annotation, checks in time exponential in
     // its length: each occurrence of a shared node holding a function takes its own
     // copy here, so a DAG of holders becomes a tree. `let (a, w) = (x, 0); w <- 1; let
@@ -2126,6 +2126,9 @@ impl<R: Rt> CompileCtx<R> {
     // (main runs those). The lane also refuses some well-typed arrays of composites with
     // "expected fn not [fn, fn]". Back to Eric as the D11/D12 follow-up in
     // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/M-r*/.
+    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D11/D12 follow-up: (a). Split
+    // D12 (one instance per shared node) out of cr50-M-parked (fb0072ecd), re-review and
+    // land it now.
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
