@@ -253,6 +253,8 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
         Produce("app(j)", Value::I64(2)),
         Accept("let arr = [j, |x: i64| -> i64 x]"),
         Produce("arr[1]$(4)", Value::I64(4)),
+        Accept("let kj = select true { true => j, false => |x: i64| -> i64 x }"),
+        Produce("kj(3)", Value::I64(6)),
         Accept(SETF),
         Refuse(
             "setf(&mut j)",
@@ -264,6 +266,11 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
         Accept("let fs = [g, g]"),
         Refuse(
             "let z: fn(x: i64, y: i64) -> i64 = fs[0]$",
+            "this input would decide a type of an earlier input: annotate `fs` (line 1, \
+             column 5 in `let fs = [g, g]`)",
+        ),
+        Refuse(
+            "fs[1]$(1.5, 2.5)",
             "this input would decide a type of an earlier input: annotate `fs` (line 1, \
              column 5 in `let fs = [g, g]`)",
         ),
