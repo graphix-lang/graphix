@@ -2428,6 +2428,9 @@ impl<R: Rt> Select<R> {
             })();
             if let Err(e) = step {
                 if checking && !decided.is_empty() {
+                    while reached.len() < self.arms.len() {
+                        reached.push(scrut.clone())
+                    }
                     self.check_undecided(&ctx.env, &AHashMap::new(), &decided, &reached)?;
                 }
                 return Err(e);
@@ -2461,7 +2464,8 @@ impl<R: Rt> Select<R> {
     /// cells the scrutinee held before the arms ran (never one the arms' own
     /// patterns brought) still open, or of `decided`, those the arms'
     /// patterns decided, in the part of the scrutinee that reaches the arm
-    /// (`reached`, one per arm), or any open cell of a written test.
+    /// (`reached`, one per arm, the whole scrutinee for an arm a refusal
+    /// stopped the check before), or any open cell of a written test.
     fn check_undecided(
         &self,
         env: &Env,
@@ -2519,6 +2523,15 @@ impl<R: Rt> Select<R> {
     }
 }
 
+// CR claude for claude: [bug/low] A cell the scrutinee holds only through a lower
+// bound is not one Deciding notes (settle::position_cells walks no bounds), so the
+// first arm decides it with no D5 refusal: `|x| { let r = &mut (x, 0); select *r {
+// (`J, _) => 1, (`M, _) => 3 } }` is accepted with arm 2 dead and `f(`M)` refused
+// "type mismatch `J does not contain `M"; with a `_` arm, "unreachable arm". The same
+// through an abstract constructor's parameter, `select W((x, 0)).0`. The annotated
+// twin runs. Same on main (base-r16): D5's undecided cells come from the same walk.
+// Found by review r16 (U-r1-1). probes: ~/ptmp/cr29/scratch/r16-U/review-fix/p/
+// lb4.gx, lb5.gx, lb1.gx, lb2.gx; twin lb7.gx (undecided-lower-bound-01)
 /// The scrutinee's cells open before a step of a select's check that may
 /// decide them: the arms' settle, or an arm's pattern. A whole scrutinee
 /// open before the arms is theirs to decide together, unless an arm holds a
@@ -2606,6 +2619,17 @@ impl Deciding {
 // cases beside them; must-reject family 14's decide shape (graphix-fuzz
 // must_reject_families_are_refused_where_their_rules_say: LEAK without the fix). Census of both
 // repos: no change.
+// 2026-11-05 claude: Review r16 (U-r1-1) fix: a refusal in the arms' loop is now offered to the
+// rule over every arm, an arm not checked yet judged against the whole scrutinee, since the
+// settle (Reach::new) runs every pattern before any arm's guard or body: g7 (`(a, _) if b =>
+// select a { `J => 1, `M => 2 }, (`M, _) => 3, _ => 4` over (x, 0)) is refused naming x for arm
+// 2 instead of "pattern `J will never match `M". Pins
+// lang::select_undecided::later_arm_deciding_a_part_an_earlier_body_tests_refused (fails x4
+// without the fix) and its annotated twin
+// later_arm_over_an_annotated_part_an_earlier_body_tests. Left by judgment: a guard or body
+// deciding a part a pattern tests keeps main's message (the ruling names patterns); a cell held
+// only through a lower bound (undecided-lower-bound-01) and a decided cell inside a binding's
+// type (undecided-part-name-01) are new CRs, main sharing both.
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
@@ -2712,6 +2736,17 @@ fn written_tests_decided(
     }))
 }
 
+// CR claude for claude: [bug/low] The D5 refusal names no binding when the
+// undecided cell is a part of a binding's type rather than all of it (Holders names
+// a binding only by the cell its whole type is): `|x| select (x[0]$, 0) { (`J, _) =>
+// 1, _ => 2 }` and `|x| select (W(x), 0) { (W(`J), _) => 1, _ => 2 }` are refused
+// "tests a value whose type is not decided at this select ... annotate the
+// scrutinee's type where it is built", where the ruling asks to name the binding to
+// annotate (x). On main these were "unreachable arm"; main's D5 message for a part
+// still open at the select's end names through the same Holders. Found by review r16
+// (U-r1-1).
+// probes: ~/ptmp/cr29/scratch/r16-U/review-fix/p/idx1.gx, abs1.gx
+// (undecided-part-name-01)
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided
 /// at its select, naming the binding whose type it is.
 fn undecided_refusal(

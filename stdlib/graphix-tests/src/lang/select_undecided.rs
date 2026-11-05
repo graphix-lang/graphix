@@ -532,6 +532,26 @@ run!(or_alternative_over_an_annotated_part, r#"{
     r
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "j1"); FuseExpect::Jit);
 
+// A later arm's pattern decides the part before an earlier arm's body is
+// checked: the select is refused for that arm, not for the body.
+run!(later_arm_deciding_a_part_an_earlier_body_tests_refused, r#"{
+    let f = |b: bool, x| select (x, 0) {
+        (a, _) if b => select a { `J => 1, `M => 2 },
+        (`M, _) => 3,
+        _ => 4
+    };
+    f(true, `M)
+}"#, refused("(`M, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(later_arm_over_an_annotated_part_an_earlier_body_tests, r#"{
+    let f = |b: bool, x: [`J, `M]| select (x, 0) {
+        (a, _) if b => select a { `J => 1, `M => 2 },
+        (`M, _) => 3,
+        _ => 4
+    };
+    [f(true, `M), f(false, `M), f(false, `J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 3, 4]); FuseExpect::Jit);
+
 // A whole scrutinee open before the arms is theirs to decide together, and
 // a name or `_` over an undecided part decides nothing.
 run!(whole_open_scrutinee_decided_by_the_arms, r#"{

@@ -642,7 +642,9 @@ the open cell it was (`union_members_stopping` stops at it), and a
 written test is judged by `written_tests_undecided` over a copy of what
 reaches it with those cells open again (`written_tests_decided`). A
 refusal any step of the arms' check makes is first offered to this rule
-over the arms checked so far, so the message names the binding. A whole
+over every arm, one not checked yet judged against the whole scrutinee
+(the settle ran its pattern before any arm's guard or body), so the
+message names the binding. A whole
 scrutinee that is one open cell is not counted: the arms decide it
 together, as `select x { `J => 1, `M => 2 }` makes `x` a `` [`J, `M] ``;
 except where an arm holds a partial struct pattern, whose completion

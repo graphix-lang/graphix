@@ -638,7 +638,7 @@ impl Type {
         Ok(out)
     }
 
-    // XCR claude for claude: [bug/medium] diff does not end over some names that recur
+    // CR claude for claude: [bug/medium] diff does not end over some names that recur
     // through Error payloads: main bbb06c0c6's --check of `type At = [Error<Bt>,
     // Error<Ct>, `R]; type Bt = [Error<At>, `P]; type Ct = [Array<Ct>, Error<Bt>]; type H
     // = [Error<Error<K>>, `Q]; type K = [Error<H>, Error<K>, `P]; let v: At = `R; select
@@ -700,6 +700,21 @@ impl Type {
     // lang::select::coverage_over_{names_recurring_through_errors,generated_error_cycles,growing_parameters}_ends
     // (mainhang, rnd13, grow5: killed on base-r16),
     // dead_arm_over_shared_tag_cycles_refused (sh235e2 stays refused).
+    // 2026-11-05 claude: Review r16 (U-r1-2) found the k = 1 bound limits how deep a path goes but not how many
+    // paths there are: a cut sets cycled, so done never keeps the answer, and (Set, Set) walks every member pair
+    // at each level. Two families of n definitions T_i = [Error<T_i+1>, Error<T_i+2>, `A_i] (and U_i) give
+    // diff(T0, U0) 24 / 1323 / 65,580 pairs at n = 2-4, n = 5 unfinished at 120 s; one arrays-only family T_i =
+    // [Array<T_i+1>, Array<T_i+2>, `A_i], diff(T0, T1), 30 / 1137 / 196,404 at n = 3-5 (main finishes neither at
+    // n = 2; the lcm pin walks branching-1 chains only, so it cannot see this). Tried (not committed): keeping a
+    // cut pair's answer in done. Pairs become polynomial (w2 n = 4-7: 99 / 150 / 219 / 467), but the residual
+    // itself grows exponentially (w2 n = 7 prints 15.6 MB in 7.2 s; w2a n = 9 223 MB, 110 s), and the memo then
+    // changes answers, wider (typ::setops::tests::diff_and_could_match_memos_change_no_answer fails: [At, Bt] -
+    // At keeps Error<[Error<[Error<Bt>, Array<Ct>]>, `R]> the walk without the memo subtracts). So the ruling's
+    // bound alone does not make diff polynomial over branching recursive unions: it needs a further rule (a cut
+    // answer reused off its path, and a bound or a shared form for the residual), which goes to Eric. The k = 1
+    // commit stands for what it pins (mainhang, rnd13, grow5, the lcm chains). Evidence:
+    // ~/ptmp/cr29/scratch/review-r16/U-r1-2/ (rv_tests.rs, rv-k123.txt),
+    // ~/ptmp/cr29/scratch/r16-U/review-fix/memo-cut-experiment.txt.
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
@@ -1035,6 +1050,16 @@ impl Type {
     // (set_covers_by_distribution); so does generated r669 (gen_rnd.py seed 669), on
     // the same path. grow2.gx and grow3.gx (r11-X/fix) now time out in contains'
     // set_covers_by_distribution too, where base-r16 timed out in diff.
+    // 2026-11-05 claude: Review r16 (U-r1-2): small mutually recursive families hang
+    // here on base-r16 and on lane U alike (60 s caps), in Select::typecheck0_with ->
+    // PatternNode::capture_type -> matching_type -> contains_with_flags ->
+    // set_covers_by_distribution (diff under 0.5% of the profile): two Error families
+    // of 4 definitions each, branching 2 (w2-4.gx, w2s-4.gx) or 3 (w3-3.gx), and a
+    // more ordinary shape, five definitions recurring through Array alone, `type T0 =
+    // [Array<T1>, Array<T2>, `A0]; ...` with `select x { T1 as t => 1, _ => 2 }`
+    // (arr-5.gx; arr-4.gx ends at 86.2G instructions on base, 86.3G on the lane).
+    // probes: ~/ptmp/cr29/scratch/r16-U/review-fix/fam/ (mk.py writes them),
+    // ~/ptmp/cr29/scratch/review-r16/U-r1-2/fam/.
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
         let refs = LPooled::take();
         let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: false };
