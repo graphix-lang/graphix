@@ -659,6 +659,38 @@ impl<'a> Input<'a> {
         &mut self,
         p: impl FnOnce(&'a str) -> Result<(T, usize), Failure>,
     ) -> R<T> {
+        self.read_value(p, true)
+    }
+
+    /// [`Input::value_part`] of an expression's literal, whose failure past
+    /// its start is not said where the text is a spaced label.
+    pub(super) fn literal_part<T>(
+        &mut self,
+        p: impl FnOnce(&'a str) -> Result<(T, usize), Failure>,
+    ) -> R<T> {
+        let says = !self.spaced_label();
+        self.read_value(p, says)
+    }
+
+    /// Whether the text here is `name: ` at the start of a bracketed list's
+    /// item: a field, a labeled argument or a key, which the printer writes
+    /// with a space after the colon where a value literal's colon is tight.
+    fn spaced_label(&self) -> bool {
+        if !self.text[..self.at.off].trim_end().ends_with(['(', '[', '{', ',']) {
+            return false;
+        }
+        let rest = self.rest();
+        let word = rest.find(|c: char| !(c.is_alphanumeric() || c == '_'));
+        word.filter(|w| *w > 0)
+            .and_then(|w| rest[w..].strip_prefix(':'))
+            .is_some_and(|r| r.starts_with(char::is_whitespace))
+    }
+
+    fn read_value<T>(
+        &mut self,
+        p: impl FnOnce(&'a str) -> Result<(T, usize), Failure>,
+        says: bool,
+    ) -> R<T> {
         let f = match p(self.rest()) {
             Ok((v, used)) => {
                 self.advance(used);
@@ -666,7 +698,7 @@ impl<'a> Input<'a> {
             }
             Err(f) => f,
         };
-        // CR claude for claude: [bug/low] A literal's failure is said where its
+        // XCR claude for claude: [bug/low] A literal's failure is said where its
         // reading is the only one that gets that far, though the text names no
         // literal: `{datetime: "\u{41}\q", b: 1}` reports netidx's escape list at
         // the q for a graphix string field (field a reports the u), `{error:
@@ -678,14 +710,30 @@ impl<'a> Input<'a> {
         // of lane K (final). probes: ~/ptmp/cr29/scratch/review-r14/K-r3-2/p/
         // {st_dt_u41q,st_err_u41sur,call_bytes,mapkey_bytes,call_dur,arr_u8}.gx
         // (show2.sh; residual.txt) (literal-reach-labels-01)
+        // 2026-11-05 claude: A value literal read at the start of a bracketed
+        // list's item with a space after its colon (`{datetime: ..`, `f(bytes:
+        // x)`, `[u8: x]`) is a label, which the printer writes with a space where
+        // a literal's colon is tight: Input::literal_part does not say its
+        // failure there (Input::spaced_label), so the report stands at the same
+        // point with the generic text. Pin:
+        // parser::test::a_spaced_label_is_no_literal (its first group fails
+        // without the fix). The existing row {datetime: "\q"} now reports the
+        // graphix string's own expected list, not the generic text, since no
+        // literal speaks against it. Judgment: the spaced-label rule is a
+        // heuristic, not a grammar fact; tight forms and non-item positions (`let
+        // a = u8: 256;`) still speak. Diagnostics only, no soak.
         let at = self.mark_at(self.at.off + f.offset);
-        let token = !matches!(f.expected, Expected::Refused(_));
-        self.labels(at.off, token, |l| l.read(f.expected));
+        if says {
+            let token = !matches!(f.expected, Expected::Refused(_));
+            self.labels(at.off, token, |l| l.read(f.expected));
+        }
         if f.offset == 0 {
             return Err(self.fail_at(at));
         }
-        let met = self.text[at.off..].chars().next();
-        self.g.note_literal(at.pos, met, f.expected);
+        if says {
+            let met = self.text[at.off..].chars().next();
+            self.g.note_literal(at.pos, met, f.expected);
+        }
         self.at = at;
         Err(Fail { at, fatal: false })
     }

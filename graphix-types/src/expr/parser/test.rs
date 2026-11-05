@@ -240,7 +240,6 @@ fn a_value_literal_failure_is_said_only_where_it_alone_failed() {
         ("let s = {u8: 300)", None),
         ("let s = {u8:300", Some(unclosed(1, 9))),
         ("let s = {u8:300)", None),
-        ("let s = {datetime: \"\\q\"}", None),
     ] {
         let msg = parse_program(src);
         let body = msg.split_once('\n').map(|(_, b)| b).unwrap_or("");
@@ -250,6 +249,41 @@ fn a_value_literal_failure_is_said_only_where_it_alone_failed() {
             None => assert!(!msg.contains("note:"), "{src}: {msg}"),
         }
     }
+}
+
+// `name: value` at the start of a list item is a field, a labeled argument
+// or a key, written with a space after the colon, where a value literal
+// prints its colon tight: the literal's failure is not said there, at the
+// point the report stands at all the same. Anywhere else, or tight, it is.
+#[test]
+fn a_spaced_label_is_no_literal() {
+    let generic = "the parser could not continue past this point\n";
+    for (src, col) in [
+        ("let s = {datetime: \"\\u{41}\\q\", b: 1};", 28),
+        ("let s = {error: \"\\u{41}\\u{d800}\"};", 32),
+        ("let x = 1;\nlet y = f(bytes: x);", 19),
+        ("let x = 1;\nlet y = f(1, bytes: x);", 22),
+        ("let y = f(duration: 5);", 22),
+        ("let x = 1;\nlet y = [u8: x];", 14),
+        ("let n = 1;\nlet x = {bytes: n, b: 2};\nlet y = x{bytes: n};", 19),
+    ] {
+        let msg = parse_program(src);
+        let line = src.matches('\n').count() + 1;
+        let head = format!("Parse error at line: {line}, column: {col}\n");
+        assert!(msg.contains(&format!("{head}{generic}")), "{src}: {msg}");
+    }
+    for (src, said) in [
+        ("let a = datetime: \"\\u{41}\\q\";", "Unexpected `q`\n"),
+        ("let y = f(datetime:\"\\u{41}\\q\");", "Unexpected `q`\n"),
+        ("let a = bytes: x;", "base64 decode failed\n"),
+        ("let a = duration: 5;", "Expected `.` or `e`\n"),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(said), "{src}: {msg}");
+    }
+    let msg = parse_program("let s = {datetime: \"\\q\"}");
+    assert!(msg.contains("Expected `n`, `r`, `t`, `0`, `\"`, `\\`, `[` or `]`"), "{msg}");
+    assert!(!msg.contains("u{"), "{msg}");
 }
 
 // A replay of a remembered parse leaves noted what reading it again

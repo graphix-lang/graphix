@@ -810,7 +810,7 @@ fn literal(i: &mut Input) -> R<Expr> {
             let start = i.mark();
             let v = i.knot(|i| {
                 i.not_followed_by(|i| i.token('"'))?;
-                let v = i.value_part(value_parser::value)?;
+                let v = i.literal_part(value_parser::value)?;
                 not_prefix(i)?;
                 Ok(v)
             })?;
