@@ -170,60 +170,6 @@ impl TypeDef {
 /// occurrence, so an entry means one thing from wherever it is reached.
 /// Each definition is held weakly. Global like the import tables: every
 /// copy of the env, a compile task's included, shares it.
-// XCR claude for claude: [bug/medium] A block's type is a different definition warm than
-// cold once its scope's name crosses an image. Entries are keyed by the scope's NAME
-// (`#fn<ExprId>::#do<ExprId>`); a restore relocates every ExprId but no ModPath, so a
-// block a warm session compiles again (an instance bound at run time) is named by the
-// relocated ids while the decoded entry, and every decoded scope around it, keeps the
-// written ones. `declare` misses the restored definition and makes another, owned only by
-// the new TypeDef node: a function written above its block's `type L`, kept after the
-// activation that declared L is deleted and then bound at run time, reads a dead entry
-// warm ("type `L` outlived its definition", or with L in its signature "an instance at
-// fn(x: i64) -> (L, i64) of a definition typed fn(x: i64) -> (L, i64)") and runs cold.
-// Main refuses the shape at the check (no outer L), so no program main runs changes.
-// Re-keying the decoded entries by relocated ids fixes a script at the root but not the
-// same program inside a top-level block, whose decoded `#do` names the scope of the
-// relocated `#fn#do` below it (a mixed name neither key holds). The root fix is one name
-// per block across images: relocate the generated components of every ModPath an image
-// decodes (`image::path_decode` is the one site), which also moves what hashes a scope
-// name (`TraitId::of`) and design/program_image.md's "never the names"; or key a block's
-// entry by something a restore relocates (its typedef's ExprId), which needs a rule for
-// one source typedef compiled under two scopes (a trait default per impl). Needs that
-// decision first. probe: ~/ptmp/cr29/scratch/r15-N/r3/pin1.gx (cold (22, 9), warm the
-// bind fails; warm.sh FILE), s1_escape.gx, s1b_sig.gx; the pin as written,
-// lang::image::a_restored_block_type_outlives_its_activation in
-// ~/ptmp/cr29/scratch/r15-N/r3/image_with_pin.rs, fails warm. (block-type-image-scope-01)
-// 2026-11-05 claude: Eric ruled (2026-11-05): D10 follow-up (b) in ~/ptmp/cr-discuss.md:
-// a block's generated scope name comes from its source position, qualified by its
-// source's identity, never an ExprId; the whole-block rule confirmed.
-// 2026-11-05 claude: Fixed (lane N r16): every scope an expression opens is named by
-// place_component (kind, line, column, an ordinal for a select's arms and a machine's
-// scopes, and Origin::tag: a fixed hash of the source's kind and name, text and load
-// number), never an ExprId; origins image their load number, so a warm run-time bind
-// names a block as the cold compile did and declares the restored definition. Loads a
-// session repeats (REPL input, load, check, dynamic module source) take
-// BlockTypes::next_load. Every probe of this CR and of review-r15 N-r3-1/N-r3-2 (16
-// files, fused and --no-fusion) now prints the same cold and warm, cold unchanged. Pins:
-// graphix-shell tests shell::block_type_image (6 tests, script run twice with the cache
-// on; all fail warm with ExprId names),
-// lang::image::a_restored_block_type_outlives_its_activation (fails warm with ExprId
-// names), lang::image::a_restored_block_trait_dispatches, shell
-// block_types::inputs_of_one_text_declare_apart and
-// lang::block_types::a_reload_declares_its_own_block_type (both fail with a tag that
-// drops the load number and text), serialize positions_cross_the_wire (packed sources
-// keep positions). Registration format 108.
-// 2026-11-05 claude: Review r16 (N-r1-1) found a module a resolver serves always took
-// load 0, so an LSP re-check named an unchanged module's blocks as the check before and
-// BlockTypes::declare handed back that check's live definition (phantom 'undefined type
-// super::k::T'; a real mismatch missed). Fixed: Origin::new takes its parent's load, so a
-// served unit is part of the load that reached it; runs keep load 0 throughout, so cold
-// and warm still agree. Pin: graphix-shell tests lsp
-// a_module_block_type_follows_each_check (fails with load 0 for served units). Also
-// (N-r1-2 low): unbind_scope_subtree no longer clears the block-type registry, which
-// every env copy shares, so a package-root check's rollback cannot lose the startup
-// copy's entries; pin env::test::unbinding_a_clone_keeps_the_block_types. The
-// eta-expansion lambda now takes its spec's origin (Expr::synth), so its scope names
-// depend on the source (no observable behaviour, unpinned).
 #[derive(Clone, Debug, Default)]
 pub struct BlockTypes(Arc<RwLock<BlockRegistry>>);
 
@@ -1483,30 +1429,6 @@ impl Env {
         }
     }
 
-    // XCR claude for claude: [readability/low] A name a block declares is its type
-    // throughout the block (the whole-block rule, confirmed by Eric 2026-11-05), but
-    // nothing a refusal or a warning prints says which `L` a name above the
-    // declaration means: `type L = i64; let g = |z: i64| { let f = |x: i64| { let b: L
-    // = 3; (b, x) }; type L = string; f(z) }` is refused "type mismatch L does not
-    // contain i64" with the outer `type L = i64` in view, and `{ use n::L; let b: L =
-    // "s"; type L = i64; .. }` likewise, the block's later type silently overriding the
-    // import above it (a type test `L as l` in such a function changes value with no
-    // word at all). Wanted: where a name resolves here to a block type its block declares
-    // later and an outer type or an import of the name is in view, say so at the
-    // reference (a warning naming the later declaration, or a note on the refusal).
-    // resolve_type_name has no position, so this needs the reference's (TypeRef::pos).
-    // probes: ~/ptmp/cr29/scratch/r16-N/low/fwd6.gx, r6_use_direct.gx
-    // (block-later-name-note-01)
-    // 2026-11-05 claude: Built: Env::later_block_type_note judges a written name that
-    // resolves to a type its block declares below it (or not yet compiled) while the name
-    // has another meaning at the block's door (an outer type or trait, an import);
-    // compiler::warn_later_block_names warns at the name in a definition's check (let
-    // annotations, type tests, casts, never<T>, lambda signatures; never in an instance's
-    // body), naming both declarations. fwd6 and r6_use_direct now warn before their
-    // refusal; q8b's type test warns and runs. Pin
-    // lang::block_types::a_later_block_type_beside_another_warns (x4 modes; all four fail
-    // with the warning disabled). Not covered: a typedef body naming the later type, a
-    // written type inside a labeled default.
     /// Where the written name `tr` means a type its block declares below
     /// it while the name means something else at the block's door (an
     /// outer type or trait, or an import): what its reader is told.
