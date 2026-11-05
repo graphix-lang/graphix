@@ -235,6 +235,38 @@ run!(written_union_test_of_an_undecided_parameter_refused, r#"{
     f(false, true)
 }"#, refused("(`J, [i64, string]) as (`J, s) tests a value of 'z, a type not decided at this select"); FuseExpect::None);
 
+// Two undecided cells are one type each together: each may pass the test
+// held alone, the other free to become what the test needs.
+run!(written_union_test_of_two_undecided_parts_refused, r#"{
+    let b = false;
+    let w = never();
+    let z = never();
+    let v = select b { true => (`K, 1, 1), false => (`J, w, z) };
+    let r = select v { [(`J, Any, i64), (`J, i64, Any)] as (`J, x, y) => "j", (_, a, c) => "n" };
+    w <- "s";
+    z <- "t";
+    r
+}"#, refused("tests a value of 'w, a type not decided at this select"); FuseExpect::None);
+
+run!(written_union_test_of_two_undecided_parameters_refused, r#"{
+    let f = |b: bool, w, z| {
+        let v = select b { true => (`K, 1, 1), false => (`J, w, z) };
+        select v { [(`J, Any, i64), (`J, i64, Any)] as (`J, x, y) => "j", (_, a, c) => "n" }
+    };
+    f(false, "s", "t")
+}"#, refused("a type not decided at this select"); FuseExpect::None);
+
+run!(written_union_test_of_two_annotated_parts, r#"{
+    let b = false;
+    let w: [i64, string] = never();
+    let z: [i64, string] = never();
+    let v = select b { true => (`K, 1, 1), false => (`J, w, z) };
+    let r = select v { [(`J, Any, i64), (`J, i64, Any)] as (`J, x, y) => "j", (_, a, c) => "n" };
+    w <- "s";
+    z <- "t";
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "n"));
+
 run!(written_union_test_of_an_annotated_part, r#"{
     let b = false;
     let z: [i64, string, bool] = never();

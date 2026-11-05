@@ -2727,9 +2727,10 @@ fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error 
     )
 }
 
-/// The first of `undecided` the written test `t` tests in a member of
-/// `reaching`: one the member passes the test with, whatever its cells
-/// become, but not with that cell one type of its own.
+/// An undecided cell the written test `t` tests in a member of `reaching`:
+/// the member passes the test whatever its cells become, but not with its
+/// undecided cells held together, each one type of its own. The cell named
+/// is the first whose hold alone fails, else the first held.
 fn written_tests_undecided(
     env: &Env,
     t: &Type,
@@ -2756,12 +2757,16 @@ fn written_tests_undecided(
         if held.is_empty() || !t.contains_holding(env, m, &[])? {
             continue;
         }
+        if t.contains_holding(env, m, &held)? {
+            continue;
+        }
         held.sort_by(|a, b| a.name.cmp(&b.name));
-        for tv in held {
-            if !t.contains_holding(env, m, std::slice::from_ref(&tv))? {
-                return Ok(Some(tv));
+        for tv in held.iter() {
+            if !t.contains_holding(env, m, std::slice::from_ref(tv))? {
+                return Ok(Some(tv.clone()));
             }
         }
+        return Ok(held.into_iter().next());
     }
     Ok(None)
 }
