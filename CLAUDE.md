@@ -1370,7 +1370,9 @@ cycle, across workers; the compiler never pins threads.
   every value of the shape it decides (a tuple, a struct naming every
   field, a slice or list with a rest, an abstract payload, of names, `_`
   and such patterns: `StructurePattern::only_destructures`) decides that
-  shape as an annotation would and tests nothing.
+  shape as an annotation would and tests nothing. An arm whose check
+  fails judges the arms before it so too, against the cells still open
+  and those decided (`still_open`).
   Exhaustiveness holds those cells rigid on copies first
   (`Type::contains_holding`), so a part only names and `_` meet covers
   whatever it becomes, else where the cover decides them. What reaches

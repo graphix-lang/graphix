@@ -663,14 +663,23 @@ An arm that only takes a decided part apart is no test of it
 a tuple, a struct naming every field, a slice or list with a rest, an
 abstract payload, holding only names, `_` and such patterns, each part of
 the shape of every member of the part as decided (`destructures`). It
-decides the part's shape as an annotation would and no later arm can be
-told apart by it; a later arm of another shape is refused as testing the
-part. A literal, a tag, `null`, `[]`, an or-pattern, a written test, a
-partial struct (its completion is the struct of the fields it names) and
-a slice of a fixed length choose among the part's values, and stay
-refused: a fixed length is a choice among lengths as a literal is among
-values, where a rest leaves every length but the shortest to a later arm
-or the coverage.
+decides the part's shape as an annotation would and tests nothing of it:
+a later arm meets the part as decided, so one written for the part's
+other values is unreachable, as under the annotation, and one of another
+shape is refused as testing the part. A literal, a tag, `null`, `[]`, an
+or-pattern, a written test, a partial struct (its completion is the
+struct of the fields it names) and a slice of a fixed length choose among
+the part's values, and stay refused: a fixed length is a choice among
+lengths as a literal is among values. A rest leaves the lengths it does
+not take to a name or `_` in a later arm, or to the coverage; a later
+`[]` chooses a length and is refused.
+
+A destructure that decides nothing, a part still open after the arms
+(`((a, b), _)` over a `y` that is `'x` or `(i64, i64)`, whose member the
+pattern takes), is a test of an undecided part as above. It is refused
+too where a later arm's own refusal (an unreachable arm) stops the check
+first: the step that fails judges every arm before it against the cells
+still open as well as those decided (`still_open`).
 
 What only names and `_` meet passes, and stays sound two ways. A name
 over a union position where one member's part is an open cell takes

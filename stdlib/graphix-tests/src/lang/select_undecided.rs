@@ -685,3 +685,37 @@ run!(null_at_a_union_position_deciding_an_undecided_member_refused, r#"{
     };
     f(true, `M)
 }"#, refused("(null, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+// A destructure that takes the member beside an undecided one leaves it
+// undecided: refused for it, also where a later arm is refused first.
+run!(destructure_beside_an_undecided_member_before_a_dead_arm_refused, r#"{
+    let f = |x, c| {
+        let y = select c { true => x, false => (1, 2) };
+        select (y, 0) { ((a, b), _) => a + b, _ => 0 }
+    };
+    f((5, 1), true)
+}"#, refused("((a, b), _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(struct_beside_an_undecided_member_before_a_dead_arm_refused, r#"{
+    let f = |x, c| {
+        let y = select c { true => x, false => {a: 1, b: 2} };
+        select (y, 0) { ({a, b}, _) => a + b, _ => 0 }
+    };
+    f({a: 5, b: 1}, true)
+}"#, refused("({ a, b }, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(whole_holder_destructured_before_a_dead_arm_refused, r#"{
+    let f = |x, c| {
+        let y = select c { true => x, false => (1, 2) };
+        select y { (a, b) => a + b, _ => 0 }
+    };
+    f((5, 1), true)
+}"#, refused("(a, b) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(destructure_beside_an_annotated_member, r#"{
+    let f = |x: [(i64, i64), null], c| {
+        let y = select c { true => x, false => (1, 2) };
+        select (y, 0) { ((a, b), _) => a + b, _ => 0 }
+    };
+    [f((5, 1), true), f(null, true), f(null, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 0, 3]); FuseExpect::Jit);

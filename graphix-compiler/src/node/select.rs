@@ -2430,12 +2430,13 @@ impl<R: Rt> Select<R> {
                 covered
             })();
             if let Err(e) = step {
-                if checking && !decided.cells.is_empty() {
+                if checking {
                     reached.truncate(i);
                     while reached.len() < self.arms.len() {
                         reached.push(scrut.clone())
                     }
-                    self.check_undecided(&ctx.env, &AHashMap::new(), &decided, &reached)?;
+                    let undecided = still_open(&outer);
+                    self.check_undecided(&ctx.env, &undecided, &decided, &reached)?;
                 }
                 return Err(e);
             }
@@ -2446,12 +2447,7 @@ impl<R: Rt> Select<R> {
         drop(rtypes);
         match checking {
             true => {
-                let mut undecided: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-                for tv in outer.values() {
-                    if let Some(c) = tv.open_cell().filter(|c| !c.is_rigid()) {
-                        undecided.insert(c.cell_addr(), c);
-                    }
-                }
+                let mut undecided = still_open(&outer);
                 self.check_undecided(&ctx.env, &undecided, &decided, &reached)?;
                 check_repeats(&ctx.env, &self.arms)?;
                 let undecided: LPooled<Vec<TVar>> =
@@ -2615,6 +2611,18 @@ impl Deciding {
     }
 }
 
+/// The open cells, none rigid, of the scrutinee's cells `outer`, each by
+/// its address.
+fn still_open(outer: &AHashMap<usize, TVar>) -> LPooled<AHashMap<usize, TVar>> {
+    let mut open: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    for tv in outer.values() {
+        if let Some(c) = tv.open_cell().filter(|c| !c.is_rigid()) {
+            open.insert(c.cell_addr(), c);
+        }
+    }
+    open
+}
+
 /// What a select's arms decided: the cells open before them, and the
 /// bindings their decisions rewrote, as they were, each by the cell it
 /// stands for.
@@ -2707,6 +2715,24 @@ struct Decisions {
 // repos: no change. Judged: a slice of fixed length (d10, [a, b]) stays refused as a length
 // choice; a partial struct stays refused (its completion is the struct of the fields it names).
 // probes: ~/ptmp/cr29/scratch/r16-U2/p/
+// 2026-11-05 claude: Review r16 (U-r1-1 part 2) medium: a destructure at a union position beside
+// a member of its shape, ((a, b), _) over y = [x, (i64, i64)], then _ => 0, said unreachable arm
+// (as main). Fixed where x stays open (t1, t1n, t2 struct, t4 whole holder): the step a refusal
+// stops at now judges the arms before it against the cells still open as well as those decided
+// (select.rs still_open), so these get D5's refusal naming x, the one main and lane gave without
+// the later arm (b1). Pins
+// lang::select_undecided::{destructure_beside_an_undecided_member_before_a_dead_arm_refused,
+// struct_beside_an_undecided_member_before_a_dead_arm_refused,
+// whole_holder_destructured_before_a_dead_arm_refused} (fail x4 without), twin
+// destructure_beside_an_annotated_member. Still open: where the coverage decides x by merging it
+// into the member (t3 abstract W(a); t5 the ladder ((a, b), 0), ((a, b), _), _), the exemption
+// holds and the later _ is unreachable, as it is beside no member (a1: |x| select (x, 0) { ((a,
+// b), _) => .., _ => 0 }) and as under the annotation. Refusing a destructure beside a member of
+// its shape (tried: StructurePattern::meets, the rigid loop) also refuses t7, ([a, ..], _) => a,
+// _ => 0 over [x, Array<i64>], which main and the lane run (5) and the ruling's letter exempts:
+// a rule the ruling does not state, left for Eric. probes:
+// ~/ptmp/cr29/scratch/review-r16/U-r1-1/part2/p5/; the tried diff
+// ~/ptmp/cr29/scratch/r16-U3/pattern-beside.diff
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
@@ -2828,6 +2854,17 @@ fn written_tests_decided(
 // (U-r1-1).
 // probes: ~/ptmp/cr29/scratch/r16-U/review-fix/p/idx1.gx, abs1.gx
 // (undecided-part-name-01)
+// 2026-11-05 claude: Review r16 (U-r1-1 part 2) found the same root through pattern
+// binds: after an exempt destructure decides x as ('p, 'q), a nested select in the
+// arm's body that tests one of those part cells by value is refused with the
+// nameless message, where the annotation that passes is on x: ((a, b), 0) => .., (c,
+// _) => select c { (1, d) => d, _ => 0 } (n01), (c@ (a, b), _) => select c { (1, d)
+// => .. } (n02), ((a, b), _) => select (a, 0) { (`J, _) => 1, _ => 0 } (n04). main
+// ran n01 (6) and n02 (0) and said unreachable arm for n04; the let-destructuring
+// analog n05 names a. Holders would have to reach a cell through the pattern binds
+// that took it apart. None is in the census. probes:
+// ~/ptmp/cr29/scratch/review-r16/U-r1-1/part2/p4/n01.gx, n02.gx, n04.gx, n05.gx;
+// p4.out
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided
 /// at its select, naming the binding whose type it is.
 fn undecided_refusal(

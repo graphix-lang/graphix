@@ -484,6 +484,8 @@ across a bottom cycle).
   so is a literal, `null`, `[]`, a fixed-length slice or an or-pattern
   there. A pattern that only takes it apart decides its shape: `((a, b),
   _)`, `({a, b}, _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check.
+  A rest leaves the other lengths to a later name or `_`: a later `([],
+  _)` is a length choice, refused.
   Only a scrutinee wholly of such a type is the arms' to decide together
   (`|x| select x { `J => 1, `M => 2 }`), never by a partial struct
   pattern (`{a, ..}`).
