@@ -165,6 +165,12 @@ nothing.
   b: L = 3` above it a mismatch (pins `lang::block_types::
   block_type_named_above_its_declaration_*`,
   `lang::select::abstract_pattern_renamed_by_a_later_typedef_written`).
+  Every reader of a type name takes it from this one lookup
+  (`Env::resolve_type_name`): an abstract constructor and pattern through
+  `Env::lookup_typedef`, and the visibility of an abstract's definition
+  (`Env::abstract_rep`) through the registry at a block level, so `W(v)`,
+  `W(p)` and `w.0` in a function above `type W` are the block's `W` (pins
+  `lang::block_types::block_abstract_*`).
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns
@@ -183,7 +189,10 @@ nothing.
   (`BlockTypes::declare`), so parallel compiles of one block declare one
   definition. `unbind_scope_subtree`
   drops the entries under its scope; dead entries are swept as the
-  registry grows. A session image carries the live entries.
+  registry grows. A session image carries the live entries, under the
+  scope names it wrote; a restore relocates the ids a block compiled again
+  is named by, so such a block declares a definition of its own (CR
+  block-type-image-scope-01).
 - **Seeded with the rest.** `Env::seed_typedef_refs` seeds the bodies of
   live block typedefs as it does the lexical ones.
 

@@ -142,8 +142,9 @@ member and over a whole value of it in another
 (`StructPatternNode::binds_inside_rigid`) is the union of both types. An
 abstract pattern names the type its compile resolved, an alias's
 included (`CompiledAbstracts`); a name a later statement of the block
-declares is that type there, refused before the declaration
-(`design/env_independent_typerefs.md`, Block types).
+declares is that type there, in a function above the declaration too, and
+refused in a statement above it (`design/env_independent_typerefs.md`,
+Block types).
 At a union holding the cell beside other members a part meets it where
 it may hold one of its values, by its typed bounds, any value without
 one, inside a member the whole pattern may hold (a pattern that cannot

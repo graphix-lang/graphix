@@ -736,7 +736,7 @@ impl<R: Rt> Construct<R> {
             .lookup_typedef(&scope.lexical, name)
             .at(&spec)?
             .ok_or_else(|| anyhow!("unknown type {name}").at(&spec))?;
-        ctx.env.push_typedef_ref(td, name, &scope.lexical, spec.pos, &spec.ori);
+        ctx.env.push_typedef_ref(&td, name, &scope.lexical, spec.pos, &spec.ori);
         let Type::Abstract { id, .. } = td.typ() else {
             bailat!(spec, "{name} is not an abstract type, so it has no constructor")
         };

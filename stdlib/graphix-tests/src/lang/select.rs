@@ -7266,7 +7266,7 @@ run!(
 // refused above the declaration.
 run!(
     abstract_pattern_renamed_by_a_later_typedef_refused,
-    refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `W<[`A(i64), `B(i64)]> as W(`A(z))`"),
+    refused("W names the type a later statement of this block declares"),
     "/test.gx" => r#"
         type W<'a> = Abstract<'a>;
         let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {

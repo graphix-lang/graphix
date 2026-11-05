@@ -1020,7 +1020,9 @@ away the element it had in hand. Build the final row there:
 - A `type` a block declares is that type throughout the block, above its
   declaration too, never an outer type of the name: in `type L = i64; {
   let f = |x: i64| { let b: L = 3; b }; type L = string; f(1) }` the `L` in
-  `f` is the string. Declare a block's types first.
+  `f` is the string, and so is an abstract `W(v)` or pattern `W(p)` there.
+  A statement above the declaration that needs the type at once (`let a =
+  W(1)`, a cast) is refused. Declare a block's types first.
 - Each REPL statement, a script and a dynamic module's load is checked
   alone, and what it leaves undecided is `_` from its end: after `let e
   = []`, a later `e <- [1]` is refused (write `let e: Array<i64> = []`),

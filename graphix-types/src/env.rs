@@ -170,6 +170,29 @@ impl TypeDef {
 /// occurrence, so an entry means one thing from wherever it is reached.
 /// Each definition is held weakly. Global like the import tables: every
 /// copy of the env, a compile task's included, shares it.
+// CR claude for eric: [bug/medium] A block's type is a different definition warm than
+// cold once its scope's name crosses an image. Entries are keyed by the scope's NAME
+// (`#fn<ExprId>::#do<ExprId>`); a restore relocates every ExprId but no ModPath, so a
+// block a warm session compiles again (an instance bound at run time) is named by the
+// relocated ids while the decoded entry, and every decoded scope around it, keeps the
+// written ones. `declare` misses the restored definition and makes another, owned only by
+// the new TypeDef node: a function written above its block's `type L`, kept after the
+// activation that declared L is deleted and then bound at run time, reads a dead entry
+// warm ("type `L` outlived its definition", or with L in its signature "an instance at
+// fn(x: i64) -> (L, i64) of a definition typed fn(x: i64) -> (L, i64)") and runs cold.
+// Main refuses the shape at the check (no outer L), so no program main runs changes.
+// Re-keying the decoded entries by relocated ids fixes a script at the root but not the
+// same program inside a top-level block, whose decoded `#do` names the scope of the
+// relocated `#fn#do` below it (a mixed name neither key holds). The root fix is one name
+// per block across images: relocate the generated components of every ModPath an image
+// decodes (`image::path_decode` is the one site), which also moves what hashes a scope
+// name (`TraitId::of`) and design/program_image.md's "never the names"; or key a block's
+// entry by something a restore relocates (its typedef's ExprId), which needs a rule for
+// one source typedef compiled under two scopes (a trait default per impl). Needs that
+// decision first. probe: ~/ptmp/cr29/scratch/r15-N/r3/pin1.gx (cold (22, 9), warm the
+// bind fails; warm.sh FILE), s1_escape.gx, s1b_sig.gx; the pin as written,
+// lang::image::a_restored_block_type_outlives_its_activation in
+// ~/ptmp/cr29/scratch/r15-N/r3/image_with_pin.rs, fails warm. (block-type-image-scope-01)
 #[derive(Clone, Debug, Default)]
 pub struct BlockTypes(Arc<RwLock<BlockRegistry>>);
 
@@ -928,7 +951,7 @@ impl Env {
     /// names `td`.
     pub fn push_typedef_ref(
         &self,
-        td: &TypeDef,
+        td: &ResolvedRef,
         name: &ModPath,
         scope: &ModPath,
         pos: SourcePosition,
@@ -940,7 +963,7 @@ impl Env {
                 ori: ori.clone(),
                 scope: scope.clone(),
                 name: name.clone(),
-                canonical_scope: td.def.canonical_scope().clone(),
+                canonical_scope: td.canonical_scope().clone(),
             })
         }
     }
@@ -1322,13 +1345,17 @@ impl Env {
         })
     }
 
+    /// The typedef a name in type position means at `scope`, as
+    /// [`Self::resolve_type_name`] reads it; `None` where it names a trait
+    /// or nothing.
     pub fn lookup_typedef(
         &self,
         scope: &ModPath,
         name: &ModPath,
-    ) -> Result<Option<&TypeDef>> {
-        self.resolve_visible(scope, name, NameNs::Type, |scope, name| {
-            self.lexical.typedefs.get(scope).and_then(|m| m.get(name))
+    ) -> Result<Option<std::sync::Arc<ResolvedRef>>> {
+        Ok(match self.resolve_type_name(scope, name)? {
+            Some(TypeName::Def(d)) => Some(d),
+            Some(TypeName::Trait(_)) | None => None,
         })
     }
 
@@ -2291,11 +2318,23 @@ impl Env {
     /// its subtree).
     pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
         let r = self.abstract_reps.get(&id)?;
-        let visible = r.public || chain_levels(from).any(|scope| {
-            self.lexical.typedefs.get(scope).and_then(|defs| defs.get(r.name.as_str())).is_some_and(|def| {
-                def.rep.is_some() && matches!(def.typ(), Type::Abstract { id: declared, .. } if *declared == id)
-            })
-        });
+        let declares = |t: &Type| matches!(t, Type::Abstract { id: d, .. } if *d == id);
+        let visible = r.public
+            || chain_levels(from).any(|scope| {
+                match self
+                    .lexical
+                    .typedefs
+                    .get(scope)
+                    .and_then(|m| m.get(r.name.as_str()))
+                {
+                    Some(def) => def.rep.is_some() && declares(def.typ()),
+                    None => {
+                        is_block_scope(scope)
+                            && matches!(self.block_types.find(scope, &r.name),
+                                Some(BlockHit::Live(def)) if declares(def.typ()))
+                    }
+                }
+            });
         visible.then_some(&**r)
     }
 

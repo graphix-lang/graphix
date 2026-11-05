@@ -144,6 +144,55 @@ run!(
     prints("i64:44")
 );
 
+// An abstract constructor, pattern and payload read above a block's
+// typedef name the block's type, as an annotation there does, never an
+// outer type of the name.
+run!(
+    block_abstract_constructed_above_its_declaration,
+    r#"{
+    type W = Abstract<string>;
+    let g = |z: i64| {
+        let mk = |v: i64| W(v);
+        let isw = |x: Any| select x { W as _ => true, _ => false };
+        type W = Abstract<i64>;
+        let a: W = mk(z);
+        (a.0, isw(mk(z)), isw(W(z)))
+    };
+    g(1)
+}"#,
+    prints("[i64:1, true, true]")
+);
+
+run!(
+    block_abstract_constructed_above_its_declaration_over_an_outer_one,
+    r#"{
+    type W = Abstract<string>;
+    let g = |z: i64| {
+        let mk = |v: string| W(v);
+        type W = Abstract<i64>;
+        mk("a")
+    };
+    g(1)
+}"#,
+    refused("type mismatch i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    block_abstract_pattern_above_its_declaration,
+    r#"{
+    type W = Abstract<i64>;
+    let g = |z: i64| {
+        let un = |w: W| select w { W(n) => n };
+        let rd = |w: W| w.0 + z;
+        type W = Abstract<i64>;
+        (un(W(z)), rd(W(5)))
+    };
+    g(1)
+}"#,
+    prints("[i64:1, i64:6]")
+);
+
 // A default's block type reaches a call through a field, which binds the
 // callee at run time.
 run!(

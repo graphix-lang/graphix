@@ -932,7 +932,7 @@ impl ResolvedRef {
         &self.params
     }
 
-    pub(crate) fn typ(&self) -> &Type {
+    pub fn typ(&self) -> &Type {
         &self.typ
     }
 

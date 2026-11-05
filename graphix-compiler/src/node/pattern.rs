@@ -1536,7 +1536,7 @@ impl StructPatternNode {
                     .lookup_typedef(&cx.scope.lexical, name)?
                     .ok_or_else(|| anyhow!("unknown type {name}"))?;
                 if let Some(pos) = at.get() {
-                    ctx.env.push_typedef_ref(td, name, &cx.scope.lexical, pos, cx.ori);
+                    ctx.env.push_typedef_ref(&td, name, &cx.scope.lexical, pos, cx.ori);
                 }
                 let Type::Abstract { id, .. } = td.typ() else {
                     bail!("{name} is not an abstract type, so it has no constructor")
