@@ -41,6 +41,7 @@ thread_local! {
         const { std::cell::Cell::new(0) };
     pub(super) static SPLIT_STEPS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+    static CHAIN_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Advanced by every change to a bound cell that can make it reach a cell
@@ -750,19 +751,83 @@ impl Drop for AtLevel {
     }
 }
 
-/// `rebuild` of `t`, made once per shared composite (`memo`, by address;
-/// a cell's address is another allocation, so a cell memo shares the map).
+/// Where each forwarding cell's chain of links ends, by cell address: the
+/// address of [`TVar::open_cell`]'s answer, kept for chains longer than
+/// [`ChainEnds::SHORT`]. Valid while no binding the chains pass changes,
+/// so one copy's walk at most.
+#[derive(Default)]
+pub(super) struct ChainEnds(Option<LPooled<AHashMap<usize, Option<usize>>>>);
+
+impl ChainEnds {
+    const SHORT: usize = 8;
+
+    /// The address of `tv.open_cell()`.
+    fn open_cell(&mut self, tv: &TVar) -> Option<usize> {
+        let mut at = tv.clone();
+        let mut walked = 0;
+        let end = loop {
+            let addr = at.cell_addr();
+            if let Some(end) = self.0.as_ref().and_then(|m| m.get(&addr)) {
+                break *end;
+            }
+            walked += 1;
+            #[cfg(test)]
+            CHAIN_STEPS.with(|n| n.set(n.get() + 1));
+            let next = match &at.cell().read().binding {
+                None => break Some(addr),
+                Some(Type::TVar(next)) => next.clone(),
+                Some(_) => break None,
+            };
+            at = next;
+        };
+        if walked > Self::SHORT {
+            let memo = self.0.get_or_insert_with(LPooled::take);
+            let mut at = tv.clone();
+            for _ in 0..walked {
+                memo.insert(at.cell_addr(), end);
+                let next = match &at.cell().read().binding {
+                    Some(Type::TVar(next)) => next.clone(),
+                    _ => break,
+                };
+                at = next;
+            }
+        }
+        end
+    }
+}
+
+/// A copy's walk state beside its images: where forwarding chains end.
+pub(super) trait Forwards {
+    fn ends(&mut self) -> &mut ChainEnds;
+}
+
+/// What a walk rebuilds once, by address: each shared composite and each
+/// bound cell's binding (a cell's address is another allocation, so the
+/// two share the map); and the chain ends of its forwarding cells.
+#[derive(Default)]
+struct CopyMemo {
+    built: LPooled<AHashMap<usize, Option<Type>>>,
+    ends: ChainEnds,
+}
+
+impl Forwards for CopyMemo {
+    fn ends(&mut self) -> &mut ChainEnds {
+        &mut self.ends
+    }
+}
+
+/// `rebuild` of `t`, made once per shared composite (`memo.built`).
 fn once(
     t: &Type,
-    memo: &mut AHashMap<usize, Option<Type>>,
-    rebuild: impl FnOnce(&mut AHashMap<usize, Option<Type>>) -> Option<Type>,
+    memo: &mut CopyMemo,
+    rebuild: impl FnOnce(&mut CopyMemo) -> Option<Type>,
 ) -> Option<Type> {
     let Some(n) = node_addr(t) else { return rebuild(memo) };
-    if let Some(r) = memo.get(&n) {
+    if let Some(r) = memo.built.get(&n) {
         return r.clone();
     }
     let r = rebuild(memo);
-    memo.insert(n, r.clone());
+    memo.built.insert(n, r.clone());
     r
 }
 
@@ -1565,7 +1630,7 @@ impl TVar {
         self.read().cell.read().binding.is_some()
     }
 
-    // CR claude for claude: [perf/low] A chain of bounds naming the next
+    // XCR claude for claude: [perf/low] A chain of bounds naming the next
     // variable itself ('a{i}: 'a{i+1}) settles in quadratic time: the settle
     // binds 'a0 -> 'a1 -> .. cell to cell, then TVar::freshen (Type::reset_memo
     // in TVar::witness, from FnType::settle_terminal) asks this of every cell,
@@ -1578,12 +1643,46 @@ impl TVar {
     // r14 of lane K. probe: ~/ptmp/cr29/scratch/review-r14/K-r1-1/p/direct_8000.gx
     // (gen.py direct N OUT), profile callgrind/cg_direct4000.out.gz
     // (open-cell-chain-01)
+    // 2026-11-05 claude: Lane hk (r17): BLOCKED, no code change. Reproduced on
+    // base-r17: direct_4000.gx 2.534 G instr, direct_8000.gx 6.214 G (--check
+    // --no-cache, net of stdlib 0.6 G): superlinear, as the text says. Cause
+    // verified: TVar::freshen (tvar.rs ~2331) calls open_cell() before descending
+    // into a forward link, and the descent inserts each copy before recursing, so
+    // the end is never in fresh at any level; each level walks the rest of the
+    // chain. Fixes considered: (1) Path compression in open_cell rewrites a
+    // forwarding cell's binding to the chain end. It keeps the open cell, but
+    // copies name through the immediate link (forwarded_as, named_as in tvar.rs),
+    // so a copy's names and quantifier-by-name lookup would change where a link is
+    // skipped. Needs Eric's ruling and pins for naming. (2) Stopping the walk at
+    // the first cell already in fresh is not exact: the copy would drop the
+    // forwarder's own constraints, lower bounds and facts (copy_into). (3) An
+    // exact fix: one chain-end memo per copy, threaded through freshen's three
+    // walk closures (reset_memo, tvar.rs ~3799, ~3887). No semantics change, but
+    // it is plumbing across three memo types. Recommendation: take (3) if the
+    // 8000-link shape matters; otherwise accept the quadratic cost, as realistic
+    // chains are short. Probe: ~/ptmp/cr29/scratch/r17-hk/direct_4000.gx; counts
+    // in perf.direct_4000.txt and perf.direct_8000.txt beside it.
+    // 2026-11-05 claude: Lane ctl (r17): fixed, no ruling needed. Two parts in
+    // TVar::freshen, both exact: a copy that holds no image yet skips the chain
+    // walk (no image of the end to name: a settle's witness copies, the probe's
+    // shape), and a forwarding chain longer than ChainEnds::SHORT has its end
+    // remembered per copy (ChainEnds, in CopyMemo for reset/instantiate/rename and
+    // in Subst), so a copy recursing down a chain walks each link once. --no-cache
+    // --check instructions, lane head -> fix: direct_4000 2.68G -> 1.74G,
+    // direct_8000 6.33G -> 2.50G (empty 0.96G: net 5.38G -> 1.53G, linear); GUI
+    // examples 43.13G -> 43.15/43.19G (noise). Pins:
+    // tvar::tests::copies_from_each_cell_of_a_chain_walk_no_link (2000999 links
+    // without the empty check) and a_copy_walks_a_forwarding_chain_once (1998999
+    // links without the memo). Probes:
+    // ~/ptmp/cr29/scratch/r17-ctl/direct_{4000,8000}.gx
     /// The open cell this var stands for: its own, or the end of a chain
     /// of bindings to vars (a merged cell's forward link); `None` when
     /// the chain ends bound.
     pub fn open_cell(&self) -> Option<TVar> {
         let mut tv = self.clone();
         loop {
+            #[cfg(test)]
+            CHAIN_STEPS.with(|n| n.set(n.get() + 1));
             let next = match &tv.cell().read().binding {
                 None => None,
                 Some(Type::TVar(next)) => Some(next.clone()),
@@ -2328,7 +2427,7 @@ impl TVar {
     /// by cell in `fresh`, so a copy keeps the source's alias topology. A
     /// var whose cell a merge forwarded to a cell the copy holds an image
     /// of names that image, whether or not its own cell is copied.
-    fn freshen<M>(
+    fn freshen<M: Forwards>(
         &self,
         fresh: &mut AHashMap<usize, TVar>,
         memo: &mut M,
@@ -2339,9 +2438,10 @@ impl TVar {
         if let Some(f) = fresh.get(&addr) {
             return f.named_as(self);
         }
-        if matches!(self.read().cell.read().binding, Some(Type::TVar(_)))
-            && let Some(end) = self.open_cell()
-            && let Some(f) = fresh.get(&end.cell_addr())
+        if !fresh.is_empty()
+            && matches!(self.read().cell.read().binding, Some(Type::TVar(_)))
+            && let Some(end) = memo.ends().open_cell(self)
+            && let Some(f) = fresh.get(&end)
         {
             return f.named_as(self);
         }
@@ -2402,11 +2502,18 @@ impl TVar {
 pub(super) struct Subst<'a> {
     known: &'a AHashMap<ArcStr, Type>,
     held: Option<LPooled<AHashSet<ArcStr>>>,
+    ends: ChainEnds,
+}
+
+impl Forwards for Subst<'_> {
+    fn ends(&mut self) -> &mut ChainEnds {
+        &mut self.ends
+    }
 }
 
 impl<'a> Subst<'a> {
     pub(super) fn new(known: &'a AHashMap<ArcStr, Type>) -> Self {
-        Self { known, held: None }
+        Self { known, held: None, ends: ChainEnds::default() }
     }
 
     fn held(&mut self) -> &AHashSet<ArcStr> {
@@ -3657,7 +3764,7 @@ impl Type {
         known: &mut AHashMap<usize, TVar>,
         how: Fresh<'_>,
     ) -> Option<Type> {
-        self.reset_memo(known, &mut LPooled::take(), how)
+        self.reset_memo(known, &mut CopyMemo::default(), how)
     }
 
     /// [`Self::reset_tvars_int`], each shared composite copied once
@@ -3665,7 +3772,7 @@ impl Type {
     fn reset_memo(
         &self,
         known: &mut AHashMap<usize, TVar>,
-        nodes: &mut AHashMap<usize, Option<Type>>,
+        nodes: &mut CopyMemo,
         how: Fresh<'_>,
     ) -> Option<Type> {
         ensure_sufficient(|| match self {
@@ -3722,7 +3829,7 @@ impl Type {
     }
 
     pub(super) fn rename_int(&self, known: &AHashMap<usize, TVar>) -> Option<Type> {
-        self.rename_memo(known, &mut LPooled::take())
+        self.rename_memo(known, &mut CopyMemo::default())
     }
 
     /// [`Self::rename_int`], each bound cell's binding rebuilt once
@@ -3730,15 +3837,15 @@ impl Type {
     fn rename_memo(
         &self,
         known: &AHashMap<usize, TVar>,
-        memo: &mut AHashMap<usize, Option<Type>>,
+        memo: &mut CopyMemo,
     ) -> Option<Type> {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match tv.binding() {
-                Some(t) => Some(tv.forwarded_as(match memo.get(&tv.cell_addr()) {
+                Some(t) => Some(tv.forwarded_as(match memo.built.get(&tv.cell_addr()) {
                     Some(r) => r.clone().unwrap_or(t),
                     None => {
                         let r = t.rename_memo(known, memo).unwrap_or(t);
-                        memo.insert(tv.cell_addr(), Some(r.clone()));
+                        memo.built.insert(tv.cell_addr(), Some(r.clone()));
                         r
                     }
                 })),
@@ -3774,7 +3881,7 @@ impl Type {
         known: &mut AHashMap<usize, TVar>,
         how: Fresh<'_>,
     ) -> Option<Type> {
-        self.instantiate_memo(known, &mut LPooled::take(), how)
+        self.instantiate_memo(known, &mut CopyMemo::default(), how)
     }
 
     /// [`Self::instantiate_int`], each bound cell's binding rebuilt once
@@ -3782,17 +3889,17 @@ impl Type {
     fn instantiate_memo(
         &self,
         known: &mut AHashMap<usize, TVar>,
-        memo: &mut AHashMap<usize, Option<Type>>,
+        memo: &mut CopyMemo,
         how: Fresh<'_>,
     ) -> Option<Type> {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 Some(match tv.binding() {
-                    Some(t) => tv.forwarded_as(match memo.get(&tv.cell_addr()) {
+                    Some(t) => tv.forwarded_as(match memo.built.get(&tv.cell_addr()) {
                         Some(r) => r.clone().unwrap_or(t),
                         None => {
                             let r = t.instantiate_memo(known, memo, how).unwrap_or(t);
-                            memo.insert(tv.cell_addr(), Some(r.clone()));
+                            memo.built.insert(tv.cell_addr(), Some(r.clone()));
                             r
                         }
                     }),
@@ -4029,6 +4136,58 @@ mod tests {
         x.alias_cells(&rigid);
         assert!(x.same_cell(&rigid) && o1.same_cell(&rigid));
         assert!(!o2.same_cell(&rigid));
+    }
+
+    /// A copy of a chain of cells bound each to the next walks each link
+    /// once to find where the chain ends, not once per cell that asks.
+    #[test]
+    fn a_copy_walks_a_forwarding_chain_once() {
+        let n = 2000;
+        let cells: Vec<TVar> =
+            (0..n).map(|i| TVar::empty_named(arcstr::format!("a{i}"))).collect();
+        for w in cells.windows(2) {
+            w[0].bind(Type::TVar(w[1].clone()))
+        }
+        let head = Type::TVar(cells[0].clone());
+        let end = |t: &Type| match t {
+            Type::TVar(tv) => tv.open_cell().expect("open").cell_addr(),
+            _ => panic!("a var"),
+        };
+        let copies = [(|t: &Type| t.reset_tvars()) as fn(&Type) -> Type, |t| {
+            t.replace_tvars(&AHashMap::new())
+        }];
+        for copy in copies {
+            CHAIN_STEPS.with(|s| s.set(0));
+            let c = copy(&head);
+            let steps = CHAIN_STEPS.with(|s| s.get());
+            assert!(steps <= 2 * n, "{steps} links walked for a chain of {n}");
+            assert_ne!(end(&c), cells[n - 1].cell_addr());
+            assert!(matches!(&c, Type::TVar(tv) if tv.name == "a0"));
+        }
+    }
+
+    /// A copy from each cell of a chain, none of which it copies (a
+    /// settle's witnesses, each its own copy), walks no link: a copy that
+    /// holds no image yet has no image of the chain's end to name.
+    #[test]
+    fn copies_from_each_cell_of_a_chain_walk_no_link() {
+        let n = 2000;
+        let cells: Vec<TVar> =
+            (0..n).map(|i| TVar::empty_named(arcstr::format!("a{i}"))).collect();
+        for c in &cells {
+            c.set_level(Level::TOP)
+        }
+        for w in cells.windows(2) {
+            w[0].bind(Type::TVar(w[1].clone()))
+        }
+        CHAIN_STEPS.with(|s| s.set(0));
+        for c in &cells {
+            let t = Type::TVar(c.clone());
+            let r = t.reset_tvars_int(&mut LPooled::take(), Fresh::Generic);
+            assert!(matches!(&r, Some(Type::TVar(r)) if r.same_cell(c)));
+        }
+        let steps = CHAIN_STEPS.with(|s| s.get());
+        assert!(steps <= 2 * n, "{steps} links walked for {n} copies");
     }
 
     #[test]
