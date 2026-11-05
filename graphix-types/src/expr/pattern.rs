@@ -546,6 +546,20 @@ impl StructurePattern {
         Ok(self.meets(env, ids, typ, None, met)?.map(|(tv, _)| tv))
     }
 
+    /// The first cell `decided` admits, read as still open though bound,
+    /// whose value this pattern, over a value of `typ`, tests or binds
+    /// inside, met as [`Self::meets_undecided`] meets an open one.
+    pub fn meets_decided(
+        &self,
+        env: &Env,
+        ids: &AbstractOf,
+        typ: &Type,
+        decided: &dyn Fn(&TVar) -> bool,
+    ) -> Result<Option<TVar>> {
+        let met = Met::Decided(decided);
+        Ok(self.meets(env, ids, typ, None, met)?.map(|(tv, _)| tv))
+    }
+
     /// [`Self::meets_rigid`] under `written`, the written test over a value
     /// of `typ`: the first variable met where the test's part over it,
     /// returned with it, holds `_` or an open cell, so types nothing
@@ -600,11 +614,25 @@ impl StructurePattern {
             _ => {
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
                 let mut rigid: SmallVec<[TVar; 2]> = SmallVec::new();
-                union_members_with(env, typ, &mut members, &mut |tv| {
-                    if let Some(c) = tv.open_cell().filter(|c| met.counts(c)) {
-                        rigid.push(c)
-                    }
-                })?;
+                let stop = |tv: &TVar| matches!(met, Met::Decided(d) if d(tv));
+                union_members_stopping(
+                    env,
+                    typ,
+                    &mut members,
+                    &stop,
+                    &mut |tv| match met {
+                        Met::Decided(_) => {
+                            if stop(tv) {
+                                rigid.push(tv.clone())
+                            }
+                        }
+                        _ => {
+                            if let Some(c) = tv.open_cell().filter(|c| met.counts(c)) {
+                                rigid.push(c)
+                            }
+                        }
+                    },
+                )?;
                 for tv in rigid {
                     if members.is_empty() || self.may_hold_value_of(env, ids, &tv)? {
                         match written {
@@ -801,6 +829,8 @@ impl StructurePattern {
 enum Met<'a> {
     Rigid,
     Undecided(&'a dyn Fn(&TVar) -> bool),
+    /// Bound cells, each met as the open cell it was.
+    Decided(&'a dyn Fn(&TVar) -> bool),
 }
 
 impl Met<'_> {
@@ -808,6 +838,7 @@ impl Met<'_> {
         match self {
             Self::Rigid => c.is_rigid(),
             Self::Undecided(f) => !c.is_rigid() && f(c),
+            Self::Decided(_) => false,
         }
     }
 }
@@ -846,13 +877,32 @@ pub fn union_members_with(
     out: &mut SmallVec<[Type; 8]>,
     open: &mut dyn FnMut(&TVar),
 ) -> Result<()> {
+    union_members_stopping(env, t, out, &|_| false, open)
+}
+
+/// [`union_members_with`], where a tvar `stop` takes is handed to `open`
+/// as it stands, bound or not.
+fn union_members_stopping(
+    env: &Env,
+    t: &Type,
+    out: &mut SmallVec<[Type; 8]>,
+    stop: &dyn Fn(&TVar) -> bool,
+    open: &mut dyn FnMut(&TVar),
+) -> Result<()> {
     fn go(
         env: &Env,
         t: &Type,
         out: &mut SmallVec<[Type; 8]>,
         unfolded: &mut Unfolded,
+        stop: &dyn Fn(&TVar) -> bool,
         open: &mut dyn FnMut(&TVar),
     ) -> Result<()> {
+        if let Type::TVar(tv) = t
+            && stop(tv)
+        {
+            open(tv);
+            return Ok(());
+        }
         crate::stack::ensure_sufficient(|| match t.deref_cloned() {
             None => {
                 if let Type::TVar(tv) = t {
@@ -862,12 +912,12 @@ pub fn union_members_with(
             }
             Some(t) => match &t {
                 Type::Set(ts) => {
-                    ts.iter().try_for_each(|t| go(env, t, out, unfolded, open))
+                    ts.iter().try_for_each(|t| go(env, t, out, unfolded, stop, open))
                 }
                 Type::Ref(tr) => {
                     tr.resolve_in(env);
                     match unfolded.first(&t) {
-                        true => go(env, &t.lookup_ref(env)?, out, unfolded, open),
+                        true => go(env, &t.lookup_ref(env)?, out, unfolded, stop, open),
                         false => Ok(()),
                     }
                 }
@@ -878,7 +928,7 @@ pub fn union_members_with(
             },
         })
     }
-    go(env, t, out, &mut Unfolded::default(), open)
+    go(env, t, out, &mut Unfolded::default(), stop, open)
 }
 
 /// A struct pattern's fields in the order they print (as written when

@@ -6084,6 +6084,20 @@ mod tests {
                 rep.rejects
             );
         }
+        // family 14 refuses its open cell beside the scrutinee's members and
+        // inside a tuple, where the first arm testing it would decide it
+        for prog in [
+            "{ let v = 3; select v { 1 => \"a\", _ => \"b\" } }",
+            "{ let v: [`A, `B] = `B; select v { `A => 1, `B => 2 } }",
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            let up: Vec<_> = rep
+                .rejects
+                .iter()
+                .filter(|p| p.id.starts_with("undecided-part#"))
+                .collect();
+            assert!(up.len() >= 2 && up.iter().all(|p| p.verdict.is_none()), "{up:?}");
+        }
         // family 8 refuses a literal and a function with a defaulted label
         let qf = "{ let qf = queuefn(#trigger: never(), |x: i64| -> i64 x); qf(7) }";
         let rep = typemorph_subject(qf, per, TM_CAP).await.unwrap();

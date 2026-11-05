@@ -348,11 +348,13 @@ scrutinee `s` whose arms bind no name and have no guard or type test,
 one of them testing (not `_` or a name). Mutation: `{ let tm__z =
 never(); select (select true { true => s, false => tm__z }) { arms, _ =>
 last } }`, the last arm's body repeated under a `_` (a union scrutinee
-beside a wildcard is one the arms' settle does not decide). Rule: an
-open cell the scrutinee held before the arms, still open at the select's
-end, that an arm tests is refused (`Select::check_undecided`,
-`StructurePattern::meets_undecided`). Built (`undecided-part`), right
-site the select. Not generated: a name over the open part, typed beside
+beside a wildcard is one the arms' settle does not decide); and the
+decide shape, `{ let tm__z = never(); select (tm__z, 0) { (arm, _) ..,
+_ => last } }`, where the first arm testing `tm__z` would decide it.
+Rule: an open cell the scrutinee held before the arms, still open at the
+select's end or decided by an arm's pattern, that an arm tests is
+refused (`Select::check_undecided`, `StructurePattern::meets_undecided`,
+`meets_decided`). Built (`undecided-part`), right site the select. Not generated: a name over the open part, typed beside
 the members' others (`TVar::narrow_per_member`), whose refusal comes at
 a later write (pins `lang::select_undecided::name_over_an_undecided_*`);
 a written test's own open variable (pins

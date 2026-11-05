@@ -479,6 +479,11 @@ across a bottom cycle).
   takes its member whole, `` (`J, _) `` over `` [(`K, i64), (`J, z)] ``,
   leaves the later arms free of it): over `let v = select b { true => {a: [1],
   c: 1}, false => z }`, `{a, ..} => ..` is refused until `z` is annotated.
+  An arm whose pattern would decide it is refused the same way: `|x|
+  select (x, 0) { (`J, _) => 1, (`M, _) => 2 }` (write `x: [`J, `M]`);
+  only a scrutinee wholly of such a type is the arms' to decide together
+  (`|x| select x { `J => 1, `M => 2 }`), never by a partial struct
+  pattern (`{a, ..}`).
   A part only a name or `_` meets passes, and a name there holds that
   type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
   `str::len(x)` makes `z` a string. A written test is closed: `` ['b,

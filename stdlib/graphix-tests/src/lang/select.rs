@@ -4696,11 +4696,23 @@ run!(partial_struct_after_a_type_test_taking_a_decided_member, r#"{
     "[r] [s]"
 }"#, refused("told apart by types not decided at this select"); FuseExpect::None);
 
-// A written test over a member decides its cells, so the other member
-// alone reaches the partial pattern.
-run!(partial_struct_after_a_type_test_taking_the_first_member, r#"{
+// A written test that would decide a member's undecided cells tests them;
+// over the cells annotated, the other member alone reaches the partial
+// pattern.
+run!(partial_struct_after_a_type_test_deciding_the_first_member_refused, r#"{
     let b = true;
     let x = never();
+    let y = never();
+    let v = select b { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let r = select v { {a: Array<i64>, c: i64} as s => "first [s.c]", {a, ..} => "[a]" };
+    x <- 1;
+    y <- "w";
+    r
+}"#, refused("{ a: Array<i64>, c: i64 } as s tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(partial_struct_after_a_type_test_taking_the_first_member, r#"{
+    let b = true;
+    let x: i64 = never();
     let y = never();
     let v = select b { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
     let r = select v { {a: Array<i64>, c: i64} as s => "first [s.c]", {a, ..} => "[a]" };
@@ -6838,44 +6850,53 @@ run!(
     prints(r#"["x5", "xs"]"#)
 );
 
-// An open cell inside the scrutinee takes its shape from the arms' own
-// cells: `x + 1` makes `v` an Array<i64>, so a string array is refused.
+// An open cell inside the scrutinee that an arm's pattern would shape is
+// tested by that arm: refused, naming the binding to annotate.
 run!(
-    settle_shapes_an_open_part_with_the_arms_cells,
+    an_open_part_a_slice_arm_would_shape_refused,
     r#"{
         let f = |v| select (v, 0) { ([x, ..], _) => x + 1, (_, _) => 0 };
         f(["s"])
     }"#,
-    refused("type mismatch Array<i64> does not contain Array<string>");
+    refused("([x, ..], _) tests a value of 'v, a type not decided at this select");
     FuseExpect::None
 );
 
 run!(
-    settle_shapes_an_open_struct_field_with_the_arms_cells,
+    an_open_field_a_slice_arm_would_shape_refused,
     r#"{
         let f = |v| select {a: v, b: 0} { {a: [x, ..], b: _} => x + 1, {a: _, b: _} => 0 };
         f(["s"])
     }"#,
-    refused("type mismatch Array<i64> does not contain Array<string>");
+    refused("{ a: [x, ..], b: _ } tests a value of 'v, a type not decided at this select");
     FuseExpect::None
 );
 
 run!(
-    settle_shapes_a_later_written_part_with_the_arms_cells,
+    a_later_written_part_a_slice_arm_would_shape_refused,
     r#"{
         let z = never();
         let r = select (z, 0) { ([x, ..], _) => str::len(x), (_, _) => 0 };
         z <- [1];
         r
     }"#,
-    refused("z is Array<string>, inferred from an earlier use, and cannot hold Array<i64>");
+    refused("([x, ..], _) tests a value of 'z, a type not decided at this select");
     FuseExpect::None
 );
 
 run!(
-    settle_shapes_an_open_part_and_runs,
+    an_annotated_part_a_slice_arm_tests_runs,
     r#"{
-        let f = |v| select (v, 0) { ([x, ..], _) => x + 1, (_, _) => 0 };
+        let f = |v: Array<i64>| select (v, 0) { ([x, ..], _) => x + 1, (_, _) => 0 };
+        [f([3, 4]), f([])]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0])
+);
+
+run!(
+    an_annotated_field_a_slice_arm_tests_runs,
+    r#"{
+        let f = |v: Array<i64>| select {a: v, b: 0} { {a: [x, ..], b: _} => x + 1, {a: _, b: _} => 0 };
         [f([3, 4]), f([])]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0])

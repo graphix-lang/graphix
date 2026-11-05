@@ -435,6 +435,33 @@ Caused by:
     3: { a, .. } tests a value of 'z, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'z the type of `z` (line 2, column 5)
 ```
 
+An arm whose pattern would decide such a type itself is refused the
+same way. Here the first arm would make `x` a `` `J `` alone, and the
+second arm could then never match:
+
+```graphix,refused
+let f = |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 };
+f(`M)
+```
+
+```
+$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 1, column: 1 in file test.gx, in: let f = |x| select (x, 0) { (`J, _) =>..
+    1: at: line: 1, column: 9 in file test.gx, in: |x| select (x, 0) { (`J, _) => 1, (`M,..
+    2: at: line: 1, column: 13 in file test.gx, in: select (x, 0) { (`J, _) => 1, (`M, _) ..
+    3: at: line: 1, column: 29 in file test.gx
+    4: (`J, _) tests a value of 'x, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'x the type of `x` (line 1, column 10)
+```
+
+Annotated, `|x: [`J, `M]|`, both arms check. A scrutinee that is wholly
+such a type is the arms' to decide together: `|x| select x { `J => 1, `M
+=> 2 }` makes `x` a `` [`J, `M] ``. A partial struct pattern decides
+nothing there, since it names only some of the fields: `|x| select x {
+{a, ..} => a }` is refused until `x` is annotated.
+
 A part that only a name or `_` meets passes, and a name there holds that
 type beside the other members' parts: over `` [(`A, z), (`B, "s")] ``,
 `(_, x) => str::len(x)` makes `z` a string, so a later `z <- 5` is

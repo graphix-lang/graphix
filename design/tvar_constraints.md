@@ -628,6 +628,27 @@ would meet no value of it. The cost is one walk per arm, plus for a
 written test one containment per member reaching it that holds an
 undecided cell.
 
+An arm's pattern may decide such a cell instead of leaving it open: the
+arms' settle (`Reach::new`) binds an open part inside a structure to the
+first arm's predicate, a partial struct pattern completes against a
+sibling member, a literal or a tag narrows it. Nothing is open at the
+end then, and a later arm is refused as dead or a later write as
+mismatched, naming nothing the program wrote. So the cells the scrutinee
+held open are noted before each step that runs a pattern (the settle and
+completion before the arms, each arm's completion and narrowing; never a
+guard or a body), and a cell such a step bound counts as undecided
+(`Deciding`, Eric 11-05, D5 follow-up (b)): `meets_decided` walks it as
+the open cell it was (`union_members_stopping` stops at it), and a
+written test is judged by `written_tests_undecided` over a copy of what
+reaches it with those cells open again (`written_tests_decided`). A
+refusal any step of the arms' check makes is first offered to this rule
+over the arms checked so far, so the message names the binding. A whole
+scrutinee that is one open cell is not counted: the arms decide it
+together, as `select x { `J => 1, `M => 2 }` makes `x` a `` [`J, `M] ``;
+except where an arm holds a partial struct pattern, whose completion
+against an open cell is the struct of the fields it names, a type the
+program never wrote.
+
 What only names and `_` meet passes, and stays sound two ways. A name
 over a union position where one member's part is an open cell takes
 that cell beside the other members' parts (`TVar::narrow_per_member`:

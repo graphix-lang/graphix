@@ -2236,6 +2236,14 @@ impl<R: Rt> Select<R> {
         if checking {
             crate::typ::settle::position_cells(self.arg.node.typ(), &mut outer)
         }
+        // the cells the arms' patterns decide, each by the cell it stands for
+        let mut decided: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let deciding = match &self.spec.kind {
+            ExprKind::Select(se) if checking => {
+                Deciding::new(&outer, self.arg.node.typ(), &se.arms)
+            }
+            _ => Deciding::default(),
+        };
         if checking && let ExprKind::Select(se) = &self.spec.kind {
             let scrut = self.arg.node.typ();
             for ((pat, n), (spec_pat, _)) in self.arms.iter().zip(se.arms.iter()) {
@@ -2305,110 +2313,128 @@ impl<R: Rt> Select<R> {
         }
         let scrut = self.arg.node.typ().clone();
         let mut reach = Reach::new(&ctx.env, &scrut, &self.arms)?;
-        let mut rtypes: LPooled<Vec<&Type>> = LPooled::take();
+        deciding.decided(&mut decided);
         let mut reached: SmallVec<[Type; 16]> = SmallVec::new();
         let spec_pats: &[_] = match &self.spec.kind {
             ExprKind::Select(se) => &se.arms,
             _ => &[],
         };
-        for (i, (pat, n)) in self.arms.iter_mut().enumerate() {
-            if checking && pat.explicit_type_predicate {
-                super::defer_written_map_keys(ctx, &pat.type_predicate, &self.spec)
-            }
-            // a refusal about the pattern points at the pattern
-            let site = match spec_pats.get(i) {
-                Some((p, _)) => pattern_site(p, n.spec()),
-                None => n.spec().clone(),
-            };
-            if deferred[i]
-                && let Some((spec_pat, _)) = spec_pats.get(i)
-            {
-                let t = spec_pat
-                    .structure_predicate
-                    .complete_type_predicate(&ctx.env, &pat.type_predicate, &reach.atype)
-                    .map_err(|e| undecided_members(&ctx.env, e, &self.spec.ori))
-                    .at(&site)?;
-                if let Some(t) = t {
-                    pat.structure_predicate.realign(&ctx.env, &t)?;
-                    pat.type_predicate = t;
+        for i in 0..self.arms.len() {
+            // an arm refused for what an earlier arm's pattern decided is
+            // refused for that decision
+            let step = (|| -> Result<()> {
+                let (pat, n) = &mut self.arms[i];
+                if checking && pat.explicit_type_predicate {
+                    super::defer_written_map_keys(ctx, &pat.type_predicate, &self.spec)
                 }
-            }
-            // The arm's binds alias against what reaches it. The
-            // `any_as_tvar` view keeps a `_` slot from short-circuiting the
-            // walk.
-            let reaching = match !super::instance_rechecked()
-                || !reach.passes_nothing(&ctx.env, pat)?
-            {
-                true => reach.atype.clone(),
-                // an arm its definition's check kept that nothing reaches
-                // at the instance's types never runs
-                false => Type::Bottom,
-            };
-            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-            union_members(&ctx.env, &reaching, &mut members)?;
-            let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
-            reaching.narrow_pattern(&ctx.env, &narrowed)?;
-            pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
-                .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
-                .at(&site)?;
-            // a runtime test can't tell apart two types with one runtime form
-            if checking
-                && pat.explicit_type_predicate
-                && pat.type_predicate.ref_over_any(&ctx.env, &reaching)
-            {
-                let t = &pat.type_predicate;
-                return Err(format_with_flags(PrintFlag::DerefTVars, || {
-                    anyhow!(
-                        "this pattern can't tell what the reference in {t} refers to \
-                         where the scrutinee may hold Any: every reference has one runtime \
-                         form"
-                    )
-                }))
-                .at(&site);
-            }
-            if checking {
-                let mut tests: SmallVec<[(Type, Type); 4]> =
-                    smallvec![(pat.type_predicate.clone(), reaching.clone())];
-                if !pat.explicit_type_predicate {
-                    pat.structure_predicate.element_tests(
-                        &ctx.env,
-                        &pat.type_predicate,
-                        &reaching,
-                        &mut tests,
-                    );
-                }
-                let spec = Arc::new(site.clone());
-                for (test, among) in tests {
-                    let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
-                    if let Some(why) = test.rep_collision(&ctx.env, &rest) {
-                        return Err(format_with_flags(PrintFlag::DerefTVars, || {
-                            why.untold("this pattern", &test, &rest)
-                        }))
-                        .at(&site);
+                let deciding = deciding.again();
+                // a refusal about the pattern points at the pattern
+                let site = match spec_pats.get(i) {
+                    Some((p, _)) => pattern_site(p, n.spec()),
+                    None => n.spec().clone(),
+                };
+                if deferred[i]
+                    && let Some((spec_pat, _)) = spec_pats.get(i)
+                {
+                    let t = spec_pat
+                        .structure_predicate
+                        .complete_type_predicate(
+                            &ctx.env,
+                            &pat.type_predicate,
+                            &reach.atype,
+                        )
+                        .map_err(|e| undecided_members(&ctx.env, e, &self.spec.ori))
+                        .at(&site)?;
+                    if let Some(t) = t {
+                        pat.structure_predicate.realign(&ctx.env, &t)?;
+                        pat.type_predicate = t;
                     }
-                    let spec = spec.clone();
-                    super::defer_judgment(
-                        ctx,
-                        crate::PendingSettle::Told { test, rest, spec },
-                    );
                 }
-            }
-            // The guard typechecks after the narrowing so it sees the
-            // arm's binds at their settled type; it must be bool.
-            if let Some(guard) = &mut pat.guard {
-                wrap!(guard.node, child(&mut guard.node, ctx))?;
+                // The arm's binds alias against what reaches it. The
+                // `any_as_tvar` view keeps a `_` slot from short-circuiting the
+                // walk.
+                let reaching = match !super::instance_rechecked()
+                    || !reach.passes_nothing(&ctx.env, pat)?
+                {
+                    true => reach.atype.clone(),
+                    // an arm its definition's check kept that nothing reaches
+                    // at the instance's types never runs
+                    false => Type::Bottom,
+                };
                 if checking {
-                    let bt = Type::Primitive(Typ::Bool.into());
-                    wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
+                    reached.push(reaching.clone());
                 }
-            }
-            wrap!(n, child(n, ctx))?;
-            rtypes.push(n.typ());
-            reach.arm(&ctx.env, &scrut, pat, &site, checking)?;
-            if checking {
-                reached.push(reaching);
+                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                union_members(&ctx.env, &reaching, &mut members)?;
+                let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
+                reaching.narrow_pattern(&ctx.env, &narrowed)?;
+                pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
+                    .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
+                    .at(&site)?;
+                deciding.decided(&mut decided);
+                // a runtime test can't tell apart two types with one runtime form
+                if checking
+                    && pat.explicit_type_predicate
+                    && pat.type_predicate.ref_over_any(&ctx.env, &reaching)
+                {
+                    let t = &pat.type_predicate;
+                    return Err(format_with_flags(PrintFlag::DerefTVars, || {
+                        anyhow!(
+                            "this pattern can't tell what the reference in {t} refers to \
+                             where the scrutinee may hold Any: every reference has one runtime \
+                             form"
+                        )
+                    }))
+                    .at(&site);
+                }
+                if checking {
+                    let mut tests: SmallVec<[(Type, Type); 4]> =
+                        smallvec![(pat.type_predicate.clone(), reaching.clone())];
+                    if !pat.explicit_type_predicate {
+                        pat.structure_predicate.element_tests(
+                            &ctx.env,
+                            &pat.type_predicate,
+                            &reaching,
+                            &mut tests,
+                        );
+                    }
+                    let spec = Arc::new(site.clone());
+                    for (test, among) in tests {
+                        let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
+                        if let Some(why) = test.rep_collision(&ctx.env, &rest) {
+                            return Err(format_with_flags(PrintFlag::DerefTVars, || {
+                                why.untold("this pattern", &test, &rest)
+                            }))
+                            .at(&site);
+                        }
+                        let spec = spec.clone();
+                        super::defer_judgment(
+                            ctx,
+                            crate::PendingSettle::Told { test, rest, spec },
+                        );
+                    }
+                }
+                // The guard typechecks after the narrowing so it sees the
+                // arm's binds at their settled type; it must be bool.
+                if let Some(guard) = &mut pat.guard {
+                    wrap!(guard.node, child(&mut guard.node, ctx))?;
+                    if checking {
+                        let bt = Type::Primitive(Typ::Bool.into());
+                        wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
+                    }
+                }
+                wrap!(n, child(n, ctx))?;
+                reach.arm(&ctx.env, &scrut, pat, &site, checking)
+            })();
+            if let Err(e) = step {
+                if checking && !decided.is_empty() {
+                    self.check_undecided(&ctx.env, &AHashMap::new(), &decided, &reached)?;
+                }
+                return Err(e);
             }
         }
+        let rtypes: LPooled<Vec<&Type>> =
+            self.arms.iter().map(|(_, n)| n.typ()).collect();
         self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;
         drop(rtypes);
         match checking {
@@ -2419,7 +2445,7 @@ impl<R: Rt> Select<R> {
                         undecided.insert(c.cell_addr(), c);
                     }
                 }
-                self.check_undecided(&ctx.env, &undecided, &reached)?;
+                self.check_undecided(&ctx.env, &undecided, &decided, &reached)?;
                 check_repeats(&ctx.env, &self.arms)?;
                 let undecided: LPooled<Vec<TVar>> =
                     undecided.drain().map(|(_, c)| c).collect();
@@ -2429,21 +2455,23 @@ impl<R: Rt> Select<R> {
         }
     }
 
-    /// Refuse an arm whose pattern tests a part whose type is still not
-    /// decided once the arms have decided what they will, a later decision
-    /// could make the test match what its coverage and its binds assumed it
-    /// would not: one of `undecided`, the cells the scrutinee held before
-    /// the arms ran (never one the arms' own patterns brought), in the part
-    /// of the scrutinee that reaches the arm (`reached`, one per arm), or any
-    /// open cell of a written test.
+    /// Refuse an arm whose pattern tests a part whose type is not decided
+    /// before the arms, a later decision could make the test match what its
+    /// coverage and its binds assumed it would not: one of `undecided`, the
+    /// cells the scrutinee held before the arms ran (never one the arms' own
+    /// patterns brought) still open, or of `decided`, those the arms'
+    /// patterns decided, in the part of the scrutinee that reaches the arm
+    /// (`reached`, one per arm), or any open cell of a written test.
     fn check_undecided(
         &self,
         env: &Env,
         undecided: &AHashMap<usize, TVar>,
+        decided: &AHashMap<usize, TVar>,
         reached: &[Type],
     ) -> Result<()> {
         let ExprKind::Select(se) = &self.spec.kind else { return Ok(()) };
         let held = |tv: &TVar| undecided.contains_key(&tv.cell_addr());
+        let was_open = |tv: &TVar| decided.contains_key(&tv.stands_for());
         for (((pat, n), (spec_pat, _)), reaching) in
             self.arms.iter().zip(se.arms.iter()).zip(reached.iter())
         {
@@ -2463,16 +2491,25 @@ impl<R: Rt> Select<R> {
                                 )
                             }))
                         }
-                        None => written_tests_undecided(env, t, reaching, undecided)?
+                        None => {
+                            match written_tests_undecided(env, t, reaching, undecided)? {
+                                Some(tv) => Some(tv),
+                                None if decided.is_empty() => None,
+                                None => written_tests_decided(env, t, reaching, decided)?,
+                            }
                             .map(|tv| {
                                 let pat = format_compact!("{t} as {sp}");
                                 undecided_refusal(env, &pat, &tv, &self.spec.ori)
-                            }),
+                            })
+                        }
                     }
                 }
-                false => sp
-                    .meets_undecided(env, &ids, reaching, &held)?
-                    .map(|tv| undecided_refusal(env, sp, &tv, &self.spec.ori)),
+                false => match sp.meets_undecided(env, &ids, reaching, &held)? {
+                    Some(tv) => Some(tv),
+                    None if decided.is_empty() => None,
+                    None => sp.meets_decided(env, &ids, reaching, &was_open)?,
+                }
+                .map(|tv| undecided_refusal(env, sp, &tv, &self.spec.ori)),
             };
             if let Some(e) = e {
                 return Err(e).at(&pattern_site(spec_pat, n.spec()));
@@ -2482,7 +2519,56 @@ impl<R: Rt> Select<R> {
     }
 }
 
-// CR claude for claude: [question/low] D5 (b) refuses an arm that tests a part still
+/// The scrutinee's cells open before a step of a select's check that may
+/// decide them: the arms' settle, or an arm's pattern. A whole scrutinee
+/// open before the arms is theirs to decide together, unless an arm holds a
+/// partial struct pattern, whose completion has no one answer.
+#[derive(Default)]
+struct Deciding(SmallVec<[TVar; 4]>);
+
+impl Deciding {
+    fn new(
+        outer: &AHashMap<usize, TVar>,
+        scrut: &Type,
+        arms: &[(Pattern, Expr)],
+    ) -> Self {
+        let whole = match scrut {
+            Type::TVar(tv)
+                if !arms.iter().any(|(p, _)| {
+                    p.type_predicate.is_none()
+                        && p.structure_predicate.has_partial_struct()
+                }) =>
+            {
+                tv.open_cell().map(|c| c.cell_addr())
+            }
+            _ => None,
+        };
+        Self(
+            outer
+                .values()
+                .filter(|tv| {
+                    tv.open_cell()
+                        .is_some_and(|c| !c.is_rigid() && Some(c.cell_addr()) != whole)
+                })
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// The cells still open, for the next step.
+    fn again(&self) -> Self {
+        Self(self.0.iter().filter(|tv| tv.open_cell().is_some()).cloned().collect())
+    }
+
+    /// Add to `decided` each cell the step decided.
+    fn decided(&self, decided: &mut AHashMap<usize, TVar>) {
+        for tv in self.0.iter().filter(|tv| tv.open_cell().is_none()) {
+            decided.insert(tv.stands_for(), tv.clone());
+        }
+    }
+}
+
+// XCR claude for claude: [question/low] D5 (b) refuses an arm that tests a part still
 // undecided at the select's end, but an arm may decide the part first, and then nothing
 // is undecided to refuse: the arms decide what they will. So `(_, {a, ..})` over
 // [(`K, {a: Array<i64>, c: i64}), (`J, 'z)] completes against the K member's struct and
@@ -2502,6 +2588,24 @@ impl<R: Rt> Select<R> {
 // as testing it, with the D5 message naming the binding to annotate; a whole open scrutinee the
 // arms decide together stays as it is. Census first. Analysis and probes: ~/ptmp/cr-discuss.md
 // (Ruled 11-05, D5 follow-up); ~/tmp/d5/.
+// 2026-11-05 claude: Built (lane U, round 16): the cells the scrutinee held open are noted
+// before each step that runs a pattern (Reach::new's settle and the completions before the arms,
+// each arm's completion and narrowing; never a guard or a body), and a cell such a step bound
+// counts as undecided (Deciding; StructurePattern::meets_decided walks it as the open cell it
+// was; written_tests_decided judges a written test over a copy with those cells open again). A
+// refusal the arms' check makes is first offered to this rule, so t1, t6, t9, w6 and e1 name the
+// binding instead of 'unreachable arm'. A whole open scrutinee stays the arms' to decide
+// together unless an arm holds a partial struct pattern (n2, n3 refused). Pins (each fails
+// without the fix): lang::select_undecided::{tag_deciding_*, element_tag_*, payload_tag_*,
+// written_test_deciding_*, partial_struct_completing_*, partial_struct_over_a_lone_*,
+// partial_struct_over_an_undecided_parameter_refused, or_alternative_deciding_*,
+// slice_over_an_undecided_part_refused, undecided_member_beside_a_guarded_tag_refused,
+// widened_open_element_refused}, lang::select::{an_open_part_a_slice_arm_would_shape_refused,
+// an_open_field_*, a_later_written_part_*,
+// partial_struct_after_a_type_test_deciding_the_first_member_refused}; annotated twins and kept
+// cases beside them; must-reject family 14's decide shape (graphix-fuzz
+// must_reject_families_are_refused_where_their_rules_say: LEAK without the fix). Census of both
+// repos: no change.
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
@@ -2567,6 +2671,45 @@ fn written_tests_undecided(
         return Ok(held.into_iter().next());
     }
     Ok(None)
+}
+
+/// [`written_tests_undecided`] over `reaching` with each of `decided`, cells
+/// the arms' patterns decided, open again on a copy: the cell of `decided`
+/// the written test `t` tests.
+fn written_tests_decided(
+    env: &Env,
+    t: &Type,
+    reaching: &Type,
+    decided: &AHashMap<usize, TVar>,
+) -> Result<Option<TVar>> {
+    fn reopen(
+        t: &Type,
+        decided: &AHashMap<usize, TVar>,
+        fresh: &mut AHashMap<usize, (TVar, TVar)>,
+    ) -> Option<Type> {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => match decided.get(&tv.stands_for()) {
+                Some(d) => {
+                    let (c, _) = fresh.entry(tv.stands_for()).or_insert_with(|| {
+                        (TVar::empty_named(d.name.clone()), d.clone())
+                    });
+                    Some(Type::TVar(c.clone()))
+                }
+                None => {
+                    let b = tv.binding()?;
+                    Some(reopen(&b, decided, fresh).unwrap_or(b))
+                }
+            },
+            t => t.cow_children(&mut |c| reopen(c, decided, fresh)),
+        })
+    }
+    let mut fresh: LPooled<AHashMap<usize, (TVar, TVar)>> = LPooled::take();
+    let Some(copy) = reopen(reaching, decided, &mut fresh) else { return Ok(None) };
+    let open: AHashMap<usize, TVar> =
+        fresh.values().map(|(c, _)| (c.cell_addr(), c.clone())).collect();
+    Ok(written_tests_undecided(env, t, &copy, &open)?.and_then(|c| {
+        fresh.values().find(|(f, _)| f.same_cell(&c)).map(|(_, d)| d.clone())
+    }))
 }
 
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided

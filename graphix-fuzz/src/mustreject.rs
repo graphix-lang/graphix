@@ -453,7 +453,10 @@ fn same_form(
 /// last arm's body: `tm__z`'s type is not decided where the arms test it,
 /// so a later use could decide it apart from what they assume. The `_`
 /// arm keeps the arms from deciding it (a union scrutinee beside a
-/// wildcard settles nothing). Right site: the replaced select.
+/// wildcard settles nothing). And it becomes `{ let tm__z = never();
+/// select (tm__z, 0) { (arm, _) .., _ => last } }`, where the first arm
+/// testing `tm__z` would decide it: refused as testing it. Right site: the
+/// replaced select.
 fn undecided_part(
     root: &Expr,
     pre: &[Expr],
@@ -500,7 +503,10 @@ fn undecided_part(
             arg: Arc::new(
                 ExprKind::Constant(netidx_value::Value::Bool(true)).to_expr_nopos(),
             ),
-            arms: Arc::from_iter([(lit(true), (*se.arg).clone()), (lit(false), z)]),
+            arms: Arc::from_iter([
+                (lit(true), (*se.arg).clone()),
+                (lit(false), z.clone()),
+            ]),
         })
         .to_expr_nopos();
         let mut arms = se.arms.to_vec();
@@ -511,30 +517,41 @@ fn undecided_part(
                 Pattern { structure_predicate: StructurePattern::Ignore, ..lit(true) };
             arms.push((ignore, last.clone()))
         }
-        let sel = ExprKind::Select(SelectExpr {
-            arg: Arc::new(union),
-            arms: Arc::from_iter(arms),
-        })
-        .to_expr_nopos();
-        let never =
-            ExprKind::Never { typ: None, args: Arc::from_iter([]) }.to_expr_nopos();
-        let block = ExprKind::Block {
-            exprs: Arc::from_iter([
-                ExprKind::Bind(Arc::new(BindExpr {
-                    rec: false,
-                    pattern: StructurePattern::Bind(Name::from(Z)),
-                    typ: None,
-                    value: never,
-                }))
-                .to_expr_nopos(),
-                sel,
-            ]),
-        }
-        .to_expr(e.pos);
-        let cand = mutate::replace(root, i, &block);
-        out.extend(finish(Family::UndecidedPart, i, &cand, |_, pre| {
-            vec![pre.get(i).and_then(span)]
+        // the decide shape: `tm__z` inside a tuple, which the first arm
+        // testing it would decide alone
+        let nested = Arc::from_iter(arms.iter().map(|(p, body)| {
+            let binds = [p.structure_predicate.clone(), StructurePattern::Ignore];
+            let tuple =
+                StructurePattern::Tuple { all: None, binds: Arc::from_iter(binds) };
+            (Pattern { structure_predicate: tuple, ..p.clone() }, body.clone())
         }));
+        let zero = ExprKind::Constant(netidx_value::Value::I64(0)).to_expr_nopos();
+        let pair =
+            ExprKind::Tuple { args: Arc::from_iter([z.clone(), zero]) }.to_expr_nopos();
+        let scrutinees = [(union, Arc::from_iter(arms)), (pair, nested)];
+        for (arg, arms) in scrutinees {
+            let sel =
+                ExprKind::Select(SelectExpr { arg: Arc::new(arg), arms }).to_expr_nopos();
+            let never =
+                ExprKind::Never { typ: None, args: Arc::from_iter([]) }.to_expr_nopos();
+            let block = ExprKind::Block {
+                exprs: Arc::from_iter([
+                    ExprKind::Bind(Arc::new(BindExpr {
+                        rec: false,
+                        pattern: StructurePattern::Bind(Name::from(Z)),
+                        typ: None,
+                        value: never,
+                    }))
+                    .to_expr_nopos(),
+                    sel,
+                ]),
+            }
+            .to_expr(e.pos);
+            let cand = mutate::replace(root, i, &block);
+            out.extend(finish(Family::UndecidedPart, i, &cand, |_, pre| {
+                vec![pre.get(i).and_then(span)]
+            }));
+        }
         taken += 1;
     }
 }

@@ -1361,6 +1361,11 @@ cycle, across workers; the compiler never pins threads.
   that takes such a member only whatever the cell becomes, not with the
   cell one type of its own (`written_tests_undecided`); a name over it takes
   the open part beside the members' others (`TVar::narrow_per_member`).
+  A cell an arm's pattern decided (the arms' settle, a completion, the
+  narrowing) counts as one still open there (`Deciding`,
+  `StructurePattern::meets_decided`, `written_tests_decided`), except a
+  whole open scrutinee, which the arms decide together, unless an arm
+  holds a partial struct pattern.
   Exhaustiveness holds those cells rigid on copies first
   (`Type::contains_holding`), so a part only names and `_` meet covers
   whatever it becomes, else where the cover decides them. A partial
