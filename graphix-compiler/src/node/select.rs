@@ -547,7 +547,7 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 /// An arm nothing reaches: its refusal.
 struct Dead(anyhow::Error);
 
-// CR claude for claude: [bug/low] A written test over an abstract parameter that is a
+// XCR claude for claude: [bug/low] A written test over an abstract parameter that is a
 // declared variable covers nothing of it: `'b: (i64, string) |x: W<'b>| select x {
 // W<(i64, string)> as W((n, s)) => n }` over `type W<'a> = Abstract<'a>` is refused
 // "missing match cases: no arm covers W<'b>", as is `'b: [`A(i64), `B(i64)]` with the
@@ -556,6 +556,19 @@ struct Dead(anyhow::Error);
 // test covers a declared variable where it covers every member of its bound, but not
 // under an abstract type's (invariant) parameter. Main eb0989d33 alike. probes:
 // ~/ptmp/cr29/scratch/review-r14/B-r2-1/n/{y2,y3,y6,y7}.gx (abstract-written-cover-01)
+// 2026-11-05 claude: Not taken as asked: a type test of an abstract compares its
+// parameters (design/nominal_abstract_types.md item 4, Type::is_a), so W<bound> as ..
+// matches only a W built at exactly the bound; with a catch-all, g(W(`A(3))) at 'b =
+// `A(i64) takes the catch-all (probe ~/ptmp/cr29/scratch/r17-hk/a1.gx prints 99), so
+// letting the test cover W<'b> would leave values no arm matches. The bug was the
+// advice: rigid_refusal told an arm testing inside W<'b> to write W<bound> as .., and
+// the skill said the same. Now an arm meeting the variable inside an abstract's
+// parameter is told to bind the payload by a name and test that (`bound as ..`) or
+// declare no 'b; the skill says so. Pins (lang::select):
+// abstract_payload_inside_a_declared_variable_refused (fails without the fix),
+// abstract_payload_inside_a_declared_variable_tested_by_name,
+// abstract_written_test_at_the_bound_covers_no_instance_refused,
+// abstract_written_test_at_the_bound_misses_a_narrower_instance.
 /// What reaches each arm of a select, walked arm by arm: the scrutinee
 /// less what the unguarded arms before it cover (irrefutable atoms,
 /// `null`, a true/false pair, a completed literal pool, a completed

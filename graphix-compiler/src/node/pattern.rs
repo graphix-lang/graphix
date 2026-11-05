@@ -369,6 +369,20 @@ pub(super) fn rigid_refusal(
             Holder::Let | Holder::Formal => anyhow!("{what}"),
         };
     }
+    if let Holder::Arm = holder
+        && in_abstract_param(typ, tv)
+    {
+        let test = match &bounds[..] {
+            [b] => format_compact!("`{b} as ..`"),
+            _ => format_compact!("`T as ..`"),
+        };
+        return anyhow!(
+            "{pat} tests inside {what}; an abstract type's parameter holds the variable, \
+             and a type test of the abstract matches only the parameters it writes: bind \
+             the payload by a name and test that, {test}, or declare no {var}, writing \
+             its bound in its place"
+        );
+    }
     match (holder, rigid_written(env, ids, pat, typ, tv)) {
         (Holder::Arm, Some(t)) if t.holds_fn(env) => anyhow!(
             "{pat} tests inside {what}, and no type test holds its function type: \

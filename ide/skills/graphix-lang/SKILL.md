@@ -466,8 +466,11 @@ across a bottom cycle).
   variable's value keeps it where the test holds the scrutinee around it:
   `([`A(i64), `B(i64)], i64) as (v, n)` over `('b, i64)` gives `v: 'b`.
   An abstract type's parameter takes no annotation wider than the
-  variable: over `W<'b>`, select with a written test (`W<(i64, string)>
-  as W((n, s))`) or declare no `'b`. Beside other members (`(bool,
+  variable, and a type test of an abstract compares its parameters:
+  `W<(i64, string)> as ..` matches only a `W` built at exactly that
+  type, covering nothing of `W<'b>`. Bind the payload by a name and test
+  that, `W(p) => select p { (i64, string) as (n, s) => n }`, or declare
+  no `'b`. Beside other members (`(bool,
   ['b, null])`, `'b: [i64, string]`) the
   variable's values are covered by a name or `_` at its position, or by
   written tests that split its bound: `(false, null)` leaves `(false, v)`

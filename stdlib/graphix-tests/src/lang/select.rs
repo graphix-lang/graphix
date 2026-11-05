@@ -4097,6 +4097,68 @@ run!(
     FuseExpect::Jit
 );
 
+// A type test of an abstract compares its parameters, so one written at the
+// bound matches only the instance at the bound: the refusal of a pattern
+// inside the parameter names a test of the payload instead.
+run!(
+    abstract_payload_inside_a_declared_variable_refused,
+    refused("W(`A(n)) tests inside a value of 'b, a type variable of the definition, which types none of its parts; an abstract type's parameter holds the variable, and a type test of the abstract matches only the parameters it writes: bind the payload by a name and test that, `[`A(i64), `B(i64)] as ..`, or declare no 'b, writing its bound in its place"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| -> i64 select x {
+            W(`A(n)) => n,
+            W(`B(n)) => n
+        };
+        let result = g(W(`A(3)))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_inside_a_declared_variable_tested_by_name,
+    prints("[i64:3, i64:11]"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| -> i64 select x {
+            W(p) => select p {
+                [`A(i64), `B(i64)] as `A(n) => n,
+                [`A(i64), `B(i64)] as `B(n) => n + 10
+            }
+        };
+        let result = (g(W(`A(3))), g(W(`B(1))))
+    "#;
+    FuseExpect::Jit
+);
+
+run!(
+    abstract_written_test_at_the_bound_covers_no_instance_refused,
+    refused("missing match cases: no arm covers W<'b"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: (i64, string) |x: W<'b>| -> i64 select x {
+            W<(i64, string)> as W((n, s)) => n
+        };
+        let o: (i64, string) = (3, "s");
+        let result = g(W(o))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_written_test_at_the_bound_misses_a_narrower_instance,
+    prints("[i64:99, i64:3]"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| -> i64 select x {
+            W<[`A(i64), `B(i64)]> as W(`A(n)) => n,
+            _ => 99
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = (g(W(`A(3))), g(W(o)))
+    "#;
+    FuseExpect::Jit
+);
+
 // The refusal tells what to write: an arm that can match no value of the
 // variable is dead; a variable with no bound is bounded first, since a test
 // beside an unbounded variable may share its runtime form; a variable its
