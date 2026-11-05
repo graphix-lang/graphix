@@ -168,6 +168,27 @@ run!(
     "/test/m.gx" => "let g = |x| x"
 );
 
+run!(
+    a_parenthesized_lambda_in_a_holder_is_generic,
+    "{ let k = {p: (|x| x)}; (k.p(1), k.p(true)) }",
+    prints("[i64:1, true]");
+    FuseExpect::None
+);
+
+run!(
+    a_parenthesized_lambda_in_a_tuple_holder_is_generic,
+    "{ let k = ((|x| x), 1); (k.0(1), k.0(true)) }",
+    prints("[i64:1, true]");
+    FuseExpect::None
+);
+
+run!(
+    a_parenthesized_generic_name_in_a_holder_is_generic,
+    "{ let f = |x| x; let k = {p: (f)}; (k.p(1), k.p(true)) }",
+    prints("[i64:1, true]");
+    FuseExpect::None
+);
+
 // The ML rule: a function value no binding names is one instance.
 run!(
     a_callbacks_result_is_one_instance,
@@ -240,6 +261,27 @@ run!(
     FuseExpect::Jit
 );
 
+run!(
+    a_holder_of_a_steps_lambda_in_a_seq_step_is_generic,
+    "seq { let f = |x| x; let s = {g: f}; (s.g(1), s.g(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_destructured_holder_in_a_seq_step_written_by_a_later_step_is_one_instance,
+    "seq { let (g, k) = (|x| x, |y| y); let rk = &mut k; *rk <- |y: i64| y + 1; let a = 0; (k(\"a\"), g(1)) }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_destructured_holder_in_a_seq_step_written_by_a_later_step_at_its_type,
+    "seq { let (g, k) = (|x| x, |y| y); let rk = &mut k; *rk <- |y: i64| y + 1; let a = 0; (k(2), g(\"s\")) }",
+    prints(r#"[i64:3, "s"]"#);
+    FuseExpect::Jit
+);
+
 // A method's annotation writes no scheme of its own: the trait's
 // declaration is the scheme, which the method is held to.
 const OUTSIDE_V: &str =
@@ -309,5 +351,39 @@ run!(
         trait T { val m: fn<'a: Number + Singleton>(self, x: 'a) -> 'a };
         impl T for i64 { let m: fn<'a: Number + Singleton>(s: i64, x: 'a) -> 'a = |s, x| x + x };
         let result = (T::m(1, 2), T::m(1, 1.5))
+    "#
+);
+
+run!(
+    an_unannotated_impl_method_under_a_quantified_val_writing_an_outer_binding_is_refused,
+    refused(OUTSIDE_V),
+    "/test.gx" => r#"
+        let v = never();
+        trait T { val m: fn<'a: Any>(self, x: 'a) -> 'a };
+        impl T for i64 { let m = |s, x| { v <- x; x } };
+        let result = (T::m(1, "s"), T::m(1, 2))
+    "#
+);
+
+run!(
+    an_unannotated_impl_method_under_a_quantified_val_writing_a_binding_of_any_type,
+    prints(r#"["s", i64:2]"#),
+    "/test.gx" => r#"
+        let v: Any = never();
+        trait T { val m: fn<'a: Any>(self, x: 'a) -> 'a };
+        impl T for i64 { let m = |s, x| { v <- x; x } };
+        let result = (T::m(1, "s"), T::m(1, 2))
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    a_makers_result_as_an_impl_method_under_a_quantified_val_is_refused,
+    refused("its value is no lambda, so no call copies its types"),
+    "/test.gx" => r#"
+        let mk = |z| |s: i64, x| { z <- x; z };
+        trait T { val m: fn<'a: Any>(self, x: 'a) -> 'a };
+        impl T for i64 { let m = mk(never()) };
+        let result = (T::m(1, "s"), T::m(1, 2))
     "#
 );

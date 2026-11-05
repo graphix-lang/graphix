@@ -1016,6 +1016,16 @@ impl<R: Rt> Update<R> for Impl<R> {
         for d in self.trait_def.methods.iter() {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
+            let declared = method_sig_at(&d.typ.reset_tvars(), &self.def.target);
+            implements(ctx, &declared, &bind.typ, *id).with_context(|| {
+                format!(
+                    "method {} of impl {} for {} does not implement the declared {}",
+                    d.name,
+                    self.trait_def.name,
+                    self.def.target,
+                    declared.resolve_tvars()
+                )
+            })?;
             let expected =
                 Type::Fn(Arc::new(method_sig_at(&d.typ.reset_tvars(), &self.def.target)));
             expected.check_contains(&ctx.env, &bind.typ).with_context(|| {
@@ -1026,16 +1036,6 @@ impl<R: Rt> Update<R> for Impl<R> {
                     self.def.target,
                     bind.typ.resolve_tvars(),
                     expected.resolve_tvars()
-                )
-            })?;
-            let declared = method_sig_at(&d.typ.reset_tvars(), &self.def.target);
-            implements(ctx, &declared, &bind.typ, *id).with_context(|| {
-                format!(
-                    "method {} of impl {} for {} does not implement the declared {}",
-                    d.name,
-                    self.trait_def.name,
-                    self.def.target,
-                    declared.resolve_tvars()
                 )
             })?;
         }

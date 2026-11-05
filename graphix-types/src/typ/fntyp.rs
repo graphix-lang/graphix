@@ -972,6 +972,17 @@ impl FnType {
     // (CallSite::settle_unread) reads quantifier names; printing could drop the header
     // of a type whose quantifiers are not generic cells instead. probe:
     // ~/ptmp/cr29/scratch/r16-Q/hint1.gx, hint2.gx (instance-quantifier-print-01)
+    // 2026-11-05 claude: A second face of the same kept quantifier: in a module task,
+    // two calls through a one-instance function a parent binding's projection gives
+    // (main.gx `let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x + x); mod m;`,
+    // m.gx `let g = super::fs[0]$; let go = (g(1), g(1.5))`, m.gxi `val go: (i64,
+    // f64)`) are refused, as the ML rule wants, but the message is "val go is declared
+    // (i64, f64) but implemented ('_7814: unbound within Number & Singleton, ..)",
+    // naming open cells and not fs: has_earlier_quantifier compares fs's kept
+    // quantifier as a fresh copy in the module task, so each call's result stays open.
+    // The sibling forms name fs ("annotate fs"). Whether dropping the list from one
+    // instance (this fix) makes the calls decide the copy and name fs is untried. probe
+    // ~/ptmp/cr29/scratch/review-r16/Q-r2-2/mq1/main.gx (run.sh mq1/main.gx).
     /// One instance of the scheme under the open gates `open`: what a
     /// call copies is a fresh cell at the current level, which every use of
     /// the copy shares (`Fresh::Instantiate`).

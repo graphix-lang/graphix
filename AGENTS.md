@@ -1744,9 +1744,12 @@ cycle, across workers; the compiler never pins threads.
   each later step snapshots the local lets it reads at its own entry;
   a `let` of one name to a lambda literal binds the lambda itself, so
   calls through it resolve statically (its assertions are the build's),
-  and a `let` of a data literal of lambdas that issues no call binds the
-  literal itself, generic as outside a seq (`seq::inline_holder`); later
-  steps read neither through a snapshot.
+  and a `let` of a data literal whose functions are lambda literals or
+  names the seq reads as functions, issuing no call and reading nothing
+  live, binds the literal itself, generic as outside a seq
+  (`seq::inline_holder`); later steps read neither through a snapshot.
+  A holder with a call or a `live` part, and an outer generalized
+  binding a step snapshots, are one instance in the step.
   A statement starts in the first cycle its predecessor's effect can
   be seen: the next step enters in the cycle its predecessor completes
   unless it reads or writes a variable a pending write targets, by the

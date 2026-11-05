@@ -1611,7 +1611,7 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 /// signatures only once they are checked.
 fn holds_function<R: Rt>(env: &Env, node: &Node<R>) -> bool {
     fn part<R: Rt>(env: &Env, node: &Node<R>) -> bool {
-        match node.view() {
+        match ungrouped(node) {
             NodeView::Lambda(_) => true,
             NodeView::Ref(r) => env.poly_binds.contains(&r.id),
             _ => holds_function(env, node),

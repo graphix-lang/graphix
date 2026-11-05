@@ -798,6 +798,25 @@ fn label(k: usize) -> ArcStr {
 }
 
 impl Machine<'_> {
+    // CR claude for eric: [bug/medium] Under the ML rule a step's snapshot of an outer
+    // generalized holder is one instance, where a read outside a seq copies the scheme:
+    // `let s = {g: |x| x}; seq t { (s.g(1), s.g("s")) }` is refused ("i64 does not
+    // contain string"), and so are `seq t { let u = s; (u.g(1), u.g("s")) }` and `seq t
+    // { let u = {a: s}; .. u.a.g(1); u.a.g("s") }`; main 038729af4 runs all three,
+    // printing (1, "s"), on cells the snapshot leaked. An outer function binding is
+    // not snapshotted (`is_function`), and a step's holder of lambdas binds the literal
+    // itself (`inline_holder`), so those stay generic; a holder with a call or a `live`
+    // part (`{g: |x| x, n: str::len("ab")}`, `n: live(v)`) also goes through a cell and
+    // is one instance (main runs the live one, and passes the call one at --check, then
+    // its bind refuses it at run time). Options: (a) read an outer generalized binding
+    // bare, as a function binding is: generic, but a holder part that tracks a variable
+    // is then read live, not at the step's entry; (b) a snapshot cell of a generalized
+    // binding forwards that binding's scheme (sound, since nothing writes it): a new
+    // rule in the compiler for lowered snapshot lets, and the projection the snapshot
+    // tuple reads through must forward too; (c) keep it: annotate or bind the holder
+    // in the step. Recommend (b). probes: ~/ptmp/cr29/scratch/r16-Q/fix2/{o1,o3,
+    // h2_holder_of_holder,h1_holder_with_call,c3_seq_holder_live}.gx (run.sh FILE
+    // compares lane and base) (seq-snapshot-generic-01)
     /// The step's entry snapshot of `e`'s external variables and completed
     /// local lets, `live` aside (`design/seq_blocks.md` §5). Each read goes
     /// to a cell filled at the
@@ -1198,13 +1217,8 @@ impl Machine<'_> {
             None => {
                 let whole =
                     ArcStr::from(format_compact!("#seqh{}", value.id.inner()).as_str());
+                binds.push(let_pat(pos, b.pattern.clone(), b.typ.clone(), value.clone()));
                 binds.push(let_bind(pos, &whole, None, value));
-                binds.push(let_pat(
-                    pos,
-                    b.pattern.clone(),
-                    b.typ.clone(),
-                    r#ref(pos, &whole),
-                ));
                 whole
             }
         };
@@ -1949,14 +1963,18 @@ fn inline_lambda(mut e: &Expr) -> bool {
     matches!(e.kind, ExprKind::Lambda(_))
 }
 
-/// Whether `e` is a data literal holding a lambda literal, through the
-/// data literals it is built of, issuing no call and reading nothing live:
-/// a `let` of it is generic in the lambdas it holds.
+/// Whether `e` is a data literal holding a lambda literal or a name the
+/// seq reads as a function, through the data literals it is built of,
+/// issuing no call and reading nothing live: a `let` of it is generic in
+/// the functions it holds.
 fn inline_holder(mut e: &Expr, map: &Names) -> bool {
-    fn holds(e: &Expr) -> bool {
+    fn holds(e: &Expr, map: &Names) -> bool {
         ensure_sufficient(|| match &e.kind {
-            ExprKind::ExplicitParens(inner) => holds(inner),
+            ExprKind::ExplicitParens(inner) => holds(inner, map),
             ExprKind::Lambda(_) => true,
+            ExprKind::Ref { name } => {
+                matches!(redirect(name, map), Some(Redirect::Function(_)))
+            }
             ExprKind::Array { .. }
             | ExprKind::List { .. }
             | ExprKind::Map { .. }
@@ -1964,7 +1982,7 @@ fn inline_holder(mut e: &Expr, map: &Names) -> bool {
             | ExprKind::Variant { .. }
             | ExprKind::Struct(_) => {
                 let mut found = false;
-                e.for_each_child(&mut |c| found = found || holds(c));
+                e.for_each_child(&mut |c| found = found || holds(c, map));
                 found
             }
             _ => false,
@@ -1973,8 +1991,8 @@ fn inline_holder(mut e: &Expr, map: &Names) -> bool {
     while let ExprKind::ExplicitParens(inner) = &e.kind {
         e = inner;
     }
-    !matches!(e.kind, ExprKind::Lambda(_))
-        && holds(e)
+    !matches!(e.kind, ExprKind::Lambda(_) | ExprKind::Ref { .. })
+        && holds(e, map)
         && !has_call(e)
         && !reads_live(e, map)
 }

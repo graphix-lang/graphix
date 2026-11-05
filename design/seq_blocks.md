@@ -305,12 +305,17 @@ literal, a step's or a `{ .. }` statement's, binds the name to the
 lambda itself and the step's value is the name fired at entry, so a
 call through it resolves statically as it would outside a seq: its
 `#[sync]`/`#[native]` assertions are checked by the build. A `let` of
-any pattern to a data literal holding lambdas that issues no call and
-reads nothing live (`inline_holder`) binds the literal itself the same
-way (a pattern through a lowered `#seqh` name), so its names are as
-generic as a holder's outside a seq; later steps read the names of both
-kinds as they stand, never through a snapshot: after its step neither
-changes.
+any pattern to a data literal whose functions are lambda literals or
+names the seq reads as functions (a step's lambda `let`, an outer
+function binding), issuing no call and reading nothing live
+(`inline_holder`), binds the literal itself the same way, so its names
+are as generic as a holder's outside a seq, and a later step's write to
+one of them holds it as a write in a block does; a pattern's step value
+is a copy of the literal under a lowered `#seqh` name. Later steps read
+the names of both kinds as they stand, never through a snapshot: after
+its step neither changes. A holder with a call or a `live` part goes
+through a cell as any other step value does, and so does a step's read
+of an outer generalized binding (a snapshot): each is one instance.
 
 ## 6. The lowering
 
