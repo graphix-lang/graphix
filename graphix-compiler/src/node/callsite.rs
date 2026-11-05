@@ -3171,6 +3171,9 @@ impl<R: Rt> CallSite<R> {
             // callback formal reads the formal the same way. Expanding the formal's reference
             // at these tests would make the two spellings fuse alike. Main 387c29e60 the same.
             // probes: ~/ptmp/cr29/scratch/r11-R/{tdplain,tdpoly}.gx (typedef-callback-formal-01)
+            // 2026-11-05 claude: Lane Q (cr51-Q): the quantified typedef spelling (type K =
+            // fn<'a: Any>(x: 'a) -> 'a) is now refused where it is written (QUANTIFIED_FN), so
+            // tdpoly is moot; the plain typedef case (tdplain) stands.
             if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
                 continue;
             }

@@ -111,6 +111,13 @@ fn implements<R: Rt>(
     // trait-generic-written-01 notes the same claim for lambdas. No census file has the
     // shape. probes ~/ptmp/cr29/scratch/review-r14/A-r2-2/p/{tq1,tq1b} (controls tq1d,
     // tq1e, tq1f, vq1) (trait-nolambda-bound-01)
+    // 2026-11-05 claude: Lane Q (cr51-Q, Eric's 11-05 ML rule): a method whose value is no
+    // lambda ((|#x, s, y| x, 1).0, (id, 1).0) is now one instance by rule, since no binding
+    // names the lambda inside the tuple, so its refusal under a variable each call picks is
+    // the intended verdict, not an over-refusal (pin
+    // lang::traits::method_value_projected_from_data_is_refused). Whether the message
+    // should cite the ML rule rather than the level test is what remains; the probes tq1,
+    // tq1b are refused as before.
     let shared = |tv: &TVar| {
         !tv.level().copied_by(&ctx.rec_defs)
             && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
