@@ -522,7 +522,7 @@ impl<X: GXExt> GX<X> {
         Ok(())
     }
 
-    // CR claude for eric: [bug/medium] A production reaches only readers that run after it
+    // CR claude for claude: [bug/medium] A production reaches only readers that run after it
     // in its cycle, and nothing delivers it to one that ran before, so a reader holding a
     // function value from later in the program never sees what that function reads move.
     // A script: `let h: fn(x: i64) -> i64 = never(); let r = h(1); let t = timer(50.ms, 5);
@@ -555,6 +555,10 @@ impl<X: GXExt> GX<X> {
     // through a function value now runs a cycle at a time forever where main settles
     // (late-loop-01 on the branch). Back to Eric as the D16/D19 follow-up in
     // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/W-r*/.
+    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D16/D19 follow-up: (a). A late value
+    // that closes a loop (late-loop-01) is a self-loop, as x <- x + 1 is. Land D19 alone
+    // from cr50-W-parked (1fb17e606), split from the D16 commits and re-reviewed, with
+    // late-loop-01 pinned as a loop.
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {

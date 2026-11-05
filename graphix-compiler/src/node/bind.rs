@@ -744,7 +744,7 @@ impl<R: Rt> Update<R> for Bind<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         if woke {
-            // CR claude for eric: [bug/low] At a wake the write that landed during the
+            // CR claude for claude: [bug/low] At a wake the write that landed during the
             // sleep is re-raised here. The initializer then updates with its input's
             // catch-up fire and publishes over it, even when that input fired before
             // the write. Catch-up loses the order inside the sleep, so the let ends on
@@ -800,6 +800,12 @@ impl<R: Rt> Update<R> for Bind<R> {
             // runs a cycle at a time forever where main settles (late-loop-01 on the branch).
             // Back to Eric as the D16/D19 follow-up in ~/ptmp/cr29/next-discuss.md; probes
             // ~/ptmp/cr29/scratch/review-r15/W-r*/.
+            // 2026-11-05 claude: Eric ruled (2026-11-05) on the D16/D19 follow-up: (c), keep
+            // main. At a wake, a let's initializer catch-up replaces a write that landed
+            // during the sleep. The exact alternative (a live bit carried by every fire) was
+            // judged not worth its cost. To do: state the rule in CLAUDE.md and
+            // design/wake_catchup.md, pin main's behaviour with this probe, then remove this
+            // CR. Lane W's D16 commits (cr50-W-parked) are dropped.
             self.reraise_writes_while_asleep(ctx);
         }
         let tv = self.node.update(ctx);
@@ -808,7 +814,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         // initializer fired; otherwise a production publishes when it
         // fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
-        // CR claude for eric: [bug/medium] Two events missed during a sleep are applied
+        // CR claude for claude: [bug/medium] Two events missed during a sleep are applied
         // in the wrong order. The initializer input fired at c=4 and a write to this
         // target landed at c=5. At the wake the re-raised write is published first,
         // then the initializer's caught-up fire overwrites it, so x is 100 where an arm
@@ -862,6 +868,12 @@ impl<R: Rt> Update<R> for Bind<R> {
         // value now runs a cycle at a time forever where main settles (late-loop-01 on
         // the branch). Back to Eric as the D16/D19 follow-up in
         // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/W-r*/.
+        // 2026-11-05 claude: Eric ruled (2026-11-05) on the D16/D19 follow-up: (c), keep
+        // main. At a wake, a let's initializer catch-up replaces a write that landed
+        // during the sleep. The exact alternative (a live bit carried by every fire) was
+        // judged not worth its cost. To do: state the rule in CLAUDE.md and
+        // design/wake_catchup.md, pin main's behaviour with this probe, then remove this
+        // CR. Lane W's D16 commits (cr50-W-parked) are dropped.
         if (woke || ctx.event.wake()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =
