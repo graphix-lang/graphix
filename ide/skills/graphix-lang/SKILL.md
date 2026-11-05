@@ -65,8 +65,9 @@ constant argument to `exit` runs at init — always gate it).
   value a cycle late, as a write. A backward reader that feeds what it
   reads runs a cycle at a time, as `x <- x + 1` does. A `*r` in the same
   statement as a nested block or a call that makes its target, after the
-  `*r`, is never delivered its values (it reads the one standing from the cycle before when the
-  statement runs again): read it in a statement of its own.
+  `*r`, is never delivered its values (it reads the one standing from the
+  cycle before when the statement runs again): read it in a statement of
+  its own.
 - **A function returning a level it does not derive from its argument
   fires nothing when re-called** (`|v| k`); write `|v| v ~ k`. This is
   what makes `f(trigger)` a sequencing tool only when `f` uses its arg.

@@ -455,9 +455,9 @@ owes no fire for one, whether or not it changed the value; `Notify`
 picks whether a fire schedules the roots that read it. A fire, `Roots`
 or `Walk`, reaches the readers the walk has not passed in its cycle, and
 each one it has (in an earlier root, or in a boundary of its own root
-the walk left, `Reader::passed_by`, in steps logarithmic in the depth: a
-reader through a function value or a reference, an earlier REPL input or
-a reloaded module) alone in the next, as a write lands (`RtView::store_fire`, `Rt::late`, `Event::late`,
+the walk left, `Reader::passed_by`: a reader through a function value or
+a reference, an earlier REPL input or a reloaded module) alone in the
+next, as a write lands (`RtView::store_fire`, `Rt::late`, `Event::late`,
 `read_var_by`, a `*p <-`'s reference included; a write to the binding in
 that cycle supersedes it): a reader before its producer runs a cycle
 behind, and none runs twice in a cycle; one feeding its producer back

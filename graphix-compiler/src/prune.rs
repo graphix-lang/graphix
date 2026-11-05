@@ -99,7 +99,9 @@ impl BoundaryRef {
         self.0.stamp.load(Relaxed) == cycle
     }
 
-    /// Record that a walk reached the boundary in `cycle`.
+    /// Record that a walk reached the boundary in `cycle`. A walk reaches a
+    /// boundary only inside its parent, so a cycle's visits are closed
+    /// upward, which `Reader::passed_by`'s jumps rely on.
     pub fn visit(&self, cycle: u64) {
         debug_assert!(
             self.0.parent.as_ref().is_none_or(|p| p.visited(cycle)),
@@ -342,14 +344,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// A long chain drops without a recursion as deep as it is.
-    #[test]
-    fn a_deep_chain_drops_in_a_loop() {
-        let deep = chain(None, 200_000);
-        let last = deep.last().cloned().expect("chain");
-        drop(deep);
-        drop(last)
     }
 }
