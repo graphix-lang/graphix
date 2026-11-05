@@ -1845,7 +1845,12 @@ impl<R: Rt> CompileCtx<R> {
 
     /// The reader a node at `top_id` inside the current boundary is.
     pub fn reader(&self, top_id: ExprId) -> prune::Reader {
-        prune::Reader { root: top_id, boundary: self.boundary.clone() }
+        prune::Reader { root: top_id, boundary: self.boundary.clone(), late: false }
+    }
+
+    /// [`Self::reader`] for a node that reads [`Event::late`].
+    pub fn late_reader(&self, top_id: ExprId) -> prune::Reader {
+        prune::Reader { late: true, ..self.reader(top_id) }
     }
 
     /// `f` compiling inside `boundary`.
@@ -2631,7 +2636,12 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
 
     /// The reader a node at `top_id` inside the walk's boundary is.
     pub fn reader(&self, top_id: ExprId) -> prune::Reader {
-        prune::Reader { root: top_id, boundary: self.boundary.clone() }
+        prune::Reader { root: top_id, boundary: self.boundary.clone(), late: false }
+    }
+
+    /// [`Self::reader`] for a node that reads [`Event::late`].
+    pub fn late_reader(&self, top_id: ExprId) -> prune::Reader {
+        prune::Reader { late: true, ..self.reader(top_id) }
     }
 
     /// `f` walking inside `boundary`.

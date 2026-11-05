@@ -2787,7 +2787,8 @@ impl<R: Rt> ConnectDeref<R> {
         let rhs = decode_node(ctx, buf)?;
         let src_id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(src_id, top_id);
+        let reader = ctx.late_reader(top_id);
+        ctx.record_reader(src_id, reader);
         Ok(Self::with(spec, rhs, src_id, top_id))
     }
 
@@ -2814,7 +2815,8 @@ impl<R: Rt> ConnectDeref<R> {
                 bind_id: src_id,
             });
         }
-        ctx.record_ref(src_id, top_id);
+        let reader = ctx.late_reader(top_id);
+        ctx.record_reader(src_id, reader);
         let rhs = compile(ctx, flags, value.clone(), scope, top_id)?;
         Ok(Self::with(spec, rhs, src_id, top_id))
     }
@@ -2914,7 +2916,8 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        ctx.unref_var(self.src_id, self.top_id);
+        let reader = ctx.late_reader(self.top_id);
+        ctx.unref_reader(self.src_id, reader);
         self.rhs.delete(ctx)
     }
 

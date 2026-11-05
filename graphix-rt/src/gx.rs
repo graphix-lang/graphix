@@ -581,7 +581,9 @@ impl<X: GXExt> GX<X> {
             };
             for (r, _) in readers.iter() {
                 match self.nodes.seq(&r.root) {
-                    Some(s) if s < i => rt.late.push((id, tv.clone(), r.clone())),
+                    Some(s) if s < i && r.late => {
+                        rt.late.push((id, tv.clone(), r.clone()))
+                    }
                     Some(s) if s > i => {
                         rt.updated.entry(r.root).or_default();
                     }
@@ -597,11 +599,17 @@ impl<X: GXExt> GX<X> {
     // reads the value standing, unfired. Main loses that fire too. Record a late fire in
     // the waking select's bits as a fire of its input. probe: a function value read in an
     // arm asleep the cycle after the later binding fires (late-asleep-01)
-    // CR claude for claude: [perf/low] Every passed reader gets a late entry, a scheduled
+    // XCR claude for claude: [perf/low] Every passed reader gets a late entry, a scheduled
     // root and a marked boundary, though only Ref, Deref and ConnectDeref read Event::late:
     // a catch's receipts, a select's tracked fires, a seq machine's and Payments' readers of
     // the same id are walked next cycle for nothing (no value changes). Telling them apart
     // needs the reader's kind in its registration. (late-unread-01)
+    // 2026-11-05 claude: A reader is `late` or not (prune::Reader::late): a Ref, a
+    // Deref (its cell too) and a ConnectDeref register through ExecCtx::late_reader, any
+    // other reader through reader, and Rt::store_fire and readers_in_other_roots hand
+    // only late readers a fire the walk had passed. Fails without it: graphix-rt
+    // tests/rt late_readers::only_a_late_reader_is_passed_a_fire. No lang fixture passes
+    // a non-late reader today, so the saving shows in no cycle count.
     /// Deliver last cycle's late fires ([`GXRt::late`]) to their readers:
     /// each reader's root runs and its boundary is marked, unless a write
     /// delivered the variable already this cycle.

@@ -974,7 +974,8 @@ impl Ref {
         top_id: ExprId,
         spec: impl Into<Arc<Expr>>,
     ) -> Node<R> {
-        ctx.record_ref(id, top_id);
+        let reader = ctx.late_reader(top_id);
+        ctx.record_reader(id, reader);
         Node::new(Self {
             spec: spec.into(),
             typ,
@@ -1246,7 +1247,8 @@ impl<R: Rt> Update<R> for Ref {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        ctx.unref_var(self.id, self.top_id)
+        let reader = ctx.late_reader(self.top_id);
+        ctx.unref_reader(self.id, reader)
     }
 
     fn spec(&self) -> &Expr {
@@ -2150,9 +2152,10 @@ impl<R: Rt> Deref<R> {
         let top_id = ExprId::decode(buf)?;
         let addr = Option::<Addr>::decode(buf)?;
         if let Some(a) = &addr {
-            ctx.record_ref(a.id, top_id);
+            let reader = ctx.late_reader(top_id);
+            ctx.record_reader(a.id, reader.clone());
             if a.cell != a.id {
-                ctx.record_ref(a.cell, top_id);
+                ctx.record_reader(a.cell, reader);
             }
         }
         Ok(Self::with(spec, typ, child, top_id, addr))
@@ -2198,9 +2201,10 @@ impl<R: Rt> Deref<R> {
                     None => Moved::First,
                 };
                 self.release(ctx);
-                ctx.ref_var(id, self.top_id);
+                let reader = ctx.late_reader(self.top_id);
+                ctx.rt.ref_var(id, reader.clone());
                 if cell != id {
-                    ctx.ref_var(cell, self.top_id);
+                    ctx.rt.ref_var(cell, reader);
                 }
                 self.addr = Some(Addr { cell, id, path: p.unwrap_or_default() });
                 moved
@@ -2214,20 +2218,22 @@ impl<R: Rt> Deref<R> {
         if a.cell == cell {
             return;
         }
+        let reader = ctx.late_reader(top_id);
         if a.cell != a.id {
-            ctx.unref_var(a.cell, top_id);
+            ctx.unref_reader(a.cell, reader.clone());
         }
         if cell != a.id {
-            ctx.ref_var(cell, top_id);
+            ctx.rt.ref_var(cell, reader);
         }
         a.cell = cell;
     }
 
     fn release(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(a) = self.addr.take() {
-            ctx.unref_var(a.id, self.top_id);
+            let reader = ctx.late_reader(self.top_id);
+            ctx.unref_reader(a.id, reader.clone());
             if a.cell != a.id {
-                ctx.unref_var(a.cell, self.top_id);
+                ctx.unref_reader(a.cell, reader);
             }
         }
     }

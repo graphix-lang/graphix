@@ -390,7 +390,7 @@ impl<'a, R: Rt> RtView<'a, R> {
             r.mark(cycle);
             if r.root != root {
                 elsewhere = true
-            } else if r.passed_by(at, cycle) {
+            } else if r.late && r.passed_by(at, cycle) {
                 passed.get_or_insert_default().push(r.clone())
             }
         });

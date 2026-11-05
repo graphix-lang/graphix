@@ -7,6 +7,7 @@ mod answered_calls;
 mod callable_fusion;
 mod embedder_writes;
 mod jit_retention;
+mod late_readers;
 mod pass_thread;
 mod runtime_api;
 mod send_loop;

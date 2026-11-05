@@ -179,11 +179,15 @@ impl fmt::Debug for BoundaryRef {
 }
 
 /// Who reads a variable: the top-level expression the runtime schedules,
-/// and the innermost boundary around the reader, if any.
+/// and the innermost boundary around the reader, if any. A `late` reader
+/// takes a fire it met after the walk passed it next cycle
+/// ([`crate::Event::late`]: a `Ref`, a `Deref`, a `ConnectDeref`); any
+/// other is scheduled only by a fire in a root after its own.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Reader {
     pub root: ExprId,
     pub boundary: Option<BoundaryRef>,
+    pub late: bool,
 }
 
 impl Reader {
@@ -221,7 +225,7 @@ mod tests {
     use super::*;
 
     fn reader(boundary: &BoundaryRef) -> Reader {
-        Reader { root: ExprId::new(), boundary: Some(boundary.clone()) }
+        Reader { root: ExprId::new(), boundary: Some(boundary.clone()), late: true }
     }
 
     /// Whether a walk inside `at` passed `r`, climbing one boundary a step.
