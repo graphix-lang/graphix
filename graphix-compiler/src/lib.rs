@@ -3559,7 +3559,7 @@ fn check_and_fuse_inner<R: Rt>(
     drop(p);
     info!("typecheck time {:?}", st.elapsed());
     let tail_loops = analysis::analyze(node, ctx)?;
-    // CR claude for claude: [bug/high] An instance body that names a type its block
+    // XCR claude for claude: [bug/high] An instance body that names a type its block
     // declares over an outer type of the same name crashes the process under fusion: `type
     // L = string; let g = |z: i64| { type L = [i64, null]; let f = |x: i64| { let b: L =
     // 3; (b, x) }; f(z) }; println(g(1))` aborts with "misaligned pointer dereference:
@@ -3596,6 +3596,15 @@ fn check_and_fuse_inner<R: Rt>(
     // sit under a scope unique to the block), so a late lookup finds the right definition
     // and every default can take its definition's types; a short design pass first, then a
     // lane.
+    // 2026-11-04 claude: Fixed by D10 (b) (lane N r15): a block's typedef stays findable
+    // after the block in Env::block_types (by scope and name, weak, shared by every env
+    // copy); a lookup at a block level the lexical maps lack the name at reads it, and a
+    // dead entry is refused, never continued outward. e3, d3b, later.gx,
+    // use_shadow/main.gx and later_repl2.txt print (3, 1) / (3, 2) in every mode. Pins
+    // lang::block_types::block_type_over_an_outer_one_in_an_instance, _declared_later,
+    // body_type_over_an_outer_one_its_parameter_names, block_type_over_an_imported_one
+    // (jit and jit_par abort 'misaligned pointer dereference' with the registry disabled),
+    // graphix-shell/tests/shell/block_types.rs (REPL; base aborts).
     // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
     // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are
     // fixed at the root (a registry of block typedefs that outlive their block, a block's
@@ -3617,6 +3626,7 @@ fn check_and_fuse_inner<R: Rt>(
     // cold run and a warm image agree (block-type-image-scope-01 on the branch); then it
     // lands.
     ctx.env.seed_typedef_refs();
+    seed_node_types(&ctx.env, node, &mut LPooled::take());
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();
         let p = profile::phase(Phase::Fusion);
@@ -3628,6 +3638,21 @@ fn check_and_fuse_inner<R: Rt>(
         analysis::check_tail_loops(tail_loops, node)?;
     }
     Ok(())
+}
+
+/// Fill the resolution cell of every name the types of `node` and the
+/// nodes under it hold, once the check has ended, as a definition's table
+/// seeds its body's rows (`DefTable::record`): a value carries the types
+/// it was built at (`typ::regular`). A module's statements are seeded
+/// under the module's own env (`Module::typecheck1_nodes`).
+pub(crate) fn seed_node_types<R: Rt>(env: &Env, node: &Node<R>, seen: &mut AddrSet) {
+    stack::ensure_sufficient(|| {
+        if let NodeView::Module(_) = node.view() {
+            return;
+        }
+        node.typ().seed_names_seen(env, seen);
+        fusion::for_each_child(node, &mut |c| seed_node_types(env, c, seen))
+    })
 }
 
 /// Whether a compile under `flags` asks for fusion.

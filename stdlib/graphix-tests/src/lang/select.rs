@@ -6429,9 +6429,10 @@ run!(
     prints("[i64:5, i64:1, i64:5, i64:1, i64:5, i64:1, i64:5, i64:1]")
 );
 
-// A default typed with a type name is checked again at the bind, where the
-// names it writes resolve: a recursive type its block declares, and a
-// block's type over an outer one of the same name.
+// A default typed with a type name takes its types at a bind from its
+// definition's check, where the names it writes mean what they meant there:
+// a recursive type its block declares, and a block's type over an outer one
+// of the same name.
 run!(
     default_at_a_bind_declares_a_recursive_type,
     r#"{

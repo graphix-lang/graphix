@@ -463,7 +463,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 4	strict-bottom-collections-aug2026/00_loop_op_poison.gx
 5	strict-bottom-collections-aug2026/01_empty_fold_bottom_init.gx
 1	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
-2	table-typedef-scope-oct2026/00_body_typedef_alias.gx
+1	table-typedef-scope-oct2026/00_body_typedef_alias.gx
 0	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
 1	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx
 1	tail-arg-bottom-jul2026/02_alternating_bottom_ride.gx
@@ -486,7 +486,7 @@ abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 1	tailloop-firing-jul2026/01_live_input_tail_loop.gx
 1	tailloop-firing-jul2026/02_const_chain_capture.gx
 1	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx
-4	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
+2	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
 1	taint-cache-callee-jul2026/00_callee_interior_bottom.gx
 1	taint-cache-callee-jul2026/01_float_cache_block_param.gx
 1	transient-prime-park-jul2026/01_refired_deep_rec_superlinear.gx

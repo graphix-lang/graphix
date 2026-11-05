@@ -77,7 +77,7 @@ impl Graph {
                 Some(b) => self.node(&b),
                 None => self.leaf(b'v', &[]),
             },
-            // CR claude for claude: [bug/low] A reference that does not expand here is
+            // XCR claude for claude: [bug/low] A reference that does not expand here is
             // keyed by its written name, and a nested reference in an inline written
             // type argument reaches the key unresolved: with `type R<'a> = [`Nil,
             // `Cons('a, R<'a>)]; type B<'x> = Abstract<i64>`, `B<R<i64>>` and
@@ -105,6 +105,16 @@ impl Graph {
             // names them (they sit under a scope unique to the block), so a late lookup
             // finds the right definition and every default can take its definition's
             // types; a short design pass first, then a lane.
+            // 2026-11-04 claude: Fixed (lane N r15) with lane E's seed_node_types (cr40-E
+            // 6e09af91c), now sound under D10 (b): every node's type outside a definition
+            // has its names filled once the check ends (a module's statements under the
+            // module's env), and a late fill finds a block's own type through
+            // Env::block_types. rg8/rg9 print all true, ri11 true 1 1. Pins
+            // lang::block_types::abstract_inline_recursive_parameters_compare,
+            // abstract_parameters_a_type_test_or_a_write_decides_compare,
+            // abstract_parameter_a_module_type_test_decides_compares,
+            // abstract_parameter_a_default_type_test_decides_compares: all four modes fail
+            // with seed_node_types and the registry disabled.
             // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
             // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts
             // are fixed at the root (a registry of block typedefs that outlive their

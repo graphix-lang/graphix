@@ -253,7 +253,7 @@ fn checked_default<R: Rt>(
     judge: Judge,
     held_in: Option<&mut HeldIn>,
 ) -> Result<Node<R>> {
-    // CR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
+    // XCR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
     // in full here at the instance's types, so a select in it over an enclosing
     // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
     // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
@@ -391,6 +391,13 @@ fn checked_default<R: Rt>(
     // as the first 11-02 note says (pin: review-r8/G-r1-2/p/dnm4.gx, which passes --check
     // and whose build refuses on main 387c29e60). The block-type half is the question D10
     // in ~/ptmp/cr-discuss.md (default-typedef-outlived-01).
+    // 2026-11-04 claude: What remained is done (lane N r15, D10 (b)): every default keeps
+    // its rows (names_type_anywhere is gone); a block's type its rows name is found at the
+    // bind through Env::block_types. Pin
+    // lang::block_types::default_naming_a_block_type_takes_its_definitions_types (a
+    // top-level P and a block's Q in the default's arm at an unreached arm: base refuses
+    // its build 'reading a tuple needs its type known here', lane prints [9, 1]); under
+    // GRAPHIX_NO_SUBST=1 it fails as the other d_* pins do (the known NO_SUBST class).
     // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
     // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are fixed
     // at the root (a registry of block typedefs that outlive their block, a block's name

@@ -72,8 +72,9 @@ pub struct DefTable {
     aux: AHashMap<ExprId, Box<[Type]>>,
     /// The table of each lambda literal of the body, by its id.
     lambdas: AHashMap<ExprId, SArc<DefTable>>,
-    /// The typedefs the rows name, owned here: one the body declares
-    /// is in the env only while the body compiles.
+    /// The typedefs the rows name and the body's and defaults' blocks
+    /// declare, owned here: a block's is in the env only while the block
+    /// compiles, and the registry of block types holds it weakly.
     typedefs: Vec<SArc<ResolvedRef>>,
     /// The body's own effect facts (`analysis::def_body_facts`), which
     /// every definition this table types starts from.
@@ -246,29 +247,65 @@ impl DefTable {
         table.add_rows(body, checked, &mut |n| {
             capture_names(n, def_env, checked, captures)
         });
-        let mut seen: LPooled<AddrSet> = LPooled::take();
-        let env = Env { lexical: def_env.clone(), ..Env::default() };
-        table.for_each_type(&mut |t, _| {
-            t.seed_refs_seen(&env, &mut seen);
-        });
-        table.own_typedefs();
+        table.seed_and_own(def_env, checked, |_| true);
         table
+    }
+
+    /// Fill every name the rows `of` an id hold, in the definition's
+    /// environment (a block's own types through the registry of block
+    /// types), and own what they name.
+    fn seed_and_own(
+        &mut self,
+        def_env: &Lexical,
+        checked: &Env,
+        of: impl Fn(&ExprId) -> bool,
+    ) {
+        let mut env = checked.clone();
+        env.lexical = def_env.clone();
+        let mut seen: LPooled<AddrSet> = LPooled::take();
+        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut defs: LPooled<AHashMap<usize, SArc<ResolvedRef>>> = LPooled::take();
+        for r in self.typedefs.drain(..) {
+            defs.insert(SArc::as_ptr(&r) as usize, r);
+        }
+        self.for_each_row(&of, &mut |t| {
+            t.seed_refs_seen(&env, &mut seen);
+            t.named_defs(&mut cells, &mut defs)
+        });
+        self.typedefs.extend(defs.drain().map(|(_, r)| r));
+    }
+
+    /// Every type the rows `of` an id hold, signatures' parts included.
+    fn for_each_row(&self, of: &impl Fn(&ExprId) -> bool, f: &mut impl FnMut(&Type)) {
+        for (_, t) in self.types.iter().filter(|(id, _)| of(id)) {
+            f(t)
+        }
+        for (_, ts) in self.aux.iter().filter(|(id, _)| of(id)) {
+            ts.iter().for_each(&mut *f)
+        }
+        for (_, ft) in self.ftypes.iter().filter(|(id, _)| of(id)) {
+            ft.for_each_part(&mut |t, _| f(t))
+        }
     }
 
     /// The rows of the definition's labeled defaults as its check
     /// compiled them: a call's bind types its default from them, as an
-    /// instance types its body. A default typed with a type name keeps
-    /// none: the names its compile at a bind writes resolve only in that
-    /// compile's scope, which typing it from rows never reaches
-    /// (default-typedef-outlived-01), so a bind checks it again. The rows
-    /// kept name no type, so there is nothing to seed or own.
-    fn record_defaults<R: Rt>(&mut self, defaults: &[Node<R>], checked: &Env) {
-        let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
+    /// instance types its body.
+    fn record_defaults<R: Rt>(
+        &mut self,
+        defaults: &[Node<R>],
+        def_env: &Lexical,
+        checked: &Env,
+    ) {
+        let mut ids: LPooled<AHashSet<ExprId>> = LPooled::take();
         for n in defaults {
-            if !names_type_anywhere(n, checked) {
-                self.add_rows(n, checked, &mut |n| ids.push(n.spec().id));
-                self.defaults.extend(ids.drain(..));
-            }
+            self.add_rows(n, checked, &mut |n| {
+                ids.insert(n.spec().id);
+            });
+        }
+        if !ids.is_empty() {
+            self.seed_and_own(def_env, checked, |id| ids.contains(id));
+            self.defaults.extend(ids.drain());
         }
     }
 
@@ -308,6 +345,9 @@ impl DefTable {
                 NodeView::Qop(q) => {
                     self.aux.insert(id, Box::new([q.strip.removed()]));
                 }
+                NodeView::TypeDef(td) => {
+                    self.typedefs.extend(td.definition().cloned());
+                }
                 _ => (),
             }
         });
@@ -322,8 +362,10 @@ impl DefTable {
     fn own_typedefs(&mut self) {
         let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
         let mut defs: LPooled<AHashMap<usize, SArc<ResolvedRef>>> = LPooled::take();
+        for r in self.typedefs.drain(..) {
+            defs.insert(SArc::as_ptr(&r) as usize, r);
+        }
         self.for_each_type(&mut |t, _| t.named_defs(&mut cells, &mut defs));
-        self.typedefs.clear();
         self.typedefs.extend(defs.drain().map(|(_, r)| r));
     }
 
@@ -354,7 +396,7 @@ impl DefTable {
                     .iter()
                     .map(|(id, t)| (*id, SArc::new(t.renamed(known))))
                     .collect(),
-                vec![],
+                self.typedefs.clone(),
                 self.facts,
                 self.calls_own,
                 self.calls_captured.clone(),
@@ -2814,7 +2856,7 @@ fn capture_names<R: Rt>(
 /// variable fits its parameter whole: a call instantiates no variable of
 /// the definitions around it, and an omitting site outside them sees
 /// their schemes (`callsite::Judge`).
-// CR claude for claude: [bug/low] A recursive typedef a labeled default's block declares
+// XCR claude for claude: [bug/low] A recursive typedef a labeled default's block declares
 // outlives its definition: the default's check node, whose TypeDef node owns the
 // definition, is discarded here, while the parameter's type, which the default decided,
 // still names it. `{ let f = |#d = { type L<'a> = [`Nil, `Cons('a, L<'a>)]; let l:
@@ -2842,6 +2884,16 @@ fn capture_names<R: Rt>(
 // block's type definitions findable after the block while anything names them (they sit
 // under a scope unique to the block), so a late lookup finds the right definition and
 // every default can take its definition's types; a short design pass first, then a lane.
+// 2026-11-04 claude: Fixed by D10 (b) (lane N r15): DefTable owns every typedef its
+// body's and its defaults' blocks declare (add_rows takes each TypeDef node's
+// definition), the registry Env::block_types finds a default's block type after the
+// default's check is discarded, and record_defaults keeps rows for every default.
+// d1j/d1/d8 log nothing; h3.gx agrees in every engine; a1.gx reads the default's L, a1ns
+// refuses the outer L's data. Pins lang::block_types::default_block_type_through_a_field
+// (all four modes fail with the registry disabled), json_reads_a_defaults_block_type
+// (base refuses its build), lang::select::default_at_a_bind_declares_a_recursive_type
+// (fails in all four with the registry disabled),
+// lang::image::a_restored_block_type_is_found.
 // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
 // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are fixed
 // at the root (a registry of block typedefs that outlive their block, a block's name
@@ -2896,48 +2948,6 @@ fn check_defaults<R: Rt>(
         checked.push(node);
     }
     Ok(())
-}
-
-/// Whether a type the checked tree at `root` derived holds a type name:
-/// a node's own, an arm's predicates and binds, a catch's binds. A
-/// callee's signature is its definition's, written nowhere in the tree.
-fn names_type_anywhere<R: Rt>(root: &Node<R>, checked: &Env) -> bool {
-    let seen = &mut LPooled::take();
-    let mut found = false;
-    fusion::for_each_node(root, &mut |n| {
-        found = found
-            || names_type(n.typ(), seen)
-            || match n.view() {
-                NodeView::Select(s) => {
-                    s.aux_types(checked).iter().any(|t| names_type(t, seen))
-                }
-                NodeView::Catch(c) => {
-                    c.aux_types(checked).iter().any(|t| names_type(t, seen))
-                }
-                _ => false,
-            }
-    });
-    found
-}
-
-/// Whether `t` holds a type name, through bindings, each shared node
-/// walked once.
-fn names_type(t: &Type, seen: &mut AddrSet) -> bool {
-    ensure_sufficient(|| match t {
-        Type::Ref(_) => true,
-        t if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
-        Type::TVar(tv) => tv.binding().is_some_and(|b| names_type(&b, seen)),
-        Type::Fn(ft) => {
-            let mut found = false;
-            ft.for_each_part(&mut |t, _| found = found || names_type(t, seen));
-            found
-        }
-        t => {
-            let mut found = false;
-            t.for_each_child(&mut |c| found = found || names_type(c, seen));
-            found
-        }
-    })
 }
 
 /// The default `node` of the parameter `at` checked against it, in the
@@ -3115,7 +3125,7 @@ impl<R: Rt> Update<R> for Lambda {
                 facts: *def.facts.lock(),
                 ..DefTable::default()
             });
-            table.record_defaults(&defaults, &ctx.env);
+            table.record_defaults(&defaults, &def.env, &ctx.env);
             table.captures = captures
                 .drain()
                 .map(|(scope, name)| Captured::new(&def.scope.lexical, scope, name))

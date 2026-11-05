@@ -706,13 +706,22 @@ is), never overwrite a filled cell; the cell holds the definition
 weakly and the `TypeDef` owns it (a recursive body reaches its own
 cell), so a type outliving its definition's env entry is refused,
 never re-resolved, and what outlives the entry owns the definitions
-its types name (a definition's check table, a kernel's type constant,
-an abstract type's registration, the block's `TypeDef` node, which a
-labeled default compiled at a call outlives the env clone with:
+its types name (a definition's check table, which also owns every
+typedef its body's and its defaults' blocks declare, a kernel's type
+constant, an abstract type's registration, the block's `TypeDef` node:
 `DefTable::typedefs`, `record::KernelType`, `AbstractRep::named`,
-`node::TypeDef`); `Env::seed_typedef_refs` runs at the
-check's end (an instance elaborates under its definition's env) and
-again right before fusion in both modes. A bound's ref resolves the same way, its
+`node::TypeDef`). A typedef a block declares (a scope ending in a
+generated component) stays findable after the block in `Env::
+block_types`, by scope and name, held weakly and shared by every copy
+of the env: a lookup at a block level the lexical maps lack the name at
+reads it, and one that meets a dead entry is refused, never continued
+outward; a block compiled again declares the live definition, so one
+source typedef is one definition; an image carries the live entries.
+`Env::seed_typedef_refs` (block types included) runs at the check's end
+(an instance elaborates under its definition's env) and again right
+before fusion in both modes, and every node outside a definition has
+its type's names filled then (`seed_node_types`; a definition's rows at
+its check, `DefTable::record`). A bound's ref resolves the same way, its
 cell holding the trait (`Resolution::Trait`), filled by the seed walk at
 a definition's check. Substitution by name (`Type::replace_tvars`: a
 typedef's expansion, an abstract's representation, a trait method's
@@ -1168,10 +1177,7 @@ node graph IS the IR — there is no parallel typed IR
   hides, which the default narrows; compiled at a bind, it takes its
   types from its definition's check, as an instance's body does (the
   definition's `DefTable` holds the defaults' rows,
-  `InstanceTypes::of_default`), except one whose checked types name any
-  type (`lambda::names_type_anywhere`): that one keeps no rows and is
-  checked again there (`DefTable::record_defaults`; CR
-  default-bind-coverage-01). A default whose type holds an enclosing
+  `InstanceTypes::of_default`, `DefTable::record_defaults`). A default whose type holds an enclosing
   definition's open cell requires a closed parameter type (annotate the
   factory's parameter or the defaulted parameter); an enclosing definition's
   declared variable is closed, as is a rank-2 formal's quantifier while a

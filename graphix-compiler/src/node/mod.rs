@@ -573,9 +573,8 @@ pub struct TypeDef {
     /// at the check, once the typedefs it names are declared.
     unchanged_from: Option<Arc<env::AbstractRep>>,
     /// The definition, kept while the node lives: a block compiled in an
-    /// environment it does not outlive (a labeled default's, at each call
-    /// that omits it) still names it.
-    _definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
+    /// environment it does not outlive still names it.
+    definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
 }
 
 impl TypeDef {
@@ -584,9 +583,13 @@ impl TypeDef {
         scope: ModPath,
         name: ArcStr,
         unchanged_from: Option<Arc<env::AbstractRep>>,
-        _definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
+        definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
     ) -> Node<R> {
-        Node::new(Self { spec, scope, name, unchanged_from, _definition })
+        Node::new(Self { spec, scope, name, unchanged_from, definition })
+    }
+
+    pub(crate) fn definition(&self) -> Option<&std::sync::Arc<crate::typ::ResolvedRef>> {
+        self.definition.as_ref()
     }
 
     /// A registration this definition made owns what its representation
@@ -647,7 +650,11 @@ impl TypeDef {
         let spec = Arc::new(Expr::decode(buf)?);
         let scope = ModPath::decode(buf)?;
         let name = ArcStr::decode(buf)?;
-        Ok(Self::with(spec, scope, name, None, None))
+        let definition = match bool::decode(buf)? {
+            false => None,
+            true => Some(crate::image::resolved_decode(buf)?),
+        };
+        Ok(Self::with(spec, scope, name, None, definition))
     }
 }
 
@@ -676,7 +683,12 @@ impl<R: Rt> Update<R> for TypeDef {
         put_tag(NodeTag::TypeDef, buf);
         self.spec.encode(buf)?;
         self.scope.encode(buf)?;
-        self.name.encode(buf)
+        self.name.encode(buf)?;
+        self.definition.is_some().encode(buf)?;
+        match &self.definition {
+            None => Ok(()),
+            Some(def) => crate::image::resolved_encode(def, buf),
+        }
     }
 
     fn update(&mut self, _ctx: &mut ExecCtx<'_, R>) -> &TagValue {

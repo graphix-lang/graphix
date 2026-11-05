@@ -1755,6 +1755,8 @@ impl<R: Rt> Module<R> {
             ctx.env.seed_typedef_refs_under(&scope.lexical);
             let r = super::typecheck1_statements(ctx, nodes, catches, false);
             ctx.env.seed_typedef_refs_under(&scope.lexical);
+            let seen = &mut LPooled::take();
+            nodes.iter().for_each(|n| crate::seed_node_types(&ctx.env, n, seen));
             r
         })
     }

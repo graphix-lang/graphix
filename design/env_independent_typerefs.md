@@ -116,6 +116,64 @@ What remains:
    `lang::types::instance_expands_caller_recursive_typedef`) and fusion
    must expand it env-free. Fusion's pass runs in both modes, so a pass
    the fusion gate owns never changes what the typechecker sees.
+3. **`seed_node_types`** fills, at the same moment, the names of every
+   node's type outside a definition (a module's statements under the
+   module's own env), as `DefTable::record` fills a body's rows at its
+   check: a value carries the type it was built at, and `typ::regular`
+   keys an abstract value's parameters by the definitions their names
+   fill to, so a name written inline in a parameter (`B<[`Nil, `Cons(i64,
+   R<i64>)]>`) must be filled where `B<R<i64>>` is. The bodies of the
+   definitions the names fill to are the typedef seeder's
+   (`Type::seed_names_seen`).
+
+## Block types outlive their block
+
+A typedef a block declares (a `do` block, a function body, a select
+arm's body, a catch, a labeled default: a scope whose last component is
+generated, `#do12`) is in the lexical maps only while its block
+compiles, under `with_restored`. A name naming it may be resolved after
+that: an instance's body is compiled again and typed from its
+definition's rows, with its written annotations open; a default is
+compiled at each omitting call; fusion freezes types; a seed walk runs at
+the check's end; a value is cast at run time. The late lookup ran in an
+env the block was gone from and walked outward, to an outer type of the
+same name (a kernel reading `3` as a string), a name a `use` brings, or
+nothing.
+
+`Env::block_types` keeps every block typedef findable after its block:
+
+- **By scope and name, held weakly.** A block's scope names one source
+  occurrence (the expression id its parse minted), so an entry means one
+  thing from wherever it is reached. Name resolution reads it at a block
+  level whose lexical maps lack the name, after the level's own typedefs
+  and traits and before its imports. A typedef a module inside a block
+  declares is not registered: the module's scope ends in its name, which
+  a reload declares again with other text.
+- **One source typedef, one definition.** A block compiled again (an
+  instance, a default at a call, a runtime bind) declares its typedef
+  with the live definition the registry holds, and its `TypeDef` node owns
+  that one: two references to one source typedef fill to one definition,
+  whichever compile filled them (`same_definition`, `def_key`).
+- **Owned while anything names it.** The registry holds a `Weak`; the
+  owners are the `TypeDef` node that declared it (imaged with the node)
+  and what outlives the node: a definition's `DefTable` owns every
+  typedef its body's and its labeled defaults' blocks declare beside the
+  ones its rows name. A lookup that meets a dead entry is refused (`type
+  L outlived its definition`), never continued outward: outside the block
+  the name may mean something else.
+- **Global like the import tables.** One registry per runtime, shared by
+  every copy of the env (a compile task's, a snapshot), so parallel
+  compiles of one block declare one definition. `unbind_scope_subtree`
+  drops the entries under its scope; dead entries are swept as the
+  registry grows. A session image carries the live entries.
+- **Seeded with the rest.** `Env::seed_typedef_refs` seeds the bodies of
+  live block typedefs as it does the lexical ones.
+
+With every name findable, the rows of a labeled default are kept whatever
+names they hold (`DefTable::record_defaults`), and a definition's rows
+are seeded in its own env with the registry and import tables beside it.
+Pins: `lang::block_types`, `lang::image::a_restored_block_type_is_found`,
+`graphix-shell/tests/shell/block_types.rs` (a later REPL input's `type L`).
 
 ## Every written name names something
 

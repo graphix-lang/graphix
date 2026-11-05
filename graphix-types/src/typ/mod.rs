@@ -1207,6 +1207,15 @@ impl TypeRef {
     // never came, and every memo the note above lists is there (diff's done,
     // could_match's refuted and apart, needs_split's NodePairs). Unchanged: not shown
     // on main.
+    // 2026-11-04 claude: Lane N r15 (D10 (b)) changes how a reference finds its
+    // definition but leaves this CR's asymmetry: one source typedef is now one
+    // definition (a block compiled again declares the live definition the registry
+    // holds), so references a compile filled agree with the check's, and more cells are
+    // filled at the check's end (DefTable::record now seeds in the definition's env
+    // with its import tables and the registry; seed_node_types fills node types outside
+    // definitions). A filled and an open reference to one definition are still two
+    // definitions to same_definition; closing that needs the env where these read it.
+    // Not shown on main.
     /// Whether two references name one definition: two filled cells by
     /// the definition, two open ones by the written scope and name.
     pub(crate) fn same_definition(&self, other: &Self) -> bool {
@@ -2881,7 +2890,18 @@ impl Type {
     /// nodes already walked.
     #[doc(hidden)]
     pub fn seed_refs_seen(&self, env: &Env, seen: &mut AddrSet) -> bool {
-        fn go(t: &Type, env: &Env, seen: &mut AddrSet) -> bool {
+        self.seed_walk(env, seen, true)
+    }
+
+    /// [`Self::seed_refs_seen`] but for the bodies of the definitions
+    /// the names fill to, which [`Env::seed_typedef_refs`] seeds.
+    #[doc(hidden)]
+    pub fn seed_names_seen(&self, env: &Env, seen: &mut AddrSet) -> bool {
+        self.seed_walk(env, seen, false)
+    }
+
+    fn seed_walk(&self, env: &Env, seen: &mut AddrSet, bodies: bool) -> bool {
+        fn go(t: &Type, env: &Env, seen: &mut AddrSet, bodies: bool) -> bool {
             ensure_sufficient(|| {
                 if let Some(node) = node_addr(t)
                     && !seen.insert(node)
@@ -2895,13 +2915,14 @@ impl Type {
                         match tr.resolve_in(env) {
                             None if tr.resolve_trait_in(env).is_some() => (),
                             None => all = false,
+                            Some(_) if !bodies => (),
                             Some(r) => {
                                 for (_, c) in r.params.iter() {
                                     if let Some(c) = c {
-                                        all &= go(c, env, seen);
+                                        all &= go(c, env, seen, bodies);
                                     }
                                 }
-                                all &= go(&r.typ, env, seen);
+                                all &= go(&r.typ, env, seen, bodies);
                             }
                         }
                     }
@@ -2915,16 +2936,16 @@ impl Type {
                             (cell.binding.clone(), cell.constraints.clone())
                         };
                         for t in binding.iter().chain(cons.iter()) {
-                            all &= go(t, env, seen);
+                            all &= go(t, env, seen, bodies);
                         }
                     }
                     _ => (),
                 }
-                t.for_each_child(&mut |c| all &= go(c, env, seen));
+                t.for_each_child(&mut |c| all &= go(c, env, seen, bodies));
                 all
             })
         }
-        go(self, env, seen)
+        go(self, env, seen, bodies)
     }
 
     /// Whether this type reaches the definition `def` (a

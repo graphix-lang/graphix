@@ -633,6 +633,36 @@ async fn a_restored_interface_keeps_its_positions() -> Result<()> {
     Ok(())
 }
 
+/// A type a block declares is found after a restore as it is cold: a
+/// default's type read into from data, and a default compiled at a call
+/// that binds its callee at run time.
+#[tokio::test]
+async fn a_restored_block_type_is_found() -> Result<()> {
+    let program = r##"{
+    type L = [`X(i64)];
+    let out = never();
+    let g = |z: i64| {
+        type L = [`Nil, `Cons(i64, L)];
+        let f = |#d = { let b: [`Y, `Z(L)] = never(); out <- b; 0 }, x: i64| d + x;
+        f(z)
+    };
+    let h = |#d = { type K = [`Nil, `Cons(i64, K)]; let l: K = `Cons(1, `Nil); l }, x: i64| (d, x);
+    let s = {k: h};
+    let t: {k: fn(x: i64) -> 'r} = s;
+    let r = json::read(r#"["Z",["Cons",1,"Nil"]]"#);
+    out <- r$;
+    (g(1), r, t.k(2))
+}"##;
+    let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
+    let last = cold.last().expect("the program produced its tuple");
+    assert_eq!(
+        format!("{last}"),
+        r#"[i64:1, ["Z", ["Cons", i64:1, "Nil"]], [["Cons", i64:1, "Nil"], i64:2]]"#
+    );
+    assert_eq!(cold, warm);
+    Ok(())
+}
+
 /// A restored catch keeps the handler type its check sealed: a dynamic
 /// module's later raise of another error is refused warm as cold.
 #[tokio::test]

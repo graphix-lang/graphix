@@ -1,0 +1,21 @@
+//! A block's type stays its own after a later REPL input declares a type
+//! of the same name at the top level.
+
+use super::common::repl;
+
+#[test]
+fn a_later_input_does_not_shadow_a_blocks_type() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = "let g = |z: i64| { type L = [i64, null]; \
+                 let f = |x: i64| { let b: L = 3; (b, x) }; f(z) }\n\
+                 g(1)\n\
+                 type L = string\n\
+                 g(2)\n\
+                 sys::exit(3)\n";
+    for args in [&["--no-cache"][..], &["--no-cache", "--no-fusion"]] {
+        let ran = repl(dir.path(), args, input);
+        assert_eq!(ran.status.code(), Some(3), "{}\n{}", ran.stdout, ran.stderr);
+        assert!(ran.stdout.contains("(3, 1)"), "{}", ran.stdout);
+        assert!(ran.stdout.contains("(3, 2)"), "{}", ran.stdout);
+    }
+}

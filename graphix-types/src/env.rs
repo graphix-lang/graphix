@@ -24,7 +24,9 @@ use netidx_core::{
     path::Path,
 };
 use netidx_derive::Pack;
+use parking_lot::RwLock;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
     fmt,
     hash::Hash,
@@ -158,6 +160,134 @@ impl TypeDef {
 
     pub fn ori(&self) -> &Arc<Origin> {
         self.def.ori()
+    }
+}
+
+/// The typedefs blocks declare, findable after their block
+/// (`design/env_independent_typerefs.md`, Block types): a block's typedef
+/// is in the lexical maps only while the block compiles, and a name
+/// naming it may be looked up after. A block's scope names one source
+/// occurrence, so an entry means one thing from wherever it is reached.
+/// Each definition is held weakly. Global like the import tables: every
+/// copy of the env, a compile task's included, shares it.
+#[derive(Clone, Debug, Default)]
+pub struct BlockTypes(Arc<RwLock<BlockRegistry>>);
+
+#[derive(Debug, Default)]
+struct BlockRegistry {
+    by_name: AHashMap<CompactString, SmallVec<[BlockType; 1]>>,
+    entries: usize,
+    /// `entries` after the last sweep of dead entries.
+    swept_at: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockType {
+    pub scope: ModPath,
+    pub def: std::sync::Weak<ResolvedRef>,
+    pub seeded: Arc<AtomicBool>,
+}
+
+/// What the registry holds for a name at a scope.
+pub(crate) enum BlockHit {
+    Live(std::sync::Arc<ResolvedRef>),
+    Dead,
+}
+
+/// Whether `scope` is a block's own: its last component is generated.
+/// A module a block declares is not: its scope ends in its name, which
+/// a reload declares again with other text.
+pub(crate) fn is_block_scope(scope: &str) -> bool {
+    Path::basename(scope).is_some_and(crate::is_block_component)
+}
+
+impl BlockTypes {
+    fn entry<T>(
+        &self,
+        scope: &str,
+        name: &str,
+        f: impl FnOnce(&BlockType) -> T,
+    ) -> Option<T> {
+        let reg = self.0.read();
+        reg.by_name.get(name)?.iter().find(|e| &*e.scope.0 == scope).map(f)
+    }
+
+    pub(crate) fn find(&self, scope: &str, name: &str) -> Option<BlockHit> {
+        self.entry(scope, name, |e| match e.def.upgrade() {
+            Some(def) => BlockHit::Live(def),
+            None => BlockHit::Dead,
+        })
+    }
+
+    /// The live definition of `name` at `scope`, with its seeded flag.
+    fn live(
+        &self,
+        scope: &str,
+        name: &str,
+    ) -> Option<(std::sync::Arc<ResolvedRef>, Arc<AtomicBool>)> {
+        self.entry(scope, name, |e| Some((e.def.upgrade()?, e.seeded.clone()))).flatten()
+    }
+
+    /// Record `td` as `name` at `scope`, in place of the entry there.
+    fn declare(&self, scope: &ModPath, name: &str, td: &TypeDef) {
+        let entry = BlockType {
+            scope: scope.clone(),
+            def: std::sync::Arc::downgrade(&td.def),
+            seeded: td.seeded.clone(),
+        };
+        let mut reg = self.0.write();
+        let reg = &mut *reg;
+        let es = reg.by_name.entry(CompactString::from(name)).or_default();
+        match es.iter_mut().find(|e| e.scope == *scope) {
+            Some(e) => *e = entry,
+            None => {
+                es.push(entry);
+                reg.entries += 1;
+            }
+        }
+        if reg.entries >= 2 * reg.swept_at.max(16) {
+            reg.by_name.retain(|_, es| {
+                es.retain(|e| e.def.strong_count() > 0);
+                !es.is_empty()
+            });
+            reg.entries = reg.by_name.values().map(|es| es.len()).sum();
+            reg.swept_at = reg.entries;
+        }
+    }
+
+    /// Every live entry at `scope` or below, with its name.
+    pub fn live_under(&self, scope: &str) -> Vec<(CompactString, BlockType)> {
+        let reg = self.0.read();
+        let mut out = Vec::new();
+        for (n, es) in reg.by_name.iter() {
+            for e in es.iter() {
+                if e.def.strong_count() > 0 && scope_is_under(&e.scope, scope) {
+                    out.push((n.clone(), e.clone()))
+                }
+            }
+        }
+        out
+    }
+
+    fn remove_under(&self, scope: &str) {
+        let mut reg = self.0.write();
+        reg.by_name.retain(|_, es| {
+            es.retain(|e| !scope_is_under(&e.scope, scope));
+            !es.is_empty()
+        });
+        reg.entries = reg.by_name.values().map(|es| es.len()).sum();
+    }
+
+    pub fn from_entries(
+        entries: impl IntoIterator<Item = (CompactString, BlockType)>,
+    ) -> Self {
+        let mut reg = BlockRegistry::default();
+        for (n, e) in entries {
+            reg.by_name.entry(n).or_default().push(e);
+            reg.entries += 1;
+        }
+        reg.swept_at = reg.entries;
+        Self(Arc::new(RwLock::new(reg)))
     }
 }
 
@@ -433,6 +563,15 @@ pub(crate) enum TypeName {
     Trait(TraitId),
 }
 
+impl From<BlockHit> for Result<TypeName, ()> {
+    fn from(hit: BlockHit) -> Self {
+        match hit {
+            BlockHit::Live(def) => Ok(TypeName::Def(def)),
+            BlockHit::Dead => Err(()),
+        }
+    }
+}
+
 /// Where a scope is, for a message: the root is the top level.
 fn in_scope(scope: &ModPath) -> CompactString {
     match &*scope.0 {
@@ -567,6 +706,8 @@ pub struct Env {
     /// Whether compiles serve an editor, and the IDE side-channels
     /// ([`Ide`]) a check records into.
     pub ide: IdeMode,
+    /// The typedefs blocks declare, past their blocks.
+    pub block_types: BlockTypes,
     /// The modules whose undeclared impls this compile task does not
     /// see: its siblings in a run of module checks, which reach each
     /// other only through their interfaces.
@@ -596,6 +737,7 @@ impl Env {
             impls: self.impls.fork(),
             poly_binds: self.poly_binds.fork(),
             package_roots: self.package_roots.fork(),
+            block_types: self.block_types.clone(),
             ide: self.ide.fork(),
             lexical: self.lexical.clone(),
             hidden_impls: self.hidden_impls.clone(),
@@ -617,6 +759,7 @@ impl Env {
             impls,
             poly_binds,
             package_roots,
+            block_types: _,
             ide,
             hidden_impls: _,
             recorded: _,
@@ -1225,17 +1368,25 @@ impl Env {
         scope: &ModPath,
         name: &ModPath,
     ) -> Result<Option<TypeName>> {
-        self.resolve_visible(scope, name, NameNs::Type, |s, n| {
+        let hit = self.resolve_visible(scope, name, NameNs::Type, |s, n| {
             match self.lexical.typedefs.get(s).and_then(|m| m.get(n)) {
-                Some(d) => Some(TypeName::Def(d.def.clone())),
-                None => self
-                    .lexical
-                    .traits
-                    .get(s)
-                    .and_then(|m| m.get(n))
-                    .map(|id| TypeName::Trait(*id)),
+                Some(d) => Some(BlockHit::Live(d.def.clone()).into()),
+                None => match self.lexical.traits.get(s).and_then(|m| m.get(n)) {
+                    Some(id) => Some(Ok(TypeName::Trait(*id))),
+                    None if is_block_scope(s) => {
+                        self.block_types.find(s, n).map(Into::into)
+                    }
+                    None => None,
+                },
             }
-        })
+        })?;
+        match hit {
+            None => Ok(None),
+            Some(Ok(t)) => Ok(Some(t)),
+            Some(Err(())) => {
+                bail!("type `{name}` outlived its definition in `{scope}`")
+            }
+        }
     }
 
     /// Declare trait `name` in `scope`: one dispatcher per method at
@@ -1963,24 +2114,27 @@ impl Env {
             // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);
         }
-        let def = std::sync::Arc::new(ResolvedRef::new(
-            scope.clone(),
-            pos,
-            ori,
-            params.clone(),
-            typ.clone(),
-        ));
+        let block = defer && is_block_scope(scope);
+        let (def, seeded) = match block.then(|| self.block_types.live(scope, name)) {
+            Some(Some(live)) => live,
+            _ => (
+                std::sync::Arc::new(ResolvedRef::new(
+                    scope.clone(),
+                    pos,
+                    ori,
+                    params.clone(),
+                    typ.clone(),
+                )),
+                Arc::new(AtomicBool::new(false)),
+            ),
+        };
         let key = def.def_key();
+        let td = TypeDef { def, rep: rep.clone(), doc, seeded };
+        if block {
+            self.block_types.declare(scope, name, &td);
+        }
         let defs = self.lexical.typedefs.get_or_default_cow(scope.clone());
-        defs.insert_cow(
-            name.into(),
-            TypeDef {
-                def,
-                rep: rep.clone(),
-                doc,
-                seeded: Arc::new(AtomicBool::new(false)),
-            },
-        );
+        defs.insert_cow(name.into(), td);
         // compared with the definition in scope, where a self-reference in
         // the representation resolves
         let mut deferred = None;
@@ -2152,6 +2306,16 @@ impl Env {
                 }
             }
         }
+        for (_, bt) in self.block_types.live_under(scope) {
+            if bt.seeded.load(Ordering::Relaxed) {
+                continue;
+            }
+            if let Some(def) = bt.def.upgrade()
+                && def.typ().seed_refs(self)
+            {
+                bt.seeded.store(true, Ordering::Relaxed);
+            }
+        }
     }
 
     /// Mark the abstract type `id`'s definition exported: its
@@ -2262,11 +2426,13 @@ impl Env {
             poly_binds,
             // a package stays registered across its recheck
             package_roots: _,
+            block_types,
             ide: _,
             hidden_impls: _,
             recorded: _,
         } = self;
         names.retain(|s, _| !under(s));
+        block_types.remove_under(scope);
         let binds: LPooled<Vec<BindId>> = by_id
             .into_iter()
             .filter(|(_, b)| under(&b.scope))
