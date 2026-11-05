@@ -1102,7 +1102,7 @@ impl Machine<'_> {
                 let mut vis = scope(snapped);
                 shadow_step(stmt, &mut vis);
                 let result = self.result;
-                let k = match self.bound_lambda(b, &value, snapped) {
+                let k = match self.bound_lambda(b, &value, snapped, pos) {
                     Some((name, mut binds)) => {
                         let value = guard(entry_fire(r#ref(pos, &name), self.issue.pc));
                         let k = self
@@ -1252,24 +1252,40 @@ impl Machine<'_> {
     /// data literal of lambdas ([`inline_holder`]): the name the step's
     /// value reads and the one binding of the value itself, so calls
     /// through a lambda resolve statically and a holder is as generic as
-    /// outside a seq. A destructuring pattern names the whole value by its
-    /// capture (`#seqh@ (g, k)`).
+    /// outside a seq. A destructuring pattern, the statement's at `pos`,
+    /// takes the value from that binding, `let #seqh = ..; let (g, k) =
+    /// #seqh`, whose scheme it forwards.
     fn bound_lambda(
         &self,
         b: &BindExpr,
         value: &Expr,
         visible: &Names,
+        pos: SourcePosition,
     ) -> Option<(ArcStr, LPooled<Vec<Expr>>)> {
-        let single = b.pattern.single_bind().is_some();
-        if !(single && inline_lambda(value) || inline_holder(value, visible)) {
+        let single = b.pattern.single_bind();
+        if !(single.is_some() && inline_lambda(value) || inline_holder(value, visible)) {
             return None;
         }
-        let whole = format_compact!("#seqh{}", value.id.inner());
-        let (pattern, name) = whole_captured(&b.pattern, whole.as_str())?;
-        let pos = value.pos;
+        let (at, id) = (value.pos, value.id.inner());
         let value = rewrite_with(value, visible, Rewrite::Issue(self.issue));
         let mut binds: LPooled<Vec<Expr>> = LPooled::take();
-        binds.push(let_pat(pos, pattern, b.typ.clone(), value));
+        let name = match single {
+            Some(name) => {
+                binds.push(let_pat(at, b.pattern.clone(), b.typ.clone(), value));
+                name.clone()
+            }
+            None => {
+                let whole = ArcStr::from(format_compact!("#seqh{id}").as_str());
+                binds.push(let_bind(at, &whole, None, value));
+                binds.push(let_pat(
+                    pos,
+                    b.pattern.clone(),
+                    b.typ.clone(),
+                    r#ref(pos, &whole),
+                ));
+                whole
+            }
+        };
         Some((name, binds))
     }
 
@@ -1332,7 +1348,7 @@ impl Machine<'_> {
                 }
                 ExprKind::Bind(b) => {
                     let value = decorated(&b.value, &s.dec);
-                    match self.bound_lambda(b, &value, &vis) {
+                    match self.bound_lambda(b, &value, &vis, s.pos) {
                         Some((name, mut binds)) => {
                             body.extend(binds.drain(..));
                             let value =
@@ -2043,37 +2059,6 @@ fn inline_holder(mut e: &Expr, map: &Names) -> bool {
         && holds(e, map)
         && !has_call(e)
         && !reads_live(e, map)
-}
-
-/// `pattern` with a name for the whole value it matches: its own name or
-/// capture, else `whole` added as a capture. None for a literal or an
-/// or-pattern.
-fn whole_captured(
-    pattern: &StructurePattern,
-    whole: &str,
-) -> Option<(StructurePattern, ArcStr)> {
-    use StructurePattern as P;
-    let mut pattern = pattern.clone();
-    let all = match &mut pattern {
-        P::Ignore => {
-            let name = Name::from(whole);
-            return Some((P::Bind(name.clone()), name.name));
-        }
-        P::Bind(name) => {
-            let name = name.name.clone();
-            return Some((pattern, name));
-        }
-        P::Literal(..) | P::Or(_) => return None,
-        P::Slice { all, .. }
-        | P::SlicePrefix { all, .. }
-        | P::SliceSuffix { all, .. }
-        | P::Tuple { all, .. }
-        | P::Variant { all, .. }
-        | P::Abstract { all, .. }
-        | P::Struct { all, .. } => all,
-    };
-    let name = all.get_or_insert_with(|| Name::from(whole)).name.clone();
-    Some((pattern, name))
 }
 
 /// One call issued per entry over a snapshot of the arguments taken on

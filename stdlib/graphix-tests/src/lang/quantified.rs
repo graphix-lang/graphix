@@ -437,6 +437,24 @@ run!(
     FuseExpect::Jit
 );
 
+// A step's destructured holder is refused at its statement, inside the seq,
+// once the holder is checked: the pattern takes the holder's own binding.
+run!(
+    a_destructured_holder_in_a_seq_step_is_refused_at_its_let,
+    "seq { let (g, m, z) = (|x| x, 1); g(m) }",
+    |v: anyhow::Result<&Value>| matches!(v, Err(e) if {
+        let e = format!("{e:#}");
+        let identity = e
+            .split_once("match error (fn(x: ")
+            .and_then(|(_, r)| r.split_once(": unbound) -> "))
+            .is_some_and(|(x, r)| r.starts_with(x));
+        e.contains("in: let result = seq { let (g, m, z) = ")
+            && e.contains("column: 20 in module /test: match error")
+            && identity
+    });
+    FuseExpect::None
+);
+
 run!(
     a_destructured_holder_in_a_seq_step_written_by_a_later_step_is_one_instance,
     "seq { let (g, k) = (|x| x, |y| y); let rk = &mut k; *rk <- |y: i64| y + 1; let a = 0; (k(\"a\"), g(1)) }",
