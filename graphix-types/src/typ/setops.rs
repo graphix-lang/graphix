@@ -320,8 +320,8 @@ impl Identity {
             | (Type::Array(a), Type::Array(b))
             | (Type::List(a), Type::List(b)) => self.same(a, b),
             (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && self.same(a, b),
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                self.same(k0, k1) && self.same(v0, v1)
+            (Type::Map(m0), Type::Map(m1)) => {
+                self.same(&m0.key, &m1.key) && self.same(&m0.value, &m1.value)
             }
             (Type::Tuple(a), Type::Tuple(b)) => self.all(a, b),
             (Type::Struct(a), Type::Struct(b)) => {
@@ -1015,8 +1015,8 @@ impl Type {
                     Ok(self.clone())
                 }
             }
-            (Type::Primitive(p), Type::Map { key, value }) => {
-                if is_any(key) && is_any(value) {
+            (Type::Primitive(p), Type::Map(m)) => {
+                if is_any(&m.key) && is_any(&m.value) {
                     let mut p = *p;
                     p.remove(Typ::Map);
                     Ok(Type::Primitive(p))

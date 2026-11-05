@@ -139,9 +139,7 @@ impl Graph {
                 self.ordered(b's', &names, &kids)
             }
             Type::Variant(tag, ts, _) => self.ordered(b'V', tag.as_bytes(), ts),
-            Type::Map { key, value } => {
-                self.ordered(b'm', &[], &[(**key).clone(), (**value).clone()])
-            }
+            Type::Map(m) => self.ordered(b'm', &[], &[m.key.clone(), m.value.clone()]),
             Type::Abstract { id, params } => {
                 let id = format_compact!("{id:?}");
                 self.ordered(b'b', id.as_bytes(), params)

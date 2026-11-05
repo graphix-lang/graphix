@@ -530,9 +530,9 @@ fn hidden_defaults_at<R: Rt>(
         | (Type::List(d), Type::List(v))
         | (Type::Error(d), Type::Error(v))
         | (Type::ByRef(_, d), Type::ByRef(_, v)) => at(ctx, d, v),
-        (Type::Map { key: dk, value: dv }, Type::Map { key: vk, value: vv }) => {
-            at(ctx, dk, vk)?;
-            at(ctx, dv, vv)
+        (Type::Map(d), Type::Map(v)) => {
+            at(ctx, &d.key, &v.key)?;
+            at(ctx, &d.value, &v.value)
         }
         _ => Ok(()),
     })

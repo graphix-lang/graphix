@@ -5574,7 +5574,7 @@ fn type_node(t: &graphix_compiler::typ::Type) -> Option<usize> {
         Type::Tuple(a) | Type::Set(a) | Type::Variant(_, a, _) => Some(a.as_ptr().addr()),
         Type::Struct(a) => Some(a.as_ptr().addr()),
         Type::Array(a) | Type::List(a) => Some(triomphe::Arc::as_ptr(a).addr()),
-        Type::Map { key, .. } => Some(triomphe::Arc::as_ptr(key).addr()),
+        Type::Map(m) => Some(triomphe::Arc::as_ptr(m).addr()),
         Type::Fn(f) => Some(triomphe::Arc::as_ptr(f).addr()),
         Type::TVar(tv) => Some(tv.cell_addr()),
         _ => None,

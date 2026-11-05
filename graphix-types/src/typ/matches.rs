@@ -587,9 +587,9 @@ impl Type {
             (Type::Array(t0), Type::Array(t1)) => t0.could_match_int(env, hist, t1),
             (Type::List(t0), Type::List(t1)) => t0.could_match_int(env, hist, t1),
             (Type::Primitive(p), Type::Array(_)) => Ok(p.contains(Typ::Array)),
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                Ok(k0.could_match_int(env, hist, k1)?
-                    && v0.could_match_int(env, hist, v1)?)
+            (Type::Map(m0), Type::Map(m1)) => {
+                Ok(m0.key.could_match_int(env, hist, &m1.key)?
+                    && m0.value.could_match_int(env, hist, &m1.value)?)
             }
             (Type::Primitive(p), Type::Map { .. }) => Ok(p.contains(Typ::Map)),
             (Type::Tuple(ts0), Type::Tuple(ts1)) => Ok(ts0.len() == ts1.len()
@@ -892,9 +892,9 @@ impl Type {
                 }
                 Ok(())
             }
-            (Self::Map { key: k0, value: v0 }, Self::Map { key: k1, value: v1 }) => {
-                k0.sig_matches_int(env, k1, tvar_map, hist)?;
-                v0.sig_matches_int(env, v1, tvar_map, hist)
+            (Self::Map(m0), Self::Map(m1)) => {
+                m0.key.sig_matches_int(env, &m1.key, tvar_map, hist)?;
+                m0.value.sig_matches_int(env, &m1.value, tvar_map, hist)
             }
             (
                 Self::Abstract { id: id0, params: p0 },

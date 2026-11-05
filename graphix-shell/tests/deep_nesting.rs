@@ -859,6 +859,42 @@ fn a_call_over_a_shared_type_dag_elaborates_in_linear_time() {
     completes_within(&["--no-cache"], &program, 10 * BILLION)
 }
 
+/// Bounds that name the next variable twice (in a tuple, a struct or a
+/// map, or the next two variables), and a pair DAG passed where a bound's
+/// conjunct holds its cell, elaborate in time linear in their depth: the
+/// commit of a cell's conjuncts and the position, closure and occurs
+/// walks each take a shared node, a map's included, once.
+#[test]
+#[cfg(target_os = "linux")]
+fn bound_dags_elaborate_in_linear_time() {
+    const DEPTH: usize = 60;
+    let cells = (0..=DEPTH).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
+    for link in
+        ["('a{n}, 'a{n})", "{l: 'a{n}, r: 'a{n}}", "Map<'a{n}, 'a{n}>", "('a{n}, 'a{m})"]
+    {
+        let bounds = (0..DEPTH)
+            .map(|i| {
+                let bound = link
+                    .replace("{n}", &(i + 1).to_string())
+                    .replace("{m}", &(i + 2).min(DEPTH).to_string());
+                format!("'a{i}: {bound}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let program = format!(
+            "let f = {bounds}, 'a{DEPTH}: Number |x: ({cells})| x;\nf(never())\n"
+        );
+        completes_within(&["--expand", "--no-cache"], &program, 10 * BILLION)
+    }
+    let mut valued = String::from("let x0 = 1;\n");
+    for i in 1..=DEPTH {
+        valued.push_str(&format!("let x{i} = (x{}, x{});\n", i - 1, i - 1));
+    }
+    valued
+        .push_str(&format!("let f = 'a: Array<'b> |x: 'a, y: 'b| 0;\nf([], x{DEPTH})\n"));
+    completes_within(&["--expand", "--no-cache"], &valued, 10 * BILLION)
+}
+
 // A search over a shared type walks each shared node once: the definition
 // called at two types, whose kernels' types are DAGs, builds in time
 // linear in the DAG.

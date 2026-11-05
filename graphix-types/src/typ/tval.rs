@@ -422,16 +422,16 @@ impl<'a> TVal<'a> {
                 }
                 write!(f, ">]")
             }
-            (Type::Map { key, value }, Value::Map(m)) => {
+            (Type::Map(t), Value::Map(m)) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in m.into_iter().enumerate() {
-                    Self { typ: key, env: self.env, v: k }.fmt_int(
+                    Self { typ: &t.key, env: self.env, v: k }.fmt_int(
                         f,
                         hist,
                         context.nested(),
                     )?;
                     write!(f, " => ")?;
-                    Self { typ: value, env: self.env, v: v }.fmt_int(
+                    Self { typ: &t.value, env: self.env, v: v }.fmt_int(
                         f,
                         hist,
                         context.nested(),

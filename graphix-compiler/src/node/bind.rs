@@ -2065,10 +2065,7 @@ impl<R: Rt> Place<R> {
                 }
                 PlaceStep::Key(k, _) => {
                     let (kt, vt) = (Type::empty_tvar(), Type::empty_tvar());
-                    let mt = Type::Map {
-                        key: Arc::new(kt.clone()),
-                        value: Arc::new(vt.clone()),
-                    };
+                    let mt = Type::map(kt.clone(), vt.clone());
                     mt.check_contains(&ctx.env, &cur)?;
                     kt.check_contains(&ctx.env, k.typ())?;
                     vt

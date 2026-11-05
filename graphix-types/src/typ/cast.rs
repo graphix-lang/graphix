@@ -7,7 +7,8 @@ use crate::{
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, CoreTrait, RefKey, TVar, Type, TypeRef, Unfolded, params_size,
+        AbstractId, Bound, CoreTrait, MapType, RefKey, TVar, Type, TypeRef, Unfolded,
+        params_size,
         setops::union_identical,
         tval::{NakedPrefix, PlainScalar, has_form, member_of},
     },
@@ -696,10 +697,10 @@ impl Type {
                             {
                                 ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
                             }
-                            (
-                                Type::Map { key: pk, value: pv },
-                                Type::Map { key: rk, value: rv },
-                            ) => go(env, seen, pk, rk) || go(env, seen, pv, rv),
+                            (Type::Map(p), Type::Map(r)) => {
+                                go(env, seen, &p.key, &r.key)
+                                    || go(env, seen, &p.value, &r.value)
+                            }
                             _ => false,
                         }
                     },
@@ -1117,10 +1118,11 @@ impl Type {
                     v => Err(self.cast_fail("not a list", v)),
                 }
             }
-            Type::Map { key, value } => {
+            Type::Map(m) => {
+                let MapType { key, value } = &**m;
                 let src = src_head(cx, src, env, v);
                 let (ks, vs) = match &src {
-                    Some(Type::Map { key, value }) => (Some(&**key), Some(&**value)),
+                    Some(Type::Map(s)) => (Some(&s.key), Some(&s.value)),
                     _ => (None, None),
                 };
                 let check_keys = cx.check_keys && key.orders_refs(env);
@@ -1811,17 +1813,17 @@ impl Type {
                     }
                 }
             }
-            Type::Map { key, value }
-                if matches!(&**key, Type::Any)
-                    && matches!(&**value, Type::Any)
+            Type::Map(m)
+                if matches!(m.key, Type::Any)
+                    && matches!(m.value, Type::Any)
                     && !flags.contains(IsAFlags::Strict) =>
             {
                 matches!(v, Value::Map(_))
             }
-            Type::Map { key, value } => match v {
+            Type::Map(t) => match v {
                 Value::Map(m) => m.into_iter().all(|(k, v)| {
-                    key.is_a_int(env, hist, flags, k)
-                        && value.is_a_int(env, hist, flags, v)
+                    t.key.is_a_int(env, hist, flags, k)
+                        && t.value.is_a_int(env, hist, flags, v)
                 }),
                 _ => false,
             },
@@ -2129,9 +2131,7 @@ fn shallowify(t: &Type) -> Type {
         )),
         Type::Array(_) => Type::Array(Arc::new(Type::Any)),
         Type::List(_) => Type::List(Arc::new(Type::Any)),
-        Type::Map { .. } => {
-            Type::Map { key: Arc::new(Type::Any), value: Arc::new(Type::Any) }
-        }
+        Type::Map { .. } => Type::map(Type::Any, Type::Any),
         Type::Error(_) => Type::Error(Arc::new(Type::Any)),
         t => t.clone(),
     }
@@ -2609,10 +2609,9 @@ fn rep_collision(
                     | (Type::Error(x), Type::Error(y)) => {
                         pairs(&mut std::iter::once((&**x, &**y)))
                     }
-                    (
-                        Type::Map { key: k0, value: v0 },
-                        Type::Map { key: k1, value: v1 },
-                    ) => pairs(&mut [(&**k0, &**k1), (&**v0, &**v1)].into_iter()),
+                    (Type::Map(m0), Type::Map(m1)) => pairs(
+                        &mut [(&m0.key, &m1.key), (&m0.value, &m1.value)].into_iter(),
+                    ),
                     (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
                         pairs(&mut x.iter().zip(y.iter()))
                     }
@@ -2814,7 +2813,7 @@ fn rep_ambiguity(
                     }
                     parts(&mut ts.iter())
                 }
-                Type::Map { key, value } => {
+                Type::Map(m) => {
                     let keys = match keys_only {
                         true => rep_ambiguity(
                             env,
@@ -2822,11 +2821,11 @@ fn rep_ambiguity(
                             open,
                             false,
                             true,
-                            key,
+                            &m.key,
                         ),
                         false => None,
                     };
-                    keys.or_else(|| parts(&mut [&**key, &**value].into_iter()))
+                    keys.or_else(|| parts(&mut [&m.key, &m.value].into_iter()))
                 }
                 Type::Array(e) | Type::List(e) | Type::Error(e) => {
                     parts(&mut std::iter::once(&**e))
@@ -2983,7 +2982,7 @@ fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type, kind: CoreTrait)
                         any(&mut std::iter::once(&**e))
                     }
                     Type::Struct(fs) => any(&mut fs.iter().map(|(_, t, _)| t)),
-                    Type::Map { key, value } => any(&mut [&**key, &**value].into_iter()),
+                    Type::Map(m) => any(&mut [&m.key, &m.value].into_iter()),
                     Type::Abstract { id, params } => {
                         match reference_rep(env, *id, params, kind) {
                             None => false,
@@ -3172,10 +3171,10 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
                 && a.len() == ps.len()
                 && ps.iter().zip(a).all(|(p, x)| in_own_class(env, p, x))
         }),
-        Some(Type::Map { key, value }) => match v {
-            Value::Map(m) => m
-                .into_iter()
-                .all(|(k, x)| in_own_class(env, key, k) && in_own_class(env, value, x)),
+        Some(Type::Map(t)) => match v {
+            Value::Map(m) => m.into_iter().all(|(k, x)| {
+                in_own_class(env, &t.key, k) && in_own_class(env, &t.value, x)
+            }),
             _ => false,
         },
         Some(Type::Error(_)) => matches!(v, Value::Error(_)),
@@ -3553,9 +3552,9 @@ fn map_refs(
                     .collect();
                 rep::structure_of_fields(vs.drain(..))
             }
-            (Type::Map { value, .. }, Value::Map(m)) => Value::Map(
+            (Type::Map(t), Value::Map(m)) => Value::Map(
                 m.into_iter()
-                    .map(|(k, v)| (k.clone(), map_refs(env, holds, value, v, f)))
+                    .map(|(k, v)| (k.clone(), map_refs(env, holds, &t.value, v, f)))
                     .collect(),
             ),
             (Type::Abstract { id, params }, v)

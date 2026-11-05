@@ -1124,8 +1124,9 @@ fn settled_cause(container: &Type, contained: &Type, exact: bool) -> bool {
             (Type::ByRef(m, a), Type::ByRef(_, b)) => {
                 settled_cause(a, b, exact || *m == Mutability::Mut)
             }
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                settled_cause(k0, k1, exact) || settled_cause(v0, v1, exact)
+            (Type::Map(m0), Type::Map(m1)) => {
+                settled_cause(&m0.key, &m1.key, exact)
+                    || settled_cause(&m0.value, &m1.value, exact)
             }
             (Type::Tuple(a), Type::Tuple(b)) => pairs(a, b, exact),
             (Type::Variant(t0, a, _), Type::Variant(t1, b, _)) => {
@@ -1594,11 +1595,11 @@ impl TVar {
     /// is not a var, without an occurs walk of `t`'s whole depth, when
     /// `t` cannot reach the var's cell: nothing but `slot` holds the var
     /// and nothing but the var holds the cell, and either nothing but its
-    /// owner holds `slot` (a type reaches a cell only through a clone of
-    /// one of the three) or `t` reaches no open cell at all. False,
-    /// binding nothing, when any of that fails.
-    pub fn bind_unshared(slot: &Arc<Type>, t: &Type) -> bool {
-        let Type::TVar(tv) = &**slot else { return false };
+    /// owner holds the node `slot` sits in (`shared` false: a type reaches
+    /// a cell only through a clone of one of the three) or `t` reaches no
+    /// open cell at all. False, binding nothing, when any of that fails.
+    pub fn bind_unshared(slot: &Type, shared: bool, t: &Type) -> bool {
+        let Type::TVar(tv) = slot else { return false };
         if Arc::count(&tv.0) != 1
             || Arc::count(&tv.read().cell) != 1
             || matches!(t, Type::TVar(_))
@@ -1610,7 +1611,6 @@ impl TVar {
             return false;
         }
         let epoch = ground_epoch();
-        let shared = Arc::count(slot) > 1;
         let mut walked: LPooled<Vec<CellRef>> = LPooled::take();
         if shared && !reaches_no_open_cell(t, epoch, &mut LPooled::take(), &mut walked) {
             return false;
@@ -2829,8 +2829,8 @@ impl Type {
                     .zip(b.iter())
                     .fold(true, |ok, ((_, a, _), (_, b, _))| a.take_row_at(b, seen) & ok)
             }
-            (Type::Map { key: ka, value: va }, Type::Map { key: kb, value: vb }) => {
-                ka.take_row_at(kb, seen) & va.take_row_at(vb, seen)
+            (Type::Map(a), Type::Map(b)) => {
+                a.key.take_row_at(&b.key, seen) & a.value.take_row_at(&b.value, seen)
             }
             (
                 Type::Abstract { id: ia, params: a },

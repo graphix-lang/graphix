@@ -76,7 +76,7 @@ impl FromIterator<bool> for AndAc {
 impl Type {
     /// What a walk that visits each shared node once keys it by: a
     /// composite's content allocation, a reference's, a var's cell;
-    /// `None` for a leaf and for `Map`, whose content is two allocations.
+    /// `None` for a leaf and for `App`, whose content is two allocations.
     pub fn shared_identity(&self) -> Option<usize> {
         match self {
             Type::TVar(tv) => Some(tv.cell_addr()),
@@ -174,10 +174,10 @@ impl Type {
                 text_words(tag, out);
                 each(ts, out, at)
             }
-            Type::Map { key, value } => {
+            Type::Map(m) => {
                 out.push(20);
-                key.key_words(out, at);
-                value.key_words(out, at)
+                m.key.key_words(out, at);
+                m.value.key_words(out, at)
             }
             Type::Abstract { id, params } => {
                 out.extend([21, id.0 as usize]);
@@ -342,7 +342,7 @@ impl NodePairs {
 /// The address of a composite's content allocation, its low bits telling
 /// apart the kinds (and a reference's mutability) that can wrap one
 /// allocation, for walks that visit each shared node once; `None` for
-/// leaves and for `Map`, whose content is two allocations.
+/// leaves and for `App`, whose content is two allocations.
 pub(super) fn node_addr(t: &Type) -> Option<usize> {
     const _: () = assert!(align_of::<Type>() >= 8);
     let slice = |a: &Arc<[Type]>, kind: usize| (**a).as_ptr().addr() | kind;
@@ -359,8 +359,8 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         Type::Error(a) => Some(boxed(a, 2)),
         Type::ByRef(Mutability::Shared, a) => Some(boxed(a, 3)),
         Type::ByRef(Mutability::Mut, a) => Some(boxed(a, 4)),
-        Type::Map { .. }
-        | Type::App(..)
+        Type::Map(m) => Some((&**m as *const MapType).addr()),
+        Type::App(..)
         | Type::Hole
         | Type::Bound(_)
         | Type::Primitive(_)
@@ -1580,10 +1580,7 @@ pub enum Type {
     Tuple(Arc<[Type]>),
     Struct(Arc<[(ArcStr, Type, WrittenAt)]>),
     Variant(ArcStr, Arc<[Type]>, WrittenAt),
-    Map {
-        key: Arc<Type>,
-        value: Arc<Type>,
-    },
+    Map(Arc<MapType>),
     Abstract {
         id: AbstractId,
         params: Arc<[Type]>,
@@ -1599,6 +1596,14 @@ pub enum Type {
     /// A conjunct a cell's constraints may hold ([`Bound`]). Legal only as
     /// a constraint.
     Bound(Bound),
+}
+
+/// A map type's key and value types, in one allocation so a map many
+/// paths share is one node ([`node_addr`]).
+#[derive(Debug)]
+pub struct MapType {
+    pub key: Type,
+    pub value: Type,
 }
 
 impl Debug for Type {
@@ -1631,9 +1636,11 @@ impl Debug for Type {
             Self::Variant(tag, ts, at) => {
                 f.debug_tuple("Variant").field(tag).field(ts).field(at).finish()
             }
-            Self::Map { key, value } => {
-                f.debug_struct("Map").field("key", key).field("value", value).finish()
-            }
+            Self::Map(m) => f
+                .debug_struct("Map")
+                .field("key", &m.key)
+                .field("value", &m.value)
+                .finish(),
             Self::Abstract { id, params } => f
                 .debug_struct("Abstract")
                 .field("id", id)
@@ -1715,6 +1722,14 @@ fn key_list(ts: &Arc<[Type]>, out: &mut Vec<u8>) {
         for t in ts.iter() {
             t.content_key(out);
         }
+    })
+}
+
+fn key_map(m: &Arc<MapType>, out: &mut Vec<u8>) {
+    let keep = || KeyedNode::Map(m.clone());
+    image::shared_key(Arc::as_ptr(m) as usize, keep, out, |out| {
+        m.key.content_key(out);
+        m.value.content_key(out)
     })
 }
 
@@ -1828,10 +1843,9 @@ impl Type {
                 key_text(name, out);
                 key_list(ts, out);
             }
-            Type::Map { key, value } => {
+            Type::Map(m) => {
                 out.put_u8(tag::MAP);
-                key_one(key, out);
-                key_one(value, out);
+                key_map(m, out);
             }
             Type::Abstract { id, params } => {
                 out.put_u8(tag::ABSTRACT);
@@ -1863,7 +1877,7 @@ impl Type {
             }
             Type::Struct(fs) => fs.encoded_len(),
             Type::Variant(name, ts, _) => name.encoded_len() + ts.encoded_len(),
-            Type::Map { key, value } => key.encoded_len() + value.encoded_len(),
+            Type::Map(m) => m.key.encoded_len() + m.value.encoded_len(),
             Type::Abstract { id, params } => id.encoded_len() + params.encoded_len(),
             Type::App(c, a) => c.encoded_len() + a.encoded_len(),
         }
@@ -1937,10 +1951,10 @@ impl Type {
                 name.encode(buf)?;
                 ts.encode(buf)
             }
-            Type::Map { key, value } => {
+            Type::Map(m) => {
                 buf.put_u8(tag::MAP);
-                key.encode(buf)?;
-                value.encode(buf)
+                m.key.encode(buf)?;
+                m.value.encode(buf)
             }
             Type::Abstract { id, params } => {
                 buf.put_u8(tag::ABSTRACT);
@@ -1991,7 +2005,7 @@ impl Type {
             }
             tag::MAP => {
                 let key = PackTrait::decode(buf)?;
-                Type::Map { key, value: PackTrait::decode(buf)? }
+                Type::map(key, PackTrait::decode(buf)?)
             }
             tag::ABSTRACT => {
                 let id = PackTrait::decode(buf)?;
@@ -2128,9 +2142,10 @@ impl Type {
             Type::Variant(t0, a, _) => {
                 matches!(other, Type::Variant(t1, b, _) if t0 == t1 && slice_eq(a, b))
             }
-            Type::Map { key: k0, value: v0 } => matches!(
+            Type::Map(m0) => matches!(
                 other,
-                Type::Map { key: k1, value: v1 } if one_eq(k0, k1) && one_eq(v0, v1)
+                Type::Map(m1) if Arc::ptr_eq(m0, m1)
+                    || (m0.key == m1.key && m0.value == m1.value)
             ),
             Type::Abstract { id: i0, params: p0 } => matches!(
                 other,
@@ -2193,8 +2208,8 @@ impl Type {
             (Type::Variant(t0, a, w0), Type::Variant(t1, b, w1)) => {
                 t0.cmp(t1).then_with(|| a.cmp(b)).then_with(|| w0.cmp(w1))
             }
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                k0.cmp(k1).then_with(|| v0.cmp(v1))
+            (Type::Map(m0), Type::Map(m1)) => {
+                m0.key.cmp(&m1.key).then_with(|| m0.value.cmp(&m1.value))
             }
             (
                 Type::Abstract { id: i0, params: p0 },
@@ -2245,9 +2260,9 @@ impl Hash for Type {
                     ts.hash(state);
                     at.hash(state)
                 }
-                Type::Map { key, value } => {
-                    key.hash(state);
-                    value.hash(state)
+                Type::Map(m) => {
+                    m.key.hash(state);
+                    m.value.hash(state)
                 }
                 Type::Abstract { id, params } => {
                     id.hash(state);
@@ -2320,9 +2335,8 @@ impl Drop for Type {
                 a.is_unique()
             }
             Type::Struct(fs) => fs.is_unique(),
-            Type::Map { key: a, value: b } | Type::App(a, b) => {
-                a.is_unique() || b.is_unique()
-            }
+            Type::Map(m) => m.is_unique(),
+            Type::App(a, b) => a.is_unique() || b.is_unique(),
         };
         if !last {
             return;
@@ -2348,10 +2362,7 @@ impl Drop for Type {
                     drop(ptr::read(tag));
                     drop(ptr::read(ts))
                 }
-                Type::Map { key, value } => {
-                    drop(ptr::read(key));
-                    drop(ptr::read(value))
-                }
+                Type::Map(m) => drop(ptr::read(m)),
                 Type::Abstract { id: _, params } => drop(ptr::read(params)),
                 Type::App(c, a) => {
                     drop(ptr::read(c));
@@ -2457,9 +2468,9 @@ impl Type {
                 ControlFlow::Continue(())
             }
             Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => f(t),
-            Type::Map { key, value } => {
-                f(key)?;
-                f(value)
+            Type::Map(m) => {
+                f(&m.key)?;
+                f(&m.value)
             }
             Type::Fn(ft) => ft.try_for_each_type(f),
         }
@@ -2583,12 +2594,12 @@ impl Type {
             Type::Array(t) => f(t).map(|t| Type::Array(Arc::new(t))),
             Type::List(t) => f(t).map(|t| Type::List(Arc::new(t))),
             Type::ByRef(m, t) => f(t).map(|t| Type::ByRef(*m, Arc::new(t))),
-            Type::Map { key, value } => match (f(key), f(value)) {
+            Type::Map(m) => match (f(&m.key), f(&m.value)) {
                 (None, None) => None,
-                (k, v) => Some(Type::Map {
-                    key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
-                    value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
-                }),
+                (k, v) => Some(Type::map(
+                    k.unwrap_or_else(|| m.key.clone()),
+                    v.unwrap_or_else(|| m.value.clone()),
+                )),
             },
             Type::Tuple(ts) => Type::cow_slice(ts, |t| f(t)).map(Type::Tuple),
             Type::Variant(tag, ts, at) => Type::cow_slice(ts, |t| f(t))
@@ -2604,6 +2615,10 @@ impl Type {
 
     pub fn empty_tvar() -> Self {
         Type::TVar(TVar::default())
+    }
+
+    pub fn map(key: Type, value: Type) -> Type {
+        Type::Map(Arc::new(MapType { key, value }))
     }
 
     /// Apply a constructor to an argument: a concrete constructor (a
@@ -2920,10 +2935,7 @@ impl Type {
         match self {
             Type::Array(t) => Some((Type::Array(Arc::new(Type::Hole)), (**t).clone())),
             Type::List(t) => Some((Type::List(Arc::new(Type::Hole)), (**t).clone())),
-            Type::Map { key, value } => Some((
-                Type::Map { key: key.clone(), value: Arc::new(Type::Hole) },
-                (**value).clone(),
-            )),
+            Type::Map(m) => Some((Type::map(m.key.clone(), Type::Hole), m.value.clone())),
             Type::Ref(tr) if !tr.params.is_empty() => {
                 let n = tr.params.len() - 1;
                 let params = Arc::from_iter(

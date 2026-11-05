@@ -283,8 +283,8 @@ impl MapCollection for ValueMap {
 
     fn element_type(ft: &FnType) -> Result<Type> {
         match &source_type(ft) {
-            Some(Type::Map { key, value }) => {
-                Ok(Type::Tuple(Arc::from_iter([(**key).clone(), (**value).clone()])))
+            Some(Type::Map(m)) => {
+                Ok(Type::Tuple(Arc::from_iter([m.key.clone(), m.value.clone()])))
             }
             _ => bail!("expected Map, got {}", ft.args[0].typ),
         }
@@ -1448,7 +1448,7 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
         self.callback.see_arg(ctx);
         each(self.base.nodes_mut(), |n| n.typecheck1(ctx))?;
         self.base.check_keys = self.base.typ.with_deref(|t| match t {
-            Some(Type::Map { key, .. }) => key.orders_refs(&ctx.env),
+            Some(Type::Map(m)) => m.key.orders_refs(&ctx.env),
             _ => false,
         });
         Ok(())

@@ -102,10 +102,7 @@ impl<R: Rt> Map<R> {
             .flat_map(|(k, v)| [k, v])
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
-        let typ = Type::Map {
-            key: Arc::new(Type::empty_tvar()),
-            value: Arc::new(Type::empty_tvar()),
-        };
+        let typ = Type::map(Type::empty_tvar(), Type::empty_tvar());
         Ok(Self::with(spec, typ, n, ForkSite::default(), true))
     }
 }
@@ -186,19 +183,22 @@ impl<R: Rt> Map<R> {
         require_bounds(&[Type::Bound(Bound::Ordered)], &ktype);
         let vtype = wrap!(self, super::array::element_union(&ctx.env, &vts))?;
         let bound = match &self.typ {
-            Type::Map { key, value } => {
-                super::array::bind_element(key, &ktype)
-                    && super::array::bind_element(value, &vtype)
+            Type::Map(m) => {
+                let shared = Arc::count(m) > 1;
+                super::array::bind_part(&m.key, shared, &ktype)
+                    && super::array::bind_part(&m.value, shared, &vtype)
             }
             _ => false,
         };
         if !bound {
-            let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
+            let rtype = Type::map(ktype, vtype);
             self.typ.check_contains(&ctx.env, &rtype).map_err(|e| {
                 match (&self.typ, &rtype) {
-                    (Type::Map { key, value }, Type::Map { key: kt, value: vt }) => {
-                        TVar::refusal_over(value, vt, TVar::refusal_over(key, kt, e))
-                    }
+                    (Type::Map(m), Type::Map(r)) => TVar::refusal_over(
+                        &m.value,
+                        &r.value,
+                        TVar::refusal_over(&m.key, &r.key, e),
+                    ),
                     _ => e,
                 }
             })?;
@@ -274,8 +274,7 @@ impl<R: Rt> MapRef<R> {
         wrap!(self.key, child(&mut self.key, ctx))?;
         // the map's key type holds the key, not the other way around
         let kt = Type::empty_tvar();
-        let mt =
-            Type::Map { key: Arc::new(kt.clone()), value: Arc::new(self.vtyp.clone()) };
+        let mt = Type::map(kt.clone(), self.vtyp.clone());
         wrap!(self, mt.check_contains(&ctx.env, self.source.typ()))?;
         match check {
             true => wrap!(self.key, kt.check_contains(&ctx.env, self.key.typ())),
@@ -307,7 +306,7 @@ impl<R: Rt> MapRef<R> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let key = compile(ctx, flags, key.clone(), scope, top_id)?;
         let vtyp = match &source.typ() {
-            Type::Map { value, .. } => (**value).clone(),
+            Type::Map(m) => m.value.clone(),
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([vtyp.clone(), ERR.clone()]));

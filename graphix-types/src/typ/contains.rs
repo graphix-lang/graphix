@@ -556,21 +556,37 @@ fn type_has_refused_open_cell(t: &Type) -> bool {
 /// Whether every part of `t` is one type, so an open cell bound to a part
 /// loses nothing (a union part would bind the cell to the whole union,
 /// where it only had to stay within it). A variable is exact: binding
-/// aliases the cell to it, constraints and all.
+/// aliases the cell to it, constraints and all. The walk stops at the
+/// first part that is not exact, so a shared node or cell met again was.
 fn exact(t: &Type) -> bool {
-    ensure_sufficient(|| match t {
-        Type::Set(_) | Type::Any | Type::Ref(_) => false,
-        Type::Primitive(p) => p.len() == 1,
-        Type::TVar(tv) => tv.binding().is_none_or(|b| exact(&b)),
-        t => {
-            let mut all = true;
-            t.for_each_child(&mut |c| all &= exact(c));
-            all
-        }
-    })
+    fn walk(t: &Type, seen: &mut AddrSet) -> bool {
+        ensure_sufficient(|| {
+            if let Some(node) = node_addr(t)
+                && !seen.insert(node)
+            {
+                return true;
+            }
+            match t {
+                Type::Set(_) | Type::Any | Type::Ref(_) => false,
+                Type::Primitive(p) => p.len() == 1,
+                Type::TVar(tv) => match tv.binding() {
+                    None => true,
+                    Some(_) if !seen.insert(tv.cell_addr()) => true,
+                    Some(b) => walk(&b, seen),
+                },
+                t => t
+                    .try_for_each_child(&mut |c| match walk(c, seen) {
+                        true => ControlFlow::Continue(()),
+                        false => ControlFlow::Break(()),
+                    })
+                    .is_continue(),
+            }
+        })
+    }
+    walk(t, &mut LPooled::take())
 }
 
-// CR claude for claude: [perf/medium] A type shaped like a DAG under a bound
+// XCR claude for claude: [perf/medium] A type shaped like a DAG under a bound
 // elaborates in exponential time, though it checks flat. A value DAG (`let
 // x{i+1} = (x{i}, x{i})`, then `'a: Array<'b> |x: 'a, y: 'b| 0` called with
 // `[]` and x{N}) costs 0.06 / 0.22 / 0.81 / 2.91 / 11.5 G instructions net of
@@ -590,6 +606,18 @@ fn exact(t: &Type) -> bool {
 // ~/ptmp/cr29/scratch/review-r14/K-r3-1/p/{vdag_26,map_24,dup_26,skip2_34}.gx
 // (gen.py, genv.py; sweep.txt; cg/{vdag_22,dup_22,map_16}.out.gz)
 // (bound-dag-elab-01)
+// 2026-11-05 claude: Fixed: contains::exact walks each shared node and cell
+// once (it stops at the first inexact part), and a map type is one allocation
+// (Type::Map(Arc<MapType>), Type::map), so node_addr gives it an identity and
+// every node-memo walk (position_cells, ContainsHist::closed,
+// would_cycle_inner, collect_tvars_seen) takes a shared map once. --expand
+// --no-cache, debug, total G instructions (empty program 0.93-0.98): vdag 26
+// 12.85 -> 1.00, dup 26 23.3 -> 0.95, map 24 252.9 -> 0.96, skip2 34 7.7 ->
+// 0.97, sdag 24 6.3 -> 0.96; all five at depth 60 under 1.07. GUI --check total
+// 43.16 G (lane head) -> 43.21 G. Pin: graphix-shell/tests/deep_nesting.rs
+// bound_dags_elaborate_in_linear_time (the five shapes at depth 60, 10 G budget
+// each); it fails with exact's memo removed (the value DAG) and with
+// node_addr(Map) None (the map chain).
 // CR claude for claude: [perf/medium] Elaborating a chain of bounds is cubic
 // in its length, where its check is linear (chainbounds-cubic-01): `graphix
 // --expand --no-cache` of deep_nesting's chainbounds program costs, net of
@@ -740,8 +768,8 @@ fn commit_parts(
             | (Type::ByRef(Mutability::Shared, c), Type::ByRef(Mutability::Shared, t)) => {
                 commit_parts(tv, flags, env, hist, c, t)
             }
-            (Type::Map { value: c, .. }, Type::Map { value: t, .. }) => {
-                commit_parts(tv, flags, env, hist, c, t)
+            (Type::Map(c), Type::Map(t)) => {
+                commit_parts(tv, flags, env, hist, &c.value, &t.value)
             }
             (Type::Tuple(cs), Type::Tuple(ts)) if cs.len() == ts.len() => {
                 all(&mut cs.iter().zip(ts.iter()), hist)
@@ -1226,8 +1254,8 @@ impl Link {
             | (Type::List(a), Type::List(b))
             | (Type::Error(a), Type::Error(b)) => self.equal(a, b),
             (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && self.equal(a, b),
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                self.equal(k0, k1) && self.equal(v0, v1)
+            (Type::Map(m0), Type::Map(m1)) => {
+                self.equal(&m0.key, &m1.key) && self.equal(&m0.value, &m1.value)
             }
             (Type::App(c0, a0), Type::App(c1, a1)) => {
                 self.equal(c0, c1) && self.equal(a0, a1)
@@ -1504,9 +1532,9 @@ impl<'a> DataMeet<'a> {
             | [Type::List(a), Type::List(b)]
             | [Type::Error(a), Type::Error(b)]
             | [Type::ByRef(_, a), Type::ByRef(_, b)] => self.walk([a, b]),
-            [Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }] => {
-                self.walk([k0, k1]).or_else(|| self.walk([v0, v1]))
-            }
+            [Type::Map(m0), Type::Map(m1)] => self
+                .walk([&m0.key, &m1.key])
+                .or_else(|| self.walk([&m0.value, &m1.value])),
             [Type::App(c0, a0), Type::App(c1, a1)] => {
                 self.walk([c0, c1]).or_else(|| self.walk([a0, a1]))
             }
@@ -1615,9 +1643,7 @@ fn same_content(a: &Type, b: &Type) -> bool {
         | (Type::List(x), Type::List(y))
         | (Type::Error(x), Type::Error(y)) => Arc::ptr_eq(x, y),
         (Type::ByRef(m0, x), Type::ByRef(m1, y)) => m0 == m1 && Arc::ptr_eq(x, y),
-        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-            Arc::ptr_eq(k0, k1) && Arc::ptr_eq(v0, v1)
-        }
+        (Type::Map(x), Type::Map(y)) => Arc::ptr_eq(x, y),
         _ => false,
     }
 }
@@ -1702,9 +1728,7 @@ fn any_part_pair(s: &Type, t: &Type, f: &mut impl FnMut(&Type, &Type) -> bool) -
         | (Type::List(a), Type::List(b))
         | (Type::Error(a), Type::Error(b))
         | (Type::ByRef(_, a), Type::ByRef(_, b)) => f(a, b),
-        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-            f(k0, k1) || f(v0, v1)
-        }
+        (Type::Map(m0), Type::Map(m1)) => f(&m0.key, &m1.key) || f(&m0.value, &m1.value),
         (Type::Tuple(a), Type::Tuple(b)) => zip(a, b, f),
         (Type::Variant(n0, a, _), Type::Variant(n1, b, _)) if n0 == n1 => zip(a, b, f),
         (Type::Abstract { id: i0, params: a }, Type::Abstract { id: i1, params: b })
@@ -2477,16 +2501,14 @@ impl Type {
             (Self::Array(t0), Self::Primitive(p)) if *p == BitFlags::from(Typ::Array) => {
                 t0.contains_int(flags, env, hist, &Type::Any)
             }
-            (Self::Map { key: k0, value: v0 }, Self::Map { key: k1, value: v1 }) => {
-                Ok(k0.contains_int(flags, env, hist, k1)?
-                    && v0.contains_int(flags, env, hist, v1)?)
+            (Self::Map(m0), Self::Map(m1)) => {
+                Ok(m0.key.contains_int(flags, env, hist, &m1.key)?
+                    && m0.value.contains_int(flags, env, hist, &m1.value)?)
             }
             (Self::Primitive(p), Self::Map { .. }) => Ok(p.contains(Typ::Map)),
-            (Self::Map { key, value }, Self::Primitive(p))
-                if *p == BitFlags::from(Typ::Map) =>
-            {
-                Ok(key.contains_int(flags, env, hist, &Type::Any)?
-                    && value.contains_int(flags, env, hist, &Type::Any)?)
+            (Self::Map(m), Self::Primitive(p)) if *p == BitFlags::from(Typ::Map) => {
+                Ok(m.key.contains_int(flags, env, hist, &Type::Any)?
+                    && m.value.contains_int(flags, env, hist, &Type::Any)?)
             }
             (Self::Primitive(p0), Self::Error(_)) => Ok(p0.contains(Typ::Error)),
             (Self::Error(e), Self::Primitive(p)) if *p == BitFlags::from(Typ::Error) => {

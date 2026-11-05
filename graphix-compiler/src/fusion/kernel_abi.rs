@@ -877,10 +877,7 @@ pub fn null_type() -> Type {
 /// A placeholder `Map<null, null>` type; codegen only reads its
 /// [`AbiKind::Value`] classification, never its key/value types.
 pub fn map_type() -> Type {
-    Type::Map {
-        key: triomphe::Arc::new(null_type()),
-        value: triomphe::Arc::new(null_type()),
-    }
+    Type::map(null_type(), null_type())
 }
 
 /// One parameter of a fused kernel. The `KernelSig::params` order is
@@ -1350,9 +1347,7 @@ mod tests {
                 inner.clone().prop_map(|t| {
                     Type::Variant(literal!("V"), Arc::from_iter([t]), WrittenAt::NOWHERE)
                 }),
-                (inner.clone(), inner.clone()).prop_map(|(a, b)| {
-                    Type::Map { key: Arc::new(a), value: Arc::new(b) }
-                }),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| { Type::map(a, b) }),
                 (inner.clone(), inner.clone())
                     .prop_map(|(a, b)| Type::Tuple(Arc::from_iter([a, b]))),
                 (inner.clone(), inner.clone())

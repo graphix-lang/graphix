@@ -78,9 +78,7 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
             Some((d, &**a as *const Type as usize, 0))
         }
         Type::ByRef(m, a) => Some((d, &**a as *const Type as usize, *m as usize)),
-        Type::Map { key, value } => {
-            Some((d, &**key as *const Type as usize, &**value as *const Type as usize))
-        }
+        Type::Map(m) => Some((d, &**m as *const _ as usize, 0)),
         Type::Bottom
         | Type::Any
         | Type::Primitive(_)
@@ -532,9 +530,9 @@ impl Type {
                     None
                 }
             }
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                if flat_eq(k0, k1) && flat_eq(v0, v1) {
-                    Some(Type::Map { key: k0.clone(), value: v0.clone() })
+            (Type::Map(m0), Type::Map(m1)) => {
+                if flat_eq(&m0.key, &m1.key) && flat_eq(&m0.value, &m1.value) {
+                    Some(Type::Map(m0.clone()))
                 } else {
                     None
                 }

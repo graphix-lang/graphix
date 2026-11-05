@@ -222,7 +222,7 @@ fn identity(t: &Type) -> Option<(Identity, Type)> {
         Type::Struct(fs) => (a(fs), 0),
         Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => (a(t), 0),
         Type::Variant(tag, ts, _) => (tag.as_ptr() as usize, a(ts)),
-        Type::Map { key, value } => (a(key), a(value)),
+        Type::Map(m) => (a(m), 0),
         Type::App(f, x) => (a(f), a(x)),
         Type::Bottom
         | Type::Any

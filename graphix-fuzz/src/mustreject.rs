@@ -762,7 +762,7 @@ fn holds(t: &Type, p: &impl Fn(&Type) -> bool) -> bool {
         Some(Type::Array(t) | Type::List(t) | Type::Error(t) | Type::ByRef(_, t)) => {
             holds(t, p)
         }
-        Some(Type::Map { key, value }) => holds(key, p) || holds(value, p),
+        Some(Type::Map(m)) => holds(&m.key, p) || holds(&m.value, p),
         Some(_) => false,
     })
 }

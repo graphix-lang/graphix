@@ -48,7 +48,7 @@ impl SameType {
             Type::Primitive(p) => (p.bits(), 0),
             Type::TVar(tv) => (tv.cell_addr() as u64, 0),
             Type::Array(e) | Type::List(e) => (at(Arc::as_ptr(e)), 0),
-            Type::Map { key, value } => (at(Arc::as_ptr(key)), at(Arc::as_ptr(value))),
+            Type::Map(m) => (at(Arc::as_ptr(m)), 0),
             Type::Tuple(ts) => (at(Arc::as_ptr(ts)), 0),
             Type::Struct(fs) => (at(Arc::as_ptr(fs)), 0),
             t => (at(t), 0),
@@ -76,7 +76,13 @@ pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
 /// cell: nothing else holds `slot`, or `t` reaches no open cell
 /// ([`TVar::bind_unshared`]). False, binding nothing, otherwise.
 pub(super) fn bind_element(slot: &Arc<Type>, t: &Type) -> bool {
-    !matches!(t, Type::Bottom) && TVar::bind_unshared(slot, t)
+    bind_part(slot, Arc::count(slot) > 1, t)
+}
+
+/// [`bind_element`] of a cell in a node that holds more than one part:
+/// `shared` when anything but its owner holds the node.
+pub(super) fn bind_part(slot: &Type, shared: bool, t: &Type) -> bool {
+    !matches!(t, Type::Bottom) && TVar::bind_unshared(slot, shared, t)
 }
 
 /// An array index or slice bound: any integer. An open cell is narrowed

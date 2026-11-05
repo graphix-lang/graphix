@@ -21,7 +21,7 @@ use crate::{
     expr::{Expr, ExprId, ModPath, Origin, Source, WrittenAt},
     ids::{IdRelocation, IdSpan, IdSpans},
     typ::{
-        FnType, ResolvedRef, TVar, Type,
+        FnType, MapType, ResolvedRef, TVar, Type,
         fntyp::LambdaIds,
         tvar::{TCell, TVarId},
     },
@@ -1322,6 +1322,7 @@ pub(crate) enum KeyedNode {
     Type(Arc<Type>),
     Fn(Arc<FnType>),
     Fields(Arc<[(ArcStr, Type, WrittenAt)]>),
+    Map(Arc<MapType>),
 }
 
 /// Append the interned key of the shared type node at `ptr`, walking

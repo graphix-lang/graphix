@@ -285,7 +285,7 @@ impl Type {
             Self::Error(t) => write!(f, "Error<{t}>"),
             Self::Array(t) => write!(f, "Array<{t}>"),
             Self::List(t) => write!(f, "List<{t}>"),
-            Self::Map { key, value } => write!(f, "Map<{key}, {value}>"),
+            Self::Map(m) => write!(f, "Map<{}, {}>", m.key, m.value),
             Self::ByRef(m, t) => write!(f, "{}{t}", m.prefix()),
             Self::Tuple(ts) => {
                 write!(f, "(")?;
@@ -435,13 +435,13 @@ impl Type {
             Self::Error(t) => pretty_lone_arg(buf, "Error<", t, ">"),
             Self::Array(t) => pretty_lone_arg(buf, "Array<", t, ">"),
             Self::List(t) => pretty_lone_arg(buf, "List<", t, ">"),
-            Self::Map { key, value } => {
+            Self::Map(m) => {
                 writeln!(buf, "Map<")?;
                 buf.nested(|buf| {
-                    key.fmt_pretty(buf)?;
+                    m.key.fmt_pretty(buf)?;
                     buf.kill_newline();
                     writeln!(buf, ",")?;
-                    value.fmt_pretty(buf)
+                    m.value.fmt_pretty(buf)
                 })?;
                 writeln!(buf, ">")
             }
