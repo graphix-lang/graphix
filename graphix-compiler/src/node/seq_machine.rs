@@ -233,6 +233,28 @@ impl<R: Rt> SeqMachine<R> {
         // write them
         let writers: SmallVec<[&Expr; 32]> =
             m.steps.iter().flat_map(|s| s.items.iter()).collect();
+        let top = super::block_top(ctx, scope);
+        ctx.written.enter(&writers, top);
+        let steps = Self::compile_steps(ctx, flags, top_id, m, &scopes);
+        ctx.written.exit();
+        let steps = steps?;
+        Ok(Self::with(
+            spec,
+            m.id,
+            pc,
+            pc_id,
+            steps.into_boxed_slice(),
+            flags.contains(CFlag::ExpandSeq),
+        ))
+    }
+
+    fn compile_steps(
+        ctx: &mut CompileCtx<R>,
+        flags: BitFlags<CFlag>,
+        top_id: ExprId,
+        m: &SeqMachineExpr,
+        scopes: &[Scope],
+    ) -> Result<Vec<Step<R>>> {
         let mut steps = Vec::with_capacity(m.steps.len());
         for s in m.steps.iter() {
             let scope = &scopes[s.scope as usize];
@@ -243,7 +265,7 @@ impl<R: Rt> SeqMachine<R> {
                 top_id,
                 false,
                 s.items.iter(),
-                Some(&writers),
+                false,
             )?;
             let next = s.next.map(|n| n as usize);
             // the value's let, by the name the lowering gave it
@@ -258,14 +280,7 @@ impl<R: Rt> SeqMachine<R> {
                 Step::new(s.label.clone(), s.until, nodes, catches, value, next, false)?;
             steps.push(step);
         }
-        Ok(Self::with(
-            spec,
-            m.id,
-            pc,
-            pc_id,
-            steps.into_boxed_slice(),
-            flags.contains(CFlag::ExpandSeq),
-        ))
+        Ok(steps)
     }
 
     pub(crate) fn image_decode(

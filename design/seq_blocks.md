@@ -324,8 +324,8 @@ nothing, so each carries the read binding's scheme as a `let` of it does
 (`expr::seq::passes_on`, `bind::passes_generic`, Eric 11-05); what the
 snapshot reads is still read at the step's entry, a holder's part that
 tracks a variable included. A step's `let` a later step writes is known
-written at its binding (the machine finds the writes among every step's
-items, `compile_block_children`'s `writers`), so it is one instance, as
+written at its binding (`SeqMachine::compile` finds the writes among
+every step's items, once for the machine), so it is one instance, as
 a written `let` is anywhere. A holder with a call part is one instance in
 its step: a call's result is no binding's. A `seqq` reads a holder once
 per request, through the queue, one instance of it per request.

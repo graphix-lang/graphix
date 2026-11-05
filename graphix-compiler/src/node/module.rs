@@ -1625,7 +1625,7 @@ impl<R: Rt> Module<R> {
                 self.top_id,
                 true,
                 exprs.iter(),
-                None,
+                true,
             )
         });
         (self.nodes, self.catches) = compiled?;

@@ -1023,18 +1023,31 @@ impl<R: Rt> Block<R> {
             top_id,
             module,
             exprs.iter(),
-            None,
+            true,
         )?;
         Ok(Self::with(module, spec, children, catches, Runs::default()))
     }
 }
 
+/// A module's top block's path below its package root, which its
+/// statements' `self::` writes name; `None` for any other block.
+pub(crate) fn block_top<R: Rt>(
+    ctx: &CompileCtx<R>,
+    scope: &Scope,
+) -> Option<CompactString> {
+    let lexical: &str = &scope.lexical;
+    (crate::mod_root(lexical) == lexical).then(|| {
+        let below = &lexical[ctx.env.package_root(lexical).len()..];
+        CompactString::from(below.trim_start_matches('/'))
+    })
+}
+
 /// Compile a statement list: each `catch(e) expr` child compiles
 /// through [`error::Catch::compile`], which advances the dynamic scope
 /// for all subsequent siblings. Returns the children in syntactic order
-/// plus the catch indices. The lets something writes are found among
-/// `writers`, the statements of the scope the list's lets are visible in,
-/// the list itself when `None`.
+/// plus the catch indices. The lets something writes are found among the
+/// list's own statements where `own_writers`, else the caller entered the
+/// statements its lets are visible to ([`BlockWrites::enter`]).
 pub(crate) fn compile_block_children<'a, R: Rt>(
     ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -1042,7 +1055,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     top_id: ExprId,
     module: bool,
     exprs: impl Iterator<Item = &'a Expr>,
-    writers: Option<&[&Expr]>,
+    own_writers: bool,
 ) -> Result<(Box<[Node<R>]>, Box<[usize]>)> {
     let exprs: SmallVec<[&'a Expr; 32]> = exprs.collect();
     // pre-register the block's `mod` names so resolution is independent
@@ -1073,12 +1086,10 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
-    let lexical: &str = &scope.lexical;
-    let top = (crate::mod_root(lexical) == lexical).then(|| {
-        let below = &lexical[ctx.env.package_root(lexical).len()..];
-        CompactString::from(below.trim_start_matches('/'))
-    });
-    ctx.written.enter(writers.unwrap_or(&exprs), top);
+    if own_writers {
+        let top = block_top(ctx, &scope);
+        ctx.written.enter(&exprs, top);
+    }
     let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);
@@ -1092,7 +1103,9 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         children.push(prune::Prune::wrap(boundary, node));
         Ok::<_, anyhow::Error>(())
     });
-    ctx.written.exit();
+    if own_writers {
+        ctx.written.exit();
+    }
     if declares_types {
         ctx.block_typedefs.pop();
     }
