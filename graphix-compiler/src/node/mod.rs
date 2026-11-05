@@ -1072,6 +1072,9 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     if declares_types {
         ctx.block_typedefs.push((scope.lexical.clone(), typedefs));
     }
+    if exprs.iter().any(|e| matches!(e.kind, ExprKind::TypeDef(_))) {
+        ctx.env.open_block(&scope.lexical);
+    }
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();

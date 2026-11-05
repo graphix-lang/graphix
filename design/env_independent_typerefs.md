@@ -145,8 +145,12 @@ nothing.
 - **By scope and name, held weakly.** A block's scope names one source
   occurrence (the expression id its parse minted), so an entry means one
   thing from wherever it is reached. Name resolution reads it at a block
-  level whose lexical maps lack the name, after the level's own typedefs
-  and traits and before its imports. A typedef a module inside a block
+  level no lexical map holds, before the level's imports. A block that
+  is compiling holds its own level (`Env::open_block`, before its first
+  statement), so while it compiles a name there means what its earlier
+  statements declare, as at its first compile, and never a later
+  statement's typedef an earlier compile registered (pin
+  `lang::select::abstract_pattern_renamed_by_a_later_typedef_written`). A typedef a module inside a block
   declares is not registered: the module's scope ends in its name, which
   a reload declares again with other text.
 - **One source typedef, one definition.** A block compiled again (an

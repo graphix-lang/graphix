@@ -505,9 +505,10 @@ constant, an abstract type's registration, the block's `TypeDef` node:
 `node::TypeDef`). A typedef a block declares (a scope ending in a
 generated component) stays findable after the block in `Env::
 block_types`, by scope and name, held weakly and shared by every copy
-of the env: a lookup at a block level the lexical maps lack the name at
-reads it, and one that meets a dead entry is refused, never continued
-outward; a block compiled again declares the live definition, so one
+of the env: a lookup at a block level no lexical map holds reads it (a
+block compiling holds its own, `Env::open_block`, so a name there means
+what its earlier statements declare, as at its first compile), and one
+that meets a dead entry is refused, never continued outward; a block compiled again declares the live definition, so one
 source typedef is one definition; an image carries the live entries.
 `Env::seed_typedef_refs` (block types included) runs at the check's end
 (an instance elaborates under its definition's env) and again right

@@ -1373,7 +1373,9 @@ impl Env {
                 Some(d) => Some(BlockHit::Live(d.def.clone()).into()),
                 None => match self.lexical.traits.get(s).and_then(|m| m.get(n)) {
                     Some(id) => Some(Ok(TypeName::Trait(*id))),
-                    None if is_block_scope(s) => {
+                    None if is_block_scope(s)
+                        && self.lexical.typedefs.get(s).is_none() =>
+                    {
                         self.block_types.find(s, n).map(Into::into)
                     }
                     None => None,
@@ -2365,6 +2367,17 @@ impl Env {
             .get(scope)
             .and_then(|m| m.get(name))
             .map(|td| td.def.clone())
+    }
+
+    /// Open the block at `scope` in the lexical maps before its
+    /// statements compile: while a block compiles, a name at its level
+    /// means what the statements before it declare, as at its first
+    /// compile, never what a later one does (`Env::block_types` serves
+    /// only a block no lexical map holds).
+    pub fn open_block(&mut self, scope: &ModPath) {
+        if is_block_scope(scope) {
+            self.lexical.typedefs.get_or_default_cow(scope.clone());
+        }
     }
 
     /// Drop the name `name` at `scope`. An abstract type's
