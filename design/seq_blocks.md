@@ -314,9 +314,20 @@ one of them holds it as a write in a block does; a pattern's step value
 is the whole it matches, which its capture names (a lowered `#seqh`
 capture where it has none), so the literal is evaluated once. Later steps read
 the names of both kinds as they stand, never through a snapshot: after
-its step neither changes. A holder with a call or a `live` part goes
-through a cell as any other step value does, and so does a step's read
-of an outer generalized binding (a snapshot): each is one instance.
+its step neither changes. A step's read of an outer generalized
+binding goes through its entry snapshot, and a holder with a `live` part
+through a step value: the lowering's bindings that pass a read on whole,
+the snapshot (`.. ~! #seqsin`), the projection of it a read takes, and a
+step's or a `{ .. }` item's value (`any(pc ~! v, v)`), are written by
+nothing, so each carries the read binding's scheme as a `let` of it does
+(`expr::seq::passes_on`, `bind::passes_generic`, Eric 11-05); what the
+snapshot reads is still read at the step's entry, a holder's part that
+tracks a variable included. A step's `let` a later step writes is known
+written at its binding (the machine finds the writes among every step's
+items, `compile_block_children`'s `writers`), so it is one instance, as
+a written `let` is anywhere. A holder with a call part is one instance in
+its step: a call's result is no binding's. A `seqq` reads a holder once
+per request, through the queue, one instance of it per request.
 
 ## 6. The lowering
 

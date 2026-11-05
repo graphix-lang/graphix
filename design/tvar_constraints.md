@@ -426,8 +426,9 @@ the parent's other names share (CR module-holder-write-01). Two lambda
 literals one array or list holds meet as its elements (`[|x| x, |y| y]`
 is one function type), and a `seqq` reads a holder once per request,
 every step of the run sharing that read's copy. A lambda a let holds through a
-block or a select is not generalized (must_reject family 1), though a
-call through it instantiates it (CR holder-block-select-01). Pin
+select is not generalized, though a call through it instantiates it (CR
+holder-block-select-01); one through a block's final expression is
+("Generic only where a binding names it"). Pin
 `lang::types::holder_reads_copy_its_signatures`.
 
 An image carries each cell's level and each definition's depth.

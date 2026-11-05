@@ -362,6 +362,81 @@ run!(
     FuseExpect::Jit
 );
 
+// A step reads an outer variable through its entry snapshot, which
+// carries a generalized binding's scheme: nothing writes a snapshot.
+run!(
+    an_outer_holder_read_in_a_seq_step_is_generic,
+    "{ let s = {g: |x| x}; seq { (s.g(1), s.g(\"s\")) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    an_outer_holder_bound_in_a_seq_step_is_generic,
+    "{ let s = {g: |x| x}; seq { let u = s; (u.g(1), u.g(\"s\")) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_holder_of_an_outer_holder_in_a_seq_step_is_generic,
+    "{ let s = {g: |x| x}; seq { let u = {a: s}; let a = u.a.g(1); let b = u.a.g(\"s\"); (a, b) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_holder_of_an_outer_holder_in_a_seq_statement_block_is_generic,
+    "{ let s = {g: |x| x}; seq { { let u = {a: s}; (u.a.g(1), u.a.g(\"s\")) } } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_holder_with_a_live_part_in_a_seq_step_is_generic,
+    "{ let v = 1; seq { let s = {g: |x| x, n: live(v)}; (s.g(1), s.g(\"s\"), s.n) } }",
+    prints(r#"[i64:1, "s", i64:1]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_holder_with_a_call_part_in_a_seq_step_is_one_instance,
+    "seq { let s = {g: |x| x, n: str::len(\"ab\")}; (s.g(1), s.g(\"s\"), s.n) }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_holder_with_a_call_part_in_a_seq_step_takes_its_one_type,
+    "seq { let s = {g: |x| x, n: str::len(\"ab\")}; (s.g(1), s.g(2), s.n) }",
+    prints("[i64:1, i64:2, i64:2]");
+    FuseExpect::Jit
+);
+
+// The snapshot reads a holder's part that tracks a variable at the step's
+// entry: `k` counts on to 3 while the step waits, and `s.n` is what it was.
+run!(
+    a_holder_part_a_seq_step_reads_is_its_entry_value,
+    "{ let k = 0; k <- select k { 8 => never(), _ => k + 1 }; let s = {g: |x| x, n: k}; \
+     seq { select live(k) { 3 => (s.g(1), s.g(\"s\"), s.n), _ => never() } } }",
+    prints(r#"[i64:1, "s", i64:1]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_holder_a_later_step_writes_is_one_instance,
+    "{ let s = {g: |x| x}; seq { let u = s; let w = &mut u; *w <- {g: |x: i64| x + 1}; (u.g(1), u.g(\"s\")) } }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_holder_a_later_step_writes_takes_its_one_type,
+    "{ let s = {g: |x| x}; seq { let u = s; let w = &mut u; *w <- {g: |x: i64| x + 1}; (u.g(1), u.g(2)) } }",
+    prints("[i64:2, i64:3]");
+    FuseExpect::Jit
+);
+
 run!(
     a_destructured_holder_in_a_seq_step_written_by_a_later_step_is_one_instance,
     "seq { let (g, k) = (|x| x, |y| y); let rk = &mut k; *rk <- |y: i64| y + 1; let a = 0; (k(\"a\"), g(1)) }",

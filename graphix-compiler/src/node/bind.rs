@@ -452,8 +452,12 @@ impl<R: Rt> Bind<R> {
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
         let mut node = node;
+        let passes = passes_generic(&ctx.env, b, &node);
         if names_generic(&ctx.env, b, &node) {
-            name_value(&mut node, false);
+            match passes {
+                true => name_passed(&mut node),
+                false => name_value(&mut node, false),
+            }
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert(id);
             });
@@ -495,7 +499,7 @@ impl<R: Rt> Bind<R> {
                 name_value(&mut node, true);
             }
         }
-        let reads = match (written(ctx, &pattern) || b.typ.is_some(), holder) {
+        let reads = match (written(ctx, &pattern) || b.typ.is_some(), holder || passes) {
             (true, _) => ValueReads::Own,
             (false, true) => ValueReads::Shared,
             (false, false) => ValueReads::Inherit,
@@ -1065,7 +1069,42 @@ fn shares<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> bool {
 /// the binding shares the read's copy of the scheme; unifying with a fresh
 /// instance would pin it.
 fn forwards<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
-    b.typ.is_none() && reads_generic(env, node)
+    b.typ.is_none() && (reads_generic(env, node) || passes_generic(env, b, node))
+}
+
+/// Whether the binding is a seq lowering's that passes on a generalized
+/// binding's read (`expr::seq::passes_on`: a step's entry snapshot, `.. ~!
+/// r`, or a step's guarded value, `any(pc ~! r, r)`): nothing writes it,
+/// so it carries the scheme.
+fn passes_generic<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
+    fn passed<R: Rt>(env: &Env, node: &Node<R>) -> bool {
+        match value_of(node).view() {
+            NodeView::SeqGuard(g) => passed(env, &g.n),
+            NodeView::Sample(s) => reads_generic(env, &s.arg.node),
+            NodeView::Any(a) => !a.n.is_empty() && a.n.iter().all(|c| passed(env, c)),
+            _ => reads_generic(env, node),
+        }
+    }
+    b.pattern.single_bind().is_some_and(|n| expr::seq::passes_on(n)) && passed(env, node)
+}
+
+/// Name the reads a seq lowering's binding passes on ([`passes_generic`]).
+fn name_passed<R: Rt>(node: &mut Node<R>) {
+    if let Some(b) = node.downcast_mut::<super::Block<R>>() {
+        if !b.module
+            && let Some(last) = b.children.last_mut()
+        {
+            name_passed(last)
+        }
+    } else if let Some(g) = node.downcast_mut::<super::error::SeqGuard<R>>() {
+        name_passed(&mut g.n)
+    } else if let Some(s) = node.downcast_mut::<super::Sample<R>>() {
+        name_value(&mut s.arg.node, false)
+    } else if let Some(a) = node.downcast_mut::<super::Any<R>>() {
+        a.n.iter_mut().for_each(name_passed)
+    } else {
+        name_value(node, false)
+    }
 }
 
 /// Whether `node`, past grouping parentheses and a block's final

@@ -139,6 +139,40 @@ fn note_lowered(
     }
 }
 
+/// The prefix of a step's entry snapshot, `let #seqs<id>_<n> = .. ~!
+/// #seqsin<id>_<n>`: the sampled tuple of what the step reads, which its
+/// reads take apart and nothing writes (`Machine::enter`).
+const ENTRY_SNAPSHOT: &str = "#seqs";
+
+/// The prefix of a step's value, `let #seqv.. = any(pc ~! v, v)`: `v`
+/// fired at the step's entry with its standing value, then tracked
+/// ([`entry_fire`], `Machine::step`).
+const STEP_VALUE: &str = "#seqv";
+
+/// The prefix of a `{ .. }` statement's item values (`Machine::lower_block`),
+/// each a step value's kind.
+const STATEMENT_VALUE: &str = "#seqb";
+
+/// Whether the lowering's binding `name` passes on what it reads whole,
+/// and nothing writes it: a step's entry snapshot ([`ENTRY_SNAPSHOT`]), a
+/// step's value ([`STEP_VALUE`]) or a statement item's
+/// ([`STATEMENT_VALUE`]). A read of a generalized binding through one
+/// carries the binding's scheme.
+pub fn passes_on(name: &str) -> bool {
+    let numbered = |prefix: &str, parts: &[usize]| {
+        name.strip_prefix(prefix).is_some_and(|rest| {
+            let n = rest.split('_').count();
+            parts.contains(&n)
+                && rest
+                    .split('_')
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        })
+    };
+    numbered(ENTRY_SNAPSHOT, &[2])
+        || numbered(STEP_VALUE, &[1, 2])
+        || numbered(STATEMENT_VALUE, &[2])
+}
+
 /// The seq `spec` lowered to its machine, every expression of which
 /// comes from `spec`'s source. Under a language server, the cells it
 /// sends written names to are told to the IDE ([`Env::note_lowered`]).
@@ -798,7 +832,7 @@ fn label(k: usize) -> ArcStr {
 }
 
 impl Machine<'_> {
-    // CR claude for eric: [bug/medium] Under the ML rule a step's snapshot of an outer
+    // XCR claude for claude: [bug/medium] Under the ML rule a step's snapshot of an outer
     // generalized holder is one instance, where a read outside a seq copies the scheme:
     // `let s = {g: |x| x}; seq t { (s.g(1), s.g("s")) }` is refused ("i64 does not
     // contain string"), and so are `seq t { let u = s; (u.g(1), u.g("s")) }` and `seq t
@@ -817,6 +851,28 @@ impl Machine<'_> {
     // in the step. Recommend (b). probes: ~/ptmp/cr29/scratch/r16-Q/fix2/{o1,o3,
     // h2_holder_of_holder,h1_holder_with_call,c3_seq_holder_live}.gx (run.sh FILE
     // compares lane and base) (seq-snapshot-generic-01)
+    // 2026-11-05 claude: Eric ruled (2026-11-05, ~/ptmp/cr-discuss.md, D3 follow-up 2,
+    // Q2): (b), a step's snapshot of a generalized binding carries that binding's
+    // scheme; the snapshot rule itself is unchanged.
+    // 2026-11-05 claude: Built (b): the lowering's bindings that pass a read on whole
+    // and nothing writes, a step's entry snapshot (#seqs<id>_<n> = .. ~! #seqsin), a
+    // step's value and a { .. } item's value (any(pc ~! v, v)), carry the read's scheme
+    // (expr::seq::passes_on, bind::passes_generic / name_passed, their reads sharing one
+    // copy); the projection #seqs<id>_<n>_<i> = #seqs.i forwards it by Q1's rule. The
+    // machine now finds writes among every step's items (compile_block_children's
+    // writers), so a step's let a later step writes through &mut is one instance (it was
+    // generalized unseen). o1, o3, h2, h2s and c3 run as on main; h1/c1 are refused at
+    // --check. seqq captures stay one instance per request (through the queue builtin),
+    // as documented. Pins
+    // lang::quantified::{an_outer_holder_read_in_a_seq_step_is_generic,
+    // an_outer_holder_bound_in_a_seq_step_is_generic,
+    // a_holder_of_an_outer_holder_in_a_seq_step_is_generic,
+    // a_holder_of_an_outer_holder_in_a_seq_statement_block_is_generic,
+    // a_holder_with_a_live_part_in_a_seq_step_is_generic,
+    // a_holder_part_a_seq_step_reads_is_its_entry_value} fail without it;
+    // a_holder_a_later_step_writes_is_one_instance fails without the writers walk;
+    // a_holder_with_a_call_part_in_a_seq_step_is_one_instance and the twins pin what
+    // stays.
     /// The step's entry snapshot of `e`'s external variables and completed
     /// local lets, `live` aside (`design/seq_blocks.md` §5). Each read goes
     /// to a cell filled at the
@@ -866,7 +922,8 @@ impl Machine<'_> {
         let mut map = scope(visible);
         let mut reads: LPooled<Vec<(ArcStr, Expr)>> = LPooled::take();
         for (i, (k, read)) in vars.drain(..).enumerate() {
-            let c = ArcStr::from(format_compact!("#seqs{id}_{n}_{i}").as_str());
+            let c =
+                ArcStr::from(format_compact!("{ENTRY_SNAPSHOT}{id}_{n}_{i}").as_str());
             map.insert(k, Redirect::Entry(c.clone()));
             reads.push((c, read));
         }
@@ -896,7 +953,7 @@ impl Machine<'_> {
         }
         let (pc, id) = (self.issue.pc, self.id);
         let input = format_compact!("#seqsin{id}_{n}");
-        let snap = format_compact!("#seqs{id}_{n}");
+        let snap = format_compact!("{ENTRY_SNAPSHOT}{id}_{n}");
         let tuple = ExprKind::Tuple {
             args: Arc::from_iter(
                 std::iter::once(r#ref(pos, pc))
@@ -927,7 +984,7 @@ impl Machine<'_> {
         writes: impl FnOnce(&str) -> LPooled<Vec<Expr>>,
     ) -> usize {
         let k = self.steps.len();
-        let name = ArcStr::from(format_compact!("#seqv{}_{k}", self.id).as_str());
+        let name = ArcStr::from(format_compact!("{STEP_VALUE}{}_{k}", self.id).as_str());
         let mut items: SmallVec<[Expr; 4]> = SmallVec::new();
         // an until's condition is a boolean
         let typ = until.then(|| Type::Primitive(Typ::Bool.into()));
@@ -1252,7 +1309,7 @@ impl Machine<'_> {
                 )
                 .at(s));
             }
-            let v = format_compact!("#seqb{}_{i}", spec.id.inner());
+            let v = format_compact!("{STATEMENT_VALUE}{}_{i}", spec.id.inner());
             match &s.kind {
                 ExprKind::NoOp => continue,
                 ExprKind::Bind(b) if b.rec => {
@@ -1827,7 +1884,7 @@ fn entry_fire(e: Expr, pc: &str) -> Expr {
     match &e.kind {
         ExprKind::Ref { .. } | ExprKind::Constant(_) => any(at_entry(e.clone()), e),
         _ => {
-            let v = format_compact!("#seqv{}", e.id.inner());
+            let v = format_compact!("{STEP_VALUE}{}", e.id.inner());
             block(
                 pos,
                 [

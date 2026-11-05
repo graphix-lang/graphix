@@ -1016,8 +1016,15 @@ impl<R: Rt> Block<R> {
         module: bool,
         exprs: &Arc<[Expr]>,
     ) -> Result<Node<R>> {
-        let (children, catches) =
-            compile_block_children(ctx, flags, scope, top_id, module, exprs.iter())?;
+        let (children, catches) = compile_block_children(
+            ctx,
+            flags,
+            scope,
+            top_id,
+            module,
+            exprs.iter(),
+            None,
+        )?;
         Ok(Self::with(module, spec, children, catches, Runs::default()))
     }
 }
@@ -1025,7 +1032,9 @@ impl<R: Rt> Block<R> {
 /// Compile a statement list: each `catch(e) expr` child compiles
 /// through [`error::Catch::compile`], which advances the dynamic scope
 /// for all subsequent siblings. Returns the children in syntactic order
-/// plus the catch indices.
+/// plus the catch indices. The lets something writes are found among
+/// `writers`, the statements of the scope the list's lets are visible in,
+/// the list itself when `None`.
 pub(crate) fn compile_block_children<'a, R: Rt>(
     ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -1033,6 +1042,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     top_id: ExprId,
     module: bool,
     exprs: impl Iterator<Item = &'a Expr>,
+    writers: Option<&[&Expr]>,
 ) -> Result<(Box<[Node<R>]>, Box<[usize]>)> {
     let exprs: SmallVec<[&'a Expr; 32]> = exprs.collect();
     // pre-register the block's `mod` names so resolution is independent
@@ -1068,7 +1078,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         let below = &lexical[ctx.env.package_root(lexical).len()..];
         CompactString::from(below.trim_start_matches('/'))
     });
-    ctx.written.enter(&exprs, top);
+    ctx.written.enter(writers.unwrap_or(&exprs), top);
     let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);

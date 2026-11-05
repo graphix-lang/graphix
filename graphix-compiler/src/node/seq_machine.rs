@@ -229,6 +229,10 @@ impl<R: Rt> SeqMachine<R> {
             };
             scopes.push(s);
         }
+        // a step's lets are visible to the steps after it, whose writes
+        // write them
+        let writers: SmallVec<[&Expr; 32]> =
+            m.steps.iter().flat_map(|s| s.items.iter()).collect();
         let mut steps = Vec::with_capacity(m.steps.len());
         for s in m.steps.iter() {
             let scope = &scopes[s.scope as usize];
@@ -239,6 +243,7 @@ impl<R: Rt> SeqMachine<R> {
                 top_id,
                 false,
                 s.items.iter(),
+                Some(&writers),
             )?;
             let next = s.next.map(|n| n as usize);
             // the value's let, by the name the lowering gave it

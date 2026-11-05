@@ -1751,8 +1751,13 @@ cycle, across workers; the compiler never pins threads.
   names the seq reads as functions, issuing no call and reading nothing
   live, binds the literal itself, generic as outside a seq
   (`seq::inline_holder`); later steps read neither through a snapshot.
-  A holder with a call or a `live` part, and an outer generalized
-  binding a step snapshots, are one instance in the step.
+  A step's entry snapshot, the projection of it a read takes and a
+  step's value are written by nothing, so a read of a generalized
+  binding through them carries its scheme (`seq::passes_on`,
+  `bind::passes_generic`), read at the step's entry as ever; a step's
+  `let` a later step writes is written at its binding (the machine walks
+  every step's items for writers); a holder with a call part is one
+  instance in the step, and a `seqq` request's capture one per request.
   A statement starts in the first cycle its predecessor's effect can
   be seen: the next step enters in the cycle its predecessor completes
   unless it reads or writes a variable a pending write targets, by the
