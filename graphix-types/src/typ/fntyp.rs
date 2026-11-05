@@ -963,6 +963,14 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
     }
 
+    /// One instance of the scheme under the open gates `open`: what a
+    /// call copies is a fresh cell at the current level, which every use of
+    /// the copy shares (`Fresh::Instantiate`).
+    #[doc(hidden)]
+    pub fn one_instance(&self, open: &IntSet<LambdaId>) -> Self {
+        self.reset_tvars_int(&mut LPooled::take(), Fresh::Instantiate(open))
+    }
+
     /// A quantifier of this signature no call has picked: the type is a
     /// scheme, not the type of a call.
     pub fn has_open_quantifier(&self) -> bool {
@@ -1222,18 +1230,12 @@ impl FnType {
     }
 
     /// A call's copy of the signature under the open gates `open`
-    /// (`Fresh::Instantiate`), its quantifiers always fresh, each fresh
-    /// cell the copy holds more than once frozen, so it keeps its cell
-    /// when it unifies with an unfrozen one.
+    /// (`Fresh::Instantiate`), each fresh cell the copy holds more than
+    /// once frozen, so it keeps its cell when it unifies with an unfrozen
+    /// one.
     pub fn instantiate(&self, open: &IntSet<LambdaId>) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let how = Fresh::Instantiate(open);
-        let walk = |c: &Type, known: &mut AHashMap<usize, TVar>| {
-            c.reset_tvars_int(known, how).unwrap_or_else(|| c.clone())
-        };
-        self.fresh_quantifiers(&mut known, walk);
-        self.generic_inner_quantifiers(&mut known, |tv| tv.level().copied_by(open), walk);
-        let fresh = self.reset_tvars_int(&mut known, how);
+        let fresh = self.reset_tvars_int(&mut known, Fresh::Instantiate(open));
         let copies: LPooled<AHashSet<usize>> =
             known.values().map(|tv| tv.cell_addr()).collect();
         let mut occurrences = super::tvar::Occurrences::default();
@@ -1507,7 +1509,8 @@ impl FnType {
         }
         let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
         self.each_quantifier(|name, tv| {
-            if tv.open_cell().is_none() || decided.contains(name) {
+            let scheme = tv.open_cell().is_some_and(|open| open.level().is_generic());
+            if !scheme || decided.contains(name) {
                 return;
             }
             gates.push(match adopted {
@@ -2422,6 +2425,18 @@ impl Type {
     ) -> Option<Type> {
         ReadCopies::default().read(self, open, keep)
     }
+
+    /// [`Self::scheme_read`] taking one instance of each signature
+    /// ([`FnType::one_instance`]): a read no binding names.
+    #[doc(hidden)]
+    pub fn instance_read(
+        &self,
+        open: &IntSet<LambdaId>,
+        keep: &dyn Fn(&FnType) -> bool,
+    ) -> Option<Type> {
+        let mut copies = ReadCopies::default();
+        ReadWalk { open, keep, copies: &mut copies, generic: false }.go(self)
+    }
 }
 
 /// The copies reads take ([`Type::scheme_read`]) through one cell map:
@@ -2445,7 +2460,7 @@ impl ReadCopies {
         open: &IntSet<LambdaId>,
         keep: &dyn Fn(&FnType) -> bool,
     ) -> Option<Type> {
-        ReadWalk { open, keep, copies: self }.go(t)
+        ReadWalk { open, keep, copies: self, generic: true }.go(t)
     }
 }
 
@@ -2453,6 +2468,17 @@ struct ReadWalk<'a> {
     open: &'a IntSet<LambdaId>,
     keep: &'a dyn Fn(&FnType) -> bool,
     copies: &'a mut ReadCopies,
+    /// Copies are generic, a scheme's; else one instance's.
+    generic: bool,
+}
+
+impl<'a> ReadWalk<'a> {
+    fn how(&self) -> Fresh<'a> {
+        match self.generic {
+            true => Fresh::Scheme(self.open),
+            false => Fresh::Instantiate(self.open),
+        }
+    }
 }
 
 impl ReadWalk<'_> {
@@ -2479,16 +2505,15 @@ impl ReadWalk<'_> {
                     None
                 }
                 Type::Fn(ft) => {
-                    let fresh = ft.reset_tvars_int(
-                        &mut self.copies.known,
-                        Fresh::Scheme(self.open),
-                    );
+                    let how = self.how();
+                    let fresh = ft.reset_tvars_int(&mut self.copies.known, how);
                     fresh.alias_tvars(&mut LPooled::take());
                     Some(Type::Fn(Arc::new(fresh)))
                 }
                 Type::Ref(_) if t.copied_outside_functions(self.open) => {
+                    let how = self.how();
                     let fresh = t
-                        .reset_tvars_int(&mut self.copies.known, Fresh::Scheme(self.open))
+                        .reset_tvars_int(&mut self.copies.known, how)
                         .unwrap_or_else(|| t.clone());
                     fresh.alias_tvars(&mut LPooled::take());
                     Some(fresh)

@@ -30,7 +30,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type, check_bounds_acyclic,
-        tvar::{AtLevel, InTask, Level, RigidGate, TaskId},
+        tvar::{AtLevel, InTask, Level, RigidGate, TaskId, current_level},
     },
     wrap,
 };
@@ -2181,6 +2181,10 @@ pub struct Lambda {
     spec: Arc<Expr>,
     def: Value,
     typ: Type,
+    /// A binding names it (a `let` of it, or of a data literal holding
+    /// it): its gate generalizes its signature. Anywhere else its
+    /// signature is one instance, its enclosing level's.
+    pub(crate) named: bool,
     /// A lambda literal is a constant: present from birth (see Constant).
     resident: TagValue,
 }
@@ -2595,7 +2599,13 @@ impl Lambda {
     }
 
     fn with<R: Rt>(spec: Arc<Expr>, def: Value, typ: Type) -> Node<R> {
-        Node::new(Self { spec, def: def.clone(), typ, resident: TagValue::stale(def) })
+        Node::new(Self {
+            spec,
+            def: def.clone(),
+            typ,
+            named: false,
+            resident: TagValue::stale(def),
+        })
     }
 }
 
@@ -2607,6 +2617,9 @@ impl Lambda {
 struct DefGate<R: Rt> {
     def: LambdaId,
     depth: u32,
+    /// The level the definition stands at, where an unnamed one's
+    /// signature belongs.
+    outer: Level,
     _at: AtLevel,
     sig: Arc<FnType>,
     faux_id: BindId,
@@ -2620,6 +2633,7 @@ struct DefGate<R: Rt> {
 
 impl<R: Rt> DefGate<R> {
     fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>) -> Self {
+        let outer = current_level();
         let at = AtLevel::enter(def.level);
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
         let faux_id = BindId::new();
@@ -2653,21 +2667,7 @@ impl<R: Rt> DefGate<R> {
         // (bound-chain-rigid-01)
         def.typ.collect_tvars(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
-        // a rank-2 formal's own quantifiers are held too: a use of the
-        // formal in the body takes an instance of it, never binds them.
-        // One an earlier task created and marked is any instance of itself
-        // to this task already, which writes nothing of it.
-        let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        def.typ.inner_quantifiers(&mut quantifiers);
-        quantifiers.retain(|_, tv| !(tv.earlier_task() && tv.is_formal_quantifier()));
-        for tv in quantifiers.values() {
-            tv.mark_formal_quantifier()
-        }
-        let rigid = named
-            .values()
-            .map(|tv| tv.open_rigid())
-            .chain(quantifiers.values().map(|tv| tv.open_quantifier_rigid()))
-            .collect();
+        let rigid = named.values().map(|tv| tv.open_rigid()).collect();
         let declared = def
             .typ
             .quantifiers
@@ -2681,6 +2681,7 @@ impl<R: Rt> DefGate<R> {
         Self {
             def: def.id,
             depth: def.level.depth(),
+            outer,
             _at: at,
             sig: def.typ.clone(),
             faux_id,
@@ -2722,11 +2723,20 @@ impl<R: Rt> DefGate<R> {
     }
 
     /// The body's sites settle with the enclosing statement, all but the
-    /// cells this signature reaches: those stay open, generalized.
-    fn close(mut self, ctx: &mut CompileCtx<R>, table: Option<(SArc<DefTable>, &Expr)>) {
+    /// cells this signature reaches: those stay open, generalized where a
+    /// binding names the definition, else its enclosing level's.
+    fn close(
+        mut self,
+        ctx: &mut CompileCtx<R>,
+        table: Option<(SArc<DefTable>, &Expr)>,
+        named: bool,
+    ) {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
         ctx.def_gate_depth -= 1;
-        self.sig.generalize(self.depth);
+        match named {
+            true => self.sig.generalize(self.depth),
+            false => self.sig.claim(self.outer),
+        }
         for s in frame.iter_mut() {
             if let crate::PendingSettle::Site { sigs, .. } = s {
                 sigs.push(self.sig.clone());
@@ -2866,6 +2876,7 @@ fn check_defaults<R: Rt>(
             let mut node = def.in_signature(ctx, None, |ctx| {
                 compile(ctx, flags, expr.clone(), scope, ExprId::new())
             })?;
+            super::bind::name_value(&mut node, true);
             let res = judge_default(ctx, def, at, &mut node);
             Ok::<_, anyhow::Error>((node, res))
         })?;
@@ -3109,7 +3120,7 @@ impl<R: Rt> Update<R> for Lambda {
         for n in defaults.drain(..) {
             ctx.discard(n)
         }
-        gate.close(ctx, def.table.get().map(|t| (t.table.clone(), spec)));
+        gate.close(ctx, def.table.get().map(|t| (t.table.clone(), spec)), self.named);
         // what the body bound is the signature: a call's types follow from
         // it without elaborating the body
         self.typ.unbind_vacuous_tvars();
@@ -3146,7 +3157,10 @@ impl<R: Rt> Update<R> for Lambda {
             let _at = AtLevel::enter(level);
             self.typ.check_adopts(&ctx.env, &row).at(&self.spec)?;
         }
-        def.typ.generalize(def.level.depth());
+        match self.named {
+            true => def.typ.generalize(def.level.depth()),
+            false => def.typ.claim(current_level()),
+        }
         let mut own = tables.table.calls_own;
         let mut captured = SmallVec::new();
         for k in tables.table.calls_captured.iter() {

@@ -414,6 +414,7 @@ fn checked_default<R: Rt>(
         let mut node = f.in_signature(ctx, types.clone(), |ctx| {
             compile(ctx, flags, expr.clone(), &local_scope, top_id)
         })?;
+        super::bind::name_value(&mut node, true);
         let res = match types {
             Some(mut types) => node.typecheck0_instance(ctx, &mut types),
             None => {
@@ -4770,7 +4771,7 @@ impl<R: Rt> CallSite<R> {
                     // A shallow clone shares the def's TVar cells.
                     (*ftype).clone()
                 } else if is_param_knot {
-                    ftype.shared_call()
+                    (*ftype).clone()
                 } else {
                     fresh = true;
                     ftype.instantiate(&ctx.rec_defs)
@@ -5750,20 +5751,6 @@ mod test {
         assert_eq!(quantified.len(), 1);
         let steps = RANK2_STEPS.with(|n| n.get());
         assert!(steps <= 8 * 17, "{steps} steps");
-    }
-
-    // A formal whose every level builds its quantified function types anew,
-    // `Q<i><'a> = (Q<i-1><fn<'b: Any>(x: 'b) -> 'a>, ..)`, holds 2^11 - 2
-    // distinct quantifiers at Q10, each taken once.
-    #[test]
-    fn rank2_parts_takes_each_of_many_quantifiers_once() {
-        let env = chain_passing("Q", "'a", "('a, i64)", "fn<'b: Any>(x: 'b) -> 'a");
-        let t = parse_type("Q10<i64>").unwrap();
-        let (_, _, quantified) =
-            quantified_formal(&env, &t).expect("a quantified formal");
-        let cells: AHashSet<usize> =
-            quantified.iter().map(|(_, q)| q.cell_addr()).collect();
-        assert_eq!((quantified.len(), cells.len()), (2046, 2046));
     }
 
     // And where that parameter is a function type with no quantifiers of

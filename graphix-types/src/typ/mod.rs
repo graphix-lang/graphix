@@ -635,6 +635,14 @@ impl nohash::IsEnabled for AbstractId {}
 /// The v5 UUID namespace abstract type identities are derived from,
 /// so the compile-time [`AbstractId`] and a value's runtime tag agree
 /// across processes and builds.
+/// The refusal of a function type with quantifiers of its own anywhere
+/// but a declared signature's top.
+pub const QUANTIFIED_FN: &str = "a function type with type variables of its own \
+     (`fn<'a: ..>(..)`, or a trait as a parameter's type, `fn(c: Collection)`) \
+     stands only as a definition's signature: declare the variables on the \
+     definition (`'a: Number |f: fn(x: 'a) -> 'a| ..`), or bind the generic \
+     function with `let` and call it by name";
+
 const ABSTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x1f, 0x64, 0x9a, 0x2e, 0x7b, 0xd5, 0x4c, 0x8a, 0x9f, 0x3e, 0x21, 0xb7, 0x5c, 0x0d,
     0xe6, 0x42,
@@ -3366,8 +3374,9 @@ impl Type {
 
     /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
     /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
-    /// trait anywhere else is an error. Every function type it holds is
-    /// rank-2, its bounds held to [`FnType::check_bounds_closed`].
+    /// trait anywhere else is an error. A function type with quantifiers
+    /// of its own is refused ([`QUANTIFIED_FN`]): only a declared
+    /// signature's top has them ([`Self::rewrite_declared_args`]).
     /// Returns the rewritten type.
     pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
         self.rewrite_written(env, false)
@@ -3375,10 +3384,43 @@ impl Type {
 
     /// [`Self::rewrite_trait_args`] over a declared signature (an
     /// interface `val`, a trait method), whose own quantifiers at its top
-    /// are its scheme's, which each use picks: their bounds may name any
-    /// variable.
+    /// are its scheme's, which each use picks.
     pub fn rewrite_declared_args(&self, env: &Env) -> Result<Type> {
         self.rewrite_written(env, true)
+    }
+
+    /// Refuse a function type with quantifiers of its own, written or a
+    /// trait as a parameter's type, anywhere in a written type that
+    /// [`Self::rewrite_trait_args`] does not read (a catch's annotation, a
+    /// cast's target, a type test).
+    pub fn refuse_quantified_fns(&self, env: &Env) -> Result<()> {
+        let mut found = false;
+        let _ = self.try_for_each_written_fn(&mut |ft| {
+            found = !ft.quantifiers.is_empty()
+                || ft.args.iter().any(
+                    |a| matches!(&a.typ, Type::Ref(tr) if env.trait_of_ref(tr).is_some()),
+                );
+            match found {
+                true => ControlFlow::Break(()),
+                false => ControlFlow::Continue(()),
+            }
+        });
+        match found {
+            true => bail!("{QUANTIFIED_FN}"),
+            false => Ok(()),
+        }
+    }
+
+    fn try_for_each_written_fn(
+        &self,
+        f: &mut impl FnMut(&FnType) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        ensure_sufficient(|| {
+            if let Type::Fn(ft) = self {
+                f(ft)?;
+            }
+            self.try_for_each_child(&mut |c| c.try_for_each_written_fn(f))
+        })
     }
 
     fn rewrite_written(&self, env: &Env, scheme: bool) -> Result<Type> {
@@ -3406,12 +3448,8 @@ impl Type {
                 tr.name
             ),
             Type::Fn(ft) => {
-                let bounds = ft.constraint_view();
-                for (_, c) in bounds.iter() {
+                for (_, c) in ft.constraint_view().iter() {
                     c.check_bound(env)?;
-                }
-                if !scheme {
-                    ft.check_bounds_closed(&bounds)?;
                 }
                 let mut quantifiers: LPooled<Vec<ArcStr>> =
                     ft.quantifiers.iter().cloned().collect();
@@ -3460,6 +3498,9 @@ impl Type {
                 let rtype = part(&ft.rtype)?;
                 let throws = part(&ft.throws)?;
                 let ctors = ctor_quantifiers(ft, env);
+                if !scheme && !quantifiers.is_empty() {
+                    bail!("{QUANTIFIED_FN}")
+                }
                 if !changed && !params_changed && ctors.is_empty() {
                     return Ok(None);
                 }

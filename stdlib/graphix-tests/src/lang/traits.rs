@@ -590,17 +590,6 @@ run!(
     "#
 );
 
-// A quantifier bound written in a `let` annotation is enforced.
-run!(
-    annotation_bound_enforced,
-    refused("within Number does not contain string"),
-    "/test.gx" => r#"
-        let f: fn<'a: Number>(x: 'a) -> 'a = |x| x;
-        let result = f("hi")
-    "#
-    ; FuseExpect::None
-);
-
 // A polymorphic binding used as a value is instantiated per occurrence.
 run!(
     poly_value_two_types,
@@ -3032,7 +3021,7 @@ run!(
 );
 
 run!(
-    method_value_no_lambda_is_generic_per_call,
+    method_value_projected_from_data_is_refused,
     r#"{
     type C = Abstract<i64>;
     let id = |s, x| x;
@@ -3044,7 +3033,7 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"), Put::get(c, 2), Put::get(c, "t"))
 }"#,
-    prints(r#"[i64:1, "s", i64:2, "t"]"#)
+    refused("its value is no lambda, so no call copies its types")
 );
 
 run!(

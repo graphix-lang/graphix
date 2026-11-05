@@ -34,7 +34,6 @@ mod netidx_zero_config;
 mod no_subst;
 mod profile_instances;
 mod program_args;
-mod rank2_escape;
 mod repl_interrupt;
 mod sandbox_whitelist;
 mod script_exit;

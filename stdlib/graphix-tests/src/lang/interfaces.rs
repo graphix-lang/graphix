@@ -1433,16 +1433,6 @@ run!(
     "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
 ; FuseExpect::None);
 
-// A val's own quantifiers are its scheme's, so their bounds name any
-// variable; a rank-2 function type inside it is held to its own.
-run!(
-    a_rank2_bound_in_a_val_names_only_its_own_quantifiers,
-    refused("a rank-2 quantifier's bound names 'c, which this function type does not quantify"),
-    "/test.gx" => "mod m; let result = m::f(|x| x, 1)",
-    "/test/m.gxi" => "val f: fn(k: fn<'a: 'c>(x: 'a) -> 'a, z: 'c) -> 'c;",
-    "/test/m.gx" => "let f = |k: fn<'a: i64>(x: 'a) -> 'a, z: i64| k(z)"
-; FuseExpect::None);
-
 // A predicate the implementation needs of a compound signature type asks
 // it of the variables inside: Array<'a> is discernible only if 'a is.
 run!(
@@ -1460,23 +1450,6 @@ run!(
     "/test/m.gxi" => "val eq: fn<'a: Discernible>(x: Array<'a>, y: Array<'a>) -> bool;",
     "/test/m.gx" => "let eq = 'a: Discernible |x: Array<'a>, y: Array<'a>| -> bool x == y"
 );
-
-// An implementation that calls a function it is handed at types of its
-// own choosing (a rank-2 parameter) does not implement a signature that
-// hands it a function at one type.
-run!(
-    rank2_parameter_does_not_implement_a_monomorphic_one,
-    refused("the implementation picks 'b at each call of the function it is handed"),
-    "/test.gx" => r#"
-        mod inner;
-        let result = inner::f(|x: i64| x * 2)
-    "#,
-    "/test/inner.gxi" => r#"
-        val f: fn(g: fn(x: i64) -> i64) -> f64;
-    "#,
-    "/test/inner.gx" => r#"
-        let f = |g: fn<'b: Number>(x: 'b) -> 'b| -> f64 g(2.5)
-    "#; FuseExpect::None);
 
 // An interface's names resolve through what it imports or declares
 // itself, never through the implementation's imports or types.
@@ -1532,25 +1505,6 @@ run!(
     "/test.gx" => "mod inner; let result = inner::id(1)",
     "/test/inner.gxi" => "val id: fn(x: 'a) -> 'a",
     "/test/inner.gx" => "let id = 'a: Any |x: 'a| -> 'a x"
-; FuseExpect::Jit);
-
-// A function the implementation is handed is used at any type the
-// implementation's own quantifier admits: the interface must hand it
-// one at least that polymorphic.
-run!(
-    interface_rank2_argument_narrower_than_its_use_refused,
-    refused("the implementation uses the function it is handed at any 'c, where the signature hands it one at 'b: Number only"),
-    "/test.gx" => "mod inner; let result = inner::f(|x| x + x)",
-    "/test/inner.gxi" => "val f: fn(g: fn<'b: Number + Singleton>(x: 'b) -> 'b) -> (i64, string)",
-    "/test/inner.gx" => "let f = |g: fn<'c: Any>(x: 'c) -> 'c| (g(1), g(\"s\"))"
-);
-
-run!(
-    interface_rank2_argument_wider_than_its_use,
-    prints("[i64:1, f64:2.5]"),
-    "/test.gx" => "mod inner; let result = inner::f(|x| x)",
-    "/test/inner.gxi" => "val f: fn(g: fn<'b: Any>(x: 'b) -> 'b) -> (i64, f64)",
-    "/test/inner.gx" => "let f = |g: fn<'c: Number + Singleton>(x: 'c) -> 'c| (g(1), g(2.5))"
 ; FuseExpect::Jit);
 
 // A signature's variable is every caller's to pick: it meets an
@@ -1774,22 +1728,6 @@ run!(
 );
 
 run!(
-    rank2_val_result_over_an_outer_binding_refused,
-    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
-    "/test.gx" => "mod m; let k = m::mk(0); let result = (k(1), k(\"s\"))",
-    "/test/m.gxi" => "val mk: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a",
-    "/test/m.gx" => "let y = never(); let mk = |z| |x| { y <- x; x }"
-);
-
-run!(
-    rank2_val_result_over_its_own_variable,
-    prints("[i64:1, \"s\"]"),
-    "/test.gx" => "mod m; let k = m::mk(0); let result = (k(1), k(\"s\"))",
-    "/test/m.gxi" => "val mk: fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a",
-    "/test/m.gx" => "let mk = |z| |x| x"
-; FuseExpect::None);
-
-run!(
     struct_of_functions_val_over_an_outer_binding_refused,
     refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
     "/test.gx" => r#"
@@ -1870,14 +1808,6 @@ run!(
     "/test/m.gxi" => "val h: fn<'a: Any>(x: 'a) -> 'a",
     "/test/m.gx" => "let h = |x| x; h <- |x| x"
 );
-
-run!(
-    rank2_val_over_a_written_let_at_its_quantified_type,
-    prints("[i64:1, \"s\"]"),
-    "/test.gx" => "mod m; let result = (m::h(1), m::h(\"s\"))",
-    "/test/m.gxi" => "val h: fn<'a: Any>(x: 'a) -> 'a",
-    "/test/m.gx" => "let h: fn<'a: Any>(x: 'a) -> 'a = |x| x; h <- |x| x"
-; FuseExpect::None);
 
 // The refusal names the variable first by name, whichever the walk met.
 run!(
@@ -1974,14 +1904,6 @@ run!(
     "/test.gx" => "mod m; m::e <- |x| x; let result = (m::e(1), m::e(\"s\"))",
     "/test/m.gxi" => "val e: fn<'a: Any>(x: 'a) -> 'a",
     "/test/m.gx" => "let e = never()"
-; FuseExpect::None);
-
-run!(
-    rank2_val_parameter_over_a_written_let,
-    is(Value::I64(1)),
-    "/test.gx" => "mod m; let result = m::app(|x| x)",
-    "/test/m.gxi" => "val app: fn(f: fn<'a: Any>(x: 'a) -> 'a) -> i64",
-    "/test/m.gx" => "let g = never(); let app = |f| { g <- f; 1 }"
 ; FuseExpect::None);
 
 // What is written through a val lands on its implementation, which every
@@ -2134,21 +2056,6 @@ run!(
     "/test/a.gxi" => "val f: fn<'b: Any>(x: 'b) -> 'b",
     "/test/a.gx" => "let f = |x| x"
 );
-
-// A rank-2 function type in a val's data is one type, which a writable
-// reference holds whole.
-run!(
-    mut_ref_to_a_val_holding_a_quantified_function,
-    prints("[i64:1, \"s\"]"),
-    "/test.gx" => r#"
-        mod a;
-        let set = |r: &mut {f: fn<'b: Any>(x: 'b) -> 'b}, v| { *r <- v; null };
-        let z = set(&mut a::c, {f: |x| x});
-        let result = (a::c.f(1), a::c.f("s"))
-    "#,
-    "/test/a.gxi" => "val c: {f: fn<'b: Any>(x: 'b) -> 'b}",
-    "/test/a.gx" => "let c: {f: fn<'b: Any>(x: 'b) -> 'b} = {f: |x| x}"
-; FuseExpect::None);
 
 // A val whose type holds a variable is generic wherever its function types
 // stand (a typedef, a struct, an array): what is written through it must

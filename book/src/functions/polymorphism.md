@@ -160,26 +160,37 @@ error: ... 'a's bound names 'a: a bound may not reach its own variable; a recurs
 [1, [2, [3]]]
 ```
 
-A function type written with variables of its own, as a parameter's
-type, a field's, a `let`'s or a typedef's (`k: fn<'a: Number>(x: 'a) ->
-'a`), holds a function that works at every `'a` its bound admits. Its
-bounds may name only written types and its own variables: a variable of
-the definition around it, decided by the other arguments, is not a bound
-the function can be held to, and is refused,
+A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
+'a`, or a trait as a parameter's type, `fn(c: Collection) -> i64`, which
+declares one) stands only as a definition's own signature: an interface
+`val`'s type, a trait method's, a builtin's at the top of its
+declaration. Anywhere else, a parameter's type, a field, an element, a
+`let` annotation, a typedef, another function type's argument or result,
+it is refused. Declare the variable on the definition instead, which each
+call picks, or bind the generic function with `let` and call it by name,
 
 ```graphix
-〉let outer = |#k: fn<'a: 'c>(x: 'a) -> 'a, z: 'c| (k(z), z)
-error: ... a rank-2 quantifier's bound names 'c, which this function type does not quantify: bound it by a written type
-〉let outer = |#k: fn<'a: i64>(x: 'a) -> 'a, z: i64| (k(z), z)
-〉outer(#k: |x| x, 1)
--: (i64, i64)
-(1, 1)
+〉let apply = |f: fn<'a: Number>(x: 'a) -> 'a| f(1)
+error: ... a function type with type variables of its own (`fn<'a: ..>(..)`, or a trait as a parameter's type, `fn(c: Collection)`) stands only as a definition's signature: declare the variables on the definition (`'a: Number |f: fn(x: 'a) -> 'a| ..`), or bind the generic function with `let` and call it by name
+〉let apply = 'a: Number |f: fn(x: 'a) -> 'a, x: 'a| f(x)
+〉apply(|x| x * 2, 3)
+-: i64
+6
 ```
 
-A bound naming another variable of the same function type
-(`fn<'a: Any, 'b: ['a, null]>`) is fine, and so is any bound of an
-interface `val`'s or a trait method's own variables, which each use
-picks.
+A function stays generic only where a binding names it: a `let` of a
+lambda or of a data literal holding lambdas, a `val`, a trait method.
+Anywhere else, an element of a collection a call returns, a callback's
+result, a field of a call's result, an argument, it is one instance,
+which its uses decide. Here `g` is one instance of the lambda the
+callback returns, decided to `i64` by its first call, so a second call
+`g(1.5)` would be refused:
+
+```graphix
+let fs = array::map([1, 2], |r| 'a: Number |x: 'a| -> 'a x + x);
+let g = fs[0]$;
+g(3)
+```
 
 A third bound, `Discernible`, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type

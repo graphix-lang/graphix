@@ -2289,7 +2289,11 @@ impl<R: Rt> Connect<R> {
                 bind_id: id,
             });
         }
-        let node = compile(ctx, flags, value.clone(), scope, top_id)?;
+        let mut node = compile(ctx, flags, value.clone(), scope, top_id)?;
+        // a generalized binding names what is written to it
+        if ctx.env.poly_binds.contains(&id) {
+            bind::name_value(&mut node, true);
+        }
         Ok(Self::with(spec, node, id))
     }
 }
@@ -2938,6 +2942,7 @@ impl<R: Rt> TypeCast<R> {
     ) -> Result<Node<R>> {
         let n = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let target = typ.scope_refs(&scope.lexical);
+        target.refuse_quantified_fns(&ctx.env).at(&spec)?;
         target.check_cast(&ctx.env).at(&spec)?;
         let typ = Type::union(&ctx.env, &[&target, &CAST_ERR])?;
         Ok(Self::with(spec, typ, target, n, false, true))

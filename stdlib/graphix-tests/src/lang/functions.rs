@@ -28,59 +28,6 @@ const FIRST_CLASS_LAMBDAS: &str = r#"
 
 run!(first_class_lambdas, FIRST_CLASS_LAMBDAS, is(Value::I64(3)); FuseExpect::Jit);
 
-// A formal with its own quantifier is rank-2: each call of it copies 'a,
-// so the body may apply it at i64.
-const RANK2_FORMAL_APPLIED_AT_A_NUMBER: &str = r#"
-{
-  let g = |f: fn<'a: Number>(x: 'a) -> 'a, y| f(y) + 1;
-  g(|x| x, 1)
-}
-"#;
-
-run!(rank2_formal_applied_at_a_number, RANK2_FORMAL_APPLIED_AT_A_NUMBER, |v: Result<
-    &Value,
->| {
-    matches!(v, Ok(Value::I64(2)))
-});
-
-// A rank-2 formal's quantifier is held in the body, whatever the order
-// of the parameters or a declared variable of the same name: a use at
-// i64 takes an instance of the formal, so a callback must still be
-// polymorphic.
-run!(
-    rank2_formal_used_at_a_type_stays_polymorphic,
-    r#"{
-  let k = |y: 'b, g: fn<'b: Number>(x: 'b) -> 'b| { let h: fn(x: i64) -> i64 = g; h(1) + g(2) };
-  let j = |g: fn<'b: Number>(x: 'b) -> 'b, y: 'b| { let h: fn(x: i64) -> i64 = g; (h(1), g(f64:2.5), y) };
-  "[k("s", |x| x)] [j(|x| x, "s")]"
-}"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "3 (1, 2.5, \"s\")")
-);
-
-run!(rank2_formal_used_at_a_type_refuses_a_monomorphic_callback, r#"{
-  let k = |y: 'b, g: fn<'b: Number>(x: 'b) -> 'b| { let h: fn(x: i64) -> i64 = g; h(1) };
-  k("s", |x: i64| x + 1)
-}"#, refused("does not contain fn(x: i64) -> i64"); FuseExpect::None);
-
-run!(rank2_formal_listed_first_refuses_a_monomorphic_callback, r#"{
-  let k = |g: fn<'b: Number>(x: 'b) -> 'b, y: 'b| { let h: fn(x: i64) -> i64 = g; h(1) };
-  k(|x: i64| x + 1, "s")
-}"#, refused("does not contain fn(x: i64) -> i64"); FuseExpect::None);
-
-// A lambda returned through a rank-2 formal stays generic at run time:
-// its first bind, at i64, decides nothing for a later one at string.
-run!(
-    rank2_returned_lambda_binds_at_each_type,
-    r#"{
-  let app = |f: fn<'b: Any>(x: 'b) -> 'b| f;
-  let g = app(|x| x);
-  let a = g(1);
-  let b = g("s");
-  "[a] [b]"
-}"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 s")
-);
-
 const TWO_RIGID_VARS_INDEPENDENT: &str = r#"
 {
   let pair = 'a: Number, 'b: Number |x: 'a, y: 'b| -> ('a, 'b) (x, y);
@@ -2202,8 +2149,8 @@ async fn tail_quiet_bottom_inline(mode: Mode) -> Result<()> {
 
 modes!(tail_quiet_bottom_call, tail_quiet_bottom_inline);
 
-// A `let rec` annotation reads a trait parameter as a bounded
-// quantifier, as a plain `let` does.
+// A `let rec` annotation holds no function type with a variable of its
+// own, as a plain `let` does: the lambda declares it instead.
 const REC_ANNOTATION_TRAIT_PARAM: &str = r#"
 {
   let rec f: fn(x: Display) -> string = |x| "a";
@@ -2211,9 +2158,17 @@ const REC_ANNOTATION_TRAIT_PARAM: &str = r#"
 }
 "#;
 
-run!(rec_annotation_trait_param, REC_ANNOTATION_TRAIT_PARAM, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == "a")
-}; FuseExpect::Jit);
+run!(
+    rec_annotation_trait_param,
+    REC_ANNOTATION_TRAIT_PARAM,
+    refused("stands only as a definition's signature");
+    FuseExpect::None
+);
+
+run!(rec_trait_param_on_the_lambda, r#"{
+  let rec f = |x: Display| -> string "a";
+  (f(1), f("s"))
+}"#, prints(r#"["a", "a"]"#); FuseExpect::Jit);
 
 // A `let` that shadows a builtin binding is not a builtin.
 const BUILTIN_BINDING_SHADOWED: &str = r#"
@@ -2477,15 +2432,14 @@ const PARAM_CALLED_THROUGH_AN_EXPRESSION: &str = r#"
 {
   let m = |a, f: fn(x: 'a) -> 'b| -> Array<'b> array::map(a, |v| ((f))(v));
   let n = |a, f: fn(x: 'a) -> 'b| -> Array<'b> { let g = f; array::map(a, |v| g(v)) };
-  let apply = |f: fn<'b: Number>(x: 'b) -> 'b| ((f))(1);
-  (m([1, 2], |x| x * 2), n(["a"], |s| "[s]!"), apply(|x| x))
+  (m([1, 2], |x| x * 2), n(["a"], |s| "[s]!"))
 }
 "#;
 
 run!(
     param_called_through_an_expression,
     PARAM_CALLED_THROUGH_AN_EXPRESSION,
-    prints(r#"[[i64:2, i64:4], ["a!"], i64:1]"#);
+    prints(r#"[[i64:2, i64:4], ["a!"]]"#);
     FuseExpect::Jit
 );
 
@@ -2887,14 +2841,6 @@ run!(default_hidden_by_a_return_type, r#"
 }
 "#, refused("does not contain i64"); FuseExpect::None);
 
-run!(default_hidden_by_a_rank2_formal, r#"
-{
-    let f = 'a: Any |#x: 'a = 1, y: 'a| -> 'a select y { _ => x };
-    let app = |g: fn<'b: Any>(y: 'b) -> 'b| (g(1), g("s"));
-    app(f)
-}
-"#, refused("does not contain i64"); FuseExpect::None);
-
 // A union member built by the value's constructor holds the value, so a
 // function under it meets the fn type there: a field of an optional
 // struct, a tuple member, an array element of an option, a variant's
@@ -3132,7 +3078,7 @@ const BUILTIN_BOUND_WITHOUT_ITS_DEFAULT: &str = r#"
 run!(builtin_bound_without_its_default, BUILTIN_BOUND_WITHOUT_ITS_DEFAULT, prints("[i64:3, i64:1, i64:2]"); FuseExpect::None);
 
 // A builtin's variadic type is written like its other types: a trait
-// in it is rewritten.
+// parameter in a function type there is refused as it is elsewhere.
 const BUILTIN_VARIADIC_TRAIT: &str = r#"
 {
     let f = |@args: fn(x: Eq) -> i64| -> Any 'core_all;
@@ -3141,9 +3087,12 @@ const BUILTIN_VARIADIC_TRAIT: &str = r#"
 }
 "#;
 
-run!(builtin_variadic_trait, BUILTIN_VARIADIC_TRAIT, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(0)))
-}; FuseExpect::None);
+run!(
+    builtin_variadic_trait,
+    BUILTIN_VARIADIC_TRAIT,
+    refused("stands only as a definition's signature");
+    FuseExpect::None
+);
 
 // A builtin binding in a collection callback: forked slots each compile it,
 // and the binding is entered once.
@@ -3423,20 +3372,6 @@ run!(lambda_sampled_on_a_trigger, r#"{
   select f(5) { 6 => g(4), _ => never() }
 }"#, is(Value::I64(8)); FuseExpect::None);
 
-// A nested fn type's quantifier named like the signature's is its own:
-// the outer 'b stays rigid whichever parameter comes first.
-run!(
-    shadowing_quantifier_keeps_outer_rigid,
-    refused("cannot compute 'b: unbound within Number + i64"),
-    "/test.gx" => "let f = 'b: Number |g: fn<'b: Number>(x: 'b) -> 'b, y: 'b| -> 'b y + 1; let result = 0"
-; FuseExpect::None);
-
-run!(
-    shadowing_quantifier_keeps_outer_rigid_swapped,
-    refused("cannot compute 'b: unbound within Number + i64"),
-    "/test.gx" => "let f = 'b: Number |y: 'b, g: fn<'b: Number>(x: 'b) -> 'b| -> 'b y + 1; let result = 0"
-; FuseExpect::None);
-
 // A declared variable beside a concrete member cannot be made one type:
 // the body is refused, not the variable narrowed to the member.
 run!(
@@ -3470,51 +3405,16 @@ run!(
     "#
 ; FuseExpect::None);
 
-// A rank-2 formal's quantifier named like the definition's own is its
-// own, whichever parameter comes first: check and build agree.
-run!(
-    shadowing_rank2_formal_after,
-    is(Value::F64(2.5)),
-    "/test.gx" => "let f = 'a: Number |y: 'a, g: fn<'a: Number>(x: 'a) -> 'a| -> 'a g(y); let result = f(2.5, |x| x)"
-);
-
-run!(
-    shadowing_rank2_formal_before,
-    is(Value::F64(2.5)),
-    "/test.gx" => "let f = 'a: Number |g: fn<'a: Number>(x: 'a) -> 'a, y: 'a| -> 'a g(y); let result = f(|x| x, 2.5)"
-);
-
-// A rank-2 formal passes on to another rank-2 formal: its value is any
-// instance of itself. One bounded tighter than the target is refused.
-run!(
-    rank2_formal_forwards_to_rank2,
-    is(Value::I64(1)),
-    "/test.gx" => r#"
-        let app = |f: fn<'b: Any>(x: 'b) -> 'b| f(1);
-        let app2 = |g: fn<'c: Any>(x: 'c) -> 'c| app(g);
-        let result = app2(|x| x)
-    "#
-);
-
-run!(
-    rank2_formal_bounded_tighter_is_refused,
-    refused("does not contain fn<'c: Number>"),
-    "/test.gx" => r#"
-        let app = |f: fn<'b: Any>(x: 'b) -> 'b| f("s");
-        let app2 = |g: fn<'c: Number>(x: 'c) -> 'c| app(g);
-        let result = app2(|x| x)
-    "#
-; FuseExpect::None);
-
-// A generic function value is generic wherever it stands: an element of
-// a collection keeps its quantifier, and each call picks it anew.
+// A function value no binding names is one instance: an element of a
+// collection a call returns is, and a callback calling it at two types is
+// refused.
 run!(
     generic_function_elements_stay_generic,
     r#"{
         let fs = array::map([1, 2], |x| 'a: Number |x: 'a, y: 'a| -> 'a x + y);
         array::map(fs, |f| (f(1, 2), f(f32:1.5, f32:2.0)))
     }"#,
-    prints("[[i64:3, f32:3.5], [i64:3, f32:3.5]]");
+    refused("does not contain f32");
     FuseExpect::None
 );
 
@@ -3611,7 +3511,7 @@ run!(
 
 run!(
     generic_function_literals_in_an_array,
-    prints("[[u8:3, f64:4.], [u8:2, f64:3.75]]"),
+    refused("does not contain f64"),
     "/test.gx" => r#"
         let fs = ['q: Number |x, y: 'q| -> 'q x + y, 'q: Number |x, y: 'q| -> 'q x * y];
         let result = array::map(fs, |f| (f(u8:1, u8:2), f(1.5, 2.5)))
@@ -3620,7 +3520,7 @@ run!(
 
 run!(
     generic_function_beside_a_function_literal_in_an_array,
-    prints("[[u8:6, f64:3.], [u8:5, f64:3.5]]"),
+    refused("does not contain f64"),
     "/test.gx" => format!(
         "{GENERIC_ADD} let fs = [|x, y| x * y, g]; \
          let result = array::map(fs, |f| (f(u8:2, u8:3), f(1.5, 2.0)))"
@@ -3629,7 +3529,7 @@ run!(
 
 run!(
     generic_function_returned_through_a_select,
-    prints("[u8:5, f64:3.5]"),
+    refused("does not contain f64"),
     "/test.gx" => format!(
         "{GENERIC_ADD} let pick = |b: bool| select b {{ true => g, false => g }}; \
          let h = pick(true); let result = (h(u8:2, u8:3), h(1.5, 2.0))"
@@ -3787,61 +3687,6 @@ run!(returned_function_type_parenthesized_before_the_throws, r#"{
   let h: i64 = f;
   h
 }"#, refused("does not contain fn(x: i64) -> (fn(y: i64) -> i64) throws Error<ErrChain<`E>>"); FuseExpect::None);
-
-// A parameter whose own parameter is rank-2 takes a polymorphic
-// argument at each call: the call copies the inner quantifier, in the
-// body and in a lambda nested in it alike.
-run!(rank2_quantifier_of_a_parameter_copied_at_each_call, r#"{
-  let use_it = |k: fn(f: fn<'c: Any>(x: 'c) -> 'c) -> (i64, string)| k(|z| z);
-  let nested = |k: fn(f: fn<'c: Any>(x: 'c) -> 'c) -> (i64, string)| { let g = |u: i64| k(|z| z); g(1) };
-  let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
-  (use_it(apply), nested(apply))
-}"#, prints(r#"[[i64:1, "s"], [i64:1, "s"]]"#); FuseExpect::Jit);
-
-// While a call checks its argument against a rank-2 formal, the formal's
-// quantifier is one type: a definition inside the argument that holds it
-// does not generalize it, so a reference to that definition does not copy it.
-run!(rank2_quantifier_a_closure_holds_stays_the_formals, r#"{
-  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> 'b| (f(1)(0), f("s")(0));
-  app(|x| { let g = |y: i64| x; g })
-}"#, prints(r#"[i64:1, "s"]"#); FuseExpect::None);
-
-run!(rank2_quantifier_a_closure_holds_is_not_a_closed_type, r#"{
-  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> string| f(1)(0);
-  app(|x| { let g = |y: i64| x; g })
-}"#, refused("fn(y: i64) -> string does not contain fn(x: "); FuseExpect::None);
-
-// A labeled default that reads a rank-2 formal's quantifier fits its
-// parameter for every type the quantifier stands for, as one of an
-// enclosing definition's declared variable does.
-run!(
-    default_of_a_rank2_quantifier_types_its_parameter,
-    r#"{
-  let app = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
-  let esc = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> 'b| (f(1)(0), f("s")(0));
-  (
-    app(|x| { let g = |#d = x, y: i64| d; g(1) }),
-    app('q: Any |x: 'q| -> 'q { let g = |#d = x, y: i64| d; g(1) }),
-    esc('q: Any |x: 'q| { let g = |#d = x, y: i64| d; g })
-  )
-}"#,
-    prints(r#"[[i64:1, "s"], [i64:1, "s"], [i64:1, "s"]]"#)
-);
-
-run!(default_of_a_rank2_quantifier_is_not_a_closed_type, r#"{
-  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> string| f(1)(0);
-  app(|x| { let g = |#d = x, y: i64| d; g })
-}"#, refused("fn(y: i64) -> string does not contain fn(x: "); FuseExpect::None);
-
-run!(default_of_a_declared_rank2_quantifier_is_not_a_closed_type, r#"{
-  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> string| f(1)(0);
-  app('q: Any |x: 'q| { let g = |#d = x, y: i64| d; g })
-}"#, refused("fn(y: i64) -> string does not contain fn<'q: Any>(x: "); FuseExpect::None);
-
-run!(default_of_a_rank2_quantifier_fits_its_own_parameter, r#"{
-  let app = |f: fn<'b: Any>(x: 'b) -> fn(y: i64) -> string| f(1)(0);
-  app(|x| { let g = |#d: 'q = x, y: i64| d; g })
-}"#, refused("'q: unbound does not contain"); FuseExpect::None);
 
 // A labeled default's block names the types it declares, at the
 // definition's check and at each call that omits it.

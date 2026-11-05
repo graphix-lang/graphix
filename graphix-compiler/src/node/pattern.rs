@@ -2472,6 +2472,7 @@ impl<R: Rt> PatternNode<R> {
         let (explicit, type_predicate) = match &spec.type_predicate {
             Some(t) => {
                 let t = t.scope_refs(&scope.lexical);
+                t.refuse_quantified_fns(&ctx.env)?;
                 super::lambda::body_annotation(ctx, &t);
                 (true, t.lookup_ref(&ctx.env)?)
             }

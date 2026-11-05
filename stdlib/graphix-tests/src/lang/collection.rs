@@ -440,27 +440,43 @@ const NESTED_MIXED_TYPES: &str = r#"
 
 run!(nested_mixed_types, NESTED_MIXED_TYPES, is(Value::I64(9)); FuseExpect::Jit);
 
-// A trait-typed parameter of a fn type takes a fresh element at each
-// call, so a rank-2 formal applies to collections of two element types.
+// A function type with a trait-typed parameter has a variable of its own,
+// so it stands only as a definition's signature: a formal holding one is
+// refused, and the generic function is called by the name a `let` binds.
 run!(
-    collection_rank2_elements_per_call,
-    is(Value::I64(21)),
+    collection_generic_formal_is_refused,
+    refused("stands only as a definition's signature"),
     "/test.gx" => r#"
         use Collection::*;
         let n = |c: Collection| fold(c, 0, |acc, x| acc + 1);
         let apply = |f: fn(c: Collection) -> i64| (f([1, 2]), f(["x"]));
-        let (a, b) = apply(n);
-        let result = a * 10 + b
+        let result = apply(n)
     "#
 );
 
-// A callback that returns a function with its own quantifier leaves the
-// quantifier open: each call of an element picks it.
+run!(
+    collection_generic_function_called_by_name_at_two_types,
+    is(Value::I64(21)),
+    "/test.gx" => r#"
+        use Collection::*;
+        let n = |c: Collection| fold(c, 0, |acc, x| acc + 1);
+        let result = n([1, 2]) * 10 + n(["x"])
+    "#
+);
+
+// A function a callback returns is one instance, which its uses decide:
+// no binding names it, so it is generic nowhere.
 run!(collection_returns_a_generic_function, r#"{
     let fs = array::map([1, 2], |r| 'a: Number |#start: 'a = 0, x: 'a| -> 'a start + x);
     let g = fs[0]$;
     g(#start: 3, 4)
 }"#, is(Value::I64(7)); FuseExpect::None);
+
+run!(collection_returned_function_is_one_instance, r#"{
+    let fs = array::map([1, 2], |r| 'a: Number |#start: 'a = 0, x: 'a| -> 'a start + x);
+    let g = fs[0]$;
+    (g(#start: 3, 4), g(#start: 1.5, 2.0))
+}"#, refused("does not contain f64"); FuseExpect::None);
 
 // A collection fires when it resizes or its source comes back from bottom,
 // whatever tag the source arrives with (an arm waking after another arm

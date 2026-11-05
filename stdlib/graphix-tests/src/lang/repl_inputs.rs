@@ -165,20 +165,6 @@ async fn annotated_binding_takes_a_function_write() -> Result<()> {
     .await
 }
 
-/// A rank-2 annotation over such a function is refused at its own input.
-#[tokio::test(flavor = "current_thread")]
-async fn generic_annotation_over_a_held_write_is_refused() -> Result<()> {
-    session(&[
-        Accept("let y = never()"),
-        Refuse(
-            "let p: fn<'b: Any>(x: 'b) -> 'b = |x| { y <- x; x }",
-            "does not contain fn(x: _) -> _: it holds the type of `y` (line 1, column 5 \
-             in `let y = never()`)",
-        ),
-    ])
-    .await
-}
-
 /// A constructed abstract value's parameter its input left open is ⊥:
 /// a later type test of another parameter covers nothing of it.
 #[tokio::test(flavor = "current_thread")]
@@ -226,8 +212,8 @@ async fn refused_input_leaves_earlier_types() -> Result<()> {
     session(&[
         Accept("let y = []"),
         Refuse(
-            "let p: fn<'b: Any>(x: 'b) -> 'b = |x| { y <- [x]; x }",
-            "does not contain fn(x: _) -> _: it holds the type of `y`",
+            "let p = 'b: Any |x: 'b| -> 'b { y <- [x]; x }",
+            "y is Array<_>, settled when its input ended, and cannot hold",
         ),
         Refuse("y <- [1]", "y is Array<_>, settled when its input ended"),
     ])
@@ -239,8 +225,8 @@ async fn refused_input_leaves_an_annotated_binding() -> Result<()> {
     session(&[
         Accept("let y: Array<i64> = []"),
         Refuse(
-            "let p: fn<'b: Any>(x: 'b) -> 'b = |x| { y <- [x]; x }",
-            "does not contain fn(x: i64) -> i64",
+            "let p = 'b: Any |x: 'b| -> 'b { y <- [x]; x }",
+            "y is Array<i64> and cannot hold",
         ),
         Accept("y <- [1]"),
         Produce("y", Value::Array([Value::I64(1)].into())),
@@ -251,9 +237,9 @@ async fn refused_input_leaves_an_annotated_binding() -> Result<()> {
 const SETF: &str =
     "let setf = |p: &mut fn(x: i64) -> i64| { *p <- |x: i64| -> i64 x + 100; null }";
 
-/// A function read out of a generic holder is one type to the inputs
-/// after its own: calls copy its quantifier, and a later value use that
-/// would decide it is refused, naming the binding to annotate.
+/// A function read out of a generic holder is one instance, which no
+/// binding names: a later input that would decide it, a call included, is
+/// refused, naming the binding to annotate.
 #[tokio::test(flavor = "current_thread")]
 async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
     const DECIDES_J: &str = "this input would decide a type of an earlier input: \
@@ -261,8 +247,7 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
     session(&[
         Accept("let s = {g: 'a: Number |x: 'a| -> 'a x + x}"),
         Accept("let j = s.g"),
-        Produce("j(1)", Value::I64(2)),
-        Produce("j(1.5)", Value::F64(3.0)),
+        Refuse("j(1)", DECIDES_J),
         Accept("let app = |f: fn(x: i64) -> i64| f(1)"),
         Refuse("app(j)", DECIDES_J),
         Refuse("let arr = [j, |x: i64| -> i64 x]", DECIDES_J),
@@ -272,15 +257,8 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
         ),
         Accept(SETF),
         Refuse("setf(&mut j)", DECIDES_J),
-        Produce("j(2.5)", Value::F64(5.0)),
-        Accept("let g = 'q: Number |x, y: 'q| -> 'q x + y"),
-        Accept("let fs = [g, g]"),
-        Refuse(
-            "let z: fn(x: i64, y: i64) -> i64 = fs[0]$",
-            "this input would decide a type of an earlier input: annotate `fs` (line 1, \
-             column 5 in `let fs = [g, g]`)",
-        ),
-        Produce("fs[1]$(1.5, 2.5)", Value::F64(4.0)),
+        Produce("s.g(2.5)", Value::F64(5.0)),
+        Produce("s.g(2)", Value::I64(4)),
     ])
     .await
 }
@@ -307,61 +285,56 @@ async fn annotated_earlier_value_takes_a_later_use() -> Result<()> {
     .await
 }
 
-/// A write as general as an earlier binding's function holds it rigid for
-/// the comparison and decides nothing of it; one narrower is refused.
+/// A write as general as an earlier generic holder holds it rigid for the
+/// comparison and decides nothing of it; one narrower is refused.
 #[tokio::test(flavor = "current_thread")]
 async fn write_as_general_decides_nothing() -> Result<()> {
     session(&[
         Accept("let s = {g: 'a: Number |x: 'a| -> 'a x + x}"),
-        Accept("let j = s.g"),
-        Accept("j <- s.g"),
-        Produce("j(1.5)", Value::F64(3.0)),
-        Produce("j(1)", Value::I64(2)),
+        Accept("let j = s"),
+        Accept("j <- s"),
+        Produce("j.g(1.5)", Value::F64(3.0)),
+        Produce("j.g(1)", Value::I64(2)),
         Accept("let s2 = {g: |x| x}"),
-        Accept("let j2 = s2.g"),
+        Accept("let j2 = s2"),
         Refuse(
-            "j2 <- |x: i64| -> i64 x",
-            "this input would decide a type of an earlier input: annotate `j2`",
+            "j2 <- {g: |x: i64| -> i64 x}",
+            "made generic by an earlier compile, so what is written to it must be as \
+             general",
         ),
-        Produce("j2(\"s\")", Value::String(arcstr::literal!("s"))),
+        Produce("j2.g(\"s\")", Value::String(arcstr::literal!("s"))),
     ])
     .await
 }
 
 /// A write through a reference to an earlier input's binding that would
-/// decide its type is refused, naming the bindings that hold the type,
-/// and the value it would have narrowed is still the one its input made.
+/// decide its type is refused, naming the binding that holds the type: a
+/// function read out of a holder is one instance, settled when its input
+/// ended.
 #[tokio::test(flavor = "current_thread")]
 async fn write_through_a_reference_decides_no_earlier_type() -> Result<()> {
+    const J0: &str = "it holds the type of `j0` (line 1, column 20 in `let (j, r) = { let \
+                      j0 = s.g; (j0, &mut j..`), settled when its input ended";
     session(&[
         Accept("let s = {g: |x| x}"),
         Accept("let (j, r) = { let j0 = s.g; (j0, &mut j0) }"),
         Accept(SETF),
-        Refuse(
-            "setf(r)",
-            "this input would decide a type of an earlier input: annotate `j0` (line 1, \
-             column 20 in `let (j, r) = { let j0 = s.g; (j0, &mut j..`), `j` (line 1, \
-             column 6",
-        ),
-        Refuse(
-            "{ let r2 = r; *r2 <- |x: i64| -> i64 x + 1; null }",
-            "this input would decide a type of an earlier input: annotate `j0`",
-        ),
-        Produce("j(\"s\")", Value::String(arcstr::literal!("s"))),
+        Refuse("setf(r)", J0),
+        Refuse("{ let r2 = r; *r2 <- |x: i64| -> i64 x + 1; null }", J0),
+        Refuse("j(\"s\")", J0),
         Accept("let q = &mut { let n = 1; s.g }"),
         Refuse(
             "setf(q)",
-            "this input would decide a type of an earlier input: annotate `q` (line 1, \
-             column 5 in `let q = &mut { let n = 1; s.g }`)",
+            "it holds the type of `q` (line 1, column 5 in `let q = &mut { let n = 1; \
+             s.g }`), settled when its input ended",
         ),
         Accept("type H<'a> = Abstract<&mut 'a>"),
         Accept("let h = H(&mut { let n = 1; |x| x })"),
         Refuse(
             "setf(h.0)",
-            "this input would decide a type of an earlier input: annotate `h` (line 1, \
-             column 5 in `let h = H(&mut { let n = 1; |x| x })`)",
+            "it holds the type of `h` (line 1, column 5 in `let h = H(&mut { let n = \
+             1; |x| x })`), settled when its input ended",
         ),
-        Produce("(*h.0)(\"s\")", Value::String(arcstr::literal!("s"))),
     ])
     .await
 }
@@ -388,31 +361,23 @@ async fn annotated_written_value_takes_a_write() -> Result<()> {
 const WRITTEN_MODULE: &str =
     "let k = super::s.g;\nlet j = k;\nlet w = |v| { k <- v; null }";
 
-/// A later input that would decide an open cell of an earlier input is
-/// refused and decides nothing: the cell a module's `<-` target holds stays
-/// open after a refused input that would have decided it, and an accepted
-/// one that would is refused, naming the bindings that hold it.
+/// A function a module reads out of a holder into a `<-` target is one
+/// instance, settled when the module's input ended: a later input that would
+/// decide it is refused, naming the binding that holds it, and a refused
+/// input decides nothing of it.
 #[tokio::test(flavor = "current_thread")]
 async fn refused_input_decides_no_earlier_open_cell() -> Result<()> {
+    const K: &str = "it holds the type of `k` (line 1, column 5 in module /m), settled \
+                     when its input ended";
     session_over(
         &[("/m.gx", WRITTEN_MODULE)],
         &[
             Accept("let s = {g: |x| x}"),
             Accept("mod m"),
-            Refuse(
-                "{ let q: fn(x: i64) -> i64 = m::k; let bad: string = 1; q }",
-                "type mismatch string does not contain i64",
-            ),
-            Produce("m::k(\"s\")", Value::String(arcstr::literal!("s"))),
-            Refuse(
-                "let z: fn(x: i64) -> i64 = m::k",
-                "this input would decide a type of an earlier input: annotate `k` (line 1, \
-                 column 5 in module /m), `j` (line 2, column 5 in module /m)",
-            ),
-            Refuse(
-                "let z: fn(x: i64) -> i64 = m::j",
-                "this input would decide a type of an earlier input: annotate `k`",
-            ),
+            Refuse("{ let q: fn(x: i64) -> i64 = m::k; let bad: string = 1; q }", K),
+            Refuse("m::k(\"s\")", K),
+            Refuse("let z: fn(x: i64) -> i64 = m::k", K),
+            Refuse("let z: fn(x: i64) -> i64 = m::j", K),
         ],
     )
     .await
@@ -436,8 +401,8 @@ async fn annotated_module_binding_takes_a_later_use() -> Result<()> {
     .await
 }
 
-/// A callback's cell an earlier input left in its value's type is decided
-/// by no later input.
+/// A function a block holds is one instance, settled when its input ended:
+/// a later input that would decide it is refused.
 #[tokio::test(flavor = "current_thread")]
 async fn later_input_decides_no_leaked_callback_cell() -> Result<()> {
     session(&[
@@ -448,7 +413,8 @@ async fn later_input_decides_no_leaked_callback_cell() -> Result<()> {
         ),
         Refuse(
             "let w: (i64, Array<W<string>>, i64) = (0, h(0).1, 1)",
-            "this input would decide a type of an earlier input: annotate `y0`",
+            "it holds the type of `h` (line 1, column 5 in `let h = { let y0 = []; let \
+             g0 = |x| { y0..`), settled when its input ended",
         ),
     ])
     .await
@@ -459,8 +425,9 @@ async fn annotated_callback_result_takes_a_later_use() -> Result<()> {
     session(&[
         Accept("type W<'t> = Abstract<'t>"),
         Accept(
-            "let h = { let y0: Array<W<i64>> = []; let g0 = |x| { y0 <- \
-             array::map([x], |e| W(e)); x }; |u| (u, y0, g0) }",
+            "let h: fn(u: i64) -> (i64, Array<W<i64>>, fn(x: i64) -> i64) = { let y0: \
+             Array<W<i64>> = []; let g0 = |x| { y0 <- array::map([x], |e| W(e)); x }; \
+             |u| (u, y0, g0) }",
         ),
         Refuse("let w: (i64, Array<W<string>>, i64) = (0, h(0).1, 1)", "type mismatch"),
         Accept("let w: (i64, Array<W<i64>>, i64) = (0, h(0).1, 1)"),
@@ -642,10 +609,13 @@ run!(
 const STATUS: &str = r#"select st { error as e => "[e]", null as _ => "loaded" }"#;
 
 /// A dynamic load is an input of its own: a decision about a type an
-/// earlier input left open refuses it, naming the bindings that hold the
-/// type, and a refused load decides nothing.
+/// earlier input settled refuses it, naming the binding that holds the type,
+/// and a refused load decides nothing. A ⊥ the earlier input settled reads
+/// as any type.
 #[tokio::test(flavor = "current_thread")]
 async fn load_decides_no_earlier_open_cell() -> Result<()> {
+    const K: &str = "it holds the type of `k` (line 1, column 5 in module /m), settled \
+                     when its input ended";
     session_over(
         &[("/m.gx", WRITTEN_MODULE)],
         &[
@@ -662,11 +632,7 @@ async fn load_decides_no_earlier_open_cell() -> Result<()> {
                     source r#"let s = |u: i64| -> string super::unw(super::p[0]$)"#
                 }"##,
             ),
-            ProduceText(
-                STATUS,
-                "this input would decide a type of an earlier input: annotate `y` (line \
-                 1, column 15 in `let p = { let y = never(); let g = |x| {..`), `g`",
-            ),
+            ProduceText(STATUS, "loaded"),
             Accept("let s = {g: |x| x}"),
             Accept("mod m"),
             Accept(
@@ -676,29 +642,8 @@ async fn load_decides_no_earlier_open_cell() -> Result<()> {
                     source "let q: fn(x: i64) -> i64 = super::m::k; let bad: string = 1"
                 }"#,
             ),
-            ProduceText(
-                STATUS,
-                "this input would decide a type of an earlier input: annotate `k` (line \
-                 1, column 5 in module /m)",
-            ),
-            ProduceText(STATUS, "type mismatch string does not contain i64"),
-            Produce("m::k(\"s\")", Value::String(arcstr::literal!("s"))),
-            Accept(
-                r#"let st = mod f dynamic {
-                    sandbox unrestricted;
-                    sig { val q: fn(x: i64) -> i64 };
-                    source "let q: fn(x: i64) -> i64 = super::m::k"
-                }"#,
-            ),
-            ProduceText(
-                STATUS,
-                "this input would decide a type of an earlier input: annotate `k`",
-            ),
-            Produce("m::k(\"t\")", Value::String(arcstr::literal!("t"))),
-            Refuse(
-                "let z: fn(x: i64) -> i64 = m::k",
-                "this input would decide a type of an earlier input: annotate `k`",
-            ),
+            ProduceText(STATUS, K),
+            Refuse("m::k(\"s\")", K),
         ],
     )
     .await
@@ -744,8 +689,9 @@ async fn load_takes_an_annotated_earlier_binding() -> Result<()> {
     .await
 }
 
-// A load is an input after the program that loads it: it decides none of
-// the program's types, here the cell a callback leaves in `p`.
+// A load is an input after the program that loads it: the cell the
+// program left in `p` is one instance, settled at ⊥, which the load reads
+// as any type.
 const LOAD_DECIDES_PROGRAM_TYPE: &str = r##"{
     type W<'t> = Abstract<'t>;
     let unw = |w: W<'a>| -> 'a w.0;
@@ -761,11 +707,7 @@ const LOAD_DECIDES_PROGRAM_TYPE: &str = r##"{
 run!(
     load_decides_no_type_the_program_left_open,
     LOAD_DECIDES_PROGRAM_TYPE,
-    |v: anyhow::Result<&Value>| matches!(
-        v,
-        Ok(Value::String(s))
-            if s.contains("this input would decide a type of an earlier input: annotate `y`")
-    );
+    |v: anyhow::Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "loaded");
     FuseExpect::Jit
 );
 

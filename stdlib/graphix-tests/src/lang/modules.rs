@@ -942,29 +942,6 @@ run!(
     FuseExpect::None
 );
 
-// A module's callbacks over its parent's annotated array of rank-2
-// functions call each element at a type of their own and decide nothing
-// of the parent's written type.
-run!(
-    module_calls_outer_rank2_elements,
-    prints("[[f64:4., f64:4.], [i64:3, i64:3]]"),
-    "/test.gx" => r#"
-        let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
-        let fs: Array<fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a> = [f, f];
-        mod m;
-        let result = (m::r, m::q)
-    "#,
-    "/test/m.gxi" => r#"
-        val r: Array<f64>;
-        val q: Array<i64>
-    "#,
-    "/test/m.gx" => r#"
-        use super::fs;
-        let r = array::map(fs, |h| h(1.5, 2.5));
-        let q = array::map(fs, |h| h(1, 2))
-    "#
-);
-
 // A module with no interface writing a name its parent destructured from a
 // holder decides that holder value's copy, never the definition the
 // parent's other reads instantiate.
@@ -2533,23 +2510,6 @@ run!(
         let y = f(2)
     "#; FuseExpect::Jit);
 
-// An interface typedef naming a trait-typed parameter serves its
-// implementation.
-run!(
-    interface_typedef_with_a_trait_parameter,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "3"),
-    "/test.gx" => r#"
-        mod m;
-        let result = m::apply(|x| "[x]", 3)
-    "#,
-    "/test/m.gxi" => r#"
-        type F = fn(x: Display) -> string;
-        val apply: fn(f: F, x: i64) -> string
-    "#,
-    "/test/m.gx" => r#"
-        let apply = |f: F, x: i64| -> string f(x)
-    "#; FuseExpect::None);
-
 // A predicate bound on a typedef parameter reaches the open members of a
 // union argument on the interface's side as on the implementation's.
 run!(
@@ -2566,27 +2526,6 @@ run!(
     "/test/m.gx" => r#"
         let f = |x: T<[i64, 'b]>| -> i64 array::len(x)
     "#; FuseExpect::Jit);
-
-// The same with the trait-typed parameter inside an abstract's
-// representation.
-run!(
-    interface_abstract_typedef_with_a_trait_parameter,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "3"),
-    "/test.gx" => r#"
-        mod m;
-        let result = m::apply(3)
-    "#,
-    "/test/m.gxi" => r#"
-        type F = Abstract<fn(x: Display) -> string>;
-        val apply: fn(x: i64) -> string
-    "#,
-    "/test/m.gx" => r#"
-        let apply = |x: i64| -> string {
-            let f = F(|y| "[y]");
-            let g = f.0;
-            g(x)
-        }
-    "#; FuseExpect::None);
 
 // A dynamic module whose source goes bottom keeps its loaded body
 // running: a write to an interface val reaches the body that cycle.

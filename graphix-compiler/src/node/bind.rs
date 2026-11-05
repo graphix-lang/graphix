@@ -111,14 +111,15 @@ impl ValueReads {
 
 /// A read of a holder whose type is `t`: the copy the holder's value being
 /// checked shares, else a copy of its own.
-fn holder_read<R: Rt>(ctx: &mut CompileCtx<R>, t: &Type) -> Option<Type> {
+fn holder_read<R: Rt>(ctx: &mut CompileCtx<R>, t: &Type, named: bool) -> Option<Type> {
     match ctx.holder_reads.take() {
         Some(mut copies) => {
             let r = copies.read(t, &ctx.rec_defs, &|ft| shares(ctx, ft));
             ctx.holder_reads = Some(copies);
             r
         }
-        None => t.scheme_read(&ctx.rec_defs, &|ft| shares(ctx, ft)),
+        None if named => t.scheme_read(&ctx.rec_defs, &|ft| shares(ctx, ft)),
+        None => t.instance_read(&ctx.rec_defs, &|ft| shares(ctx, ft)),
     }
 }
 
@@ -439,7 +440,9 @@ impl<R: Rt> Bind<R> {
         }
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
+        let mut node = node;
         if lambda_value(&node).is_some() || forwards(&ctx.env, b, &node) {
+            name_value(&mut node, false);
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert(id);
             });
@@ -470,11 +473,16 @@ impl<R: Rt> Bind<R> {
         // uses or an annotation decide what the value holds.
         let mut holder = false;
         if holds_function(&ctx.env, &node) {
+            let mut generalized = false;
             pattern.ids(&mut |id| {
                 if !ctx.connect_targets.contains(&id) {
+                    generalized = true;
                     holder |= ctx.env.poly_binds.insert(id)
                 }
             });
+            if generalized {
+                name_value(&mut node, true);
+            }
         }
         let reads = match (written(ctx, &pattern) || b.typ.is_some(), holder) {
             (true, _) => ValueReads::Own,
@@ -1008,6 +1016,10 @@ pub struct Ref {
     pub(super) top_id: ExprId,
     pub(crate) resident: TagValue,
     pub(crate) signature: Signature,
+    /// A binding names the value it reads (`let g = f`, or a data literal
+    /// a generalized `let` holds): a generalized binding's read is a copy
+    /// of its scheme, anywhere else one instance of it.
+    pub(crate) named: bool,
 }
 
 /// Whose cells a reference's signature holds. The first `typecheck0`
@@ -1025,8 +1037,11 @@ pub(crate) enum Signature {
 }
 
 /// A fresh instance of a generalized signature under the open gates.
-fn instance(ft: &FnType, open: &nohash::IntSet<crate::LambdaId>) -> FnType {
-    let fresh = ft.scheme(open);
+fn instance(ft: &FnType, open: &nohash::IntSet<crate::LambdaId>, named: bool) -> FnType {
+    let fresh = match named {
+        true => ft.scheme(open),
+        false => ft.one_instance(open),
+    };
     fresh.alias_tvars(&mut LPooled::take());
     fresh
 }
@@ -1093,6 +1108,7 @@ impl Ref {
             top_id,
             resident: TagValue::phantom(),
             signature,
+            named: false,
         })
     }
 
@@ -1262,7 +1278,7 @@ impl Ref {
         }
         match ft.lambda_ids.own().and_then(|id| ctx.resolving_innermost(id)) {
             Some(active) => Arc::new(active.ftype),
-            None => Arc::new(instance(&ft, &ctx.rec_defs)),
+            None => Arc::new(instance(&ft, &ctx.rec_defs, self.named)),
         }
     }
 
@@ -1393,7 +1409,9 @@ impl<R: Rt> Update<R> for Ref {
         });
         let signature = match (ft, self.signature) {
             (Some(ft), _) => Type::Fn(self.decide(ctx, ft)),
-            (None, Signature::Pending) => holder_read(ctx, &def).unwrap_or(def),
+            (None, Signature::Pending) => {
+                holder_read(ctx, &def, self.named).unwrap_or(def)
+            }
             (None, _) => return Ok(()),
         };
         let held = mem::replace(&mut self.typ, signature);
@@ -1489,6 +1507,34 @@ fn written<R: Rt>(ctx: &CompileCtx<R>, pattern: &StructPatternNode) -> bool {
     let mut written = false;
     pattern.ids(&mut |id| written |= ctx.connect_targets.contains(&id));
     written
+}
+
+/// Mark the lambdas and references a binding names in its value `node`:
+/// the value itself, and where `data`, every part of the data literals it
+/// is built of ([`holds_function`]'s walk).
+pub(crate) fn name_value<R: Rt>(node: &mut Node<R>, data: bool) {
+    if let Some(l) = node.downcast_mut::<super::lambda::Lambda>() {
+        return l.named = true;
+    }
+    if let Some(r) = node.downcast_mut::<Ref>() {
+        return r.named = true;
+    }
+    if let Some(p) = node.downcast_mut::<super::ExplicitParens<R>>() {
+        return name_value(&mut p.n, data);
+    }
+    let literal = matches!(
+        node.view(),
+        NodeView::Struct(_)
+            | NodeView::StructWith(_)
+            | NodeView::Tuple(_)
+            | NodeView::Variant(_)
+            | NodeView::Array(_)
+            | NodeView::ListLit(_)
+            | NodeView::Map(_)
+    );
+    if data && literal {
+        node.for_each_child_mut(&mut |c| name_value(c, true))
+    }
 }
 
 /// The lambda `node` is, seen through grouping parentheses.
@@ -1935,7 +1981,13 @@ impl<R: Rt> ByRef<R> {
         // still mints a cell so embedders keep reading the mirror.
         let (referent, typ) = match Place::<R>::of(expr) {
             Some((root, specs)) => {
-                let place = Place::compile(ctx, flags, scope, top_id, root, specs)?;
+                let mut place = Place::compile(ctx, flags, scope, top_id, root, specs)?;
+                // a writable place in a generalized binding is its scheme's
+                if let Mutability::Mut = mutability
+                    && let Some(r) = place.root.downcast_mut::<Ref>()
+                {
+                    r.named = true;
+                }
                 (
                     Referent::Place(place),
                     Type::ByRef(mutability, Arc::new(Type::empty_tvar())),
