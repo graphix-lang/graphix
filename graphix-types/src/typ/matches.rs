@@ -34,11 +34,8 @@ pub(super) struct SigPairs {
     /// The unions whose pairing waits.
     deferred: Vec<DeferredUnion>,
     /// Each function type paired, signature and implementation, whose
-    /// bounds are judged once every variable has paired, and whether it
-    /// stands in a contravariant position.
-    pub(super) fns: Vec<(FnType, FnType, bool)>,
-    /// The walk is under an odd number of function arguments.
-    pub(super) contra: bool,
+    /// bounds are judged once every variable has paired.
+    pub(super) fns: Vec<(FnType, FnType)>,
 }
 
 /// A union pair whose pairing waits ([`SigPairs::settle`]).
@@ -46,8 +43,6 @@ pub(super) struct SigPairs {
 struct DeferredUnion {
     sig: Type,
     imp: Type,
-    /// It stands in a contravariant position.
-    contra: bool,
     /// The typedef pairs whose expansion it is part of, in progress again
     /// while its members pair, so a recursive typedef's union meets its
     /// own pair as the walk that deferred it would.
@@ -95,8 +90,8 @@ impl SigPairs {
         self.settle(env, hist)?;
         let mut i = 0;
         while i < self.fns.len() {
-            let (sig, imp, contra) = self.fns[i].clone();
-            sig.sig_bounds(env, &imp, contra, self, hist)?;
+            let (sig, imp) = self.fns[i].clone();
+            sig.sig_bounds(env, &imp, self, hist)?;
             i += 1;
         }
         self.settle(env, hist)
@@ -169,7 +164,7 @@ impl SigPairs {
     /// Pair the last deferred union by the first assignment of its
     /// members under which the rest settle.
     fn search(&mut self, env: &Env, hist: &mut RefHist<AHashSet<RefPair>>) -> Result<()> {
-        let Some(DeferredUnion { sig, imp, contra, within }) = self.deferred.pop() else {
+        let Some(DeferredUnion { sig, imp, within }) = self.deferred.pop() else {
             return Ok(());
         };
         let (Type::Set(m0), Type::Set(m1)) = (&sig, &imp) else { unreachable!() };
@@ -178,7 +173,6 @@ impl SigPairs {
         let mut first_err = None;
         loop {
             let mut scratch = self.clone();
-            scratch.contra = contra;
             let entered: SmallVec<[RefPair; 2]> =
                 within.iter().filter(|k| hist.insert(**k)).copied().collect();
             let r = m0.iter().zip(order.iter()).try_for_each(|(t0, i)| {
@@ -187,7 +181,6 @@ impl SigPairs {
             entered.iter().for_each(|k| {
                 hist.remove(k);
             });
-            scratch.contra = self.contra;
             let r = r.and_then(|()| ensure_sufficient(|| scratch.settle(env, hist)));
             match r {
                 Ok(()) => {
@@ -838,7 +831,6 @@ impl Type {
                 tvar_map.deferred.push(DeferredUnion {
                     sig: self.clone(),
                     imp: impl_type.clone(),
-                    contra: tvar_map.contra,
                     within: hist.iter().copied().collect(),
                 });
                 Ok(())

@@ -1329,8 +1329,6 @@ pub struct TypeMismatch {
     settled: Option<CompactString>,
 }
 
-impl TypeMismatch {}
-
 impl std::fmt::Display for TypeMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.infinite {

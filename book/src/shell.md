@@ -29,12 +29,11 @@ In REPL mode:
   array or a select's arms, are one function type whose parameters were
   decided by nothing, so they settle too: after `let fs = [|x| x, |y|
   y]`, `fs[0]$(1)` is refused; write `let fs: Array<fn(x: i64) -> i64> =
-  ..`. A generic function a statement leaves in a binding (`let j = s.g`,
-  `s` a struct of functions) is called at any type, but a later
-  statement that would decide its type is refused, naming the binding:
-  after `let app = |f: fn(x: i64) -> i64| f(1)`, `app(j)` is refused,
-  naming `j`, and passes once `j` is declared at the type the use needs,
-  `let j: fn(x: i64) -> i64 = s.g`. A dynamic module's load is checked the same
+  ..`. A function read out of a struct of functions (`let j = s.g`) is
+  one instance, whose type its statement leaves undecided, so a later
+  statement that would decide it, a call `j(1)` included, is refused,
+  naming the binding: declare it at the type the use needs, `let j:
+  fn(x: i64) -> i64 = s.g`, or call `s.g` itself, which is generic. A dynamic module's load is checked the same
   way, after the statements before it
 - Completion is available via the Tab key
 - The value and type of output expressions are

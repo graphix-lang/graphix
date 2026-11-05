@@ -632,9 +632,6 @@ pub struct AbstractId(u64);
 
 impl nohash::IsEnabled for AbstractId {}
 
-/// The v5 UUID namespace abstract type identities are derived from,
-/// so the compile-time [`AbstractId`] and a value's runtime tag agree
-/// across processes and builds.
 /// The refusal of a function type with quantifiers of its own anywhere
 /// but a declared signature's top.
 pub const QUANTIFIED_FN: &str = "a function type with type variables of its own \
@@ -643,6 +640,9 @@ pub const QUANTIFIED_FN: &str = "a function type with type variables of its own 
      definition (`'a: Number |f: fn(x: 'a) -> 'a| ..`), or bind the generic \
      function with `let` and call it by name";
 
+/// The v5 UUID namespace abstract type identities are derived from,
+/// so the compile-time [`AbstractId`] and a value's runtime tag agree
+/// across processes and builds.
 const ABSTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x1f, 0x64, 0x9a, 0x2e, 0x7b, 0xd5, 0x4c, 0x8a, 0x9f, 0x3e, 0x21, 0xb7, 0x5c, 0x0d,
     0xe6, 0x42,

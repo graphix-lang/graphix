@@ -963,6 +963,15 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
     }
 
+    // CR claude for claude: [readability/low] One instance keeps its scheme's
+    // quantifier list, so a checker message prints a one-instance function type with a
+    // quantifier header, which reads as generic and, written back as an annotation, is
+    // refused by QUANTIFIED_FN: `let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a
+    // x); let y = never(); y <- fs; y <- 1` says `y is Array<fn<'a: Number>(x: 'a ...)
+    // -> 'a> and cannot hold i64`. The list stays because the builtin unread settle
+    // (CallSite::settle_unread) reads quantifier names; printing could drop the header
+    // of a type whose quantifiers are not generic cells instead. probe:
+    // ~/ptmp/cr29/scratch/r16-Q/hint1.gx, hint2.gx (instance-quantifier-print-01)
     /// One instance of the scheme under the open gates `open`: what a
     /// call copies is a fresh cell at the current level, which every use of
     /// the copy shares (`Fresh::Instantiate`).
@@ -1449,9 +1458,6 @@ impl FnType {
         if !aligned {
             bail!("the signature's and the implementation's labeled arguments differ")
         }
-        // the arguments are the implementation's to use: what pairs there
-        // stands under one more contravariant position
-        tvar_map.contra = !tvar_map.contra;
         let args = (|| -> Result<()> {
             let first_positional = self.first_positional();
             for (i, (sig_arg, impl_arg)) in pairs.into_iter().enumerate() {
@@ -1492,7 +1498,6 @@ impl FnType {
             }
             Ok(())
         })();
-        tvar_map.contra = !tvar_map.contra;
         args?;
         sig_rtype
             .sig_matches_int(env, impl_rtype, tvar_map, hist)
@@ -1516,7 +1521,7 @@ impl FnType {
                 })
             })
             .context("in throws clause")?;
-        tvar_map.fns.push((self.clone(), impl_fn.clone(), tvar_map.contra));
+        tvar_map.fns.push((self.clone(), impl_fn.clone()));
         Ok(())
     }
 
@@ -1526,7 +1531,6 @@ impl FnType {
         &self,
         env: &Env,
         impl_fn: &Self,
-        contra: bool,
         tvar_map: &mut SigPairs,
         hist: &mut super::RefHist<AHashSet<super::RefPair>>,
     ) -> Result<()> {
@@ -1605,76 +1609,9 @@ impl FnType {
                  does not declare"
             )
         };
-        // a quantifier of a function the implementation is handed is the
-        // implementation's to pick at each call: the signature's paired
-        // argument must leave it a quantifier too
-        let arg_quantifiers = |f: &FnType| {
-            let mut q: AHashMap<usize, TVar> = AHashMap::new();
-            FnType { args: f.args.clone(), vargs: f.vargs.clone(), ..FnType::default() }
-                .inner_quantifiers(&mut q);
-            q
-        };
-        let (impl_q, sig_q) = (arg_quantifiers(impl_fn), arg_quantifiers(self));
-        // a quantifier of a function type inside this one is judged at that
-        // function type's own pair, under its polarity
-        let mut nested_q: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        impl_fn.inner_quantifiers(&mut nested_q);
-        // under a contravariant position the function is the one the
-        // implementation is handed: it uses it at any type its own bound
-        // admits, so that bound must imply each of the signature's
-        let mut handed_q: LPooled<AHashSet<usize>> = LPooled::take();
-        if contra {
-            impl_fn.open_quantifiers(|_, open| {
-                handed_q.insert(open.cell_addr());
-            });
-        }
-        let held_to = |sig_tv: &TVar, impl_tv: &TVar| -> Result<()> {
-            let impl_tcs: LPooled<Vec<Type>> = impl_tv
-                .cell_constraints()
-                .iter()
-                .map(|c| c.swap_cells(&|a| tvar_map.sig_type(a).cloned()))
-                .collect();
-            for sig_tc in sig_tv.cell_constraints().iter() {
-                if *sig_tc == Type::Any {
-                    continue;
-                }
-                let mut held = false;
-                for c in impl_tcs.iter() {
-                    if c.implies(env, sig_tc)? {
-                        held = true;
-                        break;
-                    }
-                }
-                if !held {
-                    bail!(
-                        "the implementation uses the function it is handed at any \
-                         {impl_tv}, where the signature hands it one at {sig_tv}: \
-                         {sig_tc} only"
-                    )
-                }
-            }
-            Ok(())
-        };
         for (_, tv) in impl_cells.iter() {
-            let addr = tv.cell_addr();
-            if impl_q.contains_key(&addr) {
-                match tvar_map.sig_type(addr) {
-                    Some(Type::TVar(s)) if sig_q.contains_key(&s.cell_addr()) => (),
-                    None => (),
-                    Some(t) => bail!(
-                        "the implementation picks {tv} at each call of the function it \
-                         is handed, where the signature hands it a function at {t}"
-                    ),
-                }
-            }
-            if nested_q.contains_key(&addr) {
-                continue;
-            }
-            match tvar_map.sig_type(addr) {
+            match tvar_map.sig_type(tv.cell_addr()) {
                 None => (),
-                Some(Type::TVar(sig_tv)) if handed_q.contains(&addr) => {
-                    held_to(sig_tv, tv)?
-                }
                 Some(Type::TVar(sig_tv)) => {
                     for impl_tc in tv.cell_constraints() {
                         declared(sig_tv, &impl_tc)?

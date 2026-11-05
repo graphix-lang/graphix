@@ -1022,11 +1022,11 @@ away the element it had in hand. Build the final row there:
   = []`, a later `e <- [1]` is refused (write `let e: Array<i64> = []`),
   and a later function writing `e` takes only `_`. Lambdas that meet in
   one array or select settle the same way (`let fs = [|x| x, |y| y]`
-  takes no later `fs[0]$(1)`: annotate `fs`). A generic function it
-  leaves in a binding (`let j = s.g`) is called at any type, but a later
-  use that would decide its type (`app(j)` over `app: fn(f: fn(x: i64) ->
-  i64)`) is refused, naming the binding: declare it at the type the use
-  needs (`let j: fn(x: i64) -> i64 = s.g`).
+  takes no later `fs[0]$(1)`: annotate `fs`). A function read out of a
+  holder (`let j = s.g`) is one instance, so a later use that would
+  decide its type, `j(1)` or `app(j)`, is refused, naming the binding:
+  declare it at the type the use needs (`let j: fn(x: i64) -> i64 =
+  s.g`), or call `s.g` itself, which is generic.
 - `--check` a witness before arguing about a semantics question.
 
 ## Line reader retries

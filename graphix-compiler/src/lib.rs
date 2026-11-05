@@ -1885,6 +1885,11 @@ impl<R: Rt> CompileCtx<R> {
         // --check passes 16/16 on base and lane, the build refuses "f cannot be written: an
         // earlier compile calls it as a fixed function at f(1)" in 7/16 runs on base, 5/16 on
         // the lane. probe ~/ptmp/cr29/scratch/review-r14/A-r4-1/.
+        // 2026-11-05 claude: Lane Q (cr51-Q, rank-2 types removed): the second probe sx14
+        // writes a rank-2 parameter (|k: fn<'b: Any>(x: 'b) -> 'b|) and is now refused by the
+        // check with typ::QUANTIFIED_FN, so it no longer reaches the join; the first shape
+        // (nw6t) stands, as does sx14's join race in any form that writes no nested quantified
+        // type.
         let ids = self.static_callees.variable(id);
         if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
             let name =

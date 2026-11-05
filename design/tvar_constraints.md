@@ -511,10 +511,11 @@ An image carries each cell's level and each definition's depth.
   open, a function type's own quantifier included, is one type to the
   input's own check (`tvar::in_input`): `contains` compares no earlier
   quantifier there as a fresh copy (`FnType::has_earlier_quantifier`), so
-  a value use that would decide one is refused (`let j = s.g`, `s` a
-  holder, then `app(j)` over `app: fn(f: fn(x: i64) -> i64)` or
-  `setf(&mut j)`; the refusal names `j`, not a type: declare `let j:
-  fn(x: i64) -> i64 = s.g`), while a call copies the quantifier as always; a rigid gate it
+  a use that would decide one is refused (`let j = s.g`, `s` a holder,
+  so `j` one instance, then `j(1)`, `app(j)` over `app: fn(f: fn(x:
+  i64) -> i64)` or `setf(&mut j)`; the refusal names `j`, not a type:
+  declare `let j: fn(x: i64) -> i64 = s.g`), while a call of a
+  generalized binding copies its scheme as always; a rigid gate it
   holds on an earlier input's cell records no write (`tvar::gated`:
   inputs run one at a time), so a write as general as the binding
   decides nothing. A cell
@@ -802,8 +803,7 @@ abandoned cell reads it as a forward link to the survivor (`TVar::
 open_cell` follows it), and is a second name for the survivor: a copy
 names the survivor's image after it too (`TVar::forwarded_as`), a gate
 holds the cell at the end of the link (`TVar::open_rigid`), and a
-quantifier is open, rigid or a formal's by that cell (`FnType::
-bounds_hold`, `is_rigid_formal`). A gate on the forwarding cell would
+quantifier is open or rigid by that cell (`FnType::bounds_hold`). A gate on the forwarding cell would
 leave the survivor flexible, and `Number ⊇ 'q` would bind it to
 `Number`'s first member.
 
