@@ -2021,7 +2021,7 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// CR claude for eric: [bug/medium] An argument whose type holds a cell its uses decide
+// CR claude for claude: [bug/medium] An argument whose type holds a cell its uses decide
 // (a read target such as str::parse's or sys::net::subscribe's, an unwritten `let x =
 // never()`, an empty `[]`'s element) is not widened over: its cell is decided by
 // whichever argument the loop meets first, so "the widest argument, whatever the
@@ -2065,6 +2065,8 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // union decided by later writes, a callback parameter's union. Back to Eric as the D7/D8
 // follow-up in ~/ptmp/cr29/next-discuss.md; probes
 // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
+// 2026-11-05 claude: Eric ruled (2026-11-05) on the D7/D8 follow-up: (c), land D7 alone:
+// split D7's part out of cr50-R-parked (544862d33) and re-review it.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument, whatever the order. An argument that does not
 /// fit is probed once against its formal with those variables open; it
@@ -2899,7 +2901,7 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // CR claude for eric: [risk/medium] An omitted labeled default only narrows: it is
+    // CR claude for claude: [risk/medium] An omitted labeled default only narrows: it is
     // checked after Widening::settle has set the call's widenable variables, so a
     // default wider than the arguments is refused when omitted and accepted when
     // written. Over `let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y`, `f(#x: [1,
@@ -2950,6 +2952,8 @@ impl<R: Rt> CallSite<R> {
     // result union decided by later writes, a callback parameter's union. Back to Eric
     // as the D7/D8 follow-up in ~/ptmp/cr29/next-discuss.md; probes
     // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
+    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D7/D8 follow-up: (c), land D7
+    // alone: split D7's part out of cr50-R-parked (544862d33) and re-review it.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

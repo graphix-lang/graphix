@@ -1393,7 +1393,7 @@ impl FnType {
         r
     }
 
-    // CR claude for eric: [bug/low] Which member of a union of two open cells (`x: ['a,
+    // CR claude for claude: [bug/low] Which member of a union of two open cells (`x: ['a,
     // 'b]`) takes what is decided by an order, not a rule, and two orders exist: this
     // containment holds such a position after every other (instance_sig, a written
     // function type), while a call site's check relates its arguments first, deciding
@@ -1423,6 +1423,11 @@ impl FnType {
     // union decided by later writes, a callback parameter's union. Back to Eric as the
     // D7/D8 follow-up in ~/ptmp/cr29/next-discuss.md; probes
     // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
+    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D7/D8 follow-up: (c) then (b).
+    // D8's part of cr50-R is dropped; after D7 lands, a written signature may not hold a
+    // union of two or more bare type variables of its definition (also under
+    // constructors), refused naming the annotation, census first. This CR stays open for
+    // the inferred result-union split ((a), deferring, is dropped).
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,
