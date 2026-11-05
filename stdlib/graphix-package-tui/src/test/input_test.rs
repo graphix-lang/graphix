@@ -527,10 +527,10 @@ let first = select b {
   },
   _ => never()
 };
-let script: Array<MoveCursor> = [`Up(1), `Down(1), `Down(1), `Down(1), `Up(1), `Up(1), `Up(1), `Up(1)];
+let script: Array<MoveCursor> = [`Up(1), `Down(1), `Down(1), `Down(1), `Up(1), `Up(1), `Up(1), `Down(1)];
 // the row selected before each move and after the last: an Up at the top
 // selects what it did, so the move after it follows at once
-let want = array::map([0, 0, 1, 10, 11, 10, 1, 0, 0], |k| "/local/back/r[k]");
+let want = array::map([0, 0, 1, 10, 11, 10, 1, 0, 1], |k| "/local/back/r[k]");
 let step = 0;
 step <- select (step, sel$) { (s, r) if s < 9 && r == want[s]$ => s + 1, _ => never() };
 cur <- select step { 0 => never(), s => (s ~ script[s - 1])$ };
