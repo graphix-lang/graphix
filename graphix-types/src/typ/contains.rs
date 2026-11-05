@@ -3864,6 +3864,27 @@ mod tests {
         assert_ne!(ab.param_key(), aa.param_key());
     }
 
+    // A walk's memo of node pairs keys a variant by its payload and its
+    // tag: a walk past its eager nodes that met `A(p) against `A(p) has
+    // not met `A(p) against `B(p) over the same payload.
+    #[test]
+    fn a_walks_node_pairs_tell_apart_variants_over_one_payload() {
+        let ts: Arc<[Type]> = Arc::from_iter([Type::Primitive(Typ::I64.into())]);
+        let v = |tag| Type::Variant(tag, ts.clone(), Default::default());
+        let (a, b) = (v(literal!("A")), v(literal!("B")));
+        let past_eager = |last: &Type| {
+            let filler = (0..2 * NodePairs::EAGER as usize).map(|_| a.clone());
+            Type::Tuple(Arc::from_iter(filler.chain([a.clone(), last.clone()])))
+        };
+        let (aa, ab) = (past_eager(&a), past_eager(&b));
+        let env = Env::default();
+        assert!(!aa.could_match(&env, &ab).unwrap());
+        assert!(!strictly_identical(&aa, &ab));
+        assert!(!union_identical(&aa, &ab));
+        assert!(!strictly_identical(&a, &b));
+        assert!(!union_identical(&a, &b));
+    }
+
     const CHAIN_DEPTH: usize = 12;
 
     fn expanded_chain_steps(params: &[&str], base: &str, leaf: &str) -> usize {

@@ -85,6 +85,19 @@ impl Type {
         }
     }
 
+    /// What a walk that remembers answers about shared nodes keys one by:
+    /// its [`Type::shared_identity`] and what that leaves out, which two
+    /// nodes over one content allocation may differ by (a variant's tag,
+    /// an abstract type's id).
+    pub fn node_key(&self) -> Option<NodeKey> {
+        let named = match self {
+            Type::Variant(tag, _, _) => tag.as_ptr().addr(),
+            Type::Abstract { id, .. } => id.0 as usize,
+            _ => 0,
+        };
+        Some((self.shared_identity()?, named))
+    }
+
     /// What a walk that meets one application of a typedef many times
     /// keys each of its parameters by ([`ParamKey`]); the application must
     /// be held while the key is, so the identities stay its parameters'.
@@ -96,24 +109,18 @@ impl Type {
 
     /// The words of [`Type::param_key`]: a tag, then the part's content; a
     /// shared node met again in this key by the position its first words
-    /// start at (`at`, by the node's identity and a variant's tag or an
-    /// abstract type's id, which its identity leaves out).
+    /// start at (`at`, by its [`Type::node_key`]).
     fn key_words(
         &self,
         out: &mut SmallVec<[usize; 8]>,
-        at: &mut AHashMap<(usize, usize), usize>,
+        at: &mut AHashMap<NodeKey, usize>,
     ) {
         let each = |ts: &[Type], out: &mut SmallVec<[usize; 8]>, at: &mut _| {
             out.push(ts.len());
             ts.iter().for_each(|t| t.key_words(out, at))
         };
-        let named = match self {
-            Type::Variant(tag, _, _) => tag.as_ptr().addr(),
-            Type::Abstract { id, .. } => id.0 as usize,
-            _ => 0,
-        };
-        if let Some(n) = self.shared_identity() {
-            match at.entry((n, named)) {
+        if let Some(k) = self.node_key() {
+            match at.entry(k) {
                 Entry::Occupied(e) => return out.extend([7, *e.get()]),
                 Entry::Vacant(e) => {
                     e.insert(out.len());
@@ -239,6 +246,10 @@ fn text_words(s: &str, out: &mut SmallVec<[usize; 8]>) {
     }))
 }
 
+/// A shared node as [`Type::node_key`] keys it: its identity, then a
+/// variant's tag or an abstract type's id.
+pub type NodeKey = (usize, usize);
+
 /// A typedef application's parameter as [`Type::param_key`] keys it: by
 /// its content, a variable by its cell, a name by its resolution and
 /// parameters, a function type with quantifiers of its own by its node
@@ -293,13 +304,13 @@ impl Unfolded {
 #[derive(Default)]
 pub(super) struct NodePairs {
     seen: u32,
-    found: Option<LPooled<AHashMap<(usize, usize), (Type, Type)>>>,
+    found: Option<LPooled<AHashMap<(NodeKey, NodeKey), (Type, Type)>>>,
 }
 
 impl NodePairs {
     const EAGER: u32 = 64;
 
-    // CR claude for claude: [risk/low] A variant's key is its payload's allocation
+    // XCR claude for claude: [risk/low] A variant's key is its payload's allocation
     // (node_addr), which leaves out the tag: two variants of different tags over one
     // payload allocation share a key, so what one walk found for `A(p) against a node
     // answers for `B(p) too, where every user reads the tag (contains' Link::equal,
@@ -308,25 +319,38 @@ impl NodePairs {
     // (contains' a_param_key_tells_apart_variants_over_one_payload, which param_key
     // tells apart by folding the tag in). A direction: key a variant by its payload and
     // its tag. (node-pairs-variant-tag-01)
+    // 2026-11-05 claude: Type::node_key (typ/mod.rs) keys a shared node by its identity
+    // and a variant's tag or an abstract type's id; NodePairs::key, MatchHist's resting
+    // pairs, Identity::same's one-node fast path (which answered `A(p) and `B(p)
+    // identical outright), key_words and fusion's shallow_key/shallow_same (which
+    // interned a node whose part is `B(p) as one whose part is `A(p)) all key by it.
+    // Pins, each failing without the fix: contains'
+    // a_walks_node_pairs_tell_apart_variants_over_one_payload (could_match,
+    // strictly_identical, union_identical past NodePairs::EAGER and on the bare
+    // variants) and kernel_abi's shallow_same_tells_apart_variants_over_one_payload.
+    // Contains' Link::equal and needs_split read no tag (Link runs on types already
+    // found equal), so their keys change with no pin. The visit-once walks keyed by
+    // shared_identity alone are left as they are: they collect from a node's parts,
+    // which the tag does not change.
     /// The key of the node pair `t0`, `t1`, when both are shared
     /// composites and the walk has grown past `EAGER`.
     #[inline]
-    pub(super) fn key(&mut self, t0: &Type, t1: &Type) -> Option<(usize, usize)> {
+    pub(super) fn key(&mut self, t0: &Type, t1: &Type) -> Option<(NodeKey, NodeKey)> {
         if self.seen < Self::EAGER {
             self.seen += 1;
             return None;
         }
         match (t0, t1) {
             (Type::TVar(_), _) | (_, Type::TVar(_)) => None,
-            _ => Some((t0.shared_identity()?, t1.shared_identity()?)),
+            _ => Some((t0.node_key()?, t1.node_key()?)),
         }
     }
 
-    pub(super) fn contains(&self, key: (usize, usize)) -> bool {
+    pub(super) fn contains(&self, key: (NodeKey, NodeKey)) -> bool {
         self.found.as_ref().is_some_and(|f| f.contains_key(&key))
     }
 
-    pub(super) fn insert(&mut self, key: (usize, usize), t0: &Type, t1: &Type) {
+    pub(super) fn insert(&mut self, key: (NodeKey, NodeKey), t0: &Type, t1: &Type) {
         self.found
             .get_or_insert_with(LPooled::take)
             .insert(key, (t0.clone(), t1.clone()));

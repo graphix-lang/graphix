@@ -5,7 +5,8 @@ use crate::{
     ids::AddrHasher,
     stack::ensure_sufficient,
     typ::{
-        AndAc, Bound, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar, Type,
+        AndAc, Bound, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist, RefPair, TVar,
+        Type,
         contains::{ContainsHist, find_open_cell},
         setops::{Pairs, Unfoldings, def_pair, memo_on, strictly_identical},
     },
@@ -321,7 +322,7 @@ struct Rests {
     /// The nodes the walk in progress read true, each call's from its mark.
     read: Lazy<Vec<u32>>,
     /// The node pairs found to overlap resting on a node, with that node.
-    resting: Lazy<AHashMap<(usize, usize), Kept<u32>>>,
+    resting: Lazy<AHashMap<(NodeKey, NodeKey), Kept<u32>>>,
 }
 
 impl Rests {
@@ -356,7 +357,7 @@ impl Rests {
     }
 
     /// The node a standing true of the node pair `key` rests on.
-    fn standing(&self, key: (usize, usize)) -> Option<u32> {
+    fn standing(&self, key: (NodeKey, NodeKey)) -> Option<u32> {
         let node = self.resting.get()?.get(&key)?.answer;
         (!self.nodes.get()?[node as usize].0).then_some(node)
     }

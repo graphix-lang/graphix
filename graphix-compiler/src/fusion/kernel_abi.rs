@@ -491,13 +491,13 @@ fn try_freeze_for_abi(t: &Type) -> Result<Type, FreezeError> {
     Freeze::default().freeze(t, None)
 }
 
-/// A hash of a frozen node's own content and its parts' identities (a
+/// A hash of a frozen node's own content and its parts' node keys (a
 /// part with none, a leaf, by content): parts interned first, two equal
 /// nodes key alike. `None` for a node not interned.
 pub(crate) fn shallow_key(t: &Type) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     fn part(t: &Type, h: &mut ahash::AHasher) {
-        match t.shared_identity() {
+        match t.node_key() {
             Some(id) => id.hash(h),
             None => t.hash(h),
         }
@@ -528,7 +528,7 @@ pub(crate) fn shallow_key(t: &Type) -> Option<u64> {
 /// content equal and their parts the same nodes (leaves equal).
 pub(crate) fn shallow_same(a: &Type, b: &Type) -> bool {
     fn part(a: &Type, b: &Type) -> bool {
-        match (a.shared_identity(), b.shared_identity()) {
+        match (a.node_key(), b.node_key()) {
             (Some(x), Some(y)) => x == y,
             (None, None) => a == b,
             _ => false,
@@ -1146,6 +1146,17 @@ mod tests {
 
     fn i64_t() -> Type {
         Type::Primitive(Typ::I64.into())
+    }
+
+    /// Two nodes whose parts are variants of different tags over one
+    /// payload allocation are two nodes.
+    #[test]
+    fn shallow_same_tells_apart_variants_over_one_payload() {
+        let ts: Arc<[Type]> = Arc::from_iter([i64_t()]);
+        let v = |tag| Type::Variant(tag, ts.clone(), Default::default());
+        let a = Type::Tuple(Arc::from_iter([v(literal!("A"))]));
+        let b = Type::Tuple(Arc::from_iter([v(literal!("B"))]));
+        assert!(!shallow_same(&a, &b));
     }
 
     /// A type that shares its parts unfolds exponentially: one 40 levels
