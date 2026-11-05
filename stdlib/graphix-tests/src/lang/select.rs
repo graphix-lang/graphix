@@ -2666,7 +2666,7 @@ run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, prints(r#"[[i64:0
 // `~` banks one trigger however many find `v` absent, and pays it with
 // `v`'s first value: `v` lands alone at step 5, paying the three banked
 // triggers with one write, and the live trigger at step 6 writes again;
-// `~!` drops the banked ones and writes only at step 6 (x-engine-firing-05).
+// `~!` drops the banked ones and writes only at step 6.
 const STRICT_SAMPLE_NO_BANK: &str = r#"
 {
   let step = 0;

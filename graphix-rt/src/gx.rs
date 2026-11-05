@@ -588,6 +588,21 @@ impl<X: GXExt> GX<X> {
     // climbs), verdicts_are_those_of_judging_each_boundary_anew;
     // lang::delivery::a_fire_in_a_later_module_reaches_a_passed_reader_next_cycle (base-r16
     // prints a=1 a=1 only). The boundary-granular limit is late-same-boundary-01, documented.
+    // 2026-11-05 claude: Round 16 review 2 fixes (W-r2-1, W-r2-2): prune::Passed's per-fire
+    // memo is gone. Reader::passed_by keeps nothing between readers or fires: visits are
+    // closed upward (a debug assertion in BoundaryRef::visit), and each boundary carries a
+    // skew-binary jump pointer, so the climb to the innermost visited boundary around the
+    // reader and the walk's climb to its depth are logarithmic in the depth. Per cycle
+    // against base-r16 (instructions:u, min of 5, PAR=off, --no-fusion): fw (forward readers,
+    // one fire a level) 500/1000/2000 +0.3/+1.3/+2.7% (was +105/+208/+415%); cl (a closure
+    // chain, one deep reader a fire) 500/1000/2000 +3/-3/+0.5% (was +161/+311/+612%);
+    // d500/d2000 +0.9/+2.0%; mf (the backward D19 case, whose late deliveries are the ruled
+    // semantics) +72% at every depth, linear (was +226/+374/+676%); the loop2k/6k delivery
+    // loop +3%. Pins:
+    // prune::tests::{a_fire_a_level_read_deep_ahead_costs_the_log_of_the_depth,
+    // a_fire_a_level_read_at_the_top_costs_the_log_of_the_depth} (fail at 7459564ab's memo:
+    // 4004000 and 4010000 climbs), verdicts_are_those_of_climbing_a_step_at_a_time,
+    // a_deep_chain_drops_in_a_loop.
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {

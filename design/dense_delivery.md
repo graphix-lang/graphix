@@ -188,14 +188,15 @@ unchanged.
   pass over the readers that marks their boundaries) each reader in the
   root being updated that the walk has passed is recorded (`Rt::late`): one
   whose boundary, or the nearest boundary around it the walk reached
-  this cycle, does not hold the walk's own (`prune::Passed`, over the
+  this cycle, does not hold the walk's own (`Reader::passed_by`, over the
   boundaries' `visited` stamps; a reader with no boundary the walk
-  reached is ahead). Each boundary is judged once a fire: from a fire's
-  second reader on, its verdict is stamped on every boundary a reader's
-  climb crosses and on the walk's boundaries as they are compared, so
-  readers along a deep recursion cost its depth once, not once each. A
-  branch running beside others keeps the readers' stamps but compares
-  the walk's anew, since a sibling's fire may overwrite them. A binding with a reader in another root is noted
+  reached is ahead). The judgment keeps nothing between readers or fires:
+  a walk reaches a boundary only inside its parent, so the boundaries a
+  cycle visited are closed upward, and each boundary carries a skew-binary
+  jump pointer (an ancestor, Myers' random-access lists), so both climbs,
+  the reader's to the innermost visited boundary around it and the walk's
+  to that boundary's depth, take steps logarithmic in the depth, whatever
+  the number of fires or readers. A binding with a reader in another root is noted
   (`Rt::produced`), and after each root's update the runtime records the
   readers in earlier roots of what it fired and schedules the roots after
   it that read it, which a `Walk` delivery does not schedule itself

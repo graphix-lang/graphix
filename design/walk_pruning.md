@@ -174,7 +174,7 @@ cycle runs because the publication marks it before the walk reaches it.
 `notify_set` today reschedules later roots mid-cycle the same way
 (`update_nodes`). A reader the walk had passed when the fire was made
 (in an earlier root, or in a boundary the walk had reached and left,
-`prune::Passed`, read from the boundaries' `visited` stamps) takes
+`Reader::passed_by`, read from the boundaries' `visited` stamps) takes
 it next cycle: its root is scheduled and its boundary marked as that
 cycle starts (`GX::deliver_late`), so pruning walks it and it reads the
 fire (`read_var_by`, `design/dense_delivery.md`).
