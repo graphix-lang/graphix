@@ -690,7 +690,6 @@ pub enum SlotPlan {
     Serial,
     /// Update in order and time the whole: [`SlotSite::measured`].
     Measure(u64),
-    /// Fork in ranges of `grain` slots.
     /// Fork in ranges of `grain` slots, then [`SlotSite::forked`].
     Fork {
         grain: usize,

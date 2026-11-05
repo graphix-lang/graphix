@@ -604,6 +604,12 @@ impl<X: GXExt> GX<X> {
     // its wake. Pin lang::delivery::a_late_fire_reaches_a_sleeping_arm_at_its_wake: its
     // "2" case fails without the deselect call, its "2 | 3" case without the update call.
     // Guards and the other TrackedFires users: late-asleep-02.
+    // 2026-11-05 claude: Review r17 fix: observe_late now walks the select's tracked ids
+    // and looks each up in Event::late by the variable it names
+    // (ctx.event.variables.var), so a reader of a binding a .gxi declares as a val (D18
+    // keys Event::late by the val's id) takes the late fire too. Pin
+    // lang::delivery::a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake; its val w
+    // case fails without it (prints [[1, 1]]).
     // CR claude for claude: [perf/low] Every passed reader gets a late entry, a scheduled
     // root and a marked boundary, though only Ref, Deref and ConnectDeref read Event::late:
     // a catch's receipts, a select's tracked fires, a seq machine's and Payments' readers of

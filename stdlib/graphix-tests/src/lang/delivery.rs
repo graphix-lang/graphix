@@ -273,6 +273,27 @@ async fn a_late_fire_reaches_a_sleeping_arm_at_its_wake(mode: Mode) -> Result<()
 
 modes!(a_late_fire_reaches_a_sleeping_arm_at_its_wake);
 
+// The same in a module's body: a val the interface declares is the
+// binding's one variable, and the arm reading it owes the late fire the
+// same with the val declared or not.
+async fn a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake(
+    mode: Mode,
+) -> Result<()> {
+    let body = PASSED_ASLEEP
+        .replace("ASLEEP", "2")
+        .replace("FIRES", "1")
+        .replace("select n { 5 =>", "let out = select n { 5 =>");
+    let body = body.trim().trim_start_matches('{').trim_end_matches('}');
+    for gxi in ["val out: Array<(i64, i64)>", "val w: i64;\nval out: Array<(i64, i64)>"] {
+        let files = [("/test/m.gx", body), ("/test/m.gxi", gxi)];
+        let got = result_updates("{ mod m; m::out }", &files, mode).await?;
+        assert_eq!(got, ["[[1, 1], [3, 11]]"], "{gxi}, {mode:?}");
+    }
+    Ok(())
+}
+
+modes!(a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake);
+
 // A late value that feeds its producer back is a self-loop, as `x <- x + 1`
 // is: `r` reads `w` through `h` a cycle late, and each new `r` makes a new
 // `w`, one step a cycle, never settling. `c` counts the cycles.

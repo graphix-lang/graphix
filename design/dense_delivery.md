@@ -221,8 +221,13 @@ unchanged.
   cycle sets its select's catch-up bit (`TrackedFires::observe_late`,
   matching the reader's root and an arm's boundary around it, as the
   select updates and again as it deselects the arm), so the arm takes it
-  at its wake as a fire made while it slept. Pin:
-  `lang::delivery::a_late_fire_reaches_a_sleeping_arm_at_its_wake`.
+  at its wake as a fire made while it slept, the reader's own binding
+  compared as the variable the late fire names (a val's included). Not
+  yet a guard's reader, which carries the select's own boundary, nor what
+  a seq machine, a collection over a bottom source or a call over a bottom
+  function holds asleep: those lose the fire (CR late-asleep-02). Pins:
+  `lang::delivery::a_late_fire_reaches_a_sleeping_arm_at_its_wake`,
+  `a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake`.
 - Inside the walk's own boundary the boundaries cannot order a reader
   against the fire: a `Deref` keeps a read stamp (`prune::ReadStamp`,
   in its `Reader`), set as it reads, and one that read this cycle is

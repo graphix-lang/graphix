@@ -457,13 +457,13 @@ impl TrackedFires {
             return;
         };
         let Self { all, pending, per_arm, .. } = self;
-        for (id, (_, readers)) in late.iter() {
-            if !all.keys.contains(id)
-                || pending.contains(id)
-                || ctx.event.variables.contains_key(id)
-            {
+        for id in all.keys.iter() {
+            if pending.contains(id) || ctx.event.variables.contains_key(id) {
                 continue;
             }
+            let Some((_, readers)) = late.get(&ctx.event.variables.var(*id)) else {
+                continue;
+            };
             let inside = |r: &Reader| {
                 r.root == root
                     && per_arm.iter().enumerate().any(|(i, ids)| {

@@ -1056,8 +1056,10 @@ node graph IS the IR — there is no parallel typed IR
   back). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
   recomputes from the world as it stands, reading standing values STALE;
   the only events it re-raises are the fires no selected reader saw,
-  a late fire to a reader in an arm that did not run included
-  (`TrackedFires::observe_late`), once, at their current value (one fire bit per input per select, shared
+  a late fire to a reader in a select arm's body that did not run included
+  (`TrackedFires::observe_late`; a guard's reader, a seq step's, a
+  collection's over a bottom source and a call's over a bottom function
+  lose it, CR late-asleep-02), once, at their current value (one fire bit per input per select, shared
   by consulted guards and arm bodies and consumed by whichever arm reads
   it, an arm's guard and its own body seeing it alike; a destructuring let's
   siblings are inputs of their own; a pattern bind, of this select or

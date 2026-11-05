@@ -372,8 +372,11 @@ As built:
   the input it fired on fired before the write landed or after, and a
   write landing in the wake's own cycle is replaced too. Where the
   initializer does not fire at the wake the write stands: no input fired
-  asleep, or a sample whose argument alone fired (its trigger did not).
-  A write landing after the wake's cycle stands as any write does. An arm that never slept would end on
+  asleep, a sample whose argument alone fired (its trigger did not), or
+  an input whose fire reached a guard, a seq step, a collection over a
+  bottom source or a call over a bottom function only late, delivered
+  while it slept and lost (CR late-asleep-02; an arm's body takes it,
+  `design/dense_delivery.md`). A write landing after the wake's cycle stands as any write does. An arm that never slept would end on
   the later of the two; telling them apart needs a liveness bit on every
   fire in both engines, which was judged not worth its cost. Pins:
   `lang::select::{wake_catchup_replaces_a_later_write,

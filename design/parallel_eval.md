@@ -433,11 +433,7 @@ fork, halved again at each re-probe), and the slots fork only where each
 half costs `T` plus it (the overhead is the fork's, paid once, so a range
 still needs only `T`). Three forks in a row that take no less than the
 slots' mean times their count turn the site serial until it re-probes or
-its slots double. 2000 idle node-walked slots under one 1 ms timer
-(`design/review-2026-10-26/repro/x-perf-runtime-auto-cpu.sh`) forked
-every timer cycle, its parts together taking 1.5-4x the slots' time in
-order, for no more cycles and 2-6x the CPU; the site now turns serial
-after two to four forks and probes again every `RECHECK` updates. The
+its slots double. The
 wall time of a fork does not see the CPU the pool's woken workers spin
 away after it (rayon wakes a worker per job it finds, each spinning
 through every deque before it parks): a fork that wins wall time still

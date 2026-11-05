@@ -395,8 +395,10 @@ fn export_sig(env: &mut Env, inner_env: &Lexical, scope: &Scope, sig: &Sig) {
 }
 
 /// A signature binding (`outer`) and the binding behind it (`inner`):
-/// the implementation's own, or a trait default. A private inner
-/// binding's production moves out and a write to the outer id flows in.
+/// the implementation's own, or a trait default. An implementation's
+/// binding is the signature's variable at run time
+/// ([`crate::branch::VarAliases`]); only a trait default's production is
+/// relayed out and a write to the outer id relayed in.
 #[derive(Debug, Clone, Copy, netidx_derive::Pack)]
 #[pack(unwrapped)]
 struct Proxy {
