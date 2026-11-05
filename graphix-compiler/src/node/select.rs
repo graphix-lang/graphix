@@ -2482,7 +2482,7 @@ impl<R: Rt> Select<R> {
     }
 }
 
-// CR claude for eric: [question/low] D5 (b) refuses an arm that tests a part still
+// CR claude for claude: [question/low] D5 (b) refuses an arm that tests a part still
 // undecided at the select's end, but an arm may decide the part first, and then nothing
 // is undecided to refuse: the arms decide what they will. So `(_, {a, ..})` over
 // [(`K, {a: Array<i64>, c: i64}), (`J, 'z)] completes against the K member's struct and
@@ -2497,6 +2497,11 @@ impl<R: Rt> Select<R> {
 // (a completion, a tag, a literal in an or-alternative) be refused as testing it,
 // naming the binding, rather than decide it? probes:
 // ~/ptmp/cr29/scratch/review-r15/P-r2-1/{d3,t3,g1,n2,n3,or5,w6,w8}.gx (arm-decides-undecided-01)
+// 2026-11-05 claude: Eric ruled (2026-11-05): (b). An arm whose pattern would decide an
+// undecided part of the scrutinee (a completion, a tag, a literal, an or-alternative) is refused
+// as testing it, with the D5 message naming the binding to annotate; a whole open scrutinee the
+// arms decide together stays as it is. Census first. Analysis and probes: ~/ptmp/cr-discuss.md
+// (Ruled 11-05, D5 follow-up); ~/tmp/d5/.
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
