@@ -136,8 +136,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // literals (let-extract's probe) or blocks, nor on `never()`: a `let`
     // over ⊥ is typed by its writers, an open cell where `never()` is ⊥;
     // nor under `&`, where `e` may be a place's root; nor a call's
-    // function, which would dispatch dynamically where it was static
+    // function, which would dispatch dynamically where it was static; nor
+    // on what may be a generic function, which a block's value holds as
+    // one instance
     {
+        let generic = generic_names(&root);
         let under_ref = |i: usize| {
             (0..i).any(|j| matches!(pre[j].kind, ExprKind::ByRef(..)) && i < j + sizes[j])
         };
@@ -154,6 +157,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                             | ExprKind::Never { .. }
                     )
                     && !leaks_binds(&pre[i])
+                    && !may_be_generic(&pre[i], &generic)
             })
             .collect();
         for i in sample(&sites, cap) {
@@ -787,6 +791,51 @@ pub(crate) fn calls_reached(
     });
 }
 
+/// The names a `let` in `root` binds to what may be a generic function
+/// ([`may_be_generic`]), by name whatever the scope.
+fn generic_names(root: &Expr) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for e in mutate::preorder(root) {
+        if let ExprKind::Bind(b) = &e.kind
+            && may_be_generic(&b.value, &names)
+        {
+            b.pattern.with_names(&mut |n| {
+                names.insert(n.to_string());
+            })
+        }
+    }
+    names
+}
+
+/// Whether `e` may be a generic function, or data holding one: a lambda,
+/// a module path or a name of `generic`, a projection of one, or a data
+/// literal holding one.
+fn may_be_generic(e: &Expr, generic: &HashSet<String>) -> bool {
+    match &unparen(e).kind {
+        ExprKind::Lambda(_) => true,
+        ExprKind::Ref { name } => {
+            let name = name.to_string();
+            name.contains("::") || generic.contains(&name)
+        }
+        ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
+            may_be_generic(source, generic)
+        }
+        ExprKind::Array { .. }
+        | ExprKind::List { .. }
+        | ExprKind::Map { .. }
+        | ExprKind::Tuple { .. }
+        | ExprKind::Variant { .. }
+        | ExprKind::Struct(_)
+        | ExprKind::StructWith(_) => {
+            let mut found = false;
+            unparen(e)
+                .for_each_child(&mut |c| found = found || may_be_generic(c, generic));
+            found
+        }
+        _ => false,
+    }
+}
+
 /// Whether an expression reads no name at all (a literal, an operator
 /// over literals), so it means the same thing anywhere.
 fn reads_no_name(e: &Expr) -> bool {
@@ -887,6 +936,31 @@ mod test {
         let (probes, noparse) = probes(bare, 3);
         assert_eq!(noparse, 0);
         assert!(probes.iter().any(|p| p.kind == TmKind::ParensWrap), "no probes");
+    }
+
+    /// A block's value holds a function as one instance, so block-wrap
+    /// leaves alone what may be a generic function: a generic alias's
+    /// read, a holder's field, a holder.
+    #[test]
+    fn block_wrap_keeps_away_from_generic_functions() {
+        let body = "{ let id = |x| x; let g = id; let s = {f: g}; let h = g; let k = s.f; \
+                    let n = i64:1; (h(n), k(\"s\"), s) }";
+        let (probes, _) = probes(body, 64);
+        let wrapped: Vec<_> =
+            probes.iter().filter(|p| p.kind == TmKind::BlockWrap).collect();
+        assert!(!wrapped.is_empty(), "no block-wrap probe at all");
+        for p in wrapped {
+            for kept in
+                ["let g = id;", "let s = { f: g };", "let h = g;", "let k = s.f;", ", s)"]
+            {
+                assert!(
+                    p.body.contains(kept),
+                    "{}: wrapped a generic function: {}",
+                    p.id(),
+                    p.body
+                );
+            }
+        }
     }
 
     #[test]
