@@ -1633,7 +1633,9 @@ cycle, across workers; the compiler never pins threads.
   name over a value holding it keeps the variable where a part of the test
   around it holds the scrutinee's part there
   (`PatternNode::type_inside_rigid`), and one that stands inside it in
-  another alternative or member takes both.
+  another alternative or member takes both. A name over the variable's
+  value at the top of the test (`[`A(i64), `B(i64)] as v` over `'b`) is
+  typed by the test, never `'b`.
 - **Composite forms** (`graphix-types/src/rep.rs`,
   `design/distinct_composite_forms.md`): a tuple, struct, variant (bare
   included) and list cell is an array whose element 0 is its kind's

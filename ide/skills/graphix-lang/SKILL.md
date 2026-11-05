@@ -466,7 +466,9 @@ across a bottom cycle).
   type: `` `A(_) as `A(z) `` (`_` is bottom) and `` 'c as `A(z) `` (an
   undeclared variable) are refused. Under a written test a name over the
   variable's value keeps it where the test holds the scrutinee around it:
-  `([`A(i64), `B(i64)], i64) as (v, n)` over `('b, i64)` gives `v: 'b`.
+  `([`A(i64), `B(i64)], i64) as (v, n)` over `('b, i64)` gives `v: 'b`;
+  at the top, `[`A(i64), `B(i64)] as v` over `'b` types `v` by the test,
+  not as `'b`.
   An abstract type's parameter takes no annotation wider than the
   variable, and a type test of an abstract compares its parameters:
   `W<(i64, string)> as ..` matches only a `W` built at exactly that

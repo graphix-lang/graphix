@@ -3323,6 +3323,25 @@ impl Type {
         self.open_beneath(&|tv| !tv.is_rigid())
     }
 
+    /// The first open cell not held rigid beneath, through bindings
+    /// ([`Self::has_free`]).
+    pub fn first_free(&self) -> Option<TVar> {
+        self.first_open(&|tv| !tv.is_rigid())
+    }
+
+    /// The first open cell `counts` beneath, through bindings.
+    pub fn first_open(&self, counts: &dyn Fn(&TVar) -> bool) -> Option<TVar> {
+        let found = std::cell::RefCell::new(None);
+        self.open_beneath(&|tv| match counts(tv) {
+            false => false,
+            true => {
+                *found.borrow_mut() = Some(tv.clone());
+                true
+            }
+        });
+        found.into_inner()
+    }
+
     /// An open cell held rigid anywhere beneath, through bindings.
     pub fn has_rigid(&self) -> bool {
         self.open_beneath(&|tv| tv.is_rigid())

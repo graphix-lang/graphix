@@ -140,7 +140,10 @@ the scrutinee's part there, as on the same test with no variable inside
 `` ([`A(i64), `B(i64)], `X) as (v, `X) `` over `` ('b, [`X, `Y]) `` types
 `v` by the test. A name that stands inside the cell in one alternative or
 member and over a whole value of it in another
-(`StructPatternNode::binds_inside_rigid`) is the union of both types. An
+(`StructPatternNode::binds_inside_rigid`) is the union of both types. A
+name over the cell's value at the top of the written test is typed by
+the test: ``[`A(i64), `B(i64)] as v`` over `'b` gives `v` the bound, and
+a body returning it as `'b` is refused. An
 abstract pattern names the type its compile resolved, an alias's
 included (`CompiledAbstracts`); a name a later statement of the block
 declares is that type there, in a function above the declaration too, and

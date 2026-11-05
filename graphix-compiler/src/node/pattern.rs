@@ -5,7 +5,7 @@ use crate::{
     env::Env,
     expr::{
         AbstractOf, ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt,
-        union_members,
+        union_members, union_members_with,
     },
     format_with_flags,
     node::{Held, compiler, list},
@@ -15,7 +15,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint, varint_len};
 use netidx_value::{Typ, Value};
@@ -310,7 +310,7 @@ pub(super) enum Holder {
     Formal,
 }
 
-// CR claude for claude: [readability/low] D6's advice, from review r14's final lows; no
+// XCR claude for claude: [readability/low] D6's advice, from review r14's final lows; no
 // soundness. (1) Over a nullable scrutinee it sends a fused form to one that does not
 // fuse: `'b: [`A(i64), `B(i64)] |x: ['b, null]| -> i64 #[native] select x { null => 0,
 // `A(z) => z, `B(z) => z }` fuses on main; the advised `` `A(i64) as `A(z) `` does not
@@ -330,6 +330,23 @@ pub(super) enum Holder {
 // design/tvar_constraints.md, the skill). probes:
 // ~/ptmp/cr29/scratch/review-r14/B-r3-1/{f/u10*,c/a7*,b/k11*,i/tr3,c/a6,g/s4,a/p4}.gx,
 // ~/ptmp/cr29/scratch/review-r14/B-r3-2/{sm/u3*,w/t1-t4}.gx (d6-advice-01)
+// 2026-11-05 claude: Addressed in one commit. (1) over a nullable variable (['b, null])
+// the advice is the test over the whole scrutinee, `[null, `A(i64), `B(i64)] as `A(z)`,
+// which fuses under #[native]; the member-only form stays for the variable alone and for
+// other unions (an abstract member needs it: whole-union `W(..)` is refused). (2)
+// in_abstract_param now expands a typedef name through lookup_ref_probe, so a struct
+// field W<'b> gets the 'declare no b' advice. (3) 'or bound b' is left off when b
+// already has a bound (Any); a variable bounded by another is told to replace that
+// bound; an unnamed variable is described by its typed bound; written_refusal says
+// '$part is a type variable nothing declares' / 'holds _, which is bottom' as the part
+// is. (4) a bound holding a rigid variable with no typed bound (b: [c, X]) says 'bound c
+// by one'. (5) CLAUDE.md, design/tvar_constraints.md and the skill say a name over the
+// variable at the top of a test is typed by the test. Pins in lang/select.rs that fail
+// without it: nullable_declared_variable_advice,
+// test_beside_a_variable_bounded_by_any_advice, variable_bounded_by_a_variable_advice,
+// bound_naming_an_unbounded_variable_advice, unnamed_variable_advice_names_its_bound,
+// abstract_parameter_in_a_struct_field_advice, plus the three written_test_* pins
+// reworded; each has a passing twin. Messages only, no new refusals; needs no soak.
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
 /// a value of `tv`, a type variable its definition holds rigid
 /// ([`StructurePattern::meets_rigid`]), told as the type to write.
@@ -346,19 +363,22 @@ pub(super) fn rigid_refusal(
         true => format_compact!("'{}", tv.name),
         false => format_compact!("the variable"),
     };
-    let what = match named {
-        true => format_compact!(
+    let bounds = tv.typed_bounds(env);
+    let what = match (named, &bounds[..]) {
+        (true, _) => format_compact!(
             "a value of {var}, a type variable of the definition, which types none of \
              its parts"
         ),
-        false => format_compact!(
+        (false, [b]) => format_compact!(
+            "a value of a type variable of the definition bounded by {b}, which types \
+             none of its parts"
+        ),
+        (false, _) => format_compact!(
             "a value of a type variable of the definition, which types none of its \
              parts"
         ),
     };
-    let alone =
-        matches!(typ, Type::TVar(t) if t.open_cell().is_some_and(|c| c.same_cell(tv)));
-    let bounds = tv.typed_bounds(env);
+    let alone = is_alone(typ, tv);
     if alone
         && let Some(b) =
             bounds.iter().find(|b| !pat.may_hold(env, ids, b).unwrap_or(true))
@@ -370,7 +390,7 @@ pub(super) fn rigid_refusal(
         };
     }
     if let Holder::Arm = holder
-        && in_abstract_param(typ, tv)
+        && in_abstract_param(env, typ, tv)
     {
         let test = match &bounds[..] {
             [b] => format_compact!("`{b} as ..`"),
@@ -383,6 +403,29 @@ pub(super) fn rigid_refusal(
              its bound in its place"
         );
     }
+    if let Some(c) = unbounded_in_bounds(env, tv) {
+        let (head, fix) = match holder {
+            Holder::Arm => (
+                format_compact!("{pat} tests inside {what}"),
+                format_compact!("write the type it tests, `T as {pat}`"),
+            ),
+            Holder::Let => (
+                format_compact!("the pattern {pat} binds inside {what}"),
+                format_compact!(
+                    "annotate the binding with the type it binds, `let {pat}: T = ..`"
+                ),
+            ),
+            Holder::Formal => (
+                format_compact!("the parameter {pat} binds inside {what}"),
+                format_compact!("annotate it with the type it binds, `{pat}: T`"),
+            ),
+        };
+        return anyhow!(
+            "{head}: the bound of {var} holds {c}, which no type bounds; bound {c} by one, \
+             `{c}: T`, then {fix}"
+        );
+    }
+    let or_bound = or_bound(tv, &var);
     match (holder, rigid_written(env, ids, pat, typ, tv)) {
         (Holder::Arm, Some(t)) if t.holds_fn(env) => anyhow!(
             "{pat} tests inside {what}, and no type test holds its function type: \
@@ -392,14 +435,13 @@ pub(super) fn rigid_refusal(
             anyhow!("{pat} tests inside {what}: write the type it tests, `{t} as {pat}`")
         }
         (Holder::Arm, None) if alone && bounds.is_empty() => anyhow!(
-            "{pat} tests inside {what}: bound {var} by the type it tests, `{var}: T`, \
-             and write that type, `T as {pat}`"
+            "{pat} tests inside {what}: {}, `{var}: T`, and write that type, `T as {pat}`",
+            bounding(tv, &var, "tests")
         ),
         (Holder::Arm, None) => anyhow!(
-            "{pat} tests inside {what}: write the type it tests, `T as {pat}`, or \
-             bound {var}"
+            "{pat} tests inside {what}: write the type it tests, `T as {pat}`{or_bound}"
         ),
-        (Holder::Let, _) if in_abstract_param(typ, tv) => anyhow!(
+        (Holder::Let, _) if in_abstract_param(env, typ, tv) => anyhow!(
             "the pattern {pat} binds inside {what}; an abstract type's parameter holds \
              the variable, which no annotation widens: declare no {var}, writing the type \
              it binds in its place"
@@ -409,12 +451,13 @@ pub(super) fn rigid_refusal(
              {t} = ..`"
         ),
         (Holder::Let, None) if alone && bounds.is_empty() => anyhow!(
-            "the pattern {pat} binds inside {what}: bound {var} by the type it binds, \
-             `{var}: T`, and annotate the binding with it, `let {pat}: T = ..`"
+            "the pattern {pat} binds inside {what}: {}, `{var}: T`, and annotate the \
+             binding with it, `let {pat}: T = ..`",
+            bounding(tv, &var, "binds")
         ),
         (Holder::Let, None) => anyhow!(
             "the pattern {pat} binds inside {what}: annotate the binding with the type \
-             it binds, `let {pat}: T = ..`, or bound {var}"
+             it binds, `let {pat}: T = ..`{or_bound}"
         ),
         (Holder::Formal, Some(t)) => anyhow!(
             "the parameter {pat} binds inside {what}: annotate it with the type it \
@@ -445,18 +488,76 @@ pub(super) fn written_refusal(
     };
     let fix = match rigid_written(env, ids, pat, typ, tv) {
         Some(t) => format_compact!("write the type it tests, `{t} as {pat}`"),
-        None => format_compact!("write the type it tests, `T as {pat}`, or bound {var}"),
+        None => {
+            format_compact!("write the type it tests, `T as {pat}`{}", or_bound(tv, &var))
+        }
+    };
+    let why = match (part.has_bottom(), part) {
+        (true, _) => format_compact!("{part} holds `_`, which is bottom"),
+        (false, Type::TVar(t)) if t.written_open().is_some() => {
+            format_compact!("{part} is a type variable nothing declares")
+        }
+        (false, _) => match part.first_free().filter(|c| c.written_open().is_some()) {
+            Some(c) => {
+                format_compact!("{part} holds {c}, a type variable nothing declares")
+            }
+            None => format_compact!("{part} holds a type variable nothing declares"),
+        },
     };
     anyhow!(
         "{pat} tests inside a value of {var}, a type variable of the definition, and its \
-         type test types none of it: {part} holds `_`, which is bottom, or a type \
-         variable nothing declares; {fix}"
+         type test types none of it: {why}; {fix}"
     )
 }
 
+/// Whether `typ` is the variable `tv` itself.
+fn is_alone(typ: &Type, tv: &TVar) -> bool {
+    matches!(typ, Type::TVar(t) if t.open_cell().is_some_and(|c| c.same_cell(tv)))
+}
+
+/// How to give `tv` the type a pattern `verb`s (tests or binds) as its
+/// bound: in place of the bound it has.
+fn bounding(tv: &TVar, var: &str, verb: &str) -> CompactString {
+    let cs = tv.cell_constraints();
+    match &cs[..] {
+        [] => format_compact!("bound {var} by the type it {verb}"),
+        [c] => format_compact!("replace the bound of {var}, {c}, by the type it {verb}"),
+        _ => format_compact!("replace the bounds of {var} by the type it {verb}"),
+    }
+}
+
+/// ", or bound {var}" where `tv` has no bound declared yet.
+fn or_bound(tv: &TVar, var: &str) -> CompactString {
+    match tv.cell_constraints().is_empty() {
+        true => format_compact!(", or bound {var}"),
+        false => CompactString::default(),
+    }
+}
+
+/// A variable a program wrote that a bound of `tv` holds, held rigid
+/// with no bound of its own: a test written over `tv` cannot name it.
+fn unbounded_in_bounds(env: &Env, tv: &TVar) -> Option<TVar> {
+    tv.typed_bounds(env).iter().find_map(|b| {
+        b.first_open(&|c| {
+            c.is_rigid() && c.written_open().is_some() && c.typed_bounds(env).is_empty()
+        })
+    })
+}
+
+/// Whether `typ` is `tv` beside `null`, whose test fuses written over the
+/// whole of it and not over the members `pat` may hold.
+fn nullable_variable(env: &Env, typ: &Type, tv: &TVar) -> bool {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members_with(env, typ, &mut members, &mut |_| ()).is_ok()
+        && !members.is_empty()
+        && members
+            .iter()
+            .all(|m| matches!(m, Type::Primitive(p) if *p == BitFlags::from(Typ::Null)))
+}
+
 /// The type `pat` tests written out: `typ` with `tv` at its one typed
-/// bound, only the members of that union `pat` may hold. `None` where
-/// `tv` has no one typed bound.
+/// bound. Where `typ` is the variable alone or the variable beside `null`,
+/// only the members of that union `pat` may hold. `None` where `tv` has no one typed bound.
 fn rigid_written(
     env: &Env,
     ids: &AbstractOf,
@@ -467,8 +568,14 @@ fn rigid_written(
     let bounds = tv.typed_bounds(env);
     let [bound] = &bounds[..] else { return None };
     let bound = rigid_as_bounds(env, bound)?;
+    if bound.has_free() {
+        return None;
+    }
     let is_tv = |t: &TVar| t.open_cell().is_some_and(|c| c.same_cell(tv));
     let t = typ.written_form(&mut |t| is_tv(t).then(|| bound.clone()))?;
+    if !is_alone(typ, tv) && nullable_variable(env, typ, tv) {
+        return Some(t);
+    }
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, &t, &mut members).ok()?;
     let held: SmallVec<[Type; 8]> = members
@@ -486,12 +593,10 @@ fn rigid_written(
 
 /// Whether `t` holds `tv` in an abstract type's parameter, which no
 /// annotation widens.
-fn in_abstract_param(t: &Type, tv: &TVar) -> bool {
+fn in_abstract_param(env: &Env, t: &Type, tv: &TVar) -> bool {
     fn holds(t: &Type, tv: &TVar) -> bool {
         crate::stack::ensure_sufficient(|| match t.deref_cloned() {
-            None => {
-                matches!(t, Type::TVar(c) if c.open_cell().is_some_and(|c| c.same_cell(tv)))
-            }
+            None => is_alone(t, tv),
             Some(t) => {
                 let mut found = false;
                 t.for_each_child(&mut |c| found = found || holds(c, tv));
@@ -499,13 +604,24 @@ fn in_abstract_param(t: &Type, tv: &TVar) -> bool {
             }
         })
     }
-    crate::stack::ensure_sufficient(|| match t.deref_cloned() {
-        None => false,
-        Some(Type::Abstract { ref params, .. }) => params.iter().any(|p| holds(p, tv)),
-        Some(t) => {
-            let mut found = false;
-            t.for_each_child(&mut |c| found = found || in_abstract_param(c, tv));
-            found
+    crate::stack::ensure_sufficient(|| {
+        let t = match t {
+            Type::Ref(_) => match t.lookup_ref_probe(env) {
+                Some((_, a @ Type::Abstract { .. })) => Some(a),
+                _ => Some(t.clone()),
+            },
+            t => t.deref_cloned(),
+        };
+        match t {
+            None => false,
+            Some(Type::Abstract { ref params, .. }) => {
+                params.iter().any(|p| holds(p, tv))
+            }
+            Some(t) => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found = found || in_abstract_param(env, c, tv));
+                found
+            }
         }
     })
 }

@@ -7503,7 +7503,7 @@ run!(
         let o: [`A(i64), `B(i64)] = `A(3);
         g(o)
     }"#,
-    refused("`A(z) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: `A(_) holds `_`, which is bottom, or a type variable nothing declares; write the type it tests, ``A(i64) as `A(z)`");
+    refused("`A(z) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: `A(_) holds `_`, which is bottom; write the type it tests, ``A(i64) as `A(z)`");
     FuseExpect::None
 );
 
@@ -7517,7 +7517,7 @@ run!(
         let o: [`A(i64), `B(i64)] = `A(3);
         g((o, 1))
     }"#,
-    refused("(`A(z), n) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: 'c holds `_`, which is bottom, or a type variable nothing declares; write the type it tests, `([`A(i64), `B(i64)], i64) as (`A(z), n)`");
+    refused("(`A(z), n) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: 'c is a type variable nothing declares; write the type it tests, `([`A(i64), `B(i64)], i64) as (`A(z), n)`");
     FuseExpect::None
 );
 
@@ -7537,7 +7537,7 @@ run!(
 
 run!(
     written_test_variable_in_an_abstract_payload_refused,
-    refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: 'c holds `_`"),
+    refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: 'c is a type variable nothing declares"),
     "/test.gx" => r#"
         type W<'a> = Abstract<'a>;
         let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| select x {
@@ -7725,6 +7725,161 @@ run!(
         };
         let o: [`A(i64), `B(i64)] = `A(3);
         let result = g(W(o))
+    "#;
+    FuseExpect::Jit
+);
+
+// The advice over a nullable variable is the test over the whole scrutinee,
+// which fuses where the test over the one member does not.
+run!(
+    nullable_declared_variable_advice,
+    r#"{
+        let g = 'b: [`A(i64), `B(i64)] |x: ['b, null]| -> i64 select x {
+            null => 0,
+            `A(z) => z,
+            `B(z) => z
+        };
+        g(`A(7))
+    }"#,
+    refused("`A(z) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `[null, `A(i64), `B(i64)] as `A(z)`");
+    FuseExpect::None
+);
+
+run!(
+    nullable_declared_variable_advice_written,
+    r#"{
+        let g = 'b: [`A(i64), `B(i64)] |x: ['b, null]| -> i64 #[native] select x {
+            null => 0,
+            [null, `A(i64), `B(i64)] as `A(z) => z,
+            [null, `A(i64), `B(i64)] as `B(z) => z
+        };
+        g(`A(7))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7)));
+    FuseExpect::Jit
+);
+
+// A variable already bounded is not told to bound it, and one bounded by
+// another variable is told to replace that bound.
+#[tokio::test]
+async fn test_beside_a_variable_bounded_by_any_advice() -> anyhow::Result<()> {
+    let src = r#"{
+        let g = 'b: Any |x: ['b, `Z]| -> ['b, null] select x { `Z => null, v => v };
+        g(1)
+    }"#;
+    let e = graphix_package_core::testing::refusal(src, crate::TEST_REGISTER).await?;
+    assert!(
+        e.contains("`Z tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `T as `Z`"),
+        "{e}"
+    );
+    assert!(!e.contains("or bound 'b"), "{e}");
+    Ok(())
+}
+
+run!(
+    test_beside_a_variable_bounded_by_any_written,
+    r#"{
+        let g = 'b: Any |x: ['b, `Z]| -> ['b, null] select x { `Z as `Z => null, v => v };
+        g(1)
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    FuseExpect::Jit
+);
+
+run!(
+    variable_bounded_by_a_variable_advice,
+    r#"{
+        let g = 'a: [`A(i64), `B(i64)], 'b: 'a |x: 'b| -> i64 select x {
+            `A(z) => z,
+            `B(z) => z * 10
+        };
+        let o: [`A(i64), `B(i64)] = `B(4);
+        g(o)
+    }"#,
+    refused("`A(z) tests inside a value of 'b, a type variable of the definition, which types none of its parts: replace the bound of 'b, 'a, by the type it tests, `'b: T`, and write that type, `T as `A(z)`");
+    FuseExpect::None
+);
+
+run!(
+    variable_bounded_by_a_variable_replaced,
+    r#"{
+        let g = 'b: [`A(i64), `B(i64)] |x: 'b| -> i64 select x {
+            `A(i64) as `A(z) => z,
+            `B(i64) as `B(z) => z * 10
+        };
+        let o: [`A(i64), `B(i64)] = `B(4);
+        g(o)
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(40)));
+    FuseExpect::Jit
+);
+
+// A bound naming a variable nothing bounds is told to bound that variable.
+run!(
+    bound_naming_an_unbounded_variable_advice,
+    r#"{
+        let f = 'b: ['c, `X] |x: ('b, [`A, `B]), y: 'c| -> string select x {
+            (`X, _) => "x",
+            (v, _) => "v"
+        };
+        f((1, `A), 2)
+    }"#,
+    refused("(`X, _) tests inside a value of 'b, a type variable of the definition, which types none of its parts: the bound of 'b holds 'c, which no type bounds; bound 'c by one, `'c: T`, then write the type it tests, `T as (`X, _)`");
+    FuseExpect::None
+);
+
+run!(
+    bound_naming_a_bounded_variable_written,
+    r#"{
+        let f = 'c: i64, 'b: ['c, `X] |x: ('b, [`A, `B])| -> string select x {
+            (['c, `X], [`A, `B]) as (`X, _) => "x",
+            (v, _) => "v"
+        };
+        f((1, `A))
+    }"#,
+    prints(r#""v""#);
+    FuseExpect::None
+);
+
+// An inferred variable is described by its bound.
+run!(
+    unnamed_variable_advice_names_its_bound,
+    r#"{
+        let id = |v| v;
+        let g = 'b: [`A(i64), `B(i64)] |x: 'b| select id(x) { `A(z) => z + 1.5, _ => 0.0 };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        g(o)
+    }"#,
+    refused("`A(z) tests inside a value of a type variable of the definition bounded by [`A(i64), `B(i64)], which types none of its parts: write the type it tests, ``A(i64) as `A(z)`");
+    FuseExpect::None
+);
+
+// An abstract type's parameter inside a struct field is found through the
+// typedef name.
+run!(
+    abstract_parameter_in_a_struct_field_advice,
+    refused("the pattern { a: W((p, q)), z: m } binds inside a value of 'b, a type variable of the definition, which types none of its parts; an abstract type's parameter holds the variable, which no annotation widens: declare no 'b, writing the type it binds in its place"),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: (i64, i64) |x: {z: i64, a: W<'b>}| {
+            let {z: m, a: W((p, q))} = x;
+            p + 1
+        };
+        let result = g({z: 1, a: W((3, 4))})
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_parameter_in_a_struct_field_declared_without_the_variable,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = |x: {z: i64, a: W<(i64, i64)>}| {
+            let {z: m, a: W((p, q))} = x;
+            p + q
+        };
+        let result = g({z: 1, a: W((3, 4))})
     "#;
     FuseExpect::Jit
 );
