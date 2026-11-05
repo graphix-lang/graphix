@@ -136,11 +136,8 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // literals (let-extract's probe) or blocks, nor on `never()`: a `let`
     // over ⊥ is typed by its writers, an open cell where `never()` is ⊥;
     // nor under `&`, where `e` may be a place's root; nor a call's
-    // function, which would dispatch dynamically where it was static; nor
-    // on what may be a generic function, which a block's value holds as
-    // one instance
+    // function, which would dispatch dynamically where it was static
     {
-        let generic = generic_names(&root);
         let under_ref = |i: usize| {
             (0..i).any(|j| matches!(pre[j].kind, ExprKind::ByRef(..)) && i < j + sizes[j])
         };
@@ -157,7 +154,6 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                             | ExprKind::Never { .. }
                     )
                     && !leaks_binds(&pre[i])
-                    && !may_be_generic(&pre[i], &generic)
             })
             .collect();
         for i in sample(&sites, cap) {
@@ -245,8 +241,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // decides, so two of its readers do not commute
     let open = open_lets(&stmts);
     // let-inline: substitute a single-use, unannotated, non-shadowed
-    // `let x = e` into its one later use
+    // `let x = e` into its one later use; not what may be a generic function
+    // into a field or tuple read, whose `let` names a generic binding's
+    // field but holds one instance of a literal's
     {
+        let generic = generic_names(&root);
         let mut done = 0usize;
         for si in 0..stmts.len() {
             if done >= cap {
@@ -287,6 +286,19 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let under = |k: fn(&ExprKind) -> bool| {
                 (0..gi).any(|j| k(&pre[j].kind) && gi < j + sizes[j])
             };
+            let projected = (0..gi)
+                .rev()
+                .filter(|&j| gi < j + sizes[j])
+                .find(|&j| !matches!(pre[j].kind, ExprKind::ExplicitParens(_)))
+                .is_some_and(|j| {
+                    matches!(
+                        pre[j].kind,
+                        ExprKind::StructRef { .. } | ExprKind::TupleRef { .. }
+                    )
+                });
+            if projected && may_be_generic(&b.value, &generic) {
+                continue;
+            }
             // the inline moves the value's check to its use, past the reads
             // between: a reader of an open let the value reads would decide
             // it first
@@ -938,29 +950,16 @@ mod test {
         assert!(probes.iter().any(|p| p.kind == TmKind::ParensWrap), "no probes");
     }
 
-    /// A block's value holds a function as one instance, so block-wrap
-    /// leaves alone what may be a generic function: a generic alias's
-    /// read, a holder's field, a holder.
     #[test]
-    fn block_wrap_keeps_away_from_generic_functions() {
-        let body = "{ let id = |x| x; let g = id; let s = {f: g}; let h = g; let k = s.f; \
-                    let n = i64:1; (h(n), k(\"s\"), s) }";
+    fn inline_keeps_a_generic_value_out_of_a_projection() {
+        let body = "{ let s = {f: |x| x}; let n = i64:1; let k = s.f; (k(n), k(\"s\")) }";
         let (probes, _) = probes(body, 64);
-        let wrapped: Vec<_> =
-            probes.iter().filter(|p| p.kind == TmKind::BlockWrap).collect();
-        assert!(!wrapped.is_empty(), "no block-wrap probe at all");
-        for p in wrapped {
-            for kept in
-                ["let g = id;", "let s = { f: g };", "let h = g;", "let k = s.f;", ", s)"]
-            {
-                assert!(
-                    p.body.contains(kept),
-                    "{}: wrapped a generic function: {}",
-                    p.id(),
-                    p.body
-                );
-            }
-        }
+        assert!(
+            probes
+                .iter()
+                .all(|p| p.kind != TmKind::LetInline || p.body.contains("let s = ")),
+            "inlined a generic holder into a field read"
+        );
     }
 
     #[test]

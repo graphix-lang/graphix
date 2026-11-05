@@ -511,11 +511,10 @@ An image carries each cell's level and each definition's depth.
   open, a function type's own quantifier included, is one type to the
   input's own check (`tvar::in_input`): `contains` compares no earlier
   quantifier there as a fresh copy (`FnType::has_earlier_quantifier`), so
-  a use that would decide one is refused (`let j = s.g`, `s` a holder,
-  so `j` one instance, then `j(1)`, `app(j)` over `app: fn(f: fn(x:
-  i64) -> i64)` or `setf(&mut j)`; the refusal names `j`, not a type:
-  declare `let j: fn(x: i64) -> i64 = s.g`), while a call of a
-  generalized binding copies its scheme as always; a rigid gate it
+  a use that would decide one is refused (`let fs = [g, g]`, `g` generic,
+  then `let z: fn(x: i64, y: i64) -> i64 = fs[0]$`; the refusal names
+  `fs`, not a type: annotate `fs`), while a read of a generalized binding
+  (`let j = s.g`, then `j(1)`, `app(j)`) copies its scheme as always; a rigid gate it
   holds on an earlier input's cell records no write (`tvar::gated`:
   inputs run one at a time), so a write as general as the binding
   decides nothing. A cell
@@ -727,11 +726,17 @@ signature's cell stays generalized and each call settles its copy.
 ### Generic only where a binding names it
 
 A function stays generic only where a binding names it (ML's rule, Eric
-11-05): a `let` of a lambda, or of a data literal holding lambdas that a
-generalized `let` holds (`bind::holds_function`), a write to a
-generalized binding, a labeled default (its parameter names it), a
-call's callee by name, a top-level input's value (`bind::name_value`
-marks each). A lambda a binding names generalizes its signature at its
+11-05): a `let` whose value, past parentheses and a block's final
+expression, is a lambda, a generalized binding or a field or tuple read
+of one (`let j = s.g`, `let j = t.0`, `let j = u.a.g`, `let f = { let n
+= 1; |x| x }`: `bind::names_generic`), or a data literal holding these
+(`bind::holds_function`), a write to a generalized binding, a labeled
+default (its parameter names it), a call's callee by name, a top-level
+input's value (`bind::name_value` marks each: the lambda, or the
+reference at the root of the read). The value restriction stands: a
+binding something writes is one instance (`let j = s.g; j <- ..`), and a
+reference is no binding naming a function (`let r = &f` makes `*r` one
+instance), as in ML. A lambda a binding names generalizes its signature at its
 gate's close; any other takes its enclosing level's
 (`Lambda::named`, `DefGate::close`, `FnType::claim`), so its cells are
 the enclosing definition's, or the top level's, and every use shares
@@ -742,13 +747,18 @@ generic (`Fresh::Scheme`); any other read is one instance of it
 callback's result, a field of a call's result and an argument is one
 instance, which its uses decide: `let fs = array::map([1], |r| 'a:
 Number |x: 'a| x); let g = fs[0]$` makes `g` one type, `g(1)` and then
-`g(1.5)` is refused, and so is `let k = (id, 1).0` at two types. A call
+`g(1.5)` is refused, and so is `let k = (id, 1).0` at two types (a read
+of a literal, not of a generalized binding). A call
 copies a quantifier only where its level says so, as any cell
 (`FnType::instantiate`), and a parameter called in its definition's body
 shares its cells. A write to a generalized binding's place through
 `&mut` reads the root as named, so the place's type holds the scheme's
 cells (`crate::holds_generic` refuses it). Pins: `lang::quantified`
-(`a_callbacks_result_is_one_instance` and its neighbours),
+(`a_callbacks_result_is_one_instance` and its neighbours,
+`a_field_of_a_generic_binding_is_generic`,
+`a_block_whose_value_is_a_lambda_is_generic`,
+`a_reference_to_a_generic_function_is_one_instance`,
+`a_written_field_alias_is_one_instance`),
 `lang::collection::collection_returned_function_is_one_instance`,
 `lang::functions::generic_function_*`.
 

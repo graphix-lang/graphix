@@ -452,7 +452,7 @@ impl<R: Rt> Bind<R> {
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
         let mut node = node;
-        if lambda_value(&node).is_some() || forwards(&ctx.env, b, &node) {
+        if names_generic(&ctx.env, b, &node) {
             name_value(&mut node, false);
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert(id);
@@ -1061,14 +1061,42 @@ fn shares<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> bool {
         || ft.lambda_ids.own().is_some_and(|id| ctx.resolving_innermost(id).is_some())
 }
 
-/// `let g = f` with `f` generalized and no annotation: `g` shares `f`'s
-/// scheme; unifying with a fresh instance would pin it.
+/// `let g = f`, `let j = s.g` with `f`, `s` generalized and no annotation:
+/// the binding shares the read's copy of the scheme; unifying with a fresh
+/// instance would pin it.
 fn forwards<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
-    b.typ.is_none()
-        && match ungrouped(node) {
-            NodeView::Ref(r) => env.poly_binds.contains(&r.id),
-            _ => false,
-        }
+    b.typ.is_none() && reads_generic(env, node)
+}
+
+/// Whether `node`, past grouping parentheses and a block's final
+/// expression, reads a generalized binding or a field or tuple of one.
+fn reads_generic<R: Rt>(env: &Env, node: &Node<R>) -> bool {
+    match value_of(node).view() {
+        NodeView::Ref(r) => env.poly_binds.contains(&r.id),
+        NodeView::StructRef(s) => reads_generic(env, &s.source),
+        NodeView::TupleRef(t) => reads_generic(env, &t.source),
+        _ => false,
+    }
+}
+
+/// Whether a `let` of `node` names a generic function: past grouping
+/// parentheses and a block's final expression, a lambda, or what
+/// [`forwards`] its scheme.
+fn names_generic<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
+    matches!(value_of(node).view(), NodeView::Lambda(_)) || forwards(env, b, node)
+}
+
+/// What `node` evaluates to past grouping parentheses and a block's final
+/// expression.
+fn value_of<R: Rt>(node: &Node<R>) -> &Node<R> {
+    match node.view() {
+        NodeView::ExplicitParens(p) => value_of(&p.n),
+        NodeView::Block(b) if !b.module => match b.children.last() {
+            Some(last) => value_of(last),
+            None => node,
+        },
+        _ => node,
+    }
 }
 
 /// The `BindId` a `#bind::N` path names, if `name` is one.
@@ -1511,8 +1539,9 @@ fn written<R: Rt>(ctx: &CompileCtx<R>, pattern: &StructPatternNode) -> bool {
 }
 
 /// Mark the lambdas and references a binding names in its value `node`:
-/// the value itself, and where `data`, every part of the data literals it
-/// is built of ([`holds_function`]'s walk).
+/// the value itself past parentheses and a block's final expression, the
+/// binding a field or tuple read reads, and where `data`, every part of the
+/// data literals it is built of ([`holds_function`]'s walk).
 pub(crate) fn name_value<R: Rt>(node: &mut Node<R>, data: bool) {
     if let Some(l) = node.downcast_mut::<super::lambda::Lambda>() {
         return l.named = true;
@@ -1522,6 +1551,20 @@ pub(crate) fn name_value<R: Rt>(node: &mut Node<R>, data: bool) {
     }
     if let Some(p) = node.downcast_mut::<super::ExplicitParens<R>>() {
         return name_value(&mut p.n, data);
+    }
+    if let Some(b) = node.downcast_mut::<super::Block<R>>() {
+        if !b.module
+            && let Some(last) = b.children.last_mut()
+        {
+            name_value(last, data)
+        }
+        return;
+    }
+    if let Some(s) = node.downcast_mut::<super::data::StructRef<R>>() {
+        return name_value(&mut s.source, false);
+    }
+    if let Some(t) = node.downcast_mut::<super::data::TupleRef<R>>() {
+        return name_value(&mut t.source, false);
     }
     let literal = matches!(
         node.view(),
@@ -1605,20 +1648,29 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // runs those). The lane also refuses some well-typed arrays of composites with
 // "expected fn not [fn, fn]". Back to Eric as the D11/D12 follow-up in
 // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/M-r*/.
-/// Whether the value `node` builds holds a lambda literal or a generalized
-/// binding's value in a data literal (a struct, its update, a tuple, a
-/// variant, an array, a list or a map): a type that holds the definitions'
-/// signatures only once they are checked.
+// 2026-11-05 claude: Lane Q round 16 (D3 follow-up 2, Q1 (a), Eric 11-05): a let
+// whose value, past parentheses and a block's final expression, is a lambda, a
+// generalized binding or a field or tuple read of one is generalized
+// (bind::names_generic, name_value sees through blocks; holds_function's parts too).
+// blk1.gx now passes --check and runs at both types (s, 1; main refuses f("s")'s
+// bind). A select's arms are still not seen through: c4.gx is refused at --check by
+// the lane's ML rule (main passes the check and refuses the bind). must_reject family
+// 1's mutation now routes the lambda through a written binding (let f = { let tm__0 =
+// ..; let tm__1 = &mut tm__0; tm__0 }), since a block alone generalizes. Pins
+// lang::quantified::a_block_whose_value_is_a_lambda_is_generic and neighbours.
+/// Whether the value `node` builds holds, in a data literal (a struct, its
+/// update, a tuple, a variant, an array, a list or a map), a part a `let`
+/// of it would name ([`names_generic`]), each seen past grouping
+/// parentheses and a block's final expression: a type that holds the
+/// definitions' signatures only once they are checked.
 fn holds_function<R: Rt>(env: &Env, node: &Node<R>) -> bool {
     fn part<R: Rt>(env: &Env, node: &Node<R>) -> bool {
-        match ungrouped(node) {
-            NodeView::Lambda(_) => true,
-            NodeView::Ref(r) => env.poly_binds.contains(&r.id),
-            _ => holds_function(env, node),
-        }
+        matches!(value_of(node).view(), NodeView::Lambda(_))
+            || reads_generic(env, node)
+            || holds_function(env, node)
     }
+    let node = value_of(node);
     match node.view() {
-        NodeView::ExplicitParens(p) => holds_function(env, &p.n),
         NodeView::Struct(_)
         | NodeView::StructWith(_)
         | NodeView::Tuple(_)

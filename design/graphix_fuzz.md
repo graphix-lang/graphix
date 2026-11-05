@@ -560,8 +560,11 @@ THE order probe: declared-param push vs body-first inference; not on a
 callback whose body selects over a value an unannotated parameter's type
 decides, or reads a field of or `with`-updates such a parameter, which
 by language rule only the call types), let-inline (the reverse: the
-value goes in parenthesized, never a `never()`, and never where a later
-binder at any depth rebinds the name or a name the value reads),
+value goes in parenthesized, never a `never()`, never where a later
+binder at any depth rebinds the name or a name the value reads, and never
+what may be a generic function into a field or tuple read, where a `let`
+of the read names a generalized binding's field but of a literal's holds
+one instance),
 stmt-permute (adjacent independent statements of the top block, the
 block's value never moved; declarations, connects and catches stay put
 — tvar allocation order), default-materialize and default-elide (write

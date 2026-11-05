@@ -74,23 +74,24 @@ at two uses whose instances take different primitive first parameters:
 a VALUE use's by the map's type of it, a call's by the map's type of its
 first positional argument where the lambda's first parameter is left
 open.
-Mutation: wrap the lambda so the binding is not generalized, `let f = {
-let tm__0 = null; |..| .. }`. Rule: only a `let` of a lambda, a
-`let` forwarding a generalized binding (a single name something writes
-holds an instance of its own, `Bind::forwards`, pinned by
-`lang::interfaces::written_alias_of_*`), or a `let` nothing writes that
-holds either in a data literal (`bind::holds_function`; a block's value
-and a select's arms are not data literals, CR holder-block-select-01)
-generalizes, and a value reference to a binding that is not generalized
-holds the binding's own cells, so the two uses meet in one instance. A
-lambda no binding names is one instance (Generalization, "Generic only
-where a binding names it", in `tvar_constraints.md`: its gate claims its
-cells for the enclosing level), so a CALL through the wrapped `f` shares
-them too: `f(1); f(1.5)` over it is refused. Right site: the definition,
-or the statement of any use up to the second of the two: every use
-shares the wrapped binding's cells, so the checker refuses at whichever
-conflicts first, a use the map gives no primitive first parameter
-included. An unannotated `let g = f`
+Mutation: route the lambda through a binding something writes, `let f =
+{ let tm__0 = |..| ..; let tm__1 = &mut tm__0; tm__0 }`. Rule: a binding
+something writes is not generalized (the value restriction,
+`CompileCtx::monomorphic`; a written name's cells are claimed for its
+level at its binding), and `f`, a `let` of a block whose value names it,
+forwards that one instance (`bind::names_generic`; a single name
+something writes holds an instance of its own, `Bind::forwards`, pinned
+by `lang::interfaces::written_alias_of_*`), so every use, a call's
+included, shares its cells and the two uses meet in one instance:
+`f(1); f(1.5)` over it is refused. A block alone would not hold it: a
+`let` of a block whose value is a lambda, a generalized binding or a
+field or tuple read of one generalizes (Generalization, "Generic only
+where a binding names it", in `tvar_constraints.md`); a select's arms
+are not seen through (CR holder-block-select-01). Right site: the
+definition, or the statement of any use up to the second of the two:
+every use shares the written binding's cells, so the checker refuses at
+whichever conflicts first, a use the map gives no primitive first
+parameter included. An unannotated `let g = f`
 forwards the wrapped binding, so the value uses of `g` are uses of `f`
 (family 7's sites follow the same aliases).
 

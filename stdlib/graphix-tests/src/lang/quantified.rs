@@ -233,11 +233,105 @@ run!(
 );
 
 run!(
-    a_projection_of_a_generic_binding_is_one_instance,
+    a_projection_of_a_tuple_literal_is_one_instance,
     "{ let id = |x| x; let k = (id, 1).0; (k(1), k(\"s\")) }",
     refused("does not contain string");
     FuseExpect::None
 );
+
+// A let names what its value reads: past parentheses and a block's final
+// expression, a lambda, a generalized binding, or a field or tuple of one.
+run!(
+    a_field_of_a_generic_binding_is_generic,
+    "{ let s = {g: |x| x}; let j = s.g; (j(1), j(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_tuple_field_of_a_generic_binding_is_generic,
+    "{ let t = (|x| x, 1); let j = t.0; (j(1), j(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_nested_field_of_a_generic_binding_is_generic,
+    "{ let u = {a: {g: |x| x}}; let j = u.a.g; (j(1), j(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_block_whose_value_is_a_lambda_is_generic,
+    "{ let f = { let n = 1; |x| x }; (f(1), f(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_block_whose_value_is_a_generic_name_is_generic,
+    "{ let g = |x| x; let f = { let n = 1; g }; (f(1), f(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_parenthesized_block_whose_value_is_a_field_read_is_generic,
+    "{ let s = {g: |x| x}; let j = ({ let n = 1; (s).g }); (j(1), j(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_holder_of_a_field_read_is_generic,
+    "{ let s = {g: |x| x}; let u = {h: { let n = 1; s.g }}; (u.h(1), u.h(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_reference_to_a_generic_function_is_one_instance,
+    "{ let f = |x| x; let r = &f; ((*r)(1), (*r)(\"s\")) }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_reference_to_a_generic_function_takes_its_one_type,
+    "{ let f = |x| x; let r = &f; ((*r)(1), (*r)(2)) }",
+    prints("[i64:1, i64:2]");
+    FuseExpect::None
+);
+
+run!(
+    a_written_field_alias_is_one_instance,
+    "{ let s = {g: |x| x}; let j = s.g; j <- |x| x; (j(1), j(\"s\")) }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_written_field_alias_takes_its_one_type,
+    "{ let s = {g: |x| x}; let j = s.g; j <- |x| x; (j(1), j(2)) }",
+    prints("[i64:1, i64:2]");
+    FuseExpect::None
+);
+
+run!(
+    an_interface_val_implemented_by_a_field_read,
+    prints(r#"[i64:1, "s"]"#),
+    "/test.gx" => r#"
+        mod m;
+        let result = (m::f(1), m::f("s"))
+    "#,
+    "/test/m.gxi" => r#"
+        val f: fn(x: 'a) -> 'a
+    "#,
+    "/test/m.gx" => r#"
+        let s = {g: |x| x};
+        let f = s.g
+    "#; FuseExpect::None);
 
 // A let in a seq step names what it holds as a let outside one does.
 run!(

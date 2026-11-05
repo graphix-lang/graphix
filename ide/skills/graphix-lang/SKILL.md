@@ -303,10 +303,14 @@ name.
 
 A function stays generic only where a binding names it: a `let` of a
 lambda (or of a data literal holding lambdas, below), a `val`, a trait
-method. Anywhere else it is one instance, which its uses decide: `let
-fs = array::map([1], |r| |x| x); let g = fs[0]$` takes `g(1)` and then
-refuses `g("s")`, and so do a function a call returns (`let h = mk(0)`
-over `let mk = |z| |x| x`), a field of a call's result and `(id, 1).0`.
+method, and a `let` of a generic name or of a field or tuple read of
+one (`let j = s.g`, `let j = t.0`), or of a block whose value is one of
+these (`let f = { let n = 1; |x| x }`). Anywhere else it is one
+instance, which its uses decide: `let fs = array::map([1], |r| |x| x);
+let g = fs[0]$` takes `g(1)` and then refuses `g("s")`, and so do a
+function a call returns (`let h = mk(0)` over `let mk = |z| |x| x`), a
+field of a call's result, `(id, 1).0`, a reference (`let r = &f`, then
+`(*r)(1)`) and a binding something writes (`let j = s.g; j <- ..`).
 Each call of `mk` is an instance of its own: `let a = mk(0); let b =
 mk(0)` takes `a(1)` and `b("s")`.
 
@@ -1022,11 +1026,9 @@ away the element it had in hand. Build the final row there:
   = []`, a later `e <- [1]` is refused (write `let e: Array<i64> = []`),
   and a later function writing `e` takes only `_`. Lambdas that meet in
   one array or select settle the same way (`let fs = [|x| x, |y| y]`
-  takes no later `fs[0]$(1)`: annotate `fs`). A function read out of a
-  holder (`let j = s.g`) is one instance, so a later use that would
-  decide its type, `j(1)` or `app(j)`, is refused, naming the binding:
-  declare it at the type the use needs (`let j: fn(x: i64) -> i64 =
-  s.g`), or call `s.g` itself, which is generic.
+  takes no later `fs[0]$(1)`: annotate `fs`). A generic function it
+  leaves in a binding (`let j = s.g`) stays generic: each later use
+  copies it, `j(1)` and `app(j)` alike.
 - `--check` a witness before arguing about a semantics question.
 
 ## Line reader retries

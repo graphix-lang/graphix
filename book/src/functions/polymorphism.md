@@ -179,9 +179,11 @@ error: ... a function type with type variables of its own (`fn<'a: ..>(..)`, or 
 ```
 
 A function stays generic only where a binding names it: a `let` of a
-lambda or of a data literal holding lambdas, a `val`, a trait method.
-Anywhere else, an element of a collection a call returns, a callback's
-result, a field of a call's result, an argument, it is one instance,
+lambda or of a data literal holding lambdas, a `let` of a generic name or
+of a field of one (`let j = s.g`), or of a block ending in one of these,
+a `val`, a trait method. Anywhere else, an element of a collection a call
+returns, a callback's result, a field of a call's result, an argument, a
+reference (`&f`), it is one instance,
 which its uses decide. Here `g` is one instance of the lambda the
 callback returns, decided to `i64` by its first call, so a second call
 `g(1.5)` would be refused:

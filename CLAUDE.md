@@ -984,9 +984,12 @@ node graph IS the IR — there is no parallel typed IR
   naming the fix (`typ::QUANTIFIED_FN`: `Type::rewrite_trait_args`, and
   `refuse_quantified_fns` for a cast, a type test and a catch's
   annotation); a function stays generic only where a binding names it (a
-  `let` of a lambda or of a data literal holding one, a write to a
+  `let` whose value, past parentheses and a block's final expression, is
+  a lambda, a generalized binding, a field or tuple read of one
+  (`let j = s.g`) or a data literal holding these, a write to a
   generalized binding, a labeled default, a call's callee by name, an
-  input's value: `bind::name_value`): a lambda no binding names takes its
+  input's value: `bind::names_generic`, `holds_function`, `name_value`;
+  a reference, `&f`, is not one): a lambda no binding names takes its
   enclosing level's cells at its gate's close (`Lambda::named`,
   `DefGate::close`), and a read of a generalized binding no binding names
   is one instance (`Ref::named`, `FnType::one_instance`,

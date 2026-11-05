@@ -1654,13 +1654,12 @@ fn widen_through_let(
     }
 }
 
-/// Family 1. A generalized lambda (`let f = |..| ..`) passed as a VALUE
-/// at two uses whose instances take different primitive first parameters
-/// is wrapped so the binding is not generalized. A call instantiates its
-/// callee whatever the binding, but a value reference to a binding that
-/// is not generalized holds the binding's own cells, so the two uses
-/// meet in one instance and cannot both hold; an alias `let g = f`
-/// forwards the binding, and its value uses are among them.
+/// Family 1. A generalized lambda (`let f = |..| ..`) used at two uses
+/// whose instances take different primitive first parameters is routed
+/// through a binding something writes, `let f = { let tm__0 = |..| ..; let
+/// tm__1 = &mut tm__0; tm__0 }`: a written binding is one instance, which
+/// `f` forwards, so the two uses meet in it and cannot both hold; an alias
+/// `let g = f` forwards the binding, and its value uses are among them.
 fn mono_reuse(
     root: &Expr,
     pre: &[Expr],
@@ -1721,16 +1720,23 @@ fn mono_reuse(
         }) else {
             continue;
         };
+        let bind = |name: &str, value: Expr| {
+            ExprKind::Bind(Arc::new(BindExpr {
+                rec: false,
+                pattern: StructurePattern::Bind(Name::from(name)),
+                typ: None,
+                value,
+            }))
+            .to_expr_nopos()
+        };
+        let held = ExprKind::Ref { name: ModPath::from(["tm__0"]) }.to_expr_nopos();
+        let writer =
+            ExprKind::ByRef(Mutability::Mut, Arc::new(held.clone())).to_expr_nopos();
         let wrapped = ExprKind::Block {
             exprs: Arc::from_iter([
-                ExprKind::Bind(Arc::new(BindExpr {
-                    rec: false,
-                    pattern: StructurePattern::Bind(Name::from("tm__0")),
-                    typ: None,
-                    value: ExprKind::Constant(netidx_value::Value::Null).to_expr_nopos(),
-                }))
-                .to_expr_nopos(),
-                b.value.clone(),
+                bind("tm__0", b.value.clone()),
+                bind("tm__1", writer),
+                held,
             ]),
         }
         .to_expr_nopos();
