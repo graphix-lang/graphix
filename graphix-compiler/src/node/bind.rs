@@ -744,7 +744,7 @@ impl<R: Rt> Update<R> for Bind<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         if woke {
-            // CR claude for claude: [bug/low] At a wake the write that landed during the
+            // CR claude for eric: [bug/low] At a wake the write that landed during the
             // sleep is re-raised here. The initializer then updates with its input's
             // catch-up fire and publishes over it, even when that input fired before
             // the write. Catch-up loses the order inside the sleep, so the let ends on
@@ -787,6 +787,19 @@ impl<R: Rt> Update<R> for Bind<R> {
             // initializer's catch-up (the write wins; replaces the 10-27 'later event wins');
             // a write through a place stands as computed; cr34-W's wake pins reused with these
             // answers, then the branch deleted.
+            // 2026-11-04 claude: Round 15 lane W built D16 (b) and D19 (b) on branch
+            // cr50-W-parked (e64fdff5d..1fb17e606) and was parked. D16: a write that landed
+            // during the sleep stands over catch-up, but an input that fires live in the
+            // wake's own cycle must still replace it (the scrutinee that wakes the arm), and
+            // every static test of liveness failed review in a new way: by the initializer's
+            // text (a pattern bind, an alias), then by triggering inputs (a sample paying its
+            // bank, an imaged callee's reads, a cold/warm image divergence), and a uniq'd
+            // scrutinee or an untaken inner arm needs a per-fire liveness bit in both engines.
+            // D19 held up after fixes (Walk deliveries, moved references, the fork rule) but
+            // breaks its ruling's premise: a backward data cycle through a function value now
+            // runs a cycle at a time forever where main settles (late-loop-01 on the branch).
+            // Back to Eric as the D16/D19 follow-up in ~/ptmp/cr29/next-discuss.md; probes
+            // ~/ptmp/cr29/scratch/review-r15/W-r*/.
             self.reraise_writes_while_asleep(ctx);
         }
         let tv = self.node.update(ctx);
@@ -795,7 +808,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         // initializer fired; otherwise a production publishes when it
         // fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
-        // CR claude for claude: [bug/medium] Two events missed during a sleep are applied
+        // CR claude for eric: [bug/medium] Two events missed during a sleep are applied
         // in the wrong order. The initializer input fired at c=4 and a write to this
         // target landed at c=5. At the wake the re-raised write is published first,
         // then the initializer's caught-up fire overwrites it, so x is 100 where an arm
@@ -836,6 +849,19 @@ impl<R: Rt> Update<R> for Bind<R> {
         // initializer's catch-up (the write wins; replaces the 10-27 'later event wins');
         // a write through a place stands as computed; cr34-W's wake pins reused with
         // these answers, then the branch deleted.
+        // 2026-11-04 claude: Round 15 lane W built D16 (b) and D19 (b) on branch
+        // cr50-W-parked (e64fdff5d..1fb17e606) and was parked. D16: a write that landed
+        // during the sleep stands over catch-up, but an input that fires live in the
+        // wake's own cycle must still replace it (the scrutinee that wakes the arm), and
+        // every static test of liveness failed review in a new way: by the initializer's
+        // text (a pattern bind, an alias), then by triggering inputs (a sample paying its
+        // bank, an imaged callee's reads, a cold/warm image divergence), and a uniq'd
+        // scrutinee or an untaken inner arm needs a per-fire liveness bit in both
+        // engines. D19 held up after fixes (Walk deliveries, moved references, the fork
+        // rule) but breaks its ruling's premise: a backward data cycle through a function
+        // value now runs a cycle at a time forever where main settles (late-loop-01 on
+        // the branch). Back to Eric as the D16/D19 follow-up in
+        // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/W-r*/.
         if (woke || ctx.event.wake()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =

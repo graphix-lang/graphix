@@ -522,7 +522,7 @@ impl<X: GXExt> GX<X> {
         Ok(())
     }
 
-    // CR claude for claude: [bug/medium] A production reaches only readers that run after it
+    // CR claude for eric: [bug/medium] A production reaches only readers that run after it
     // in its cycle, and nothing delivers it to one that ran before, so a reader holding a
     // function value from later in the program never sees what that function reads move.
     // A script: `let h: fn(x: i64) -> i64 = never(); let r = h(1); let t = timer(50.ms, 5);
@@ -543,6 +543,18 @@ impl<X: GXExt> GX<X> {
     // 2026-11-03 claude: Eric ruled (2026-11-03): D19 (b) in ~/ptmp/cr-discuss.md: a value
     // made in a cycle reaches an earlier reader (one that ran before it in the root order)
     // in the next cycle, as a write does; forward readers unchanged.
+    // 2026-11-04 claude: Round 15 lane W built D16 (b) and D19 (b) on branch cr50-W-parked
+    // (e64fdff5d..1fb17e606) and was parked. D16: a write that landed during the sleep
+    // stands over catch-up, but an input that fires live in the wake's own cycle must still
+    // replace it (the scrutinee that wakes the arm), and every static test of liveness
+    // failed review in a new way: by the initializer's text (a pattern bind, an alias), then
+    // by triggering inputs (a sample paying its bank, an imaged callee's reads, a cold/warm
+    // image divergence), and a uniq'd scrutinee or an untaken inner arm needs a per-fire
+    // liveness bit in both engines. D19 held up after fixes (Walk deliveries, moved
+    // references, the fork rule) but breaks its ruling's premise: a backward data cycle
+    // through a function value now runs a cycle at a time forever where main settles
+    // (late-loop-01 on the branch). Back to Eric as the D16/D19 follow-up in
+    // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/W-r*/.
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
