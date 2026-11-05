@@ -1823,6 +1823,16 @@ run!(
     "/test/m.gx" => "let y = never(); let f = |x| { y <- x; x }"
 );
 
+// A data literal's helper that writes an outer binding is followed: the
+// refusal names the binding written, not the holder or nothing.
+run!(
+    val_struct_holding_a_writing_helper_names_what_it_writes,
+    refused("that of y, a binding outside its let: declare the val at one type, or give y a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::c.g(1), m::c.g(\"s\"))",
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let y = never(); let store = |x| { y <- x; y }; let c = {f: |x| x, g: store}"
+);
+
 run!(
     val_over_an_outer_binding_of_every_type,
     prints("[i64:1, \"s\"]"),

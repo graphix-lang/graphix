@@ -2469,6 +2469,27 @@ impl Type {
         })
     }
 
+    /// Each function type this type holds outside any other function type,
+    /// bindings followed: the function values a holder of this type may carry.
+    pub fn each_held_fn(&self, f: &mut impl FnMut(&FnType)) {
+        self.held_fns_seen(&mut LPooled::take(), f)
+    }
+
+    fn held_fns_seen(&self, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&FnType)) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                if seen.insert(tv.cell_addr())
+                    && let Some(b) = tv.binding()
+                {
+                    b.held_fns_seen(seen, f)
+                }
+            }
+            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
+            Type::Fn(ft) => f(ft),
+            t => t.for_each_child(&mut |c| c.held_fns_seen(seen, f)),
+        })
+    }
+
     /// Rebuild this type's immediate structural children through `f`
     /// (`None` from `f` means unchanged); `None` when nothing changed.
     /// Leaves, `TVar` included, return `None`. `Ref` params rebuild

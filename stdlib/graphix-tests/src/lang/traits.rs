@@ -2985,6 +2985,37 @@ run!(
     refused("that of y, a binding outside its let: give y a type that holds every 'a")
 );
 
+// A method that calls into a struct of lambdas, or into a struct holding a
+// named helper, is told the binding the helper writes, not the struct.
+run!(
+    method_over_a_struct_of_lambdas_names_what_they_write,
+    r#"{
+    type C = Abstract<i64>;
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    let y = never();
+    let st = {k: |x| { y <- x; y }};
+    impl Put for C { let put = |s, x| st.k(x) };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused("that of y, a binding outside its let: give y a type that holds every 'a")
+);
+
+run!(
+    method_over_a_struct_of_a_named_helper_names_what_it_writes,
+    r#"{
+    type C = Abstract<i64>;
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    let y = never();
+    let k = |x| { y <- x; y };
+    let st = {k};
+    impl Put for C { let put = |s, x| st.k(x) };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused("that of y, a binding outside its let: give y a type that holds every 'a")
+);
+
 // A method whose value is no lambda keeps the types its value holds, which
 // no call copies: a variable each call picks may not stand on one of them,
 // a binding's outside or a call's result's.

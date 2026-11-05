@@ -512,7 +512,7 @@ pub(crate) enum Holder {
 }
 
 impl Holder {
-    // CR claude for claude: [readability/low] A refusal over a holder of a capturing
+    // XCR claude for claude: [readability/low] A refusal over a holder of a capturing
     // helper names no binding, or the holder rather than the binding to annotate, since
     // this follows only a LambdaDef's captures: `val c: {f: fn(x: 'a) -> 'a, g: fn(x:
     // 'a) -> 'a}` over `let y = never(); let store = |x| { y <- x; y }; let c = {f: |x|
@@ -525,18 +525,34 @@ impl Holder {
     // data literal's lambdas, and through a binding that holds one) to the captured
     // binding would name y. probes: ~/ptmp/cr29/scratch/r14-A/fix3/p/{k12,tr1,tr2}
     // (iface-holder-name-01)
+    // 2026-11-05 claude: Holder::of now follows a data holder's function types (their
+    // lambda ids, via Type::each_held_fn) to the lambdas they carry and so to the binding
+    // those capture; a holder whose lambdas capture nothing that holds the cell is still
+    // named. A function-typed non-lambda value (a call result, a tuple projection) is not
+    // followed, so the no-lambda method refusal is unchanged. Pins that fail without it:
+    // lang::interfaces::val_struct_holding_a_writing_helper_names_what_it_writes,
+    // lang::traits::method_over_a_struct_of_lambdas_names_what_they_write,
+    // method_over_a_struct_of_a_named_helper_names_what_it_writes (all modes). Wording
+    // only, no census needed.
     /// What holds `tv` for the implementation's binding `id`: the nearest
-    /// binding its lambda captures, or a lambda it captures captures, whose
-    /// type reaches the cell and which holds no lambda, the binding an
-    /// annotation can widen.
+    /// binding the lambdas it holds capture, or the lambdas those capture,
+    /// whose type reaches the cell and which holds no lambda, the binding an
+    /// annotation can widen. A binding that holds lambdas in data (a struct
+    /// of them) is followed to what they capture, and named only when they
+    /// capture nothing that holds the cell.
     pub(crate) fn of<R: Rt>(ctx: &CompileCtx<R>, id: BindId, tv: &TVar) -> Self {
-        let Some(def) = held_lambda(ctx, id) else { return Self::NoLambda };
+        let mut level: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
+        held_lambdas(ctx, id, &mut level);
+        if level.is_empty() {
+            return Self::NoLambda;
+        }
         let mut seen: LPooled<AHashSet<BindId>> = LPooled::take();
-        let mut level: SmallVec<[&LambdaDef<R>; 4]> = smallvec::smallvec![def];
+        let mut followed: LPooled<AHashSet<LambdaId>> = LPooled::take();
+        let mut data_holder = None;
         let mut next: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
         while !level.is_empty() {
             let mut found = None;
-            for def in level.drain(..) {
+            for def in level.drain(..).filter(|d| followed.insert(d.id)) {
                 def.captured_ids(&mut |id| {
                     let Some(b) = ctx.env.by_id.get(&id) else { return };
                     if found.is_some() || !seen.insert(id) {
@@ -545,9 +561,12 @@ impl Holder {
                     let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                     b.typ.reached_cells(&mut cells);
                     if cells.contains_key(&tv.cell_addr()) {
-                        match held_lambda(ctx, id) {
-                            Some(def) => next.push(def),
-                            None => found = Some(b.name.clone()),
+                        let before = next.len();
+                        held_lambdas(ctx, id, &mut next);
+                        if next.len() == before {
+                            found = Some(b.name.clone())
+                        } else if held_lambda(ctx, id).is_none() {
+                            data_holder.get_or_insert_with(|| b.name.clone());
                         }
                     }
                 });
@@ -557,7 +576,7 @@ impl Holder {
             }
             mem::swap(&mut level, &mut next);
         }
-        Self::Lambda
+        data_holder.map_or(Self::Lambda, Self::Captured)
     }
 }
 
@@ -610,6 +629,30 @@ fn free_variable(t: &Type) -> Option<TVar> {
         .filter(|tv| !tv.is_bound() && !quantified.contains(&tv.cell_addr()))
         .min_by(|a, b| a.name.cmp(&b.name))
         .cloned()
+}
+
+/// The lambdas the binding `id` holds: its own when it is a lambda, else,
+/// where its value is data and not a function, those its type's function
+/// types carry.
+fn held_lambdas<'a, R: Rt>(
+    ctx: &'a CompileCtx<R>,
+    id: BindId,
+    out: &mut SmallVec<[&'a LambdaDef<R>; 4]>,
+) {
+    if let Some(def) = held_lambda(ctx, id) {
+        return out.push(def);
+    }
+    let Some(b) = ctx.env.by_id.get(&id) else { return };
+    if b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
+        return;
+    }
+    b.typ.each_held_fn(&mut |ft| {
+        for lid in ft.lambda_ids.ids().iter() {
+            let def =
+                ctx.lambda_defs.get(lid).and_then(|v| v.downcast_ref::<LambdaDef<R>>());
+            out.extend(def);
+        }
+    })
 }
 
 /// The lambda the binding `id` holds, if it holds one.
