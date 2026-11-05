@@ -365,6 +365,21 @@ As built:
   after no re-raise visits no statement for it. The reactive fuzzer found the
   gap (`findings/wake-resume-seq-abort-oct2026/`): the constants that
   used to fire at a wake had papered over it.
+- **The initializer's catch-up replaces such a write.** Catch-up keeps
+  no order inside the sleep: when an input of the `let`'s initializer
+  fired during the sleep, the initializer fires at the wake and replaces
+  the re-raised write (`Bind::update` holds a `<-` target back only from
+  a production that did not fire), whether the input fired before the
+  write landed or after, and a write landing in the wake's own cycle is
+  replaced too. With no such input fired the write stands, and a write
+  landing after the wake's cycle stands as any write does. An arm that
+  never slept would end on the later of the two; telling them apart
+  needs a liveness bit on every fire in both engines, which was judged
+  not worth its cost. Pins: `lang::select::{wake_catchup_replaces_a_later_write,
+  wake_catchup_replaces_a_write_landing_at_the_wake,
+  wake_write_after_the_wake_stands, wake_write_stands_with_no_input_fired_asleep,
+  wake_catchup_through_an_alias_replaces_a_write,
+  wake_sample_catchup_replaces_a_write, wake_catchup_replaces_queued_writes}`.
 - **Rebirth is a birth's.** `Apply::reborn` (no-op by default) holds
   what `sleep` used to clear; a call site calls it before an update that
   follows its sleep under a born view (`CallSite::update_call`), so a seq

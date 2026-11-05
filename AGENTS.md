@@ -1029,7 +1029,10 @@ node graph IS the IR — there is no parallel typed IR
   the block around it, whose later statements read its names); a `let`
   that re-raises marks its block (`node::Lets`), which reads the mark as
   its update ends, so an update after no re-raise visits no `let`. A
-  reader outside (an escaped `&mut`) sees the write once. State
+  reader outside (an escaped `&mut`) sees the write once. At the wake
+  the initializer's catch-up (an input of it fired during the sleep)
+  replaces such a write, whichever came first; a write landing after the
+  wake's cycle stands. State
   survives an arm's sleep (`Held` residents at the select scrutinee,
   pattern guard and `~`'s arg; `CachedVals` staging; collection slots;
   a `<-` target's value, which only a fired input of its initializer

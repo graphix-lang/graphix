@@ -3124,8 +3124,8 @@ run!(
     wake_constant_keeps_target,
     WAKE_CONSTANT_KEEPS_TARGET,
     prints(
-        "[[i64:10, i64:10], [i64:-1, i64:-1], [i64:11, i64:11], [i64:-1, i64:-1], \
-            [i64:12, i64:12], [i64:-1, i64:-1], [i64:13, i64:13]]"
+        "[[i64:10, i64:10], [i64:-1, i64:-1], [i64:11, i64:11], \
+            [i64:-1, i64:-1], [i64:12, i64:12], [i64:-1, i64:-1], [i64:13, i64:13]]"
     )
 );
 
@@ -3158,6 +3158,180 @@ async fn wake_keeps_target_of_unpublished_let(mode: Mode) -> Result<()> {
 }
 
 modes!(wake_keeps_target_of_unpublished_let);
+
+// At a wake a `let`'s initializer catch-up replaces a write that landed on
+// it during the sleep, whatever the order of the two in the sleep; with no
+// initializer input fired during the sleep the write stands, and a write
+// landing after the wake's cycle stands as any write does. `inp` fires at
+// INPUT, the write through `h` lands at WRITE + 1, the arm sleeps for
+// c = 3..5 and wakes at 6.
+const WAKE_ORDER: &str = r#"
+{
+  let c = 0;
+  c <- select c { k if k < 9 => k + 1, _ => never() };
+  let sel = select c { 3 => false, 4 => false, 5 => false, _ => true };
+  let inp = 0;
+  inp <- select c { INPUT => c ~ 100, _ => never() };
+  let holder: [&mut i64, null] = null;
+  let inner = select sel {
+    true => { let x = inp; holder <- &mut x; x },
+    false => -1
+  };
+  let h = holder$;
+  *h <- select c { WRITE => c ~ 555, _ => never() };
+  let hv = *h;
+  let seen = [];
+  seen <- c ~ array::push(seen, [c, inner, hv]);
+  select c { 9 => c ~ seen, _ => never() }
+}
+"#;
+
+fn wake_order(input: &str, write: &str) -> String {
+    WAKE_ORDER.replace("INPUT", input).replace("WRITE", write)
+}
+
+run!(
+    wake_catchup_replaces_a_later_write,
+    wake_order("3", "4"),
+    prints(
+        "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
+            [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:555], \
+            [i64:6, i64:100, i64:100], [i64:7, i64:100, i64:100], \
+            [i64:8, i64:100, i64:100]]"
+    )
+);
+
+run!(
+    wake_catchup_replaces_a_write_landing_at_the_wake,
+    wake_order("3", "5"),
+    prints(
+        "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
+            [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:0], \
+            [i64:6, i64:100, i64:100], [i64:7, i64:100, i64:100], \
+            [i64:8, i64:100, i64:100]]"
+    )
+);
+
+run!(
+    wake_write_after_the_wake_stands,
+    wake_order("3", "6"),
+    prints(
+        "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
+            [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:0], \
+            [i64:6, i64:100, i64:100], [i64:7, i64:555, i64:555], \
+            [i64:8, i64:555, i64:555]]"
+    )
+);
+
+run!(
+    wake_write_stands_with_no_input_fired_asleep,
+    wake_order("7", "4"),
+    prints(
+        "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
+            [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:555], \
+            [i64:6, i64:555, i64:555], [i64:7, i64:555, i64:555], \
+            [i64:8, i64:100, i64:100]]"
+    )
+);
+
+// The initializer reads its input through a `let` of the arm: its catch-up
+// replaces the write as a direct read does.
+const WAKE_CATCHUP_THROUGH_AN_ALIAS_REPLACES_A_WRITE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let input = 0;
+  input <- select step { 3 => 100, _ => never() };
+  let holder: [&mut i64, null] = null;
+  let result = select step < 3 || step > 5 {
+    true => {
+      let alias = input + 0;
+      let target = alias;
+      holder <- &mut target;
+      target
+    },
+    false => -1
+  };
+  let h = holder$;
+  *h <- select step { 4 => 555, _ => never() };
+  select step { 8 => result, _ => never() }
+}
+"#;
+
+run!(
+    wake_catchup_through_an_alias_replaces_a_write,
+    WAKE_CATCHUP_THROUGH_AN_ALIAS_REPLACES_A_WRITE,
+    prints("i64:100")
+);
+
+// The sample's trigger fired during the sleep: its catch-up replaces the
+// write with the argument as it stands at the wake.
+const WAKE_SAMPLE_CATCHUP_REPLACES_A_WRITE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 10 => s + 1, _ => never() };
+  let trigger = 0;
+  trigger <- select step { 3 => 1, _ => never() };
+  let argument = 100;
+  argument <- select step { 5 => 200, _ => never() };
+  let holder: [&mut i64, null] = null;
+  let result = select step < 3 || step > 7 {
+    true => {
+      let target = trigger ~ argument;
+      holder <- &mut target;
+      target
+    },
+    false => -1
+  };
+  let h = holder$;
+  *h <- select step { 4 => 555, _ => never() };
+  select step { 10 => result, _ => never() }
+}
+"#;
+
+run!(
+    wake_sample_catchup_replaces_a_write,
+    WAKE_SAMPLE_CATCHUP_REPLACES_A_WRITE,
+    prints("i64:200")
+);
+
+// Two writes queued in the arm's last awake cycle land during its sleep,
+// after the initializer's input fired: at the wake the catch-up replaces
+// them (an arm that never slept ends on the later write, 2).
+const WAKE_CATCHUP_REPLACES_QUEUED_WRITES: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 16 => s + 1, _ => never() };
+  let x = 100;
+  x <- select step { s if s == 10 => 200, _ => never() };
+  let on = uniq(step < 11 || step > 13);
+  let no = 0 - 1;
+  let out = select on {
+    true => {
+      let z = x;
+      z <- select step { 10 => 1, _ => never() };
+      z <- select step { 10 => 2, _ => never() };
+      [step, z]
+    },
+    false => [no, no]
+  };
+  let seen = [];
+  seen <- out ~ array::push(seen, out);
+  select step { 16 => step ~ seen, _ => never() }
+}
+"#;
+
+run!(
+    wake_catchup_replaces_queued_writes,
+    WAKE_CATCHUP_REPLACES_QUEUED_WRITES,
+    prints(
+        "[[i64:0, i64:100], [i64:1, i64:100], [i64:2, i64:100], \
+            [i64:3, i64:100], [i64:4, i64:100], [i64:5, i64:100], [i64:6, i64:100], \
+            [i64:7, i64:100], [i64:8, i64:100], [i64:9, i64:100], \
+            [i64:10, i64:100], [i64:-1, i64:-1], [i64:14, i64:200], \
+            [i64:15, i64:200]]"
+    )
+);
 
 // A restart builtin over a constant passes nothing at a wake, where the
 // constant stands, so a `<-` target it initialises keeps its value after
@@ -4179,7 +4353,8 @@ run!(
     wake_recomputes_a_targets_siblings,
     WAKE_RECOMPUTES_A_TARGETS_SIBLINGS,
     prints(
-        "[[i64:0, i64:100], [i64:-1, i64:5], [i64:1, i64:105], [i64:-1, i64:5], [i64:2, i64:105]]"
+        "[[i64:0, i64:100], [i64:-1, i64:5], [i64:1, i64:105], [i64:-1, i64:5], \
+            [i64:2, i64:105]]"
     )
 );
 

@@ -743,68 +743,6 @@ impl<R: Rt> Update<R> for Bind<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         if woke {
-            // CR claude for claude: [bug/low] At a wake the write that landed during the
-            // sleep is re-raised here. The initializer then updates with its input's
-            // catch-up fire and publishes over it, even when that input fired before
-            // the write. Catch-up loses the order inside the sleep, so the let ends on
-            // a value the awake program never ends on: in the probe 200 where awake it
-            // settles on 2. Rule whether a caught-up initializer fire may override a
-            // write stamped after it. If not, keep the re-raised write when its stamp
-            // is newer than the stamp of the initializer inputs' last write, as `held`
-            // keeps a connect target. probe:
-            // design/review-2026-10-26/repro/x-engine-firing-init-catchup-beats-later-write.gx
-            // (x-engine-firing-05)
-            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q4, A caught-up
-            // initializer against a later write): yes, later wins (the recommendation: the
-            // later write wins.)
-            // 2026-10-27 codex: Partial, no implementation landed. Reproduced both supplied
-            // probes. Tried retaining each target whose write stamp is newer than every free
-            // initializer input, excluding a rebirth. The direct target/write-order and
-            // queued-write pins passed (12 mode runs), but two additional pins still failed in
-            // all four modes: c-bind-wake-order-alias.gx gives 100 instead of 555 because the
-            // caught-up alias gets the wake cycle's stamp; c-bind-wake-order-sample.gx gives
-            // 200 instead of 555 because the sample argument's later update is not the fire
-            // that initialized the target. Added both probes under
-            // design/review-2026-10-26/repro. Reverted the local comparison: it does not
-            // implement the ruling through derived bindings or sampling. Remaining work is
-            // causal provenance for initializer fires across those nodes; the store's delivery
-            // stamp alone is insufficient and also serves read_var's live-delivery contract.
-            // Trial Rust pins and the candidate patch are retained in /tmp/q4-trial-select.rs
-            // and /tmp/q4-candidate.patch. No language rule or FuseExpect changed.
-            // 2026-11-01 claude: Round 6 lane W2 built 'the later event wins' at a resume by
-            // dating each caught-up fire by its initializer's inputs (branch cr34-W: 03afebabe
-            // 389cbe00a ffebc3b3d 7eae1b817). Three review rounds each found new orders it
-            // misses, one showing a value of no world the awake run passes through
-            // (~/ptmp/cr29/scratch/review-r6/W2-r3-1/a9*, a10), at up to 1.6x instructions
-            // where a write lands at every sleep. Parked for Eric
-            // (~/ptmp/cr29/next-discuss.md, wake order); main's behaviour stands.
-            // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "c-bind-06 /
-            // x-engine-firing-05 wake order" (~/ptmp/cr29/next-discuss.md). Readdressed to
-            // eric until then.
-            // 2026-11-03 claude: Eric ruled (2026-11-03): D16 (b) in ~/ptmp/cr-discuss.md: no
-            // dating: at a wake, a write that landed during the sleep always stands over the
-            // initializer's catch-up (the write wins; replaces the 10-27 'later event wins');
-            // a write through a place stands as computed; cr34-W's wake pins reused with these
-            // answers, then the branch deleted.
-            // 2026-11-04 claude: Round 15 lane W built D16 (b) and D19 (b) on branch
-            // cr50-W-parked (e64fdff5d..1fb17e606) and was parked. D16: a write that landed
-            // during the sleep stands over catch-up, but an input that fires live in the
-            // wake's own cycle must still replace it (the scrutinee that wakes the arm), and
-            // every static test of liveness failed review in a new way: by the initializer's
-            // text (a pattern bind, an alias), then by triggering inputs (a sample paying its
-            // bank, an imaged callee's reads, a cold/warm image divergence), and a uniq'd
-            // scrutinee or an untaken inner arm needs a per-fire liveness bit in both engines.
-            // D19 held up after fixes (Walk deliveries, moved references, the fork rule) but
-            // breaks its ruling's premise: a backward data cycle through a function value now
-            // runs a cycle at a time forever where main settles (late-loop-01 on the branch).
-            // Back to Eric as the D16/D19 follow-up in ~/ptmp/cr29/next-discuss.md; probes
-            // ~/ptmp/cr29/scratch/review-r15/W-r*/.
-            // 2026-11-05 claude: Eric ruled (2026-11-05) on the D16/D19 follow-up: (c), keep
-            // main. At a wake, a let's initializer catch-up replaces a write that landed
-            // during the sleep. The exact alternative (a live bit carried by every fire) was
-            // judged not worth its cost. To do: state the rule in CLAUDE.md and
-            // design/wake_catchup.md, pin main's behaviour with this probe, then remove this
-            // CR. Lane W's D16 commits (cr50-W-parked) are dropped.
             self.reraise_writes_while_asleep(ctx);
         }
         let tv = self.node.update(ctx);
@@ -813,66 +751,6 @@ impl<R: Rt> Update<R> for Bind<R> {
         // initializer fired; otherwise a production publishes when it
         // fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
-        // CR claude for claude: [bug/medium] Two events missed during a sleep are applied
-        // in the wrong order. The initializer input fired at c=4 and a write to this
-        // target landed at c=5. At the wake the re-raised write is published first,
-        // then the initializer's caught-up fire overwrites it, so x is 100 where an arm
-        // that never slept stands at 555. Which should win: the later write (hold the
-        // target when its write stamp is after every initializer input's), or always
-        // the initializer? probe: design/review-2026-10-26/repro/c-bind-wake-order.gx
-        // (c-bind-06)
-        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q4, A
-        // caught-up initializer against a later write): yes, later wins (the
-        // recommendation: the later write wins.)
-        // 2026-10-27 codex: Partial, no implementation landed. Reproduced both supplied
-        // probes. Tried retaining each target whose write stamp is newer than every free
-        // initializer input, excluding a rebirth. The direct target/write-order and
-        // queued-write pins passed (12 mode runs), but two additional pins still failed
-        // in all four modes: c-bind-wake-order-alias.gx gives 100 instead of 555 because
-        // the caught-up alias gets the wake cycle's stamp; c-bind-wake-order-sample.gx
-        // gives 200 instead of 555 because the sample argument's later update is not the
-        // fire that initialized the target. Added both probes under
-        // design/review-2026-10-26/repro. Reverted the local comparison: it does not
-        // implement the ruling through derived bindings or sampling. Remaining work is
-        // causal provenance for initializer fires across those nodes; the store's
-        // delivery stamp alone is insufficient and also serves read_var's live-delivery
-        // contract. Trial Rust pins and the candidate patch are retained in
-        // /tmp/q4-trial-select.rs and /tmp/q4-candidate.patch. No language rule or
-        // FuseExpect changed.
-        // 2026-11-01 claude: Round 6 lane W2 built 'the later event wins' at a resume by
-        // dating each caught-up fire by its initializer's inputs (branch cr34-W:
-        // 03afebabe 389cbe00a ffebc3b3d 7eae1b817). Three review rounds each found new
-        // orders it misses, one showing a value of no world the awake run passes through
-        // (~/ptmp/cr29/scratch/review-r6/W2-r3-1/a9*, a10), at up to 1.6x instructions
-        // where a write lands at every sleep. Parked for Eric
-        // (~/ptmp/cr29/next-discuss.md, wake order); main's behaviour stands.
-        // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "c-bind-06 /
-        // x-engine-firing-05 wake order" (~/ptmp/cr29/next-discuss.md). Readdressed to
-        // eric until then.
-        // 2026-11-03 claude: Eric ruled (2026-11-03): D16 (b) in ~/ptmp/cr-discuss.md: no
-        // dating: at a wake, a write that landed during the sleep always stands over the
-        // initializer's catch-up (the write wins; replaces the 10-27 'later event wins');
-        // a write through a place stands as computed; cr34-W's wake pins reused with
-        // these answers, then the branch deleted.
-        // 2026-11-04 claude: Round 15 lane W built D16 (b) and D19 (b) on branch
-        // cr50-W-parked (e64fdff5d..1fb17e606) and was parked. D16: a write that landed
-        // during the sleep stands over catch-up, but an input that fires live in the
-        // wake's own cycle must still replace it (the scrutinee that wakes the arm), and
-        // every static test of liveness failed review in a new way: by the initializer's
-        // text (a pattern bind, an alias), then by triggering inputs (a sample paying its
-        // bank, an imaged callee's reads, a cold/warm image divergence), and a uniq'd
-        // scrutinee or an untaken inner arm needs a per-fire liveness bit in both
-        // engines. D19 held up after fixes (Walk deliveries, moved references, the fork
-        // rule) but breaks its ruling's premise: a backward data cycle through a function
-        // value now runs a cycle at a time forever where main settles (late-loop-01 on
-        // the branch). Back to Eric as the D16/D19 follow-up in
-        // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/W-r*/.
-        // 2026-11-05 claude: Eric ruled (2026-11-05) on the D16/D19 follow-up: (c), keep
-        // main. At a wake, a let's initializer catch-up replaces a write that landed
-        // during the sleep. The exact alternative (a live bit carried by every fire) was
-        // judged not worth its cost. To do: state the rule in CLAUDE.md and
-        // design/wake_catchup.md, pin main's behaviour with this probe, then remove this
-        // CR. Lane W's D16 commits (cr50-W-parked) are dropped.
         if (woke || ctx.event.wake()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =
