@@ -437,6 +437,33 @@ run!(
     FuseExpect::Jit
 );
 
+// A later step reads a step's holder through its own entry snapshot: `h`,
+// bound before the write, calls the holder as it stood at `h`'s step.
+run!(
+    a_lambda_over_a_step_s_holder_reads_it_at_its_step_s_entry,
+    "seq { let u = (|x| x + 1, 0); let h = |z| u.0(z); let ru = &mut u; \
+     *ru <- (|x| x + 100, 0); let b = 1; h(1) }",
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+
+run!(
+    a_lambda_over_a_step_s_written_capture_reads_it_at_its_step_s_entry,
+    "seq { let u@ (g, k) = (|x| x, |y| y); let h = |z| u.0(z); let ru = &mut u; \
+     *ru <- (|x: i64| x + 100, |y: i64| y); let b = 1; let c = 2; h(\"t\") }",
+    is(Value::from("t"));
+    FuseExpect::Jit
+);
+
+run!(
+    a_step_s_written_capture_is_its_write_after_it,
+    "seq { let u@ (g, k) = (|x| x, |y| y); let h = |z| u.0(z); let a = h(\"s\"); \
+     let ru = &mut u; *ru <- (|x: i64| x + 100, |y: i64| y); let b = 1; let c = 2; \
+     (a, h(\"t\"), u.0(1)) }",
+    prints(r#"["s", "t", i64:101]"#);
+    FuseExpect::Jit
+);
+
 // A step's `let` of a generic function, a read of it or of a field of one,
 // is generic as it is outside a seq: the step's value carries the scheme.
 run!(
@@ -548,6 +575,13 @@ run!(
     "{ let s = {g: |x| x}; let k = 1; seq { let h = k ~! s.g; (h(1), h(\"s\")) } }",
     refused("does not contain string");
     FuseExpect::None
+);
+
+run!(
+    a_program_s_sample_in_a_seq_step_takes_its_one_type,
+    "{ let s = {g: |x| x}; let k = 1; seq { let h = k ~! s.g; (h(1), h(2)) } }",
+    prints("[i64:1, i64:2]");
+    FuseExpect::Jit
 );
 
 run!(

@@ -928,6 +928,15 @@ impl Machine<'_> {
     // a_program_s_sample_in_a_seq_step_is_one_instance (fail with the old
     // passed/name_passed), a_program_s_any_in_a_seq_step_is_one_instance} and their
     // one-type twins; the five seq alias pins fail with the Any one-copy typing disabled.
+    // 2026-11-05 claude: Round 16 part 3: the step holder path (inline_holder, the holder
+    // half of Machine::bound_lambda, #seqh) is deleted: a step's let of a data literal of
+    // lambdas is an ordinary step whose value (any(pc ~! v, v) over the literal's own
+    // let) passes the holder's scheme on by this ruling's rule, and later steps read it
+    // through their entry snapshot as on main. Every generic step pin still passes;
+    // z2/z4/z5 and k1/k3 (review-r16 Q-r3-1/r16p2) print main's values. Pins
+    // lang::quantified::{a_lambda_over_a_step_s_holder_reads_it_at_its_step_s_entry,
+    // a_lambda_over_a_step_s_written_capture_reads_it_at_its_step_s_entry,
+    // a_step_s_written_capture_is_its_write_after_it} fail with the path restored.
     /// The step's entry snapshot of `e`'s external variables and completed
     /// local lets, `live` aside (`design/seq_blocks.md` §5). Each read goes
     /// to a cell filled at the
@@ -1157,12 +1166,12 @@ impl Machine<'_> {
                 let mut vis = scope(snapped);
                 shadow_step(stmt, &mut vis);
                 let result = self.result;
-                let k = match self.bound_lambda(b, &value, snapped, pos) {
-                    Some((name, mut binds)) => {
+                let k = match self.bound_lambda(b, &value, snapped) {
+                    Some((name, bind)) => {
                         let value = guard(entry_fire(r#ref(pos, &name), self.issue.pc));
                         let k = self
                             .step(false, value, |v| writes(sink, result, pos, v, &vis));
-                        self.steps[k].items.insert_many(0, binds.drain(..));
+                        self.steps[k].items.insert(0, bind);
                         k
                     }
                     None => {
@@ -1303,45 +1312,21 @@ impl Machine<'_> {
         }
     }
 
-    /// A `let` of one name to a lambda literal, or of any pattern to a
-    /// data literal of lambdas ([`inline_holder`]): the name the step's
-    /// value reads and the one binding of the value itself, so calls
-    /// through a lambda resolve statically and a holder is as generic as
-    /// outside a seq. A destructuring pattern, the statement's at `pos`,
-    /// takes the value from that binding, `let #seqh = ..; let (g, k) =
-    /// #seqh`, whose scheme it forwards.
+    /// A `let` of one name to a lambda literal: the name and its binding
+    /// to the lambda itself, so calls through it resolve statically.
     fn bound_lambda(
         &self,
         b: &BindExpr,
         value: &Expr,
         visible: &Names,
-        pos: SourcePosition,
-    ) -> Option<(ArcStr, LPooled<Vec<Expr>>)> {
-        let single = b.pattern.single_bind();
-        if !(single.is_some() && inline_lambda(value) || inline_holder(value, visible)) {
+    ) -> Option<(ArcStr, Expr)> {
+        let name = b.pattern.single_bind()?;
+        if !inline_lambda(value) {
             return None;
         }
-        let (at, id) = (value.pos, value.id.inner());
-        let value = rewrite_with(value, visible, Rewrite::Issue(self.issue));
-        let mut binds: LPooled<Vec<Expr>> = LPooled::take();
-        let name = match single {
-            Some(name) => {
-                binds.push(let_pat(at, b.pattern.clone(), b.typ.clone(), value));
-                name.clone()
-            }
-            None => {
-                let whole = ArcStr::from(format_compact!("#seqh{id}").as_str());
-                binds.push(let_bind(at, &whole, None, value));
-                binds.push(let_pat(
-                    pos,
-                    b.pattern.clone(),
-                    b.typ.clone(),
-                    r#ref(pos, &whole),
-                ));
-                whole
-            }
-        };
-        Some((name, binds))
+        let lambda = rewrite_with(value, visible, Rewrite::Issue(self.issue));
+        let bind = let_pat(value.pos, b.pattern.clone(), b.typ.clone(), lambda);
+        Some((name.clone(), bind))
     }
 
     /// A statement's value. A block in statement position, or as a
@@ -1403,9 +1388,9 @@ impl Machine<'_> {
                 }
                 ExprKind::Bind(b) => {
                     let value = decorated(&b.value, &s.dec);
-                    match self.bound_lambda(b, &value, &vis, s.pos) {
-                        Some((name, mut binds)) => {
-                            body.extend(binds.drain(..));
+                    match self.bound_lambda(b, &value, &vis) {
+                        Some((name, bind)) => {
+                            body.push(bind);
                             let value =
                                 guard(entry_fire(r#ref(s.pos, &name), self.issue.pc));
                             body.push(let_bind(s.pos, &v, None, value));
@@ -2094,40 +2079,6 @@ fn inline_lambda(mut e: &Expr) -> bool {
     matches!(e.kind, ExprKind::Lambda(_))
 }
 
-/// Whether `e` is a data literal holding a lambda literal or a name the
-/// seq reads as a function, through the data literals it is built of,
-/// issuing no call and reading nothing live: a `let` of it is generic in
-/// the functions it holds.
-fn inline_holder(mut e: &Expr, map: &Names) -> bool {
-    fn holds(e: &Expr, map: &Names) -> bool {
-        ensure_sufficient(|| match &e.kind {
-            ExprKind::ExplicitParens(inner) => holds(inner, map),
-            ExprKind::Lambda(_) => true,
-            ExprKind::Ref { name } => {
-                matches!(redirect(name, map), Some(Redirect::Function(_)))
-            }
-            ExprKind::Array { .. }
-            | ExprKind::List { .. }
-            | ExprKind::Map { .. }
-            | ExprKind::Tuple { .. }
-            | ExprKind::Variant { .. }
-            | ExprKind::Struct(_) => {
-                let mut found = false;
-                e.for_each_child(&mut |c| found = found || holds(c, map));
-                found
-            }
-            _ => false,
-        })
-    }
-    while let ExprKind::ExplicitParens(inner) = &e.kind {
-        e = inner;
-    }
-    !matches!(e.kind, ExprKind::Lambda(_) | ExprKind::Ref { .. })
-        && holds(e, map)
-        && !has_call(e)
-        && !reads_live(e, map)
-}
-
 /// One call issued per entry over a snapshot of the arguments taken on
 /// the entry event, and again at each fire of an argument read live;
 /// only the call's own fired production is this invocation's answer. A
@@ -2207,9 +2158,6 @@ fn shadow_step(e: &Expr, map: &mut Names) {
             Some(n) if inline_lambda(&b.value) => {
                 map.insert(n.clone(), Redirect::Function(n.clone()));
             }
-            _ if inline_holder(&b.value, map) => b.pattern.with_names(&mut |n| {
-                map.insert(n.clone(), Redirect::Function(n.clone()));
-            }),
             _ => b.pattern.with_names(&mut |n| {
                 map.remove(n);
             }),

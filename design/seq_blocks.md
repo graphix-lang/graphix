@@ -305,19 +305,14 @@ literal, a step's or a `{ .. }` statement's, binds the name to the
 lambda itself and the step's value is the name fired at entry, so a
 call through it resolves statically as it would outside a seq: its
 `#[sync]`/`#[native]` assertions are checked by the build. A `let` of
-any pattern to a data literal whose functions are lambda literals or
-names the seq reads as functions (a step's lambda `let`, an outer
-function binding), issuing no call and reading nothing live
-(`inline_holder`), binds the literal itself the same way, a single name
-directly and a pattern through the literal's own binding (`let #seqh =
-..; let (g, k) = #seqh`, at the statement's position, whose scheme it
-forwards as a `let` of a holder does), so its names are as generic as a
-holder's outside a seq, the literal is evaluated once, and a later
-step's write to one of them holds it as a write in a block does. Later steps read
-the names of both kinds as they stand, never through a snapshot: after
-its step neither changes. A step's read of an outer generalized
-binding goes through its entry snapshot, and a holder with a `live` part
-through a step value: the lowering's bindings that pass a read on whole,
+a data literal of lambdas is no definition: it is a step as any other
+`let` is, and its value, which passes the holder's scheme on (below),
+leaves its names as generic as a holder's outside a seq; a later step
+reads them through its entry snapshot, as it reads any step's `let`,
+so a lambda a later step binds reads the holder as it stood at that
+step's entry, whatever a step after it writes. A step's read of an
+outer generalized binding goes through its entry snapshot, and a holder
+a step binds through the step's value: the lowering's bindings that pass a read on whole,
 the snapshot (`.. ~! #seqsin`), the projection of it a read takes, a
 step's or a `{ .. }` item's value (`any(pc ~! v, v)`) and a `{ .. }`
 statement's value (its last item's), are written by nothing, so each

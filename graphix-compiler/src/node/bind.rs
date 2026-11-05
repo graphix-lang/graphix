@@ -613,6 +613,13 @@ impl<R: Rt> Bind<R> {
     // judged. probes: ~/ptmp/cr29/scratch/r16-Q/fix4/u9_struct_destr_written.gx,
     // u4_alias_written_capture.gx, u10_proj_destr_written.gx,
     // u11_tuple_proj_destr_written.gx (destructured-written-holder-01)
+    // 2026-11-05 claude: Round 16 part 3: an in-seq form of the same hole, main
+    // 038729af4 and lane alike: seq { let (g, k) = (|x| x, |y| y); let h = |z| g(z); let
+    // a = h("s"); let rg = &mut g; *rg <- |x: i64| x + 100; let b = 1; let c = 2; (a,
+    // h("t")) } passes --check and its run refuses the bind at g(z); the step value the
+    // pattern takes apart passes the literal's scheme on, so this is the
+    // destructured-generalized-holder shape (outside a seq the literal's names are
+    // refused). probe ~/ptmp/cr29/scratch/r16-Q/p3/z1_seq_destr_lambda_after_write.gx
     /// Whether the binding forwards its value's scheme (`let g = f`): a
     /// single name something writes holds an instance of its own instead.
     fn forwards(&self, ctx: &CompileCtx<R>) -> bool {
