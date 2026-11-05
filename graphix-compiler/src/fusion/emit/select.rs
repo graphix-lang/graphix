@@ -861,7 +861,7 @@ fn emit_leaf_cond_inner(
                     None => c,
                 })
             }
-            // CR claude for claude: [perf/low] A tuple or struct pattern over a union
+            // XCR claude for claude: [perf/low] A tuple or struct pattern over a union
             // holding its member node-walks, at the top and at a payload alike: `select v {
             // (_, true) => 5, (_, false) => 6, `A(_) => 7 }` over `[(bool, bool), `A((bool,
             // bool))]` is refused under #[native] ("slice/tuple/struct select pattern over
@@ -871,9 +871,33 @@ fn emit_leaf_cond_inner(
             // (pool-payload-heads-01) makes such selects exhaustive without a catch-all, so
             // more programs meet it. The fix is not located. probes:
             // ~/ptmp/cr29/scratch/r11-N/{f0,f1,f2}.gx (union-composite-pattern-fuse-01)
-            other => bail!(
-                "emit_clif: nested pattern over a leaf of shape {other:?} not lowerable"
-            ),
+            // 2026-11-05 claude: A tuple, struct or slice pattern over a union now reads
+            // the one composite member it may pass (select.rs composite_member): at the top
+            // through emit_member_cond when the inferred predicate does not freeze (its
+            // test is the arm's inferred test, which only that member passes), at a leaf or
+            // payload in emit_leaf_cond and emit_value_leaf_cond behind the member's full
+            // type test. Two or more candidate members still node-walk. Pins that fail
+            // without it (jit, jit_par):
+            // lang::select::composite_pattern_over_a_union_member_fuses,
+            // composite_payload_pattern_over_a_union_member_fuses,
+            // composite_or_payload_over_a_union_member_fuses,
+            // composite_pattern_over_one_of_two_tuple_members_fuses; six pins upgraded None
+            // -> Jit (pool_joins_a_tuple_member_with_variant_heads is probe f1). fusecheck:
+            // 560 programs, 0 mismatches.
+            other => {
+                let Some(member) = composite_member(cx, sub, None, typ) else {
+                    bail!(
+                        "emit_clif: nested pattern over a leaf of shape {other:?} \
+                         not lowerable"
+                    )
+                };
+                let (ptr, test) = at.array(cx, &member, false)?;
+                let c = emit_composite_pattern_cond(cx, ptr, &member, sub, true, binds)?;
+                Some(match test {
+                    Some(t) => cx.b.ins().band(t, c),
+                    None => c,
+                })
+            }
         },
     })
 }
@@ -922,6 +946,28 @@ fn is_composite(t: &Type) -> bool {
     )
 }
 
+/// The one composite member of the union `typ` that the structure `sp`,
+/// and the predicate `pred` where there is one, may pass, frozen; `None`
+/// where there is none or more than one.
+fn composite_member(
+    cx: &BodyCx,
+    sp: &StructPatternNode,
+    pred: Option<&Type>,
+    typ: &Type,
+) -> Option<Type> {
+    let env = cx.ctx.type_env;
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members(env, typ, &mut members).ok()?;
+    let mut found = members.iter().filter(|m| {
+        sp.may_pass(env, m) && pred.is_none_or(|p| p.could_pass(env, m).unwrap_or(true))
+    });
+    let member = found.next()?;
+    match found.next() {
+        Some(_) => None,
+        None => freeze_node_typ(cx.ctx, member).filter(is_composite),
+    }
+}
+
 /// The test of a pattern that binds nothing (a literal of any type, an
 /// or-pattern of such) against borrowed Value words `v` of type `typ`:
 /// an element, a payload. The arm's own scrutinee tests run the same.
@@ -956,14 +1002,19 @@ fn emit_value_leaf_cond(
     for alt in alts.iter().filter(|a| a.may_pass(cx.ctx.type_env, typ)) {
         let c = match is_composite_pattern(alt) {
             true => {
-                let Some(member) = &member else {
-                    bail!(
-                        "emit_clif: slice/tuple/struct select pattern over {typ} not lowerable"
-                    )
+                let (member, exact) = match &member {
+                    Some(member) => (member.clone(), exact),
+                    None => match composite_member(cx, alt, None, typ) {
+                        Some(member) => (member, false),
+                        None => bail!(
+                            "emit_clif: slice/tuple/struct select pattern over {typ} \
+                             not lowerable"
+                        ),
+                    },
                 };
-                let (ptr, test) = value_array(cx, v, member, exact)?;
+                let (ptr, test) = value_array(cx, v, &member, exact)?;
                 let c =
-                    emit_composite_pattern_cond(cx, ptr, member, alt, true, &mut binds)?;
+                    emit_composite_pattern_cond(cx, ptr, &member, alt, true, &mut binds)?;
                 Some(cx.b.ins().band(test, c))
             }
             false => emit_structure_cond(cx, alt, typ, false, scrut, typ, &mut binds)?,
@@ -2262,16 +2313,23 @@ fn emit_member_cond(
                 let call = cx.call_helper("graphix_value_is_a", &[typ, disc, payload])?;
                 (cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0), pred, true)
             }
-            (_, Some(pred)) => {
+            (_, pred) if !written => {
+                let (pred, unique) = match pred {
+                    Some(pred) => (pred, false),
+                    None => match composite_member(cx, sp, Some(pred_typ), scrut_typ) {
+                        Some(member) => (member, true),
+                        None => return Ok(None),
+                    },
+                };
                 let (test, exact) =
                     emit_inferred_guard_cond(cx, pred_typ, scrut, scrut_typ)?;
                 let test = match test {
                     Some(test) => test,
                     None => cx.b.ins().iconst(types::I8, 1),
                 };
-                (test, pred, exact)
+                (test, pred, exact || unique)
             }
-            (_, None) => return Ok(None),
+            (_, _) => return Ok(None),
         };
     let empty = cx.call_helper("graphix_valarray_empty_borrowed", &[])?[0];
     let ptr = cx.b.ins().select(test, payload, empty);

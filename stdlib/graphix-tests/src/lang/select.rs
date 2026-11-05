@@ -5157,7 +5157,7 @@ run!(
     f((5, 6)) + f((7, 8, 9))
 }"#,
     is(Value::I64(12));
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -5214,7 +5214,7 @@ run!(or_arm_wildcard_only_through_bare_name, "{ let f = |t: [(i64, i64), (i64, i
 
 // a tuple alternative and a struct alternative are told apart
 run!(alternative_taken_by_structure, "{ let f = |t: [(i64, i64), {x: i64, y: i64}]| select t { (x, _) | {x, ..} => x }; f({x: 1, y: 2}) }",
-    is(Value::I64(1)); FuseExpect::None);
+    is(Value::I64(1)); FuseExpect::Jit);
 
 // A woken arm's constants stand (through any operator, call, builtin,
 // select, formal or collection loop), so they never rewrite a `<-`
@@ -6716,7 +6716,7 @@ run!(
         (f((true, false)), f((false, false)), f(`Y), g([]), g([false]), g([true, true]), g(`X))
     }"#,
     prints("[i64:1, i64:3, i64:5, i64:0, i64:2, i64:3, i64:4]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // Short of exhaustive over such a union, the refusal names only what no arm
@@ -6914,7 +6914,7 @@ run!(
         [f(`B((false, true))), f(`B((true, false))), f(`B(`A((true, true)))), f(`C(1))]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 6, 7, 8]);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -6931,7 +6931,7 @@ run!(
         [f((false, true)), f(`A((false, true))), f(`B((true, false))), f(`B(`A((true, false)))), f(`C((true, true)))]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 4, 6, 7, 8]);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -7146,7 +7146,7 @@ run!(
         [u(`B((true, w))), u(`B((true, true))), u(`B(`A)), u(`C)]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7, 8]);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A position holding a declared variable beside other members has a head of
@@ -8070,4 +8070,71 @@ run!(
     }"#,
     refused("pattern Error<`Q> will never match");
     FuseExpect::None
+);
+
+// A tuple or struct pattern over a union holding one such member fuses, at
+// the top, at a payload, and in an or-pattern that binds nothing.
+run!(
+    composite_pattern_over_a_union_member_fuses,
+    r#"{
+        let f = |v: [(i64, bool), `A((i64, bool))]| #[native] select v {
+            (_, true) => 0,
+            (n, false) => n + 10,
+            `A((n, _)) => n + 100
+        };
+        [f((1, true)), f((2, false)), f(`A((3, true)))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 12, 103]);
+    FuseExpect::Jit
+);
+
+run!(
+    composite_payload_pattern_over_a_union_member_fuses,
+    r#"{
+        let f = |v: [`B([{x: i64, y: bool}, `A(i64)]), `C(i64)]| #[native] select v {
+            `B({x: _, y: true}) => 1,
+            `B({x, y: false}) => x + 10,
+            `B(`A(n)) => n + 100,
+            `C(n) => n + 1000
+        };
+        [f(`B({x: 1, y: true})), f(`B({x: 2, y: false})), f(`B(`A(3))), f(`C(4))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 12, 103, 1004]);
+    FuseExpect::Jit
+);
+
+run!(
+    composite_or_payload_over_a_union_member_fuses,
+    r#"{
+        let f = |v: [`B([(bool, bool), `A((bool, bool))]), `C]| #[native] select v {
+            `B((_, true) | (true, _)) => 1,
+            `B(_) => 2,
+            `C => 3
+        };
+        [
+            f(`B((false, true))),
+            f(`B((true, false))),
+            f(`B((false, false))),
+            f(`B(`A((true, true)))),
+            f(`C)
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 2, 3]);
+    FuseExpect::Jit
+);
+
+// Of two tuple members the inferred test leaves one: `(4, "")` is no
+// `(_, false)`.
+run!(
+    composite_pattern_over_one_of_two_tuple_members_fuses,
+    r#"{
+        let f = |v: [(bool, bool), (i64, string)]| #[native] select v {
+            (_, false) => 1,
+            (_, true) => 2,
+            (i64, string) as (n, s) => n + str::len(s)
+        };
+        [f((true, false)), f((false, true)), f((3, "ab")), f((4, ""))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 5, 4]);
+    FuseExpect::Jit
 );

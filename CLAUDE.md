@@ -1141,7 +1141,8 @@ payload binds, owned binds of a nullable's payload, of a slice's rest,
 head or whole (`[x, tail..]`, `all@ [_, ..]`) and of non-scalar elements,
 tag tests and binds over a primitive union, every pattern at an
 element, a payload or a list head as at the top (a binding or-pattern
-included), scalar literals over an option, a result
+included), a tuple, struct or slice pattern over a union holding one
+member it may pass, scalar literals over an option, a result
 or a union, `never()` arms as bottom
 productions of the merge shape, or-patterns, list patterns, type tests
 that hold the scrutinee's type, any union of encoded members as one
