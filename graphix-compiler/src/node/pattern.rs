@@ -1336,55 +1336,6 @@ impl StructPatternNode {
                 ctx.env.retype(id, typ)
             }
             let env = &ctx.env;
-            // XCR claude for claude: [bug/medium] Under a written type, a constructor
-            // pattern at a union position is told from the union's other members with open
-            // cells benign, and the select arm's Told judgment tests the written type, which
-            // covers what reaches it, so neither tells the constructor from a quantifier
-            // beside it. `let g = |x: ['b, `Keep('b)]| -> ['b, null] select x { ['b,
-            // `Keep('b)] as `Keep(r) => r, _ => null }` checks, and over `v: [`Keep(i64),
-            // `Keep(`Keep(i64))] = `Keep(5)` g(v) prints 5, typed ['b, null] at 'b =
-            // `Keep(i64); `Array<['b, `Keep('b)]> as [`Keep(r), ..]` over an array of them
-            // does the same. The inferred spellings are refused (keep-slice-told-01). A Told
-            // judgment of (shape, rest) deferred from here would refuse them; this compile
-            // does not know whether it is the definition's check. (keep-written-told-01)
-            // 2026-11-02 claude: Round 7 lane G built a Told judgment of written tests over
-            // three review rounds (ea1eb8726, d73b5b6a4, bcd6e1b54, 4e5a944c2, parked on
-            // branch cr45-G, reverted on the landing branch). Each round closed the last
-            // round's shapes and opened another, all around an open cell or a declared rigid
-            // variable at the test: judged against the whole written union it refused
-            // programs main runs (y4, u6); judged among what reaches the position it missed
-            // an open constructor's application (a4: the check passes, the value is not of
-            // its type); reading that as unknown refused correct programs over 'c<..> (c15)
-            // and over a declared 'b: Number (the written rest does not see the definition's
-            // variables); and an Any at the test's own position keeps the hole (ap23, main
-            // alike). Probes ~/ptmp/cr29/scratch/review-r8/G-r1-1 .. G-r3-2. How an open
-            // cell or a declared variable reads at a written test is the rule D3 and
-            // rigid-pattern-bind-01 decide, so this waits on them. Readdressed to eric.
-            // 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md,
-            // under his rule for type holes (reject and require an annotation, then a
-            // --check census: it comes back to him only if the stdlib, the book's examples
-            // or netidx-admin would need a new annotation): rebuild the 10-31 select rule
-            // small from main: at a select's end an undecided part an arm tests is refused
-            // ("annotate it"), a part only a name or `_` meets passes; written tests by the
-            // same rule; census first; built as its own lane after the settle fix
-            // (settle-commits-name-01) and D6.
-            // 2026-11-04 claude: Lane B r14 (D6 b): a select's written test now names the
-            // definition's variables as a let's annotation does (PatternNode::compile
-            // calls lambda::body_annotation), so the D6 rule sees the declared or
-            // signature-named variable in it: this CR's two shapes (kw1,
-            // ~/ptmp/cr29/scratch/discuss-merge/d3rigid/kw1.gx, and the Array form) and
-            // the declared form ('b: Any, ~/ptmp/cr29/scratch/r14-B/kw3.gx) are refused
-            // "`Keep(r) tests inside a value of 'b"; on main they print 5. Pin:
-            // lang::select::written_test_naming_a_declared_variable_refused. What an open
-            // cell in a written test means (the review-r8 G probes) stays D5's.
-            // 2026-11-04 claude: D5 (b): an open cell of a written test that its structure
-            // tests is refused ('tests a value of 'b, a type variable its type test ..
-            // leaves open: write the type it tests'); the declared and signature-named forms
-            // (kw1, kw3, y4, a4, ap23) are D6's refusal on main. u6 and c15 (an undeclared
-            // variable in the test) ran on main and are refused now. Pins:
-            // lang::select_undecided::written_test_with_an_open_variable_refused,
-            // written_collection_test_with_an_open_variable_refused (main prints [3, 0]);
-            // twin written_test_closed.
             if let Ok(rest) = type_predicate.diff(env, &shape)
                 && node.footprint(env, &shape, false).rep_collision(env, &rest).is_some()
             {

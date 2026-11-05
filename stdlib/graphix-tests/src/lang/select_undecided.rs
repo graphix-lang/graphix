@@ -256,7 +256,9 @@ run!(written_union_test_of_two_undecided_parameters_refused, r#"{
     f(false, "s", "t")
 }"#, refused("a type not decided at this select"); FuseExpect::None);
 
-run!(written_union_test_of_two_annotated_parts, r#"{
+run!(
+    written_union_test_of_two_annotated_parts,
+    r#"{
     let b = false;
     let w: [i64, string] = never();
     let z: [i64, string] = never();
@@ -265,7 +267,9 @@ run!(written_union_test_of_two_annotated_parts, r#"{
     w <- "s";
     z <- "t";
     r
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "n"));
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "n")
+);
 
 run!(written_union_test_of_an_annotated_part, r#"{
     let b = false;

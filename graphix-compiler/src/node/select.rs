@@ -544,84 +544,6 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
     Ok(())
 }
 
-// XCR claude for claude: [bug/low] A written type test whose structure tests a constructor
-// at a nested union position holding a declared variable counts as covering the whole
-// scrutinee: `let g = 'b: Number |x: {f: ['b, `Keep('b)]}| -> ['b, null] select x { {f:
-// ['b, `Keep('b)]} as {f: `Keep(r)} => r }` passes the check, and g({f: 5}) under
-// GRAPHIX_ABORT_ON_NO_MATCH=1 aborts "no arm matches: a coverage hole in the check"
-// (main bbb06c0c6 alike; a tuple position, `(['b, `Keep('b)], i64) as (`Keep(r), _)`,
-// the same). At the top position the same arm is refused "missing match cases", as it
-// should be. The undeclared-'b forms are refused by the Told judgment
-// (keep-written-told-01); a declared 'b: Number shares no form with `Keep, so only
-// coverage can refuse this one, and coverage is D3's (Reach, the pool). probes:
-// ~/ptmp/cr29/scratch/r8-G/i2/k1c.gx, k1tup.gx, k1top.gx (written-nested-cover-01)
-// 2026-11-02 claude: Re-review r8 (lane G, low): the hole has a dual this CR does not
-// say. With the catch-all a correct program needs, the same arms are refused
-// 'unreachable arm: the earlier arms already cover the whole scrutinee':
-// review-r8/G-r2-2/i2/wc1.gx ('b: Number, {f: ['b, `Keep('b)]} as {f: `Keep(r)} => r, _
-// => null), and the undeclared-'b forms with a catch-all
-// (review-r8/G-r1-2/p/wk_struct.gx, wk_variant.gx), on main bbb06c0c6 alike. So under a
-// declared 'b: Number a user can write neither the accepted holey arm nor the covering
-// one. The coverage of an abstract's payload has the same pair
-// (abstract-payload-cover-01).
-// 2026-11-02 claude: Lane G's Told judgment of written tests (keep-written-told-01) is
-// parked on branch cr45-G, not landed, so on main the undeclared-'b forms (k1b, k2b)
-// are a coverage hole too, not refused as the CR's text says.
-// 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under his
-// rule for type holes (reject and require an annotation, then a --check census: it
-// comes back to him only if the stdlib, the book's examples or netidx-admin would need
-// a new annotation): rebuild the 10-31 select rule small from main: at a select's end
-// an undecided part an arm tests is refused ("annotate it"), a part only a name or `_`
-// meets passes; written tests by the same rule; census first; built as its own lane
-// after the settle fix (settle-commits-name-01) and D6.
-// 2026-11-04 claude: On main eb0989d33 (D6) both halves are right: k1c is refused
-// 'missing match cases' and wc1 (the catch-all) runs, printing null; the D5 rule adds
-// nothing here, a declared 'b being rigid. Pinned:
-// lang::select_undecided::written_nested_constructor_covers_its_member_alone (refused),
-// written_nested_constructor_beside_a_catch_all ('null 4').
-
-// XCR claude for claude: [bug/low] Coverage counts an abstract pattern whose payload
-// tests the variant beside a parameter of the representation as covering the whole
-// scrutinee: `type R<'a> = Abstract<['a, `Err(string)]>; let v: [i64, `Err(string)] =
-// 5; select R(v) { R(`Err(m)) => str::len(m) }` passes the check, and the run logs
-// 'no arm matches abstract:..: a coverage hole in the check' (under
-// GRAPHIX_ABORT_ON_NO_MATCH=1 it aborts). The dual: the `_ => 0` arm a correct program
-// adds after it is refused 'unreachable arm: the earlier arms already cover the whole
-// scrutinee', over R<'z>, a let's R(v) and a declared 'a: Number alike, where the arm
-// is needed for the numbers. Main bbb06c0c6 the same. Coverage of a payload is D3's
-// (Reach, the pool), beside written-nested-cover-01. probes:
-// ~/ptmp/cr29/scratch/review-r8/G-r2-1/i2/ab8.gx (the hole), ab4.gx, ab7.gx, ab10.gx
-// (the refusals) (abstract-payload-cover-01)
-// 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under his
-// rule for type holes (reject and require an annotation, then a --check census: it
-// comes back to him only if the stdlib, the book's examples or netidx-admin would need
-// a new annotation): rebuild the 10-31 select rule small from main: at a select's end
-// an undecided part an arm tests is refused ("annotate it"), a part only a name or `_`
-// meets passes; written tests by the same rule; census first; built as its own lane
-// after the settle fix (settle-commits-name-01) and D6.
-// 2026-11-04 claude: Review r14 round 2 (B-r2-1, low): D6 now tells a pattern inside
-// an abstract payload over W<'b> to write W<T> as W(..), and those written tests still
-// need a catch-all (W<(i64, string)> as W((n, s)) alone, or W<[`A(i64), `B(i64)]> as
-// W(`A(n)) beside W<..> as W(`B(n)), are refused 'missing match cases: no arm covers
-// W<'b>', main the same). probes:
-// ~/ptmp/cr29/scratch/review-r14/B-r2-1/n/{y1,y2,y3,y6,y7}.gx
-// 2026-11-04 claude: On main eb0989d33 both halves of the CR's text are right: ab8 is
-// refused 'missing match cases: no arm covers R<i64>' and ab7/ab10 (the catch-all)
-// run, 3 and 3 0. With the parameter still open at the select (select R(v) in a block)
-// the D5 rule refuses the payload test first. Pinned:
-// lang::select_undecided::abstract_payload_variant_covers_its_member_alone,
-// abstract_payload_variant_beside_a_catch_all,
-// abstract_payload_parameter_undecided_refused. The 11-04 note's written tests over
-// W<'b> (y2, y6: W<T> as W(..) covering a declared variable's bound under an abstract
-// parameter) are D6's coverage, not this rule's: moved to abstract-written-cover-01.
-// 2026-11-04 claude: Review r15 (low, left): over `let x = R(v)` the D5 refusal names
-// no binding ('annotate the scrutinee's type where it is built'), where `let x:
-// R<[i64, `Err(string)]>` passes: the cell is R's parameter inside x's type, which
-// Holders::name_cell (a binding whose type is the cell) does not reach; naming it
-// needs a holder search through type applications, a new mechanism. Main runs these
-// shapes but is unsound there (g2d: base's JIT panics on a kernel param of the wrong
-// kind). probes: ~/ptmp/cr29/scratch/review-r15/P-r1-1/g2b.gx, g2c.gx, g2d.gx, g2e.gx.
-
 // CR claude for claude: [bug/low] A written test over an abstract parameter that is a
 // declared variable covers nothing of it: `'b: (i64, string) |x: W<'b>| select x {
 // W<(i64, string)> as W((n, s)) => n }` over `type W<'a> = Abstract<'a>` is refused
@@ -686,26 +608,6 @@ impl Reach {
     /// typed only where its arm narrows: its part of every member the arm
     /// can match. A copy the settle leaves open, the part an open cell
     /// inside the scrutinee took, is the arm's own cell again.
-    // XCR claude for claude: [bug/medium] Over a composite scrutinee holding an open cell,
-    // a name an arm binds at the cell's part is typed by its own cell while another arm's
-    // literal widens that part, so the name is typed narrower than the values that reach
-    // it: `let f = |v| select (v, 0) { ([x, ..], _) => str::len(x), ([1, ..], _) => 5,
-    // (_, _) => 0 }; [f(["ab"]), f([1])]` passes the check with v: Array<[string, i64]>
-    // and x: string, and f([1]) sends 1 to the first arm: the JIT aborts (a misaligned
-    // pointer in arcstr) and the node-walk yields nothing. With `x + 1` and `[true, ..]`
-    // (v: Array<[bool, i64]>) both engines return 2 for [true]. Main 429f61c96 (base
-    // 30702808d) alike: an open cell's parts take the arms' own cells there as here, the
-    // part (settle-commits-name-01) leaves as it was. Eric's D5 (b) ruling
-    // (~/ptmp/cr-discuss.md: an undecided part an arm tests is refused, "annotate it")
-    // likely covers it, since the `[1, ..]` arm tests v's undecided element. probes:
-    // ~/ptmp/cr29/scratch/review-r11/N-r1-1/r13/{t11,t11r,t01,t13}.gx
-    // (settle-open-part-widened-01)
-    // 2026-11-04 claude: Main eb0989d33 already types x over the whole element: t11/t11r
-    // refused 'string does not contain [i64, ..]', t01/t13 'cannot compute [bool, ..] +
-    // i64'; the D5 walk would refuse the [1, ..] arm too if the element stayed open, but
-    // the body refuses first. Pinned:
-    // lang::select_undecided::widened_open_element_refused, twin
-    // widened_open_element_annotated.
     fn new<R: Rt>(
         env: &Env,
         scrut: &Type,
@@ -1021,21 +923,6 @@ impl Reach {
             || !pat.type_predicate.could_match(env, &self.atype)?)
     }
 
-    // XCR claude for claude: [bug/low] Over a union of arrays, a slice arm whose element
-    // test is irrefutable against one member's element type covers no length of that
-    // member: `let v: [Array<(`A, i64)>, Array<(`B, string)>] = [(`A, 5)]; select v {
-    // [(`A, x), ..] => "a[x]", [(`B, s), ..] => "b[s]", [] => "e" }` covers every value
-    // and is refused "no arm covers ... (the slice arms cover finitely many lengths of
-    // Array<(`A, i64)> — it also needs a rest pattern or a wildcard)", the hint false
-    // (both arms have a rest); with written type tests (`Array<(`A, i64)> as [(`A, x),
-    // ..]`) the same. Not located; the per-member ladder should take `[(`A, x), ..]` as
-    // Array<(`A, i64)>'s rest arm. Main 30702808d alike. probes:
-    // ~/ptmp/cr29/scratch/r11-N/r2/{m01d,m01e}.gx (slice-array-union-cover-01)
-    // 2026-11-04 claude: Reach::arm: a slice arm claims its lengths of each ladder
-    // member whose element type its elements cover (StructPatternNode::elements_cover),
-    // not only when its elements match anything. m01d/m01e check and run. Pins:
-    // lang::select_undecided::slice_arm_claims_the_member_it_covers,
-    // written_slice_arm_claims_the_member_it_covers (main: missing match cases).
     /// Nothing reaches past the last arm: an unguarded arm matches
     /// anything, or what the arms cover leaves no case, each of
     /// `undecided` one type whatever it becomes, else where the cover
@@ -2335,100 +2222,6 @@ impl<R: Rt> Select<R> {
         Ok(())
     }
 
-    // XCR claude for claude: [bug/medium] A scrutinee member that is an open cell decided
-    // after the select counts as covered by a struct arm: `let z = never(); let v =
-    // select b { true => {a: [1], c: 1}, false => z }` read by `{a, ..} => "[a]"` (the
-    // full `{a, c}` alike) with `z <- {a: ["s"], c: "w"}` after it passes the check,
-    // prints `[1]`, then "no arm matches: a coverage hole in the check" once `b` is false
-    // (main 3c784b3db and cr31-P alike; GRAPHIX_ABORT_ON_NO_MATCH=1 dumps core). The
-    // class of partial-hole-01 by another road: nothing judges the open member once it
-    // is decided. Under Eric's D2 ruling (cr-discuss round 4, option a: a late check),
-    // defer the open member beside the arms' cover to the check's end and refuse it
-    // decided outside that cover. Found by the round-2 review of partial-hole-01.
-    // probes: ~/tmp/cr29/scratch/review7/P/r2/p/om1.gx, om3.gx (open-member-cover-01)
-    // 2026-10-31 claude: Eric ruled (round 5 D3, 10-31): refuse at the select. After the
-    // select makes the decisions its own arms make, its coverage is judged with every
-    // type still undecided treated as a declared type variable (one unknown type, equal
-    // only to itself), so the verdict holds whatever those types become; a program whose
-    // types end up equal is refused until annotated. This replaces the late checks
-    // (PendingSettle::OneMember, and cr32-P's open-member check, which does not land).
-    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
-    // (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
-    // (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
-    // to eric until then.
-    // 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under his
-    // rule for type holes (reject and require an annotation, then a --check census: it
-    // comes back to him only if the stdlib, the book's examples or netidx-admin would
-    // need a new annotation): rebuild the 10-31 select rule small from main: at a
-    // select's end an undecided part an arm tests is refused ("annotate it"), a part only
-    // a name or `_` meets passes; written tests by the same rule; census first; built as
-    // its own lane after the settle fix (settle-commits-name-01) and D6.
-    // 2026-11-04 claude: D5 (b) built: Select::check_undecided refuses an arm that tests
-    // a cell the scrutinee held before the arms and still open at the select's end,
-    // naming the binding (StructurePattern::meets_undecided, the D6 walk over open
-    // cells). om1/om3 refused 'tests a value of 'z, a type not decided at this select'.
-    // PendingSettle::OneMember and Undecided are deleted. Pins (refused on this branch,
-    // accepted on main): lang::select_undecided::undecided_member_tested_refused,
-    // undecided_member_tested_whole_refused, undecided_member_beside_a_literal_refused,
-    // undecided_parameter_tested_refused; twins undecided_member_annotated,
-    // undecided_parameter_annotated; must-reject family undecided-part.
-    // 2026-11-04 claude: Review of af8bd1db2 (y1, y3, y4): check_undecided judged each
-    // arm over the whole scrutinee, refusing (_, 1) after (`J, _) had taken the (`J, z)
-    // member whole; it now judges each arm over what reaches it (the Reach type before
-    // the arm), as the narrowing and dead-arm checks do. Pins (refused without it):
-    // lang::select_undecided::undecided_member_taken_by_an_earlier_tag,
-    // undecided_member_taken_by_an_earlier_field_tag,
-    // undecided_parameter_taken_by_an_earlier_tag; a guarded earlier arm takes nothing:
-    // undecided_member_beside_a_guarded_tag_decided.
-    // 2026-11-04 claude: Review r15 P-r2-2 (high, w5/w5b/w5e/w5h): a written union test,
-    // (`J, [i64, string]) as (`J, s), took the (`J, z) member out of what reaches the
-    // later arms without deciding z, so (_, n) met no value of it and both engines found
-    // no arm. check_undecided now also judges a written test over what reaches it
-    // (written_tests_undecided: the member passes the test with the cells copied but not
-    // with the cell held rigid) and refuses it naming z; w1 and w5d, accepted on main,
-    // are refused the same way. Pins (fail without it):
-    // lang::select_undecided::written_union_test_of_an_undecided_part_refused,
-    // _before_a_literal_refused, _parameter_refused; twins
-    // written_union_test_of_an_annotated_part, written_test_any_over_an_undecided_part.
-    // XCR claude for claude: [bug/medium] A pattern over a variant whose payload is a
-    // union of structs told apart only by cells decided after the select covers only
-    // the payload's first member: `let v = select b { true => `P({a: [1], c: x}), false
-    // => `P({a: ["s"], c: y}) }` read by `` `P({a, ..}) => "[a]", _ => "other" `` with `x
-    // <- 1; y <- 2` after it prints `[1]`, then `other` for `` `P({a: ["s"], c: 2}) ``
-    // (node-walk and JIT; `` `P({a, c: _}) `` alike), and without the `_` arm the check
-    // refuses "missing match cases: no arm covers `P([{ a: Array<i64>, c: '_ }, { a:
-    // Array<string>, c: '_ }])". At top level (`{a, ..}` over the two structs) both
-    // members reach the arm and `_` is refused as unreachable, and with the cells
-    // decided before the select both members reach the payload arm too. Pre-existing
-    // (main 5f4b4677f and cr31-P alike), found by the review of partial-hole-01; not
-    // the partial completion's doing, since the exhaustive `{a, c: _}` misroutes too.
-    // probes: ~/tmp/cr29/scratch/review7/P/p/pay2_alike.gx,
-    // ~/tmp/cr29/scratch/laneP/r2/pay3.gx .. pay6.gx, pay_before.gx (payload-union-01)
-    // 2026-10-31 claude: Eric ruled (round 5 D3, 10-31): refuse at the select. After the
-    // select makes the decisions its own arms make, its coverage is judged with every
-    // type still undecided treated as a declared type variable (one unknown type, equal
-    // only to itself), so the verdict holds whatever those types become; a program whose
-    // types end up equal is refused until annotated. This replaces the late checks
-    // (PendingSettle::OneMember, and cr32-P's open-member check, which does not land).
-    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D3 lane V
-    // (cr33-V)" (~/ptmp/cr29/next-discuss.md). D3 is ruled (10-31); how it is built
-    // (rebuilt small from main, or more rounds on cr33-V) decides this fix. Readdressed
-    // to eric until then.
-    // 2026-11-03 claude: Eric ruled (2026-11-03): D5 b in ~/ptmp/cr-discuss.md, under his
-    // rule for type holes (reject and require an annotation, then a --check census: it
-    // comes back to him only if the stdlib, the book's examples or netidx-admin would
-    // need a new annotation): rebuild the 10-31 select rule small from main: at a
-    // select's end an undecided part an arm tests is refused ("annotate it"), a part only
-    // a name or `_` meets passes; written tests by the same rule; census first; built as
-    // its own lane after the settle fix (settle-commits-name-01) and D6.
-    // 2026-11-04 claude: D5 (b): a partial struct pattern's completion now takes members
-    // told apart only by cells not decided at the select for two (strictly_identical),
-    // refused as UndecidedMembers naming the cells' bindings; the late OneMember judgment
-    // is deleted. pay2_alike refused; twin with x, y annotated reaches the arm for both
-    // members. Pins: lang::select_undecided::undecided_payload_members_refused (main
-    // prints [1]), annotated_payload_members_reach_the_arm;
-    // lang::select::partial_struct_*_two_members (messages now 'told apart by types not
-    // decided at this select').
     /// `checking`: the definition's check, which also judges coverage,
     /// dead arms and guards; an instance does only what they decide.
     fn typecheck0_with(

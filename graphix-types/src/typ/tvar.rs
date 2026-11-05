@@ -3488,37 +3488,6 @@ impl Type {
         })
     }
 
-    // XCR claude for claude: [bug/high] A name over a union scrutinee is typed from the
-    // closed members alone where one member's part at it is an open cell (a never() let
-    // written later, an unannotated parameter): the copy of the name's cell stays open
-    // against that part, so the cell "stays open" here, the body decides it alone, and
-    // nothing ties it to the member's cell. `let z = never(); let v = select b { true =>
-    // (`A, z), false => (`B, "s") }; select v { (_, x) => str::len(x) }` with `z <- 5`
-    // passes the check and finds no arm at run time ("a coverage hole in the check");
-    // with `(_, x) if true => str::len(x), _ => 0` it prints 0, a wrong value; over a
-    // struct field (`{a: x, ..}`) or an unannotated parameter (`|z, b|`) the JIT reads 5
-    // as a string's pointer and the process aborts (undefined behaviour in a release
-    // build). `let (_, x) = v` and `v.1` are refused ("z is string, inferred from an
-    // earlier use"). Reach::new's settle, (settle-commits-name-01), does not reach it:
-    // the arm matches every member, so no settle runs. Main 30702808d alike. An
-    // experiment taking such a copy as a part (`(None, Some(p)) =>
-    // p.push(Type::TVar(f.clone()))`; the containment linked it to the member's cell)
-    // refuses n3e, w3, w5 and n07b ("z is string ... declare z: [i64, string]") and w8
-    // ("string does not contain i64"), and changes no verdict or message in the --check
-    // census of both repos (2941 files); a run of lang:: under it did not finish in 50
-    // minutes on a loaded host, not looked into. It is the D3 ruling's "a part only a name
-    // meets passes" typed right, so it may go with D5's rebuild (~/ptmp/cr-discuss.md).
-    // probes: ~/ptmp/cr29/scratch/review-r11/N-r2-2/p/{n3e,w3,w5,w8}.gx,
-    // review-r11/N-r2-1/n/n07b.gx (narrow-open-part-01)
-    // 2026-11-04 claude: TVar::narrow_per_member: a copy the narrowing left open that took
-    // an open cell of the member's part (the member reaches it) is that part, so the name
-    // holds it beside the other members' parts; the CR's experiment, restricted to a copy
-    // the member reaches. n3e, w3, w5, n07b refused at the write ('z is string, inferred
-    // from an earlier use'), w8 at the call. lang:: runs in about a minute (the
-    // experiment's hang did not reproduce). Pins:
-    // lang::select_undecided::name_over_an_undecided_part_written_apart_refused, _field_,
-    // _guarded_part_, _slice_part_, _parameter_part_called_apart_refused (main: no arm, a
-    // wrong value, or a JIT abort), name_over_an_undecided_part_decides_it.
     /// `members ⊇ self` for a select arm's predicate over what reaches the
     /// arm, `members` being the members of that union it can match: each
     /// open cell of self takes the union of its parts over every member and
