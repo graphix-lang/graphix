@@ -132,7 +132,7 @@ pub(crate) fn summarize(
     text: ArcStr,
 ) -> (Vec<ArcStr>, Arc<[Symbol]>) {
     let text = parser::without_shebang(&text);
-    let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
+    let ori = Origin::new(None, Source::File(path.to_path_buf()), text);
     let mut mods = Vec::new();
     let symbols = match kind {
         FileKind::Gx => match parser::parse(ori) {

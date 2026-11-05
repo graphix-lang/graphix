@@ -512,7 +512,11 @@ of the env: a lookup at a block level no lexical map holds reads it, so
 does one at a compiling block's level (or a snapshot of it) for a name
 the block declares later (`Env::open_block`), and one
 that meets a dead entry is refused, never continued outward; a block compiled again declares the live definition, so one
-source typedef is one definition; an image carries the live entries.
+source typedef is one definition; an image carries the live entries. A
+scope an expression opens is named by where it is written and its
+source's load (`place_component`, `Origin::tag`), never by an id, so a
+restore names a block as the cold compile did (design/program_image.md,
+Scope names).
 `Env::seed_typedef_refs` (block types included) runs at the check's end
 (an instance elaborates under its definition's env) and again right
 before fusion in both modes, and every node outside a definition has

@@ -161,9 +161,7 @@ pub(crate) fn lower_over_operands<R: Rt>(
     operands: impl IntoIterator<Item = (ArcStr, Node<R>)>,
     body: Expr,
 ) -> Result<Node<R>> {
-    // named by the lowered node's spec, which an image writes, as a
-    // block's scope is
-    let scope = scope.append_block("op", spec.id.inner());
+    let scope = scope.append_place("op", spec, None);
     let mut children: Vec<Node<R>> = Vec::new();
     for (name, node) in operands {
         let typ = node.typ().clone();

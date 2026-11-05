@@ -464,7 +464,7 @@ impl<X: GXExt> GX<X> {
             if probes.is_some() {
                 t.ctx.env.record_warnings();
             }
-            let loaded = t.load_program(&source, probes.as_ref()).await;
+            let loaded = t.load_program(&source, probes.as_ref(), 0).await;
             let warnings = t.ctx.env.recorded_warnings();
             match loaded {
                 Ok(root) => {
@@ -1014,7 +1014,7 @@ impl<X: GXExt> GX<X> {
     }
 
     async fn compile_root(&mut self, flags: BitFlags<CFlag>, text: ArcStr) -> Result<()> {
-        let ori = Origin { parent: None, source: Source::Unspecified, text };
+        let ori = Origin::new(None, Source::Unspecified, text);
         let exprs = expr::parser::parse(ori.clone())
             .with_context(|| format!("parsing the root module {ori}"))?;
         let exprs =
@@ -1045,7 +1045,8 @@ impl<X: GXExt> GX<X> {
     /// Compile and install the statements of `text`, all or none: a
     /// failure leaves the session as it was.
     async fn compile(&mut self, rt: GXHandle<X>, text: ArcStr) -> Result<CompRes<X>> {
-        let ori = Origin { parent: None, source: Source::Unspecified, text };
+        let load = self.ctx.env.block_types.next_load();
+        let ori = Origin::new(None, Source::Unspecified, text).loaded(load);
         let exprs = expr::parser::parse(ori.clone())?;
         let exprs =
             join_in_order(exprs.iter().map(|e| e.resolve_modules(&self.resolvers, None)))
@@ -1101,11 +1102,12 @@ impl<X: GXExt> GX<X> {
         source: &Load,
         resolvers: &Resolvers,
         probes: Option<&Probes>,
+        load: u32,
     ) -> Result<(Origin, Arc<[Expr]>, Option<Sig>)> {
         let (ori, exprs, sig) = match source {
             Load::File(file) => {
                 let overrides = resolvers.iter().find_map(|r| r.overrides());
-                let root = RootFile::load(file, overrides.as_ref(), probes).await?;
+                let root = RootFile::load(file, overrides.as_ref(), probes, load).await?;
                 (root.ori, root.exprs, root.sig)
             }
             Load::Netidx(_) => {
@@ -1120,12 +1122,11 @@ impl<X: GXExt> GX<X> {
                     anyhow!("no module resolver can load {source:?}")
                 })?;
                 let src = fetch.await?;
-                let ori = Origin { parent: None, source, text: src };
+                let ori = Origin::new(None, source, src).loaded(load);
                 (ori.clone(), expr::parser::parse(ori)?, None)
             }
             Load::Text(src) => {
-                let ori =
-                    Origin { parent: None, source: Source::Program, text: src.clone() };
+                let ori = Origin::new(None, Source::Program, src.clone()).loaded(load);
                 (ori.clone(), expr::parser::parse(ori)?, None)
             }
         };
@@ -1140,6 +1141,7 @@ impl<X: GXExt> GX<X> {
         expr_types: bool,
     ) -> Result<crate::CheckResult> {
         let env = self.ctx.env.clone();
+        let load = self.ctx.env.block_types.next_load();
         // a check runs nothing: everything it compiled is rolled back
         let saved = Saved::take(&mut self.ctx.cx);
         if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
@@ -1166,7 +1168,8 @@ impl<X: GXExt> GX<X> {
                     // a package this binary was not built with is still
                     // the root `package::` names
                     self.ctx.env.package_roots.insert(name.clone());
-                    let root = RootFile::load(file, overrides.as_ref(), None).await?;
+                    let root =
+                        RootFile::load(file, overrides.as_ref(), None, load).await?;
                     let ori = root.ori.clone();
                     (
                         ori,
@@ -1179,7 +1182,7 @@ impl<X: GXExt> GX<X> {
                 (Some(_), _) => bail!("only a file can be checked as a package root"),
                 (None, _) => {
                     let (ori, exprs, sig) =
-                        self.load_exprs(source, &resolvers_for_call, None).await?;
+                        self.load_exprs(source, &resolvers_for_call, None, load).await?;
                     (ori, exprs, ModPath::root(), false, sig)
                 }
             };
@@ -1265,7 +1268,9 @@ impl<X: GXExt> GX<X> {
     }
 
     async fn load(&mut self, rt: GXHandle<X>, source: &Load) -> Result<CompRes<X>> {
-        let ProgramRoot { id, output, typ, .. } = self.load_program(source, None).await?;
+        let load = self.ctx.env.block_types.next_load();
+        let ProgramRoot { id, output, typ, .. } =
+            self.load_program(source, None, load).await?;
         let res = smallvec![CompExp { id, output, typ, rt: rt.clone() }];
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }
@@ -1296,10 +1301,12 @@ impl<X: GXExt> GX<X> {
         &mut self,
         source: &Load,
         probes: Option<&Probes>,
+        load: u32,
     ) -> Result<ProgramRoot> {
         let scope = Scope::root();
         let st = Instant::now();
-        let (ori, exprs, sig) = self.load_exprs(source, &self.resolvers, probes).await?;
+        let (ori, exprs, sig) =
+            self.load_exprs(source, &self.resolvers, probes, load).await?;
         info!("parse time: {:?}", st.elapsed());
         let st = Instant::now();
         let exprs = join_in_order(

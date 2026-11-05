@@ -2122,11 +2122,11 @@ fn parse_program(text: &str) -> String {
 
 /// `text` as the file `/test`.
 fn vfs(text: &str) -> crate::expr::Origin {
-    crate::expr::Origin {
-        parent: None,
-        source: crate::expr::Source::Vfs(literal!("/test")),
-        text: ArcStr::from(text),
-    }
+    crate::expr::Origin::new(
+        None,
+        crate::expr::Source::Vfs(literal!("/test")),
+        ArcStr::from(text),
+    )
 }
 
 /// A failure's summary, what an editor shows beside the caret.

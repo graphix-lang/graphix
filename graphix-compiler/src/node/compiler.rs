@@ -416,7 +416,7 @@ fn compile_kind<R: Rt>(
             )
         }
         ExprKind::Block { exprs } => {
-            let scope = scope.append_block("do", spec.id.inner());
+            let scope = scope.append_place("do", &spec, None);
             Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, exprs)
         }
         ExprKind::Array { args } => {

@@ -220,12 +220,7 @@ impl<R: Rt> SeqMachine<R> {
         for (i, parent) in m.scopes.iter().enumerate() {
             let s = match i {
                 0 => scope.clone(),
-                // named from what every compile of the definition shares, so a
-                // seq nested here is lowered once
-                _ => scopes[*parent as usize].append_block(
-                    compact_str::format_compact!("seq{i}_").as_str(),
-                    m.id.inner(),
-                ),
+                _ => scopes[*parent as usize].append_place("seq", &spec, Some(i)),
             };
             scopes.push(s);
         }

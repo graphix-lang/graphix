@@ -201,7 +201,8 @@ impl Containment {
 /// compiles neither hides nor fakes a diagnostic difference: tvar numbers
 /// (`'_6070` -> `'_N`) and ids after a `#` (`<abstract#12>`, the block
 /// scopes `#do123`, `#fn45`, the names a lowering binds, `#seqv4611_1` ->
-/// `#seqvN_1`).
+/// `#seqvN_1`), a place-named scope's whole place (`#do3.5.1~9fa2` ->
+/// `#doN`).
 fn normalize_diag(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -221,6 +222,22 @@ fn normalize_diag(s: &str) -> String {
                 out.push_str(&s[flushed..j]);
                 while b.get(j).is_some_and(u8::is_ascii_digit) {
                     j += 1;
+                }
+                while b.get(j) == Some(&b'.')
+                    && b.get(j + 1).is_some_and(u8::is_ascii_digit)
+                {
+                    j += 2;
+                    while b.get(j).is_some_and(u8::is_ascii_digit) {
+                        j += 1;
+                    }
+                }
+                if b.get(j) == Some(&b'~')
+                    && b.get(j + 1).is_some_and(u8::is_ascii_hexdigit)
+                {
+                    j += 2;
+                    while b.get(j).is_some_and(u8::is_ascii_hexdigit) {
+                        j += 1;
+                    }
                 }
                 out.push('N');
                 (flushed, i) = (j, j);
@@ -5914,6 +5931,7 @@ mod tests {
             "`let [h, ..] = #seqvN_1` in #seqpcN"
         );
         assert_eq!(n("'_6070 <abstract#12> #do123 #fn45"), "'_N <abstract#N> #doN #fnN");
+        assert_eq!(n("`#do3.5~9fa2::#sel7.1.2~9fa2` x"), "`#doN::#selN` x");
         assert_eq!(n("myseqv12 seq x2 'a1 s3"), "myseqv12 seq x2 'a1 s3");
     }
 

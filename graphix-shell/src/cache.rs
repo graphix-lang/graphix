@@ -894,8 +894,9 @@ mod tests {
             tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let probes = Probes::default();
-            let root =
-                RootFile::load(&main.to_path_buf(), None, Some(&probes)).await.unwrap();
+            let root = RootFile::load(&main.to_path_buf(), None, Some(&probes), 0)
+                .await
+                .unwrap();
             let dirs = std::iter::once(main.parent().unwrap().to_path_buf())
                 .chain(search.iter().cloned());
             let resolvers: Vec<ResolverRef> =

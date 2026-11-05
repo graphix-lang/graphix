@@ -1110,11 +1110,7 @@ pub async fn eval_packed(
     register: &[PackageRef],
 ) -> Result<(Value, TestCtx)> {
     let source = result_text(code);
-    let ori = Origin {
-        parent: None,
-        source: Source::Vfs(arcstr::literal!("/test")),
-        text: source.clone(),
-    };
+    let ori = Origin::new(None, Source::Vfs(arcstr::literal!("/test")), source.clone());
     let exprs = graphix_compiler::expr::parser::parse(ori)?;
     let packed = graphix_compiler::expr::serialize::pack_module(&exprs)?;
     let entry = VfsEntry { source, packed: Some(packed) };

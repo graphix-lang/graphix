@@ -64,7 +64,7 @@ fn accepted(shape: &str, mode: &str) -> usize {
     use graphix_compiler::expr::{Origin, parser};
     let admitted = |d: usize| {
         let text = arcstr::ArcStr::from(source(shape, d, mode));
-        let origin = Origin { parent: None, source: Source::Unspecified, text };
+        let origin = Origin::new(None, Source::Unspecified, text);
         match parser::parse(origin) {
             Ok(_) => true,
             Err(e) => !format!("{e:#}").contains("nesting too deep"),

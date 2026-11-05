@@ -315,7 +315,7 @@ impl ServerState {
             Some(doc) => doc.text.clone(),
             None => ArcStr::from(std::fs::read_to_string(path)?),
         };
-        let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
+        let ori = Origin::new(None, Source::File(path.to_path_buf()), text);
         parser::parse_sig(ori).map(|_| ())
     }
 

@@ -39,3 +39,25 @@ fn a_blocks_type_above_its_declaration_is_not_an_earlier_inputs() {
         assert!(ran.stdout.contains("(\"s\", 1)"), "{}", ran.stdout);
     }
 }
+
+/// Two inputs of one text are two sources: what a block of the second
+/// declares is its own, never the first input's.
+#[test]
+fn inputs_of_one_text_declare_apart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stmt = "let a = { trait Tr { val m: fn(self) -> i64 }; \
+                impl Tr for i64 { let m = |x| x + 1 }; Tr::m(1) }";
+    let input = format!("{stmt}\na\n{stmt}\na\nsys::exit(3)\n");
+    for args in [&["--no-cache"][..], &["--no-cache", "--no-fusion"]] {
+        let ran = repl(dir.path(), args, &input);
+        assert_eq!(ran.status.code(), Some(3), "{}\n{}", ran.stdout, ran.stderr);
+        assert_eq!(
+            ran.stdout.matches("\n2\n").count(),
+            2,
+            "{}\n{}",
+            ran.stdout,
+            ran.stderr
+        );
+        assert!(!ran.stderr.contains("error"), "{}", ran.stderr);
+    }
+}

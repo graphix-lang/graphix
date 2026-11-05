@@ -984,7 +984,8 @@ pub(crate) fn origin_encode(
                 None => buf.put_u8(0),
             }
             source_encode(&ori.source, buf)?;
-            ori.text.encode(buf)
+            ori.text.encode(buf)?;
+            ori.load.encode(buf)
         },
     )
 }
@@ -1003,7 +1004,8 @@ pub(crate) fn origin_decode(buf: &mut impl Buf) -> Result<Arc<Origin>, PackError
             };
             let source = source_decode(sub)?;
             let text: ArcStr = Pack::decode(sub)?;
-            Ok(Arc::new(Origin { parent, source, text }))
+            let load: u32 = Pack::decode(sub)?;
+            Ok(Arc::new(Origin::new(parent, source, text).loaded(load)))
         },
         |b| origin_decode(b),
     )
@@ -2134,11 +2136,7 @@ mod tests {
     #[test]
     fn a_program_origin_writes_its_text_once() {
         let text = literal!("let x = 1; x + 1 // a program long enough to see twice");
-        let ori = Arc::new(Origin {
-            parent: None,
-            source: Source::Program,
-            text: text.clone(),
-        });
+        let ori = Arc::new(Origin::new(None, Source::Program, text.clone()));
         let expr = Expr {
             id: ExprId::new(),
             ori,
@@ -2164,11 +2162,11 @@ mod tests {
 
     #[test]
     fn expression_clones_share_one_definition() {
-        let ori = Arc::new(Origin {
-            parent: None,
-            source: Source::Vfs(literal!("/test")),
-            text: literal!("1 + 2"),
-        });
+        let ori = Arc::new(Origin::new(
+            None,
+            Source::Vfs(literal!("/test")),
+            literal!("1 + 2"),
+        ));
         let child = Expr {
             id: ExprId::new(),
             ori: ori.clone(),
@@ -2211,11 +2209,8 @@ mod tests {
 
     #[test]
     fn expressions_keep_ids_and_share_origins() {
-        let ori = Arc::new(Origin {
-            parent: None,
-            source: Source::Vfs(literal!("/test")),
-            text: literal!("1; 2"),
-        });
+        let ori =
+            Arc::new(Origin::new(None, Source::Vfs(literal!("/test")), literal!("1; 2")));
         let mk = |v: i64| Expr {
             id: ExprId::new(),
             ori: ori.clone(),

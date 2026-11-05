@@ -340,18 +340,15 @@ mod test {
 
     /// `src` parsed, and its package round trip.
     fn packed(src: &str) -> (Arc<[Expr]>, Arc<[Expr]>) {
-        let ori = Origin {
-            parent: None,
-            source: Source::Vfs(ArcStr::from("/test")),
-            text: ArcStr::from(src),
-        };
+        let ori =
+            Origin::new(None, Source::Vfs(ArcStr::from("/test")), ArcStr::from(src));
         let exprs = parser::parse(ori).unwrap_or_else(|e| panic!("parse `{src}`: {e}"));
         let packed = pack_module(&exprs).expect("pack");
-        let dummy = Arc::new(Origin {
-            parent: None,
-            source: Source::Vfs(ArcStr::from("/decoded")),
-            text: ArcStr::new(),
-        });
+        let dummy = Arc::new(Origin::new(
+            None,
+            Source::Vfs(ArcStr::from("/decoded")),
+            ArcStr::new(),
+        ));
         (exprs, unpack_module(&packed, dummy).expect("unpack"))
     }
 
@@ -359,6 +356,29 @@ mod test {
         let (exprs, unpacked) = packed(src);
         // `Expr` equality is kind-only, so this checks structure.
         assert_eq!(&exprs[..], &unpacked[..], "round-trip mismatch for: {src}");
+    }
+
+    /// A packed package's expressions keep where they are written, so a
+    /// scope one opens is named as its parsed source names it.
+    #[test]
+    fn positions_cross_the_wire() {
+        let src = "let f = |x: i64| {\n    type L = i64;\n    let g = |y: L| select y {\n        0 => { let z = 1; z },\n        n => n\n    };\n    g(x)\n};\nlet h = { let a = 1; |b: i64| a + b }";
+        let ori =
+            Origin::new(None, Source::Vfs(ArcStr::from("/test")), ArcStr::from(src));
+        let exprs = parser::parse(ori.clone()).expect("parse");
+        let unpacked = unpack_module(&pack_module(&exprs).expect("pack"), Arc::new(ori))
+            .expect("unpack");
+        let names = |es: &[Expr]| {
+            es.iter().fold(Vec::new(), |acc, e| {
+                e.fold(acc, &mut |mut acc, e| {
+                    acc.push(crate::place_component("x", &e.ori, e.pos, None));
+                    acc
+                })
+            })
+        };
+        let (written, decoded) = (names(&exprs), names(&unpacked));
+        assert!(written.len() > 20, "{written:?}");
+        assert_eq!(written, decoded);
     }
 
     /// A fn type's declared quantifiers, in source order, and those of the
@@ -451,18 +471,18 @@ mod test {
     fn roundtrip_preserves_dec() {
         // `Expr` equality ignores `dec`; attributes are semantic and must
         // survive, so check `dec` directly.
-        let ori = Origin {
-            parent: None,
-            source: Source::Vfs(ArcStr::from("/dec")),
-            text: ArcStr::from("#[native]\n// note\n\n// apart\n42"),
-        };
+        let ori = Origin::new(
+            None,
+            Source::Vfs(ArcStr::from("/dec")),
+            ArcStr::from("#[native]\n// note\n\n// apart\n42"),
+        );
         let exprs = parser::parse(ori).expect("parse");
         let packed = pack_module(&exprs).expect("pack");
-        let dummy = Arc::new(Origin {
-            parent: None,
-            source: Source::Vfs(ArcStr::from("/decoded")),
-            text: ArcStr::new(),
-        });
+        let dummy = Arc::new(Origin::new(
+            None,
+            Source::Vfs(ArcStr::from("/decoded")),
+            ArcStr::new(),
+        ));
         let unpacked = unpack_module(&packed, dummy).expect("unpack");
         let dec = unpacked[0].dec.as_ref().expect("dec dropped on round-trip");
         assert_eq!(dec.attrs.len(), 1, "attribute lost");

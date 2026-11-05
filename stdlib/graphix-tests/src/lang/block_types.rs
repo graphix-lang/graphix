@@ -351,3 +351,25 @@ run!(
 }"#,
     prints("[[true, true, true, false], i64:2, i64:1]")
 );
+
+// A dynamic module's new source is a new source: a block it declares at
+// the place the old source declared another is its own definition, even
+// while the old body still runs.
+run!(
+    a_reload_declares_its_own_block_type,
+    r#"{
+    let k = 0;
+    k <- select k { 0 => 1, _ => never() };
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val y: string };
+        source select k {
+            0 => "let y = { type L = i64; let v: L = 1; \"a\" }",
+            _ => "let y = { type L = string; let v: L = \"b\"; v }"
+        }
+    };
+    let r = select status { error as e => "[e]", null as _ => foo::y };
+    filter(r, |s| s != "a")
+}"#,
+    prints(r#""b""#)
+);

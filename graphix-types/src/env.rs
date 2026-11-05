@@ -170,7 +170,7 @@ impl TypeDef {
 /// occurrence, so an entry means one thing from wherever it is reached.
 /// Each definition is held weakly. Global like the import tables: every
 /// copy of the env, a compile task's included, shares it.
-// CR claude for eric: [bug/medium] A block's type is a different definition warm than
+// XCR claude for claude: [bug/medium] A block's type is a different definition warm than
 // cold once its scope's name crosses an image. Entries are keyed by the scope's NAME
 // (`#fn<ExprId>::#do<ExprId>`); a restore relocates every ExprId but no ModPath, so a
 // block a warm session compiles again (an instance bound at run time) is named by the
@@ -193,6 +193,25 @@ impl TypeDef {
 // bind fails; warm.sh FILE), s1_escape.gx, s1b_sig.gx; the pin as written,
 // lang::image::a_restored_block_type_outlives_its_activation in
 // ~/ptmp/cr29/scratch/r15-N/r3/image_with_pin.rs, fails warm. (block-type-image-scope-01)
+// 2026-11-05 claude: Eric ruled (2026-11-05): D10 follow-up (b) in ~/ptmp/cr-discuss.md:
+// a block's generated scope name comes from its source position, qualified by its
+// source's identity, never an ExprId; the whole-block rule confirmed.
+// 2026-11-05 claude: Fixed (lane N r16): every scope an expression opens is named by
+// place_component (kind, line, column, an ordinal for a select's arms and a machine's
+// scopes, and Origin::tag: a fixed hash of the source's kind and name, text and load
+// number), never an ExprId; origins image their load number, so a warm run-time bind
+// names a block as the cold compile did and declares the restored definition. Loads a
+// session repeats (REPL input, load, check, dynamic module source) take
+// BlockTypes::next_load. Every probe of this CR and of review-r15 N-r3-1/N-r3-2 (16
+// files, fused and --no-fusion) now prints the same cold and warm, cold unchanged. Pins:
+// graphix-shell tests shell::block_type_image (6 tests, script run twice with the cache
+// on; all fail warm with ExprId names),
+// lang::image::a_restored_block_type_outlives_its_activation (fails warm with ExprId
+// names), lang::image::a_restored_block_trait_dispatches, shell
+// block_types::inputs_of_one_text_declare_apart and
+// lang::block_types::a_reload_declares_its_own_block_type (both fail with a tag that
+// drops the load number and text), serialize positions_cross_the_wire (packed sources
+// keep positions). Registration format 108.
 #[derive(Clone, Debug, Default)]
 pub struct BlockTypes(Arc<RwLock<BlockRegistry>>);
 
@@ -202,6 +221,8 @@ struct BlockRegistry {
     entries: usize,
     /// `entries` after the last sweep of dead entries.
     swept_at: usize,
+    /// The loads numbered so far ([`BlockTypes::next_load`]).
+    loads: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -283,6 +304,17 @@ impl BlockTypes {
             reg.swept_at = reg.entries;
         }
         (def, seeded)
+    }
+
+    /// The number of a load of a source the session may load again (a
+    /// REPL input, a `load`, a check, a dynamic module's source): its
+    /// origin's [`crate::expr::Origin::load`], so the scopes it opens are
+    /// named apart from every other load's, and a block it declares is
+    /// never an earlier load's live definition.
+    pub fn next_load(&self) -> u32 {
+        let mut reg = self.0.write();
+        reg.loads += 1;
+        reg.loads
     }
 
     /// Every live entry at `scope` or below, with its name.
@@ -1398,6 +1430,20 @@ impl Env {
         }
     }
 
+    // CR claude for claude: [readability/low] A name a block declares is its type
+    // throughout the block (the whole-block rule, confirmed by Eric 2026-11-05), but
+    // nothing a refusal or a warning prints says which `L` a name above the
+    // declaration means: `type L = i64; let g = |z: i64| { let f = |x: i64| { let b: L
+    // = 3; (b, x) }; type L = string; f(z) }` is refused "type mismatch L does not
+    // contain i64" with the outer `type L = i64` in view, and `{ use n::L; let b: L =
+    // "s"; type L = i64; .. }` likewise, the block's later type silently overriding the
+    // import above it (a type test `L as l` in such a function changes value with no
+    // word at all). Wanted: where a name resolves here to a block type its block declares
+    // later and an outer type or an import of the name is in view, say so at the
+    // reference (a warning naming the later declaration, or a note on the refusal).
+    // resolve_type_name has no position, so this needs the reference's (TypeRef::pos).
+    // probes: ~/ptmp/cr29/scratch/r16-N/low/fwd6.gx, r6_use_direct.gx
+    // (block-later-name-note-01)
     /// What a name in type position means at `scope`: the first typedef
     /// or trait of that name along the lookup chain, so a closer one of
     /// either kind shadows a farther one of the other.

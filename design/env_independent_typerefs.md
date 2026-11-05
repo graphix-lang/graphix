@@ -130,7 +130,7 @@ What remains:
 
 A typedef a block declares (a `do` block, a function body, a select
 arm's body, a catch, a labeled default: a scope whose last component is
-generated, `#do12`) is in the lexical maps only while its block
+generated, `#do12.5~3fa9c2e1b07d`) is in the lexical maps only while its block
 compiles, under `with_restored`. A name naming it may be resolved after
 that: an instance's body is compiled again and typed from its
 definition's rows, with its written annotations open; a default is
@@ -143,8 +143,9 @@ nothing.
 `Env::block_types` keeps every block typedef findable after its block:
 
 - **By scope and name, held weakly.** A block's scope names one source
-  occurrence (the expression id its parse minted), so an entry means one
-  thing from wherever it is reached. Name resolution reads it at a block
+  occurrence (where its expression is written, in which load of which
+  source: design/program_image.md, Scope names), so an entry means one
+  thing from wherever it is reached, cold or restored. Name resolution reads it at a block
   level no lexical map holds, before the level's imports. A typedef a
   module inside a block declares is not registered: the module's scope
   ends in its name, which a reload declares again with other text.
@@ -190,9 +191,8 @@ nothing.
   definition. `unbind_scope_subtree`
   drops the entries under its scope; dead entries are swept as the
   registry grows. A session image carries the live entries, under the
-  scope names it wrote; a restore relocates the ids a block compiled again
-  is named by, so such a block declares a definition of its own (CR
-  block-type-image-scope-01).
+  scope names it wrote, which a block compiled again after the restore
+  spells alike, so it declares the restored definition.
 - **Seeded with the rest.** `Env::seed_typedef_refs` seeds the bodies of
   live block typedefs as it does the lexical ones.
 
@@ -200,8 +200,11 @@ With every name findable, the rows of a labeled default are kept whatever
 names they hold (`DefTable::record_defaults`), and a definition's rows
 are seeded in its own env with the registry and import tables beside it.
 Pins: `lang::block_types`, `lang::image::a_restored_block_type_is_found`,
+`lang::image::a_restored_block_type_outlives_its_activation`,
 `graphix-shell/tests/shell/block_types.rs` (a later REPL input's `type L`;
-an earlier input's beside a block's later one).
+an earlier input's beside a block's later one; two inputs of one text),
+`graphix-shell/tests/shell/block_type_image.rs` (a script run twice with
+the cache on).
 
 ## Every written name names something
 

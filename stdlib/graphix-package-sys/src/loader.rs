@@ -93,10 +93,8 @@ impl ModuleResolver for NetidxResolver {
         probes: Option<&'a Probes>,
     ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>> {
         Box::pin(async move {
-            let ori = |text: ArcStr, p: &Path| Origin {
-                parent: Some(parent.clone()),
-                source: Source::Netidx(p.clone()),
-                text,
+            let ori = |text: ArcStr, p: &Path| {
+                Origin::new(Some(parent.clone()), Source::Netidx(p.clone()), text)
             };
             // a path nobody publishes is absent; any other failure is the
             // module's, never a reason to look elsewhere or to drop its
@@ -193,11 +191,7 @@ mod test {
             Path::from("/mods"),
             Some(Duration::from_secs(1)),
         );
-        let parent = Arc::new(Origin {
-            parent: None,
-            source: Source::Unspecified,
-            text: ArcStr::from(""),
-        });
+        let parent = Arc::new(Origin::new(None, Source::Unspecified, ArcStr::from("")));
         let probes = Probes::default();
         let mut errors = vec![];
         let name = Path::from("foo");

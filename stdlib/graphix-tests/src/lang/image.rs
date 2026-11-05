@@ -663,6 +663,63 @@ async fn a_restored_block_type_is_found() -> Result<()> {
     Ok(())
 }
 
+/// A function written above its block's typedef, kept past the deletion
+/// of the activation that declared it and bound at run time, reads the
+/// type the image carried: a block compiled again warm is named as it was
+/// cold, so it declares the definition its rows name.
+#[tokio::test]
+async fn a_restored_block_type_outlives_its_activation() -> Result<()> {
+    let program = r#"{
+    let mk = |z: i64| {
+        let f = |x: i64| -> (L, i64) { let b: L = x + z; (b, cast<L>("7")$ + x) };
+        type L = i64;
+        f
+    };
+    let xs = [10, 20];
+    let fs = array::map(xs, |i| mk(i));
+    let saved = once(fs);
+    xs <- saved ~ [];
+    let gone = select array::len(xs) { 0 => xs ~ saved, _ => never() };
+    let h = never();
+    h <- gone;
+    let g = h[1]$;
+    g(2)
+}"#;
+    let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
+    let last = cold.last().expect("the program produced its tuple");
+    assert_eq!(format!("{last}"), "[i64:22, i64:9]");
+    assert_eq!(cold, warm);
+    Ok(())
+}
+
+/// A trait a block declares is one trait warm as cold: a function bound
+/// at run time after a restore dispatches it to the block's impl.
+#[tokio::test]
+async fn a_restored_block_trait_dispatches() -> Result<()> {
+    let program = r#"{
+    let r = {
+        trait Tr { val m: fn(self) -> i64 };
+        impl Tr for i64 { let m = |x| x + 1 };
+        let mk = |z: i64| |x: Tr| Tr::m(x) + z;
+        let xs = [10, 20];
+        let fs = array::map(xs, |i| mk(i));
+        let saved = once(fs);
+        xs <- saved ~ [];
+        let gone = select array::len(xs) { 0 => xs ~ saved, _ => never() };
+        let h = never();
+        h <- gone;
+        let g = h[1]$;
+        g(2)
+    };
+    r
+}"#;
+    let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
+    let last = cold.last().expect("the program produced its value");
+    assert_eq!(format!("{last}"), "i64:23");
+    assert_eq!(cold, warm);
+    Ok(())
+}
+
 /// A restored catch keeps the handler type its check sealed: a dynamic
 /// module's later raise of another error is refused warm as cold.
 #[tokio::test]

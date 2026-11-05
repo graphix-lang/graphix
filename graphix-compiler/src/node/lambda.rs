@@ -2267,9 +2267,7 @@ pub(crate) fn make_init<R: Rt>(
     table: SArc<DefTables>,
     shared: BodyShare,
 ) -> InitFn<R> {
-    // named by the expression, which every compile of a literal shares,
-    // so what is keyed by scope (a seq's lowering) is found again
-    let def_scope = scope.append_block("fn", def_spec.id.inner());
+    let def_scope = scope.append_place("fn", &def_spec, None);
     SArc::new(move |scope, ctx, args, mode, tid| {
         // the definition's names, the call site's handlers
         let scope =
@@ -2920,6 +2918,11 @@ fn capture_names<R: Rt>(
 // the source's identity (file or module, a REPL input's number), never an ExprId, so a
 // cold run and a warm image agree (block-type-image-scope-01 on the branch); then it
 // lands.
+// 2026-11-05 claude: Lane N r16: rebased onto main 462ccf70d (gate green before any
+// change); Eric confirmed the whole-block rule (2026-11-05, D10 follow-up), and block
+// scopes are now named by source place, not ExprId (block-type-image-scope-01), so the
+// registry this fix rests on finds a restored block's definition warm as cold. The pins
+// named above still pass at the lane's final HEAD.
 fn check_defaults<R: Rt>(
     ctx: &mut CompileCtx<R>,
     def: &LambdaDef<R>,

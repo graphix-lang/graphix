@@ -472,9 +472,34 @@ and never overlaps anything already handed out, the same image loads
 into several runtimes in one process (the test suite, the GUI harness,
 the LSP, the fuzzer's session pairs), each with its own block, and no ID
 this process mints or relocates equals one the image wrote: a scope
-component minted after a restore (`#fn7`, `#do12`) never spells one the
-image's scope text holds. Restored IDs stay below the IDs minted after
-the restore, as in the runtime that wrote them.
+component Rust mints at run time (`#fn7`) never spells one the image's
+scope text holds. Restored IDs stay below the IDs minted after the
+restore, as in the runtime that wrote them.
+
+### Scope names
+
+An image never rewrites a name. A scope an expression opens (a block, a
+function body, a select arm, a catch, an impl, a seq machine's step) is
+named by where the expression is written, never by an id
+(`place_component`): its kind, its line and column, an ordinal where one
+expression opens several (a select's arms, a machine's scopes), and its
+source's tag (`Origin::tag`: a fixed hash of the source's kind and name,
+its text and its load number). Positions and origins are imaged
+(`Expr::pos`, `origin_encode`, the load number included), so a block a
+warm session compiles again (an instance bound at run time) is named as
+the cold compile named it, and finds what the image holds under that
+name: a block's type definition (`Env::block_types`), a trait's id
+(`TraitId::of` hashes the scope). A lowering's expression carries the
+position of the expression it stands for; the synthesized ones that share
+a position bind only names the lowering made unique or their own
+parameters, so a shared name holds nothing two of them read. A load a
+session may repeat (a REPL input, a `load`, a check, a dynamic module's
+source) takes a number of the session's own (`BlockTypes::next_load`),
+so two loads of one text never share a scope; the loads an image holds
+(the root, the program, the modules a resolver serves) are load 0.
+Pins: `graphix-shell/tests/shell/block_type_image.rs`,
+`lang::image::a_restored_block_type_outlives_its_activation`,
+`lang::image::a_restored_block_trait_dispatches`.
 
 The regions are what keep a chain of restores small. With one region, a
 restored runtime's IDs sit in its block while the ones it mints later

@@ -2379,10 +2379,12 @@ mod test {
     #[test]
     fn a_machine_has_the_seq_origin() {
         use crate::expr::{Origin, Source, parser::parse};
-        let ori = |name: &str| Origin {
-            parent: None,
-            source: Source::Vfs(ArcStr::from(name)),
-            text: ArcStr::from("seq { a <- 1; b <- a; let c = f(b); c }"),
+        let ori = |name: &str| {
+            Origin::new(
+                None,
+                Source::Vfs(ArcStr::from(name)),
+                ArcStr::from("seq { a <- 1; b <- a; let c = f(b); c }"),
+            )
         };
         let seq = parse(ori("seq")).expect("parses");
         let _elsewhere = OriginScope::enter(Arc::new(ori("elsewhere")));

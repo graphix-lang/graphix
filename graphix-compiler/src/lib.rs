@@ -11,8 +11,8 @@ pub use graphix_types::{
     AbstractTypeRegistry, BindId, CFlag, LambdaId, LambdaInstanceId, LibState, PrintFlag,
     SourcePosition, abstract_value, block_component, dbg_flag, defetyp, env, err, errf,
     expr, format_with_flags, ide, is_block_component, is_do_block, is_fn_block,
-    is_lowered, is_method_block, list, mod_root, reference, rep, shared_map, tracked,
-    typ, valarray_of,
+    is_lowered, is_method_block, list, mod_root, place_component, reference, rep,
+    shared_map, tracked, typ, valarray_of,
 };
 pub(crate) use graphix_types::{
     AddrMap, AddrSet, CAST_ERR, CAST_ERR_TAG, Restore, profile, stack,
@@ -3218,9 +3218,17 @@ impl Scope {
         Self { lexical: ModPath(self.lexical.append(s)), dynamic: self.dynamic.clone() }
     }
 
-    /// Append a generated block-scope component (do/fn/sel/ca level).
+    /// Append a generated block-scope component a scope Rust builds at
+    /// run time names by a fresh id.
     pub fn append_block(&self, kind: &str, id: u64) -> Self {
         self.append(block_component(kind, id).as_str())
+    }
+
+    /// Append the component of the scope `spec` opens (do/fn/sel/ca
+    /// level), named by where it is written; `ordinal` tells apart the
+    /// scopes one expression opens.
+    pub fn append_place(&self, kind: &str, spec: &Expr, ordinal: Option<usize>) -> Self {
+        self.append(place_component(kind, &spec.ori, spec.pos, ordinal).as_str())
     }
 
     /// The scope covered by a handler of `kind` installed here.
@@ -3639,6 +3647,11 @@ fn check_and_fuse_inner<R: Rt>(
     // the source's identity (file or module, a REPL input's number), never an ExprId, so a
     // cold run and a warm image agree (block-type-image-scope-01 on the branch); then it
     // lands.
+    // 2026-11-05 claude: Lane N r16: rebased onto main 462ccf70d (gate green before any
+    // change); Eric confirmed the whole-block rule (2026-11-05, D10 follow-up), and block
+    // scopes are now named by source place, not ExprId (block-type-image-scope-01), so the
+    // registry this fix rests on finds a restored block's definition warm as cold. The
+    // pins named above still pass at the lane's final HEAD.
     ctx.env.seed_typedef_refs();
     seed_node_types(&ctx.env, node, &mut LPooled::take());
     if fusion_on(flags) && ctx.fusion.available() {

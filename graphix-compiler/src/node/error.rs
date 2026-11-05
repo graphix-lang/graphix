@@ -309,7 +309,7 @@ impl<R: Rt> Catch<R> {
         top_id: ExprId,
         c: &Arc<expr::CatchExpr>,
     ) -> Result<(Node<R>, Scope)> {
-        let catch_scope = scope.append_block("ca", spec.id.inner());
+        let catch_scope = scope.append_place("ca", &spec, None);
         // an ascribed catch takes its type now, so a raise it covers writes
         // nothing, from whatever task checks the raise
         let typ = Type::empty_tvar();

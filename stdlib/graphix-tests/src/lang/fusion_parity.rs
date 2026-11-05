@@ -43,7 +43,7 @@ w",
 /// the program made, one a line, printed as the checker left it.
 async fn first_refusal(name: &str, text: &str, mode: Mode) -> Result<(String, String)> {
     let text = ArcStr::from(text);
-    let ori = Origin { parent: None, source: Source::Unspecified, text };
+    let ori = Origin::new(None, Source::Unspecified, text);
     let stmts = parser::parse(ori)?;
     let (ctx, _rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let root = ModPath::root();

@@ -7,6 +7,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod block_type_image;
 mod block_types;
 mod bound_callee_assertion;
 mod cache_trust_report;

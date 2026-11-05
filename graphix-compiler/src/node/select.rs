@@ -320,8 +320,8 @@ impl<R: Rt> Select<R> {
         let inputs = scrutinee_inputs(&ctx.env, &arg.node);
         // every instance holds its arms: exactly as many as written
         let mut built = Vec::with_capacity(arms.len());
-        for (pat, body) in arms.iter() {
-            let scope = scope.append_block("sel", body.id.inner());
+        for (i, (pat, body)) in arms.iter().enumerate() {
+            let scope = scope.append_place("sel", &spec, Some(i));
             let pat = PatternNode::compile(
                 ctx,
                 flags,

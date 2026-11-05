@@ -4008,11 +4008,7 @@ mod test {
     use triomphe::Arc;
 
     fn parse(text: &str) -> Arc<[Expr]> {
-        let ori = Origin {
-            parent: None,
-            source: Source::Unspecified,
-            text: ArcStr::from(text),
-        };
+        let ori = Origin::new(None, Source::Unspecified, ArcStr::from(text));
         parser::parse(ori).expect("parses")
     }
 

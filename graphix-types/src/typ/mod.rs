@@ -676,10 +676,10 @@ impl AbstractId {
     }
 
     /// The identity of the abstract type `name` declared at `pos` in
-    /// `ori`, in `scope`. A component a function body or block mints
-    /// (`#fn..`, `#do..`) differs per instance and per process, so it
-    /// takes no part: a module's type is its path without them (an
-    /// interface's declaration and its implementation's are one type),
+    /// `ori`, in `scope`. A component a function body or block opens
+    /// (`#fn..`, `#do..`) takes no part: a module's type is its path
+    /// without them (an interface's declaration and its implementation's
+    /// are one type),
     /// and a type declared in a body is its place there, so every
     /// instance of the enclosing function, cold or warm, declares one. A
     /// dynamic module whose path crosses a body is told from a same-named

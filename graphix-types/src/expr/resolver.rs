@@ -400,11 +400,11 @@ fn resolve_from_vfs(
 ) -> Resolution {
     let vfs = &r.vfs;
     let unit = |e: &VfsEntry| Unit {
-        ori: Origin {
-            parent: Some(parent.clone()),
-            source: Source::Vfs(ArcStr::from(&*scope.0.append(&**name))),
-            text: e.source.clone(),
-        },
+        ori: Origin::new(
+            Some(parent.clone()),
+            Source::Vfs(ArcStr::from(&*scope.0.append(&**name))),
+            e.source.clone(),
+        ),
         packed: e.packed.clone(),
     };
     // the package owns its root scope, so a program's own root module
@@ -467,11 +467,7 @@ async fn resolve_from_files(
         Ok(text)
     }
     let unit = |text: ArcStr, path: PathBuf| {
-        Unit::parsed(Origin {
-            parent: Some(parent.clone()),
-            source: Source::File(path),
-            text,
-        })
+        Unit::parsed(Origin::new(Some(parent.clone()), Source::File(path), text))
     };
     let rel = Path::parts(&name).collect::<Vec<_>>().join("/");
     struct Shown(PathBuf);
@@ -742,6 +738,7 @@ impl RootFile {
         file: &PathBuf,
         overrides: Option<&BufferOverrides>,
         probes: Option<&Probes>,
+        load: u32,
     ) -> Result<Self> {
         let buffer = |p: &PathBuf| overrides.and_then(|o| o.lock().get(p).cloned());
         let file = match overrides {
@@ -773,13 +770,10 @@ impl RootFile {
             }
             Some(_) | None => None,
         };
-        let interface = interface.map(|text| Origin {
-            parent: None,
-            source: Source::File(intf),
-            text,
-        });
+        let interface = interface
+            .map(|text| Origin::new(None, Source::File(intf), text).loaded(load));
         let implementation =
-            Unit::parsed(Origin { parent: None, source: Source::File(file), text });
+            Unit::parsed(Origin::new(None, Source::File(file), text).loaded(load));
         let interface = interface.map(Unit::parsed);
         let (exprs, sig) = parse_module(interface.as_ref(), &implementation).await?;
         Ok(Self { ori: implementation.ori, exprs, sig })
@@ -1231,7 +1225,7 @@ mod test {
     }
 
     fn file(path: PathBuf, text: &str) -> Origin {
-        Origin { parent: None, source: Source::File(path), text: ArcStr::from(text) }
+        Origin::new(None, Source::File(path), ArcStr::from(text))
     }
 
     async fn resolve_first(ori: Origin, resolvers: &[ResolverRef]) -> Result<Expr> {

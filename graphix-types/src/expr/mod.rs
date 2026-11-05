@@ -1163,6 +1163,36 @@ pub struct Origin {
     pub parent: Option<Arc<Origin>>,
     pub source: Source,
     pub text: ArcStr,
+    /// Which load of its source this is: 0 for one a session makes once
+    /// (its root, its program, a module a resolver serves), a number of
+    /// the session's own for one it may make again (a REPL input, a
+    /// `load`, a check, a dynamic module's source).
+    pub load: u32,
+    tag: SourceTag,
+}
+
+/// The tag a scope a source's expression opens carries
+/// ([`crate::place_component`]), computed once: it decides nothing
+/// `Origin`'s comparisons see.
+#[derive(Clone, Default)]
+struct SourceTag(std::sync::OnceLock<u64>);
+
+impl fmt::Debug for SourceTag {
+    fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+
+impl PartialEq for SourceTag {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl PartialOrd for SourceTag {
+    fn partial_cmp(&self, _: &Self) -> Option<std::cmp::Ordering> {
+        Some(std::cmp::Ordering::Equal)
+    }
 }
 
 impl fmt::Display for Origin {
@@ -1214,7 +1244,37 @@ impl Origin {
 
     /// The origin of source text that came from nowhere in particular.
     pub fn unspecified(s: &str) -> Self {
-        Self { parent: None, source: Source::Unspecified, text: ArcStr::from(s) }
+        Self::new(None, Source::Unspecified, ArcStr::from(s))
+    }
+
+    /// The origin of `text` from `source`, its first load.
+    pub fn new(parent: Option<Arc<Origin>>, source: Source, text: ArcStr) -> Self {
+        Self { parent, source, text, load: 0, tag: SourceTag::default() }
+    }
+
+    /// This origin as the session's load number `load` of its source.
+    pub fn loaded(self, load: u32) -> Self {
+        Self { load, tag: SourceTag::default(), ..self }
+    }
+
+    /// The source's identity in a scope name: its kind and name, its
+    /// text and its load, hashed by a fixed hasher, so a cold compile and
+    /// a restored image of the same source name its scopes alike.
+    pub fn tag(&self) -> u64 {
+        *self.tag.0.get_or_init(|| {
+            use std::hash::{DefaultHasher, Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            match &self.source {
+                Source::File(p) => (0u8, p).hash(&mut h),
+                Source::Netidx(p) => (1u8, &**p).hash(&mut h),
+                Source::Vfs(p) => (2u8, p.as_str()).hash(&mut h),
+                Source::Program => 3u8.hash(&mut h),
+                Source::Unspecified => 4u8.hash(&mut h),
+            }
+            self.load.hash(&mut h);
+            self.text.as_str().hash(&mut h);
+            h.finish()
+        })
     }
 }
 
