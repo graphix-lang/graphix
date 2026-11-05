@@ -50,41 +50,70 @@ impl DiffHist {
     }
 }
 
-/// How many pairs of named types one walk (a top-level `diff` or
-/// `could_match`) unfolds. Past it diff subtracts nothing and could_match
-/// answers an overlap, wherever a pair is met: the walk's work is bounded
-/// whatever the types, branching recursive unions whose paths multiply
-/// with their depth included (`design/tvar_constraints.md`, Unfolding a
-/// pair of definitions).
+/// How many pairs one walk (a top-level `diff` or `could_match`) unfolds,
+/// a pair any side of which is a named type. Past it diff subtracts
+/// nothing and could_match answers an overlap, wherever a pair is met: the
+/// walk's work is bounded whatever the types, branching recursive unions
+/// whose paths multiply with their depth included
+/// (`design/tvar_constraints.md`, Unfolding a pair of definitions).
 pub(super) const WALK_PAIRS: usize = 1000;
 
-/// The most parts a pair of named types' difference may have: a larger one
-/// is the minuend. Over a branching recursive union the difference of a
-/// pattern `d` deep has `2^d` parts.
+/// The most union members a difference, a pair's or a walk's, may have
+/// where it has more than its minuend: a larger one is the minuend. Over a
+/// branching recursive union the difference of a pattern `d` deep has
+/// `2^d` members, and a select's running residual doubles at each arm that
+/// tests a level deeper.
 pub(super) const RESIDUAL_PARTS: usize = 1000;
 
-/// Whether `t`, read as a tree through bound cells, has more than `n`
-/// parts; it stops counting there.
-fn larger_than(t: &Type, n: usize) -> bool {
-    fn go(t: &Type, left: &mut usize) -> ControlFlow<()> {
-        if *left == 0 {
-            return ControlFlow::Break(());
-        }
-        *left -= 1;
-        ensure_sufficient(|| match t {
-            Type::TVar(tv) => match tv.binding() {
-                Some(b) => go(&b, left),
-                None => ControlFlow::Continue(()),
-            },
-            t => t.try_for_each_child(&mut |c| go(c, left)),
-        })
-    }
-    let mut left = n;
-    go(t, &mut left).is_break()
+/// Whether `d`, a difference of `minuend`, has more union members than
+/// [`RESIDUAL_PARTS`] and than `minuend`, each counted as a tree through
+/// bound cells.
+fn grown(d: &Type, minuend: &Type) -> bool {
+    let n = members(d);
+    n > RESIDUAL_PARTS && n > members(minuend)
 }
 
-/// The pairs of named types a walk has unfolded, counted against
-/// [`WALK_PAIRS`].
+/// The members of every union in `t` read as a tree through bound cells,
+/// walked once per shared node, saturating at `usize::MAX`.
+fn members(t: &Type) -> usize {
+    fn go(t: &Type, memo: &mut AHashMap<(usize, bool), usize>) -> usize {
+        let key = match t {
+            Type::TVar(tv) => Some((tv.cell_addr(), true)),
+            t => node_addr(t).map(|a| (a, false)),
+        };
+        if let Some(n) = key.and_then(|k| memo.get(&k)) {
+            return *n;
+        }
+        if let Some(k) = key {
+            memo.insert(k, 0);
+        }
+        let mut n = match t {
+            Type::Set(ts) => ts.len(),
+            _ => 0,
+        };
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if let Some(b) = tv.binding() {
+                    n = go(&b, memo);
+                }
+            }
+            t => {
+                let _: ControlFlow<()> = t.try_for_each_child(&mut |c| {
+                    n = n.saturating_add(go(c, memo));
+                    ControlFlow::Continue(())
+                });
+            }
+        });
+        if let Some(k) = key {
+            memo.insert(k, n);
+        }
+        n
+    }
+    go(t, &mut LPooled::take())
+}
+
+/// The pairs a walk has unfolded, a side of each a named type, counted
+/// against [`WALK_PAIRS`].
 #[derive(Default)]
 pub(super) struct Pairs(usize);
 
@@ -812,6 +841,22 @@ impl Type {
     // the budgets (diff_over_branching_unions_is_bounded, diff_over_names_recurring_through_errors_ends,
     // coverage_over_*_ends, deep_error_test_over_branching_unions_ends) or fail without the both-named pair rule
     // (the four alias/recursive-name select pins, 16/16).
+    // 2026-11-05 claude: Review r16 (U-r1-2) fixes. RESIDUAL_PARTS counted every node of the difference read as a
+    // tree, type arguments included, so a residual over a definition whose parameters grow (G<('a, 'a)>) passed
+    // it at depth 5 and the widened rest refused the arm (rep_collision, can't be decided): greach5-8 refused,
+    // gdead5-10 lost their dead arm. It now counts union members, as a tree, each shared node walked once
+    // (setops::members): greach5-7 check as on main, gdead5-7 will never match as on main; greach8 (main 2.3G)
+    // and gdead8 still meet it, greach10 meets WALK_PAIRS (2^10 pairs). And the select's running residual was
+    // capped only per pair, so arms testing a level deeper each doubled it (darms: 429G at 14 arms, timeout at
+    // 16, on main and lane): a top-level diff whose result has more members than RESIDUAL_PARTS and than its
+    // minuend is now its minuend (setops::grown, Type::diff), so darms2..20 at d4/d8/d12 end at most 43G (2000
+    // members: 150G, 4000: 700G, so 1000 stays), arms16-d12 56G. 1600 generated: as before (1547 keep verdict and
+    // message kind, r425/r598 another form, 52 of 53 timeouts end); the 54 families and the review families as
+    // the lane's earlier final. Pins (fail without):
+    // typ::setops::tests::running_residual_over_branching_unions_is_bounded (85..725 then flat; 1365, 2901, ..
+    // without), lang::select::{deep_test_over_growing_parameters_reaches,
+    // deep_test_over_growing_parameters_dead}. Docs now say WALK_PAIRS counts every pair a side of which is a
+    // named type. Results: ~/ptmp/cr29/scratch/r16-U3/.
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         #[cfg(test)]
         DIFF_STEPS.with(|n| n.set(n.get() + 1));
@@ -851,7 +896,7 @@ impl Type {
                 hist.unfoldings.enter(defs, key);
                 let outer = mem::replace(&mut hist.cycled, false);
                 let r = match t0.diff_int(env, hist, &t1) {
-                    Ok(d) if larger_than(&d, RESIDUAL_PARTS) => Ok(self.clone()),
+                    Ok(d) if grown(&d, self) => Ok(self.clone()),
                     r => r,
                 };
                 hist.unfoldings.leave(defs);
@@ -1178,6 +1223,16 @@ impl Type {
     // generated r1088 still times out; r669 now ends. The Error-nesting dp/dq
     // families end (dp64 2.4G). Results:
     // ~/ptmp/cr29/scratch/r16-U2/wp/rfam-1000-100.txt, rfam-base.txt.
+    // 2026-11-05 claude: At the lane's final constants (RESIDUAL_PARTS 1000) w3s-3
+    // times out at 60 s as on base-r16; the 134.6G above was measured at 100 parts.
+    // ~/ptmp/cr29/scratch/r16-U2/wp/rfam-final-x.txt.
+    // 2026-11-05 claude: Review r16 (U-r1-2, budgets) adds cm4: four T and four U
+    // branching definitions, a select over T0 with arms U0 as u0 .. U3 as u3 then _,
+    // times out at 120 s on base-r16 and on lane U alike, 99.6% in Type::contains
+    // under set_commit and set_covers_by_distribution, outside diff's and
+    // could_match's budgets (cm8-cm64 and the shared-tag cms* too). probe:
+    // ~/ptmp/cr29/scratch/review-r16/U-r1-2/r16U2/p2/cm4.gx; out/cm-head.txt,
+    // cm-base.txt
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
         let refs = LPooled::take();
         let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: false };
@@ -1316,8 +1371,13 @@ impl Type {
         }
     }
 
+    /// The values of `self` that are not values of `t`, or more: a
+    /// difference that [grew](grown) past its walk's budget is `self`.
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
         let r = self.diff_int(env, &mut DiffHist::new(), t)?;
+        if grown(&r, self) {
+            return Ok(self.clone());
+        }
         if diff_already_normal(self, &r) { Ok(r) } else { Ok(r.normalize()) }
     }
 }
@@ -1861,6 +1921,26 @@ mod tests {
         let wide: Vec<usize> =
             [8, 16].iter().map(|&n| diff_steps(&branching(n), "T0", "U0")).collect();
         assert_eq!((deep, wide), (vec![99, 195], vec![14001, 14001]));
+    }
+
+    // A select's running residual, each arm's test a level deeper than the
+    // last, doubles at every arm; past the residual budget a difference is
+    // its minuend, so the residual stays within it.
+    #[test]
+    fn running_residual_over_branching_unions_is_bounded() {
+        let defs = branching(2);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "T0");
+        let mut rest = t;
+        let mut sizes = vec![];
+        for i in 0..8 {
+            let d = 4 + i;
+            let tag = if i % 2 == 0 { "A0" } else { "B0" };
+            let test = format!("{}`{tag}{}", "Error<".repeat(d), ">".repeat(d));
+            rest = rest.diff(&env, &parsed(&env, &test)).unwrap();
+            sizes.push(super::members(&rest));
+        }
+        assert_eq!(sizes, [85, 181, 341, 725, 725, 725, 725, 725]);
     }
 
     // could_match over a branching family answers an overlap once it has

@@ -721,30 +721,46 @@ goes and a tag it cannot hold is found dead however deep it sits.
 Within that bound, unions that branch at every level still multiply the
 walk's paths, and the difference's parts, with depth: two definitions
 `T = [Error<T>, Error<U>, `A]`, `U` alike, give a test nested `d` deep a
-residual of `2^d` parts, and a family of `n` such definitions an
+residual of `2^d` union members, and a family of `n` such definitions an
 exponential number of pairs. So a walk has two budgets, counted, never
-timed (Eric 11-05, diff-cycle-hang-01 follow-up 2 (b)): one walk unfolds
-at most `setops::WALK_PAIRS` (1000) pairs, past which diff subtracts
-nothing and could_match answers an overlap wherever a pair is met; and a
-pair's difference of more than `setops::RESIDUAL_PARTS` (1000) parts, read
-as a tree, is the pair's minuend, kept in diff's memo as any answer is, so
-the walk meets it once. The pair count alone does not bound the depth
-case (under 100 pairs, the residual's merging exponential), nor does the
-residual's size the family case (14001 steps at n = 8 and 16 alike only
-because the pair budget cuts it): pins
-`typ::setops::tests::diff_over_branching_unions_is_bounded`,
+timed (Eric 11-05, diff-cycle-hang-01 follow-up 2 (b)). One walk unfolds
+at most `setops::WALK_PAIRS` (1000) pairs, a side of each a named type,
+past which diff subtracts nothing and could_match answers an overlap
+wherever a pair is met. And a difference with more union members than
+`setops::RESIDUAL_PARTS` (1000) and than its minuend is its minuend: a
+pair's, kept in diff's memo as any answer is, so the walk meets it once,
+and a top-level diff's, so a select's running residual, which doubles at
+each arm testing a level deeper than the last, stops growing. Members
+are counted as a tree, every union's at every level, over the type's
+shared nodes once each (`setops::members`): a parameter that grows as its
+definition recurses (`G<('a, 'a)>`, doubling at each level) counts only
+the unions it holds, so its size alone does not widen a residual. The
+pair count alone does not bound the depth case (under 100 pairs, the
+residual's merging exponential), nor does the residual's size the family
+case (14001 steps at n = 8 and 16 alike only because the pair budget
+cuts it): pins `typ::setops::tests::diff_over_branching_unions_is_bounded`,
+`running_residual_over_branching_unions_is_bounded`,
 `could_match_over_branching_unions_is_bounded`,
-`lang::select::deep_error_test_over_branching_unions_ends`.
+`lang::select::deep_error_test_over_branching_unions_ends`,
+`deep_test_over_growing_parameters_reaches`.
 
 A wider residual is sound: fewer dead arms are found, a missing case may
-be refused that a `_` arm fixes, a later arm's bind is wider. One
-unfolding, 1000 pairs and 1000 parts were chosen from the 1600 generated
-selects (review-r8 X-r1-1): of main's 1547 finishes none changes verdict
-or the kind of its message (two missing-case messages print another
-form of the residual), 52 of its 53 timeouts end, the last in matching_type's
-containment; 100 pairs moved two (a dead arm accepted, a dead-arm refusal
-become a missing case), 30 parts moved 21 messages, 10000 pairs cost a
-generated select (rnd13) 3.4G instructions where 1000 cost 1.7G. Over
+be refused that a `_` arm fixes, a later arm's bind is wider. Where a
+widened residual meets a type whose parameters grow, the arm's test of
+it against the rest can no longer be decided (`Type::rep_collision`) and
+the arm is refused: a test 8 levels deep in `G<'a> = [Error<G<Array<'a>>>,
+Error<G<('a, 'a)>>, `A('a)]` (main: 2.3G instructions), where 7 levels
+check as on main. One unfolding, 1000 pairs and 1000 members were chosen
+from the 1600 generated selects (review-r8 X-r1-1): of main's 1547
+finishes none changes verdict or the kind of its message (two
+missing-case messages print another form of the residual), 52 of its 53
+timeouts end, the last in matching_type's containment; 100 pairs moved
+two (a dead arm accepted, a dead-arm refusal become a missing case),
+10000 pairs cost a generated select (rnd13) 3.4G instructions where 1000
+cost 1.7G. Over 2 to 20 arms each testing a level deeper than the last
+(review-r16 U-r1-2 darms), the check costs at most 43G instructions at
+1000 members (main: 429G at 14 arms, past 120 s at 16), 2000 members 150G,
+4000 members 700G. Over
 Error cycles of coprime lengths diff walks pairs that grow with the
 lengths, not their lcm (pin
 `typ::setops::tests::diff_over_error_cycles_walks_pairs_by_their_lengths`).

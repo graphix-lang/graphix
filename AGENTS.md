@@ -1588,8 +1588,9 @@ cycle, across workers; the compiler never pins threads.
   named types' definitions (arguments ignored) once on a path, a pair
   with a side that is no named type uncounted; met again, diff
   subtracts nothing and could_match answers an overlap
-  (`setops::UNFOLDINGS`), as they do past `setops::WALK_PAIRS` pairs in
-  one walk, and a pair's difference of more than `RESIDUAL_PARTS` parts
+  (`setops::UNFOLDINGS`), as they do past `setops::WALK_PAIRS` pairs
+  (either side named) in one walk, and a difference, a pair's or a
+  walk's, of more union members than `RESIDUAL_PARTS` and its minuend
   is its minuend: a wider residual, so fewer dead arms are found and a
   missing case may be refused that `_` fixes. A partial
   struct pattern completes against the one member it can match

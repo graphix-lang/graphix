@@ -7872,6 +7872,39 @@ run!(
     FuseExpect::None
 );
 
+// A definition whose parameters grow as it recurses: a test six deep leaves
+// a residual whose members fit the budget, however large its parameters,
+// so the arms after it are judged on the exact residual.
+run!(
+    deep_test_over_growing_parameters_reaches,
+    r#"{
+        type G<'a> = [Error<G<Array<'a>>>, Error<G<('a, 'a)>>, `A('a)];
+        let x: G<i64> = `A(1);
+        select x {
+            Error<Error<Error<Error<Error<Error<`A(Array<Array<Array<Array<Array<Array<i64>>>>>>)>>>>>> as e => 0,
+            `A(n) => n,
+            _ => 3
+        }
+    }"#,
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    deep_test_over_growing_parameters_dead,
+    r#"{
+        type G<'a> = [Error<G<Array<'a>>>, Error<G<('a, 'a)>>, `A('a)];
+        let x: G<i64> = `A(1);
+        select x {
+            Error<Error<Error<Error<Error<Error<`A(i64)>>>>>> as e => 0,
+            `A(n) => n,
+            _ => 3
+        }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
 // What reaches the next arm over unions that branch at every level, after a
 // test nested 32 deep, is bounded: the walk ends.
 run!(
