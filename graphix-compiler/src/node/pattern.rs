@@ -1920,7 +1920,7 @@ impl StructPatternNode {
         }
     }
 
-    // CR claude for claude: [bug/low] Bool literals in a tuple beside an arm that takes a
+    // XCR claude for claude: [bug/low] Bool literals in a tuple beside an arm that takes a
     // `null` at another position cover nothing: over `x: (bool, [i64, null])`, `select x {
     // (_, null) => 1, (true, _) => 0, (false, _) => 2 }` and `{ (true, null) => 0, (true,
     // _) => 2, (false, _) => 1 }` are refused "missing match cases: no arm covers (bool,
@@ -1944,6 +1944,20 @@ impl StructPatternNode {
     // (LiteralPool::claim skips a member the test does not contain) and matched_part
     // answers None for a bool literal; covering them needs the pool to read a written test
     // as the member's part it holds, a change to how written tests pool, not this rule's.
+    // 2026-11-05 claude: Fixed the written-test forms: a written tuple/struct test holding
+    // only part of a member pools as that part (select.rs written_part, restrict_leaves:
+    // the test's bool/null/primitive heads at each position it narrows, intersected with
+    // the pattern's), each primitive member is its own Head::Prim (was one Head::Rest),
+    // and an open cell with one typed bound of primitives has that bound's heads (q10
+    // under 'b: [i64, string]). q10p, q10c, q10 now check and run ([0,7,1], [0,1,3],
+    // [0,1,3]). Pins that fail without it:
+    // lang::select_undecided::written_test_beside_bool_head_covers,
+    // written_tests_split_a_primitive_member,
+    // written_tests_split_a_declared_variable_beside_bool_head,
+    // written_test_after_bool_head_is_dead; refusal pins
+    // written_test_leaves_a_member_part_refused,
+    // written_test_leaves_a_declared_variable_part_refused. Census of every .gx/.gxi here
+    // and in ../netidx: no difference against base-r17. Needs a soak.
     /// The part of `typ` this pattern covers when its only refutable parts
     /// are `null` literals and constructors: `typ` with `null` at each
     /// `null` and, where a constructor stands over a union, the members

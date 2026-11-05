@@ -159,7 +159,10 @@ Coverage counts a rigid cell's values apart from its neighbours'. In the
 literal pool a position holding an open cell has a head of its own,
 `Head::Open`, which only a name or `_` there admits, so `(true, _)`,
 `(false, null)` over `(bool, ['b, null])` leave `(false, v)` for an arm
-of its own, and a tuple or struct member beside the cell is never the
+of its own (a cell with one typed bound of primitives has that bound's
+`Head::Prim`s instead, which a written test holding them also admits:
+`(bool, i64) as (false, n)` and `(bool, string) as (false, s)` under
+`'b: [i64, string]` complete it), and a tuple or struct member beside the cell is never the
 position's only shape. In containment (`Type::covers_by_parts`, which
 set coverage and every annotation reach) a rigid cell at the position
 the distribution splits is its one typed bound's members, each also

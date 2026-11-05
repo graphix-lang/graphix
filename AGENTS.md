@@ -1542,10 +1542,15 @@ cycle, across workers; the compiler never pins threads.
   scrutinee's members are its structural bound's; a union position's one
   tuple or struct member holding no open cell is a head beside them, its
   own positions counted under that head alone; an open cell at the
-  position, a declared variable included, is a head of its own that only
-  a name or `_` there admits, `Head::Open`, as is a primitive member's
-  value but `bool` and `null`, `Head::Rest`), and an arm under
-  a type test pools only a member the test holds; a group whose combinations of
+  position is a head of its own that only a name or `_` there admits,
+  `Head::Open`, unless it has one typed bound of primitives (a declared
+  variable's), whose heads it has instead; each primitive member but
+  `bool` and `null` is a head `Head::Prim`, which a name or `_` admits
+  and so does a written test holding that primitive), and an arm under
+  a type test pools the member the test holds, or, where the test is
+  a tuple or struct of the member's shape holding only part of a
+  position by `bool`, `null` and primitives, that part of it
+  (`written_part`); any other test pools only a member it holds whole; a group whose combinations of
   heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
   positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over

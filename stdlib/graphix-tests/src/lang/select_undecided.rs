@@ -375,6 +375,65 @@ run!(rest_head_left_uncovered_refused, r#"{
     u((false, 7))
 }"#, refused("missing match cases"); FuseExpect::None);
 
+// A written test that holds part of a member pools as that part: its
+// type's primitives at a position are heads of their own.
+run!(written_test_beside_bool_head_covers, r#"{
+    let u = |x: (bool, [i64, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => n,
+        (bool, null) as (false, _) => 1
+    };
+    [u((true, null)), u((false, 7)), u((false, null)), u((true, 3))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 7, 1, 0]); FuseExpect::None);
+
+run!(written_tests_split_a_primitive_member, r#"{
+    let u = |x: (bool, [i64, string, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => n,
+        (bool, string) as (false, s) => str::len(s),
+        (false, null) => 3
+    };
+    [u((true, null)), u((false, 7)), u((false, "abcd")), u((false, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 7, 4, 3]); FuseExpect::Jit);
+
+run!(written_tests_split_a_declared_variable_beside_bool_head, r#"{
+    let u = 'b: [i64, string] |x: (bool, ['b, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => 1,
+        (bool, string) as (false, s) => 2,
+        (false, null) => 3
+    };
+    let (w0, w1): ([i64, string], [i64, string]) = (7, "four");
+    [u((true, null)), u((false, w0)), u((false, w1)), u((false, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2, 3]); FuseExpect::Jit);
+
+run!(written_test_leaves_a_declared_variable_part_refused, r#"{
+    let u = 'b: [i64, string] |x: (bool, ['b, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => 1,
+        (false, null) => 3
+    };
+    u((true, null))
+}"#, refused("missing match cases"); FuseExpect::None);
+
+run!(written_test_leaves_a_member_part_refused, r#"{
+    let u = |x: (bool, [i64, string, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => n,
+        (false, null) => 3
+    };
+    u((false, "abcd"))
+}"#, refused("missing match cases"); FuseExpect::None);
+
+run!(written_test_after_bool_head_is_dead, r#"{
+    let u = |x: (bool, [i64, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (true, n) => n,
+        _ => 1
+    };
+    u((false, 7))
+}"#, refused("every combination of heads it matches is covered by earlier arms"); FuseExpect::None);
+
 // A written test at a nested union position covers its member alone.
 run!(written_nested_constructor_covers_its_member_alone, r#"{
     let g = 'b: Number |x: {f: ['b, `Keep('b)]}| -> ['b, null] select x {

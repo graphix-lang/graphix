@@ -13,7 +13,7 @@ use crate::{
     env::Env,
     expr::{
         At, Decided, Expr, ExprId, ExprKind, Origin, Pattern, StructurePattern,
-        UndecidedMembers, union_members, union_members_open,
+        UndecidedMembers, union_members, union_members_open, union_members_with,
     },
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -1159,9 +1159,9 @@ enum Head {
     /// A value of an open cell the position holds, which only a name or
     /// `_` there matches.
     Open,
-    /// A value of a primitive member but `bool` and `null`, which only a
-    /// name or `_` there matches.
-    Rest,
+    /// The values of one primitive member but `bool` and `null`, which
+    /// only a name or `_` there, or a written test holding them, matches.
+    Prim(Typ),
 }
 
 /// One position of a composite pattern, keyed by its path into the
@@ -1234,11 +1234,13 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants, at most one tuple or struct holding no open
-/// cell, [`Head::Rest`] for its other primitives and [`Head::Open`] for
-/// the open cells among them.
+/// cell, [`Head::Prim`] for each of its other primitives and
+/// [`Head::Open`] for the open cells among them, an open cell whose one
+/// typed bound is a union of primitives having those as its heads.
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-    let open = union_members_open(env, t, &mut members)?;
+    let mut cells: SmallVec<[TVar; 2]> = SmallVec::new();
+    union_members_with(env, t, &mut members, &mut |tv| cells.push(tv.clone()))?;
     if members.is_empty() {
         return Ok(None);
     }
@@ -1251,23 +1253,48 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
                 composite = true;
                 out.push(Head::Composite)
             }
-            Type::Primitive(p) => {
-                for typ in p.iter() {
-                    match typ {
-                        Typ::Bool => out.extend([Head::Bool(true), Head::Bool(false)]),
-                        Typ::Null => out.push(Head::Null),
-                        _ if out.contains(&Head::Rest) => (),
-                        _ => out.push(Head::Rest),
-                    }
-                }
-            }
+            Type::Primitive(p) => primitive_heads(*p, &mut out),
             _ => return Ok(None),
         }
     }
-    if open {
-        out.push(Head::Open)
+    for tv in cells {
+        let mut bound: SmallVec<[Type; 8]> = SmallVec::new();
+        let by_bound = match Type::TVar(tv).open_bound(env) {
+            Some(b) => {
+                union_members(env, &b, &mut bound)?;
+                !bound.is_empty() && bound.iter().all(|m| matches!(m, Type::Primitive(_)))
+            }
+            None => false,
+        };
+        match by_bound {
+            true => {
+                for m in bound.iter() {
+                    if let Type::Primitive(p) = m {
+                        primitive_heads(*p, &mut out)
+                    }
+                }
+            }
+            false if !out.contains(&Head::Open) => out.push(Head::Open),
+            false => (),
+        }
     }
     Ok(Some(out))
+}
+
+/// The heads of the primitives `p`, each once.
+fn primitive_heads(p: BitFlags<Typ>, out: &mut SmallVec<[Head; 4]>) {
+    for typ in p.iter() {
+        let hs: &[Head] = match typ {
+            Typ::Bool => &[Head::Bool(true), Head::Bool(false)],
+            Typ::Null => &[Head::Null],
+            typ => &[Head::Prim(typ)],
+        };
+        for h in hs {
+            if !out.contains(h) {
+                out.push(h.clone())
+            }
+        }
+    }
 }
 
 /// The head a pattern tests at one position, when it tests only a head:
@@ -1531,6 +1558,100 @@ struct PoolGroup {
     done: bool,
 }
 
+/// The positions at which written test `t`, a tuple or struct of the
+/// shape of `m`, holds only part of `m`'s values there, with the heads
+/// of the part it holds; `None` where `t` is another shape or holds a
+/// part by more than bool, null and primitive heads.
+fn written_part(
+    env: &Env,
+    t: &Type,
+    m: &Type,
+) -> Result<Option<SmallVec<[(u32, SmallVec<[Head; 4]>); 2]>>> {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members(env, t, &mut members)?;
+    let [t] = &members[..] else { return Ok(None) };
+    let (ts, ms): (SmallVec<[&Type; 8]>, SmallVec<[&Type; 8]>) = match (t, m) {
+        (Type::Tuple(ts), Type::Tuple(ms)) if ts.len() == ms.len() => {
+            (ts.iter().collect(), ms.iter().collect())
+        }
+        (Type::Struct(ts), Type::Struct(ms))
+            if ts.len() == ms.len()
+                && ts.iter().zip(ms.iter()).all(|((a, _, _), (b, _, _))| a == b) =>
+        {
+            (
+                ts.iter().map(|(_, t, _)| t).collect(),
+                ms.iter().map(|(_, t, _)| t).collect(),
+            )
+        }
+        _ => return Ok(None),
+    };
+    let mut out = SmallVec::new();
+    for (i, (t, m)) in ts.into_iter().zip(ms).enumerate() {
+        if t.contains_with_flags(BitFlags::empty(), env, m)? {
+            continue;
+        }
+        match heads(env, t)? {
+            Some(hs)
+                if hs
+                    .iter()
+                    .all(|h| matches!(h, Head::Bool(_) | Head::Null | Head::Prim(_))) =>
+            {
+                out.push((i as u32, hs))
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Narrow the heads `leaves` admit to the part `part` of `m` a written
+/// test holds; `Never` when that leaves an arm matching nothing of `m`,
+/// `Unread` when it holds part of an open cell's values.
+fn restrict_leaves(
+    env: &Env,
+    m: &Type,
+    leaves: &mut SmallVec<[Leaf; 8]>,
+    part: SmallVec<[(u32, SmallVec<[Head; 4]>); 2]>,
+) -> Result<Result<(), Miss>> {
+    for (i, held) in part {
+        let at = [i];
+        let leaf = match leaves.iter_mut().position(|l| l.path[..] == at) {
+            Some(j) => &mut leaves[j],
+            None => {
+                let t = match m {
+                    Type::Tuple(ts) => ts.get(i as usize),
+                    Type::Struct(fs) => fs.get(i as usize).map(|(_, t, _)| t),
+                    _ => None,
+                };
+                let domain = match t {
+                    Some(t) => heads(env, t)?,
+                    None => return Ok(Err(Miss::Unread)),
+                };
+                leaves.push(Leaf { path: at.into_iter().collect(), heads: None, domain });
+                leaves.last_mut().expect("pushed above")
+            }
+        };
+        let admitted: SmallVec<[Head; 2]> = match &leaf.heads {
+            Some(old) => held.into_iter().filter(|h| old.contains(h)).collect(),
+            None => held.into_iter().collect(),
+        };
+        match &leaf.domain {
+            Some(d) if d.contains(&Head::Open) => {
+                if !admitted.iter().all(|h| d.contains(h)) {
+                    return Ok(Err(Miss::Unread));
+                }
+            }
+            Some(d) if !admitted.iter().any(|h| d.contains(h)) => {
+                return Ok(Err(Miss::Never));
+            }
+            _ if admitted.is_empty() => return Ok(Err(Miss::Never)),
+            _ => (),
+        }
+        leaf.heads = Some(admitted);
+    }
+    Ok(Ok(()))
+}
+
 /// What pooling an atom decided.
 enum Claim {
     /// The pool does not read it.
@@ -1558,16 +1679,27 @@ impl LiteralPool {
         // under its type test, with a head each position admits
         let mut reached: Option<(Type, SmallVec<[Leaf; 8]>)> = None;
         for m in shape.members(env, scrut)? {
+            let mut held = None;
             if let Some(t) = explicit
                 && !t.contains_with_flags(BitFlags::empty(), env, &m)?
             {
-                continue;
+                match written_part(env, t, &m)? {
+                    Some(part) => held = Some(part),
+                    None => continue,
+                }
             }
-            let leaves = match pooled_leaves(env, sp, &m)? {
+            let mut leaves = match pooled_leaves(env, sp, &m)? {
                 Ok(leaves) => leaves,
                 Err(Miss::Never) => continue,
                 Err(Miss::Unread) => return Ok(Claim::Unpooled),
             };
+            if let Some(part) = held {
+                match restrict_leaves(env, &m, &mut leaves, part)? {
+                    Ok(()) => (),
+                    Err(Miss::Never) => continue,
+                    Err(Miss::Unread) => return Ok(Claim::Unpooled),
+                }
+            }
             if reached.is_some() {
                 return Ok(Claim::Unpooled);
             }
