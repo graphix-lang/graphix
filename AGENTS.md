@@ -1353,7 +1353,8 @@ included), a tuple, struct or slice pattern over a union holding one
 member it may pass, scalar literals over an option, a result
 or a union, `never()` arms as bottom
 productions of the merge shape, or-patterns, list patterns, type tests
-that hold the scrutinee's type, any union of encoded members as one
+that hold the scrutinee's type, a written tuple, struct or array test
+over a composite whose type it does not hold, any union of encoded members as one
 value (`` [`A, `B, null] ``, a list beside an array) with its written
 type tests, a union naming union typedefs as the flat union they name, tail loops
 over any kernel param

@@ -1499,7 +1499,12 @@ fn emit_arm_cond<R: Rt>(
     scrut_typ: &Type,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<(Option<ClifValue>, Option<ClifValue>)> {
+    let member_test = match scrut {
+        SelectScrut::Composite { .. } => !type_test_is_trivial(cx, pat, scrut_typ),
+        _ => true,
+    };
     if pat.explicit_type_predicate
+        && member_test
         && let Some(m) = emit_member_cond(
             cx,
             &pat.structure_predicate,
@@ -1649,7 +1654,7 @@ fn emit_type_test<R: Rt>(
                     }
                 }
             }
-            // CR claude for claude: [perf/low] A written composite test that does not hold
+            // XCR claude for claude: [perf/low] A written composite test that does not hold
             // the scrutinee's type has no lowering: `|x: ([`A, `B], [i64, string, null])|
             // #[native] select x { ([`A, `B], [i64, string]) as (b, n) => 1, _ => 0 }` is
             // refused "did not fully fuse" (main 968fa9bc0 alike), the blocker "type
@@ -1657,6 +1662,15 @@ fn emit_type_test<R: Rt>(
             // value's parts against the predicate's, as a pattern's structure is. Pin:
             // lang::select::written_test_covers_the_part_its_structure_takes (FuseExpect::None)
             // (written-composite-test-fuse-01)
+            // 2026-11-05 claude: A written composite test over a composite scrutinee its type
+            // does not hold is the value's test against it (graphix_value_is_a,
+            // emit_member_cond taking a Composite scrutinee when the test is written and not
+            // trivial), the structure then read at the test's frozen type, as over a union
+            // member. Pins that fail without it (jit):
+            // lang::select::written_composite_test_fuses (#[native], tuple, struct, nested
+            // slice, guard), written_test_covers_the_part_its_structure_takes and
+            // written_tests_over_a_variable_its_bound_names_covered (now FuseExpect::Jit).
+            // fusecheck manifest unchanged.
             _ => {
                 return Err(anyhow!("emit_clif: type predicate {pred} not lowerable"));
             }
@@ -2276,9 +2290,10 @@ fn emit_structure_cond(
 }
 
 /// `sp` over the composite member of a value scrutinee (an option or a
-/// result of a composite, a union holding composites) that the arm's
-/// predicate `pred_typ` names: the test that the value is that member,
-/// and `sp`'s condition over the member. A value failing the test reads
+/// result of a composite, a union holding composites, or a composite a
+/// `written` predicate tests) that the arm's predicate `pred_typ` names:
+/// the test that the value is that member, and `sp`'s condition over the
+/// member. A value failing the test reads
 /// as the empty array, which every read of it survives. An option's or
 /// a result's composite is the one array the value may be; any other
 /// member is tested by type, a `written` predicate strictly, an inferred
@@ -2293,13 +2308,14 @@ fn emit_member_cond(
     scrut_typ: &Type,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<Option<(ClifValue, Option<ClifValue>)>> {
-    let SelectScrut::Value {
-        kind: ValueKind::Nullable | ValueKind::Value,
-        disc,
-        payload,
-    } = scrut
-    else {
-        return Ok(None);
+    let (disc, payload) = match scrut {
+        SelectScrut::Value {
+            kind: ValueKind::Nullable | ValueKind::Value,
+            disc,
+            payload,
+        } => (disc, payload),
+        SelectScrut::Composite { disc, ptr, .. } if written => (disc, ptr),
+        _ => return Ok(None),
     };
     let pred = freeze_node_typ(cx.ctx, pred_typ).filter(is_composite);
     let (test, member, exact) =

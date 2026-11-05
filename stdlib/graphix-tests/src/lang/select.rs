@@ -7322,7 +7322,7 @@ run!(
         [u((`A, null)), u((`B, 7)), u((`B, "w")), u((`B, null))]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 1, 3]);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // Plain containment splits a declared variable by its bound the same way.
@@ -7412,7 +7412,7 @@ run!(
         g(("str", `B))
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "b");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A pattern tests nothing inside the variable at a member it cannot match.
@@ -8136,5 +8136,36 @@ run!(
         [f((true, false)), f((false, true)), f((3, "ab")), f((4, ""))]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 5, 4]);
+    FuseExpect::Jit
+);
+
+// A written test over a tuple or struct its type does not hold is the value's
+// test against it; its binds read at the test's types.
+run!(
+    written_composite_test_fuses,
+    r#"{
+        let f = |x: ([i64, null], i64)| #[native] select x {
+            (i64, i64) as (a, b) if a > 0 => a + b,
+            (i64, i64) as (a, b) => a - b,
+            (_, b) => b
+        };
+        let g = |s: {a: [i64, string, null], b: i64}| #[native] select s {
+            {a: i64, b: i64} as {a, b} => a + b,
+            {a: string, b: i64} as {a: _, b} => b * 10,
+            {a: _, b} => b * 100
+        };
+        let h = |x: (Array<[i64, null]>, i64)| #[native] select x {
+            (Array<i64>, i64) as ([hd, ..], n) => hd + n,
+            (Array<i64>, i64) as (_, n) => n,
+            _ => -1
+        };
+        [
+            f((3, 4)), f((-3, 4)), f((null, 9)),
+            g({a: 1, b: 2}), g({a: "s", b: 3}), g({a: null, b: 4}),
+            h(([1, 2], 10)), h(([], 10)), h(([1, null], 10))
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [7, -7, 9, 3, 30, 400, 11, 10, -1]);
     FuseExpect::Jit
 );
