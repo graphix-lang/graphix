@@ -271,7 +271,7 @@ run!(
 run!(
     a_destructured_holder_in_a_seq_step_written_by_a_later_step_is_one_instance,
     "seq { let (g, k) = (|x| x, |y| y); let rk = &mut k; *rk <- |y: i64| y + 1; let a = 0; (k(\"a\"), g(1)) }",
-    refused("does not contain string");
+    refused("type mismatch i64 does not contain string");
     FuseExpect::None
 );
 
@@ -279,6 +279,51 @@ run!(
     a_destructured_holder_in_a_seq_step_written_by_a_later_step_at_its_type,
     "seq { let (g, k) = (|x| x, |y| y); let rk = &mut k; *rk <- |y: i64| y + 1; let a = 0; (k(2), g(\"s\")) }",
     prints(r#"[i64:3, "s"]"#);
+    FuseExpect::Jit
+);
+
+// A step's destructured holder is evaluated once: its `?` raises once and
+// its connect writes once. Each fixture reads its counts eight cycles in.
+run!(
+    a_destructured_holder_in_a_seq_step_raises_once,
+    r#"{
+        let n = 0;
+        let r: Result<i64, `E> = error(`E);
+        let out = { catch(e) n <- e ~ n + 1; seq { let (g, m) = (|x| x, r?); g(m) } };
+        let k = 0;
+        k <- select k { 8 => never(), _ => k + 1 };
+        select k { 8 => n, _ => never() }
+    }"#,
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    a_destructured_holder_in_a_seq_step_connects_once,
+    r#"{
+        let c = 0;
+        let fires = 0;
+        fires <- c ~ fires + 1;
+        let out = seq { let (g, m) = (|x| x, { c <- 10 + c; 2 }); g(m) };
+        let k = 0;
+        k <- select k { 8 => never(), _ => k + 1 };
+        select k { 8 => (out, c, fires), _ => never() }
+    }"#,
+    prints("[i64:2, i64:10, i64:2]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_destructured_holder_in_a_seq_statement_block_raises_once,
+    r#"{
+        let n = 0;
+        let r: Result<i64, `E> = error(`E);
+        let out = { catch(e) n <- e ~ n + 1; seq { { let (g, m) = (|x| x, r?); g(m) }; 1 } };
+        let k = 0;
+        k <- select k { 8 => never(), _ => k + 1 };
+        select k { 8 => n, _ => never() }
+    }"#,
+    is(Value::I64(1));
     FuseExpect::Jit
 );
 

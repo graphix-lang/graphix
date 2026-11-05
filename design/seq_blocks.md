@@ -311,7 +311,8 @@ function binding), issuing no call and reading nothing live
 (`inline_holder`), binds the literal itself the same way, so its names
 are as generic as a holder's outside a seq, and a later step's write to
 one of them holds it as a write in a block does; a pattern's step value
-is a copy of the literal under a lowered `#seqh` name. Later steps read
+is the whole it matches, which its capture names (a lowered `#seqh`
+capture where it has none), so the literal is evaluated once. Later steps read
 the names of both kinds as they stand, never through a snapshot: after
 its step neither changes. A holder with a call or a `live` part goes
 through a cell as any other step value does, and so does a step's read

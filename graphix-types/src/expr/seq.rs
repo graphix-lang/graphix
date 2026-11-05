@@ -1193,35 +1193,26 @@ impl Machine<'_> {
 
     /// A `let` of one name to a lambda literal, or of any pattern to a
     /// data literal of lambdas ([`inline_holder`]): the name the step's
-    /// value reads and the bindings of the value itself, so calls through
-    /// a lambda resolve statically and a holder is as generic as outside a
-    /// seq.
+    /// value reads and the one binding of the value itself, so calls
+    /// through a lambda resolve statically and a holder is as generic as
+    /// outside a seq. A destructuring pattern names the whole value by its
+    /// capture (`#seqh@ (g, k)`).
     fn bound_lambda(
         &self,
         b: &BindExpr,
         value: &Expr,
         visible: &Names,
     ) -> Option<(ArcStr, LPooled<Vec<Expr>>)> {
-        let single = b.pattern.single_bind();
-        if !(single.is_some() && inline_lambda(value) || inline_holder(value, visible)) {
+        let single = b.pattern.single_bind().is_some();
+        if !(single && inline_lambda(value) || inline_holder(value, visible)) {
             return None;
         }
+        let whole = format_compact!("#seqh{}", value.id.inner());
+        let (pattern, name) = whole_captured(&b.pattern, whole.as_str())?;
         let pos = value.pos;
         let value = rewrite_with(value, visible, Rewrite::Issue(self.issue));
         let mut binds: LPooled<Vec<Expr>> = LPooled::take();
-        let name = match single {
-            Some(name) => {
-                binds.push(let_pat(pos, b.pattern.clone(), b.typ.clone(), value));
-                name.clone()
-            }
-            None => {
-                let whole =
-                    ArcStr::from(format_compact!("#seqh{}", value.id.inner()).as_str());
-                binds.push(let_pat(pos, b.pattern.clone(), b.typ.clone(), value.clone()));
-                binds.push(let_bind(pos, &whole, None, value));
-                whole
-            }
-        };
+        binds.push(let_pat(pos, pattern, b.typ.clone(), value));
         Some((name, binds))
     }
 
@@ -1995,6 +1986,37 @@ fn inline_holder(mut e: &Expr, map: &Names) -> bool {
         && holds(e, map)
         && !has_call(e)
         && !reads_live(e, map)
+}
+
+/// `pattern` with a name for the whole value it matches: its own name or
+/// capture, else `whole` added as a capture. None for a literal or an
+/// or-pattern.
+fn whole_captured(
+    pattern: &StructurePattern,
+    whole: &str,
+) -> Option<(StructurePattern, ArcStr)> {
+    use StructurePattern as P;
+    let mut pattern = pattern.clone();
+    let all = match &mut pattern {
+        P::Ignore => {
+            let name = Name::from(whole);
+            return Some((P::Bind(name.clone()), name.name));
+        }
+        P::Bind(name) => {
+            let name = name.name.clone();
+            return Some((pattern, name));
+        }
+        P::Literal(..) | P::Or(_) => return None,
+        P::Slice { all, .. }
+        | P::SlicePrefix { all, .. }
+        | P::SliceSuffix { all, .. }
+        | P::Tuple { all, .. }
+        | P::Variant { all, .. }
+        | P::Abstract { all, .. }
+        | P::Struct { all, .. } => all,
+    };
+    let name = all.get_or_insert_with(|| Name::from(whole)).name.clone();
+    Some((pattern, name))
 }
 
 /// One call issued per entry over a snapshot of the arguments taken on
