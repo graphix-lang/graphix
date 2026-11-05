@@ -2082,10 +2082,12 @@ impl<R: Rt> CallSite<R> {
         reject_dead_variadic_call(ctx, scope, f, args).at(&spec)?;
         // a call's function is compiled as written: a trait method named
         // here is the dispatcher itself, never its eta-expansion
-        let fnode = match &f.kind {
+        let mut fnode = match &f.kind {
             ExprKind::Ref { name } => Ref::compile(ctx, f.clone(), scope, top_id, name)?,
             _ => compile(ctx, flags, (**f).clone(), scope, top_id)?,
         };
+        // a call by name reads its callee's scheme, which the call copies
+        super::bind::name_value(&mut fnode, false);
         let args = compile_apply_args(ctx, flags, scope, top_id, &spec, args)?;
         let rtype = ctx.instance_node_type(spec.id).unwrap_or_else(Type::empty_tvar);
         let site =
@@ -4714,13 +4716,6 @@ pub(crate) fn lambda_literal<R: Rt>(node: &Node<R>) -> Option<&Lambda> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        SourcePosition,
-        expr::{
-            ModPath,
-            parser::{parse_one, parse_type},
-        },
-    };
     use netidx_value::Typ;
 
     // A call's escape checks walk the argument's shared nodes once:

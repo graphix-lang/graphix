@@ -286,8 +286,7 @@ quantifier's bound included, and carry none of them out
 copy, instantiates a typedef's arguments as one, since they stand for
 what its body holds. A writable reference to a val is refused where the
 val is generic (`CompileCtx::generalized_earlier`, which counts a
-declared signature's own quantifiers, its scheme's, and skips a rank-2
-type's, `CellFact::FormalQuantifier`), and one to a place of it where
+declared signature's own quantifiers, its scheme's), and one to a place of it where
 the place's type holds such a cell (`crate::holds_generic`, at the
 reference's check). A name that aliases a generalized binding and is
 written (`let g = m::c; g <- ..`) holds an instance of its own, the

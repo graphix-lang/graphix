@@ -6112,11 +6112,13 @@ mod tests {
         let fb: Vec<_> =
             rep.rejects.iter().filter(|p| p.id.starts_with("function-bound#")).collect();
         assert!(fb.len() >= 2 && fb.iter().all(|p| p.verdict.is_none()), "{fb:?}");
-        // a call instantiates its callee whatever the binding: no site
+        // a call through a binding no let generalizes shares its cells: a site
         let calls = "{ let f = |x| x + x; let a = f(1); let b = f(1.5); (a, b) }";
         let rep = typemorph_subject(calls, per, TM_CAP).await.unwrap();
         assert!(
-            !rep.rejects.iter().any(|p| p.id.starts_with("mono-reuse#")),
+            rep.rejects
+                .iter()
+                .any(|p| p.id.starts_with("mono-reuse#") && p.verdict.is_none()),
             "{:?}",
             rep.rejects
         );

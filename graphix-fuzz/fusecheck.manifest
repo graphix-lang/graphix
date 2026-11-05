@@ -280,7 +280,6 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	organic-firing-aug2026/00_const_terminal.gx
 1	organic-firing-aug2026/01_multilevel_face.gx
 1	param-call-expr-sep2026/00_param_called_through_parens.gx
-1	param-call-expr-sep2026/01_rank2_param_called_through_parens.gx
 0	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
 0	parse-bottom-member-jul2026/01_nested_bottom_member.gx
 2	prevlen-word-jul2026/00_callee_loop_source_refresh.gx
@@ -337,7 +336,6 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 0	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
 0	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
 0	rigid-param-call-sep2026/00_param_called_with_a_string.gx
-1	rigid-param-call-sep2026/01_rank2_quantifier_per_call.gx
 0	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
 1	scalar-read-widen-sep2026/00_nullable_f64_let.gx
 1	scalar-read-widen-sep2026/01_nullable_bool_capture.gx

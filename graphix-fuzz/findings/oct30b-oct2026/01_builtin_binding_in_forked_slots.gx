@@ -2,4 +2,4 @@
 // the callback and each entered the binding's builtin record, with its own
 // instance's type, so the join refused the second as a lost write and the
 // runtime aborted. Found by the oct30b soak (aieka, ryouko).
-array::map(["hi", "yo"], |x| { let f = |@args: fn(x: Eq) -> i64| -> Any 'core_all; let r = f(|x| 1, |x| 2); 0 })
+array::map(["hi", "yo"], |x| { let f = |@args: fn(x: i64) -> i64| -> Any 'core_all; let r = f(|x| 1, |x| 2); 0 })

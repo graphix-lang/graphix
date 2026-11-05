@@ -76,7 +76,7 @@ impl Family {
     /// the mutation added) would hide the rule's regression.
     pub fn refuses_with(self, head: &str) -> bool {
         let says: &[&str] = match self {
-            Family::MonoReuse => &["does not contain fn("],
+            Family::MonoReuse => &["does not contain"],
             Family::RigidVar => &["unbound"],
             Family::RigidPattern => &["tests inside a value of", "matches no value of"],
             Family::SharedVar | Family::AbstractParam => &["does not contain"],
@@ -1682,16 +1682,38 @@ fn mono_reuse(
         else {
             continue;
         };
-        let (calls, refs, _) = forwarded_uses(&stmts, si, f);
-        // a callee's reference sits right after its call in preorder
-        let values: Vec<(usize, usize)> = refs
-            .into_iter()
-            .filter(|(r, _)| !calls.iter().any(|c| c + 1 == *r))
-            .collect();
+        let (calls, values, _) = forwarded_uses(&stmts, si, f);
+        // a call's argument types its parameter only where the definition
+        // left the parameter open
+        let open_param = types.of(&b.value).first().is_some_and(|t| {
+            t.with_deref(|d| match d {
+                Some(Type::Fn(ft)) => {
+                    ft.args.iter().find(|a| a.is_positional()).is_some_and(
+                        |a| matches!(&a.typ, Type::TVar(tv) if !tv.is_bound()),
+                    )
+                }
+                _ => false,
+            })
+        });
+        // a use's first parameter: a value's from its type, a call's (its
+        // callee's reference sits right after it in preorder) from its
+        // first positional argument
         let firsts: Vec<(Typ, usize)> = values
             .iter()
             .filter_map(|(r, j)| {
-                Some((types.of(&pre[*r]).first().and_then(first_param)?, *j))
+                let first = match calls.iter().find(|c| *c + 1 == *r) {
+                    None => types.of(&pre[*r]).first().and_then(first_param)?,
+                    Some(_) if !open_param => return None,
+                    Some(c) => match &pre[*c].kind {
+                        ExprKind::Apply(ap) => {
+                            ap.args.iter().find(|(label, _)| label.is_none()).and_then(
+                                |(_, a)| types.of(a).first().and_then(primitive),
+                            )?
+                        }
+                        _ => return None,
+                    },
+                };
+                Some((first, *j))
             })
             .collect();
         let Some((_, (_, jb))) = firsts.iter().enumerate().find_map(|(n, a)| {

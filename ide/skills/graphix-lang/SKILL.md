@@ -288,27 +288,27 @@ directly or through another's bound (`'a: [i64, Array<'a>]`, `'a: 'b,
 may not reach a binding outside the function: `'a: Concrete |x: 'a| -> 'a
 { y <- x; x }` is refused. Give `y` a type that holds every `'a` (the
 bound, or `Any`), or declare no `'a`: `|x: 'a| -> 'a { y <- x; x }` is
-then one type, the first call's. A written `fn<'a: ..>` type holds a value
-the same way wherever it stands (a parameter, a `let` annotation, a field,
-an element, a return type, a labeled default, an abstract type's
-representation or parameter (`W<fn<'a: Any>(..)>`, `Transparent<..>`),
-another function type's result): `let h: fn<'a: Any>(x:
-'a) -> 'a = |x| { y <- x; x }` is refused, and so are `let mk: fn(z: i64)
--> fn<'a: Any>(x: 'a) -> 'a = |z| |x| { y <- x; x }` and a function a call
-made whose instance holds `'a` (`mk(never())` over `|z| |x| { z <- x; z
-}`). Its bounds name only written types and its own quantifiers: `|#k:
-fn<'a: 'c>(x: 'a) -> 'a, z: 'c|`, `type K<'p> = fn<'a: 'p>(x: 'a) -> 'a`
-and `fn<'q: Any>(k: fn<'a: 'q>(..), ..)` are refused (bound it by a
-written type, `fn<'a: i64>`); a sibling, `fn<'a: Any, 'b: ['a, null]>`,
-is fine, and so is any bound of a `.gxi` `val`'s or a trait method's own
-quantifiers (`val m: fn<'a: ['b, null]>(self, x: 'a, y: 'b) -> 'a`); a
-trait method's parameter `fn<'a: [self, null]>` is refused. A
-parameter's other variables are one type per call: `|#k: fn<'a:
-Any>(x: 'a) -> W<'c>, n: i64| ..` takes no `|x| W(x)`, passed or as its
-default, since its `'c` would have to be every `'a`; write `W<'a>`. An
-argument that makes `'c` its `'a` is refused even where another argument
-widens `'c` (`d: 'c` given an `Any`): annotate it with the type `'c` is
-meant to be, `#k: |x| -> Any x`.
+then one type, the first call's.
+
+A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
+'a`, or a trait as a parameter's type inside a written function type,
+`fn(c: Collection) -> i64`) stands only as a definition's signature: a
+`.gxi` `val`'s type, a trait method's, a lambda's own declared
+variables. As a parameter's type, a field, an element, a `let`
+annotation, a typedef, a return type or anywhere else inside a type it
+is refused: declare the variable on the definition, `'a: Number |f:
+fn(x: 'a) -> 'a, x: 'a| f(x)`, write the parameter as a trait, `|c:
+Collection| ..`, or bind the generic function with `let` and call it by
+name.
+
+A function stays generic only where a binding names it: a `let` of a
+lambda (or of a data literal holding lambdas, below), a `val`, a trait
+method. Anywhere else it is one instance, which its uses decide: `let
+fs = array::map([1], |r| |x| x); let g = fs[0]$` takes `g(1)` and then
+refuses `g("s")`, and so do a function a call returns (`let h = mk(0)`
+over `let mk = |z| |x| x`), a field of a call's result and `(id, 1).0`.
+Each call of `mk` is an instance of its own: `let a = mk(0); let b =
+mk(0)` takes `a(1)` and `b("s")`.
 
 A `let` nothing writes that holds lambdas in a struct, tuple, array or
 other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`
@@ -336,8 +336,7 @@ closed defaulted parameter type. Annotate the factory's parameter
 |#d = z, x| (d, x); g }` and `#d: Array<'q> = [z]` are refused. A
 variable the factory declares is closed: `|z: 'a| { let g = |#d: 'a = z,
 y: i64| d; g(1) }` checks, and `#d = z` there takes `'a`; a type written
-inside the default (`= |q: i64| -> 'a z`) names it too. So is a polymorphic
-parameter's `'b` inside the function passed for it.
+inside the default (`= |q: i64| -> 'a z`) names it too.
 
 A function is more than a computation: each call is a live piece of
 graph that stays. It can hold state (`let x = ..; x <- ..`), run seqs
@@ -370,8 +369,8 @@ use picks it: `val v: Array<'a>` is refused (declare it at one type,
 null]}`. The implementation must be as general as the val: under `val f:
 fn(x: 'a) -> 'a`, `let f = |x| { y <- x; x }` over an outer `let y =
 never()` is refused (`let y: Any`, or the val at one type), and so is a
-written `let f = |x| x; f <- |x| x` (the val at one type, or `let f:
-fn<'a: Any>(x: 'a) -> 'a`). A trait method alike: one that writes an
+written `let f = |x| x; f <- |x| x` (declare the val at one type). A
+trait method alike: one that writes an
 outer binding, or whose value is no lambda and has a type its value
 fixed (`(store, 1).0` over a writer of an outer binding, `mk(0)`), is
 refused under a variable each call picks: write it as a lambda. A val that
@@ -379,7 +378,8 @@ something writes (`m::f <- ..`, `&mut m::f`) must fit its
 implementation: `val f: fn(x: i64) -> i64` over a generic `let f = |x|
 x` takes no write until the `let` is annotated `fn(x: i64) -> i64`. A
 val generic in a variable (`val c: {f: fn(x: 'a) -> 'a}`, `val g:
-fn<'a: Any>(..)`, `val h: F<'a>` over `type F<'a> = fn(x: 'a) -> 'a`)
+fn<'a: Any>(..)` at its top, `val h: F<'a>` over `type F<'a> = fn(x: 'a)
+-> 'a`)
 is copied by each use, takes only a write as general as it, and no
 `&mut` of it or of a place holding its variable (`&mut m::c.f`; `&mut
 m::c.n` over `n: i64` is fine). `let g = m::c; g <- ..` makes `g` one

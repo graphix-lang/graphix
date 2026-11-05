@@ -1174,8 +1174,7 @@ node graph IS the IR — there is no parallel typed IR
   default-bind-coverage-01). A default whose type holds an enclosing
   definition's open cell requires a closed parameter type (annotate the
   factory's parameter or the defaulted parameter); an enclosing definition's
-  declared variable is closed, as is a rank-2 formal's quantifier while a
-  call checks its argument: such a default fits its parameter whole, for
+  declared variable is closed: such a default fits its parameter whole, for
   every instance of the variable (an unannotated parameter takes its type),
   and a site outside that definition judges it over a copy of the scheme
   (`callsite::Judge`). A call's type variable that only
@@ -1184,51 +1183,27 @@ node graph IS the IR — there is no parallel typed IR
   type, a type application or a writable reference holds is fixed there, those
   arguments checked first whatever the order the call writes (a
   transparent typedef is its expansion)
-  (`callsite.rs::Widening`, `holds_invariantly`); a written function type with its own quantifiers
-  (`fn<'b: C>(..)`) is rank-2 wherever it stands (a formal, a field, an
-  element, a member, a `let` annotation, a typedef, a return type, a
-  function type's result, an abstract type's representation or
-  parameter; an interface `val`'s or trait method's own quantifiers are
-  its scheme's, at its impls and default body too), and its bounds name
-  only written types and its own quantifiers (`fn<'b: 'c>` beside a
-  definition's `'c` or `self`, or a typedef's parameter, is refused:
-  `FnType::check_bounds_closed`): what
-  it holds is checked with `'b` rigid and held to exactly its declared
-  bounds, predicates included (`fn<'b: Number>` takes no `|x| x * x`:
-  declare `Number + Singleton`; `FnType::contains_int`, judged
-  coinductively where bounds name each other), except a lambda's written
-  type over its own checked one, which adopts its bounds and a
-  quantifier the check decided (`ContainsFlags::Adopt`); the value it
-  holds (a call's argument, a `let`'s, a write's, a struct update's
-  field, a body under a written return type, a labeled default, a
-  constructor's payload; the function whose result holds it) carries
-  `'b` into nothing that outlives it: no binding it reads or writes from
-  outside, its lambdas' captures included, and no instance a call in it
-  makes reaches `'b`, through bindings and an open cell's lower bounds
-  and constraints, outside a function type there that quantifies `'b`
-  itself (`callsite::check_general`, `contain_generally`; not judged:
-  what the function whose result holds it shares across its own calls,
-  CR rank2-result-maker-01, a written holder's own variable beside the
-  function type, CR rank2-holder-variable-01, and a value contained as a
-  copy of it (a write's, a written `let`'s, a select's or an array's of
-  lambdas, a read's of a generalized binding) whose callback ties a
-  binding outside to the original's cell, CR rank2-escape-hof-01); a
-  variable of the call an argument or an omitted labeled default is
-  passed to is one type for the call: none named in the call's signature
-  may be or reach `'b`, under the formal included (`callsite::HeldIn`,
-  one walk per call);
-  while a call
-  checks its argument against the
-  formal, `'b` is one type, which no definition in the argument
-  generalizes or copies (`TVar::freshen`); a call copies `'b`
-  generic, the formal passed on is any instance of itself in an
-  instance's elaboration as in the definition's check, as is any such
-  written type from where it takes its cells, whichever use comes first
-  (`CellFact::FormalQuantifier`, marked by `Type::alias_tvars` in the
-  creating task, and a gate holds rigid none an earlier task marked; an
-  interface `val`'s own quantifiers are its scheme's and unmarked), as
-  is a quantifier an earlier compile
-  task left open, which a later task's `contains` compares as a fresh
+  (`callsite.rs::Widening`, `holds_invariantly`); a function type with
+  type variables of its own (a written `fn<'b: C>(..)`, a trait as a
+  parameter's type, `fn(c: Collection)`, a constructor-trait quantifier)
+  stands only as a declared signature's top (an interface `val`'s, a
+  trait method's, an impl's or a default body's method `let`, a lambda's
+  own declared variables): anywhere else in a written type it is refused,
+  naming the fix (`typ::QUANTIFIED_FN`: `Type::rewrite_trait_args`, and
+  `refuse_quantified_fns` for a cast, a type test and a catch's
+  annotation); a function stays generic only where a binding names it (a
+  `let` of a lambda or of a data literal holding one, a write to a
+  generalized binding, a labeled default, a call's callee by name, an
+  input's value: `bind::name_value`): a lambda no binding names takes its
+  enclosing level's cells at its gate's close (`Lambda::named`,
+  `DefGate::close`), and a read of a generalized binding no binding names
+  is one instance (`Ref::named`, `FnType::one_instance`,
+  `Type::instance_read`), so an element of a collection a call returns, a
+  callback's result or a field of a call's result is one type its uses
+  decide; a call copies a quantifier only where its level says so, as any
+  cell, and a containment holds rigid a scheme's quantifiers alone; a
+  quantifier an earlier compile
+  task left open is one a later task's `contains` compares as a fresh
   copy on either side and never writes (`FnType::has_earlier_quantifier`:
   parallel elaborations share the check's cells; not in a top-level
   input's own check, to which an earlier input's is one type), and an open quantifier
@@ -1712,8 +1687,8 @@ cycle, across workers; the compiler never pins threads.
   holds a variable, its own quantifiers and a typedef's arguments
   included, is generic (`Env::poly_binds`): each read copies it, a
   typedef's arguments as its function types (`Type::scheme_read`), and
-  it is held as an earlier compile's generalized binding is above (a
-  rank-2 type's quantifiers are not its variables). A val something writes
+  it is held as an earlier compile's generalized binding is above. A val
+  something writes
   (`<-`, `&mut`, in any compile) must fit its implementation, whose
   variables are held rigid with their bounds
   (`CompileCtx::check_val_written`).
