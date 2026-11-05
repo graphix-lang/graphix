@@ -173,7 +173,17 @@ impl Calibration {
     fn floor(&self, b: u8) -> u64 {
         1u64 << (b as u32 + self.shift)
     }
+
+    /// Whether a sample of `ticks` contradicts an estimate in bucket `b`.
+    fn contradicts(&self, ticks: u64, b: u8) -> bool {
+        self.bucket(ticks).abs_diff(b as usize) >= CONTRADICTS
+    }
 }
+
+/// The buckets a sample lies from its estimate's to contradict it: a
+/// settled site whose sample contradicts its estimates samples every
+/// update until its histograms follow.
+const CONTRADICTS: usize = 2;
 
 /// A log2 histogram of tick counts. Old samples fade: the counts halve
 /// whenever their total reaches [`Hist::DECAY`].
@@ -449,6 +459,8 @@ pub struct Meter<'a> {
     site: &'a mut ForkSite,
     cal: &'static Calibration,
     total: u64,
+    /// A child's time contradicted its settled estimate.
+    contradicted: bool,
 }
 
 impl<'a> Meter<'a> {
@@ -456,7 +468,7 @@ impl<'a> Meter<'a> {
         if let Site::Measured(m) = &site.0 {
             debug_assert_eq!(m.hist.len(), n);
         }
-        Self { site, cal, total: 0 }
+        Self { site, cal, total: 0, contradicted: false }
     }
 
     /// Run child `i`'s update `f`, timed.
@@ -472,6 +484,7 @@ impl<'a> Meter<'a> {
     fn timed(&mut self, i: usize, dt: u64) {
         self.total += dt;
         if let Site::Measured(m) = &mut self.site.0 {
+            self.contradicted |= m.settled && self.cal.contradicts(dt, m.p75[i]);
             m.hist[i].add(self.cal, dt);
         }
     }
@@ -497,7 +510,11 @@ impl<'a> Meter<'a> {
             }
             Site::Serial { .. } => unreachable!("a serial site is not measured"),
             Site::Measured(m) => {
-                let mut changed = false;
+                let paid = m.settled
+                    && Splits::Weighted { prefix: &m.prefix, t: cal.t }
+                        .split(0, n)
+                        .is_some();
+                let mut changed = self.contradicted || (paid && self.total < 2 * cal.t);
                 for (i, h) in m.hist.iter().enumerate() {
                     let b = h.p75();
                     changed |= m.p75[i] != b;
@@ -507,7 +524,7 @@ impl<'a> Meter<'a> {
                     m.prefix[i + 1] = m.prefix[i] + est;
                 }
                 m.settled |= m.hist.iter().all(|h| h.n == 0 || h.n >= SETTLE);
-                // CR claude for claude: [perf/medium] A settled site resets its sampling
+                // XCR claude for claude: [perf/medium] A settled site resets its sampling
                 // period only when a p75 bucket moves. After its children turn cheap,
                 // each sample (1 in 256 updates) lands far below the p75 without moving
                 // it until cheap samples are about 3x the heavy ones, so the site forks
@@ -539,6 +556,20 @@ impl<'a> Meter<'a> {
                 // measure against them on mixed.gx. The patches and the benchmark
                 // scripts: ~/tmp/grok-forkcost/ and ~/tmp/grok-forkcost/bench/
                 // (run1.sh, batch.sh, p/mixed.gx, p/fade.gx).
+                // 2026-11-05 claude: A settled site's sample that contradicts its
+                // estimates (a child two or more buckets from its p75, or a total under
+                // 2T where the estimates fork) resets the sampling period to 0, in
+                // ForkSite (Meter::timed/done) and SlotSite::measured_with alike
+                // (Calibration::contradicts). fade.gx's cheap window (debug,
+                // --no-fusion, Auto): 0.048-0.052 s against 0.16-0.20 s on base-r17,
+                // 0.046-0.053 s with heavy_until=0; mixed.gx 2.11-2.25 s against
+                // 2.11-2.23 s on base. Pins that fail without it:
+                // cost::tests::fork_site_follows_children_that_turn_cheap,
+                // fork_site_follows_a_child_that_turns_dear,
+                // slot_site_follows_slots_that_turn_cheap;
+                // fork_site_keeps_its_period_over_agreeing_samples pins that a sample
+                // within a bucket keeps the period. x-perf-runtime-02 (the fork overhead
+                // and the back-off) is not addressed here.
                 m.sampler.sampled(m.settled, changed);
                 let pays = Splits::Weighted { prefix: &m.prefix, t: cal.t }
                     .split(0, n)
@@ -811,10 +842,15 @@ impl SlotSite {
             }
             Slots::Serial { .. } => unreachable!("a serial site is not measured"),
             Slots::Measured { hist, sampler, est } => {
-                hist.add(cal, total / n.max(1) as u64);
+                let each = total / n.max(1) as u64;
+                let contradicted = hist.n >= SETTLE
+                    && (cal.contradicts(each, hist.p75())
+                        || (est.saturating_mul(n as u64) >= 2 * cal.t
+                            && total < 2 * cal.t));
+                hist.add(cal, each);
                 let e = cal.floor(hist.p75());
                 let settled = hist.n >= SETTLE;
-                sampler.sampled(settled, e != *est);
+                sampler.sampled(settled, contradicted || e != *est);
                 *est = e;
                 if settled && e.saturating_mul(n as u64) < 2 * cal.t {
                     self.standing =
@@ -1162,16 +1198,20 @@ mod tests {
 
     static CAL: Calibration = Calibration { t: 1 << 10, shift: 4 };
 
-    /// One measured update of `site`'s children at `each` ticks apiece.
-    fn measure(site: &mut ForkSite, each: &[u64]) {
-        let n = each.len();
-        let Plan::Measure(mut m) = site.plan_with(&CAL, n) else {
-            panic!("the site did not measure: {:?}", site.0)
-        };
+    /// Time children at `each` ticks apiece.
+    fn time_each(mut m: Meter<'_>, each: &[u64]) {
         for (i, dt) in each.iter().enumerate() {
             m.timed(i, *dt);
         }
-        m.done(n);
+        m.done(each.len());
+    }
+
+    /// One measured update of `site`'s children at `each` ticks apiece.
+    fn measure(site: &mut ForkSite, each: &[u64]) {
+        let Plan::Measure(m) = site.plan_with(&CAL, each.len()) else {
+            panic!("the site did not measure: {:?}", site.0)
+        };
+        time_each(m, each)
     }
 
     fn forks(site: &mut ForkSite, n: usize) -> bool {
@@ -1241,6 +1281,102 @@ mod tests {
             "settled, a side under T pays for no fork: {:?}",
             site.0
         );
+    }
+
+    /// One update of `site`'s children at `each` ticks apiece: whether it
+    /// forked.
+    fn update(site: &mut ForkSite, each: &[u64]) -> bool {
+        match site.plan_with(&CAL, each.len()) {
+            Plan::Measure(m) => {
+                time_each(m, each);
+                false
+            }
+            Plan::Fork(_) => true,
+            Plan::Serial => false,
+        }
+    }
+
+    /// A settled site whose children turn cheap stops forking within a
+    /// few histogram turnovers, however long its sampling period grew.
+    #[test]
+    fn fork_site_follows_children_that_turn_cheap() {
+        let mut site = ForkSite::default();
+        for _ in 0..4096 {
+            update(&mut site, &[4 * CAL.t, 4 * CAL.t]);
+        }
+        let Site::Measured(m) = &site.0 else { panic!("{:?}", site.0) };
+        assert_eq!(m.sampler.period, MAX_PERIOD);
+        let mut forked = 0;
+        while !matches!(site.0, Site::Serial { .. }) && forked < 4096 {
+            forked += update(&mut site, &[CAL.t / 64, CAL.t / 64]) as usize;
+        }
+        assert!(matches!(site.0, Site::Serial { .. }), "{:?}", site.0);
+        assert!(forked < 64, "cheap children forked {forked} times");
+    }
+
+    /// A child that turns dear moves its site's split as soon.
+    #[test]
+    fn fork_site_follows_a_child_that_turns_dear() {
+        let mut site = ForkSite::default();
+        for _ in 0..4096 {
+            update(&mut site, &[4 * CAL.t, 4 * CAL.t, CAL.t / 64]);
+        }
+        let mut stale = 0;
+        while stale < 4096 {
+            let Site::Measured(m) = &site.0 else { panic!("{:?}", site.0) };
+            if m.prefix[3] - m.prefix[2] >= 4 * CAL.t {
+                break;
+            }
+            update(&mut site, &[4 * CAL.t, 4 * CAL.t, 16 * CAL.t]);
+            stale += 1;
+        }
+        assert!(stale < 64, "the dear child was estimated cheap {stale} updates");
+    }
+
+    /// A settled site whose children's times stay within a bucket of
+    /// their estimates keeps its period.
+    #[test]
+    fn fork_site_keeps_its_period_over_agreeing_samples() {
+        let mut site = ForkSite::default();
+        let mut x = 1u64;
+        for _ in 0..4096 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let first = if x >> 60 == 0 { 4 * CAL.t } else { 8 * CAL.t };
+            update(&mut site, &[first, 4 * CAL.t]);
+        }
+        let Site::Measured(m) = &site.0 else { panic!("{:?}", site.0) };
+        assert_eq!(m.sampler.period, MAX_PERIOD);
+    }
+
+    /// One update of `n` standing slots at `each` ticks apiece: whether
+    /// it forked.
+    fn slots_update(site: &mut SlotSite, n: usize, each: u64) -> bool {
+        match site.plan_with(&CAL, n) {
+            SlotPlan::Measure(_) => {
+                site.measured_with(&CAL, each * n as u64, n);
+                false
+            }
+            SlotPlan::Fork { .. } => true,
+            SlotPlan::Serial => false,
+        }
+    }
+
+    /// Slots that turn cheap stop forking within a few histogram
+    /// turnovers, however long the sampling period grew.
+    #[test]
+    fn slot_site_follows_slots_that_turn_cheap() {
+        let mut site = SlotSite::default();
+        for _ in 0..4096 {
+            slots_update(&mut site, 8, CAL.t);
+        }
+        let Slots::Measured { sampler, .. } = &site.standing else { panic!() };
+        assert_eq!(sampler.period, MAX_PERIOD);
+        let mut forked = 0;
+        while !matches!(site.standing, Slots::Serial { .. }) && forked < 4096 {
+            forked += slots_update(&mut site, 8, CAL.t / 64) as usize;
+        }
+        assert!(matches!(site.standing, Slots::Serial { .. }), "{:?}", site.standing);
+        assert!(forked < 64, "cheap slots forked {forked} times");
     }
 
     /// A process that may start no thread measures no threshold, and

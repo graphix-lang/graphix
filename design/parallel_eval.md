@@ -385,7 +385,11 @@ point that is a chain stores nothing.
 **When it is measured.** Every update while a site is unsettled (a
 child it times has fewer than four samples); then one update in N, with N
 doubling while the estimates hold (to 1 in 256) and reset when one
-moves (`cost::Sampler`). Sampling keeps the steady-state overhead to a
+moves or a sample contradicts them (`cost::Sampler`): a child's time
+two or more buckets from its p75, or a total under `2T` at a site whose
+estimates fork (`Calibration::contradicts`). A reset site samples every
+update, so its histograms follow a change within tens of updates rather
+than thousands. Sampling keeps the steady-state overhead to a
 branch and a counter.
 
 **What is decided.** A child's estimate is the floor of its
