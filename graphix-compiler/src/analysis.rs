@@ -1861,7 +1861,9 @@ fn own_access<R: Rt>(
 
 /// The summary of every instance `roots` reach: its body's reads and
 /// writes joined with its callees', less its own bindings (its formals and
-/// what its body binds), which only a fresh activation of it reaches.
+/// what its body binds), which only a fresh activation of it reaches,
+/// except those a lambda in it captures: a closure it hands to a fresh
+/// activation of itself reads the caller's.
 fn instance_summaries<R: Rt>(
     graph: &StaticCallGraph<'_, R>,
     ctx: &CompileCtx<R>,
@@ -1881,10 +1883,21 @@ fn instance_summaries<R: Rt>(
         let mut cs = SmallVec::new();
         local_summary(g.body(), None, graph, ctx, detail, &mut s, &mut cs);
         if detail == Detail::Ids {
+            let mut own: LPooled<IntSet<BindId>> = LPooled::take();
             let mut refs = Refs::without_callees();
             g.body().refs(&mut refs);
-            refs.with_bound(|id| s.forget(id));
-            g.args().iter().for_each(|p| p.ids(&mut |id| s.forget(id)));
+            refs.with_bound(|id| {
+                own.insert(id);
+            });
+            g.args().iter().for_each(|p| {
+                p.ids(&mut |id| {
+                    own.insert(id);
+                })
+            });
+            own.iter().for_each(|id| s.forget(*id));
+            fusion::for_each_node(g.body(), &mut |x| {
+                lambda_captures(x, &mut s.reads, &mut |id| own.contains(&id))
+            });
         }
         stack.extend(cs.iter().copied());
         sums.insert(i, s);
@@ -1912,7 +1925,7 @@ fn instance_summaries<R: Rt>(
     sums
 }
 
-// CR claude for claude: [bug/medium] A closure chain through a recursion forks a branch
+// XCR claude for claude: [bug/medium] A closure chain through a recursion forks a branch
 // that reads what its left sibling publishes in the same cycle, so the forked node-walk
 // differs from the serial one, on main as well. `let rec f = |n, g| { let y = x * 100 + n;
 // select n { 0 => g(0), n => f(n - 1, |u| y + g(u)) } }; (x, f(3, |u| u))` with x counting
@@ -1925,6 +1938,14 @@ fn instance_summaries<R: Rt>(
 // missed by plan_block's summaries, analysis::escaping or hands_out_callee_binds: the
 // closure handed down captures y, which the callee's own call reads. probe:
 // ~/ptmp/cr29/scratch/r16-W/{fz_cl.gx,cl_small.gx} (par-closure-chain-01)
+// 2026-11-05 claude: instance_summaries keeps an instance's own bindings that a lambda in
+// its body captures (analysis::lambda_captures, shared with escaping): a self-call shares
+// the instance, so the closure it hands down reads the caller's let in the next activation,
+// and the caller's block now breaks its run there. Pins:
+// lang::par_attrs::{a_closure_handed_down_a_recursion_reads_the_callers_let,
+// a_closure_handed_down_through_a_helper_reads_its_let} (both fail without it: forced
+// Interp 10206.. and 103206..); graphix-fuzz check of fz_cl.gx AGREE (base-r17:
+// DIVERGENCE). PARAUDIT-NOFORK over the par-mode fixtures unchanged (1102 both).
 /// A block's statements as runs for forking (`design/parallel_eval.md`
 /// §3.3): `(start, end)` ranges over `children`, catches left out. A run
 /// is contiguous and holds no catch, and no statement in it reads what
@@ -2223,16 +2244,29 @@ fn escaping<'a, R: Rt>(children: impl Iterator<Item = &'a Node<R>>) -> Vars {
                 x.refs(&mut refs);
                 esc.ids.extend(refs.refed.iter().copied());
             }
-            NodeView::Lambda(l) => match l.def_value().downcast_ref::<LambdaDef<R>>() {
-                Some(def) if def.table.get().is_some() => def.captured_ids(&mut |id| {
-                    esc.ids.insert(id);
-                }),
-                _ => esc.all = true,
-            },
+            NodeView::Lambda(_) => lambda_captures(x, &mut esc, &mut |_| true),
             _ => (),
         });
     }
     esc
+}
+
+/// Add to `vars` what the lambda `x` captures, those `keep` takes, or
+/// every variable where its captures are not known yet.
+fn lambda_captures<R: Rt>(
+    x: &Node<R>,
+    vars: &mut Vars,
+    keep: &mut dyn FnMut(BindId) -> bool,
+) {
+    let NodeView::Lambda(l) = x.view() else { return };
+    match l.def_value().downcast_ref::<LambdaDef<R>>() {
+        Some(def) if def.table.get().is_some() => def.captured_ids(&mut |id| {
+            if keep(id) {
+                vars.ids.insert(id);
+            }
+        }),
+        _ => vars.all = true,
+    }
 }
 
 /// Whether a binding a call in `n` fires (a callee's formal, `let`,

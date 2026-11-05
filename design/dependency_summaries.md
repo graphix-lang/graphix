@@ -82,9 +82,13 @@ walks it (`fusion::for_each_node`):
 An instance's summary is its body's joined with its callees', to a
 fixpoint over the instances the machines' calls reach
 (`instance_summaries`, a union worklist over the `StaticCallGraph`
-the effect inference builds). Nothing is stored: each analysis pass
-recomputes what its machines need, and a pass with no machine computes
-nothing. An imaged callee not yet decoded has no body to walk and is
+the effect inference builds), less the instance's own bindings (its
+formals and what its body binds), which only a fresh activation of it
+reaches, except those a lambda in its body captures: a recursion that
+hands a closure to its next activation shares the instance, and the
+closure reads the caller's bindings there. Nothing is stored: each
+analysis pass recomputes what its machines need, and a pass with no
+machine computes nothing. An imaged callee not yet decoded has no body to walk and is
 opaque. There is no alias analysis.
 
 A callback written inline in a seq step is issued as `pc ~! |x| ..`
