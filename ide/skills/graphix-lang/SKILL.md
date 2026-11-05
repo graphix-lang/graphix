@@ -470,8 +470,9 @@ across a bottom cycle).
   it: `let {x, y}: {x: i64, y: i64} = p`, or a parameter, `|(n, s):
   (i64, string)|`). A variable with no bound is bounded first (`'a:
   (bool, i64)`, then `(bool, i64) as (true, k)`). The test is a closed
-  type: `` `A(_) as `A(z) `` (`_` is bottom) and `` 'c as `A(z) `` (an
-  undeclared variable) are refused. Under a written test a name over the
+  type: `` `A(_) as `A(z) `` (`_` is bottom, through a typedef too:
+  `` `A(T) `` over `type T = _`) and `` 'c as `A(z) `` (an undeclared
+  variable) are refused. Under a written test a name over the
   variable's value keeps it where the test holds the scrutinee around it:
   `([`A(i64), `B(i64)], i64) as (v, n)` over `('b, i64)` gives `v: 'b`.
   An abstract type's parameter takes no annotation wider than the

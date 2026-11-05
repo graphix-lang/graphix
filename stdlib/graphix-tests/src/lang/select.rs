@@ -7459,6 +7459,84 @@ run!(
     FuseExpect::None
 );
 
+// A typedef a written test names is closed only where its body is.
+run!(
+    written_test_typedef_of_bottom_inside_a_declared_variable_refused,
+    refused("`A(z) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: `A(T) holds `_`, which is bottom, or a type variable nothing declares; write the type it tests, ``A(i64) as `A(z)`"),
+    "/test.gx" => r#"
+        type T = _;
+        let g = 'b: [`A(i64), `B(i64)] |x: 'b| -> [string, null] select x {
+            `A(T) as `A(z) => z,
+            _ => null
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(o)
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    written_test_typedef_holding_bottom_inside_a_declared_variable_refused,
+    refused("(`A(z), n) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: BotA holds `_`, which is bottom, or a type variable nothing declares; write the type it tests, `([`A(i64), `B(i64)], i64) as (`A(z), n)`"),
+    "/test.gx" => r#"
+        type BotA = `A(_);
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| select x {
+            (BotA, i64) as (`A(z), n) => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g((o, 1))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    written_test_typedef_holding_bottom_at_an_element_refused,
+    refused("tests inside a value of 'b, a type variable of the definition, and its type test types none of it: BotA holds `_`"),
+    "/test.gx" => r#"
+        type BotA = `A(_);
+        let g = 'b: [`A(i64), `B(i64)] |x: Array<'b>| select x {
+            Array<BotA> as [`A(z), ..] => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g([o])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    written_test_typedef_holding_bottom_returning_the_variable_refused,
+    refused("tests inside a value of 'b, a type variable of the definition, and its type test types none of it: BotA holds `_`"),
+    "/test.gx" => r#"
+        type BotA = `A(_);
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| -> 'b select x {
+            (BotA, i64) as (`A(z), n) => z,
+            (v, n) => v
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g((o, 1))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    written_test_closed_typedef_inside_a_declared_variable,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 3]),
+    "/test.gx" => r#"
+        type AB = [`A(i64), `B(i64)];
+        type I = i64;
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| select x {
+            (AB, i64) as (`A(z), n) => z + n,
+            _ => 0
+        };
+        let h = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(I) as `A(z) => z, _ => 0 };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = [g((o, 1)), h(o)]
+    "#;
+    FuseExpect::Jit
+);
+
 run!(
     written_test_closed_inside_a_declared_variable,
     r#"{

@@ -1396,7 +1396,8 @@ cycle, across workers; the compiler never pins threads.
   itself as the arm compiles; an abstract pattern names the type its
   compile resolved, `CompiledAbstracts`); a name there takes the whole
   union. A written test's part over the variable must be closed: one
-  holding `_` or an undeclared variable is refused
+  holding `_` (a typedef's body included) or an undeclared variable is
+  refused
   (`StructurePattern::meets_rigid_written`). Under a written test a bind
   inside the variable takes the test's part (`Type::matching_parts`); a
   name over a value holding it keeps the variable where a part of the test

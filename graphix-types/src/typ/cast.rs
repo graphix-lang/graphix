@@ -638,6 +638,16 @@ impl Type {
         })
     }
 
+    /// Whether `_`, bottom, stands in this type outside a function type,
+    /// through the definitions it names.
+    pub fn holds_bottom(&self, env: &Env) -> bool {
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::Bottom => Some(true),
+            Type::Fn(_) => Some(false),
+            _ => None,
+        })
+    }
+
     /// Whether a reference this type test holds sits where `reaching`
     /// admits `Any`: there the test would take a reference to anything
     /// for one to its type.

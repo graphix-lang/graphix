@@ -127,7 +127,8 @@ itself as its arm compiles).
 A written test names the definition's variables as a `let`'s annotation
 does, and types a bind inside a rigid cell by its own part
 (`Type::matching_parts`), so that part must be closed: a test whose part
-over the cell holds `_` (bottom, which types nothing) or a variable no
+over the cell holds `_` (bottom, which types nothing; written or in the
+body of a typedef the test names, `Type::holds_bottom`) or a variable no
 definition declares (which the arm's body would decide) is refused,
 naming the closed test to write (`StructurePattern::meets_rigid_written`,
 which walks the written test beside the scrutinee). A name over a value

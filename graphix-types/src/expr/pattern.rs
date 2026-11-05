@@ -562,8 +562,8 @@ impl StructurePattern {
 
     /// [`Self::meets_rigid`] under `written`, the written test over a value
     /// of `typ`: the first variable met where the test's part over it,
-    /// returned with it, holds `_` or an open cell, so types nothing
-    /// inside it.
+    /// returned with it, holds `_` (through the types it names too) or an
+    /// open cell, so types nothing inside it.
     pub fn meets_rigid_written(
         &self,
         env: &Env,
@@ -576,7 +576,7 @@ impl StructurePattern {
             .and_then(|(tv, w)| w.map(|w| (tv, w))))
     }
 
-    // CR claude for claude: [bug/high] The closed-written-test rule judges the test's
+    // XCR claude for claude: [bug/high] The closed-written-test rule judges the test's
     // spelling: meets refuses a written part over the variable only when `has_free() ||
     // has_bottom()`, and neither looks inside a typedef's body (a `Type::Ref`'s children
     // are its parameters), while the pattern compile expands only the written type's top.
@@ -593,6 +593,17 @@ impl StructurePattern {
     // pin t1c, t13, a2, a3, a6, a10 with closed twins. Review r14 B-r3-1, B-r3-2. probe:
     // ~/ptmp/cr29/scratch/review-r14/B-r3-1/a/{t1,t1c,t12,t13}.gx,
     // ~/ptmp/cr29/scratch/review-r14/B-r3-2/td/{a2,a3,a6,a7,a10}.gx (d6-typedef-bottom-01)
+    // 2026-11-05 claude: The written-test closedness check now looks for _ through the
+    // typedefs a written part names (Type::holds_bottom, over Type::holds), so (BotA, i64)
+    // as .., Array<BotA> as .., `A(T) as .. over type T = _ are refused like a spelled _.
+    // Pins in lang::select:
+    // written_test_typedef_of_bottom_inside_a_declared_variable_refused,
+    // written_test_typedef_holding_bottom_inside_a_declared_variable_refused,
+    // written_test_typedef_holding_bottom_at_an_element_refused,
+    // written_test_typedef_holding_bottom_returning_the_variable_refused (all four fail
+    // without the fix), closed twin written_test_closed_typedef_inside_a_declared_variable.
+    // Census of both repos unchanged. An abstract type's hidden representation is not
+    // walked (its values carry the same rep the bound names).
     fn meets(
         &self,
         env: &Env,
@@ -646,7 +657,7 @@ impl StructurePattern {
                     if members.is_empty() || self.may_hold_value_of(env, ids, &tv)? {
                         match written {
                             None => return Ok(Some((tv, None))),
-                            Some(w) if w.has_free() || w.has_bottom() => {
+                            Some(w) if w.has_free() || w.holds_bottom(env) => {
                                 return Ok(Some((tv, Some(w.clone()))));
                             }
                             Some(_) => (),
