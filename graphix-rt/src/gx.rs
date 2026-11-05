@@ -577,6 +577,17 @@ impl<X: GXExt> GX<X> {
     // a_late_value_closing_a_loop_steps_a_cycle_at_a_time},
     // lang::par_attrs::{parallel_names_an_earlier_reader,
     // parallel_names_an_earlier_reader_of_a_callee_binding}. Needs a soak.
+    // 2026-11-05 claude: Round 16 review fixes (W-r1-1, W-r1-2): the passed judgment is
+    // prune::Passed, each boundary judged once a fire from its second reader on (reader
+    // climbs and the walk's chain stamped with the fire's token; a concurrent branch compares
+    // the walk anew), so readers along a recursion cost its depth once: per cycle against
+    // base-r16 +7%/+4%/0% at depths 500/1000/2000 (the reviewed commit +64/+145/+291%), the
+    // loop2k/6k probe +4.8% by callgrind (reviewed commit +6.2%). Pins:
+    // prune::tests::{readers_deep_in_a_chain_ahead_of_the_walk_cost_its_depth,
+    // readers_along_a_deep_walk_cost_its_depth} (fail without the memo: 2001000 and 2003000
+    // climbs), verdicts_are_those_of_judging_each_boundary_anew;
+    // lang::delivery::a_fire_in_a_later_module_reaches_a_passed_reader_next_cycle (base-r16
+    // prints a=1 a=1 only). The boundary-granular limit is late-same-boundary-01, documented.
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
@@ -648,6 +659,11 @@ impl<X: GXExt> GX<X> {
     // reads the value standing, unfired. Main loses that fire too. Record a late fire in
     // the waking select's bits as a fire of its input. probe: a function value read in an
     // arm asleep the cycle after the later binding fires (late-asleep-01)
+    // CR claude for claude: [perf/low] Every passed reader gets a late entry, a scheduled
+    // root and a marked boundary, though only Ref, Deref and ConnectDeref read Event::late:
+    // a catch's receipts, a select's tracked fires, a seq machine's and Payments' readers of
+    // the same id are walked next cycle for nothing (no value changes). Telling them apart
+    // needs the reader's kind in its registration. (late-unread-01)
     /// Deliver last cycle's late fires ([`GXRt::late`]) to their readers:
     /// each reader's root runs and its boundary is marked, unless a write
     /// delivered the variable already this cycle.

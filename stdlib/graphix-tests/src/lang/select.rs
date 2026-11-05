@@ -3295,6 +3295,37 @@ run!(
     prints("i64:200")
 );
 
+// Only the sample's argument fired during the sleep, not its trigger: the
+// initializer does not fire at the wake, and the write stands.
+const WAKE_SAMPLE_ARGUMENT_ALONE_LEAVES_A_WRITE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 10 => s + 1, _ => never() };
+  let trigger = 0;
+  trigger <- select step { 1 => 1, _ => never() };
+  let argument = 100;
+  argument <- select step { 5 => 200, _ => never() };
+  let holder: [&mut i64, null] = null;
+  let result = select step < 3 || step > 7 {
+    true => {
+      let target = trigger ~ argument;
+      holder <- &mut target;
+      target
+    },
+    false => -1
+  };
+  let h = holder$;
+  *h <- select step { 4 => 555, _ => never() };
+  select step { 10 => result, _ => never() }
+}
+"#;
+
+run!(
+    wake_sample_argument_alone_leaves_a_write,
+    WAKE_SAMPLE_ARGUMENT_ALONE_LEAVES_A_WRITE,
+    prints("i64:555")
+);
+
 // Two writes queued in the arm's last awake cycle land during its sleep,
 // after the initializer's input fired: at the wake the catch-up replaces
 // them (an arm that never slept ends on the later write, 2).

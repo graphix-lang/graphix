@@ -382,3 +382,29 @@ async fn a_moved_reference_reaches_a_passed_write_next_cycle(mode: Mode) -> Resu
 }
 
 modes!(a_moved_reference_reaches_a_passed_write_next_cycle);
+
+// A dynamic module loads after `a`'s statement ran: `a` reads, through the
+// function `h` takes from it, the module's `d`, made in the walk, a cycle
+// late.
+const LATER_MODULE: &str = r#"{
+  let h: fn(x: i64) -> i64 = |x: i64| -> i64 x;
+  let a = h(1);
+  let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig { val g: fn(x: i64) -> i64 };
+    source "let c = 0; c <- select c { k if k < 3 => k + 1, _ => never() };
+            let d = c * 10; let g = |x: i64| -> i64 x + d"
+  };
+  h <- select status { error as e => never(dbg(e)), null as _ => foo::g };
+  a
+}"#;
+
+async fn a_fire_in_a_later_module_reaches_a_passed_reader_next_cycle(
+    mode: Mode,
+) -> Result<()> {
+    let got = result_updates(LATER_MODULE, &[], mode).await?;
+    assert_eq!(got, ["1", "1", "11", "21", "31"], "{mode:?}");
+    Ok(())
+}
+
+modes!(a_fire_in_a_later_module_reaches_a_passed_reader_next_cycle);

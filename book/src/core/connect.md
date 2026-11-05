@@ -63,6 +63,11 @@ new value the same way a connect delivers one, in the next cycle, while
 readers after it see the value in the cycle it is made. A reader that sits
 before a value and feeds it back (`let r = h(1); let w = r + 1; h <- |x| x +
 w`) is a loop like `x <- x + 1`: it takes one step per cycle and never stops.
+One case is not delivered today: a reference read in the same statement as a
+nested block that makes its target's new value, `(*r, { let v = ..; r <- &v;
+v })`. It never gets the new value itself; when the statement runs again it
+reads the value standing from the cycle before, and the last value not at
+all. Read it in a statement of its own.
 
 When combined with other operations, specifically select, connect becomes a
 looping construct that runs one step per cycle: connect is the only way to

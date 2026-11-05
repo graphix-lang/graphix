@@ -455,13 +455,16 @@ owes no fire for one, whether or not it changed the value; `Notify`
 picks whether a fire schedules the roots that read it. A fire, `Roots`
 or `Walk`, reaches the readers the walk has not passed in its cycle, and
 each one it has (in an earlier root, or in a boundary of its own root
-the walk left, `Reader::passed_by`: a reader through a function value or
-a reference, an earlier REPL input or a reloaded module) alone in the
-next, as a write lands (`RtView::store_fire`, `Rt::late`, `Event::late`,
+the walk left, `prune::Passed`, each boundary judged once a fire: a
+reader through a function value or a reference, an earlier REPL input or
+a reloaded module) alone in the next, as a write lands (`RtView::store_fire`, `Rt::late`, `Event::late`,
 `read_var_by`, a `*p <-`'s reference included; a write to the binding in
 that cycle supersedes it): a reader before its producer runs a cycle
 behind, and none runs twice in a cycle; one feeding its producer back
-is a self-loop, a step a cycle, as `x <- x + 1` is. A wake's
+is a self-loop, a step a cycle, as `x <- x + 1` is. Order is judged by
+boundary: a reader in a boundary the walk is still inside is ahead, so a
+reference read earlier in its producer's own boundary misses the fire
+(CR late-same-boundary-01). A wake's
 re-raise, catch-up's inject, a priming from the store and a born
 callee's quiet arguments are fires in the event alone, never stored; an
 error raised to a catch is stored as any write is, delivered the cycle
@@ -1039,9 +1042,10 @@ node graph IS the IR — there is no parallel typed IR
   that re-raises marks its block (`node::Lets`), which reads the mark as
   its update ends, so an update after no re-raise visits no `let`. A
   reader outside (an escaped `&mut`) sees the write once. At the wake
-  the initializer's catch-up (an input of it fired during the sleep)
-  replaces such a write, whichever came first; a write landing after the
-  wake's cycle stands. State
+  the initializer's fire by catch-up replaces such a write, whichever
+  came first (a sample whose argument alone fired asleep does not fire;
+  a late fire the sleeping arm missed is lost, CR late-asleep-01); a
+  write landing after the wake's cycle stands. State
   survives an arm's sleep (`Held` residents at the select scrutinee,
   pattern guard and `~`'s arg; `CachedVals` staging; collection slots;
   a `<-` target's value, which only a fired input of its initializer
@@ -1410,7 +1414,7 @@ neither reads what the other publishes (`analysis::plan_block`, an
 earlier reader taking a later fire next cycle, through a reference or an
 unresolved call only one a reference names or a lambda captures,
 `analysis::escaping`, or one a call fires in a callee whose body makes a
-reference or a lambda; a module, trait or impl
+reference or a lambda, or that has no static target; a module, trait or impl
 statement is a run of its own and a catch runs last) and they do not
 both reach an `ORDERED` builtin
 (in-language state shared across nodes, `queuefn`; a call with no static

@@ -1,3 +1,5 @@
+// Ruled (Eric 11-05, D16 (c)): the observed value is the rule, kept and
+// pinned (lang::select::wake_catchup_*); the expectation below was overruled.
 // c-bind: across a sleep, a `<-` target's initializer input that fired
 // BEFORE a write landed on the target overwrites that later write at the
 // wake: the catch-up replays inp's fire (c=4) after x's write (c=5).

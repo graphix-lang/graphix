@@ -188,9 +188,14 @@ unchanged.
   pass over the readers that marks their boundaries) each reader in the
   root being updated that the walk has passed is recorded (`Rt::late`): one
   whose boundary, or the nearest boundary around it the walk reached
-  this cycle, does not hold the walk's own (`Reader::passed_by`, over the
+  this cycle, does not hold the walk's own (`prune::Passed`, over the
   boundaries' `visited` stamps; a reader with no boundary the walk
-  reached is ahead). A binding with a reader in another root is noted
+  reached is ahead). Each boundary is judged once a fire: from a fire's
+  second reader on, its verdict is stamped on every boundary a reader's
+  climb crosses and on the walk's boundaries as they are compared, so
+  readers along a deep recursion cost its depth once, not once each. A
+  branch running beside others keeps the readers' stamps but compares
+  the walk's anew, since a sibling's fire may overwrite them. A binding with a reader in another root is noted
   (`Rt::produced`), and after each root's update the runtime records the
   readers in earlier roots of what it fired and schedules the roots after
   it that read it, which a `Walk` delivery does not schedule itself
@@ -212,7 +217,11 @@ unchanged.
   target (`analysis::hands_out_callee_binds`): any other `let` is named
   by its scope alone.
 - Not delivered late: to a reader in an arm asleep in the next cycle
-  (its select did not observe the fire either).
+  (its select did not observe the fire either); to a reader in a boundary
+  the walk is still inside, which counts as ahead though the walk may
+  have passed it there: a `*r` directly in a statement, before a nested
+  block of that statement that makes `r`'s target fire, never sees that
+  fire (CR late-same-boundary-01, as on main).
 - A backward reader that feeds its producer (`let r = h(1); let w = r +
   1; h <- |x| x + w`) runs a cycle at a time, never settling, as a
   `<-` self-loop does: it is what the program says (Eric, 2026-11-05).

@@ -1,3 +1,5 @@
+// Ruled (Eric 11-05, D16 (c)): the observed value is the rule, kept and
+// pinned (lang::select::wake_catchup_*); the expectation below was overruled.
 // At a wake, a let's initializer input that fired during the sleep is
 // re-raised AFTER a write to the let that landed later in the same sleep, so
 // the older event wins and the let ends on a value the awake program never

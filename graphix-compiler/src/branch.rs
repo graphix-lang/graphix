@@ -14,7 +14,7 @@ use crate::{
         callsite::CallNode,
         place::{Path, RefPath},
     },
-    prune::{BoundaryRef, Reader},
+    prune::{BoundaryRef, Passed, Reader},
     typ::tvar::TaskContext,
 };
 use futures::channel::mpsc;
@@ -388,12 +388,17 @@ impl<'a, R: Rt> RtView<'a, R> {
     ) -> bool {
         self.store_insert_unmarked(id, tv);
         let cycle = self.cycle();
+        let concurrent = matches!(self, Self::Fork(_));
+        let mut judge = None;
         let mut elsewhere = false;
         self.each_reader(&id, &mut |r| {
             r.mark(cycle);
             if r.root != root {
                 elsewhere = true
-            } else if r.passed_by(at, cycle) {
+            } else if judge
+                .get_or_insert_with(|| Passed::new(at, cycle, concurrent))
+                .passed(r)
+            {
                 passed.get_or_insert_default().push(r.clone())
             }
         });
