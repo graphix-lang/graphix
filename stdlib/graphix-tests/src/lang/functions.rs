@@ -2806,6 +2806,32 @@ run!(open_default_through_a_fn_type, r#"{
     h(g)
 }"#, refused("does not contain string"); FuseExpect::None);
 
+// Two lambdas in one array are one function type, and a call through an
+// element may reach either: it judges both defaults against the label.
+run!(array_defaults_of_two_types, r#"{
+    let fs = [
+        |#d = 1, x: i64| cast<string>(d)$,
+        |#d = "q", x: i64| cast<string>(d)$
+    ];
+    fs[0]$(7)
+}"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(array_defaults_with_declared_types, r#"{
+    let fs = [
+        |#d: [i64, string] = 1, x: i64| cast<string>(d)$,
+        |#d: [i64, string] = "q", x: i64| cast<string>(d)$
+    ];
+    fs[1]$(7)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "q"); FuseExpect::None);
+
+run!(array_defaults_of_one_type, r#"{
+    let fs = [
+        |#d = 1, x: i64| cast<string>(d)$,
+        |#d = 2, x: i64| cast<string>(d)$
+    ];
+    fs[1]$(7)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "2"); FuseExpect::None);
+
 // A function value's default is judged where the value meets a fn type
 // that hides the label, at the parameter the fn type fixes.
 const DEFAULT_HIDDEN_BY_A_FN_TYPE: &str = r#"

@@ -238,7 +238,7 @@ enum Judge {
 /// the instance runs with; where the site hides the label, against `f`'s
 /// own parameter, and then against the label of `value`, the function as
 /// the site holds it, which it narrows.
-// CR claude for claude: [bug/low] Two lambdas in one array whose labeled defaults have
+// XCR claude for claude: [bug/low] Two lambdas in one array whose labeled defaults have
 // different types pass the check and fail at every dynamic bind: `let fs = [|#d = 1, x:
 // i64| cast<string>(d)$, |#d = "q", x: i64| cast<string>(d)$]` and `fs[i]$(7)` (i from a
 // timer) passes --check, then each dispatch logs "binding the callee failed: type mismatch
@@ -249,6 +249,13 @@ enum Judge {
 // defaults declaring different `type L`s) it fails the same way. probes:
 // ~/ptmp/cr29/scratch/r15-N/fix/two_defaults_plain.gx, two_blocks.gx
 // (array-defaults-meet-01)
+// 2026-11-05 claude: meet_open_fns (setops.rs) let the met member stand for the other
+// without its lambda ids, so a call through the array element judged only the last
+// lambda's default (lane s2 2026-11-05). It now links the ids, and check_omitted_defaults
+// visits the definitions in id order, so both defaults are judged against the one label
+// and the second is refused at the call (i64 does not contain string). Pins that fail
+// without the fix: lang::functions::array_defaults_of_two_types (annotated twin
+// array_defaults_with_declared_types and one-type twin array_defaults_of_one_type pass).
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt>(
     ctx: &mut CompileCtx<R>,
@@ -2838,7 +2845,8 @@ impl<R: Rt> CallSite<R> {
         // the definitions the callee may be: by its type's lambda ids, else
         // (a restored interface `val`'s type carries none) by the binding
         // the function names
-        let ids = ftype.lambda_ids.ids();
+        let mut ids: SmallVec<[_; 2]> = ftype.lambda_ids.ids().iter().copied().collect();
+        ids.sort_unstable();
         let mut defs: SmallVec<[Option<Value>; 2]> =
             ids.iter().map(|id| ctx.lambda_defs.get(id).cloned()).collect();
         if defs.is_empty()

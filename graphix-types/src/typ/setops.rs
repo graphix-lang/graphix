@@ -660,6 +660,10 @@ impl Type {
                     && g.contains(env, &inst)?
                 {
                     // the member it meets stands for it, so the union holds one
+                    // and a call through it may be either definition
+                    if let Type::Fn(g) = &g {
+                        g.lambda_ids.link(&f.lambda_ids);
+                    }
                     let out = out
                         .get_or_insert_with(|| ts.iter().map(|t| (*t).clone()).collect());
                     out[*i] = g;
