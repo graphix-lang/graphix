@@ -438,7 +438,9 @@ Caused by:
 A part that only a name or `_` meets passes, and a name there holds that
 type beside the other members' parts: over `` [(`A, z), (`B, "s")] ``,
 `(_, x) => str::len(x)` makes `z` a string, so a later `z <- 5` is
-refused where it is written.
+refused where it is written. A type test tests what it reads as a
+pattern does: `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) `` is
+refused until `z` is annotated, since `z` might become neither.
 
 For the same reason, two members whose left-out fields differ only in
 types not decided yet are two members, and a partial pattern over both

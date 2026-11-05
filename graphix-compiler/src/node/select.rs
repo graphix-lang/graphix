@@ -2380,6 +2380,16 @@ impl<R: Rt> Select<R> {
     // undecided_member_taken_by_an_earlier_field_tag,
     // undecided_parameter_taken_by_an_earlier_tag; a guarded earlier arm takes nothing:
     // undecided_member_beside_a_guarded_tag_decided.
+    // 2026-11-04 claude: Review r15 P-r2-2 (high, w5/w5b/w5e/w5h): a written union test,
+    // (`J, [i64, string]) as (`J, s), took the (`J, z) member out of what reaches the
+    // later arms without deciding z, so (_, n) met no value of it and both engines found
+    // no arm. check_undecided now also judges a written test over what reaches it
+    // (written_tests_undecided: the member passes the test with the cells copied but not
+    // with the cell held rigid) and refuses it naming z; w1 and w5d, accepted on main,
+    // are refused the same way. Pins (fail without it):
+    // lang::select_undecided::written_union_test_of_an_undecided_part_refused,
+    // _before_a_literal_refused, _parameter_refused; twins
+    // written_union_test_of_an_annotated_part, written_test_any_over_an_undecided_part.
     // XCR claude for claude: [bug/medium] A pattern over a variant whose payload is a
     // union of structs told apart only by cells decided after the select covers only
     // the payload's first member: `let v = select b { true => `P({a: [1], c: x}), false
@@ -2650,15 +2660,22 @@ impl<R: Rt> Select<R> {
             let e = match pat.explicit_type_predicate {
                 true => {
                     let t = &pat.type_predicate;
-                    sp.meets_undecided(env, &ids, t, &|_| true)?.map(|tv| {
-                        format_with_flags(PrintFlag::DerefTVars, || {
-                            anyhow!(
-                                "{sp} tests a value of '{}, a type variable its type test \
+                    match sp.meets_undecided(env, &ids, t, &|_| true)? {
+                        Some(tv) => {
+                            Some(format_with_flags(PrintFlag::DerefTVars, || {
+                                anyhow!(
+                                    "{sp} tests a value of '{}, a type variable its type test \
                                  {t} leaves open: write the type it tests",
-                                tv.name
-                            )
-                        })
-                    })
+                                    tv.name
+                                )
+                            }))
+                        }
+                        None => written_tests_undecided(env, t, reaching, undecided)?
+                            .map(|tv| {
+                                let pat = format_compact!("{t} as {sp}");
+                                undecided_refusal(env, &pat, &tv, &self.spec.ori)
+                            }),
+                    }
                 }
                 false => sp
                     .meets_undecided(env, &ids, reaching, &held)?
@@ -2672,6 +2689,21 @@ impl<R: Rt> Select<R> {
     }
 }
 
+// CR claude for eric: [question/low] D5 (b) refuses an arm that tests a part still
+// undecided at the select's end, but an arm may decide the part first, and then nothing
+// is undecided to refuse: the arms decide what they will. So `(_, {a, ..})` over
+// [(`K, {a: Array<i64>, c: i64}), (`J, 'z)] completes against the K member's struct and
+// decides z := {a: _, c: i64}, even where an earlier arm took the K member whole, and a
+// later `z <- {a: ["s"], c: "w"}` is refused at the write ("z is { a: Array<string>, c:
+// i64 }, inferred from an earlier use"), a type the program never gave z; a lone open
+// cell under `{a, ..}` becomes {a: '_} ("does not contain {..}" over a parameter, naming
+// nothing); `(`J, _) | (_, 1)` decides z := i64 where the arms written apart pass; and a
+// tag test `(`J, _)` over (('w, ..)) decides w := `J, so the next arm `(`M, _)` is
+// "will never match", naming neither w nor `let w: [`J, `M, `L]`. All sound (refused,
+// no wrong value) and main eb0989d33 alike. Should an arm that decides an undecided part
+// (a completion, a tag, a literal in an or-alternative) be refused as testing it,
+// naming the binding, rather than decide it? probes:
+// ~/ptmp/cr29/scratch/review-r15/P-r2-1/{d3,t3,g1,n2,n3,or5,w6,w8}.gx (arm-decides-undecided-01)
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
@@ -2695,11 +2727,50 @@ fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error 
     )
 }
 
+/// The first of `undecided` the written test `t` tests in a member of
+/// `reaching`: one the member passes the test with, whatever its cells
+/// become, but not with that cell one type of its own.
+fn written_tests_undecided(
+    env: &Env,
+    t: &Type,
+    reaching: &Type,
+    undecided: &AHashMap<usize, TVar>,
+) -> Result<Option<TVar>> {
+    if undecided.is_empty() {
+        return Ok(None);
+    }
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members(env, reaching, &mut members)?;
+    for m in members.iter() {
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        crate::typ::settle::position_cells(m, &mut cells);
+        let mut held: SmallVec<[TVar; 2]> = SmallVec::new();
+        for tv in cells.values().filter_map(|tv| tv.open_cell()) {
+            let addr = tv.cell_addr();
+            if undecided.contains_key(&addr)
+                && !held.iter().any(|h| h.cell_addr() == addr)
+            {
+                held.push(tv)
+            }
+        }
+        if held.is_empty() || !t.contains_holding(env, m, &[])? {
+            continue;
+        }
+        held.sort_by(|a, b| a.name.cmp(&b.name));
+        for tv in held {
+            if !t.contains_holding(env, m, std::slice::from_ref(&tv))? {
+                return Ok(Some(tv));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided
 /// at its select, naming the binding whose type it is.
 fn undecided_refusal(
     env: &Env,
-    pat: &StructurePattern,
+    pat: &dyn std::fmt::Display,
     tv: &TVar,
     at: &Origin,
 ) -> anyhow::Error {

@@ -1527,7 +1527,9 @@ cycle, across workers; the compiler never pins threads.
   pattern other than a name or `_` standing over its values, is refused,
   naming the binding to annotate (`StructurePattern::meets_undecided`,
   the walk the declared-variable rule below takes), and so is any open
-  cell of a written test that its structure tests; a name over it takes
+  cell of a written test that its structure tests, and a written test
+  that takes such a member only whatever the cell becomes, not with the
+  cell one type of its own (`written_tests_undecided`); a name over it takes
   the open part beside the members' others (`TVar::narrow_per_member`).
   Exhaustiveness holds those cells rigid on copies first
   (`Type::contains_holding`), so a part only names and `_` meet covers

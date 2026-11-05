@@ -207,6 +207,53 @@ run!(written_collection_test_with_an_open_variable_refused, r#"{
     [f([`Keep(3)]), f([1])]
 }"#, refused("[`Keep(r)] tests a value of 'q, a type variable its type test"); FuseExpect::None);
 
+// A written test tests what it reads as any other pattern does: one
+// that takes a member only through an undecided part is refused.
+run!(written_union_test_of_an_undecided_part_refused, r#"{
+    let b = false;
+    let z = never();
+    let v = select b { true => (`K, 1), false => (`J, z) };
+    let r = select v { (`J, [i64, string]) as (`J, s) => "js", (_, n) => "n" };
+    z <- true;
+    r
+}"#, refused("(`J, [i64, string]) as (`J, s) tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+run!(written_union_test_of_an_undecided_part_before_a_literal_refused, r#"{
+    let b = false;
+    let z = never();
+    let v = select b { true => (`K, 1), false => (`J, z) };
+    let r = select v { (`J, [i64, string]) as (`J, s) => "js", (_, 1) => "one", (_, n) => "n" };
+    z <- true;
+    r
+}"#, refused("(`J, [i64, string]) as (`J, s) tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+run!(written_union_test_of_an_undecided_parameter_refused, r#"{
+    let f = |b: bool, z| {
+        let v = select b { true => (`K, 1), false => (`J, z) };
+        select v { (`J, [i64, string]) as (`J, s) => "js", (_, n) => "n" }
+    };
+    f(false, true)
+}"#, refused("(`J, [i64, string]) as (`J, s) tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+run!(written_union_test_of_an_annotated_part, r#"{
+    let b = false;
+    let z: [i64, string, bool] = never();
+    let v = select b { true => (`K, 1), false => (`J, z) };
+    let r = select v { (`J, [i64, string]) as (`J, s) => "js", (_, n) => "n" };
+    z <- true;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "n"); FuseExpect::Jit);
+
+// A written test over an undecided part it does not test (Any there) passes.
+run!(written_test_any_over_an_undecided_part, r#"{
+    let b = false;
+    let z = never();
+    let v = select b { true => (`K, 1), false => (`J, z) };
+    let r = select v { (`J, Any) as (`J, _) => "j", (_, n) => "n" };
+    z <- true;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "j"); FuseExpect::Jit);
+
 // Exhaustiveness holds an undecided part only `_` meets as one type,
 // whatever it becomes: the product distributes over it.
 run!(undecided_part_only_wildcards_meet_distributes, r#"{

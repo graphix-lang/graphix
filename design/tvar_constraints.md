@@ -614,8 +614,15 @@ before the arms ran (`settle::position_cells`), still open at the end:
 a cell an arm's own pattern brought, a bind's or a `_`'s, which the
 arms' settle put into an open scrutinee, is the arms' decision and not
 counted. A written test is judged over its own type, where any open
-cell is its own variable nothing declares. The cost is one walk per arm,
-linear in the arms.
+cell is its own variable nothing declares, and over what reaches it: it
+tests an undecided cell of a member when the member passes the test
+with the cells copied (whatever they become) but not with that cell held
+rigid, one type of its own (`written_tests_undecided`, two
+`contains_holding` per member holding such a cell): else
+`` (`J, [i64, string]) as (`J, s) `` would take `` (`J, z) `` out of what
+reaches the later arms, deciding nothing of `z`, and a later `(_, n)`
+would meet no value of it. The cost is one walk per arm, linear in the
+arms.
 
 What only names and `_` meet passes, and stays sound two ways. A name
 over a union position where one member's part is an open cell takes

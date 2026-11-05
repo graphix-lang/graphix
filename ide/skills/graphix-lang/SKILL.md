@@ -472,7 +472,9 @@ across a bottom cycle).
   A part only a name or `_` meets passes, and a name there holds that
   type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
   `str::len(x)` makes `z` a string. A written test is closed: `` ['b,
-  `A(i64)] as `A(n) `` with `'b` declared nowhere is refused.
+  `A(i64)] as `A(n) `` with `'b` declared nowhere is refused, and a
+  written test that tests the undecided part is refused as a pattern is:
+  `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) ``.
 - A partial struct pattern over members whose left-out fields differ
   only in types not decided at the select takes them for two members and
   is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,

@@ -356,7 +356,9 @@ site the select. Not generated: a name over the open part, typed beside
 the members' others (`TVar::narrow_per_member`), whose refusal comes at
 a later write (pins `lang::select_undecided::name_over_an_undecided_*`);
 a written test's own open variable (pins
-`lang::select_undecided::written_*_open_variable_refused`); and members
+`lang::select_undecided::written_*_open_variable_refused`) and a written
+test of the undecided part (`written_tests_undecided`, pins
+`lang::select_undecided::written_union_test_of_an_undecided_*`); and members
 told apart only by undecided cells under a partial struct pattern
 (`UndecidedMembers`; pins `lang::select::partial_struct_*_two_members`).
 
