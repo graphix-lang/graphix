@@ -395,6 +395,40 @@ async fn a_callee_fire_reaches_a_passed_reader_forked_or_not(mode: Mode) -> Resu
 
 modes!(a_callee_fire_reaches_a_passed_reader_forked_or_not);
 
+/// `MAKE` makes `rr`'s target and fires it in the walk; `READ` reads it
+/// through `rr` before and after `MAKE`, in one statement or in three.
+const PASSED_DEREF: &str = "{
+  let n = 0;
+  n <- select n { k if k < 3 => k + 1, _ => never() };
+  let rr: [&i64, null] = null;
+  let mk = |u: i64| -> i64 { let v = u * 10; rr <- &v; v };
+  READ
+}";
+
+// A dereference the walk passed inside its own statement, before the
+// nested block or the call that fires its target, reads that fire next
+// cycle, as one in a statement of its own does; one after it reads it in
+// its cycle.
+async fn a_fire_reaches_a_passed_dereference_in_its_statement(mode: Mode) -> Result<()> {
+    for make in ["{ let inner = n * 10; rr <- &inner; inner }", "mk(n)"] {
+        for read in [
+            "(*(rr$), MAKE, *(rr$))",
+            "{ let a = *(rr$); let b = MAKE; let c = *(rr$); (a, b, c) }",
+        ] {
+            let code = PASSED_DEREF.replace("READ", read).replace("MAKE", make);
+            let got = result_updates(&code, &[], mode).await?;
+            assert_eq!(
+                got,
+                ["[0, 10, 10]", "[10, 20, 20]", "[20, 30, 30]", "[30, 30, 30]"],
+                "{read} over {make}, {mode:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+modes!(a_fire_reaches_a_passed_dereference_in_its_statement);
+
 // A write through a reference that moves after the walk passed the write
 // lands at the new target from the next cycle on.
 const PASSED_REFERENCE: &str = "{

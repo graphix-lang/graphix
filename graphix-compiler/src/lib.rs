@@ -1845,7 +1845,20 @@ impl<R: Rt> CompileCtx<R> {
 
     /// The reader a node at `top_id` inside the current boundary is.
     pub fn reader(&self, top_id: ExprId) -> prune::Reader {
-        prune::Reader { root: top_id, boundary: self.boundary.clone() }
+        self.stamped_reader(top_id, None)
+    }
+
+    /// [`Self::reader`] keeping the read stamp `read`.
+    pub(crate) fn stamped_reader(
+        &self,
+        top_id: ExprId,
+        read: Option<&prune::ReadStamp>,
+    ) -> prune::Reader {
+        prune::Reader {
+            root: top_id,
+            boundary: self.boundary.clone(),
+            read: read.cloned(),
+        }
     }
 
     /// `f` compiling inside `boundary`.
@@ -2622,9 +2635,27 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         self.rt.ref_var(id, reader)
     }
 
+    /// [`Self::ref_var`] for a reader taken earlier.
+    pub(crate) fn ref_reader(&mut self, id: BindId, reader: prune::Reader) {
+        self.rt.ref_var(id, reader)
+    }
+
     /// The reader a node at `top_id` inside the walk's boundary is.
     pub fn reader(&self, top_id: ExprId) -> prune::Reader {
-        prune::Reader { root: top_id, boundary: self.boundary.clone() }
+        self.stamped_reader(top_id, None)
+    }
+
+    /// [`Self::reader`] keeping the read stamp `read`.
+    pub(crate) fn stamped_reader(
+        &self,
+        top_id: ExprId,
+        read: Option<&prune::ReadStamp>,
+    ) -> prune::Reader {
+        prune::Reader {
+            root: top_id,
+            boundary: self.boundary.clone(),
+            read: read.cloned(),
+        }
     }
 
     /// `f` walking inside `boundary`.

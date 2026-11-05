@@ -25,6 +25,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
+    prune::ReadStamp,
     typ::{
         CoreTrait, FnType, Mutability, ReadCopies, TVar, Type,
         tvar::{AtLevel, Level, current_level},
@@ -1464,7 +1465,7 @@ impl<R: Rt> Update<R> for Ref {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         // Overlays first, then the store; a store miss rides the resident.
         let dbg = dbgenv::gxdbg_ref();
-        let r = match read_var_by(ctx, &self.id, self.top_id) {
+        let r = match read_var_by(ctx, &self.id, self.top_id, None) {
             Some(VarRead::Delivered(tv)) => {
                 if dbg {
                     eprintln!(
@@ -2452,6 +2453,9 @@ pub struct Deref<R: Rt> {
     resident: TagValue,
     /// Where the reference points; `None` while it is bottom.
     addr: Option<Addr>,
+    /// Its target may fire later in the walk of its own boundary (a
+    /// nested block or a call after it in its statement makes it).
+    read: ReadStamp,
 }
 
 /// A reference's target as a `Deref` reads it: the reference's own
@@ -2484,8 +2488,10 @@ impl<R: Rt> Deref<R> {
         child: Node<R>,
         top_id: ExprId,
         addr: Option<Addr>,
+        read: ReadStamp,
     ) -> Node<R> {
-        Node::new(Self { spec, typ, child, top_id, resident: TagValue::phantom(), addr })
+        let resident = TagValue::phantom();
+        Node::new(Self { spec, typ, child, top_id, resident, addr, read })
     }
 
     pub(crate) fn image_decode(
@@ -2497,13 +2503,15 @@ impl<R: Rt> Deref<R> {
         let child = decode_node(ctx, buf)?;
         let top_id = ExprId::decode(buf)?;
         let addr = Option::<Addr>::decode(buf)?;
+        let read = ReadStamp::default();
         if let Some(a) = &addr {
-            ctx.record_ref(a.id, top_id);
+            let reader = ctx.stamped_reader(top_id, Some(&read));
             if a.cell != a.id {
-                ctx.record_ref(a.cell, top_id);
+                ctx.record_reader(a.cell, reader.clone());
             }
+            ctx.record_reader(a.id, reader);
         }
-        Ok(Self::with(spec, typ, child, top_id, addr))
+        Ok(Self::with(spec, typ, child, top_id, addr, read))
     }
 
     pub(crate) fn compile(
@@ -2516,7 +2524,7 @@ impl<R: Rt> Deref<R> {
     ) -> Result<Node<R>> {
         let child = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let typ = Type::empty_tvar();
-        Ok(Self::with(spec, typ, child, top_id, None))
+        Ok(Self::with(spec, typ, child, top_id, None, ReadStamp::default()))
     }
 
     /// Address `cell`'s referent: the place it stands for, else the
@@ -2532,11 +2540,11 @@ impl<R: Rt> Deref<R> {
         let path: Option<Path> = (!same_path).then(|| path.clone());
         let moved = match (&mut self.addr, path) {
             (Some(a), None) => {
-                Self::swap_cell(ctx, a, cell, self.top_id);
+                Self::swap_cell(ctx, a, cell, self.top_id, &self.read);
                 Moved::No
             }
             (Some(a), Some(p)) if same_id => {
-                Self::swap_cell(ctx, a, cell, self.top_id);
+                Self::swap_cell(ctx, a, cell, self.top_id, &self.read);
                 a.path = p;
                 Moved::Path
             }
@@ -2546,10 +2554,11 @@ impl<R: Rt> Deref<R> {
                     None => Moved::First,
                 };
                 self.release(ctx);
-                ctx.ref_var(id, self.top_id);
+                let reader = ctx.stamped_reader(self.top_id, Some(&self.read));
                 if cell != id {
-                    ctx.ref_var(cell, self.top_id);
+                    ctx.ref_reader(cell, reader.clone());
                 }
+                ctx.ref_reader(id, reader);
                 self.addr = Some(Addr { cell, id, path: p.unwrap_or_default() });
                 moved
             }
@@ -2558,25 +2567,33 @@ impl<R: Rt> Deref<R> {
     }
 
     /// Follow another reference cell to the same binding.
-    fn swap_cell(ctx: &mut ExecCtx<'_, R>, a: &mut Addr, cell: BindId, top_id: ExprId) {
+    fn swap_cell(
+        ctx: &mut ExecCtx<'_, R>,
+        a: &mut Addr,
+        cell: BindId,
+        top_id: ExprId,
+        read: &ReadStamp,
+    ) {
         if a.cell == cell {
             return;
         }
+        let reader = ctx.stamped_reader(top_id, Some(read));
         if a.cell != a.id {
-            ctx.unref_var(a.cell, top_id);
+            ctx.unref_reader(a.cell, reader.clone());
         }
         if cell != a.id {
-            ctx.ref_var(cell, top_id);
+            ctx.ref_reader(cell, reader);
         }
         a.cell = cell;
     }
 
     fn release(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(a) = self.addr.take() {
-            ctx.unref_var(a.id, self.top_id);
+            let reader = ctx.stamped_reader(self.top_id, Some(&self.read));
             if a.cell != a.id {
-                ctx.unref_var(a.cell, self.top_id);
+                ctx.unref_reader(a.cell, reader.clone());
             }
+            ctx.unref_reader(a.id, reader);
         }
     }
 }
@@ -2613,7 +2630,8 @@ impl<R: Rt> Update<R> for Deref<R> {
         let (id, moved) = self.address(ctx, cell);
         // a target the arm around it learns only now may owe a fire
         let owed = super::wake::owed(ctx, &id);
-        let res = match read_var_by(ctx, &id, self.top_id) {
+        self.read.read(ctx.rt.cycle());
+        let res = match read_var_by(ctx, &id, self.top_id, Some(&self.read)) {
             Some(VarRead::Delivered(tv)) => Some(tv.clone()),
             Some(VarRead::Standing(tv)) if owed => {
                 Some(TagValue::fired(tv.value_cloned()))

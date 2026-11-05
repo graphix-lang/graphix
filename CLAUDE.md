@@ -254,9 +254,8 @@ next, as a write lands (`RtView::store_fire`, `Rt::late`, `Event::late`,
 that cycle supersedes it): a reader before its producer runs a cycle
 behind, and none runs twice in a cycle; one feeding its producer back
 is a self-loop, a step a cycle, as `x <- x + 1` is. Order is judged by
-boundary: a reader in a boundary the walk is still inside is ahead, so a
-reference read earlier in its producer's own boundary misses the fire
-(CR late-same-boundary-01). A wake's
+boundary, and inside the walk's own boundary by a `Deref`'s read stamp
+(`prune::ReadStamp`): one that read this cycle is passed. A wake's
 re-raise, catch-up's inject, a priming from the store and a born
 callee's quiet arguments are fires in the event alone, never stored; an
 error raised to a catch is stored as any write is, delivered the cycle

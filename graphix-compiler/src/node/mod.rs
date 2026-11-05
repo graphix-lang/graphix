@@ -21,6 +21,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
+    prune::ReadStamp,
     typ::{
         CastInput, Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
         tvar::{
@@ -108,16 +109,17 @@ pub(crate) fn read_var<'a, R: Rt>(
 }
 
 /// [`read_var`] by a reader at the root `root`, inside the walk's
-/// boundary: a fire made last cycle after the walk passed it is delivered
-/// to it now ([`crate::Event::late`]).
+/// boundary, keeping the read stamp `read`: a fire made last cycle after
+/// the walk passed it is delivered to it now ([`crate::Event::late`]).
 #[inline]
 pub(crate) fn read_var_by<'a, R: Rt>(
     ctx: &'a ExecCtx<'_, R>,
     id: &BindId,
     root: ExprId,
+    read: Option<&ReadStamp>,
 ) -> Option<VarRead<'a>> {
     if ctx.event.late.is_some()
-        && let Some(tv) = late_fire(ctx, id, root)
+        && let Some(tv) = late_fire(ctx, id, root, read)
     {
         return Some(VarRead::Delivered(tv));
     }
@@ -125,17 +127,20 @@ pub(crate) fn read_var_by<'a, R: Rt>(
 }
 
 /// The fire of `id` made last cycle after the walk passed a reader at the
-/// root `root`, inside the walk's boundary, delivered to it now
-/// ([`crate::Event::late`]).
+/// root `root`, inside the walk's boundary, keeping the read stamp `read`,
+/// delivered to it now ([`crate::Event::late`]).
 fn late_fire<'a, R: Rt>(
     ctx: &'a ExecCtx<'_, R>,
     id: &BindId,
     root: ExprId,
+    read: Option<&ReadStamp>,
 ) -> Option<&'a TagValue> {
     let late = ctx.event.late.as_ref()?;
     let (tv, readers) = late.get(id)?;
     if ctx.event.variables.contains_key(id)
-        || !readers.iter().any(|r| r.root == root && r.boundary == ctx.boundary)
+        || !readers.iter().any(|r| {
+            r.root == root && r.boundary == ctx.boundary && r.read.as_ref() == read
+        })
     {
         return None;
     }
@@ -2973,7 +2978,7 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
             .event
             .variables
             .get(&self.src_id)
-            .or_else(|| late_fire(ctx, &self.src_id, self.top_id))
+            .or_else(|| late_fire(ctx, &self.src_id, self.top_id, None))
         {
             self.cell = Self::cell(tv);
             addressless = self.cell.is_none();

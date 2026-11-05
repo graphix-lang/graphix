@@ -206,7 +206,7 @@ unchanged.
   write delivered the binding in that cycle, and `Event::late` holds the
   fire for those readers alone: `Ref` and `Deref` read it through
   `read_var_by`, and `ConnectDeref` its reference through `late_fire`,
-  matching their root and the walk's boundary.
+  matching their root, the walk's boundary and their read stamp.
 - A run of statements that fork must not race that choice: siblings are
   dependent when an earlier one reads what a later one publishes
   (`analysis::plan_runs`, `ids_verdict`; `design/parallel_eval.md`). An
@@ -223,11 +223,15 @@ unchanged.
   select updates and again as it deselects the arm), so the arm takes it
   at its wake as a fire made while it slept. Pin:
   `lang::delivery::a_late_fire_reaches_a_sleeping_arm_at_its_wake`.
-- Not delivered late: to a reader in a boundary
-  the walk is still inside, which counts as ahead though the walk may
-  have passed it there: a `*r` directly in a statement, before a nested
-  block of that statement that makes `r`'s target fire, never sees that
-  fire (CR late-same-boundary-01, as on main).
+- Inside the walk's own boundary the boundaries cannot order a reader
+  against the fire: a `Deref` keeps a read stamp (`prune::ReadStamp`,
+  in its `Reader`), set as it reads, and one that read this cycle is
+  passed (`Reader::passed_by`), so a `*r` before a nested block or a call
+  of its own statement that makes `r`'s target fire reads that fire next
+  cycle. The stamp tells apart Derefs that share a root and a boundary,
+  so one after the producer, which read the fire in its cycle, takes no
+  late copy. Pin:
+  `lang::delivery::a_fire_reaches_a_passed_dereference_in_its_statement`.
 - A backward reader that feeds its producer (`let r = h(1); let w = r +
   1; h <- |x| x + w`) runs a cycle at a time, never settling, as a
   `<-` self-loop does: it is what the program says (Eric, 2026-11-05).
