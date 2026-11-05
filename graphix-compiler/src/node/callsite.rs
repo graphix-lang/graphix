@@ -3653,7 +3653,7 @@ impl<R: Rt> CallSite<R> {
         let formals =
             ftype.args.iter().zip(g.args()).zip(ArgKey::of_formals(&ftype.args));
         for (i, ((farg, pat), key)) in formals.enumerate() {
-            // CR claude for claude: [perf/medium] A formal whose type is a typedef naming a
+            // XCR claude for claude: [perf/medium] A formal whose type is a typedef naming a
             // function type is no callback formal here: with_deref follows bindings, never a
             // Type::Ref, so a call through it gets no static callee and de-fuses. `type K =
             // fn(x: i64) -> i64; let outer = |#k: K, z: i64| (k(z), z); #[native] outer(#k:
@@ -3663,7 +3663,16 @@ impl<R: Rt> CallSite<R> {
             // callback formal reads the formal the same way. Expanding the formal's reference
             // at these tests would make the two spellings fuse alike. Main 387c29e60 the same.
             // probes: ~/ptmp/cr29/scratch/r11-R/{tdplain,tdpoly}.gx (typedef-callback-formal-01)
-            if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
+            // 2026-11-05 claude: A formal typed by a typedef naming a function type is a
+            // callback formal: Type::is_function expands the name (lookup_ref_probe), used by
+            // register_fn_params, typecheck0_instance's callback test, the def gate's param knot
+            // and fusion lowering (replacing is_fn_shaped). Pins that fail without it (jit,
+            // jit_par): lang::fusion::typedef_callback_formal_fuses,
+            // quantified_typedef_callback_formal_fuses. Two fixtures that took a typedef'd fn
+            // formal now fuse (FuseExpect::Jit):
+            // modules::interface_typedef_with_a_trait_parameter,
+            // types::rank2_written_holders_take_general_values. Needs a soak.
+            if !farg.typ.is_function(&ctx.env) {
                 continue;
             }
             let Some(id) = pat.single_bind_id() else { continue };
@@ -4805,7 +4814,7 @@ impl<R: Rt> CallSite<R> {
                 wrap!(n, n.typecheck0_instance(ctx, types))?;
                 // a callback formal's other cells (its return) are decided
                 // here, in the instance's task, not by its elaboration
-                if farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
+                if farg.typ.is_function(&ctx.env) {
                     wrap!(n, farg.typ.check_contains(&ctx.env, n.typ()))?;
                 }
             }

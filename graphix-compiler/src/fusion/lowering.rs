@@ -1154,7 +1154,7 @@ pub(crate) fn body_fingerprint<R: Rt>(
             };
             res.push(callee.id().inner());
             each_arg_node(cs, &mut |a: &Node<R>| {
-                if !is_fn_shaped(a.typ(), &ec.env) {
+                if !a.typ().is_function(&ec.env) {
                     return;
                 }
                 let id = match a.view() {
@@ -1195,17 +1195,6 @@ fn each_arg_node<R: Rt>(cs: &CallSite<R>, f: &mut impl FnMut(&Node<R>)) {
         if let Some(n) = n {
             f(n)
         }
-    }
-}
-
-/// Is this an fn type once tvars deref and aliases expand?
-fn is_fn_shaped(t: &Type, env: &Env) -> bool {
-    match t.deref_cloned() {
-        Some(Type::Fn(_)) => true,
-        Some(r @ Type::Ref(_)) => {
-            expand_refs(&r, env).with_deref(|t| matches!(t, Some(Type::Fn(_))))
-        }
-        _ => false,
     }
 }
 
@@ -1391,7 +1380,7 @@ fn instance_agrees<R: Rt>(
         && gt.args.iter().zip(site.args.iter()).all(|(a, b)| {
             // An fn-typed arg is never a value slot and is keyed by
             // `FnResolutions`; its `throws` differs benignly here.
-            let (af, bf) = (is_fn_shaped(&a.typ, &ec.env), is_fn_shaped(&b.typ, &ec.env));
+            let (af, bf) = (a.typ.is_function(&ec.env), b.typ.is_function(&ec.env));
             if af || bf { af && bf } else { a.typ == b.typ }
         });
     if !args_agree || gt.vargs != site.vargs || gt.rtype != site.rtype {
@@ -1443,7 +1432,7 @@ fn formal_slots<R: Rt>(
         // An invariant fn-typed formal drops out of the signature: its
         // uses are statically-resolved calls, and a body that needs it
         // as a value fails to emit. A rebind slot cannot carry a lambda.
-        if is_fn_shaped(&arg_typ, &ec.env) {
+        if arg_typ.is_function(&ec.env) {
             if inv[i] {
                 out.skipped.push(i as u32);
                 continue;
@@ -1494,10 +1483,7 @@ impl ReadsMemo {
     /// value the caller could forward.
     fn captured<R: Rt>(&mut self, id: BindId, ec: &CompileCtx<R>) -> bool {
         *self.captured.entry(id).or_insert_with(|| {
-            ec.env
-                .by_id
-                .get(&id)
-                .is_some_and(|b| !is_fn_shaped(&expand_refs(&b.typ, &ec.env), &ec.env))
+            ec.env.by_id.get(&id).is_some_and(|b| !b.typ.is_function(&ec.env))
         })
     }
 }

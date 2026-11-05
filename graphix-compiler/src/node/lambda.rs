@@ -3024,7 +3024,7 @@ impl<R: Rt> Update<R> for Lambda {
             let mut param_knot: LPooled<Vec<BindId>> = LPooled::take();
             if let ApplyView::Lambda(g) = f.view() {
                 for (i, (pat, at)) in g.args().iter().zip(ftyp.args.iter()).enumerate() {
-                    if at.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
+                    if at.typ.is_function(&ctx.env)
                         && let Some(id) = pat.single_bind_id()
                     {
                         ctx.def_gate_params.insert(id, (def.id, i as u32));

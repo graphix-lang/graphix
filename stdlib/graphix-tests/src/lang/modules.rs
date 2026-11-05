@@ -2548,7 +2548,7 @@ run!(
     "#,
     "/test/m.gx" => r#"
         let apply = |f: F, x: i64| -> string f(x)
-    "#; FuseExpect::None);
+    "#; FuseExpect::Jit);
 
 // A predicate bound on a typedef parameter reaches the open members of a
 // union argument on the interface's side as on the implementation's.

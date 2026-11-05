@@ -7886,7 +7886,7 @@ run!(
   (app(e), app(t.f), app(h), app(mk(0)), g(2), each([|x| x]), s.n)
 }"#,
     prints(r#"[[i64:1, "s"], [i64:1, "s"], [i64:1, "s"], [i64:1, "s"], i64:2, [[i64:1, "s"]], i64:1]"#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A quantified function type in a function type's result, or an abstract

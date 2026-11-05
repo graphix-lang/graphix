@@ -3335,6 +3335,19 @@ impl Type {
         })
     }
 
+    /// Whether this type is a function type through bindings and typedef
+    /// names: a formal so typed is a callback formal however it is
+    /// written. Only looks: it fills no resolution cell and binds nothing.
+    pub fn is_function(&self, env: &Env) -> bool {
+        ensure_sufficient(|| match self.deref_cloned() {
+            Some(Type::Fn(_)) => true,
+            Some(r @ Type::Ref(_)) => {
+                r.lookup_ref_probe(env).is_some_and(|(_, t)| t.is_function(env))
+            }
+            _ => false,
+        })
+    }
+
     /// The dereferenced type, cloned; `None` for an unbound cell.
     pub fn deref_cloned(&self) -> Option<Self> {
         self.with_deref(|t| t.cloned())
