@@ -602,7 +602,10 @@ after it, a parameter nothing has bound yet) is one unknown type, equal
 only to itself, whatever the program decides later (Eric, 10-31 and
 11-03, D5 (b)). Once the arms have decided what they will (Reach::new's
 settle, the narrowing, the bodies), `Select::check_undecided` walks each
-arm's pattern over the scrutinee with `StructurePattern::meets_undecided`,
+arm's pattern over what reaches it (`Reach`'s type before the arm: a
+member an earlier unguarded arm took whole, by a tag at another
+position, meets no later arm; that arm passed the rule itself) with
+`StructurePattern::meets_undecided`,
 the walk the declared-variable rule takes (`meets`, met over open cells
 instead of rigid ones): a pattern other than a name or `_` standing over
 a value of such a cell is refused, naming the binding whose type it is

@@ -464,8 +464,10 @@ across a bottom cycle).
   needing an arm of its own.
 - A type not decided yet where a select is checked (a `never()` let
   written after it, a function's unannotated parameter) is one unknown
-  type there, equal only to itself. An arm that tests a value of it is
-  refused, naming the binding: over `let v = select b { true => {a: [1],
+  type there, equal only to itself. An arm that tests a value of it
+  reaching the arm is refused, naming the binding (an earlier arm that
+  takes its member whole, `` (`J, _) `` over `` [(`K, i64), (`J, z)] ``,
+  leaves the later arms free of it): over `let v = select b { true => {a: [1],
   c: 1}, false => z }`, `{a, ..} => ..` is refused until `z` is annotated.
   A part only a name or `_` meets passes, and a name there holds that
   type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with

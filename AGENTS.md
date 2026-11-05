@@ -1522,7 +1522,8 @@ cycle, across workers; the compiler never pins threads.
   undecided at a select's end is one unknown type, equal only to itself**
   (`Select::check_undecided`): once the arms have decided what they will,
   an open cell the scrutinee held before them (never one their own
-  patterns brought: a bind's, a `_`'s) that an arm tests, a
+  patterns brought: a bind's, a `_`'s) in what reaches an arm (an earlier
+  unguarded arm may take its member whole) that the arm tests, a
   pattern other than a name or `_` standing over its values, is refused,
   naming the binding to annotate (`StructurePattern::meets_undecided`,
   the walk the declared-variable rule below takes), and so is any open

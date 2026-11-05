@@ -614,6 +614,13 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 // abstract_payload_parameter_undecided_refused. The 11-04 note's written tests over
 // W<'b> (y2, y6: W<T> as W(..) covering a declared variable's bound under an abstract
 // parameter) are D6's coverage, not this rule's: moved to abstract-written-cover-01.
+// 2026-11-04 claude: Review r15 (low, left): over `let x = R(v)` the D5 refusal names
+// no binding ('annotate the scrutinee's type where it is built'), where `let x:
+// R<[i64, `Err(string)]>` passes: the cell is R's parameter inside x's type, which
+// Holders::name_cell (a binding whose type is the cell) does not reach; naming it
+// needs a holder search through type applications, a new mechanism. Main runs these
+// shapes but is unsound there (g2d: base's JIT panics on a kernel param of the wrong
+// kind). probes: ~/ptmp/cr29/scratch/review-r15/P-r1-1/g2b.gx, g2c.gx, g2d.gx, g2e.gx.
 
 // CR claude for claude: [bug/low] A written test over an abstract parameter that is a
 // declared variable covers nothing of it: `'b: (i64, string) |x: W<'b>| select x {
@@ -632,6 +639,15 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
 /// the last arm. Quadratic in the arm count (each arm re-walks what still
 /// reaches; 4000 tag arms check in about 2 s): member sets indexed by
 /// head would make it linear.
+// CR claude for claude: [perf/low] A select over an open part checks worse than
+// quadratically in its arms, on main eb0989d33 as on cr50-P: `--no-cache --check`
+// instructions over the empty program's 1.45G, a tuple scrutinee `(k, z)` with z an
+// unannotated parameter and arms `(`Ki, x)`: 50 arms +0.07G, 100 +0.23G, 200 +1.0G,
+// 400 +5.6G (x5.6 for x2); a never() member and `_` arms alike, a union of N structs
+// holding the open cell milder (200 arms +0.55G). Not located: the Reach walk
+// (`Reach::arm`'s diff of what still reaches) is the suspect the doc above names.
+// probes: ~/ptmp/cr29/scratch/review-r15/P-r1-1/scale/{tup,cat,mem,un}_*.gx, results
+// in scale/results.txt there (select-arm-cost-01)
 struct Reach {
     /// What still reaches the next arm.
     atype: Type,
@@ -2356,6 +2372,14 @@ impl<R: Rt> Select<R> {
     // undecided_member_tested_whole_refused, undecided_member_beside_a_literal_refused,
     // undecided_parameter_tested_refused; twins undecided_member_annotated,
     // undecided_parameter_annotated; must-reject family undecided-part.
+    // 2026-11-04 claude: Review of af8bd1db2 (y1, y3, y4): check_undecided judged each
+    // arm over the whole scrutinee, refusing (_, 1) after (`J, _) had taken the (`J, z)
+    // member whole; it now judges each arm over what reaches it (the Reach type before
+    // the arm), as the narrowing and dead-arm checks do. Pins (refused without it):
+    // lang::select_undecided::undecided_member_taken_by_an_earlier_tag,
+    // undecided_member_taken_by_an_earlier_field_tag,
+    // undecided_parameter_taken_by_an_earlier_tag; a guarded earlier arm takes nothing:
+    // undecided_member_beside_a_guarded_tag_decided.
     // XCR claude for claude: [bug/medium] A pattern over a variant whose payload is a
     // union of structs told apart only by cells decided after the select covers only
     // the payload's first member: `let v = select b { true => `P({a: [1], c: x}), false
@@ -2479,6 +2503,7 @@ impl<R: Rt> Select<R> {
         let scrut = self.arg.node.typ().clone();
         let mut reach = Reach::new(&ctx.env, &scrut, &self.arms)?;
         let mut rtypes: LPooled<Vec<&Type>> = LPooled::take();
+        let mut reached: SmallVec<[Type; 16]> = SmallVec::new();
         let spec_pats: &[_] = match &self.spec.kind {
             ExprKind::Select(se) => &se.arms,
             _ => &[],
@@ -2577,6 +2602,9 @@ impl<R: Rt> Select<R> {
             wrap!(n, child(n, ctx))?;
             rtypes.push(n.typ());
             reach.arm(&ctx.env, &scrut, pat, &site, checking)?;
+            if checking {
+                reached.push(reaching);
+            }
         }
         self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;
         drop(rtypes);
@@ -2588,7 +2616,7 @@ impl<R: Rt> Select<R> {
                         undecided.insert(c.cell_addr(), c);
                     }
                 }
-                self.check_undecided(&ctx.env, &undecided)?;
+                self.check_undecided(&ctx.env, &undecided, &reached)?;
                 check_repeats(&ctx.env, &self.arms)?;
                 let undecided: LPooled<Vec<TVar>> =
                     undecided.drain().map(|(_, c)| c).collect();
@@ -2602,17 +2630,20 @@ impl<R: Rt> Select<R> {
     /// decided once the arms have decided what they will, a later decision
     /// could make the test match what its coverage and its binds assumed it
     /// would not: one of `undecided`, the cells the scrutinee held before
-    /// the arms ran (never one the arms' own patterns brought), or any open
-    /// cell of a written test.
+    /// the arms ran (never one the arms' own patterns brought), in the part
+    /// of the scrutinee that reaches the arm (`reached`, one per arm), or any
+    /// open cell of a written test.
     fn check_undecided(
         &self,
         env: &Env,
         undecided: &AHashMap<usize, TVar>,
+        reached: &[Type],
     ) -> Result<()> {
         let ExprKind::Select(se) = &self.spec.kind else { return Ok(()) };
-        let scrut = self.arg.node.typ();
         let held = |tv: &TVar| undecided.contains_key(&tv.cell_addr());
-        for ((pat, n), (spec_pat, _)) in self.arms.iter().zip(se.arms.iter()) {
+        for (((pat, n), (spec_pat, _)), reaching) in
+            self.arms.iter().zip(se.arms.iter()).zip(reached.iter())
+        {
             let sp = &spec_pat.structure_predicate;
             let ids = CompiledAbstracts::new(&pat.structure_predicate, sp);
             let ids = |p: &StructurePattern| ids.get(p);
@@ -2630,7 +2661,7 @@ impl<R: Rt> Select<R> {
                     })
                 }
                 false => sp
-                    .meets_undecided(env, &ids, scrut, &held)?
+                    .meets_undecided(env, &ids, reaching, &held)?
                     .map(|tv| undecided_refusal(env, sp, &tv, &self.spec.ori)),
             };
             if let Some(e) = e {

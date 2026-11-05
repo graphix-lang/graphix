@@ -62,6 +62,45 @@ run!(undecided_parameter_annotated, r#"{
     f({a: [2], c: 2}, false)
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "[2]"); FuseExpect::Jit);
 
+// An arm is judged by what reaches it: a member an earlier arm took whole
+// meets no later arm.
+run!(undecided_member_taken_by_an_earlier_tag, r#"{
+    let b = false;
+    let z = never();
+    let v = select b { true => (`K, 1), false => (`J, z) };
+    let r = select v { (`J, _) => "j", (_, 1) => "one", _ => "o" };
+    z <- "q";
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "j"); FuseExpect::Jit);
+
+run!(undecided_member_taken_by_an_earlier_field_tag, r#"{
+    let b = false;
+    let z = never();
+    let v = select b { true => {k: `K, p: 1}, false => {k: `J, p: z} };
+    let r = select v { {k: `J, ..} => "j", {p: 1, ..} => "one", _ => "o" };
+    z <- "q";
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "j"); FuseExpect::Jit);
+
+run!(undecided_parameter_taken_by_an_earlier_tag, r#"{
+    let f = |b: bool, z| {
+        let v = select b { true => (`K, 1), false => (`J, z) };
+        select v { (`J, _) => "j", (_, 1) => "one", _ => "o" }
+    };
+    f(false, "q")
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "j"); FuseExpect::Jit);
+
+// A guarded arm takes nothing: the arm after it meets the member, and decides it.
+run!(undecided_member_beside_a_guarded_tag_decided, r#"{
+    let b = false;
+    let g = true;
+    let z = never();
+    let v = select b { true => (`K, {a: 1, c: 1}), false => (`J, z) };
+    let r = select v { (`J, _) if g => "j", (_, {a, ..}) => "[a]" };
+    z <- {a: "s", c: "w"};
+    r
+}"#, refused("z is { a: string, c: i64 }, inferred from an earlier use"); FuseExpect::None);
+
 // The arms' own cells, a bind's or a `_`'s, are what the arms decided.
 run!(arm_cells_are_decided, r#"{
     let f = |x| select x { `A(0) => 1, `A(n) => n, `B(_) => 2 };
