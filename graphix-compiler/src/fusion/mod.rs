@@ -472,7 +472,9 @@ impl FusionCtx {
 
     pub(crate) fn join(&mut self, mut fork: Self) {
         self.stats.join(fork.stats);
-        self.dead.append(&mut fork.dead);
+        if self.records_dead() {
+            self.dead.append(&mut fork.dead)
+        }
         match fork.emission.into_inner() {
             EmissionSlot::Task(task) => self
                 .emission
@@ -644,9 +646,16 @@ impl FusionCtx {
     /// The definition `id` was deleted: the next link forgets its kernels.
     pub(crate) fn forget_def(&mut self, id: LambdaId) {
         self.instances.lock().retain(|(def, ..), _| *def != id);
-        if !matches!(self.emission.get_mut(), EmissionSlot::Root(None)) {
+        if self.records_dead() {
             self.dead.push(id)
         }
+    }
+
+    /// Whether this context keeps the definitions deleted until a link: a
+    /// root that has emitted nothing has no kernels to forget, and a task
+    /// cannot tell, so its join decides.
+    fn records_dead(&mut self) -> bool {
+        !matches!(self.emission.get_mut(), EmissionSlot::Root(None))
     }
 
     /// Start compiling every region fused since the last link while
@@ -1922,5 +1931,20 @@ mod tests {
         let root = FusionCtx::new();
         let fork = root.fork();
         assert!(fork.emission().is_err());
+    }
+
+    #[test]
+    fn a_root_that_emitted_nothing_keeps_no_dead_definitions() {
+        let mut root = FusionCtx::new();
+        for _ in 0..3 {
+            let mut fork = root.fork();
+            fork.forget_def(LambdaId::new());
+            let mut nested = fork.fork();
+            nested.forget_def(LambdaId::new());
+            fork.join(nested);
+            assert_eq!(fork.dead.len(), 2);
+            root.join(fork);
+        }
+        assert!(root.dead.is_empty(), "{} dead definitions kept", root.dead.len());
     }
 }
