@@ -1194,7 +1194,7 @@ impl TypeRef {
         self.resolved().map(|r| r.def_key())
     }
 
-    // CR claude for claude: [risk/medium] same_definition and def_key read only the
+    // XCR claude for claude: [risk/medium] same_definition and def_key read only the
     // resolution cell: two references to one definition, one cell filled and one open,
     // are two definitions here, so a walk that fills cells (resolve_in, through ref_id
     // and lookup_ref) changes what a later walk's shortcuts read (could_match's and
@@ -1224,14 +1224,106 @@ impl TypeRef {
     // definitions). A filled and an open reference to one definition are still two
     // definitions to same_definition; closing that needs the env where these read it.
     // Not shown on main.
-    /// Whether two references name one definition: two filled cells by
-    /// the definition, two open ones by the written scope and name.
-    pub(crate) fn same_definition(&self, other: &Self) -> bool {
+    // 2026-11-05 claude: TypeRef::same_definition now takes the env and reads an open
+    // cell as what its name means there (resolve_peek, filling nothing), so the
+    // shortcuts in contains, could_match, sig_matches, union, diff and DataMeet answer
+    // the same whichever cells earlier walks filled; Identity and the env-free part
+    // walks (meets_itself, nests, decided_part) keep the cell-only answer as
+    // same_filled_definition. Taking the shortcut more often showed it skipped what an
+    // expansion does to the arguments: lookup_ref holds them to the definition's
+    // parameter bounds (an open cell takes 'r: NoError from Result<'r, ..>) and fills
+    // the cell; without that, 12 graphix-tests fixtures failed (str::parse's 'b lost
+    // NoError at the interface's sig_matches, a later-module annotation's cell stayed
+    // open). Every shortcut arm now calls TypeRef::hold_bounds_in (the loop
+    // lookup_ref_by now shares, hold_bounds_of), which fills the cell as the expansion
+    // would. Pins: typ::setops::tests::an_open_reference_is_its_filled_twin (union of a
+    // filled and an open R<i64> gave the expansion; fails without the fix) and
+    // one_definition_by_its_arguments_holds_their_bounds (fails without the hold in
+    // contains' shortcut). Census of both repos: no verdict changes, one message names
+    // the interface's 'b: Any + NoError (x-typecheck-generics-03b). guicheck +0.3%
+    // instructions vs base-r17. probes: ~/ptmp/cr29/scratch/r17-o3/
+    /// Whether two references name one definition: an open cell names
+    /// what its name means in `env`, so the answer does not depend on
+    /// which cells a walk filled; two that name nothing, by the written
+    /// scope and name. Fills no cell.
+    pub(crate) fn same_definition(&self, other: &Self, env: &Env) -> bool {
+        let same_name = || self.scope == other.scope && self.name == other.name;
+        if self.is_open() && other.is_open() && same_name() {
+            return true;
+        }
+        match (self.resolve_peek(env), other.resolve_peek(env)) {
+            (Some(a), Some(b)) => a.def_key() == b.def_key(),
+            (None, None) => same_name(),
+            _ => false,
+        }
+    }
+
+    /// [`Self::same_definition`] by what the cells hold, for a walk with
+    /// no env: a filled cell and an open one are two definitions.
+    pub(crate) fn same_filled_definition(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
             (None, None) => self.scope == other.scope && self.name == other.name,
             _ => false,
         }
+    }
+
+    /// The filled cell's definition, else the name's in `env`, filling
+    /// the cell as [`Self::resolve_in`] does.
+    fn definition_in(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
+        match &*self.resolved.lock() {
+            Resolution::Def(w) => return w.upgrade(),
+            Resolution::Trait(_) => return None,
+            Resolution::Open => (),
+        }
+        self.resolve_in(env)
+    }
+
+    /// Hold the arguments to `def`'s parameter bounds, as an expansion
+    /// does: an open argument cell takes its bound when `commit`, any
+    /// other argument must meet it, refused by error when `commit`, else
+    /// `false`.
+    fn hold_bounds_of(&self, env: &Env, def: &ResolvedRef, commit: bool) -> Result<bool> {
+        if def.params.iter().all(|(_, b)| b.is_none()) {
+            return Ok(true);
+        }
+        let Some(known) = def.bindings(&self.params) else { return Ok(true) };
+        for ((_, bound), arg) in def.params.iter().zip(self.params.iter()) {
+            let Some(bound) = bound else { continue };
+            let bound = bound.replace_tvars(&known);
+            match arg {
+                Type::TVar(tv) if !tv.is_bound() => {
+                    if commit {
+                        tv.add_cell_constraint(bound)
+                    }
+                }
+                _ if commit => {
+                    bound.check_contains(env, arg)?;
+                    tvar::require_bounds(std::slice::from_ref(&bound), arg)
+                }
+                _ => {
+                    if !bound.contains_with_flags(BitFlags::empty(), env, arg)? {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// [`Self::hold_bounds_of`] the definition this reference names in
+    /// `env`, filling an open cell: what a walk that takes two
+    /// applications of one definition by their arguments owes each, as
+    /// their expansions would.
+    pub(crate) fn hold_bounds_in(&self, env: &Env, commit: bool) -> Result<bool> {
+        match self.definition_in(env) {
+            Some(def) => self.hold_bounds_of(env, &def, commit),
+            None => Ok(true),
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        matches!(&*self.resolved.lock(), Resolution::Open)
     }
 
     /// Does the name mean something: its filled cell, a typedef visible
@@ -3087,7 +3179,7 @@ impl Type {
                     canonical_scope,
                     pos: _,
                     ori: _,
-                    params: def_params,
+                    params: _,
                     typ: def_typ,
                 } = &*resolved;
                 resolved.check_arity(name, params)?;
@@ -3102,33 +3194,10 @@ impl Type {
                         });
                     }
                 }
-                let known = resolved.bindings(params).expect("arity checked");
-                for ((_, constraint), arg) in def_params.iter().zip(params.iter()) {
-                    let Some(constraint) = constraint else {
-                        continue;
-                    };
-                    let constraint = constraint.replace_tvars(&known);
-                    match arg {
-                        Type::TVar(tv) if !tv.is_bound() => {
-                            if commit {
-                                tv.add_cell_constraint(constraint)
-                            }
-                        }
-                        _ if commit => {
-                            constraint.check_contains(env, arg)?;
-                            tvar::require_bounds(std::slice::from_ref(&constraint), arg)
-                        }
-                        _ => {
-                            if !constraint.contains_with_flags(
-                                BitFlags::empty(),
-                                env,
-                                arg,
-                            )? {
-                                return Ok(None);
-                            }
-                        }
-                    }
+                if !tr.hold_bounds_of(env, &resolved, commit)? {
+                    return Ok(None);
                 }
+                let known = resolved.bindings(params).expect("arity checked");
                 // a raise extends a chain rather than nesting it, so a chain
                 // of a chain is that chain
                 if env.is_core_errchain(&resolved)

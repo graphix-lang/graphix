@@ -1467,7 +1467,7 @@ impl<'a> DataMeet<'a> {
         }
         let expand = |i: usize| t[i].lookup_ref_probe(self.env).map(|(_, x)| x);
         match t {
-            [Type::Ref(r0), Type::Ref(r1)] if r0.same_definition(r1) => {
+            [Type::Ref(r0), Type::Ref(r1)] if r0.same_definition(r1, self.env) => {
                 self.zip(&r0.params, &r1.params)
             }
             [Type::Ref(_), _] => {
@@ -1712,7 +1712,7 @@ fn any_part_pair(s: &Type, t: &Type, f: &mut impl FnMut(&Type, &Type) -> bool) -
         {
             zip(a, b, f)
         }
-        (Type::Ref(r0), Type::Ref(r1)) if r0.same_definition(r1) => {
+        (Type::Ref(r0), Type::Ref(r1)) if r0.same_filled_definition(r1) => {
             zip(&r0.params, &r1.params, f)
         }
         (Type::Struct(a), Type::Struct(b)) => a.iter().any(|(n, x, _)| {
@@ -2242,7 +2242,7 @@ impl Type {
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
-                    && tr0.same_definition(tr1)
+                    && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
                     && tr0
                         .params
@@ -2250,7 +2250,7 @@ impl Type {
                         .zip(tr1.params.iter())
                         .all(|(a, b)| identical_linked(a, b, commit)) =>
             {
-                Ok(true)
+                Ok(tr0.hold_bounds_in(env, commit)? && tr1.hold_bounds_in(env, commit)?)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
                 // CR claude for claude: [bug/low] Taking two instances of one definition as
@@ -2268,7 +2268,7 @@ impl Type {
                 // each other are one type: no expansion, which a parameter
                 // growing at each level would never end
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
-                    && tr0.same_definition(tr1)
+                    && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
                 {
                     let pairs = || tr0.params.iter().zip(tr1.params.iter());
@@ -2284,7 +2284,8 @@ impl Type {
                     };
                     let probe = flags & !BitFlags::from(ContainsFlags::Commit);
                     if equal(probe, hist)? && (!commit || equal(flags, hist)?) {
-                        return Ok(true);
+                        return Ok(tr0.hold_bounds_in(env, commit)?
+                            && tr1.hold_bounds_in(env, commit)?);
                     }
                 }
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
