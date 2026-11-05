@@ -902,21 +902,37 @@ fn finite(i: &mut Input, start: Mark, v: Value) -> R<Value> {
     }
 }
 
-// CR claude for claude: [bug/low] An exponent reads as a unit:
+// XCR claude for claude: [bug/low] An exponent reads as a unit:
 // `duration:1e300y` notes "`e` is not a duration unit", where the value
 // parser reads 1e300 years and refuses them as too long; `n` here stops at
 // the `e`. Reading an exponent into `n` would note "`1e300y` is negative or
 // longer than the longest duration". Main 968fa9bc0 says the same. Found by
 // review r14 of lane K. probe:
 // ~/ptmp/cr29/scratch/review-r14/K-r1-2/lit/dur_huge.gx (duration-exponent-note-01)
+// 2026-11-05 claude: duration_unit_note reads the count as the value parser does,
+// an exponent (e, optional -, digits) included, so duration:1e300y notes that
+// 1e300y is negative or longer than the longest duration. Pin:
+// expr::parser::test::a_literal_out_of_range_names_its_type (the 1e300y case fails
+// without the fix; 1es and 1.5e-3es still name es as the unit).
 /// A diagnostic arm behind the literal parser: a `duration:` literal with
 /// an unknown unit names the unit, since the value parser accepts the
 /// longest known prefix and fails after it, and one no duration holds
-/// says so, since the value parser fails without a reason.
+/// says so, since the value parser fails without a reason. The count is
+/// read as the value parser reads it, an exponent (`e`, `-`, digits)
+/// included.
 fn duration_unit_note<O>(i: &mut Input) -> R<O> {
     i.attempt(|i| i.string("duration:"))?;
     let start = i.pos();
-    let n = i.take_while1(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')?;
+    let m = i.mark();
+    i.take_while1(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')?;
+    i.optional(|i| {
+        i.attempt(|i| {
+            i.token('e')?;
+            i.optional(|i| i.token('-'))?;
+            i.take_while1(|c| c.is_ascii_digit())
+        })
+    })?;
+    let n = i.since(&m);
     let pos = i.pos();
     let unit = i.take_while1(char::is_alphabetic)?;
     if duration_of("0", unit).is_none() {

@@ -2821,6 +2821,12 @@ fn a_literal_out_of_range_names_its_type() {
             "`99999999999999999999.s` is negative or longer than the longest duration",
         ),
         (
+            "let a = duration:1e300y;\na",
+            "note: at line: 1, column: 18: `1e300y` is negative or longer than the longest duration",
+        ),
+        ("let a = duration:1.5e-3es;\na", "`es` is not a duration unit"),
+        ("let a = duration:1es;\na", "`es` is not a duration unit"),
+        (
             "let a = select x { duration:-1.s => 0, _ => 1 };\na",
             "note: at line: 1, column: 29: `-1.s` is negative",
         ),
@@ -2828,7 +2834,14 @@ fn a_literal_out_of_range_names_its_type() {
         let msg = parse_program(src);
         assert!(msg.contains(note), "{src}: {msg}");
     }
-    for src in ["u8:255", "i8:-128", "-9223372036854775808", "1e3", "duration:-0.s"] {
+    for src in [
+        "u8:255",
+        "i8:-128",
+        "-9223372036854775808",
+        "1e3",
+        "duration:-0.s",
+        "duration:1e-3s",
+    ] {
         parse_one(src).unwrap();
     }
     parse_one("select x { u8:255 => 0, duration:-0.s => 1, _ => 2 }").unwrap();
