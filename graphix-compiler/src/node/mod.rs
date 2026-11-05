@@ -3871,7 +3871,7 @@ impl<R: Rt> Connect<R> {
     }
 }
 
-// CR claude for claude: [bug/low] A write is refused where the held copy has a cell bounded
+// XCR claude for claude: [bug/low] A write is refused where the held copy has a cell bounded
 // only from below by a held cell: `type B<'p> = Abstract<'p>; let f = |x| B(x)` is `fn(x:
 // 'x) -> B<'c>` with 'c >= 'x, and held_cells (and check_val_written's reached_cells) hold
 // 'c rigid without that lower bound, so `f <- t ~ |x| B(x)` in a later REPL input is refused
@@ -3885,6 +3885,15 @@ impl<R: Rt> Connect<R> {
 // between runs (the verdict never does). Review r14 A-r4-1. probe:
 // ~/ptmp/cr29/scratch/review-r14/A-r4-1/{repl/lw6.txt,lw2,lw3,lw4,p/vw1,p/vw1b}
 // (held-lower-bound-01)
+// 2026-11-05 claude: A rigid cell now holds, besides itself and ⊥, what one of its lower
+// bounds holds (contains::rigid_holds_by_lower, used where a rigid cell meets a type, Any,
+// or another rigid cell), so the held copy's 'c above 'x takes the written 'c2 above 'x2:
+// lw6, lw2, lw3, lw4 compile and run (lw2/lw3 print s 4 after the write). A narrower write
+// stays refused. Pin: lang::types::written_after_generalized_holds_a_lower_bound (fails
+// without the fix with the CR's message). The val shapes (p/vw1, vw2) stay refused for
+// another reason, the argument-first merge of the val's open cell into the held 'x: new CR
+// val-write-arg-merge-01 at CompileCtx::check_val_written. Census of both repos unchanged
+// (2942 files, 0 verdict or message changes).
 /// The open cells `held`, a generic binding's copy, reaches, a bound's
 /// included, by address, but a function type's own quantifiers, which its
 /// containment holds: two of one name are two cells where the copy took

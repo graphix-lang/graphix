@@ -6511,6 +6511,34 @@ async fn written_after_generalized_holds_a_bound_variable() -> Result<()> {
     Ok(())
 }
 
+/// A held variable bounded from below (an abstract type's parameter its
+/// constructor's payload bounds) holds what its lower bounds hold: a write
+/// of the binding's own shape compiles, a narrower one is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn written_after_generalized_holds_a_lower_bound() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let mut held = Vec::new();
+    for i in [
+        "type B<'p> = Abstract<'p>",
+        "let f = |x| B(x)",
+        "let g = |x| (x, B(3))",
+        "f <- |x| B(x)",
+        "g <- |x| (x, B(4))",
+    ] {
+        held.push(ctx.rt.compile(ArcStr::from(i)).await?);
+    }
+    for w in ["f <- |x: i64| B(x)", "g <- |x| (x, B(\"s\"))"] {
+        let e = ctx.rt.compile(ArcStr::from(w)).await.unwrap_err();
+        let e = format!("{e:#}");
+        assert!(e.contains("what is written to it must be as general"), "{w}: {e}");
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
 /// A later input's `<-` to a function an earlier input calls statically
 /// is refused, naming the call, which keeps the definition it bound; one
 /// no call fixed takes the write.

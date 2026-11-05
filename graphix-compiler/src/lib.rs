@@ -1951,6 +1951,20 @@ impl<R: Rt> CompileCtx<R> {
         val: &Type,
         imp: &Type,
     ) -> Result<()> {
+        // CR claude for claude: [bug/low] `val f: fn(x: 'a) -> B<'a>` over `let f = |x|
+        // B(x)` (`type B<'p> = Abstract<'p>`), written `m::f <- t ~ |x| m::B(x)`, is still
+        // refused ("annotate the implementation's let with the val's type", which it
+        // already matches), though the write is as general as the implementation (`'a` :=
+        // `'c`, which holds `'x` by its lower bound). The containment decides positions in
+        // order, arguments first: the val's open `'a` meets the held `'x` at the argument
+        // and merges into it, and then the result asks the rigid `'x` to hold the rigid
+        // `'c`, which it does not. held-lower-bound-01's fix (a rigid cell holds what its
+        // lower bounds hold) closed the REPL shape, where the written value's `'c2` carries
+        // its own lower bound into the held `'c`. Fix: the open cell takes the rigid one as
+        // a lower bound in a contravariant position instead of merging, here at least, or
+        // the check solves the result's invariant positions first. The annotation `let f:
+        // fn(x: 'a) -> B<'a> = |x| B(x)` passes. probes: ~/ptmp/cr29/scratch/r17-hk/{vw1,vw2}
+        // (val-write-arg-merge-01)
         let held = self.monomorphic(imp);
         let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
         held.reached_cells(&mut cells);

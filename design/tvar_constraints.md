@@ -107,7 +107,8 @@ to the open cells of each lower bound, whichever came first
 `JsonData` reaches the variable a payload bounds `Box`'s parameter by
 in `|x| json::write_str([Box(x), `A])`, so each call judges it; a merge joins
 both cells' lists after each side's conjuncts admit the other's (a
-rigid cell admits none but itself, and an open cell below a rigid
+rigid cell admits none but itself, ⊥ and what one of its lower bounds
+holds, `contains::rigid_holds_by_lower`, and an open cell below a rigid
 survivor merges into it, since it can be no other type: `W<'c> ⊇ W(x)`
 under a rigid `'c` makes `x` `'c`; one whose merge is refused, the
 occurs check's case, stays below it, a lower bound); a copy, an image
@@ -414,7 +415,9 @@ before or after the `mod` statement (pins
 compile already generalized, which only a later input to the same
 runtime can see (the REPL, `GXHandle::compile`), had its uses checked
 against the scheme, so it stays one: a write is checked against a copy
-of it with every variable rigid (`Connect::typecheck0_with`), and a
+of it with every variable rigid (`Connect::typecheck0_with`), each
+holding what its lower bounds hold (`|x| B(x)`'s `B<'c>` above `'x` takes
+`|x| B(x)` again), and a
 `&mut` of it is refused, since a reference cannot hold the variables
 rigid.
 

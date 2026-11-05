@@ -937,6 +937,27 @@ fn conjuncts_admit(
     Ok(true)
 }
 
+/// Whether the rigid open cell `tv` holds `t`: a rigid cell holds only
+/// itself, ⊥ and what one of its lower bounds holds (`t ⊆ L ⊆ tv`), since
+/// whatever it stands for holds each. The bound that holds commits.
+fn rigid_holds_by_lower(
+    tv: &TVar,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<bool> {
+    for l in tv.cell_lower().iter() {
+        if l.contains_int(guide(flags), env, hist, t)? {
+            return match flags.contains(ContainsFlags::Commit) {
+                true => l.contains_int(flags, env, hist, t),
+                false => Ok(true),
+            };
+        }
+    }
+    Ok(false)
+}
+
 /// Whether the open cell `to` (as `tt`) admits the lower bounds of the
 /// open cell `from` its unification would merge in: its conjuncts
 /// contain each, and a rigid cell, which holds only itself, holds each.
@@ -2480,9 +2501,8 @@ impl Type {
                 if let Some(t0) = t0.binding() {
                     return t0.contains_int(flags, env, hist, t);
                 }
-                // A rigid cell contains only itself and Bottom.
                 if (rigid || commit) && t0.is_rigid() {
-                    return Ok(false);
+                    return rigid_holds_by_lower(t0, flags, env, hist, t);
                 }
                 if !cell_constraints_ok(t0, flags, env, hist, &Self::Any)? {
                     return Ok(false);
@@ -2635,9 +2655,8 @@ impl Type {
                 if let Some(t0) = t0.binding() {
                     return t0.contains_int(flags, env, hist, t1);
                 }
-                // A rigid tvar contains only itself and Bottom.
                 if (rigid || commit) && t0.is_rigid() {
-                    return Ok(false);
+                    return rigid_holds_by_lower(t0, flags, env, hist, t1);
                 }
                 if flags.contains(ContainsFlags::Lower)
                     && !flags.contains(ContainsFlags::Contra)
@@ -3112,7 +3131,8 @@ impl Type {
                 Ok(true)
             }
             // two quantifiers: t0 holds t1 only through one of t1's
-            // conjuncts ('t1 ⊆ C ⊆ t0), whatever an occurs check would say
+            // conjuncts ('t1 ⊆ C ⊆ t0) or one of t0's lower bounds ('t1 ⊆
+            // L ⊆ t0), whatever an occurs check would say
             (None, None) if t0.is_rigid() && t1.is_rigid() => {
                 let cons = t1.cell_constraints();
                 hist.assuming((Some(addr0), Some(addr1)), |hist| {
@@ -3121,7 +3141,7 @@ impl Type {
                             return Ok(true);
                         }
                     }
-                    Ok(false)
+                    rigid_holds_by_lower(t0, flags, env, hist, tt1)
                 })
             }
             (None, None) => {
