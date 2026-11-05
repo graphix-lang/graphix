@@ -2022,7 +2022,7 @@ impl<R: Rt> CompileCtx<R> {
         self.env.by_id.get(&id).is_some_and(|b| holds_generic(&b.typ))
     }
 
-    // CR claude for claude: [perf/medium] A chain of lets holding functions, where each
+    // CR claude for eric: [perf/medium] A chain of lets holding functions, where each
     // link binds a written name or carries an annotation, checks in time exponential in
     // its length: each occurrence of a shared node holding a function takes its own
     // copy here, so a DAG of holders becomes a tree. `let (a, w) = (x, 0); w <- 1; let
@@ -2115,6 +2115,17 @@ impl<R: Rt> CompileCtx<R> {
     // node a written binding's value type shares (ML's weak variable): `p <- mk(g)` is
     // refused as its `let` form is; start from ~/ptmp/cr29/scratch/r9-N/item5-dag.patch,
     // with a CLAUDE.md line and pins.
+    // 2026-11-04 claude: Round 15 lane M built D11 (b) and D12 (a) on branch
+    // cr50-M-parked (fb0072ecd..f90e93c94) and was parked. D12 held up (a written chain
+    // of 18 holders checks in 1.34G where main is killed at 150 s). D11 failed review
+    // three times in new ways, each the same cause at a new site: a call through a value
+    // no generic binding names shares its definition's cells, but wherever a generic
+    // copy meets those cells (a holder's read, then a struct update, then an array, map,
+    // list or select of composites) the merge keeps the copy's generic cell, so a later
+    // read copies what the shared call decided and the run refuses what the check passed
+    // (main runs those). The lane also refuses some well-typed arrays of composites with
+    // "expected fn not [fn, fn]". Back to Eric as the D11/D12 follow-up in
+    // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/M-r*/.
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {

@@ -1343,7 +1343,7 @@ impl Typing {
         };
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
-            // CR claude for claude: [bug/medium] A lambda literal held in a
+            // CR claude for eric: [bug/medium] A lambda literal held in a
             // struct, tuple or array and passed a value holding itself passes
             // --check, then its run-time bind is refused here and the call never
             // produces: `{ let s = {f: |x| 0}; s.f(s) }` prints "binding the callee
@@ -1560,6 +1560,20 @@ impl Typing {
             // binding names shares its type, as a value use does (ML's value
             // restriction); calls at two types through such a lambda are refused,
             // the fix a plain `let f = |x| ..`.
+            // 2026-11-04 claude: Round 15 lane M built D11 (b) and D12 (a) on
+            // branch cr50-M-parked (fb0072ecd..f90e93c94) and was parked. D12 held
+            // up (a written chain of 18 holders checks in 1.34G where main is
+            // killed at 150 s). D11 failed review three times in new ways, each the
+            // same cause at a new site: a call through a value no generic binding
+            // names shares its definition's cells, but wherever a generic copy
+            // meets those cells (a holder's read, then a struct update, then an
+            // array, map, list or select of composites) the merge keeps the copy's
+            // generic cell, so a later read copies what the shared call decided and
+            // the run refuses what the check passed (main runs those). The lane
+            // also refuses some well-typed arrays of composites with "expected fn
+            // not [fn, fn]". Back to Eric as the D11/D12 follow-up in
+            // ~/ptmp/cr29/next-discuss.md; probes
+            // ~/ptmp/cr29/scratch/review-r15/M-r*/.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),

@@ -1499,7 +1499,7 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
     }
 }
 
-// CR claude for claude: [bug/medium] A lambda a let holds through a block or a select
+// CR claude for eric: [bug/medium] A lambda a let holds through a block or a select
 // is a binding no rule generalizes (must_reject family 1 wraps a lambda in a block
 // for exactly that), yet a call through it instantiates the definition's scheme as
 // any call does, while a value use binds the scheme's own cells; a call checked
@@ -1547,6 +1547,17 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // value no generic binding names shares its type, as a value use does (ML's value
 // restriction); calls at two types through such a lambda are refused, the fix a plain
 // `let f = |x| ..`.
+// 2026-11-04 claude: Round 15 lane M built D11 (b) and D12 (a) on branch
+// cr50-M-parked (fb0072ecd..f90e93c94) and was parked. D12 held up (a written chain
+// of 18 holders checks in 1.34G where main is killed at 150 s). D11 failed review
+// three times in new ways, each the same cause at a new site: a call through a value
+// no generic binding names shares its definition's cells, but wherever a generic copy
+// meets those cells (a holder's read, then a struct update, then an array, map, list
+// or select of composites) the merge keeps the copy's generic cell, so a later read
+// copies what the shared call decided and the run refuses what the check passed (main
+// runs those). The lane also refuses some well-typed arrays of composites with
+// "expected fn not [fn, fn]". Back to Eric as the D11/D12 follow-up in
+// ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/M-r*/.
 /// Whether the value `node` builds holds a lambda literal or a generalized
 /// binding's value in a data literal (a struct, its update, a tuple, a
 /// variant, an array, a list or a map): a type that holds the definitions'
