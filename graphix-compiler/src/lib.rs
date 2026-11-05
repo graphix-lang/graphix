@@ -3559,7 +3559,7 @@ fn check_and_fuse_inner<R: Rt>(
     drop(p);
     info!("typecheck time {:?}", st.elapsed());
     let tail_loops = analysis::analyze(node, ctx)?;
-    // CR claude for eric: [bug/high] An instance body that names a type its block
+    // CR claude for claude: [bug/high] An instance body that names a type its block
     // declares over an outer type of the same name crashes the process under fusion: `type
     // L = string; let g = |z: i64| { type L = [i64, null]; let f = |x: i64| { let b: L =
     // 3; (b, x) }; f(z) }; println(g(1))` aborts with "misaligned pointer dereference:
@@ -3609,6 +3609,13 @@ fn check_and_fuse_inner<R: Rt>(
     // binds warm and reads a wrong value. CR block-type-image-scope-01 on the branch. Back
     // to Eric as the D10 follow-up in ~/ptmp/cr29/next-discuss.md; probes
     // ~/ptmp/cr29/scratch/review-r15/N-r*/.
+    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D10 follow-up: (b), and the
+    // whole-block rule is confirmed (a name a block declares means the block's type
+    // throughout the block, its two silent value changes included). Lane N (cr50-N-parked)
+    // resumes: a block's generated scope name comes from its source position, qualified by
+    // the source's identity (file or module, a REPL input's number), never an ExprId, so a
+    // cold run and a warm image agree (block-type-image-scope-01 on the branch); then it
+    // lands.
     ctx.env.seed_typedef_refs();
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();

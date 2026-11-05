@@ -253,7 +253,7 @@ fn checked_default<R: Rt>(
     judge: Judge,
     held_in: Option<&mut HeldIn>,
 ) -> Result<Node<R>> {
-    // CR claude for eric: [bug/medium] A labeled default compiled at a bind is checked
+    // CR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
     // in full here at the instance's types, so a select in it over an enclosing
     // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
     // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
@@ -404,6 +404,13 @@ fn checked_default<R: Rt>(
     // wrong value. CR block-type-image-scope-01 on the branch. Back to Eric as the D10
     // follow-up in ~/ptmp/cr29/next-discuss.md; probes
     // ~/ptmp/cr29/scratch/review-r15/N-r*/.
+    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D10 follow-up: (b), and the
+    // whole-block rule is confirmed (a name a block declares means the block's type
+    // throughout the block, its two silent value changes included). Lane N (cr50-N-parked)
+    // resumes: a block's generated scope name comes from its source position, qualified by
+    // the source's identity (file or module, a REPL input's number), never an ExprId, so a
+    // cold run and a warm image agree (block-type-image-scope-01 on the branch); then it
+    // lands.
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };

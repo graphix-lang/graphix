@@ -2814,7 +2814,7 @@ fn capture_names<R: Rt>(
 /// variable fits its parameter whole: a call instantiates no variable of
 /// the definitions around it, and an omitting site outside them sees
 /// their schemes (`callsite::Judge`).
-// CR claude for eric: [bug/low] A recursive typedef a labeled default's block declares
+// CR claude for claude: [bug/low] A recursive typedef a labeled default's block declares
 // outlives its definition: the default's check node, whose TypeDef node owns the
 // definition, is discarded here, while the parameter's type, which the default decided,
 // still names it. `{ let f = |#d = { type L<'a> = [`Nil, `Cons('a, L<'a>)]; let l:
@@ -2854,6 +2854,13 @@ fn capture_names<R: Rt>(
 // type of the same name; an abstract constructor), and one shape binds warm and reads a
 // wrong value. CR block-type-image-scope-01 on the branch. Back to Eric as the D10
 // follow-up in ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/N-r*/.
+// 2026-11-05 claude: Eric ruled (2026-11-05) on the D10 follow-up: (b), and the
+// whole-block rule is confirmed (a name a block declares means the block's type
+// throughout the block, its two silent value changes included). Lane N (cr50-N-parked)
+// resumes: a block's generated scope name comes from its source position, qualified by
+// the source's identity (file or module, a REPL input's number), never an ExprId, so a
+// cold run and a warm image agree (block-type-image-scope-01 on the branch); then it
+// lands.
 fn check_defaults<R: Rt>(
     ctx: &mut CompileCtx<R>,
     def: &LambdaDef<R>,

@@ -77,7 +77,7 @@ impl Graph {
                 Some(b) => self.node(&b),
                 None => self.leaf(b'v', &[]),
             },
-            // CR claude for eric: [bug/low] A reference that does not expand here is
+            // CR claude for claude: [bug/low] A reference that does not expand here is
             // keyed by its written name, and a nested reference in an inline written
             // type argument reaches the key unresolved: with `type R<'a> = [`Nil,
             // `Cons('a, R<'a>)]; type B<'x> = Abstract<i64>`, `B<R<i64>>` and
@@ -119,6 +119,13 @@ impl Graph {
             // shape binds warm and reads a wrong value. CR block-type-image-scope-01 on
             // the branch. Back to Eric as the D10 follow-up in
             // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/N-r*/.
+            // 2026-11-05 claude: Eric ruled (2026-11-05) on the D10 follow-up: (b), and
+            // the whole-block rule is confirmed (a name a block declares means the block's
+            // type throughout the block, its two silent value changes included). Lane N
+            // (cr50-N-parked) resumes: a block's generated scope name comes from its
+            // source position, qualified by the source's identity (file or module, a REPL
+            // input's number), never an ExprId, so a cold run and a warm image agree
+            // (block-type-image-scope-01 on the branch); then it lands.
             Type::Ref(tr) => match Self::expand(t) {
                 None => {
                     let name = format_compact!("{}", tr.name);
