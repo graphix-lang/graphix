@@ -8942,3 +8942,30 @@ run!(
     prints(r#"["str", i64:3, null, "X"]"#);
     FuseExpect::Jit
 );
+
+// Two instances of a typedef whose parameters hold an open cell are
+// compared by their expansions, so the order of a function type's
+// positions does not decide the cell.
+run!(
+    typedef_instances_over_an_open_cell_agree_with_the_expansion,
+    r#"{
+  type L<'p> = fn(x: 'p) -> i64;
+  let outer = |k: L<'c>, z: 'c| z;
+  let g: fn(k: L<Any>, z: i64) -> i64 = outer;
+  g(|x| 0, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    typedef_instances_over_an_open_cell_agree_with_the_expansion_z_first,
+    r#"{
+  type L<'p> = fn(x: 'p) -> i64;
+  let outer = |z: 'c, k: L<'c>| z;
+  let g: fn(z: i64, k: L<Any>) -> i64 = outer;
+  g(1, |x| 0)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);

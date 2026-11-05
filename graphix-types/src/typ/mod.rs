@@ -934,6 +934,31 @@ impl ResolvedRef {
         guarded
     }
 
+    /// Whether the body reaches this definition again, through the
+    /// filled cells of the typedefs it names; a name not yet resolved
+    /// may.
+    pub(crate) fn is_recursive(&self) -> bool {
+        fn reaches(t: &Type, own: usize, seen: &mut AHashSet<usize>) -> bool {
+            ensure_sufficient(|| match t {
+                Type::Ref(r) => match r.resolved() {
+                    None => true,
+                    Some(d) => {
+                        d.def_key() == own
+                            || (seen.insert(d.def_key()) && reaches(&d.typ, own, seen))
+                            || r.params.iter().any(|p| reaches(p, own, seen))
+                    }
+                },
+                t => t
+                    .try_for_each_child(&mut |c| match reaches(c, own, seen) {
+                        true => ControlFlow::Break(()),
+                        false => ControlFlow::Continue(()),
+                    })
+                    .is_break(),
+            })
+        }
+        reaches(&self.typ, self.def_key(), &mut LPooled::take())
+    }
+
     pub(crate) fn new(
         canonical_scope: ModPath,
         pos: SourcePosition,

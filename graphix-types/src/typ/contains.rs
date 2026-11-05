@@ -2360,7 +2360,7 @@ impl Type {
                 Ok(true)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
-                // CR claude for claude: [bug/low] Taking two instances of one definition as
+                // XCR claude for claude: [bug/low] Taking two instances of one definition as
                 // one type when their parameters contain each other decides an open cell
                 // by equality where the expansion asks less, so the order of a function
                 // type's positions decides: `type L<'p> = fn(x: 'p) -> i64; let outer =
@@ -2374,9 +2374,27 @@ impl Type {
                 // two instances of one definition whose parameters contain
                 // each other are one type: no expansion, which a parameter
                 // growing at each level would never end
+                // 2026-11-05 claude: Two instances of a definition that never reaches itself
+                // (ResolvedRef::is_recursive) and hold an open cell in their parameters are
+                // compared by their expansions, so L<'c> against L<Any> asks what the written
+                // fn type asks. A recursive definition keeps the shortcut: a growing one
+                // (nested_datatype_instances_relate_by_parameters) would be refused by the
+                // growth guard. Pins that fail without it:
+                // lang::types::typedef_instances_over_an_open_cell_agree_with_the_expansion
+                // (and _z_first passes either way). Census of 2942 files unchanged; needs a
+                // soak.
+
+                // a definition that never reaches itself has no growing level, and over
+                // an open cell its expansion asks less than the parameters' equality
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1)
                     && tr0.params.len() == tr1.params.len()
+                    && (tr0.resolve_peek(env).is_none_or(|d| d.is_recursive())
+                        || !tr0
+                            .params
+                            .iter()
+                            .chain(tr1.params.iter())
+                            .any(|p| p.has_free()))
                 {
                     let pairs = || tr0.params.iter().zip(tr1.params.iter());
                     let equal = |f: BitFlags<ContainsFlags>, hist: &mut ContainsHist| {
