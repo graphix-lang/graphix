@@ -2699,85 +2699,33 @@ impl Type {
                 if !commit || !shares_bare_cell(s0) {
                     return Self::place_members(flags, env, hist, t0, s0, s1);
                 }
-                // the members as written, else deepest first: the deepest a
-                // constructor member fits decides the variable its bare
-                // sibling shares; each order is tried on copies first
-                let mut deepest: SmallVec<[Type; 8]> = s1.iter().cloned().collect();
-                deepest.sort_by_key(|m| std::cmp::Reverse(nesting(m)));
-                for order in [&s1[..], &deepest[..]] {
-                    let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-                    let copy0 = t0.reset_tvars_int(&mut known, Fresh::Copy);
-                    let copy0 = copy0.unwrap_or_else(|| t0.clone());
-                    let copy1: SmallVec<[Type; 8]> = order
-                        .iter()
-                        .map(|m| {
-                            m.reset_tvars_int(&mut known, Fresh::Copy)
-                                .unwrap_or_else(|| m.clone())
-                        })
-                        .collect();
-                    let Self::Set(c0) = &copy0 else {
-                        unreachable!("a copy keeps its shape")
-                    };
-                    let trial = &mut ContainsHist::new();
-                    if Self::place_members(flags, env, trial, &copy0, c0, &copy1)? {
-                        return Self::place_members(flags, env, hist, t0, s0, order);
-                    }
-                }
-                Self::place_members(flags, env, hist, t0, s0, s1)
+                // the deepest a constructor member fits decides the variable
+                // its bare sibling shares
+                Self::place_in_order(
+                    flags,
+                    env,
+                    hist,
+                    (t0, s0, s1),
+                    ContainsHist::new,
+                    Self::place_members,
+                )
             }
-            // Member-wise identity pre-pass: only the residue takes the
-            // general per-member walk (which is O(|s0|·|s1|) per level).
-            // An open rhs member takes from the lhs members its known
-            // siblings leave: in `[A, E] ⊇ ['b, E]`, 'b is A, never E; where
-            // they leave none it can take, from the whole lhs.
+            // Where two lhs members hold open cells, the first that fits an
+            // rhs member alone may decide them so that a later member fits
+            // none.
             (t0 @ Self::Set(s0), Self::Set(s1)) => {
-                let mut used: SmallVec<[bool; 8]> = smallvec::smallvec![false; s0.len()];
-                let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
-                for m in s1.iter() {
-                    if is_unbound_tvar(m) {
-                        open.push(m);
-                        continue;
-                    }
-                    if let Some(i) =
-                        s0.iter().position(|c| identical_linked(c, m, commit))
-                    {
-                        used[i] = true;
-                        continue;
-                    }
-                    if !t0.contains_int(flags, env, hist, m)? {
-                        return Ok(false);
-                    }
-                    for (i, c) in s0.iter().enumerate() {
-                        if c.contains_int(guide(flags), env, hist, m)? {
-                            used[i] = true;
-                            break;
-                        }
-                    }
+                let holding = |m: &&Type| !is_unbound_tvar(m) && m.has_unbound();
+                if !commit || hist.trial || s0.iter().filter(holding).nth(1).is_none() {
+                    return Self::place_each(flags, env, hist, t0, s0, s1);
                 }
-                if open.is_empty() {
-                    return Ok(true);
-                }
-                let mut rest: SmallVec<[Type; 8]> = s0
-                    .iter()
-                    .zip(&used)
-                    .filter(|(_, used)| !**used)
-                    .map(|(c, _)| c.clone())
-                    .collect();
-                let rest = match rest.len() {
-                    0 => t0.clone(),
-                    1 => rest.pop().unwrap(),
-                    _ => Self::Set(Arc::from_iter(rest.drain(..))),
-                };
-                for m in open {
-                    let from = match rest.contains_int(guide(flags), env, hist, m)? {
-                        true => &rest,
-                        false => t0,
-                    };
-                    if !from.contains_int(flags, env, hist, m)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
+                Self::place_in_order(
+                    flags,
+                    env,
+                    hist,
+                    (t0, s0, s1),
+                    ContainsHist::trial,
+                    Self::place_each,
+                )
             }
             (t0, Self::Set(s)) => Ok(s
                 .iter()
@@ -3362,6 +3310,111 @@ impl Type {
             }
             Ok(true)
         })
+    }
+
+    /// `place` over the members `s1` in the first of two orders that
+    /// places them all on copies, each walk on copies starting from
+    /// `trial`: as written, then deepest first; as written where neither
+    /// does.
+    fn place_in_order(
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        (t0, s0, s1): (&Self, &[Type], &[Type]),
+        trial: fn() -> ContainsHist,
+        place: fn(
+            BitFlags<ContainsFlags>,
+            &Env,
+            &mut ContainsHist,
+            &Self,
+            &[Type],
+            &[Type],
+        ) -> Result<bool>,
+    ) -> Result<bool> {
+        let mut deepest: SmallVec<[Type; 8]> = s1.iter().cloned().collect();
+        deepest.sort_by_key(|m| std::cmp::Reverse(nesting(m)));
+        if deepest[..] == s1[..] {
+            return place(flags, env, hist, t0, s0, s1);
+        }
+        for order in [s1, &deepest[..]] {
+            let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            let copy0 = t0.reset_tvars_int(&mut known, Fresh::Copy);
+            let copy0 = copy0.unwrap_or_else(|| t0.clone());
+            let copy1: SmallVec<[Type; 8]> = order
+                .iter()
+                .map(|m| {
+                    m.reset_tvars_int(&mut known, Fresh::Copy)
+                        .unwrap_or_else(|| m.clone())
+                })
+                .collect();
+            let Self::Set(c0) = &copy0 else { unreachable!("a copy keeps its shape") };
+            if place(flags, env, &mut trial(), &copy0, c0, &copy1)? {
+                return place(flags, env, hist, t0, s0, order);
+            }
+        }
+        place(flags, env, hist, t0, s0, s1)
+    }
+
+    /// `t0`, a union `s0` holding no bare open member, contains the
+    /// members `s1` in that order. Member-wise identity pre-pass: only the
+    /// residue takes the general per-member walk (which is O(|s0|·|s1|)
+    /// per level). An open rhs member takes from the lhs members its known
+    /// siblings leave: in `[A, E] ⊇ ['b, E]`, 'b is A, never E; where they
+    /// leave none it can take, from the whole lhs.
+    fn place_each(
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t0: &Self,
+        s0: &[Type],
+        s1: &[Type],
+    ) -> Result<bool> {
+        let commit = flags.contains(ContainsFlags::Commit);
+        let mut used: SmallVec<[bool; 8]> = smallvec::smallvec![false; s0.len()];
+        let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
+        for m in s1.iter() {
+            if is_unbound_tvar(m) {
+                open.push(m);
+                continue;
+            }
+            if let Some(i) = s0.iter().position(|c| identical_linked(c, m, commit)) {
+                used[i] = true;
+                continue;
+            }
+            if !t0.contains_int(flags, env, hist, m)? {
+                return Ok(false);
+            }
+            for (i, c) in s0.iter().enumerate() {
+                if c.contains_int(guide(flags), env, hist, m)? {
+                    used[i] = true;
+                    break;
+                }
+            }
+        }
+        if open.is_empty() {
+            return Ok(true);
+        }
+        let mut rest: SmallVec<[Type; 8]> = s0
+            .iter()
+            .zip(&used)
+            .filter(|(_, used)| !**used)
+            .map(|(c, _)| c.clone())
+            .collect();
+        let rest = match rest.len() {
+            0 => t0.clone(),
+            1 => rest.pop().unwrap(),
+            _ => Self::Set(Arc::from_iter(rest.drain(..))),
+        };
+        for m in open {
+            let from = match rest.contains_int(guide(flags), env, hist, m)? {
+                true => &rest,
+                false => t0,
+            };
+            if !from.contains_int(flags, env, hist, m)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// `t0`, a union `s0` holding an open member, contains the members

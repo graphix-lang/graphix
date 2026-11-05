@@ -607,6 +607,19 @@ fn instance_sig<R: Rt>(
     // no closed gate owns included, so the check binds nothing another
     // instance reads
     let def = def.instantiate_owned(known);
+    // CR claude for claude: [bug/medium] A chain of union bounds five deep with
+    // only its first two links at positions checks and its build refuses the
+    // instance: `let f = 'a0: [Array<'a1>, Array<'a2>, null], 'a1: [Array<'a2>,
+    // Array<'a3>, null], 'a2: [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>,
+    // null], 'a4: Number |x: ('a0, 'a1)| 7; println(f(never()))` passes --check,
+    // GRAPHIX_ELAB_AUDIT reports instance-signature and the run fails, where
+    // GRAPHIX_NO_SUBST=1 prints 7; ('a1, 'a0) the same. The definition's
+    // signature lists 'a0..'a3 and not 'a4 as quantifiers, and the instance holds
+    // an open cell printed `'a4: [null, Array<'a4: Number>]` ('a3, unsettled, under
+    // 'a4's name), which the check here then merges with the copy's 'a4. x: 'a1
+    // alone, x: 'a0 alone, every position given (union-dag-elab-01) and chains of
+    // four run. Main ed2e39816 the same. probes:
+    // ~/ptmp/cr29/scratch/r17-o1/union-dag/{w21,w22,w6,w11}.gx (bound-only-settle-01)
     instance.check_contains(&ctx.env, &def).ok()?;
     Some(Arc::new(def))
 }
@@ -1791,7 +1804,7 @@ impl<R: Rt> GXLambda<R> {
     ) -> Result<Self> {
         let origin = body.ori.clone();
         let instance_id = LambdaInstanceId::new();
-        // CR claude for claude: [bug/medium] A DAG of union bounds checks and its
+        // XCR claude for claude: [bug/medium] A DAG of union bounds checks and its
         // build refuses the instance's signature: `let f = 'a0: [Array<'a1>,
         // Array<'a2>, null], 'a1: [Array<'a2>, Array<'a3>, null], 'a2:
         // [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number
@@ -1803,6 +1816,21 @@ impl<R: Rt> GXLambda<R> {
         // review r14 of lane K (final). probes:
         // ~/ptmp/cr29/scratch/review-r14/K-r3-1/m/u4.gx, p/udag_4.gx, udag4.err
         // (union-dag-elab-01)
+        // 2026-11-05 claude: Fixed in Type::contains_int's union-against-union
+        // arm (contains.rs): where two members of the containing union hold open
+        // cells, the contained union's members go in as written, else deepest
+        // first, whichever order places them all on copies (Type::place_each), as
+        // the bare-cell arm already did. Before, each member went to the first
+        // member that fit it alone: in 'a1's bound [null, Array<'a2>, Array<'a3>]
+        // against [null, Array<A3>, Array<A2>], Array<A3> took 'a2 and Array<A2>
+        // then fit nowhere. Pin
+        // lang::types::a_dag_of_union_bounds_types_its_instances (the probe and a
+        // struct of 'a0, 'a3) fails 4 of 4 modes without it. Census of both repos
+        // unchanged; GUI --check 42.989G -> 42.995G instructions. Still greedy
+        // where the two orders each fit locally and a later relation decides
+        // between them; the 5-deep chain with only 'a0 and 'a1 at positions fails
+        // for another cause, bound-only-settle-01. probes
+        // ~/ptmp/cr29/scratch/r17-o1/union-dag/
         let types = {
             let mut p = profile::phase(Phase::InstanceCheck);
             profile::instance(&mut p, instance_id, id, &body);

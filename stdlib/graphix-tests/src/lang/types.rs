@@ -7209,3 +7209,14 @@ run!(
     prints(r#"[i64:2, null, "s", null]"#);
     FuseExpect::Jit
 );
+
+run!(
+    a_dag_of_union_bounds_types_its_instances,
+    r#"{
+  let f = 'a0: [Array<'a1>, Array<'a2>, null], 'a1: [Array<'a2>, Array<'a3>, null], 'a2: [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number |x: ('a0, 'a1, 'a2, 'a3, 'a4)| 7;
+  let g = 'a0: [Array<'a1>, Array<'a2>, null], 'a1: [Array<'a2>, Array<'a3>, null], 'a2: [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number |x: {a: 'a0, b: 'a3}| 8;
+  f(never()) + g(never())
+}"#,
+    is(Value::I64(15));
+    FuseExpect::None
+);

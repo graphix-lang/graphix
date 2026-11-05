@@ -1053,7 +1053,10 @@ node graph IS the IR — there is no parallel typed IR
   union collapse requires strict tvar identity; in a union checked against
   a union, an open member takes only the members its known siblings leave
   (`[&i64, Error<E>] ⊇ ['b, Error<E>]` gives 'b `&i64`, never `Error<E>`,
-  all of them when none are left or what is left refuses it); a free union member stays free (a type test over an
+  all of them when none are left or what is left refuses it), and where two
+  of its members hold open cells (`[Array<'a>, Array<'b>, null]`) the other
+  union's members go in as written, else deepest first, whichever order
+  places them all on copies (`Type::place_each`); a free union member stays free (a type test over an
   untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
   NaN`, below every number) so `Value` is map-key-able, and numbers of
   different types (under `Any`) order by value, exactly, ties by type,

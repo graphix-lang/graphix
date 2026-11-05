@@ -852,6 +852,11 @@ to and never refuse.
   and an open member takes only the members they leave (all of them when
   none are left, `contains.rs`), so `let r: [&i64, Error<E>] = parse(..)`
   offers 'b only `&i64`, which `Concrete` refuses, never `Error<E>`.
+  Where two members hold open cells (`[Array<'a1>, Array<'a2>, null]`, a
+  bound naming two variables), the member that fits first alone may decide
+  them so a later one fits nowhere: the other union's members go in as
+  written, else deepest first, whichever order places them all on copies
+  (`Type::place_each`).
 - A builtin reads a quantifier only through the values of the arguments
   that hold it. At a call, a quantifier of a builtin's signature that the
   result and throws do not hold, and that no argument the call passes or
