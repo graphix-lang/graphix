@@ -667,6 +667,31 @@ unless what reaches the arm leaves one: annotate the cells, the member,
 or name every field; a program whose cells end up equal is refused
 until annotated.
 
+### Unfolding a pair of definitions
+
+`Type::diff` (what reaches the next arm) and `could_match` walk two
+named types into their definitions. A pair met again inside its own walk
+is answered by assumption: diff subtracts nothing there (the residual is
+the minuend), could_match answers an overlap that rests on the pair in
+progress (`Rests`). The pair is keyed by its two definitions, arguments
+and the type on a side that names none ignored (`setops::DefPair`), and a
+path may hold `setops::UNFOLDINGS` (one) unfoldings of a pair
+(`Unfoldings`): keyed by the types themselves, a walk that subtracts a
+union member by member, or a definition whose parameters grow as it
+recurses, meets a new key at every level and does not end, and the exact
+difference over Error cycles of coprime lengths repeats only after their
+lcm (Eric 11-05, diff-cycle-hang-01 (b)). A wider residual is sound:
+fewer dead arms are found, a missing case may be refused that a `_` arm
+fixes, a later arm's bind is wider. One unfolding was chosen from the
+1600 generated selects (review-r8 X-r1-1): 51 of main's 53 timeouts end
+(the other two are in matching_type's containment); of those main
+finishes, 24 dead-arm refusals become accepted and 17 become missing-case
+refusals, none accepted is refused; two unfoldings move 5 and 5, three 3
+and 0, but a generated select (rnd13) costs 0.9G, 10.7G and 532G
+instructions at one, two and three. Over Error cycles of coprime lengths
+diff walks pairs linear in the sum of the lengths (pin
+`typ::setops::tests::diff_over_error_cycles_unfolds_each_pair_of_definitions_once`).
+
 ### The occurs check
 
 Before a cell binds, takes a lower bound or merges with another, the

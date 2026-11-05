@@ -7680,3 +7680,70 @@ run!(
     "#;
     FuseExpect::Jit
 );
+
+// What reaches the next arm unfolds a pair of definitions once on a path,
+// then subtracts nothing there: names that recur through Error payloads,
+// and a definition whose parameters grow, end.
+run!(
+    coverage_over_names_recurring_through_errors_ends,
+    r#"{
+        type At = [Error<Bt>, Error<Ct>, `R];
+        type Bt = [Error<At>, `P];
+        type Ct = [Array<Ct>, Error<Bt>];
+        type H = [Error<Error<K>>, `Q];
+        type K = [Error<H>, Error<K>, `P];
+        let v: At = `R;
+        select v { K as k => 0, _ => 1 }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+);
+
+run!(
+    coverage_over_generated_error_cycles_ends,
+    r#"{
+        type At = [Error<[Array<Bt>, `Q]>, List<Bt>];
+        type Bt = [Error<[Array<At>, i64]>, Error<[string, Ct]>, `Q];
+        type Ct = [Array<Dt>, Error<Bt>, Error<Et>];
+        type Dt = [Error<[Array<At>, Error<Et>]>, Et, List<Et>];
+        type Et = [Error<Ct>, Error<Dt>];
+        let v: Bt = `Q;
+        select v { Ct as x0 => 0, Et as x1 => 1, Bt as x2 => 2 }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);
+
+run!(
+    coverage_over_growing_parameters_ends,
+    r#"{
+        type G<'a> = [i64, Error<G<Array<'a>>>];
+        type P = [i64, Error<P>];
+        let v: G<i64> = 1;
+        select v { P as x => 0, _ => 1 }
+    }"#,
+    refused("which hold P, whose parameters grow as it recurses");
+    FuseExpect::None
+);
+
+// Over Error cycles sharing the minuend's tag, the arm the first arm
+// covers is still found dead.
+run!(
+    dead_arm_over_shared_tag_cycles_refused,
+    r#"{
+        type C2_0 = [Error<C2_1>, `Mm];
+        type C2_1 = [Error<C2_0>, `K2_1];
+        type C3_0 = [Error<C3_1>, `Mm];
+        type C3_1 = [Error<C3_2>, `K3_1];
+        type C3_2 = [Error<C3_0>, `K3_2];
+        type C5_0 = [Error<C5_1>, `Mm];
+        type C5_1 = [Error<C5_2>, `K5_1];
+        type C5_2 = [Error<C5_3>, `K5_2];
+        type C5_3 = [Error<C5_4>, `K5_3];
+        type C5_4 = [Error<C5_0>, `K5_4];
+        type S = [C2_0, C3_0, C5_0];
+        type M0 = [Error<M0>, `Mm];
+        let v: M0 = `Mm;
+        select v { S as x => 0, Error<Error<`Mm>> as z => 2, _ => 1 }
+    }"#,
+    refused("pattern Error<Error<`Mm>> will never match");
+    FuseExpect::None
+);

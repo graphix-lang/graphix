@@ -7,7 +7,7 @@ use crate::{
     typ::{
         AndAc, Bound, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar, Type,
         contains::{ContainsHist, find_open_cell},
-        setops::{memo_on, strictly_identical},
+        setops::{Unfoldings, def_pair, memo_on, strictly_identical},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -246,6 +246,7 @@ pub(super) struct MatchHist {
     /// pairs of names are.
     apart: NodePairs,
     rests: Rests,
+    unfoldings: Unfoldings,
 }
 
 impl MatchHist {
@@ -257,6 +258,7 @@ impl MatchHist {
             found: NodePairs::default(),
             apart: NodePairs::default(),
             rests: Rests::new(),
+            unfoldings: Unfoldings::default(),
         }
     }
 }
@@ -520,7 +522,16 @@ impl Type {
                 if memo_on() && hist.refuted.get().is_some_and(|m| m.contains_key(&key)) {
                     return Ok(false);
                 }
-                if let Some(node) = hist.hist.get_mut(&key) {
+                // a pair of definitions unfolded as often as a walk may is
+                // met again as the innermost of them in progress
+                let defs = def_pair(env, t0, t1);
+                let again = match hist.hist.contains_key(&key) {
+                    true => Some(key),
+                    false => hist.unfoldings.again(&defs),
+                };
+                if let Some(again) = again
+                    && let Some(node) = hist.hist.get_mut(&again)
+                {
                     if *node == NO_NODE {
                         *node = hist.rests.node()
                     }
@@ -534,7 +545,9 @@ impl Type {
                 let t1 = t1.lookup_ref(env)?;
                 let mark = hist.rests.mark();
                 hist.insert(key, NO_NODE);
+                hist.unfoldings.enter(defs, key);
                 let r = t0.could_match_int(env, hist, &t1);
+                hist.unfoldings.leave(&defs);
                 let node = hist.remove(&key).unwrap_or(NO_NODE);
                 match r {
                     Ok(true) if node == NO_NODE => {
@@ -1220,5 +1233,19 @@ mod tests {
                 "{n}: {pairs} {steps}"
             );
         }
+    }
+
+    // A pair of definitions whose parameters grow as they recur unfolds
+    // once, then is met again as the pair in progress: an overlap.
+    #[test]
+    fn could_match_unfolds_growing_definitions_once() {
+        let defs: Vec<(String, String)> = [
+            ("G<'a>", "[Error<G<Array<'a>>>, `X]"),
+            ("H<'a>", "[Error<H<Array<'a>>>, `Y]"),
+        ]
+        .iter()
+        .map(|(n, b)| (n.to_string(), b.to_string()))
+        .collect();
+        assert_eq!(pairs_walked(&defs, "H<i64>", "G<i64>"), (true, 1));
     }
 }

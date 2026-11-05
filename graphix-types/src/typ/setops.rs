@@ -32,13 +32,65 @@ struct MatchingTypes {
 struct DiffHist {
     hist: RefHist<AHashMap<RefPair, Type>>,
     done: Lazy<AHashMap<RefPair, Kept<Type>>>,
-    /// The current walk met a pair in progress.
+    unfoldings: Unfoldings,
+    /// The current walk met a pair in progress, or stopped unfolding.
     cycled: bool,
 }
 
 impl DiffHist {
     fn new() -> Self {
-        DiffHist { hist: RefHist::new(), done: Lazy::new(), cycled: false }
+        DiffHist {
+            hist: RefHist::new(),
+            done: Lazy::new(),
+            unfoldings: Unfoldings::default(),
+            cycled: false,
+        }
+    }
+}
+
+/// The definitions of a pair a walk unfolds, a side that is no named type
+/// `None`: arguments and the types around them ignored.
+pub(super) type DefPair = (Option<usize>, Option<usize>);
+
+pub(super) fn def_pair(env: &Env, t0: &Type, t1: &Type) -> DefPair {
+    let def = |t: &Type| match t {
+        Type::Ref(tr) => tr.resolve_in(env).map(|r| r.def_key()),
+        _ => None,
+    };
+    (def(t0), def(t1))
+}
+
+/// How many unfoldings of one pair of definitions a walk's path may
+/// hold; the next is the pair met again. Types a walk builds as it goes (a
+/// union less each member in turn, parameters that grow) are new keys at
+/// every level, and an exact difference may repeat only after the lcm of
+/// the cycles it walks. Each more unfolding multiplies a walk's cost
+/// (`design/tvar_constraints.md`, Unfolding a pair of definitions).
+pub(super) const UNFOLDINGS: usize = 1;
+
+/// The pairs of definitions a walk is inside, each with its unfoldings'
+/// pairs in progress, innermost last.
+#[derive(Default)]
+pub(super) struct Unfoldings(LPooled<AHashMap<DefPair, SmallVec<[RefPair; 1]>>>);
+
+impl Unfoldings {
+    /// The innermost pair in progress of `defs` when the walk has unfolded
+    /// it [`UNFOLDINGS`] times.
+    pub(super) fn again(&self, defs: &DefPair) -> Option<RefPair> {
+        self.0
+            .get(defs)
+            .filter(|ks| ks.len() >= UNFOLDINGS)
+            .and_then(|ks| ks.last().copied())
+    }
+
+    pub(super) fn enter(&mut self, defs: DefPair, key: RefPair) {
+        self.0.entry(defs).or_default().push(key)
+    }
+
+    pub(super) fn leave(&mut self, defs: &DefPair) {
+        if let Some(ks) = self.0.get_mut(defs) {
+            ks.pop();
+        }
     }
 }
 
@@ -586,7 +638,7 @@ impl Type {
         Ok(out)
     }
 
-    // CR claude for claude: [bug/medium] diff does not end over some names that recur
+    // XCR claude for claude: [bug/medium] diff does not end over some names that recur
     // through Error payloads: main bbb06c0c6's --check of `type At = [Error<Bt>,
     // Error<Ct>, `R]; type Bt = [Error<At>, `P]; type Ct = [Array<Ct>, Error<Bt>]; type H
     // = [Error<Error<K>>, `Q]; type K = [Error<H>, Error<K>, `P]; let v: At = `R; select
@@ -628,6 +680,26 @@ impl Type {
     // chosen from the census of both repos, the 1600 generated selects and the review's
     // grow/lcm families. could_match's missing bound goes in the same lane. Analysis:
     // ~/ptmp/cr-discuss.md, Ruled 11-05.
+    // 2026-11-05 claude: Built (lane U, round 16) at k = 1: diff and could_match key a
+    // pair met again by its two definitions (setops::DefPair, arguments ignored) and
+    // allow one unfolding per pair on a path (setops::UNFOLDINGS, Unfoldings); past it
+    // diff subtracts nothing and could_match answers an overlap resting on the innermost
+    // pair in progress. Chosen from the 1600 generated selects (perf instructions,
+    // --no-cache --check, 30 s): main's 53 timeouts -> 2 (r669 and r1088, both in
+    // matching_type's contains: matching-type-contains-dag-01); of the 1547 main
+    // finishes, 24 dead-arm refusals become accepted, 17 become missing-case refusals, 3
+    // refuse a later dead arm, none accepted is refused; k = 2 moves 10 and k = 3 3, but
+    // rnd13 costs 2.24G / 12.01G / 533G at k = 1 / 2 / 3. Families (cy, ec, n, p, sh,
+    // sh235e2) keep every verdict; ecs400x32 4.35G -> 4.40G; grow1, grow4-6, gr1-7, hd1,
+    // name1 now end refused by rep_collision's growth rule; grow2 and grow3 still time
+    // out, now in contains' set_covers_by_distribution. Pins:
+    // typ::setops::tests::diff_over_error_cycles_unfolds_each_pair_of_definitions_once
+    // (pairs 12/18/32/61; 12/24/43/178 without),
+    // diff_over_names_recurring_through_errors_ends and
+    // typ::matches::tests::could_match_unfolds_growing_definitions_once (hang without);
+    // lang::select::coverage_over_{names_recurring_through_errors,generated_error_cycles,growing_parameters}_ends
+    // (mainhang, rnd13, grow5: killed on base-r16),
+    // dead_arm_over_shared_tag_cycles_refused (sh235e2 stays refused).
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
@@ -650,15 +722,22 @@ impl Type {
                     hist.cycled = true;
                     return Ok(r.clone());
                 }
+                // a pair met again inside its own difference subtracts
+                // nothing: assuming it covered would drop what it did not
+                let defs = def_pair(env, t0, t1);
+                if hist.unfoldings.again(&defs).is_some() {
+                    hist.cycled = true;
+                    return Ok(self.clone());
+                }
                 #[cfg(test)]
                 DIFF_PAIRS.with(|n| n.set(n.get() + 1));
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                // a pair met again inside its own difference subtracts
-                // nothing: assuming it covered would drop what it did not
                 hist.hist.insert(key, self.clone());
+                hist.unfoldings.enter(defs, key);
                 let outer = mem::replace(&mut hist.cycled, false);
                 let r = t0.diff_int(env, hist, &t1);
+                hist.unfoldings.leave(&defs);
                 hist.hist.remove(&key);
                 let cycled = mem::replace(&mut hist.cycled, outer);
                 hist.cycled |= cycled;
@@ -950,6 +1029,12 @@ impl Type {
     // in progress, as could_match's Rests holds them) and walks that do not read
     // which cells earlier walks filled. Evidence:
     // ~/ptmp/cr29/scratch/review-r11/X-r1-1/, X-r1-2/, X-r2-1/.
+    // 2026-11-05 claude: Lane U (round 16, diff-cycle-hang-01 at k = 1): generated
+    // p1088 still times out at 30 s, in Select::typecheck0_with ->
+    // PatternNode::capture_type -> matching_type -> contains
+    // (set_covers_by_distribution); so does generated r669 (gen_rnd.py seed 669), on
+    // the same path. grow2.gx and grow3.gx (r11-X/fix) now time out in contains'
+    // set_covers_by_distribution too, where base-r16 timed out in diff.
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
         let refs = LPooled::take();
         let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: false };
@@ -1526,6 +1611,71 @@ mod tests {
         SPLIT_STEPS.with(|n| n.set(0));
         assert!(!s.narrow_pattern(&env, &m).unwrap());
         assert_eq!(SPLIT_STEPS.with(|n| n.get()), 174);
+    }
+
+    /// Error cycles `C<l>_j = [Error<C<l>_j+1 mod l>, tag]` of the lengths
+    /// `ls`, position 0 tagged `` `Mm `` where `shared`, `S` the union of
+    /// their heads, and `M0 = [Error<M0>, `Mm]`.
+    fn error_cycles(ls: &[usize], shared: bool) -> Vec<(String, String)> {
+        let mut defs = vec![];
+        for &l in ls {
+            for j in 0..l {
+                let tag = match j == 0 && shared {
+                    true => "`Mm".to_string(),
+                    false => format!("`K{l}_{j}"),
+                };
+                defs.push((
+                    format!("C{l}_{j}"),
+                    format!("[Error<C{l}_{}>, {tag}]", (j + 1) % l),
+                ));
+            }
+        }
+        let heads: Vec<String> = ls.iter().map(|l| format!("C{l}_0")).collect();
+        defs.push(("S".into(), format!("[{}]", heads.join(", "))));
+        defs.push(("M0".into(), "[Error<M0>, `Mm]".into()));
+        defs
+    }
+
+    fn diff_pairs(defs: &[(String, String)], t: &str, less: &str) -> (String, usize) {
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, t);
+        super::DIFF_PAIRS.with(|n| n.set(0));
+        let rest = t.diff(&env, &parsed(&env, less)).unwrap();
+        (rest.to_string(), super::DIFF_PAIRS.with(|n| n.get()))
+    }
+
+    // diff unfolds a pair of definitions once: over Error cycles of coprime
+    // lengths, whose exact residual repeats only after their lcm, the pairs
+    // it walks grow with the sum of the lengths.
+    #[test]
+    fn diff_over_error_cycles_unfolds_each_pair_of_definitions_once() {
+        let pairs =
+            |ls: &[usize], shared| diff_pairs(&error_cycles(ls, shared), "M0", "S").1;
+        let sets: [&[usize]; 4] =
+            [&[2, 3], &[2, 3, 5], &[2, 3, 5, 7], &[2, 3, 5, 7, 11, 13]];
+        let apart: Vec<usize> = sets.iter().map(|ls| pairs(ls, false)).collect();
+        let shared: Vec<usize> = sets.iter().map(|ls| pairs(ls, true)).collect();
+        assert_eq!((apart, shared), (vec![12, 18, 32, 61], vec![12, 18, 32, 61]));
+    }
+
+    // Names recurring through Error payloads, and a definition whose
+    // parameters grow as it recurses, end.
+    #[test]
+    fn diff_over_names_recurring_through_errors_ends() {
+        let defs: Vec<(String, String)> = [
+            ("At", "[Error<Bt>, Error<Ct>, `R]"),
+            ("Bt", "[Error<At>, `P]"),
+            ("Ct", "[Array<Ct>, Error<Bt>]"),
+            ("H", "[Error<Error<K>>, `Q]"),
+            ("K", "[Error<H>, Error<K>, `P]"),
+            ("G<'a>", "[i64, Error<G<Array<'a>>>]"),
+            ("P", "[i64, Error<P>]"),
+        ]
+        .iter()
+        .map(|(n, b)| (n.to_string(), b.to_string()))
+        .collect();
+        let ends = |t: &str, less: &str| diff_pairs(&defs, t, less).1;
+        assert_eq!((ends("At", "K"), ends("G<i64>", "P")), (33, 1));
     }
 
     // A select over a DAG of named unions (Li = [Li-1, Mi-1], Mi = [Mi-1,

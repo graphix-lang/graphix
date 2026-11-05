@@ -1576,7 +1576,12 @@ cycle, across workers; the compiler never pins threads.
   holds a partial struct pattern.
   Exhaustiveness holds those cells rigid on copies first
   (`Type::contains_holding`), so a part only names and `_` meet covers
-  whatever it becomes, else where the cover decides them. A partial
+  whatever it becomes, else where the cover decides them. What reaches
+  the next arm (`Type::diff`) and `could_match` unfold a pair of
+  definitions (arguments ignored) once on a path; met again, diff
+  subtracts nothing and could_match answers an overlap
+  (`setops::UNFOLDINGS`): a wider residual, so fewer dead arms are found
+  and a missing case may be refused that `_` fixes. A partial
   struct pattern completes against the one member it can match
   (`StructurePattern::complete_type_predicate`); members told apart only
   by undecided cells are two members, refused unless what reaches the
