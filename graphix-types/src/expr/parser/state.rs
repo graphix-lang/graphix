@@ -126,22 +126,55 @@ struct Reason {
     /// a failure only inside that token.
     span: Option<usize>,
     reason: CompactString,
-    /// Where the parse failed, for a refusal of something read before
-    /// that point: a failure there is reported at `pos`.
-    failed_at: Option<SourcePosition>,
+    said: Said,
+}
+
+/// Of what a [`Reason`] is said.
+#[derive(Clone, Copy, PartialEq)]
+enum Said {
+    /// Of a refusal at its `pos`.
+    Here,
+    /// Of something read before this point, where the parse failed: a
+    /// failure there is reported at the reason's `pos`.
+    Before(SourcePosition),
+    /// Of text read as a value literal to this point, which another
+    /// reading may read otherwise: said only where no other reading
+    /// parsed to it.
+    Literal(SourcePosition),
 }
 
 impl Reason {
-    fn explains(&self, failure: SourcePosition) -> bool {
-        self.failed_at == Some(failure)
-            || failure.line == self.pos.line
-                && match self.span {
-                    None => true,
-                    Some(n) => {
-                        self.pos.column <= failure.column
-                            && failure.column <= self.pos.column + n as i32
-                    }
+    /// Where it stands, as a later one wins.
+    fn at(&self) -> (i32, i32) {
+        match self.said {
+            Said::Before(f) => key(f),
+            Said::Here | Said::Literal(_) => key(self.pos),
+        }
+    }
+
+    /// Whether it is of something read before `failure`.
+    fn read_before(&self, failure: SourcePosition) -> bool {
+        self.said == Said::Before(failure)
+    }
+
+    /// Whether it explains a failure at `failure`, where the furthest
+    /// point a knot parsed to is `parsed`.
+    fn explains(&self, failure: SourcePosition, parsed: Option<SourcePosition>) -> bool {
+        match self.said {
+            Said::Before(f) if f == failure => return true,
+            Said::Literal(end) if parsed.is_some_and(|p| key(p) >= key(end)) => {
+                return false;
+            }
+            Said::Here | Said::Before(_) | Said::Literal(_) => (),
+        }
+        failure.line == self.pos.line
+            && match self.span {
+                None => true,
+                Some(n) => {
+                    self.pos.column <= failure.column
+                        && failure.column <= self.pos.column + n as i32
                 }
+            }
     }
 }
 
@@ -367,7 +400,7 @@ impl State {
         span: Option<usize>,
         reason: impl FnOnce() -> CompactString,
     ) {
-        self.note(pos, span, None, reason)
+        self.note(pos, span, Said::Here, reason)
     }
 
     /// [`State::note_reason`] of something read before `failed_at`, where
@@ -378,25 +411,37 @@ impl State {
         failed_at: SourcePosition,
         reason: &'static str,
     ) {
-        self.note(pos, None, Some(failed_at), || CompactString::const_new(reason))
+        self.note(pos, None, Said::Before(failed_at), || CompactString::const_new(reason))
+    }
+
+    /// [`State::note_reason`] of text read as a value literal from `pos`
+    /// to `end`, which explains a failure only where no other reading
+    /// parsed to `end`.
+    pub(super) fn note_literal_reason(
+        &mut self,
+        pos: SourcePosition,
+        end: SourcePosition,
+        span: Option<usize>,
+        reason: impl FnOnce() -> CompactString,
+    ) {
+        self.note(pos, span, Said::Literal(end), reason)
     }
 
     fn note(
         &mut self,
         pos: SourcePosition,
         span: Option<usize>,
-        failed_at: Option<SourcePosition>,
+        said: Said,
         reason: impl FnOnce() -> CompactString,
     ) {
         if self.diag() {
-            self.keep_reason(Reason { pos, span, reason: reason(), failed_at })
+            self.keep_reason(Reason { pos, span, reason: reason(), said })
         }
     }
 
     /// Keep `r` unless the reason kept stands later.
     fn keep_reason(&mut self, r: Reason) {
-        let at = |r: &Reason| key(r.failed_at.unwrap_or(r.pos));
-        if self.reason.as_ref().is_none_or(|kept| at(kept) <= at(&r)) {
+        if self.reason.as_ref().is_none_or(|kept| kept.at() <= r.at()) {
             self.reason = Some(r);
         }
     }
@@ -432,7 +477,7 @@ impl State {
     }
 
     fn reason_explains(&self, pos: SourcePosition) -> bool {
-        self.reason.as_ref().is_some_and(|r| r.explains(pos))
+        self.reason.as_ref().is_some_and(|r| r.explains(pos, self.furthest_ok))
     }
 
     /// Where a parse that failed at `err` reports, and whether that report
@@ -443,7 +488,7 @@ impl State {
         }
         let furthest = self.furthest.unwrap_or(err);
         let pos = if key(furthest) > key(err) { furthest } else { err };
-        let read = self.reason.as_ref().is_some_and(|r| r.failed_at == Some(pos));
+        let read = self.reason.as_ref().is_some_and(|r| r.read_before(pos));
         (pos, pos == err && !read)
     }
 
@@ -482,7 +527,7 @@ impl State {
         let read = self
             .reason
             .as_ref()
-            .filter(|r| r.failed_at == Some(pos))
+            .filter(|r| r.read_before(pos))
             .map(|r| (r.pos, r.reason.clone()));
         let header = |p: SourcePosition| {
             format!("Parse error at line: {}, column: {}", p.line, p.column)
@@ -514,7 +559,7 @@ impl State {
         }
         let reason = match read {
             Some(_) => None,
-            None => self.reason.clone().filter(|r| r.explains(pos)),
+            None => self.reason.clone().filter(|r| r.explains(pos, self.furthest_ok)),
         };
         let note = match reason {
             Some(r) => Some((r.pos, r.reason)),

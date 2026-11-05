@@ -205,6 +205,8 @@ fn an_out_of_range_integer_literal_names_its_range() {
         "{msg}"
     );
     assert!(msg.contains("note: at line: 1, column: 9: `256` is out of the range of u8"));
+    let msg = parse_program("let s = [1, u8:300]");
+    assert!(msg.contains("note: at line: 1, column: 13: `300` is out"), "{msg}");
     for (src, at) in [("let a = u8: 256;\na", 16), ("let a = u8:\n256;\na", 4)] {
         let msg = parse_program(src);
         let line = if at == 4 { 2 } else { 1 };
@@ -236,6 +238,8 @@ fn a_value_literal_failure_is_said_only_where_it_alone_failed() {
         ("let s = {u8:\n300", Some(unclosed(1, 9))),
         ("let s = {u8: 300", Some(unclosed(1, 9))),
         ("let s = {u8: 300)", None),
+        ("let s = {u8:300", Some(unclosed(1, 9))),
+        ("let s = {u8:300)", None),
         ("let s = {datetime: \"\\q\"}", None),
     ] {
         let msg = parse_program(src);

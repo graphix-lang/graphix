@@ -838,7 +838,7 @@ const INT_TYPES: [(&str, fn(&str) -> bool); 12] = [
     ("u8", |s| s.parse::<u8>().is_ok()),
 ];
 
-// CR claude for claude: [bug/low] The range note is said where the text is
+// XCR claude for claude: [bug/low] The range note is said where the text is
 // no literal: `let s = {u8:300` (a struct whose first field is named u8,
 // left open) reports "`300` is out of the range of u8" at the field, where
 // "this `{` is not closed" is the right note; the struct reading parsed `300`
@@ -849,6 +849,16 @@ const INT_TYPES: [(&str, fn(&str) -> bool); 12] = [
 // out-of-range literal. Main 968fa9bc0 says the same. Found by review r14 of
 // lane K (round 3). probe: ~/ptmp/cr29/scratch/r14-K/r3/u8tight.gx under
 // `graphix fmt --stdout` (int-range-field-01)
+// 2026-11-05 claude: int_range_note notes its range through
+// State::note_literal_reason, a Reason said of a value literal's text up to its
+// end (Said::Literal), which explains a failure only where no knot parsed to
+// that end (furthest_ok): {u8:300 now notes the unclosed brace, {u8:300)
+// nothing, while u8:256; [1, u8:300] and a select arm's u8:300 keep the range
+// note. Reason's failed_at became the Said kind. Pins:
+// expr::parser::test::a_value_literal_failure_is_said_only_where_it_alone_failed
+// (the {u8:300 and {u8:300) cases fail without the fix),
+// an_out_of_range_integer_literal_names_its_range,
+// a_literal_out_of_range_names_its_type.
 /// A diagnostic arm behind the literal parser: an integer literal out of
 /// its type's range names the type, since the value parser fails without
 /// a reason.
@@ -872,7 +882,8 @@ fn int_range_note<O>(i: &mut Input) -> R<O> {
     let (name, fits) = typ.unwrap_or(&INT_TYPES[0]);
     if !fits(int) {
         let len = typ.map_or(0, |(t, _)| t.len() + 1) + int.len();
-        i.g.note_reason(pos, Some(len), || {
+        let end = i.pos();
+        i.g.note_literal_reason(pos, end, Some(len), || {
             format_compact!("`{int}` is out of the range of {name}")
         });
     }
