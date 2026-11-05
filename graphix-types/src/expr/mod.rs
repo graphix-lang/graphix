@@ -1164,9 +1164,9 @@ pub struct Origin {
     pub source: Source,
     pub text: ArcStr,
     /// Which load of its source this is: 0 for one a session makes once
-    /// (its root, its program, a module a resolver serves), a number of
-    /// the session's own for one it may make again (a REPL input, a
-    /// `load`, a check, a dynamic module's source).
+    /// (its root, its program), a number of the session's own for one it
+    /// may make again (a REPL input, a `load`, a check, a dynamic
+    /// module's source), and a module a resolver serves its parent's.
     pub load: u32,
     tag: SourceTag,
 }
@@ -1247,9 +1247,12 @@ impl Origin {
         Self::new(None, Source::Unspecified, ArcStr::from(s))
     }
 
-    /// The origin of `text` from `source`, its first load.
+    /// The origin of `text` from `source`, part of its parent's load (a
+    /// unit a resolver serves is loaded with what loads it), else its
+    /// source's first load.
     pub fn new(parent: Option<Arc<Origin>>, source: Source, text: ArcStr) -> Self {
-        Self { parent, source, text, load: 0, tag: SourceTag::default() }
+        let load = parent.as_ref().map_or(0, |p| p.load);
+        Self { parent, source, text, load, tag: SourceTag::default() }
     }
 
     /// This origin as the session's load number `load` of its source.

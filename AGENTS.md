@@ -645,7 +645,8 @@ file outside every project. A root at `<crate>/src/graphix/mod.gx` of a
 `graphix-package-<x>` crate is a package root, checked as the body of
 `mod <x>` over the copy registered at startup: `Env::
 unbind_scope_subtree` must drop everything a package registers, so a new
-global registry is cleared there. `--check` and the server share one
+global registry is cleared there (the block-type registry, shared by every
+copy of the env, is not: each load names its blocks apart). `--check` and the server share one
 path (`GXRt::check`), which runs the check alone (`CFlag::CheckOnly`:
 no elaboration, no fusion, so `#[native]`, `#[parallel]` and the def
 assertions are verified by a build; `--expand` builds) and checks a script's file as one block, as it

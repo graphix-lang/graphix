@@ -495,11 +495,15 @@ a position bind only names the lowering made unique or their own
 parameters, so a shared name holds nothing two of them read. A load a
 session may repeat (a REPL input, a `load`, a check, a dynamic module's
 source) takes a number of the session's own (`BlockTypes::next_load`),
-so two loads of one text never share a scope; the loads an image holds
-(the root, the program, the modules a resolver serves) are load 0.
+so two loads of one text never share a scope; a module a resolver serves
+is part of the load that reached it (`Origin::new` takes its parent's),
+so each check of a root names an unchanged module's blocks apart from
+the last check's; the loads an image holds (the root, the program and
+the modules they reach) are load 0.
 Pins: `graphix-shell/tests/shell/block_type_image.rs`,
 `lang::image::a_restored_block_type_outlives_its_activation`,
-`lang::image::a_restored_block_trait_dispatches`.
+`lang::image::a_restored_block_trait_dispatches`,
+`graphix-shell/tests/lsp`'s `a_module_block_type_follows_each_check`.
 
 The regions are what keep a chain of restores small. With one region, a
 restored runtime's IDs sit in its block while the ones it mints later

@@ -195,8 +195,9 @@ nothing.
   every copy of the env (a compile task's, a snapshot). Finding the live
   definition or declaring a new one is one step under the registry's lock
   (`BlockTypes::declare`), so parallel compiles of one block declare one
-  definition. `unbind_scope_subtree`
-  drops the entries under its scope; dead entries are swept as the
+  definition. `unbind_scope_subtree` leaves them: a check unbinds on
+  a copy it then drops, and the shared registry has no copy to restore;
+  the check's load names its blocks apart. Dead entries are swept as the
   registry grows. A session image carries the live entries, under the
   scope names it wrote, which a block compiled again after the restore
   spells alike, so it declares the restored definition.

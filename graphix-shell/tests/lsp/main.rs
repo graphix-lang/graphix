@@ -1352,3 +1352,23 @@ fn a_request_mid_burst_checks_its_document() {
         "what the burst left dirty went unchecked: {trailing:?}"
     );
 }
+
+/// Each check of a root names the blocks of the modules it loads as its
+/// own: a block type of an unchanged module is declared again over the
+/// module's current neighbours, never taken from the check before.
+#[test]
+fn a_module_block_type_follows_each_check() {
+    const K: &str = "type T = i64;\nlet z = 1;\n";
+    const M: &str =
+        "let r = {\n    type L = super::k::T;\n    let v: L = 5;\n    v\n};\n";
+    let mut c =
+        Client::start(&[("root.gx", "mod k;\nmod m;\nm::r\n"), ("k.gx", K), ("m.gx", M)]);
+    c.open("root.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    c.open("k.gx");
+    c.edit("root.gx", "mod k;\nmod m;\nm::r\n\n");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    c.edit("k.gx", "type T = string;\nlet z = 1;\n");
+    let d = c.diagnostics("m.gx");
+    assert!(d.len() == 1 && d[0].2.contains("L does not contain i64"), "{d:?}");
+}

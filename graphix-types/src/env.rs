@@ -212,6 +212,18 @@ impl TypeDef {
 // lang::block_types::a_reload_declares_its_own_block_type (both fail with a tag that
 // drops the load number and text), serialize positions_cross_the_wire (packed sources
 // keep positions). Registration format 108.
+// 2026-11-05 claude: Review r16 (N-r1-1) found a module a resolver serves always took
+// load 0, so an LSP re-check named an unchanged module's blocks as the check before and
+// BlockTypes::declare handed back that check's live definition (phantom 'undefined type
+// super::k::T'; a real mismatch missed). Fixed: Origin::new takes its parent's load, so a
+// served unit is part of the load that reached it; runs keep load 0 throughout, so cold
+// and warm still agree. Pin: graphix-shell tests lsp
+// a_module_block_type_follows_each_check (fails with load 0 for served units). Also
+// (N-r1-2 low): unbind_scope_subtree no longer clears the block-type registry, which
+// every env copy shares, so a package-root check's rollback cannot lose the startup
+// copy's entries; pin env::test::unbinding_a_clone_keeps_the_block_types. The
+// eta-expansion lambda now takes its spec's origin (Expr::synth), so its scope names
+// depend on the source (no observable behaviour, unpinned).
 #[derive(Clone, Debug, Default)]
 pub struct BlockTypes(Arc<RwLock<BlockRegistry>>);
 
@@ -238,13 +250,13 @@ pub(crate) enum BlockHit {
     Dead,
 }
 
-/// Whether `scope` is a block's own: its last component is generated.
-/// A module a block declares is not: its scope ends in its name, which
-/// a reload declares again with other text.
 fn same_origin(a: &Arc<Origin>, b: &Arc<Origin>) -> bool {
     Arc::ptr_eq(a, b) || a == b
 }
 
+/// Whether `scope` is a block's own: its last component is generated.
+/// A module a block declares is not: its scope ends in its name, which
+/// a reload declares again with other text.
 pub(crate) fn is_block_scope(scope: &str) -> bool {
     Path::basename(scope).is_some_and(crate::is_block_component)
 }
@@ -333,15 +345,6 @@ impl BlockTypes {
             }
         }
         out
-    }
-
-    fn remove_under(&self, scope: &str) {
-        let mut reg = self.0.write();
-        reg.by_name.retain(|_, es| {
-            es.retain(|e| !scope_is_under(&e.scope, scope));
-            !es.is_empty()
-        });
-        reg.entries = reg.by_name.values().map(|es| es.len()).sum();
     }
 
     pub fn from_entries(
@@ -2618,13 +2621,14 @@ impl Env {
             poly_binds,
             // a package stays registered across its recheck
             package_roots: _,
-            block_types,
+            // shared by every clone, so a check's restore could not bring
+            // back what it dropped; each load names its blocks apart
+            block_types: _,
             ide: _,
             hidden_impls: _,
             recorded: _,
         } = self;
         names.retain(|s, _| !under(s));
-        block_types.remove_under(scope);
         let binds: LPooled<Vec<BindId>> = by_id
             .into_iter()
             .filter(|(_, b)| under(&b.scope))
@@ -2919,6 +2923,35 @@ mod test {
         assert!(!env.abstract_minted(id));
         register(&mut env, &TypeDefBody::Abstract(None));
         assert!(!env.abstract_minted(id));
+    }
+
+    /// Unbinding a package from a clone of the env (a check, rolled back
+    /// by restoring the original) leaves the original's block types.
+    #[test]
+    fn unbinding_a_clone_keeps_the_block_types() {
+        let mut env = Env::default();
+        let pkg = ModPath::from(["pkg"]);
+        let block = ModPath(pkg.0.append("#do1.1~0"));
+        let i64 = Type::Primitive(netidx_value::Typ::I64.into());
+        let pos = SourcePosition::default();
+        let ori = Arc::new(Origin::default());
+        env.deftype_in_block(
+            &block,
+            "L",
+            Arc::from_iter([]),
+            &TypeDefBody::Alias(i64),
+            pos,
+            pos,
+            ori,
+        )
+        .unwrap();
+        let live = |env: &Env| {
+            matches!(env.block_types.find(&block.0, "L"), Some(BlockHit::Live(_)))
+        };
+        assert!(live(&env));
+        let mut check = env.clone();
+        check.unbind_scope_subtree(&pkg);
+        assert!(live(&env));
     }
 
     fn at(env: &mut Env, scope: &ModPath, name: &str) -> BindId {

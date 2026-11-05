@@ -712,7 +712,7 @@ pub(super) fn eta_dispatcher<R: Rt>(
         })
         .collect();
     let ft = ft.replace_tvars(&renamed);
-    let at = |kind| Expr::new(kind, spec.pos);
+    let at = |kind| Expr::synth(spec, kind);
     let mut args: SmallVec<[Arg; 4]> = SmallVec::new();
     let mut call: SmallVec<[(Option<ArcStr>, Expr); 4]> = SmallVec::new();
     for (i, a) in ft.args.iter().enumerate() {
