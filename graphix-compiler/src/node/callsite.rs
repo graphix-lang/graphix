@@ -2637,7 +2637,7 @@ impl<R: Rt> CallSite<R> {
                 Self::unregister_fn_params(ctx, params);
                 res.map(|tail_loops| (defaults, tail_loops))
             })?;
-            // CR claude for claude: [perf/low] A run-time bind fuses only a collection
+            // CR claude for eric: [perf/low] A run-time bind fuses only a collection
             // slot's instance and one an assertion it reaches covers (`asserted`): a
             // function value called with no attribute in reach, `let g = select b {
             // true => fib, .. }; g(20)`, runs every level of its recursion in the
@@ -2653,6 +2653,32 @@ impl<R: Rt> CallSite<R> {
             // costs what a named call does (a JIT compile at the first bind of each
             // new instance, cached by definition and type); measure the admin TUI's
             // first-bind cost first and bring it back if it stalls visibly.
+            // 2026-11-05 claude: Built D20 (b) in lane o1 r17 and did not land it
+            // (patch, pins and probes: ~/ptmp/cr29/scratch/r17-o1/bound-bind-policy/).
+            // The change: build_bound calls fusion::fuse_instance for every non-slot
+            // bind, and fuse_instance caches an instance whose walk fused nothing
+            // (None), walking it again only where an assertion reaches the bind;
+            // without that cache a node-walked recursion whose body does not fuse
+            // retries fusion at every level (nf_bound.gx at depth 2000: 2001 walks,
+            // 4002 recorded failures, growing with depth). Measured (instructions:u,
+            // debug): b8.gx 24.5G on main to 1.15G; nf_named/nf_bound +1-3% (the
+            // per-bind fingerprint). Pins in the patch:
+            // lang::fusion::bound_function_value_fuses (fails without the policy
+            // change: no kernel runs) and bound_unfused_instance_tried_once (fails
+            // without the cache: 16 against 406 failures). Two things block it, both
+            // Eric's: (1) a wrong answer under fusion:
+            // lang::prune::standing_formal_refresh_marks_its_readers fails in Jit,
+            // since the kernel of a bound closure reading a capture bare computes as
+            // an operator over it does in the node-walk, not as the bare read does
+            // (quiet-refresh-op-01); fusing every bind makes that a node-walk/JIT
+            // divergence. (2) 81 run! fixtures marked FuseExpect::None now fuse (list
+            // in fuseexpect-flips.txt): fixture_mode counts the regions fused by the
+            // time its fusion_stats read arrives, which a run-time bind in the first
+            // cycle reaches; rec: count the build alone (a snapshot at the compile's
+            // end), keeping FuseExpect's documented meaning, rather than flipping 81
+            // annotations on a race. The admin TUI's first-bind cost was not measured.
+            // Rec: settle quiet-refresh-op-01 first, then land the patch with the
+            // FuseExpect change.
             if !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads

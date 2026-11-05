@@ -524,6 +524,21 @@ fn gather_in_order<'a, R: Rt>(
 /// A strict computation propagates consumed bottom before considering
 /// its cached result. Quiet recomputation cannot manufacture an event.
 /// `$tag` is the join of the consumed productions.
+// CR claude for eric: [bug/medium] A quiet change of a standing value
+// reaches a bare read but not an operator over it: an operator whose
+// inputs did not fire rides its resident here, so in a closure whose
+// capture is a callee's formal refreshed standing at its arm's wake, `|y|
+// { let z = y; x }` reads the new value and `|y| { let z = y; x + 0 }` the
+// old one, in the unpruned node-walk alike (GRAPHIX_PRUNE=off --no-fusion,
+// at clk 6: `(6, 3, 0, 3)` against `(6, 3, 0, 1)`). A kernel computes as
+// the operator does, so fusing a run-time bind of the bare read (D20 (b),
+// bound-bind-policy-01) diverges from the node-walk, and
+// lang::prune::standing_formal_refresh_marks_its_readers fails in Jit.
+// Which is intended: does a quiet standing change reach the readers of an
+// operator over it (operators recompute on a stale input), or only a fire
+// does (a bare read rides as well)? probes:
+// ~/ptmp/cr29/scratch/r17-o1/bound-bind-policy/sf.gx, sfp.gx
+// (quiet-refresh-op-01)
 macro_rules! dense_gate {
     ($self:ident, $tag:expr, $bottom:expr) => {{
         let woke = $self.slept.take();
