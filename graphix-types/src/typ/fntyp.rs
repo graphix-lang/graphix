@@ -11,6 +11,7 @@ use crate::{
         contains::{ContainsFlags, ContainsHist},
         key_text,
         matches::{MatchHist, SigMatch, SigPairs},
+        normalize::NormCx,
         tvar::{self, Fresh, Level, RigidGate},
     },
 };
@@ -557,24 +558,26 @@ impl FnType {
         known
     }
 
-    /// `(tvar, conjunct)` for every conjunct of every signature cell
-    /// `keep` selects, normalized (so equality and display agree on the
-    /// canonical form), sorted by name then conjunct.
-    fn constraint_pairs(
-        &self,
-        keep: impl Fn(&TVar) -> bool,
-    ) -> LPooled<Vec<(TVar, Type)>> {
+    /// `(tvar, conjunct)` for every conjunct of every declared quantifier,
+    /// normalized (so equality and display agree on the canonical form),
+    /// sorted by name then conjunct: the part of the constraints that is
+    /// the signature's identity.
+    pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
         let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+        if self.quantifiers.is_empty() {
+            return view;
+        }
         let Some(_guard) = Walking::enter(&VIEWING, self) else { return view };
         // every cell the signature reaches, through its conjuncts too: a
         // quantifier may occur only inside another's bound
         let mut reached: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut reached);
-        for (_, tv) in reached.drain() {
-            if keep(&tv) {
-                for tc in tv.cell_constraints() {
-                    view.push((tv.clone(), tc.normalize()));
-                }
+        let mut cx = NormCx::take();
+        for q in self.quantifiers.iter() {
+            let Some(tv) = reached.remove(q) else { continue };
+            for tc in tv.cell_constraints() {
+                let n = tc.normalize_int(&mut cx).unwrap_or_else(|| tc.clone());
+                view.push((tv.clone(), n));
             }
         }
         // equality is blind to an open variable's name: `'a: 'b + 'c` holds two
@@ -590,15 +593,6 @@ impl FnType {
                 && var_names(x).as_slice() == var_names(y).as_slice()
         });
         view
-    }
-
-    /// The declared quantifiers' conjuncts, as [`Self::constraint_pairs`]:
-    /// the part of the constraints that is the signature's identity.
-    pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
-        if self.quantifiers.is_empty() {
-            return LPooled::take();
-        }
-        self.constraint_pairs(|tv| self.quantifiers.contains(&tv.name))
     }
 
     /// The canonical bytes the image keys this type by: the shape with

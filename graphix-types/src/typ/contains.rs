@@ -11,8 +11,8 @@ use crate::{
         Unfolded, node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{
-            CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cycle_toward,
-            settled_cause_note, would_cycle_inner,
+            CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cell_writes,
+            cycle_toward, settled_cause_note, would_cycle_inner,
         },
     },
 };
@@ -96,8 +96,8 @@ pub(super) struct ContainsHist {
     /// Pure-probe pair memo: `contains_int` verdicts for empty-flag
     /// calls, keyed by both sides' content-Arc identities. Each entry
     /// pins both types so an address cannot be recycled under its key,
-    /// and carries the `epoch` at insert: a committing call may bind a
-    /// cell a verdict read, so the epoch bumps there.
+    /// and carries the [`cell_writes`] count it was reached at: a write
+    /// to a cell may change a verdict that read it.
     probe_pairs: Lazy<AHashMap<(NormKey, NormKey, bool), (u64, bool)>>,
     probe_pins: Lazy<Vec<Type>>,
     /// Committing pairs proven to hold, by both sides' identities and the
@@ -119,7 +119,6 @@ pub(super) struct ContainsHist {
     tainted: Option<usize>,
     /// The shallowest in-progress pair the current verdict assumed.
     low_water: usize,
-    epoch: u64,
     /// Per definition and side (`true` for the right), on this path: the
     /// size of the params its latest expansion took, and how many
     /// expansions in a row grew them. The sides expand on alternate steps
@@ -131,9 +130,10 @@ pub(super) struct ContainsHist {
     /// A cycle under a constructor refused a pair of cells: the reason a
     /// refusal gives ([`TypeMismatch`]).
     cycled: bool,
-    /// [`Self::closed`]'s verdicts by node and cell identity, each node
-    /// pinned so its address is not recycled under its key.
-    closed: Lazy<AddrMap<bool>>,
+    /// [`Self::closure`]'s verdicts by node and cell identity, with the
+    /// [`cell_writes`] count each was reached at, each node pinned so its
+    /// address is not recycled under its key.
+    closed: Lazy<AddrMap<(Closure, u64)>>,
     closed_pins: Lazy<Vec<Type>>,
     /// How many function types hold quantifier cells rigid on this path
     /// (`FnType::contains_int`): a verdict reached under one depends on
@@ -184,6 +184,18 @@ pub(super) struct ContainsHist {
 /// applications of one alias shrink theirs.
 const MAX_GROWTH: u32 = 64;
 
+/// What [`ContainsHist::closure`] knows of a type, least first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Closure {
+    /// It reaches an open cell through bindings, or may.
+    Open,
+    /// It reaches no open cell through bindings; a bound cell's conjuncts
+    /// and lower bounds may.
+    Closed,
+    /// It holds no cell.
+    NoCell,
+}
+
 impl Deref for ContainsHist {
     type Target = RefHist<AHashMap<RefPair, usize>>;
 
@@ -210,7 +222,6 @@ impl ContainsHist {
             in_progress: SmallVec::new(),
             tainted: None,
             low_water: usize::MAX,
-            epoch: 0,
             unfolding: Lazy::new(),
             grew: None,
             cycled: false,
@@ -226,31 +237,61 @@ impl ContainsHist {
     }
 
     /// Whether `t` reaches no open cell, through bindings: a commit over
-    /// two closed sides binds nothing, so it is the probe. Within a walk
-    /// a closed node stays closed (cells only bind), and one found open
+    /// two closed sides binds nothing, so it is the probe. Within a walk a
+    /// closed node stays closed (cells only bind), and one found open
     /// only costs the commit's walk.
     fn closed(&mut self, t: &Type) -> bool {
+        self.closure(t, false) != Closure::Open
+    }
+
+    /// [`Self::closed`] as the cells stand now: a verdict reached before
+    /// a cell was written is reached again.
+    fn closed_now(&mut self, t: &Type) -> bool {
+        self.closure(t, true) != Closure::Open
+    }
+
+    /// Whether `t`, a node, holds no cell, so it reaches none: no occurs
+    /// check finds a cycle through it.
+    fn holds_no_cell(&mut self, t: &Type) -> bool {
+        t.shared_identity().is_some() && self.closure(t, false) == Closure::NoCell
+    }
+
+    fn closure(&mut self, t: &Type, now: bool) -> Closure {
         ensure_sufficient(|| {
             let key = t.shared_identity();
+            let writes = cell_writes();
             if let Some(k) = key {
-                if let Some(c) = self.closed.get().and_then(|m| m.get(&k)) {
-                    return *c;
+                match self.closed.get().and_then(|m| m.get(&k)).copied() {
+                    Some((c, at)) if !now || c == Closure::NoCell || at == writes => {
+                        return c;
+                    }
+                    Some(_) => (),
+                    None => self.closed_pins.get_mut().push(t.clone()),
                 }
                 // a binding that reaches its own cell is not closed
-                self.closed.get_mut().insert(k, false);
-                self.closed_pins.get_mut().push(t.clone());
+                self.closed.get_mut().insert(k, (Closure::Open, writes));
             }
             let c = match t {
-                Type::TVar(tv) => tv.binding().is_some_and(|b| self.closed(&b)),
-                t => t
-                    .try_for_each_child(&mut |c| match self.closed(c) {
-                        true => ControlFlow::Continue(()),
-                        false => ControlFlow::Break(()),
-                    })
-                    .is_continue(),
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => self.closure(&b, now).min(Closure::Closed),
+                    None => Closure::Open,
+                },
+                t => {
+                    let mut c = Closure::NoCell;
+                    let _ = t.try_for_each_child(&mut |p| {
+                        c = c.min(self.closure(p, now));
+                        match c {
+                            Closure::Open => ControlFlow::Break(()),
+                            Closure::Closed | Closure::NoCell => {
+                                ControlFlow::Continue(())
+                            }
+                        }
+                    });
+                    c
+                }
             };
             if let Some(k) = key {
-                self.closed.get_mut().insert(k, c);
+                self.closed.get_mut().insert(k, (c, writes));
             }
             c
         })
@@ -261,7 +302,7 @@ impl ContainsHist {
     fn probe_get(&self, rigid: bool, t0: &Type, t1: &Type) -> Option<bool> {
         let k = (probe_key(t0)?, probe_key(t1)?, rigid);
         let (epoch, r) = self.probe_pairs.get()?.get(&k).copied()?;
-        (epoch == self.epoch).then_some(r)
+        (epoch == cell_writes()).then_some(r)
     }
 
     fn probe_put(&mut self, rigid: bool, t0: &Type, t1: &Type, r: bool) {
@@ -269,7 +310,7 @@ impl ContainsHist {
             && self
                 .probe_pairs
                 .get_mut()
-                .insert((k0, k1, rigid), (self.epoch, r))
+                .insert((k0, k1, rigid), (cell_writes(), r))
                 .is_none()
         {
             let pins = self.probe_pins.get_mut();
@@ -618,7 +659,7 @@ fn exact(t: &Type) -> bool {
 // bound_dags_elaborate_in_linear_time (the five shapes at depth 60, 10 G budget
 // each); it fails with exact's memo removed (the value DAG) and with
 // node_addr(Map) None (the map chain).
-// CR claude for claude: [perf/medium] Elaborating a chain of bounds is cubic
+// XCR claude for claude: [perf/medium] Elaborating a chain of bounds is cubic
 // in its length, where its check is linear (chainbounds-cubic-01): `graphix
 // --expand --no-cache` of deep_nesting's chainbounds program costs, net of
 // the stdlib, 0.76 / 5.29 / 40.3 / 381 / 3520 G instructions at 250 / 500 /
@@ -641,6 +682,22 @@ fn exact(t: &Type) -> bool {
 // ~/ptmp/cr29/scratch/review-r14/K-r2-1/p/{chainbounds_250,chainbounds_500,run_rev_500}.gx
 // (gen.py chainbounds[:rev] N OUT), expand_sweep.txt, cg/exp_{250,500}.out.gz
 // (chainbounds-elab-01)
+// 2026-11-05 claude: Fixed. Three walks the chain repeated per link: the probe memo was
+// dropped at every commit's entry, so each link re-probed the rest of the chain
+// (ContainsHist's probe verdicts now stand while tvar::cell_writes, a per-thread count of
+// cell and link writes kept by CellLock::write and TVar::write, stands); the occurs check
+// walked each instance tree (ContainsHist::holds_no_cell, memoized with closed as a
+// Closure, skips it for a node holding no cell); commit_cell_bounds' post-commit
+// exact/has_unbound walks ran over the bound tree (ContainsHist::closed_now answers first,
+// its verdicts restamped by cell_writes). Also FnType::constraint_view normalizes with one
+// NormCx and reads the quantifiers by name. --expand --no-cache, debug, total G
+// instructions (empty 0.96): 500 links 6.28 (base-r17) -> 1.14, 1000 41.9 -> 1.30, 10000
+// 4.12, 30000 reversed 10.8. Pin: graphix-shell/tests/deep_nesting.rs
+// a_chain_of_bounds_elaborates_in_linear_time (10000 forward under 8G, 30000 reversed
+// under 18G); it fails without the change (8.2G over 8G at 10000), and each of the three
+// parts removed alone costs 6-23G at 4000. Census 2942 files: no verdict or message
+// change. GUI --check total 43.19G (lane head) -> 43.40G. probes:
+// ~/ptmp/cr29/scratch/r17-hk/chainbounds_{gen.py,500.gx,1000.gx}
 /// Give the open cells inside `t`, about to be bound into the cell, their
 /// part of each exact structural conjunct (`Array<i64> ⊇ Array<'y>` binds
 /// `'y`), each trait conjunct (every member of a union implements the
@@ -681,7 +738,8 @@ fn commit_cell_bounds(
         // the conjunct's own open cells must hold what the cell takes:
         // `'d: [null, 'c]` bound to i64 puts i64 below 'c, so 'c bound
         // later to a type without it is refused
-        if !exact(c)
+        if !hist.closed_now(c)
+            && !exact(c)
             && c.has_unbound()
             && !c.contains_int(flags | ContainsFlags::Lower, env, hist, t)?
         {
@@ -708,6 +766,11 @@ fn commit_cell_bounds(
 // ~/ptmp/cr29/scratch/review-r14/K-r2-1/p/{typedef_125,typedef_250,union_500}.gx
 // (gen.py typedef|union N OUT), expand_sweep.txt, cg/td_{60,125}.out.gz
 // (chainbounds-elab-neighbours-01)
+// 2026-11-05 claude: chainbounds-elab-01's fix (probe verdicts standing across
+// commits that write nothing) takes the union chain from 15.69 to 1.70 G total
+// (base-r17 to lane, --expand --no-cache, union_500.gx; empty 0.96); the typedef
+// chain is unchanged (typedef_125.gx 9.65 -> 9.60 G), still in union_identical
+// -> TypeRef::same_definition.
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
@@ -2111,8 +2174,6 @@ impl Type {
             if hist.gated == 0 && hist.commit_held(flags, self, t) {
                 return Ok(true);
             }
-            // A committing call may bind a cell a cached verdict read.
-            hist.epoch += 1;
             let (height, outer, outer_taint) = hist.enter_verdict();
             let r = self.contains_dispatch(flags, env, hist, t);
             let own = hist.leave_verdict(height, outer, outer_taint);
@@ -2567,7 +2628,9 @@ impl Type {
             // occurs check guards the open cell's bind; an open cell
             // `t1` reaches (the μ-shape `'r ⊇ [T, 'r]`) takes the arms
             // below, where the union collapses.
-            (Self::TVar(t0), t1) if t0.is_bound() || !t0.would_cycle(t1) => {
+            (Self::TVar(t0), t1)
+                if t0.is_bound() || hist.holds_no_cell(t1) || !t0.would_cycle(t1) =>
+            {
                 if let Some(t0) = t0.binding() {
                     return t0.contains_int(flags, env, hist, t1);
                 }
@@ -2614,7 +2677,9 @@ impl Type {
                 }
                 Ok(true)
             }
-            (t0, Self::TVar(t1)) if t1.is_bound() || !t1.would_cycle(t0) => {
+            (t0, Self::TVar(t1))
+                if t1.is_bound() || hist.holds_no_cell(t0) || !t1.would_cycle(t0) =>
+            {
                 if let Some(t1) = t1.binding() {
                     return t0.contains_int(flags, env, hist, &t1);
                 }

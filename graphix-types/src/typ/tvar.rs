@@ -60,7 +60,7 @@ fn bound_cell_changes() {
     GROUND_EPOCH.fetch_add(1, atomic::Ordering::SeqCst);
 }
 
-type CellRef = Arc<RwLock<TCell>>;
+type CellRef = Arc<CellLock>;
 
 /// Whether no open cell is reachable from `t` through the bindings,
 /// constraints and lower bounds [`would_cycle_inner`] walks: then `t`
@@ -122,7 +122,7 @@ fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
         return;
     }
     for cell in cells.drain(..) {
-        let mut c = cell.write();
+        let mut c = cell.0.write();
         if c.binding.is_some() {
             c.ground = c.ground.max(epoch);
         }
@@ -480,6 +480,46 @@ thread_local! {
     /// ([`OwnWrites`]).
     static OWN_WRITES: std::cell::Cell<Option<Record>> =
         const { std::cell::Cell::new(None) };
+    static CELL_WRITES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many writes this thread has made to cells and to vars' links: a
+/// verdict this thread read from cells stands while the count does (a
+/// compile task on another thread writes only cells it owns).
+#[inline]
+pub(super) fn cell_writes() -> u64 {
+    CELL_WRITES.with(|n| n.get())
+}
+
+#[inline]
+fn count_write() {
+    CELL_WRITES.with(|n| n.set(n.get() + 1))
+}
+
+/// A cell's lock: each write counts toward [`cell_writes`].
+#[derive(Debug, Default)]
+pub struct CellLock(RwLock<TCell>);
+
+impl CellLock {
+    pub(crate) fn new(cell: TCell) -> Self {
+        Self(RwLock::new(cell))
+    }
+
+    #[inline]
+    pub(crate) fn read(&self) -> RwLockReadGuard<'_, TCell> {
+        self.0.read()
+    }
+
+    #[inline]
+    pub(crate) fn write(&self) -> RwLockWriteGuard<'_, TCell> {
+        count_write();
+        self.0.write()
+    }
+
+    #[inline]
+    pub(crate) fn data_ptr(&self) -> *mut TCell {
+        self.0.data_ptr()
+    }
 }
 
 /// A concurrent compile task: one started later is greater.
@@ -999,7 +1039,7 @@ impl Default for TCell {
 /// left, so the close decrements this cell and not whatever the var
 /// reads by then.
 pub struct RigidGate {
-    cell: Arc<RwLock<TCell>>,
+    cell: Arc<CellLock>,
 }
 
 impl Drop for RigidGate {
@@ -1196,7 +1236,7 @@ impl fmt::Display for BoundAt<'_> {
 pub struct TVarLink {
     pub(crate) id: TVarId,
     pub(crate) frozen: bool,
-    pub(crate) cell: Arc<RwLock<TCell>>,
+    pub(crate) cell: Arc<CellLock>,
     /// The compile task that created the var ([`written`]).
     task: TaskId,
 }
@@ -1338,7 +1378,7 @@ impl Default for TVar {
     fn default() -> Self {
         let id = TVarId::new();
         let name = ArcStr::from(format_compact!("_{}", id.0).as_str());
-        Self::from_parts(name, id, false, Arc::new(RwLock::new(TCell::default())))
+        Self::from_parts(name, id, false, Arc::new(CellLock::default()))
     }
 }
 
@@ -1437,12 +1477,7 @@ impl TVar {
     }
 
     pub fn empty_named(name: ArcStr) -> Self {
-        Self::from_parts(
-            name,
-            TVarId::new(),
-            false,
-            Arc::new(RwLock::new(TCell::default())),
-        )
+        Self::from_parts(name, TVarId::new(), false, Arc::new(CellLock::default()))
     }
 
     /// A fresh variable no definition owns yet, as written in source.
@@ -1512,7 +1547,7 @@ impl TVar {
             name,
             TVarId::new(),
             false,
-            Arc::new(RwLock::new(TCell::bound(typ))),
+            Arc::new(CellLock::new(TCell::bound(typ))),
         )
     }
 
@@ -1521,7 +1556,7 @@ impl TVar {
         name: ArcStr,
         id: TVarId,
         frozen: bool,
-        cell: Arc<RwLock<TCell>>,
+        cell: Arc<CellLock>,
     ) -> Self {
         Self(ManuallyDrop::new(Arc::new(TVarInner {
             name,
@@ -1536,7 +1571,7 @@ impl TVar {
     }
 
     /// The wrapper's id and frozen flag, and its cell.
-    pub(crate) fn parts(&self) -> (TVarId, bool, Arc<RwLock<TCell>>) {
+    pub(crate) fn parts(&self) -> (TVarId, bool, Arc<CellLock>) {
         let link = self.read();
         (link.id, link.frozen, link.cell.clone())
     }
@@ -1547,7 +1582,7 @@ impl TVar {
     }
 
     /// The cell this var reads now.
-    pub(crate) fn cell(&self) -> Arc<RwLock<TCell>> {
+    pub(crate) fn cell(&self) -> Arc<CellLock> {
         self.read().cell.clone()
     }
 
@@ -1775,6 +1810,7 @@ impl TVar {
     }
 
     pub fn write<'a>(&'a self) -> RwLockWriteGuard<'a, TVarLink> {
+        count_write();
         self.link.write()
     }
 

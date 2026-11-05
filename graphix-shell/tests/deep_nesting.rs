@@ -701,6 +701,22 @@ fn a_chain_of_bounds_declared_last_link_first_checks_in_linear_time() {
     checks_within(&program("chainboundsreversed", 3 * CHAIN_DEPTH), 14 * BILLION)
 }
 
+/// The chain elaborates in time linear in its length, in either order, at
+/// two depths: the call binds each cell of the signature's copy to a tree
+/// that holds no cell, with each conjunct probed once a chain and no
+/// occurs check walking such a tree.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_elaborates_in_linear_time() {
+    let expand = ["--expand", "--no-cache"];
+    completes_within(&expand, &program("chainbounds", CHAIN_DEPTH), 8 * BILLION);
+    completes_within(
+        &expand,
+        &program("chainboundsreversed", 3 * CHAIN_DEPTH),
+        18 * BILLION,
+    )
+}
+
 /// A let chain that wraps the last value in any constructor, or in an
 /// array literal holding it twice, checks in time linear in its length:
 /// a let's single name binds without an occurs walk of the value, and a
