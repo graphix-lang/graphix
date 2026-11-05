@@ -2429,10 +2429,10 @@ impl Type {
                         restore(hist, &saved);
                         // a probe answers; a commit that grows past the limit
                         // is an error the program sees
-                        let name = match (t0, t1) {
-                            (Self::Ref(tr), _) | (_, Self::Ref(tr)) => tr.name.clone(),
-                            _ => unreachable!("a definition key is a reference's"),
+                        let Self::Ref(tr) = (if d.1 { t1 } else { t0 }) else {
+                            unreachable!("a definition key is a reference's")
                         };
+                        let name = tr.name.clone();
                         if !commit {
                             hist.grew = Some(name);
                             return Ok(false);

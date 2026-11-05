@@ -7217,6 +7217,38 @@ run!(growing_typedef_select_refused, r#"{
     f(null)
 }"#, refused("which hold N, whose parameters grow as it recurses"); FuseExpect::None);
 
+// The growth refusal names the definition whose parameters grow, whichever
+// side of the pair it stands on, never a neighbour that has none.
+run!(growing_typedef_select_names_growing_pattern_side, r#"{
+    type G<'a> = [i64, Error<G<Array<'a>>>];
+    type P = [i64, Error<P>];
+    let v: [`L(G<i64>), `R(G<i64>)] = never();
+    select v { [`L(P), `R(P)] as x => 0, _ => 1 }
+}"#, refused("which hold G, whose parameters grow as it recurses"); FuseExpect::None);
+
+run!(growing_typedef_select_names_growing_scrutinee_side, r#"{
+    type G<'a> = [i64, Error<G<Array<'a>>>];
+    type P = [i64, Error<P>];
+    let v: [`L(P), `R(P)] = never();
+    select v { [`L(G<i64>), `R(G<i64>)] as x => 0, _ => 1 }
+}"#, refused("which hold G, whose parameters grow as it recurses"); FuseExpect::None);
+
+run!(growing_typedef_bind_names_growing_source, r#"{
+    type G<'a> = [i64, Error<G<Array<'a>>>];
+    type P = [i64, Error<P>];
+    let x: G<i64> = never();
+    let y: P = x;
+    y
+}"#, refused("cannot compare two instances of G: its parameters grow"); FuseExpect::None);
+
+run!(growing_typedef_bind_names_growing_target, r#"{
+    type G<'a> = [i64, Error<G<Array<'a>>>];
+    type P = [i64, Error<P>];
+    let x: P = never();
+    let y: G<i64> = x;
+    y
+}"#, refused("cannot compare two instances of G: its parameters grow"); FuseExpect::None);
+
 // A finite type whose parameters grow a few times is decided as usual.
 run!(
     finitely_growing_typedef_compares,

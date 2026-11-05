@@ -651,7 +651,7 @@ impl Type {
                     seen,
                     pair_at(&p, &r),
                     false,
-                    || true,
+                    |_| true,
                     |seen| {
                         let expand = |t: &Type| match t {
                             Type::Ref(_) => t.lookup_ref(env).ok(),
@@ -2338,6 +2338,8 @@ struct Expanded<
 > {
     seen: LPooled<AHashSet<K>>,
     path: LPooled<Vec<((usize, usize), usize)>>,
+    /// Each application on `path`'s parameters' size, per side of a pair.
+    sides: LPooled<Vec<(usize, usize)>>,
     /// The shared nodes (or pairs of them) the walk found nothing under,
     /// so a type that shares them (a DAG) is walked once.
     clear: LPooled<AHashSet<N>>,
@@ -2353,6 +2355,7 @@ impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static> Defau
         Self {
             seen: LPooled::take(),
             path: LPooled::take(),
+            sides: LPooled::take(),
             clear: LPooled::take(),
             built: LPooled::take(),
         }
@@ -2392,8 +2395,8 @@ impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static>
 }
 
 /// An application a walk is about to expand: its key, its definition (or
-/// pair of definitions) and its parameters' size.
-type At<K> = (K, (usize, usize), usize);
+/// pair of definitions), its parameters' size and, for a pair, each side's.
+type At<K> = (K, (usize, usize), usize, (usize, usize));
 
 fn def_of(t: &Type) -> usize {
     match t {
@@ -2407,6 +2410,25 @@ fn size_of(t: &Type) -> usize {
         Type::Ref(tr) => params_size(&tr.params),
         _ => 0,
     }
+}
+
+/// Which side of a pair grew in `path`, the applications a walk is inside
+/// (`sides`: each one's side sizes): the one more of the earlier applications
+/// of the pair's definitions took smaller parameters on.
+fn growing_side(
+    path: &[((usize, usize), usize)],
+    sides: &[(usize, usize)],
+    def: &(usize, usize),
+    size: usize,
+    now: (usize, usize),
+) -> usize {
+    let smaller = |side: fn(&(usize, usize)) -> usize| {
+        path.iter()
+            .zip(sides)
+            .filter(|((d, s), t)| d == def && *s < size && side(t) < side(&now))
+            .count()
+    };
+    usize::from(smaller(|t| t.1) > smaller(|t| t.0))
 }
 
 /// How many applications of one definition with smaller parameters a
@@ -2446,24 +2468,26 @@ pub(super) fn grows_on<D: PartialEq>(path: &[(D, usize)], def: &D, size: usize) 
 /// already, `grows` when the path holds [`MAX_GROWTH`] applications of
 /// its definition with smaller parameters, as one whose parameters grow
 /// at every level does (`type N<'a> = [null, ('a, N<Array<'a>>)]`), which
-/// no walk finishes. Parameters that stop growing on a path come from
+/// no walk finishes; `grows` is told which side of a pair grew. Parameters that stop growing on a path come from
 /// finitely many types, so a walk ends.
 fn walk<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static, R>(
     seen: &mut Expanded<K, N>,
     at: Option<At<K>>,
     again: R,
-    grows: impl FnOnce() -> R,
+    grows: impl FnOnce(usize) -> R,
     body: impl FnOnce(&mut Expanded<K, N>) -> R,
 ) -> R {
-    let Some((k, def, size)) = at else { return body(seen) };
+    let Some((k, def, size, sides)) = at else { return body(seen) };
     if !seen.seen.insert(k) {
         return again;
     }
     if grows_on(&seen.path, &def, size) {
-        return grows();
+        return grows(growing_side(&seen.path, &seen.sides, &def, size, sides));
     }
     seen.path.push((def, size));
+    seen.sides.push(sides);
     let r = body(seen);
+    seen.sides.pop();
     seen.path.pop();
     r
 }
@@ -2473,12 +2497,18 @@ type RepSeen = Expanded<(Type, Type), (usize, usize)>;
 
 fn pair_at(a: &Type, b: &Type) -> Option<At<(Type, Type)>> {
     (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_))).then(|| {
-        ((a.clone(), b.clone()), (def_of(a), def_of(b)), size_of(a) + size_of(b))
+        (
+            (a.clone(), b.clone()),
+            (def_of(a), def_of(b)),
+            size_of(a) + size_of(b),
+            (size_of(a), size_of(b)),
+        )
     })
 }
 
 fn ref_at(t: &Type) -> Option<At<Type>> {
-    matches!(t, Type::Ref(_)).then(|| (t.clone(), (def_of(t), 0), size_of(t)))
+    matches!(t, Type::Ref(_))
+        .then(|| (t.clone(), (def_of(t), 0), size_of(t), (size_of(t), 0)))
 }
 
 /// An abstract type a walk is about to look through, keyed like a named
@@ -2486,7 +2516,8 @@ fn ref_at(t: &Type) -> Option<At<Type>> {
 fn abstract_at(t: &Type) -> Option<At<Type>> {
     match t {
         Type::Abstract { id, params } => {
-            Some((t.clone(), (id.inner() as usize, 1), params_size(params)))
+            let size = params_size(params);
+            Some((t.clone(), (id.inner() as usize, 1), size, (size, 0)))
         }
         _ => None,
     }
@@ -2537,7 +2568,7 @@ fn rep_collision(
         return None;
     }
     ensure_sufficient(|| {
-        // CR claude for claude: [bug/low] The growth refusal names the first reference
+        // XCR claude for claude: [bug/low] The growth refusal names the first reference
         // of the pair, which need not be the definition that grew: review r11's gd6.gx
         // (`type G<'a> = [i64, Error<G<Array<'a>>>]; type P = [i64, Error<P>]`, a DAG
         // of `L/`R names over each, `select v { S0 as x => 0, _ => 1 }`) is refused on
@@ -2548,11 +2579,15 @@ fn rep_collision(
         // message fix that did not come to main, since it rode the parked growth cut
         // (diff-cycle-hang-01). probe: ~/ptmp/cr29/scratch/r11-X/x2/gd6.gx
         // (growth-reason-name-01)
-        let grows = || match (a, b) {
-            (Type::Ref(tr), _) | (_, Type::Ref(tr)) => {
-                Some(Indiscernible::Grows(tr.name.clone()))
-            }
-            _ => unreachable!("only a reference expands"),
+        // 2026-11-05 claude: The growth refusal names the side of the pair that grew
+        // (cast::growing_side, told to walk's grows closure, per-side parameter sizes
+        // kept beside the path; contains names the side whose definition key grew).
+        // gd6.gx and m2.gx now say G, not P. Pins that fail without it: lang::types
+        // growing_typedef_select_names_growing_pattern_side and
+        // growing_typedef_bind_names_growing_source.
+        let grows = |side: usize| match [a, b][side] {
+            Type::Ref(tr) => Some(Indiscernible::Grows(tr.name.clone())),
+            _ => unreachable!("only a reference grows"),
         };
         walk(seen, pair_at(a, b), None, grows, |seen| {
             let pairs =
@@ -2765,7 +2800,7 @@ fn rep_ambiguity(
     t: &Type,
 ) -> Option<Indiscernible> {
     ensure_sufficient(|| {
-        let grows = || match t {
+        let grows = |_| match t {
             Type::Ref(tr) => Some(Indiscernible::Grows(tr.name.clone())),
             _ => unreachable!("only a reference expands"),
         };
@@ -2833,7 +2868,7 @@ fn rep_ambiguity(
                         seen,
                         abstract_at(t),
                         None,
-                        || None,
+                        |_| None,
                         |seen| rep_ambiguity(env, seen, open, keys_only, refs, &rep),
                     );
                     seen.keep(Some(Cow::Owned(rep)));
@@ -2957,7 +2992,7 @@ fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type, kind: CoreTrait)
             seen,
             ref_at(t),
             false,
-            || true,
+            |_| true,
             |seen| {
                 let Some(t) = resolved_head(env, t) else { return false };
                 let t = &*t;
@@ -2981,7 +3016,7 @@ fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type, kind: CoreTrait)
                                 seen,
                                 abstract_at(t),
                                 false,
-                                || true,
+                                |_| true,
                                 |seen| compared_ref(env, seen, &rep, kind),
                             ),
                         }
