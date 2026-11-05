@@ -1383,8 +1383,11 @@ cycle, across workers; the compiler never pins threads.
   (`setops::UNFOLDINGS`), as they do past `setops::WALK_PAIRS` pairs
   (either side named) in one walk, and a difference, a pair's or a
   walk's, of more union members than `RESIDUAL_PARTS` and its minuend
-  is its minuend: a wider residual, so fewer dead arms are found and a
-  missing case may be refused that `_` fixes. A partial
+  (each definition it names where diff reads one counted once,
+  `setops::members`) is its minuend: a wider residual, so fewer dead arms
+  are found and a missing case may be refused that `_` fixes. What reads
+  the part a difference left out (`?`'s strip and raised type) takes
+  `Type::diff_held`: the whole operand where a budget widened it. A partial
   struct pattern completes against the one member it can match
   (`StructurePattern::complete_type_predicate`); members told apart only
   by undecided cells are two members, refused unless what reaches the

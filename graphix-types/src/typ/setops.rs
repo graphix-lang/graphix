@@ -36,6 +36,8 @@ struct DiffHist {
     pairs: Pairs,
     /// The current walk met a pair in progress, or stopped unfolding.
     cycled: bool,
+    /// A budget made the walk subtract less than it would have.
+    widened: bool,
 }
 
 impl DiffHist {
@@ -46,6 +48,7 @@ impl DiffHist {
             unfoldings: Unfoldings::default(),
             pairs: Pairs::default(),
             cycled: false,
+            widened: false,
         }
     }
 }
@@ -66,26 +69,34 @@ pub(super) const WALK_PAIRS: usize = 1000;
 pub(super) const RESIDUAL_PARTS: usize = 1000;
 
 /// Whether `d`, a difference of `minuend`, has more union members than
-/// [`RESIDUAL_PARTS`] and than `minuend`, each counted as a tree through
-/// bound cells.
-fn grown(d: &Type, minuend: &Type) -> bool {
-    let n = members(d);
-    n > RESIDUAL_PARTS && n > members(minuend)
+/// [`RESIDUAL_PARTS`] and than `minuend` holds with each definition it
+/// names where diff reads one ([`members`]).
+fn grown(env: &Env, d: &Type, minuend: &Type) -> bool {
+    let n = members(d, None);
+    n > RESIDUAL_PARTS && n > members(minuend, Some(env))
 }
 
 /// The members of every union in `t` read as a tree through bound cells,
-/// walked once per shared node, saturating at `usize::MAX`.
-fn members(t: &Type) -> usize {
-    fn go(t: &Type, memo: &mut AHashMap<(usize, bool), usize>) -> usize {
+/// walked once per shared node, saturating at `usize::MAX`. With `env`, a
+/// named type where diff takes one apart (a member, an error's payload)
+/// counts its definition at its arguments, the first time the walk meets
+/// that definition.
+fn members(t: &Type, env: Option<&Env>) -> usize {
+    struct Count<'a> {
+        env: Option<&'a Env>,
+        memo: LPooled<AHashMap<(usize, u8), usize>>,
+        defs: LPooled<AHashSet<usize>>,
+    }
+    fn go(c: &mut Count, t: &Type, read: bool) -> usize {
         let key = match t {
-            Type::TVar(tv) => Some((tv.cell_addr(), true)),
-            t => node_addr(t).map(|a| (a, false)),
+            Type::TVar(tv) => Some((tv.cell_addr(), read as u8)),
+            t => node_addr(t).map(|a| (a, 2 | read as u8)),
         };
-        if let Some(n) = key.and_then(|k| memo.get(&k)) {
+        if let Some(n) = key.and_then(|k| c.memo.get(&k)) {
             return *n;
         }
         if let Some(k) = key {
-            memo.insert(k, 0);
+            c.memo.insert(k, 0);
         }
         let mut n = match t {
             Type::Set(ts) => ts.len(),
@@ -94,22 +105,38 @@ fn members(t: &Type) -> usize {
         ensure_sufficient(|| match t {
             Type::TVar(tv) => {
                 if let Some(b) = tv.binding() {
-                    n = go(&b, memo);
+                    n = go(c, &b, read);
                 }
             }
+            Type::Ref(_)
+                if read
+                    && let Some(env) = c.env
+                    && let Some((def, body)) = t.lookup_ref_probe(env) =>
+            {
+                if c.defs.insert(def) {
+                    n = go(c, &body, true)
+                }
+            }
+            Type::Set(ts) => {
+                for t in ts.iter() {
+                    n = n.saturating_add(go(c, t, read))
+                }
+            }
+            Type::Error(e) => n = go(c, e, read),
             t => {
-                let _: ControlFlow<()> = t.try_for_each_child(&mut |c| {
-                    n = n.saturating_add(go(c, memo));
+                let _: ControlFlow<()> = t.try_for_each_child(&mut |t| {
+                    n = n.saturating_add(go(c, t, false));
                     ControlFlow::Continue(())
                 });
             }
         });
         if let Some(k) = key {
-            memo.insert(k, n);
+            c.memo.insert(k, n);
         }
         n
     }
-    go(t, &mut LPooled::take())
+    let mut c = Count { env, memo: LPooled::take(), defs: LPooled::take() };
+    go(&mut c, t, true)
 }
 
 /// The pairs a walk has unfolded, a side of each a named type, counted
@@ -857,6 +884,23 @@ impl Type {
     // without), lang::select::{deep_test_over_growing_parameters_reaches,
     // deep_test_over_growing_parameters_dead}. Docs now say WALK_PAIRS counts every pair a side of which is a
     // named type. Results: ~/ptmp/cr29/scratch/r16-U3/.
+    // 2026-11-05 claude: Review r16 (U-r2-1, U-r2-2) high: the residual cap compared a difference with an
+    // unexpanded minuend, whose name counted only its arguments, so any named type of more than 1000 union
+    // members subtracted nothing on every diff; ?/$ then picked the null strip over [R, null] and a raise of R's
+    // error missed its handler (a coverage hole at run time), and a dead arm was lost. Now setops::members counts
+    // the minuend with each definition it names where diff takes one apart (a union member, an error's payload)
+    // read once, at its arguments; the difference is still counted inline. And the callers that read what a
+    // difference left out (Strip::of, the raised type) take Type::diff_held, the whole operand where
+    // Type::diff_exact says a budget widened it. Pins (fail without):
+    // lang::errors::{a_large_named_operand_strips_its_error, a_large_named_operand_raises_its_error,
+    // a_large_named_operand_raises_to_a_covering_handler},
+    // lang::select::{an_arm_after_one_over_a_large_named_type_is_dead,
+    // an_arm_after_one_over_a_large_named_error_payload_is_dead},
+    // typ::setops::tests::{diff_of_a_large_named_type_is_exact, diff_held_past_the_budget_is_the_minuend}. 1600
+    // generated selects, the 54 families, the review families (darms, dq, dp, w2/w3, greach) as at e05f3b675.
+    // Left: greach8/10/12 stay refused and gdead8/10 lose their dead-arm message: their residuals hold more than
+    // 1000 distinct members (3 per expansion, both branches at every level), not a counting artifact; 2000
+    // members would cost darms 150G.
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         #[cfg(test)]
         DIFF_STEPS.with(|n| n.set(n.get() + 1));
@@ -884,8 +928,13 @@ impl Type {
                 // a pair met again inside its own difference subtracts
                 // nothing: assuming it covered would drop what it did not
                 let defs = def_pair(env, t0, t1);
-                if hist.unfoldings.again(defs).is_some() || !hist.pairs.unfold() {
+                if hist.unfoldings.again(defs).is_some() {
                     hist.cycled = true;
+                    return Ok(self.clone());
+                }
+                if !hist.pairs.unfold() {
+                    hist.cycled = true;
+                    hist.widened = true;
                     return Ok(self.clone());
                 }
                 #[cfg(test)]
@@ -896,7 +945,10 @@ impl Type {
                 hist.unfoldings.enter(defs, key);
                 let outer = mem::replace(&mut hist.cycled, false);
                 let r = match t0.diff_int(env, hist, &t1) {
-                    Ok(d) if grown(&d, self) => Ok(self.clone()),
+                    Ok(d) if grown(env, &d, self) => {
+                        hist.widened = true;
+                        Ok(self.clone())
+                    }
                     r => r,
                 };
                 hist.unfoldings.leave(defs);
@@ -1374,11 +1426,34 @@ impl Type {
     /// The values of `self` that are not values of `t`, or more: a
     /// difference that [grew](grown) past its walk's budget is `self`.
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
-        let r = self.diff_int(env, &mut DiffHist::new(), t)?;
-        if grown(&r, self) {
-            return Ok(self.clone());
+        Ok(self.diff_walk(env, t)?.0)
+    }
+
+    /// The values of `self` that are not values of `t`, `None` where a
+    /// budget left [`Self::diff`] wider: a caller that reads what a
+    /// difference left out needs this one.
+    pub fn diff_exact(&self, env: &Env, t: &Self) -> Result<Option<Self>> {
+        let (d, widened) = self.diff_walk(env, t)?;
+        Ok((!widened).then_some(d))
+    }
+
+    /// The values of `self` that `t` holds, `self` less its difference
+    /// from `t`, or all of `self` where a budget widened that difference.
+    pub fn diff_held(&self, env: &Env, t: &Self) -> Result<Self> {
+        match self.diff_exact(env, t)? {
+            Some(rest) => self.diff(env, &rest),
+            None => Ok(self.clone()),
         }
-        if diff_already_normal(self, &r) { Ok(r) } else { Ok(r.normalize()) }
+    }
+
+    fn diff_walk(&self, env: &Env, t: &Self) -> Result<(Self, bool)> {
+        let mut hist = DiffHist::new();
+        let r = self.diff_int(env, &mut hist, t)?;
+        if grown(env, &r, self) {
+            return Ok((self.clone(), true));
+        }
+        let r = if diff_already_normal(self, &r) { r } else { r.normalize() };
+        Ok((r, hist.widened))
     }
 }
 
@@ -1938,7 +2013,7 @@ mod tests {
             let tag = if i % 2 == 0 { "A0" } else { "B0" };
             let test = format!("{}`{tag}{}", "Error<".repeat(d), ">".repeat(d));
             rest = rest.diff(&env, &parsed(&env, &test)).unwrap();
-            sizes.push(super::members(&rest));
+            sizes.push(super::members(&rest, None));
         }
         assert_eq!(sizes, [85, 181, 341, 725, 725, 725, 725, 725]);
     }
@@ -1971,5 +2046,41 @@ mod tests {
         MATCH_PAIRS.with(|n| n.set(0));
         assert!(!parsed(&env, "`D(i64)").could_match(&env, &t).unwrap());
         assert_eq!(MATCH_PAIRS.with(|n| n.get()), 39);
+    }
+
+    // A named type larger than the residual budget is not a grown
+    // difference of itself: taking a member out of it is exact, whatever
+    // the parts its definition holds or its arguments fill in.
+    #[test]
+    fn diff_of_a_large_named_type_is_exact() {
+        let tags = (0..40).map(|i| format!("`K{i}")).collect::<Vec<_>>().join(", ");
+        let parts = vec!["'a"; 26].join(", ");
+        let w = format!("[Error<`E>, i64, ({parts})]");
+        let t = format!("[W<[{tags}]>, string]");
+        let (env, t) = typed(&[("W<'a>", &w)], &t);
+        let error = Type::Primitive(Typ::Error.into());
+        assert!(t.diff_exact(&env, &error).unwrap().is_some());
+        let held = t.diff_held(&env, &error).unwrap();
+        assert_eq!(held.to_string(), "Error<`E>");
+    }
+
+    // Past the walk's budget a difference is wider than exact, and what it
+    // left out is no measure of what the subtrahend holds (the difference
+    // from it loses the error behind a name): diff_held is the whole
+    // minuend there.
+    #[test]
+    fn diff_held_past_the_budget_is_the_minuend() {
+        let names: Vec<(String, String)> = (0..WALK_PAIRS + 100)
+            .map(|i| (format!("N{i}"), format!("`N{i}")))
+            .chain([("Zerr".to_string(), "Error<`E>".to_string())])
+            .collect();
+        let defs: Vec<(&str, &str)> = names.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let all = names.iter().map(|(n, _)| &**n).collect::<Vec<_>>().join(", ");
+        let (env, t) = typed(&defs, &format!("[{all}, null]"));
+        let error = Type::Primitive(Typ::Error.into());
+        assert!(t.diff_exact(&env, &error).unwrap().is_none());
+        assert_eq!(t.diff_held(&env, &error).unwrap(), t);
+        let twice = t.diff(&env, &t.diff(&env, &error).unwrap()).unwrap();
+        assert!(!twice.to_string().contains("Zerr"));
     }
 }

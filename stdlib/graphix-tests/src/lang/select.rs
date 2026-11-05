@@ -7905,6 +7905,30 @@ run!(
     FuseExpect::None
 );
 
+// A named scrutinee larger than the residual budget leaves an exact
+// residual after an arm: the arm after it testing what it took is dead.
+run!(
+    an_arm_after_one_over_a_large_named_type_is_dead,
+    r#"{
+        type W<'a> = [i64, string, ('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a)];
+        let x: [W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>, null] = 3;
+        select x { i64 as a => a, i64 as b => b, _ => 2 }
+    }"#,
+    refused("pattern i64 will never match");
+    FuseExpect::None
+);
+
+run!(
+    an_arm_after_one_over_a_large_named_error_payload_is_dead,
+    r#"{
+        type W<'a> = [`P(('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a)), `Q];
+        let x: [Error<W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>>, null] = null;
+        select x { Error<`Q> as e => 1, Error<`Q> as f => 2, _ => 3 }
+    }"#,
+    refused("pattern Error<`Q> will never match");
+    FuseExpect::None
+);
+
 // What reaches the next arm over unions that branch at every level, after a
 // test nested 32 deep, is bounded: the walk ends.
 run!(

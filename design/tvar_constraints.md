@@ -739,6 +739,12 @@ are counted as a tree, every union's at every level, over the type's
 shared nodes once each (`setops::members`): a parameter that grows as its
 definition recurses (`G<('a, 'a)>`, doubling at each level) counts only
 the unions it holds, so its size alone does not widen a residual. The
+minuend's count reads each named type where diff takes one apart (a
+union member, an error's payload, through bound cells) as its definition
+at its arguments, the first time the count meets that definition: a
+difference that only takes members out of a large named type is no
+larger than what it was taken from, while one that unfolds a recursive
+definition again at each level of a test is. The
 pair count alone does not bound the depth case (under 100 pairs, the
 residual's merging exponential), nor does the residual's size the family
 case (14001 steps at n = 8 and 16 alike only because the pair budget
@@ -749,7 +755,15 @@ cuts it): pins `typ::setops::tests::diff_over_branching_unions_is_bounded`,
 `deep_test_over_growing_parameters_reaches`.
 
 A wider residual is sound: fewer dead arms are found, a missing case may
-be refused that a `_` arm fixes, a later arm's bind is wider. Where a
+be refused that a `_` arm fixes, a later arm's bind is wider. It is not
+sound for a caller that reads what a difference left out: `?` and `$`
+pick their strip by whether `t - (t - error)` holds a member, and `?`
+raises that part to its handler, so a widened inner difference would
+read as nothing taken. `Type::diff_exact` says where a budget widened a
+difference, and `Type::diff_held`, the part of `t` that its subtrahend
+holds, is all of `t` there (pin
+`typ::setops::tests::diff_held_past_the_budget_is_the_minuend`,
+`lang::errors::a_large_named_operand_*`). Where a
 widened residual meets a type whose parameters grow, the arm's test of
 it against the rest can no longer be decided (`Type::rep_collision`) and
 the arm is refused: a test 8 levels deep in `G<'a> = [Error<G<Array<'a>>>,

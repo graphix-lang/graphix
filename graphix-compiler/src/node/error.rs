@@ -650,8 +650,7 @@ impl Strip {
         // an open member holds both: the strip is the one that takes a
         // member out, the error form when neither does (`Any`)
         let takes = |strip: Self| -> Result<bool> {
-            let rest = typ.diff(&ctx.env, &strip.removed())?;
-            Ok(!typ.diff(&ctx.env, &rest)?.is_uninhabited())
+            Ok(!typ.diff_held(&ctx.env, &strip.removed())?.is_uninhabited())
         };
         if holds(&err)? && holds(&null)? && !takes(Self::Error)? && takes(Self::Null)? {
             Ok(Self::Null)
@@ -1558,7 +1557,9 @@ impl<R: Rt> Qop<R> {
         }
         if let Some(handler) = self.handler() {
             let etyp = match self.strip {
-                Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
+                Strip::Error => {
+                    self.n.typ().diff_held(&ctx.env, &Strip::Error.removed())?
+                }
                 Strip::Null => NULL_ERR.clone(),
             };
             // an instance's operand may be narrower than its definition's

@@ -1280,3 +1280,49 @@ run!(
 }"#,
     prints(r#""s""#)
 );
+
+// A named operand larger than the residual budget takes its error out
+// exactly: `$` strips the error, so null passes, and a raise of the error
+// joins the handler, which must cover it.
+run!(
+    a_large_named_operand_strips_its_error,
+    r#"{
+    type W<'a> = [Error<`E>, `V(('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a))];
+    let f = |x: [W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>, null]| select x$ { null => 1, `V(_) => 2 };
+    f(null)
+}"#,
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    a_large_named_operand_raises_its_error,
+    r#"{
+    type W<'a> = [Error<`E>, i64, ('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a)];
+    let go = |v: [W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>, string], z: [i64, Error<`Other>]| -> i64 {
+        catch(e) println(select e.0.error { `Other => "other" });
+        let a = v?;
+        let b = z?;
+        0
+    };
+    go(1, 1)
+}"#,
+    refused("missing match cases: no arm covers `E");
+    FuseExpect::None
+);
+
+run!(
+    a_large_named_operand_raises_to_a_covering_handler,
+    r#"{
+    type W<'a> = [Error<`E>, i64, ('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a)];
+    let go = |v: [W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>, string], z: [i64, Error<`Other>]| -> i64 {
+        catch(e) println(select e.0.error { `Other => "other", `E => "e" });
+        let a = v?;
+        let b = z?;
+        0
+    };
+    go(1, 1)
+}"#,
+    is(Value::I64(0));
+    FuseExpect::Jit
+);
