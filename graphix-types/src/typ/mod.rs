@@ -2858,7 +2858,9 @@ impl Type {
         res
     }
 
-    fn for_each_written_name(&self, f: &mut impl FnMut(&TypeRef)) {
+    /// Each name this written type holds, its variables' bounds' included.
+    #[doc(hidden)]
+    pub fn for_each_written_name(&self, f: &mut impl FnMut(&TypeRef)) {
         fn go(t: &Type, seen: &mut AddrSet, f: &mut impl FnMut(&TypeRef)) {
             ensure_sufficient(|| match t {
                 Type::Ref(tr) => {

@@ -172,6 +172,13 @@ nothing.
   (`Env::abstract_rep`) through the registry at a block level, so `W(v)`,
   `W(p)` and `w.0` in a function above `type W` are the block's `W` (pins
   `lang::block_types::block_abstract_*`).
+  Where such a name, written above the declaration, has another meaning
+  at the block's level or outside it (an outer type or trait, an
+  import), the definition's check warns at the name, naming both
+  declarations (`Env::later_block_type_note`, warned by
+  `warn_later_block_names` at a body's annotations, type tests, casts,
+  `never<T>` and lambda signatures; never in an instance's body: pin
+  `lang::block_types::a_later_block_type_beside_another_warns`).
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns

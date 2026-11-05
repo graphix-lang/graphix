@@ -241,6 +241,10 @@ pub(crate) enum BlockHit {
 /// Whether `scope` is a block's own: its last component is generated.
 /// A module a block declares is not: its scope ends in its name, which
 /// a reload declares again with other text.
+fn same_origin(a: &Arc<Origin>, b: &Arc<Origin>) -> bool {
+    Arc::ptr_eq(a, b) || a == b
+}
+
 pub(crate) fn is_block_scope(scope: &str) -> bool {
     Path::basename(scope).is_some_and(crate::is_block_component)
 }
@@ -1430,7 +1434,53 @@ impl Env {
         }
     }
 
-    // CR claude for claude: [readability/low] A name a block declares is its type
+    /// What a name in type position means at `scope`: the first typedef
+    /// or trait of that name along the lookup chain, so a closer one of
+    /// either kind shadows a farther one of the other.
+    pub(crate) fn resolve_type_name(
+        &self,
+        scope: &ModPath,
+        name: &ModPath,
+    ) -> Result<Option<TypeName>> {
+        let hit = self
+            .resolve_visible(scope, name, NameNs::Type, |s, n| self.type_name_at(s, n))?;
+        match hit {
+            None => Ok(None),
+            Some(Ok(t)) => Ok(Some(t)),
+            Some(Err(Unseen::Dead)) => {
+                bail!("type `{name}` outlived its definition in `{scope}`")
+            }
+            Some(Err(Unseen::Later)) => bail!(
+                "{name} names the type a later statement of this block declares: \
+                 declare it before its first use"
+            ),
+        }
+    }
+
+    /// The typedef or trait `n` names at the one level `s`.
+    fn type_name_at(&self, s: &str, n: &str) -> Option<Result<TypeName, Unseen>> {
+        if let Some(d) = self.lexical.typedefs.get(s).and_then(|m| m.get(n)) {
+            return Some(Ok(TypeName::Def(d.def.clone())));
+        }
+        if let Some(id) = self.lexical.traits.get(s).and_then(|m| m.get(n)) {
+            return Some(Ok(TypeName::Trait(*id)));
+        }
+        if !is_block_scope(s) {
+            return None;
+        }
+        let later = match self.lexical.block_names.get(s) {
+            Some(names) if names.get(n).is_none() => return None,
+            Some(_) => true,
+            None => false,
+        };
+        match self.block_types.find(s, n) {
+            Some(BlockHit::Live(def)) => Some(Ok(TypeName::Def(def))),
+            Some(BlockHit::Dead) => Some(Err(Unseen::Dead)),
+            None => later.then_some(Err(Unseen::Later)),
+        }
+    }
+
+    // XCR claude for claude: [readability/low] A name a block declares is its type
     // throughout the block (the whole-block rule, confirmed by Eric 2026-11-05), but
     // nothing a refusal or a warning prints says which `L` a name above the
     // declaration means: `type L = i64; let g = |z: i64| { let f = |x: i64| { let b: L
@@ -1444,46 +1494,63 @@ impl Env {
     // resolve_type_name has no position, so this needs the reference's (TypeRef::pos).
     // probes: ~/ptmp/cr29/scratch/r16-N/low/fwd6.gx, r6_use_direct.gx
     // (block-later-name-note-01)
-    /// What a name in type position means at `scope`: the first typedef
-    /// or trait of that name along the lookup chain, so a closer one of
-    /// either kind shadows a farther one of the other.
-    pub(crate) fn resolve_type_name(
-        &self,
-        scope: &ModPath,
-        name: &ModPath,
-    ) -> Result<Option<TypeName>> {
-        let hit = self.resolve_visible(scope, name, NameNs::Type, |s, n| {
-            if let Some(d) = self.lexical.typedefs.get(s).and_then(|m| m.get(n)) {
-                return Some(Ok(TypeName::Def(d.def.clone())));
+    // 2026-11-05 claude: Built: Env::later_block_type_note judges a written name that
+    // resolves to a type its block declares below it (or not yet compiled) while the name
+    // has another meaning at the block's door (an outer type or trait, an import);
+    // compiler::warn_later_block_names warns at the name in a definition's check (let
+    // annotations, type tests, casts, never<T>, lambda signatures; never in an instance's
+    // body), naming both declarations. fwd6 and r6_use_direct now warn before their
+    // refusal; q8b's type test warns and runs. Pin
+    // lang::block_types::a_later_block_type_beside_another_warns (x4 modes; all four fail
+    // with the warning disabled). Not covered: a typedef body naming the later type, a
+    // written type inside a labeled default.
+    /// Where the written name `tr` means a type its block declares below
+    /// it while the name means something else at the block's door (an
+    /// outer type or trait, or an import): what its reader is told.
+    pub fn later_block_type_note(&self, tr: &TypeRef) -> Option<CompactString> {
+        let (Some(pos), Some(ori)) = (tr.pos, &tr.ori) else { return None };
+        let mut level = CompactString::default();
+        let hit = self
+            .resolve_visible(&tr.scope, &tr.name, NameNs::Type, |s, n| {
+                let hit = self.type_name_at(s, n)?;
+                level = CompactString::from(s);
+                Some(hit)
+            })
+            .ok()??;
+        let declared = match hit {
+            Err(Unseen::Later) => None,
+            Ok(TypeName::Def(d))
+                if is_block_scope(&level)
+                    && same_origin(d.ori(), ori)
+                    && d.pos() > pos =>
+            {
+                Some(d.pos())
             }
-            if let Some(id) = self.lexical.traits.get(s).and_then(|m| m.get(n)) {
-                return Some(Ok(TypeName::Trait(*id)));
+            Ok(_) | Err(Unseen::Dead) => return None,
+        };
+        let other = self
+            .resolve_visible(&tr.scope, &tr.name, NameNs::Type, |s, n| {
+                if s == level { None } else { self.type_name_at(s, n)?.ok() }
+            })
+            .ok()??;
+        let (opos, oori) = match &other {
+            TypeName::Def(o) => (o.pos(), o.ori().clone()),
+            TypeName::Trait(id) => {
+                let t = self.trait_def(*id)?;
+                (t.pos, t.ori.clone())
             }
-            if !is_block_scope(s) {
-                return None;
-            }
-            let later = match self.lexical.block_names.get(s) {
-                Some(names) if names.get(n).is_none() => return None,
-                Some(_) => true,
-                None => false,
-            };
-            match self.block_types.find(s, n) {
-                Some(BlockHit::Live(def)) => Some(Ok(TypeName::Def(def))),
-                Some(BlockHit::Dead) => Some(Err(Unseen::Dead)),
-                None => later.then_some(Err(Unseen::Later)),
-            }
-        })?;
-        match hit {
-            None => Ok(None),
-            Some(Ok(t)) => Ok(Some(t)),
-            Some(Err(Unseen::Dead)) => {
-                bail!("type `{name}` outlived its definition in `{scope}`")
-            }
-            Some(Err(Unseen::Later)) => bail!(
-                "{name} names the type a later statement of this block declares: \
-                 declare it before its first use"
-            ),
-        }
+        };
+        let at = declared.map(|p| format_compact!(", at {p}")).unwrap_or_default();
+        let elsewhere = match same_origin(&oori, ori) {
+            true => CompactString::default(),
+            false => format_compact!(" in {}", oori.source),
+        };
+        let name = &tr.name;
+        Some(format_compact!(
+            "`{name}` here names the type this block declares below it{at}, not the \
+             `{name}` declared at {opos}{elsewhere}: a name a block declares is its \
+             type throughout the block"
+        ))
     }
 
     /// Declare trait `name` in `scope`: one dispatcher per method at

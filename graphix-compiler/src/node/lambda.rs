@@ -2439,6 +2439,14 @@ impl Lambda {
                 .rewrite_trait_args(env)?
                 .apply_ctor_quantifiers(&ctors))
         };
+        let signature = l.args.iter().filter_map(|a| a.constraint.as_ref());
+        let signature = signature
+            .chain(l.rtype.iter())
+            .chain(l.throws.iter())
+            .chain(l.constraints.iter().map(|(_, tc)| tc));
+        for t in signature {
+            crate::warn_later_block_names(ctx, flags, &t.scope_refs(&scope.lexical))?;
+        }
         if l.vargs.is_some() && matches!(l.body, LambdaBody::Expr(_)) {
             bail!("a variadic argument (`@args`) is for builtins only")
         }

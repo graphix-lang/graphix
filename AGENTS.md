@@ -363,7 +363,9 @@ is refused (`node::later_typedef`); a name a block declares is its type
 throughout the block (an annotation, a test, a cast, an abstract
 constructor, pattern or payload read), never an outer type of the name
 or one a `use` brings, and a statement above the declaration that needs
-it as it compiles is refused (`Lexical::block_names`). A top-level input (a REPL input, each
+it as it compiles is refused (`Lexical::block_names`); where another of
+the name is in view, the definition's check warns at the name
+(`Env::later_block_type_note`). A top-level input (a REPL input, each
 statement of its line one; a script; a dynamic module's load) is checked
 and run alone, as a compile task of its own (`Input`): at its end every
 open top-level cell its bindings' and value's types reach settles, ⊥

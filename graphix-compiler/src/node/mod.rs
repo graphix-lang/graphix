@@ -2953,6 +2953,7 @@ impl<R: Rt> TypeCast<R> {
     ) -> Result<Node<R>> {
         let n = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let target = typ.scope_refs(&scope.lexical);
+        crate::warn_later_block_names(ctx, flags, &target)?;
         target.check_cast(&ctx.env).at(&spec)?;
         let typ = Type::union(&ctx.env, &[&target, &CAST_ERR])?;
         Ok(Self::with(spec, typ, target, n, false, true))
@@ -3085,7 +3086,9 @@ impl<R: Rt> Never<R> {
             .collect::<Result<Box<[_]>>>()?;
         let typ = match typ {
             Some(t) => {
-                let t = t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?;
+                let t = t.scope_refs(&scope.lexical);
+                crate::warn_later_block_names(ctx, flags, &t)?;
+                let t = t.rewrite_trait_args(&ctx.env)?;
                 lambda::body_annotation(ctx, &t);
                 t
             }

@@ -301,6 +301,7 @@ impl<R: Rt> Bind<R> {
         let annotation = match annotation {
             Some(t) => {
                 let t = t.scope_refs(&scope.lexical);
+                crate::warn_later_block_names(ctx, flags, &t)?;
                 let declares_method = netidx_core::path::Path::basename(&*scope.lexical)
                     .is_some_and(crate::is_method_block);
                 let t = match declares_method {

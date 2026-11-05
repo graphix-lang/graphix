@@ -1,9 +1,15 @@
 // Type names a block declares, read after the block: an instance's body,
 // a labeled default compiled at a call, a value's type at run time.
 
+use anyhow::Result;
+use arcstr::{ArcStr, literal};
+use graphix_compiler::{
+    CFlag,
+    expr::{VfsEntry, VfsResolver},
+};
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, prints, refused},
+    testing::{FuseExpect, Mode, TestCtx, config, prints, refused},
 };
 
 // An instance's body names its block's type over an outer one of the
@@ -373,3 +379,74 @@ run!(
 }"#,
     prints(r#""b""#)
 );
+
+// A name above its block's declaration of it, with another of the name in
+// view there (an outer type, an import), is the block's type, and the
+// check says so at the name; with nothing else in view, or below the
+// declaration, it says nothing.
+async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
+    let (tx, _rx) = tokio::sync::mpsc::channel(100);
+    let files = [(
+        netidx::path::Path::from("/n.gx"),
+        VfsEntry::from(literal!("type L = string")),
+    )];
+    let resolver = VfsResolver::new(ahash::AHashMap::from_iter(files));
+    let ctx = TestCtx::start(
+        config(tx, crate::TEST_REGISTER, vec![resolver], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(mode.flags() | CFlag::WarningsAreErrors),
+    )
+    .await?;
+    let _n = ctx.rt.compile(literal!("mod n")).await?;
+    let outer = "`L` here names the type this block declares below it";
+    for (source, note) in [
+        (
+            "type L = string;\nlet g = |z: i64| {\n    \
+             let f = |x: i64| { let b: L = 3; (b, x) };\n    type L = i64;\n    f(z)\n}",
+            format!(
+                "{outer}, at line: 4, column: 10, not the `L` declared at line: 1, column: 6"
+            ),
+        ),
+        (
+            "type L = string;\nlet g = |z: i64| {\n    \
+             let f = |v: [i64, string]| select v { L as l => l, _ => 0 };\n    \
+             type L = i64;\n    f(z)\n}",
+            format!(
+                "{outer}, at line: 4, column: 10, not the `L` declared at line: 1, column: 6"
+            ),
+        ),
+        (
+            "type L = string;\nlet g = |z: i64| {\n    let h = |v: L| v;\n    \
+             type L = i64;\n    h(z)\n}",
+            format!("{outer}, not the `L` declared at line: 1, column: 6"),
+        ),
+        (
+            "let g = |z: i64| {\n    use n::L;\n    let f = |x: i64| { let b: L = 3; (b, x) };\n    \
+             type L = i64;\n    f(z)\n}",
+            format!(
+                "{outer}, at line: 4, column: 10, not the `L` declared at line: 1, column: 6 in "
+            ),
+        ),
+    ] {
+        match ctx.rt.compile(ArcStr::from(source)).await {
+            Ok(_) => anyhow::bail!("no warning for {source}"),
+            Err(e) => {
+                let e = format!("{e:#}");
+                assert!(e.contains(&note), "{source}: {e}")
+            }
+        }
+    }
+    for source in [
+        "type L = string;\nlet g = |z: i64| {\n    type L = i64;\n    \
+         let f = |v: [i64, string]| select v { L as l => l, _ => 0 };\n    f(z)\n}",
+        "let g = |z: i64| {\n    let f = |v: [i64, string]| select v { L as l => l, _ => 0 };\n    \
+         type L = i64;\n    f(z)\n}",
+    ] {
+        let _quiet = ctx.rt.compile(ArcStr::from(source)).await?;
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
+modes!(a_later_block_type_beside_another_warns);

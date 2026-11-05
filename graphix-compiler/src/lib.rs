@@ -3787,6 +3787,32 @@ pub(crate) fn defer_unresolved_names<R: Rt>(
     res
 }
 
+/// Warn at each name the written type `t` holds that means a type its
+/// block declares below it while another of the name is in view there
+/// ([`env::Env::later_block_type_note`]): in a definition's check, never
+/// again in an instance's body.
+pub(crate) fn warn_later_block_names<R: Rt>(
+    ctx: &CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    t: &Type,
+) -> Result<()> {
+    if ctx.body.as_ref().is_some_and(|b| !b.checking) {
+        return Ok(());
+    }
+    let mut res = Ok(());
+    t.for_each_written_name(&mut |tr| {
+        if res.is_ok()
+            && let (Some(pos), Some(ori)) = (tr.pos, &tr.ori)
+            && let Some(note) = ctx.env.later_block_type_note(tr)
+        {
+            let width = tr.name.chars().count() as i32;
+            let end = SourcePosition { column: pos.column + width, ..pos };
+            res = ctx.env.warn_at(flags, ori, pos, end, note)
+        }
+    });
+    res
+}
+
 /// A `use` whose name did not exist at its compile position must name
 /// something by the end of the compile that deferred it.
 pub(crate) fn check_pending_imports<R: Rt>(ctx: &mut ExecCtx<'_, R>) -> Result<()> {
