@@ -251,6 +251,41 @@ fn a_value_literal_failure_is_said_only_where_it_alone_failed() {
     }
 }
 
+// A value literal read in a pattern or as a tuple index says what its
+// parser expected where the expression's literal does.
+#[test]
+fn a_value_literal_failure_is_said_in_a_pattern_and_an_index() {
+    for (src, said) in [
+        (
+            "let x = 1;\nlet a = select x { error:\"\\q\" => 1, _ => 0 };",
+            "line: 2, column: 28\nUnexpected `q`\n\
+             Expected `n`, `r`, `t`, `0`, `u{`, `\\` or `\"`\n",
+        ),
+        (
+            "let x = 1;\nlet a = select x { `A(error:\"\\u{d800}\") => 1, _ => 0 };",
+            "line: 2, column: 38\ninvalid unicode escape: a surrogate, not a character\n",
+        ),
+        (
+            "let x = 1;\nlet a = x.99999999999999999999999;",
+            "line: 2, column: 34\ninvalid signed integer\n",
+        ),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(&format!("Parse error at {said}")), "{src}: {msg}");
+    }
+    let msg = parse_program("let x = 1;\nlet a = select x { u8:300 => 1, _ => 0 };");
+    assert!(msg.contains("the parser could not continue past this point\n"), "{msg}");
+    assert!(msg.contains("`300` is out of the range of u8"), "{msg}");
+    let msg =
+        parse_program("let x = 1;\nlet a = select x { (bytes: n, 1) => 1, _ => 0 };");
+    assert!(
+        msg.contains(
+            "Parse error at line: 2, column: 29\nthe parser could not continue past this point\n"
+        ),
+        "{msg}"
+    );
+}
+
 // `name: value` at the start of a list item is a field, a labeled argument
 // or a key, written with a space after the colon, where a value literal
 // prints its colon tight: the literal's failure is not said there, at the

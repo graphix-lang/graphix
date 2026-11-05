@@ -64,7 +64,7 @@ fn postfix_op(i: &mut Input, key: bool) -> R<Post> {
             choice!(
                 i,
                 |i| i
-                    .attempt(|i| i.value_part(value_parser::int::<usize>))
+                    .attempt(|i| i.knot(|i| i.value_part(value_parser::int::<usize>)))
                     .map(Post::Index),
                 |i| {
                     i.spaces();
