@@ -576,7 +576,8 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
     };
     let registration = registration_image_source().await;
     let (tx, _rx) = mpsc::channel(64);
-    let cfg = session_config(&subj, mode, registration, Limits::default(), tx, |_| {})
+    let limits = Limits { activations: Some(ACTIVATION_BUDGET), ..Limits::default() };
+    let cfg = session_config(&subj, mode, registration, limits, tx, |_| {})
         .and_then(|cfg| Ok(cfg.program(subj.program()).build()?));
     let cfg = match cfg {
         Ok(cfg) => cfg,
