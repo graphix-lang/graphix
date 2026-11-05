@@ -511,6 +511,59 @@ run!(
     FuseExpect::Jit
 );
 
+// Two reads of one holder's field in an array meet as two names' reads do:
+// an element of data is one instance.
+run!(
+    two_reads_of_a_holder_field_in_an_array_are_one_instance,
+    "{ let s = {g: |x| x}; let a = [s.g, s.g]; (a[0]$(1), a[1]$(\"s\")) }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    two_reads_of_a_holder_field_in_an_array_take_their_one_type,
+    "{ let s = {g: |x| x}; let a = [s.g, s.g]; (a[0]$(1), a[1]$(2)) }",
+    prints("[i64:1, i64:2]");
+    FuseExpect::None
+);
+
+// A value a program writes in a seq step is judged as the same `let`
+// outside a seq: only the lowering's own forms pass a scheme on.
+run!(
+    a_program_s_tuple_read_in_a_seq_step_is_one_instance,
+    "{ let s = {g: |x| x}; seq { let j = (1, s.g).1; (j(1), j(\"s\")) } }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_program_s_tuple_read_in_a_seq_step_takes_its_one_type,
+    "{ let s = {g: |x| x}; seq { let j = (1, s.g).1; (j(1), j(2)) } }",
+    prints("[i64:1, i64:2]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_program_s_sample_in_a_seq_step_is_one_instance,
+    "{ let s = {g: |x| x}; let k = 1; seq { let h = k ~! s.g; (h(1), h(\"s\")) } }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_program_s_any_in_a_seq_step_is_one_instance,
+    "{ let s = {g: |x| x}; seq { let h = any(s.g, s.g); (h(1), h(\"s\")) } }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_program_s_any_in_a_seq_step_takes_its_one_type,
+    "{ let s = {g: |x| x}; seq { let h = any(s.g, s.g); (h(1), h(2)) } }",
+    prints("[i64:1, i64:2]");
+    FuseExpect::Jit
+);
+
 // A step's destructured holder is refused at its statement, inside the seq,
 // once the holder is checked: the pattern takes the holder's own binding.
 run!(

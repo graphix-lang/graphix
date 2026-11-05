@@ -1754,7 +1754,8 @@ cycle, across workers; the compiler never pins threads.
   A step's entry snapshot, the projection of it a read takes and a
   step's value are written by nothing, so a read of a generalized
   binding through them carries its scheme (`seq::passes_on`,
-  `bind::passes_generic`), read at the step's entry as ever; a step's
+  `bind::Passing`: those forms only, what the program wrote inside them
+  judged as outside a seq), read at the step's entry as ever; a step's
   `let` a later step writes is written at its binding (the machine walks
   every step's items for writers); a holder with a call part is one
   instance in the step, and a `seqq` request's capture one per request.

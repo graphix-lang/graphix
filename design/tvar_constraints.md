@@ -424,8 +424,7 @@ module with no interface that writes such a name is not known as a
 writer when the parent's `let` compiles, so its write decides the copy
 the parent's other names share (CR module-holder-write-01). Two lambda
 literals one array or list holds meet as its elements (`[|x| x, |y| y]`
-is one function type; two reads sharing one copy of a function are that
-copy, met with nothing), and a `seqq` reads a holder once per request,
+is one function type, and so are `[g, g]` and `[s.g, s.g]`), and a `seqq` reads a holder once per request,
 every step of the run sharing that read's copy. A lambda a let holds through a
 select is not generalized, though a call through it instantiates it (CR
 holder-block-select-01); one through a block's final expression is

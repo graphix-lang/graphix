@@ -153,24 +153,49 @@ const STEP_VALUE: &str = "#seqv";
 /// each a step value's kind.
 const STATEMENT_VALUE: &str = "#seqb";
 
+/// The prefix of the tuple a step's entry snapshot samples, `let
+/// #seqsin<id>_<n> = (pc, ..)`.
+const ENTRY_INPUT: &str = "#seqsin";
+
+/// The prefix of a machine's program counter.
+const PC: &str = "#seqpc";
+
 /// Whether the lowering's binding `name` passes on what it reads whole,
 /// and nothing writes it: a step's entry snapshot ([`ENTRY_SNAPSHOT`]), a
 /// step's value ([`STEP_VALUE`]) or a statement item's
 /// ([`STATEMENT_VALUE`]). A read of a generalized binding through one
 /// carries the binding's scheme.
 pub fn passes_on(name: &str) -> bool {
-    let numbered = |prefix: &str, parts: &[usize]| {
-        name.strip_prefix(prefix).is_some_and(|rest| {
-            let n = rest.split('_').count();
-            parts.contains(&n)
-                && rest
-                    .split('_')
-                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-        })
-    };
-    numbered(ENTRY_SNAPSHOT, &[2])
-        || numbered(STEP_VALUE, &[1, 2])
-        || numbered(STATEMENT_VALUE, &[2])
+    numbered(name, ENTRY_SNAPSHOT, &[2])
+        || numbered(name, STEP_VALUE, &[1, 2])
+        || is_statement_value(name)
+}
+
+/// Whether `name` is a `{ .. }` statement's item value ([`STATEMENT_VALUE`]).
+pub fn is_statement_value(name: &str) -> bool {
+    numbered(name, STATEMENT_VALUE, &[2])
+}
+
+/// Whether `name` is the tuple a step's entry snapshot samples
+/// ([`ENTRY_INPUT`]).
+pub fn is_entry_input(name: &str) -> bool {
+    numbered(name, ENTRY_INPUT, &[2])
+}
+
+/// Whether `name` is a machine's program counter ([`PC`]), whose fire
+/// enters a step.
+pub fn is_pc(name: &str) -> bool {
+    numbered(name, PC, &[1])
+}
+
+/// `name` is `prefix` and then one of `parts` numbers joined by `_`.
+fn numbered(name: &str, prefix: &str, parts: &[usize]) -> bool {
+    name.strip_prefix(prefix).is_some_and(|rest| {
+        parts.contains(&rest.split('_').count())
+            && rest
+                .split('_')
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 /// The seq `spec` lowered to its machine, every expression of which
@@ -376,7 +401,7 @@ fn desugar_plain(
     if steps.is_empty() {
         return Err(anyhow!("a seq block must contain at least one step").at(spec));
     }
-    let pc = format_compact!("#seqpc{id}");
+    let pc = format_compact!("{PC}{id}");
     let idle = format_compact!("#seqidle{id}");
     let result = format_compact!("#seqr{id}");
     let go = format_compact!("#seqgo{id}");
@@ -888,6 +913,21 @@ impl Machine<'_> {
     // a_seq_statement_block_ending_in_a_field_read_is_generic} fail without the change
     // (each of the three parts fails some); the written twins pin what stays one
     // instance. The seqq capture is seqq-capture-generic-01.
+    // 2026-11-05 claude: Review r16 round 2 (reviewer 2 mediums, reviewer 1 lows): the
+    // generic verdict reached past the lowering's own forms. Type::meet_open_fns'
+    // same-Arc skip made [s.g, s.g] generic outside any seq, and passes_generic recursed
+    // into a program's any/sample/tuple read inside a step value (seq { let j = (1,
+    // s.g).1 }, k ~! s.g, any(s.g, s.g) ran while the same let outside a seq is refused).
+    // Fixed: the skip is gone; only the lowering's forms pass a scheme on (bind::Passing:
+    // the entry snapshot .. ~! #seqsin, the entry fire any(#seqpc ~! v, v), a { .. }
+    // statement's (#seqb.., ..).n, each recognized by names only the lowering writes),
+    // and the entry fire's two reads of one copy are typed as that copy
+    // (Any::fired_at_entry); what the program wrote is judged as outside a seq. Pins
+    // lang::quantified::{two_reads_of_a_holder_field_in_an_array_are_one_instance (fails
+    // with the meet skip restored), a_program_s_tuple_read_in_a_seq_step_is_one_instance,
+    // a_program_s_sample_in_a_seq_step_is_one_instance (fail with the old
+    // passed/name_passed), a_program_s_any_in_a_seq_step_is_one_instance} and their
+    // one-type twins; the five seq alias pins fail with the Any one-copy typing disabled.
     /// The step's entry snapshot of `e`'s external variables and completed
     /// local lets, `live` aside (`design/seq_blocks.md` §5). Each read goes
     /// to a cell filled at the
@@ -967,7 +1007,7 @@ impl Machine<'_> {
             return;
         }
         let (pc, id) = (self.issue.pc, self.id);
-        let input = format_compact!("#seqsin{id}_{n}");
+        let input = format_compact!("{ENTRY_INPUT}{id}_{n}");
         let snap = format_compact!("{ENTRY_SNAPSHOT}{id}_{n}");
         let tuple = ExprKind::Tuple {
             args: Arc::from_iter(
@@ -2516,7 +2556,6 @@ fn pat_lit(v: Value) -> Pattern {
     }
 }
 
-/// `(_, …, name)`: the last of `n` tuple elements.
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2567,7 +2606,7 @@ mod test {
             let mut found = false;
             lowered.fold((), &mut |(), e| {
                 if let ExprKind::Bind(b) = &e.kind
-                    && b.pattern.single_bind().is_some_and(|n| n.starts_with("#seqpc"))
+                    && b.pattern.single_bind().is_some_and(|n| is_pc(n))
                 {
                     assert_eq!(b.typ, Some(Type::Primitive(Typ::I64.into())));
                     found = true;

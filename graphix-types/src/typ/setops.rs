@@ -534,9 +534,8 @@ impl Type {
     /// call needs one signature. A generic member meets through a fresh
     /// instance; an occurrence's own cells bind, as the call would bind
     /// them, once the meet holds on copies (a probe judges each part apart,
-    /// and a refused commit would leave its bindings behind). Two
-    /// occurrences of one function type are that type, met with nothing.
-    /// `None` when no member changes.
+    /// and a refused commit would leave its bindings behind). `None` when
+    /// no member changes.
     fn meet_open_fns(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
         let fns: SmallVec<[(usize, Arc<FnType>); 4]> = ts
             .iter()
@@ -563,10 +562,6 @@ impl Type {
             for (j, (_, g)) in fns.iter().enumerate() {
                 if j == k || met[j] {
                     continue;
-                }
-                if Arc::ptr_eq(f, g) {
-                    met[k] = true;
-                    break;
                 }
                 let g = Type::Fn(g.clone());
                 if inst.contains_with_flags(probe, env, &g)?

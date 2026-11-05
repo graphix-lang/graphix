@@ -455,7 +455,7 @@ impl<R: Rt> Bind<R> {
         let passes = passes_generic(&ctx.env, b, &node);
         if names_generic(&ctx.env, b, &node) {
             match passes {
-                true => name_passed(&mut node),
+                true => name_passed(&ctx.env, &mut node),
                 false => name_value(&mut node, false),
             }
             pattern.ids(&mut |id| {
@@ -1100,21 +1100,22 @@ fn forwards<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
 }
 
 /// Whether the binding is a seq lowering's that passes on a generalized
-/// binding's read (`expr::seq::passes_on`: a step's entry snapshot, `.. ~!
-/// r`, a step's guarded value, `any(pc ~! r, r)`, or a `{ .. }` item's
-/// value, the last of its items' values, `(.., r).n`): nothing writes it,
-/// so it carries the scheme.
+/// binding's read (`expr::seq::passes_on`): nothing writes it, so it
+/// carries the scheme. Past the step's guard and a block's final
+/// expression, its value is one of the lowering's [`Passing`] forms, or
+/// what a `let` outside a seq forwards.
 fn passes_generic<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
     fn passed<R: Rt>(env: &Env, node: &Node<R>) -> bool {
-        match value_of(node).view() {
-            NodeView::SeqGuard(g) => passed(env, &g.n),
-            NodeView::Sample(s) => reads_generic(env, &s.arg.node),
-            NodeView::Any(a) => !a.n.is_empty() && a.n.iter().all(|c| passed(env, c)),
-            NodeView::TupleRef(t) => match t.source.view() {
-                NodeView::Tuple(parts) => {
-                    parts.n.get(t.field).is_some_and(|p| passed(env, p))
-                }
-                _ => reads_generic(env, node),
+        let node = value_of(node);
+        match (node.view(), passing(env, node)) {
+            (NodeView::SeqGuard(g), _) => passed(env, &g.n),
+            (NodeView::Sample(s), Some(Passing::Snapshot)) => {
+                reads_generic(env, &s.arg.node)
+            }
+            (NodeView::Any(a), Some(Passing::EntryFire)) => reads_generic(env, &a.n[1]),
+            (NodeView::TupleRef(t), Some(Passing::Statement)) => match t.source.view() {
+                NodeView::Tuple(parts) => reads_generic(env, &parts.n[t.field]),
+                _ => false,
             },
             _ => reads_generic(env, node),
         }
@@ -1122,29 +1123,99 @@ fn passes_generic<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool 
     b.pattern.single_bind().is_some_and(|n| expr::seq::passes_on(n)) && passed(env, node)
 }
 
-/// Name the reads a seq lowering's binding passes on ([`passes_generic`]).
-fn name_passed<R: Rt>(node: &mut Node<R>) {
-    if let Some(r) = node.downcast_mut::<Ref>() {
-        r.naming = Naming::Passed
-    } else if let Some(b) = node.downcast_mut::<super::Block<R>>() {
-        if !b.module
-            && let Some(last) = b.children.last_mut()
+/// A form only a seq lowering builds, which passes one read on whole: the
+/// names it reads are the lowering's, which a program cannot write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Passing {
+    /// A step's entry snapshot, `.. ~! #seqsin`.
+    Snapshot,
+    /// A value fired at its step's entry, then tracked: `any(#seqpc ~! v, v)`
+    /// ([`super::Any::fired_at_entry`]).
+    EntryFire,
+    /// A `{ .. }` statement's value, the last of its items': `(#seqb.., ..).n`.
+    Statement,
+}
+
+fn passing<R: Rt>(env: &Env, node: &Node<R>) -> Option<Passing> {
+    match node.view() {
+        NodeView::Sample(s)
+            if s.is_strict()
+                && reads_lowered(env, &s.arg.node, expr::seq::is_entry_input) =>
         {
-            name_passed(last)
+            Some(Passing::Snapshot)
         }
-    } else if let Some(g) = node.downcast_mut::<super::error::SeqGuard<R>>() {
-        name_passed(&mut g.n)
-    } else if let Some(s) = node.downcast_mut::<super::Sample<R>>() {
-        name_passed(&mut s.arg.node)
-    } else if let Some(a) = node.downcast_mut::<super::Any<R>>() {
-        a.n.iter_mut().for_each(name_passed)
-    } else if let Some(t) = node.downcast_mut::<super::data::TupleRef<R>>()
-        && let Some(parts) = t.source.downcast_mut::<super::data::Tuple<R>>()
-        && let Some(part) = parts.n.get_mut(t.field)
-    {
-        name_passed(part)
-    } else {
-        name_value(node, false)
+        NodeView::Any(a) if a.fired_at_entry(env) => Some(Passing::EntryFire),
+        NodeView::TupleRef(t) => match t.source.view() {
+            NodeView::Tuple(parts)
+                if parts.n.get(t.field).is_some_and(|p| {
+                    reads_lowered(env, p, expr::seq::is_statement_value)
+                }) =>
+            {
+                Some(Passing::Statement)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `node` reads a seq lowering's binding whose name `is` holds.
+pub(super) fn reads_lowered<R: Rt>(
+    env: &Env,
+    node: &Node<R>,
+    is: fn(&str) -> bool,
+) -> bool {
+    match node.view() {
+        NodeView::Ref(r) => env.by_id.get(&r.id).is_some_and(|b| is(&b.name)),
+        _ => false,
+    }
+}
+
+/// Name the reads a seq lowering's binding passes on ([`passes_generic`]).
+fn name_passed<R: Rt>(env: &Env, node: &mut Node<R>) {
+    fn pass<R: Rt>(node: &mut Node<R>) {
+        if let Some(r) = node.downcast_mut::<Ref>() {
+            r.naming = Naming::Passed
+        }
+    }
+    match passing(env, node) {
+        Some(Passing::Snapshot) => {
+            if let Some(s) = node.downcast_mut::<super::Sample<R>>() {
+                pass(&mut s.arg.node)
+            }
+        }
+        Some(Passing::EntryFire) => {
+            if let Some(a) = node.downcast_mut::<super::Any<R>>() {
+                for n in a.n.iter_mut() {
+                    match n.downcast_mut::<super::Sample<R>>() {
+                        Some(s) => pass(&mut s.arg.node),
+                        None => pass(n),
+                    }
+                }
+            }
+        }
+        Some(Passing::Statement) => {
+            if let Some(t) = node.downcast_mut::<super::data::TupleRef<R>>()
+                && let Some(parts) = t.source.downcast_mut::<super::data::Tuple<R>>()
+            {
+                pass(&mut parts.n[t.field])
+            }
+        }
+        None => {
+            if let Some(r) = node.downcast_mut::<Ref>() {
+                r.naming = Naming::Passed
+            } else if let Some(b) = node.downcast_mut::<super::Block<R>>() {
+                if !b.module
+                    && let Some(last) = b.children.last_mut()
+                {
+                    name_passed(env, last)
+                }
+            } else if let Some(g) = node.downcast_mut::<super::error::SeqGuard<R>>() {
+                name_passed(env, &mut g.n)
+            } else {
+                name_value(node, false)
+            }
+        }
     }
 }
 

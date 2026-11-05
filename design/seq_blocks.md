@@ -324,9 +324,13 @@ statement's value (its last item's), are written by nothing, so each
 carries the read binding's scheme as a `let` of it does
 (`expr::seq::passes_on`, `bind::passes_generic`, Eric 11-05): the reads
 in such a value share one copy of a function as of a holder
-(`bind::Naming::Passed`), and a `let` of a step's or a block's value
+(`bind::Naming::Passed`), the entry fire's two reads of it are that copy
+(`Any::fired_at_entry`), and a `let` of a step's or a block's value
 (`let j = s.g`, `let g = f`, `let v = { let n = 1; s }`) is generic as
-it is outside a seq; what the
+it is outside a seq. Only those forms pass a scheme on (`bind::Passing`:
+each reads names only the lowering writes): what the program wrote inside
+them is judged as the same `let` outside a seq, so `let j = (1, s.g).1`,
+`k ~! s.g` or `any(s.g, s.g)` in a step is one instance; what the
 snapshot reads is still read at the step's entry, a holder's part that
 tracks a variable included. A step's `let` a later step writes is known
 written at its binding (`SeqMachine::compile` finds the writes among
