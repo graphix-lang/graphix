@@ -557,6 +557,27 @@ impl FnType {
         known
     }
 
+    /// [`Self::collect_tvars`] and then, until nothing new arrives, the
+    /// cells the bounds of the cells found name: a quantifier only the
+    /// bound of a bound names is reached too.
+    pub fn collect_tvars_through_bounds(&self, known: &mut AHashMap<ArcStr, TVar>) {
+        self.collect_tvars(known);
+        let mut todo: LPooled<Vec<TVar>> = LPooled::take();
+        todo.extend(known.values().cloned());
+        let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        while let Some(tv) = todo.pop() {
+            for tc in tv.cell_constraints() {
+                tc.collect_tvars(&mut found);
+            }
+            for (name, tv) in found.drain() {
+                if !known.contains_key(&name) {
+                    known.insert(name, tv.clone());
+                    todo.push(tv);
+                }
+            }
+        }
+    }
+
     /// `(tvar, conjunct)` for every conjunct of every signature cell
     /// `keep` selects, normalized (so equality and display agree on the
     /// canonical form), sorted by name then conjunct.

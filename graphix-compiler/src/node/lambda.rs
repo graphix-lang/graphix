@@ -2692,7 +2692,7 @@ impl<R: Rt> DefGate<R> {
         );
         let scope = def.scope.with_catch((faux_id, ExprId::new()), HandlerKind::Catch);
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        // CR claude for claude: [bug/low] A declared variable that only the bound of a
+        // XCR claude for claude: [bug/low] A declared variable that only the bound of a
         // bound names is not held rigid in the definition's check, so the body decides it:
         // `'a: [i64, string], 'c: ['a, null], 'b: ['c, `X] |x: 'b| -> [`X, null, i64] x`
         // checks and binds the declared 'a to i64, and a call with "str" is then refused
@@ -2705,7 +2705,12 @@ impl<R: Rt> DefGate<R> {
         // such a cell rigid while it probes (split_members), the coverage half of it.
         // probes: ~/ptmp/cr29/scratch/review-r14/B-r2-2/lt/{c10,c11,c16,c17,c18}.gx
         // (bound-chain-rigid-01)
-        def.typ.collect_tvars(&mut named);
+        // 2026-11-05 claude: FnType::collect_tvars_through_bounds closes the cells
+        // DefGate::open holds rigid over the bounds of the cells found, so a quantifier
+        // only a bound of a bound names is gated. Pins that fail without it:
+        // lang::types::quantifier_named_by_a_bound_of_a_bound_is_rigid (refused) and its
+        // twin (annotated return, f("str") passes).
+        def.typ.collect_tvars_through_bounds(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
         // a rank-2 formal's own quantifiers are held too: a use of the
         // formal in the body takes an instance of it, never binds them.

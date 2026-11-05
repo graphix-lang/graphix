@@ -8888,3 +8888,25 @@ run!(
     prints(r#"[i64:2, null, "s", null]"#);
     FuseExpect::Jit
 );
+
+// A quantifier only the bound of a bound names is rigid in the body's check
+// as one a bound names directly is.
+run!(
+    quantifier_named_by_a_bound_of_a_bound_is_rigid,
+    r#"{
+  let f = 'a: [i64, string], 'c: ['a, null], 'b: ['c, `X] |x: 'b| -> [`X, null, i64] x;
+  f(`X)
+}"#,
+    refused("[i64, null, `X] does not contain 'b: unbound within ['c: unbound within [null, 'a: unbound within [i64, string]], `X]");
+    FuseExpect::None
+);
+
+run!(
+    quantifier_named_by_a_bound_of_a_bound_is_rigid_twin,
+    r#"{
+  let f = 'a: [i64, string], 'c: ['a, null], 'b: ['c, `X] |x: 'b| -> [`X, null, i64, string] x;
+  (f("str"), f(3), f(null), f(`X))
+}"#,
+    prints(r#"["str", i64:3, null, "X"]"#);
+    FuseExpect::Jit
+);
