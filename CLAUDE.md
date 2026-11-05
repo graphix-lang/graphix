@@ -1197,8 +1197,8 @@ built at its first fork, `GRAPHIX_EVAL_THREADS` workers; runtimes in
 one process never run each other's parts): a block's runs, a call's arguments, a
 constructor's fields, an operator's operands, a collection's slots, a
 server's requests (`http::serve`, `sys::net` rpc: an instance of the
-handler per request, `branch::fork_instances`, forked whenever two are
-independent, whatever their cost) and a kernel's top-level map-family
+handler per request, `branch::fork_instances`, planned by a `SlotSite`
+as a collection's slots are) and a kernel's top-level map-family
 loops (chunks, `fusion/par_loop.rs`).
 Branches see the runtime through branch views (`RtView`/`ForkRt`,
 `Layered`, `CxView`) and merge back in program order, so a forked cycle

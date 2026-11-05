@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use graphix_compiler::{
     BindId, CompileCtx, ExecCtx, LambdaId, Node, Notify, Refs, Rt, Scope, TagValue,
     TagView, branch,
-    cost::Siblings,
+    cost::SlotSite,
     errf,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -113,9 +113,9 @@ pub struct Handler<R: Rt, Q> {
     /// Requests not yet given an instance.
     pending: Vec<(Value, Q)>,
     running: Vec<(Request<R>, Q)>,
-    /// Whether the running instances may run apart, once decided; a new
-    /// function decides again.
-    siblings: Siblings,
+    /// Whether the running instances may run apart, once decided (a new
+    /// function decides again), and when forking them pays.
+    fork: SlotSite,
 }
 
 /// How a request's instance answered.
@@ -195,7 +195,7 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
             top_id,
             pending: Vec::new(),
             running: Vec::new(),
-            siblings: Siblings::default(),
+            fork: SlotSite::default(),
         }
     }
 
@@ -220,7 +220,7 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
     pub fn set_fn(&mut self, ctx: &mut ExecCtx<'_, R>, f: Option<Value>, fired: bool) {
         if fired && let Some(v) = f {
             ctx.deliver(self.pid, TagValue::fired(v), Notify::Walk);
-            self.siblings = Siblings::default();
+            self.fork.redecide();
         }
     }
 
@@ -237,6 +237,7 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
     /// answer each request whose instance fired or raised. The instances
     /// run on branches of their own where they are independent.
     pub fn update(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        let standing = self.running.len();
         if !self.pending.is_empty()
             && let Some(function) = ctx.rt.store_value(&self.pid)
         {
@@ -255,8 +256,9 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
         // None: still running; Some(None): its asker stopped waiting
         let answers = branch::fork_instances(
             ctx,
-            &mut self.siblings,
+            &mut self.fork,
             &mut self.running,
+            standing,
             call_of,
             |ctx, (r, q)| match q.abandoned() {
                 true => Some(None),

@@ -7,8 +7,7 @@
 
 use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue,
-    analysis::Sites,
-    cost::{ForkSite, Meter, Plan, Siblings},
+    cost::{ForkSite, Meter, Plan, SlotPlan, SlotSite},
     expr::{Expr, ExprId},
     node::{
         callsite::CallNode,
@@ -18,9 +17,7 @@ use crate::{
     typ::tvar::TaskContext,
 };
 use futures::channel::mpsc;
-use graphix_types::stack::{
-    Control, ParMode, eval_threads, with_control, with_current_control,
-};
+use graphix_types::stack::{Control, eval_threads, with_control, with_current_control};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::{global::GPooled, local::LPooled};
@@ -1112,17 +1109,19 @@ where
 }
 
 /// Update `items`, instances of functions the runtime started (a
-/// server's requests), each on a branch of its own when there are two or
-/// more and they are independent, else in order. `siblings` is the
-/// caller's verdict on its instances: decided here
-/// ([`Siblings::decide`]) and kept until the caller resets it, as
-/// instances of one function stand for each other. A fresh instance's
-/// call binds here first, so no branch compiles; `call` is an item's
-/// call.
+/// server's requests), `old_len` of them standing and the rest fresh:
+/// in order or forked in ranges where `site` says it pays, as a
+/// collection's slots are. `site` decides whether the instances are
+/// independent once ([`SlotSite::decide_siblings`]) and keeps the
+/// decision until the caller redecides it, as instances of one function
+/// stand for each other. A fresh instance's call binds here first, so no
+/// branch compiles; `call` is an item's call. The results, in item
+/// order.
 pub fn fork_instances<R, T, O, F>(
     ctx: &mut ExecCtx<'_, R>,
-    siblings: &mut Siblings,
+    site: &mut SlotSite,
     items: &mut [T],
+    old_len: usize,
     call: for<'a> fn(&'a mut T) -> &'a mut Node<R>,
     f: F,
 ) -> Vec<O>
@@ -1142,11 +1141,27 @@ where
     if ctx.deferred_pending() {
         ctx.apply_deferred();
     }
-    if !siblings.decided() {
+    {
         let calls: LPooled<Vec<&Node<R>>> = items.iter_mut().map(|i| &*call(i)).collect();
-        siblings.decide(ctx, calls.len(), calls.iter().copied(), Sites::Slots);
+        site.decide_siblings(ctx, calls.len(), calls.iter().copied());
     }
-    // CR claude for claude: [perf/medium] Every update forks all running instances, with
+    let in_order = |ctx: &mut ExecCtx<'_, R>, items: &mut [T]| -> Vec<O> {
+        items.iter_mut().map(|item| f(ctx, item)).collect()
+    };
+    let in_ranges = |ctx: &mut ExecCtx<'_, R>, items: &mut [T], grain: usize| {
+        let grain = grain.max(1);
+        match items.len() < 2 * grain {
+            true => in_order(ctx, items),
+            false => fork_each(ctx, items.chunks_mut(grain), |c, part| in_order(c, part))
+                .into_iter()
+                .flatten()
+                .collect(),
+        }
+    };
+    if site.in_order() {
+        return in_order(ctx, items);
+    }
+    // XCR claude for claude: [perf/medium] Every update forks all running instances, with
     // no cost estimate and no saturated() check. An instance's first update is costly,
     // but a waiting instance's later updates are a few nodes each, and each one still
     // pays a fork of every instance and wakes the whole pool. A server whose N
@@ -1173,12 +1188,48 @@ where
     // against them on mixed.gx. The patches and the benchmark scripts:
     // ~/tmp/grok-forkcost/ and ~/tmp/grok-forkcost/bench/ (run1.sh, batch.sh,
     // p/mixed.gx, p/fade.gx).
-    let fork =
-        items.len() >= 2 && ctx.fork_mode() != ParMode::Off && siblings.independent();
-    match fork {
-        true => fork_each(ctx, items.iter_mut(), |c, item| f(c, item)),
-        false => items.iter_mut().map(|item| f(ctx, item)).collect(),
-    }
+    // 2026-11-05 claude: Fixed: Handler holds a cost::SlotSite and
+    // branch::fork_instances plans the standing instances through it (one estimate per
+    // instance, serial once n * estimate < 2T, saturated() honoured) and the instances
+    // started this cycle through its fresh ProbeSite, as a collection's slots; CLAUDE.md
+    // and design/parallel_eval.md no longer say 'whatever their cost'. Probe on the
+    // debug build, 32 cores: N=20 Auto cpu_during 3.30 s -> 0.10 s (serial 0.13 s);
+    // N=300 stays 5.4 s against 0.6 s serial because 300 instances at about 1 us each
+    // exceed 2T = 35 us, so the model forks them: that is x-perf-runtime-02 (T leaves
+    // out branch overhead and worker spin), not planned away here. The cost model is
+    // untouched, so the mixed.gx regression of the dropped rework cannot occur. Pin:
+    // lang::par_attrs::waiting_server_instances_fork_only_where_it_pays (Auto forks 0
+    // with the fix, 303 without). Needs a soak.
+    let (standing, fresh) = items.split_at_mut(old_len.min(items.len()));
+    let n = standing.len();
+    let out = match site.plan(ctx, n) {
+        SlotPlan::Serial => in_order(ctx, standing),
+        SlotPlan::Measure(t0) => {
+            let out = in_order(ctx, standing);
+            site.measured(t0, n);
+            out
+        }
+        SlotPlan::Fork { grain } => in_ranges(ctx, standing, grain),
+    };
+    site.fresh
+        .run(
+            ctx,
+            fresh,
+            n,
+            out,
+            |ctx, item, _| Some(vec![f(ctx, item)]),
+            |ctx, items, _, grain| {
+                Some(match grain {
+                    None => in_order(ctx, items),
+                    Some(grain) => in_ranges(ctx, items, grain),
+                })
+            },
+            |mut a, mut b| {
+                a.append(&mut b);
+                a
+            },
+        )
+        .expect("an instance update is not interrupted")
 }
 
 /// Run `f` over each of `parts` in a compile task of its own, every task

@@ -630,3 +630,38 @@ async fn rebound_dynamic_calls_stay_ordered() -> Result<()> {
     }
     Ok(())
 }
+
+// A server's instances that wait on a ticking value are a few nodes each
+// per update: under Auto they run in order once their cost says a fork
+// does not pay, where Force forks at every update.
+const WAITING_REQUESTS: &str = r#"{
+    let tick = 0;
+    tick <- sys::time::timer(duration:2.ms, 1500) ~ tick + 1;
+    let handler = |req: http::Request| {
+        let start = req ~ tick;
+        select tick {
+            t if t > start + 150 => { body: "ok", headers: [], status: u16:200 },
+            _ => never()
+        }
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let rs = array::init(8, |i| http::request(client, "http://[addr]/[i]")$);
+    array::fold(rs, 0, |n, r| n + select r.status { u16:200 => 1, _ => 0 })
+}"#;
+
+#[tokio::test(flavor = "current_thread")]
+async fn waiting_server_instances_fork_only_where_it_pays() -> Result<()> {
+    let ok = Some(Value::I64(8));
+    let serial = run_par(WAITING_REQUESTS, ParMode::Off).await?;
+    assert_eq!(serial.values.last(), ok.as_ref());
+    assert_eq!(serial.forks, 0);
+    let forced = run_par(WAITING_REQUESTS, ParMode::Force).await?;
+    assert_eq!(forced.values.last(), ok.as_ref());
+    let auto = run_par(WAITING_REQUESTS, ParMode::Auto).await?;
+    assert_eq!(auto.values.last(), ok.as_ref());
+    assert!(forced.forks > 0, "Force ran the instances in order");
+    assert!(auto.forks < 50, "Auto forked {} times", auto.forks);
+    Ok(())
+}
