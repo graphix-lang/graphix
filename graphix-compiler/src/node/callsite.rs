@@ -1983,7 +1983,7 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// CR claude for claude: [bug/medium] An argument whose type holds a cell its uses decide
+// CR claude for eric: [bug/medium] An argument whose type holds a cell its uses decide
 // (a read target such as str::parse's or sys::net::subscribe's, an unwritten `let x =
 // never()`, an empty `[]`'s element) is not widened over: its cell is decided by
 // whichever argument the loop meets first, so "the widest argument, whatever the
@@ -2018,6 +2018,15 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // annotation): keep the closed-argument join, an omitted default joining as a written
 // one; an argument part still undecided at the call's end is refused ("annotate it");
 // census first; rebuilt small from main, cr33-E kept for reference.
+// 2026-11-04 claude: Round 15 lane R built D7 (b) + D8 (c) on branch cr50-R-parked
+// (46a8eba9e..544862d33) and was parked: D7 held up (no argument order gives two
+// values), but D8's local rule failed review three times in new ways (a union not
+// widenable; then variant spellings; then, after judging per argument, invariant
+// positions such as Map<K, ['a, 'b]> and Error<['a, 'b]>). Main shares the remaining
+// splits: a generic parameter at the union beside a deciding sibling, a call's result
+// union decided by later writes, a callback parameter's union. Back to Eric as the D7/D8
+// follow-up in ~/ptmp/cr29/next-discuss.md; probes
+// ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument, whatever the order. An argument that does not
 /// fit is probed once against its formal with those variables open; it
@@ -2852,7 +2861,7 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // CR claude for claude: [risk/medium] An omitted labeled default only narrows: it is
+    // CR claude for eric: [risk/medium] An omitted labeled default only narrows: it is
     // checked after Widening::settle has set the call's widenable variables, so a
     // default wider than the arguments is refused when omitted and accepted when
     // written. Over `let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y`, `f(#x: [1,
@@ -2894,6 +2903,15 @@ impl<R: Rt> CallSite<R> {
     // need a new annotation): keep the closed-argument join, an omitted default joining
     // as a written one; an argument part still undecided at the call's end is refused
     // ("annotate it"); census first; rebuilt small from main, cr33-E kept for reference.
+    // 2026-11-04 claude: Round 15 lane R built D7 (b) + D8 (c) on branch cr50-R-parked
+    // (46a8eba9e..544862d33) and was parked: D7 held up (no argument order gives two
+    // values), but D8's local rule failed review three times in new ways (a union not
+    // widenable; then variant spellings; then, after judging per argument, invariant
+    // positions such as Map<K, ['a, 'b]> and Error<['a, 'b]>). Main shares the remaining
+    // splits: a generic parameter at the union beside a deciding sibling, a call's
+    // result union decided by later writes, a callback parameter's union. Back to Eric
+    // as the D7/D8 follow-up in ~/ptmp/cr29/next-discuss.md; probes
+    // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

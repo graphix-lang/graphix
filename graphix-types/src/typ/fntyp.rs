@@ -1391,7 +1391,7 @@ impl FnType {
         r
     }
 
-    // CR claude for claude: [bug/low] Which member of a union of two open cells (`x: ['a,
+    // CR claude for eric: [bug/low] Which member of a union of two open cells (`x: ['a,
     // 'b]`) takes what is decided by an order, not a rule, and two orders exist: this
     // containment holds such a position after every other (instance_sig, a written
     // function type), while a call site's check relates its arguments first, deciding
@@ -1412,6 +1412,15 @@ impl FnType {
     // it comes back to him only if the stdlib, the book's examples or netidx-admin would
     // need a new annotation): with D7's rule an argument part undecided at the call's
     // end is refused, so both orders refuse fw1 alike (annotate the let).
+    // 2026-11-04 claude: Round 15 lane R built D7 (b) + D8 (c) on branch cr50-R-parked
+    // (46a8eba9e..544862d33) and was parked: D7 held up (no argument order gives two
+    // values), but D8's local rule failed review three times in new ways (a union not
+    // widenable; then variant spellings; then, after judging per argument, invariant
+    // positions such as Map<K, ['a, 'b]> and Error<['a, 'b]>). Main shares the remaining
+    // splits: a generic parameter at the union beside a deciding sibling, a call's result
+    // union decided by later writes, a callback parameter's union. Back to Eric as the
+    // D7/D8 follow-up in ~/ptmp/cr29/next-discuss.md; probes
+    // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,
