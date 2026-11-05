@@ -1501,8 +1501,9 @@ pub(crate) fn loop_body<R: Rt>(cx: &BodyCx, node: &Node<R>) -> LoopBody {
             let collection = matches!(
                 cs.resolved_apply(),
                 Some(ApplyView::Lambda(l)) if l.inline_callback().is_some()
-            ) || cs.recursion_callback().is_some();
-            if collection || cx.ctx.lambda_call_sites.contains_key(&id) {
+            ) || cs.recursion_callback().is_some()
+                || cx.shared_loop(cs).is_some();
+            if collection || cx.lambda_site(id).is_some() {
                 sites.push(id);
             }
         }

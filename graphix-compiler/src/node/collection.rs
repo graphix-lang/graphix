@@ -828,16 +828,19 @@ impl<R: Rt> MapQBase<R> {
         [&mut self.source, &mut self.prototype]
     }
 
-    /// The fused loop for a call site's intrinsic call.
+    /// The fused loop for a call site's intrinsic call; `recursion` is
+    /// the prototype call and the name of the recursion the slots call,
+    /// where the call names it bare.
     pub(crate) fn emit_clif_call(
         &self,
         callsite: &CallSite<R>,
+        recursion: Option<(&CallSite<R>, BindId)>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         let Some(source) = callsite.arg_positional(0) else {
             return Ok(None);
         };
-        // CR claude for claude: [perf/low] A collection call nested in its own
+        // XCR claude for claude: [perf/low] A collection call nested in its own
         // callback with the same callback does not fuse: in `let rec k = |n: i64|
         // -> i64 select n { 0 => 0, _ => n + array::fold(array::map([n - 1], k), 0,
         // |a, x| a + x) }`, `#[native] array::map([1, 2, 4], k)` is refused
@@ -861,8 +864,26 @@ impl<R: Rt> MapQBase<R> {
         // the bare program too (not discovered). probe:
         // ~/ptmp/cr29/scratch/review-r10/J-r1-1/m_two_holders.gx (eta:
         // m_two_holders_eta.gx).
+        // 2026-11-05 claude: Both gaps fuse now. A call sharing a collection instance
+        // the region runs around it emits that instance's loop
+        // (CallSite::shared_loop_callback; discovery keeps the region's collection
+        // instances, fusion::Loops, handed to emission as BodySpec::loops;
+        // BodyCx::shared_loop), its slots making the prototype's call of the
+        // recursion, which is the kernel's own call inside the recursion's kernel
+        // (BodyCx::loop_own_call); the analysis counts the shared instance as run
+        // inline in the call's holder. Loop prototype calls are recorded by prototype
+        // id and recursion binding (fusion::LambdaSites), so two recursions' loops in
+        // one region no longer collide. Pins that fail without it:
+        // lib_tests::tree_recursion::{bare_recursion_from_its_own_collection,
+        // bare_recursion_from_its_own_fold,
+        // bare_capturing_recursion_from_its_own_collection,
+        // bare_recursions_from_their_own_collections,
+        // bare_recursions_from_collection_callbacks} (jit, jit_par),
+        // shared_recursion_{children_deleted, frees_deleted_slots, sleeps_and_wakes}.
+        // A body fused without the outer collection in reach (an instance body alone)
+        // still node-walks the call.
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
-        let r = match callsite.recursion_callback() {
+        let r = match recursion {
             Some((call, name)) => self.emit_recursion(source, call, name, cx),
             None => self.emit(source, &callsite.spec, cx),
         };
@@ -1524,10 +1545,12 @@ impl<R: Rt> FoldQBase<R> {
         [&mut self.source, &mut self.init, &mut self.prototype]
     }
 
-    /// The fused loop for a call site's intrinsic call.
+    /// The fused loop for a call site's intrinsic call, as
+    /// [`MapQBase::emit_clif_call`]'s.
     pub(crate) fn emit_clif_call(
         &self,
         callsite: &CallSite<R>,
+        recursion: Option<(&CallSite<R>, BindId)>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         let (Some(source), Some(init)) =
@@ -1536,7 +1559,7 @@ impl<R: Rt> FoldQBase<R> {
             return Ok(None);
         };
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
-        let r = match callsite.recursion_callback() {
+        let r = match recursion {
             Some((call, name)) => self.emit_recursion(source, init, call, name, cx),
             None => self.emit(source, init, &callsite.spec, cx),
         };

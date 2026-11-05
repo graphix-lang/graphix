@@ -1674,9 +1674,11 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
         callsite: &CallSite<R>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
+        let recursion =
+            callsite.recursion_callback().or_else(|| callsite.shared_loop_callback(self));
         let res = match self.body.view() {
-            NodeView::MapQ(map) => map.emit_clif_call(callsite, cx)?,
-            NodeView::FoldQ(fold) => fold.emit_clif_call(callsite, cx)?,
+            NodeView::MapQ(map) => map.emit_clif_call(callsite, recursion, cx)?,
+            NodeView::FoldQ(fold) => fold.emit_clif_call(callsite, recursion, cx)?,
             _ => None,
         };
         // the loop emits the lambda's own return shape; a callsite widened

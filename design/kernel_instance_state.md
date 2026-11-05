@@ -253,17 +253,29 @@ JIT's root word must be the slot's, never one shared by the slots.
   counts the collection's own instance as run inline in the holder of
   its call (`inline_holders`) and takes the self binding from the
   collection call's argument (`recursion_names`); discovery records the
-  prototype under its id where the recursion is a holder or the region's
-  own; emission binds the element under the prototype's argument and
+  prototype under its id and that binding (`fusion::LambdaSites`), since
+  every instance of a collection shares its prototype's id, where the
+  recursion is a holder or the region's own; emission binds the element
+  under the prototype's argument and
   emits the prototype call, which `BodyCx::own_call` reads as named by
   that argument while the loop is built (`LowerCtx::recursion_call`).
   The node-walk is untouched: its slots call the definition the
   prototype resolved to (`CallKind::slot`).
-- **Not a bare callback.** A collection call nested in its own callback
-  with the same callback (`array::map([n - 1], k)` in `k` under
+- **A shared bare callback.** A collection call nested in its own
+  callback with the same callback (`array::map([n - 1], k)` in `k` under
   `array::map(xs, k)`) reaches the collection with the outer call's
-  identity: it is the outer collection instance's self-call, has no loop
-  of its own, and does not fuse (collection-self-identity-01).
+  identity: it is the outer collection instance's self-call and has no
+  loop of its own, while the outer instance's prototype holds the
+  recursion's instance. Discovery keeps the region's collection
+  instances (`fusion::Loops`), and the call runs the loop of the one it
+  shares (`CallSite::shared_loop_callback`), its slots making the
+  prototype's call of the recursion it names, as a bare callback's do;
+  the analysis counts that instance as run inline in the call's holder,
+  and the prototype's call, which holds its callee, is the kernel's own
+  call while the loop is built (`BodyCx::loop_own_call`). Emission reads
+  the instance from the region's loops by the call's static target
+  (`BodyCx::shared_loop`), so a body fused where the outer collection is
+  out of reach (an instance body of its own) does not fuse the call.
 
 ## What this is not
 

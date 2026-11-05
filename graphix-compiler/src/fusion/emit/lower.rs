@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     expr::ExprId,
     fusion::{
-        LambdaCallInfo,
+        LambdaCallInfo, LambdaSites,
         emit_helpers::{AbiTy, HelperSpec, all_helpers},
         kernel_abi::{self, KernelKey, KernelSig},
         lowering::{self, BuiltinCallSiteInfo},
@@ -186,6 +186,7 @@ pub(super) fn compile_into_function<'a>(
         kernel,
         builtin_apply_sites: spec.builtin_apply_sites,
         lambda_call_sites: spec.lambda_call_sites,
+        loops: spec.loops,
         self_call: callees.self_call,
         type_env: spec.type_env,
         frontend,
@@ -593,7 +594,9 @@ pub(crate) struct LowerCtx<'a> {
     /// Sync-builtin Apply sites by spec id.
     pub(super) builtin_apply_sites: &'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     /// Statically-resolved lambda call sites.
-    pub(super) lambda_call_sites: &'a nohash::IntMap<ExprId, LambdaCallInfo>,
+    pub(super) lambda_call_sites: &'a LambdaSites,
+    /// See [`super::body::BodySpec::loops`].
+    pub(super) loops: &'a super::body::ErasedLoops<'a>,
     /// Set when this kernel is a self-recursive lambda body.
     pub(super) self_call: Option<OwnCall<'a>>,
     /// Type-resolution env snapshot ([`resolve_node_typ`]).

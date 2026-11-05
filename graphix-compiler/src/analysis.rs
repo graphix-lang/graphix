@@ -62,7 +62,8 @@ struct StaticCallGraph<'a, R: Rt> {
     /// Each instance a fused loop runs inline, by the holder of its
     /// collection's call: a collection callback's, and a collection's
     /// own where its slots call a recursion by its bare name
-    /// (`recursion_names`).
+    /// (`recursion_names`), by the holder of its call or of a call that
+    /// shares its instance.
     inline_holders: LPooled<IntMap<LambdaInstanceId, Holder>>,
     /// The binding a collection's call names the recursion its slots call
     /// by, for each collection whose callback is that bare name
@@ -195,6 +196,14 @@ fn walk_static_graph<'a, R: Rt>(
             };
             if let Some(target) = site.static_target() {
                 graph.edges.push(StaticEdge { caller, callee: target.instance, site });
+                // a call sharing a loop's instance runs that loop inline,
+                // its slots calling the recursion it names bare
+                if let Some(g) = graph.instances.get(&target.instance).copied()
+                    && let Some((_, name)) = site.shared_loop_callback(g)
+                {
+                    graph.inline_holders.insert(target.instance, caller);
+                    graph.recursion_names.insert(target.instance, name);
+                }
             }
             let Some(ApplyView::Lambda(g)) = site.resolved_apply() else {
                 return;

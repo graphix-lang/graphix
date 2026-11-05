@@ -1836,6 +1836,35 @@ impl<R: Rt> CallSite<R> {
     /// and the binding this call names it by.
     pub(crate) fn recursion_callback(&self) -> Option<(&CallSite<R>, BindId)> {
         let Some(ApplyView::Lambda(g)) = self.resolved_apply() else { return None };
+        let (call, name) = self.loop_callback(g)?;
+        call.shares_instance().then_some((call, name))
+    }
+
+    /// Where this call shares `g`, a collection's instance whose
+    /// callback is the recursion this call names bare (`array::map(xs,
+    /// k)` in `k`, run by `array::map(ys, k)`): `g`'s prototype call,
+    /// which holds the recursion's instance, and the binding this call
+    /// names it by.
+    pub(crate) fn shared_loop_callback<'a>(
+        &'a self,
+        g: &'a GXLambda<R>,
+    ) -> Option<(&'a CallSite<R>, BindId)> {
+        let target = self.static_target.as_ref()?;
+        if !self.shares_instance() || target.instance != g.instance_id() {
+            return None;
+        }
+        let (call, name) = self.loop_callback(g)?;
+        matches!(call.resolved_apply(), Some(ApplyView::Lambda(_)))
+            .then_some((call, name))
+    }
+
+    /// The prototype call of the loop of `g`, a collection-bodied
+    /// instance, and the binding this call passes for the formal that
+    /// call makes its call through.
+    fn loop_callback<'a>(
+        &'a self,
+        g: &'a GXLambda<R>,
+    ) -> Option<(&'a CallSite<R>, BindId)> {
         let prototype = match g.body().view() {
             NodeView::MapQ(m) => &m.prototype,
             NodeView::FoldQ(f) => &f.prototype,
@@ -1843,9 +1872,6 @@ impl<R: Rt> CallSite<R> {
         };
         let NodeView::CallSite(call) = prototype.view() else { return None };
         let NodeView::Ref(formal) = call.fnode().view() else { return None };
-        if !call.shares_instance() {
-            return None;
-        }
         let key =
             ArgKey::of_formals(&g.typ().args).zip(g.args()).find_map(|(key, pat)| {
                 (pat.single_bind_id() == Some(formal.id)).then_some(key)
@@ -4266,6 +4292,9 @@ impl<R: Rt> CallSite<R> {
             // A resolved lambda callee is a cross-kernel call; an
             // undiscovered site de-fuses.
             if matches!(f.view(), ApplyView::Lambda(_)) {
+                if let Some(own) = cx.loop_own_call(self) {
+                    return emit_lambda_call_node(cx, self, Called::Own(own));
+                }
                 if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
                     return emit_lambda_call_node(cx, self, Called::Other(&info));
                 }
@@ -4278,6 +4307,11 @@ impl<R: Rt> CallSite<R> {
                     ),
                 ));
             }
+        }
+        if let Some(g) = cx.shared_loop(self)
+            && let Some(cv) = Apply::emit_clif(g, self, cx)?
+        {
+            return Ok(cv);
         }
         // A value-position self-call: `self.callee` is unresolved here.
         if let Some(own) = cx.own_call(self) {

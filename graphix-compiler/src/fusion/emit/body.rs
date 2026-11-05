@@ -5,15 +5,15 @@
 
 use super::lower::OwnCall;
 use crate::{
-    BindId, Node, NodeView, Rt, Update,
+    BindId, LambdaInstanceId, Node, NodeView, Rt, Update,
     env::Env,
     expr::{Expr, ExprId, ExprKind},
     fusion::{
-        LambdaCallInfo,
+        LambdaCallInfo, LambdaSites,
         kernel_abi::{self, AbiKind, KernelKey, PrimType},
         lowering::BuiltinCallSiteInfo,
     },
-    node::callsite::CallSite,
+    node::{callsite::CallSite, lambda::GXLambda},
     typ::Type,
 };
 use anyhow::{Result, anyhow, bail};
@@ -26,6 +26,7 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_module::DataId;
 use netidx_value::Value;
 use smallvec::SmallVec;
+use std::any::Any;
 
 use super::{
     abi::{
@@ -221,7 +222,7 @@ pub(super) struct BodySpec<'a> {
     /// `CallSite::emit_clif` lowers a registered site to a direct call.
     pub(super) builtin_apply_sites: &'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     /// Statically-resolved lambda call sites of the body being emitted.
-    pub(super) lambda_call_sites: &'a nohash::IntMap<ExprId, LambdaCallInfo>,
+    pub(super) lambda_call_sites: &'a LambdaSites,
     /// The environment for type resolution only: node `typ` cells can
     /// carry `Type::Ref`s that need `env.lookup_ref` before
     /// `abi_kind`/freeze can classify them. Never for binding lookups.
@@ -230,7 +231,12 @@ pub(super) struct BodySpec<'a> {
     /// This body's own formal ids for the kernel's (cached from another
     /// instance of the definition): old to new.
     pub(super) params: &'a [(BindId, BindId)],
+    /// The region's loops ([`crate::fusion::Loops`]), each a `GXLambda`.
+    pub(super) loops: &'a ErasedLoops<'a>,
 }
+
+/// [`crate::fusion::Loops`] with each instance's runtime type erased.
+pub(crate) type ErasedLoops<'a> = nohash::IntMap<LambdaInstanceId, &'a dyn Any>;
 
 /// The id a body binds the kernel parameter `id` under, by its
 /// [`BodySpec::params`].
@@ -507,7 +513,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             tables.push(SlotTable { site: *id, base: table, blocks: None });
             // a call site's callee blocks too, so an iteration only
             // indexes them
-            let layout = self.ctx.lambda_call_sites.get(id).and_then(|info| {
+            let layout = self.lambda_site(*id).and_then(|info| {
                 let callee = !std::ptr::eq(&*info.kernel, self.ctx.kernel);
                 callee.then(|| {
                     self.callee_site_layout(kernel_abi::kernel_key(&info.kernel))
@@ -772,9 +778,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         match self.ctx.self_call {
             Some(own) if own.bind == name => Some(own.info),
             _ => {
-                let sites: &'c nohash::IntMap<ExprId, LambdaCallInfo> =
-                    self.ctx.lambda_call_sites;
-                sites.get(&call.spec().id).filter(|info| info.self_call == Some(name))
+                let sites: &'c LambdaSites = self.ctx.lambda_call_sites;
+                sites
+                    .loop_call(call.spec().id, name)
+                    .filter(|info| info.self_call == Some(name))
             }
         }
     }
@@ -829,9 +836,15 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 
     /// The lambda call-site info for `id`, if `try_fuse`'s analysis
     /// registered one; `Some` means the callee kernel is declared in
-    /// this function's `callee_refs` and ready to `call`.
-    pub(crate) fn lambda_site(&self, id: ExprId) -> Option<&LambdaCallInfo> {
-        self.ctx.lambda_call_sites.get(&id)
+    /// this function's `callee_refs` and ready to `call`. The prototype
+    /// call of a loop under construction whose slots call a recursion by
+    /// its bare name is that recursion's.
+    pub(crate) fn lambda_site(&self, id: ExprId) -> Option<&'c LambdaCallInfo> {
+        let sites: &'c LambdaSites = self.ctx.lambda_call_sites;
+        match self.ctx.recursion_call.get() {
+            Some((call, name)) if call == id => sites.loop_call(id, name),
+            _ => sites.call(id),
+        }
     }
 
     /// The kernel's own self-call when `cs` makes it, emitting a
@@ -840,14 +853,32 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// function's Ref, and the prototype call of a loop under construction
     /// whose callback is a recursion's bare name by that name.
     pub(crate) fn own_call<R: Rt>(&self, cs: &CallSite<R>) -> Option<OwnCall<'c>> {
-        let name = match self.ctx.recursion_call.get() {
-            Some((id, name)) if id == cs.spec().id && cs.shares_instance() => Some(name),
-            _ => match cs.fnode().view() {
-                NodeView::Ref(r) => Some(r.id),
-                _ => None,
-            },
-        };
-        self.ctx.self_call.filter(|own| Some(own.bind) == name)
+        match (self.ctx.recursion_call.get(), cs.fnode().view()) {
+            (Some((id, _)), _) if id == cs.spec().id => self.loop_own_call(cs),
+            (_, NodeView::Ref(r)) => self.ctx.self_call.filter(|own| own.bind == r.id),
+            _ => None,
+        }
+    }
+
+    /// The kernel's own self-call where `cs` is the prototype call of a
+    /// loop under construction whose slots call this kernel's recursion
+    /// by its bare name.
+    pub(crate) fn loop_own_call<R: Rt>(&self, cs: &CallSite<R>) -> Option<OwnCall<'c>> {
+        match self.ctx.recursion_call.get() {
+            Some((id, name)) if id == cs.spec().id => {
+                self.ctx.self_call.filter(|own| own.bind == name)
+            }
+            _ => None,
+        }
+    }
+
+    /// The instance of the loop `cs` runs where it shares one the region
+    /// runs around it (`CallSite::shared_loop_callback`).
+    pub(crate) fn shared_loop<R: Rt>(&self, cs: &CallSite<R>) -> Option<&'c GXLambda<R>> {
+        let loops: &'c ErasedLoops<'c> = self.ctx.loops;
+        let g =
+            loops.get(&cs.static_target()?.instance)?.downcast_ref::<GXLambda<R>>()?;
+        cs.shared_loop_callback(g).is_some().then_some(g)
     }
 
     /// The kernel `cs` calls, where emission makes the call: its
@@ -857,13 +888,13 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         &self,
         cs: &CallSite<R>,
     ) -> Option<&'c LambdaCallInfo> {
-        let sites: &'c nohash::IntMap<ExprId, LambdaCallInfo> =
-            self.ctx.lambda_call_sites;
-        sites
-            .get(&cs.spec().id)
+        self.lambda_site(cs.spec().id)
             .or_else(|| self.own_call(cs).map(|own| own.info))
             .or_else(|| {
-                let (call, name) = cs.recursion_callback()?;
+                let (call, name) = match cs.recursion_callback() {
+                    Some(rc) => rc,
+                    None => cs.shared_loop_callback(self.shared_loop(cs)?)?,
+                };
                 self.recursion_kernel(call, name)
             })
     }
