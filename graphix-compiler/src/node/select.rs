@@ -2630,6 +2630,16 @@ impl Deciding {
 // deciding a part a pattern tests keeps main's message (the ruling names patterns); a cell held
 // only through a lower bound (undecided-lower-bound-01) and a decided cell inside a binding's
 // type (undecided-part-name-01) are new CRs, main sharing both.
+// 2026-11-05 claude: For Eric (rule question, not changed): the ruling's letter also refuses,
+// over an unannotated parameter, working programs main ran: exhaustive bool literals (true, _) /
+// (false, _); a literal beside a catch-all (a, 0) => a, (a, _) => a; irrefutable destructuring
+// ((a, b), _), ({a, b}, _), ([], _), a list head; an or-pattern (a, 0) | (_, a); an irrefutable
+// abstract pattern (W((p, q)), _) over (x, 0) with type W = Abstract<(i64, i64)> (names x); and
+// a cell no binding owns, an empty array literal's element in select (x, []) { (0, [`J]) => 1, _
+// => 2 } (the nameless message, annotate the scrutinee where it is built). A guard deciding the
+// same part passes. None is in the census of both repos. probes:
+// ~/ptmp/cr29/scratch/r16-U/review-fix/p/,
+// ~/ptmp/cr29/scratch/review-r16/U-r2-1/p/{e1,e8,e9}.gx.
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {

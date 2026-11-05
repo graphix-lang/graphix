@@ -1370,7 +1370,8 @@ cycle, across workers; the compiler never pins threads.
   (`Type::contains_holding`), so a part only names and `_` meet covers
   whatever it becomes, else where the cover decides them. What reaches
   the next arm (`Type::diff`) and `could_match` unfold a pair of
-  definitions (arguments ignored) once on a path; met again, diff
+  definitions (arguments ignored) once on a path, a pair with a side
+  that names no type (a pattern's) uncounted; met again, diff
   subtracts nothing and could_match answers an overlap
   (`setops::UNFOLDINGS`): a wider residual, so fewer dead arms are found
   and a missing case may be refused that `_` fixes. A partial

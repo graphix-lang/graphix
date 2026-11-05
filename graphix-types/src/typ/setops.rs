@@ -52,12 +52,34 @@ impl DiffHist {
 /// `None`: arguments and the types around them ignored.
 pub(super) type DefPair = (Option<usize>, Option<usize>);
 
-pub(super) fn def_pair(env: &Env, t0: &Type, t1: &Type) -> DefPair {
+/// The pair [`Unfoldings`] counts, none where a side names no type: that
+/// side shrinks at every step, so the walk ends without a bound.
+pub(super) fn def_pair(env: &Env, t0: &Type, t1: &Type) -> Option<DefPair> {
     let def = |t: &Type| match t {
         Type::Ref(tr) => tr.resolve_in(env).map(|r| r.def_key()),
         _ => None,
     };
-    (def(t0), def(t1))
+    (names_a_type(t0) && names_a_type(t1)).then(|| (def(t0), def(t1)))
+}
+
+fn names_a_type(t: &Type) -> bool {
+    fn go(t: &Type, seen: &mut AHashSet<(usize, bool)>) -> ControlFlow<()> {
+        ensure_sufficient(|| match t {
+            Type::Ref(_) => ControlFlow::Break(()),
+            Type::TVar(tv) if !seen.insert((tv.cell_addr(), true)) => {
+                ControlFlow::Continue(())
+            }
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => go(&b, seen),
+                None => ControlFlow::Continue(()),
+            },
+            t if node_addr(t).is_some_and(|n| !seen.insert((n, false))) => {
+                ControlFlow::Continue(())
+            }
+            t => t.try_for_each_child(&mut |c| go(c, seen)),
+        })
+    }
+    go(t, &mut LPooled::take()).is_break()
 }
 
 /// How many unfoldings of one pair of definitions a walk's path may
@@ -76,19 +98,21 @@ pub(super) struct Unfoldings(LPooled<AHashMap<DefPair, SmallVec<[RefPair; 1]>>>)
 impl Unfoldings {
     /// The innermost pair in progress of `defs` when the walk has unfolded
     /// it [`UNFOLDINGS`] times.
-    pub(super) fn again(&self, defs: &DefPair) -> Option<RefPair> {
+    pub(super) fn again(&self, defs: Option<DefPair>) -> Option<RefPair> {
         self.0
-            .get(defs)
+            .get(&defs?)
             .filter(|ks| ks.len() >= UNFOLDINGS)
             .and_then(|ks| ks.last().copied())
     }
 
-    pub(super) fn enter(&mut self, defs: DefPair, key: RefPair) {
-        self.0.entry(defs).or_default().push(key)
+    pub(super) fn enter(&mut self, defs: Option<DefPair>, key: RefPair) {
+        if let Some(defs) = defs {
+            self.0.entry(defs).or_default().push(key)
+        }
     }
 
-    pub(super) fn leave(&mut self, defs: &DefPair) {
-        if let Some(ks) = self.0.get_mut(defs) {
+    pub(super) fn leave(&mut self, defs: Option<DefPair>) {
+        if let Some(ks) = defs.and_then(|defs| self.0.get_mut(&defs)) {
             ks.pop();
         }
     }
@@ -638,7 +662,7 @@ impl Type {
         Ok(out)
     }
 
-    // CR claude for claude: [bug/medium] diff does not end over some names that recur
+    // CR claude for eric: [bug/medium] diff does not end over some names that recur
     // through Error payloads: main bbb06c0c6's --check of `type At = [Error<Bt>,
     // Error<Ct>, `R]; type Bt = [Error<At>, `P]; type Ct = [Array<Ct>, Error<Bt>]; type H
     // = [Error<Error<K>>, `Q]; type K = [Error<H>, Error<K>, `P]; let v: At = `R; select
@@ -715,6 +739,19 @@ impl Type {
     // commit stands for what it pins (mainhang, rnd13, grow5, the lcm chains). Evidence:
     // ~/ptmp/cr29/scratch/review-r16/U-r1-2/ (rv_tests.rs, rv-k123.txt),
     // ~/ptmp/cr29/scratch/r16-U/review-fix/memo-cut-experiment.txt.
+    // 2026-11-05 claude: Review r16 re-review (U-r2-2) found the k = 1 key cut finite patterns: def_pair keyed a
+    // side that is no named type as None, so a pattern met against the scrutinee's definition a second time on a
+    // path answered an overlap (could_match) or subtracted nothing (diff), where main keys that side by its
+    // content and ends because it shrinks. l3, l5, t1, t2, e2 (a misspelled tag two levels deep over a list, tree
+    // or expression type) were accepted and e1 refused for a missing case. Fixed: def_pair counts no pair where a
+    // side names no type (setops::names_a_type). Pins (each fails without the fix, in all four modes):
+    // lang::select::{misspelled_tag_deep_in_a_list_pattern_refused,
+    // misspelled_tag_deep_in_a_tree_pattern_refused, impossible_error_nesting_in_a_type_test_refused,
+    // nested_error_tests_cover_a_recursive_scrutinee}. Generated 1600 against base-r16: 0 accepted refused; 18
+    // dead-arm refusals accepted, 13 become missing-case (were 21 and 17; c48, c142, r256 refused again as main
+    // refuses them); timeouts 53 -> 2 as before. The builder's 54 families keep every verdict and message. Still
+    // open, unchanged: the exponential path count over branching recursive unions (the U-r1-2 note above), which
+    // needs a rule beyond the ruling's bound; readdressed to eric for that.
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
@@ -740,7 +777,7 @@ impl Type {
                 // a pair met again inside its own difference subtracts
                 // nothing: assuming it covered would drop what it did not
                 let defs = def_pair(env, t0, t1);
-                if hist.unfoldings.again(&defs).is_some() {
+                if hist.unfoldings.again(defs).is_some() {
                     hist.cycled = true;
                     return Ok(self.clone());
                 }
@@ -752,7 +789,7 @@ impl Type {
                 hist.unfoldings.enter(defs, key);
                 let outer = mem::replace(&mut hist.cycled, false);
                 let r = t0.diff_int(env, hist, &t1);
-                hist.unfoldings.leave(&defs);
+                hist.unfoldings.leave(defs);
                 hist.hist.remove(&key);
                 let cycled = mem::replace(&mut hist.cycled, outer);
                 hist.cycled |= cycled;
@@ -1060,6 +1097,15 @@ impl Type {
     // (arr-5.gx; arr-4.gx ends at 86.2G instructions on base, 86.3G on the lane).
     // probes: ~/ptmp/cr29/scratch/r16-U/review-fix/fam/ (mk.py writes them),
     // ~/ptmp/cr29/scratch/review-r16/U-r1-2/fam/.
+    // 2026-11-05 claude: Review r16 re-review (U-r2-2) adds shapes on the same path
+    // (set_covers_by_distribution about 77% of the profile, diff and could_match
+    // under 1%): a union scrutinee over two branching Error families (w2u), shared
+    // tags (w2s), and an arrays-only family selected with a capture or with as _
+    // alike (arr, arrs), so the capture does not trigger it. n = 2 ends; n = 3 ends
+    // at 13-29G instructions (arr-4 86G); every n >= 4 (arr: n >= 5) is killed at 60
+    // s, on lane U and on base-r16. probes:
+    // ~/ptmp/cr29/scratch/review-r16/U-r2-2/fam/*-4-u.gx (mk.py KIND n CAP),
+    // head-fam.txt.
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
         let refs = LPooled::take();
         let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: false };

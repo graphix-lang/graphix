@@ -527,7 +527,7 @@ impl Type {
                 let defs = def_pair(env, t0, t1);
                 let again = match hist.hist.contains_key(&key) {
                     true => Some(key),
-                    false => hist.unfoldings.again(&defs),
+                    false => hist.unfoldings.again(defs),
                 };
                 if let Some(again) = again
                     && let Some(node) = hist.hist.get_mut(&again)
@@ -547,7 +547,7 @@ impl Type {
                 hist.insert(key, NO_NODE);
                 hist.unfoldings.enter(defs, key);
                 let r = t0.could_match_int(env, hist, &t1);
-                hist.unfoldings.leave(&defs);
+                hist.unfoldings.leave(defs);
                 let node = hist.remove(&key).unwrap_or(NO_NODE);
                 match r {
                     Ok(true) if node == NO_NODE => {

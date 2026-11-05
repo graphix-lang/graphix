@@ -678,7 +678,10 @@ the minuend), could_match answers an overlap that rests on the pair in
 progress (`Rests`). The pair is keyed by its two definitions, arguments
 and the type on a side that names none ignored (`setops::DefPair`), and a
 path may hold `setops::UNFOLDINGS` (one) unfoldings of a pair
-(`Unfoldings`): keyed by the types themselves, a walk that subtracts a
+(`Unfoldings`). A pair whose side names no type at all (a pattern written
+as a type, `` `Cons(_, `Cons(_, `Nul)) ``) is not counted: that side
+shrinks at every step, so the walk ends, and a tag it cannot hold is found
+dead however deep it sits. Keyed by the types themselves, a walk that subtracts a
 union member by member, or a definition whose parameters grow as it
 recurses, meets a new key at every level and does not end, and the exact
 difference over Error cycles of coprime lengths repeats only after their
@@ -687,7 +690,7 @@ fewer dead arms are found, a missing case may be refused that a `_` arm
 fixes, a later arm's bind is wider. One unfolding was chosen from the
 1600 generated selects (review-r8 X-r1-1): 51 of main's 53 timeouts end
 (the other two are in matching_type's containment); of those main
-finishes, 24 dead-arm refusals become accepted and 17 become missing-case
+finishes, 18 dead-arm refusals become accepted and 13 become missing-case
 refusals, none accepted is refused; two unfoldings move 5 and 5, three 3
 and 0, but a generated select (rnd13) costs 0.9G, 10.7G and 532G
 instructions at one, two and three. Over Error cycles of coprime lengths

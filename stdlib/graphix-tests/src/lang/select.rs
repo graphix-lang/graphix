@@ -7747,3 +7747,63 @@ run!(
     refused("pattern Error<Error<`Mm>> will never match");
     FuseExpect::None
 );
+
+// A pattern written as a type is finite: a tag it cannot hold, however deep
+// in a recursive scrutinee, is found dead.
+run!(
+    misspelled_tag_deep_in_a_list_pattern_refused,
+    r#"{
+        type L = [`Cons(i64, L), `Nil];
+        let x: L = `Cons(1, `Cons(2, `Nil));
+        select x {
+            `Nil => 0,
+            `Cons(a, `Nil) => a,
+            `Cons(a, `Cons(b, `Nul)) => a + b,
+            `Cons(a, _) => a
+        }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+run!(
+    misspelled_tag_deep_in_a_tree_pattern_refused,
+    r#"{
+        type Tree = [`Leaf(i64), `Node(Tree, Tree)];
+        let x: Tree = `Node(`Leaf(1), `Leaf(2));
+        select x {
+            `Leaf(n) => n,
+            `Node(`Leaf(a), `Node(`Lef(b), _)) => a + b,
+            `Node(_, _) => 0
+        }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+run!(
+    impossible_error_nesting_in_a_type_test_refused,
+    r#"{
+        type T = [Error<T>, `A];
+        let x: T = `A;
+        select x { Error<Error<`B>> as e => 3, _ => 1 }
+    }"#,
+    refused("pattern Error<Error<`B>> will never match");
+    FuseExpect::None
+);
+
+run!(
+    nested_error_tests_cover_a_recursive_scrutinee,
+    r#"{
+        type T = [Error<T>, `A];
+        let x: T = error(error(`A));
+        select x {
+            Error<Error<`A>> as e => 3,
+            `A => 1,
+            Error<`A> as e => 2,
+            Error<Error<Error<T>>> as e => 4
+        }
+    }"#,
+    is(Value::I64(3));
+    FuseExpect::Jit
+);
