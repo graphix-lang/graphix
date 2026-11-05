@@ -479,8 +479,7 @@ thread_local! {
     static TASK: std::cell::Cell<TaskId> = const { std::cell::Cell::new(TaskId::OUTSIDE) };
     /// The compile task whose foreign writes this thread records
     /// ([`OwnWrites`]).
-    static OWN_WRITES: std::cell::Cell<Option<Record>> =
-        const { std::cell::Cell::new(None) };
+    static OWN_WRITES: RefCell<Option<Record>> = const { RefCell::new(None) };
 }
 
 /// A concurrent compile task: one started later is greater.
@@ -567,7 +566,7 @@ impl TaskContext {
         InContext {
             task: TASK.replace(self.task),
             level: LEVEL.replace(self.level),
-            own: OWN_WRITES.replace(None),
+            own: OWN_WRITES.take(),
         }
     }
 }
@@ -586,7 +585,7 @@ impl Drop for InContext {
     fn drop(&mut self) {
         TASK.set(self.task);
         LEVEL.set(self.level);
-        OWN_WRITES.set(self.own);
+        OWN_WRITES.set(self.own.take());
     }
 }
 
@@ -625,31 +624,44 @@ fn cell_addr(cell: &TCell) -> usize {
 /// recorded and not made: every module of a run that would make it is
 /// refused, whatever order they ran in, and none sees another's.
 pub(super) fn decided(cell: &TCell) -> bool {
-    decided_of(cell.task, "cell", Some(cell_addr(cell)))
+    decided_of(cell.task, "cell", Some(cell_addr(cell)), || None)
 }
 
-fn decided_of(owner: TaskId, what: &str, cell: Option<usize>) -> bool {
+/// [`decided`], where the decision would make the cell `would`.
+pub(super) fn decided_as(cell: &TCell, would: &Type) -> bool {
+    decided_of(cell.task, "cell", Some(cell_addr(cell)), || Some(would.clone()))
+}
+
+fn decided_of(
+    owner: TaskId,
+    what: &str,
+    cell: Option<usize>,
+    would: impl FnOnce() -> Option<Type>,
+) -> bool {
     if owner >= TASK.get() {
         return true;
     }
-    foreign_write(owner, what, cell);
-    !OWN_WRITES.get().is_some_and(|r| r.task == TASK.get())
+    foreign_write(owner, what, cell, would);
+    !OWN_WRITES.with_borrow(|r| r.as_ref().is_some_and(|r| r.task == TASK.get()))
 }
 
 fn written_of(owner: TaskId, what: &str, cell: Option<usize>) {
     if owner < TASK.get() {
-        foreign_write(owner, what, cell)
+        foreign_write(owner, what, cell, || None)
     }
 }
 
+/// The most cells a refusal names.
+const MAX_FOREIGN: usize = 3;
+
 /// A compile task's record of its writes outside itself ([`OwnWrites`]).
-#[derive(Clone, Copy)]
 struct Record {
     task: TaskId,
     /// The task is a top-level input's ([`OwnWrites::enter_input`]).
     input: bool,
-    /// The first write it made outside itself.
-    first: Option<ForeignWrite>,
+    /// The cells it wrote outside itself, in the order it first wrote
+    /// them, or the one write that was no cell's.
+    foreign: SmallVec<[ForeignWrite; MAX_FOREIGN]>,
 }
 
 /// While this lives, record whether the running compile task changes a
@@ -662,20 +674,36 @@ pub struct OwnWrites(Option<Record>);
 impl OwnWrites {
     #[doc(hidden)]
     pub fn enter(task: TaskId) -> Self {
-        Self(OWN_WRITES.replace(Some(Record { task, input: false, first: None })))
+        Self(OWN_WRITES.replace(Some(Record {
+            task,
+            input: false,
+            foreign: SmallVec::new(),
+        })))
     }
 
     /// [`Self::enter`] for a top-level input's task (a REPL input, a
     /// script, a dynamic load): see [`in_input`].
     #[doc(hidden)]
     pub fn enter_input(task: TaskId) -> Self {
-        Self(OWN_WRITES.replace(Some(Record { task, input: true, first: None })))
+        Self(OWN_WRITES.replace(Some(Record {
+            task,
+            input: true,
+            foreign: SmallVec::new(),
+        })))
     }
 
     /// The first write the task made outside itself.
     #[doc(hidden)]
     pub fn foreign(&self) -> Option<ForeignWrite> {
-        OWN_WRITES.get().and_then(|r| r.first)
+        OWN_WRITES.with_borrow(|r| r.as_ref().and_then(|r| r.foreign.first().cloned()))
+    }
+
+    /// The cells the task wrote outside itself, at most [`MAX_FOREIGN`],
+    /// in the order it first wrote them.
+    #[doc(hidden)]
+    pub fn foreigns(&self) -> SmallVec<[ForeignWrite; MAX_FOREIGN]> {
+        OWN_WRITES
+            .with_borrow(|r| r.as_ref().map(|r| r.foreign.clone()).unwrap_or_default())
     }
 }
 
@@ -684,15 +712,18 @@ impl OwnWrites {
 /// is one type, compared as itself and never as a fresh copy, so a
 /// decision about it is recorded and not made.
 pub(super) fn in_input() -> bool {
-    OWN_WRITES.get().is_some_and(|r| r.input && r.task == TASK.get())
+    OWN_WRITES
+        .with_borrow(|r| r.as_ref().is_some_and(|r| r.input && r.task == TASK.get()))
 }
 
 /// A compile task's write to what an earlier task created: the cell, when
 /// it was one.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 #[doc(hidden)]
 pub struct ForeignWrite {
     cell: Option<usize>,
+    /// What the write would have made the cell, where the write said.
+    would: Option<Type>,
 }
 
 impl ForeignWrite {
@@ -701,22 +732,53 @@ impl ForeignWrite {
     pub fn held_by(&self, t: &Type) -> bool {
         self.cell.is_some_and(|c| t.holds_cell(c))
     }
+
+    /// `t` with the cell written made what the write would have made it:
+    /// the type to declare for a binding holding it. `None` where the
+    /// write did not say, or what it would have made is itself open.
+    #[doc(hidden)]
+    pub fn declared(&self, t: &Type) -> Option<Type> {
+        let (cell, would) = (self.cell?, self.would.as_ref()?);
+        let would = would.deref_cloned()?;
+        t.with_cell_as(cell, &would)
+    }
 }
 
 impl Drop for OwnWrites {
     fn drop(&mut self) {
-        OWN_WRITES.set(self.0)
+        OWN_WRITES.set(self.0.take());
     }
 }
 
 #[cold]
-fn foreign_write(owner: TaskId, what: &str, cell: Option<usize>) {
-    if let Some(r) = OWN_WRITES.get()
-        && r.task == TASK.get()
-        && r.first.is_none_or(|f| f.cell.is_none() && cell.is_some())
-    {
-        OWN_WRITES.set(Some(Record { first: Some(ForeignWrite { cell }), ..r }))
-    }
+fn foreign_write(
+    owner: TaskId,
+    what: &str,
+    cell: Option<usize>,
+    would: impl FnOnce() -> Option<Type>,
+) {
+    OWN_WRITES.with_borrow_mut(|r| {
+        let Some(r) = r.as_mut().filter(|r| r.task == TASK.get()) else {
+            return;
+        };
+        match r.foreign.iter_mut().find(|f| cell.is_some() && f.cell == cell) {
+            Some(f) => {
+                if f.would.is_none() {
+                    f.would = would()
+                }
+            }
+            None => {
+                if r.foreign.len() == 1 && r.foreign[0].cell.is_none() && cell.is_some() {
+                    r.foreign.clear()
+                }
+                if r.foreign.len() < MAX_FOREIGN
+                    && (cell.is_some() || r.foreign.is_empty())
+                {
+                    r.foreign.push(ForeignWrite { cell, would: would() })
+                }
+            }
+        }
+    });
     if crate::dbgenv::graphix_task_audit() {
         eprintln!(
             "FOREIGN-WRITE by task {} to a {what} of task {owner}\n{}",
@@ -1751,7 +1813,7 @@ impl TVar {
         lower(&t, self.level());
         let cell = self.cell();
         let mut c = cell.write();
-        if decided(&c) {
+        if decided_as(&c, &t) {
             if reaching && c.binding.is_some() {
                 bound_cell_changes();
             }
@@ -1823,7 +1885,7 @@ impl TVar {
         require_bounds(&self.cell_constraints(), &t);
         lower(&t, cell.read().level);
         let mut c = cell.write();
-        if decided(&c) {
+        if decided_as(&c, &t) {
             if c.binding.is_some() {
                 bound_cell_changes();
             }
@@ -2024,10 +2086,12 @@ impl TVar {
             let s_task = s_cell.read().task;
             let o_task = o_cell.read().task;
             let var_task = self.read().task;
-            if !decided_of(s_task, "cell", Some(s_cell.data_ptr().addr()))
+            let into = || Some(Type::TVar(other.clone()));
+            let from = || Some(Type::TVar(self.clone()));
+            if !decided_of(s_task, "cell", Some(s_cell.data_ptr().addr()), into)
                 || (!to_add.is_empty()
-                    && !decided_of(o_task, "cell", Some(o_cell.data_ptr().addr())))
-                || !decided_of(var_task, "var", None)
+                    && !decided_of(o_task, "cell", Some(o_cell.data_ptr().addr()), from))
+                || !decided_of(var_task, "var", None, || None)
             {
                 return;
             }
@@ -2095,7 +2159,8 @@ impl TVar {
         };
         let renamed = {
             let mut l = self.write();
-            let renamed = l.frozen && l.id != id && decided_of(l.task, "var", None);
+            let renamed =
+                l.frozen && l.id != id && decided_of(l.task, "var", None, || None);
             if renamed {
                 l.frozen = false;
             }
@@ -2118,7 +2183,7 @@ impl TVar {
 
     pub fn freeze(&self) {
         let mut l = self.write();
-        if !l.frozen && !decided_of(l.task, "var", None) {
+        if !l.frozen && !decided_of(l.task, "var", None, || None) {
             return;
         }
         l.frozen = true;
@@ -2193,7 +2258,7 @@ impl TVar {
         }
         let cons = {
             let mut sc = s_cell.write();
-            if !decided(&sc) {
+            if !decided_as(&sc, &binding) {
                 return;
             }
             if sc.binding.is_some() {
@@ -3146,6 +3211,19 @@ impl Type {
             })
         }
         go(self, level, &mut SmallVec::new(), &mut LPooled::take())
+    }
+
+    /// This type with the cell at `addr` replaced by `with`, bound cells
+    /// looked through; `None` where it holds none such.
+    fn with_cell_as(&self, addr: usize, with: &Type) -> Option<Type> {
+        fn go(t: &Type, addr: usize, with: &Type) -> Option<Type> {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) if tv.cell_addr() == addr => Some(with.clone()),
+                Type::TVar(tv) => tv.binding().and_then(|b| go(&b, addr, with)),
+                t => t.cow_children(&mut |c| go(c, addr, with)),
+            })
+        }
+        go(self, addr, with)
     }
 
     /// Whether the cell at `addr` ([`ForeignWrite`]) is one of this type's,
@@ -4247,6 +4325,35 @@ mod tests {
         assert!(!older.is_bound(), "a decision about an earlier task's cell is not made");
         assert!(w.held_by(&Type::Tuple(Arc::from_iter([Type::TVar(older.clone())]))));
         assert!(!w.held_by(&Type::TVar(old.clone())), "the write names its own cell");
+    }
+
+    /// A task's decisions about earlier cells are recorded, each once with
+    /// what it would have made the cell, and the type holding a cell is
+    /// declared with that.
+    #[test]
+    fn foreign_decisions_record_what_they_would_make() {
+        let i64 = Type::Primitive(netidx_value::Typ::I64.into());
+        let string = Type::Primitive(netidx_value::Typ::String.into());
+        let (a, b) = (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("b")));
+        let module = new_task();
+        let _task = InTask::enter(module);
+        let writes = OwnWrites::enter_input(module);
+        a.bind(i64.clone());
+        a.bind(string.clone());
+        b.add_lower(string.clone());
+        assert!(!a.is_bound() && !b.is_bound());
+        let all = writes.foreigns();
+        assert_eq!(all.len(), 2, "one record per cell");
+        let held =
+            Type::Tuple(Arc::from_iter([Type::TVar(a.clone()), Type::TVar(b.clone())]));
+        let declared = all[0].declared(&held).expect("a's write said what it would make");
+        let Type::Tuple(parts) = &declared else { panic!() };
+        assert_eq!(parts[0], i64, "the first decision about a cell is the one kept");
+        assert!(matches!(&parts[1], Type::TVar(v) if v.same_cell(&b)));
+        assert!(
+            all[1].declared(&Type::TVar(a.clone())).is_none(),
+            "b's cell is not held"
+        );
     }
 
     /// A copy knows what the source's checks learned of each cell.

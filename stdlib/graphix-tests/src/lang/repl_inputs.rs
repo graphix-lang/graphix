@@ -257,7 +257,8 @@ const SETF: &str =
 #[tokio::test(flavor = "current_thread")]
 async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
     const DECIDES_J: &str = "this input would decide a type of an earlier input: \
-                             annotate `j` (line 1, column 5 in `let j = s.g`)";
+                             annotate `j` (line 1, column 5 in `let j = s.g`) as \
+                             `fn(x: i64) -> i64`";
     session(&[
         Accept("let s = {g: 'a: Number |x: 'a| -> 'a x + x}"),
         Accept("let j = s.g"),
@@ -281,6 +282,42 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
              column 5 in `let fs = [g, g]`)",
         ),
         Produce("fs[1]$(1.5, 2.5)", Value::F64(4.0)),
+    ])
+    .await
+}
+
+/// The refusal names the type to declare, and only the binding the cell
+/// came from: a binding derived from it (a reference, a copy) would decide
+/// the cell again under its own annotation.
+#[tokio::test(flavor = "current_thread")]
+async fn refusal_names_the_declaration_of_the_origin() -> Result<()> {
+    session(&[
+        Accept("let s = {g: |x| x}"),
+        Accept("let j = s.g"),
+        Accept("let r = &j"),
+        Accept("let (k, w) = { let a = s.g; (a, |f| { a <- f; null }) }"),
+        RefuseEnding(
+            "array::map([\"a\"], j)",
+            "annotate `j` (line 1, column 5 in `let j = s.g`) as \
+             `fn(x: string) -> string`",
+        ),
+        RefuseEnding(
+            "let z: fn(x: i64) -> i64 = k",
+            "annotate `a` (line 1, column 20 in `let (k, w) = { let a = s.g; (a, |f| { a ..`) \
+             as `fn(x: i64) -> i64`",
+        ),
+        Produce("j(1)", Value::I64(1)),
+    ])
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn annotated_origin_takes_the_declared_use() -> Result<()> {
+    session(&[
+        Accept("let s = {g: |x| x}"),
+        Accept("let j: fn(x: string) -> string = s.g"),
+        Accept("let r = &j"),
+        Produce("array::map([\"a\"], j)[0]", Value::String(arcstr::literal!("a"))),
     ])
     .await
 }
@@ -340,8 +377,8 @@ async fn write_through_a_reference_decides_no_earlier_type() -> Result<()> {
         Refuse(
             "setf(r)",
             "this input would decide a type of an earlier input: annotate `j0` (line 1, \
-             column 20 in `let (j, r) = { let j0 = s.g; (j0, &mut j..`), `j` (line 1, \
-             column 6",
+             column 20 in `let (j, r) = { let j0 = s.g; (j0, &mut j..`) as `fn(x: i64) -> \
+             i64`",
         ),
         Refuse(
             "{ let r2 = r; *r2 <- |x: i64| -> i64 x + 1; null }",
@@ -407,7 +444,7 @@ async fn refused_input_decides_no_earlier_open_cell() -> Result<()> {
             Refuse(
                 "let z: fn(x: i64) -> i64 = m::k",
                 "this input would decide a type of an earlier input: annotate `k` (line 1, \
-                 column 5 in module /m), `j` (line 2, column 5 in module /m)",
+                 column 5 in module /m) as `fn(x: i64) -> i64`",
             ),
             Refuse(
                 "let z: fn(x: i64) -> i64 = m::j",
@@ -665,7 +702,8 @@ async fn load_decides_no_earlier_open_cell() -> Result<()> {
             ProduceText(
                 STATUS,
                 "this input would decide a type of an earlier input: annotate `y` (line \
-                 1, column 15 in `let p = { let y = never(); let g = |x| {..`), `g`",
+                 1, column 15 in `let p = { let y = never(); let g = |x| {..`) as \
+                 `Array<W<string>>`",
             ),
             Accept("let s = {g: |x| x}"),
             Accept("mod m"),
@@ -701,6 +739,30 @@ async fn load_decides_no_earlier_open_cell() -> Result<()> {
             ),
         ],
     )
+    .await
+}
+
+/// A load that would decide several earlier cells names each, with the
+/// type it would have given it.
+#[tokio::test(flavor = "current_thread")]
+async fn load_names_every_cell_it_would_decide() -> Result<()> {
+    session(&[
+        Accept("let s = {g: |x| x}"),
+        Accept("let j = s.g"),
+        Accept("let k = s.g"),
+        Accept(
+            r#"let st = mod d dynamic {
+                sandbox unrestricted;
+                sig { val z: fn(x: i64) -> i64 };
+                source "let z: fn(x: i64) -> i64 = super::j; let kk: fn(x: string) -> string = super::k"
+            }"#,
+        ),
+        ProduceText(
+            STATUS,
+            "annotate `j` (line 1, column 5 in `let j = s.g`) as `fn(x: i64) -> i64`, \
+             `k` (line 1, column 5 in `let k = s.g`) as `fn(x: string) -> string`",
+        ),
+    ])
     .await
 }
 

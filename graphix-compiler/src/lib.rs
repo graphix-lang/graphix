@@ -4322,7 +4322,7 @@ fn compile_top<R: Rt>(
     Ok((node, out_scope))
 }
 
-// CR claude for claude: [readability/low] An input's refusal over an earlier input's cell
+// XCR claude for claude: [readability/low] An input's refusal over an earlier input's cell
 // names bindings but never the type to declare ("this input would decide a type of an
 // earlier input: annotate `j` (line 1, column 5 in `let j = s.g`)"): OwnWrites records only
 // the cell that would be decided, not what it would have become. It also names bindings
@@ -4332,6 +4332,17 @@ fn compile_top<R: Rt>(
 // it as the declaration, and name only bindings whose written type holds the cell. Review
 // r14 D-r4-1. probe: ~/ptmp/cr29/scratch/review-r14/D-r4-1/{all/review-r14_D-r2-1__g1.txt,
 // new/rl1.txt} (./r.sh lane FILE) (input-refusal-type-01)
+// 2026-11-05 claude: An input's refusal over an earlier input's cell now names, for each cell
+// it would decide (up to three, so a load names every one), the first binding that holds it
+// (where the cell came from; a binding derived from it, as r from &j, would decide it again
+// under its own annotation) and the type it would take: annotate `j` (...) as `fn(x: i64) ->
+// i64`. OwnWrites records the would-be type beside each cell (ForeignWrite::declared). Pins
+// that fail without it: lang::repl_inputs::{refusal_names_the_declaration_of_the_origin,
+// load_names_every_cell_it_would_decide, earlier_value_is_decided_by_no_later_use,
+// write_through_a_reference_decides_no_earlier_type,
+// refused_input_decides_no_earlier_open_cell, load_decides_no_earlier_open_cell} and the tvar
+// unit test foreign_decisions_record_what_they_would_make. Needs no soak (message text only;
+// decisions unchanged). Judged: the first holder by binding id is the origin.
 /// A top-level input while it compiles: a REPL input, a script or a
 /// dynamic module's load. It is a compile task of its own: what an
 /// earlier input made reads as decided, and a decision about it is not
@@ -4386,34 +4397,49 @@ impl Input {
     }
 
     fn earlier_decision<R: Rt>(&self, ctx: &CompileCtx<R>) -> Option<CompactString> {
-        let w = self.writes.foreign()?;
-        Some(format_compact!(
-            "this input would decide a type of an earlier input: {}",
-            earlier_binds(ctx, self.since, &w)
-        ))
+        let writes = self.writes.foreigns();
+        (!writes.is_empty()).then(|| {
+            format_compact!(
+                "this input would decide a type of an earlier input: {}",
+                earlier_binds(ctx, self.since, &writes)
+            )
+        })
     }
 }
 
-/// The bindings an earlier input made (ids below `since`) whose types
-/// hold what `w` wrote, as the declarations to annotate.
+/// The declarations that lift a refusal: for each cell `writes` would have
+/// decided, the first binding an earlier input (ids below `since`) made
+/// whose type holds it, which is where the cell came from, with the type it
+/// would have taken. A later binding holding the cell derives it, and its
+/// annotation would decide the cell again.
 fn earlier_binds<R: Rt>(
     ctx: &CompileCtx<R>,
     since: BindId,
-    w: &typ::tvar::ForeignWrite,
+    writes: &[typ::tvar::ForeignWrite],
 ) -> CompactString {
     use std::fmt::Write;
-    let mut held: LPooled<Vec<&Arc<env::Bind>>> = ctx
-        .env
-        .by_id
-        .iter()
-        .map(|(_, b)| b)
-        .filter(|b| b.id < since && annotatable(b) && w.held_by(&b.typ))
-        .collect();
-    held.sort_unstable_by_key(|b| b.id);
     let mut out = CompactString::new("");
-    for (i, b) in held.iter().take(3).enumerate() {
-        let sep = if i == 0 { "annotate " } else { ", " };
+    let mut named: SmallVec<[BindId; 3]> = SmallVec::new();
+    for w in writes {
+        let origin = ctx
+            .env
+            .by_id
+            .iter()
+            .map(|(_, b)| b)
+            .filter(|b| b.id < since && annotatable(b) && w.held_by(&b.typ))
+            .min_by_key(|b| b.id);
+        let Some(b) = origin else { continue };
+        if named.contains(&b.id) {
+            continue;
+        }
+        named.push(b.id);
+        let sep = if out.is_empty() { "annotate " } else { ", " };
         let _ = write!(out, "{sep}`{}` ({})", b.name, typ::tvar::BoundAt(b, None));
+        if let Some(t) = w.declared(&b.typ) {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                let _ = write!(out, " as `{t}`");
+            });
+        }
     }
     if out.is_empty() {
         out.push_str("annotate the binding it decides");

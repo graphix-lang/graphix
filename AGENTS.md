@@ -373,8 +373,9 @@ where nothing bounds it, and is `CellFact::Settled`
 (`typ::settle::settle_input`); what an earlier input left open, a
 function type's own quantifier included (a call still copies that), is
 one type to a later input, whose decision about it is refused and not
-made, naming the bindings that hold it (`OwnWrites::enter_input`,
-`tvar::in_input`); a cell below a settled ⊥ is linked to it, so a later
+made, naming, for each cell it would decide (three at most), the first
+binding that holds it and the type it would take (`OwnWrites::enter_input`,
+`tvar::in_input`, `ForeignWrite::declared`); a cell below a settled ⊥ is linked to it, so a later
 function's write to an earlier binding is held to its type, and a
 refusal a settled ⊥ causes names the binding that holds it
 (`typ::tvar::settled_note`); a load reopens nothing settled
