@@ -2185,6 +2185,30 @@ run!(
 ; FuseExpect::None);
 
 run!(
+    write_through_a_typedef_of_two_functions_val_as_general,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; let result = (m::c.f(1), m::c.g(\"s\"))",
+    "/test/m.gxi" => "type S<'a> = {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a}; val c: S<'a>",
+    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+; FuseExpect::None);
+
+run!(
+    write_through_a_typedef_of_two_typedefs_val_as_general,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; let result = (m::c.f(1), m::c.g(\"s\"))",
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; type S<'a> = {f: F<'a>, g: F<'a>}; val c: S<'a>",
+    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+; FuseExpect::None);
+
+run!(
+    write_through_a_recursive_typedef_of_two_functions_val_as_general,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; m::c <- `Cons(|x| x, |x| x, `Nil); let result = select m::c { `Cons(f, g, _) => (f(1), g(\"s\")), `Nil => never() }",
+    "/test/m.gxi" => "type L<'a> = [`Cons(fn(x: 'a) -> 'a, fn(x: 'a) -> 'a, L<'a>), `Nil]; val c: L<'a>",
+    "/test/m.gx" => "let c: L<'a> = `Nil"
+; FuseExpect::Jit);
+
+run!(
     write_through_a_struct_of_functions_val_refused,
     refused("made generic by an earlier compile, so what is written to it must be as general, and { f: fn(x: 'a: unbound) -> 'a: unbound } is not"),
     "/test.gx" => r#"

@@ -3123,6 +3123,21 @@ impl Type {
         Some((key, t))
     }
 
+    /// [`Self::lookup_ref_probe`] with the place the definition was
+    /// declared at in place of its key: two cells filled from one
+    /// declaration name it alike.
+    #[doc(hidden)]
+    pub fn lookup_ref_declared(
+        &self,
+        env: &Env,
+    ) -> Option<((ModPath, SourcePosition), Type)> {
+        let Type::Ref(tr) = self else { return None };
+        let def = tr.resolve_peek(env)?;
+        let site = (def.canonical_scope.clone(), def.pos);
+        let t = self.lookup_ref_by(env, false, TypeRef::resolve_peek).ok()??;
+        Some((site, t))
+    }
+
     /// Whether a function type with quantifiers of its own may stand at a
     /// part of this type a value of it produces (an abstract type's
     /// parameter, a function type's result and throws, never its

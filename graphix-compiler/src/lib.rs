@@ -2181,6 +2181,12 @@ impl<R: Rt> CompileCtx<R> {
             open: &'a nohash::IntSet<LambdaId>,
             done: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
             fresh: bool,
+            env: &'a Env,
+            /// the typedefs being expanded, and the lowest of them a
+            /// nested application met: an expansion holding its own
+            /// application is copied whole instead
+            expanding: LPooled<Vec<(ModPath, SourcePosition)>>,
+            cycle: usize,
         }
         fn instance(t: &Type, m: &mut Memo) -> Option<Type> {
             crate::stack::ensure_sufficient(|| {
@@ -2198,8 +2204,9 @@ impl<R: Rt> CompileCtx<R> {
                         Some(Type::Fn(Arc::new(ft.instantiate(m.open))))
                     }
                     // a typedef's arguments stand for what its body holds:
-                    // instantiated as one, as the functions they name would be
-                    // CR claude for claude: [bug/low] A typedef application is copied as
+                    // instantiated as one, or, where the body holds two
+                    // places a copy takes apart, as its expansion would be
+                    // XCR claude for claude: [bug/low] A typedef application is copied as
                     // one here, where its expansion would be copied per function type, so a
                     // val typed by a typedef whose body names its parameter in two function
                     // types is narrower in check_val_written (and the Connect hold) than the
@@ -2222,9 +2229,53 @@ impl<R: Rt> CompileCtx<R> {
                     // cell map, written out or not, and is not concerned. probes:
                     // ~/ptmp/cr29/scratch/r14-A/fix3/p/sw-{sw1,sw6,sw6b,sw7,sw8}
                     // (iface-typedef-copy-01)
+                    // 2026-11-05 claude: Fixed: CompileCtx::monomorphic copies a typedef
+                    // application whose body holds two places a copy takes apart
+                    // (Type::copied_in_two_places: function types and applications holding a
+                    // copied cell) as its expansion, so each function type is copied on its
+                    // own; other applications stay copied as one (the Connect hold still
+                    // prints F<'a>), and an expansion that meets its own typedef (by
+                    // declaration site, Type::lookup_ref_declared) is copied whole. Pins that
+                    // fail without it:
+                    // lang::interfaces::write_through_a_typedef_of_two_functions_val_as_general
+                    // (sw8) and write_through_a_typedef_of_two_typedefs_val_as_general (sw6);
+                    // write_through_a_recursive_typedef_of_two_functions_val_as_general pins
+                    // the recursion guard. Needs a soak.
                     Type::Ref(_) if t.copied_outside_functions(m.open) => {
+                        let apart =
+                            t.lookup_ref_declared(m.env).and_then(|(key, body)| match m
+                                .expanding
+                                .iter()
+                                .position(|k| *k == key)
+                            {
+                                Some(i) => {
+                                    m.cycle = m.cycle.min(i);
+                                    None
+                                }
+                                None => body
+                                    .copied_in_two_places(m.open)
+                                    .then_some((key, body)),
+                            });
                         m.fresh = true;
-                        Some(t.instantiate_with(&mut LPooled::take(), m.open))
+                        let as_one =
+                            |open| t.instantiate_with(&mut LPooled::take(), open);
+                        match apart {
+                            None => Some(as_one(m.open)),
+                            Some((key, body)) => {
+                                let depth = m.expanding.len();
+                                m.expanding.push(key);
+                                let r = instance(&body, m);
+                                m.expanding.pop();
+                                let cyclic = m.cycle <= depth;
+                                if m.cycle == depth {
+                                    m.cycle = usize::MAX;
+                                }
+                                match cyclic {
+                                    true => Some(as_one(m.open)),
+                                    false => Some(r.unwrap_or(body)),
+                                }
+                            }
+                        }
                     }
                     t => t.cow_children(&mut |c| instance(c, m)),
                 };
@@ -2237,7 +2288,14 @@ impl<R: Rt> CompileCtx<R> {
                 r
             })
         }
-        let mut m = Memo { open: &self.rec_defs, done: LPooled::take(), fresh: false };
+        let mut m = Memo {
+            open: &self.rec_defs,
+            done: LPooled::take(),
+            fresh: false,
+            env: &self.env,
+            expanding: LPooled::take(),
+            cycle: usize::MAX,
+        };
         instance(t, &mut m).unwrap_or_else(|| t.clone())
     }
 

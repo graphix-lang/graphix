@@ -2544,6 +2544,68 @@ impl Type {
     }
 }
 
+impl Type {
+    /// Whether this type holds two places a copy takes apart: function
+    /// types and typedef applications ([`Type::copied_outside_functions`])
+    /// that hold a cell the open gates `open` copy, none inside another.
+    #[doc(hidden)]
+    pub fn copied_in_two_places(&self, open: &IntSet<LambdaId>) -> bool {
+        struct Walk<'a> {
+            open: &'a IntSet<LambdaId>,
+            sites: usize,
+            empty: AHashSet<usize>,
+            path: AHashSet<usize>,
+        }
+        impl Walk<'_> {
+            fn go(&mut self, t: &Type) -> bool {
+                crate::stack::ensure_sufficient(|| {
+                    let addr = match t {
+                        Type::TVar(tv) => Some(tv.cell_addr()),
+                        t => super::node_addr(t),
+                    };
+                    if let Some(a) = addr
+                        && (self.empty.contains(&a) || !self.path.insert(a))
+                    {
+                        return false;
+                    }
+                    let before = self.sites;
+                    let done = match t {
+                        Type::TVar(tv) => tv.binding().is_some_and(|b| self.go(&b)),
+                        Type::Fn(_) => {
+                            self.sites += copied_beneath(t, self.open, true) as usize;
+                            self.sites > 1
+                        }
+                        Type::Ref(_) => {
+                            self.sites += t.copied_outside_functions(self.open) as usize;
+                            self.sites > 1
+                        }
+                        t => t
+                            .try_for_each_child(&mut |c| match self.go(c) {
+                                true => ControlFlow::Break(()),
+                                false => ControlFlow::Continue(()),
+                            })
+                            .is_break(),
+                    };
+                    if let Some(a) = addr {
+                        self.path.remove(&a);
+                        if self.sites == before {
+                            self.empty.insert(a);
+                        }
+                    }
+                    done
+                })
+            }
+        }
+        let mut w = Walk {
+            open,
+            sites: 0,
+            empty: AHashSet::default(),
+            path: AHashSet::default(),
+        };
+        w.go(self)
+    }
+}
+
 /// Whether `t` reaches an open cell a scheme's copy under the open gates
 /// `open` copies; inside a function type only where `functions`.
 fn copied_beneath(t: &Type, open: &IntSet<LambdaId>, functions: bool) -> bool {
