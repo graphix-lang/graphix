@@ -253,7 +253,7 @@ fn checked_default<R: Rt>(
     judge: Judge,
     held_in: Option<&mut HeldIn>,
 ) -> Result<Node<R>> {
-    // CR claude for claude: [bug/medium] A labeled default compiled at a bind is checked
+    // CR claude for eric: [bug/medium] A labeled default compiled at a bind is checked
     // in full here at the instance's types, so a select in it over an enclosing
     // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
     // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
@@ -391,6 +391,19 @@ fn checked_default<R: Rt>(
     // as the first 11-02 note says (pin: review-r8/G-r1-2/p/dnm4.gx, which passes --check
     // and whose build refuses on main 387c29e60). The block-type half is the question D10
     // in ~/ptmp/cr-discuss.md (default-typedef-outlived-01).
+    // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
+    // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are fixed
+    // at the root (a registry of block typedefs that outlive their block, a block's name
+    // meaning its type throughout the block), census 0 changes, gate green, and guicheck
+    // drops from 94G to 42G instructions (DefTable::record now fills rows in an env with
+    // the import tables). Left: the registry is keyed by scope names holding ExprIds, which
+    // a restore renumbers, so a block compiled again in a warm session declares a second
+    // definition; a function above a block's typedef that outlives its slot runs cold and
+    // fails warm ("type L outlived its definition"), including programs main runs (an outer
+    // type of the same name; an abstract constructor), and one shape binds warm and reads a
+    // wrong value. CR block-type-image-scope-01 on the branch. Back to Eric as the D10
+    // follow-up in ~/ptmp/cr29/next-discuss.md; probes
+    // ~/ptmp/cr29/scratch/review-r15/N-r*/.
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };

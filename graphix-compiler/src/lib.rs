@@ -3556,7 +3556,7 @@ fn check_and_fuse_inner<R: Rt>(
     drop(p);
     info!("typecheck time {:?}", st.elapsed());
     let tail_loops = analysis::analyze(node, ctx)?;
-    // CR claude for claude: [bug/high] An instance body that names a type its block
+    // CR claude for eric: [bug/high] An instance body that names a type its block
     // declares over an outer type of the same name crashes the process under fusion: `type
     // L = string; let g = |z: i64| { type L = [i64, null]; let f = |x: i64| { let b: L =
     // 3; (b, x) }; f(z) }; println(g(1))` aborts with "misaligned pointer dereference:
@@ -3593,6 +3593,19 @@ fn check_and_fuse_inner<R: Rt>(
     // sit under a scope unique to the block), so a late lookup finds the right definition
     // and every default can take its definition's types; a short design pass first, then a
     // lane.
+    // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
+    // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are
+    // fixed at the root (a registry of block typedefs that outlive their block, a block's
+    // name meaning its type throughout the block), census 0 changes, gate green, and
+    // guicheck drops from 94G to 42G instructions (DefTable::record now fills rows in an
+    // env with the import tables). Left: the registry is keyed by scope names holding
+    // ExprIds, which a restore renumbers, so a block compiled again in a warm session
+    // declares a second definition; a function above a block's typedef that outlives its
+    // slot runs cold and fails warm ("type L outlived its definition"), including programs
+    // main runs (an outer type of the same name; an abstract constructor), and one shape
+    // binds warm and reads a wrong value. CR block-type-image-scope-01 on the branch. Back
+    // to Eric as the D10 follow-up in ~/ptmp/cr29/next-discuss.md; probes
+    // ~/ptmp/cr29/scratch/review-r15/N-r*/.
     ctx.env.seed_typedef_refs();
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();

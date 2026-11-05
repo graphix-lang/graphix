@@ -2805,7 +2805,7 @@ fn capture_names<R: Rt>(
 /// variable fits its parameter whole: a call instantiates no variable of
 /// the definitions around it, and an omitting site outside them sees
 /// their schemes (`callsite::Judge`).
-// CR claude for claude: [bug/low] A recursive typedef a labeled default's block declares
+// CR claude for eric: [bug/low] A recursive typedef a labeled default's block declares
 // outlives its definition: the default's check node, whose TypeDef node owns the
 // definition, is discarded here, while the parameter's type, which the default decided,
 // still names it. `{ let f = |#d = { type L<'a> = [`Nil, `Cons('a, L<'a>)]; let l:
@@ -2833,6 +2833,18 @@ fn capture_names<R: Rt>(
 // block's type definitions findable after the block while anything names them (they sit
 // under a scope unique to the block), so a late lookup finds the right definition and
 // every default can take its definition's types; a short design pass first, then a lane.
+// 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
+// (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are fixed
+// at the root (a registry of block typedefs that outlive their block, a block's name
+// meaning its type throughout the block), census 0 changes, gate green, and guicheck
+// drops from 94G to 42G instructions (DefTable::record now fills rows in an env with the
+// import tables). Left: the registry is keyed by scope names holding ExprIds, which a
+// restore renumbers, so a block compiled again in a warm session declares a second
+// definition; a function above a block's typedef that outlives its slot runs cold and
+// fails warm ("type L outlived its definition"), including programs main runs (an outer
+// type of the same name; an abstract constructor), and one shape binds warm and reads a
+// wrong value. CR block-type-image-scope-01 on the branch. Back to Eric as the D10
+// follow-up in ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/N-r*/.
 fn check_defaults<R: Rt>(
     ctx: &mut CompileCtx<R>,
     def: &LambdaDef<R>,
