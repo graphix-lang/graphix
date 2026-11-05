@@ -2621,8 +2621,7 @@ impl Env {
             poly_binds,
             // a package stays registered across its recheck
             package_roots: _,
-            // shared by every clone, so a check's restore could not bring
-            // back what it dropped; each load names its blocks apart
+            // each load names its blocks apart
             block_types: _,
             ide: _,
             hidden_impls: _,
