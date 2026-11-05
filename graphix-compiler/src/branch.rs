@@ -57,6 +57,81 @@ pub(crate) fn standing_stamp(e: Option<&(TagValue, u64)>, cycle: u64) -> u64 {
     }
 }
 
+/// The bindings that are another binding's variable at run time: from
+/// its interface's join, the binding implementing a `val` is the val's
+/// ([`crate::StaticCallees::join`]). Every read, delivery, store entry,
+/// registration and waiting write of either is the val's.
+#[derive(Debug, Clone, Default)]
+pub struct VarAliases(Option<Arc<Aliases>>);
+
+/// The aliases, and a filter of their ids that answers most ids that are
+/// none without a probe of the map.
+#[derive(Debug)]
+struct Aliases {
+    filter: Box<[u64; FILTER_WORDS]>,
+    map: IntMap<BindId, BindId>,
+}
+
+const FILTER_WORDS: usize = 1024;
+
+#[inline]
+fn filter_bit(id: BindId) -> (usize, u64) {
+    let h = id.inner() as usize % (FILTER_WORDS * 64);
+    (h / 64, 1 << (h % 64))
+}
+
+impl VarAliases {
+    pub(crate) fn new(map: IntMap<BindId, BindId>) -> Self {
+        if map.is_empty() {
+            return Self(None);
+        }
+        let mut filter = Box::new([0u64; FILTER_WORDS]);
+        for id in map.keys() {
+            let (w, b) = filter_bit(*id);
+            filter[w] |= b
+        }
+        Self(Some(Arc::new(Aliases { filter, map })))
+    }
+
+    /// The variable `id` names.
+    #[inline]
+    pub fn var(&self, id: BindId) -> BindId {
+        match &self.0 {
+            None => id,
+            Some(a) => {
+                let (w, b) = filter_bit(id);
+                if a.filter[w] & b == 0 {
+                    id
+                } else {
+                    a.map.get(&id).copied().unwrap_or(id)
+                }
+            }
+        }
+    }
+
+    /// These with every alias of `kept` it lacks for which `keep` holds.
+    pub fn with_kept(&self, kept: &Self, mut keep: impl FnMut(&BindId) -> bool) -> Self {
+        let Some(old) = &kept.0 else { return self.clone() };
+        let mut m = self.0.as_ref().map(|a| a.map.clone()).unwrap_or_default();
+        let mut grew = false;
+        for (inner, outer) in old.map.iter() {
+            if !m.contains_key(inner) && keep(inner) {
+                m.insert(*inner, *outer);
+                grew = true
+            }
+        }
+        if grew { Self::new(m) } else { self.clone() }
+    }
+
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
 /// A runtime call a forked branch made, replayed into its parent at the
 /// merge in the order the branch made it.
 enum RtOp {
@@ -76,6 +151,7 @@ enum RtOp {
     SpawnVar(BoxFuture<(BindId, Value)>),
     Watch(mpsc::Receiver<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>),
     WatchVar(mpsc::Receiver<GPooled<Vec<(BindId, Value)>>>),
+    SetAliases(VarAliases),
 }
 
 impl RtOp {
@@ -83,7 +159,7 @@ impl RtOp {
     /// drops a reader.
     fn effect(&self) -> Option<&'static str> {
         Some(match self {
-            RtOp::RefVar(..) | RtOp::UnrefVar(..) => return None,
+            RtOp::RefVar(..) | RtOp::UnrefVar(..) | RtOp::SetAliases(_) => return None,
             RtOp::SetVar(..) => "set_var",
             RtOp::SetLevel(..) => "set_level",
             RtOp::PatchVar(..) => "patch_var",
@@ -115,6 +191,7 @@ pub struct ForkRt<R: Rt> {
     /// at the merge: a delivery this cycle marks them too.
     readers: IntMap<BindId, SmallVec<[Reader; 1]>>,
     log: Vec<RtOp>,
+    aliases: VarAliases,
 }
 
 // SAFETY: `parent` is only read, and only while the parent is suspended
@@ -158,6 +235,7 @@ impl<R: Rt> ForkRt<R> {
             ref_paths: IntMap::default(),
             readers: IntMap::default(),
             log: Vec::new(),
+            aliases: parent.var_aliases().clone(),
         }
     }
 
@@ -193,10 +271,44 @@ impl<'a, R: Rt> RtView<'a, R> {
         }
     }
 
+    /// The bindings that are another's variable at run time.
+    pub fn var_aliases(&self) -> &VarAliases {
+        match self {
+            Self::Root(r) => r.var_aliases(),
+            Self::Fork(f) => &f.aliases,
+        }
+    }
+
+    /// The variable `id` names ([`VarAliases`]).
+    #[inline]
+    pub fn var(&self, id: BindId) -> BindId {
+        self.var_aliases().var(id)
+    }
+
+    /// The variable `id` names in a forked branch, whose aliases are its
+    /// parents' and the joins it made; the runtime finds its own.
+    #[inline]
+    fn fork_var(&self, id: BindId) -> BindId {
+        match self {
+            Self::Root(_) => id,
+            Self::Fork(f) => f.aliases.var(id),
+        }
+    }
+
+    pub(crate) fn set_var_aliases(&mut self, aliases: VarAliases) {
+        match self {
+            Self::Root(r) => r.set_var_aliases(aliases),
+            Self::Fork(f) => {
+                f.aliases = aliases.with_kept(&f.aliases, |_| true);
+                f.log.push(RtOp::SetAliases(aliases))
+            }
+        }
+    }
+
     #[inline]
     pub fn ref_var(&mut self, id: BindId, by: Reader) {
         if let Self::Fork(f) = self {
-            f.readers.entry(id).or_default().push(by.clone());
+            f.readers.entry(f.aliases.var(id)).or_default().push(by.clone());
         }
         logged!(self, ref_var(id, by), RtOp::RefVar(id, by))
     }
@@ -204,6 +316,7 @@ impl<'a, R: Rt> RtView<'a, R> {
     /// Each reader of `id`: the runtime's and those the branches above
     /// registered this cycle.
     pub(crate) fn each_reader(&self, id: &BindId, f: &mut dyn FnMut(&Reader)) {
+        let id = &self.fork_var(*id);
         let mut view: &RtView<'_, R> = self;
         loop {
             match view {
@@ -236,6 +349,7 @@ impl<'a, R: Rt> RtView<'a, R> {
     /// The writes to `id` queued and not delivered yet: the runtime's,
     /// and those the branches above made this cycle.
     pub fn waiting_writes(&self, id: &BindId) -> usize {
+        let id = &self.fork_var(*id);
         let mut n = 0;
         let mut view: &RtView<'_, R> = self;
         loop {
@@ -245,7 +359,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                     n += f
                         .log
                         .iter()
-                        .filter(|op| matches!(op, RtOp::SetVar(i, _) if i == id))
+                        .filter(|op| matches!(op, RtOp::SetVar(i, _) if f.aliases.var(*i) == *id))
                         .count();
                     view = f.parent();
                 }
@@ -341,6 +455,7 @@ impl<'a, R: Rt> RtView<'a, R> {
     /// [`Rt::store_get`].
     #[inline]
     pub fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)> {
+        let id = &self.fork_var(*id);
         let mut view: &RtView<'_, R> = self;
         loop {
             match view {
@@ -370,7 +485,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         match self {
             Self::Root(r) => r.store_insert(id, tv),
             Self::Fork(f) => {
-                f.store.insert(id, Some((tv, f.cycle)));
+                f.store.insert(f.aliases.var(id), Some((tv, f.cycle)));
             }
         }
     }
@@ -412,7 +527,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         match self {
             Self::Root(r) => r.store_put(id, entry),
             Self::Fork(f) => {
-                f.store.insert(id, entry);
+                f.store.insert(f.aliases.var(id), entry);
             }
         }
     }
@@ -422,16 +537,19 @@ impl<'a, R: Rt> RtView<'a, R> {
         match self {
             Self::Root(r) => r.store_remove(id),
             Self::Fork(f) => {
-                f.store.insert(*id, None);
+                f.store.insert(f.aliases.var(*id), None);
             }
         }
     }
 
     /// A binding released or deleted: its stored value and the writes
-    /// still waiting for it go.
+    /// still waiting for it go. A binding that is another's variable
+    /// takes only the writes made through it: the variable stays.
     pub fn store_release(&mut self, id: &BindId) {
         logged!(self, forget_writes(*id), RtOp::ForgetWrites(*id));
-        self.store_remove(id)
+        if self.var(*id) == *id {
+            self.store_remove(id)
+        }
     }
 
     pub fn ref_path(&self, cell: &BindId) -> Option<&RefPath> {
@@ -471,9 +589,21 @@ impl<'a, R: Rt> RtView<'a, R> {
     /// Apply what the forked branch `child` did, after everything this
     /// view did before the fork and before anything it does after.
     pub(crate) fn merge(&mut self, child: ForkRt<R>) {
-        let ForkRt { parent: _, cycle: _, reads, store, ref_paths, readers, log } = child;
+        let ForkRt {
+            parent: _,
+            cycle: _,
+            reads,
+            store,
+            ref_paths,
+            readers,
+            log,
+            aliases,
+        } = child;
         match self {
             Self::Fork(f) => {
+                if !f.aliases.same(&aliases) {
+                    f.aliases = aliases
+                }
                 if let (Some(mine), Some(theirs)) = (&f.reads, reads) {
                     mine.lock().extend(theirs.into_inner());
                 }
@@ -512,6 +642,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                         RtOp::SpawnVar(f) => r.spawn_var(f),
                         RtOp::Watch(s) => r.watch(s),
                         RtOp::WatchVar(s) => r.watch_var(s),
+                        RtOp::SetAliases(a) => r.set_var_aliases(a),
                     }
                 }
             }
@@ -534,11 +665,13 @@ pub(crate) enum Prior<V> {
 
 /// A map a branch writes over its parent's: the parent's entries show
 /// through unless the branch wrote them or removed them (`removed`). A
-/// root map has no parent and no removals.
+/// root map has no parent and no removals. Keyed by variable: an id
+/// another's variable ([`VarAliases`]) reads and writes that one.
 pub struct Layered<V> {
     map: IntMap<BindId, V>,
     removed: IntSet<BindId>,
     parent: *const Layered<V>,
+    aliases: VarAliases,
 }
 
 // SAFETY: `parent` is only read, and only while the parent is suspended
@@ -552,6 +685,7 @@ impl<V> Default for Layered<V> {
             map: IntMap::default(),
             removed: IntSet::default(),
             parent: std::ptr::null(),
+            aliases: VarAliases::default(),
         }
     }
 }
@@ -569,8 +703,23 @@ impl<V: Clone> Layered<V> {
         unsafe { self.parent.as_ref() }
     }
 
+    /// The variable `id` names ([`VarAliases`]).
+    #[inline]
+    pub fn var(&self, id: BindId) -> BindId {
+        self.aliases.var(id)
+    }
+
+    pub fn aliases(&self) -> &VarAliases {
+        &self.aliases
+    }
+
+    pub(crate) fn set_aliases(&mut self, aliases: VarAliases) {
+        self.aliases = aliases
+    }
+
     #[inline]
     pub fn get(&self, id: &BindId) -> Option<&V> {
+        let id = &self.aliases.var(*id);
         let mut layer = self;
         loop {
             if let Some(v) = layer.map.get(id) {
@@ -592,6 +741,7 @@ impl<V: Clone> Layered<V> {
     /// Set `id`, returning this layer's own entry for it.
     #[inline]
     pub fn insert(&mut self, id: BindId, v: V) -> Option<V> {
+        let id = self.aliases.var(id);
         let prev = self.map.insert(id, v);
         if prev.is_none() && !self.parent.is_null() {
             self.removed.remove(&id);
@@ -612,6 +762,7 @@ impl<V: Clone> Layered<V> {
     /// Set `id` for a while: what [`Self::put_back`] needs to leave the
     /// layer as it was.
     pub(crate) fn put(&mut self, id: BindId, v: V) -> Prior<V> {
+        let id = self.aliases.var(id);
         let inherited = !self.map.contains_key(&id)
             && !self.removed.contains(&id)
             && self.parent().is_some_and(|p| p.contains_key(&id));
@@ -624,6 +775,7 @@ impl<V: Clone> Layered<V> {
 
     /// Undo a [`Self::put`].
     pub(crate) fn put_back(&mut self, id: BindId, prior: Prior<V>) {
+        let id = self.aliases.var(id);
         match prior {
             Prior::Own(v) => {
                 self.map.insert(id, v);
@@ -640,6 +792,7 @@ impl<V: Clone> Layered<V> {
     /// Remove `id`, returning what it held.
     #[inline]
     pub fn remove(&mut self, id: &BindId) -> Option<V> {
+        let id = &self.aliases.var(*id);
         let own = self.map.remove(id);
         if self.parent.is_null() || self.removed.contains(id) {
             return own;
@@ -659,7 +812,7 @@ impl<V: Clone> Layered<V> {
     /// Take this layer's own entry for `id`, leaving what its parent
     /// holds visible.
     pub(crate) fn take_own(&mut self, id: &BindId) -> Option<V> {
-        self.map.remove(id)
+        self.map.remove(&self.aliases.var(*id))
     }
 
     /// The entries this layer holds.
@@ -692,11 +845,19 @@ impl<V: Clone> Layered<V> {
     /// must outlive this branch and must not be used, by its owner or
     /// another branch's merge, until this branch has merged back.
     pub(crate) unsafe fn fork(&self) -> Self {
-        Self { map: IntMap::default(), removed: IntSet::default(), parent: self }
+        Self {
+            map: IntMap::default(),
+            removed: IntSet::default(),
+            parent: self,
+            aliases: self.aliases.clone(),
+        }
     }
 
     /// Apply the forked layer `child` over this one.
     pub(crate) fn merge(&mut self, child: Self) {
+        if !self.aliases.same(&child.aliases) {
+            self.aliases = child.aliases
+        }
         for id in child.removed {
             self.remove(&id);
         }

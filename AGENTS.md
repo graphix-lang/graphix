@@ -426,13 +426,14 @@ that binding (a REPL input's) is refused, naming the call, while the
 call lives: its holders (the call site, an alias `let`, the kernel that
 replaced them) hold it in `CompileCtx::static_callees` and carry their
 holds through the image; a module's interface binding and its
-implementation's are one binding there from the module's check on, a
-write to either compiled before it keeps static calls off both from the
-body's check on (`CompileCtx::carry_static_mark`; its typing stays the
-named binding's) and makes both `<-` targets from the join on
-(`CompileCtx::join_interface_pair`: a woken `let` keeps what was written
-through either), and a reload's replaced body holds nothing against its
-replacement (`design/program_image.md`).
+implementation's are one variable from the module's check on
+(`CompileCtx::join_interface_pair`): a `<-` marks the binding it names
+(its typing stays that binding's), and a call through either binds
+statically only where no name of the variable is written
+(`CompileCtx::rebinds`; a woken `let` keeps a value written through
+either, `var_written`); a reload's replaced body holds nothing against
+its replacement, and its marks go with its binding
+(`design/program_image.md`).
 
 **Runtime.** `graphix-rt` implements `Rt`: variables, timers, spawned
 tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`)
@@ -471,9 +472,12 @@ it was raised in its handler's root, else a runtime write; a quiet formal's seed
 reference cell's quiet seed or its bottom where its place has no
 element, and a fold's quiet accumulator are written to the store alone
 (`design/dense_delivery.md`). A
-write to either binding of a module's interface pair lands on both as
-the cycle starts (`ExecCtx::deliver_pair_writes`); what the body
-produces reaches the `val` at the module node. A
+module's interface pair is the `val`'s one variable at run time from
+its join (`branch::VarAliases`): the body's `let` publishes to it, and
+every read, write, store entry and registration through the
+implementing binding is the val's, in one queue; a reload drops the
+writes the replaced body made through its binding and had not landed,
+while one through the val lands on the new body. A
 running program's failures (an unhandled `?`, a hot operator's failure)
 are logged under `graphix_compiler::FAILURE_TARGET`, never printed; the
 shell shows that target on stderr.

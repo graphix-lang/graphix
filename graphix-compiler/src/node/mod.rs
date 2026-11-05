@@ -136,7 +136,7 @@ fn late_fire<'a, R: Rt>(
     read: Option<&ReadStamp>,
 ) -> Option<&'a TagValue> {
     let late = ctx.event.late.as_ref()?;
-    let (tv, readers) = late.get(id)?;
+    let (tv, readers) = late.get(&ctx.event.variables.var(*id))?;
     if ctx.event.variables.contains_key(id)
         || !readers.iter().any(|r| {
             r.root == root && r.boundary == ctx.boundary && r.read.as_ref() == read

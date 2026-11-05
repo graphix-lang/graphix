@@ -690,7 +690,6 @@ impl<X: GXExt> GX<X> {
                 self.deliver_custom(id, u, Via::Reply);
             }
         }
-        self.ctx.view().deliver_pair_writes();
         self.deliver_late();
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
@@ -859,6 +858,7 @@ impl<X: GXExt> GX<X> {
     }
 
     fn write(&mut self, id: BindId, u: VarUpdate, via: Via) {
+        let id = self.ctx.rt.aliases.var(id);
         if self.busy(&id) {
             self.ctx.rt.var_updates.push(id, u, via);
         } else {
@@ -870,6 +870,9 @@ impl<X: GXExt> GX<X> {
     /// where each is first for its variable. A set naming a variable twice
     /// cannot, and lands write by write.
     fn write_set(&mut self, mut set: GPooled<Vec<(BindId, Value)>>) {
+        for (id, _) in set.iter_mut() {
+            *id = self.ctx.rt.aliases.var(*id)
+        }
         let distinct = set
             .iter()
             .enumerate()

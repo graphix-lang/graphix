@@ -741,7 +741,7 @@ impl<R: Rt> Bind<R> {
     /// one then holds.
     fn aliased_lambda(&mut self, ctx: &mut CompileCtx<R>) -> Option<Value> {
         let id = match ungrouped(&self.node) {
-            NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => r.id,
+            NodeView::Ref(r) if !ctx.rebinds(r.id) => r.id,
             _ => return None,
         };
         let fv = ctx.bind_to_lambda.get(&id).cloned()?;
@@ -810,7 +810,7 @@ impl<R: Rt> Update<R> for Bind<R> {
             self.pattern.ids(&mut |id| {
                 let holds =
                     || ctx.rt.store_get(&id).is_some_and(|(tv, _)| !tv.tag().is_bottom());
-                if ctx.connect_targets.contains(&id) && (tag.is_bottom() || holds()) {
+                if ctx.var_written(id) && (tag.is_bottom() || holds()) {
                     held.push(id)
                 }
             });

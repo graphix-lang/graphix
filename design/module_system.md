@@ -194,24 +194,34 @@ item is visible to the defining module and its descendants, uniformly
 for values and types — a private type in a public lambda's body is the
 module's own business when the body is instance-elaborated elsewhere.
 
-At run time a `val` and the binding implementing it are one variable
-(`module.rs::Proxy`, joined in `StaticCallees`). A write to either lands
-on both as the cycle starts, before any node runs
-(`deliver_pair_writes`), so every reader of either sees it that cycle
-wherever it runs; writes to both in one cycle are two writes to one
-variable, the body's landing first. What one of them produces within a
-cycle, the body's `let` or a reload's new value, the module node moves
-to the other as a binding delivers its own (`deliver_production`:
-stored, in the cycle's event, and a fire schedules the roots that read
-it and have not run yet): a `let` bound to `a::v` in a REPL input
-after the module's, or an instance of one of the body's functions
-called from one, sees it. A reader that ran earlier in the cycle (a
-statement before the `mod`, an earlier input), through a function
-value, takes it next cycle, as it takes any `let`'s production
-(`design/dense_delivery.md`, "A fire the walk passed"). Each is a `<-` target where the other is
-(`CompileCtx::join_interface_pair`), so a woken `let` keeps a write
-made through the `val`, and a seq's plan counts the pair one variable
-(`design/dependency_summaries.md` §3).
+At run time a `val` and the binding implementing it are one variable,
+the val's, from the module's check on (`module.rs::Proxy`, joined in
+`StaticCallees`). The two stay two bindings to the checker, each with
+its own type, and the runtime reads the implementing binding's id as
+the val's (`branch::VarAliases`, given to the runtime and the cycle's
+event at `ExecCtx::apply_deferred`): the body's `let` publishes to the
+val, its readers read it, a `<-` or a write through `&mut` to either
+waits in the val's one queue, in the order the writes were made, each
+landing on the value the one before it left, and a level written
+through either replaces the one waiting before it. A wake's re-raise
+of the body's `let` is the val's, taken back by the block around the
+module as any `let`'s is. A `<-` marks the binding it names, and its
+typing is that binding's; whether the variable is written reads every
+name, so a call through either binds statically only where neither is
+written (`CompileCtx::rebinds`) and a woken `let` keeps what was
+written through the `val` (`CompileCtx::var_written`); a seq's plan
+counts the pair one variable (`design/dependency_summaries.md` §3).
+
+A reload joins its new body's binding before the body it replaces
+retires; while the new source compiles, the replaced body's bindings
+are no names of the variable (`StaticCallees::set_aside`), so a write
+it made marks nothing the reload sees. The retirement drops the writes
+the replaced body made through its binding and had not landed, a
+reference to that binding alive or not, while a write made through the
+val waiting across the reload lands on the new body. A binding a join
+left stays the val's at run time while a reader registered through it
+lives (an instance of the replaced body's function a call site still
+holds): `GXRt` keeps its alias until the last such reader goes.
 
 ### A `val`'s type variables
 

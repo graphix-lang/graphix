@@ -1244,8 +1244,15 @@ pub trait Rt: Debug + Any + Send + Sync {
     fn store_remove(&mut self, id: &BindId);
 
     /// Drop the writes waiting for `id`: its binding is gone, and a write
-    /// that landed now would leave a store entry nothing removes.
+    /// that landed now would leave a store entry nothing removes. Of a
+    /// binding that is another's variable, only the writes made through
+    /// it.
     fn forget_writes(&mut self, id: BindId);
+
+    /// The bindings that are another's variable at run time; every call
+    /// here naming one acts on that variable.
+    fn var_aliases(&self) -> &branch::VarAliases;
+    fn set_var_aliases(&mut self, aliases: branch::VarAliases);
 
     /// Insert a standing entry: no delivery, so it keeps the stamp of
     /// the last one, and a same-cycle reader never sees it as delivered
@@ -1901,7 +1908,7 @@ impl<R: Rt> CompileCtx<R> {
     /// The bindings `id` is one variable with ([`StaticCallees::join`]),
     /// each a target with it.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
-        // CR claude for claude: [bug/medium] A sibling module's compile task sees another's
+        // XCR claude for claude: [bug/medium] A sibling module's compile task sees another's
         // interface pair joined or not by schedule (StaticCallees is shared by every task;
         // check_sig joins in the module's own task), so a write from a sibling's lambda
         // through a val marks the implementing binding a `<-` target only where the join
@@ -1927,6 +1934,15 @@ impl<R: Rt> CompileCtx<R> {
         // check with typ::QUANTIFIED_FN, so it no longer reaches the join; the first shape
         // (nw6t) stands, as does sx14's join race in any form that writes no nested quantified
         // type.
+        // 2026-11-05 claude: Fixed with iface-pair-one-var-01: the pair joins before the
+        // body's check and static resolution reads the variable's names when it binds
+        // (CompileCtx::rebinds), so a sibling's write marked in its own task reaches the
+        // implementation's call: nw6t prints 101 6/6 (base-r17 7/8 refused, 1/8 printed 1),
+        // sx14 builds 6/6 (base 3/6 refused). Pins
+        // lang::modules::a_siblings_write_through_an_interface_reaches_the_bodys_call (base:
+        // 1) and a_siblings_write_through_a_generic_interface_builds (base: refused). Left: a
+        // sibling's write against an alias let h = f in the body is still judged at the
+        // alias's check (Bind::aliased_lambda runs in typecheck0), as before.
         let ids = self.static_callees.variable(id);
         if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
             let name =
@@ -1949,14 +1965,38 @@ impl<R: Rt> CompileCtx<R> {
                 self.check_val_written(&o.name, &o.typ, &i.typ)?
             }
         }
-        for id in ids {
-            self.batch_connect_targets.insert(id);
-            self.connect_targets.insert(id);
-            if !self.generalized_earlier(id) {
-                self.env.poly_binds.remove(&id);
-            }
+        self.batch_connect_targets.insert(id);
+        self.connect_targets.insert(id);
+        if !self.generalized_earlier(id) {
+            self.env.poly_binds.remove(&id);
         }
         Ok(())
+    }
+
+    /// Whether a call through `id` dispatches at run time: this batch
+    /// writes it, or it is one variable with another binding and this
+    /// batch or an earlier one writes any of them. A mark stays with the
+    /// binding its write names, so it goes when that binding does.
+    pub(crate) fn rebinds(&self, id: BindId) -> bool {
+        if self.batch_connect_targets.contains(&id) {
+            return true;
+        }
+        let names = self.static_callees.variable(id);
+        names.len() > 1
+            && names.iter().any(|n| {
+                self.batch_connect_targets.contains(n) || self.connect_targets.contains(n)
+            })
+    }
+
+    /// Whether anything writes the variable `id` names: a `<-` to it or
+    /// to a binding it is one variable with.
+    pub(crate) fn var_written(&self, id: BindId) -> bool {
+        self.connect_targets.contains(&id)
+            || self
+                .static_callees
+                .variable(id)
+                .iter()
+                .any(|n| self.connect_targets.contains(n))
     }
 
     /// Refuse writes through the `val` `name`, declared `val`, that the
@@ -2002,17 +2042,7 @@ impl<R: Rt> CompileCtx<R> {
         }
     }
 
-    /// Where `a` or `b`, one variable, is a `<-` target, a static call
-    /// through neither binds in this batch. Only static resolution: the
-    /// binding a write names alone takes its typing.
-    pub(crate) fn carry_static_mark(&mut self, a: BindId, b: BindId) {
-        if self.connect_targets.contains(&a) || self.connect_targets.contains(&b) {
-            self.batch_connect_targets.insert(a);
-            self.batch_connect_targets.insert(b);
-        }
-    }
-
-    // CR claude for claude: [perf/low] The `<-`-target mark this puts on the outer outlives
+    // XCR claude for claude: [perf/low] The `<-`-target mark this puts on the outer outlives
     // the body whose write caused it: Bind::delete removes only the old inner at a reload,
     // so a reloaded body that writes nothing has its calls through the val resolved
     // dynamically (GXDBG_RESOLVE: unstable=true; base 432e34ac6 static), and fusion may go
@@ -2038,19 +2068,20 @@ impl<R: Rt> CompileCtx<R> {
     // f = |x| x) is refused as written through the val, where nothing writes it any more;
     // main reloads it. probe ~/ptmp/cr29/scratch/r14-A/q4. D18 (a)'s one-variable rebuild,
     // keeping a replaced body's writes with its binding, should take the mark with it.
+    // 2026-11-05 claude: Fixed with iface-pair-one-var-01: a write marks only the binding
+    // it names, and a reload's compile leaves the replaced body's bindings out of the
+    // variable (StaticCallees::set_aside's vars), so the reloaded body's f(count(k)) in n1
+    // resolves statically (GXDBG_RESOLVE unstable=false; base-r17 true). No answer changes,
+    // so no run! pin; lang::modules::a_reload_is_not_held_to_the_replaced_bodys_write pins
+    // the same mark staying with its binding.
     /// Join `inner`, a body's binding implementing an interface `val`, with
-    /// `outer`, the `val`'s ([`StaticCallees::join`]). From here on they are
-    /// one `<-` target where either is, so a woken `let` keeps what was
-    /// written through either. The typing stays the written binding's: the
-    /// body's check, before this, took the value restriction from the
-    /// targets as the writes named them.
+    /// `outer`, the `val`'s ([`StaticCallees::join`]): from here on they
+    /// are one variable, the val's at run time. A `<-` marks the binding
+    /// it names; whether the variable is written reads every name
+    /// ([`Self::rebinds`], [`Self::var_written`]). The typing stays the
+    /// written binding's.
     pub(crate) fn join_interface_pair(&mut self, inner: BindId, outer: BindId) {
-        self.static_callees.join(inner, outer);
-        if self.connect_targets.contains(&inner) || self.connect_targets.contains(&outer)
-        {
-            self.connect_targets.insert(inner);
-            self.connect_targets.insert(outer);
-        }
+        self.static_callees.join(inner, outer)
     }
 
     /// Hold `id`, a binding the call `call` binds statically.
@@ -2507,10 +2538,15 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         r
     }
 
-    /// Deliver a write to either binding of an interface pair to both, as
-    /// the cycle starts (`node::module::deliver_pair_writes`).
-    pub fn deliver_pair_writes(&mut self) {
-        node::module::deliver_pair_writes(self)
+    /// Give the runtime the bindings that are another's variable, where
+    /// a module's join or retirement changed them
+    /// ([`StaticCallees::join`]).
+    pub(crate) fn sync_var_aliases(&mut self) {
+        if let Some(aliases) = self.static_callees.changed_aliases() {
+            self.rt.set_var_aliases(aliases);
+            let aliases = self.rt.var_aliases().clone();
+            self.event.variables.set_aliases(aliases)
+        }
     }
 
     /// Let go of what the references released since the last cycle kept:
@@ -2540,6 +2576,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
 
     /// The same view, borrowed for a shorter time, over `event`.
     pub fn with_event<'b>(&'b mut self, event: &'b mut Event) -> ExecCtx<'b, R> {
+        event.variables.set_aliases(self.event.variables.aliases().clone());
         ExecCtx {
             cx: self.cx.reborrow(),
             image_decoder: self.image_decoder,
@@ -2689,6 +2726,8 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// reference it recorded, then delete what it discarded, so each
     /// discard's unrefs reach the runtime.
     pub fn apply_deferred(&mut self) {
+        // the registrations below are of the variables the joins name
+        self.sync_var_aliases();
         // through `Deref`: a branch view forks no compile for nothing
         if !self.deferred_pending() {
             return;
@@ -3913,7 +3952,7 @@ pub fn record_expr_types<R: Rt>(nodes: &[Node<R>], out: &mut Vec<ide::ExprTypeSi
 /// the number of holders that hold it, and the bindings that are one
 /// variable. One index serves a context and every compile task it forks.
 #[derive(Debug, Default)]
-pub(crate) struct StaticCallees(Mutex<Holds>);
+pub(crate) struct StaticCallees(Mutex<Holds>, std::sync::atomic::AtomicBool);
 
 #[derive(Debug, Default)]
 struct Holds {
@@ -3922,6 +3961,9 @@ struct Holds {
     /// The holds of a body being replaced, which a write its replacement
     /// makes does not see ([`StaticCallees::set_aside`]).
     aside: AHashMap<(BindId, ExprId), u32>,
+    /// The bindings of a body being replaced: no longer one variable with
+    /// another to its replacement's compile.
+    aside_vars: AHashMap<BindId, u32>,
 }
 
 /// A binding's side of the interface pairs it is in
@@ -3965,17 +4007,22 @@ impl StaticCallees {
         calls.iter().find(|(c, n)| *n > aside(c.id)).map(|(c, _)| c.clone())
     }
 
-    /// Leave `holds`, a replaced body's, out of [`Self::held`] until the
+    /// Leave `holds`, a replaced body's, out of [`Self::held`], and its
+    /// bindings `vars` out of the variables they are one with, until the
     /// guard drops: the body goes when its replacement compiles.
     pub(crate) fn set_aside(
         index: &Arc<Self>,
         holds: Vec<(BindId, ExprId)>,
+        vars: Vec<BindId>,
     ) -> AsideHolds {
         let mut held = index.0.lock();
         for key in holds.iter() {
             *held.aside.entry(*key).or_default() += 1;
         }
-        AsideHolds { index: index.clone(), holds }
+        for id in vars.iter() {
+            *held.aside_vars.entry(*id).or_default() += 1;
+        }
+        AsideHolds { index: index.clone(), holds, vars }
     }
 
     /// `inner` and `outer` are one variable, a write to either reaching
@@ -3983,6 +4030,7 @@ impl StaticCallees {
     /// `val`'s.
     pub(crate) fn join(&self, inner: BindId, outer: BindId) {
         let mut held = self.0.lock();
+        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
         held.joined.insert(inner, Side::Inner(outer));
         let side =
             held.joined.entry(outer).or_insert_with(|| Side::Outer(SmallVec::new()));
@@ -3996,6 +4044,7 @@ impl StaticCallees {
     /// `inner` and `outer` are no longer one variable.
     pub(crate) fn unjoin(&self, inner: BindId, outer: BindId) {
         let mut held = self.0.lock();
+        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
         if matches!(held.joined.get(&inner), Some(Side::Inner(o)) if *o == outer) {
             held.joined.remove(&inner);
         }
@@ -4013,6 +4062,25 @@ impl StaticCallees {
         let mut ids: SmallVec<[BindId; 2]> = smallvec::smallvec![id];
         held.close_over_joins(&mut ids);
         ids
+    }
+
+    /// Each binding implementing a `val` mapped to the val's, its variable
+    /// at run time, when a join or an unjoin changed them since the last
+    /// call.
+    fn changed_aliases(&self) -> Option<branch::VarAliases> {
+        if !self.1.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let held = self.0.lock();
+        let m = held
+            .joined
+            .iter()
+            .filter_map(|(id, side)| match side {
+                Side::Inner(outer) => Some((*id, *outer)),
+                Side::Outer(_) => None,
+            })
+            .collect();
+        Some(branch::VarAliases::new(m))
     }
 
     /// Add to `ids` every binding one of them is one variable with.
@@ -4055,6 +4123,7 @@ impl StaticCallees {
         let mut held = self.0.lock();
         held.calls.remove(&id);
         let Some(side) = held.joined.remove(&id) else { return };
+        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
         for with in side.with() {
             match held.joined.get_mut(with) {
                 Some(Side::Outer(inners)) => {
@@ -4091,6 +4160,7 @@ impl StaticCallees {
 pub(crate) struct AsideHolds {
     index: Arc<StaticCallees>,
     holds: Vec<(BindId, ExprId)>,
+    vars: Vec<BindId>,
 }
 
 impl Drop for AsideHolds {
@@ -4101,6 +4171,14 @@ impl Drop for AsideHolds {
                 *n -= 1;
                 if *n == 0 {
                     held.aside.remove(key);
+                }
+            }
+        }
+        for id in self.vars.iter() {
+            if let Some(n) = held.aside_vars.get_mut(id) {
+                *n -= 1;
+                if *n == 0 {
+                    held.aside_vars.remove(id);
                 }
             }
         }
@@ -4125,7 +4203,7 @@ impl Holds {
         let mut i = 0;
         while let Some(id) = ids.get(i).copied() {
             for with in self.joined.get(&id).map(Side::with).unwrap_or_default() {
-                if !ids.contains(with) {
+                if !ids.contains(with) && !self.aside_vars.contains_key(with) {
                     ids.push(*with)
                 }
             }

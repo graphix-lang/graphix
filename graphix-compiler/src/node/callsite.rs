@@ -2995,11 +2995,11 @@ impl<R: Rt> CallSite<R> {
                         "RESOLVE {} id={:?} unstable={} b2l={}",
                         self.spec,
                         r.id,
-                        ctx.batch_connect_targets.contains(&r.id),
+                        ctx.rebinds(r.id),
                         ctx.bind_to_lambda.contains_key(&r.id),
                     );
                 }
-                if ctx.batch_connect_targets.contains(&r.id) {
+                if ctx.rebinds(r.id) {
                     None
                 } else {
                     let id = r.id;
@@ -3045,7 +3045,7 @@ impl<R: Rt> CallSite<R> {
             .filter_map(|(key, arg)| {
                 let source = arg.node.as_ref().and_then(|node| match node.view() {
                     _ if let Some(l) = lambda_literal(node) => Some(l.source_id()),
-                    NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => ctx
+                    NodeView::Ref(r) if !ctx.rebinds(r.id) => ctx
                         .bind_to_lambda
                         .get(&r.id)
                         .and_then(|fv| fv.downcast_ref::<LambdaDef<R>>())
@@ -3115,7 +3115,7 @@ impl<R: Rt> CallSite<R> {
                     param_binds.push(id);
                 }
                 NodeView::Ref(r) => {
-                    if ctx.batch_connect_targets.contains(&r.id) {
+                    if ctx.rebinds(r.id) {
                         continue;
                     }
                     if let Some(fv) = ctx.bind_to_lambda.get(&r.id).cloned() {
