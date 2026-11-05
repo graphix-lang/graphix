@@ -2543,8 +2543,7 @@ run!(impl_method_does_not_narrow_the_head, r#"{
   impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
   "[Box(41)]"
 }"#, refused(
-    "method fmt of impl Display for Box<'a> has type fn(self: Box<i64>) -> string, \
-     the trait declares fn(self: Box<'a>) -> string"
+    "signature has type variable 'a where implementation has i64"
 ); FuseExpect::None);
 
 // A core-trait hook site a dynamic load retires is deleted by whichever
