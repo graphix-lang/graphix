@@ -1211,7 +1211,16 @@ impl<X: GXExt> GXConfig<X> {
     /// the root and the program and send their images, and run nothing:
     /// an error when the program did not compile.
     pub async fn compile(self) -> Result<()> {
-        GX::new(self).await?.program_compiled()
+        self.compile_counted().await?.0
+    }
+
+    /// [`compile`](Self::compile)'s verdict on the program beside the
+    /// fusion counters of everything it compiled, a refused program's
+    /// included: what [`GXHandle::fusion_stats`] reads before the first
+    /// cycle. An error when the runtime could not be built.
+    pub async fn compile_counted(self) -> Result<(Result<()>, FusionStats)> {
+        let gx = GX::new(self).await?;
+        Ok((gx.program_compiled(), gx.fusion_stats()))
     }
 
     /// Start the runtime and return a handle to it. It compiles `root`,

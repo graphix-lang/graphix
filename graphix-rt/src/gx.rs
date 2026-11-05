@@ -5,8 +5,8 @@ use bytes::Bytes;
 use enumflags2::BitFlags;
 use futures::{FutureExt, Stream, StreamExt, stream::SelectAll};
 use graphix_compiler::{
-    BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Late, Node, Rt, Saved,
-    Scope, TagValue, View, WriteTarget, diagnostic_site,
+    BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, FusionStats, Late, Node,
+    Rt, Saved, Scope, TagValue, View, WriteTarget, diagnostic_site,
     expr::{
         self, Expr, ExprId, ExprKind, Load, ModPath, Origin, Probes, ResolverRef,
         Resolvers, RootFile, Sig, Source, join_in_order,
@@ -394,6 +394,10 @@ impl<X: GXExt> GX<X> {
             Some(Err(e)) => Err(anyhow!("{e}")),
             Some(Ok(_)) | None => Ok(()),
         }
+    }
+
+    pub(super) fn fusion_stats(&self) -> FusionStats {
+        self.ctx.fusion.stats()
     }
 
     pub(super) async fn new(mut cfg: GXConfig<X>) -> Result<Self> {
