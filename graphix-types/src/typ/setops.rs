@@ -586,7 +586,7 @@ impl Type {
         Ok(out)
     }
 
-    // CR claude for eric: [bug/medium] diff does not end over some names that recur
+    // CR claude for claude: [bug/medium] diff does not end over some names that recur
     // through Error payloads: main bbb06c0c6's --check of `type At = [Error<Bt>,
     // Error<Ct>, `R]; type Bt = [Error<At>, `P]; type Ct = [Array<Ct>, Error<Bt>]; type H
     // = [Error<Error<K>>, `Q]; type K = [Error<H>, Error<K>, `P]; let v: At = `R; select
@@ -621,6 +621,13 @@ impl Type {
     // ~/ptmp/cr29/scratch/review-r11/X-r1-1/x2/lcm/, X-r3-1/x2/, X-r3-2/x2/,
     // ~/ptmp/cr29/scratch/r11-X/x2r13b/ (sh235e2.gx); the branch's own note on cr48-X2
     // has the three directions tried on paper.
+    // 2026-11-05 claude: Eric ruled (2026-11-05): (b). diff keys a pair met again by its
+    // two definitions, arguments ignored, and allows k unfoldings per definition pair, as
+    // cast::grows_on counts; past them the pair subtracts nothing (a wider residual:
+    // fewer dead arms found, an occasional missing-case refusal). k starts at 1 and is
+    // chosen from the census of both repos, the 1600 generated selects and the review's
+    // grow/lcm families. could_match's missing bound goes in the same lane. Analysis:
+    // ~/ptmp/cr-discuss.md, Ruled 11-05.
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
