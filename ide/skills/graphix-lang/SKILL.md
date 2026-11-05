@@ -481,7 +481,10 @@ across a bottom cycle).
   c: 1}, false => z }`, `{a, ..} => ..` is refused until `z` is annotated.
   An arm whose pattern would decide it is refused the same way: `|x|
   select (x, 0) { (`J, _) => 1, (`M, _) => 2 }` (write `x: [`J, `M]`);
-  only a scrutinee wholly of such a type is the arms' to decide together
+  so is a literal, `null`, `[]`, a fixed-length slice or an or-pattern
+  there. A pattern that only takes it apart decides its shape: `((a, b),
+  _)`, `({a, b}, _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check.
+  Only a scrutinee wholly of such a type is the arms' to decide together
   (`|x| select x { `J => 1, `M => 2 }`), never by a partial struct
   pattern (`{a, ..}`).
   A part only a name or `_` meets passes, and a name there holds that

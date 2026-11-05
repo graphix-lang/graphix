@@ -168,14 +168,16 @@ run!(name_over_an_undecided_guarded_part_written_apart_refused, r#"{
     r
 }"#, refused("z is string, inferred from an earlier use, and cannot hold i64"); FuseExpect::None);
 
-run!(slice_over_an_undecided_part_refused, r#"{
+// A slice with a rest decides the shape of the undecided part it stands
+// over, as an annotation would.
+run!(slice_over_an_undecided_part_decides_its_shape, r#"{
     let b = true;
     let z = never();
     let v = select b { true => (`A, [1]), false => (`B, z) };
     let r = select v { (_, [x, ..]) => x + 1, (_, _) => 0 };
     z <- ["s"];
     r
-}"#, refused("(_, [x, ..]) tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+}"#, refused("z is Array<i64>, inferred from an earlier use, and cannot hold Array<string>"); FuseExpect::None);
 
 run!(name_over_an_undecided_parameter_part_called_apart_refused, r#"{
     let f = |z, b| {
@@ -320,7 +322,7 @@ run!(undecided_part_beside_a_bool_head_distributes, r#"{
 run!(widened_open_element_refused, r#"{
     let f = |v| select (v, 0) { ([x, ..], _) => str::len(x), ([1, ..], _) => 5, (_, _) => 0 };
     [f(["ab"]), f([1])]
-}"#, refused("([x, ..], _) tests a value of 'v, a type not decided at this select"); FuseExpect::None);
+}"#, refused("([1, ..], _) tests a value of 'v, a type not decided at this select"); FuseExpect::None);
 
 run!(widened_open_element_annotated, r#"{
     let f = |v: Array<string>| select (v, 0) { ([x, ..], _) => str::len(x), (_, _) => 0 };
@@ -567,3 +569,119 @@ run!(wildcard_and_name_over_an_undecided_part, r#"{
     w <- `M;
     r
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "M"); FuseExpect::Jit);
+
+// An arm that only takes an undecided part apart decides its shape, as an
+// annotation would.
+run!(destructuring_tuple_decides_an_undecided_part, r#"{
+    let f = |x| select (x, 0) { ((a, b), _) => a + b };
+    f((1, 2))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+run!(destructuring_struct_decides_an_undecided_part, r#"{
+    let f = |x| select (x, 0) { ({a, b}, _) => a + b };
+    f({a: 1, b: 2})
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+run!(destructuring_slice_with_a_rest_decides_an_undecided_part, r#"{
+    let f = |x| select (x, 0) { ([a, ..], _) => a, (_, _) => 0 };
+    [f([4, 5]), f([])]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0]); FuseExpect::Jit);
+
+run!(destructuring_slice_suffix_decides_an_undecided_part, r#"{
+    let f = |x| select (x, 0) { ([init.., l], _) => l + array::len(init), (_, _) => 0 };
+    [f([4, 5]), f([])]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 0]); FuseExpect::Jit);
+
+run!(destructuring_list_decides_an_undecided_part, r#"{
+    let f = |x| select (x, 0) { ([<a, t..>], _) => a + list::len(t), (_, _) => 0 };
+    [f([<4, 5, 6>]), f([<>])]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 0]); FuseExpect::Jit);
+
+run!(destructuring_abstract_payload_decides_an_undecided_part, r#"{
+    type W = Abstract<(i64, i64)>;
+    let f = |x| select (x, 0) { (W((p, q)), _) => p + q };
+    f(W((1, 2)))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+run!(destructuring_nested_capture_decides_an_undecided_part, r#"{
+    let f = |x| select (x, 0) { (v@ (a, {b, c}), _) => a + b + c + v.0 };
+    f((1, {b: 2, c: 3}))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit);
+
+// A pattern that chooses a value, a tag or a length at an undecided part
+// decides it to that choice: refused as testing it.
+run!(bool_literals_deciding_an_undecided_part_refused, r#"{
+    let f = |x| select (x, 0) { (true, _) => 1, (false, _) => 2 };
+    f(true)
+}"#, refused("(true, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(bool_literals_over_an_annotated_part, r#"{
+    let f = |x: bool| select (x, 0) { (true, _) => 1, (false, _) => 2 };
+    [f(true), f(false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2]); FuseExpect::Jit);
+
+run!(literal_deciding_an_undecided_part_refused, r#"{
+    let f = |x| select (x, 0) { (1, _) => 1, _ => 2 };
+    f(2)
+}"#, refused("(1, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(empty_slice_deciding_an_undecided_part_refused, r#"{
+    let f = |x| select (x, 0) { ([], _) => 1, _ => 2 };
+    f([1])
+}"#, refused("([], _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(fixed_length_slice_deciding_an_undecided_part_refused, r#"{
+    let f = |x| select (x, 0) { ([a, b], _) => a + b, (_, _) => 0 };
+    f([1, 2])
+}"#, refused("([a, b], _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(fixed_length_slice_over_an_annotated_part, r#"{
+    let f = |x: Array<i64>| select (x, 0) { ([a, b], _) => a + b, (_, _) => 0 };
+    [f([1, 2]), f([1])]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0]); FuseExpect::Jit);
+
+run!(list_head_deciding_an_undecided_part_refused, r#"{
+    let f = |x| select (x, 0) { ([<`J, ..>], _) => 1, _ => 2 };
+    f([<`M>])
+}"#, refused("([<`J, ..>], _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(or_pattern_deciding_an_undecided_part_refused, r#"{
+    let f = |x| select (x, 0) { ((a, b) | (a, b, _), _) => a + b };
+    f((1, 2))
+}"#, refused("((a, b) | (a, b, _), _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(partial_struct_deciding_an_undecided_part_refused, r#"{
+    let f = |x| select (x, 0) { ({a, ..}, _) => a };
+    f({a: 1, b: 2})
+}"#, refused("({ a, .. }, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(other_shape_than_an_earlier_arm_decided_refused, r#"{
+    let f = |x| select (x, 0) { ((a, b), _) => a + b, ((a, b, c), _) => a };
+    f((1, 2))
+}"#, refused("((a, b, c), _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+// A literal at a union position decides the undecided member beside the
+// one that holds its type.
+run!(tag_at_a_union_position_deciding_an_undecided_member_refused, r#"{
+    let f = |b: bool, x| {
+        let y = select b { true => x, false => `J };
+        select (y, 0) { (`J, _) => 0, (v, _) => 1 }
+    };
+    f(true, `M)
+}"#, refused("(`J, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(tag_at_a_union_position_over_an_annotated_member, r#"{
+    let f = |b: bool, x| {
+        let y: [`J, `M] = select b { true => x, false => `J };
+        select (y, 0) { (`J, _) => 0, (v, _) => 1 }
+    };
+    [f(true, `M), f(false, `M)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0]); FuseExpect::Jit);
+
+run!(null_at_a_union_position_deciding_an_undecided_member_refused, r#"{
+    let f = |b: bool, x| {
+        let y = select b { true => x, false => null };
+        select (y, 0) { (null, _) => 0, (v, _) => 1 }
+    };
+    f(true, `M)
+}"#, refused("(null, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);

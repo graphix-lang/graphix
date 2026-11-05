@@ -1362,10 +1362,15 @@ cycle, across workers; the compiler never pins threads.
   cell one type of its own (`written_tests_undecided`); a name over it takes
   the open part beside the members' others (`TVar::narrow_per_member`).
   A cell an arm's pattern decided (the arms' settle, a completion, the
-  narrowing) counts as one still open there (`Deciding`,
+  narrowing, the coverage) counts as one still open there, a binding the
+  decision rewrote read as it was (`Deciding`,
   `StructurePattern::meets_decided`, `written_tests_decided`), except a
   whole open scrutinee, which the arms decide together, unless an arm
-  holds a partial struct pattern.
+  holds a partial struct pattern; a pattern there that only takes apart
+  every value of the shape it decides (a tuple, a struct naming every
+  field, a slice or list with a rest, an abstract payload, of names, `_`
+  and such patterns: `StructurePattern::only_destructures`) decides that
+  shape as an annotation would and tests nothing.
   Exhaustiveness holds those cells rigid on copies first
   (`Type::contains_holding`), so a part only names and `_` meet covers
   whatever it becomes, else where the cover decides them. What reaches

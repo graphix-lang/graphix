@@ -651,6 +651,27 @@ except where an arm holds a partial struct pattern, whose completion
 against an open cell is the struct of the fields it names, a type the
 program never wrote.
 
+A decision may rewrite a binding that held the cell: `y` bound to `['x,
+`J]` becomes `` `J `` once `(`J, _)` decides `'x`. So a bound cell of
+the scrutinee whose binding holds an open cell is noted with that binding,
+and one a step rewrote is walked as it was (`Decisions::held`), where the
+decided `'x` stands beside the member that holds the literal's type.
+Coverage (`Reach::arm`) is a pattern step too.
+
+An arm that only takes a decided part apart is no test of it
+(`StructurePattern::only_destructures`, Eric 11-05, D5 follow-up 2 (b)):
+a tuple, a struct naming every field, a slice or list with a rest, an
+abstract payload, holding only names, `_` and such patterns, each part of
+the shape of every member of the part as decided (`destructures`). It
+decides the part's shape as an annotation would and no later arm can be
+told apart by it; a later arm of another shape is refused as testing the
+part. A literal, a tag, `null`, `[]`, an or-pattern, a written test, a
+partial struct (its completion is the struct of the fields it names) and
+a slice of a fixed length choose among the part's values, and stay
+refused: a fixed length is a choice among lengths as a literal is among
+values, where a rest leaves every length but the shortest to a later arm
+or the coverage.
+
 What only names and `_` meet passes, and stays sound two ways. A name
 over a union position where one member's part is an open cell takes
 that cell beside the other members' parts (`TVar::narrow_per_member`:

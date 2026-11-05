@@ -6850,44 +6850,44 @@ run!(
     prints(r#"["x5", "xs"]"#)
 );
 
-// An open cell inside the scrutinee that an arm's pattern would shape is
-// tested by that arm: refused, naming the binding to annotate.
+// An open cell inside the scrutinee takes its shape from the arms' own
+// cells: `x + 1` makes `v` an Array<i64>, so a string array is refused.
 run!(
-    an_open_part_a_slice_arm_would_shape_refused,
+    settle_shapes_an_open_part_with_the_arms_cells,
     r#"{
         let f = |v| select (v, 0) { ([x, ..], _) => x + 1, (_, _) => 0 };
         f(["s"])
     }"#,
-    refused("([x, ..], _) tests a value of 'v, a type not decided at this select");
+    refused("type mismatch Array<i64> does not contain Array<string>");
     FuseExpect::None
 );
 
 run!(
-    an_open_field_a_slice_arm_would_shape_refused,
+    settle_shapes_an_open_struct_field_with_the_arms_cells,
     r#"{
         let f = |v| select {a: v, b: 0} { {a: [x, ..], b: _} => x + 1, {a: _, b: _} => 0 };
         f(["s"])
     }"#,
-    refused("{ a: [x, ..], b: _ } tests a value of 'v, a type not decided at this select");
+    refused("type mismatch Array<i64> does not contain Array<string>");
     FuseExpect::None
 );
 
 run!(
-    a_later_written_part_a_slice_arm_would_shape_refused,
+    settle_shapes_a_later_written_part_with_the_arms_cells,
     r#"{
         let z = never();
         let r = select (z, 0) { ([x, ..], _) => str::len(x), (_, _) => 0 };
         z <- [1];
         r
     }"#,
-    refused("([x, ..], _) tests a value of 'z, a type not decided at this select");
+    refused("z is Array<string>, inferred from an earlier use, and cannot hold Array<i64>");
     FuseExpect::None
 );
 
 run!(
-    an_annotated_part_a_slice_arm_tests_runs,
+    settle_shapes_an_open_part_and_runs,
     r#"{
-        let f = |v: Array<i64>| select (v, 0) { ([x, ..], _) => x + 1, (_, _) => 0 };
+        let f = |v| select (v, 0) { ([x, ..], _) => x + 1, (_, _) => 0 };
         [f([3, 4]), f([])]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0])

@@ -453,9 +453,10 @@ fn same_form(
 /// last arm's body: `tm__z`'s type is not decided where the arms test it,
 /// so a later use could decide it apart from what they assume. The `_`
 /// arm keeps the arms from deciding it (a union scrutinee beside a
-/// wildcard settles nothing). And it becomes `{ let tm__z = never();
-/// select (tm__z, 0) { (arm, _) .., _ => last } }`, where the first arm
-/// testing `tm__z` would decide it: refused as testing it. Right site: the
+/// wildcard settles nothing). And, where an arm chooses a value (a
+/// literal, a tag, a length), not only taking one apart, it becomes `{ let
+/// tm__z = never(); select (tm__z, 0) { (arm, _) .., _ => last } }`, where
+/// that arm would decide `tm__z`: refused as testing it. Right site: the
 /// replaced select.
 fn undecided_part(
     root: &Expr,
@@ -528,8 +529,12 @@ fn undecided_part(
         let zero = ExprKind::Constant(netidx_value::Value::I64(0)).to_expr_nopos();
         let pair =
             ExprKind::Tuple { args: Arc::from_iter([z.clone(), zero]) }.to_expr_nopos();
+        // an arm that only takes `tm__z` apart decides its shape as an
+        // annotation would: the decide shape needs one that chooses a value
+        let decides =
+            !se.arms.iter().all(|(p, _)| p.structure_predicate.only_destructures());
         let scrutinees = [(union, Arc::from_iter(arms)), (pair, nested)];
-        for (arg, arms) in scrutinees {
+        for (arg, arms) in scrutinees.into_iter().take(1 + decides as usize) {
             let sel =
                 ExprKind::Select(SelectExpr { arg: Arc::new(arg), arms }).to_expr_nopos();
             let never =

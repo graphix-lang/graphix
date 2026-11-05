@@ -12,8 +12,8 @@ use crate::{
     TagValue, Update, View, bailat,
     env::Env,
     expr::{
-        At, Expr, ExprId, ExprKind, Origin, Pattern, StructurePattern, UndecidedMembers,
-        union_members, union_members_open,
+        At, Decided, Expr, ExprId, ExprKind, Origin, Pattern, StructurePattern,
+        UndecidedMembers, union_members, union_members_open,
     },
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -2237,7 +2237,7 @@ impl<R: Rt> Select<R> {
             crate::typ::settle::position_cells(self.arg.node.typ(), &mut outer)
         }
         // the cells the arms' patterns decide, each by the cell it stands for
-        let mut decided: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let mut decided = Decisions::default();
         let deciding = match &self.spec.kind {
             ExprKind::Select(se) if checking => {
                 Deciding::new(&outer, self.arg.node.typ(), &se.arms)
@@ -2424,10 +2424,14 @@ impl<R: Rt> Select<R> {
                     }
                 }
                 wrap!(n, child(n, ctx))?;
-                reach.arm(&ctx.env, &scrut, pat, &site, checking)
+                let deciding = deciding.again();
+                let covered = reach.arm(&ctx.env, &scrut, pat, &site, checking);
+                deciding.decided(&mut decided);
+                covered
             })();
             if let Err(e) = step {
-                if checking && !decided.is_empty() {
+                if checking && !decided.cells.is_empty() {
+                    reached.truncate(i);
                     while reached.len() < self.arms.len() {
                         reached.push(scrut.clone())
                     }
@@ -2463,19 +2467,23 @@ impl<R: Rt> Select<R> {
     /// coverage and its binds assumed it would not: one of `undecided`, the
     /// cells the scrutinee held before the arms ran (never one the arms' own
     /// patterns brought) still open, or of `decided`, those the arms'
-    /// patterns decided, in the part of the scrutinee that reaches the arm
-    /// (`reached`, one per arm, the whole scrutinee for an arm a refusal
-    /// stopped the check before), or any open cell of a written test.
+    /// patterns decided, unless the arm's pattern there only takes apart
+    /// every value of the shape decided, in the part of the scrutinee that
+    /// reaches the arm (`reached`, one per arm, the whole scrutinee from the
+    /// arm a refusal stopped the check at), or any open cell of a written
+    /// test.
     fn check_undecided(
         &self,
         env: &Env,
         undecided: &AHashMap<usize, TVar>,
-        decided: &AHashMap<usize, TVar>,
+        decided: &Decisions,
         reached: &[Type],
     ) -> Result<()> {
         let ExprKind::Select(se) = &self.spec.kind else { return Ok(()) };
-        let held = |tv: &TVar| undecided.contains_key(&tv.cell_addr());
-        let was_open = |tv: &TVar| decided.contains_key(&tv.stands_for());
+        let open = |tv: &TVar| undecided.contains_key(&tv.cell_addr());
+        let was_open = |tv: &TVar| decided.cells.contains_key(&tv.stands_for());
+        let held = |tv: &TVar| decided.held.get(&tv.stands_for()).cloned();
+        let was = Decided { cell: &was_open, held: &held };
         for (((pat, n), (spec_pat, _)), reaching) in
             self.arms.iter().zip(se.arms.iter()).zip(reached.iter())
         {
@@ -2498,7 +2506,7 @@ impl<R: Rt> Select<R> {
                         None => {
                             match written_tests_undecided(env, t, reaching, undecided)? {
                                 Some(tv) => Some(tv),
-                                None if decided.is_empty() => None,
+                                None if decided.cells.is_empty() => None,
                                 None => written_tests_decided(env, t, reaching, decided)?,
                             }
                             .map(|tv| {
@@ -2508,10 +2516,10 @@ impl<R: Rt> Select<R> {
                         }
                     }
                 }
-                false => match sp.meets_undecided(env, &ids, reaching, &held)? {
+                false => match sp.meets_undecided(env, &ids, reaching, &open)? {
                     Some(tv) => Some(tv),
-                    None if decided.is_empty() => None,
-                    None => sp.meets_decided(env, &ids, reaching, &was_open)?,
+                    None if decided.cells.is_empty() => None,
+                    None => sp.meets_decided(env, &ids, reaching, &was)?,
                 }
                 .map(|tv| undecided_refusal(env, sp, &tv, &self.spec.ori)),
             };
@@ -2533,11 +2541,14 @@ impl<R: Rt> Select<R> {
 // Found by review r16 (U-r1-1). probes: ~/ptmp/cr29/scratch/r16-U/review-fix/p/
 // lb4.gx, lb5.gx, lb1.gx, lb2.gx; twin lb7.gx (undecided-lower-bound-01)
 /// The scrutinee's cells open before a step of a select's check that may
-/// decide them: the arms' settle, or an arm's pattern. A whole scrutinee
-/// open before the arms is theirs to decide together, unless an arm holds a
+/// decide them, the arms' settle or an arm's pattern, and the bound cells
+/// whose bindings hold open cells, each with its binding: deciding a cell
+/// may rewrite a binding that held it (`['x, `J]` to `` `J ``), so a holder
+/// whose binding the step changed was decided too. A whole scrutinee open
+/// before the arms is theirs to decide together, unless an arm holds a
 /// partial struct pattern, whose completion has no one answer.
 #[derive(Default)]
-struct Deciding(SmallVec<[TVar; 4]>);
+struct Deciding(SmallVec<[(TVar, Option<Type>); 4]>);
 
 impl Deciding {
     fn new(
@@ -2559,26 +2570,58 @@ impl Deciding {
         Self(
             outer
                 .values()
-                .filter(|tv| {
-                    tv.open_cell()
-                        .is_some_and(|c| !c.is_rigid() && Some(c.cell_addr()) != whole)
+                .filter_map(|tv| match tv.open_cell() {
+                    Some(c) => (!c.is_rigid() && Some(c.cell_addr()) != whole)
+                        .then(|| (tv.clone(), None)),
+                    None => Self::holding(tv),
                 })
-                .cloned()
                 .collect(),
         )
     }
 
-    /// The cells still open, for the next step.
-    fn again(&self) -> Self {
-        Self(self.0.iter().filter(|tv| tv.open_cell().is_some()).cloned().collect())
+    fn holding(tv: &TVar) -> Option<(TVar, Option<Type>)> {
+        let b = tv.binding()?;
+        b.has_free().then(|| (tv.clone(), Some(b)))
     }
 
-    /// Add to `decided` each cell the step decided.
-    fn decided(&self, decided: &mut AHashMap<usize, TVar>) {
-        for tv in self.0.iter().filter(|tv| tv.open_cell().is_none()) {
-            decided.insert(tv.stands_for(), tv.clone());
+    /// The cells still open, and the holders still holding one, for the
+    /// next step.
+    fn again(&self) -> Self {
+        Self(
+            self.0
+                .iter()
+                .filter_map(|(tv, held)| match held {
+                    None => tv.open_cell().is_some().then(|| (tv.clone(), None)),
+                    Some(_) => Self::holding(tv),
+                })
+                .collect(),
+        )
+    }
+
+    /// Add to `decided` each cell the step decided, and each binding it
+    /// rewrote as it was.
+    fn decided(&self, decided: &mut Decisions) {
+        for (tv, held) in self.0.iter() {
+            match held {
+                None if tv.open_cell().is_none() => {
+                    decided.cells.insert(tv.stands_for(), tv.clone());
+                }
+                Some(b) if tv.binding().as_ref() != Some(b) => {
+                    decided.held.entry(tv.stands_for()).or_insert_with(|| b.clone());
+                }
+                None | Some(_) => (),
+            }
         }
     }
+}
+
+/// What a select's arms decided: the cells open before them, and the
+/// bindings their decisions rewrote, as they were, each by the cell it
+/// stands for.
+#[derive(Default)]
+struct Decisions {
+    cells: AHashMap<usize, TVar>,
+    held: AHashMap<usize, Type>,
 }
 
 // XCR claude for claude: [question/low] D5 (b) refuses an arm that tests a part still
@@ -2640,6 +2683,30 @@ impl Deciding {
 // same part passes. None is in the census of both repos. probes:
 // ~/ptmp/cr29/scratch/r16-U/review-fix/p/,
 // ~/ptmp/cr29/scratch/review-r16/U-r2-1/p/{e1,e8,e9}.gx.
+// 2026-11-05 claude: Eric ruled (11-05, D5 follow-up 2): (b), irrefutable structure is exempt.
+// Built (lane U, round 16 part 2): an arm whose pattern at a decided part only takes apart every
+// value of the shape decided (a tuple, a struct naming every field, a slice or list with a rest,
+// an abstract payload, with only names, _ and such patterns:
+// StructurePattern::only_destructures, destructures) decides the shape as an annotation would
+// and is not refused; literals, tags, null, [], a fixed-length slice, an or-pattern, a partial
+// struct and a written test stay refused. A later arm of another shape than the one decided is
+// refused naming the binding (may_hold_met reads decided cells as open; the arm a refusal stops
+// at is judged against the whole scrutinee). Also the literal at a union position main and lane
+// missed ((null, _) over y = [x, null]): deciding x rewrote y's binding to the literal's member,
+// hiding x; Deciding now notes the scrutinee's bound cells whose bindings hold open cells and
+// Decisions::held walks a rewritten one as it was, and Reach::arm (coverage) counts as a pattern
+// step. Pins: lang::select_undecided::{destructuring_tuple_*, destructuring_struct_*,
+// destructuring_slice_with_a_rest_*, destructuring_slice_suffix_*, destructuring_list_*,
+// destructuring_abstract_payload_*, destructuring_nested_capture_*} (run as on main; fail x4
+// without the exemption), {bool_literals_*, literal_*, empty_slice_*, fixed_length_slice_*,
+// list_head_*, or_pattern_*, partial_struct_deciding_*,
+// other_shape_than_an_earlier_arm_decided_refused} with annotated twins,
+// {tag,null}_at_a_union_position_deciding_an_undecided_member_refused (fail x4 without the
+// holder snapshot) and its annotated twin; main's lang::select::settle_shapes_* restored.
+// Must-reject family 14 emits its decide shape only where an arm chooses a value. Census of both
+// repos: no change. Judged: a slice of fixed length (d10, [a, b]) stays refused as a length
+// choice; a partial struct stays refused (its completion is the struct of the fields it names).
+// probes: ~/ptmp/cr29/scratch/r16-U2/p/
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
@@ -2714,15 +2781,15 @@ fn written_tests_decided(
     env: &Env,
     t: &Type,
     reaching: &Type,
-    decided: &AHashMap<usize, TVar>,
+    decided: &Decisions,
 ) -> Result<Option<TVar>> {
     fn reopen(
         t: &Type,
-        decided: &AHashMap<usize, TVar>,
+        decided: &Decisions,
         fresh: &mut AHashMap<usize, (TVar, TVar)>,
     ) -> Option<Type> {
         crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => match decided.get(&tv.stands_for()) {
+            Type::TVar(tv) => match decided.cells.get(&tv.stands_for()) {
                 Some(d) => {
                     let (c, _) = fresh.entry(tv.stands_for()).or_insert_with(|| {
                         (TVar::empty_named(d.name.clone()), d.clone())
@@ -2730,7 +2797,11 @@ fn written_tests_decided(
                     Some(Type::TVar(c.clone()))
                 }
                 None => {
-                    let b = tv.binding()?;
+                    let b = decided
+                        .held
+                        .get(&tv.stands_for())
+                        .cloned()
+                        .or_else(|| tv.binding())?;
                     Some(reopen(&b, decided, fresh).unwrap_or(b))
                 }
             },
