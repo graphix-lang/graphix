@@ -129,7 +129,7 @@ fn line_text<'a>(i: &mut Input<'a>) -> &'a str {
     i.take_while(|c| c != '\r' && c != '\n')
 }
 
-// CR claude for claude: [bug/low] A blank line lone CRs make is lost: this
+// XCR claude for claude: [bug/low] A blank line lone CRs make is lost: this
 // counts only '\n', so `// a\r\r// b` formats as two comment lines with no
 // blank between, where an editor and Mark (crcrlf-lines-01) see one, and the
 // same text with LFs keeps it. Counting every '\r' and '\n' of the text,
@@ -137,9 +137,16 @@ fn line_text<'a>(i: &mut Input<'a>) -> &'a str {
 // too. Found by review r14 of lane K. probe:
 // ~/ptmp/cr29/scratch/review-r14/K-r1-2/crlf2/blank_cr.gx against blank_lf.gx
 // (lone-cr-blank-01)
+// 2026-11-05 claude: spaces_blank counts every '\r' and '\n' of the whitespace
+// (the text's CRLFs already read as LF), so a lone-CR blank line between
+// comment lines is kept as Mark counts it. Pin:
+// expr::parser::test::a_blank_line_between_comment_lines_rides_the_next, its
+// '// a\r\r// b' and '// a\r\r\n// b' cases, fails without it. Probe
+// blank_cr.gx now formats with the blank line, as blank_lf.gx does.
 /// Whitespace, and whether it holds a blank line.
 fn spaces_blank(i: &mut Input) -> bool {
-    i.take_while(char::is_whitespace).chars().filter(|c| *c == '\n').count() > 1
+    i.take_while(char::is_whitespace).chars().filter(|c| matches!(c, '\r' | '\n')).count()
+        > 1
 }
 
 /// `//`, and whether it opens a `///` doc.

@@ -370,7 +370,12 @@ fn spacing(lines: &[Comment]) -> Vec<(bool, ArcStr)> {
 #[test]
 fn a_blank_line_between_comment_lines_rides_the_next() {
     let want = [(false, literal!(" a")), (true, literal!(" b")), (false, literal!(" c"))];
-    for src in ["\n// a\n\n  \n\n// b\n// c\n\n42", "// a\r\n\r\n// b\r\n// c\r\n42"] {
+    for src in [
+        "\n// a\n\n  \n\n// b\n// c\n\n42",
+        "// a\r\n\r\n// b\r\n// c\r\n42",
+        "// a\r\r// b\r// c\r42",
+        "// a\r\r\n// b\n// c\n42",
+    ] {
         assert_eq!(spacing(&dec_of(&parse_one(src).unwrap()).comments), want, "{src:?}");
     }
     let e = parse_one("{ x; y\n\n// a\n\n// b\n// c\n\n}").unwrap();
