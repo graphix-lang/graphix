@@ -1,7 +1,10 @@
 // Type names a block declares, read after the block: an instance's body,
 // a labeled default compiled at a call, a value's type at run time.
 
-use graphix_package_core::{run, testing::prints};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, prints, refused},
+};
 
 // An instance's body names its block's type over an outer one of the
 // same name, wherever the outer one is declared.
@@ -74,6 +77,71 @@ let g = |z: i64| {
 let result = g(1)
 "#,
     "/test/m.gx" => "type L = string"
+);
+
+// A name a block declares means its type throughout the block, in a
+// function written above the declaration as in a later instance of it.
+run!(
+    block_type_named_above_its_declaration_in_a_function,
+    r#"{
+    type L = i64;
+    let g = |z: i64| {
+        let f = |x: i64| { let b: L = 3; (b, x) };
+        type L = string;
+        f(z)
+    };
+    g(1)
+}"#,
+    refused("type mismatch L does not contain i64");
+    FuseExpect::None
+);
+
+run!(
+    block_type_named_above_its_declaration_in_a_function_fits,
+    r#"{
+    type L = i64;
+    let g = |z: i64| {
+        let f = |x: i64| { let b: L = "s"; (b, x) };
+        type L = string;
+        f(z)
+    };
+    g(1)
+}"#,
+    prints(r#"["s", i64:1]"#)
+);
+
+run!(
+    block_type_named_above_its_declaration_in_a_block,
+    r#"{
+    type L = i64;
+    let r = {
+        let f = |x: i64| { let b: L = 3; (b, x) };
+        type L = string;
+        f(1)
+    };
+    r
+}"#,
+    refused("type mismatch L does not contain i64");
+    FuseExpect::None
+);
+
+run!(
+    block_type_named_above_its_declaration_over_an_outer_one,
+    r#"{
+    type Foo = string;
+    let r = { let f = |x: i64| { let a: Foo = 42; a + x }; type Foo = i64; f(1) };
+    r + 1
+}"#,
+    prints("i64:44")
+);
+
+run!(
+    block_type_named_above_its_declaration_alone,
+    r#"{
+    let r = { let f = |x: i64| { let a: Foo = 42; a + x }; type Foo = i64; f(1) };
+    r + 1
+}"#,
+    prints("i64:44")
 );
 
 // A default's block type reaches a call through a field, which binds the

@@ -588,10 +588,6 @@ impl TypeDef {
         Node::new(Self { spec, scope, name, unchanged_from, definition })
     }
 
-    pub(crate) fn definition(&self) -> Option<&std::sync::Arc<crate::typ::ResolvedRef>> {
-        self.definition.as_ref()
-    }
-
     /// A registration this definition made owns what its representation
     /// names; one another made is compared with this definition's.
     fn check_unchanged<R: Rt>(&self, ctx: &CompileCtx<R>) -> Result<()> {
@@ -1072,9 +1068,13 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     if declares_types {
         ctx.block_typedefs.push((scope.lexical.clone(), typedefs));
     }
-    if exprs.iter().any(|e| matches!(e.kind, ExprKind::TypeDef(_))) {
-        ctx.env.open_block(&scope.lexical);
-    }
+    ctx.env.open_block(
+        &scope.lexical,
+        exprs.iter().filter_map(|e| match &e.kind {
+            ExprKind::TypeDef(td) => Some(td.name.name.as_str()),
+            _ => None,
+        }),
+    );
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();

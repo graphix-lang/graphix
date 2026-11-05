@@ -3605,6 +3605,20 @@ fn check_and_fuse_inner<R: Rt>(
     // body_type_over_an_outer_one_its_parameter_names, block_type_over_an_imported_one
     // (jit and jit_par abort 'misaligned pointer dereference' with the registry disabled),
     // graphix-shell/tests/shell/block_types.rs (REPL; base aborts).
+    // 2026-11-04 claude: Review r15 (N-r1-1) found the registry made a later block typedef
+    // take over an earlier statement's use of an outer type of the name at run time (fwd6:
+    // an outer type L = i64, a function above a block's type L = string naming L; check
+    // i64, kernel string, abort), and the same shape in a top-level block aborted on main
+    // (fwd9). The rule is now that a name a block declares is its type throughout the
+    // block (Lexical::block_names, Env::open_block): at a compiling block's level, and in
+    // every snapshot taken inside it, such a name is the registry's definition or refused,
+    // never an outer type; the earlier note's open-block wording ('a name there means what
+    // its earlier statements declare') no longer holds. fwd6, fwd7, fwd9, fwd11, fwd3 are
+    // refused by the check in every mode (L does not contain i64 / string); a function
+    // naming the block's later type with no outer one now checks (fwd2, p2). Pins
+    // lang::block_types::block_type_named_above_its_declaration_in_a_function,
+    // _in_a_block, _over_an_outer_one, _alone, _in_a_function_fits; shell
+    // block_types::a_blocks_type_above_its_declaration_is_not_an_earlier_inputs.
     // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
     // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are
     // fixed at the root (a registry of block typedefs that outlive their block, a block's

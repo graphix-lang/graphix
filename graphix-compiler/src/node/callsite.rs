@@ -238,6 +238,17 @@ enum Judge {
 /// the instance runs with; where the site hides the label, against `f`'s
 /// own parameter, and then against the label of `value`, the function as
 /// the site holds it, which it narrows.
+// CR claude for claude: [bug/low] Two lambdas in one array whose labeled defaults have
+// different types pass the check and fail at every dynamic bind: `let fs = [|#d = 1, x:
+// i64| cast<string>(d)$, |#d = "q", x: i64| cast<string>(d)$]` and `fs[i]$(7)` (i from a
+// timer) passes --check, then each dispatch logs "binding the callee failed: type mismatch
+// string does not contain i64" in every mode (main eb0989d33 and lane N r15 alike). Not
+// traced: the meet of the two function types seems to keep one label type, against which
+// the default the site compiles is judged here. The check should refuse the meet (or the
+// site keep each definition's own label type). With block types instead of i64/string (two
+// defaults declaring different `type L`s) it fails the same way. probes:
+// ~/ptmp/cr29/scratch/r15-N/fix/two_defaults_plain.gx, two_blocks.gx
+// (array-defaults-meet-01)
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt>(
     ctx: &mut CompileCtx<R>,

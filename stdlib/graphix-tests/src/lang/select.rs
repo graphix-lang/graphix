@@ -7261,8 +7261,9 @@ run!(
     FuseExpect::None
 );
 
-// An abstract pattern holds the type its compile resolved, not one a
-// later statement of its block declares under the name.
+// A name a later statement of the block declares is that type throughout
+// the block, so an abstract pattern over the outer type of the name is
+// refused above the declaration.
 run!(
     abstract_pattern_renamed_by_a_later_typedef_refused,
     refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `W<[`A(i64), `B(i64)]> as W(`A(z))`"),
@@ -7281,12 +7282,28 @@ run!(
 
 run!(
     abstract_pattern_renamed_by_a_later_typedef_written,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    refused("W names the type a later statement of this block declares"),
     "/test.gx" => r#"
         type W<'a> = Abstract<'a>;
         let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {
             let r = select x { W<[`A(i64), `B(i64)]> as W(`A(z)) => z + 1, _ => 0 };
             type W = i64;
+            r
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(W(o))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_pattern_beside_a_later_typedef_of_another_name,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {
+            let r = select x { W<[`A(i64), `B(i64)]> as W(`A(z)) => z + 1, _ => 0 };
+            type V = i64;
             r
         };
         let o: [`A(i64), `B(i64)] = `A(3);

@@ -219,27 +219,33 @@ impl BlockTypes {
         })
     }
 
-    /// The live definition of `name` at `scope`, with its seeded flag.
-    fn live(
+    /// The live definition of `name` at `scope`, with its seeded flag,
+    /// else the one `new` makes, recorded there in place of a dead entry:
+    /// one step under the lock, so compiles of one block declare one
+    /// definition.
+    fn declare(
         &self,
-        scope: &str,
+        scope: &ModPath,
         name: &str,
-    ) -> Option<(std::sync::Arc<ResolvedRef>, Arc<AtomicBool>)> {
-        self.entry(scope, name, |e| Some((e.def.upgrade()?, e.seeded.clone()))).flatten()
-    }
-
-    /// Record `td` as `name` at `scope`, in place of the entry there.
-    fn declare(&self, scope: &ModPath, name: &str, td: &TypeDef) {
-        let entry = BlockType {
-            scope: scope.clone(),
-            def: std::sync::Arc::downgrade(&td.def),
-            seeded: td.seeded.clone(),
-        };
+        new: impl FnOnce() -> std::sync::Arc<ResolvedRef>,
+    ) -> (std::sync::Arc<ResolvedRef>, Arc<AtomicBool>) {
         let mut reg = self.0.write();
         let reg = &mut *reg;
         let es = reg.by_name.entry(CompactString::from(name)).or_default();
-        match es.iter_mut().find(|e| e.scope == *scope) {
-            Some(e) => *e = entry,
+        let live = |e: &BlockType| Some((e.def.upgrade()?, e.seeded.clone()));
+        let at = es.iter().position(|e| e.scope == *scope);
+        if let Some(live) = at.and_then(|i| live(&es[i])) {
+            return live;
+        }
+        let def = new();
+        let seeded = Arc::new(AtomicBool::new(false));
+        let entry = BlockType {
+            scope: scope.clone(),
+            def: std::sync::Arc::downgrade(&def),
+            seeded: seeded.clone(),
+        };
+        match at {
+            Some(i) => es[i] = entry,
             None => {
                 es.push(entry);
                 reg.entries += 1;
@@ -253,6 +259,7 @@ impl BlockTypes {
             reg.entries = reg.by_name.values().map(|es| es.len()).sum();
             reg.swept_at = reg.entries;
         }
+        (def, seeded)
     }
 
     /// Every live entry at `scope` or below, with its name.
@@ -563,13 +570,12 @@ pub(crate) enum TypeName {
     Trait(TraitId),
 }
 
-impl From<BlockHit> for Result<TypeName, ()> {
-    fn from(hit: BlockHit) -> Self {
-        match hit {
-            BlockHit::Live(def) => Ok(TypeName::Def(def)),
-            BlockHit::Dead => Err(()),
-        }
-    }
+/// Why a block's type name has no definition where it is looked up.
+enum Unseen {
+    /// Its definition is gone.
+    Dead,
+    /// Its block declares it in a statement not compiled yet.
+    Later,
 }
 
 /// Where a scope is, for a message: the root is the top level.
@@ -673,6 +679,11 @@ pub struct Lexical {
     pub modules: Set<ModPath>,
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
     pub traits: Map<ModPath, Map<CompactString, TraitId>>,
+    /// The type names each compiling block declares, by the block's
+    /// scope. A name there is the block's type before its declaration
+    /// too: through `Env::block_types` where an earlier compile declared
+    /// it, else it is refused, never an outer type of the name.
+    pub block_names: Map<ModPath, Map<CompactString, ()>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1369,25 +1380,36 @@ impl Env {
         name: &ModPath,
     ) -> Result<Option<TypeName>> {
         let hit = self.resolve_visible(scope, name, NameNs::Type, |s, n| {
-            match self.lexical.typedefs.get(s).and_then(|m| m.get(n)) {
-                Some(d) => Some(BlockHit::Live(d.def.clone()).into()),
-                None => match self.lexical.traits.get(s).and_then(|m| m.get(n)) {
-                    Some(id) => Some(Ok(TypeName::Trait(*id))),
-                    None if is_block_scope(s)
-                        && self.lexical.typedefs.get(s).is_none() =>
-                    {
-                        self.block_types.find(s, n).map(Into::into)
-                    }
-                    None => None,
-                },
+            if let Some(d) = self.lexical.typedefs.get(s).and_then(|m| m.get(n)) {
+                return Some(Ok(TypeName::Def(d.def.clone())));
+            }
+            if let Some(id) = self.lexical.traits.get(s).and_then(|m| m.get(n)) {
+                return Some(Ok(TypeName::Trait(*id)));
+            }
+            if !is_block_scope(s) {
+                return None;
+            }
+            let later = match self.lexical.block_names.get(s) {
+                Some(names) if names.get(n).is_none() => return None,
+                Some(_) => true,
+                None => false,
+            };
+            match self.block_types.find(s, n) {
+                Some(BlockHit::Live(def)) => Some(Ok(TypeName::Def(def))),
+                Some(BlockHit::Dead) => Some(Err(Unseen::Dead)),
+                None => later.then_some(Err(Unseen::Later)),
             }
         })?;
         match hit {
             None => Ok(None),
             Some(Ok(t)) => Ok(Some(t)),
-            Some(Err(())) => {
+            Some(Err(Unseen::Dead)) => {
                 bail!("type `{name}` outlived its definition in `{scope}`")
             }
+            Some(Err(Unseen::Later)) => bail!(
+                "{name} names the type a later statement of this block declares: \
+                 declare it before its first use"
+            ),
         }
     }
 
@@ -2116,25 +2138,22 @@ impl Env {
             // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);
         }
-        let block = defer && is_block_scope(scope);
-        let (def, seeded) = match block.then(|| self.block_types.live(scope, name)) {
-            Some(Some(live)) => live,
-            _ => (
-                std::sync::Arc::new(ResolvedRef::new(
-                    scope.clone(),
-                    pos,
-                    ori,
-                    params.clone(),
-                    typ.clone(),
-                )),
-                Arc::new(AtomicBool::new(false)),
-            ),
+        let new = || {
+            std::sync::Arc::new(ResolvedRef::new(
+                scope.clone(),
+                pos,
+                ori,
+                params.clone(),
+                typ.clone(),
+            ))
+        };
+        let (def, seeded) = if defer && is_block_scope(scope) {
+            self.block_types.declare(scope, name, new)
+        } else {
+            (new(), Arc::new(AtomicBool::new(false)))
         };
         let key = def.def_key();
         let td = TypeDef { def, rep: rep.clone(), doc, seeded };
-        if block {
-            self.block_types.declare(scope, name, &td);
-        }
         let defs = self.lexical.typedefs.get_or_default_cow(scope.clone());
         defs.insert_cow(name.into(), td);
         // compared with the definition in scope, where a self-reference in
@@ -2369,14 +2388,21 @@ impl Env {
             .map(|td| td.def.clone())
     }
 
-    /// Open the block at `scope` in the lexical maps before its
-    /// statements compile: while a block compiles, a name at its level
-    /// means what the statements before it declare, as at its first
-    /// compile, never what a later one does (`Env::block_types` serves
-    /// only a block no lexical map holds).
-    pub fn open_block(&mut self, scope: &ModPath) {
-        if is_block_scope(scope) {
-            self.lexical.typedefs.get_or_default_cow(scope.clone());
+    /// Record the type names the block at `scope` declares before its
+    /// statements compile: a name a block declares means its type
+    /// throughout the block, so before its declaration it is never an
+    /// outer type of the name ([`Lexical::block_names`]).
+    pub fn open_block<'a>(
+        &mut self,
+        scope: &ModPath,
+        names: impl IntoIterator<Item = &'a str>,
+    ) {
+        let mut names = names.into_iter().peekable();
+        if is_block_scope(scope) && names.peek().is_some() {
+            let m = self.lexical.block_names.get_or_default_cow(scope.clone());
+            for n in names {
+                m.insert_cow(CompactString::from(n), ());
+            }
         }
     }
 
@@ -2411,6 +2437,7 @@ impl Env {
         }
         self.lexical.modules =
             retain_set(&self.lexical.modules, |s| !scope_is_under(s, scope));
+        drop_scopes(&mut self.lexical.block_names, scope);
         drop_scopes(&mut self.lexical.binds, scope)
             + drop_scopes(&mut self.lexical.typedefs, scope)
             + drop_scopes(&mut self.lexical.traits, scope)

@@ -72,9 +72,9 @@ pub struct DefTable {
     aux: AHashMap<ExprId, Box<[Type]>>,
     /// The table of each lambda literal of the body, by its id.
     lambdas: AHashMap<ExprId, SArc<DefTable>>,
-    /// The typedefs the rows name and the body's and defaults' blocks
-    /// declare, owned here: a block's is in the env only while the block
-    /// compiles, and the registry of block types holds it weakly.
+    /// The typedefs the rows name, owned here: a block's is in the env
+    /// only while the block compiles, and the registry of block types
+    /// holds it weakly.
     typedefs: Vec<SArc<ResolvedRef>>,
     /// The body's own effect facts (`analysis::def_body_facts`), which
     /// every definition this table types starts from.
@@ -344,9 +344,6 @@ impl DefTable {
                 }
                 NodeView::Qop(q) => {
                     self.aux.insert(id, Box::new([q.strip.removed()]));
-                }
-                NodeView::TypeDef(td) => {
-                    self.typedefs.extend(td.definition().cloned());
                 }
                 _ => (),
             }
@@ -2893,6 +2890,16 @@ fn capture_names<R: Rt>(
 // (all four modes fail with the registry disabled), json_reads_a_defaults_block_type
 // (base refuses its build), lang::select::default_at_a_bind_declares_a_recursive_type
 // (fails in all four with the registry disabled),
+// lang::image::a_restored_block_type_is_found.
+// 2026-11-04 claude: Correction to the 2026-11-04 note (review N-r1-2):
+// default_block_type_through_a_field and
+// lang::select::default_at_a_bind_declares_a_recursive_type do not depend on the registry
+// lookup; the first depends on record_defaults keeping rows (with names_type_anywhere
+// restored its interp mode fails 'type L outlived its definition'), the second passes on
+// main. DefTable no longer takes each block TypeDef node's definition (no program showed
+// a loss without it): it owns what its rows name. The registry lookup is pinned by the D2
+// shapes (lang::block_types::block_type_over_an_outer_one_*),
+// abstract_parameter_a_default_type_test_decides_compares and
 // lang::image::a_restored_block_type_is_found.
 // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
 // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are fixed

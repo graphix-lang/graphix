@@ -151,7 +151,9 @@ writes, a typedef body's included, must name something by the check's
 end, expanded or not (`design/env_independent_typerefs.md`). A pattern
 naming a type a later statement of its block declares binds at that
 type as the block ends, and one that tests or takes such a type apart
-is refused (`node::later_typedef`). A top-level input (a REPL input, each
+is refused (`node::later_typedef`); a name a block declares is its type
+throughout the block, never an outer type of the name, and one needed
+before its declaration is refused (`Lexical::block_names`). A top-level input (a REPL input, each
 statement of its line one; a script; a dynamic module's load) is checked
 and run alone, as a compile task of its own (`Input`): at its end every
 open top-level cell its bindings' and value's types reach settles, ⊥
@@ -498,16 +500,15 @@ is), never overwrite a filled cell; the cell holds the definition
 weakly and the `TypeDef` owns it (a recursive body reaches its own
 cell), so a type outliving its definition's env entry is refused,
 never re-resolved, and what outlives the entry owns the definitions
-its types name (a definition's check table, which also owns every
-typedef its body's and its defaults' blocks declare, a kernel's type
+its types name (a definition's check table, a kernel's type
 constant, an abstract type's registration, the block's `TypeDef` node:
 `DefTable::typedefs`, `record::KernelType`, `AbstractRep::named`,
 `node::TypeDef`). A typedef a block declares (a scope ending in a
 generated component) stays findable after the block in `Env::
 block_types`, by scope and name, held weakly and shared by every copy
-of the env: a lookup at a block level no lexical map holds reads it (a
-block compiling holds its own, `Env::open_block`, so a name there means
-what its earlier statements declare, as at its first compile), and one
+of the env: a lookup at a block level no lexical map holds reads it, so
+does one at a compiling block's level (or a snapshot of it) for a name
+the block declares later (`Env::open_block`), and one
 that meets a dead entry is refused, never continued outward; a block compiled again declares the live definition, so one
 source typedef is one definition; an image carries the live entries.
 `Env::seed_typedef_refs` (block types included) runs at the check's end
