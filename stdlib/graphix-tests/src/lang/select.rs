@@ -7807,3 +7807,86 @@ run!(
     is(Value::I64(3));
     FuseExpect::Jit
 );
+
+// A pattern that is no named type is walked against a recursive scrutinee
+// as deep as it goes, a name it holds included, whether an alias or the
+// scrutinee's own recursive name.
+run!(
+    alias_deep_in_a_list_pattern_refused,
+    r#"{
+        type Item = {v: i64};
+        type L = [`Cons(Item, L), `Nil];
+        let x: L = `Cons({v: 1}, `Cons({v: 2}, `Nil));
+        select x { `Cons(Item, `Cons(Item, `Cons(Item, `Nul))) as c => 2, _ => 3 }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+run!(
+    alias_in_nested_error_tests_covers,
+    r#"{
+        type UA = `A;
+        type T = [Error<T>, `A];
+        let x: T = `A;
+        select x {
+            Error<Error<Error<UA>>> as e => 3,
+            `A => 1,
+            Error<`A> as e => 2,
+            Error<Error<`A>> as e => 5,
+            Error<Error<Error<Error<T>>>> as e => 4
+        }
+    }"#,
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    recursive_name_deep_in_a_list_type_test_refused,
+    r#"{
+        type L = [`Cons(i64, L), `Nil];
+        let x: L = `Cons(5, `Cons(6, `Cons(7, `Nil)));
+        select x {
+            `Nil => 0,
+            `Cons(i64, `Cons(i64, `Cons(string, L))) as v => 1,
+            `Cons(a, _) => a
+        }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+run!(
+    alias_deep_in_a_list_type_test_refused,
+    r#"{
+        type N = `Nul;
+        type L = [`Cons(i64, L), `Nil];
+        let x: L = `Cons(5, `Cons(6, `Cons(7, `Nil)));
+        select x {
+            `Nil => 0,
+            `Cons(i64, `Cons(i64, `Cons(i64, N))) as v => 1,
+            `Cons(a, _) => a
+        }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+// What reaches the next arm over unions that branch at every level, after a
+// test nested 32 deep, is bounded: the walk ends.
+run!(
+    deep_error_test_over_branching_unions_ends,
+    r#"{
+        type T = [Error<T>, Error<U>, `A];
+        type U = [Error<T>, Error<U>, `B];
+        let x: T = `A;
+        select x {
+            Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<`A>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> as e => 0,
+            `A => 2,
+            Error<U> as e => 3,
+            Error<T> as e => 4
+        }
+    }"#,
+    is(Value::I64(2));
+    FuseExpect::Jit
+);

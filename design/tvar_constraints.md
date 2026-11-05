@@ -696,27 +696,49 @@ until annotated.
 named types into their definitions. A pair met again inside its own walk
 is answered by assumption: diff subtracts nothing there (the residual is
 the minuend), could_match answers an overlap that rests on the pair in
-progress (`Rests`). The pair is keyed by its two definitions, arguments
-and the type on a side that names none ignored (`setops::DefPair`), and a
-path may hold `setops::UNFOLDINGS` (one) unfoldings of a pair
-(`Unfoldings`). A pair whose side names no type at all (a pattern written
-as a type, `` `Cons(_, `Cons(_, `Nul)) ``) is not counted: that side
-shrinks at every step, so the walk ends, and a tag it cannot hold is found
-dead however deep it sits. Keyed by the types themselves, a walk that subtracts a
-union member by member, or a definition whose parameters grow as it
+progress (`Rests`). Keyed by the types themselves, a walk that subtracts
+a union member by member, or a definition whose parameters grow as it
 recurses, meets a new key at every level and does not end, and the exact
 difference over Error cycles of coprime lengths repeats only after their
-lcm (Eric 11-05, diff-cycle-hang-01 (b)). A wider residual is sound:
-fewer dead arms are found, a missing case may be refused that a `_` arm
-fixes, a later arm's bind is wider. One unfolding was chosen from the
-1600 generated selects (review-r8 X-r1-1): 51 of main's 53 timeouts end
-(the other two are in matching_type's containment); of those main
-finishes, 18 dead-arm refusals become accepted and 13 become missing-case
-refusals, none accepted is refused; two unfoldings move 5 and 5, three 3
-and 0, but a generated select (rnd13) costs 0.9G, 10.7G and 532G
-instructions at one, two and three. Over Error cycles of coprime lengths
-diff walks pairs linear in the sum of the lengths (pin
-`typ::setops::tests::diff_over_error_cycles_unfolds_each_pair_of_definitions_once`).
+lcm. So a pair of two named types is also keyed by its two definitions,
+arguments ignored (`setops::DefPair`), and a path may hold
+`setops::UNFOLDINGS` (one) unfoldings of it (`Unfoldings`; Eric 11-05,
+diff-cycle-hang-01 (b)). A pair with a side that is no named type is not
+counted: that side walks into its own parts, smaller at every step, until
+it meets a name, so a pattern written as a type, an alias or the
+scrutinee's own recursive name in it included, is walked as deep as it
+goes and a tag it cannot hold is found dead however deep it sits.
+
+Within that bound, unions that branch at every level still multiply the
+walk's paths, and the difference's parts, with depth: two definitions
+`T = [Error<T>, Error<U>, `A]`, `U` alike, give a test nested `d` deep a
+residual of `2^d` parts, and a family of `n` such definitions an
+exponential number of pairs. So a walk has two budgets, counted, never
+timed (Eric 11-05, diff-cycle-hang-01 follow-up 2 (b)): one walk unfolds
+at most `setops::WALK_PAIRS` (1000) pairs, past which diff subtracts
+nothing and could_match answers an overlap wherever a pair is met; and a
+pair's difference of more than `setops::RESIDUAL_PARTS` (1000) parts, read
+as a tree, is the pair's minuend, kept in diff's memo as any answer is, so
+the walk meets it once. The pair count alone does not bound the depth
+case (under 100 pairs, the residual's merging exponential), nor does the
+residual's size the family case (14001 steps at n = 8 and 16 alike only
+because the pair budget cuts it): pins
+`typ::setops::tests::diff_over_branching_unions_is_bounded`,
+`could_match_over_branching_unions_is_bounded`,
+`lang::select::deep_error_test_over_branching_unions_ends`.
+
+A wider residual is sound: fewer dead arms are found, a missing case may
+be refused that a `_` arm fixes, a later arm's bind is wider. One
+unfolding, 1000 pairs and 1000 parts were chosen from the 1600 generated
+selects (review-r8 X-r1-1): of main's 1547 finishes none changes verdict
+or the kind of its message (two missing-case messages print another
+form of the residual), 52 of its 53 timeouts end, the last in matching_type's
+containment; 100 pairs moved two (a dead arm accepted, a dead-arm refusal
+become a missing case), 30 parts moved 21 messages, 10000 pairs cost a
+generated select (rnd13) 3.4G instructions where 1000 cost 1.7G. Over
+Error cycles of coprime lengths diff walks pairs that grow with the
+lengths, not their lcm (pin
+`typ::setops::tests::diff_over_error_cycles_walks_pairs_by_their_lengths`).
 
 ### The occurs check
 

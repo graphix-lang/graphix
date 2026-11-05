@@ -1375,11 +1375,13 @@ cycle, across workers; the compiler never pins threads.
   (`Type::contains_holding`), so a part only names and `_` meet covers
   whatever it becomes, else where the cover decides them. What reaches
   the next arm (`Type::diff`) and `could_match` unfold a pair of
-  definitions (arguments ignored) once on a path, a pair with a side
-  that names no type (a pattern's) uncounted; met again, diff
+  named types' definitions (arguments ignored) once on a path, a pair
+  with a side that is no named type uncounted; met again, diff
   subtracts nothing and could_match answers an overlap
-  (`setops::UNFOLDINGS`): a wider residual, so fewer dead arms are found
-  and a missing case may be refused that `_` fixes. A partial
+  (`setops::UNFOLDINGS`), as they do past `setops::WALK_PAIRS` pairs in
+  one walk, and a pair's difference of more than `RESIDUAL_PARTS` parts
+  is its minuend: a wider residual, so fewer dead arms are found and a
+  missing case may be refused that `_` fixes. A partial
   struct pattern completes against the one member it can match
   (`StructurePattern::complete_type_predicate`); members told apart only
   by undecided cells are two members, refused unless what reaches the

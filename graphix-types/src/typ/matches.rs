@@ -7,7 +7,7 @@ use crate::{
     typ::{
         AndAc, Bound, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar, Type,
         contains::{ContainsHist, find_open_cell},
-        setops::{Unfoldings, def_pair, memo_on, strictly_identical},
+        setops::{Pairs, Unfoldings, def_pair, memo_on, strictly_identical},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -247,6 +247,7 @@ pub(super) struct MatchHist {
     apart: NodePairs,
     rests: Rests,
     unfoldings: Unfoldings,
+    pairs: Pairs,
 }
 
 impl MatchHist {
@@ -259,6 +260,7 @@ impl MatchHist {
             apart: NodePairs::default(),
             rests: Rests::new(),
             unfoldings: Unfoldings::default(),
+            pairs: Pairs::default(),
         }
     }
 }
@@ -537,6 +539,9 @@ impl Type {
                     }
                     let node = *node;
                     hist.rests.read(node);
+                    return Ok(true);
+                }
+                if !hist.pairs.unfold() {
                     return Ok(true);
                 }
                 #[cfg(test)]
@@ -1110,16 +1115,23 @@ mod tests {
     // Each P_k fails at its tag and takes back the trues of the chain,
     // which rest on it, so the level above walks the chain again; the
     // node pairs that walk found apart stay apart, as a pair of names
-    // found apart does.
+    // found apart does. A larger family meets the walk's pair budget and
+    // is still found apart.
     #[test]
     fn could_match_keeps_the_node_pairs_found_apart() {
-        let defs = nested_pairs(64, 32);
-        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
-        let (env, _) = typed(&defs, "null");
-        let (p, q) = (parsed(&env, "P998"), parsed(&env, "Q998"));
-        MATCH_CALLS.with(|n| n.set(0));
-        assert!(!p.could_match(&env, &q).unwrap());
-        assert_eq!(MATCH_CALLS.with(|n| n.get()), 66124);
+        let walk = |n: usize, m: usize| {
+            let defs = nested_pairs(n, m);
+            let defs: Vec<(&str, &str)> =
+                defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+            let (env, _) = typed(&defs, "null");
+            let (p, q) = (parsed(&env, "P998"), parsed(&env, "Q998"));
+            MATCH_CALLS.with(|n| n.set(0));
+            MATCH_PAIRS.with(|n| n.set(0));
+            let could = p.could_match(&env, &q).unwrap();
+            (could, MATCH_CALLS.with(|n| n.get()), MATCH_PAIRS.with(|n| n.get()))
+        };
+        assert_eq!(walk(16, 8), (false, 3868, 384));
+        assert_eq!(walk(64, 32), (false, 9437, super::super::setops::WALK_PAIRS));
     }
 
     // Where every overlap rests on a pair in progress, the walk takes each

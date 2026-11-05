@@ -33,6 +33,7 @@ struct DiffHist {
     hist: RefHist<AHashMap<RefPair, Type>>,
     done: Lazy<AHashMap<RefPair, Kept<Type>>>,
     unfoldings: Unfoldings,
+    pairs: Pairs,
     /// The current walk met a pair in progress, or stopped unfolding.
     cycled: bool,
 }
@@ -43,43 +44,73 @@ impl DiffHist {
             hist: RefHist::new(),
             done: Lazy::new(),
             unfoldings: Unfoldings::default(),
+            pairs: Pairs::default(),
             cycled: false,
         }
     }
 }
 
-/// The definitions of a pair a walk unfolds, a side that is no named type
-/// `None`: arguments and the types around them ignored.
-pub(super) type DefPair = (Option<usize>, Option<usize>);
+/// How many pairs of named types one walk (a top-level `diff` or
+/// `could_match`) unfolds. Past it diff subtracts nothing and could_match
+/// answers an overlap, wherever a pair is met: the walk's work is bounded
+/// whatever the types, branching recursive unions whose paths multiply
+/// with their depth included (`design/tvar_constraints.md`, Unfolding a
+/// pair of definitions).
+pub(super) const WALK_PAIRS: usize = 1000;
 
-/// The pair [`Unfoldings`] counts, none where a side names no type: that
-/// side shrinks at every step, so the walk ends without a bound.
+/// The most parts a pair of named types' difference may have: a larger one
+/// is the minuend. Over a branching recursive union the difference of a
+/// pattern `d` deep has `2^d` parts.
+pub(super) const RESIDUAL_PARTS: usize = 1000;
+
+/// Whether `t`, read as a tree through bound cells, has more than `n`
+/// parts; it stops counting there.
+fn larger_than(t: &Type, n: usize) -> bool {
+    fn go(t: &Type, left: &mut usize) -> ControlFlow<()> {
+        if *left == 0 {
+            return ControlFlow::Break(());
+        }
+        *left -= 1;
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => go(&b, left),
+                None => ControlFlow::Continue(()),
+            },
+            t => t.try_for_each_child(&mut |c| go(c, left)),
+        })
+    }
+    let mut left = n;
+    go(t, &mut left).is_break()
+}
+
+/// The pairs of named types a walk has unfolded, counted against
+/// [`WALK_PAIRS`].
+#[derive(Default)]
+pub(super) struct Pairs(usize);
+
+impl Pairs {
+    /// Count one more unfolding; false once the walk has used them all.
+    pub(super) fn unfold(&mut self) -> bool {
+        let more = self.0 < WALK_PAIRS;
+        self.0 += more as usize;
+        more
+    }
+}
+
+/// The definitions of a pair of named types a walk unfolds, their
+/// arguments ignored.
+pub(super) type DefPair = (usize, usize);
+
+/// The pair [`Unfoldings`] counts: none unless both sides are named types.
+/// A side that is not walks into its own parts, smaller at every step, until
+/// it meets a name, so a pattern written as a type, a name's alias
+/// included, is unfolded against the other side as deep as it goes.
 pub(super) fn def_pair(env: &Env, t0: &Type, t1: &Type) -> Option<DefPair> {
     let def = |t: &Type| match t {
         Type::Ref(tr) => tr.resolve_in(env).map(|r| r.def_key()),
         _ => None,
     };
-    (names_a_type(t0) && names_a_type(t1)).then(|| (def(t0), def(t1)))
-}
-
-fn names_a_type(t: &Type) -> bool {
-    fn go(t: &Type, seen: &mut AHashSet<(usize, bool)>) -> ControlFlow<()> {
-        ensure_sufficient(|| match t {
-            Type::Ref(_) => ControlFlow::Break(()),
-            Type::TVar(tv) if !seen.insert((tv.cell_addr(), true)) => {
-                ControlFlow::Continue(())
-            }
-            Type::TVar(tv) => match tv.binding() {
-                Some(b) => go(&b, seen),
-                None => ControlFlow::Continue(()),
-            },
-            t if node_addr(t).is_some_and(|n| !seen.insert((n, false))) => {
-                ControlFlow::Continue(())
-            }
-            t => t.try_for_each_child(&mut |c| go(c, seen)),
-        })
-    }
-    go(t, &mut LPooled::take()).is_break()
+    Some((def(t0)?, def(t1)?))
 }
 
 /// How many unfoldings of one pair of definitions a walk's path may
@@ -662,7 +693,7 @@ impl Type {
         Ok(out)
     }
 
-    // CR claude for eric: [bug/medium] diff does not end over some names that recur
+    // XCR claude for claude: [bug/medium] diff does not end over some names that recur
     // through Error payloads: main bbb06c0c6's --check of `type At = [Error<Bt>,
     // Error<Ct>, `R]; type Bt = [Error<At>, `P]; type Ct = [Array<Ct>, Error<Bt>]; type H
     // = [Error<Error<K>>, `Q]; type K = [Error<H>, Error<K>, `P]; let v: At = `R; select
@@ -752,7 +783,38 @@ impl Type {
     // refuses them); timeouts 53 -> 2 as before. The builder's 54 families keep every verdict and message. Still
     // open, unchanged: the exponential path count over branching recursive unions (the U-r1-2 note above), which
     // needs a rule beyond the ruling's bound; readdressed to eric for that.
+    // 2026-11-05 claude: Eric ruled (11-05, diff-cycle-hang-01 follow-up 2): (b), a counted work budget per diff
+    // call. Built (lane U, round 16 part 2), k stays 1: one walk (a top-level diff or could_match) unfolds at
+    // most setops::WALK_PAIRS (1000) pairs of named types, past which diff subtracts nothing and could_match
+    // answers an overlap (Pairs); and a pair's difference of more than setops::RESIDUAL_PARTS (1000) parts, read
+    // as a tree, is its minuend, kept in done like any answer (larger_than). Both, measured: over T = [Error<T>,
+    // Error<U>, `A] a test d deep walks under 100 pairs while the residual's merge is exponential (dq16 133.5G on
+    // base-r16, 1.34G now; dp64/dq64 end at 2.4G/1.4G), and the n-definition family walks exponentially many
+    // pairs with a small residual. Also (no ruling needed): a pair is counted only where both sides are named
+    // types (DefPair is two definitions), so a pattern side naming an alias or the scrutinee's own recursive name
+    // walks as deep as it goes, as on main: m12, n3, n4 refused will never match, m16 runs (names_a_type deleted;
+    // termination of the rest rests on the budget). 1600 generated selects vs base-r16: every one of main's 1547
+    // finishes keeps its verdict and message kind (r425, r598 print another form of the missing case), 52 of 53
+    // timeouts end (r1088 still times out, matching_type's contains); 54 families: verdicts as base where base
+    // ends, grow2/grow3 still time out in contains. Tried 100/10000 pairs and 30/100 parts (100 pairs moves r114,
+    // r696; 30 parts moves 21 messages; 10000 pairs costs rnd13 3.4G vs 1.7G). Pins (each hangs or fails
+    // without): typ::setops::tests::{diff_over_branching_unions_is_bounded (steps 99/195 at d = 8/16, 14001 at n
+    // = 8/16), could_match_over_branching_unions_is_bounded, diff_over_names_recurring_through_errors_ends,
+    // diff_over_error_cycles_walks_pairs_by_their_lengths},
+    // typ::matches::tests::could_match_keeps_the_node_pairs_found_apart,
+    // lang::select::{deep_error_test_over_branching_unions_ends, coverage_over_*_ends,
+    // alias_deep_in_a_list_pattern_refused, alias_in_nested_error_tests_covers,
+    // recursive_name_deep_in_a_list_type_test_refused, alias_deep_in_a_list_type_test_refused}. Left: the
+    // select-level w2/w3/arr families (review-r16 U-r1-2 fam) still time out at n >= 4 in matching_type's
+    // contains, as on base (matching-type-contains-dag-01). probes: ~/ptmp/cr29/scratch/r16-U2/
+    // 2026-11-05 claude: Correction to the note above: diff_over_error_cycles_walks_pairs_by_their_lengths pins
+    // counts (12/24/43/178) that the budgets do not reach; it does not fail without them. The others hang without
+    // the budgets (diff_over_branching_unions_is_bounded, diff_over_names_recurring_through_errors_ends,
+    // coverage_over_*_ends, deep_error_test_over_branching_unions_ends) or fail without the both-named pair rule
+    // (the four alias/recursive-name select pins, 16/16).
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
+        #[cfg(test)]
+        DIFF_STEPS.with(|n| n.set(n.get() + 1));
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
 
@@ -777,7 +839,7 @@ impl Type {
                 // a pair met again inside its own difference subtracts
                 // nothing: assuming it covered would drop what it did not
                 let defs = def_pair(env, t0, t1);
-                if hist.unfoldings.again(defs).is_some() {
+                if hist.unfoldings.again(defs).is_some() || !hist.pairs.unfold() {
                     hist.cycled = true;
                     return Ok(self.clone());
                 }
@@ -788,7 +850,10 @@ impl Type {
                 hist.hist.insert(key, self.clone());
                 hist.unfoldings.enter(defs, key);
                 let outer = mem::replace(&mut hist.cycled, false);
-                let r = t0.diff_int(env, hist, &t1);
+                let r = match t0.diff_int(env, hist, &t1) {
+                    Ok(d) if larger_than(&d, RESIDUAL_PARTS) => Ok(self.clone()),
+                    r => r,
+                };
                 hist.unfoldings.leave(defs);
                 hist.hist.remove(&key);
                 let cycled = mem::replace(&mut hist.cycled, outer);
@@ -1106,6 +1171,13 @@ impl Type {
     // s, on lane U and on base-r16. probes:
     // ~/ptmp/cr29/scratch/review-r16/U-r2-2/fam/*-4-u.gx (mk.py KIND n CAP),
     // head-fam.txt.
+    // 2026-11-05 claude: Lane U (round 16 part 2, diff budgets): with diff and
+    // could_match bounded (setops::WALK_PAIRS, RESIDUAL_PARTS), the review-r16 U-r1-2
+    // select families still time out at 60 s in this path, as on base-r16: w2/w2s/w2x
+    // n >= 4, w3/w3s/w3x n >= 3 (w3s-3 ends at 134.6G), arr n >= 5 (arr-4 86.3G);
+    // generated r1088 still times out; r669 now ends. The Error-nesting dp/dq
+    // families end (dp64 2.4G). Results:
+    // ~/ptmp/cr29/scratch/r16-U2/wp/rfam-1000-100.txt, rfam-base.txt.
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
         let refs = LPooled::take();
         let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: false };
@@ -1289,6 +1361,7 @@ fn same_resolved<'a, 'b>(
 #[cfg(test)]
 thread_local! {
     pub(super) static DIFF_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DIFF_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NO_MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -1312,6 +1385,7 @@ mod tests {
             Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
+            setops::WALK_PAIRS,
         },
     };
     use ahash::AHashMap;
@@ -1715,22 +1789,23 @@ mod tests {
         (rest.to_string(), super::DIFF_PAIRS.with(|n| n.get()))
     }
 
-    // diff unfolds a pair of definitions once: over Error cycles of coprime
-    // lengths, whose exact residual repeats only after their lcm, the pairs
-    // it walks grow with the sum of the lengths.
+    // Over Error cycles of coprime lengths, whose exact residual repeats
+    // only after their lcm, the pairs diff walks grow with the lengths, not
+    // with their lcm.
     #[test]
-    fn diff_over_error_cycles_unfolds_each_pair_of_definitions_once() {
+    fn diff_over_error_cycles_walks_pairs_by_their_lengths() {
         let pairs =
             |ls: &[usize], shared| diff_pairs(&error_cycles(ls, shared), "M0", "S").1;
         let sets: [&[usize]; 4] =
             [&[2, 3], &[2, 3, 5], &[2, 3, 5, 7], &[2, 3, 5, 7, 11, 13]];
         let apart: Vec<usize> = sets.iter().map(|ls| pairs(ls, false)).collect();
         let shared: Vec<usize> = sets.iter().map(|ls| pairs(ls, true)).collect();
-        assert_eq!((apart, shared), (vec![12, 18, 32, 61], vec![12, 18, 32, 61]));
+        assert_eq!((apart, shared), (vec![12, 24, 43, 178], vec![12, 24, 43, 178]));
     }
 
     // Names recurring through Error payloads, and a definition whose
-    // parameters grow as it recurses, end.
+    // parameters grow as it recurses, end: the first within the walk's pair
+    // budget, the second unfolding its pair once.
     #[test]
     fn diff_over_names_recurring_through_errors_ends() {
         let defs: Vec<(String, String)> = [
@@ -1746,7 +1821,59 @@ mod tests {
         .map(|(n, b)| (n.to_string(), b.to_string()))
         .collect();
         let ends = |t: &str, less: &str| diff_pairs(&defs, t, less).1;
-        assert_eq!((ends("At", "K"), ends("G<i64>", "P")), (33, 1));
+        assert_eq!((ends("At", "K"), ends("G<i64>", "P")), (WALK_PAIRS, 1));
+    }
+
+    /// `T0 .. Tn-1`, each `[Error<Ti+1>, Error<Ti+2>, `Ai]` (indices mod
+    /// n), and `U0 .. Un-1` alike with `` `Bi ``: unions whose paths
+    /// branch at every level.
+    fn branching(n: usize) -> Vec<(String, String)> {
+        let mut defs = vec![];
+        for (name, tag) in [("T", "A"), ("U", "B")] {
+            for i in 0..n {
+                let (a, b) = ((i + 1) % n, (i + 2) % n);
+                let body = format!("[Error<{name}{a}>, Error<{name}{b}>, `{tag}{i}]");
+                defs.push((format!("{name}{i}"), body));
+            }
+        }
+        defs
+    }
+
+    /// The steps diff takes (every part pair it walks) for `t` less `less`.
+    fn diff_steps(defs: &[(String, String)], t: &str, less: &str) -> usize {
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, t);
+        super::DIFF_STEPS.with(|n| n.set(0));
+        t.diff(&env, &parsed(&env, less)).unwrap();
+        super::DIFF_STEPS.with(|n| n.get())
+    }
+
+    // Over branching recursive unions, both an Error nesting `d` deep and a
+    // family of `n` definitions, diff's steps stay within its budgets: the
+    // pairs it unfolds and the parts of a pair's difference.
+    #[test]
+    fn diff_over_branching_unions_is_bounded() {
+        let nested = |d: usize| format!("{}`C{}", "Error<".repeat(d), ">".repeat(d));
+        let deep: Vec<usize> = [8, 16]
+            .iter()
+            .map(|&d| diff_steps(&branching(2), "T0", &nested(d)))
+            .collect();
+        let wide: Vec<usize> =
+            [8, 16].iter().map(|&n| diff_steps(&branching(n), "T0", "U0")).collect();
+        assert_eq!((deep, wide), (vec![99, 195], vec![14001, 14001]));
+    }
+
+    // could_match over a branching family answers an overlap once it has
+    // unfolded its pairs.
+    #[test]
+    fn could_match_over_branching_unions_is_bounded() {
+        let defs: Vec<(String, String)> = branching(16);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "T0");
+        MATCH_PAIRS.with(|n| n.set(0));
+        let could = t.could_match(&env, &parsed(&env, "U0")).unwrap();
+        let pairs = MATCH_PAIRS.with(|n| n.get());
+        assert_eq!((could, pairs), (true, 14));
     }
 
     // A select over a DAG of named unions (Li = [Li-1, Mi-1], Mi = [Mi-1,
