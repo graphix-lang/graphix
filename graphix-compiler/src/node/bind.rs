@@ -596,6 +596,23 @@ impl<R: Rt> Bind<R> {
         Ok(())
     }
 
+    // CR claude for claude: [bug/medium] A name a destructuring `let` binds out of a
+    // generalized holder, which something later writes, passes --check and its run
+    // refuses a call through it: `let s = {f: |x| x, n: 1}; let {f, n} = s;
+    // println(f("a")); f <- t ~ |x: i64| x + 1` runs to "a run-time bind at f(\"a\") did
+    // not type: an instance at fn(x: string) -> string of a definition typed fn(x: i64)
+    // -> i64" (GRAPHIX_ELAB_AUDIT instance-signature); so do `let u@ {f, n} = s; u <-
+    // ..`, `let {f, n} = s.a`, `let (f, n) = s.0` and `let (u, k) = (s, 1)`. A single
+    // name (`let u = s; u <- ..`) and a literal's names (`let (f, n) = (|x| x, 1); f <-
+    // ..`) are refused. The pattern forwards the source's scheme (forwards: the value's
+    // read is a scheme copy with generic cells) and mark_connect_target drops only the
+    // written id from poly_binds, so the written name keeps generic cells: each call
+    // through it copies them while the write binds them. Main 038729af4 the same. A
+    // fix: a pattern any of whose names something writes reads its value as one
+    // instance (Own), or each written name takes `apart`'s copy before the write is
+    // judged. probes: ~/ptmp/cr29/scratch/r16-Q/fix4/u9_struct_destr_written.gx,
+    // u4_alias_written_capture.gx, u10_proj_destr_written.gx,
+    // u11_tuple_proj_destr_written.gx (destructured-written-holder-01)
     /// Whether the binding forwards its value's scheme (`let g = f`): a
     /// single name something writes holds an instance of its own instead.
     fn forwards(&self, ctx: &CompileCtx<R>) -> bool {
@@ -1021,10 +1038,20 @@ pub struct Ref {
     pub(super) top_id: ExprId,
     pub(crate) resident: TagValue,
     pub(crate) signature: Signature,
-    /// A binding names the value it reads (`let g = f`, or a data literal
-    /// a generalized `let` holds): a generalized binding's read is a copy
-    /// of its scheme, anywhere else one instance of it.
-    pub(crate) named: bool,
+    pub(crate) naming: Naming,
+}
+
+/// Whether a binding names the value a reference reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Naming {
+    /// A generalized binding's read is one instance of it.
+    Unnamed,
+    /// A binding names it (`let g = f`, or a data literal a generalized
+    /// `let` holds): the read is a copy of the scheme.
+    Named,
+    /// A seq lowering's binding passes it on ([`passes_generic`]): the
+    /// copy of the scheme every read in the value shares.
+    Passed,
 }
 
 /// Whose cells a reference's signature holds. The first `typecheck0`
@@ -1074,7 +1101,8 @@ fn forwards<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
 
 /// Whether the binding is a seq lowering's that passes on a generalized
 /// binding's read (`expr::seq::passes_on`: a step's entry snapshot, `.. ~!
-/// r`, or a step's guarded value, `any(pc ~! r, r)`): nothing writes it,
+/// r`, a step's guarded value, `any(pc ~! r, r)`, or a `{ .. }` item's
+/// value, the last of its items' values, `(.., r).n`): nothing writes it,
 /// so it carries the scheme.
 fn passes_generic<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
     fn passed<R: Rt>(env: &Env, node: &Node<R>) -> bool {
@@ -1082,6 +1110,12 @@ fn passes_generic<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool 
             NodeView::SeqGuard(g) => passed(env, &g.n),
             NodeView::Sample(s) => reads_generic(env, &s.arg.node),
             NodeView::Any(a) => !a.n.is_empty() && a.n.iter().all(|c| passed(env, c)),
+            NodeView::TupleRef(t) => match t.source.view() {
+                NodeView::Tuple(parts) => {
+                    parts.n.get(t.field).is_some_and(|p| passed(env, p))
+                }
+                _ => reads_generic(env, node),
+            },
             _ => reads_generic(env, node),
         }
     }
@@ -1090,7 +1124,9 @@ fn passes_generic<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool 
 
 /// Name the reads a seq lowering's binding passes on ([`passes_generic`]).
 fn name_passed<R: Rt>(node: &mut Node<R>) {
-    if let Some(b) = node.downcast_mut::<super::Block<R>>() {
+    if let Some(r) = node.downcast_mut::<Ref>() {
+        r.naming = Naming::Passed
+    } else if let Some(b) = node.downcast_mut::<super::Block<R>>() {
         if !b.module
             && let Some(last) = b.children.last_mut()
         {
@@ -1099,9 +1135,14 @@ fn name_passed<R: Rt>(node: &mut Node<R>) {
     } else if let Some(g) = node.downcast_mut::<super::error::SeqGuard<R>>() {
         name_passed(&mut g.n)
     } else if let Some(s) = node.downcast_mut::<super::Sample<R>>() {
-        name_value(&mut s.arg.node, false)
+        name_passed(&mut s.arg.node)
     } else if let Some(a) = node.downcast_mut::<super::Any<R>>() {
         a.n.iter_mut().for_each(name_passed)
+    } else if let Some(t) = node.downcast_mut::<super::data::TupleRef<R>>()
+        && let Some(parts) = t.source.downcast_mut::<super::data::Tuple<R>>()
+        && let Some(part) = parts.n.get_mut(t.field)
+    {
+        name_passed(part)
     } else {
         name_value(node, false)
     }
@@ -1176,7 +1217,7 @@ impl Ref {
             top_id,
             resident: TagValue::phantom(),
             signature,
-            named: false,
+            naming: Naming::Unnamed,
         })
     }
 
@@ -1340,13 +1381,26 @@ impl Ref {
     /// definition's own cells in a rec knot or a gate parameter, the
     /// innermost active instance (a bare value reference has no
     /// arguments to key an instance identity on), else fresh cells.
-    fn decide<R: Rt>(&self, ctx: &CompileCtx<R>, ft: Arc<FnType>) -> Arc<FnType> {
+    fn decide<R: Rt>(&self, ctx: &mut CompileCtx<R>, ft: Arc<FnType>) -> Arc<FnType> {
         if rec_knot(ctx, &ft) || ctx.def_gate_params.contains_key(&self.id) {
             return ft;
         }
-        match ft.lambda_ids.own().and_then(|id| ctx.resolving_innermost(id)) {
-            Some(active) => Arc::new(active.ftype),
-            None => Arc::new(instance(&ft, &ctx.rec_defs, self.named)),
+        if let Some(active) =
+            ft.lambda_ids.own().and_then(|id| ctx.resolving_innermost(id))
+        {
+            return Arc::new(active.ftype);
+        }
+        match (self.naming, ctx.holder_reads.is_some()) {
+            (Naming::Passed, true) => {
+                let copy = holder_read(ctx, &Type::Fn(ft.clone()), true);
+                match &copy {
+                    Some(Type::Fn(copy)) => copy.clone(),
+                    _ => ft,
+                }
+            }
+            (naming, _) => {
+                Arc::new(instance(&ft, &ctx.rec_defs, naming != Naming::Unnamed))
+            }
         }
     }
 
@@ -1478,7 +1532,7 @@ impl<R: Rt> Update<R> for Ref {
         let signature = match (ft, self.signature) {
             (Some(ft), _) => Type::Fn(self.decide(ctx, ft)),
             (None, Signature::Pending) => {
-                holder_read(ctx, &def, self.named).unwrap_or(def)
+                holder_read(ctx, &def, self.naming != Naming::Unnamed).unwrap_or(def)
             }
             (None, _) => return Ok(()),
         };
@@ -1586,7 +1640,7 @@ pub(crate) fn name_value<R: Rt>(node: &mut Node<R>, data: bool) {
         return l.named = true;
     }
     if let Some(r) = node.downcast_mut::<Ref>() {
-        return r.named = true;
+        return r.naming = Naming::Named;
     }
     if let Some(p) = node.downcast_mut::<super::ExplicitParens<R>>() {
         return name_value(&mut p.n, data);
@@ -2078,7 +2132,7 @@ impl<R: Rt> ByRef<R> {
                 if let Mutability::Mut = mutability
                     && let Some(r) = place.root.downcast_mut::<Ref>()
                 {
-                    r.named = true;
+                    r.naming = Naming::Named;
                 }
                 (
                     Referent::Place(place),

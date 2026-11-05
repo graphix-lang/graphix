@@ -437,6 +437,80 @@ run!(
     FuseExpect::Jit
 );
 
+// A step's `let` of a generic function, a read of it or of a field of one,
+// is generic as it is outside a seq: the step's value carries the scheme.
+run!(
+    a_field_alias_in_a_seq_step_is_generic,
+    "{ let s = {g: |x| x}; seq { let j = s.g; (j(1), j(\"s\")) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    an_outer_function_alias_in_a_seq_step_is_generic,
+    "{ let f = |x| x; seq { let g = f; (g(1), g(\"s\")) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_step_function_alias_in_a_seq_step_is_generic,
+    "seq { let f = |x| x; let g = f; (g(1), g(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_field_alias_in_a_seq_statement_block_is_generic,
+    "{ let s = {g: |x| x}; seq { { let j = s.g; (j(1), j(\"s\")) } } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+// A `{ .. }` item's value is its last item's, which carries a generic
+// name's scheme as a block's final expression does.
+run!(
+    a_seq_statement_block_ending_in_a_holder_is_generic,
+    "{ let s = {g: |x| x}; seq { let u = s; let v = { let w = u; w }; (v.g(2), v.g(\"z\")) } }",
+    prints(r#"[i64:2, "z"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_seq_statement_block_ending_in_a_field_read_is_generic,
+    "{ let s = {g: |x| x}; seq { let j = { let n = 1; s.g }; (j(1), j(\"s\")) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_written_function_alias_in_a_seq_step_is_one_instance,
+    "{ let f = |x| x; seq { let g = f; g <- |x: i64| x + 1; (g(1), g(\"s\")) } }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_written_function_alias_in_a_seq_step_takes_its_one_type,
+    "{ let f = |x| x; seq { let g = f; g <- |x: i64| x + 1; (g(1), g(2)) } }",
+    prints("[i64:2, i64:3]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_written_name_a_seq_statement_block_ends_in_is_one_instance,
+    "{ let s = {g: |x| x}; seq { let v = { let w = s; w <- {g: |x: i64| x + 1}; w }; (v.g(1), v.g(\"s\")) } }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_written_name_a_seq_statement_block_ends_in_takes_its_one_type,
+    "{ let s = {g: |x| x}; seq { let v = { let w = s; w <- {g: |x: i64| x + 1}; w }; (v.g(1), v.g(2)) } }",
+    prints("[i64:1, i64:2]");
+    FuseExpect::Jit
+);
+
 // A step's destructured holder is refused at its statement, inside the seq,
 // once the holder is checked: the pattern takes the holder's own binding.
 run!(

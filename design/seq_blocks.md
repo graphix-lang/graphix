@@ -318,10 +318,15 @@ the names of both kinds as they stand, never through a snapshot: after
 its step neither changes. A step's read of an outer generalized
 binding goes through its entry snapshot, and a holder with a `live` part
 through a step value: the lowering's bindings that pass a read on whole,
-the snapshot (`.. ~! #seqsin`), the projection of it a read takes, and a
-step's or a `{ .. }` item's value (`any(pc ~! v, v)`), are written by
-nothing, so each carries the read binding's scheme as a `let` of it does
-(`expr::seq::passes_on`, `bind::passes_generic`, Eric 11-05); what the
+the snapshot (`.. ~! #seqsin`), the projection of it a read takes, a
+step's or a `{ .. }` item's value (`any(pc ~! v, v)`) and a `{ .. }`
+statement's value (its last item's), are written by nothing, so each
+carries the read binding's scheme as a `let` of it does
+(`expr::seq::passes_on`, `bind::passes_generic`, Eric 11-05): the reads
+in such a value share one copy of a function as of a holder
+(`bind::Naming::Passed`), and a `let` of a step's or a block's value
+(`let j = s.g`, `let g = f`, `let v = { let n = 1; s }`) is generic as
+it is outside a seq; what the
 snapshot reads is still read at the step's entry, a holder's part that
 tracks a variable included. A step's `let` a later step writes is known
 written at its binding (`SeqMachine::compile` finds the writes among
@@ -493,10 +498,9 @@ conservatively, uses the next cycle everywhere. The last step writes
 `pc` idle. A block (`lower_block`) hoists each statement into a `let`
 under the step, connects `once(value)` (an answer on every run, a level
 as it stands at entry; the step's entry for a run is a birth
-(`View::Step`), which rebirths its `once`), and joins
-the statements with a
-select over the tuple of their values, present once every statement
-has produced. `until` is refused where its value would be used: the
+(`View::Step`), which rebirths its `once`), and takes
+the last of the tuple of the statements' values (`(v0, .., vn).n`),
+present once every statement has produced. `until` is refused where its value would be used: the
 last statement of a seq, or of a try or with body whose value is used,
 must be an expression.
 

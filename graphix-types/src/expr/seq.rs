@@ -873,6 +873,21 @@ impl Machine<'_> {
     // a_holder_a_later_step_writes_is_one_instance fails without the writers walk;
     // a_holder_with_a_call_part_in_a_seq_step_is_one_instance and the twins pin what
     // stays.
+    // 2026-11-05 claude: Review r16 (Q-r1-1 o1/o8, Q-r1-2 s_a..s_e): a step's let of a
+    // generic function (let j = s.g, let g = f) and a let of a { .. } statement's value
+    // were still one instance. Fixed: the reads a passed binding names share one copy of
+    // a function as of a holder (bind::Naming::Passed through Ref::decide), a union of
+    // two occurrences of one function type is that type, met with nothing
+    // (Type::meet_open_fns), and a { .. } statement's value is the last of its items'
+    // tuple, (v0, .., vn).n, which passes_generic sees through (was a select over a #seqb
+    // pattern bind). Pins lang::quantified::{a_field_alias_in_a_seq_step_is_generic,
+    // an_outer_function_alias_in_a_seq_step_is_generic,
+    // a_step_function_alias_in_a_seq_step_is_generic,
+    // a_field_alias_in_a_seq_statement_block_is_generic,
+    // a_seq_statement_block_ending_in_a_holder_is_generic,
+    // a_seq_statement_block_ending_in_a_field_read_is_generic} fail without the change
+    // (each of the three parts fails some); the written twins pin what stays one
+    // instance. The seqq capture is seqq-capture-generic-01.
     /// The step's entry snapshot of `e`'s external variables and completed
     /// local lets, `live` aside (`design/seq_blocks.md` §5). Each read goes
     /// to a cell filled at the
@@ -1392,14 +1407,13 @@ impl Machine<'_> {
         let value = match vals.len() {
             0 => return Err(declaration_refused(spec)),
             1 => vals.pop().unwrap(),
-            n => {
-                let last = format_compact!("#seqb{}", spec.id.inner());
-                select(
-                    pos,
+            n => ExprKind::TupleRef {
+                source: Arc::new(
                     ExprKind::Tuple { args: Arc::from_iter(vals.drain(..)) }.to_expr(pos),
-                    [(pat_last(n, &last), r#ref(pos, &last))],
-                )
+                ),
+                field: n - 1,
             }
+            .to_expr(pos),
         };
         body.push(value);
         Ok(block(pos, body.drain(..)))
@@ -1664,6 +1678,19 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         }
         .to_expr(pos),
     ));
+    // CR claude for eric: [bug/low] A seqq refuses a generalized holder its body reads
+    // at two types where the same seq body runs: `let s = {g: |x| x}; seqq t {
+    // (s.g(1), s.g("s")) }` and `seqq t { let a = s.g(1); let b = s.g("s"); (a, b) }`
+    // are refused at --check ("i64 does not contain string"), while `seq t { .. }`
+    // over either runs and prints (1, "s"); main 038729af4 runs both. A seqq request
+    // captures what its body reads through this queue, a call, whose result no binding
+    // names, so the capture is one instance per request (as CLAUDE.md, seq_blocks.md §5
+    // and SKILL.md say). The argument for seq-snapshot-generic-01's (b), that nothing
+    // writes the capture, holds for the queue's capture too. Options: (a) keep it, the
+    // documented rule; (b) the projection of the dequeued request a read takes carries
+    // the captured binding's scheme, as a seq step's snapshot does: a lowering rule for
+    // the queue's capture cells. probe: ~/ptmp/cr29/scratch/r16-Q/fix4/q1_seqq_outer_holder.gx,
+    // q3_seqq_outer_holder_step2.gx (seqq-capture-generic-01)
     qlets.push(let_bind(pos, &input, None, apply_core(pos, "queue", queue_args)));
     let mut field = 0;
     for (var, (live, name, _)) in captures.iter() {
@@ -2490,22 +2517,6 @@ fn pat_lit(v: Value) -> Pattern {
 }
 
 /// `(_, …, name)`: the last of `n` tuple elements.
-fn pat_last(n: usize, name: &str) -> Pattern {
-    let binds = (1..n)
-        .map(|_| StructurePattern::Ignore)
-        .chain([StructurePattern::Bind(Name::from(name))]);
-    Pattern {
-        type_predicate: None,
-        structure_predicate: StructurePattern::Tuple {
-            all: None,
-            binds: Arc::from_iter(binds),
-        },
-        guard: None,
-        pos: WrittenAt::NOWHERE,
-        end: WrittenAt::NOWHERE,
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;

@@ -1200,7 +1200,7 @@ node graph IS the IR — there is no parallel typed IR
   a reference, `&f`, is not one): a lambda no binding names takes its
   enclosing level's cells at its gate's close (`Lambda::named`,
   `DefGate::close`), and a read of a generalized binding no binding names
-  is one instance (`Ref::named`, `FnType::one_instance`,
+  is one instance (`Ref::naming`, `FnType::one_instance`,
   `Type::instance_read`), so an element of a collection a call returns, a
   callback's result or a field of a call's result is one type its uses
   decide; a call copies a quantifier only where its level says so, as any

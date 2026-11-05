@@ -424,7 +424,8 @@ module with no interface that writes such a name is not known as a
 writer when the parent's `let` compiles, so its write decides the copy
 the parent's other names share (CR module-holder-write-01). Two lambda
 literals one array or list holds meet as its elements (`[|x| x, |y| y]`
-is one function type), and a `seqq` reads a holder once per request,
+is one function type; two reads sharing one copy of a function are that
+copy, met with nothing), and a `seqq` reads a holder once per request,
 every step of the run sharing that read's copy. A lambda a let holds through a
 select is not generalized, though a call through it instantiates it (CR
 holder-block-select-01); one through a block's final expression is
@@ -743,7 +744,7 @@ gate's close; any other takes its enclosing level's
 the enclosing definition's, or the top level's, and every use shares
 them. A read of a generalized binding a binding names copies its scheme
 generic (`Fresh::Scheme`); any other read is one instance of it
-(`Ref::named`, `FnType::one_instance`, `Type::instance_read`:
+(`Ref::naming`, `FnType::one_instance`, `Type::instance_read`:
 `Fresh::Instantiate`). So an element of a collection a call returns, a
 callback's result, a field of a call's result and an argument is one
 instance, which its uses decide: `let fs = array::map([1], |r| 'a:
