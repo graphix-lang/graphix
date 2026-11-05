@@ -1043,8 +1043,7 @@ node graph IS the IR — there is no parallel typed IR
   its update ends, so an update after no re-raise visits no `let`. A
   reader outside (an escaped `&mut`) sees the write once. At the wake
   the initializer's fire by catch-up replaces such a write, whichever
-  came first (a sample whose argument alone fired asleep does not fire;
-  a late fire the sleeping arm missed is lost, CR late-asleep-01); a
+  came first (a sample whose argument alone fired asleep does not fire); a
   write landing after the wake's cycle stands. State
   survives an arm's sleep (`Held` residents at the select scrutinee,
   pattern guard and `~`'s arg; `CachedVals` staging; collection slots;
@@ -1054,7 +1053,8 @@ node graph IS the IR — there is no parallel typed IR
   back). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
   recomputes from the world as it stands, reading standing values STALE;
   the only events it re-raises are the fires no selected reader saw,
-  once, at their current value (one fire bit per input per select, shared
+  a late fire to a reader in an arm that did not run included
+  (`TrackedFires::observe_late`), once, at their current value (one fire bit per input per select, shared
   by consulted guards and arm bodies and consumed by whichever arm reads
   it, an arm's guard and its own body seeing it alike; a destructuring let's
   siblings are inputs of their own; a pattern bind, of this select or

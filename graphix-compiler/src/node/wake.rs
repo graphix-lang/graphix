@@ -3,7 +3,12 @@
 //! a collection whose source went bottom and a call whose function did.
 
 use super::{VarRead, read_var};
-use crate::{BindId, Event, ExecCtx, Refs, Rt, TagValue, branch::Prior, env::Env};
+use crate::{
+    BindId, Event, ExecCtx, Refs, Rt, TagValue,
+    branch::Prior,
+    env::Env,
+    prune::{BoundaryRef, Reader},
+};
 use nohash::{IntMap, IntSet};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
@@ -431,6 +436,46 @@ impl TrackedFires {
                 } else if !pending.contains(id) {
                     Arc::make_mut(pending).insert(*id);
                 }
+            }
+        }
+    }
+
+    // CR claude for claude: [risk/low] Only a select's arm bodies take a late fire they
+    // slept through: a guard's reader has the select's own boundary, which tells no arm
+    // apart, and the seq machine, a collection over a bottom source and a call over a bottom
+    // function never call observe_late, so a late fire to a reader they hold asleep is lost
+    // at the wake as it was for select arms before late-asleep-01. Unprobed. (late-asleep-02)
+    /// Record each late fire ([`crate::Event::late`]) to a reader inside
+    /// an arm `arm(i)` names by its boundary: the walk passed the arm when
+    /// the fire was made, so the arm owes it if it does not run this cycle.
+    pub(crate) fn observe_late<'a, R: Rt>(
+        &mut self,
+        ctx: &ExecCtx<'_, R>,
+        arm: impl Fn(usize) -> Option<&'a BoundaryRef>,
+    ) {
+        let (Some(late), Some(root)) = (&ctx.event.late, ctx.event.root) else {
+            return;
+        };
+        let Self { all, pending, per_arm, .. } = self;
+        for (id, (_, readers)) in late.iter() {
+            if !all.keys.contains(id)
+                || pending.contains(id)
+                || ctx.event.variables.contains_key(id)
+            {
+                continue;
+            }
+            let inside = |r: &Reader| {
+                r.root == root
+                    && per_arm.iter().enumerate().any(|(i, ids)| {
+                        ids.contains(id)
+                            && arm(i).is_some_and(|b| b.holds(r.boundary.as_ref()))
+                    })
+            };
+            if readers.iter().any(inside) {
+                if let crate::branch::RtView::Fork(f) = &ctx.rt {
+                    f.note_read(*id);
+                }
+                Arc::make_mut(pending).insert(*id);
             }
         }
     }

@@ -21,6 +21,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
+    prune::BoundaryRef,
     typ::{AbstractId, InfiniteType, ShallowScrutinee, TVar, Type, TypeMismatch},
     wrap,
 };
@@ -1108,6 +1109,12 @@ fn deselect<R: Rt>(
     }
     tracked.fell_asleep(j, ctx.rt.cycle());
     tracked.refresh(&ctx.env, j, |r| arm_refs(arm, r));
+    tracked.observe_late(ctx, |i| (i == j).then(|| arm_boundary(arm)).flatten());
+}
+
+/// The walk-pruning boundary around an arm's body.
+fn arm_boundary<R: Rt>(arm: &(PatternNode<R>, Node<R>)) -> Option<&BoundaryRef> {
+    arm.1.as_prune().map(|p| p.boundary_ref())
 }
 
 /// The chain ran and took `taken` (`None`: no arm, or a bottom scrutinee),
@@ -1857,6 +1864,10 @@ impl<R: Rt> Update<R> for Select<R> {
             SmallVec::new();
         let arg_prod = arg.update(ctx);
         tracked.observe(ctx);
+        let awake = *selected;
+        tracked.observe_late(ctx, |i| {
+            (Some(i) != awake).then(|| arms.get(i).and_then(arm_boundary)).flatten()
+        });
         // A guard runs where the chain reaches it, an arm whose shape
         // admits the value with no earlier arm claiming it (`open` is the
         // chain still running at arm `i`): the checker narrowed the binds

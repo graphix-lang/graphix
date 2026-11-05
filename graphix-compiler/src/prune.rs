@@ -132,7 +132,7 @@ impl BoundaryRef {
     }
 
     /// Whether this boundary is `inner` or one of its ancestors.
-    fn holds(&self, inner: Option<&BoundaryRef>) -> bool {
+    pub(crate) fn holds(&self, inner: Option<&BoundaryRef>) -> bool {
         let mut b = inner;
         while let Some(x) = b
             && x.0.depth > self.0.depth

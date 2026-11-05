@@ -217,8 +217,13 @@ unchanged.
   it reaches makes a reference or a lambda or a call has no static
   target (`analysis::hands_out_callee_binds`): any other `let` is named
   by its scope alone.
-- Not delivered late: to a reader in an arm asleep in the next cycle
-  (its select did not observe the fire either); to a reader in a boundary
+- A late fire to a reader in a select arm that does not run in the next
+  cycle sets its select's catch-up bit (`TrackedFires::observe_late`,
+  matching the reader's root and an arm's boundary around it, as the
+  select updates and again as it deselects the arm), so the arm takes it
+  at its wake as a fire made while it slept. Pin:
+  `lang::delivery::a_late_fire_reaches_a_sleeping_arm_at_its_wake`.
+- Not delivered late: to a reader in a boundary
   the walk is still inside, which counts as ahead though the walk may
   have passed it there: a `*r` directly in a statement, before a nested
   block of that statement that makes `r`'s target fire, never sees that

@@ -239,6 +239,40 @@ async fn a_fire_reaches_a_passed_reader_next_cycle(mode: Mode) -> Result<()> {
 
 modes!(a_fire_reaches_a_passed_reader_next_cycle);
 
+/// `r`'s second arm reads `w` through `h`, and `w` is made after `r`'s
+/// statement ran, once, at `n == FIRES`; at `n == ASLEEP` the arm sleeps.
+const PASSED_ASLEEP: &str = "{
+  let n = 0;
+  n <- select n { k if k < 5 => k + 1, _ => never() };
+  let h: fn(x: i64) -> i64 = never();
+  let log: Array<(i64, i64)> = [];
+  let r = select n {
+    ASLEEP => -1,
+    _ => { let v = h(1); log <- v ~ array::push(log, (n, v)); v }
+  };
+  let w = uniq(select n { k if k < FIRES => 0, _ => 10 });
+  h <- |x: i64| -> i64 x + w;
+  select n { 5 => n ~ log, _ => never() }
+}";
+
+// `w`'s one fire reaches the passed reader next cycle: there if its arm is
+// awake, else at the arm's wake, once, as a fire made while it slept does,
+// whether the arm falls asleep as the fire arrives or slept already.
+async fn a_late_fire_reaches_a_sleeping_arm_at_its_wake(mode: Mode) -> Result<()> {
+    for (asleep, fires, want) in [
+        ("100", "1", "[[1, 1], [2, 11]]"),
+        ("2", "1", "[[1, 1], [3, 11]]"),
+        ("2 | 3", "2", "[[1, 1], [4, 11]]"),
+    ] {
+        let code = PASSED_ASLEEP.replace("ASLEEP", asleep).replace("FIRES", fires);
+        let got = result_updates(&code, &[], mode).await?;
+        assert_eq!(got, [want], "asleep at {asleep}, {mode:?}");
+    }
+    Ok(())
+}
+
+modes!(a_late_fire_reaches_a_sleeping_arm_at_its_wake);
+
 // A late value that feeds its producer back is a self-loop, as `x <- x + 1`
 // is: `r` reads `w` through `h` a cycle late, and each new `r` makes a new
 // `w`, one step a cycle, never settling. `c` counts the cycles.
