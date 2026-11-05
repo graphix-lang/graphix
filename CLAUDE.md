@@ -1210,8 +1210,10 @@ serially inside; runtime compiles run in compile tasks
 (`set_par_mode`), from `GRAPHIX_PAR=off|auto|force`, `auto` by
 default: `Auto` forks where `cost.rs`'s tick histograms say a side
 costs the calibrated threshold (4x the pool's wake latency) and not
-while every worker has a part; `Force` forks at every fork point (tests,
-the fuzzer). `#[parallel]`/`#[parallel(g)]` forces the fork points
+while every worker has a part; a collection's slots fork only where each
+half also pays what its forks took beyond their parts, and run in order
+after three forks in a row no faster than in order (`SlotSite::forked`);
+`Force` forks at every fork point (tests, the fuzzer). `#[parallel]`/`#[parallel(g)]` forces the fork points
 under it (a compile error where nothing forks; callees excluded),
 `#[serial]` inhibits them, callees included. The stack budget is per
 cycle, across workers; the compiler never pins threads.

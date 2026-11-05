@@ -10,7 +10,7 @@ use super::{
     prune::Prune,
     wake::TrackedFires,
 };
-use crate::cost::{ProbeSite, SlotPlan, SlotSite};
+use crate::cost::{self, Parts, ProbeSite, SlotPlan, SlotSite};
 use crate::{
     ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Notify, PruneMode, Refs, Rt,
     Scope, SourcePosition, Tag, TagValue, Update, View,
@@ -1108,7 +1108,12 @@ fn update_slots<R: Rt>(
             site.measured(t0, n);
             r
         }
-        SlotPlan::Fork { grain } => update_ranges(ctx, standing, 0, views, grain)?,
+        SlotPlan::Fork { grain } => {
+            let (t0, mut parts) = (cost::ticks(), Parts::default());
+            let r = update_ranges(ctx, standing, 0, views, grain, &mut parts)?;
+            site.forked(t0, n, &parts);
+            r
+        }
     };
     site.fresh.run(
         ctx,
@@ -1118,7 +1123,9 @@ fn update_slots<R: Rt>(
         |ctx, slot, at| update_slots_in_order(ctx, std::slice::from_mut(slot), at, views),
         |ctx, slots, at, grain| match grain {
             None => update_slots_in_order(ctx, slots, at, views),
-            Some(grain) => update_ranges(ctx, slots, at, views, grain),
+            Some(grain) => {
+                update_ranges(ctx, slots, at, views, grain, &mut Parts::default())
+            }
         },
         merge_tags,
     )
@@ -1175,13 +1182,14 @@ impl SlotViews {
 }
 
 /// Update `slots`, the first at index `at`, in sibling branches of
-/// `grain` slots each.
+/// `grain` slots each, adding each branch's ticks to `timed`.
 fn update_ranges<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
     slots: &mut [Slot<R>],
     at: usize,
     views: SlotViews,
     grain: usize,
+    timed: &mut Parts,
 ) -> Option<Option<Tag>> {
     let n = slots.len();
     let grain = grain.max(1);
@@ -1192,9 +1200,12 @@ fn update_ranges<R: Rt>(
     let parts = crate::branch::cut(slots, &ranges);
     let parts = parts.into_iter().zip(ranges.iter().map(|r| at + r.0));
     let mut production = None;
-    for p in crate::branch::fork_each(ctx, parts, |c, (p, at)| {
-        update_slots_in_order(c, p, at, views)
+    for (p, ticks) in crate::branch::fork_each(ctx, parts, |c, (p, at)| {
+        let t0 = cost::ticks();
+        let p = update_slots_in_order(c, p, at, views);
+        (p, cost::ticks_since(t0))
     }) {
+        timed.add(ticks);
         production = merge_tags(production, p?);
     }
     Some(production)

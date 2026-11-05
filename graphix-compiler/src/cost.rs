@@ -166,7 +166,7 @@ fn threshold(wake: u64, per_ns: f64) -> u64 {
 impl Calibration {
     fn bucket(&self, ticks: u64) -> usize {
         let log = 63u32.saturating_sub(ticks.max(1).leading_zeros());
-        log.saturating_sub(self.shift).min(15) as usize
+        log.saturating_sub(self.shift).min(Hist::TOP as u32) as usize
     }
 
     /// The least tick count bucket `b` holds.
@@ -185,6 +185,9 @@ struct Hist {
 
 impl Hist {
     const DECAY: u16 = 64;
+
+    /// The last bucket, which holds every count from `8T` up.
+    const TOP: u8 = 15;
 
     fn add(&mut self, cal: &Calibration, ticks: u64) {
         self.counts[cal.bucket(ticks)] += 1;
@@ -208,7 +211,7 @@ impl Hist {
                 return b as u8;
             }
         }
-        15
+        Self::TOP
     }
 }
 
@@ -607,6 +610,9 @@ impl Splits<'_> {
 #[derive(Debug, Default)]
 pub struct SlotSite {
     standing: Slots,
+    /// What a fork of the standing slots took beyond its parts, decayed:
+    /// each half of the slots must cost the threshold plus this.
+    overhead: u64,
     pub fresh: ProbeSite,
     pub build: ProbeSite,
     siblings: Siblings,
@@ -627,7 +633,22 @@ enum Slots {
         hist: Hist,
         sampler: Sampler,
         est: u64,
+        /// The measured ticks a slot, decayed: the serial estimate a
+        /// fork must beat.
+        mean: u64,
+        /// The forks in a row that took no less than `mean` a slot.
+        losses: u8,
     },
+}
+
+/// Forks in a row that do not beat their serial estimate before a
+/// collection's slots run in order.
+const LOSSES: u8 = 3;
+
+/// The ticks a slot is estimated at: its p75 bucket's floor `est`, or,
+/// past the last bucket's floor, its `mean`.
+fn slot_cost(hist: &Hist, est: u64, mean: u64) -> u64 {
+    if hist.p75() == Hist::TOP { est.max(mean) } else { est }
 }
 
 impl Default for Slots {
@@ -670,14 +691,15 @@ pub enum SlotPlan {
     /// Update in order and time the whole: [`SlotSite::measured`].
     Measure(u64),
     /// Fork in ranges of `grain` slots.
+    /// Fork in ranges of `grain` slots, then [`SlotSite::forked`].
     Fork {
         grain: usize,
     },
 }
 
-/// The slot count at which slots of `est` ticks each reach `2T`.
-fn serial_below(cal: &Calibration, est: u64) -> usize {
-    usize::try_from((2 * cal.t).div_ceil(est.max(1))).unwrap_or(usize::MAX)
+/// The slot count at which slots of `est` ticks each reach `2 * least`.
+fn serial_below(least: u64, est: u64) -> usize {
+    usize::try_from((2 * least).div_ceil(est.max(1))).unwrap_or(usize::MAX)
 }
 
 impl SlotSite {
@@ -728,7 +750,14 @@ impl SlotSite {
         }
     }
 
+    /// The least ticks each half of the slots costs where a fork pays:
+    /// the threshold plus what a fork here took beyond its parts.
+    fn least(&self, cal: &Calibration) -> u64 {
+        cal.t.saturating_add(self.overhead)
+    }
+
     fn plan_with(&mut self, cal: &Calibration, n: usize) -> SlotPlan {
+        let least = self.least(cal);
         match &mut self.standing {
             Slots::Probe { .. } => SlotPlan::Measure(ticks()),
             Slots::Serial { countdown, below } => match countdown.checked_sub(1) {
@@ -738,16 +767,22 @@ impl SlotSite {
                 }
                 _ => {
                     self.standing = Slots::Probe { left: PROBES };
+                    self.overhead /= 2;
                     SlotPlan::Measure(ticks())
                 }
             },
-            Slots::Measured { hist, sampler, est } => {
+            Slots::Measured { hist, sampler, est, mean, .. } => {
+                let cost = slot_cost(hist, *est, *mean);
                 if sampler.due() || hist.n < SETTLE {
                     SlotPlan::Measure(ticks())
+                } else if cost.saturating_mul(n as u64) < 2 * least {
+                    let below = serial_below(least, cost);
+                    self.standing = Slots::Serial { countdown: RECHECK, below };
+                    SlotPlan::Serial
                 } else if saturated() {
                     SlotPlan::Serial
                 } else {
-                    // CR claude for claude: [perf/medium] This fork is taken for any loop
+                    // XCR claude for claude: [perf/medium] This fork is taken for any loop
                     // whose slots cost over T, and T counts only a worker's wake
                     // latency. It leaves out each branch's fork and merge, the slower
                     // slot updates inside a branch, and the CPU the woken workers spin
@@ -779,7 +814,24 @@ impl SlotSite {
                     // on mixed.gx. The patches and the benchmark scripts:
                     // ~/tmp/grok-forkcost/ and ~/tmp/grok-forkcost/bench/ (run1.sh,
                     // batch.sh, p/mixed.gx, p/fade.gx).
-                    SlotPlan::Fork { grain: grain(cal, *est, n, RANGES_PER_WORKER) }
+                    // 2026-11-05 claude: SlotSite now times each fork and each part in it
+                    // (cost::Parts, collection.rs update_ranges): what a fork takes
+                    // beyond its parts' critical path is a decayed overhead, and the
+                    // slots fork only where each half costs T plus it (SlotSite::least);
+                    // three forks in a row no faster than mean * n turn the site serial
+                    // until it re-probes or doubles (LOSSES, SlotSite::forked_with); a
+                    // slot past the last histogram bucket is estimated at its mean
+                    // (slot_cost). The probe on ryouko, debug, --no-fusion: base-r17 Auto
+                    // 1360-1428 cycles on 1.5-4.0 CPU-s, Off 1441 on 0.64; now Auto
+                    // 1421-1453 on 0.8-0.97. A heavy collection (64 slots each folding
+                    // 400) still forks every cycle with 64 parts, cycles within noise of
+                    // base. Not covered: the CPU rayon's woken workers spin after a fork,
+                    // which wall time cannot see. ForkSite untouched (the mixed.gx
+                    // regression was there). Pins that fail without it:
+                    // cost::tests::slots_whose_forks_lose_run_in_order,
+                    // a_fork_pays_its_overhead_in_each_half,
+                    // dear_slots_are_estimated_past_the_last_bucket.
+                    SlotPlan::Fork { grain: grain(cal, cost, n, RANGES_PER_WORKER) }
                 }
             }
         }
@@ -794,34 +846,97 @@ impl SlotSite {
     }
 
     fn measured_with(&mut self, cal: &Calibration, total: u64, n: usize) {
+        let least = self.least(cal);
+        let each = total / n.max(1) as u64;
         match &mut self.standing {
             Slots::Probe { left } => {
-                if total >= 2 * cal.t {
+                if total >= 2 * least {
                     self.standing = Slots::Measured {
                         hist: Hist::default(),
                         sampler: Sampler::default(),
                         est: 0,
+                        mean: each,
+                        losses: 0,
                     };
                 } else if *left <= 1 {
-                    let below = serial_below(cal, total / n.max(1) as u64);
+                    let below = serial_below(least, each);
                     self.standing = Slots::Serial { countdown: RECHECK, below };
                 } else {
                     *left -= 1;
                 }
             }
             Slots::Serial { .. } => unreachable!("a serial site is not measured"),
-            Slots::Measured { hist, sampler, est } => {
-                hist.add(cal, total / n.max(1) as u64);
+            Slots::Measured { hist, sampler, est, mean, .. } => {
+                hist.add(cal, each);
+                *mean = (*mean * 3 + each) / 4;
                 let e = cal.floor(hist.p75());
                 let settled = hist.n >= SETTLE;
                 sampler.sampled(settled, e != *est);
                 *est = e;
-                if settled && e.saturating_mul(n as u64) < 2 * cal.t {
-                    self.standing =
-                        Slots::Serial { countdown: RECHECK, below: serial_below(cal, e) };
+                let cost = slot_cost(hist, e, *mean);
+                if settled && cost.saturating_mul(n as u64) < 2 * least {
+                    let below = serial_below(least, cost);
+                    self.standing = Slots::Serial { countdown: RECHECK, below };
                 }
             }
         }
+    }
+
+    /// A forked update of `n` standing slots, which started at tick `t0`
+    /// and ran as `parts`, is over.
+    pub fn forked(&mut self, t0: u64, n: usize, parts: &Parts) {
+        if let Slots::Measured { .. } = self.standing {
+            self.forked_with(ticks_since(t0), n, parts, crate::branch::eval_workers())
+        }
+    }
+
+    // CR claude for eric: [perf/low] A fork is judged by its wall time
+    // alone, which leaves out the CPU the pool spends after it: rayon
+    // wakes a sleeping worker for each worker that finds a job, and each
+    // woken worker spins 33 rounds over every deque (crossbeam_epoch::pin,
+    // Stealer::steal, sched_yield) before it parks. perf of the
+    // x-perf-runtime-02 probe under Auto on base-r17: all 32 eval workers
+    // at 4-7% each, the runtime thread 6%, about 0.4 ms of CPU a fork that
+    // saved under 0.04 ms. Measuring it needs a thread CPU clock
+    // (CLOCK_THREAD_CPUTIME_ID: libc, a new dependency of
+    // graphix-compiler) read around each part, or a pool whose idle
+    // workers do not spin. Decide whether Auto should weigh CPU against
+    // wall time, and so whether to take the dependency. (par-spin-cpu-01)
+    /// Learn what a fork of `n` slots on `workers` workers took beyond
+    /// its parts, and run the slots in order once [`LOSSES`] forks in a
+    /// row took no less than in order.
+    fn forked_with(&mut self, total: u64, n: usize, parts: &Parts, workers: usize) {
+        let Slots::Measured { mean, losses, .. } = &mut self.standing else { return };
+        if parts.count < 2 {
+            return;
+        }
+        let critical = parts.longest.max(parts.sum / workers.max(1) as u64);
+        self.overhead = (self.overhead + total.saturating_sub(critical)) / 2;
+        if total < mean.saturating_mul(n as u64) {
+            *losses = 0;
+        } else if *losses + 1 < LOSSES {
+            *losses += 1;
+        } else {
+            self.standing =
+                Slots::Serial { countdown: RECHECK, below: n.saturating_mul(2) };
+        }
+    }
+}
+
+/// The ticks each part of a fork took.
+#[derive(Debug, Default)]
+pub struct Parts {
+    count: usize,
+    longest: u64,
+    sum: u64,
+}
+
+impl Parts {
+    /// One part took `ticks`.
+    pub fn add(&mut self, ticks: u64) {
+        self.count += 1;
+        self.longest = self.longest.max(ticks);
+        self.sum = self.sum.saturating_add(ticks);
     }
 }
 
@@ -1000,7 +1115,7 @@ impl LoopSite {
         match p.grain(cal, n, CHUNKS_PER_WORKER) {
             None if p.hist.n >= SETTLE => {
                 let est = cal.floor(p.hist.p75());
-                let below = serial_below(cal, est).min(u32::MAX as usize) as u32;
+                let below = serial_below(cal.t, est).min(u32::MAX as usize) as u32;
                 self.below.store(below, Ordering::Relaxed);
                 let until = ticks().saturating_add(RECHECK as u64 * cal.t);
                 self.until.store(until, Ordering::Relaxed);
@@ -1101,6 +1216,116 @@ mod tests {
             matches!(site.plan_with(&cal, 16), SlotPlan::Measure(_)),
             "a serial site that grew to pay for a fork probes again at once"
         );
+    }
+
+    /// The grain of the next fork `site` plans for `n` slots at `each`
+    /// ticks apiece, measuring the updates it measures before it.
+    fn next_fork(site: &mut SlotSite, cal: &Calibration, n: usize, each: u64) -> usize {
+        for _ in 0..1 << MAX_PERIOD {
+            match site.plan_with(cal, n) {
+                SlotPlan::Fork { grain } => return grain,
+                SlotPlan::Measure(_) => site.measured_with(cal, each * n as u64, n),
+                SlotPlan::Serial => panic!("the site turned serial: {:?}", site.standing),
+            }
+        }
+        panic!("the site never forked: {:?}", site.standing)
+    }
+
+    fn parts(each: &[u64]) -> Parts {
+        let mut p = Parts::default();
+        for t in each {
+            p.add(*t)
+        }
+        p
+    }
+
+    #[test]
+    fn slots_whose_forks_lose_run_in_order() {
+        let cal = Calibration { t: 1 << 10, shift: 4 };
+        let (n, each, workers) = (64, cal.t / 8, 4);
+        let serial = each * n as u64;
+        // a part as slow as all the slots in order: no overhead, no gain
+        let slow = parts(&[serial, 1]);
+        let mut site = SlotSite::default();
+        for _ in 0..LOSSES - 1 {
+            next_fork(&mut site, &cal, n, each);
+            site.forked_with(serial, n, &slow, workers);
+        }
+        next_fork(&mut site, &cal, n, each);
+        site.forked_with(serial / 2, n, &parts(&[serial / 2, serial / 2]), workers);
+        for _ in 0..LOSSES - 1 {
+            next_fork(&mut site, &cal, n, each);
+            site.forked_with(serial, n, &slow, workers);
+        }
+        assert!(
+            matches!(site.standing, Slots::Measured { .. }),
+            "a fork that beat its serial estimate starts the count again"
+        );
+        assert_eq!(site.overhead, 0);
+        next_fork(&mut site, &cal, n, each);
+        site.forked_with(serial + 1, n, &slow, workers);
+        assert!(
+            matches!(site.plan_with(&cal, n), SlotPlan::Serial),
+            "{LOSSES} forks in a row no faster than in order: {:?}",
+            site.standing
+        );
+        assert!(
+            matches!(site.plan_with(&cal, 2 * n), SlotPlan::Measure(_)),
+            "twice the slots probe again"
+        );
+    }
+
+    #[test]
+    fn a_fork_pays_its_overhead_in_each_half() {
+        let cal = Calibration { t: 1 << 10, shift: 4 };
+        let (n, each, workers): (usize, _, _) = (64, cal.t / 8, 4);
+        let t = cal.t;
+        let grain = 8.max(n.div_ceil(crate::branch::eval_workers() * 4));
+        let mut site = SlotSite::default();
+        assert_eq!(next_fork(&mut site, &cal, n, each), grain);
+        // eight parts of T on four workers take 2T; the fork took 4T more
+        site.forked_with(2 * t + 4 * t, n, &parts(&[t; 8]), workers);
+        assert_eq!(site.overhead, 2 * t);
+        assert_eq!(
+            next_fork(&mut site, &cal, n, each),
+            grain,
+            "the overhead is the fork's, so a range still costs T"
+        );
+        // 6T more: halves of 5T, more than the slots
+        site.forked_with(2 * t + 6 * t, n, &parts(&[t; 8]), workers);
+        assert_eq!(site.overhead, 4 * t);
+        loop {
+            match site.plan_with(&cal, n) {
+                SlotPlan::Measure(_) => site.measured_with(&cal, each * n as u64, n),
+                SlotPlan::Serial => break,
+                SlotPlan::Fork { .. } => panic!("8T of slots forked at 5T a half"),
+            }
+        }
+        assert!(matches!(site.plan_with(&cal, 79), SlotPlan::Serial));
+        assert!(
+            matches!(site.plan_with(&cal, 80), SlotPlan::Measure(_)),
+            "slots that reach two halves of 5T probe again"
+        );
+        assert_eq!(site.overhead, 2 * t, "a probe again halves the overhead");
+    }
+
+    /// A slot past the histogram's last bucket is estimated at its mean,
+    /// not the bucket's floor.
+    #[test]
+    fn dear_slots_are_estimated_past_the_last_bucket() {
+        // T in bucket T_BUCKET, as a measured threshold is: the last
+        // bucket's floor is 8T
+        let cal = Calibration { t: 1 << 20, shift: 20 - T_BUCKET };
+        assert_eq!(cal.floor(Hist::TOP), 8 * cal.t);
+        let (n, each) = (4, 64 * cal.t);
+        let mut site = SlotSite::default();
+        let grain = next_fork(&mut site, &cal, n, each);
+        assert_eq!(grain, 1);
+        // a fork that took 32T beyond its parts: halves of 17T, which two of
+        // these slots cover, where two of the last bucket's floor, 8T, do not
+        site.forked_with(64 * cal.t + 32 * cal.t, n, &parts(&[64 * cal.t; 4]), 4);
+        assert_eq!(site.overhead, 16 * cal.t);
+        assert_eq!(next_fork(&mut site, &cal, n, each), 1);
     }
 
     #[test]
