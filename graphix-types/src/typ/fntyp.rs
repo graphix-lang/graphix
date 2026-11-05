@@ -971,24 +971,6 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Instantiate(open))
     }
 
-    /// A quantifier of this signature no call has picked: the type is a
-    /// scheme, not the type of a call.
-    pub fn has_open_quantifier(&self) -> bool {
-        self.any_open_quantifier(|_| true)
-    }
-
-    /// A rank-2 formal in its definition's body: its open quantifiers are
-    /// held rigid there, so its value is still any instance of itself.
-    fn is_rigid_formal(&self) -> bool {
-        self.any_open_quantifier(|tv| tv.is_rigid() || tv.is_formal_quantifier())
-    }
-
-    fn any_open_quantifier(&self, also: impl Fn(&TVar) -> bool) -> bool {
-        let mut any = false;
-        self.open_quantifiers(|_, open| any |= also(&open));
-        any
-    }
-
     /// A quantifier an earlier compile task left open: the check decided
     /// it open, so a later task compares the type as any instance of
     /// itself and never writes the cell (`tvar::earlier_task`), except an
@@ -1049,78 +1031,6 @@ impl FnType {
         }
     }
 
-    // CR claude for claude: [bug/low] A trait method's parameter whose rank-2 bound names
-    // `self` or a constructor trait's element is refused here, as any variable its written
-    // type does not quantify is: `trait T { val m: fn(self, k: fn<'a: [self, null]>(x: 'a)
-    // -> 'a) -> (self, null) }` and `trait C { val m: fn(self<'a>, f: fn<'b: ['a,
-    // null]>(x: 'b) -> 'b) -> null }` ("a rank-2 quantifier's bound names 'self"). Main
-    // (387c29e60) runs every such method right in every mode where the rank-2 parameter is
-    // positional, so checked after `self`, which decides both: an impl, a generic impl, a
-    // default body (t7, t8, t9, t11, t12). A labeled parameter comes before `self`, and
-    // there it is the hole rank2-bound-instance-01 closes (`fn(#f: fn<'b: ['a, null]>(x:
-    // 'b) -> 'b, self<'a>)`: main's check passes, its build refuses every instance, s9,
-    // s10) or main's check refuses it (`#k: fn<'a: [self, null]>`, s7, s8). No annotation
-    // passes: the trait cannot write its impls' types. Options: (a) keep refusing, the
-    // one-line rule as it stands; (b) let a positional parameter's rank-2 bound name `self`
-    // and its element, a labeled one's not: one line, but the parameter's kind decides, and
-    // only what main runs argues that a positional parameter is always checked after
-    // `self`. Pins of the labeled shapes, which stay refused either way:
-    // lang::types::rank2_bound_naming_self_is_refused,
-    // rank2_bound_naming_a_ctor_traits_element_is_refused. probes:
-    // ~/ptmp/cr29/scratch/r11-R/r1fix/{t7_self_in_rank2,t8_self_in_rank2_generic,t9_ctor_elem_rank2,t11_self_rank2_default,t12_elem_rank2_default,s7_labeled_first,s8_labeled_first_default,s9_elem_labeled_first,s10_elem_labeled_first_default}.gx
-    // (rank2-self-bound-01)
-    // 2026-11-03 claude: Corrected evidence (review r12 of lane R, both reviewers): no
-    // shape of a rank-2 bound naming self is the hole; only the constructor trait's element
-    // is. Main (387c29e60, 30702808d) runs every labeled-self method its check passes right
-    // in every mode (default, --no-fusion, GRAPHIX_NO_SUBST=1, ELAB_AUDIT silent, fuzzer
-    // check AGREE): s7i (one i64 impl, exactly the pin rank2_bound_naming_self_is_refused),
-    // s7s (i64 and string), s11 (a 'q: T caller), s15 (a struct self), s16 (a HOF argument,
-    // under array::map). Its check refuses labeled self only over a generic impl (s7, s14)
-    // or a default body (s8, s8i), and its build refuses none. So refusing self is
-    // over-refusal of methods that run, with no annotation that passes: lost s7i, s7s, s11,
-    // s15, s16 and the positional t7, t8, t11; the element is the hole labeled (s9, s10)
-    // and a loss positional (t9, t12). Option (b) above rests on the wrong premise.
-    // Corrected options: (a) keep refusing self and the element, the one-line rule as
-    // built, with those losses; (b) let a trait method's rank-2 bound name self, the
-    // element staying refused. (b) is not a filter by name: self parses as a type anywhere
-    // and outside a trait is a plain variable, where it is the hole (|#k: fn<'a: [self,
-    // null]>(x: 'a) -> 'a, z: self| ..: main's check passes, its build refuses the
-    // instance, selfout_let), so the exemption needs scoping to a trait method's signature
-    // and its impls' and default's lets, and two further choices: at a generic impl self
-    // becomes the target, whose variable the rule then names (t8 runs on main, s7 and s14
-    // its check refuses), and at a default body self stays a variable (t11 runs on main, s8
-    // its check refuses). Not built: a mechanism and a rule the brief does not state.
-    // probes: ~/ptmp/cr29/scratch/review-r11/R-r2-1/t/{s7i,s7s,s11,s14,s15,s16,s8i}_*.gx,
-    // review-r11/R-r2-2/{pin_self,self_lab_two_mono,self_lab_generic,self_lab_default_i64,pin_elem}.gx,
-    // ~/ptmp/cr29/scratch/r11-R/r12/selfout_{let,pos}.gx
-    // 2026-11-03 claude: Scope of the note above (review r13 of lane R): 'no shape of a
-    // rank-2 bound naming self is the hole' holds for a self dispatched to one impl. A
-    // union self fails the build for ANY rank-2 argument, self in its bound or not (y1,
-    // y1c, y1d, a6, a8: main's check passes, every mode's build refuses 'the argument is
-    // not polymorphic in 'a'), a separate bug, CR union-self-rank2-01; and self outside a
-    // trait is the hole (selfout_let). Options (a) and (b) stand. The note's s15/s16 are
-    // review-r11/R-r2-1 probes, not review-r10's. probes:
-    // ~/ptmp/cr29/scratch/review-r11/R-r3-2/y/, R-r3-1/t/
-    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2 types: a written quantified function type stands only as a definition's, a val's or a trait method's own scheme; plus the ML rule: a function stays generic
-    // only where a binding names it, and anywhere else (data, a result) takes one instance. Lane Q (cr51-Q) builds it; this CR goes with the feature.
-    /// Refuse a bound of the type's own quantifiers (`bounds`, its
-    /// [`Self::constraint_view`]) naming a variable it does not quantify.
-    /// A rank-2 quantifier is held rigid at exactly its bounds, which such
-    /// a variable, decided elsewhere, does not say.
-    pub fn check_bounds_closed(&self, bounds: &[(TVar, Type)]) -> Result<()> {
-        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        for (_, b) in bounds.iter() {
-            b.collect_tvars(&mut named);
-        }
-        match named.keys().filter(|n| !self.quantifiers.contains(*n)).min() {
-            None => Ok(()),
-            Some(n) => bail!(
-                "a rank-2 quantifier's bound names '{n}, which this function type \
-                 does not quantify: bound it by a written type"
-            ),
-        }
-    }
-
     /// Each of the signature's own quantifiers whose cell is open, as the
     /// signature names it and as its open cell.
     fn open_quantifiers(&self, mut f: impl FnMut(&TVar, TVar)) {
@@ -1151,44 +1061,11 @@ impl FnType {
             for c in tv.cell_constraints() {
                 f.add_cell_constraint(walk(&c, known));
             }
-            if tv.is_formal_quantifier() {
-                f.mark_formal_quantifier()
-            }
         }
     }
 
-    /// Map each open quantifier of a function type the signature holds
-    /// (a rank-2 formal's `fn<'b: C>`) that `copied` says a call copies
-    /// to a fresh generic cell, its conjuncts copied through `walk`: the
-    /// formal's callers pick it, never the site that passes the argument.
-    /// A rank-2 formal's quantifier is copied whatever gate owns it.
-    fn generic_inner_quantifiers(
-        &self,
-        known: &mut AHashMap<usize, TVar>,
-        copied: impl Fn(&TVar) -> bool,
-        walk: impl Fn(&Type, &mut AHashMap<usize, TVar>) -> Type,
-    ) {
-        let mut inner: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.inner_quantifiers(&mut inner);
-        inner.retain(|addr, tv| {
-            !known.contains_key(addr) && (tv.is_formal_quantifier() || copied(tv))
-        });
-        for (addr, tv) in inner.iter() {
-            known.insert(*addr, TVar::empty_generic(tv.name.clone()));
-        }
-        for (addr, tv) in inner.iter() {
-            let f = known[addr].clone();
-            for c in tv.cell_constraints() {
-                f.add_cell_constraint(walk(&c, known));
-            }
-            if tv.is_formal_quantifier() {
-                f.mark_formal_quantifier()
-            }
-        }
-    }
-
-    /// The open quantifiers of every function type the signature holds
-    /// (a rank-2 formal's `fn<'b: C>`), by cell.
+    /// The open quantifiers of every function type the signature holds, by
+    /// cell: a generic function's a scheme holds.
     pub fn inner_quantifiers(&self, out: &mut AHashMap<usize, TVar>) {
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
         self.for_each_part(&mut |t, _| {
@@ -1200,17 +1077,9 @@ impl FnType {
         });
     }
 
-    /// A call's copy of a signature whose cells it shares (a parameter
-    /// called in its definition's body): only the quantifiers are fresh,
-    /// its own and its rank-2 formals'.
-    #[doc(hidden)]
-    pub fn shared_call(&self) -> Self {
-        self.fresh_quantified(true)
-    }
-
-    /// A copy whose own open quantifiers are fresh cells, and its rank-2
-    /// formals' when `formals`; every other cell is shared.
-    fn fresh_quantified(&self, formals: bool) -> Self {
+    /// A copy whose own open quantifiers are fresh cells; every other cell
+    /// is shared.
+    fn fresh_own_quantifiers(&self) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let image = |known: &AHashMap<usize, TVar>, a| {
             known.get(&a).map(|f| Type::TVar(f.clone()))
@@ -1219,9 +1088,6 @@ impl FnType {
             c.swap_cells(&|a| image(known, a))
         };
         self.fresh_quantifiers(&mut known, walk);
-        if formals {
-            self.generic_inner_quantifiers(&mut known, |_| false, walk);
-        }
         if known.is_empty() {
             return self.clone();
         }
@@ -1380,13 +1246,12 @@ impl FnType {
         let copy;
         let this = match self.has_earlier_quantifier() {
             true => {
-                copy = self.fresh_quantified(false);
+                copy = self.fresh_own_quantifiers();
                 &copy
             }
             false => self,
         };
-        let adopted = flags.contains(ContainsFlags::Adopt).then_some(t);
-        let gates = this.open_quantifier_gates(adopted);
+        let gates = this.open_quantifier_gates();
         let gated = u32::from(!gates.is_empty());
         hist.gated += gated;
         let r = this.contains_gated(flags, env, hist, t);
@@ -1433,13 +1298,13 @@ impl FnType {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        // a rank-2 formal passed on is any instance of itself, as is a
-        // type whose quantifier an earlier task left open: its quantifiers
-        // are fresh for this comparison, so self's bind them
+        // a type whose quantifier an earlier task left open is any instance
+        // of itself: its quantifiers are fresh for this comparison, so
+        // self's bind them
         let fresh;
-        let t = match t.is_rigid_formal() || t.has_earlier_quantifier() {
+        let t = match t.has_earlier_quantifier() {
             true => {
-                fresh = t.shared_call();
+                fresh = t.fresh_own_quantifiers();
                 &fresh
             }
             false => t,
@@ -1490,33 +1355,14 @@ impl FnType {
         Ok(true)
     }
 
-    /// Rigid gates on the quantifiers no call has picked: each holds what
-    /// it meets to its declared bounds, unless self is the written form of
-    /// the function `adopted` types: then each adopts the bounds of its
-    /// counterpart there, and takes the type `adopted` decided it to.
-    fn open_quantifier_gates(
-        &self,
-        adopted: Option<&Self>,
-    ) -> LPooled<Vec<super::tvar::RigidGate>> {
-        let mut decided: LPooled<AHashSet<ArcStr>> = LPooled::take();
-        if let Some(t) = adopted {
-            decided.extend(t.quantifiers.iter().cloned());
-            t.each_quantifier(|name, tv| {
-                if tv.open_cell().is_some() {
-                    decided.remove(name);
-                }
-            })
-        }
+    /// Rigid gates on a scheme's quantifiers no call has picked: what each
+    /// meets must hold for every type its bound admits.
+    fn open_quantifier_gates(&self) -> LPooled<Vec<super::tvar::RigidGate>> {
         let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
-        self.each_quantifier(|name, tv| {
-            let scheme = tv.open_cell().is_some_and(|open| open.level().is_generic());
-            if !scheme || decided.contains(name) {
-                return;
+        self.open_quantifiers(|tv, open| {
+            if open.level().is_generic() {
+                gates.push(tv.open_rigid())
             }
-            gates.push(match adopted {
-                Some(_) => tv.open_rigid(),
-                None => tv.open_quantifier_rigid(),
-            })
         });
         gates
     }
@@ -1553,11 +1399,6 @@ impl FnType {
     /// before its body is typechecked. Return and throws are what the
     /// body determines and are left open.
     pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
-        // a rank-2 formal passed on is any instance of itself, copied fresh
-        // at the check: nothing is pushed into its own quantifiers
-        if t.is_rigid_formal() {
-            return Ok(());
-        }
         let mut hist = ContainsHist::new();
         for (s, t) in self.align(t).0 {
             t.typ.contains_int(ContainsFlags::Commit.into(), env, &mut hist, &s.typ)?;
@@ -1934,6 +1775,12 @@ fn is_self_param(a: &FnArgType) -> bool {
 // Main 968fa9bc0 the same. Found by review r14 of lane K (round 3). probe:
 // ~/ptmp/cr29/scratch/review-r14/K-r2-1/q/fnqtyp_320.gx (genq.py fnqtyp N
 // OUT), cg/fnq_160.out.gz (rank2-print-01)
+// 2026-11-05 claude: Lane Q (cr51-Q): written nested quantified function types
+// are now refused by the check (QUANTIFIED_FN at Type::rewrite_trait_args), so
+// fnqtyp_320 no longer type-checks, but graphix fmt formats without checking
+// and still reaches this printer path at the same cost; an inferred nest (a
+// lambda declaring a variable, returned by a lambda declaring one, ...) also
+// prints nested headers. The CR stands for the formatter.
 /// The quantifiers a signature prints: the declared ones, minus the
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those
@@ -2557,7 +2404,7 @@ fn copied_beneath(t: &Type, open: &IntSet<LambdaId>, functions: bool) -> bool {
                 seen.insert(tv.cell_addr())
                     && match tv.binding() {
                         Some(b) => go(&b, open, functions, seen),
-                        None => !tv.is_quantifier_rigid() && tv.level().copied_by(open),
+                        None => tv.level().copied_by(open),
                     }
             }
             Type::Fn(_) if !functions => false,

@@ -857,6 +857,14 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 // binding (no wrong value: the bind is the backstop). The direct `j <- |x: i64| -> i64 x + 1` and an annotated writer (mm2) are refused. It goes through
 // because a call copies the earlier quantifier the writer's parameter type holds. probe:
 // ~/ptmp/cr29/scratch/review-r14/D-r4-1/new/mm/{mm1,mm2,mm3,mm4}.txt (GRAPHIX_MODPATH=$PWD ../../r.sh lane FILE).
+// 2026-11-05 claude: Lane Q (cr51-Q, Eric's 11-05 ruling: (e) plus the ML rule) closes this CR's probes as a side effect of the ML rule, not by D14 (b) as
+// ruled: a lambda no binding names (the collection callback |e| W(e) here) takes its enclosing level's cells at its gate's close instead of generic ones
+// (Lambda::named, DefGate::close), and a read of a generalized binding no binding names is one instance (Ref::named), so the callback leaves no generic
+// cell in y's type and g is one type in x. gen_map, gen_map2, gen_map4, gen_map5 are now refused by --check (type mismatch i64 does not contain string, or
+// cannot compute string + i64), as gen_app2 was; the review r9 rank-2 forms (ref1_arg .. e2_default_sel, c1) are refused by the new rule on written
+// quantified function types; c4b_norank2 by the check. Left for D14's owner to decide whether this closes the CR or D14 (b) is still wanted for a shape
+// the ML rule misses; no probe here still holds. Pins: lang::quantified::a_callbacks_result_is_one_instance,
+// a_generic_binding_read_into_a_callbacks_result_is_one_instance.
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is
@@ -910,10 +918,6 @@ pub struct TCell {
     /// body check: a rigid unbound cell never binds, so the body must
     /// be well-typed for arbitrary 'a.
     pub(crate) rigid_gates: u32,
-    /// The rigid gates a call opened on a rank-2 formal's quantifiers: a callee
-    /// checked against the declared bound alone, so a unification may not
-    /// add a conjunct the bound does not imply.
-    pub(crate) quantifier_gates: u32,
     /// Where the cell belongs ([`Level`]); everything it reaches is at
     /// its depth or shallower.
     pub(crate) level: Level,
@@ -967,11 +971,6 @@ pub(crate) enum CellFact {
     /// a `_` annotation, a `-> _` return): a fact the gate keeps, where a
     /// ⊥ nothing required is vacuous and reopens.
     BottomRequired,
-    /// The cell is a quantifier of a rank-2 formal, or of a written fn
-    /// type other than a declared signature's own: wherever the type is
-    /// passed on, in a definition's check or an instance's elaboration,
-    /// it is any instance of itself, copied fresh for each use.
-    FormalQuantifier,
     /// The end of the input that made the cell settled it
     /// ([`settle_input`](super::settle::settle_input)): what it holds is
     /// decided, so a ⊥ it holds is required of whatever a later input sends
@@ -987,7 +986,6 @@ impl Default for TCell {
             lower: SmallVec::new(),
             facts: BitFlags::empty(),
             rigid_gates: 0,
-            quantifier_gates: 0,
             level: current_level(),
             task: TASK.get(),
             ground: 0,
@@ -1002,7 +1000,6 @@ impl Default for TCell {
 /// reads by then.
 pub struct RigidGate {
     cell: Arc<RwLock<TCell>>,
-    quantifier: bool,
 }
 
 impl Drop for RigidGate {
@@ -1010,9 +1007,6 @@ impl Drop for RigidGate {
         let mut cell = self.cell.write();
         gated(&cell);
         cell.rigid_gates = cell.rigid_gates.saturating_sub(1);
-        if self.quantifier {
-            cell.quantifier_gates = cell.quantifier_gates.saturating_sub(1);
-        }
     }
 }
 
@@ -2147,16 +2141,6 @@ impl TVar {
     /// others reading a cell that forwards), else on the cell it reads;
     /// see [`TCell::rigid_gates`].
     pub fn open_rigid(&self) -> RigidGate {
-        self.open_gate(false)
-    }
-
-    /// [`Self::open_rigid`] for a rank-2 formal's quantifier; see
-    /// [`TCell::quantifier_gates`].
-    pub fn open_quantifier_rigid(&self) -> RigidGate {
-        self.open_gate(true)
-    }
-
-    fn open_gate(&self, quantifier: bool) -> RigidGate {
         let cell = match self.open_cell() {
             Some(open) => open.cell(),
             None => self.cell(),
@@ -2165,16 +2149,8 @@ impl TVar {
             let mut c = cell.write();
             gated(&c);
             c.rigid_gates += 1;
-            if quantifier {
-                c.quantifier_gates += 1;
-            }
         }
-        RigidGate { cell, quantifier }
-    }
-
-    /// Whether a rank-2 formal's quantifier holds this cell rigid.
-    pub fn is_quantifier_rigid(&self) -> bool {
-        self.read().cell.read().quantifier_gates > 0
+        RigidGate { cell }
     }
 
     /// Whether a compile task started before the running one created the
@@ -2214,23 +2190,6 @@ impl TVar {
         if !c.facts.contains(CellFact::Settled) && decided(&c) {
             c.facts |= CellFact::Settled;
         }
-    }
-
-    /// Mark the cell a quantifier of a rank-2 formal; see
-    /// [`CellFact::FormalQuantifier`].
-    pub fn mark_formal_quantifier(&self) {
-        let cell = self.cell();
-        let mut c = cell.write();
-        if decided(&c) {
-            c.facts |= CellFact::FormalQuantifier;
-        }
-    }
-
-    /// Whether the cell is a rank-2 type's quantifier; see
-    /// [`CellFact::FormalQuantifier`].
-    #[doc(hidden)]
-    pub fn is_formal_quantifier(&self) -> bool {
-        self.cell().read().facts.contains(CellFact::FormalQuantifier)
     }
 
     /// Whether a ⊥ was produced into the cell while it was open: a
@@ -2347,13 +2306,6 @@ impl TVar {
         }
         let f = match how {
             Fresh::Copy => self.fresh_copy(),
-            // a rank-2 formal's quantifier a gate holds is one type for the
-            // check under it, which no definition inside generalizes
-            Fresh::Instantiate(_) | Fresh::Scheme(_) | Fresh::Generic
-                if self.is_quantifier_rigid() =>
-            {
-                return self.clone();
-            }
             Fresh::Instantiate(open) if self.level().copied_by(open) => {
                 TVar::empty_named(self.name.clone())
             }
@@ -2984,19 +2936,13 @@ impl Type {
                 }
             },
             // a nested fn type's own quantifiers are its own, whatever an
-            // enclosing signature names alike, and any instance of
-            // themselves wherever the type stands, marked by the task that
-            // created them (`CellFact::FormalQuantifier`)
+            // enclosing signature names alike
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
                 let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
                     ft.quantifiers.iter().map(|q| (q.clone(), known.remove(q))).collect();
                 ft.alias_tvars(known);
                 for (q, tv) in outer {
-                    if let Some(own) = known.remove(&q)
-                        && !own.earlier_task()
-                    {
-                        own.mark_formal_quantifier()
-                    }
+                    known.remove(&q);
                     if let Some(tv) = tv {
                         known.insert(q, tv);
                     }

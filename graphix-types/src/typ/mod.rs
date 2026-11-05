@@ -3038,48 +3038,6 @@ impl Type {
         Some((key, t))
     }
 
-    /// Whether a function type with quantifiers of its own may stand at a
-    /// part of this type a value of it produces (an abstract type's
-    /// parameter, a function type's result and throws, never its
-    /// parameters): through
-    /// bindings, an open cell's lower bounds, and each definition a name
-    /// reaches, its body walked as written, once. A quick test that only
-    /// looks: it copies no body and decides no name, which another task's
-    /// check may resolve in another environment.
-    #[doc(hidden)]
-    pub fn may_hold_quantified_fn(&self, env: &Env) -> bool {
-        fn go(
-            t: &Type,
-            env: &Env,
-            defs: &mut AHashSet<usize>,
-            nodes: &mut AHashSet<usize>,
-        ) -> bool {
-            ensure_sufficient(|| match t {
-                Type::Fn(ft) if !ft.quantifiers.is_empty() => true,
-                Type::TVar(tv) => match tv.binding() {
-                    Some(b) => go(&b, env, defs, nodes),
-                    None => t.open_lower().iter().any(|l| go(l, env, defs, nodes)),
-                },
-                Type::Ref(tr) => {
-                    tr.params.iter().any(|p| go(p, env, defs, nodes))
-                        || tr.resolve_peek(env).is_some_and(|d| {
-                            defs.insert(d.def_key()) && go(&d.typ, env, defs, nodes)
-                        })
-                }
-                t if node_addr(t).is_some_and(|n| !nodes.insert(n)) => false,
-                Type::Fn(ft) => {
-                    go(&ft.rtype, env, defs, nodes) || go(&ft.throws, env, defs, nodes)
-                }
-                t => {
-                    let mut r = false;
-                    t.for_each_child(&mut |c| r = r || go(c, env, defs, nodes));
-                    r
-                }
-            })
-        }
-        go(self, env, &mut LPooled::take(), &mut LPooled::take())
-    }
-
     fn lookup_ref_by(
         &self,
         env: &Env,

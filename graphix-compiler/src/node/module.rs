@@ -260,7 +260,7 @@ fn bind_sig_item(
             // a declared signature has no gate to close over its cells:
             // every one is a quantifier, a constructor trait's element
             // included, copied at each use, and its own are its scheme's,
-            // which each use picks, not a rank-2 type's
+            // which each use picks
             match &typ {
                 Type::Fn(ft) => {
                     ft.alias_tvars(&mut LPooled::take());

@@ -1133,10 +1133,7 @@ impl<R: Rt> StructWith<R> {
                 if check {
                     for typ in typs.iter() {
                         let contain = |t: &Type| t.check_contains(&ctx.env, &rep.n.typ());
-                        wrap!(
-                            rep.n,
-                            super::callsite::contain_generally(ctx, typ, &rep.n, contain)
-                        )?;
+                        wrap!(rep.n, contain(typ))?;
                         wrap!(
                             rep.n,
                             super::callsite::check_hidden_defaults(
@@ -1263,10 +1260,7 @@ impl<R: Rt> Construct<R> {
             return Ok(());
         }
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
-        wrap!(
-            self.arg,
-            super::callsite::contain_generally(ctx, &self.rep, &self.arg, contain)
-        )?;
+        wrap!(self.arg, contain(&self.rep))?;
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {
                 if let Type::TVar(tv) = p {

@@ -3633,112 +3633,6 @@ impl<R: Rt> Connect<R> {
         if !check {
             return Ok(());
         }
-        // CR claude for claude: [bug/medium] A value held through its monomorphic copy
-        // (CompileCtx::monomorphic: a connect, `*r <-`, a let of a binding something
-        // writes, a REPL write to a generic binding) is contained by a written quantified
-        // type as that copy, while callsite::check_general walks what the original reaches:
-        // where the original's cells stay generic, as a collection HOF's callback's do,
-        // the quantifier merges with the copy's cell and no binding outside reaches it.
-        // `type W<'t> = Abstract<'t>; let y = never(); let f: fn<'a: Any>(x: 'a) -> 'a =
-        // |x| x; f <- |x| { y <- array::map([x], |e| W(e)); x }` passes --check and the
-        // run-time bind refuses f("s") (map_conn; the same through `*r <-` map_deref,
-        // filter_map fm_conn, list::map lmap_conn, a named constructor mapn_conn,
-        // Transparent mapt_conn, a let of a binding a later `<-` writes map_let_w, the REPL
-        // h5.txt); the let of an unwritten binding (map_let) and a direct call (`y <-
-        // mk(x)`) are refused; graphix-fuzz check says AGREE, so the fuzzer cannot see it.
-        // Main bbb06c0c6 the same. Fix: check_general judges the cells of the copy the
-        // containment held, or the copy shares the cells the original's body reaches
-        // outside it. probes: ~/ptmp/cr29/scratch/review-r7/B5-r4-1/i1c/{map_conn,
-        // map_deref,fm_conn,lmap_conn,mapn_conn,mapt_conn}.gx, repl/h5.txt,
-        // ~/ptmp/cr29/scratch/r8-R/map_let_w.gx (rank2-escape-hof-01)
-        // 2026-11-02 claude: Not specific to the collection intrinsics: a user generic HOF
-        // does it too, B5-r4-1/i1c/app3_conn.gx (`let app = 'p: Any, 'q: Any |g: fn(v: 'p)
-        // -> 'q, v: 'p| -> 'q g(v); f <- |x| { y <- app(|e| W(e), x); x }`) passes --check
-        // with 29145700c and runs, y holding W(1) and then W("s").
-        // 2026-11-03 claude: Round 9 lane R, the CR's first way: a value contained as its
-        // monomorphic copy has each of its cells whose copy is or reaches a quantifier
-        // stand for that quantifier, so check_general asks for those cells too
-        // (CompileCtx::monomorphic_noting names the cells it copied through
-        // FnType::instantiate_noting; callsite::stand_ins, contain_generally's copied;
-        // Connect, ConnectDeref and Bind::check_value pass them; the REPL write to a
-        // generic binding asks for its rigid cells' stand-ins through
-        // callsite::general_as_copied and keeps its message). Existing messages unchanged
-        // (the census). map_conn map_deref fm_conn lmap_conn mapn_conn mapt_conn map_let_w
-        // and h5.txt are refused by the check ('a binding it reaches, of type
-        // Array<W<'_N>>, where '_N is 'a'; h5 'made generic by an earlier compile'); main
-        // passes each --check and its run-time bind refuses f("s"). app3_conn is no hole:
-        // its 'q: Any settles y to Any (runs on both); with written undeclared variables
-        // (r9-R/app_undecl.gx) main passes the check and the bind refuses, now refused. The
-        // same leak with no rank-2 type (a collection callback's generic cells in an outer
-        // binding's type, gen_map) is the new CR callback-generic-leak-01. Pins: the
-        // RANK2_CONNECT_THROUGH_A_COLLECTION_CALLBACK, _FILTER_MAP, _A_LIST_CALLBACK,
-        // _A_CALLBACK, RANK2_DEREF_THROUGH_A_COLLECTION_CALLBACK and
-        // RANK2_WRITTEN_LET_THROUGH_A_COLLECTION_CALLBACK cases of
-        // lang::types::unsound_acceptances_are_refused (main's build runs each and its bind
-        // refuses, so no value arrives), graphix-shell tests/rank2_escape.rs
-        // a_repl_write_to_a_generic_binding_holds_its_copy_generally (main accepts the
-        // write), lang::types::rank2_copied_value_keeps_its_callbacks_inside (no
-        // over-refusal). Pass under GRAPHIX_NO_SUBST=1.
-        // 2026-11-03 claude: Cost follow-up: computing every copied cell's stand-in before
-        // the bindings' walk cost one more walk of what the copies reach (tk14 3.89G ->
-        // 5.33G instructions to --check with the holder walk below). Now check_general asks
-        // the copied cells beside the quantifiers and finds the quantifier a copied cell
-        // stands for only where a binding reaches it (its copy walked once then), so a
-        // value nothing outside reaches walks nothing more: tk14 3.894G (main 3.891G), tr14
-        // 3.894G (3.887G), rcself12 5.203G (5.181G), dq_1000_900 1.784G (1.782G).
-        // callsite::stand_ins is folded into check_general; the pins hold.
-        // 2026-11-03 claude: Review r9 (R-r1-1, medium) found the fix holds only where
-        // CompileCtx::monomorphic_noting made the copy. A copy another step made still
-        // passes --check, and the build or the run-time bind refuses f("s") ('an instance
-        // at fn(x: string) -> string of a definition typed fn(x: i64) -> i64'): a select or
-        // array of lambda literals, whose type contains copies into its result cell
-        // (connected: c4_sel, a3_appconn; an unwritten let annotation: c4e_let, c4h_arr; a
-        // rank-2 call argument: a1_selarg; an omitted labeled default: e2_default_sel), a
-        // read of a let-bound lambda, which copies its signature (ref1_arg, ref2_let,
-        // ref3_conn, R-r1-2's c1), and a block whose value is such a read (c5_block); main
-        // ec53d4846 the same. In each the outer binding holds the callback's generic cell,
-        // which reaches the original lambda's generic parameter cell, and nothing records
-        // the copy the containment merged into the quantifier. The non-rank-2 analog of the
-        // select shapes (c4b_norank2) is refused, of the read shapes it is
-        // callback-generic-leak-01 itself. Two ways out, neither in lane R's brief: the
-        // root, callback-generic-leak-01's second option (lower a generic cell a
-        // non-generic binding reaches, so a copy shares it and check_general's walk meets
-        // the quantifier), which closes every shape here and leaves monomorphic_noting's
-        // record moot; or a copy record at every copy site (contains' left copy, a read's
-        // instantiation), a new mechanism. Readdressed to eric with
-        // callback-generic-leak-01. What c82330ef5 refuses stays pinned (the
-        // RANK2_*_THROUGH_A_* cases of lang::types::unsound_acceptances_are_refused,
-        // graphix-shell rank2_escape
-        // a_repl_write_to_a_generic_binding_holds_its_copy_generally). probes:
-        // ~/ptmp/cr29/scratch/review-r9/R-r1-1/p/{c4_sel,c4e_let,c4h_arr,c5_block,a1_selarg,a3_appconn,e2_default_sel,ref1_arg,ref2_let,ref3_conn,c4b_norank2}.gx
-        // (R-r1-1/run2.sh audit <file>), review-r9/R-r1-2/p/c1.gx
-        // 2026-11-03 claude: Review r9 round 2 (R-r2-1 medium, R-r2-2 high): asking every copied cell in Free's answers made a binding that reaches a K-deep nest
-        // of copied cells cost O(K^2) per walk (gen_nest/gen_deep4: 100 bindings over 1000 cells 25.0G instructions to --check, main 9.1G). A copied cell is now
-        // only met by the walk, never answered, until a function type the walk meets quantifies it (Free::answering, escapes_standing re-walks that binding once
-        // with it answered): a cell no function type binds is free wherever it is met, so the verdicts and messages are those of c82330ef5, and the answer sets
-        // hold the quantifiers and the copied cells some function type quantifies, as on main. nest_400_1000 23.54G (main 23.32G), deep4_50_1000 6.30G (6.26G).
-        // Pins: graphix-shell rank2_escape a_binding_meets_a_nest_of_copies_once (6.88G over the 5G bound without it, 3.21G with), node::callsite
-        // escape_walk_answers_a_copied_cell_a_function_type_quantifies (fails with the re-walk dropped). No program found reaches the re-walk (lang:: fixtures,
-        // the review probes, rw1-rw4 under ~/ptmp/cr29/scratch/r9-R/fix2/).
-        // 2026-11-03 claude: Lane R salvage (branch cr46-R2): the copied-cell mechanism the three notes above describe is withdrawn, as built on cr46-R by
-        // c82330ef5, 4841e0987, 5cce8189b and their share of 951b5fbcb: CompileCtx::monomorphic_noting, FnType::instantiate_noting, check_general's copied-cell
-        // index and stand-ins, callsite::general_as_copied, Sights, escapes_standing and Free's met/answered split are gone, and the escape walk asks the
-        // quantifiers alone, as on main ec53d4846. Why: three reviews in a row found it superlinear where main is not, each fix bringing the next shape: bindings
-        // x copied cells (R-r1-2: api3_2000 8.63G instructions to --check, main 5.95G), K^2 per binding over a K-deep nest of copies (R-r2-1, R-r2-2:
-        // nest_100_1000 25.04G, main 9.13G; deep4_50_1000 14.50G, main 6.59G), then K^3 per binding in the re-walk (R-r3-2: gen_kr kr_50_100 21.28G, main 14.65G;
-        // gen_kb kb_50_100 21.35G, main 14.86G; R-r3-1: gen_mk mk_50_400 15.44G, main 13.82G); and it closed only the copies CompileCtx::monomorphic makes, never
-        // a select's or an array's copy of lambda literals or a read of a let-bound lambda (the review r9 note above). Every shape this CR and its notes name
-        // passes --check again with main's verdict and message (map_conn and kin, map_let_w, app_undecl, the review r9 i2_*/k*/c*/h* probes; h5.txt and r3_h5 in
-        // the REPL). The pins the notes above give for the mechanism are removed with it (the six RANK2_*_THROUGH_* cases, graphix-shell rank2_escape
-        // a_repl_write_to_a_generic_binding_holds_its_copy_generally, a_copy_is_asked_once_for_every_binding, a_binding_meets_a_nest_of_copies_once,
-        // node::callsite escape_walk_answers_a_copied_cell_a_function_type_quantifies), and the last note's 'No program found reaches the re-walk' is moot
-        // (R-r3-1's mk_1_3.gx did reach it). lang::types::rank2_copied_value_keeps_its_callbacks_inside stays: no over-refusal, main runs it. The way that closes
-        // every copy shape is callback-generic-leak-01's root fix (its second option: lower a generic cell a non-generic binding reaches, so a copy shares it and
-        // check_general meets the quantifier through the outer binding). Generators: ~/ptmp/cr29/scratch/review-r9/R-r1-2/p/gen_api3.sh, R-r2-2/p/gen_nest.py,
-        // R-r2-1/p/gen_deep4.sh, R-r3-2/p/{gen_kr,gen_kb}.py, R-r3-1/p/gen_mk.py.
-        // 2026-11-03 claude: Eric ruled (2026-11-03): D14 (b) in ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an annotation, then a
-        // --check census; back to him only if the stdlib, the book's examples or netidx-admin would need a new annotation): when a non-generic binding's type
-        // reaches a generic variable no let names, that variable stops being generic (ML's level rule); census and the must-reject lane before landing.
         let written = &ctx.monomorphic(self.node.typ());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
@@ -3782,7 +3676,7 @@ impl<R: Rt> Connect<R> {
                 }
             })
         };
-        wrap!(self, callsite::contain_generally(ctx, &held, &self.node, contain))?;
+        wrap!(self, contain(&held))?;
         // as general as the binding: the written value may not carry one of
         // its variables into the environment, as a function's parameter would
         let quantified: LPooled<Vec<(ArcStr, usize)>> =
@@ -3829,17 +3723,12 @@ impl<R: Rt> Connect<R> {
 // between runs (the verdict never does). Review r14 A-r4-1. probe:
 // ~/ptmp/cr29/scratch/review-r14/A-r4-1/{repl/lw6.txt,lw2,lw3,lw4,p/vw1,p/vw1b}
 // (held-lower-bound-01)
-/// The open cells `held`, a generic binding's copy, reaches, a bound's
-/// included, by address, but a function type's own quantifiers, which its
-/// containment holds: two of one name are two cells where the copy took
-/// each function type apart.
+/// The open cells `held`, a generic binding's copy, reaches, a bound's and
+/// a function type's own quantifiers included, by address: two of one name
+/// are two cells where the copy took each function type apart.
 fn held_cells(held: &Type, out: &mut AHashMap<usize, TVar>) {
     held.reached_cells(out);
-    let mut own: LPooled<AHashSet<usize>> = LPooled::take();
-    held.each_quantifier(&mut |_, tv| {
-        own.insert(tv.cell_addr());
-    });
-    out.retain(|addr, tv| !tv.is_bound() && !own.contains(addr));
+    out.retain(|_, tv| !tv.is_bound());
 }
 
 fn reference_targets(
@@ -3907,10 +3796,7 @@ impl<R: Rt> ConnectDeref<R> {
                         )
                     }
                     let contain = |t: &Type| t.check_contains(&ctx.env, rhs);
-                    wrap!(
-                        self,
-                        callsite::contain_generally(ctx, &t, &self.rhs, contain)
-                    )?;
+                    wrap!(self, contain(&t))?;
                     wrap!(
                         self,
                         callsite::check_hidden_defaults(

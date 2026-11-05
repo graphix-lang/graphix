@@ -453,7 +453,6 @@ pub fn settle_input(
     let top = |tv: &TVar| {
         tv.level() == Level::Top
             && !tv.earlier_task()
-            && !tv.is_formal_quantifier()
             && !quantifiers.contains_key(&tv.cell_addr())
     };
     for (i, tv) in reached.iter().filter(|(_, tv)| top(tv)) {

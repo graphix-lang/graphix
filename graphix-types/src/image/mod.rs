@@ -1472,7 +1472,6 @@ fn cell_encode(
                     lower,
                     facts,
                     rigid_gates,
-                    quantifier_gates: _,
                     level,
                     task: _,
                     ground: _,

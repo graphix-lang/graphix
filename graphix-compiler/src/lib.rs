@@ -4404,25 +4404,11 @@ fn abandon_stmt<R: Rt>(
 }
 
 /// Whether `t` holds a generic cell, a variable of a function it holds that
-/// a read copies: not a rank-2 type's quantifier, generic whatever compiled
-/// it, but a declared signature's own, its scheme's.
+/// a read copies.
 pub(crate) fn holds_generic(t: &Type) -> bool {
     let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
     t.reached_cells(&mut cells);
-    let mut generic = cells
-        .iter()
-        .filter(|(_, tv)| tv.level().is_generic() && !tv.is_quantifier_rigid())
-        .peekable();
-    if generic.peek().is_none() {
-        return false;
-    }
-    let mut quantified: LPooled<AHashSet<usize>> = LPooled::take();
-    t.each_quantifier(&mut |_, tv| {
-        if tv.is_formal_quantifier() {
-            quantified.insert(tv.cell_addr());
-        }
-    });
-    generic.any(|(addr, _)| !quantified.contains(addr))
+    cells.values().any(|tv| tv.level().is_generic())
 }
 
 #[cfg(test)]

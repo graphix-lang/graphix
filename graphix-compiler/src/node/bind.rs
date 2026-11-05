@@ -641,15 +641,7 @@ impl<R: Rt> Bind<R> {
             let annotated =
                 matches!(&self.spec.kind, ExprKind::Bind(b) if b.typ.is_some());
             let contain = |t: &Type| t.check_contains(&ctx.env, &value);
-            match annotated {
-                true => wrap!(
-                    self.node,
-                    super::callsite::contain_generally(
-                        ctx, &self.typ, &self.node, contain
-                    )
-                )?,
-                false => wrap!(self.node, contain(&self.typ))?,
-            }
+            wrap!(self.node, contain(&self.typ))?;
             if annotated {
                 let scope = Scope::root();
                 let (flags, top) = (BitFlags::empty(), self.spec.id);

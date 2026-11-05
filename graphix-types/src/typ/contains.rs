@@ -26,7 +26,6 @@ use nohash::IntMap;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    cell::RefCell,
     collections::hash_map::Entry,
     mem,
     ops::{ControlFlow, Deref, DerefMut},
@@ -47,10 +46,6 @@ pub enum ContainsFlags {
     /// The walk is under an odd number of function arguments, where the
     /// sides of the judgment have swapped.
     Contra,
-    /// `self` is the written form of the very function `t` types, which
-    /// adopts `t`'s quantifier bounds: its quantifiers absorb them rather
-    /// than hold `t` to their declared bounds.
-    Adopt,
     /// An open cell `self` reaches outside a function's arguments takes
     /// `t`'s part as a lower bound instead of binding to it: a constructed
     /// value's payload bounds its parameters, the context decides them.
@@ -912,64 +907,6 @@ fn admits_lower(
     Ok(true)
 }
 
-/// Whether `q`, when a rank-2 formal's quantifier holds it rigid at a
-/// call, admits unifying with the open cell `o`: the callee was checked
-/// against `q`'s declared bounds alone, so each of `o`'s conjuncts must
-/// follow from them. A quantifier with no bound is not judged.
-fn quantifier_admits(env: &Env, q: &TVar, o: &TVar) -> bool {
-    if !q.is_quantifier_rigid() || o.is_rigid() {
-        return true;
-    }
-    let own = q.cell_constraints();
-    if own.is_empty() {
-        return true;
-    }
-    // bounds that name each other (`'a: [i64, ('a, 'b)]`) reach this pair
-    // again while judging it: coinductively, it holds there
-    let pair = (Arc::as_ptr(&q.cell()) as usize, Arc::as_ptr(&o.cell()) as usize);
-    let Some(_judging) = Judging::enter(pair) else { return true };
-    let trait_of = |t: &Type| match t {
-        Type::Ref(tr) => env.trait_of_ref(tr),
-        _ => None,
-    };
-    o.cell_constraints().iter().all(|c| {
-        own.iter().any(|q| match (trait_of(q), trait_of(c)) {
-            (Some(a), Some(b)) => a == b,
-            (None, None) => q.implies(env, c).unwrap_or(false),
-            _ => false,
-        })
-    })
-}
-
-thread_local! {
-    static JUDGING: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
-}
-
-/// A quantifier/cell pair [`quantifier_admits`] is judging on this thread.
-struct Judging((usize, usize));
-
-impl Judging {
-    /// `None` when the pair is already being judged.
-    fn enter(pair: (usize, usize)) -> Option<Self> {
-        JUDGING.with_borrow_mut(|j| {
-            (!j.contains(&pair)).then(|| {
-                j.push(pair);
-                Self(pair)
-            })
-        })
-    }
-}
-
-impl Drop for Judging {
-    fn drop(&mut self) {
-        JUDGING.with_borrow_mut(|j| {
-            if let Some(i) = j.iter().rposition(|p| *p == self.0) {
-                j.remove(i);
-            }
-        })
-    }
-}
-
 impl Type {
     /// Whether the declared bound `self` implies the bound `c`: it is `c`,
     /// or holds it of every type it admits (a predicate only where none of
@@ -1017,10 +954,7 @@ pub(super) fn on_copies<const N: usize, R>(
             if tv.is_rigid()
                 && let Some(c) = known.get(&tv.cell_addr())
             {
-                gates.push(match tv.is_quantifier_rigid() {
-                    true => c.open_quantifier_rigid(),
-                    false => c.open_rigid(),
-                });
+                gates.push(c.open_rigid());
             }
             false
         });
@@ -1089,9 +1023,7 @@ fn merge_bare_cycle(
             continue;
         }
         let (ts, to) = (Type::TVar(survivor.clone()), Type::TVar(o.clone()));
-        if !quantifier_admits(env, &survivor, o)
-            || !quantifier_admits(env, o, &survivor)
-            || !admits_lower(flags, env, hist, (&ts, &survivor), o)?
+        if !admits_lower(flags, env, hist, (&ts, &survivor), o)?
             || !admits_lower(flags, env, hist, (&to, o), &survivor)?
         {
             return Ok(false);
@@ -1397,14 +1329,7 @@ pub struct TypeMismatch {
     settled: Option<CompactString>,
 }
 
-impl TypeMismatch {
-    /// The report with `expected` shown for the type it was found against:
-    /// its written form, where the check ran over an expansion of it.
-    pub fn shown_as(mut self, expected: Type) -> Self {
-        self.expected = expected;
-        self
-    }
-}
+impl TypeMismatch {}
 
 impl std::fmt::Display for TypeMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2084,15 +2009,6 @@ impl Type {
 
     /// [`Self::check_contains`] with rigid enforcement; the def gate's
     /// acceptance checks only.
-    /// [`Self::check_contains`] of a function's written type over its
-    /// checked type `t`, adopting `t`'s quantifier bounds
-    /// ([`ContainsFlags::Adopt`]).
-    pub fn check_adopts(&self, env: &Env, t: &Self) -> Result<()> {
-        let flags = ContainsFlags::Commit | ContainsFlags::Adopt;
-        let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
-        if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
-    }
-
     pub fn check_contains_rigid(&self, env: &Env, t: &Self) -> Result<()> {
         let flags = ContainsFlags::Commit | ContainsFlags::RigidCheck;
         let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
@@ -3090,9 +3006,6 @@ impl Type {
                     cycle_toward(addr0, tt1, down).max(cycle_toward(addr1, tt0, up))
                 {
                     return refuse(cycle, &[(t0, tt1, down), (t1, tt0, up)], hist);
-                }
-                if !quantifier_admits(env, t0, t1) || !quantifier_admits(env, t1, t0) {
-                    return Ok(false);
                 }
                 // an open cell below is bounded by what bounds `t0`, as a
                 // merge would have it; a declared one is merged

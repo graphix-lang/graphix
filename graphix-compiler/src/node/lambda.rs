@@ -558,84 +558,6 @@ pub struct InstanceTypes {
 /// it: each open cell copied under its name into `known` and bound to the
 /// instance's type. `None` when the instance's signature does not hold
 /// the definition's.
-// CR claude for claude: [bug/medium] A rank-2 formal whose quantifier is bounded by a
-// variable of its definition fails every instance here, so the check accepts what the
-// build refuses: `let outer = |#k: fn<'a: 'c>(x: 'a) -> 'a, z: 'c| z; println(outer(#k:
-// |x| x, 1))` passes --check and the build refuses the call's instance ("an instance at
-// fn(#k: fn<'a: i64>(x: 'a) -> 'a, z: i64) -> i64 of a definition typed fn(#k: fn<'a:
-// 'c>(x: 'a) -> 'a, z: 'c) -> '_N"); GRAPHIX_ELAB_AUDIT=1 reports instance-signature,
-// and under GRAPHIX_NO_SUBST=1 it runs and prints 1. The same with the formal called
-// (o10, o10b) and with 'c declared ('c: Any, o10d); main ec53d4846 the same. Not traced:
-// the copy instantiate_owned makes of the formal's bound, or check_contains holding the
-// formal's bounds exactly, are where to look. Found by review r9 of lane R (R-r1-2).
-// probes: ~/ptmp/cr29/scratch/r9-R/{o10,o10b,o10c,o10d}.gx (rank2-bound-instance-01)
-// 2026-11-03 claude: Closed by refusing, at the definition's check:
-// Type::rewrite_trait_args runs FnType::check_bounds_closed on every function type a
-// written type holds (a formal, a field, an element, a let or body annotation, a typedef
-// body, an abstract's representation, a return type, a bound), so a rank-2 quantifier's
-// bound names only written types and its own fn<..>'s quantifiers: "a rank-2
-// quantifier's bound names 'c, which this function type does not quantify: bound it by a
-// written type". An interface val's and a trait method's own quantifiers are their
-// scheme's and exempt (Type::rewrite_declared_args); a sibling bound (fn<'a: Any, 'b:
-// ['a, null]>) stays. o10, o10b, o10c and o10d (declared 'c: main's build refuses it in
-// every mode) and the reviewers' tdef4/5/9/12, s15-17, leak1/7/13, esc1-3 are refused by
-// --check; the round-9 approaches (late round, quantifier_admits taking the conjunct)
-// are withdrawn. Pins that fail with the rule disabled (120 of 128 runs):
-// lang::types::rank2_bound_*_is_refused* (29) and
-// lang::interfaces::a_rank2_bound_in_a_val_names_only_its_own_quantifiers;
-// rank2_bound_by_a_written_type_runs and rank2_bound_naming_a_sibling_quantifier_runs
-// hold the passing forms. Lost, which main runs: s15-17 and sc_z2 (the positions' order
-// happened to decide the bound first), and a let or body annotation, a return type or a
-// typedef applied to a written type
-// (~/ptmp/cr29/scratch/r11-R/{let1,body1,ret1,td1,td2}.gx); the --check census of both
-// repos has no verdict change. rank2-structured-bound-01 and
-// body-annotation-bound-quantifier-01 (round-9 CRs that never landed) are moot: their
-// shapes are refused.
-// 2026-11-03 claude: Review r11 fixes: an impl's method and a default body declare the
-// method, so their let annotation (the generated one, or one the impl writes) is
-// rewritten as a declared signature (Bind::compile, is_method_block): its own
-// quantifiers keep any bound, as at the trait's declaration; main runs all of these
-// right (t1, t3, t6, u1-u8). Pins that fail without it (12 of 12 runs):
-// lang::types::a_trait_methods_own_bound_names_any_variable_at_its_impls,
-// _at_its_default,
-// a_ctor_trait_methods_own_bound_names_its_element_at_its_impls_and_default. A bound
-// naming self or a constructor trait's element stays refused (a labeled parameter before
-// self is the hole, s9/s10): CR rank2-self-bound-01 for Eric; pins
-// rank2_bound_naming_self_is_refused and
-// rank2_bound_naming_a_ctor_traits_element_is_refused (8 of 8 runs fail without the
-// rule). Lost too, which main runs: a positional parameter's bound naming self or the
-// element (t7, t8, t9, t11, t12), a lambda's quantifier bounded by a written fn type
-// naming another variable ('k: fn<'a: 'c>(..) |#k: 'k, z: 'c|, e3-e3e), an interface val
-// returning such a type (v3), never<fn<'a: 'c>(..)> (never1), an abstract's
-// representation bounded by its parameter (abs1). Corrected: an enclosing written
-// quantifier (enc_q2) passes main's check and its build refuses it,
-// rank2-bound-instance-01's own class, not a main check refusal. probes:
-// ~/ptmp/cr29/scratch/r11-R/r1fix/.
-// 2026-11-03 claude: Corrected (review r12 of lane R): the note above says a labeled
-// parameter before self is the hole for self as for the element. It is for the element
-// alone (s9, s10). No shape of a rank-2 bound naming self is: main runs every
-// labeled-self method its check passes right in every mode (s7i, s7s, s11, s15, s16),
-// and its check refuses the rest (a generic impl, s7 and s14; a default body, s8 and
-// s8i). So the pin rank2_bound_naming_self_is_refused (s7i) holds a disclosed
-// over-refusal, and the loss list adds labeled self over a closed impl target (s7i, s7s,
-// s11, s15, s16) to the positional t7, t8, t11. Whether to let self stand in a rank-2
-// bound is CR rank2-self-bound-01 (its note has the corrected options); the rule here is
-// unchanged, and the element's refusal is this hole's. probes:
-// ~/ptmp/cr29/scratch/review-r11/R-r2-1/t/, review-r11/R-r2-2/.
-// 2026-11-03 claude: Landed (main e5ce6689a) for every site but two: a catch's
-// annotation and a seq try's with(e: T) never pass through rewrite_trait_args
-// (Catch::compile binds c.constraint raw), so a written fn<'a: ['c, null]> there naming
-// the definition's 'c is not held to check_bounds_closed. When the annotated error
-// escapes into the result, the original class returns: c1 ('c: Any |z: 'c| { let r =
-// never(); catch(e: Error<ErrChain<`F(fn<'a: ['c, null]>(x: 'a) -> 'a)>>) r <- e;
-// error(`F(|x| x))?; (r, z) }, then (k(z), k(null))) passes --check, logs 'a run-time
-// bind at k(z) did not type' and prints nothing; ELAB_AUDIT instance-signature; NO_SUBST
-// refuses the build. Same for c1b (undeclared 'c), c5 (labeled formal) and c3 (seq try
-// .. with: ELAB_AUDIT unify-back). Main shares it. Next: hold catch and with annotations
-// to the rule, pin c1 and c3, list catch4 (main runs it) as a loss, and drop
-// design/tvar_constraints.md's exemption of a catch's annotation. probes:
-// ~/ptmp/cr29/scratch/review-r11/R-r3-1/ex/{c1_catch_ann,c1b_catch_ann_undeclared,c5_catch_ann_labeled_formal,c3_seq_try_with,catch4}.gx
-// (run with that dir's p.sh)
 fn instance_sig<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,
@@ -643,8 +565,8 @@ fn instance_sig<R: Rt>(
     known: &mut AHashMap<usize, TVar>,
 ) -> Option<Arc<FnType>> {
     // every open cell of the signature is the instance's own copy, a cell
-    // no closed gate owns (a rank-2 formal's copy) included, so the check
-    // binds nothing another instance reads
+    // no closed gate owns included, so the check binds nothing another
+    // instance reads
     let def = def.instantiate_owned(known);
     instance.check_contains(&ctx.env, &def).ok()?;
     Some(Arc::new(def))
@@ -1649,8 +1571,6 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     wrap!(self.body, self.body.typecheck0_instance(ctx, &mut types))
                 }
                 None => {
-                    // an unwritten result is a cell the body binds
-                    let written = !matches!(&self.typ.rtype, Type::TVar(_));
                     let body = &mut self.body;
                     let res =
                         super::rechecking_instance(recheck, || body.typecheck0(ctx));
@@ -1658,15 +1578,7 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     let body = self.body.typ().clone();
                     let contain = |t: &Type| t.check_contains_rigid(&ctx.env, &body);
                     let rtype = &self.typ.rtype;
-                    match written {
-                        true => wrap!(
-                            self.body,
-                            super::callsite::contain_generally(
-                                ctx, rtype, &self.body, contain
-                            )
-                        )?,
-                        false => wrap!(self.body, contain(rtype))?,
-                    }
+                    wrap!(self.body, contain(rtype))?;
                     let top = self.body.spec().id;
                     wrap!(
                         self.body,
@@ -2956,13 +2868,11 @@ fn judge_default<R: Rt>(
                      parameter or give the defaulted parameter a closed type"
             );
         }
-        let declared = holds_unbound(&typ, &|tv| {
-            tv.is_rigid() && (enclosing(tv) || tv.is_quantifier_rigid())
-        });
+        let declared = holds_unbound(&typ, &|tv| tv.is_rigid() && enclosing(tv));
         match &at.typ {
-            // no call instantiates an enclosing definition's variable or
-            // a rank-2 formal's quantifier the default sits under: the
-            // default fits for every instance of it, or not at all
+            // no call instantiates an enclosing definition's variable the
+            // default sits under: the default fits for every instance of it,
+            // or not at all
             _ if declared => at.typ.check_contains(&ctx.env, &typ),
             // each conjunct narrows the default's open cells, which
             // may be the environment's, rather than deciding them
@@ -2977,8 +2887,7 @@ fn judge_default<R: Rt>(
                     true => t.reset_tvars(),
                     false => t.clone(),
                 };
-                let contain = |t: &Type| t.check_contains(&ctx.env, &typ);
-                super::callsite::contain_generally(ctx, &held, node, contain)
+                held.check_contains(&ctx.env, &typ)
             }
         }
     })
@@ -3155,7 +3064,7 @@ impl<R: Rt> Update<R> for Lambda {
         };
         {
             let _at = AtLevel::enter(level);
-            self.typ.check_adopts(&ctx.env, &row).at(&self.spec)?;
+            self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         match self.named {
             true => def.typ.generalize(def.level.depth()),
