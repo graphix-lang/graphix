@@ -311,6 +311,17 @@ impl<R: Rt> Bind<R> {
                     false => t.rewrite_trait_args(&ctx.env)?,
                 };
                 super::lambda::body_annotation(ctx, &t);
+                // the method's scheme is the trait's declaration, which
+                // `traits::implements` holds the binding to: the
+                // annotation's own variables are written ones, claimed by
+                // the value's definition or by a binding outside it
+                if declares_method && let Type::Fn(ft) = &t {
+                    ft.each_quantifier(|q, tv| {
+                        if &**q != "self" {
+                            tv.own_written()
+                        }
+                    })
+                }
                 Some(t)
             }
             None => None,
@@ -629,9 +640,7 @@ impl<R: Rt> Bind<R> {
         self.type_leaves(ctx, leaves, apart)
     }
 
-    /// The binding holds its value's type, unless it forwards it; an
-    /// annotation holds it generally
-    /// ([`super::callsite::contain_generally`]).
+    /// The binding holds its value's type, unless it forwards it.
     fn check_value(&self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if !self.forwards(ctx) {
             let value = match written(ctx, &self.pattern) {

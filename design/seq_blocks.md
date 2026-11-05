@@ -304,7 +304,13 @@ error.
 literal, a step's or a `{ .. }` statement's, binds the name to the
 lambda itself and the step's value is the name fired at entry, so a
 call through it resolves statically as it would outside a seq: its
-`#[sync]`/`#[native]` assertions are checked by the build.
+`#[sync]`/`#[native]` assertions are checked by the build. A `let` of
+any pattern to a data literal holding lambdas that issues no call and
+reads nothing live (`inline_holder`) binds the literal itself the same
+way (a pattern through a lowered `#seqh` name), so its names are as
+generic as a holder's outside a seq; later steps read the names of both
+kinds as they stand, never through a snapshot: after its step neither
+changes.
 
 ## 6. The lowering
 

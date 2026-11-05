@@ -1743,7 +1743,10 @@ cycle, across workers; the compiler never pins threads.
   a step and a passed step sleeps, so a `let` keeps its step's value;
   each later step snapshots the local lets it reads at its own entry;
   a `let` of one name to a lambda literal binds the lambda itself, so
-  calls through it resolve statically (its assertions are the build's).
+  calls through it resolve statically (its assertions are the build's),
+  and a `let` of a data literal of lambdas that issues no call binds the
+  literal itself, generic as outside a seq (`seq::inline_holder`); later
+  steps read neither through a snapshot.
   A statement starts in the first cycle its predecessor's effect can
   be seen: the next step enters in the cycle its predecessor completes
   unless it reads or writes a variable a pending write targets, by the

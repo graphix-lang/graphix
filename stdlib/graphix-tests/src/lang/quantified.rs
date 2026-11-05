@@ -217,3 +217,97 @@ run!(
     refused("does not contain string");
     FuseExpect::None
 );
+
+// A let in a seq step names what it holds as a let outside one does.
+run!(
+    a_holder_bound_in_a_seq_step_is_generic,
+    "seq { let s = {g: |x| x}; let a = s.g(1); let b = s.g(\"s\"); (a, b) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_holder_bound_in_a_seqq_step_is_generic,
+    "seqq { let s = {g: |x| x}; (s.g(1), s.g(\"s\")) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_destructured_holder_in_a_seq_statement_block_is_generic,
+    "seq { { let (g, n) = (|x| x, 1); (g(n), g(\"s\")) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+// A method's annotation writes no scheme of its own: the trait's
+// declaration is the scheme, which the method is held to.
+const OUTSIDE_V: &str =
+    "that of v, a binding outside its let: give v a type that holds every 'a";
+
+run!(
+    a_quantified_trait_default_writing_an_outer_binding_is_refused,
+    refused(OUTSIDE_V),
+    "/test.gx" => r#"
+        let v = never();
+        trait T { val m: fn<'a: Any>(self, x: 'a) -> 'a = |s, x| { v <- x; x } };
+        impl T for i64 {};
+        let a: i64 = v;
+        let result = T::m(1, "s")
+    "#
+);
+
+run!(
+    a_quantified_trait_default_writing_a_binding_of_any_type,
+    prints(r#"["s", i64:2]"#),
+    "/test.gx" => r#"
+        let v: Any = never();
+        trait T { val m: fn<'a: Any>(self, x: 'a) -> 'a = |s, x| { v <- x; x } };
+        impl T for i64 {};
+        let result = (T::m(1, "s"), T::m(1, 2))
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    a_quantified_trait_default_called_at_two_types,
+    prints("[i64:4, f64:3.]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: Number + Singleton>(self, x: 'a) -> 'a = |s, x| x + x };
+        impl T for i64 {};
+        let result = (T::m(1, 2), T::m(1, 1.5))
+    "#
+);
+
+run!(
+    an_impl_methods_quantified_annotation_over_an_outer_writer_is_refused,
+    refused(OUTSIDE_V),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: 'a) -> 'a };
+        let v = never();
+        impl T for i64 { let m: fn<'a: Any>(s: i64, x: 'a) -> 'a = |s, x| { v <- x; x } };
+        let a: i64 = v;
+        let result = T::m(1, "s")
+    "#
+);
+
+run!(
+    an_impl_methods_quantified_annotation_over_a_makers_result_is_refused,
+    refused("its value is no lambda, so no call copies its types"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: 'a) -> 'a };
+        let mk = |z| { let v = never(); |s: i64, x| { v <- x; v } };
+        impl T for i64 { let m: fn<'a: Any>(s: i64, x: 'a) -> 'a = mk(0) };
+        let result = (T::m(1, 2), T::m(1, "s"))
+    "#
+);
+
+run!(
+    an_impl_methods_quantified_annotation_over_a_lambda_at_two_types,
+    prints("[i64:4, f64:3.]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: Number + Singleton>(self, x: 'a) -> 'a };
+        impl T for i64 { let m: fn<'a: Number + Singleton>(s: i64, x: 'a) -> 'a = |s, x| x + x };
+        let result = (T::m(1, 2), T::m(1, 1.5))
+    "#
+);
