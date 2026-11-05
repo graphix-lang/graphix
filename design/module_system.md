@@ -207,8 +207,8 @@ it and have not run yet): a `let` bound to `a::v` in a REPL input
 after the module's, or an instance of one of the body's functions
 called from one, sees it. A reader that ran earlier in the cycle (a
 statement before the `mod`, an earlier input), through a function
-value, misses it as it misses any `let`'s production (CR
-root-order-production-01). Each is a `<-` target where the other is
+value, takes it next cycle, as it takes any `let`'s production
+(`design/dense_delivery.md`, "A fire the walk passed"). Each is a `<-` target where the other is
 (`CompileCtx::join_interface_pair`), so a woken `let` keeps a write
 made through the `val`, and a seq's plan counts the pair one variable
 (`design/dependency_summaries.md` §3).

@@ -77,6 +77,18 @@ impl BoundaryRef {
     pub fn visited(&self, cycle: u64) -> bool {
         self.0.visited.load(Relaxed) == cycle
     }
+
+    /// Whether `at` is this boundary or inside it.
+    fn holds(&self, at: Option<&BoundaryRef>) -> bool {
+        let mut b = at;
+        while let Some(x) = b {
+            if x == self {
+                return true;
+            }
+            b = x.0.parent.as_ref();
+        }
+        false
+    }
 }
 
 impl PartialEq for BoundaryRef {
@@ -113,5 +125,18 @@ impl Reader {
         if let Some(b) = &self.boundary {
             b.mark(cycle)
         }
+    }
+
+    /// Whether a walk now inside `at` has passed the reader in `cycle`: it
+    /// reached the reader's boundary, or one around it, and left it.
+    pub fn passed_by(&self, at: Option<&BoundaryRef>, cycle: u64) -> bool {
+        let mut b = self.boundary.as_ref();
+        while let Some(x) = b {
+            if x.visited(cycle) {
+                return !x.holds(at);
+            }
+            b = x.0.parent.as_ref();
+        }
+        false
     }
 }

@@ -107,6 +107,44 @@ pub(crate) fn read_var<'a, R: Rt>(
     }
 }
 
+/// [`read_var`] by a reader at the root `root`, inside the walk's
+/// boundary: a fire made last cycle after the walk passed it is delivered
+/// to it now ([`crate::Event::late`]).
+#[inline]
+pub(crate) fn read_var_by<'a, R: Rt>(
+    ctx: &'a ExecCtx<'_, R>,
+    id: &BindId,
+    root: ExprId,
+) -> Option<VarRead<'a>> {
+    if ctx.event.late.is_some()
+        && let Some(tv) = late_fire(ctx, id, root)
+    {
+        return Some(VarRead::Delivered(tv));
+    }
+    read_var(ctx, id)
+}
+
+/// The fire of `id` made last cycle after the walk passed a reader at the
+/// root `root`, inside the walk's boundary, delivered to it now
+/// ([`crate::Event::late`]).
+fn late_fire<'a, R: Rt>(
+    ctx: &'a ExecCtx<'_, R>,
+    id: &BindId,
+    root: ExprId,
+) -> Option<&'a TagValue> {
+    let late = ctx.event.late.as_ref()?;
+    let (tv, readers) = late.get(id)?;
+    if ctx.event.variables.contains_key(id)
+        || !readers.iter().any(|r| r.root == root && r.boundary == ctx.boundary)
+    {
+        return None;
+    }
+    if let crate::branch::RtView::Fork(f) = &ctx.rt {
+        f.note_read(*id);
+    }
+    Some(tv)
+}
+
 /// A standing entry as a reader sees it: fresh at a birth only. A wake
 /// or a step reads it stale: its value is a past event the graph
 /// already consumed.
@@ -2824,7 +2862,12 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
         // a reference that arrived naming no place (a place whose address
         // is bottom) has nowhere to write
         let mut addressless = false;
-        if let Some(tv) = ctx.event.variables.get(&self.src_id) {
+        if let Some(tv) = ctx
+            .event
+            .variables
+            .get(&self.src_id)
+            .or_else(|| late_fire(ctx, &self.src_id, self.top_id))
+        {
             self.cell = Self::cell(tv);
             addressless = self.cell.is_none();
         } else if self.cell.is_none() || woke {

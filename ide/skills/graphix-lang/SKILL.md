@@ -58,6 +58,12 @@ constant argument to `exit` runs at init — always gate it).
   `spawn(options(#args: a, go ~ prog))` — a call fires when ANY argument
   fires, so the second re-issues the spawn when `a` moves on its own.
 - **`<-` lands next cycle.** You do not see the new value this cycle.
+- **A value made later in the cycle reaches an earlier reader next
+  cycle.** A cycle runs statements in text order and REPL inputs in input
+  order; a reader that sits before what it reads (through a function value
+  or a reference to a later binding, an earlier REPL input) gets each new
+  value a cycle late, as a write. A backward reader that feeds what it
+  reads runs a cycle at a time, as `x <- x + 1` does.
 - **A function returning a level it does not derive from its argument
   fires nothing when re-called** (`|v| k`); write `|v| v ~ k`. This is
   what makes `f(trigger)` a sequencing tool only when `f` uses its arg.

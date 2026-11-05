@@ -5,7 +5,7 @@ use super::{
     lambda::{DefBody, DefOrigin, LambdaDef},
     pattern::{CompiledAbstracts, Holder, StructPatternNode, rigid_refusal},
     place::{self, Path, RefPath},
-    read_var, standing_view,
+    read_var_by, standing_view,
 };
 use crate::{
     BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, Notify,
@@ -1197,7 +1197,7 @@ impl<R: Rt> Update<R> for Ref {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         // Overlays first, then the store; a store miss rides the resident.
         let dbg = dbgenv::gxdbg_ref();
-        let r = match read_var(ctx, &self.id) {
+        let r = match read_var_by(ctx, &self.id, self.top_id) {
             Some(VarRead::Delivered(tv)) => {
                 if dbg {
                     eprintln!(
@@ -2265,7 +2265,7 @@ impl<R: Rt> Update<R> for Deref<R> {
         let (id, moved) = self.address(ctx, cell);
         // a target the arm around it learns only now may owe a fire
         let owed = super::wake::owed(ctx, &id);
-        let res = match read_var(ctx, &id) {
+        let res = match read_var_by(ctx, &id, self.top_id) {
             Some(VarRead::Delivered(tv)) => Some(tv.clone()),
             Some(VarRead::Standing(tv)) if owed => {
                 Some(TagValue::fired(tv.value_cloned()))

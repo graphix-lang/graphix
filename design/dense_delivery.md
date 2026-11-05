@@ -170,6 +170,64 @@ reduced from an architecture to one annotation, the fired bit, which
 survives because firing is observable in the language (effects,
 `count`, `~`, select).
 
+## A fire the walk passed
+
+A cycle walks its roots in compile order and each block's statements in
+text order, so a binding's fire (a `Roots` or a `Walk` delivery) reaches
+in its cycle only the readers the walk has not passed. A reader can sit
+before its producer only through a function value (`let r = h(1)` above
+`let w` with `h <- |x| x + w`; the function may capture a formal or a
+pattern bind as well as a `let`), a reference (`*r`, and the reference a
+`*p <- v` writes through), an earlier REPL input or a reloaded module. Such
+a reader takes the fire in the next cycle, as a write lands, and no
+other reader does (Eric, 2026-11-03): a reader before its producer runs
+a cycle behind, nothing runs twice in a cycle, and a forward reader is
+unchanged.
+
+- At the delivery (`ExecCtx::deliver`, `RtView::store_fire`, in the one
+  pass over the readers that marks their boundaries) each reader in the
+  root being updated that the walk has passed is recorded (`Rt::late`): one
+  whose boundary, or the nearest boundary around it the walk reached
+  this cycle, does not hold the walk's own (`Reader::passed_by`, over the
+  boundaries' `visited` stamps; a reader with no boundary the walk
+  reached is ahead). A binding with a reader in another root is noted
+  (`Rt::produced`), and after each root's update the runtime records the
+  readers in earlier roots of what it fired and schedules the roots after
+  it that read it, which a `Walk` delivery does not schedule itself
+  (`GX::readers_in_other_roots`).
+- As the next cycle starts, after the writes land, each recorded reader's
+  root is scheduled and its boundary marked (`GX::deliver_late`) unless a
+  write delivered the binding in that cycle, and `Event::late` holds the
+  fire for those readers alone: `Ref` and `Deref` read it through
+  `read_var_by`, and `ConnectDeref` its reference through `late_fire`,
+  matching their root and the walk's boundary.
+- A run of statements that fork must not race that choice: siblings are
+  dependent when an earlier one reads what a later one publishes
+  (`analysis::plan_runs`, `ids_verdict`; `design/parallel_eval.md`). An
+  earlier read through a reference or an unresolved call reaches only a
+  variable a reference names or a lambda captures, or a reference's cell
+  (`analysis::escaping`), or a binding a call fires in a callee (a
+  formal, a `let`, a pattern bind, a slot element) where a callee body
+  it reaches makes a reference or a lambda or a call has no static
+  target (`analysis::hands_out_callee_binds`): any other `let` is named
+  by its scope alone.
+- Not delivered late: to a reader in an arm asleep in the next cycle
+  (its select did not observe the fire either).
+- A backward reader that feeds its producer (`let r = h(1); let w = r +
+  1; h <- |x| x + w`) runs a cycle at a time, never settling, as a
+  `<-` self-loop does: it is what the program says (Eric, 2026-11-05).
+  Pin: `lang::delivery::a_late_value_closing_a_loop_steps_a_cycle_at_a_time`.
+
+Pins: `lang::delivery::{a_fire_reaches_a_passed_reader_next_cycle,
+a_fire_reaches_an_earlier_input_next_cycle,
+a_walk_fire_reaches_a_passed_reader_next_cycle,
+a_walk_fire_reaches_a_later_input,
+a_callee_fire_reaches_a_passed_reader_forked_or_not,
+a_moved_reference_reaches_a_passed_write_next_cycle}`,
+`lang::par_attrs::{parallel_names_an_earlier_reader,
+parallel_names_an_earlier_reader_of_a_callee_binding,
+parallel_beside_an_earlier_reader_of_nothing_it_publishes}`.
+
 ## Why dense, and why not remove the tag
 
 The sparse currency — `Option<TagValue>` with consumer operand caches

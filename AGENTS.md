@@ -452,7 +452,16 @@ pending write. A node's production to a binding is delivered through
 `ExecCtx::deliver`: into the event; a fire stored as delivered, stamped
 this cycle, a quiet production standing with its old stamp, so a wake
 owes no fire for one, whether or not it changed the value; `Notify`
-picks whether a fire schedules the roots that read it. A wake's
+picks whether a fire schedules the roots that read it. A fire, `Roots`
+or `Walk`, reaches the readers the walk has not passed in its cycle, and
+each one it has (in an earlier root, or in a boundary of its own root
+the walk left, `Reader::passed_by`: a reader through a function value or
+a reference, an earlier REPL input or a reloaded module) alone in the
+next, as a write lands (`RtView::store_fire`, `Rt::late`, `Event::late`,
+`read_var_by`, a `*p <-`'s reference included; a write to the binding in
+that cycle supersedes it): a reader before its producer runs a cycle
+behind, and none runs twice in a cycle; one feeding its producer back
+is a self-loop, a step a cycle, as `x <- x + 1` is. A wake's
 re-raise, catch-up's inject, a priming from the store and a born
 callee's quiet arguments are fires in the event alone, never stored; an
 error raised to a catch is stored as any write is, delivered the cycle
@@ -1397,9 +1406,13 @@ loops (chunks, `fusion/par_loop.rs`).
 Branches see the runtime through branch views (`RtView`/`ForkRt`,
 `Layered`, `CxView`) and merge back in program order, so a forked cycle
 computes what the serial node-walk does. Siblings are independent iff
-no later one reads what an earlier one publishes (`analysis::
-plan_block`; a module, trait or impl statement is a run of its own and
-a catch runs last) and they do not both reach an `ORDERED` builtin
+neither reads what the other publishes (`analysis::plan_block`, an
+earlier reader taking a later fire next cycle, through a reference or an
+unresolved call only one a reference names or a lambda captures,
+`analysis::escaping`, or one a call fires in a callee whose body makes a
+reference or a lambda; a module, trait or impl
+statement is a run of its own and a catch runs last) and they do not
+both reach an `ORDERED` builtin
 (in-language state shared across nodes, `queuefn`; a call with no static
 target counts as one, a slot site's own call excepted). External effects in
 parallel branches happen when they run, unordered. A seq machine runs

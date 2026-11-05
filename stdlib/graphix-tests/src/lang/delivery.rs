@@ -7,8 +7,8 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::expr::VfsEntry;
 use graphix_package_core::testing::{
-    Collect, HANG_GUARD, Mode, compile_result, data, fixture_runtime, result_source,
-    updates_until,
+    Collect, HANG_GUARD, Mode, collect, compile_result, data, fixture_runtime,
+    result_source, updates_until,
 };
 use netidx::publisher::Value;
 use std::time::Duration;
@@ -210,3 +210,175 @@ async fn module_quiet_republish_is_owed_no_fire(mode: Mode) -> Result<()> {
 }
 
 modes!(module_quiet_republish_is_owed_no_fire);
+
+/// `w` is made after `r`'s statement ran, and `r` reads it through the
+/// function `h` holds: BEFORE or AFTER places `r`.
+const PASSED: &str = "{
+  let n = 0;
+  n <- select n { k if k < 3 => k + 1, _ => never() };
+  let h: fn(x: i64) -> i64 = never();
+  BEFORE
+  let w = n * 10;
+  AFTER
+  h <- |x: i64| -> i64 x + w;
+  r
+}";
+
+// A fire reaches a reader the cycle had passed, one that sits before it,
+// in the next cycle, as a write does; a reader after it reads it in the
+// cycle it is made, as it always did.
+async fn a_fire_reaches_a_passed_reader_next_cycle(mode: Mode) -> Result<()> {
+    let before = PASSED.replace("BEFORE", "let r = h(1);").replace("AFTER", "");
+    let got = result_updates(&before, &[], mode).await?;
+    assert_eq!(got, ["1", "11", "21", "31"], "before, {mode:?}");
+    let after = PASSED.replace("BEFORE", "").replace("AFTER", "let r = h(1);");
+    let got = result_updates(&after, &[], mode).await?;
+    assert_eq!(got, ["11", "21", "31"], "after, {mode:?}");
+    Ok(())
+}
+
+modes!(a_fire_reaches_a_passed_reader_next_cycle);
+
+// A late value that feeds its producer back is a self-loop, as `x <- x + 1`
+// is: `r` reads `w` through `h` a cycle late, and each new `r` makes a new
+// `w`, one step a cycle, never settling. `c` counts the cycles.
+const LATE_LOOP: &str = "{
+  let c = 0;
+  c <- select c { k if k < 8 => k + 1, _ => never() };
+  let h: fn(x: i64) -> i64 = |x: i64| -> i64 x;
+  let r = h(1);
+  let w = r + 1;
+  h <- |x: i64| -> i64 x + w;
+  let seen = [];
+  seen <- r ~ array::push(seen, [c, r, w]);
+  select c { 8 => c ~ seen, _ => never() }
+}";
+
+async fn a_late_value_closing_a_loop_steps_a_cycle_at_a_time(mode: Mode) -> Result<()> {
+    let got =
+        collect(LATE_LOOP, &crate::TEST_REGISTER, mode, Collect::First(1), HANG_GUARD)
+            .await?;
+    let got = shown(got);
+    assert_eq!(
+        got,
+        ["[[0, 1, 2], [1, 3, 4], [2, 5, 6], [3, 7, 8], [4, 9, 10], [5, 11, 12], \
+             [6, 13, 14], [7, 15, 16]]"],
+        "{mode:?}"
+    );
+    Ok(())
+}
+
+modes!(a_late_value_closing_a_loop_steps_a_cycle_at_a_time);
+
+// An earlier input reads a later one's binding through a function value:
+// each fire of `w` reaches it in the next cycle.
+async fn a_fire_reaches_an_earlier_input_next_cycle(mode: Mode) -> Result<()> {
+    let inputs = [
+        "let n = 0",
+        "let hs: Array<fn(x: i64) -> i64> = []",
+        "select hs { [f, ..] => f(1), _ => 0 }",
+        "let w = n * 10",
+        "hs <- [|x: i64| -> i64 x + w]",
+        DRIVER,
+    ];
+    let got = input_updates(&[], &inputs, 2, mode).await?;
+    assert_eq!(got, ["0", "1", "11", "21", "31"], "{mode:?}");
+    Ok(())
+}
+
+modes!(a_fire_reaches_an_earlier_input_next_cycle);
+
+/// `r` reads, through the function `g` holds, a binding `BIND` makes after
+/// `r`'s statement ran: a formal or a pattern bind, delivered in the walk.
+const PASSED_WALK: &str = "{
+  let n = 0;
+  n <- select n { k if k < 3 => k + 1, _ => never() };
+  let g: fn(y: i64) -> i64 = never();
+  let r = g(0);
+  BIND;
+  r
+}";
+
+// A fire delivered in the walk (a formal, a pattern bind) reaches a reader
+// it had passed next cycle, as one delivered to its roots does.
+async fn a_walk_fire_reaches_a_passed_reader_next_cycle(mode: Mode) -> Result<()> {
+    for bind in [
+        "let f = |x: i64| -> i64 { g <- |y: i64| -> i64 y + x; x }; let s = f(n * 10)",
+        "let s = select n * 10 { v => { g <- |y: i64| -> i64 y + v; v } }",
+    ] {
+        let code = PASSED_WALK.replace("BIND", bind);
+        let got = result_updates(&code, &[], mode).await?;
+        assert_eq!(got, ["0", "10", "20", "30"], "{bind}, {mode:?}");
+    }
+    Ok(())
+}
+
+modes!(a_walk_fire_reaches_a_passed_reader_next_cycle);
+
+// A fire delivered in the walk reaches a reader in a later input in its own
+// cycle, as one delivered to its roots does.
+async fn a_walk_fire_reaches_a_later_input(mode: Mode) -> Result<()> {
+    let inputs = [
+        "let n = 0",
+        "let mk = |x: i64| |y: i64| -> i64 y + x",
+        "let g = mk(n * 10)",
+        "g(1)",
+        DRIVER,
+    ];
+    let got = input_updates(&[], &inputs, 3, mode).await?;
+    assert_eq!(got, ["1", "11", "21", "31"], "{mode:?}");
+    Ok(())
+}
+
+modes!(a_walk_fire_reaches_a_later_input);
+
+/// `a` reads, through the function `h` comes to hold, a binding `mk`'s
+/// call fires after `a`'s statement ran, in the same run of the block:
+/// forked or not, it reads the fire next cycle.
+const PASSED_CALLEE: &str = "{
+  let n = 0;
+  n <- select n { k if k < 3 => k + 1, _ => never() };
+  let mk = MK;
+  let h: fn(y: i64) -> i64 = |y: i64| -> i64 y;
+  let a = h(1);
+  let g = mk(n * 10);
+  h <- g;
+  a
+}";
+
+async fn a_callee_fire_reaches_a_passed_reader_forked_or_not(mode: Mode) -> Result<()> {
+    for mk in [
+        "|x: i64| |y: i64| -> i64 y + x",
+        "|x: i64| { let z = x + 0; |y: i64| -> i64 y + z }",
+        "|x: i64| { let r = &x; |y: i64| -> i64 y + *r }",
+    ] {
+        let code = PASSED_CALLEE.replace("MK", mk);
+        let got = result_updates(&code, &[], mode).await?;
+        assert_eq!(got, ["1", "1", "11", "21", "31"], "{mk}, {mode:?}");
+    }
+    Ok(())
+}
+
+modes!(a_callee_fire_reaches_a_passed_reader_forked_or_not);
+
+// A write through a reference that moves after the walk passed the write
+// lands at the new target from the next cycle on.
+const PASSED_REFERENCE: &str = "{
+  let a = 0;
+  let b = 0;
+  let n = 0;
+  n <- select n { k if k < 5 => k + 1, _ => never() };
+  let f: fn(x: i64) -> i64 = never();
+  let r = f(n);
+  let p = select n { k if k < 3 => &mut a, _ => &mut b };
+  f <- |x: i64| -> i64 { *p <- x * 10; x };
+  (r ~ a, r ~ b)
+}";
+
+async fn a_moved_reference_reaches_a_passed_write_next_cycle(mode: Mode) -> Result<()> {
+    let got = result_updates(PASSED_REFERENCE, &[], mode).await?;
+    assert_eq!(got, ["[0, 0]", "[10, 0]", "[20, 0]", "[30, 0]", "[30, 40]"], "{mode:?}");
+    Ok(())
+}
+
+modes!(a_moved_reference_reaches_a_passed_write_next_cycle);

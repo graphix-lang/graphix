@@ -99,7 +99,19 @@ dependent. It lands next cycle, and the merge keeps the queue in serial
 order (§4.2).
 
 > Sibling `j` depends on an earlier sibling `i` iff `reads(j)` meets
-> `publishes(i)`, or both contain an `Ordered` call (§6).
+> `publishes(i)`, `reads(i)` meets `publishes(j)`, or both contain an
+> `Ordered` call (§6).
+
+The second clause holds because an earlier reader of a later fire takes
+it next cycle, chosen by which boundaries the walk had left when the
+fire was made (`design/dense_delivery.md`, "A fire the walk passed"):
+siblings running at once would make that choice race. A read through a
+reference or an unresolved call meets there only what a reference names
+or a lambda captures, or a reference's cell (`analysis::escaping`), and
+what a later sibling's calls fire in a callee whose body makes a reference
+or a lambda, or in a callee no static target names
+(`analysis::hands_out_callee_binds`): a later sibling's other `let`s are
+out of the earlier one's reach.
 
 `reads` is the dependency summary's read set
 (`dependency_summaries.md` §2), following statically resolved calls

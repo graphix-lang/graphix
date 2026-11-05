@@ -5,8 +5,8 @@ use bytes::Bytes;
 use enumflags2::BitFlags;
 use futures::{FutureExt, Stream, StreamExt, stream::SelectAll};
 use graphix_compiler::{
-    BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
-    TagValue, View, WriteTarget, diagnostic_site,
+    BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Late, Node, Rt, Saved,
+    Scope, TagValue, View, WriteTarget, diagnostic_site,
     expr::{
         self, Expr, ExprId, ExprKind, Load, ModPath, Origin, Probes, ResolverRef,
         Resolvers, RootFile, Sig, Source, join_in_order,
@@ -522,7 +522,7 @@ impl<X: GXExt> GX<X> {
         Ok(())
     }
 
-    // CR claude for claude: [bug/medium] A production reaches only readers that run after it
+    // XCR claude for claude: [bug/medium] A production reaches only readers that run after it
     // in its cycle, and nothing delivers it to one that ran before, so a reader holding a
     // function value from later in the program never sees what that function reads move.
     // A script: `let h: fn(x: i64) -> i64 = never(); let r = h(1); let t = timer(50.ms, 5);
@@ -559,6 +559,24 @@ impl<X: GXExt> GX<X> {
     // that closes a loop (late-loop-01) is a self-loop, as x <- x + 1 is. Land D19 alone
     // from cr50-W-parked (1fb17e606), split from the D16 commits and re-reviewed, with
     // late-loop-01 pinned as a loop.
+    // 2026-11-05 claude: Round 16 lane W: D19 (Eric 11-03 (b), 11-05 (a)) built from
+    // cr50-W-parked without its D16 parts: a fire, Roots or Walk, reaches each reader the
+    // walk passed in its cycle (an earlier root, or a boundary of its own root the walk left:
+    // Reader::passed_by) alone next cycle (ExecCtx::deliver via RtView::store_fire, Rt::late,
+    // GX::deliver_late, Event::late, read_var_by in Ref/Deref, late_fire in ConnectDeref; a
+    // write that cycle supersedes it); a Walk fire schedules later roots
+    // (GX::readers_in_other_roots); the fork plan keeps an earlier reader and a later
+    // publisher apart (RunBreak::ReadBefore, ids_verdict, analysis::escaping,
+    // hands_out_callee_binds). A late value closing a loop is a self-loop, accepted
+    // (late-loop-01, deleted). Pins that fail without it:
+    // lang::delivery::{a_fire_reaches_a_passed_reader_next_cycle,
+    // a_fire_reaches_an_earlier_input_next_cycle,
+    // a_walk_fire_reaches_a_passed_reader_next_cycle, a_walk_fire_reaches_a_later_input,
+    // a_callee_fire_reaches_a_passed_reader_forked_or_not,
+    // a_moved_reference_reaches_a_passed_write_next_cycle,
+    // a_late_value_closing_a_loop_steps_a_cycle_at_a_time},
+    // lang::par_attrs::{parallel_names_an_earlier_reader,
+    // parallel_names_an_earlier_reader_of_a_callee_binding}. Needs a soak.
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
@@ -578,9 +596,11 @@ impl<X: GXExt> GX<X> {
         };
         let mut due = scheduled(self, None);
         let mut known = self.ctx.rt.updated.len();
+        self.ctx.rt.running = true;
         while let Some((i, init)) = due.pop() {
             let (id, n) = self.nodes.at_mut(i).expect("scheduled root");
             self.ctx.event.view = if init { View::Birth } else { View::Cycle };
+            self.ctx.event.root = Some(id);
             // Only a FIRED production becomes an event.
             let tv = n.update(&mut self.ctx.view());
             if tv.is_fired() {
@@ -590,10 +610,66 @@ impl<X: GXExt> GX<X> {
                 }
                 batch.push(GXEvent::Updated(id, v))
             }
+            self.readers_in_other_roots(i);
             if self.ctx.rt.updated.len() != known {
                 known = self.ctx.rt.updated.len();
                 due = scheduled(self, Some(i));
             }
+        }
+        self.ctx.rt.running = false;
+        self.ctx.event.root = None;
+    }
+
+    /// The readers in other roots of what root `i` fired: one in a root
+    /// before it, which the cycle passed, reads the fire next cycle; one
+    /// in a root after it runs this cycle.
+    fn readers_in_other_roots(&mut self, i: u64) {
+        let rt = &mut self.ctx.rt;
+        for id in rt.produced.drain(..) {
+            let (Some(readers), Some((tv, _))) = (rt.by_ref.get(&id), rt.store.get(&id))
+            else {
+                continue;
+            };
+            for (r, _) in readers.iter() {
+                match self.nodes.seq(&r.root) {
+                    Some(s) if s < i => rt.late.push((id, tv.clone(), r.clone())),
+                    Some(s) if s > i => {
+                        rt.updated.entry(r.root).or_default();
+                    }
+                    _ => (),
+                }
+            }
+        }
+    }
+
+    // CR claude for claude: [bug/low] A late fire for a reader in an arm that is still
+    // asleep next cycle is never delivered: the select's catch-up bits never record it
+    // (TrackedFires::observe reads read_var, not Event::late), so at the wake the reader
+    // reads the value standing, unfired. Main loses that fire too. Record a late fire in
+    // the waking select's bits as a fire of its input. probe: a function value read in an
+    // arm asleep the cycle after the later binding fires (late-asleep-01)
+    /// Deliver last cycle's late fires ([`GXRt::late`]) to their readers:
+    /// each reader's root runs and its boundary is marked, unless a write
+    /// delivered the variable already this cycle.
+    fn deliver_late(&mut self) {
+        if self.ctx.rt.late.is_empty() {
+            return;
+        }
+        let cycle = self.ctx.rt.cycle;
+        let mut late = Late::default();
+        for (id, tv, r) in self.ctx.rt.late.drain(..) {
+            if self.ctx.event.variables.contains_key(&id) {
+                continue;
+            }
+            self.ctx.rt.updated.entry(r.root).or_insert(false);
+            r.mark(cycle);
+            let (_, readers) = late.entry(id).or_insert_with(|| (tv, SmallVec::new()));
+            if !readers.contains(&r) {
+                readers.push(r)
+            }
+        }
+        if !late.is_empty() {
+            self.ctx.event.late = Some(Arc::new(late));
         }
     }
 
@@ -654,6 +730,7 @@ impl<X: GXExt> GX<X> {
             }
         }
         self.ctx.view().deliver_pair_writes();
+        self.deliver_late();
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
             || !self.ctx.event.custom.lock().is_empty();
@@ -1011,6 +1088,7 @@ impl<X: GXExt> GX<X> {
             || !self.ctx.rt.updated.is_empty()
             || !self.ctx.rt.var_updates.is_empty()
             || !self.ctx.rt.custom_updates.is_empty()
+            || !self.ctx.rt.late.is_empty()
     }
 
     async fn compile_root(&mut self, flags: BitFlags<CFlag>, text: ArcStr) -> Result<()> {

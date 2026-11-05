@@ -207,7 +207,15 @@ pub struct Event {
     /// The cycle's custom deliveries, each taken by its consumer; one
     /// map for every branch of the cycle.
     pub custom: Arc<Mutex<IntMap<BindId, Box<dyn CustomBuiltinType>>>>,
+    /// The root the runtime is updating.
+    pub root: Option<ExprId>,
+    /// Last cycle's fires each delivered now to the readers the walk had
+    /// passed when it was made ([`Rt::late`]).
+    pub late: Option<Arc<Late>>,
 }
+
+/// Fires delivered a cycle late, each to its readers alone.
+pub type Late = IntMap<BindId, (TagValue, SmallVec<[prune::Reader; 1]>)>;
 
 impl Event {
     pub fn new() -> Self {
@@ -215,6 +223,8 @@ impl Event {
             view: View::Cycle,
             variables: branch::Layered::default(),
             custom: Arc::new(Mutex::new(IntMap::default())),
+            root: None,
+            late: None,
         }
     }
 
@@ -260,20 +270,24 @@ impl Event {
             // SAFETY: the caller's contract
             variables: unsafe { self.variables.fork() },
             custom: self.custom.clone(),
+            root: self.root,
+            late: self.late.clone(),
         }
     }
 
     /// Apply what the forked branch's event `child` delivered.
     pub(crate) fn merge(&mut self, child: Self) {
-        let Self { view: _, variables, custom: _ } = child;
+        let Self { view: _, variables, custom: _, root: _, late: _ } = child;
         self.variables.merge(variables);
     }
 
     pub fn clear(&mut self) {
-        let Self { view, variables, custom } = self;
+        let Self { view, variables, custom, root, late } = self;
         *view = View::Cycle;
         variables.clear();
         custom.lock().clear();
+        *root = None;
+        *late = None;
     }
 }
 
@@ -1251,6 +1265,15 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// A variable was set within the current cycle; dependent toplevel
     /// nodes must be updated.
     fn notify_set(&mut self, id: BindId);
+
+    /// `reader` meets this cycle's fire `tv` of `id` after the walk passed
+    /// it: deliver the fire to it alone next cycle ([`Event::late`]).
+    fn late(&mut self, id: BindId, tv: TagValue, reader: prune::Reader);
+
+    /// The root being updated fired `id`, which a reader in another root
+    /// reads: one in a root the cycle passed reads it next cycle
+    /// ([`Self::late`]), one in a later root this cycle.
+    fn produced(&mut self, id: BindId);
 
     /// Deliver a variable event for `id` carrying the current time after
     /// `timeout`.
@@ -2533,9 +2556,29 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             false => tv.clone(),
         };
         if tag.triggers() {
-            self.rt.store_insert(id, stored);
+            match self.event.root {
+                None => self.rt.store_insert(id, stored),
+                Some(root) => {
+                    let mut passed = None;
+                    let elsewhere = self.rt.store_fire(
+                        id,
+                        stored,
+                        root,
+                        self.boundary.as_ref(),
+                        &mut passed,
+                    );
+                    if let Some(passed) = passed {
+                        for r in passed {
+                            self.rt.late(id, tv.clone(), r)
+                        }
+                    }
+                    if elsewhere {
+                        self.rt.produced(id)
+                    }
+                }
+            }
             if notify == Notify::Roots {
-                self.rt.notify_set(id)
+                self.rt.notify_marked(id)
             }
         } else {
             self.rt.store_insert_standing(id, stored)

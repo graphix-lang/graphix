@@ -243,6 +243,63 @@ async fn parallel_block_needs_two_that_work() {
     assert!(e.contains("#[parallel] has nothing to run in parallel"), "{e}");
 }
 
+// A statement publishing what an earlier one may read is a later run: the
+// earlier reads its fire next cycle, after the walk passed it. Through a
+// reference or an unresolved call an earlier statement reaches only what a
+// reference names or a lambda captures.
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_names_an_earlier_reader() {
+    for tail in ["(r, &w)", "let k = |x: i64| x + w; (r, k(1))"] {
+        let e = refusal(&format!(
+            "{{ let g = |x: i64| x * 2; let h: fn(x: i64) -> i64 = g; \
+             h <- |x: i64| -> i64 x + 1; let n = 3; \
+             #[parallel] {{ let r = h(n); let w = g(n); {tail} }} }}"
+        ))
+        .await;
+        assert!(
+            e.contains(
+                "statement 2 publishes what an earlier statement may read through"
+            ),
+            "{tail}: {e}"
+        );
+    }
+}
+
+// A call whose callee makes a lambda or a reference may hand out a binding
+// it fires to an earlier statement that reads through a function value.
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_names_an_earlier_reader_of_a_callee_binding() {
+    for mk in ["|x: i64| |y: i64| -> i64 y + x", "|x: i64| &x"] {
+        let e = refusal(&format!(
+            "{{ let g = |x: i64| x * 2; let h: fn(x: i64) -> i64 = g; \
+             h <- |x: i64| -> i64 x + 1; let n = 3; let mk = {mk}; \
+             #[parallel] {{ let r = h(n); let k = mk(n); (r, k) }} }}"
+        ))
+        .await;
+        assert!(
+            e.contains(
+                "statement 2 publishes what an earlier statement may read through"
+            ),
+            "{mk}: {e}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_beside_an_earlier_reader_of_nothing_it_publishes() -> Result<()> {
+    for code in [
+        "{ let a = 1; let r = &a; let g = |x: i64| x * 2; let n = 3; \
+         #[parallel] { let x = *r + n; let w = g(n); x + w } }",
+        "{ let g = |x: i64| x * 2; let h: fn(x: i64) -> i64 = g; h <- |x: i64| -> i64 x + 1; \
+         let n = 3; #[parallel] { let r = h(n); let w = g(n); r + w } }",
+    ] {
+        let ran = run_par(code, ParMode::Force).await?;
+        assert_eq!(ran.values.last(), Some(&Value::I64(10)), "{code}");
+        assert!(ran.forks > 0, "forked nothing: {code}");
+    }
+    Ok(())
+}
+
 // A reference publishes its cell: the read through it is a later run.
 #[tokio::test(flavor = "current_thread")]
 async fn parallel_reference_publishes() {
