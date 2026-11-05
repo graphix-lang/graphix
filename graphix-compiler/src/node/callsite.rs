@@ -1152,7 +1152,7 @@ fn held_generally<R: Rt>(
     }
 }
 
-// CR claude for eric: [bug/high] A quantified fn type in a function type's result
+// CR claude for claude: [bug/high] A quantified fn type in a function type's result
 // (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
 // that makes the result shares nothing that reaches 'a across its calls, and nothing
 // checks that: check_general judges the bindings outside the outer value, so a let of
@@ -1224,7 +1224,12 @@ fn held_generally<R: Rt>(
 // rank2-param-subsumed-01. The corpus outside test fixtures and repro files writes no
 // nested rank-2 type. Back to eric as a D3 follow-up in the next discuss round. Probes:
 // ~/ptmp/cr29/scratch/r14-F/review/, ~/ptmp/cr29/scratch/review-r14/F-r3-{1,2}/.
-// CR claude for eric: [bug/high] A plain rank-2 quantifier (at a function type's top,
+// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
+// types: a written quantified function type stands only as a definition's, a val's or a
+// trait method's own scheme; plus the ML rule: a function stays generic only where a
+// binding names it, and anywhere else (data, a result) takes one instance. Lane Q
+// (cr51-Q) builds it; this CR goes with the feature.
+// CR claude for claude: [bug/high] A plain rank-2 quantifier (at a function type's top,
 // not in a result) under an even number of parameters is never judged: `let drive:
 // fn(cb: fn(g: fn<'a: Any>(x: 'a) -> 'a) -> string) -> string = drive0` over `drive0
 // = 'q: Any |cb: fn(g: fn(x: 'q) -> 'q) -> string| { let y = never(); cb(|x| { y <-
@@ -1235,7 +1240,12 @@ fn held_generally<R: Rt>(
 // Found by review r14 of lane F (D3 (a), parked on cr49-F). probe:
 // ~/ptmp/cr29/scratch/r14-F/review/r3/n42b_pp_plain_inner_state.gx
 // (rank2-under-params-01)
-// CR claude for eric: [bug/high] An invariant position lets a generic value be viewed,
+// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
+// types: a written quantified function type stands only as a definition's, a val's or
+// a trait method's own scheme; plus the ML rule: a function stays generic only where
+// a binding names it, and anywhere else (data, a result) takes one instance. Lane Q
+// (cr51-Q) builds it; this CR goes with the feature.
+// CR claude for claude: [bug/high] An invariant position lets a generic value be viewed,
 // then written, at a monomorphic type: `let g: fn<'a: Any>(x: 'a) -> 'a = |x| x; let
 // r: &mut fn(x: 'q) -> 'q = &mut g; *r <- { let y = never(); |x| { y <- x; y } }`
 // passes --check and g then shares one y (`n = s, s = s` under --no-fusion; fusion
@@ -1248,7 +1258,12 @@ fn held_generally<R: Rt>(
 // {t15c_mutref_plain_rank2,t15b_mutref_let,t15_mutref_view,t15e_mutref_struct_field,
 // t15h_mutref_array,t23_abstract_param_handed,t23b_abstract_param_let}.gx
 // (rank2-invariant-view-01)
-// CR claude for eric: [bug/high] A recursive typedef holding a quantified function type
+// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
+// types: a written quantified function type stands only as a definition's, a val's or
+// a trait method's own scheme; plus the ML rule: a function stays generic only where a
+// binding names it, and anywhere else (data, a result) takes one instance. Lane Q
+// (cr51-Q) builds it; this CR goes with the feature.
+// CR claude for claude: [bug/high] A recursive typedef holding a quantified function type
 // is judged only at its first unfolding: `type R = [`End, `More(fn<'a: Any>(x: 'a) ->
 // 'a, R)]` holding `|x| { y <- x; y }` at depth two passes --check and the read
 // function shares one y (`n = s, s = s`); makers leak the same way one level down.
@@ -1257,7 +1272,12 @@ fn held_generally<R: Rt>(
 // of lane F. probes: ~/ptmp/cr29/scratch/r14-F/review/r3/rec/n89_rec_plain_rank2.gx,
 // n80..n88; ~/ptmp/cr29/scratch/review-r14/F-r3-2/p/r03_rec_lit_bad_d3.gx
 // (rank2-recursive-holder-01)
-// CR claude for eric: [bug/medium] A function whose parameter is a plain rank-2 formal
+// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
+// types: a written quantified function type stands only as a definition's, a val's or a
+// trait method's own scheme; plus the ML rule: a function stays generic only where a
+// binding names it, and anywhere else (data, a result) takes one instance. Lane Q
+// (cr51-Q) builds it; this CR goes with the feature.
+// CR claude for claude: [bug/medium] A function whose parameter is a plain rank-2 formal
 // is handed whatever its holder's parameter admits when a function type whose
 // parameter is not rank-2 holds it: `let f = |g: fn<'a: Any>(x: 'a) -> 'a| ..; let k:
 // fn(g: fn(x: 'q) -> 'q) -> string = f; k(|x| { y <- x; y })` passes --check and the
@@ -1267,6 +1287,11 @@ fn held_generally<R: Rt>(
 // same. Found by review r14 of lane F. probes:
 // ~/ptmp/cr29/scratch/r14-F/review/r1/{d03_subsume_plain,c05_hof_plain_rank2}.gx
 // (rank2-param-subsumed-01)
+// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
+// types: a written quantified function type stands only as a definition's, a val's or a
+// trait method's own scheme; plus the ML rule: a function stays generic only where a
+// binding names it, and anywhere else (data, a result) takes one instance. Lane Q
+// (cr51-Q) builds it; this CR goes with the feature.
 /// A value checked against quantifiers held rigid holds for every choice
 /// of them only if nothing outside it that lives on reaches one: a binding
 /// it reads or writes from outside (its lambdas' captures included), or the

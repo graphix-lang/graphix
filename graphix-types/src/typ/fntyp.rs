@@ -1041,7 +1041,7 @@ impl FnType {
         }
     }
 
-    // CR claude for eric: [bug/low] A trait method's parameter whose rank-2 bound names
+    // CR claude for claude: [bug/low] A trait method's parameter whose rank-2 bound names
     // `self` or a constructor trait's element is refused here, as any variable its written
     // type does not quantify is: `trait T { val m: fn(self, k: fn<'a: [self, null]>(x: 'a)
     // -> 'a) -> (self, null) }` and `trait C { val m: fn(self<'a>, f: fn<'b: ['a,
@@ -1093,6 +1093,8 @@ impl FnType {
     // trait is the hole (selfout_let). Options (a) and (b) stand. The note's s15/s16 are
     // review-r11/R-r2-1 probes, not review-r10's. probes:
     // ~/ptmp/cr29/scratch/review-r11/R-r3-2/y/, R-r3-1/t/
+    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2 types: a written quantified function type stands only as a definition's, a val's or a trait method's own scheme; plus the ML rule: a function stays generic
+    // only where a binding names it, and anywhere else (data, a result) takes one instance. Lane Q (cr51-Q) builds it; this CR goes with the feature.
     /// Refuse a bound of the type's own quantifiers (`bounds`, its
     /// [`Self::constraint_view`]) naming a variable it does not quantify.
     /// A rank-2 quantifier is held rigid at exactly its bounds, which such
