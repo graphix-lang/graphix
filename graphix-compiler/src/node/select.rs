@@ -804,6 +804,15 @@ impl Reach {
                     )
                 })?
             }
+            // CR claude for claude: [bug/low] A slice arm whose lengths earlier
+            // arms cover is found dead only where the slice is the whole pattern:
+            // inside a tuple it is not, so `|x: Array<i64>| select (x, 0) { ([a,
+            // ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }` runs (5 for [5,
+            // 1]) with arm 2 dead, where the same arms over x alone are refused
+            // "every array length this slice pattern can match is covered by
+            // earlier arms". Same on main (base-r16). Found by review r16
+            // (U-r2-1). probes: ~/ptmp/cr29/scratch/review-r16/U-r2-1/q/a12v.gx,
+            // a12t.gx, a12.gx (slice-ladder-nested-01)
             if let Some((k, exact)) = sp.array_len_range() {
                 let (mut any, mut all) = (false, true);
                 for l in self.ladders.iter() {
@@ -2432,11 +2441,20 @@ impl<R: Rt> Select<R> {
             if let Err(e) = step {
                 if checking {
                     reached.truncate(i);
-                    while reached.len() < self.arms.len() {
-                        reached.push(scrut.clone())
-                    }
                     let undecided = still_open(&outer);
-                    self.check_undecided(&ctx.env, &undecided, &decided, &reached)?;
+                    let none = Decisions::default();
+                    self.check_undecided(&ctx.env, &undecided, &none, &reached)?;
+                    if !decided.cells.is_empty() {
+                        while reached.len() < self.arms.len() {
+                            reached.push(scrut.clone())
+                        }
+                        self.check_undecided(
+                            &ctx.env,
+                            &AHashMap::new(),
+                            &decided,
+                            &reached,
+                        )?;
+                    }
                 }
                 return Err(e);
             }
@@ -2465,9 +2483,10 @@ impl<R: Rt> Select<R> {
     /// patterns brought) still open, or of `decided`, those the arms'
     /// patterns decided, unless the arm's pattern there only takes apart
     /// every value of the shape decided, in the part of the scrutinee that
-    /// reaches the arm (`reached`, one per arm, the whole scrutinee from the
-    /// arm a refusal stopped the check at), or any open cell of a written
-    /// test.
+    /// reaches the arm (`reached`, one per arm judged: where a refusal
+    /// stopped the check at an arm, the arms before it for `undecided`, and
+    /// for `decided` every arm, the whole scrutinee from that arm on), or any
+    /// open cell of a written test.
     fn check_undecided(
         &self,
         env: &Env,
@@ -2733,6 +2752,16 @@ struct Decisions {
 // a rule the ruling does not state, left for Eric. probes:
 // ~/ptmp/cr29/scratch/review-r16/U-r1-1/part2/p5/; the tried diff
 // ~/ptmp/cr29/scratch/r16-U3/pattern-beside.diff
+// 2026-11-05 claude: Review r16 (U-r2-1) found that judging every arm against the still-open
+// cells when a step fails made an ordinary body error a false D5 refusal of a later arm (e4:
+// (`K, n) => str::len(n) reported as '(_, 3) tests a value of 'z'). Now the failing step judges
+// the arms before it, by what reaches each, against the still-open cells, and every arm (from
+// the failing one on as reached by the whole scrutinee) against the decided cells only, as
+// before. Pins lang::select_undecided::a_body_error_before_a_later_arm_is_the_error (fails x4
+// without) and its twin a_later_arm_after_a_whole_member_taken; t1/t1n/t2/t4 keep D5's refusal.
+// Both reviewers again report t3 (W(a) at a tuple position) and t5 (the ladder) giving
+// 'unreachable arm', as main does: still waiting on Eric's ruling on a destructure beside a
+// member of its shape (second review in a row; not lane work).
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {

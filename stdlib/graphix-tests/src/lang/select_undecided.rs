@@ -719,3 +719,21 @@ run!(destructure_beside_an_annotated_member, r#"{
     };
     [f((5, 1), true), f(null, true), f(null, false)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 0, 3]); FuseExpect::Jit);
+
+// A body's error in one arm is that error, not a refusal of a later arm
+// judged as if no arm before it took anything.
+run!(a_body_error_before_a_later_arm_is_the_error, r#"{
+    let f = |z, c| {
+        let y = select c { true => (`J, z), false => (`K, 1) };
+        select y { (`J, _) => 0, (`K, n) => str::len(n), (_, 3) => 2, _ => 3 }
+    };
+    f(4, true)
+}"#, refused("type mismatch string does not contain i64"); FuseExpect::None);
+
+run!(a_later_arm_after_a_whole_member_taken, r#"{
+    let f = |z, c| {
+        let y = select c { true => (`J, z), false => (`K, 1) };
+        select y { (`J, _) => 0, (`K, 7) => 1, (_, 3) => 2, _ => 3 }
+    };
+    [f(4, true), f(4, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 3]); FuseExpect::Jit);

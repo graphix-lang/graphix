@@ -678,8 +678,12 @@ A destructure that decides nothing, a part still open after the arms
 (`((a, b), _)` over a `y` that is `'x` or `(i64, i64)`, whose member the
 pattern takes), is a test of an undecided part as above. It is refused
 too where a later arm's own refusal (an unreachable arm) stops the check
-first: the step that fails judges every arm before it against the cells
-still open as well as those decided (`still_open`).
+first: the step that fails judges every arm before it, by what reaches
+it, against the cells still open (`still_open`), and every arm against
+those the arms' patterns decided, the arms from the failing one on as
+reached by the whole scrutinee. The arms after it are not judged against
+the cells still open: no arm before them has been checked to take its
+part, so an ordinary error in one arm's body stays that error.
 
 What only names and `_` meet passes, and stays sound two ways. A name
 over a union position where one member's part is an open cell takes

@@ -1580,7 +1580,7 @@ cycle, across workers; the compiler never pins threads.
   and such patterns: `StructurePattern::only_destructures`) decides that
   shape as an annotation would and tests nothing. An arm whose check
   fails judges the arms before it so too, against the cells still open
-  and those decided (`still_open`).
+  (`still_open`), and every arm against those decided.
   Exhaustiveness holds those cells rigid on copies first
   (`Type::contains_holding`), so a part only names and `_` meet covers
   whatever it becomes, else where the cover decides them. What reaches
