@@ -391,14 +391,17 @@ async fn a_browser_selection_follows_the_listing() -> Result<()> {
 use tui::browser::{MoveCursor, browser};
 let pa = array::map([0, 1, 2, 3], |i| sys::net::publish("/local/nav/a/a[i]", i));
 let pb = array::map([0, 1], |i| sys::net::publish("/local/nav/b/b[i]", i));
-let clock = sys::time::timer(duration:300.ms, true);
-let n = 0;
-n <- clock ~ n + 1;
-let cursor: MoveCursor = never();
-cursor <- select n { 2 => n ~ `Down(2), _ => never() };
-let path = "/local/nav/a";
-path <- select n { 4 => n ~ "/local/nav/b", 6 => n ~ "/local/nav/a/a3", _ => never() };
+let la = sys::net::list("/local/nav/a")$;
+let lb = sys::net::list("/local/nav/b")$;
+let path: string = never();
+path <- select (array::len(la), array::len(lb)) { l@ (4, 2) => l ~ "/local/nav/a", _ => never() };
 let sel: [string, null] = never();
+let want: Array<[string, null]> = ["/local/nav/a/a0", "/local/nav/a/a2", "/local/nav/b/b0"];
+let step = 0;
+step <- select (step, sel) { (s, r) if s < 3 && r == want[s]$ => s + 1, _ => never() };
+let cursor: MoveCursor = never();
+cursor <- select step { 1 => step ~ `Down(2), _ => never() };
+path <- select step { 2 => step ~ "/local/nav/b", 3 => step ~ "/local/nav/a/a3", _ => never() };
 let seen: Array<[string, null]> = [];
 seen <- sel ~ array::push(seen, sel);
 let result = browser(#cursor, #selected_row: &mut sel, #size: {width: 40, height: 8}, path)
@@ -427,35 +430,47 @@ let result = browser(#cursor, #selected_row: &mut sel, #size: {width: 40, height
 }
 
 /// A scroll by one row resubscribes only the row that enters: no row that
-/// stays on screen blanks to #SUB, so a step taken once the frame has no
-/// row subscribing never shows more than one.
+/// stays on screen blanks to #SUB, so a move made on the frame that shows
+/// the last one done, its row selected and no row subscribing, never
+/// shows more than one.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_browser_scroll_keeps_the_rows_that_stay() -> Result<()> {
     let mut h = TuiTestHarness::with_viewport(
         r##"
 use tui::{Tui, browser::{MoveCursor, browser}};
-let pubs = array::init(12, |k| sys::net::publish("/local/ring/r[k]", k));
-let path = sys::time::after_idle(duration:200.ms, "/local/ring");
+// names of one width list in the order of their numbers
+let pubs = array::init(12, |k| sys::net::publish("/local/ring/r[k + 10]", k));
+let listed = sys::net::list("/local/ring")$;
+let path: string = never();
+path <- select array::len(listed) { l if l == 12 => l ~ "/local/ring", _ => never() };
 let cur: MoveCursor = never();
-let b: Tui = browser(#rate: duration:10.ms, #size: {width: 40, height: 4}, #cursor: cur, path);
-let progress = select b {
+let sel: [string, null] = never();
+let b: Tui = browser(
+  #rate: duration:10.ms,
+  #size: {width: 40, height: 4},
+  #cursor: cur,
+  #selected_row: &mut sel,
+  path
+);
+let pending = select b {
   `Table(t) => {
     let rows = *t.rows;
-    (array::len(rows), array::len(array::filter(rows, |r| str::contains(#part: "#SUB", "[(*r).cells]"))))
+    array::len(array::filter(rows, |r| str::contains(#part: "#SUB", "[(*r).cells]")))
   },
   _ => never()
 };
-let loaded = false;
-loaded <- select (loaded, progress) { (false, (3, 0)) => true, _ => never() };
-let pending = progress.1;
-let tick = select loaded { true => sys::time::timer(duration:100.ms, 100), false => never() };
-let steps = 0;
-steps <- tick ~ select (steps, pending) { (s, 0) if s < 6 => s + 1, _ => never() };
-cur <- select steps { x if x >= 1 => steps ~ `Down(1), _ => never() };
-let after_load = select loaded { true => pending, false => never() };
+let step = 0;
+step <- select (step, sel$, pending) {
+  (s, r, 0) if s < 6 && r == "/local/ring/r[s + 10]" => s + 1,
+  _ => never()
+};
+cur <- select step { 0 => never(), _ => step ~ `Down(1) };
 let worst = 0;
-worst <- after_load ~ max(worst, after_load);
-let answer = select (steps, pending) { (6, 0) => worst, _ => never() };
+worst <- select step { 0 => never(), _ => pending ~ max(worst, pending) };
+let answer = select (step, sel$, pending) {
+  (6, "/local/ring/r16", 0) => worst,
+  _ => never()
+};
 let result = b
 "##,
         40,
@@ -493,9 +508,18 @@ async fn a_browser_scrolls_back_down_then_up() -> Result<()> {
         r##"
 use tui::{Tui, browser::{MoveCursor, browser}};
 let pubs = array::init(12, |k| sys::net::publish("/local/back/r[k]", k));
-let path = sys::time::after_idle(duration:200.ms, "/local/back");
+let listed = sys::net::list("/local/back")$;
+let path: string = never();
+path <- select array::len(listed) { l if l == 12 => l ~ "/local/back", _ => never() };
 let cur: MoveCursor = never();
-let b: Tui = browser(#rate: duration:10.ms, #size: {width: 40, height: 4}, #cursor: cur, path);
+let sel: [string, null] = never();
+let b: Tui = browser(
+  #rate: duration:10.ms,
+  #size: {width: 40, height: 4},
+  #cursor: cur,
+  #selected_row: &mut sel,
+  path
+);
 let first = select b {
   `Table(t) => {
     let rows = *t.rows;
@@ -503,16 +527,16 @@ let first = select b {
   },
   _ => never()
 };
-let loaded = false;
-loaded <- select (loaded, str::contains(#part: "r0", first)) { (false, true) => true, _ => never() };
 let script: Array<MoveCursor> = [`Up(1), `Down(1), `Down(1), `Down(1), `Up(1), `Up(1), `Up(1), `Up(1)];
-let i = 0;
-let tick = select loaded { true => sys::time::timer(duration:100.ms, 9), false => never() };
-i <- tick ~ i + 1;
-cur <- (tick ~ script[i])$;
+// the row selected before each move and after the last: an Up at the top
+// selects what it did, so the move after it follows at once
+let want = array::map([0, 0, 1, 10, 11, 10, 1, 0, 0], |k| "/local/back/r[k]");
+let step = 0;
+step <- select (step, sel$) { (s, r) if s < 9 && r == want[s]$ => s + 1, _ => never() };
+cur <- select step { 0 => never(), s => (s ~ script[s - 1])$ };
 let seen: Array<string> = [];
 seen <- first ~ array::push(seen, first);
-let done = select i { 9 => i ~ seen, _ => never() };
+let done = select step { 9 => step ~ seen, _ => never() };
 let result = b
 "##,
         40,
@@ -532,21 +556,21 @@ async fn a_browser_selection_stays_in_a_shrunk_window() -> Result<()> {
         r##"
 use tui::{Tui, browser::{MoveCursor, browser}};
 let pubs = array::init(12, |k| sys::net::publish("/local/shrink/r[k]", k));
-let path = sys::time::after_idle(duration:200.ms, "/local/shrink");
+let listed = sys::net::list("/local/shrink")$;
+let path: string = never();
+path <- select array::len(listed) { l if l == 12 => l ~ "/local/shrink", _ => never() };
 let cur: MoveCursor = never();
 let size = {width: 40, height: 8};
 let sel: [string, null] = never();
 let b: Tui = browser(#size: size, #cursor: cur, #selected_row: &mut sel, path);
-let loaded = false;
-loaded <- select (loaded, sel) { (false, "/local/shrink/r0") => true, _ => never() };
-let i = 0;
-let tick = select loaded { true => sys::time::timer(duration:100.ms, 10), false => never() };
-i <- tick ~ i + 1;
-cur <- select i { x if x < 6 => i ~ `Down(1), 8 => i ~ `Up(1), _ => never() };
-size <- select i { 7 => i ~ {width: 40, height: 4}, _ => never() };
+let want = array::map([0, 1, 10, 11, 2, 3, 4, 10, 1], |k| "/local/shrink/r[k]");
+let step = 0;
+step <- select (step, sel$) { (s, r) if s < 9 && r == want[s]$ => s + 1, _ => never() };
+cur <- select step { 0 => never(), x if x <= 6 => step ~ `Down(1), 8 => step ~ `Up(1), _ => never() };
+size <- select step { 7 => step ~ {width: 40, height: 4}, _ => never() };
 let seen: Array<[string, null]> = [];
 seen <- sel ~ array::push(seen, sel);
-let done = select i { 10 => i ~ seen, _ => never() };
+let done = select step { 9 => step ~ seen, _ => never() };
 let result = b
 "##,
         40,
@@ -589,7 +613,9 @@ async fn a_browser_window_fills_from_a_shrunk_listing() -> Result<()> {
 use tui::{Tui, browser::{MoveCursor, browser}};
 let n = 12;
 let pubs = array::init(n, |k| sys::net::publish("/local/refill/r[k]", k));
-let path = sys::time::after_idle(duration:200.ms, "/local/refill");
+let listed = sys::net::list("/local/refill")$;
+let path: string = never();
+path <- select array::len(listed) { l if l == 12 => l ~ "/local/refill", _ => never() };
 let cur: MoveCursor = never();
 let sel: [string, null] = never();
 let b: Tui = browser(#size: {width: 40, height: 6}, #cursor: cur, #selected_row: &mut sel, path);
@@ -597,21 +623,16 @@ let shown = select b {
   `Table(t) => array::len(*t.rows),
   _ => never()
 };
-let loaded = false;
-loaded <- select (loaded, sel) { (false, "/local/refill/r0") => true, _ => never() };
-let i = 0;
-let tick = select loaded { true => sys::time::timer(duration:300.ms, 4), false => never() };
-i <- tick ~ i + 1;
-cur <- select i { 1 => i ~ `Down(20), 2 => i ~ `Down(20), _ => never() };
-n <- select i { 4 => i ~ 3, _ => never() };
-// the Ups wait for the browser to show the shrunk listing
-let shrunk = false;
-shrunk <- select (shrunk, i >= 4, shown) { (false, true, 3) => true, _ => never() };
-let j = 0;
-let tock = select shrunk { true => sys::time::timer(duration:300.ms, 2), false => never() };
-j <- tock ~ j + 1;
-cur <- select j { x if x >= 1 => j ~ `Up(1), _ => never() };
-let done = select j { 2 => "[shown] [sel]", _ => never() };
+// the rows shown and the row selected before each step and after the last
+let want = array::map([(5, 0), (5, 2), (5, 9), (3, 2), (3, 1), (3, 0)], |(m, k)| (m, "/local/refill/r[k]"));
+let step = 0;
+step <- select (step, shown, sel$) {
+  (s, m, r) if s < 6 && (m, r) == want[s]$ => s + 1,
+  _ => never()
+};
+cur <- select step { 1 => step ~ `Down(20), 2 => step ~ `Down(20), 4 => step ~ `Up(1), 5 => step ~ `Up(1), _ => never() };
+n <- select step { 3 => step ~ 3, _ => never() };
+let done = select step { 6 => "[shown] [sel]", _ => never() };
 let result = b
 "##,
         40,
@@ -633,7 +654,12 @@ let pubs = array::init(n, |k| [
   sys::net::publish("/local/refill_cols/row0/col[k]", k),
   sys::net::publish("/local/refill_cols/row1/col[k]", k)
 ]);
-let path = sys::time::after_idle(duration:200.ms, "/local/refill_cols");
+let listed = sys::net::list_table("/local/refill_cols")$;
+let path: string = never();
+path <- select (array::len(listed.rows), array::len(listed.columns)) {
+  l@ (2, 8) => l ~ "/local/refill_cols",
+  _ => never()
+};
 let cur: MoveCursor = never();
 let sel: [string, null] = never();
 let b: Tui = browser(#size: {width: 24, height: 6}, #cursor: cur, #selected_path: &mut sel, path);
@@ -641,17 +667,14 @@ let shown = select b {
   `Table(t) => array::len((*t.widths)$) - 1,
   _ => never()
 };
-let loaded = false;
-loaded <- select (loaded, sel) {
-  (false, "/local/refill_cols/row0/col0") => true,
+let step = 0;
+step <- select (step, sel$) {
+  (s, r) if s < 8 && r == "/local/refill_cols/row0/col[s]" => s + 1,
   _ => never()
 };
-let i = 0;
-let tick = select loaded { true => sys::time::timer(duration:300.ms, 8), false => never() };
-i <- tick ~ i + 1;
-cur <- select i { x if x >= 1 && x < 8 => i ~ `Right(1), _ => never() };
-n <- select i { 8 => i ~ 3, _ => never() };
-let done = select i { 8 => "[shown] [sel]", _ => never() };
+cur <- select step { 0 => never(), x if x < 8 => step ~ `Right(1), _ => never() };
+n <- select step { 8 => step ~ 3, _ => never() };
+let done = select step { 8 => "[shown] [sel]", _ => never() };
 let result = b
 "##,
         24,
@@ -673,18 +696,23 @@ let pubs = array::init(n, |k| [
   sys::net::publish("/local/fewer/row0/col[k]", k),
   sys::net::publish("/local/fewer/row1/col[k]", k)
 ]);
-let path = sys::time::after_idle(duration:200.ms, "/local/fewer");
+let listed = sys::net::list_table("/local/fewer")$;
+let path: string = never();
+path <- select (array::len(listed.rows), array::len(listed.columns)) {
+  l@ (2, 8) => l ~ "/local/fewer",
+  _ => never()
+};
 let cur: MoveCursor = never();
 let sel: [string, null] = never();
 let b: Tui = browser(#size: {width: 24, height: 6}, #cursor: cur, #selected_path: &mut sel, path);
-let loaded = false;
-loaded <- select (loaded, sel) { (false, "/local/fewer/row0/col0") => true, _ => never() };
-let i = 0;
-let tick = select loaded { true => sys::time::timer(duration:300.ms, 8), false => never() };
-i <- tick ~ i + 1;
-cur <- select i { x if x >= 1 && x < 8 => i ~ `Right(1), _ => never() };
-n <- select i { 8 => i ~ 2, _ => never() };
-let done = select i { 8 => sel, _ => never() };
+let step = 0;
+step <- select (step, sel$) {
+  (s, r) if s < 8 && r == "/local/fewer/row0/col[s]" => s + 1,
+  _ => never()
+};
+cur <- select step { 0 => never(), x if x < 8 => step ~ `Right(1), _ => never() };
+n <- select step { 8 => step ~ 2, _ => never() };
+let done = select step { 8 => sel, _ => never() };
 let result = b
 "##,
         24,
