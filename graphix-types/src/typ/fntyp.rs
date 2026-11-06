@@ -1422,6 +1422,15 @@ impl FnType {
     // for the inferred result-union case (|c, a, b| select c { true => a, false => b }, a
     // call's result union decided by later writes), which (b) does not reach; the
     // nested-member form is formal-union-nested-01.
+    // 2026-11-06 claude: Repair (review r19 of lane d7) of (b): a member or argument that is a typedef naming a variable, or a union holding one, now counts as that variable (['a,
+    // Id<'b>], E<'a, Id<'b>>, ['a, M<'b>] over type M<'x> = ['x, null], refused as ['a, 'b, null] is; settle.rs member_vars/may_be_var); a typedef the block declares below the
+    // lambda, which does not resolve at its compile, is judged as the check ends (Pending::VariableUnion, settle::Judged); a trait method's self is no variable ([self, 'a] stands);
+    // an impl's or a trait default's method lambda is judged over the types it writes itself, the head's variables the impl's (traits::written_method_unions), so impl<'a, 'b> T for
+    // Array<['a, 'b]> stands. Pins that fail without it:
+    // lang::types::variable_union_through_{a_later_typedef,an_identity_member,an_identity_argument,an_identity_in_a_body,an_option_member}_refused,
+    // lang::traits::trait_method_self_beside_a_variable, impl_head_union_of_variables; guards impl_method_written_variable_union_refused, default_body_written_variable_union_refused.
+    // The pair-budget fixtures lang::errors::two_cells_behind_one_name_past_the_pair_budget_* wrote [Tags, F<'a>, F<'b>] over F<'t> = ['t, null], now refused: rewritten to F<'t> =
+    // [Array<'t>, null]. Probes ~/ptmp/cr29/scratch/r19-d7/r2/.
     // CR claude for eric: [bug/medium] Eric's 11-05 ruling (b) refuses a union of two or
     // more bare type variables in a written function type, but a union of members that
     // each hold a variable (`[Array<'c>, Array<'d>]`) asks the same question, which member

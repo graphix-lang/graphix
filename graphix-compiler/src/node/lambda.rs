@@ -30,6 +30,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type, check_bounds_acyclic,
+        settle::Judged,
         tvar::{AtLevel, InTask, Level, RigidGate, TaskId, current_level},
     },
     wrap,
@@ -764,8 +765,14 @@ pub struct BodyShared {
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's; any other
 /// is the written type's own (`Level::Written`). A function type it writes
-/// holds no union of two of its own variables ([`Type::variable_union`]).
-pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) -> Result<()> {
+/// at `at` holds no union of two of its own variables
+/// ([`judge_variable_unions`]); `None` for an impl method's declaration,
+/// judged at its trait.
+pub(crate) fn body_annotation<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    t: &Type,
+    at: Option<(&Arc<Origin>, SourcePosition)>,
+) -> Result<()> {
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     enclosing_tvars(ctx, &mut known);
     let enclosing: LPooled<AHashSet<ArcStr>> = known.keys().cloned().collect();
@@ -773,8 +780,33 @@ pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) -> Result<()
     for (_, tv) in known.iter().filter(|(name, _)| !enclosing.contains(*name)) {
         tv.own_written()
     }
-    if written_own(&known, &enclosing) > 1 {
-        t.variable_union(&ctx.env, &|tv| !enclosing.contains(&tv.name))?
+    match at {
+        Some((ori, pos)) if written_own(&known, &enclosing) > 1 => {
+            judge_variable_unions(ctx, t, &enclosing, ori, pos)
+        }
+        Some(_) | None => Ok(()),
+    }
+}
+
+/// Refuse a union of two of the variables of `t`, written at `pos` in
+/// `ori`, that are not `enclosing`'s ([`Type::variable_union`]); one a
+/// typedef its block declares below may hide is judged when the check
+/// ends ([`crate::Pending::VariableUnion`]).
+fn judge_variable_unions<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    t: &Type,
+    enclosing: &AHashSet<ArcStr>,
+    ori: &Arc<Origin>,
+    pos: SourcePosition,
+) -> Result<()> {
+    let judged = t.variable_union(&ctx.env, &|tv| !enclosing.contains(&tv.name))?;
+    if judged == Judged::Unresolved && ctx.body.as_ref().is_none_or(|b| b.checking) {
+        ctx.pending_names.push(crate::Pending::VariableUnion(
+            t.clone(),
+            enclosing.iter().cloned().collect(),
+            ori.clone(),
+            pos,
+        ))
     }
     Ok(())
 }
@@ -2579,9 +2611,13 @@ impl Lambda {
                 written_names(tc, &mut bounds)
             }
             let in_bounds = bounds.iter().filter(|n| !enclosing.contains(*n)).count();
-            if written_own(&known, &enclosing) + in_bounds > 1 {
-                let own = |tv: &TVar| !enclosing.contains(&tv.name);
-                Type::Fn(Arc::new(ft.clone())).variable_union(&ctx.env, &own)?;
+            // a method's lambda is judged over what it writes itself, where
+            // its impl or trait fills in the rest (traits::written_method_unions)
+            let method = netidx_core::path::Path::basename(&*scope.lexical)
+                .is_some_and(crate::is_method_block);
+            if !method && written_own(&known, &enclosing) + in_bounds > 1 {
+                let t = Type::Fn(Arc::new(ft.clone()));
+                judge_variable_unions(ctx, &t, &enclosing, &spec.ori, spec.pos)?;
             }
             Arc::new(ft)
         };

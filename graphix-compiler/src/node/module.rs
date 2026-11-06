@@ -777,7 +777,7 @@ fn check_val_variable(env: &Env, name: &str, typ: &Type) -> Result<()> {
              all its uses share: declare the val at one type"
         )
     }
-    typ.variable_union(env, &|_| true).map_err(|e| anyhow!("val {name}: {e}"))
+    typ.variable_union(env, &|_| true).map(|_| ()).map_err(|e| anyhow!("val {name}: {e}"))
 }
 
 /// [`check_val_variable`] for each `val` of `sig`, whose binding is

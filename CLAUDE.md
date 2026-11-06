@@ -1002,7 +1002,9 @@ node graph IS the IR — there is no parallel typed IR
   written function type (a lambda's signature, a `.gxi` val, a trait
   method, one a body's annotation writes) holds no union of two or more of
   its own bare variables (`['a, 'b]`, under any constructor or typedef's
-  expansion), refused, naming one variable or written types as the fix
+  expansion, a typedef that names a variable counting as it, one its block
+  declares below judged as the check ends; `self` and an impl's head are no
+  method's own), refused, naming one variable or written types as the fix
   (`Type::variable_union`); a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥, no
   two unify (`contains.rs` Distinct) and none escapes into a cell outside

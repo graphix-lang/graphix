@@ -31,8 +31,8 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     typ::{
-        CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, check_bounds_acyclic,
-        seed_conjuncts,
+        CoreTrait, FnArgKind, FnArgType, FnType, TVar, TraitId, Type, TypeRef,
+        check_bounds_acyclic, seed_conjuncts,
     },
     wrap,
 };
@@ -178,7 +178,7 @@ pub(crate) fn method_decl(
     }
     let typ = method_sig(env, &m.typ, tref, scope)?;
     Type::Fn(Arc::new(typ.clone()))
-        .variable_union(env, &|_| true)
+        .variable_union(env, &|tv| &*tv.name != "self")
         .map_err(|e| anyhow!("trait method {}: {e}", m.name.name))?;
     Ok(TraitMethodSig {
         name: m.name.name.clone(),
@@ -245,6 +245,42 @@ pub(crate) fn impl_outside_functions(
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
 /// name), through parentheses. Written annotations are kept.
+/// Refuse a union of two variables a method's lambda `value` writes itself
+/// ([`Type::variable_union`]): the types its trait's declaration fills in
+/// were judged at the trait, and an impl's `head` variables and `self`
+/// are the implementation's.
+fn written_method_unions(
+    env: &Env,
+    value: &Expr,
+    scope: &ModPath,
+    head: &[TVar],
+) -> Result<()> {
+    let l = match &value.kind {
+        ExprKind::Lambda(l) => l,
+        ExprKind::ExplicitParens(inner) => {
+            return written_method_unions(env, inner, scope, head);
+        }
+        _ => return Ok(()),
+    };
+    let written = l
+        .args
+        .iter()
+        .filter_map(|a| a.constraint.clone())
+        .chain(l.constraints.iter().map(|(_, t)| t.clone()));
+    let args = Arc::from_iter(
+        written.map(|typ| FnArgType { kind: FnArgKind::Positional { name: None }, typ }),
+    );
+    let ft = FnType {
+        args,
+        rtype: l.rtype.clone().unwrap_or(Type::Bottom),
+        throws: l.throws.clone().unwrap_or(Type::Bottom),
+        ..FnType::default()
+    };
+    let own = |tv: &TVar| &*tv.name != "self" && !head.iter().any(|h| h.name == tv.name);
+    Type::Fn(Arc::new(ft)).scope_refs(scope).variable_union(env, &own)?;
+    Ok(())
+}
+
 fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
     let l = match &value.kind {
         ExprKind::Lambda(l) => l,
@@ -367,6 +403,7 @@ impl<R: Rt> Trait<R> {
             // bound under a name no method call reaches (`#show`): a
             // bare `show` in a sibling default is the dispatcher
             if let Some(body) = &m.default {
+                written_method_unions(&ctx.env, body, &dscope.lexical, &[]).at(body)?;
                 let sig = d.typ.reset_tvars();
                 let private = format_compact!("#{}", m.name.name);
                 let name =
@@ -798,6 +835,7 @@ impl<R: Rt> Impl<R> {
             if !provided.insert(name.name.clone()) {
                 bailat!(m, "method {name} is implemented twice");
             }
+            written_method_unions(&ctx.env, &b.value, &bscope.lexical, &params).at(m)?;
             let sig = method_sig_at(&decl.typ.reset_tvars(), &target);
             let b = BindExpr {
                 rec: b.rec,

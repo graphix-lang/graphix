@@ -362,8 +362,9 @@ holds no union of two or more of its own bare variables, under any
 constructor or typedef's expansion (`Type::variable_union`). Built
 (`variable-union`), right site the definition. Not generated: the
 other places the rule reads (a callback's parameter, the result, a
-bound, a typedef application, a `.gxi` val, a trait method, a `let`
-annotation's function type), pinned by
+bound, a typedef application, a typedef naming a variable, one its block
+declares below, a `.gxi` val, a trait method, a `let` annotation's
+function type), pinned by
 `lang::types::variable_union_*_refused`,
 `lang::interfaces::val_variable_union_refused` and
 `lang::traits::trait_method_variable_union_refused`.

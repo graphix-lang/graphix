@@ -3249,7 +3249,7 @@ impl<R: Rt> Never<R> {
                 let t = t.scope_refs(&scope.lexical);
                 crate::warn_later_block_names(ctx, flags, &t)?;
                 let t = t.rewrite_trait_args(&ctx.env)?;
-                lambda::body_annotation(ctx, &t)?;
+                lambda::body_annotation(ctx, &t, Some((&spec.ori, spec.pos)))?;
                 t
             }
             None => Type::Bottom,

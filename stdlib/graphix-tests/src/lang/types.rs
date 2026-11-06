@@ -5820,6 +5820,72 @@ run!(
     r#"{ let f = 'a: Any |x: 'a| { let g = |y: ['a, 'b]| -> ['a, 'b] y; g(x) }; f(1) }"#,
     prints("i64:1")
 );
+// A typedef the block declares below the definition is judged as one
+// declared above it.
+run!(
+    variable_union_through_a_later_typedef_refused,
+    r#"{
+  let f = |x: E<'a, 'b>| -> (Array<'a>, Array<'b>) ([], []);
+  type E<'p, 'q> = ['p, 'q];
+  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
+  g(1, "s")
+}"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    later_typedef_at_a_written_type,
+    r#"{
+  let f = |x: E<i64, 'b>| -> Array<'b> [];
+  type E<'p, 'q> = ['p, 'q];
+  let g = |p| { let u = never(); let r = f(u); u <- p; r };
+  g(1)
+}"#,
+    prints("[]")
+);
+// A typedef that names a variable is that variable in a union, as a
+// member, an argument or its body's member.
+run!(
+    variable_union_through_an_identity_member_refused,
+    r#"{ type Id<'x> = 'x; let f = |x: ['a, Id<'b>]| -> i64 0; f(1) }"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    variable_union_through_an_identity_argument_refused,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  type Id<'x> = 'x;
+  let f = |x: E<'a, Id<'b>>| -> (Array<'a>, Array<'b>) ([], []);
+  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
+  g(1, "s")
+}"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    variable_union_through_an_identity_in_a_body_refused,
+    r#"{
+  type Id<'x> = 'x;
+  type E<'p, 'q> = ['p, Id<'q>];
+  let f = |x: E<'a, 'b>| -> (Array<'a>, Array<'b>) ([], []);
+  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
+  g(1, "s")
+}"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    variable_union_through_an_option_member_refused,
+    r#"{ type M<'x> = ['x, null]; let f = |x: ['a, M<'b>]| -> i64 0; f(1) }"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    identity_member_at_a_written_type,
+    r#"{ type Id<'x> = 'x; let f = |x: ['a, Id<i64>]| -> i64 0; f(1) }"#,
+    prints("i64:0")
+);
 
 // Every position is held, whichever round checks it: a result whose
 // variable the parameter's binding closes is checked all the same.

@@ -301,8 +301,10 @@ then one type, the first call's.
 A signature may not write a union of two of its type variables, `|x:
 ['a, 'b]|`, `Array<['a, 'b]>`, `-> ['a, 'b, null]`, a `.gxi` val's or a
 trait method's alike, nor a function type a `let` annotation writes: no
-value's type says which variable it takes. Keep one variable there
-(`['a, null]` is fine) or write the types (`[i64, string]`).
+value's type says which variable it takes. A typedef that names a
+variable counts as it: `['a, M<'b>]` over `type M<'x> = ['x, null]` is
+`['a, 'b, null]`. Keep one variable there (`['a, null]` and a method's
+`[self, 'a]` are fine) or write the types (`[i64, string]`).
 
 A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
 'a`, or a trait as a parameter's type inside a written function type,

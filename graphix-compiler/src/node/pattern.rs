@@ -2796,7 +2796,7 @@ impl<R: Rt> PatternNode<R> {
                 let t = t.scope_refs(&scope.lexical);
                 crate::warn_later_block_names(ctx, flags, &t)?;
                 t.refuse_quantified_fns(&ctx.env)?;
-                super::lambda::body_annotation(ctx, &t)?;
+                super::lambda::body_annotation(ctx, &t, Some((&ori, pos)))?;
                 (true, t.lookup_ref(&ctx.env)?)
             }
             None => {

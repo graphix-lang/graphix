@@ -3144,6 +3144,48 @@ run!(
     "#
 ; FuseExpect::None);
 
+// `self` is the implementation's type, a written type at every impl: one
+// variable beside it stands. A union an impl's head writes is the impl's.
+run!(
+    trait_method_self_beside_a_variable,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [self, 'a]) -> i64 };
+        impl T for i64 { let m = |s, x| 0 };
+        let result = T::m(1, 2)
+    "#
+);
+
+run!(
+    impl_head_union_of_variables,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 };
+        let result = T::m([1])
+    "#
+);
+
+run!(
+    impl_method_written_variable_union_refused,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: 'a) -> i64 };
+        impl T for i64 { let m = |s, x: ['a, 'b]| -> i64 0 };
+        let result = T::m(1, 2)
+    "#
+; FuseExpect::None);
+
+run!(
+    default_body_written_variable_union_refused,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: 'a) -> i64 = |s, x: ['a, 'b]| 0 };
+        impl T for i64 {};
+        let result = T::m(1, 2)
+    "#
+; FuseExpect::None);
+
 run!(
     trait_method_union_of_written_types,
     is(Value::I64(3)),

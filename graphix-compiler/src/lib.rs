@@ -3914,6 +3914,11 @@ pub(crate) enum Pending {
     /// A typedef whose body named something not defined yet: it must be
     /// contractive once everything is.
     Contractive(ModPath, ArcStr, Expr),
+    /// A written type holding a typedef applied to variables that did not
+    /// resolve where it was written: once the check ends it must hold no
+    /// union of two of its own variables, all but those named here
+    /// ([`typ::Type::variable_union`]).
+    VariableUnion(typ::Type, Box<[ArcStr]>, Arc<expr::Origin>, SourcePosition),
 }
 
 /// A written type name that did not resolve at its definition's check
@@ -3930,6 +3935,11 @@ pub(crate) fn check_pending_names<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> 
             }
             Pending::Contractive(scope, name, spec) => {
                 ctx.env.check_contractive(&scope, &name).at(&spec)?;
+            }
+            Pending::VariableUnion(t, enclosing, ori, pos) => {
+                t.variable_union(&ctx.env, &|tv| !enclosing.contains(&tv.name))
+                    .map_err(anyhow::Error::from)
+                    .placed(&ori, pos)?;
             }
         }
     }
@@ -3976,7 +3986,7 @@ pub(crate) fn recheck_pending_contractive<R: Rt>(ctx: &mut CompileCtx<R>) -> Res
                 }
             }
         }
-        Pending::Name(..) => true,
+        Pending::Name(..) | Pending::VariableUnion(..) => true,
     });
     res
 }

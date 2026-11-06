@@ -334,8 +334,11 @@ run!(
     "#
 ; FuseExpect::None);
 
-// A function-typed parameter does not pair the signature's unions before
-// the parameters after it have paired their variables.
+// A signature's union beside a function-typed parameter pairs with its
+// implementation's. Whether a crossed pairing waits for the parameters after
+// it, which only a union of two variables of the signature asks, is unpinned:
+// a union of two bare variables is refused, and one of members holding them
+// is formal-union-nested-01.
 run!(
     union_pairing_waits_for_later_parameters,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
