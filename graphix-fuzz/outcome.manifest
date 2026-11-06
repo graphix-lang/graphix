@@ -264,6 +264,8 @@ reject	N: a let binding is not an expression — it may only appear as a stateme
 reject	N: a let binding is not an expression — it may only appear as a statement in a block or module body, not where a value is expected	nested-bind-stmt-dead-elim-aug2026/03_variant_payload.gx
 reject	N: a let binding is not an expression — it may only appear as a statement in a block or module body, not where a value is expected	nested-bind-stmt-dead-elim-aug2026/04_select_scrutinee_bind.gx
 reject	N: a let binding is not an expression — it may only appear as a statement in a block or module body, not where a value is expected	nested-bind-stmt-dead-elim-aug2026/05_outer_literal_bind.gx
+trace	nested-seqq-credit-nov2026/01_in_a_step.gx
+trace	nested-seqq-credit-nov2026/02_in_a_function_a_step_calls.gx
 excluded	nested-value-jul2026/01_selfref_connect_growth.gx
 trace	never-args-elided-sep2026/00_dbg_in_never_arm.gx
 trace	never-args-elided-sep2026/01_raise_in_never_arm.gx

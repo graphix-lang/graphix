@@ -907,9 +907,10 @@ async fn drive_inner(
 }
 
 /// The reserved metamorphic-twin poison tag: a generated twin program
-/// settles an epoch on a `` `TwinDiverged(..) `` value when its
-/// equivalent write routes disagree. Scanned on each epoch's final
-/// value, through composites. No other program may produce it.
+/// settles an epoch on a `` `TwinDiverged `` value when its own invariant
+/// fails: its equivalent write routes disagree, or its `seqq` lost a request.
+/// Scanned on each epoch's final value, through composites. No other program
+/// may produce it.
 pub const TWIN_TAG: &str = "TwinDiverged";
 
 fn value_has_tag(v: &Value, tag: &str) -> bool {
@@ -1628,8 +1629,9 @@ impl Divergence {
         }
         match (self.pair, self.tier) {
             (Pair::Twin, _) => {
-                "twin invariant violated (equivalent write routes diverged \
-                     in-program — a single-run finding, no cross-run comparison)"
+                "twin invariant violated (a program's own check failed: equivalent \
+                     write routes diverged, or a seqq lost a request — a single-run \
+                     finding, no cross-run comparison)"
             }
             (Pair::Rejected, _) => {
                 "corpus pin rejected by both engines without `// expect: reject` \
@@ -5985,6 +5987,22 @@ mod tests {
             oracle_tier("// a header naming throttle\ncount(x)"),
             OracleTier::Exact
         );
+    }
+
+    /// Every queue twin holds, and settles inside its trace budget: inverted, its
+    /// check fails where `check` sees it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queue_twins_hold_and_settle() {
+        let t = Duration::from_secs(120);
+        let mut rng = mutate::Rng::new(31);
+        for _ in 0..8 {
+            let prog = generate::twin::gen_queue_twin(&mut rng);
+            let d = check(&prog, t).await;
+            assert!(d.is_none(), "{prog}: {d:?}");
+            let broken = prog.replace("seen.1 != prev.1 + 1", "seen.1 == prev.1 + 1");
+            let d = check(&broken, t).await;
+            assert!(matches!(&d, Some(d) if d.pair == Pair::Twin), "{broken}: {d:?}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

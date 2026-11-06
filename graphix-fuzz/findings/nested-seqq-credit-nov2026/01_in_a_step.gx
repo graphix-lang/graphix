@@ -1,0 +1,27 @@
+// A seqq in an outer seq's step loses a request: one ending in the cycle the step completes
+// wrote its result while the step slept, which fired at the next run's entry, a
+// second credit to the newborn queue, and the next request found the machine busy.
+// Both engines agree on it: only the program's own check sees it (a queue twin).
+// schedule-v1: cap=172 events=4096
+{
+  let c = 0;
+  c <- select c < 108 { true => c + 1, false => never() };
+  let n = select c { 0 => 0, 36 => 1, 72 => 2, _ => never() };
+  let f = 0;
+  f <- select c % 3 { 0 => c ~ f + 1, _ => never() };
+  let probe = |t: i64| {
+    let seen = (-1, -1, -1);
+    let prev = (-2, -1, -1);
+    prev <- seen ~ seen;
+    let bad = false;
+    bad <- seen ~ (bad
+      || (seen.0 == prev.0 && seen.1 != prev.1 + 1)
+      || (seen.0 != prev.0 && seen.1 != seen.2));
+    let runs = seq let k = n { { let first = f; let v = seqq let j = f { until live(c) % 6 == 0; let a0 = j; let a1 = j; seen <- (k, j, first); j }; let w = select live(c) >= t + k * 36 { true => true, false => never() }; v }; k };
+    select c {
+      108 => select (bad, seen.0 == 2) { (false, true) => `Held, _ => `TwinDiverged },
+      _ => never()
+    }
+  };
+  [probe(19), probe(20), probe(21), probe(22), probe(23), probe(24)]
+}

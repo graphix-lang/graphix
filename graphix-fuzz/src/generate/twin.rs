@@ -210,6 +210,108 @@ pub fn gen_twin_program(rng: &mut Rng) -> String {
     }
 }
 
+/// Where a queue twin's `seqq` sits.
+#[derive(Clone, Copy)]
+enum QueueAt {
+    /// At the program's top, run once.
+    Top,
+    /// In an outer seq's step, which every run re-enters.
+    Step,
+    /// In a function that step calls.
+    Callee,
+}
+
+/// A queue twin: a `seqq` whose program holds its requests to account, so a
+/// loss both engines share is seen ([`crate::TWIN_TAG`]). Requests number
+/// themselves, `f` counting up on a clock of cycles with no timer, so a program
+/// repeats exactly. It settles on the tag where a run skips a request or starts
+/// off its first, or the last run took none.
+///
+/// One instance per cycle of the body's period, each ending its outer step a
+/// cycle later, so one of them ends a request in the cycle its step completes
+/// wherever that falls. The gap between runs spans several requests: a re-entry
+/// sees a request only if `f` fired while it slept, and then its first is `f` as
+/// it stands. `abort`, `flush` and a sleep mid-run lose requests by design, so
+/// none is drawn.
+pub fn gen_queue_twin(rng: &mut Rng) -> String {
+    let body = 4 + rng.below(9) as i64;
+    let every = 2 + rng.below(body as usize - 1) as i64;
+    let at = match rng.below(100) {
+        0..15 => QueueAt::Top,
+        15..65 => QueueAt::Step,
+        _ => QueueAt::Callee,
+    };
+    let runs = match at {
+        QueueAt::Top => 1,
+        _ => 2 + rng.below(2) as i64,
+    };
+    let done = 2 * body + 2 + rng.below(body as usize) as i64;
+    let gap = done + body + 3 * every + 2 + rng.below(body as usize) as i64;
+    let end = gap * runs;
+    let triggers = (1..runs).map(|k| format!("{} => {k}, ", k * gap)).collect::<String>();
+    let steps = (0..rng.below(3)).map(|i| format!("let a{i} = j; ")).collect::<String>();
+    let seqq = |k: &str, first: &str| {
+        format!(
+            "seqq let j = f {{ until live(c) % {body} == 0; {steps}\
+             seen <- ({k}, j, {first}); j }}"
+        )
+    };
+    let hold = format!(
+        "let w = select live(c) >= t + k * {gap} {{ true => true, false => never() }}"
+    );
+    let (helper, machine, instances) = match at {
+        QueueAt::Top => (String::new(), seqq("0", "0"), 1),
+        QueueAt::Step => (
+            String::new(),
+            format!(
+                "seq let k = n {{ {{ let first = f; let v = {}; {hold}; v }}; k }}",
+                seqq("k", "first")
+            ),
+            body,
+        ),
+        QueueAt::Callee => (
+            format!("let inner = |k: i64, first: i64| {};\n    ", seqq("k", "first")),
+            format!(
+                "seq let k = n {{ {{ let first = f; let v = inner(k, first); {hold}; v }}; k }}"
+            ),
+            body,
+        ),
+    };
+    let probes = (0..instances)
+        .map(|i| format!("probe({})", done + i))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let code = format!(
+        "{{
+  let c = 0;
+  c <- select c < {end} {{ true => c + 1, false => never() }};
+  let n = select c {{ 0 => 0, {triggers}_ => never() }};
+  let f = 0;
+  f <- select c % {every} {{ 0 => c ~ f + 1, _ => never() }};
+  let probe = |t: i64| {{
+    let seen = (-1, -1, -1);
+    let prev = (-2, -1, -1);
+    prev <- seen ~ seen;
+    let bad = false;
+    bad <- seen ~ (bad
+      || (seen.0 == prev.0 && seen.1 != prev.1 + 1)
+      || (seen.0 != prev.0 && seen.1 != seen.2));
+    {helper}let runs = {machine};
+    select c {{
+      {end} => select (bad, seen.0 == {last}) {{ (false, true) => `Held, _ => `{tag} }},
+      _ => never()
+    }}
+  }};
+  [{probes}]
+}}",
+        last = runs - 1,
+        tag = crate::TWIN_TAG,
+    );
+    let sched =
+        Schedule { max_cycles: end as u64 + 64, max_events: 4096, ..Schedule::default() };
+    sched.render(&code)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

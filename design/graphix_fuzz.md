@@ -479,6 +479,17 @@ callable-form. What was missing was never vocabulary alone — the
 pure-language face of the bug was generator-reachable all along — it
 was an oracle that survives symmetry.
 
+A **queue twin** (`twin::gen_queue_twin`, a slice of the same lane) holds a
+`seqq` to account: requests number themselves on a clock of cycles, with no
+timer, and the program settles on the tag where a run skips a request or starts
+off its first, or the last run took none. Its `seqq` stands at the top, in an
+outer seq's step, or in a function that step calls; one instance per cycle of the
+body's period ends its step a cycle later, so one of them ends a request in the
+cycle its step completes wherever that falls, and the gap between runs spans
+several requests, since a re-entry sees a request only if the trigger fired while
+it slept. `abort`, `flush` and a sleep mid-run lose requests by design and are not
+drawn. Pin: `findings/nested-seqq-credit-nov2026/`.
+
 ## 7. Triage, dedup, and the findings corpus
 
 Dedup before minimizing (a fuzzer rediscovers a bug thousands of times
