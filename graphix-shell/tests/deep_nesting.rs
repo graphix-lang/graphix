@@ -1059,6 +1059,47 @@ fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
     completes_within(&["--no-cache"], &program, 10 * BILLION)
 }
 
+/// A typed value over a recursive union prints in time linear in its depth:
+/// each level picks its member by its shape, where testing a member's whole
+/// value at each level is quadratic.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_deep_typed_value_prints_in_linear_time() {
+    use graphix_compiler::{
+        env::Env,
+        expr::{ModPath, TypeDefBody, parser::parse_type},
+        rep,
+        typ::TVal,
+    };
+    use netidx::publisher::Value;
+    const DEPTH: i64 = 20_000;
+    let mut env = Env::default();
+    env.deftype(
+        &ModPath::root(),
+        "L",
+        triomphe::Arc::from_iter([]),
+        &TypeDefBody::Alias(parse_type("[`Cons(i64, L), `Nil]").unwrap()),
+        true,
+        None,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap();
+    let typ = parse_type("L").unwrap().scope_refs(&ModPath::root());
+    let mut v = rep::make_variant("Nil".into(), []);
+    for i in 0..DEPTH {
+        v = rep::make_variant("Cons".into(), [Value::I64(i), v]);
+    }
+    let work = Instructions::count()
+        .expect("count instructions (kernel.perf_event_paranoid must be 2 or lower)");
+    let printed = TVal { env: &env, typ: &typ, v: &v }.to_string();
+    let done = work.read();
+    assert!(printed.starts_with("`Cons(19999, "));
+    eprintln!("printed {DEPTH} levels in {:.2}G instructions", gi(done));
+    assert!(done <= BILLION / 2, "{:.2}G instructions, over 0.5G", gi(done));
+}
+
 /// A chain of written holders, each link a pair of the last, checks in
 /// time linear in its length: a written binding holds one instance of each
 /// node its value's type shares, so the instance keeps the value's DAG, where

@@ -609,15 +609,7 @@ mod test {
         for i in 0..20_000i64 {
             v = rep::make_variant("Cons".into(), [Value::I64(i), v]);
         }
-        // CR claude for claude: [test-gap/low] deep_typed_value_prints bounds
-        // the print by wall-clock time (2 s), which CLAUDE.md rules out: it
-        // failed once under the full gate's load (lane Q r16 gate log
-        // laneQ-gate-1105-170550) and passes alone. Bound the work instead
-        // (a step count of the printer, or the instructions it takes), or
-        // drop the timing and keep the depth guard. (tval-wallclock-01)
-        let started = std::time::Instant::now();
         let s = format_compact!("{}", TVal { env: &env, typ: &typ, v: &v });
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
         assert!(s.starts_with("`Cons(19999, "));
     }
 
