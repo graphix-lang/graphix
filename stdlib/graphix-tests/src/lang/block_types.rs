@@ -278,23 +278,23 @@ run!(
     prints("[true, true, i64:1]")
 );
 
-// A parameter a type test or a write decides, written inline, names the
-// typedef its scope means there, as an annotation does: equal types
-// compare equal, and a block's own `R` is another type.
+// A parameter an annotation or a write decides, written inline, names the
+// typedef its scope means there: equal types compare equal, and a block's
+// own `R` is another type.
 run!(
-    abstract_parameters_a_type_test_or_a_write_decides_compare,
+    abstract_parameters_an_annotation_or_a_write_decides_compare,
     r#"{
     type B<'x> = Abstract<i64>;
     type R<'a> = [`Nil, `Cons('a, R<'a>)];
     let c: B<R<i64>> = B(1);
     let t = B(1);
-    let q = select t { B<[`Nil, `Cons(i64, R<i64>)]> as _ => 1 };
+    let q = { let w: B<[`Nil, `Cons(i64, R<i64>)]> = t; 1 };
     let v = B(1);
     v <- never<B<[`Nil, `Cons(i64, R<i64>)]>>();
     let o = {
         type R<'a> = [`X('a)];
         let b = B(1);
-        let p = select b { B<[`Nil, `Cons(i64, R<i64>)]> as _ => 2 };
+        let w: B<[`Nil, `Cons(i64, R<i64>)]> = b;
         b
     };
     let xs: Array<Any> = [c, t, v, o];
@@ -305,10 +305,23 @@ run!(
     prints("[[true, true, true, false], false, i64:2, i64:1]")
 );
 
+// A type test does not decide an abstract type's open parameter: what the
+// arm tests is undecided at the select (D5).
+run!(
+    abstract_parameter_a_type_test_would_decide_is_refused,
+    r#"{
+    type B<'x> = Abstract<i64>;
+    type R<'a> = [`Nil, `Cons('a, R<'a>)];
+    let t = B(1);
+    select t { B<[`Nil, `Cons(i64, R<i64>)]> as _ => 1 }
+}"#,
+    refused("tests a value whose type is not decided at this select")
+);
+
 // The same in a module's body, whose private typedef only its own env
 // resolves.
 run!(
-    abstract_parameter_a_module_type_test_decides_compares,
+    abstract_parameter_a_module_annotation_decides_compares,
     prints("[true, i64:1]"),
     "/test.gx" => r#"
 mod m;
@@ -324,7 +337,8 @@ type B<'x> = Abstract<i64>;
 type P<'a> = [`Nil, `Cons('a, P<'a>)];
 let c: B<P<i64>> = B(1);
 let t = B(1);
-let q = select t { B<[`Nil, `Cons(i64, P<i64>)]> as _ => 1 };
+let w: B<[`Nil, `Cons(i64, P<i64>)]> = t;
+let q = 1;
 let xs: Array<Any> = [c, t]
 "#
 );
@@ -333,7 +347,7 @@ let xs: Array<Any> = [c, t]
 // never the outer one, and `t2` the default's `Q`, whether a call omits
 // the default or none does.
 run!(
-    abstract_parameter_a_default_type_test_decides_compares,
+    abstract_parameter_a_default_annotation_decides_compares,
     r#"{
     type B<'x> = Abstract<i64>;
     type R<'a> = [`X('a)];
@@ -341,12 +355,14 @@ run!(
     let t = B(1);
     let g = |#d = {
         type R<'a> = [`Nil, `Cons('a, R<'a>)];
-        select t { B<[`Nil, `Cons(i64, R<i64>)]> as _ => 0 }
+        let w: B<[`Nil, `Cons(i64, R<i64>)]> = t;
+        0
     }, x: i64| d + x;
     let t2 = B(1);
     let h = |#d = {
         type Q<'a> = [`Nil, `Cons('a, Q<'a>)];
-        select t2 { B<[`Nil, `Cons(i64, Q<i64>)]> as _ => 0 }
+        let w: B<[`Nil, `Cons(i64, Q<i64>)]> = t2;
+        0
     }, x: i64| d + x;
     let good: B<R2<i64>> = B(1);
     let wrong: B<[`Nil, `Cons(i64, [`X(i64)])]> = B(1);
