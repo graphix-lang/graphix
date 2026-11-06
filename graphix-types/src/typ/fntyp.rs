@@ -1449,6 +1449,10 @@ impl FnType {
     // lang::traits::impl_head_variables_in_a_block_lambda_are_its_own (inverts impl_head_variables_in_a_block_lambda), self_in_a_lambda_a_call_builds_the_method_from,
     // impl_head_variables_in_a_method_default_lambda_are_its_own, impl_head_variables_in_a_default_block_lambda_are_its_own; twins impl_head_variable_in_a_block_lambda_is_generic,
     // impl_method_lambda_writes_the_head_union. Probes ~/ptmp/cr29/scratch/r18e-d7/.
+    // 2026-11-06 claude: Lane d7 (round 18, landed) review r16 d7-r3: D8 (b)'s written-form rule still misses a union of self and a method variable in an impl method's own lambda and
+    // its let annotation: traits::written_method_unions treats self as the impl's there, but method_sig_at replaces self with the target, so a self written in the impl lambda is a
+    // variable of that lambda (impl T for i64 { let m = |s, x: [self, 'c]| 0 } runs, its ['c, 'd] twin is refused). An under-refusal, as on main before D8. probes
+    // ~/ptmp/cr29/scratch/review-r16/d7-r3-*/n_iself*.gx
     // CR claude for eric: [bug/medium] Eric's 11-05 ruling (b) refuses a union of two or
     // more bare type variables in a written function type, but a union of members that
     // each hold a variable (`[Array<'c>, Array<'d>]`) asks the same question, which member
