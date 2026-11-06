@@ -2360,7 +2360,7 @@ impl Type {
                 Ok(true)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
-                // XCR claude for claude: [bug/low] Taking two instances of one definition as
+                // CR claude for claude: [bug/low] Taking two instances of one definition as
                 // one type when their parameters contain each other decides an open cell
                 // by equality where the expansion asks less, so the order of a function
                 // type's positions decides: `type L<'p> = fn(x: 'p) -> i64; let outer =
@@ -2371,9 +2371,6 @@ impl Type {
                 // no open cell, else expanding, would make the spellings agree; the growth
                 // guard below bounds that expansion. Found by lane R's round 10. probes:
                 // ~/ptmp/cr29/scratch/r11-R/{tp1,tp1z,tp2,tp3}.gx (typedef-param-equality-01)
-                // two instances of one definition whose parameters contain
-                // each other are one type: no expansion, which a parameter
-                // growing at each level would never end
                 // 2026-11-05 claude: Two instances of a definition that never reaches itself
                 // (ResolvedRef::is_recursive) and hold an open cell in their parameters are
                 // compared by their expansions, so L<'c> against L<Any> asks what the written
@@ -2383,18 +2380,27 @@ impl Type {
                 // lang::types::typedef_instances_over_an_open_cell_agree_with_the_expansion
                 // (and _z_first passes either way). Census of 2942 files unchanged; needs a
                 // soak.
-
-                // a definition that never reaches itself has no growing level, and over
-                // an open cell its expansion asks less than the parameters' equality
+                // two instances of one definition whose parameters contain each other
+                // are one type, except where an open cell in them would be decided by
+                // that equality and the definition never reaches itself: there its
+                // expansion, which has no growing level, asks less
+                // 2026-11-05 claude: Repair (review r17), kept open for the recursive
+                // residue. ResolvedRef::is_recursive took a name not yet filled (every
+                // typedef a script's body names, during the check) as recursive, so a typedef
+                // naming another (type M<'p> = {a: L<'p>}) kept the shortcut and the order
+                // dependence. It now resolves an unfilled name through env
+                // (TypeRef::resolve_peek), remembers a definite answer on the ResolvedRef,
+                // and the cheap has_free test runs first. Pin that fails without the repair:
+                // lang::types::typedef_over_a_typedef_agrees_with_the_expansion (_z_first is
+                // its twin). Still open: a recursive typedef keeps the shortcut, so the
+                // k-first spelling over a recursive T is refused while the z-first one runs,
+                // and a non-recursive W over a recursive T is refused the same way. probes:
+                // ~/ptmp/cr29/scratch/rv17/typing-a/{tpe_rec,tpe_recz,tpe_nest}.gx
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1)
                     && tr0.params.len() == tr1.params.len()
-                    && (tr0.resolve_peek(env).is_none_or(|d| d.is_recursive())
-                        || !tr0
-                            .params
-                            .iter()
-                            .chain(tr1.params.iter())
-                            .any(|p| p.has_free()))
+                    && (!tr0.params.iter().chain(tr1.params.iter()).any(|p| p.has_free())
+                        || tr0.resolve_peek(env).is_none_or(|d| d.is_recursive(env)))
                 {
                     let pairs = || tr0.params.iter().zip(tr1.params.iter());
                     let equal = |f: BitFlags<ContainsFlags>, hist: &mut ContainsHist| {

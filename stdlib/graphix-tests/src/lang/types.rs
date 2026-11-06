@@ -8969,3 +8969,31 @@ run!(
     prints("i64:1");
     FuseExpect::Jit
 );
+
+// A typedef whose body names another, neither reaching itself, is
+// compared by its expansion while the script's names are not yet filled.
+run!(
+    typedef_over_a_typedef_agrees_with_the_expansion,
+    r#"{
+  type L<'p> = fn(x: 'p) -> i64;
+  type M<'p> = {a: L<'p>};
+  let outer = |k: M<'c>, z: 'c| z;
+  let g: fn(k: M<Any>, z: i64) -> i64 = outer;
+  g({a: |x| 0}, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+run!(
+    typedef_over_a_typedef_agrees_with_the_expansion_z_first,
+    r#"{
+  type L<'p> = fn(x: 'p) -> i64;
+  type M<'p> = {a: L<'p>};
+  let outer = |z: 'c, k: M<'c>| z;
+  let g: fn(z: i64, k: M<Any>) -> i64 = outer;
+  g(1, {a: |x| 0})
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
