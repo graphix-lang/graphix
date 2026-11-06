@@ -1588,7 +1588,8 @@ impl Widening {
 
     /// An omitted default of type `typ`, written at `at`, meets `formal` as
     /// a written argument does: it decides or widens the variables it
-    /// holds, or waits; `met` names the annotation a refusal asks for.
+    /// holds, or waits, as one holding an undecided cell does; `met` names
+    /// the annotation a refusal asks for.
     #[allow(clippy::too_many_arguments)]
     fn join_default(
         &mut self,
@@ -1600,7 +1601,10 @@ impl Widening {
         at: &Expr,
         met: Option<CompactString>,
     ) -> Result<()> {
-        if !formal.contains(env, typ)? && !self.widen(env, def, inst, formal, typ)? {
+        let undecided = typ.has_free() && !self.held(env, def, inst, formal).is_empty();
+        if undecided
+            || !formal.contains(env, typ)? && !self.widen(env, def, inst, formal, typ)?
+        {
             let waiter = Waiter::Default(typ.clone(), at.clone(), met);
             self.deferred.push((waiter, formal.clone()))
         }
@@ -2537,6 +2541,17 @@ impl<R: Rt> CallSite<R> {
     // the variable, its refusal keeping met_default_note's annotation. Pin that fails
     // without the repair: lang::functions::omitted_incomparable_default_waits (both label
     // orders). Probes ~/ptmp/cr29/scratch/r19-d7/{i1,i1w,i4,i5}.gx.
+    // 2026-11-06 claude: Repair 2 (lane d7 round 18 part 2): an omitted default holding
+    // an undecided cell was decided by label order (dp1: |#a: 'a = u, #b: 'a = n, y: 'a|
+    // with u = str::parse("abc")$ and n: [i64, string] made u i64, so f(1) printed 1 and
+    // u nothing; dp2, #b first, printed 1 and abc; du1 refused what du2 ran). It now
+    // waits as a written undecided argument does: Widening::join_default defers it
+    // (Waiter::Default) where its type has a free cell and its formal a widenable
+    // variable, and check_waiting checks it once the join is known, so dp1 = dp2 = dp3
+    // (written) and du1 = du2. Pins that fail without it:
+    // lang::functions::omitted_undecided_default_waits,
+    // omitted_undecided_default_waits_for_a_later_write. Probes
+    // ~/ptmp/cr29/scratch/r18b-d7/p/. Needs a soak.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

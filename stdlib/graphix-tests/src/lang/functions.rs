@@ -2379,6 +2379,29 @@ run!(
     prints("[i64:1, i64:1, i64:1]")
 );
 
+// An omitted default holding an undecided cell waits as a written one
+// does, and takes what the others settle, whichever label comes first.
+run!(
+    omitted_undecided_default_waits,
+    r#"(
+  { let u = str::parse("abc")$; let n: [i64, string] = 2;
+    let f = |#a: 'a = u, #b: 'a = n, y: 'a| -> 'a y; (f(1), u) },
+  { let u = str::parse("abc")$; let n: [i64, string] = 2;
+    let f = |#b: 'a = n, #a: 'a = u, y: 'a| -> 'a y; (f(1), u) }
+)"#,
+    prints(r#"[[i64:1, "abc"], [i64:1, "abc"]]"#)
+);
+run!(
+    omitted_undecided_default_waits_for_a_later_write,
+    r#"(
+  { let u = never(); let n: [i64, null] = null;
+    let f = |#a: 'a = u, #b: 'a = n, y: 'a| -> 'a y; let r = f(1); u <- null; r },
+  { let u = never(); let n: [i64, null] = null;
+    let f = |#b: 'a = n, #a: 'a = u, y: 'a| -> 'a y; let r = f(1); u <- null; r }
+)"#,
+    prints("[i64:1, i64:1]")
+);
+
 // A waiting argument decides at once the variables of its formal that do
 // not widen, so a callback after it reads them.
 run!(

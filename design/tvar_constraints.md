@@ -292,7 +292,9 @@ which those variables are open and every other cell is the formal's own
 others, a variable a callback after it reads included, as it meets
 them; it is checked at the end of the argument loop, when the join is
 known (`CallSite::check_waiting`); its cells take what the join leaves
-them. A written argument or an omitted default that is neither wider
+them. An omitted default holding an undecided cell waits the same way,
+checked at its formal once the join is known, whichever label comes
+first. A written argument or an omitted default that is neither wider
 nor narrower than what the others gave a variable waits too, and is
 checked once they have widened it. Order can then decide only between a
 value and a refusal, never between two types: where the join does not
