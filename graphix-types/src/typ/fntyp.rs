@@ -718,7 +718,11 @@ impl FnType {
         self.open_quantifiers(|_, open| {
             cx.quantifiers.insert(open.cell_addr());
         });
-        self.cow_walk(|t| t.resolve_tvars_seen_int(cx))
+        self.cow_walk(|t| t.resolve_tvars_seen_int(cx)).map(|f| {
+            tvar::keep_quantifiers(self, f, |tv| {
+                Type::TVar(tv.clone()).resolve_tvars_seen_int(cx)
+            })
+        })
     }
 
     /// Rewrite every type position through `f` (`None` means
@@ -871,7 +875,12 @@ impl FnType {
     /// [`Type::rename_with`] over the signature.
     #[doc(hidden)]
     pub fn rename_with(&self, known: &AHashMap<usize, TVar>) -> Self {
-        self.cow_walk(|t| t.rename_int(known)).unwrap_or_else(|| self.clone())
+        match self.cow_walk(|t| t.rename_int(known)) {
+            None => self.clone(),
+            Some(f) => tvar::keep_quantifiers(self, f, |tv| {
+                Type::TVar(tv.clone()).rename_int(known)
+            }),
+        }
     }
 
     /// [`Self::instantiate_with`] copying every open cell, whoever owns
@@ -887,9 +896,12 @@ impl FnType {
         known: &mut AHashMap<usize, TVar>,
         how: Fresh<'_>,
     ) -> Self {
-        let mut fresh = self
+        let fresh = self
             .cow_walk(|t| t.instantiate_int(known, how))
             .unwrap_or_else(|| self.clone());
+        let mut fresh = tvar::keep_quantifiers(self, fresh, |tv| {
+            Type::TVar(tv.clone()).instantiate_int(known, how)
+        });
         fresh.lambda_ids = self.lambda_ids.instantiate();
         fresh
     }
@@ -1874,6 +1886,15 @@ pub(crate) fn write_bounds(
     Ok(())
 }
 
+// CR claude for claude: [readability/low] Printing under PrintFlag::DerefTVars
+// prints a parameter's binding in place, so a cell of the quantifier's name the binding
+// holds prints as the quantifier: `'a: Number |y, x: 'a| -> 'a { let z = array::len(y);
+// x }` passed for `k: fn<'c: Any>(y: Array<i64>, x: 'c) -> 'c` is refused with "does
+// not contain fn<'a: Number>(y: Array<'a: i64>, x: 'a: unbound within Number)", the
+// `'a: i64` being array::len's copied 'a, not the quantifier. Type::written_form inlines
+// bindings the same way. The walks rename the quantifier apart (tvar::keep_quantifiers,
+// resolve-capture-01); the printer could do the same over the printed signature. probe:
+// ~/ptmp/cr29/scratch/r17-hk/s6.gx (print-capture-01)
 impl fmt::Display for FnType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let constraints = printed_quantifiers(self);
@@ -1981,6 +2002,62 @@ impl FnType {
 mod tests {
     use crate::expr::parser::parse_fn_type;
     use poolshark::local::LPooled;
+
+    /// A walk that inlines a parameter's binding holding a cell named like
+    /// the signature's quantifier keeps the quantifier the signature's:
+    /// renamed apart where it stands in a position, the namesake renamed
+    /// where it is held through a bound alone.
+    #[test]
+    fn an_inlined_binding_captures_no_quantifier() {
+        use crate::typ::{TVar, Type};
+        use ahash::AHashMap;
+        let quantifier = |ft: &super::FnType, name: &str| {
+            let mut out = None;
+            ft.each_quantifier(|q, tv| {
+                if &**q == name {
+                    out = Some(tv.clone())
+                }
+            });
+            out.unwrap()
+        };
+        let cell = |t: &Type| match t {
+            Type::TVar(tv) => tv.cell_addr(),
+            t => panic!("{t}"),
+        };
+        let element = |ft: &super::FnType| match &ft.args[0].typ {
+            Type::Array(e) => cell(e),
+            t => panic!("{t}"),
+        };
+        let walks = |ft: &super::FnType| {
+            let p = match &ft.args[0].typ {
+                Type::TVar(p) => p.clone(),
+                t => panic!("{t}"),
+            };
+            p.bind(Type::Array(triomphe::Arc::new(Type::TVar(TVar::empty_named(
+                "a".into(),
+            )))));
+            [
+                ("instantiate_owned", ft.instantiate_owned(&mut AHashMap::default())),
+                ("rename_with", ft.rename_with(&AHashMap::default())),
+                ("resolve_tvars", ft.resolve_tvars()),
+            ]
+        };
+        let ft = parse_fn_type("fn<'a: Number>(y: 'p, x: 'a) -> 'a").unwrap();
+        for (walk, copy) in walks(&ft) {
+            let q = quantifier(&copy, &copy.quantifiers[0]);
+            assert_eq!(q.cell_addr(), cell(&copy.args[1].typ), "{walk}: {copy}");
+            assert!(!q.cell_constraints().is_empty(), "{walk}: {copy}");
+        }
+        let ft =
+            parse_fn_type("fn<'a: Any, 'b: ['a, null]>(y: 'p, x: 'b) -> 'b").unwrap();
+        for (walk, copy) in walks(&ft) {
+            assert_ne!(
+                quantifier(&copy, "a").cell_addr(),
+                element(&copy),
+                "{walk}: {copy}"
+            );
+        }
+    }
 
     /// The refusal names the first variable declared whose bound reaches
     /// it, by the shortest path back its bounds' names lead to first:

@@ -2554,10 +2554,7 @@ fn under_quantifiers(
     let mut renames: SmallVec<[(ArcStr, ArcStr); 2]> = SmallVec::new();
     let mut copies: SmallVec<[(TVar, TVar); 2]> = SmallVec::new();
     for q in captured {
-        let name = (1u64..)
-            .map(|i| ArcStr::from(format_compact!("{q}{i}").as_str()))
-            .find(|n| !avoid.contains(n))
-            .unwrap();
+        let name = name_apart(&q, &avoid);
         avoid.insert(name.clone());
         if let Some(tv) = cells.get(&q) {
             let copy = match fresh.get(&tv.cell_addr()) {
@@ -2578,6 +2575,68 @@ fn under_quantifiers(
         tv.copy_into(&copy, fresh, &mut scoped, |t, f, s| t.replace_tvars_int(s, f));
     }
     Some((inner, renames))
+}
+
+/// `q` numbered to a name `avoid` does not hold.
+fn name_apart(q: &ArcStr, avoid: &AHashSet<ArcStr>) -> ArcStr {
+    (1u64..)
+        .map(|i| ArcStr::from(format_compact!("{q}{i}").as_str()))
+        .find(|n| !avoid.contains(n))
+        .unwrap()
+}
+
+/// `copy`, a walk's image of `ft` that inlined bindings, with each of
+/// `ft`'s quantifiers renamed apart where a cell of its name that an
+/// inlined binding brought would stand for it by name, as
+/// [`under_quantifiers`] renames one a substituted type holds; where the
+/// quantifier's image stands in no position (it is held through a bound),
+/// the cells that would stand for it are renamed instead. `image` is the
+/// walk's image of a cell of `ft`, `None` where it keeps the cell.
+pub(super) fn keep_quantifiers(
+    ft: &FnType,
+    mut copy: FnType,
+    mut image: impl FnMut(&TVar) -> Option<Type>,
+) -> FnType {
+    if ft.quantifiers.is_empty() {
+        return copy;
+    }
+    let mut own: SmallVec<[(ArcStr, TVar); 2]> = SmallVec::new();
+    ft.each_quantifier(|q, tv| own.push((q.clone(), tv.clone())));
+    let mut picked: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    copy.collect_tvars(&mut picked);
+    for (q, tv) in own {
+        let addr = match &image(&tv) {
+            None => tv.cell_addr(),
+            Some(Type::TVar(img)) => img.cell_addr(),
+            Some(_) => continue,
+        };
+        if picked.get(&q).is_none_or(|p| p.cell_addr() == addr) {
+            continue;
+        }
+        let mut avoid: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        copy.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
+        avoid.extend(copy.quantifiers.iter().cloned());
+        let name = name_apart(&q, &avoid);
+        let rename = |copy: &FnType, pick: &dyn Fn(&TVar) -> bool| {
+            let mut memo: LPooled<AHashMap<usize, Option<Type>>> = LPooled::take();
+            copy.cow_walk(|t| t.renamed_cells(pick, &name, &mut memo))
+        };
+        copy = match rename(&copy, &|c| c.cell_addr() == addr) {
+            Some(mut renamed) => {
+                renamed.quantifiers = Arc::from_iter(
+                    copy.quantifiers
+                        .iter()
+                        .map(|n| if *n == q { name.clone() } else { n.clone() }),
+                );
+                renamed
+            }
+            None => {
+                rename(&copy, &|c| c.name == q && c.cell_addr() != addr).unwrap_or(copy)
+            }
+        };
+    }
+    copy
 }
 
 // Each walk below spells out only the arms whose policy differs from
@@ -3158,6 +3217,27 @@ impl Type {
                 ft.for_each_type(&mut |t| t.names_held(out, seen))
             }
             t => t.for_each_child(&mut |c| c.names_held(out, seen)),
+        })
+    }
+
+    /// Self with each occurrence of a cell `pick` takes named `name`, its
+    /// function types' included; `None` where none occurs. Each shared
+    /// node (`memo`) is rebuilt once.
+    fn renamed_cells(
+        &self,
+        pick: &dyn Fn(&TVar) -> bool,
+        name: &ArcStr,
+        memo: &mut AHashMap<usize, Option<Type>>,
+    ) -> Option<Type> {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => pick(tv).then(|| Type::TVar(tv.renamed(name.clone()))),
+            Type::Fn(ft) => once(self, memo, |memo| {
+                ft.cow_walk(|t| t.renamed_cells(pick, name, memo))
+                    .map(|f| Type::Fn(Arc::new(f)))
+            }),
+            t => once(t, memo, |memo| {
+                t.cow_children(&mut |c| c.renamed_cells(pick, name, memo))
+            }),
         })
     }
 
@@ -3792,16 +3872,17 @@ impl Type {
                 })),
                 None => known.get(&tv.cell_addr()).map(|f| Type::TVar(f.named_as(tv))),
             },
-            Type::Fn(ft) => {
-                ft.cow_walk(|t| t.rename_memo(known, memo)).map(|f| Type::Fn(Arc::new(f)))
-            }
+            Type::Fn(ft) => ft.cow_walk(|t| t.rename_memo(known, memo)).map(|f| {
+                let image = |tv: &TVar| Type::TVar(tv.clone()).rename_memo(known, memo);
+                Type::Fn(Arc::new(keep_quantifiers(ft, f, image)))
+            }),
             t => {
                 once(t, memo, |memo| t.cow_children(&mut |c| c.rename_memo(known, memo)))
             }
         })
     }
 
-    // CR claude for claude: [risk/low] A walk that inlines a bound cell's binding under a
+    // XCR claude for claude: [risk/low] A walk that inlines a bound cell's binding under a
     // quantified function type (instantiate_memo here, rename_memo, resolve_tvars) can
     // put a cell named like that function type's quantifier inside it, which every
     // by-name reading of the quantifier (FnType::each_quantifier, collect_tvars'
@@ -3815,6 +3896,22 @@ impl Type {
     // quantifier named 'a and 'b, under GRAPHIX_NO_SUBST=1 too. If one shows: rename the
     // quantifier as under_quantifiers does when an inlined binding holds its name.
     // (resolve-capture-01)
+    // 2026-11-05 claude: Reproduced and fixed. The capture is reachable: a body
+    // annotation's free 'p bound to a parameter's Array<'a> (|k, v: Array<'a>| { let k2:
+    // fn<'a: Any>(y: 'p, x: 'a) -> 'a = k; (k2(v, 1), k2(v, "s")) }) passed --check but
+    // its instance was refused ('an instance at .. of a definition typed ..', ELAB_AUDIT
+    // instance-signature): instance_sig's instantiate_owned inlined 'p, and
+    // each_quantifier then took v's 'a for k2's. The three walks
+    // (FnType::instantiate_how, rename_with/rename_memo, resolve_tvars_seen_int) now end
+    // in tvar::keep_quantifiers: a quantifier whose name an inlined cell would take is
+    // renamed apart ('a1), as under_quantifiers does; where the quantifier stands only in
+    // a bound, the namesake is renamed. Pins that fail without it: graphix-types
+    // typ::fntyp::tests::an_inlined_binding_captures_no_quantifier (both branches),
+    // graphix-tests lang::types::rank2_quantifier_beside_an_inlined_namesake and
+    // rank2_quantifier_beside_a_declared_namesake (all four modes). Census of both repos:
+    // no verdict or message change; GUI-suite --check instructions unchanged (43.05G vs
+    // 43.04G). The printer's own capture is print-capture-01. probes:
+    // ~/ptmp/cr29/scratch/r17-hk/{v3,v3b,v4}.gx
     /// `None` when no TVar is beneath.
     /// The bindings resolved, each open cell freshened as `how` says.
     pub(super) fn instantiate_int(
