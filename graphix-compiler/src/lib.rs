@@ -4372,6 +4372,15 @@ fn compile_top<R: Rt>(
 // refused_input_decides_no_earlier_open_cell, load_decides_no_earlier_open_cell} and the tvar
 // unit test foreign_decisions_record_what_they_would_make. Needs no soak (message text only;
 // decisions unchanged). Judged: the first holder by binding id is the origin.
+// 2026-11-05 claude: Repair (review r17): (1) earlier_binds substituted only a binding's
+// first recorded cell and printed the rest as '_N: unbound, a type no one can write (j = s.g
+// over |x, y| (x, y), then app(j)); it now folds every recorded cell a binding holds into its
+// one type, and names the type only where no cell is left open outside a function type's
+// throws (open_as_written), printing it through DerefTVars. (2) The cap of three counted
+// cells, so a binding with three cells crowded out the next binding (both(j, k)); OwnWrites
+// keeps up to 16 cells and the refusal names up to three bindings. Pin that fails without the
+// repair: lang::repl_inputs::refusal_declares_every_cell_of_a_binding (its annotated twin
+// inputs run).
 /// A top-level input while it compiles: a REPL input, a script or a
 /// dynamic module's load. It is a compile task of its own: what an
 /// earlier input made reads as decided, and a decision about it is not
@@ -4438,17 +4447,18 @@ impl Input {
 
 /// The declarations that lift a refusal: for each cell `writes` would have
 /// decided, the first binding an earlier input (ids below `since`) made
-/// whose type holds it, which is where the cell came from, with the type it
-/// would have taken. A later binding holding the cell derives it, and its
-/// annotation would decide the cell again.
+/// whose type holds it, which is where the cell came from, at most three of
+/// them, each with the type it would have taken where every cell it holds
+/// is told and the type can be written. A later binding holding the cell
+/// derives it, and its annotation would decide the cell again.
 fn earlier_binds<R: Rt>(
     ctx: &CompileCtx<R>,
     since: BindId,
     writes: &[typ::tvar::ForeignWrite],
 ) -> CompactString {
     use std::fmt::Write;
-    let mut out = CompactString::new("");
-    let mut named: SmallVec<[BindId; 3]> = SmallVec::new();
+    const NAMED: usize = 3;
+    let mut named: SmallVec<[(&Arc<env::Bind>, Type); NAMED]> = SmallVec::new();
     for w in writes {
         let origin = ctx
             .env
@@ -4458,13 +4468,23 @@ fn earlier_binds<R: Rt>(
             .filter(|b| b.id < since && annotatable(b) && w.held_by(&b.typ))
             .min_by_key(|b| b.id);
         let Some(b) = origin else { continue };
-        if named.contains(&b.id) {
-            continue;
+        match named.iter().position(|(n, _)| n.id == b.id) {
+            Some(i) => {
+                if let Some(t) = w.declared(&named[i].1) {
+                    named[i].1 = t
+                }
+            }
+            None if named.len() < NAMED => {
+                named.push((b, w.declared(&b.typ).unwrap_or_else(|| b.typ.clone())))
+            }
+            None => (),
         }
-        named.push(b.id);
+    }
+    let mut out = CompactString::new("");
+    for (b, t) in &named {
         let sep = if out.is_empty() { "annotate " } else { ", " };
         let _ = write!(out, "{sep}`{}` ({})", b.name, typ::tvar::BoundAt(b, None));
-        if let Some(t) = w.declared(&b.typ) {
+        if !open_as_written(t) {
             format_with_flags(PrintFlag::DerefTVars, || {
                 let _ = write!(out, " as `{t}`");
             });
@@ -4474,6 +4494,24 @@ fn earlier_binds<R: Rt>(
         out.push_str("annotate the binding it decides");
     }
     out
+}
+
+/// Whether `t` holds a cell nothing decided where a declaration writes
+/// it: a function type's throws, written nowhere, throw nothing.
+fn open_as_written(t: &Type) -> bool {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => tv.binding().is_none_or(|b| open_as_written(&b)),
+        Type::Fn(ft) => {
+            ft.args.iter().any(|a| open_as_written(&a.typ))
+                || ft.vargs.as_ref().is_some_and(open_as_written)
+                || open_as_written(&ft.rtype)
+        }
+        t => {
+            let mut open = false;
+            t.for_each_child(&mut |c| open = open || open_as_written(c));
+            open
+        }
+    })
 }
 
 /// Whether a refusal may ask for `b` to be annotated: a lowering's binding

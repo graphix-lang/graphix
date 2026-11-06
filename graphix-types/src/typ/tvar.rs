@@ -652,7 +652,7 @@ fn written_of(owner: TaskId, what: &str, cell: Option<usize>) {
 }
 
 /// The most cells a refusal names.
-const MAX_FOREIGN: usize = 3;
+const MAX_FOREIGN: usize = 16;
 
 /// A compile task's record of its writes outside itself ([`OwnWrites`]).
 struct Record {
@@ -661,7 +661,7 @@ struct Record {
     input: bool,
     /// The cells it wrote outside itself, in the order it first wrote
     /// them, or the one write that was no cell's.
-    foreign: SmallVec<[ForeignWrite; MAX_FOREIGN]>,
+    foreign: SmallVec<[ForeignWrite; 4]>,
 }
 
 /// While this lives, record whether the running compile task changes a
@@ -701,7 +701,7 @@ impl OwnWrites {
     /// The cells the task wrote outside itself, at most [`MAX_FOREIGN`],
     /// in the order it first wrote them.
     #[doc(hidden)]
-    pub fn foreigns(&self) -> SmallVec<[ForeignWrite; MAX_FOREIGN]> {
+    pub fn foreigns(&self) -> SmallVec<[ForeignWrite; 4]> {
         OWN_WRITES
             .with_borrow(|r| r.as_ref().map(|r| r.foreign.clone()).unwrap_or_default())
     }

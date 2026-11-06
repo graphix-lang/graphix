@@ -311,6 +311,33 @@ async fn refusal_names_the_declaration_of_the_origin() -> Result<()> {
     .await
 }
 
+/// Every cell of one binding the input would decide is told in the one
+/// type to declare, and each binding counts once against the names a
+/// refusal gives.
+#[tokio::test(flavor = "current_thread")]
+async fn refusal_declares_every_cell_of_a_binding() -> Result<()> {
+    session(&[
+        Accept("let s = {g: |a, b, c| (a, b, c)}"),
+        Accept("let t = {g: |x| x}"),
+        Accept("let j = s.g"),
+        Accept("let k = t.g"),
+        Accept(
+            "let both = |f: fn(a: i64, b: string, c: bool) -> (i64, string, bool), \
+             h: fn(x: i64) -> i64| (f(1, \"a\", true), h(2))",
+        ),
+        RefuseEnding(
+            "both(j, k)",
+            "annotate `j` (line 1, column 5 in `let j = s.g`) as `fn(a: i64, b: string, \
+             c: bool) -> (i64, string, bool)`, `k` (line 1, column 5 in `let k = t.g`) \
+             as `fn(x: i64) -> i64`",
+        ),
+        Accept("let j2: fn(a: i64, b: string, c: bool) -> (i64, string, bool) = s.g"),
+        Accept("let k2: fn(x: i64) -> i64 = t.g"),
+        Produce("both(j2, k2).1", Value::I64(2)),
+    ])
+    .await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn annotated_origin_takes_the_declared_use() -> Result<()> {
     session(&[
