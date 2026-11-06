@@ -98,8 +98,16 @@ pub(super) struct ContainsHist {
     /// pins both types so an address cannot be recycled under its key,
     /// and carries the [`cell_writes`] count it was reached at: a write
     /// to a cell may change a verdict that read it.
-    probe_pairs: Lazy<AHashMap<(NormKey, NormKey, bool), (u64, bool)>>,
+    probe_pairs: Lazy<AHashMap<ProbeKey, (u64, bool)>>,
     probe_pins: Lazy<Vec<Type>>,
+    /// Probe verdicts that rest on assumptions still in progress, held
+    /// while those stand: one is dropped when an assumption it may rest
+    /// on is answered otherwise, and joins `probe_pairs` once every one
+    /// was answered as assumed. Pinned with `probe_pins`.
+    provisional: Lazy<AHashMap<ProbeKey, Provisional>>,
+    /// The keys of `provisional` in the order they were reached: an
+    /// assumption's verdicts are those reached after it was made.
+    provisional_order: Lazy<Vec<ProbeKey>>,
     /// Committing pairs proven to hold, by both sides' identities and the
     /// flags: what the proof bound stays bound for the rest of the call,
     /// so the same pair met again holds without walking it (a DAG's
@@ -113,12 +121,8 @@ pub(super) struct ContainsHist {
     /// The questions in progress on this path, answered by assumption
     /// when met again.
     in_progress: SmallVec<[Question; 4]>,
-    /// The shallowest entry of `in_progress` a verdict was answered by
-    /// assumption from: what depends on it is the walk's answer, not the
-    /// pair's, until that question returns.
-    tainted: Option<usize>,
-    /// The shallowest in-progress pair the current verdict assumed.
-    low_water: usize,
+    /// What the current verdict assumed of the walk in progress.
+    rests: Rests,
     /// Per definition and side (`true` for the right), on this path: the
     /// size of the params its latest expansion took, and how many
     /// expansions in a row grew them. The sides expand on alternate steps
@@ -184,6 +188,67 @@ pub(super) struct ContainsHist {
 /// applications of one alias shrink theirs.
 const MAX_GROWTH: u32 = 64;
 
+/// A probe memo's key: both sides' identities, rigid cells held rigid
+/// or not.
+type ProbeKey = (NormKey, NormKey, bool);
+
+/// What a verdict assumed of the walk in progress: the depth of the
+/// shallowest pair in progress it took to hold, the shallowest entries of
+/// `in_progress` it took to hold and to fail (`usize::MAX` for none), and
+/// whether a pair whose parameters grew past [`MAX_GROWTH`] was refused.
+#[derive(Clone, Copy)]
+struct Rests {
+    pairs: usize,
+    held: usize,
+    failed: usize,
+    cut: bool,
+}
+
+impl Rests {
+    const NOTHING: Self =
+        Rests { pairs: usize::MAX, held: usize::MAX, failed: usize::MAX, cut: false };
+
+    /// The questions taken to hold, or to fail.
+    fn taken(&mut self, held: bool) -> &mut usize {
+        match held {
+            true => &mut self.held,
+            false => &mut self.failed,
+        }
+    }
+
+    #[inline]
+    fn join(self, other: Self) -> Self {
+        Rests {
+            pairs: self.pairs.min(other.pairs),
+            held: self.held.min(other.held),
+            failed: self.failed.min(other.failed),
+            cut: self.cut || other.cut,
+        }
+    }
+
+    /// Whether verdict `r`, reached by a verdict at `height`, is the
+    /// pair's wherever it is met. contains is monotone in what it
+    /// assumes, so a false that took only holds stays false had they been
+    /// walked, and a true that took only failures stays true; a growth
+    /// cut is a failure on this path alone.
+    fn settled(self, r: bool, height: usize) -> bool {
+        let holds = self.pairs < height || self.held != usize::MAX;
+        match r {
+            true => !holds,
+            false => self.failed == usize::MAX && (!self.cut || !holds),
+        }
+    }
+}
+
+/// A probe verdict that rests on assumptions in progress, and the
+/// [`cell_writes`] count it was reached at.
+#[derive(Clone, Copy)]
+struct Provisional {
+    verdict: bool,
+    epoch: u64,
+    rests: Rests,
+}
+
 /// What [`ContainsHist::closure`] knows of a type, least first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Closure {
@@ -217,11 +282,12 @@ impl ContainsHist {
             expansions: Lazy::new(),
             probe_pairs: Lazy::new(),
             probe_pins: Lazy::new(),
+            provisional: Lazy::new(),
+            provisional_order: Lazy::new(),
             commit_pairs: Lazy::new(),
             apps: Lazy::new(),
             in_progress: SmallVec::new(),
-            tainted: None,
-            low_water: usize::MAX,
+            rests: Rests::NOTHING,
             unfolding: Lazy::new(),
             grew: None,
             cycled: false,
@@ -298,51 +364,130 @@ impl ContainsHist {
     }
 
     /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
-    /// or not, if current.
-    fn probe_get(&self, rigid: bool, t0: &Type, t1: &Type) -> Option<bool> {
+    /// or not, if current. A provisional one passes the assumptions it
+    /// rests on to the verdict reading it.
+    fn probe_get(&mut self, rigid: bool, t0: &Type, t1: &Type) -> Option<bool> {
         let k = (probe_key(t0)?, probe_key(t1)?, rigid);
-        let (epoch, r) = self.probe_pairs.get()?.get(&k).copied()?;
-        (epoch == cell_writes()).then_some(r)
+        let writes = cell_writes();
+        if let Some((epoch, r)) = self.probe_pairs.get().and_then(|m| m.get(&k).copied())
+        {
+            return (epoch == writes).then_some(r);
+        }
+        let p = self.provisional.get()?.get(&k).copied()?;
+        if p.epoch != writes {
+            return None;
+        }
+        self.rests = self.rests.join(p.rests);
+        Some(p.verdict)
     }
 
-    fn probe_put(&mut self, rigid: bool, t0: &Type, t1: &Type, r: bool) {
-        if let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1))
-            && self
-                .probe_pairs
-                .get_mut()
-                .insert((k0, k1, rigid), (cell_writes(), r))
-                .is_none()
-        {
+    /// Memoize a probe's verdict, reached by a verdict at `height`
+    /// assuming `rests`: for good where it is settled, else while what it
+    /// rests on stands. A false a growth cut refused is the path's alone.
+    fn probe_put(
+        &mut self,
+        (rigid, t0, t1): (bool, &Type, &Type),
+        r: bool,
+        height: usize,
+        rests: Rests,
+    ) {
+        let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1)) else { return };
+        let k = (k0, k1, rigid);
+        let epoch = cell_writes();
+        let new = if rests.settled(r, height) {
+            self.probe_pairs.get_mut().insert(k, (epoch, r)).is_none()
+        } else if r || !rests.cut {
+            let p = Provisional { verdict: r, epoch, rests };
+            self.provisional_order.get_mut().push(k);
+            self.provisional.get_mut().insert(k, p).is_none()
+        } else {
+            false
+        };
+        if new {
             let pins = self.probe_pins.get_mut();
             pins.push(t0.clone());
             pins.push(t1.clone());
         }
     }
 
-    /// Start a verdict that may be memoized: its height, and the outer
-    /// verdict's assumption state, set aside.
-    fn enter_verdict(&mut self) -> (usize, usize, Option<usize>) {
-        let height = self.len();
-        let outer = mem::replace(&mut self.low_water, usize::MAX);
-        (height, outer, self.tainted.take())
+    /// An assumption that its question is `assumed`, made when `mark`
+    /// provisional verdicts were held, is answered `r`. Those reached
+    /// since may rest on it: one that agrees with a wrong assumption is
+    /// dropped (a disagreeing one stands, by monotonicity), the rest take
+    /// from `update` what the answer rested on, and each then settled is
+    /// held for good.
+    fn answer_assumption(
+        &mut self,
+        mark: usize,
+        assumed: bool,
+        r: &Result<bool>,
+        update: impl Fn(&mut Rests),
+    ) {
+        let wrong = match r {
+            Ok(r) if *r == assumed => None,
+            Ok(_) => Some(assumed),
+            Err(_) => {
+                self.drop_provisional(mark);
+                return;
+            }
+        };
+        let Some(order) = self.provisional_order.get() else { return };
+        if order.len() <= mark {
+            return;
+        }
+        let mut order = mem::take(self.provisional_order.get_mut());
+        let map = self.provisional.get_mut();
+        let mut kept = mark;
+        for i in mark..order.len() {
+            let k = order[i];
+            let Some(p) = map.get_mut(&k) else { continue };
+            if wrong == Some(p.verdict) {
+                map.remove(&k);
+                continue;
+            }
+            update(&mut p.rests);
+            if p.rests.settled(p.verdict, usize::MAX) {
+                let p = map.remove(&k).unwrap();
+                self.probe_pairs.get_mut().insert(k, (p.epoch, p.verdict));
+            } else {
+                order[kept] = k;
+                kept += 1;
+            }
+        }
+        order.truncate(kept);
+        *self.provisional_order.get_mut() = order;
     }
 
-    /// End it: whether the verdict assumed no pair from further out, so
-    /// it holds outside this call; the outer state takes its assumptions.
-    fn leave_verdict(
-        &mut self,
-        height: usize,
-        outer: usize,
-        outer_taint: Option<usize>,
-    ) -> bool {
-        let assumed = self.low_water;
-        self.low_water = outer.min(assumed);
-        let tainted = self.tainted;
-        self.tainted = match (outer_taint, tainted) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        assumed >= height && tainted.is_none()
+    fn drop_provisional(&mut self, mark: usize) {
+        let Some(order) = self.provisional_order.get() else { return };
+        if order.len() <= mark {
+            return;
+        }
+        let order = self.provisional_order.get_mut();
+        let map = self.provisional.get_mut();
+        for k in order.drain(mark..) {
+            map.remove(&k);
+        }
+    }
+
+    /// Start a verdict that may be memoized: its height, and the outer
+    /// verdict's assumptions, set aside.
+    fn enter_verdict(&mut self) -> (usize, Rests) {
+        (self.len(), mem::replace(&mut self.rests, Rests::NOTHING))
+    }
+
+    /// End it: whether the verdict assumed nothing from further out, so
+    /// it holds outside this call; the outer verdict takes its assumptions.
+    fn leave_verdict(&mut self, height: usize, outer: Rests) -> bool {
+        let r = self.leave_probe_verdict(outer);
+        r.pairs >= height && r.held == usize::MAX && r.failed == usize::MAX
+    }
+
+    /// [`Self::leave_verdict`]: what the verdict assumed.
+    fn leave_probe_verdict(&mut self, outer: Rests) -> Rests {
+        let rests = self.rests;
+        self.rests = outer.join(rests);
+        rests
     }
 
     /// The key a committed pair is held under: a node's identity, or an
@@ -387,20 +532,24 @@ impl ContainsHist {
 
     /// Decide `key` by `f`, assuming it holds meanwhile: a pair met
     /// again inside its own proof is `true` (coinduction), and the depth
-    /// of that assumption lowers `low_water`.
+    /// of that assumption is what the verdict meeting it rests on.
     fn assuming(
         &mut self,
         key: RefPair,
         f: impl FnOnce(&mut Self) -> Result<bool>,
     ) -> Result<bool> {
         if let Some(&depth) = self.hist.get(&key) {
-            self.low_water = self.low_water.min(depth);
+            self.rests.pairs = self.rests.pairs.min(depth);
             return Ok(true);
         }
         let depth = self.hist.len();
         self.hist.insert(key, depth);
+        let outer = mem::replace(&mut self.rests.pairs, usize::MAX);
+        let mark = self.provisional_order.get().map_or(0, |o| o.len());
         let r = f(self);
         self.hist.remove(&key);
+        let rest = beyond(&mut self.rests.pairs, depth, outer);
+        self.answer_assumption(mark, true, &r, |p| answered(&mut p.pairs, depth, rest));
         r
     }
 
@@ -414,16 +563,20 @@ impl ContainsHist {
         f: impl FnOnce(&mut Self) -> Result<bool>,
     ) -> Result<bool> {
         if let Some(i) = self.in_progress.iter().position(|p| *p == q) {
-            self.tainted = Some(self.tainted.map_or(i, |t| t.min(i)));
+            let at = self.rests.taken(assumed);
+            *at = (*at).min(i);
             return Ok(assumed);
         }
         let i = self.in_progress.len();
         self.in_progress.push(q);
+        let outer = mem::replace(self.rests.taken(assumed), usize::MAX);
+        let mark = self.provisional_order.get().map_or(0, |o| o.len());
         let r = f(self);
         self.in_progress.pop();
-        if self.tainted.is_some_and(|t| t >= i) {
-            self.tainted = None;
-        }
+        let rest = beyond(self.rests.taken(assumed), i, outer);
+        self.answer_assumption(mark, assumed, &r, |p| {
+            answered(p.taken(assumed), i, rest)
+        });
         r
     }
 
@@ -454,6 +607,26 @@ impl ContainsHist {
         let r = fresh(&e);
         self.expansions.get_mut().insert(id, e);
         Ok(Some(r))
+    }
+}
+
+/// The assumption at `depth` is answered: `at`, the shallowest one the
+/// verdict in progress took (`usize::MAX` for none), gives up those from
+/// `depth` on and joins `outer`'s. What the answer itself took.
+fn beyond(at: &mut usize, depth: usize, outer: usize) -> usize {
+    let rest = match *at {
+        a if a >= depth => usize::MAX,
+        a => a,
+    };
+    *at = rest.min(outer);
+    rest
+}
+
+/// [`beyond`] for a provisional verdict: one that took the assumption at
+/// `depth` (or one past it) takes what its answer took, `rest`, instead.
+fn answered(at: &mut usize, depth: usize, rest: usize) {
+    if (depth..usize::MAX).contains(at) {
+        *at = rest
     }
 }
 
@@ -2210,9 +2383,9 @@ impl Type {
             if hist.gated == 0 && hist.commit_held(flags, self, t) {
                 return Ok(true);
             }
-            let (height, outer, outer_taint) = hist.enter_verdict();
+            let (height, outer) = hist.enter_verdict();
             let r = self.contains_dispatch(flags, env, hist, t);
-            let own = hist.leave_verdict(height, outer, outer_taint);
+            let own = hist.leave_verdict(height, outer);
             let r = r?;
             if r && own && hist.gated == 0 {
                 hist.commit_put(flags, self, t);
@@ -2231,7 +2404,7 @@ impl Type {
         {
             return Ok(r);
         }
-        // CR claude for claude: [perf/low] A probe keeps a verdict only where its walk
+        // XCR claude for claude: [perf/low] A probe keeps a verdict only where its walk
         // assumed no pair from further out, so over names that recur through error
         // payloads one containment walk can be exponential: generated p1088.gx (gen_rnd.py
         // seed 1088) and err4.gx (mkerr.py 4: X_i = [Error<X_i+1>, Error<X_k>,
@@ -2263,15 +2436,34 @@ impl Type {
         // gd8 4.14G / 4.14G, gd10 11.68G / 11.67G, so it doubles per level on main as well;
         // 'main hangs earlier, in diff' held for base-r10. probes:
         // ~/ptmp/cr29/scratch/r11-X/x2/ (p1088.gx, err4.gx, gd6.gx)
+        // 2026-11-05 claude: Every probe verdict is now kept, by what it assumed
+        // (ContainsHist::rests: the shallowest pair taken to hold, questions taken to hold
+        // and to fail, a growth cut). Settled for good (Rests::settled): a false that took
+        // only holds and a true that took only failures, by monotonicity; I checked the
+        // probe-mode rules and each combines sub-verdicts by and/or (set_commit's first
+        // member, distribution's position pick and pool, the open-member rest-or-whole
+        // choice, the NoError and witness fallbacks), so no false is a reason for a true.
+        // Any other verdict is provisional (ContainsHist::provisional), read while its
+        // assumptions stand: when one is answered, those reached since take what the answer
+        // rested on, and those agreeing with a wrong assumption are dropped. A false a
+        // growth cut refused is kept only where it assumed nothing, as before. Pins,
+        // contains.rs tests: names_recurring_through_errors_contain_in_polynomial_steps
+        // (n=4/8/16; lane HEAD fails at n=4, Y0 ⊇ X0 495603 steps vs 588; without the
+        // provisional memo n=16 takes 11.2M steps vs 25k, over the 64k bound) and
+        // a_kept_probe_verdict_is_the_pairs_own (pairs asked in one walk either way answer
+        // as alone; fails if every verdict is kept as settled). p1088.gx now passes
+        // contains and hangs in diff (diff-cycle-hang-01); err4.gx hangs in matching_type's
+        // union normalization (matching-type-merge-01, new); the gd shape was already
+        // polynomial on this lane's head. Census 2942 files vs lane head: 0 verdict, 0
+        // message changes; GUI check 42.97G -> 42.98G instructions. probes:
+        // ~/ptmp/cr29/scratch/r17-hk/
 
-        // Only a verdict that assumed no pair from further out holds
-        // outside this call.
-        let (height, outer, outer_taint) = hist.enter_verdict();
+        let (height, outer) = hist.enter_verdict();
         let r = self.contains_dispatch(flags, env, hist, t);
-        let own = hist.leave_verdict(height, outer, outer_taint);
+        let rests = hist.leave_probe_verdict(outer);
         let r = r?;
-        if own && hist.gated == 0 {
-            hist.probe_put(rigid, self, t, r);
+        if hist.gated == 0 {
+            hist.probe_put((rigid, self, t), r, height, rests);
         }
         Ok(r)
     }
@@ -2449,6 +2641,7 @@ impl Type {
                         };
                         if !commit {
                             hist.grew = Some(name);
+                            hist.rests.cut = true;
                             return Ok(false);
                         }
                         return Err(growth_error(&name));
@@ -3992,6 +4185,96 @@ mod tests {
         CONTAINS_STEPS.with(|n| n.set(0));
         expanded.check_contains(&env, &app).unwrap();
         CONTAINS_STEPS.with(|n| n.get())
+    }
+
+    /// Two families of names recurring through error payloads, each name
+    /// three: `X<i> = [Error<X<i+1>>, Error<X<7i+3>>, Error<Error<X<i+2>>>,
+    /// `P]` (mod `n`), a `Y` twin with `Q.
+    fn error_families(n: usize) -> Vec<(String, String)> {
+        let mut defs = vec![];
+        for (p, tag, k) in [("X", "`P", 7), ("Y", "`Q", 5)] {
+            for i in 0..n {
+                let (a, b, c) = ((i + 1) % n, (i * k + 3) % n, (i + 2) % n);
+                let body = format!(
+                    "[Error<{p}{a}>, Error<{p}{b}>, Error<Error<{p}{c}>>, {tag}]"
+                );
+                defs.push((format!("{p}{i}"), body));
+            }
+        }
+        defs
+    }
+
+    fn at_root(env: &Env, t: &str) -> Type {
+        let t = parsed(t).scope_refs(&ModPath::root());
+        t.seed_refs(env);
+        t
+    }
+
+    // A probe's verdict that assumed pairs or questions in progress is
+    // kept: a false that took only holds and a true that took only
+    // failures for good, any other while what it took stands, so each
+    // pair of the families is walked a bounded number of times.
+    #[test]
+    fn names_recurring_through_errors_contain_in_polynomial_steps() {
+        for (n, bound) in [(4, 4_000), (8, 16_000), (16, 64_000)] {
+            let defs = error_families(n);
+            let defs: Vec<(&str, &str)> =
+                defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+            let (env, _) = Env::typed_at_root(&defs, "X0").unwrap();
+            for (a, b, holds) in [
+                ("Y0", "X0", false),
+                ("X0", "Y0", false),
+                ("[X0, Y0]", "Y0", true),
+                ("Y0", "[X0, Y0]", false),
+            ] {
+                let (a, b) = (at_root(&env, a), at_root(&env, b));
+                CONTAINS_STEPS.with(|n| n.set(0));
+                assert_eq!(a.contains(&env, &b).unwrap(), holds, "n={n}: {a} ⊇ {b}");
+                let steps = CONTAINS_STEPS.with(|n| n.get());
+                assert!(steps <= bound, "n={n}: {a} ⊇ {b} took {steps} steps");
+            }
+        }
+    }
+
+    // What one walk keeps is each pair's verdict wherever it is met: the
+    // pairs asked in one walk, in either order, are answered as each is
+    // asked alone. `U ⊇ V` holds inside `S ⊇ T`, which assumes itself,
+    // and fails alone, as `S ⊇ T` does.
+    #[test]
+    fn a_kept_probe_verdict_is_the_pairs_own() {
+        let mut defs = error_families(3);
+        defs.extend(
+            [
+                ("S", "[Error<U>, `A]"),
+                ("T", "[Error<V>, Error<`B>]"),
+                ("U", "[Error<S>, `C]"),
+                ("V", "[Error<T>, `C]"),
+            ]
+            .map(|(n, b)| (n.to_string(), b.to_string())),
+        );
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+        let (env, _) = Env::typed_at_root(&defs, "X0").unwrap();
+        let mut names: Vec<String> = defs.iter().map(|(n, _)| n.to_string()).collect();
+        names.extend(defs.iter().map(|(n, _)| format!("Error<{n}>")));
+        names.extend(["[X0, Y1]".into(), "Error<[X2, Y0]>".into(), "`P".into()]);
+        let types: Vec<Type> = names.iter().map(|n| at_root(&env, n)).collect();
+        let pairs: Vec<(&Type, &Type)> =
+            types.iter().flat_map(|a| types.iter().map(move |b| (a, b))).collect();
+        let probe = |hist: &mut ContainsHist, (a, b): (&Type, &Type)| {
+            a.contains_int(BitFlags::empty(), &env, hist, b).unwrap()
+        };
+        let alone: Vec<bool> =
+            pairs.iter().map(|p| probe(&mut ContainsHist::new(), *p)).collect();
+        let mut hist = ContainsHist::new();
+        let forward: Vec<bool> = pairs.iter().map(|p| probe(&mut hist, *p)).collect();
+        let mut hist = ContainsHist::new();
+        let mut backward: Vec<bool> =
+            pairs.iter().rev().map(|p| probe(&mut hist, *p)).collect();
+        backward.reverse();
+        for (i, (a, b)) in pairs.iter().enumerate() {
+            assert_eq!(alone[i], forward[i], "{a} ⊇ {b}");
+            assert_eq!(alone[i], backward[i], "{a} ⊇ {b}");
+        }
     }
 
     fn parsed(s: &str) -> Type {

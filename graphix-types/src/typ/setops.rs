@@ -1321,6 +1321,17 @@ impl Type {
                         matched.push(m);
                     }
                 }
+                // CR claude for claude: [perf/low] err4.gx (mkerr.py 4: X_i = [Error<X_i+1>,
+                // Error<X_k>, Error<Error<X_i+2>>, `P], a Y twin with `Q, `select v: [X0, Y0] {
+                // Y0 as y => 0, _ => 1 }`) does not end its --check in 60 s on base-r17, in
+                // Select::typecheck0_with -> PatternNode::capture_type -> Type::matching_type,
+                // and once contains walks these names in polynomial steps
+                // (contains-probe-falses-01) it is still killed at 60 s, here: a gdb sample at
+                // 15 s shows matching_type_inner -> flatten_set -> Kept::merge_with -> merge ->
+                // merge_inner -> flat_eq -> flatten_set nested eight deep, so normalizing the
+                // matched union seems to walk the nested Error payloads as a tree. probes:
+                // ~/ptmp/cr29/scratch/r17-hk/ (err4.gx, mkerr.py, err4.fix.gdb)
+                // (matching-type-merge-01)
                 Ok(Self::flatten_set(matched.drain(..)))
             }
             (p, t) => {
