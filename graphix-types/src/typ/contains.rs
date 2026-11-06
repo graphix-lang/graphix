@@ -749,7 +749,7 @@ fn commit_cell_bounds(
     Ok(true)
 }
 
-// CR claude for claude: [perf/medium] Two neighbours of the chain of bounds
+// XCR claude for claude: [perf/medium] Two neighbours of the chain of bounds
 // elaborate superlinearly, though each checks in linear time. A chain
 // through a typedef's parameter (`type T<'x> = Array<'x>`, `'a{i}:
 // T<'a{i+1}>`) costs 0.97 / 8.8 / 126 / 1951 G instructions net of the
@@ -771,6 +771,24 @@ fn commit_cell_bounds(
 // (base-r17 to lane, --expand --no-cache, union_500.gx; empty 0.96); the typedef
 // chain is unchanged (typedef_125.gx 9.65 -> 9.60 G), still in union_identical
 // -> TypeRef::same_definition.
+// 2026-11-05 claude: Fixed for the typedef chain; the union chain was fixed by
+// chainbounds-elab-01. RefHist::ref_id found a typedef application by scanning
+// every param list seen for its definition with union_identical, each a walk
+// down the chain: it now keys an application by its params' ids
+// (RefHist::param_id, the walk's own ids, an abstract type and an unresolvable
+// name by structure) in a hash map, and a ref node met again by its node.
+// probe_key keys a Ref by its node, so a link's conjunct T<'a{i+1}> is probed
+// once a chain and not once a link. --expand --no-cache, debug, total G
+// instructions (empty 0.98): typedef 125 links 9.72 (base-r17) -> 1.09, 250
+// 127.2 -> 1.38, 500 -> 2.41, 1000 -> 6.49; either part alone at 1000: 112
+// (ref_id) / 371 (probe_key). Still quadratic, not linear (typedef 2000 23.2,
+// union 1000 / 2000 3.61 / 11.16): chainbounds-elab-quadratic-01. Pin:
+// graphix-shell/tests/deep_nesting.rs
+// a_chain_of_bounds_through_a_typedef_or_a_union_elaborates (1000 links each;
+// typedef under 12G fails without the change at 12.1G+). Census 2942 files: no
+// verdict or message change against the lane's previous head (o3g). GUI --check
+// 43.38/43.46G (lane head before: 43.40G). probes:
+// ~/ptmp/cr29/scratch/r17-hk/elabnb/
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
@@ -1443,6 +1461,24 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
         && members(actual).iter().any(|m| !keep(m) && !null(m))
 }
 
+// CR claude for claude: [perf/medium] The typedef and union neighbours of the
+// chain of bounds still elaborate in quadratic time, where the Array chain is
+// linear. `graphix --expand --no-cache`, debug, total G instructions (empty
+// 0.98): `'a{i}: T<'a{i+1}>` over `type T<'x> = Array<'x>` 2.41 / 6.49 / 23.2
+// at 500 / 1000 / 2000 links; `'a{i}: [Array<'a{i+1}>, null]` 3.61 / 11.16 at
+// 1000 / 2000; the variant chain (`'a{i}: `V('a{i+1})`) 1.93 / 4.52; the Array
+// and struct chains 1.28 / 1.59 and 1.16 / 1.48. Each link walks the
+// instance's nested type once more: for the typedef, per Ref pair in
+// contains_dispatch, params_size, the pair_key's Type::param_key, shape_hash,
+// expand_ref's tvar_free and reset_tvars, and FnType::resolve_tvars /
+// collect_tvars_seen from CallSite::instance_ftype (perf, td_2000.gx; the stacks
+// are too deep for fp unwinding to name more); for the union,
+// identical_linked's union_identical and two Link::equal walks with their
+// NodePairs inserts, from the Set arms of contains_dispatch. Each wants a memo
+// by node (the probe memo's cell_writes stamp where a binding matters) or a
+// cheaper key. Found fixing chainbounds-elab-neighbours-01. probes:
+// ~/ptmp/cr29/scratch/r17-hk/elabnb/ (gen.py typedef|union|variant N OUT)
+// (chainbounds-elab-quadratic-01)
 /// Two types identical up to `Fn` equality whose cells can be welded.
 fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
     union_identical(t0, t1)

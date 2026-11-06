@@ -387,13 +387,14 @@ impl<A> Kept<A> {
     }
 }
 
-/// [`norm_key`] extended with `Variant`: a key may include the tag's
-/// allocation identity.
+/// [`norm_key`] extended with `Variant`, whose key may include the tag's
+/// allocation identity, and `Ref`, keyed by its node.
 fn probe_key(t: &Type) -> Option<NormKey> {
     match t {
         Type::Variant(tag, ts, _) => {
             Some((mem::discriminant(t), (**ts).as_ptr() as usize, tag.as_ptr() as usize))
         }
+        Type::Ref(r) => Some((mem::discriminant(t), Arc::as_ptr(r).addr(), 0)),
         t => norm_key(t),
     }
 }
@@ -420,9 +421,14 @@ impl<T: IsoPoolable> Lazy<T> {
 
 struct RefHist<H: IsoPoolable> {
     inner: LPooled<H>,
-    /// Definition key → (the resolution it came from, pinned so the key
-    /// is not reused; the param lists seen with their ids).
-    ref_ids: Lazy<AddrMap<(sync::Arc<ResolvedRef>, SmallVec<[(Arc<[Type]>, usize); 2]>)>>,
+    /// Definition key → the resolution it came from, pinned so the key
+    /// is not reused.
+    ref_defs: Lazy<AddrMap<sync::Arc<ResolvedRef>>>,
+    /// (Definition key, param list address) → the param list, pinned,
+    /// and its application's id: a ref met again keeps its id.
+    ref_nodes: Lazy<AHashMap<(usize, usize), (Arc<[Type]>, usize)>>,
+    /// (Definition key, the params' [`Self::param_id`]s) → id.
+    ref_apps: Lazy<AHashMap<(usize, SmallVec<[usize; 4]>), usize>>,
     /// Content identity → id for non-Ref types, so the cycle memo does
     /// not conflate distinct finite sub-problems.
     content_ids: Lazy<AHashMap<NormKey, usize>>,
@@ -504,7 +510,9 @@ impl<H: IsoPoolable> RefHist<H> {
     fn new() -> Self {
         RefHist {
             inner: LPooled::take(),
-            ref_ids: Lazy::new(),
+            ref_defs: Lazy::new(),
+            ref_nodes: Lazy::new(),
+            ref_apps: Lazy::new(),
             content_ids: Lazy::new(),
             shape_ids: Lazy::new(),
             next_id: 0,
@@ -530,28 +538,21 @@ impl<H: IsoPoolable> RefHist<H> {
             Type::Ref(tr) => {
                 let r = tr.resolve_in(env)?;
                 let key = r.def_key();
-                let entry = self
-                    .ref_ids
-                    .get_mut()
-                    .entry(key)
-                    .or_insert_with(|| (r, SmallVec::new()));
-                let found = entry.1.iter().find(|(p, _)| {
-                    Arc::ptr_eq(p, &tr.params)
-                        || p.len() == tr.params.len()
-                            && p.iter()
-                                .zip(tr.params.iter())
-                                .all(|(a, b)| setops::union_identical(a, b))
-                });
-                if let Some((_, id)) = found {
+                let node = (key, (*tr.params).as_ptr().addr());
+                if let Some((_, id)) = self.ref_nodes.get().and_then(|m| m.get(&node)) {
                     return Some(*id);
                 }
-                let id = self.next();
-                self.ref_ids
-                    .get_mut()
-                    .get_mut(&key)
-                    .expect("inserted")
-                    .1
-                    .push((tr.params.clone(), id));
+                self.ref_defs.get_mut().entry(key).or_insert(r);
+                let params = tr.params.iter().map(|p| self.param_id(p, env)).collect();
+                let id = match self.ref_apps.get_mut().entry((key, params)) {
+                    Entry::Occupied(e) => *e.get(),
+                    Entry::Vacant(e) => {
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        *e.insert(id)
+                    }
+                };
+                self.ref_nodes.get_mut().insert(node, (tr.params.clone(), id));
                 return Some(id);
             }
             Type::TVar(tv) => match tv.binding() {
@@ -563,20 +564,7 @@ impl<H: IsoPoolable> RefHist<H> {
                 (d, (**params).as_ptr().addr(), id.0 as usize)
             }
             Type::Any | Type::Bottom => (d, 0, 0),
-            t => {
-                let h = shape_hash(t);
-                let found = self.shape_ids.get().and_then(|m| m.get(&h)).and_then(|b| {
-                    b.iter()
-                        .find(|(s, _)| setops::union_identical(s, t))
-                        .map(|(_, id)| *id)
-                });
-                if let Some(id) = found {
-                    return Some(id);
-                }
-                let id = self.next();
-                self.shape_ids.get_mut().entry(h).or_default().push((t.clone(), id));
-                return Some(id);
-            }
+            t => return Some(self.shape_id(t)),
         };
         if let Some(&id) = self.content_ids.get().and_then(|m| m.get(&k)) {
             return Some(id);
@@ -584,6 +572,31 @@ impl<H: IsoPoolable> RefHist<H> {
         let id = self.next();
         self.content_ids.get_mut().insert(k, id);
         Some(id)
+    }
+
+    /// The id of a ref's parameter, equal for parameters `union_identical`
+    /// holds identical: [`Self::ref_id`]'s, but an abstract type and an
+    /// unresolvable name by their structure.
+    fn param_id(&mut self, t: &Type, env: &Env) -> usize {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) if let Some(b) = tv.binding() => self.param_id(&b, env),
+            Type::Abstract { .. } => self.shape_id(t),
+            t => self.ref_id(t, env).unwrap_or_else(|| self.shape_id(t)),
+        })
+    }
+
+    /// The id of `t` by its structure, open cells by their cell.
+    fn shape_id(&mut self, t: &Type) -> usize {
+        let h = shape_hash(t);
+        let found = self.shape_ids.get().and_then(|m| m.get(&h)).and_then(|b| {
+            b.iter().find(|(s, _)| setops::union_identical(s, t)).map(|(_, id)| *id)
+        });
+        if let Some(id) = found {
+            return id;
+        }
+        let id = self.next();
+        self.shape_ids.get_mut().entry(h).or_default().push((t.clone(), id));
+        id
     }
 }
 

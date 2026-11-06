@@ -299,6 +299,22 @@ fn program(shape: &str, d: usize) -> String {
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
             format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
         }
+        // The chain through a typedef's parameter, and through a union.
+        "chainboundstypedef" | "chainboundsunion" => {
+            let link = |i: usize| match shape {
+                "chainboundstypedef" => format!("'a{i}: T<'a{}>", i + 1),
+                _ => format!("'a{i}: [Array<'a{}>, null]", i + 1),
+            };
+            let bounds = (0..d)
+                .map(link)
+                .chain([format!("'a{d}: Number")])
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
+            format!(
+                "type T<'x> = Array<'x>;\nlet f = {bounds} |x: ({cells})| x;\nf(never())"
+            )
+        }
         // Open cells, each the lower bound of the next, the last below a
         // rigid cell: the merge takes every one into it.
         "rigidchain" => {
@@ -715,6 +731,18 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
         &program("chainboundsreversed", 3 * CHAIN_DEPTH),
         18 * BILLION,
     )
+}
+
+/// The chain through a typedef's parameter and through a union elaborates
+/// with each link's conjunct probed once and each application of the
+/// typedef keyed once a walk, by its parameters' keys.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_through_a_typedef_or_a_union_elaborates() {
+    let expand = ["--expand", "--no-cache"];
+    let d = CHAIN_DEPTH / 10;
+    completes_within(&expand, &program("chainboundstypedef", d), 12 * BILLION);
+    completes_within(&expand, &program("chainboundsunion", d), 8 * BILLION)
 }
 
 /// A let chain that wraps the last value in any constructor, or in an
