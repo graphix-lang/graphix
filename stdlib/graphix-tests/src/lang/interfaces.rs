@@ -1834,6 +1834,14 @@ run!(
 );
 
 run!(
+    val_struct_made_by_a_call_is_told_to_be_a_literal,
+    refused("declare the val at one type, or make the implementation a literal of lambdas over variables of their own"),
+    "/test.gx" => "mod m; let result = (m::c.f(1), m::c.f(\"s\"))",
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let mk = |z| {f: |x| select true { true => x, false => z }}; let c = mk(never())"
+);
+
+run!(
     val_over_an_outer_binding_of_every_type,
     prints("[i64:1, \"s\"]"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",

@@ -534,6 +534,12 @@ impl Holder {
     // lang::traits::method_over_a_struct_of_lambdas_names_what_they_write,
     // method_over_a_struct_of_a_named_helper_names_what_it_writes (all modes). Wording
     // only, no census needed.
+    // 2026-11-05 claude: Repair (review r17): a data holder whose lambdas capture nothing
+    // that holds the cell fell through to Holder::Lambda, so a struct made by a call (let
+    // c = mk(never())) was told to annotate its let with a quantified type. Holder::of
+    // now answers Lambda only when the binding itself holds a lambda, else NoLambda, as
+    // before the fix. Pin that fails without the repair:
+    // lang::interfaces::val_struct_made_by_a_call_is_told_to_be_a_literal.
     /// What holds `tv` for the implementation's binding `id`: the nearest
     /// binding the lambdas it holds capture, or the lambdas those capture,
     /// whose type reaches the cell and which holds no lambda, the binding an
@@ -576,7 +582,11 @@ impl Holder {
             }
             mem::swap(&mut level, &mut next);
         }
-        data_holder.map_or(Self::Lambda, Self::Captured)
+        match (data_holder, held_lambda(ctx, id)) {
+            (Some(name), _) => Self::Captured(name),
+            (None, Some(_)) => Self::Lambda,
+            (None, None) => Self::NoLambda,
+        }
     }
 }
 
