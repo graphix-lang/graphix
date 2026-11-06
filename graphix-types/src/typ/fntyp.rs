@@ -1436,6 +1436,11 @@ impl FnType {
     // Id<Id<'b>>], ['a, Opt<'b>], ['a, Opt<Opt<'b>>]. Pins that the typedef is not looked through:
     // lang::types::{typedef_union_of_variables,identity_member,option_member}_is_not_looked_through,
     // lang::traits::{trait_method,default_body,impl_method}_typedef_is_not_looked_through. Probes ~/ptmp/cr29/scratch/r18b-d7/{x,m,a}/ (a/ is the review's d7-r3-2 a01..a10).
+    // 2026-11-06 claude: Review r18b fix (lane d7 final commit): traits::written_method_unions now judges every lambda a method's value writes outside a lambda's body (its own, one a
+    // call building the method is handed, a trait default written so, a labeled default's, one in a block), and lambda.rs leaves every lambda in a method's scope outside a lambda's
+    // body to it, so an impl's head variables are the impl's there too. Pins that fail without it:
+    // lang::traits::{impl_method_built_by_a_call,default_body_built_by_a_call,impl_method_default_lambda}_variable_union_refused, impl_head_variables_in_a_block_lambda; guard
+    // block_lambda_in_a_method_variable_union_refused. Probes ~/ptmp/cr29/scratch/r18d-d7/.
     // CR claude for eric: [bug/medium] Eric's 11-05 ruling (b) refuses a union of two or
     // more bare type variables in a written function type, but a union of members that
     // each hold a variable (`[Array<'c>, Array<'d>]`) asks the same question, which member

@@ -3207,6 +3207,76 @@ run!(
     "#
 );
 
+// Every lambda a method's value writes outside a lambda's body is judged:
+// one a call that builds the method is handed, and a labeled default.
+run!(
+    impl_method_built_by_a_call_variable_union_refused,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        let mk = |f: fn(x: [i64, string], y: i64, z: string) -> i64| |s: i64, n: i64| -> i64 f(n, n, "s");
+        trait Sz { val sz: fn(self, n: i64) -> i64 };
+        impl Sz for i64 { let sz = mk(|x: ['a, 'b], y: 'b, z: 'a| -> i64 0) };
+        let result = Sz::sz(1, 2)
+    "#
+; FuseExpect::None);
+
+run!(
+    default_body_built_by_a_call_variable_union_refused,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        let mk = |f: fn(x: [i64, string], y: i64, z: string) -> i64| |s: i64, n: i64| -> i64 f(n, n, "s");
+        trait Sz { val sz: fn(self, n: i64) -> i64 = mk(|x: ['a, 'b], y: 'a, z: 'b| -> i64 y) };
+        impl Sz for i64 {};
+        let result = Sz::sz(1, 2)
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_method_default_lambda_variable_union_refused,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        trait Sz { val sz: fn(?#g: fn(x: [i64, string], y: i64, z: string) -> i64, self, n: i64) -> i64 };
+        impl Sz for i64 {
+            let sz = |#g = |x: ['a, 'b], y: 'a, z: 'b| -> i64 0, s, n| g(1, 1, "s") + n
+        };
+        let result = Sz::sz(1, 2)
+    "#
+; FuseExpect::None);
+
+// A lambda in a block of a method's value is the method's too: an impl's
+// head variables are the impl's there.
+run!(
+    impl_head_variables_in_a_block_lambda,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a, 'b> T for Array<['a, 'b]> {
+            let m = { let g = |x: ['a, 'b]| -> i64 0; |s| 0 }
+        };
+        let result = T::m([1])
+    "#
+; FuseExpect::None);
+
+run!(
+    block_lambda_in_a_method_variable_union_refused,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl T for i64 { let m = { let g = |x: ['a, 'b]| -> i64 0; |s| 0 } };
+        let result = T::m(1)
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_method_built_by_a_call_written_types,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        let mk = |f: fn(x: [i64, string], y: i64, z: string) -> i64| |s: i64, n: i64| -> i64 f(n, n, "s");
+        trait Sz { val sz: fn(self, n: i64) -> i64 };
+        impl Sz for i64 { let sz = mk(|x: [i64, string], y: i64, z: string| -> i64 y) };
+        let result = Sz::sz(1, 2)
+    "#; FuseExpect::None);
+
 // A typedef a trait's declaration, a default body or an impl's method
 // applies is not looked through.
 run!(

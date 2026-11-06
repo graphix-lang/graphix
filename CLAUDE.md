@@ -1036,7 +1036,8 @@ node graph IS the IR — there is no parallel typed IR
   data positions or read-only references hold settles to the widest of the
   arguments holding no undecided cell and the defaults the call omits,
   whatever the order; an argument or an omitted default holding an
-  undecided cell (a read target, a `let` over `never()`, `[]`'s element)
+  undecided cell outside function types (a read target, a `let` over
+  `never()`, `[]`'s element; never a lambda's, `Type::has_free_in_data`)
   decides its formal's other variables at once, waits for that join and
   takes the variable it settles, and is refused where the join, or an undecided argument before it, decided
   the variable and does not hold it, "annotate it", naming the bindings it

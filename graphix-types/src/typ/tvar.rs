@@ -3517,6 +3517,11 @@ impl Type {
         self.open_beneath(&|tv| !tv.is_rigid())
     }
 
+    /// [`Self::has_free`] outside every function type.
+    pub fn has_free_in_data(&self) -> bool {
+        self.open_beneath_in(true, &|tv| !tv.is_rigid())
+    }
+
     /// The first open cell not held rigid beneath, through bindings
     /// ([`Self::has_free`]).
     pub fn first_free(&self) -> Option<TVar> {
@@ -3543,8 +3548,15 @@ impl Type {
 
     /// An open cell `counts` anywhere beneath, through bindings.
     fn open_beneath(&self, counts: &dyn Fn(&TVar) -> bool) -> bool {
+        self.open_beneath_in(false, counts)
+    }
+
+    /// An open cell `counts` beneath, through bindings, outside every
+    /// function type where `data`.
+    fn open_beneath_in(&self, data: bool, counts: &dyn Fn(&TVar) -> bool) -> bool {
         fn go(
             t: &Type,
+            data: bool,
             counts: &dyn Fn(&TVar) -> bool,
             seen: &mut AHashSet<usize>,
         ) -> bool {
@@ -3552,14 +3564,15 @@ impl Type {
                 Type::TVar(tv) => {
                     seen.insert(tv.cell_addr())
                         && match tv.binding() {
-                            Some(b) => go(&b, counts, seen),
+                            Some(b) => go(&b, data, counts, seen),
                             None => counts(tv),
                         }
                 }
+                Type::Fn(_) if data => false,
                 t if node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
                 t => t
                     .try_for_each_child(&mut |c| {
-                        if go(c, counts, seen) {
+                        if go(c, data, counts, seen) {
                             ControlFlow::Break(())
                         } else {
                             ControlFlow::Continue(())
@@ -3568,7 +3581,7 @@ impl Type {
                     .is_break(),
             })
         }
-        go(self, counts, &mut LPooled::take())
+        go(self, data, counts, &mut LPooled::take())
     }
 
     // CR claude for claude: [bug/high] A slice's binds over an application of a

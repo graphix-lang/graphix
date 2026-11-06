@@ -232,8 +232,10 @@ enum Judge {
 
 /// How an omitted default meets its formal at a call: given the formal
 /// and the default's type, it checks the default as the call's widening
-/// checks a written argument.
-type Join<'a> = dyn FnMut(&Env, &ArcStr, &Type, &Type, &Expr) -> Result<()> + 'a;
+/// checks a written argument; the note names the bindings to annotate
+/// where the default is undecided ([`undecided_binds`]).
+type Join<'a> = dyn FnMut(&Env, &ArcStr, &Type, &Type, &Expr, Option<CompactString>) -> Result<()>
+    + 'a;
 
 /// A labeled default of `f` compiled in `f`'s environment, where its
 /// names are, and judged in the site's, where the site's types are:
@@ -347,7 +349,11 @@ fn checked_default<R: Rt>(
     };
     let res = res.and_then(|()| match site.and_then(|s| label(s)) {
         Some(t) => match join {
-            Some(join) => join(&ctx.env, name, &t, typ, expr),
+            Some(join) => {
+                let undecided =
+                    typ.has_free_in_data().then(|| undecided_binds(ctx, &node)).flatten();
+                join(&ctx.env, name, &t, typ, expr, undecided)
+            }
             None => t.check_contains(&ctx.env, typ),
         },
         None => {
@@ -781,15 +787,17 @@ enum ArgFit {
     Fits,
     /// It does not fit the formal as it stands.
     Misfit,
-    /// It holds a cell nothing has decided, at a formal the call opened:
-    /// checked now it would take what the formal holds so far.
+    /// It holds a cell nothing has decided outside function types, at a
+    /// formal the call opened: checked now it would take what the formal
+    /// holds so far.
     Open,
 }
 
 /// Check a call's argument node against its formal's type `typ`,
 /// answering how it fit. Where the call opens the formal
 /// ([`Widening::opening`]) the argument pre-unifies with the open copy,
-/// and one holding an undecided cell is [`ArgFit::Open`].
+/// and one holding an undecided cell outside function types is
+/// [`ArgFit::Open`].
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
     typ: &Type,
@@ -803,7 +811,7 @@ fn typecheck_arg<R: Rt>(
     }
     Type::pre_unify_arg(&ctx.env, opening.unwrap_or(typ), n.typ())?;
     wrap!(n, n.typecheck0(ctx))?;
-    Ok(if opening.is_some() && n.typ().has_free() {
+    Ok(if opening.is_some() && n.typ().has_free_in_data() {
         ArgFit::Open
     } else if typ.contains(&ctx.env, n.typ())? {
         ArgFit::Fits
@@ -1463,10 +1471,16 @@ enum Waiter {
     Undecided(ArgKey),
     /// An argument neither wider nor narrower than a variable it holds.
     Incomparable(ArgKey),
-    /// An omitted default of this type, written at this expression,
-    /// neither wider nor narrower than a variable it holds, with the note
-    /// a refusal of it takes ([`met_defaults`]).
-    Default(Type, Expr, Option<CompactString>),
+    /// An omitted default of type `typ`, written at `at`, neither wider nor
+    /// narrower than a variable it holds or holding an undecided cell, with
+    /// the note a refusal of it takes ([`met_defaults`]) and, where it is
+    /// undecided, the bindings to annotate ([`undecided_binds`]).
+    Default {
+        typ: Type,
+        at: Expr,
+        met: Option<CompactString>,
+        undecided: Option<CompactString>,
+    },
 }
 
 impl Widening {
@@ -1590,8 +1604,8 @@ impl Widening {
 
     /// An omitted default of type `typ`, written at `at`, meets `formal` as
     /// a written argument does: it decides or widens the variables it
-    /// holds, or waits, as one holding an undecided cell does; `met` names
-    /// the annotation a refusal asks for.
+    /// holds, or waits, as one holding an undecided cell does; `met` and
+    /// `undecided` name the annotations a refusal asks for.
     #[allow(clippy::too_many_arguments)]
     fn join_default(
         &mut self,
@@ -1602,12 +1616,15 @@ impl Widening {
         typ: &Type,
         at: &Expr,
         met: Option<CompactString>,
+        undecided: Option<CompactString>,
     ) -> Result<()> {
-        let undecided = typ.has_free() && !self.held(env, def, inst, formal).is_empty();
-        if undecided
+        let waits =
+            typ.has_free_in_data() && !self.held(env, def, inst, formal).is_empty();
+        if waits
             || !formal.contains(env, typ)? && !self.widen(env, def, inst, formal, typ)?
         {
-            let waiter = Waiter::Default(typ.clone(), at.clone(), met);
+            let waiter =
+                Waiter::Default { typ: typ.clone(), at: at.clone(), met, undecided };
             self.deferred.push((waiter, formal.clone()))
         }
         Ok(())
@@ -1682,7 +1699,7 @@ fn annotation_may_fit(
     held: &AHashMap<ArcStr, TVar>,
     arg: &Type,
 ) -> Result<bool> {
-    if !free_in_data(arg) {
+    if !arg.has_free_in_data() {
         return Ok(false);
     }
     let fresh: AHashMap<ArcStr, TVar> =
@@ -1708,33 +1725,17 @@ fn annotation_may_fit(
     Ok(true)
 }
 
-/// An open cell not held rigid beneath `t`, through bindings, outside every
-/// function type.
-fn free_in_data(t: &Type) -> bool {
-    fn go(t: &Type, seen: &mut AHashSet<usize>) -> bool {
-        ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                seen.insert(tv.cell_addr())
-                    && match tv.binding() {
-                        Some(b) => go(&b, seen),
-                        None => !tv.is_rigid(),
-                    }
-            }
-            Type::Fn(_) => false,
-            t => {
-                let mut any = false;
-                t.for_each_child(&mut |c| any = any || go(c, seen));
-                any
-            }
-        })
-    }
-    let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
-    go(t, &mut seen)
-}
-
 /// What to annotate where the argument `n` is undecided at its call: the
 /// bindings it reads whose types are undecided, else the argument.
 fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
+    undecided_binds(ctx, n).unwrap_or(CompactString::const_new(
+        "this argument is undecided at this call; annotate it (bind it to a `let` \
+         with its type written)",
+    ))
+}
+
+/// The bindings `n` reads whose types are undecided, to annotate.
+fn undecided_binds<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> Option<CompactString> {
     let mut refs = Refs::without_callees();
     n.refs(&mut refs);
     let mut binds: SmallVec<[_; 2]> = SmallVec::new();
@@ -1749,16 +1750,13 @@ fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
     });
     binds.sort_by_key(|b| b.id);
     match &*binds {
-        [] => CompactString::const_new(
-            "this argument is undecided at this call; annotate it (bind it to a `let` \
-             with its type written)",
-        ),
-        [b] => format_compact!(
+        [] => None,
+        [b] => Some(format_compact!(
             "`{}` is undecided at this call; annotate `{}` ({})",
             b.name,
             b.name,
             BoundAt(b, None)
-        ),
+        )),
         binds => {
             let mut names = CompactString::new("");
             for (i, b) in binds.iter().enumerate() {
@@ -1766,7 +1764,7 @@ fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
                 write!(names, "{sep}`{}` ({})", b.name, BoundAt(b, None)).unwrap();
             }
             write!(names, " are undecided at this call; annotate them").unwrap();
-            names
+            Some(names)
         }
     }
 }
@@ -2554,6 +2552,17 @@ impl<R: Rt> CallSite<R> {
     // lang::functions::omitted_undecided_default_waits,
     // omitted_undecided_default_waits_for_a_later_write. Probes
     // ~/ptmp/cr29/scratch/r18b-d7/p/. Needs a soak.
+    // 2026-11-06 claude: Review r18b fixes (lane d7 final commit): an argument or omitted default is
+    // undecided (ArgFit::Open, Widening::join_default) only by a cell outside function
+    // types (Type::has_free_in_data), so a closed data argument holding a lambda joins at
+    // once as on main (h1/h4/h8/g2/g3/g5 print 1; pin
+    // lang::functions::lambda_beside_closed_data_joins fails without it). An omitted
+    // default refused at check_waiting names the undecided bindings it reads
+    // (undecided_binds), as written; pin omitted_undecided_default_names_the_binding
+    // fails without it. Still by order, as on main and documented in tvar_constraints.md:
+    // a function-holding argument or omitted default at a widenable variable
+    // (Widening::widen skips a type with an unbound cell), k1/k2 and |#p: ('a, fn(x: i64)
+    // -> i64) = (n, |x| x), y: 'a| called f(1). Probes ~/ptmp/cr29/scratch/r18d-d7/.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the
@@ -2590,11 +2599,15 @@ impl<R: Rt> CallSite<R> {
             defs.push(Some(fv.clone()));
         }
         let callee = self.fnode.typ();
-        let mut join =
-            |env: &Env, name: &ArcStr, formal: &Type, typ: &Type, at: &Expr| {
-                let met = met_defaults::<R>(&defs, name);
-                widening.join_default(env, callee, ftype, formal, typ, at, met)
-            };
+        let mut join = |env: &Env,
+                        name: &ArcStr,
+                        formal: &Type,
+                        typ: &Type,
+                        at: &Expr,
+                        undecided| {
+            let met = met_defaults::<R>(&defs, name);
+            widening.join_default(env, callee, ftype, formal, typ, at, met, undecided)
+        };
         let mut known = !defs.is_empty();
         for def in defs.iter() {
             let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
@@ -2651,38 +2664,51 @@ impl<R: Rt> CallSite<R> {
         let mut met: LPooled<AHashSet<ArcStr>> = LPooled::take();
         let env = &ctx.env;
         let arg = |key: &ArgKey| self.args.get(key).and_then(|a| a.node.as_ref());
+        // whether a refusal of a waiter of type `typ` names what to annotate:
+        // the join, or an undecided waiter before it, decided a variable it
+        // holds, and some decision of its cells could fit; judged before the
+        // check, which may decide what it reads
+        let undecided = |widening: &mut Widening,
+                         met: &mut AHashSet<ArcStr>,
+                         formal: &Type,
+                         typ: &Type|
+         -> Result<bool> {
+            let held = widening.held(env, self.fnode.typ(), ftype, formal);
+            let joined =
+                held.iter().any(|(name, tv)| tv.is_bound() || met.contains(name));
+            met.extend(held.keys().cloned());
+            Ok(joined && annotation_may_fit(env, formal, &held, typ)?)
+        };
+        let noted = |res: Result<()>, note: Option<CompactString>| match (res, note) {
+            (Err(e), Some(note)) => Err(anyhow!("{e}: {note}")),
+            (res, _) => res,
+        };
         for (waiter, formal) in deferred {
             match waiter {
                 Waiter::Undecided(key) => {
                     let Some(n) = arg(&key) else { continue };
-                    let held = widening.held(env, self.fnode.typ(), ftype, &formal);
-                    let joined =
-                        held.iter().any(|(name, tv)| tv.is_bound() || met.contains(name));
-                    met.extend(held.keys().cloned());
-                    // judged before the check, which may decide what it reads
-                    let note = match joined
-                        && annotation_may_fit(env, &formal, &held, n.typ())?
-                    {
-                        true => Some(undecided_note(ctx, n)),
-                        false => None,
-                    };
-                    let res = match (formal.check_contains(env, n.typ()), note) {
-                        (Err(e), Some(note)) => Err(anyhow!("{e}: {note}")),
-                        (res, _) => res,
-                    };
-                    wrap!(n, res)?
+                    let note = undecided(widening, &mut met, &formal, n.typ())?
+                        .then(|| undecided_note(ctx, n));
+                    wrap!(n, noted(formal.check_contains(env, n.typ()), note))?
                 }
                 Waiter::Incomparable(key) => {
                     let Some(n) = arg(&key) else { continue };
                     wrap!(n, formal.check_contains(env, n.typ()))?
                 }
-                Waiter::Default(typ, at, met) => formal
-                    .check_contains(env, &typ)
-                    .map_err(|e| match met {
-                        Some(met) => e.context(met),
-                        None => e,
-                    })
-                    .at(&at)?,
+                Waiter::Default { typ, at, met: shared, undecided: names } => {
+                    let note = match typ.has_free_in_data()
+                        && undecided(widening, &mut met, &formal, &typ)?
+                    {
+                        true => names,
+                        false => None,
+                    };
+                    noted(formal.check_contains(env, &typ), note)
+                        .map_err(|e| match shared {
+                            Some(shared) => e.context(shared),
+                            None => e,
+                        })
+                        .at(&at)?
+                }
             }
         }
         Ok(())

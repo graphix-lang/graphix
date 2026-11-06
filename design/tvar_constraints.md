@@ -283,10 +283,13 @@ fact, and erasing it made the static type lie about the runtime value
 A fresh instance's variable that only data positions hold
 (`callsite::widenable`) settles to the widest argument, whatever the
 order the call writes them in (`callsite::Widening`). Only arguments
-holding no undecided cell take part in that join, the defaults the call
-omits included, joined as written ones (`Widening::join_default`). An
-argument holding an undecided cell (a read target, a `let` over
-`never()`, `[]`'s element) pre-unifies with a copy of its formal in
+holding no undecided cell outside function types take part in that join,
+the defaults the call omits included, joined as written ones
+(`Widening::join_default`); a lambda's open cells are not undecided data
+(`Type::has_free_in_data`), so `({a: n, k: |x| x}, 1)` over `|x: {a: 'a,
+k: fn(x: i64) -> i64}, y: 'a|` joins at once. An argument holding an
+undecided cell (a read target, a `let` over `never()`, `[]`'s element)
+pre-unifies with a copy of its formal in
 which those variables are open and every other cell is the formal's own
 (`Widening::opening`), so it decides none of them, and decides the
 others, a variable a callback after it reads included, as it meets
@@ -304,8 +307,9 @@ order, and where some decision of the argument's cells outside function
 types could fit (`callsite::annotation_may_fit`: on copies, it fits the
 formal with the variables fresh and what it gives each holds or is held
 by what the call gave it), the refusal says "annotate it", naming the
-bindings the argument reads whose types are undecided
-(`callsite::undecided_note`); `f(1, [])` is a plain mismatch. Two
+bindings the argument, or the omitted default, reads whose types are
+undecided (`callsite::undecided_note`, `undecided_binds`); `f(1, [])` is a
+plain mismatch. Two
 undecided arguments at one variable: the second meets what the first
 gave it, and its refusal says the same.
 
@@ -313,7 +317,13 @@ An argument with an undecided cell and nothing else at its variable
 (`id(u)`) takes the variable as it is: one cell, decided by whichever
 use comes first, as any cell is. A variable a callback also holds is
 not widenable: the first argument decides it, an undecided one
-included.
+included. An argument or an omitted default whose type holds a function
+type with open cells does not widen either (`Widening::widen` skips a
+type with an unbound cell): it fits the variable as the arguments before
+it left it, or is refused, so order decides between a value and a
+refusal there: `f({n: 1, k}, {n: w, k})` over `|x: 'a, y: 'a|` with `w:
+[i64, null]` is refused, naming nothing, and `f({n: w, k}, {n: 1, k})`
+runs; an omitted default is met after every written argument.
 
 ### A union of variables in a signature
 
@@ -332,10 +342,11 @@ those forms still meet in order, formal-union-order-01). It is judged
 where the type is written: a lambda's signature as it compiles, in the
 walk that warns of a later block's names (`warn_written`; a variable an
 enclosing definition declares is not its own; a method in an impl or a
-trait's default body is judged over the types it writes itself, its
-lambda's and an impl `let`'s annotation, the rest being its trait's
-declaration, and an impl's head variables are the impl's:
-`traits::written_method_unions`), a `.gxi` val in the walk that resolves
+trait's default body is judged over the types it writes itself, an impl
+`let`'s annotation and every lambda its value writes outside a lambda's
+body (its own, one a call that builds it is handed, a labeled default's),
+the rest being its trait's declaration, and an impl's head variables are
+the impl's: `traits::written_method_unions`), a `.gxi` val in the walk that resolves
 its names in the interface (`module::check_interface_names`), a trait
 method's declaration in the walk that defers its names (`Trait::typecheck0`,
 where `self`, a written type at every impl, is no variable) and a

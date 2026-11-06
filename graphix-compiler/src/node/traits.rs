@@ -30,6 +30,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
+    stack::ensure_sufficient,
     typ::{
         CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, check_bounds_acyclic,
         seed_conjuncts, settle::VariableUnion,
@@ -238,30 +239,47 @@ pub(crate) fn impl_outside_functions(
     Ok(())
 }
 
-/// Refuse a union of two variables a method writes itself, in its lambda
-/// `value` or its `let`'s annotation `typ` ([`Type::variable_union`]): the
-/// types its trait's declaration fills in were judged at the trait, and an
-/// impl's `head` variables and `self` are the implementation's.
+/// Refuse a union of two variables a method writes itself, in its `let`'s
+/// annotation `typ` or a lambda its `value` writes outside every lambda's
+/// body, a labeled default's included ([`Type::variable_union`]): those
+/// lambdas compile in the method's scope, which a lambda's own check
+/// leaves to this one. The types its trait's declaration fills in were
+/// judged at the trait, and an impl's `head` variables and `self` are the
+/// implementation's.
 fn written_method_unions(typ: Option<&Type>, value: &Expr, head: &[TVar]) -> Result<()> {
     let own = |tv: &TVar| &*tv.name != "self" && !head.iter().any(|h| h.name == tv.name);
     if let Some(t) = typ {
         t.variable_union(&own)?
     }
-    let mut lambda = value;
-    while let ExprKind::ExplicitParens(inner) = &lambda.kind {
-        lambda = inner
-    }
-    if let ExprKind::Lambda(l) = &lambda.kind {
-        let written = l.args.iter().filter_map(|a| a.constraint.as_ref());
-        let written = written
-            .chain(l.constraints.iter().map(|(_, t)| t))
-            .chain(l.rtype.iter())
-            .chain(l.throws.iter());
-        for t in written {
-            t.signature_variable_union(&own)?
+    method_scope_lambdas(value, &own)
+}
+
+fn method_scope_lambdas(e: &Expr, own: &dyn Fn(&TVar) -> bool) -> Result<()> {
+    ensure_sufficient(|| match &e.kind {
+        ExprKind::Lambda(l) => {
+            let written = l.args.iter().filter_map(|a| a.constraint.as_ref());
+            let written = written
+                .chain(l.constraints.iter().map(|(_, t)| t))
+                .chain(l.rtype.iter())
+                .chain(l.throws.iter());
+            for t in written {
+                t.signature_variable_union(own).map_err(anyhow::Error::from).at(e)?
+            }
+            l.args
+                .iter()
+                .filter_map(|a| a.kind.default())
+                .try_for_each(|d| method_scope_lambdas(d, own))
         }
-    }
-    Ok(())
+        _ => {
+            let mut res = Ok(());
+            e.for_each_child(&mut |c| {
+                if res.is_ok() {
+                    res = method_scope_lambdas(c, own)
+                }
+            });
+            res
+        }
+    })
 }
 
 /// Fill a method lambda's missing parameter and return annotations

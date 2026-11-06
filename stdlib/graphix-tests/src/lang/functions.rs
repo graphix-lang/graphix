@@ -2402,6 +2402,50 @@ run!(
     prints("[i64:1, i64:1]")
 );
 
+// An omitted default's refusal names the undecided bindings it reads, as
+// the same default written does.
+run!(
+    omitted_undecided_default_names_the_binding,
+    r#"{
+  let u = never();
+  let f = |#x: Array<'a> = [u, null], y: 'a| -> 'a y;
+  let r = f(1);
+  u <- 3;
+  r
+}"#,
+    refused("`u` is undecided at this call; annotate `u`");
+    FuseExpect::None
+);
+
+run!(
+    omitted_annotated_default_joins,
+    r#"{
+  let u: [i64, null] = never();
+  let f = |#x: Array<'a> = [u, null], y: 'a| -> 'a y;
+  let r = f(1);
+  u <- 3;
+  r
+}"#,
+    prints("i64:1")
+);
+
+// A lambda's open cells are not undecided data: an argument holding one
+// beside closed data meets its formal at once.
+run!(
+    lambda_beside_closed_data_joins,
+    r#"{
+  let n: [i64, null] = null;
+  let f = |x: {a: 'a, k: fn(x: i64) -> i64}, y: 'a| -> 'a y;
+  let g = |x: ('a, fn(x: 'b) -> 'b), y: 'a| -> 'a y;
+  let h = |#p: ('a, fn(x: 'b) -> 'b) = (n, |x| x), y: 'a| -> 'a y;
+  let s = {a: n, k: |x| x};
+  (f({a: n, k: |x: i64| -> i64 x}, 1), f({a: n, k: |x| x}, 1), f(s, 1), g((n, |x| x), 1),
+   h(#p: (n, |x| x), 1))
+}"#,
+    prints("[i64:1, i64:1, i64:1, i64:1, i64:1]");
+    FuseExpect::None
+);
+
 // A waiting argument decides at once the variables of its formal that do
 // not widen, so a callback after it reads them.
 run!(

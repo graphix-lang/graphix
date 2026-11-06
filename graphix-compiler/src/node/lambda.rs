@@ -2438,10 +2438,17 @@ impl Lambda {
                 }
             })?;
         }
-        // a method's lambda is judged over what it writes itself, its impl
-        // or trait filling in the rest (traits::written_method_unions)
+        // a lambda in a method's value outside every lambda's body is judged
+        // over what it writes itself, its impl or trait filling in the rest
+        // (traits::written_method_unions)
+        let in_method = || {
+            Path::parts(&*scope.lexical)
+                .filter(|p| crate::is_fn_block(p) || crate::is_method_block(p))
+                .last()
+                .is_some_and(crate::is_method_block)
+        };
         if let Some(e) = union
-            && !Path::basename(&*scope.lexical).is_some_and(crate::is_method_block)
+            && !in_method()
         {
             return Err(e.into());
         }
