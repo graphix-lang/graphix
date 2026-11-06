@@ -311,28 +311,6 @@ pub(super) struct NodePairs {
 impl NodePairs {
     const EAGER: u32 = 64;
 
-    // XCR claude for claude: [risk/low] A variant's key is its payload's allocation
-    // (node_addr), which leaves out the tag: two variants of different tags over one
-    // payload allocation share a key, so what one walk found for `A(p) against a node
-    // answers for `B(p) too, where every user reads the tag (contains' Link::equal,
-    // could_match's found and apart, Identity::same's found, needs_split's apart). No
-    // production path builds two tags over one payload today; only a test does
-    // (contains' a_param_key_tells_apart_variants_over_one_payload, which param_key
-    // tells apart by folding the tag in). A direction: key a variant by its payload and
-    // its tag. (node-pairs-variant-tag-01)
-    // 2026-11-05 claude: Type::node_key (typ/mod.rs) keys a shared node by its identity
-    // and a variant's tag or an abstract type's id; NodePairs::key, MatchHist's resting
-    // pairs, Identity::same's one-node fast path (which answered `A(p) and `B(p)
-    // identical outright), key_words and fusion's shallow_key/shallow_same (which
-    // interned a node whose part is `B(p) as one whose part is `A(p)) all key by it.
-    // Pins, each failing without the fix: contains'
-    // a_walks_node_pairs_tell_apart_variants_over_one_payload (could_match,
-    // strictly_identical, union_identical past NodePairs::EAGER and on the bare
-    // variants) and kernel_abi's shallow_same_tells_apart_variants_over_one_payload.
-    // Contains' Link::equal and needs_split read no tag (Link runs on types already
-    // found equal), so their keys change with no pin. The visit-once walks keyed by
-    // shared_identity alone are left as they are: they collect from a node's parts,
-    // which the tag does not change.
     /// The key of the node pair `t0`, `t1`, when both are shared
     /// composites and the walk has grown past `EAGER`.
     #[inline]
@@ -1298,68 +1276,6 @@ impl TypeRef {
         self.resolved().map(|r| r.def_key())
     }
 
-    // XCR claude for claude: [risk/medium] same_definition and def_key read only the
-    // resolution cell: two references to one definition, one cell filled and one open,
-    // are two definitions here, so a walk that fills cells (resolve_in, through ref_id
-    // and lookup_ref) changes what a later walk's shortcuts read (could_match's and
-    // contains' (Ref, Ref) arms, diff's same_ref, the keys def_key gives). Review r11
-    // (X-r1-2) found it through cr48-X's shared containment walk (ce6523c7c), which
-    // skipped probes that had filled cells: rgt/v5order.gx typed two identical selects
-    // apart, and an extra probe whose answer was thrown away, or an earlier select over
-    // the same names (v5twice.gx), gave main's capture type back (the reviewer's
-    // attribution, not traced further). Not shown on main, whose walks fill the cells
-    // they read; any memo that skips a walk can expose it. A direction: resolve an open
-    // cell where these read it (they would need the env). probes:
-    // ~/ptmp/cr29/scratch/review-r11/X-r1-2/rgt/ (same-definition-fill-01)
-    // 2026-11-03 claude: The shared containment walk that exposed it is removed from
-    // cr48-X. The other memos that skip a walk (diff's done, could_match's refuted and
-    // apart, needs_split's NodePairs) remain, as main's diff and could_match memos do;
-    // none has shown it.
-    // 2026-11-03 claude: cr48-X2 carries this CR to main; the shared containment walk
-    // never came, and every memo the note above lists is there (diff's done,
-    // could_match's refuted and apart, needs_split's NodePairs). Unchanged: not shown
-    // on main.
-    // 2026-11-04 claude: Lane N r15 (D10 (b)) changes how a reference finds its
-    // definition but leaves this CR's asymmetry: one source typedef is now one
-    // definition (a block compiled again declares the live definition the registry
-    // holds), so references a compile filled agree with the check's, and more cells are
-    // filled at the check's end (DefTable::record now seeds in the definition's env
-    // with its import tables and the registry; seed_node_types fills node types outside
-    // definitions). A filled and an open reference to one definition are still two
-    // definitions to same_definition; closing that needs the env where these read it.
-    // Not shown on main.
-    // 2026-11-05 claude: TypeRef::same_definition now takes the env and reads an open
-    // cell as what its name means there (resolve_peek, filling nothing), so the
-    // shortcuts in contains, could_match, sig_matches, union, diff and DataMeet answer
-    // the same whichever cells earlier walks filled; Identity and the env-free part
-    // walks (meets_itself, nests, decided_part) keep the cell-only answer as
-    // same_filled_definition. Taking the shortcut more often showed it skipped what an
-    // expansion does to the arguments: lookup_ref holds them to the definition's
-    // parameter bounds (an open cell takes 'r: NoError from Result<'r, ..>) and fills
-    // the cell; without that, 12 graphix-tests fixtures failed (str::parse's 'b lost
-    // NoError at the interface's sig_matches, a later-module annotation's cell stayed
-    // open). Every shortcut arm now calls TypeRef::hold_bounds_in (the loop
-    // lookup_ref_by now shares, hold_bounds_of), which fills the cell as the expansion
-    // would. Pins: typ::setops::tests::an_open_reference_is_its_filled_twin (union of a
-    // filled and an open R<i64> gave the expansion; fails without the fix) and
-    // one_definition_by_its_arguments_holds_their_bounds (fails without the hold in
-    // contains' shortcut). Census of both repos: no verdict changes, one message names
-    // the interface's 'b: Any + NoError (x-typecheck-generics-03b). guicheck +0.3%
-    // instructions vs base-r17. probes: ~/ptmp/cr29/scratch/r17-o3/
-    // 2026-11-05 claude: Review r17 (o3-r1-1's root-load flake): hold_bounds_in filled
-    // an open cell from the env of whatever walk took the shortcut, and a sibling
-    // module's parallel check, whose env does not see /gui/data_table, filled
-    // ColumnSpec's nested Source with core's Source (the name's outer shadow), so
-    // data_table's text_column was refused 'ColumnSpec does not contain {..}' about
-    // once in 450 cold starts (13/6000 --no-cache starts at 8 side by side; 0/6000 on
-    // base-r17; bisected to this CR's commit; 0/6000 with GRAPHIX_EVAL_THREADS=1). The
-    // shortcuts now call TypeRef::hold_bounds_with: an open cell takes its twin's
-    // filled definition, as the expansion it replaces filled it, and two open cells
-    // stay open (resolve_peek). 0/12000 failures after. Pins:
-    // typ::setops::tests::a_shortcut_fills_no_open_pair (fails with the env fill),
-    // lang::types::annotation_names_from_a_later_module (fails with no fill at all).
-    // Left: the x-typecheck-generics-03b message naming the declared val's 'b: Any +
-    // NoError (review r17 low; the bound is Result's and the verdict is base-r17's).
     /// Whether two references name one definition: an open cell names
     /// what its name means in `env`, so the answer does not depend on
     /// which cells a walk filled; two that name nothing, by the written

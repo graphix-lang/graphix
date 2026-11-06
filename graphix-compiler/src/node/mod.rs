@@ -3881,38 +3881,6 @@ impl<R: Rt> Connect<R> {
     }
 }
 
-// XCR claude for claude: [bug/low] A write is refused where the held copy has a cell bounded
-// only from below by a held cell: `type B<'p> = Abstract<'p>; let f = |x| B(x)` is `fn(x:
-// 'x) -> B<'c>` with 'c >= 'x, and held_cells (and check_val_written's reached_cells) hold
-// 'c rigid without that lower bound, so `f <- t ~ |x| B(x)` in a later REPL input is refused
-// ("f is fn(x: '_7809) -> B<'_7809>, made generic by an earlier compile, so what is written
-// to it must be as general, and fn(x: '_7815) -> B<'_7815> is not": the same type twice, no
-// annotation named), and `val f: fn(x: 'a) -> B<'a>` over `let f = |x| B(x)` written `m::f
-// <- t ~ |x| m::B(x)` is told to annotate the implementation as the val, which it already
-// matches. Main (968fa9bc0) runs both. The annotation `|x: 'a| -> B<'a>` passes. Fix: a
-// rigid gate takes a held cell's lower bounds as it takes its constraints, or a cell bounded
-// only below by held cells is not held apart. The refusal's printed cell ids also vary
-// between runs (the verdict never does). Review r14 A-r4-1. probe:
-// ~/ptmp/cr29/scratch/review-r14/A-r4-1/{repl/lw6.txt,lw2,lw3,lw4,p/vw1,p/vw1b}
-// (held-lower-bound-01)
-// 2026-11-05 claude: A rigid cell now holds, besides itself and ⊥, what one of its lower
-// bounds holds (contains::rigid_holds_by_lower, used where a rigid cell meets a type, Any,
-// or another rigid cell), so the held copy's 'c above 'x takes the written 'c2 above 'x2:
-// lw6, lw2, lw3, lw4 compile and run (lw2/lw3 print s 4 after the write). A narrower write
-// stays refused. Pin: lang::types::written_after_generalized_holds_a_lower_bound (fails
-// without the fix with the CR's message). The val shapes (p/vw1, vw2) stay refused for
-// another reason, the argument-first merge of the val's open cell into the held 'x: new CR
-// val-write-arg-merge-01 at CompileCtx::check_val_written. Census of both repos unchanged
-// (2942 files, 0 verdict or message changes).
-// 2026-11-05 claude: Another shape, review r18 Q-r1-1, no seq involved: in the REPL, `let s
-// = {g: |x| x, n: 0}` then `s <- sys::time::timer(duration:700.ms, false) ~ {g: |x| x, n:
-// 5}` is refused ("s is { g: fn(x: '_8549) -> '_8550, n: i64 }, a generic binding, so what
-// is written to it must be as general, and { g: fn(x: '_8556) -> '_8549, .. } is not: it
-// holds a type variable of the code around the write"): the held copy prints the identity's
-// result apart from its parameter, the result bounded below by it, as this CR describes.
-// Main 5a28e6a57 and lane Q's cr53-sq refuse it alike. probe:
-// ~/ptmp/cr29/scratch/review-r16/Q-r1-1/r18/repl8.txt piped into graphix --no-cache (also
-// repl7, repl9-11).
 /// The open cells `held`, a generic binding's copy, reaches, a bound's and
 /// a function type's own quantifiers included, by address: two of one name
 /// are two cells where the copy took each function type apart.

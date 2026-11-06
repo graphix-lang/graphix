@@ -706,39 +706,6 @@ impl<'a> Input<'a> {
             }
             Err(f) => f,
         };
-        // XCR claude for claude: [bug/low] A literal's failure is said where its
-        // reading is the only one that gets that far, though the text names no
-        // literal: `{datetime: "\u{41}\q", b: 1}` reports netidx's escape list at
-        // the q for a graphix string field (field a reports the u), `{error:
-        // "\u{41}\u{d800}"}` the surrogate, `f(bytes: x)` (a labeled argument
-        // missing its #) and `x{bytes: n}` "base64 decode failed", `f(duration:
-        // 5)` an expected . or e, `[u8: x]` an expected digit. Main 968fa9bc0
-        // says "the parser could not continue past this point" at the same
-        // positions. Each text is invalid on every reading. Found by review r14
-        // of lane K (final). probes: ~/ptmp/cr29/scratch/review-r14/K-r3-2/p/
-        // {st_dt_u41q,st_err_u41sur,call_bytes,mapkey_bytes,call_dur,arr_u8}.gx
-        // (show2.sh; residual.txt) (literal-reach-labels-01)
-        // 2026-11-05 claude: A value literal read at the start of a bracketed
-        // list's item with a space after its colon (`{datetime: ..`, `f(bytes:
-        // x)`, `[u8: x]`) is a label, which the printer writes with a space where
-        // a literal's colon is tight: Input::literal_part does not say its
-        // failure there (Input::spaced_label), so the report stands at the same
-        // point with the generic text. Pin:
-        // parser::test::a_spaced_label_is_no_literal (its first group fails
-        // without the fix). The existing row {datetime: "\q"} now reports the
-        // graphix string's own expected list, not the generic text, since no
-        // literal speaks against it. Judgment: the spaced-label rule is a
-        // heuristic, not a grammar fact; tight forms and non-item positions (`let
-        // a = u8: 256;`) still speak. Diagnostics only, no soak.
-        // 2026-11-05 claude: Repair (review r17): the spaced-label rule read the
-        // text, and silenced real literals in arrays, tuples and calls, which
-        // only read as literals (`[u8: 300]`, `(error: "\q", 1)`, `f(duration:
-        // 5)`). Input::spaced_label is gone: struct_field (a struct literal's and
-        // a functional update's) marks where it read `name:`
-        // (Input::field_name_at), and a literal read from there
-        // (Input::literal_part) is quiet. Pin:
-        // parser::test::a_struct_field_name_is_no_literal; its array, tuple and
-        // call rows fail on the spaced-label rule, its brace rows on main.
         let at = self.mark_at(self.at.off + f.offset);
         if says {
             let token = !matches!(f.expected, Expected::Refused(_));

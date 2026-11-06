@@ -840,48 +840,6 @@ impl<R: Rt> MapQBase<R> {
         let Some(source) = callsite.arg_positional(0) else {
             return Ok(None);
         };
-        // XCR claude for claude: [perf/low] A collection call nested in its own
-        // callback with the same callback does not fuse: in `let rec k = |n: i64|
-        // -> i64 select n { 0 => 0, _ => n + array::fold(array::map([n - 1], k), 0,
-        // |a, x| a + x) }`, `#[native] array::map([1, 2, 4], k)` is refused
-        // "mutually recursive static call edge is not supported" (main 387c29e60
-        // the same). The inner `array::map` reaches the definition with the outer
-        // call's fn-arg identity while the outer instance is still checking, so it
-        // is that instance's self-call (`CallSite::shares_instance`), holds no
-        // instance and never reaches this loop emission. `list::map([<1, 2, 4>],
-        // k)` outside fuses (`bare_recursion_from_a_collection_callback`).
-        // Fusing it needs the inner call emitted as the outer collection's loop
-        // whose slots call the callback's kernel. probe:
-        // ~/ptmp/cr29/scratch/r10-J/probes/b_samecoll.gx (collection-self-identity-01)
-        // 2026-11-03 claude: A sibling gap from lane J's round-9 review (R-r1-1, low):
-        // two different recursions (k and j), each with a bare `array::map(.., self)`
-        // in its body, held inline in one region collide, since discovery keys a bare
-        // loop's prototype call by cs.spec().id, which every instance of one
-        // collection definition shares (node/lambda.rs, the prototype id); `#[native]
-        // (list::map([<1, 2, 4>], k), list::map([<1, 2, 3>], j))` is refused "two
-        // instances in one region call this site's lambda apart", where the eta form
-        // fuses as one region. No wrong answer; each part fuses alone. Main refuses
-        // the bare program too (not discovered). probe:
-        // ~/ptmp/cr29/scratch/review-r10/J-r1-1/m_two_holders.gx (eta:
-        // m_two_holders_eta.gx).
-        // 2026-11-05 claude: Both gaps fuse now. A call sharing a collection instance
-        // the region runs around it emits that instance's loop
-        // (CallSite::shared_loop_callback; discovery keeps the region's collection
-        // instances, fusion::Loops, handed to emission as BodySpec::loops;
-        // BodyCx::shared_loop), its slots making the prototype's call of the
-        // recursion, which is the kernel's own call inside the recursion's kernel
-        // (BodyCx::loop_own_call); the analysis counts the shared instance as run
-        // inline in the call's holder. Loop prototype calls are recorded by prototype
-        // id and recursion binding (fusion::LambdaSites), so two recursions' loops in
-        // one region no longer collide. Pins that fail without it:
-        // lib_tests::tree_recursion::{bare_recursion_from_its_own_collection,
-        // bare_recursion_from_its_own_fold,
-        // bare_capturing_recursion_from_its_own_collection,
-        // bare_recursions_from_their_own_collections,
-        // bare_recursions_from_collection_callbacks} (jit, jit_par),
-        // shared_recursion_{children_deleted, frees_deleted_slots, sleeps_and_wakes}.
-        // A body fused without the outer collection in reach (an instance body alone)
-        // still node-walks the call.
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
         let r = match recursion {
             Some((call, name)) => self.emit_recursion(source, call, name, cx),

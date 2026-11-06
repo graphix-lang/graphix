@@ -129,20 +129,6 @@ fn line_text<'a>(i: &mut Input<'a>) -> &'a str {
     i.take_while(|c| c != '\r' && c != '\n')
 }
 
-// XCR claude for claude: [bug/low] A blank line lone CRs make is lost: this
-// counts only '\n', so `// a\r\r// b` formats as two comment lines with no
-// blank between, where an editor and Mark (crcrlf-lines-01) see one, and the
-// same text with LFs keeps it. Counting every '\r' and '\n' of the text,
-// whose CRLFs read as LF, would agree with Mark. Main 968fa9bc0 drops it
-// too. Found by review r14 of lane K. probe:
-// ~/ptmp/cr29/scratch/review-r14/K-r1-2/crlf2/blank_cr.gx against blank_lf.gx
-// (lone-cr-blank-01)
-// 2026-11-05 claude: spaces_blank counts every '\r' and '\n' of the whitespace
-// (the text's CRLFs already read as LF), so a lone-CR blank line between
-// comment lines is kept as Mark counts it. Pin:
-// expr::parser::test::a_blank_line_between_comment_lines_rides_the_next, its
-// '// a\r\r// b' and '// a\r\r\n// b' cases, fails without it. Probe
-// blank_cr.gx now formats with the blank line, as blank_lf.gx does.
 /// Whitespace, and whether it holds a blank line.
 fn spaces_blank(i: &mut Input) -> bool {
     i.take_while(char::is_whitespace).chars().filter(|c| matches!(c, '\r' | '\n')).count()
@@ -838,27 +824,6 @@ const INT_TYPES: [(&str, fn(&str) -> bool); 12] = [
     ("u8", |s| s.parse::<u8>().is_ok()),
 ];
 
-// XCR claude for claude: [bug/low] The range note is said where the text is
-// no literal: `let s = {u8:300` (a struct whose first field is named u8,
-// left open) reports "`300` is out of the range of u8" at the field, where
-// "this `{` is not closed" is the right note; the struct reading parsed `300`
-// to the point the report stands at, so the integer is one reading of
-// several there. State::report says a value literal's failure only where no
-// other reading failed at its point (value-literal-labels-01); a reason has
-// no such test, and this arm notes one whenever the text reads as an
-// out-of-range literal. Main 968fa9bc0 says the same. Found by review r14 of
-// lane K (round 3). probe: ~/ptmp/cr29/scratch/r14-K/r3/u8tight.gx under
-// `graphix fmt --stdout` (int-range-field-01)
-// 2026-11-05 claude: int_range_note notes its range through
-// State::note_literal_reason, a Reason said of a value literal's text up to its
-// end (Said::Literal), which explains a failure only where no knot parsed to
-// that end (furthest_ok): {u8:300 now notes the unclosed brace, {u8:300)
-// nothing, while u8:256; [1, u8:300] and a select arm's u8:300 keep the range
-// note. Reason's failed_at became the Said kind. Pins:
-// expr::parser::test::a_value_literal_failure_is_said_only_where_it_alone_failed
-// (the {u8:300 and {u8:300) cases fail without the fix),
-// an_out_of_range_integer_literal_names_its_range,
-// a_literal_out_of_range_names_its_type.
 /// A diagnostic arm behind the literal parser: an integer literal out of
 /// its type's range names the type, since the value parser fails without
 /// a reason.
@@ -913,18 +878,6 @@ fn finite(i: &mut Input, start: Mark, v: Value) -> R<Value> {
     }
 }
 
-// XCR claude for claude: [bug/low] An exponent reads as a unit:
-// `duration:1e300y` notes "`e` is not a duration unit", where the value
-// parser reads 1e300 years and refuses them as too long; `n` here stops at
-// the `e`. Reading an exponent into `n` would note "`1e300y` is negative or
-// longer than the longest duration". Main 968fa9bc0 says the same. Found by
-// review r14 of lane K. probe:
-// ~/ptmp/cr29/scratch/review-r14/K-r1-2/lit/dur_huge.gx (duration-exponent-note-01)
-// 2026-11-05 claude: duration_unit_note reads the count as the value parser does,
-// an exponent (e, optional -, digits) included, so duration:1e300y notes that
-// 1e300y is negative or longer than the longest duration. Pin:
-// expr::parser::test::a_literal_out_of_range_names_its_type (the 1e300y case fails
-// without the fix; 1es and 1.5e-3es still name es as the unit).
 /// A diagnostic arm behind the literal parser: a `duration:` literal with
 /// an unknown unit names the unit, since the value parser accepts the
 /// longest known prefix and fails after it, and one no duration holds

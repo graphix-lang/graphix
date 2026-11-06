@@ -201,56 +201,6 @@ fn string_pattern(i: &mut Input) -> R<(Value, WrittenForm)> {
     }
 }
 
-// XCR claude for claude: [bug/low] A value literal failing inside a pattern
-// or an index still loses what its parser said: `select x { error:"\q" =>
-// 1, _ => 0 }` reports "Unexpected `:` Expected `|` or =>" at the colon, and
-// `x.99999999999999999999999` "Unexpected `.`", where the expression
-// `error:"\q"` names the escapes (value-literal-labels-01). The report stands
-// short of the literal's failure, so State's literal fallback never meets
-// it; unlike the expression's, this value_part is in no knot, which may be
-// why. Main 968fa9bc0 says the same. Found by review r14 of lane K. probes:
-// ~/ptmp/cr29/scratch/review-r14/K-r1-2/pat_errq.gx, lit/idx_big.gx
-// (literal-pattern-labels-01)
-// 2026-11-05 claude: A pattern's value literal (Input::literal_part, so a
-// spaced label stays quiet) and a tuple index (value_part of the usize) now
-// read inside a knot, as the expression's literal does, so the report stands at
-// the literal's failure and State's literal fallback says it: select x {
-// error:"\q" => 1 } names the escapes at the q, x.99999999999999999999999
-// 'invalid signed integer' at its end, u8:300 as a pattern carries the range
-// note. Pin:
-// parser::test::a_value_literal_failure_is_said_in_a_pattern_and_an_index
-// (fails without the fix). Census: 2942 files, one message change (the u8:300
-// pattern repro, now the expression's generic text plus note); no verdict
-// changes. Diagnostics only, no soak.
-// 2026-11-05 claude: Repair (review r17): (1) the knot around a pattern's
-// literal moved the report to where a reserved word, read as a literal's head,
-// failed: `let bytes = 1;` and `select x { bytes => 1 }` lost "can't use
-// keyword as a function or variable name". A pattern literal whose parser fails
-// having read no more than a word and its colon (Input::fails_before_payload)
-// is read without the knot, as before. (2) The tuple index's knot moved `x.`,
-// `x.0 + x.`, `(x).` and `5..q` to generic text a column on; it is entered only
-// where a digit or `-` follows the dot. The usize index pin asserts the
-// position only (netidx says "invalid signed integer" for it). `select x {
-// bytes: n => 1 }` and `(bytes: n, 1)` now say the bytes literal's failure at
-// its payload, as the expression `f(bytes: x)` does (judged: the colon makes it
-// a literal). Pin that fails without the repair:
-// parser::test::a_word_short_of_a_literal_is_a_name.
-// 2026-11-05 claude: Repair (review r18): an annotated binder named bytes (let
-// bytes: i64 = 1, |bytes: bytes| .., |bytes: i64| ..) and the pattern forms
-// bytes: n, (bytes: n, 1), [bytes: n] and let (bytes: n, m) entered the bytes
-// literal, which read the name after the colon as base64 and said its failure,
-// where main names the keyword. Input::fails_before_payload now also takes a
-// word, its colon and a name after it (a letter or _ first) for a name, so
-// those read without the knot and keep the reserved-word refusal; a payload
-// that starts as a literal's (u8:300) still enters it. The tuple index enters
-// its knot only where a digit follows the dot, so x.-1 says Unexpected . at the
-// dot as main does. Pin that fails without the repair:
-// parser::test::a_word_short_of_a_literal_is_a_name (its new rows). The
-// judgment in the r17 note that bytes: n and (bytes: n, 1) say the literal's
-// failure is reversed; the expression f(bytes: x) still does. Left: `A(u8:300)
-// and {a: u8:300} in a pattern say the generic text with the range note, where
-// main says Expected , or ): the literal failure said in a pattern is this CR's
-// change.
 fn literal_pattern(i: &mut Input) -> R<StructurePattern> {
     choice!(
         i,

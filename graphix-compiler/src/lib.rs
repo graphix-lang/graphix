@@ -1926,48 +1926,6 @@ impl<R: Rt> CompileCtx<R> {
     /// The bindings `id` is one variable with ([`StaticCallees::join`]),
     /// each a target with it.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
-        // XCR claude for claude: [bug/medium] A sibling module's compile task sees another's
-        // interface pair joined or not by schedule (StaticCallees is shared by every task;
-        // check_sig joins in the module's own task), so a write from a sibling's lambda
-        // through a val marks the implementing binding a `<-` target only where the join
-        // came first, and the implementation's static calls bind or not by schedule: in
-        // nw6t (a: `val f: fn(x: i64) -> i64` over `let f: fn(x: i64) -> i64 = |x| x`, `let g
-        // = |t| f(t ~ 1)`; w: `let set = |v| { super::a::f <- v; null }; let z = set(t ~
-        // |x: i64| -> i64 x + 100)`) base 968fa9bc0 in 20 runs printed a::g's last value 101
-        // (9), 1 (5: the write never reaches g's static call), or refused the build (6: "f
-        // cannot be written: an earlier compile calls it as a fixed function"); cr49-A the
-        // same (6/8/6). The narrow-write judgment skips a sibling's pair for this reason
-        // (Module::check_written_vals judges it after). D18 (a)'s one variable by
-        // construction (iface-pair-one-var-01) should take it; else the pair's join must be
-        // seen by a task only as its fork saw it. probe: ~/ptmp/cr29/scratch/r14-A/fix3/p/nw6t
-        // (iface-sibling-join-01)
-        // 2026-11-04 claude: Review r14 A-r4-1 found a second shape, main's too: sx14, val
-        // fn(x: 'a) -> 'a over let f = |x| x with f(1) and f("s") in a, sibling w writing
-        // super::a::f <- t ~ k from a lambda with a rank-2 parameter (no narrow write):
-        // --check passes 16/16 on base and lane, the build refuses "f cannot be written: an
-        // earlier compile calls it as a fixed function at f(1)" in 7/16 runs on base, 5/16 on
-        // the lane. probe ~/ptmp/cr29/scratch/review-r14/A-r4-1/.
-        // 2026-11-05 claude: Lane Q (cr51-Q, rank-2 types removed): the second probe sx14
-        // writes a rank-2 parameter (|k: fn<'b: Any>(x: 'b) -> 'b|) and is now refused by the
-        // check with typ::QUANTIFIED_FN, so it no longer reaches the join; the first shape
-        // (nw6t) stands, as does sx14's join race in any form that writes no nested quantified
-        // type.
-        // 2026-11-05 claude: Fixed with iface-pair-one-var-01: the pair joins before the
-        // body's check and static resolution reads the variable's names when it binds
-        // (CompileCtx::rebinds), so a sibling's write marked in its own task reaches the
-        // implementation's call: nw6t prints 101 6/6 (base-r17 7/8 refused, 1/8 printed 1),
-        // sx14 builds 6/6 (base 3/6 refused). Pins
-        // lang::modules::a_siblings_write_through_an_interface_reaches_the_bodys_call (base:
-        // 1) and a_siblings_write_through_a_generic_interface_builds (base: refused). Left: a
-        // sibling's write against an alias let h = f in the body is still judged at the
-        // alias's check (Bind::aliased_lambda runs in typecheck0), as before.
-        // 2026-11-06 claude: Rebased onto cr29-staging (lane Q, rank-2 removed, Eric's D3
-        // follow-up ruling (b) of 11-05): the pin
-        // a_siblings_write_through_a_generic_interface_builds wrote through a rank-2
-        // parameter, which the check now refuses (QUANTIFIED_FN), so its sibling writes the
-        // generic val from a lambda with no quantified type: let set = |u| { super::a::f <-
-        // |x| x; u }; let z = set(t ~ null). base-r17 refuses it 12/12 ('f cannot be written:
-        // an earlier compile calls it as a fixed function'); the lane prints 1 s 3 q 12/12.
         let ids = self.static_callees.variable(id);
         if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
             let name =
@@ -2081,38 +2039,6 @@ impl<R: Rt> CompileCtx<R> {
         }
     }
 
-    // XCR claude for claude: [perf/low] The `<-`-target mark this puts on the outer outlives
-    // the body whose write caused it: Bind::delete removes only the old inner at a reload,
-    // so a reloaded body that writes nothing has its calls through the val resolved
-    // dynamically (GXDBG_RESOLVE: unstable=true; base 432e34ac6 static), and fusion may go
-    // with them. No answer changes. The same holds for a write a body function compiles
-    // after the join (mark_connect_target through StaticCallees::variable). Branch cr37-W
-    // 2681714fa dropped this mark for a wake hold that reads the pair (written_target) and
-    // fixed the first shape only. probes: ~/ptmp/cr29/scratch/review-r6/W2-r2-1/{n1,n1ctl},
-    // W2-r3-1/cr37/{d5b,n2} (iface-reload-mark-01)
-    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item
-    // "iface-pair-one-var-01" (~/ptmp/cr29/next-discuss.md): with the pair one run-time
-    // variable the mark has no outer to outlive; with the relays kept it needs cr37-W's
-    // wake hold. Readdressed to eric until then.
-    // 2026-11-03 claude: Eric ruled (2026-11-03): D18 (a) in ~/ptmp/cr-discuss.md: one
-    // variable by construction: from the join the interface pair is the val's one id at run
-    // time (one queue, one stored value, the body's let publishing to it) and the relays
-    // go, iface-reload-mark-01 with them; on a reload keep both: a replaced body's pending
-    // writes drop with its binding, a root write queued across the reload still lands; the
-    // shapes cr37-W broke (d6, lv) are its tests.
-    // 2026-11-04 claude: Since cr49-A's check_val_written (iface-narrow-write-01) the mark
-    // also holds a reloaded body to the val: a dynamic module whose first body writes its
-    // own let (let f = |x: i64| -> i64 x; f <- ..) leaves the outer a <- target, so a
-    // reload whose body is generic under a narrower val (val f: fn(x: i64) -> i64 over let
-    // f = |x| x) is refused as written through the val, where nothing writes it any more;
-    // main reloads it. probe ~/ptmp/cr29/scratch/r14-A/q4. D18 (a)'s one-variable rebuild,
-    // keeping a replaced body's writes with its binding, should take the mark with it.
-    // 2026-11-05 claude: Fixed with iface-pair-one-var-01: a write marks only the binding
-    // it names, and a reload's compile leaves the replaced body's bindings out of the
-    // variable (StaticCallees::set_aside's vars), so the reloaded body's f(count(k)) in n1
-    // resolves statically (GXDBG_RESOLVE unstable=false; base-r17 true). No answer changes,
-    // so no run! pin; lang::modules::a_reload_is_not_held_to_the_replaced_bodys_write pins
-    // the same mark staying with its binding.
     /// Join `inner`, a body's binding implementing an interface `val`, with
     /// `outer`, the `val`'s ([`StaticCallees::join`]): from here on they
     /// are one variable, the val's at run time. A `<-` marks the binding
@@ -2135,143 +2061,6 @@ impl<R: Rt> CompileCtx<R> {
         self.env.by_id.get(&id).is_some_and(|b| holds_generic(&b.typ))
     }
 
-    // XCR claude for claude: [perf/medium] A chain of lets holding functions, where each
-    // link binds a written name or carries an annotation, checks in time exponential in
-    // its length: each occurrence of a shared node holding a function takes its own
-    // copy here, so a DAG of holders becomes a tree. `let (a, w) = (x, 0); w <- 1; let
-    // x = (a, a)` repeated: 2.7/3.2/12.0G instructions at N=10/12/14 (debug --check,
-    // main bbb06c0c6), past an 8G RSS cap at 16; o-wtup 6.4/61.9G at 14/18, o-annot
-    // 2.7/33.2G, o-apart2 40.8G at 14; the controls without a lambda stay flat, and
-    // u-wsingle (no holder) grows too, so not all of it is the holder rule's. Copies
-    // keyed by the shared node and the instantiation they came from would keep the
-    // DAG. Found by the r8 re-review of self-arg-instance-01. probes
-    // ~/ptmp/cr29/scratch/review-r8/xcr-self-arg/c/ (t-ownone-N, u-wsingle, o-wtup,
-    // o-annot, o-apart2) (holder-mono-chain-01)
-    // 2026-11-03 claude: monomorphic now keeps the value's DAG: every shared node
-    // rebuilds once per call and each of its occurrences holds that one instance of
-    // each function beneath it (lib.rs fn monomorphic, the memo no longer skipped below
-    // an instantiated function). JUDGED: 'the instantiation they came from' is the
-    // monomorphic call, since the walk never enters a function type
-    // (FnType::instantiate copies one whole). Holder pins hold: lang::types, modules,
-    // functions 3519 ok; under GRAPHIX_NO_SUBST=1 lang::types fails only
-    // cast_of_a_reference_in_an_instance,
-    // cast_of_a_reference_beside_a_filled_application and
-    // union_bound_open_cell_accepts, before the change too and on main's binary alike
-    // (an instance recheck refuses at the build). The shared-instance probes share1-8
-    // (r9-N/mono) print as main. --check instructions:u (GRAPHIX_PAR=off, one eval
-    // thread; the empty program 2.0-2.5G), main ec53d4846 / lane at N=10/12/14/16/18:
-    // t-ownone 1.61/2.83/14.63G/killed/killed vs 1.51/1.59/1.66/2.57/2.62G; u-wsingle
-    // 2.34/2.56/6.60G/killed/killed vs 1.78/2.44/2.49/2.27/2.41G; o-apart2
-    // 3.14/3.31/21.08G/killed/killed vs 2.69/2.73/2.42/2.14/2.39G (killed: 300 s or
-    // 8G). o-wtup and o-annot stay exponential: their cost is the Own reads' copy at
-    // each read, which doubles the type at each link by rule (new CR
-    // holder-own-reads-01 for eric). Pin graphix-compiler
-    // monomorphic_tests::a_shared_node_is_one_instance (16 doubling pairs over a
-    // generic function: 34 nodes at most, the two parts one instance; the old walk
-    // 196607 nodes: fails).
-    // 2026-11-03 claude: Review r9 of lane N (both reviewers, high/medium): the fix
-    // changes verdicts. A write whose value's type holds one node twice now holds one
-    // instance there, so p <- mk(g) (let g = |x| x; let mk = |f| (f, f); p = (|x: i64|
-    // x, |x: string| x)), p <- (gg, gg) with let gg = id(g), *r <- mk(g), and a holder
-    // let hh = (h, h) written into q: ({f: fn(x: i64) -> i64}, {f: fn(x: string) ->
-    // string}) (q <- hh, or an annotated let that something writes) are refused here and
-    // run on main ec53d4846, while p <- (g, g) and q <- (h, h) (two reads, two copies)
-    // pass on both. Main's verdicts and a linear check do not go together under a local
-    // rule: a node whose functions' instances copy no cell can be one instance with
-    // main's verdicts, but every chain this CR names copies a cell at each link (the
-    // lambda's generic argument cell; the binding's own cell is Top), so that variant
-    // measured exactly as main (--check instructions:u, --no-scale, GRAPHIX_PAR=off, one
-    // eval thread; main / that variant at N=10 and 14: t-ownone 1.38/1.38G, 5.23/5.23G;
-    // u-wsingle 1.37/1.37G, 5.24/5.24G; o-apart2 1.44/1.44G, 9.14/9.13G; both killed at
-    // 150 s at N=18), where this commit stays at 1.31-1.33G to 18. Main already ties
-    // such places where the shared cell is the binding's own: let a2 = x1; a2 <- never()
-    // over x1 = (a1, a1), a1 a written copy of x0 = (|x| x, 1), cannot be annotated
-    // ((fn(x: i64) -> i64, i64), (fn(x: string) -> string, i64)) on main. Ruling needed:
-    // (a) one instance per node the value's type shares (this commit; ML's rule: OCaml
-    // types mk g as ('_w -> '_w) * ('_w -> '_w), one weak variable; <- then agrees with
-    // let, whose forms d7, e8, e9 main already refuses); it needs CLAUDE.md's
-    // value-restriction line and pins that refuse d3, e1, e7, b1, w3 and accept b3, w2
-    // (two reads are two copies, as p <- (g, g) is); or (b) one instance per place
-    // (main): drop c30722796 and the chains stay exponential; the per-place variant with
-    // its pins (lang::types::written_value_sharing_a_node_holds_an_instance_per_place,
-    // monomorphic_tests::a_shared_node_copying_nothing_is_one_instance and
-    // a_shared_node_copying_a_cell_is_an_instance_per_occurrence, each failing under the
-    // other walk) is ~/ptmp/cr29/scratch/r9-N/item5-perplace.patch. The counts in the
-    // note above are scaled perf counts (no --no-scale), 1.5-3x high: unscaled, main /
-    // this commit at N=14: t-ownone 5.23/1.32G, u-wsingle 5.24/1.31G, o-apart2
-    // 9.14/1.32G; at 18 main killed at 150 s, this commit 1.32-1.33G; the empty program
-    // 1.30G. probes ~/ptmp/cr29/scratch/review-r9/N-r1-1/m5/,
-    // ~/ptmp/cr29/scratch/review-r9/N-r1-2/mono/, ~/ptmp/cr29/scratch/r9-N/m5/gen2.gx,
-    // chains ~/ptmp/cr29/scratch/r9-N/chains/
-    // 2026-11-03 claude: Review r9 round 2 (both reviewers, high): with the CR waiting
-    // on Eric, c30722796's walk is taken off cr46-N so the branch lands with main's
-    // verdicts: monomorphic is main's again (a shared node rebuilds once only while no
-    // function beneath it instantiated), its pin
-    // monomorphic_tests::a_shared_node_is_one_instance and the tvar_constraints.md
-    // sentence are gone, and the chains cost as main's column above (exponential). The
-    // notes above that describe the walk as built describe c30722796 only. Both options
-    // are saved for the ruling: option (a), this CR's DAG walk with its pin and doc
-    // sentence, as ~/ptmp/cr29/scratch/r9-N/item5-dag.patch (a diff of c30722796, apply
-    // with git apply); option (b), main's per-place rule with a linear case and its
-    // pins, as item5-perplace.patch. If Eric rules (a) it comes back with CLAUDE.md's
-    // value-restriction line and lang::types pins that refuse d3, e1, e7, b1, w3 and
-    // accept b3, w2 (probes ~/ptmp/cr29/scratch/review-r9/N-r1-1/m5/, N-r1-2/mono/).
-    // 2026-11-03 claude: item5-perplace.patch is a diff against c30722796, not against
-    // the branch as landed: it applies only on top of item5-dag.patch (git apply
-    // item5-dag.patch, then item5-perplace.patch). Option (b) without its pins is the
-    // tree as landed. The question is in ~/ptmp/cr29/next-discuss-addendum.md, Round 8
-    // (found by the final review of lane N).
-    // 2026-11-03 claude: Eric ruled (2026-11-03): D12 a (filled by claude at his word)
-    // in ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an
-    // annotation, then a --check census: it comes back to him only if the stdlib, the
-    // book's examples or netidx-admin would need a new annotation): one instance per
-    // node a written binding's value type shares (ML's weak variable): `p <- mk(g)` is
-    // refused as its `let` form is; start from ~/ptmp/cr29/scratch/r9-N/item5-dag.patch,
-    // with a CLAUDE.md line and pins.
-    // 2026-11-04 claude: Round 15 lane M built D11 (b) and D12 (a) on branch
-    // cr50-M-parked (fb0072ecd..f90e93c94) and was parked. D12 held up (a written chain
-    // of 18 holders checks in 1.34G where main is killed at 150 s). D11 failed review
-    // three times in new ways, each the same cause at a new site: a call through a value
-    // no generic binding names shares its definition's cells, but wherever a generic
-    // copy meets those cells (a holder's read, then a struct update, then an array, map,
-    // list or select of composites) the merge keeps the copy's generic cell, so a later
-    // read copies what the shared call decided and the run refuses what the check passed
-    // (main runs those). The lane also refuses some well-typed arrays of composites with
-    // "expected fn not [fn, fn]". Back to Eric as the D11/D12 follow-up in
-    // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/M-r*/.
-    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D11/D12 follow-up: (a). Split
-    // D12 (one instance per shared node) out of cr50-M-parked (fb0072ecd), re-review and
-    // land it now.
-    // 2026-11-06 claude: Built D12 (a) alone on main 187fd838d (lane d12, round 18):
-    // CompileCtx::monomorphic memoizes every shared node (the memo is no longer skipped
-    // below an instantiated function or a typedef application copied as its expansion),
-    // so a written binding holds one instance per node its value's type shares and keeps
-    // the value's DAG. --check instructions:u (one eval thread, --no-cache; empty
-    // program 0.74G), base-r18 / lane: w-conn-12 16.09G / 0.75G; w-conn-16, w-conn-18
-    // and o-apart2-18 killed at 150 s / 0.75G, 0.75G, 0.76G; t-ownone-18 and
-    // u-wsingle-18 0.75G on the lane. Pin graphix-shell
-    // deep_nesting::written_holder_chains_check_in_linear_time (40 links of the w-conn
-    // and o-apart2 shapes within 4G; 0.9G and 1.0G with the change, over 4G without it).
-    // On this main the verdicts already agree with the let form: lane Q's call-result
-    // rule refuses p <- mk(g) and the annotated q over hh = (h, h) without this change
-    // (lang::types::written_value_sharing_a_node_holds_one_instance,
-    // written_holder_sharing_a_node_holds_one_instance and the twin
-    // written_value_of_two_reads_holds_two_instances pass on both), and the review-r9
-    // m5/mono probes check alike on base-r18 and the lane. Needs a soak.
-    // 2026-11-06 claude: Review of lane d12 (round 18, reviewer 2, medium; the cause is
-    // ec6d5fa05, not the merge rule: the reviewer's p1 binary did not carry D12,
-    // w-conn-18 runs out its 40 s there): memoizing every shared node also shared the
-    // argument a typedef expansion substitutes into two places, so val c: P<F<'a>> (type
-    // P<'t> = {f: 't, g: 't}, Q<'t> = ('t, 't)) was refused when written with two
-    // lambdas, where CLAUDE.md copies each function type apart. CompileCtx::monomorphic
-    // now leaves out of its memo, inside a typedef application copied as its expansion,
-    // any node whose rebuild instantiated beneath it (Memo::copied, kept per entry so a
-    // hit inside an expansion is not reused). Pin
-    // lang::interfaces::write_through_a_typedef_naming_a_function_typedef_twice_val_as_general
-    // (fails without it). Chains stay flat: w-conn/o-apart2/t-ownone/u-wsingle-18
-    // 0.75-0.76G, reviewer 2's 15 written shapes at 18 0.74-0.79G (empty 0.74G).
-    // Building (--expand) a chain of calls is still exponential, main alike: new CR
-    // call-dag-chain-build-01.
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
@@ -2318,58 +2107,6 @@ impl<R: Rt> CompileCtx<R> {
                     // a typedef's arguments stand for what its body holds:
                     // instantiated as one, or, where the body holds two
                     // places a copy takes apart, as its expansion would be
-                    // XCR claude for claude: [bug/low] A typedef application is copied as
-                    // one here, where its expansion would be copied per function type, so a
-                    // val typed by a typedef whose body names its parameter in two function
-                    // types is narrower in check_val_written (and the Connect hold) than the
-                    // same type written out: `type S<'a> = {f: fn(x: 'a) -> 'a, g: fn(x:
-                    // 'a) -> 'a}; val c: S<'a>` over `let c = {f: |x| x, g: |x| x}`, written
-                    // `m::c <- t ~ {f: |x| x, g: |x| x}`, is refused "val c is written, and
-                    // what is written lands on its implementation, of type { f: .., g: .. },
-                    // which the val's S<'a> does not fit" (sw8; sw6 over `{f: F<'a>, g:
-                    // F<'a>}` alike), where `val c: {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a}`
-                    // (sw1) and `{f: F<'a>, g: F<'a>}` (sw7) run "1 2", as main 968fa9bc0
-                    // runs all four (cr49-A since 5d12f43ae). It contradicts the book's
-                    // interface page ("each of its function types on its own") and
-                    // CLAUDE.md ("each function type's apart whatever their names").
-                    // Over-refusal only: `let c: S<'a> = ..` passes (sw6b). Copying the
-                    // expansion needs a guard for a recursive typedef, whose expansion holds
-                    // its own application, and prints the Connect hold's copy expanded
-                    // (lang::interfaces::write_through_a_typedef_val_refused names F<'a>),
-                    // unless only an application whose body names a parameter in two
-                    // function types expands; a read (Type::scheme_read) copies through one
-                    // cell map, written out or not, and is not concerned. probes:
-                    // ~/ptmp/cr29/scratch/r14-A/fix3/p/sw-{sw1,sw6,sw6b,sw7,sw8}
-                    // (iface-typedef-copy-01)
-                    // 2026-11-05 claude: Fixed: CompileCtx::monomorphic copies a typedef
-                    // application whose body holds two places a copy takes apart
-                    // (Type::copied_in_two_places: function types and applications holding a
-                    // copied cell) as its expansion, so each function type is copied on its
-                    // own; other applications stay copied as one (the Connect hold still
-                    // prints F<'a>), and an expansion that meets its own typedef (by
-                    // declaration site, Type::lookup_ref_declared) is copied whole. Pins that
-                    // fail without it:
-                    // lang::interfaces::write_through_a_typedef_of_two_functions_val_as_general
-                    // (sw8) and write_through_a_typedef_of_two_typedefs_val_as_general (sw6);
-                    // write_through_a_recursive_typedef_of_two_functions_val_as_general pins
-                    // the recursion guard. Needs a soak.
-                    // 2026-11-05 claude: Repair (review r17): (1) the split copy expanded every
-                    // nested application, so a nest of typedefs doubling at each level (T18
-                    // over T17 twice, ..) took time exponential in its depth (base 0.21 s, lane
-                    // 6.8 s at 18). CompileCtx::monomorphic now copies at most 64 applications
-                    // as their expansions, the rest as one (base's copy: narrower, never a
-                    // hole), and copied_in_two_places remembers each application's places by
-                    // its declaration and which arguments hold a copied cell (CopySites), so
-                    // its own walk ends too. (2) An application counts the places its expansion
-                    // holds, so an alias (type S<'a> = P<'a, 'a>) splits as P<'a, 'a> does.
-                    // lookup_ref_declared and lookup_ref_probe share lookup_ref_def; the walk's
-                    // sets are pooled. Pins that fail without the repair:
-                    // lang::interfaces::write_through_an_alias_of_a_typedef_application_val_as_general,
-                    // write_through_a_deep_nest_of_typedef_applications_ends (killed at 150 s
-                    // without it). Left: a refused hold of a split application prints the
-                    // expanded struct, not S<'a> (bnd1); printing the binding's type instead
-                    // loses the copy's normalized variables
-                    // (lang::types::written_after_generalized_is_held_to_it).
                     Type::Ref(_) if t.copied_outside_functions(m.open) => {
                         let apart =
                             t.lookup_ref_declared(m.env).and_then(|(key, body)| match m
@@ -4559,36 +4296,6 @@ fn compile_top<R: Rt>(
     Ok((node, out_scope))
 }
 
-// XCR claude for claude: [readability/low] An input's refusal over an earlier input's cell
-// names bindings but never the type to declare ("this input would decide a type of an
-// earlier input: annotate `j` (line 1, column 5 in `let j = s.g`)"): OwnWrites records only
-// the cell that would be decided, not what it would have become. It also names bindings
-// whose annotation cannot lift the refusal (`r` from `let r = &j`, g1; `w`, ld0 and n2), and
-// a refused load names only the first binding it tried to decide (rl1 names j; its check
-// then fails on fs too). Fix: record the would-be type beside the cell in OwnWrites and print
-// it as the declaration, and name only bindings whose written type holds the cell. Review
-// r14 D-r4-1. probe: ~/ptmp/cr29/scratch/review-r14/D-r4-1/{all/review-r14_D-r2-1__g1.txt,
-// new/rl1.txt} (./r.sh lane FILE) (input-refusal-type-01)
-// 2026-11-05 claude: An input's refusal over an earlier input's cell now names, for each cell
-// it would decide (up to three, so a load names every one), the first binding that holds it
-// (where the cell came from; a binding derived from it, as r from &j, would decide it again
-// under its own annotation) and the type it would take: annotate `j` (...) as `fn(x: i64) ->
-// i64`. OwnWrites records the would-be type beside each cell (ForeignWrite::declared). Pins
-// that fail without it: lang::repl_inputs::{refusal_names_the_declaration_of_the_origin,
-// load_names_every_cell_it_would_decide, earlier_value_is_decided_by_no_later_use,
-// write_through_a_reference_decides_no_earlier_type,
-// refused_input_decides_no_earlier_open_cell, load_decides_no_earlier_open_cell} and the tvar
-// unit test foreign_decisions_record_what_they_would_make. Needs no soak (message text only;
-// decisions unchanged). Judged: the first holder by binding id is the origin.
-// 2026-11-05 claude: Repair (review r17): (1) earlier_binds substituted only a binding's
-// first recorded cell and printed the rest as '_N: unbound, a type no one can write (j = s.g
-// over |x, y| (x, y), then app(j)); it now folds every recorded cell a binding holds into its
-// one type, and names the type only where no cell is left open outside a function type's
-// throws (open_as_written), printing it through DerefTVars. (2) The cap of three counted
-// cells, so a binding with three cells crowded out the next binding (both(j, k)); OwnWrites
-// keeps up to 16 cells and the refusal names up to three bindings. Pin that fails without the
-// repair: lang::repl_inputs::refusal_declares_every_cell_of_a_binding (its annotated twin
-// inputs run).
 /// A top-level input while it compiles: a REPL input, a script or a
 /// dynamic module's load. It is a compile task of its own: what an
 /// earlier input made reads as decided, and a decision about it is not

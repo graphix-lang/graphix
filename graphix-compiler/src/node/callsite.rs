@@ -243,54 +243,6 @@ type Join<'a> = dyn FnMut(&Env, &ArcStr, &Type, &Type, &Expr, Option<CompactStri
 /// the instance runs with; where the site hides the label, against `f`'s
 /// own parameter, and then against the label of `value`, the function as
 /// the site holds it, which it narrows.
-// XCR claude for claude: [bug/low] Two lambdas in one array whose labeled defaults have
-// different types pass the check and fail at every dynamic bind: `let fs = [|#d = 1, x:
-// i64| cast<string>(d)$, |#d = "q", x: i64| cast<string>(d)$]` and `fs[i]$(7)` (i from a
-// timer) passes --check, then each dispatch logs "binding the callee failed: type mismatch
-// string does not contain i64" in every mode (main eb0989d33 and lane N r15 alike). Not
-// traced: the meet of the two function types seems to keep one label type, against which
-// the default the site compiles is judged here. The check should refuse the meet (or the
-// site keep each definition's own label type). With block types instead of i64/string (two
-// defaults declaring different `type L`s) it fails the same way. probes:
-// ~/ptmp/cr29/scratch/r15-N/fix/two_defaults_plain.gx, two_blocks.gx
-// (array-defaults-meet-01)
-// 2026-11-05 claude: meet_open_fns (setops.rs) let the met member stand for the other
-// without its lambda ids, so a call through the array element judged only the last
-// lambda's default (lane s2 2026-11-05). It now links the ids, and check_omitted_defaults
-// visits the definitions in id order, so both defaults are judged against the one label
-// and the second is refused at the call (i64 does not contain string). Pins that fail
-// without the fix: lang::functions::array_defaults_of_two_types (annotated twin
-// array_defaults_with_declared_types and one-type twin array_defaults_of_one_type pass).
-// 2026-11-05 claude: Repair (review r17): the link reached the definitions' own types, so
-// a direct call of a named member (f1 <- never(); fs = [f1, f2]; f1(7)) judged the other
-// member's default and was refused. meet_open_fns now gives the met member a fresh FnType
-// whose LambdaIds (LambdaIds::joining) reaches both definitions' ids one way, used for
-// both slots; the definitions' nodes are untouched. Pins that fail without the repair:
-// lang::functions::array_member_called_directly_keeps_its_default,
-// array_member_beside_a_literal_called_directly. Kept: an array of lambdas whose defaults
-// differ in type is refused wherever a formal holds it (array::len(fs) too), not only at a
-// call through it: the formal judges each default against the met label
-// (check_hidden_defaults); CLAUDE.md and the skill say so.
-// 2026-11-05 claude: Repair (review r18): the meet built each met member's ids from the
-// two definitions of its last pair, so in an array of three or more a member's id was lost
-// and a differing default passed the check and failed at every run-time bind (ad3.gx,
-// ad_named3.gx), the verdict depending on member order. meet_open_fns now groups the
-// members it meets and gives each group one FnType whose LambdaIds joins every definition
-// of the group. A refused default of met functions now names the annotation
-// (callsite::met_default_note: annotate the binding with a function type whose label holds
-// every default), so array::len(fs), still refused, is told how to pass. Pins that fail
-// without the repair: lang::functions::array_defaults_of_three_odd_last,
-// array_defaults_of_three_named; the note: array_defaults_passed_on_name_the_annotation,
-// its annotated twin array_defaults_passed_on_annotated passes. Nested arrays are
-// array-defaults-nested-01.
-// 2026-11-06 claude: Repair (review r19): met_default_note named the annotation wherever
-// the value's type met two or more definitions, so x-typecheck-generics-04b (f = |#x = 1,
-// y| x == y met with g, which has no #x) was told to widen #x, which no annotation makes
-// pass. The note now needs two or more of the met definitions to have a default for the
-// label. Pin that fails without it: lang::functions::one_met_default_names_no_annotation.
-// Left: ad_write.gx (two met defaults where the first body adds d) still gets the note,
-// whose annotation its body refuses; telling that apart needs the bodies checked at the
-// union, more than a message is worth.
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt>(
     ctx: &mut CompileCtx<R>,
@@ -1355,81 +1307,6 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// XCR claude for claude: [bug/medium] An argument whose type holds a cell its uses decide
-// (a read target such as str::parse's or sys::net::subscribe's, an unwritten `let x =
-// never()`, an empty `[]`'s element) is not widened over: its cell is decided by
-// whichever argument the loop meets first, so "the widest argument, whatever the
-// order" fails for it. `{ let f = |#x: Array<'a> = [1], y: 'a| -> 'a y;
-// f(sys::net::subscribe("/local/dimpl1")) }` checks, and the same call with the
-// default written, `f(#x: [1], sys::net::subscribe(..))`, is refused ("'a: iN does
-// not contain ['a: iN, Error<..>]"): typemorph's default-materialize flip,
-// fuzz/pending-triage/oct29a/aieka/typeflip_000000.gx, still flips on main
-// df6600e9b. Four review rounds on branch cr30-u3 built a widening over such
-// arguments (+557/-114 lines here); each round's review found a new path dependence
-// (round 4: renaming f's type variables flips acceptance, and a parse result held in
-// a `let` is refused where main runs it). The rule is cr-discuss round 4 D1; the
-// rounds' probes are under ~/tmp/cr29/scratch/review{3,4,5,6}/u3/ (widen-open-01)
-// 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 D1): option (c). Each
-// argument adds a lower bound to the variable (the TCell::lower mechanism an
-// abstract's payload uses) and the statement's settle sets the variable to the join of
-// its lower bounds, so the order cannot matter by construction. A design doc and a
-// prototype first; branch cr30-u3 stays for reference.
-// 2026-10-31 claude: Eric ruled (round 5 D1): a widening variable met by a
-// function-typed argument does not widen; it binds as on main, pre-unification on, the
-// first argument deciding. Decisions: 1 (b'): the call's end judges the join, the widest
-// argument must contain every other, else the call is refused naming the argument; 2
-// yes, a parameter reaching a widening call as a union member stays generic; 3 yes, the
-// variable binds at the call's end; 4 confirmed, provided a census shows the newly
-// refused population is not too big; 5 accept the refusal; 6 refuse the call. Lane E
-// continues stages 2 and 3 on cr31-E.
-// 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D1 widening"
-// (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
-// 2026-11-03 claude: Eric ruled (2026-11-03): D7 b in ~/ptmp/cr-discuss.md, under his
-// rule for type holes (reject and require an annotation, then a --check census: it comes
-// back to him only if the stdlib, the book's examples or netidx-admin would need a new
-// annotation): keep the closed-argument join, an omitted default joining as a written
-// one; an argument part still undecided at the call's end is refused ("annotate it");
-// census first; rebuilt small from main, cr33-E kept for reference.
-// 2026-11-04 claude: Round 15 lane R built D7 (b) + D8 (c) on branch cr50-R-parked
-// (46a8eba9e..544862d33) and was parked: D7 held up (no argument order gives two
-// values), but D8's local rule failed review three times in new ways (a union not
-// widenable; then variant spellings; then, after judging per argument, invariant
-// positions such as Map<K, ['a, 'b]> and Error<['a, 'b]>). Main shares the remaining
-// splits: a generic parameter at the union beside a deciding sibling, a call's result
-// union decided by later writes, a callback parameter's union. Back to Eric as the D7/D8
-// follow-up in ~/ptmp/cr29/next-discuss.md; probes
-// ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
-// 2026-11-05 claude: Eric ruled (2026-11-05) on the D7/D8 follow-up: (c), land D7 alone:
-// split D7's part out of cr50-R-parked (544862d33) and re-review it.
-// 2026-11-06 claude: D7 alone carried onto main by lane d7 (round 18), split out of
-// cr50-R-parked 46a8eba9e/84833ebeb without D8: every argument at a formal holding a
-// widenable variable pre-unifies with the copy that leaves those variables open
-// (Widening::opening), so an argument holding an undecided cell decides none of them and
-// waits for CallSite::check_waiting, after the written arguments and the omitted
-// defaults have joined; where the join, or an undecided argument before it, decided a
-// variable and does not hold the argument, the refusal says 'annotate it', naming the
-// bindings it reads (callsite::undecided_note, computed before the check decides them).
-// f(str::parse("5"), 1) and f(1, str::parse("5")) are both refused (main runs the
-// first); opt::or_default(str::parse(s)$, 0) still reads an i64. Pins that fail without
-// it: lang::functions::undecided_argument_{first,last}_refused,
-// undecided_binding_{first,last}_named, two_undecided_arguments_{first,last}_refused,
-// lang::types::merge_under_a_constructor_in_a_call_array_first, must-reject family
-// open-arg (graphix-fuzz must_reject_families_are_refused_where_their_rules_say); admit
-// side annotated_argument_joins_either_order, undecided_argument_takes_the_closed_join.
-// A variable a callback also holds is outside the rule (widen-callback-open-01). Probes
-// ~/ptmp/cr29/scratch/r18-d7/w_order_{a,b}.gx. Needs a soak.
-// 2026-11-06 claude: Repair (review r19 of lane d7): Widening::opening copied every cell
-// of the formal, so a waiting argument decided none of its formal's other variables and a
-// callback after it met them unbound (f({p: [], q: {name: "s"}}, [2], |v| v.name) over
-// |x: {p: 'a, q: 'c}, y: 'a, k: fn(v: 'c) -> string| was refused, main ran it). The
-// opening copy now shares every cell but the widenable ones, so the argument decides the
-// others as it meets them; the y-first order (c2y), which main refused, runs too. The
-// 'annotate it' note is now added only where a decision of the argument's cells outside
-// function types could fit (callsite::annotation_may_fit): f(1, []) and a closed argument
-// holding an annotated lambda get the plain mismatch. Pins that fail without the repair:
-// lang::functions::waiting_argument_decides_its_callback_variable,
-// undecided_mismatch_names_no_annotation, closed_mismatch_names_no_annotation. Probes
-// ~/ptmp/cr29/scratch/r19-d7/{c1,c2,c2y,c6,m1,m6,nm3}.gx.
 // CR claude for eric: [bug/medium] D7 (b) closes order only for a variable no callback
 // holds: one a callback also holds is not widenable (round 5 D1: such a variable binds
 // as on main, the first argument deciding), so an undecided data argument there still
@@ -2471,98 +2348,6 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // XCR claude for claude: [risk/medium] An omitted labeled default only narrows: it is
-    // checked after Widening::settle has set the call's widenable variables, so a
-    // default wider than the arguments is refused when omitted and accepted when
-    // written. Over `let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y`, `f(#x: [1,
-    // null], 1)` checks and `f(1)` is refused ("Array<'a: i64> does not contain
-    // Array<[i64, null]>"); with an open argument, `f(#x: [1, null], str::parse("5"),
-    // 1)` checks and `f(str::parse("5"), 1)` is refused, a default-elide TYPEFLIP the
-    // fuzzer's typemorph reports. CLAUDE.md says an omitting site's check "may narrow
-    // that site's cells", and design/must_reject.md grades default-elide flips EXPECTED.
-    // Options: (1) an omitted default takes part in widening as a written labeled
-    // argument does (one more closed argument to Widening, before settle), so the two
-    // spellings always agree; (2) it stays narrowing-only and the flip is documented
-    // (the book's labeled-default section, CLAUDE.md). Recommend (1): a default is an
-    // argument the caller did not write, and the widest-argument rule promises a type
-    // that does not depend on how the arguments are written. probe:
-    // ~/tmp/cr29/scratch/review3/u3/d1_omit.gx against d1_written.gx, flip2_omit.gx
-    // against flip2_written.gx (default-widen-01)
-    // 2026-10-30 claude: Written on branch cr30-u3 (round 2 of the U3 soak fix, which
-    // did not land) and copied here unchanged. On main df6600e9b the closed pair splits
-    // as stated (d1_written checks, d1_omit is refused), but the open-argument pair is
-    // refused in both spellings: its written form checks only under the branch's
-    // widening of open arguments, which is cr-discuss round 4 D1.
-    // 2026-10-30 claude: Eric ruled (2026-10-30, cr-discuss round 4 D1): option (c) for
-    // arguments, so this CR's recommendation holds: an omitted default widens as a
-    // written one does, as one more lower bound under D1's mechanism. Built with
-    // widen-open-01.
-    // 2026-10-31 claude: Eric ruled (round 5 D1): a widening variable met by a
-    // function-typed argument does not widen; it binds as on main, pre-unification on,
-    // the first argument deciding. Decisions: 1 (b'): the call's end judges the join,
-    // the widest argument must contain every other, else the call is refused naming the
-    // argument; 2 yes, a parameter reaching a widening call as a union member stays
-    // generic; 3 yes, the variable binds at the call's end; 4 confirmed, provided a
-    // census shows the newly refused population is not too big; 5 accept the refusal; 6
-    // refuse the call. Lane E continues stages 2 and 3 on cr31-E.
-    // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "D1 widening"
-    // (~/ptmp/cr29/next-discuss.md). Readdressed to eric until then.
-    // 2026-11-03 claude: Eric ruled (2026-11-03): D7 b in ~/ptmp/cr-discuss.md, under
-    // his rule for type holes (reject and require an annotation, then a --check census:
-    // it comes back to him only if the stdlib, the book's examples or netidx-admin would
-    // need a new annotation): keep the closed-argument join, an omitted default joining
-    // as a written one; an argument part still undecided at the call's end is refused
-    // ("annotate it"); census first; rebuilt small from main, cr33-E kept for reference.
-    // 2026-11-04 claude: Round 15 lane R built D7 (b) + D8 (c) on branch cr50-R-parked
-    // (46a8eba9e..544862d33) and was parked: D7 held up (no argument order gives two
-    // values), but D8's local rule failed review three times in new ways (a union not
-    // widenable; then variant spellings; then, after judging per argument, invariant
-    // positions such as Map<K, ['a, 'b]> and Error<['a, 'b]>). Main shares the remaining
-    // splits: a generic parameter at the union beside a deciding sibling, a call's
-    // result union decided by later writes, a callback parameter's union. Back to Eric
-    // as the D7/D8 follow-up in ~/ptmp/cr29/next-discuss.md; probes
-    // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
-    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D7/D8 follow-up: (c), land D7
-    // alone: split D7's part out of cr50-R-parked (544862d33) and re-review it.
-    // 2026-11-06 claude: D7 alone carried onto main by lane d7 (round 18): an omitted
-    // default joins the widening as a written argument does (Widening::join_default,
-    // through checked_default's join), before the waiting arguments are checked. f(1)
-    // over |#x: Array<'a> = [1, null], y: 'a| prints 1 as f(#x: [1, null], 1) does, and
-    // both type the result [i64, null]. Pins that fail without it:
-    // lang::functions::omitted_default_joins_as_written,
-    // omitted_default_widens_the_result. Probes
-    // ~/ptmp/cr29/scratch/r18-d7/d1_{omit,written}.gx. Needs a soak.
-    // 2026-11-06 claude: Repair (review r19 of lane d7): an omitted default neither wider
-    // nor narrower than what the others gave its variable was refused at once in
-    // Widening::join_default, while the same value written waited and ran (f(1) over |#a:
-    // 'a = "s", #b: Array<'a> = [1, "s"], y: 'a| refused, f(#a: "s", #b: [1, "s"], 1)
-    // printed 1; the defaults' parameter order flipped the verdict). It now waits as a
-    // written argument does (Waiter::Default) and is checked once the others have widened
-    // the variable, its refusal keeping met_default_note's annotation. Pin that fails
-    // without the repair: lang::functions::omitted_incomparable_default_waits (both label
-    // orders). Probes ~/ptmp/cr29/scratch/r19-d7/{i1,i1w,i4,i5}.gx.
-    // 2026-11-06 claude: Repair 2 (lane d7 round 18 part 2): an omitted default holding
-    // an undecided cell was decided by label order (dp1: |#a: 'a = u, #b: 'a = n, y: 'a|
-    // with u = str::parse("abc")$ and n: [i64, string] made u i64, so f(1) printed 1 and
-    // u nothing; dp2, #b first, printed 1 and abc; du1 refused what du2 ran). It now
-    // waits as a written undecided argument does: Widening::join_default defers it
-    // (Waiter::Default) where its type has a free cell and its formal a widenable
-    // variable, and check_waiting checks it once the join is known, so dp1 = dp2 = dp3
-    // (written) and du1 = du2. Pins that fail without it:
-    // lang::functions::omitted_undecided_default_waits,
-    // omitted_undecided_default_waits_for_a_later_write. Probes
-    // ~/ptmp/cr29/scratch/r18b-d7/p/. Needs a soak.
-    // 2026-11-06 claude: Review r18b fixes (lane d7 final commit): an argument or omitted default is
-    // undecided (ArgFit::Open, Widening::join_default) only by a cell outside function
-    // types (Type::has_free_in_data), so a closed data argument holding a lambda joins at
-    // once as on main (h1/h4/h8/g2/g3/g5 print 1; pin
-    // lang::functions::lambda_beside_closed_data_joins fails without it). An omitted
-    // default refused at check_waiting names the undecided bindings it reads
-    // (undecided_binds), as written; pin omitted_undecided_default_names_the_binding
-    // fails without it. Still by order, as on main and documented in tvar_constraints.md:
-    // a function-holding argument or omitted default at a widenable variable
-    // (Widening::widen skips a type with an unbound cell), k1/k2 and |#p: ('a, fn(x: i64)
-    // -> i64) = (n, |x| x), y: 'a| called f(1). Probes ~/ptmp/cr29/scratch/r18d-d7/.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the
@@ -3510,28 +3295,6 @@ impl<R: Rt> CallSite<R> {
         let formals =
             ftype.args.iter().zip(g.args()).zip(ArgKey::of_formals(&ftype.args));
         for (i, ((farg, pat), key)) in formals.enumerate() {
-            // XCR claude for claude: [perf/medium] A formal whose type is a typedef naming a
-            // function type is no callback formal here: with_deref follows bindings, never a
-            // Type::Ref, so a call through it gets no static callee and de-fuses. `type K =
-            // fn(x: i64) -> i64; let outer = |#k: K, z: i64| (k(z), z); #[native] outer(#k:
-            // |x| x, 1)` is refused ("call `k(z)` has no static callee: its function is a
-            // run-time value"), where `#k: fn(x: i64) -> i64` fuses; a quantified typedef
-            // (`type K = fn<'a: Any>(x: 'a) -> 'a`) the same. typecheck0_instance's test of a
-            // callback formal reads the formal the same way. Expanding the formal's reference
-            // at these tests would make the two spellings fuse alike. Main 387c29e60 the same.
-            // probes: ~/ptmp/cr29/scratch/r11-R/{tdplain,tdpoly}.gx (typedef-callback-formal-01)
-            // 2026-11-05 claude: A formal typed by a typedef naming a function type is a
-            // callback formal: Type::is_function expands the name (lookup_ref_probe), used by
-            // register_fn_params, typecheck0_instance's callback test, the def gate's param knot
-            // and fusion lowering (replacing is_fn_shaped). Pins that fail without it (jit,
-            // jit_par): lang::fusion::typedef_callback_formal_fuses,
-            // quantified_typedef_callback_formal_fuses. Two fixtures that took a typedef'd fn
-            // formal now fuse (FuseExpect::Jit):
-            // modules::interface_typedef_with_a_trait_parameter,
-            // types::rank2_written_holders_take_general_values. Needs a soak.
-            // 2026-11-05 claude: Lane Q (cr51-Q): the quantified typedef spelling (type K =
-            // fn<'a: Any>(x: 'a) -> 'a) is now refused where it is written (QUANTIFIED_FN), so
-            // tdpoly is moot; the plain typedef case (tdplain) stands.
             if !farg.typ.is_function(&ctx.env) {
                 continue;
             }

@@ -244,25 +244,6 @@ impl Reader {
         }
     }
 
-    // XCR claude for claude: [bug/medium] Order is judged by boundary only: a reader in a
-    // boundary the walk is still inside counts as ahead, though the walk may have passed it
-    // there, so it never gets the fire. A Deref directly in a statement, before a nested block
-    // statement that fires its target: `{let rr: [&i64, null] = null; let p = (*(rr$), { let
-    // inner = array::iter([i64:1, i64:2, i64:3, i64:4]); rr <- &inner; inner }); p}` ends (3,
-    // 4), the same program as two statements (4, 4); a callee's let in the same statement
-    // alike (s3_same_stmt_callee 40, 50 against the split's 50, 50). Main behaves the same (it
-    // has no late path); the docs state the limit. Record the read order inside a boundary (a
-    // Deref's read stamp compared at the fire) or keep the limit. probe:
-    // ~/ptmp/cr29/scratch/review-r16/W-r1-1/{fz_s1,fz_s4,s3_same_stmt_callee,s4_split_stmt_callee}.gx
-    // (late-same-boundary-01)
-    // 2026-11-05 claude: A Deref keeps a read stamp (prune::ReadStamp, carried in its Reader) set as
-    // it reads; Reader::passed_by counts a reader that read this cycle as passed, so a *r before a
-    // nested block or call of its own statement that fires its target reads the fire next cycle, as
-    // the split statement does, and late_fire matches the stamp so a Deref after the producer takes
-    // no late copy. Pins that fail without it:
-    // lang::delivery::a_fire_reaches_a_passed_dereference_in_its_statement (all four modes); unit
-    // prune::tests::a_reader_in_the_walks_boundary_is_passed_once_it_read. Docs: CLAUDE.md,
-    // design/dense_delivery.md, book core/connect.md, graphix-lang skill. Needs a soak.
     /// Whether a walk now inside `at` in `cycle` has passed the reader: it
     /// read in `cycle`, or the walk reached its boundary, or one around it,
     /// and left it, the verdict that of the innermost of them the walk

@@ -807,77 +807,6 @@ fn exact(t: &Type) -> bool {
     walk(t, &mut LPooled::take())
 }
 
-// XCR claude for claude: [perf/medium] A type shaped like a DAG under a bound
-// elaborates in exponential time, though it checks flat. A value DAG (`let
-// x{i+1} = (x{i}, x{i})`, then `'a: Array<'b> |x: 'a, y: 'b| 0` called with
-// `[]` and x{N}) costs 0.06 / 0.22 / 0.81 / 2.91 / 11.5 G instructions net of
-// the stdlib under `graphix --expand --no-cache` at N = 16 / 20 / 22 / 24 /
-// 26, and a run costs the same; with no bound (`|x: Array<'b>|`) it is flat.
-// Callgrind at 22: `exact` is called 8.4M times (2^23), recursing through
-// bindings and for_each_child with no memo, from commit_cell_bounds; a memo
-// keyed by node and cell address, as reaches_no_open_cell keeps, would fix
-// that shape. A chain of Map bounds (`'a{i}: Map<'a{i+1}, 'a{i+1}>`) is
-// worse: 0.99 / 15.7 / 62.9 / 251.6 G at 16 / 20 / 22 / 24, through
-// fntyp::position_cells (collect_position_tvars, collect_tvars_seen),
-// ContainsHist::closed and would_cycle_inner too, so each walk needs a
-// node-identity memo. Bound DAGs of tuples (`('a{i+1}, 'a{i+1})`: 21.9 G at
-// 26), skip-two tuples (6.39 G at 34) and structs (5.36 G at 24) likewise.
-// Main 968fa9bc0 costs the same. The chain: chainbounds-elab-01. Found by
-// review r14 of lane K (final). probes:
-// ~/ptmp/cr29/scratch/review-r14/K-r3-1/p/{vdag_26,map_24,dup_26,skip2_34}.gx
-// (gen.py, genv.py; sweep.txt; cg/{vdag_22,dup_22,map_16}.out.gz)
-// (bound-dag-elab-01)
-// 2026-11-05 claude: Fixed: contains::exact walks each shared node and cell
-// once (it stops at the first inexact part), and a map type is one allocation
-// (Type::Map(Arc<MapType>), Type::map), so node_addr gives it an identity and
-// every node-memo walk (position_cells, ContainsHist::closed,
-// would_cycle_inner, collect_tvars_seen) takes a shared map once. --expand
-// --no-cache, debug, total G instructions (empty program 0.93-0.98): vdag 26
-// 12.85 -> 1.00, dup 26 23.3 -> 0.95, map 24 252.9 -> 0.96, skip2 34 7.7 ->
-// 0.97, sdag 24 6.3 -> 0.96; all five at depth 60 under 1.07. GUI --check total
-// 43.16 G (lane head) -> 43.21 G. Pin: graphix-shell/tests/deep_nesting.rs
-// bound_dags_elaborate_in_linear_time (the five shapes at depth 60, 10 G budget
-// each); it fails with exact's memo removed (the value DAG) and with
-// node_addr(Map) None (the map chain).
-// XCR claude for claude: [perf/medium] Elaborating a chain of bounds is cubic
-// in its length, where its check is linear (chainbounds-cubic-01): `graphix
-// --expand --no-cache` of deep_nesting's chainbounds program costs, net of
-// the stdlib, 0.76 / 5.29 / 40.3 / 381 / 3520 G instructions at 250 / 500 /
-// 1000 / 2000 / 4000 links, declared in either order, and running it costs
-// the same (every run and build elaborates): about 50 T at CHAIN_DEPTH, a
-// hang. Main 968fa9bc0 is cubic too (1.29 / 9.26 / 73.0 G at 250 / 500 /
-// 1000). Callgrind at 500 links: GXLambda::new -> lambda::instance_sig ->
-// FnType::check_contains binds the signature's copy to the instance's
-// types, expanded trees that hold no cell (Array<Array<..Number>>); binding
-// 'a0 commits its conjunct Array<'a1> here and through cell_constraints_ok
-// / conjuncts_admit down the chain, and contains_dispatch's arms for an
-// open cell against a type run the occurs check (would_cycle_inner, 130,777
-// calls, about N²/2) over the type below each cell: CycleWalk::go is 4.75 G
-// of the 5.3 G net. A type that holds no cell reaches none, so those walks
-// answer nothing; making the count of walks and each walk's length small
-// needs what these walks lack (knowing a node holds no cell without walking
-// it, or a conjunct probed once a chain). Its fix gets a pin that elaborates
-// the chain at two depths (deep_nesting's checks_within under --expand).
-// Found by review r14 of lane K (round 3). probes:
-// ~/ptmp/cr29/scratch/review-r14/K-r2-1/p/{chainbounds_250,chainbounds_500,run_rev_500}.gx
-// (gen.py chainbounds[:rev] N OUT), expand_sweep.txt, cg/exp_{250,500}.out.gz
-// (chainbounds-elab-01)
-// 2026-11-05 claude: Fixed. Three walks the chain repeated per link: the probe memo was
-// dropped at every commit's entry, so each link re-probed the rest of the chain
-// (ContainsHist's probe verdicts now stand while tvar::cell_writes, a per-thread count of
-// cell and link writes kept by CellLock::write and TVar::write, stands); the occurs check
-// walked each instance tree (ContainsHist::holds_no_cell, memoized with closed as a
-// Closure, skips it for a node holding no cell); commit_cell_bounds' post-commit
-// exact/has_unbound walks ran over the bound tree (ContainsHist::closed_now answers first,
-// its verdicts restamped by cell_writes). Also FnType::constraint_view normalizes with one
-// NormCx and reads the quantifiers by name. --expand --no-cache, debug, total G
-// instructions (empty 0.96): 500 links 6.28 (base-r17) -> 1.14, 1000 41.9 -> 1.30, 10000
-// 4.12, 30000 reversed 10.8. Pin: graphix-shell/tests/deep_nesting.rs
-// a_chain_of_bounds_elaborates_in_linear_time (10000 forward under 8G, 30000 reversed
-// under 18G); it fails without the change (8.2G over 8G at 10000), and each of the three
-// parts removed alone costs 6-23G at 4000. Census 2942 files: no verdict or message
-// change. GUI --check total 43.19G (lane head) -> 43.40G. probes:
-// ~/ptmp/cr29/scratch/r17-hk/chainbounds_{gen.py,500.gx,1000.gx}
 /// Give the open cells inside `t`, about to be bound into the cell, their
 /// part of each exact structural conjunct (`Array<i64> ⊇ Array<'y>` binds
 /// `'y`), each trait conjunct (every member of a union implements the
@@ -929,46 +858,6 @@ fn commit_cell_bounds(
     Ok(true)
 }
 
-// XCR claude for claude: [perf/medium] Two neighbours of the chain of bounds
-// elaborate superlinearly, though each checks in linear time. A chain
-// through a typedef's parameter (`type T<'x> = Array<'x>`, `'a{i}:
-// T<'a{i+1}>`) costs 0.97 / 8.8 / 126 / 1951 G instructions net of the
-// stdlib under `graphix --expand --no-cache` at 60 / 125 / 250 / 500 links,
-// about N^4 (15x a doubling); a chain through a union (`'a{i}:
-// [Array<'a{i+1}>, null]`) 2.23 / 14.65 G at 250 / 500, cubic. Main
-// 968fa9bc0 costs the same (typedef 0.92 / 8.8 / 126.7 G at 60 / 125 / 250,
-// union 3.07 / 20.07 G). Callgrind for the typedef (60 against 125):
-// FnType::contains -> commit_cell_bounds -> here -> setops::union_identical
-// -> Identity::same / same_inner / all -> TypeRef::same_definition, 0.50 ->
-// 8.0 G. The direct, tree, formals, held-by-bound and uncalled shapes are
-// near linear under --expand. The chain itself: chainbounds-elab-01. Found
-// by review r14 of lane K (round 3). probes:
-// ~/ptmp/cr29/scratch/review-r14/K-r2-1/p/{typedef_125,typedef_250,union_500}.gx
-// (gen.py typedef|union N OUT), expand_sweep.txt, cg/td_{60,125}.out.gz
-// (chainbounds-elab-neighbours-01)
-// 2026-11-05 claude: chainbounds-elab-01's fix (probe verdicts standing across
-// commits that write nothing) takes the union chain from 15.69 to 1.70 G total
-// (base-r17 to lane, --expand --no-cache, union_500.gx; empty 0.96); the typedef
-// chain is unchanged (typedef_125.gx 9.65 -> 9.60 G), still in union_identical
-// -> TypeRef::same_definition.
-// 2026-11-05 claude: Fixed for the typedef chain; the union chain was fixed by
-// chainbounds-elab-01. RefHist::ref_id found a typedef application by scanning
-// every param list seen for its definition with union_identical, each a walk
-// down the chain: it now keys an application by its params' ids
-// (RefHist::param_id, the walk's own ids, an abstract type and an unresolvable
-// name by structure) in a hash map, and a ref node met again by its node.
-// probe_key keys a Ref by its node, so a link's conjunct T<'a{i+1}> is probed
-// once a chain and not once a link. --expand --no-cache, debug, total G
-// instructions (empty 0.98): typedef 125 links 9.72 (base-r17) -> 1.09, 250
-// 127.2 -> 1.38, 500 -> 2.41, 1000 -> 6.49; either part alone at 1000: 112
-// (ref_id) / 371 (probe_key). Still quadratic, not linear (typedef 2000 23.2,
-// union 1000 / 2000 3.61 / 11.16): chainbounds-elab-quadratic-01. Pin:
-// graphix-shell/tests/deep_nesting.rs
-// a_chain_of_bounds_through_a_typedef_or_a_union_elaborates (1000 links each;
-// typedef under 12G fails without the change at 12.1G+). Census 2942 files: no
-// verdict or message change against the lane's previous head (o3g). GUI --check
-// 43.38/43.46G (lane head before: 43.40G). probes:
-// ~/ptmp/cr29/scratch/r17-hk/elabnb/
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
@@ -2432,59 +2321,6 @@ impl Type {
         {
             return Ok(r);
         }
-        // XCR claude for claude: [perf/low] A probe keeps a verdict only where its walk
-        // assumed no pair from further out, so over names that recur through error
-        // payloads one containment walk can be exponential: generated p1088.gx (gen_rnd.py
-        // seed 1088) and err4.gx (mkerr.py 4: X_i = [Error<X_i+1>, Error<X_k>,
-        // Error<Error<X_i+2>>, `P], a Y twin with `Q, `select v: [X0, Y0] { Y0 as y => 0, _
-        // => 1 }`) time out at 60 s, on main and on cr48-X with diff-cycle-hang-01 and
-        // matching-type-contains-dag-01 fixed, in Select::typecheck0_with ->
-        // PatternNode::capture_type -> Type::matching_type -> contains_int under
-        // set_covers_by_distribution. Keeping also a false found while pairs in progress
-        // were assumed, where no question answered by assumption (tainted), ends p1088 in
-        // 0.5 s (refused, an experiment, not landed): sound by could_match's refuted
-        // argument (assuming pairs in progress contained only adds containments) if no
-        // rule of contains reads a false as a reason for a true, which nobody has checked.
-        // err4 still times out with it: its falses rest on distribution questions in
-        // progress, its trues on pairs in progress (could_match's Rests is the direction).
-        // probes: ~/ptmp/cr29/scratch/r11-X/{p1088.gx, err4.gx, mkerr.py}
-        // (contains-probe-falses-01)
-        // 2026-11-03 claude: Review r11 round 2 (X-r2-2) adds a shape: mkgd.py N, a DAG T_i
-        // = [`L(T_i+1), `R(T_i+1)] over a G whose parameters grow (grow5's), a twin S over
-        // P. Its --check ends on cr48-X (main hangs earlier, in diff) but doubles per
-        // level: gd6 2.19G, gd8 4.14G, gd10 11.68G instructions (one eval thread, perf), so
-        // gd20 would not end. The reviewer's callgrind of gd8 (7d0551cac) put 2.49G of
-        // 3.85G in narrow_pattern's contains (setops Identity::same), not in diff or
-        // PathApps. probe: ~/ptmp/cr29/scratch/review-r11/X-r2-2/mkgd.py
-        // 2026-11-03 claude: cr48-X2 (main 8814f118b with the union fix, without cr48-X's
-        // growth cut): p1088.gx and err4.gx are still killed at 60 s on base-r11 and
-        // cr48-X2. The gd shape above now ends on main too, refused by rep_collision's
-        // growth reason (which names P, not G: growth-reason-name-01), at the same cost on
-        // both: perf instructions, one eval thread, base-r11 / cr48-X2, gd6 2.19G / 2.19G,
-        // gd8 4.14G / 4.14G, gd10 11.68G / 11.67G, so it doubles per level on main as well;
-        // 'main hangs earlier, in diff' held for base-r10. probes:
-        // ~/ptmp/cr29/scratch/r11-X/x2/ (p1088.gx, err4.gx, gd6.gx)
-        // 2026-11-05 claude: Every probe verdict is now kept, by what it assumed
-        // (ContainsHist::rests: the shallowest pair taken to hold, questions taken to hold
-        // and to fail, a growth cut). Settled for good (Rests::settled): a false that took
-        // only holds and a true that took only failures, by monotonicity; I checked the
-        // probe-mode rules and each combines sub-verdicts by and/or (set_commit's first
-        // member, distribution's position pick and pool, the open-member rest-or-whole
-        // choice, the NoError and witness fallbacks), so no false is a reason for a true.
-        // Any other verdict is provisional (ContainsHist::provisional), read while its
-        // assumptions stand: when one is answered, those reached since take what the answer
-        // rested on, and those agreeing with a wrong assumption are dropped. A false a
-        // growth cut refused is kept only where it assumed nothing, as before. Pins,
-        // contains.rs tests: names_recurring_through_errors_contain_in_polynomial_steps
-        // (n=4/8/16; lane HEAD fails at n=4, Y0 ⊇ X0 495603 steps vs 588; without the
-        // provisional memo n=16 takes 11.2M steps vs 25k, over the 64k bound) and
-        // a_kept_probe_verdict_is_the_pairs_own (pairs asked in one walk either way answer
-        // as alone; fails if every verdict is kept as settled). p1088.gx now passes
-        // contains and hangs in diff (diff-cycle-hang-01); err4.gx hangs in matching_type's
-        // union normalization (matching-type-merge-01, new); the gd shape was already
-        // polynomial on this lane's head. Census 2942 files vs lane head: 0 verdict, 0
-        // message changes; GUI check 42.97G -> 42.98G instructions. probes:
-        // ~/ptmp/cr29/scratch/r17-hk/
 
         let (height, outer) = hist.enter_verdict();
         let r = self.contains_dispatch(flags, env, hist, t);

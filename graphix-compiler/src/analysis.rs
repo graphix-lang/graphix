@@ -1925,27 +1925,6 @@ fn instance_summaries<R: Rt>(
     sums
 }
 
-// XCR claude for claude: [bug/medium] A closure chain through a recursion forks a branch
-// that reads what its left sibling publishes in the same cycle, so the forked node-walk
-// differs from the serial one, on main as well. `let rec f = |n, g| { let y = x * 100 + n;
-// select n { 0 => g(0), n => f(n - 1, |u| y + g(u)) } }; (x, f(3, |u| u))` with x counting
-// 0..4: serial 0:(0,6) 1:(1,306) .. 4:(4,1206); forked 1:(1,206) .. 4:(4,1106), one
-// level's y a cycle behind and the first cycle's output lost (graphix-fuzz check:
-// DIVERGENCE, parallel evaluation bug). GRAPHIX_PAR_AUDIT=1 GRAPHIX_PAR=force --no-fusion
-// on cl_small.gx panics: "a forked branch read BindId(..), which its left sibling published
-// in the same cycle"; under the default Auto a depth-500 chain printed 150249 before
-// 150250. A fork point inside the chain (a call's arguments, a constructor's fields) is
-// missed by plan_block's summaries, analysis::escaping or hands_out_callee_binds: the
-// closure handed down captures y, which the callee's own call reads. probe:
-// ~/ptmp/cr29/scratch/r16-W/{fz_cl.gx,cl_small.gx} (par-closure-chain-01)
-// 2026-11-05 claude: instance_summaries keeps an instance's own bindings that a lambda in
-// its body captures (analysis::lambda_captures, shared with escaping): a self-call shares
-// the instance, so the closure it hands down reads the caller's let in the next activation,
-// and the caller's block now breaks its run there. Pins:
-// lang::par_attrs::{a_closure_handed_down_a_recursion_reads_the_callers_let,
-// a_closure_handed_down_through_a_helper_reads_its_let} (both fail without it: forced
-// Interp 10206.. and 103206..); graphix-fuzz check of fz_cl.gx AGREE (base-r17:
-// DIVERGENCE). PARAUDIT-NOFORK over the par-mode fixtures unchanged (1102 both).
 /// A block's statements as runs for forking (`design/parallel_eval.md`
 /// §3.3): `(start, end)` ranges over `children`, catches left out. A run
 /// is contiguous and holds no catch, and no statement in it reads what

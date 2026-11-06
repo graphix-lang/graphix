@@ -576,34 +576,6 @@ impl StructurePattern {
             .and_then(|(tv, w)| w.map(|w| (tv, w))))
     }
 
-    // XCR claude for claude: [bug/high] The closed-written-test rule judges the test's
-    // spelling: meets refuses a written part over the variable only when `has_free() ||
-    // has_bottom()`, and neither looks inside a typedef's body (a `Type::Ref`'s children
-    // are its parameters), while the pattern compile expands only the written type's top.
-    // So `type BotA = `A(_)` (or `type Bot = _`) and `(BotA, i64) as (`A(z), n) => z + 1.5`
-    // over `'b: [`A(i64), `B(i64)] |x: ('b, i64)|` passes: matching_parts types z as ⊥,
-    // the JIT panics ("kernel param `z`: runtime I64(3) does not match the compiled
-    // Scalar(F64) slot") and the node-walk prints 4.5; `-> 'b .. => z` returns 3 typed 'b
-    // and the caller's select finds no arm. A typedef at the top (`BotA as `A(z)`) and a
-    // typedef parameter (`Wr<_>`) are refused. Main (968fa9bc0) is the same (round 1's
-    // high, which the closedness rule was meant to close); CLAUDE.md, the skill and
-    // design/tvar_constraints.md say a written test holding `_` is refused. Fix: judge
-    // what matching_parts gives each bind inside the rigid cell (refuse ⊥ or an open
-    // cell), which catches any spelling, or walk the written part with typedefs expanded;
-    // pin t1c, t13, a2, a3, a6, a10 with closed twins. Review r14 B-r3-1, B-r3-2. probe:
-    // ~/ptmp/cr29/scratch/review-r14/B-r3-1/a/{t1,t1c,t12,t13}.gx,
-    // ~/ptmp/cr29/scratch/review-r14/B-r3-2/td/{a2,a3,a6,a7,a10}.gx (d6-typedef-bottom-01)
-    // 2026-11-05 claude: The written-test closedness check now looks for _ through the
-    // typedefs a written part names (Type::holds_bottom, over Type::holds), so (BotA, i64)
-    // as .., Array<BotA> as .., `A(T) as .. over type T = _ are refused like a spelled _.
-    // Pins in lang::select:
-    // written_test_typedef_of_bottom_inside_a_declared_variable_refused,
-    // written_test_typedef_holding_bottom_inside_a_declared_variable_refused,
-    // written_test_typedef_holding_bottom_at_an_element_refused,
-    // written_test_typedef_holding_bottom_returning_the_variable_refused (all four fail
-    // without the fix), closed twin written_test_closed_typedef_inside_a_declared_variable.
-    // Census of both repos unchanged. An abstract type's hidden representation is not
-    // walked (its values carry the same rep the bound names).
     fn meets(
         &self,
         env: &Env,
@@ -866,37 +838,6 @@ impl StructurePattern {
         Ok(true)
     }
 
-    // XCR claude for claude: [bug/high] D6 misses a pattern inside the element of a
-    // constructor-variable collection: parts_over has no case for an unfilled
-    // `Type::App` ('c<'b>, or the element quantifier of a `c: Collection` parameter), so
-    // may_hold is false for that member, meets skips it and nothing inside the element is
-    // judged. `|c: Collection| -> [string, null] select c { [`A(z), ..] => z, _ => null }`
-    // over `[`A(3)]` prints "a string of length 0" fused and logs "no arm matches" with
-    // --no-fusion (graphix-fuzz check: DIVERGENCE); `[`A(z), ..] => z + 1.5` panics the JIT
-    // link fused and prints 4.5 node-walked; a list pattern and a tuple element do the
-    // same. The written twin `Array<[`A(i64), `B(i64)]> as [`A(z), ..]` works. Main
-    // (968fa9bc0) is the same. Fix: in parts_over, may_hold and written_parts, read an
-    // unfilled App's argument as a slice pattern's element type, so the walk reaches the
-    // rigid element; pin ct4 and ct13 with the written twin. Review r14 B-r3-1. probe:
-    // ~/ptmp/cr29/scratch/review-r14/B-r3-1/i/{ct1,ct4,ct7,ct8,ct13,ct11}.gx
-    // (d6-collection-element-01)
-    // 2026-11-05 claude: parts_over reads an open constructor's application ('c<'b>, c:
-    // Collection's element) as a slice's collection of its argument, so D6 (meets,
-    // may_hold, written_parts) reaches the element: ct1/ct7/ct8 are refused naming the
-    // written test, ct4/ct13 by the undecided-type rule (whose written twin base refuses
-    // too). The advice writes the application as the slice's collection (slices_written in
-    // node/pattern.rs: Array<..>/List<..>, never the unmatchable 'c<..>), and
-    // Type::matching_type reads it the same way under a written test, so the binds of the
-    // advised twin take the test's part: before, `Array<(i64, i64)> as [(a, b), ..] => {
-    // let q: string = a; q }` over 'c<'b> checked and aborted the JIT test process. Pins in
-    // lang::select: collection_variable_element_pattern_refused,
-    // collection_variable_list_element_pattern_refused,
-    // collection_variable_tuple_element_pattern_refused,
-    // collection_parameter_element_pattern_refused,
-    // collection_parameter_element_pattern_arith_refused,
-    // collection_variable_element_written_test_types_binds (all fail without the fix, the
-    // last by SIGABRT), twin collection_variable_element_written_test. A name over the
-    // element (`[h, ..]`) is still not typed 'b: collection-element-bind-01.
     /// Each sub-pattern with the part of `m`, a member of a type (a
     /// constructor at its head), it stands over; `None` where `m` is not
     /// of this pattern's shape. An abstract pattern holds the type `ids`

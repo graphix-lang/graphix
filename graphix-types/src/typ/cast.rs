@@ -2585,23 +2585,6 @@ fn rep_collision(
         return None;
     }
     ensure_sufficient(|| {
-        // XCR claude for claude: [bug/low] The growth refusal names the first reference
-        // of the pair, which need not be the definition that grew: review r11's gd6.gx
-        // (`type G<'a> = [i64, Error<G<Array<'a>>>]; type P = [i64, Error<P>]`, a DAG
-        // of `L/`R names over each, `select v { S0 as x => 0, _ => 1 }`) is refused on
-        // main 8814f118b "which hold P, whose parameters grow as it recurses", and P
-        // has none. contains' growth error names its pair's first reference the same
-        // way (Type::contains_dispatch). cr48-X aeac81f7c named the side with the
-        // larger parameters here and the side whose definition key grew in contains, a
-        // message fix that did not come to main, since it rode the parked growth cut
-        // (diff-cycle-hang-01). probe: ~/ptmp/cr29/scratch/r11-X/x2/gd6.gx
-        // (growth-reason-name-01)
-        // 2026-11-05 claude: The growth refusal names the side of the pair that grew
-        // (cast::growing_side, told to walk's grows closure, per-side parameter sizes
-        // kept beside the path; contains names the side whose definition key grew).
-        // gd6.gx and m2.gx now say G, not P. Pins that fail without it: lang::types
-        // growing_typedef_select_names_growing_pattern_side and
-        // growing_typedef_bind_names_growing_source.
         let grows = |side: usize| match [a, b][side] {
             Type::Ref(tr) => Some(Indiscernible::Grows(tr.name.clone())),
             _ => unreachable!("only a reference grows"),

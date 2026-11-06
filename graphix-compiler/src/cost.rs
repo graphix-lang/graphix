@@ -527,52 +527,6 @@ impl<'a> Meter<'a> {
                     m.prefix[i + 1] = m.prefix[i] + est;
                 }
                 m.settled |= m.hist.iter().all(|h| h.n == 0 || h.n >= SETTLE);
-                // XCR claude for claude: [perf/medium] A settled site resets its sampling
-                // period only when a p75 bucket moves. After its children turn cheap,
-                // each sample (1 in 256 updates) lands far below the p75 without moving
-                // it until cheap samples are about 3x the heavy ones, so the site forks
-                // cheap children on every update for roughly 7700 updates. Treat this
-                // update's own times disagreeing with the estimates as a change: a
-                // child's sample two or more buckets from its p75, or a total under 2T
-                // at a site that says it pays. That resets the period to 0, so the
-                // histogram turns over in tens of updates. SlotSite::measured_with has
-                // the same `e != *est` trigger. probe:
-                // design/review-2026-10-26/repro/c-cost-misc-fork-fade.gx (cheap window
-                // 0.15 s after a heavy phase against 0.055 s without one or under Off;
-                // 0.048 s with forking disabled). (c-cost-misc-01)
-                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q67,
-                // Auto forks that cost more than they save): yes, all three (the
-                // recommendation: all three.)
-                // 2026-10-28 claude: Not fixed. A rework covering this CR with
-                // c-cost-misc-01, x-perf-runtime-02 and x-parallel-01 (handler instances
-                // planned as a SlotSite, a fork's threshold raised by a decayed setup
-                // overhead, four strict losses before a site goes serial, hysteresis on
-                // the sampling schedule) was built and measured, and dropped: pinned to
-                // cores 0-11, --no-fusion, mixed.gx (a recursion whose depth alternates
-                // 0 and 9 per cycle) took 1.53 s with the rework's first two rounds and
-                // 1.42 s with all three, against 1.03 s on main; fade.gx gained
-                // 0.02-0.04 s. The cause is the cost model, not the loss rule (which
-                // fired at most 40 times a run): a sample taken while a child forked
-                // counts only as a lower bound, which inflates a recursion's upper
-                // levels, so they fork about twice as often and the level below them
-                // almost never. A next attempt should keep main's nested samples or
-                // measure against them on mixed.gx. The patches and the benchmark
-                // scripts: ~/tmp/grok-forkcost/ and ~/tmp/grok-forkcost/bench/
-                // (run1.sh, batch.sh, p/mixed.gx, p/fade.gx).
-                // 2026-11-05 claude: A settled site's sample that contradicts its
-                // estimates (a child two or more buckets from its p75, or a total under
-                // 2T where the estimates fork) resets the sampling period to 0, in
-                // ForkSite (Meter::timed/done) and SlotSite::measured_with alike
-                // (Calibration::contradicts). fade.gx's cheap window (debug,
-                // --no-fusion, Auto): 0.048-0.052 s against 0.16-0.20 s on base-r17,
-                // 0.046-0.053 s with heavy_until=0; mixed.gx 2.11-2.25 s against
-                // 2.11-2.23 s on base. Pins that fail without it:
-                // cost::tests::fork_site_follows_children_that_turn_cheap,
-                // fork_site_follows_a_child_that_turns_dear,
-                // slot_site_follows_slots_that_turn_cheap;
-                // fork_site_keeps_its_period_over_agreeing_samples pins that a sample
-                // within a bucket keeps the period. x-perf-runtime-02 (the fork overhead
-                // and the back-off) is not addressed here.
                 m.sampler.sampled(m.settled, changed);
                 let pays = Splits::Weighted { prefix: &m.prefix, t: cal.t }
                     .split(0, n)
@@ -812,60 +766,6 @@ impl SlotSite {
                 } else if saturated() {
                     SlotPlan::Serial
                 } else {
-                    // XCR claude for claude: [perf/medium] This fork is taken for any loop
-                    // whose slots cost over T, and T counts only a worker's wake
-                    // latency. It leaves out each branch's fork and merge, the slower
-                    // slot updates inside a branch, and the CPU the woken workers spin
-                    // away. 2000 idle node-walked slots with one 1 ms timer finish
-                    // fewer cycles under Auto than serially (1327 vs 1445 in 3 s) on
-                    // 12.7 CPU-s instead of 1.8. Decide the policy: verify that a
-                    // forked run beats its serial estimate and back off to Serial when
-                    // it does not, and/or include the branch overhead in the minimum
-                    // range cost. probe:
-                    // design/review-2026-10-26/repro/x-perf-runtime-auto-cpu.sh
-                    // (x-perf-runtime-02)
-                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2,
-                    // q67, Auto forks that cost more than they save): yes, all three
-                    // (the recommendation: all three.)
-                    // 2026-10-28 claude: Not fixed. A rework covering this CR with
-                    // c-cost-misc-01, x-perf-runtime-02 and x-parallel-01 (handler
-                    // instances planned as a SlotSite, a fork's threshold raised by a
-                    // decayed setup overhead, four strict losses before a site goes
-                    // serial, hysteresis on the sampling schedule) was built and
-                    // measured, and dropped: pinned to cores 0-11, --no-fusion, mixed.gx
-                    // (a recursion whose depth alternates 0 and 9 per cycle) took 1.53 s
-                    // with the rework's first two rounds and 1.42 s with all three,
-                    // against 1.03 s on main; fade.gx gained 0.02-0.04 s. The cause is
-                    // the cost model, not the loss rule (which fired at most 40 times a
-                    // run): a sample taken while a child forked counts only as a lower
-                    // bound, which inflates a recursion's upper levels, so they fork
-                    // about twice as often and the level below them almost never. A next
-                    // attempt should keep main's nested samples or measure against them
-                    // on mixed.gx. The patches and the benchmark scripts:
-                    // ~/tmp/grok-forkcost/ and ~/tmp/grok-forkcost/bench/ (run1.sh,
-                    // batch.sh, p/mixed.gx, p/fade.gx).
-                    // 2026-11-05 claude: SlotSite now times each fork and each part in it
-                    // (cost::Parts, collection.rs update_ranges): what a fork takes
-                    // beyond its parts' critical path is a decayed overhead, and the
-                    // slots fork only where each half costs T plus it (SlotSite::least);
-                    // three forks in a row no faster than mean * n turn the site serial
-                    // until it re-probes or doubles (LOSSES, SlotSite::forked_with); a
-                    // slot past the last histogram bucket is estimated at its mean
-                    // (slot_cost). The probe on ryouko, debug, --no-fusion: base-r17 Auto
-                    // 1360-1428 cycles on 1.5-4.0 CPU-s, Off 1441 on 0.64; now Auto
-                    // 1421-1453 on 0.8-0.97. A heavy collection (64 slots each folding
-                    // 400) still forks every cycle with 64 parts, cycles within noise of
-                    // base. Not covered: the CPU rayon's woken workers spin after a fork,
-                    // which wall time cannot see. ForkSite untouched (the mixed.gx
-                    // regression was there). Pins that fail without it:
-                    // cost::tests::slots_whose_forks_lose_run_in_order,
-                    // a_fork_pays_its_overhead_in_each_half,
-                    // dear_slots_are_estimated_past_the_last_bucket.
-                    // 2026-11-05 claude: Review r17 round 2: reviewer 2 measured the
-                    // heavy-collection repeat as instructions (load 22-60): per cycle Auto
-                    // against Off is in line with base once D18's alias cost is fitted
-                    // out; that cost is fixed under iface-pair-one-var-01. The quiet-box
-                    // wall-clock repeat is not done.
                     SlotPlan::Fork { grain: grain(cal, cost, n, RANGES_PER_WORKER) }
                 }
             }

@@ -861,29 +861,6 @@ fn emit_leaf_cond_inner(
                     None => c,
                 })
             }
-            // XCR claude for claude: [perf/low] A tuple or struct pattern over a union
-            // holding its member node-walks, at the top and at a payload alike: `select v {
-            // (_, true) => 5, (_, false) => 6, `A(_) => 7 }` over `[(bool, bool), `A((bool,
-            // bool))]` is refused under #[native] ("slice/tuple/struct select pattern over
-            // .. not lowerable"), and `B((_, true))` over `B([(bool, bool), `A((bool,
-            // bool))])` the same ("nested pattern over a leaf of shape Some(Value)"). Main
-            // 30702808d alike; the pool's join of a tuple member with variant heads
-            // (pool-payload-heads-01) makes such selects exhaustive without a catch-all, so
-            // more programs meet it. The fix is not located. probes:
-            // ~/ptmp/cr29/scratch/r11-N/{f0,f1,f2}.gx (union-composite-pattern-fuse-01)
-            // 2026-11-05 claude: A tuple, struct or slice pattern over a union now reads
-            // the one composite member it may pass (select.rs composite_member): at the top
-            // through emit_member_cond when the inferred predicate does not freeze (its
-            // test is the arm's inferred test, which only that member passes), at a leaf or
-            // payload in emit_leaf_cond and emit_value_leaf_cond behind the member's full
-            // type test. Two or more candidate members still node-walk. Pins that fail
-            // without it (jit, jit_par):
-            // lang::select::composite_pattern_over_a_union_member_fuses,
-            // composite_payload_pattern_over_a_union_member_fuses,
-            // composite_or_payload_over_a_union_member_fuses,
-            // composite_pattern_over_one_of_two_tuple_members_fuses; six pins upgraded None
-            // -> Jit (pool_joins_a_tuple_member_with_variant_heads is probe f1). fusecheck:
-            // 560 programs, 0 mismatches.
             other => {
                 let Some(member) = composite_member(cx, sub, None, typ) else {
                     bail!(
@@ -1654,23 +1631,6 @@ fn emit_type_test<R: Rt>(
                     }
                 }
             }
-            // XCR claude for claude: [perf/low] A written composite test that does not hold
-            // the scrutinee's type has no lowering: `|x: ([`A, `B], [i64, string, null])|
-            // #[native] select x { ([`A, `B], [i64, string]) as (b, n) => 1, _ => 0 }` is
-            // refused "did not fully fuse" (main 968fa9bc0 alike), the blocker "type
-            // predicate ([`A, `B], [i64, string]) not lowerable". The test is a walk of the
-            // value's parts against the predicate's, as a pattern's structure is. Pin:
-            // lang::select::written_test_covers_the_part_its_structure_takes (FuseExpect::None)
-            // (written-composite-test-fuse-01)
-            // 2026-11-05 claude: A written composite test over a composite scrutinee its type
-            // does not hold is the value's test against it (graphix_value_is_a,
-            // emit_member_cond taking a Composite scrutinee when the test is written and not
-            // trivial), the structure then read at the test's frozen type, as over a union
-            // member. Pins that fail without it (jit):
-            // lang::select::written_composite_test_fuses (#[native], tuple, struct, nested
-            // slice, guard), written_test_covers_the_part_its_structure_takes and
-            // written_tests_over_a_variable_its_bound_names_covered (now FuseExpect::Jit).
-            // fusecheck manifest unchanged.
             _ => {
                 return Err(anyhow!("emit_clif: type predicate {pred} not lowerable"));
             }

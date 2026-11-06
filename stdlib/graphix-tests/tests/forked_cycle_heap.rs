@@ -173,56 +173,6 @@ fn forked_heap_settles() {
     unsafe { std::env::set_var("GRAPHIX_EVAL_THREADS", EVAL_THREADS) };
     use ParMode::{Force, Off};
     assert_heap_settles("node-walk", "n", FLAT_MAP, FIXED, false, Force);
-    // XCR claude for claude: [perf/low] The shrinking case runs serially
-    // because, forked over the 16 eval workers, its live heap still grows
-    // under the thread fix: with the runtime of option (c)
-    // (runtime-thread-spread-01) it grew 267 to 559 bytes a cycle between
-    // 6000 and 12000 cycles (6 runs, load 48 to 230) and 186 and 240 between
-    // 12000 and 24000; with netidx-value's lists bounded too, 198 and 216,
-    // and 5.3 MB from 3000 to 48000 cycles in windows of 16 to 256 bytes a
-    // cycle, not settled. Serially it is flat (29.21 to 29.22 MB from 3000
-    // to 48000 cycles under (c) and the bound), so the slots' own churn
-    // keeps nothing: some per-thread state of the eval workers grows with
-    // forked slot churn. Whether that is a bounded cache filling slowly (the
-    // bounded lists alone can hold 4 MB over 16 workers; poolshark's pools,
-    // `FastMemo`) or unbounded was not found. Main grows more on this case
-    // forked (833 to 1185 bytes a cycle), which hides it. Find what grows
-    // once runtime-thread-spread-01 lands, then fork this case. Probes:
-    // ~/ptmp/cr29/scratch/r10-M/r13/ (expc_toggles.diff, shrink_expc*.txt,
-    // final_expc*.txt, shrink_long_expc_bound*.txt). (forked-slot-churn-01)
-    // 2026-11-03 claude: Measured under (c) as built (a65acf104) with netidx
-    // 09c5f584's bound: this shrinking case forked (Force, 16 eval workers; a
-    // CHURN_ONLY variant of the test) read 176 and 251 bytes a cycle between
-    // 6000 and 12000 cycles (load 82 and 43), under the 1024 limit but not
-    // shown to settle. In the shell, s_shrink.gx --no-fusion GRAPHIX_PAR=force
-    // went 336 to 458 MB RSS in 5 min under (c) and 356 to 470 on fe2cdbcde's
-    // runtime, so the runtime thread does not move it; beside it under (c) with
-    // MALLOC_ARENA_MAX=2 it held at 156 to 167 MB (373 to 454 without): most of
-    // the forced growth is glibc's per-thread arenas over the eval workers, not
-    // live data. Probes: ~/ptmp/cr29/scratch/r11-M/ (forked_churn.txt,
-    // rss_s_shrink.txt, rss_arena.txt).
-    // 2026-11-03 claude: runtime-thread-spread-01, which this CR waits on, has
-    // landed as option (c) (a65acf104) and its XCR is deleted; netidx
-    // 09c5f584's bound is in too. What is left is this CR's own question: find
-    // what the eval workers keep under forked slot churn, then fork the case.
-    // 2026-11-05 claude: Found: the step growth was FusionCtx::dead, unbounded.
-    // A compile task's forget_def records every deleted definition, and its
-    // join appended them to the root even where the root had emitted nothing
-    // (fusion off, or before any fusion), whose dead list no link ever clears:
-    // forked here it held 7.9 MB of LambdaIds at 60000 cycles and doubled at
-    // about 28000 and 54000 cycles (+2 MB, +4 MB; serial never records).
-    // FusionCtx::join now keeps them only where the context records its own
-    // (records_dead). With it the case forked reads 51.8 to 54.0 MB from 6000
-    // to 120000 cycles in two runs, no steps. The rest is bounded per-thread
-    // caches filling within the first few thousand cycles: the eval workers'
-    // poolshark pools (about 38 MB idle here, the new eval-worker-pools-01) and
-    // netidx-value's free arrays (256 KiB a thread). The shrinking case now
-    // also runs forked in forked_heap_settles (251 bytes a cycle between 6000
-    // and 12000, under 1024; it cannot see a leak this slow, so the pin is
-    // fusion::tests::a_root_that_emitted_nothing_keeps_no_dead_definitions,
-    // which fails without the fix: 6 dead definitions kept). Probes:
-    // ~/ptmp/cr29/scratch/r17-o2/ (churn_probe.rs, H_large.txt, A_long.txt,
-    // A_fix_long*.txt).
     assert_heap_settles("shrinking, serial", "n", SHRINK, SHRINKING, false, Off);
     assert_heap_settles("shrinking, forked", "n", SHRINK, SHRINKING, false, Force);
     let (regions, _) = assert_heap_settles("fused", "n", FLAT_MAP, FIXED, true, Force);

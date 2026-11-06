@@ -1437,45 +1437,17 @@ where
     if site.in_order() {
         return in_order(ctx, items);
     }
-    // XCR claude for claude: [perf/medium] Every update forks all running instances, with
-    // no cost estimate and no saturated() check. An instance's first update is costly,
-    // but a waiting instance's later updates are a few nodes each, and each one still
-    // pays a fork of every instance and wakes the whole pool. A server whose N
-    // instances wait on a 1 ms tick used 5.92 s of CPU against 0.62 s serial at N=300,
-    // and 3.20 s against 0.13 s at N=20, with the same answers and wall time. Proposed
-    // fix: plan these forks through a cost::SlotSite held beside `siblings`, as
-    // collections do, and update the 'whatever their cost' rule in CLAUDE.md. probe:
-    // design/review-2026-10-26/repro/x-parallel-serve-fork-every-update.sh
-    // (x-parallel-01)
-    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q66, A server
-    // forks every instance on every update): yes, plan them (the recommendation: plan
-    // them.)
-    // 2026-10-28 claude: Not fixed. A rework covering this CR with c-cost-misc-01,
-    // x-perf-runtime-02 and x-parallel-01 (handler instances planned as a SlotSite, a
-    // fork's threshold raised by a decayed setup overhead, four strict losses before a
-    // site goes serial, hysteresis on the sampling schedule) was built and measured, and
-    // dropped: pinned to cores 0-11, --no-fusion, mixed.gx (a recursion whose depth
-    // alternates 0 and 9 per cycle) took 1.53 s with the rework's first two rounds and
-    // 1.42 s with all three, against 1.03 s on main; fade.gx gained 0.02-0.04 s. The
-    // cause is the cost model, not the loss rule (which fired at most 40 times a run): a
-    // sample taken while a child forked counts only as a lower bound, which inflates a
-    // recursion's upper levels, so they fork about twice as often and the level below
-    // them almost never. A next attempt should keep main's nested samples or measure
-    // against them on mixed.gx. The patches and the benchmark scripts:
-    // ~/tmp/grok-forkcost/ and ~/tmp/grok-forkcost/bench/ (run1.sh, batch.sh,
-    // p/mixed.gx, p/fade.gx).
-    // 2026-11-05 claude: Fixed: Handler holds a cost::SlotSite and
-    // branch::fork_instances plans the standing instances through it (one estimate per
-    // instance, serial once n * estimate < 2T, saturated() honoured) and the instances
-    // started this cycle through its fresh ProbeSite, as a collection's slots; CLAUDE.md
-    // and design/parallel_eval.md no longer say 'whatever their cost'. Probe on the
-    // debug build, 32 cores: N=20 Auto cpu_during 3.30 s -> 0.10 s (serial 0.13 s);
-    // N=300 stays 5.4 s against 0.6 s serial because 300 instances at about 1 us each
-    // exceed 2T = 35 us, so the model forks them: that is x-perf-runtime-02 (T leaves
-    // out branch overhead and worker spin), not planned away here. The cost model is
-    // untouched, so the mixed.gx regression of the dropped rework cannot occur. Pin:
-    // lang::par_attrs::waiting_server_instances_fork_only_where_it_pays (Auto forks 0
-    // with the fix, 303 without). Needs a soak.
+    // CR claude for claude: [perf/low] Waiting server instances planned
+    // through their SlotSite still cost Auto several times serial's CPU,
+    // and at N=300 its wall time too. design/review-2026-10-26/repro/
+    // x-parallel-serve-fork-every-update.sh on the debug build at 45961f4fd
+    // (ryouko, an 80-worker soak running at nice 19): N=300 off 0.94 s CPU
+    // in 3.92 s, auto 2.80 s in 4.64 s; N=20 off 0.17 s, auto 0.89 s. The
+    // collection probe (x-perf-runtime-auto-cpu.sh) is in line with serial
+    // (auto 1226 cycles on 0.94 s, off 1181 on 0.78 s), so what is left is
+    // a request instance's estimate or the woken workers' spin, which wall
+    // time cannot see. Measure on a quiet box first.
+    // (serve-instance-fork-cost-01)
     let (standing, fresh) = items.split_at_mut(old_len.min(items.len()));
     let n = standing.len();
     let out = match site.plan(ctx, n) {

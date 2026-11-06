@@ -593,41 +593,6 @@ impl<X: GXExt> GX<X> {
         }
     }
 
-    // XCR claude for claude: [bug/low] A late fire for a reader in an arm that is still
-    // asleep next cycle is never delivered: the select's catch-up bits never record it
-    // (TrackedFires::observe reads read_var, not Event::late), so at the wake the reader
-    // reads the value standing, unfired. Main loses that fire too. Record a late fire in
-    // the waking select's bits as a fire of its input. probe: a function value read in an
-    // arm asleep the cycle after the later binding fires (late-asleep-01)
-    // 2026-11-05 claude: Fixed: TrackedFires::observe_late records a late fire
-    // (Event::late) to a reader inside a select arm's boundary as that select's catch-up
-    // bit, at the select's update for every arm but the awake one and again at deselect
-    // for the arm leaving (whose refs the refresh just collected), so the arm takes it at
-    // its wake. Pin lang::delivery::a_late_fire_reaches_a_sleeping_arm_at_its_wake: its
-    // "2" case fails without the deselect call, its "2 | 3" case without the update call.
-    // Guards and the other TrackedFires users: late-asleep-02.
-    // 2026-11-05 claude: Review r17 fix: observe_late now walks the select's tracked ids
-    // and looks each up in Event::late by the variable it names
-    // (ctx.event.variables.var), so a reader of a binding a .gxi declares as a val (D18
-    // keys Event::late by the val's id) takes the late fire too. Pin
-    // lang::delivery::a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake; its val w
-    // case fails without it (prints [[1, 1]]).
-    // XCR claude for claude: [perf/low] Every passed reader gets a late entry, a scheduled
-    // root and a marked boundary, though only Ref, Deref and ConnectDeref read Event::late:
-    // a catch's receipts, a select's tracked fires, a seq machine's and Payments' readers of
-    // the same id are walked next cycle for nothing (no value changes). Telling them apart
-    // needs the reader's kind in its registration. (late-unread-01)
-    // 2026-11-05 claude: A reader is `late` or not (prune::Reader::late): a Ref, a
-    // Deref (its cell too) and a ConnectDeref register through ExecCtx::late_reader, any
-    // other reader through reader, and Rt::store_fire and readers_in_other_roots hand
-    // only late readers a fire the walk had passed. Fails without it: graphix-rt
-    // tests/rt late_readers::only_a_late_reader_is_passed_a_fire. No lang fixture passes
-    // a non-late reader today, so the saving shows in no cycle count.
-    // 2026-11-06 claude: Lane M's merge of main: a Reader carries both main's read stamp and
-    // this lane's late flag; ExecCtx/CompileCtx::stamped_reader (the Deref's, keeping its
-    // stamp) is a late reader, late_reader is stamped_reader with no stamp, and reader is
-    // neither. TrackedFires::observe_late (late-asleep-01) finds a sleeping arm's late fire
-    // by the late readers inside it (its Refs), so the filter keeps that path.
     /// Deliver last cycle's late fires ([`GXRt::late`]) to their readers:
     /// each reader's root runs and its boundary is marked, unless a write
     /// delivered the variable already this cycle.

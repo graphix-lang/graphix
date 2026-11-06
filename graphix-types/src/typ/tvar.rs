@@ -1772,51 +1772,6 @@ impl TVar {
         self.read().cell.read().binding.is_some()
     }
 
-    // XCR claude for claude: [perf/low] A chain of bounds naming the next
-    // variable itself ('a{i}: 'a{i+1}) settles in quadratic time: the settle
-    // binds 'a0 -> 'a1 -> .. cell to cell, then TVar::freshen (Type::reset_memo
-    // in TVar::witness, from FnType::settle_terminal) asks this of every cell,
-    // and each call walks the chain to its end, with no path compression.
-    // 0.22 / 0.57 / 1.62 / 5.19 G instructions net of the stdlib at 1000 /
-    // 2000 / 4000 / 8000 links, about 70 G at 30000; this walk is 960 M of
-    // 2.96 G at 4000. Main 968fa9bc0 has it under its cubic part. A walk that
-    // stops at a cell it already resolved, or compressing the chain where a
-    // forward link may be rewritten, would make it linear. Found by review
-    // r14 of lane K. probe: ~/ptmp/cr29/scratch/review-r14/K-r1-1/p/direct_8000.gx
-    // (gen.py direct N OUT), profile callgrind/cg_direct4000.out.gz
-    // (open-cell-chain-01)
-    // 2026-11-05 claude: Lane hk (r17): BLOCKED, no code change. Reproduced on
-    // base-r17: direct_4000.gx 2.534 G instr, direct_8000.gx 6.214 G (--check
-    // --no-cache, net of stdlib 0.6 G): superlinear, as the text says. Cause
-    // verified: TVar::freshen (tvar.rs ~2331) calls open_cell() before descending
-    // into a forward link, and the descent inserts each copy before recursing, so
-    // the end is never in fresh at any level; each level walks the rest of the
-    // chain. Fixes considered: (1) Path compression in open_cell rewrites a
-    // forwarding cell's binding to the chain end. It keeps the open cell, but
-    // copies name through the immediate link (forwarded_as, named_as in tvar.rs),
-    // so a copy's names and quantifier-by-name lookup would change where a link is
-    // skipped. Needs Eric's ruling and pins for naming. (2) Stopping the walk at
-    // the first cell already in fresh is not exact: the copy would drop the
-    // forwarder's own constraints, lower bounds and facts (copy_into). (3) An
-    // exact fix: one chain-end memo per copy, threaded through freshen's three
-    // walk closures (reset_memo, tvar.rs ~3799, ~3887). No semantics change, but
-    // it is plumbing across three memo types. Recommendation: take (3) if the
-    // 8000-link shape matters; otherwise accept the quadratic cost, as realistic
-    // chains are short. Probe: ~/ptmp/cr29/scratch/r17-hk/direct_4000.gx; counts
-    // in perf.direct_4000.txt and perf.direct_8000.txt beside it.
-    // 2026-11-05 claude: Lane ctl (r17): fixed, no ruling needed. Two parts in
-    // TVar::freshen, both exact: a copy that holds no image yet skips the chain
-    // walk (no image of the end to name: a settle's witness copies, the probe's
-    // shape), and a forwarding chain longer than ChainEnds::SHORT has its end
-    // remembered per copy (ChainEnds, in CopyMemo for reset/instantiate/rename and
-    // in Subst), so a copy recursing down a chain walks each link once. --no-cache
-    // --check instructions, lane head -> fix: direct_4000 2.68G -> 1.74G,
-    // direct_8000 6.33G -> 2.50G (empty 0.96G: net 5.38G -> 1.53G, linear); GUI
-    // examples 43.13G -> 43.15/43.19G (noise). Pins:
-    // tvar::tests::copies_from_each_cell_of_a_chain_walk_no_link (2000999 links
-    // without the empty check) and a_copy_walks_a_forwarding_chain_once (1998999
-    // links without the memo). Probes:
-    // ~/ptmp/cr29/scratch/r17-ctl/direct_{4000,8000}.gx
     /// The open cell this var stands for: its own, or the end of a chain
     /// of bindings to vars (a merged cell's forward link); `None` when
     /// the chain ends bound.
@@ -4101,44 +4056,6 @@ impl Type {
         })
     }
 
-    // XCR claude for claude: [risk/low] A walk that inlines a bound cell's binding under a
-    // quantified function type (instantiate_memo here, rename_memo, resolve_tvars) can
-    // put a cell named like that function type's quantifier inside it, which every
-    // by-name reading of the quantifier (FnType::each_quantifier, collect_tvars'
-    // first-seen pick) may take for the quantifier: the capture typedef-capture-01 closed
-    // for replace_tvars (under_quantifiers), by binding instead of by substitution. A
-    // forwarding binding keeps the occurrence's name (TVar::forwarded_as), so only a
-    // structured binding (`'_7 := Array<'a>` under `fn<'a: ..>`) brings the name in. Not
-    // reproduced: ~/ptmp/cr29/scratch/r10-R/{t_inst_a..d,t_res_c..h}.gx (a declared
-    // quantifier beside a parameter bound to an outer 'a, a body annotation's free
-    // variable, a callee instanced under a rank-2 argument) run alike with the
-    // quantifier named 'a and 'b, under GRAPHIX_NO_SUBST=1 too. If one shows: rename the
-    // quantifier as under_quantifiers does when an inlined binding holds its name.
-    // (resolve-capture-01)
-    // 2026-11-05 claude: Reproduced and fixed. The capture is reachable: a body
-    // annotation's free 'p bound to a parameter's Array<'a> (|k, v: Array<'a>| { let k2:
-    // fn<'a: Any>(y: 'p, x: 'a) -> 'a = k; (k2(v, 1), k2(v, "s")) }) passed --check but
-    // its instance was refused ('an instance at .. of a definition typed ..', ELAB_AUDIT
-    // instance-signature): instance_sig's instantiate_owned inlined 'p, and
-    // each_quantifier then took v's 'a for k2's. The three walks
-    // (FnType::instantiate_how, rename_with/rename_memo, resolve_tvars_seen_int) now end
-    // in tvar::keep_quantifiers: a quantifier whose name an inlined cell would take is
-    // renamed apart ('a1), as under_quantifiers does; where the quantifier stands only in
-    // a bound, the namesake is renamed. Pins that fail without it: graphix-types
-    // typ::fntyp::tests::an_inlined_binding_captures_no_quantifier (both branches),
-    // graphix-tests lang::types::rank2_quantifier_beside_an_inlined_namesake and
-    // rank2_quantifier_beside_a_declared_namesake (all four modes). Census of both repos:
-    // no verdict or message change; GUI-suite --check instructions unchanged (43.05G vs
-    // 43.04G). The printer's own capture is print-capture-01. probes:
-    // ~/ptmp/cr29/scratch/r17-hk/{v3,v3b,v4}.gx
-    // 2026-11-06 claude: Landed on main after rank-2 types were removed (lane Q): the two
-    // graphix-tests pins (rank2_quantifier_beside_an_inlined_namesake,
-    // rank2_quantifier_beside_a_declared_namesake) wrote a quantified let annotation,
-    // which main now refuses, so they were dropped with main's other rank-2 tests. The
-    // walks' fix stays, pinned by
-    // typ::fntyp::tests::an_inlined_binding_captures_no_quantifier. Whether a declared
-    // signature (an interface val, a trait method, a lambda's own variables) still reaches
-    // the capture is not shown.
     /// `None` when no TVar is beneath.
     /// The bindings resolved, each open cell freshened as `how` says.
     pub(super) fn instantiate_int(
